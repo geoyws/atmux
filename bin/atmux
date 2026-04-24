@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# atmux — tmux-native multi-TUI agent orchestrator.
+# Dispatcher: routes `atmux <verb> [args]` to lib/<verb>.sh.
+
+set -euo pipefail
+
+ATMUX_BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ATMUX_ROOT="$(cd "$ATMUX_BIN_DIR/.." && pwd)"
+export ATMUX_ROOT ATMUX_BIN_DIR
+export ATMUX_LIB_DIR="$ATMUX_ROOT/lib"
+export ATMUX_TEMPLATES_DIR="$ATMUX_ROOT/templates"
+
+# shellcheck source=../lib/common.sh
+. "$ATMUX_LIB_DIR/common.sh"
+
+usage() {
+  cat <<'EOF'
+atmux — tmux-native multi-TUI agent orchestrator.
+
+Usage: atmux <verb> [args]
+
+Setup:
+  init [--name <team>]        Scaffold .atmux/team.json in current dir
+  start                       Create tmux session, spawn all members
+  stop [--force]              Kill tmux session, archive state
+  attach                      tmux attach to the team session
+  status                      Powerline team overview
+
+Messaging:
+  send <member> <msg...>      tmux send-keys to a member's pane
+  broadcast <msg...>          Send to every member except the driver
+  tell-lead <msg...>          Driver-only: send to lead + append to driver-inbox.md
+
+Task board (kanban):
+  task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>]
+  task list [--status todo|in-progress|done|blocked] [--assignee <member>]
+  task show <id>
+  task move <id> <todo|in-progress|done|blocked>
+
+Dispatch + work:
+  dispatch <member> <task-id> Push task to member's inbox + ping them
+  inbox <member>              Show member's inbox
+  claim <task-id>             Claim a task from kanban (as a member)
+  done <task-id>              Mark claimed task complete
+
+Automation:
+  report                      Post 30-min progress digest to Discord
+  whip                        Run 5-min watchdog (idle / blocker / clear)
+  rotate <member>             /clear the member and re-brief
+  rotate-lead                 /clear the lead and re-bootstrap
+
+Misc:
+  version
+  help | --help | -h
+
+Environment:
+  ATMUX_DISCORD_WEBHOOK   Discord webhook URL for whip/report escalations
+  ATMUX_DIR               Override state dir (default: ./.atmux)
+  ATMUX_TEAM              Override team name (otherwise read from team.json)
+
+Docs:  https://github.com/geoyws/atmux
+EOF
+}
+
+case "${1:-}" in
+  ""|help|--help|-h) usage; exit 0 ;;
+  version|--version|-V) echo "atmux $(atmux::version)"; exit 0 ;;
+esac
+
+verb="$1"; shift
+verb_slug="${verb//-/_}"
+verb_script="$ATMUX_LIB_DIR/${verb}.sh"
+
+# Route aliased verbs:
+case "$verb" in
+  tell-lead) verb_script="$ATMUX_LIB_DIR/tell.sh" ;;
+  rotate-lead) verb_script="$ATMUX_LIB_DIR/rotate.sh"; set -- "--lead" "$@" ;;
+  task) verb_script="$ATMUX_LIB_DIR/kanban.sh" ;;
+  broadcast) verb_script="$ATMUX_LIB_DIR/send.sh"; set -- "--broadcast" "$@" ;;
+  claim|done) verb_script="$ATMUX_LIB_DIR/claim.sh"; set -- "--$verb" "$@" ;;
+esac
+
+if [[ ! -f "$verb_script" ]]; then
+  echo "atmux: unknown verb: $verb" >&2
+  echo "  run 'atmux help' for the list of verbs" >&2
+  exit 64
+fi
+
+# shellcheck disable=SC1090
+. "$verb_script"
+# Each lib/*.sh defines a main() function which we invoke here.
+if declare -F main >/dev/null; then
+  main "$@"
+else
+  echo "atmux: lib/$verb.sh missing main()" >&2
+  exit 70
+fi

@@ -1,0 +1,63 @@
+{
+  "name": "my-team",
+  "description": "atmux team — edit this to match your project",
+  "members": [
+    {
+      "name": "lead",
+      "role": "team-lead",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "reviewer",
+      "role": "reviewer",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "gitter",
+      "role": "git-committer",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "devops",
+      "role": "devops",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "cursor-1",
+      "role": "member",
+      "tui": "cursor",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "kimi-1",
+      "role": "member",
+      "tui": "kimi",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "minimax-1",
+      "role": "member",
+      "tui": "opencode",
+      "model": "default",
+      "cwd": "."
+    }
+  ],
+  "whip": {
+    "intervalMins": 5,
+    "staleMin": 30,
+    "leadMaxMin": 60
+  },
+  "report": {
+    "intervalMins": 30
+  }
+}

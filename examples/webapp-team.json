@@ -1,0 +1,15 @@
+{
+  "name": "webapp",
+  "description": "Full-stack webapp team — lead + reviewer + gitter + devops + 3 workers across Cursor/Kimi/MiniMax",
+  "members": [
+    { "name": "lead",       "role": "team-lead",     "tui": "claude",   "model": "default", "cwd": "." },
+    { "name": "reviewer",   "role": "reviewer",      "tui": "claude",   "model": "default", "cwd": "." },
+    { "name": "gitter",     "role": "git-committer", "tui": "claude",   "model": "default", "cwd": "." },
+    { "name": "devops",     "role": "devops",        "tui": "claude",   "model": "default", "cwd": "." },
+    { "name": "ui-cursor",  "role": "member",        "tui": "cursor",   "model": "default", "cwd": "." },
+    { "name": "api-kimi",   "role": "member",        "tui": "kimi",     "model": "default", "cwd": "." },
+    { "name": "svc-minimax","role": "member",        "tui": "opencode", "model": "default", "cwd": "." }
+  ],
+  "whip":   { "intervalMins": 5, "staleMin": 30, "leadMaxMin": 60 },
+  "report": { "intervalMins": 30 }
+}
