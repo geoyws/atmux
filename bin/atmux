@@ -4,8 +4,17 @@
 
 set -euo pipefail
 
-ATMUX_BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the real location of this script, following symlinks so a
+# `/usr/local/bin/atmux` symlink still finds lib/ + templates/ correctly.
+_atmux_self="${BASH_SOURCE[0]}"
+while [[ -L "$_atmux_self" ]]; do
+  _atmux_dir="$(cd -P "$(dirname "$_atmux_self")" && pwd)"
+  _atmux_self="$(readlink "$_atmux_self")"
+  [[ "$_atmux_self" != /* ]] && _atmux_self="$_atmux_dir/$_atmux_self"
+done
+ATMUX_BIN_DIR="$(cd -P "$(dirname "$_atmux_self")" && pwd)"
 ATMUX_ROOT="$(cd "$ATMUX_BIN_DIR/.." && pwd)"
+unset _atmux_self _atmux_dir
 export ATMUX_ROOT ATMUX_BIN_DIR
 export ATMUX_LIB_DIR="$ATMUX_ROOT/lib"
 export ATMUX_TEMPLATES_DIR="$ATMUX_ROOT/templates"
