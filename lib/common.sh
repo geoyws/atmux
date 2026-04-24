@@ -2,27 +2,27 @@
 # lib/common.sh — shared helpers used by every lib/*.sh.
 # Sourced by bin/atmux and re-sourced indirectly by downstream libs.
 
-# Colors (tty-only).
+# Colors (tty-only). Exported so sourced lib/*.sh see them.
 if [[ -t 1 ]]; then
   atmux_c_red=$'\e[31m'
   atmux_c_grn=$'\e[32m'
   atmux_c_yel=$'\e[33m'
-  atmux_c_blu=$'\e[34m'
-  atmux_c_mag=$'\e[35m'
   atmux_c_cyn=$'\e[36m'
   atmux_c_dim=$'\e[2m'
   atmux_c_bld=$'\e[1m'
   atmux_c_rst=$'\e[0m'
 else
-  atmux_c_red= atmux_c_grn= atmux_c_yel= atmux_c_blu= atmux_c_mag= atmux_c_cyn= atmux_c_dim= atmux_c_bld= atmux_c_rst=
+  atmux_c_red=''; atmux_c_grn=''; atmux_c_yel=''; atmux_c_cyn=''
+  atmux_c_dim=''; atmux_c_bld=''; atmux_c_rst=''
 fi
+export atmux_c_red atmux_c_grn atmux_c_yel atmux_c_cyn atmux_c_dim atmux_c_bld atmux_c_rst
 
 atmux::log()   { printf '%s🔹 atmux%s %s\n' "$atmux_c_cyn" "$atmux_c_rst" "$*" >&2; }
 atmux::ok()    { printf '%s✅ atmux%s %s%s%s\n' "$atmux_c_cyn" "$atmux_c_rst" "$atmux_c_grn" "$*" "$atmux_c_rst" >&2; }
 atmux::warn()  { printf '%s⚠️  atmux%s %s%s%s\n' "$atmux_c_cyn" "$atmux_c_rst" "$atmux_c_yel" "$*" "$atmux_c_rst" >&2; }
 atmux::die()   { printf '%s💥 atmux%s %s%s%s\n' "$atmux_c_cyn" "$atmux_c_rst" "$atmux_c_red" "$*" "$atmux_c_rst" >&2; exit 1; }
 
-atmux::version() { echo "0.2.0"; }
+atmux::version() { echo "0.3.0"; }
 
 atmux::require() {
   for dep in "$@"; do
@@ -171,11 +171,17 @@ atmux::capture_pane() {
 
 # ---------- json write helpers ----------
 
-# atomic write of jq edit to a JSON file
+# Atomic jq-driven update of a JSON file, under an flock so concurrent
+# dispatch / claim calls can't lose data.
+# Usage: atmux::jq_update <file> <jq-filter> [jq args...]
 atmux::jq_update() {
-  # Usage: atmux::jq_update <file> <jq-filter> [--arg k v ...]
   local file="$1"; shift
   local filter="$1"; shift
+  local dir; dir="$(dirname "$file")"
+  mkdir -p "$dir"
+  local lockfd
+  exec {lockfd}>"${file}.lock"
+  flock "$lockfd"
   local tmp; tmp="$(mktemp "${file}.XXXXXX")"
   if [[ -s "$file" ]]; then
     jq "$@" "$filter" "$file" >"$tmp"
@@ -183,6 +189,22 @@ atmux::jq_update() {
     jq -n "$@" "$filter" >"$tmp"
   fi
   mv "$tmp" "$file"
+  exec {lockfd}>&-
+}
+
+# Run a command with an flock on the given file. Ensures only one writer
+# mutates the target at a time across all atmux processes.
+# Usage: atmux::with_lock <file> <command...>
+atmux::with_lock() {
+  local file="$1"; shift
+  mkdir -p "$(dirname "$file")"
+  local lockfd
+  exec {lockfd}>"${file}.lock"
+  flock "$lockfd"
+  "$@"
+  local rc=$?
+  exec {lockfd}>&-
+  return "$rc"
 }
 
 atmux::now_epoch() { date +%s; }

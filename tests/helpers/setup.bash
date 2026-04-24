@@ -17,7 +17,7 @@ atmux_setup_sandbox() {
   ATMUX_TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/atmux-test-XXXXXX")"
   export ATMUX_TEST_TMP
   mkdir -p "$ATMUX_TEST_TMP/project"
-  cd "$ATMUX_TEST_TMP/project"
+  cd "$ATMUX_TEST_TMP/project" || return 1
   export ATMUX_DIR="$ATMUX_TEST_TMP/project/.atmux"
   # Don't spew colors in tests.
   export NO_COLOR=1

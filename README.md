@@ -135,32 +135,50 @@ Default role→TUI mapping:
 ## Commands
 
 ```
+🏁 Setup
 atmux init [--wizard] [--force] [--name <team>]
 atmux start [--force]
 atmux stop [--force] [--no-archive]
 atmux attach
-atmux status
+atmux status [--json]
 
+💬 Messaging
 atmux send <member> <msg...>
 atmux broadcast <msg...>
-atmux tell-lead <msg...>                    # driver → lead (via driver-inbox.md + ping)
+atmux tell-lead <msg...>                    # driver → lead (driver-inbox.md)
+atmux reply <msg...>                        # member → driver (lead-outbox.md)
+atmux outbox [--ack] [--json]               # driver reads lead-outbox
 
-atmux task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>]
-atmux task list [--status …] [--assignee <member>]
+📋 Task board
+atmux task add <subject> [--body <txt>] [--assignee <m>] [--deps <id,id>] [--priority <n>]
+atmux task list [--status …] [--assignee <m>] [--json]
 atmux task show <id>
 atmux task move <id> <todo|in-progress|done|blocked>
 atmux task assign <id> <member>
 atmux task rm <id>
 
-atmux dispatch <member> <task-id> [--no-ping]
+📨 Dispatch / work
+atmux dispatch <member> <task-id> [--no-ping]   # blocked if deps unresolved
 atmux inbox <member> [--json]
-atmux claim <task-id> [--as <member>]
+atmux claim <task-id> [--as <member>]            # blocked if deps unresolved
 atmux done  <task-id> [--as <member>] [--note <text>]
 
+💰 Cost + budgets
+atmux cost [--member <m>] [--since <ts>] [--json]
+atmux pause <member>                         # dispatch/claim refuse
+atmux resume <member>
+
+🤖 Automation
 atmux whip                                   # 5-min watchdog (cron)
 atmux report [--no-discord]                  # 30-min digest (cron)
+
+🔧 Maintenance
 atmux rotate <member>
 atmux rotate-lead
+atmux handoff <from> <to> [--reason <r>] [--no-native] [--pause-from]
+atmux add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+atmux reconfigure                            # re-run wizard on existing team
+atmux dashboard [--interval <s>]             # live full-screen panel
 ```
 
 ## State layout
@@ -215,17 +233,75 @@ Everything lives in `.atmux/` at the project root (or wherever `ATMUX_DIR` point
 - `curl` (only if you want Discord webhook pings)
 - Whatever TUIs you declare: `claude`, `opencode`, `kimi`, `cursor-agent`
 
+## 💰 Cost tracking + budgets
+
+atmux parses `~/.claude/projects/<slug>/<uuid>.jsonl` for assistant-message
+`usage` blocks, sums them against a pricing table, and attributes per member
+by `cwd`. Configure in `team.json`:
+
+```json
+"budget": {
+  "total": 25.00,
+  "perMember": 5.00,
+  "currency": "USD",
+  "overrunPolicy": "failover"
+}
+```
+
+- **`warn`** — whip logs + Discord-pings only.
+- **`pause`** — whip also calls `atmux pause <member>`; `dispatch`/`claim` refuse.
+- **`failover`** — whip additionally tries `atmux handoff <exhausted> <peer>`,
+  where `<peer>` is another member with the same `role` that still has budget.
+
+Override pricing with `ATMUX_PRICING_FILE=/path/to/my-pricing.json`. Default
+table at `lib/pricing.json` (Opus / Sonnet / Haiku).
+
+```bash
+atmux cost                      # powerline per-member breakdown
+atmux cost --member lead        # single member
+atmux cost --json               # pipe to jq
+atmux cost --since "1 hour ago" # windowed
+```
+
+## 🤝 Handoff
+
+```bash
+atmux handoff cursor-1 kimi-1 --reason "cursor budget exhausted"
+```
+
+Two-phase:
+1. 📝 **Native**: asks the source TUI to write a handoff summary to a
+   pre-registered path. Waits `ATMUX_HANDOFF_WAIT` (default 30s).
+2. 🖥️ **Screen-scrape**: if the file never shows up, `tmux capture-pane -S
+   -<ATMUX_HANDOFF_LINES>` (default 500) grabs the pane history verbatim.
+
+Either way, the target member gets the notes + the migrated in-flight tasks.
+`--pause-from` additionally calls `atmux pause <from>` so the source stops
+accepting new work.
+
 ## Testing
 
 ```bash
-# Unit tests (bats-core)
-bats tests/unit/
+# Unit tests (bats-core, parallel-safe)
+bats --jobs 4 tests/unit/
 
-# E2E tests (uses tui=shell; no AI API calls)
+# E2E tests (uses tui=shell; no AI API calls; serial because shared tmux state)
 bats tests/e2e/
 
-# Or run everything:
-./tests/run.sh
+# Or run everything (+ shellcheck):
+./tests/run.sh --shellcheck --jobs 4
+```
+
+## Completion
+
+```bash
+# bash
+echo '. /root/.atmux-src/completions/atmux.bash' >> ~/.bashrc
+
+# zsh — add to fpath
+mkdir -p ~/.zsh/completions
+ln -s /root/.atmux-src/completions/_atmux ~/.zsh/completions/_atmux
+# then in ~/.zshrc: fpath=(~/.zsh/completions $fpath) && autoload -Uz compinit && compinit
 ```
 
 ## Comparison vs plugin-orch

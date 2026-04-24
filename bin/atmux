@@ -39,6 +39,8 @@ Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
   broadcast <msg...>          Send to every member except the driver
   tell-lead <msg...>          Driver-only: send to lead + append to driver-inbox.md
+  reply <msg...>              Member → driver: write to lead-outbox.md
+  outbox [--ack] [--json]     Driver: read lead-outbox.md (--ack archives)
 
 Task board (kanban):
   task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>]
@@ -54,9 +56,18 @@ Dispatch + work:
 
 Automation:
   report                      Post 30-min progress digest to Discord
-  whip                        Run 5-min watchdog (idle / blocker / clear)
+  whip                        Run 5-min watchdog (idle / blocker / budget / clear)
+  cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   rotate <member>             /clear the member and re-brief
   rotate-lead                 /clear the lead and re-bootstrap
+  handoff <from> <to>         Move in-flight work from one member to another
+  pause <member>              Mark member paused (dispatch refuses to queue)
+  resume <member>             Unpause
+
+Maintenance:
+  add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+  reconfigure                 Re-run wizard against an existing team.json
+  dashboard [--interval <s>]  Live full-screen status panel
 
 Misc:
   version
@@ -77,7 +88,6 @@ case "${1:-}" in
 esac
 
 verb="$1"; shift
-verb_slug="${verb//-/_}"
 verb_script="$ATMUX_LIB_DIR/${verb}.sh"
 
 # Route aliased verbs:
@@ -87,6 +97,9 @@ case "$verb" in
   task) verb_script="$ATMUX_LIB_DIR/kanban.sh" ;;
   broadcast) verb_script="$ATMUX_LIB_DIR/send.sh"; set -- "--broadcast" "$@" ;;
   claim|done) verb_script="$ATMUX_LIB_DIR/claim.sh"; set -- "--$verb" "$@" ;;
+  reply) verb_script="$ATMUX_LIB_DIR/reply.sh"; set -- "--reply" "$@" ;;
+  outbox) verb_script="$ATMUX_LIB_DIR/reply.sh"; set -- "--outbox" "$@" ;;
+  pause|resume) verb_script="$ATMUX_LIB_DIR/pause.sh"; set -- "$verb" "$@" ;;
 esac
 
 if [[ ! -f "$verb_script" ]]; then

@@ -7,7 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] — 2026-04-24
+## [0.3.0] — 2026-04-24
+
+### ✨ Added
+
+- **`ATMUX_MEMBER` auto-export per pane.** Every TUI launch command now prepends
+  `export ATMUX_MEMBER=<name>`, so `atmux claim <id>` and `atmux done <id>` run
+  inside a member's pane infer `--as` without any flags.
+- **`atmux reply` / `atmux outbox`** — the missing reverse channel. Any member
+  writes `atmux reply "..."` to append to `.atmux/lead-outbox.md`; the driver
+  reads via `atmux outbox` (with `--ack` to archive, `--json` for pipeability).
+  Replaces "attach to lead pane to see what it decided" with an async mailbox.
+- **`atmux cost` + budget enforcement.** Parses `~/.claude/projects/*.jsonl`
+  `usage` blocks against a pricing table (`lib/pricing.json`; override with
+  `ATMUX_PRICING_FILE`). `team.budget.{total,perMember,overrunPolicy}` in
+  `team.json` — `overrunPolicy` ∈ `warn | pause | failover`.
+- **Budget-exhausted failover.** When `overrunPolicy: "failover"`, `atmux whip`
+  auto-invokes `atmux handoff <exhausted> <peer-with-budget>` and pauses the
+  exhausted member. Peer selection prefers same `role`.
+- **`atmux handoff <from> <to>`.** Two-phase: first asks the source TUI to write
+  a handoff summary, waits up to `ATMUX_HANDOFF_WAIT` seconds; if the file
+  never materializes, falls back to `tmux capture-pane` screen-scrape. Either
+  way the target gets the notes + the in-flight tasks migrated.
+- **`atmux pause <member>` / `atmux resume <member>`.** Paused members refuse
+  `dispatch` and `claim`. Used by budget enforcement + manual ops.
+- **`atmux add-member <name> ...`** — append a member without re-running the
+  wizard; spawns immediately if the session is up.
+- **`atmux reconfigure`** — re-run the TUI-commands part of the wizard against
+  an existing team.json without nuking members.
+- **Task `priority` + `deps` enforcement.** `task add --priority N`; `task list`
+  sorts ascending by priority. `claim` and `dispatch` refuse tasks whose `deps`
+  aren't all `done`.
+- **`--json` output** for `atmux status` and `atmux task list` (driver-side
+  Claude can now parse team state without grep/awk fragility).
+- **`atmux dashboard [--interval <s>]`** — live full-screen status panel.
+- **Shell completion**: `completions/atmux.bash` + `completions/_atmux` (zsh).
+  Tab-completes verbs + member names read from `.atmux/team.json`.
+- **GitHub Actions CI** — `.github/workflows/test.yml` runs shellcheck + bats.
+- **`flock` on every JSON mutation.** All `atmux::jq_update` calls now hold a
+  per-file lock, preventing read-modify-write races between concurrent
+  dispatches / claims.
+
+### 🛡️ Fixed
+
+- shellcheck-clean (with `-e SC1091,SC2154,SC2155,SC2016,SC2034`). Fixes:
+  bogus multi-redirect in `cost.sh`, unused vars, `cd` without `|| exit` in
+  tests, `A && B || C` misuse in `start.sh`.
+
+### 🧪 Tests
+
+- **139/139 green** (129 unit + 10 e2e) — up from 96 in v0.2.0.
+- New suites: `outbox.bats` (6), `env_member.bats` (7), `json_output.bats` (5),
+  `add_member.bats` (4), `deps.bats` (5), `cost.bats` (4), `pause.bats` (4),
+  `handoff.bats` (5).
+
+
 
 ### ✨ Added
 
@@ -75,6 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test suite: 80 bats-core tests (70 unit + 10 e2e), all green. E2E uses
   `tui=shell` so CI needs no AI API keys.
 
-[Unreleased]: https://github.com/geoyws/atmux/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/geoyws/atmux/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/geoyws/atmux/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/geoyws/atmux/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/geoyws/atmux/releases/tag/v0.1.0

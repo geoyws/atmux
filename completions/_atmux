@@ -1,0 +1,75 @@
+#compdef atmux
+# atmux(1) zsh completion. Drop into a directory on $fpath, e.g.:
+#   mkdir -p ~/.zsh/completions && cp completions/_atmux ~/.zsh/completions/
+# then add to .zshrc:
+#   fpath=(~/.zsh/completions $fpath)
+#   autoload -Uz compinit && compinit
+
+_atmux() {
+  local -a verbs
+  verbs=(
+    'init:Scaffold .atmux/team.json (optionally wizard)'
+    'start:Create tmux session + spawn members'
+    'stop:Kill session, archive state'
+    'attach:tmux attach-session to the team'
+    'status:Powerline team overview (+ --json)'
+    'send:tmux send-keys to a member pane'
+    'broadcast:Send to every member'
+    'tell-lead:Driver → lead: append to driver-inbox.md + ping'
+    'reply:Member → driver: append to lead-outbox.md'
+    'outbox:Driver: read lead-outbox.md (+ --ack, --json)'
+    'task:Manage the kanban (add/list/show/move/assign/rm)'
+    'dispatch:Push a task to a member'\''s inbox + ping'
+    'inbox:Show a member inbox (+ --json)'
+    'claim:Claim a task (as member)'
+    'done:Mark a claimed task complete'
+    'report:30-min digest (Discord)'
+    'whip:5-min watchdog (Discord)'
+    'cost:Per-member USD + token usage (+ --json)'
+    'rotate:/clear member + re-brief'
+    'rotate-lead:/clear lead + re-bootstrap'
+    'handoff:Migrate in-flight work from one member to another'
+    'pause:Pause a member (dispatch/claim refuse)'
+    'resume:Resume a paused member'
+    'add-member:Append a new member to team.json'
+    'reconfigure:Re-run wizard against existing team.json'
+    'version:Print version'
+    'help:Print help'
+  )
+
+  local context state line
+  _arguments -C \
+    '1: :->verb' \
+    '*::arg:->args'
+
+  case $state in
+    verb) _describe -t verbs 'atmux verbs' verbs ;;
+    args)
+      local tj
+      tj=$(_atmux_find_team_json)
+      local -a members
+      if [[ -n "$tj" ]]; then
+        members=(${(f)"$(jq -r '.members[].name' "$tj" 2>/dev/null)"})
+      fi
+      case "${line[1]}" in
+        send|inbox|dispatch|rotate|pause|resume|handoff)
+          _values 'members' $members ;;
+        task)
+          _values 'task verbs' add list show move assign rm ;;
+      esac
+      ;;
+  esac
+}
+
+_atmux_find_team_json() {
+  local d="$PWD"
+  while [[ "$d" != "/" ]]; do
+    if [[ -f "$d/.atmux/team.json" ]]; then
+      echo "$d/.atmux/team.json"; return 0
+    fi
+    d="${d:h}"
+  done
+  return 1
+}
+
+_atmux "$@"

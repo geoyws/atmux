@@ -56,7 +56,9 @@ main() {
   if [[ "$any_spawned" -eq 1 ]] && tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -qx "__atmux__home"; then
     # only close home if there are other windows
     local wc; wc=$(tmux list-windows -t "$session" -F '#{window_name}' | grep -cv '^__atmux__home$' || true)
-    [[ "$wc" -gt 0 ]] && tmux kill-window -t "$session:__atmux__home" 2>/dev/null || true
+    if [[ "$wc" -gt 0 ]]; then
+      tmux kill-window -t "$session:__atmux__home" 2>/dev/null || true
+    fi
   fi
 
   # ---- Record start timestamp ----

@@ -28,16 +28,34 @@ main() {
 
   atmux::member_json "$member" >/dev/null
 
+  # Refuse if the member is paused (budget blown, manual, failover peer etc.)
+  # shellcheck source=pause.sh
+  . "$ATMUX_LIB_DIR/pause.sh"
+  if atmux::is_paused "$member"; then
+    atmux::die "dispatch: $member is paused — resume with \`atmux resume $member\`"
+  fi
+
   local k; k="$(atmux::kanban_json)"
   local task; task="$(jq --arg id "$id" '.tasks[] | select(.id == $id)' "$k")"
   [[ -n "$task" ]] || atmux::die "dispatch: no such task id: $id"
 
+  # Dep-gate: block dispatch if any dep is not done.
+  local unresolved
+  unresolved=$(jq --arg id "$id" '
+    (.tasks[] | select(.id == $id) | .deps // [])     as $need
+    | [.tasks[] | select(.status != "done") | .id]    as $open
+    | [$need[] | select(IN($open[]))]
+    | join(",")' "$k")
+  if [[ -n "$unresolved" && "$unresolved" != '""' ]]; then
+    atmux::die "dispatch: task $id blocked by unresolved deps: ${unresolved//\"/}"
+  fi
+
   # Assign + move to in-progress.
-  jq --arg id "$id" --arg who "$member" --argjson now "$(atmux::now_epoch)" \
-     '(.tasks[] | select(.id == $id) | .owner) = $who
-      | (.tasks[] | select(.id == $id) | .status) = "in-progress"
-      | (.tasks[] | select(.id == $id) | .claimedAt) = $now' \
-     "$k" > "${k}.tmp" && mv "${k}.tmp" "$k"
+  atmux::jq_update "$k" \
+    '(.tasks[] | select(.id == $id) | .owner) = $who
+     | (.tasks[] | select(.id == $id) | .status) = "in-progress"
+     | (.tasks[] | select(.id == $id) | .claimedAt) = $now' \
+    --arg id "$id" --arg who "$member" --argjson now "$(atmux::now_epoch)"
 
   # Append to member inbox.
   local ib; ib="$(atmux::inbox_dir)/$member.json"

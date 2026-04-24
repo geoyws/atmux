@@ -31,7 +31,7 @@ atmux::tui_cmd() {
     local override
     override="$(jq -r '.command // ""' <<<"$member_json")"
     if [[ -n "$override" ]]; then
-      printf 'cd %q && %s\n' "$cwd" "$override"
+      printf '%s cd %q && %s\n' "$(_atmux_env_prefix "$name")" "$cwd" "$override"
       return
     fi
   fi
@@ -42,7 +42,7 @@ atmux::tui_cmd() {
     local prefix
     prefix="$(jq -r --arg t "$tui" '.tuiCommands[$t] // ""' "$tj" 2>/dev/null || true)"
     if [[ -n "$prefix" ]]; then
-      _atmux_compose_custom "$prefix" "$model" "$cwd"
+      _atmux_compose_custom "$prefix" "$model" "$cwd" "$name"
       return
     fi
   fi
@@ -53,24 +53,31 @@ atmux::tui_cmd() {
     opencode)  atmux::tui_opencode "$model" "$cwd" "$name" "$role" ;;
     kimi)      atmux::tui_kimi     "$model" "$cwd" "$name" "$role" ;;
     cursor)    atmux::tui_cursor   "$model" "$cwd" "$name" "$role" ;;
-    shell|bash|zsh) echo "cd $(printf '%q' "$cwd") && exec \$SHELL" ;;
+    shell|bash|zsh) printf '%s cd %q && exec $SHELL\n' "$(_atmux_env_prefix "$name")" "$cwd" ;;
     *)
       atmux::die "unknown tui type: '$tui' (use one of: claude, opencode, kimi, cursor, shell — OR register it in team.json's \"tuiCommands\")"
       ;;
   esac
 }
 
-# Compose a launch command given a custom prefix + model + cwd.
+# Compose a launch command given a custom prefix + model + cwd + member-name.
 # Appends `--model <model>` UNLESS the prefix already contains `--model`.
 _atmux_compose_custom() {
-  local prefix="$1" model="$2" cwd="$3"
+  local prefix="$1" model="$2" cwd="$3" name="$4"
   local model_flag=""
   if [[ -n "$model" && "$model" != "default" ]]; then
     if ! grep -q -- '--model' <<<"$prefix"; then
       model_flag="--model $(printf '%q' "$model")"
     fi
   fi
-  printf 'cd %q && %s %s\n' "$cwd" "$prefix" "$model_flag"
+  printf '%s cd %q && %s %s\n' "$(_atmux_env_prefix "$name")" "$cwd" "$prefix" "$model_flag"
+}
+
+# Prefix every pane command with `export ATMUX_MEMBER=<name>` so `atmux claim`
+# / `atmux done` run inside that pane auto-infer the member without --as.
+_atmux_env_prefix() {
+  local name="$1"
+  printf 'export ATMUX_MEMBER=%q &&' "$name"
 }
 
 atmux::tui_claude() {
@@ -78,7 +85,8 @@ atmux::tui_claude() {
   local model_flag=""
   [[ -n "$model" && "$model" != "default" ]] && model_flag="--model $(printf '%q' "$model")"
   local bin="${ATMUX_CLAUDE_BIN:-claude}"
-  printf 'cd %q && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=%s %s --permission-mode %s %s\n' \
+  printf '%s cd %q && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=%s %s --permission-mode %s %s\n' \
+    "$(_atmux_env_prefix "$name")" \
     "$cwd" \
     "${ATMUX_CLAUDE_EFFORT:-xhigh}" \
     "$bin" \
@@ -93,7 +101,8 @@ atmux::tui_opencode() {
   if [[ "$m" == "default" || -z "$m" ]]; then
     m="${ATMUX_OPENCODE_DEFAULT_MODEL:-minimax-coding-plan/MiniMax-M2.7-highspeed}"
   fi
-  printf 'cd %q && %s --model %q\n' "$cwd" "$bin" "$m"
+  printf '%s cd %q && %s --model %q\n' \
+    "$(_atmux_env_prefix "$name")" "$cwd" "$bin" "$m"
 }
 
 atmux::tui_kimi() {
@@ -103,7 +112,8 @@ atmux::tui_kimi() {
   if [[ "$m" == "default" || -z "$m" ]]; then
     m="${ATMUX_KIMI_DEFAULT_MODEL:-kimi-latest}"
   fi
-  printf 'cd %q && %s --model %q\n' "$cwd" "$bin" "$m"
+  printf '%s cd %q && %s --model %q\n' \
+    "$(_atmux_env_prefix "$name")" "$cwd" "$bin" "$m"
 }
 
 atmux::tui_cursor() {
@@ -113,7 +123,8 @@ atmux::tui_cursor() {
   if [[ "$m" == "default" || -z "$m" ]]; then
     m="${ATMUX_CURSOR_DEFAULT_MODEL:-composer-2}"
   fi
-  printf 'cd %q && %s --model %q\n' "$cwd" "$bin" "$m"
+  printf '%s cd %q && %s --model %q\n' \
+    "$(_atmux_env_prefix "$name")" "$cwd" "$bin" "$m"
 }
 
 # Returns the brief file path for a role. Used by `atmux start` to paste an

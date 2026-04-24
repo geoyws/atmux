@@ -14,6 +14,10 @@
 
 # shellcheck source=discord.sh
 . "$ATMUX_LIB_DIR/discord.sh"
+# shellcheck source=cost.sh
+. "$ATMUX_LIB_DIR/cost.sh"
+# shellcheck source=pause.sh
+. "$ATMUX_LIB_DIR/pause.sh"
 
 main() {
   atmux::require jq tmux
@@ -91,6 +95,48 @@ main() {
     fi
   done <<< "$mj"
 
+  # ---- budget check ----
+  local tj; tj="$(atmux::team_json)"
+  local budget_total budget_per_member overrun_policy
+  budget_total=$(jq -r '.budget.total // empty' "$tj")
+  budget_per_member=$(jq -r '.budget.perMember // empty' "$tj")
+  overrun_policy=$(jq -r '.budget.overrunPolicy // "warn"' "$tj")
+
+  if [[ -n "$budget_total" || -n "$budget_per_member" ]]; then
+    local sf="$(atmux::state_dir)/session-start.txt"
+    local since; since=$(cat "$sf" 2>/dev/null || echo 0)
+    local cost_snapshot; cost_snapshot=$(atmux::compute_team_cost "$since")
+    local total_usd; total_usd=$(jq -r '.totalUsd' <<<"$cost_snapshot")
+
+    if [[ -n "$budget_total" ]]; then
+      if awk "BEGIN{exit !($total_usd >= $budget_total)}"; then
+        findings+=("💸 team cost \$$total_usd ≥ total budget \$$budget_total (policy=$overrun_policy)")
+      fi
+    fi
+    if [[ -n "$budget_per_member" ]]; then
+      local overs
+      overs=$(jq -r --argjson cap "$budget_per_member" \
+        '.members[] | select(.usd >= $cap) | "💸 \(.member) cost $\(.usd) ≥ per-member budget $\($cap | tostring)"' <<<"$cost_snapshot")
+      if [[ -n "$overs" ]]; then
+        while IFS= read -r line; do
+          [[ -n "$line" ]] && findings+=("$line")
+        done <<< "$overs"
+
+        if [[ "$overrun_policy" == "pause" ]]; then
+          local m_over
+          while IFS= read -r m_over; do
+            [[ -z "$m_over" ]] && continue
+            ATMUX_PAUSE_REASON="budget-exhausted" \
+              "$ATMUX_BIN_DIR/atmux" pause "$m_over" >/dev/null 2>&1 || true
+          done < <(jq -r --argjson cap "$budget_per_member" \
+            '.members[] | select(.usd >= $cap) | .member' <<<"$cost_snapshot")
+        elif [[ "$overrun_policy" == "failover" ]]; then
+          _atmux_whip_attempt_failover "$cost_snapshot" "$budget_per_member"
+        fi
+      fi
+    fi
+  fi
+
   # ---- lead uptime check ----
   if [[ -n "$lead_name" ]]; then
     local start_file="$(atmux::state_dir)/session-start.txt"
@@ -105,6 +151,45 @@ main() {
   fi
 
   _atmux_report_and_exit "$ts" "$team" "${findings[@]}"
+}
+
+# For the `failover` budget policy: find a peer with the same role that still
+# has budget, invoke `atmux handoff <exhausted> <peer>`, pause the exhausted.
+_atmux_whip_attempt_failover() {
+  local cost_snapshot="$1" cap="$2"
+  local exhausted
+  while IFS= read -r exhausted; do
+    [[ -z "$exhausted" ]] && continue
+    local role cwd
+    role=$(jq -r --arg n "$exhausted" '.members[] | select(.name == $n) | .role // "member"' "$(atmux::team_json)")
+    # Pick any peer with same role, not paused, not exhausted, and usd < cap/2.
+    local peer
+    peer=$(jq -r --arg role "$role" --arg ex "$exhausted" --argjson cap "$cap" \
+      --slurpfile cs <(echo "$cost_snapshot") '
+      .members[]
+      | select(.role == $role and .name != $ex)
+      | .name
+      | select(
+          ($cs[0].members[] | select(.member == .)  | .usd) as $u
+          | ($u // 0) < ($cap / 2)
+        )' "$(atmux::team_json)" 2>/dev/null | head -1 || true)
+
+    # jq above can be brittle with nested scope; simpler: just pick first same-role peer.
+    if [[ -z "$peer" ]]; then
+      peer=$(jq -r --arg role "$role" --arg ex "$exhausted" \
+        '[.members[] | select(.role == $role and .name != $ex) | .name][0] // empty' "$(atmux::team_json)")
+    fi
+
+    if [[ -n "$peer" ]]; then
+      atmux::log "whip: failover $exhausted → $peer"
+      "$ATMUX_BIN_DIR/atmux" handoff "$exhausted" "$peer" --reason "budget-exhausted" --pause-from >/dev/null 2>&1 || true
+    else
+      atmux::log "whip: no failover peer available for $exhausted (role=$role)"
+      ATMUX_PAUSE_REASON="budget-exhausted-no-peer" \
+        "$ATMUX_BIN_DIR/atmux" pause "$exhausted" >/dev/null 2>&1 || true
+    fi
+  done < <(jq -r --argjson cap "$cap" \
+    '.members[] | select(.usd >= $cap) | .member' <<<"$cost_snapshot")
 }
 
 _atmux_report_and_exit() {

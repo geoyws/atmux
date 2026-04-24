@@ -15,7 +15,8 @@ main() {
   done
   [[ -n "$member" ]] || atmux::die "usage: atmux inbox <member>"
 
-  local f="$(atmux::inbox_dir)/$member.json"
+  local f
+  f="$(atmux::inbox_dir)/$member.json"
   if [[ ! -f "$f" ]]; then
     # Verify the member at least exists in team.json; then lazily materialise.
     atmux::member_json "$member" >/dev/null
@@ -42,5 +43,5 @@ main() {
   }
   _atmux_inbox_section pending    "pending"     "$atmux_c_yel"
   _atmux_inbox_section inProgress "in-progress" "$atmux_c_cyn"
-  _atmux_inbox_section done       "done"        "$atmux_c_grn"
+  _atmux_inbox_section "done"     "done"        "$atmux_c_grn"
 }

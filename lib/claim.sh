@@ -39,20 +39,31 @@ main() {
 
   case "$verb" in
     claim)
-      jq --arg id "$id" --arg who "$who" --argjson now "$now" \
-         '(.tasks[] | select(.id == $id) | .owner) = $who
-          | (.tasks[] | select(.id == $id) | .status) = "in-progress"
-          | (.tasks[] | select(.id == $id) | .claimedAt) = $now' \
-         "$k" > "${k}.tmp" && mv "${k}.tmp" "$k"
+      # Enforce deps: can't claim a task whose deps are not all "done".
+      local unresolved
+      unresolved=$(jq --arg id "$id" '
+        (.tasks[] | select(.id == $id) | .deps // [])      as $need
+        | [.tasks[] | select(.status != "done") | .id]      as $open
+        | [$need[] | select(IN($open[]))]
+        | join(",")' "$k")
+      if [[ -n "$unresolved" && "$unresolved" != "\"\"" && "$unresolved" != '""' ]]; then
+        atmux::die "claim: task $id blocked by unresolved deps: ${unresolved//\"/}"
+      fi
+
+      atmux::jq_update "$k" \
+        '(.tasks[] | select(.id == $id) | .owner) = $who
+         | (.tasks[] | select(.id == $id) | .status) = "in-progress"
+         | (.tasks[] | select(.id == $id) | .claimedAt) = $now' \
+        --arg id "$id" --arg who "$who" --argjson now "$now"
       _atmux_inbox_move "$who" "$task" "pending->inProgress" "$now"
       atmux::ok "$who claimed $id"
       ;;
     done)
-      jq --arg id "$id" --arg who "$who" --arg note "$note" --argjson now "$now" \
-         '(.tasks[] | select(.id == $id) | .status) = "done"
-          | (.tasks[] | select(.id == $id) | .completedAt) = $now
-          | (.tasks[] | select(.id == $id) | .note) = $note' \
-         "$k" > "${k}.tmp" && mv "${k}.tmp" "$k"
+      atmux::jq_update "$k" \
+        '(.tasks[] | select(.id == $id) | .status) = "done"
+         | (.tasks[] | select(.id == $id) | .completedAt) = $now
+         | (.tasks[] | select(.id == $id) | .note) = $note' \
+        --arg id "$id" --arg who "$who" --arg note "$note" --argjson now "$now"
       _atmux_inbox_move "$who" "$task" "inProgress->done" "$now"
       atmux::ok "$who completed $id"
       ;;
@@ -69,7 +80,8 @@ _atmux_guess_member_from_cwd() {
 
 _atmux_inbox_move() {
   local who="$1" task="$2" direction="$3" now="$4"
-  local ib="$(atmux::inbox_dir)/$who.json"
+  local ib
+  ib="$(atmux::inbox_dir)/$who.json"
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
   local id; id="$(jq -r '.id' <<<"$task")"
 

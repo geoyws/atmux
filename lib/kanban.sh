@@ -26,12 +26,13 @@ main() {
 }
 
 _atmux_task_add() {
-  local subject="" body="" assignee="" deps=""
+  local subject="" body="" assignee="" deps="" priority=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --body)     body="$2"; shift 2 ;;
       --assignee) assignee="$2"; shift 2 ;;
       --deps)     deps="$2"; shift 2 ;;
+      --priority|--prio) priority="$2"; shift 2 ;;
       --) shift; subject="$*"; break ;;
       -*) atmux::die "task add: unknown flag: $1" ;;
       *)
@@ -44,47 +45,57 @@ _atmux_task_add() {
   local id; id="$(atmux::gen_id)"
   local now; now="$(atmux::now_epoch)"
   local deps_json; deps_json="$(jq -Rn --arg d "$deps" '[$d | split(",") | map(select(length>0))] | flatten')"
+  local prio_json; prio_json="$(jq -Rn --arg p "$priority" 'if $p == "" then null else ($p | tonumber? // null) end')"
 
   local k; k="$(atmux::kanban_json)"
-  jq --arg id "$id" \
-     --arg subject "$subject" \
-     --arg body "$body" \
-     --arg assignee "$assignee" \
-     --argjson deps "$deps_json" \
-     --argjson now "$now" \
-     '.tasks += [{
-        id: $id, subject: $subject, body: $body,
-        status: "todo", owner: (if $assignee == "" then null else $assignee end),
-        deps: $deps, createdAt: $now, claimedAt: null, completedAt: null
-      }]' "$k" > "${k}.tmp" && mv "${k}.tmp" "$k"
+  atmux::jq_update "$k" \
+    '.tasks += [{
+      id: $id, subject: $subject, body: $body,
+      status: "todo", owner: (if $assignee == "" then null else $assignee end),
+      deps: $deps, priority: $priority,
+      createdAt: $now, claimedAt: null, completedAt: null
+    }]' \
+    --arg id "$id" \
+    --arg subject "$subject" \
+    --arg body "$body" \
+    --arg assignee "$assignee" \
+    --argjson deps "$deps_json" \
+    --argjson priority "$prio_json" \
+    --argjson now "$now"
 
   atmux::ok "added task $id: $subject"
   printf '%s\n' "$id"
 }
 
 _atmux_task_list() {
-  local filter_status="" filter_assignee=""
+  local filter_status="" filter_assignee="" json=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --status)   filter_status="$2"; shift 2 ;;
       --assignee) filter_assignee="$2"; shift 2 ;;
+      --json)     json=1; shift ;;
       *) atmux::die "task list: unknown arg: $1" ;;
     esac
   done
 
   local k; k="$(atmux::kanban_json)"
-  local f='.tasks'
-  [[ -n "$filter_status" ]]   && f="$f | map(select(.status == \"$filter_status\"))"
-  [[ -n "$filter_assignee" ]] && f="$f | map(select(.owner == \"$filter_assignee\"))"
-  f="$f | .[] | [.id, .status, (.owner // \"-\"), .subject] | @tsv"
+  local base='.tasks'
+  [[ -n "$filter_status" ]]   && base="$base | map(select(.status == \"$filter_status\"))"
+  [[ -n "$filter_assignee" ]] && base="$base | map(select(.owner == \"$filter_assignee\"))"
 
+  if [[ "$json" -eq 1 ]]; then
+    jq "$base" "$k"
+    return
+  fi
+
+  local f="$base | sort_by(.priority // 99) | .[] | [.id, .status, (.owner // \"-\"), ((.priority // \"-\") | tostring), .subject] | @tsv"
   local rows; rows="$(jq -r "$f" "$k")"
   if [[ -z "$rows" ]]; then
     echo "(no tasks)"
     return
   fi
-  printf '%-10s %-13s %-14s %s\n' "ID" "STATUS" "OWNER" "SUBJECT"
-  echo "$rows" | awk -F'\t' '{printf "%-10s %-13s %-14s %s\n", $1, $2, $3, $4}'
+  printf '%-10s %-13s %-14s %-4s %s\n' "ID" "STATUS" "OWNER" "PRIO" "SUBJECT"
+  echo "$rows" | awk -F'\t' '{printf "%-10s %-13s %-14s %-4s %s\n", $1, $2, $3, $4, $5}'
 }
 
 _atmux_task_show() {
