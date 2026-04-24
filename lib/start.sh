@@ -86,8 +86,8 @@ _atmux_spawn_member() {
   local inbox="$(atmux::inbox_dir)/$member.json"
   [[ -f "$inbox" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$inbox"
 
-  # Launch the TUI.
-  local cmd; cmd="$(atmux::tui_cmd "$tui" "$model" "$cwd" "$member" "$role")"
+  # Launch the TUI — pass the member JSON so tui.sh can honour per-member .command.
+  local cmd; cmd="$(atmux::tui_cmd "$tui" "$model" "$cwd" "$member" "$role" "$mj")"
   tmux send-keys -t "$target" "$cmd" Enter
 
   # Let it come up (claude welcome screen, opencode load, etc.)

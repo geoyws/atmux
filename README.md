@@ -80,6 +80,48 @@ atmux stop
 | `cursor`    | `cursor-agent`    | `composer-2`                             | yes, per-member `model` |
 | `shell`     | `$SHELL`          | —                                         | for testing only |
 
+### 🎛️ Custom launch commands
+
+The built-in defaults are just *defaults*. You can plug in any shell alias,
+wrapper script, or entirely custom TUI via the `tuiCommands` map in
+`team.json`:
+
+```json
+{
+  "tuiCommands": {
+    "claude":       "claude --plugin-dir=$HOME/work/journals/.sb/claude-skills",
+    "claude-fresh": "claude",
+    "claude-heavy": "CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --model claude-opus-4-7",
+    "opencode":     "opencode --model minimax-coding-plan/MiniMax-M2.7-highspeed"
+  },
+  "members": [
+    { "name": "lead",     "tui": "claude-heavy", "role": "team-lead" },
+    { "name": "reviewer", "tui": "claude-fresh", "role": "reviewer"  }
+  ]
+}
+```
+
+Resolution order (highest priority first):
+1. **`member.command`** — full override. Used verbatim, with `cd <cwd> &&` prepended.
+2. **`team.tuiCommands[<tui>]`** — per-team launch prefix. atmux appends `--model <model>` unless the prefix already has `--model`.
+3. **Built-in default** — from `lib/tui.sh` (`claude`, `opencode`, `kimi`, `cursor`, `shell`).
+
+The wizard asks for each of these during `atmux init --wizard` and tries to
+detect existing shell aliases (`claude='command claude --plugin-dir=…'`) as
+proposed defaults.
+
+### 🧑‍✈️ Non-Claude lead
+
+Nothing forces Claude to be the lead. Example — OpenCode as `team-lead` to
+keep coordination turns cheap, Claude only for reviewer / gitter:
+
+```bash
+cp examples/opencode-lead-team.json .atmux/team.json
+atmux start
+```
+
+See `examples/` for more patterns.
+
 Default role→TUI mapping:
 
 | Role              | Default TUI | Reason                                        |

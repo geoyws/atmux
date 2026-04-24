@@ -104,6 +104,35 @@ _atmux_prompt_choice() {
   done
 }
 
+# Try to figure out what shell command the user's interactive shell uses for a
+# given binary. Falls back to the binary name if nothing useful turns up.
+_atmux_detect_tui_alias() {
+  local bin="$1"
+  local alias_line
+  # zsh / bash `alias` output. Run an interactive shell so rc files load.
+  # Null-route stderr because un-aliased bins print to stderr in some shells.
+  if [[ -n "${ZSH_NAME:-}" ]] || [[ "${SHELL:-}" == */zsh ]]; then
+    alias_line=$(zsh -ic "alias $bin 2>/dev/null" 2>/dev/null | head -1 || true)
+  else
+    alias_line=$(bash -ic "alias $bin 2>/dev/null" 2>/dev/null | head -1 || true)
+  fi
+  # Formats:
+  #   zsh:  "alias claude='command claude --plugin-dir=…'"
+  #   bash: "alias claude='claude --plugin-dir=…'"
+  if [[ -n "$alias_line" ]]; then
+    # Strip leading "alias <name>=" and the surrounding quotes, then drop a leading "command ".
+    local cmd
+    cmd=$(printf '%s' "$alias_line" \
+      | sed -E "s/^alias[[:space:]]+${bin}='(.*)'$/\1/" \
+      | sed -E 's/^command[[:space:]]+//')
+    if [[ -n "$cmd" && "$cmd" != "$alias_line" ]]; then
+      printf '%s' "$cmd"
+      return
+    fi
+  fi
+  printf '%s' "$bin"
+}
+
 _atmux_init_wizard() {
   local default_team="$1" tj="$2"
 
@@ -124,6 +153,25 @@ _atmux_init_wizard() {
   [[ "$n_workers" =~ ^[0-9]+$ ]] || { atmux::warn "wizard: bad count, defaulting to 3"; n_workers=3; }
 
   local discord_hook; _atmux_prompt discord_hook "Discord webhook URL (optional, Enter to skip)" ""
+
+  # ---- TUI launch commands ----
+  # Ask the user for custom launch commands for every TUI we'll end up using.
+  # This is how users plug in aliases like `claude --plugin-dir=/path` or a
+  # wrapper script. Detect a few common candidates to use as defaults.
+  echo ""
+  echo "Register TUI launch commands. Press Enter to accept the default binary,"
+  echo "or paste a full command (e.g. \`claude --plugin-dir=\$HOME/work/journals/.sb/claude-skills\`)."
+  echo ""
+
+  local tui_cmd_claude tui_cmd_opencode tui_cmd_kimi tui_cmd_cursor
+  local claude_default; claude_default="$(_atmux_detect_tui_alias claude)"
+  local opencode_default; opencode_default="$(_atmux_detect_tui_alias opencode)"
+  local kimi_default; kimi_default="$(_atmux_detect_tui_alias kimi)"
+  local cursor_default; cursor_default="$(_atmux_detect_tui_alias cursor-agent)"
+  _atmux_prompt tui_cmd_claude   "  claude launch command"    "$claude_default"
+  _atmux_prompt tui_cmd_opencode "  opencode launch command"  "$opencode_default"
+  _atmux_prompt tui_cmd_kimi     "  kimi launch command"      "$kimi_default"
+  _atmux_prompt tui_cmd_cursor   "  cursor launch command"    "$cursor_default"
 
   # Build members array.
   local members_json='[]'
@@ -176,14 +224,30 @@ _atmux_init_wizard() {
       '{name:$name, role:"member", tui:$tui, model:$model, cwd:$cwd}')"
   done
 
+  # Only register tuiCommands entries that differ from the bare binary name
+  # (otherwise the built-in default is already perfect and we'd just add noise).
+  local tui_commands
+  tui_commands="$(jq -n \
+    --arg claude   "$tui_cmd_claude" \
+    --arg opencode "$tui_cmd_opencode" \
+    --arg kimi     "$tui_cmd_kimi" \
+    --arg cursor   "$tui_cmd_cursor" \
+    '{}
+     + (if $claude   != "" and $claude   != "claude"        then {claude:   $claude}   else {} end)
+     + (if $opencode != "" and $opencode != "opencode"      then {opencode: $opencode} else {} end)
+     + (if $kimi     != "" and $kimi     != "kimi"          then {kimi:     $kimi}     else {} end)
+     + (if $cursor   != "" and $cursor   != "cursor-agent"  then {cursor:   $cursor}   else {} end)')"
+
   jq -n \
     --arg name "$team_name" \
     --arg desc "atmux team — created via wizard" \
     --argjson members "$members_json" \
+    --argjson tuis "$tui_commands" \
     --arg hook "$discord_hook" \
     '{
        name: $name,
        description: $desc,
+       tuiCommands: $tuis,
        members: $members,
        whip:   {intervalMins: 5, staleMin: 30, leadMaxMin: 60},
        report: {intervalMins: 30}
