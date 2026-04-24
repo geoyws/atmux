@@ -86,6 +86,17 @@ if [[ ! -f "$verb_script" ]]; then
   exit 64
 fi
 
+# First-run auto-wizard: if there's no team.json, no --team override, and this
+# isn't a verb that sets up / explains atmux itself, offer to run the wizard.
+case "$verb" in
+  init|wizard) ;;  # these don't need a team to already exist
+  *)
+    if [[ -z "${ATMUX_TEAM:-}" ]]; then
+      atmux::maybe_offer_wizard || true
+    fi
+    ;;
+esac
+
 # shellcheck disable=SC1090
 . "$verb_script"
 # Each lib/*.sh defines a main() function which we invoke here.

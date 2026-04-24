@@ -62,6 +62,41 @@ atmux::ensure_dirs() {
   mkdir -p "$d/inboxes" "$d/logs" "$d/state" "$d/archive"
 }
 
+# True if a team.json is resolvable from here.
+atmux::has_team() {
+  local d; d="$(atmux::dir)"
+  [[ -f "$d/team.json" ]]
+}
+
+# First-run auto-wizard: if no team.json, we're on a TTY, and not suppressed,
+# offer to run `atmux init --wizard` before the caller's verb proceeds.
+# Exits the process after a successful wizard run (user re-runs their command).
+# Returns 1 without prompting in non-interactive environments so callers can
+# surface the normal "no team.json" error.
+atmux::maybe_offer_wizard() {
+  atmux::has_team && return 0            # team exists — nothing to do
+  [[ -n "${ATMUX_NO_WIZARD:-}" ]] && return 1  # opt-out via env
+  [[ -t 0 && -t 2 ]] || return 1         # non-interactive (cron, pipes) — fail normally
+
+  printf '\n%s🧙 atmux%s  no team.json found in %s\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" "$PWD" >&2
+  printf '%satmux%s  this looks like a first run — set up a team now? %s[Y/n]%s: ' \
+    "$atmux_c_cyn" "$atmux_c_rst" "$atmux_c_dim" "$atmux_c_rst" >&2
+
+  local ans
+  IFS= read -r ans || ans=""
+  case "$ans" in
+    ""|y|Y|yes|YES)
+      exec "$ATMUX_BIN_DIR/atmux" init --wizard
+      ;;
+    *)
+      printf '%satmux%s  ok — run %satmux init --wizard%s (or %satmux init%s for defaults) when ready\n' \
+        "$atmux_c_cyn" "$atmux_c_rst" "$atmux_c_bld" "$atmux_c_rst" "$atmux_c_bld" "$atmux_c_rst" >&2
+      return 1
+      ;;
+  esac
+}
+
 # ---------- team.json ----------
 
 atmux::require_team() {

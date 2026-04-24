@@ -46,9 +46,12 @@ A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent termina
 # 1. Install
 curl -fsSL https://raw.githubusercontent.com/geoyws/atmux/main/install.sh | bash
 
-# 2. In your project:
+# 2. In your project — any command offers the wizard on first run:
 cd ~/code/my-project
-atmux init --wizard          # interactive setup (or: atmux init for defaults)
+atmux start                  # 🧙 no team.json yet? atmux will offer to run the wizard
+# …or do it explicitly:
+atmux init --wizard          # interactive setup
+atmux init                   # defaults (7-member template)
 
 # 3. Launch the team:
 atmux start
@@ -147,6 +150,7 @@ Everything lives in `.atmux/` at the project root (or wherever `ATMUX_DIR` point
 |--------------------------------------|----------------------------------------------|-----------------------------------------------------|
 | `ATMUX_DIR`                          | `$PWD/.atmux` (walked up)                    | Override state dir                                  |
 | `ATMUX_TEAM`                         | `.name` in `team.json`                       | Override team name                                  |
+| `ATMUX_NO_WIZARD`                    | (unset)                                      | Set to `1` to suppress the first-run wizard prompt  |
 | `ATMUX_SESSION`                      | `atmux-<team>`                               | Override tmux session name                          |
 | `ATMUX_DISCORD_WEBHOOK`              | (unset → falls back to `DISCORD_WHIP_WEBHOOK`) | Discord webhook for whip/report                     |
 | `ATMUX_STALE_MIN`                    | `30`                                         | `atmux whip`: flag in-progress tasks older than this |
