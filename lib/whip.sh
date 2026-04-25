@@ -154,11 +154,14 @@ main() {
   fi
 
   # ---- lead uptime check ----
+  # Uptime anchored at max(<lead>-rotated.epoch, session-start.txt) — a recent
+  # `atmux rotate-lead` resets the clock so we don't keep re-flagging an
+  # already-rotated lead. `_atmux_whip_anchor_for` is shared for T3.1 banner-
+  # preclear timing.
   if [[ -n "$lead_name" ]]; then
-    local start_file="$(atmux::state_dir)/session-start.txt"
-    if [[ -f "$start_file" ]]; then
-      local start; start=$(cat "$start_file" 2>/dev/null || echo 0)
-      local uptime=$(( $(atmux::now_epoch) - start ))
+    local anchor; anchor="$(_atmux_whip_anchor_for "$lead_name")"
+    if [[ "$anchor" -gt 0 ]]; then
+      local uptime=$(( $(atmux::now_epoch) - anchor ))
       local uptime_min=$(( uptime / 60 ))
       if [[ "$uptime_min" -ge "$LEAD_MAX_MIN" ]]; then
         findings+=("♻️  lead uptime=${uptime_min}min ≥ ${LEAD_MAX_MIN}min — consider \`atmux rotate-lead\`")
@@ -331,5 +334,29 @@ _atmux_whip_stale_anchor() {
     printf '%s\n' "$rotated"
   else
     printf '%s\n' "$claimed"
+  fi
+}
+
+# Resolve the "last refresh" anchor for a member as
+#   max(<member>-rotated.epoch, session-start.txt).
+# A rotation resets the clock; absence of either file falls back to the other;
+# absence of both echoes 0 (caller treats as "no signal yet"). Used by the
+# lead-uptime check (E2/S2) and reserved for T3.1 banner-preclear timing.
+_atmux_whip_anchor_for() {
+  local member="$1"
+  local sd; sd="$(atmux::state_dir)"
+  local rotated=0 sess=0
+  if [[ -f "$sd/${member}-rotated.epoch" ]]; then
+    rotated=$(cat "$sd/${member}-rotated.epoch" 2>/dev/null || echo 0)
+    [[ "$rotated" =~ ^[0-9]+$ ]] || rotated=0
+  fi
+  if [[ -f "$sd/session-start.txt" ]]; then
+    sess=$(cat "$sd/session-start.txt" 2>/dev/null || echo 0)
+    [[ "$sess" =~ ^[0-9]+$ ]] || sess=0
+  fi
+  if (( rotated > sess )); then
+    printf '%s\n' "$rotated"
+  else
+    printf '%s\n' "$sess"
   fi
 }
