@@ -272,5 +272,30 @@ _atmux_report_and_exit() {
 
   printf '[%s]\n%s\n\n' "$ts" "$body" >> "$logf"
   echo "$body"
+  # ---- body-hash dedup (E2/S7 / t-96390734) ----
+  # Hash bullet content only — header + timestamp change every tick and would
+  # defeat dedup. If the hash matches the last successful ping, the findings
+  # haven't changed; skip the Discord post but keep logging + cursor advance.
+  local body_hash; body_hash="$(_atmux_whip_body_hash "${findings[@]}")"
+  local hash_file; hash_file="$(atmux::state_dir)/whip-last.hash"
+  local prev_hash=""
+  [[ -f "$hash_file" ]] && prev_hash="$(cat "$hash_file" 2>/dev/null || echo "")"
+
+  if [[ "$body_hash" == "$prev_hash" ]]; then
+    atmux::log "whip: body unchanged since last tick — skipping Discord ping (hash=$body_hash)"
+    return 0
+  fi
+
   atmux::discord_ping "$body"
+  mkdir -p "$(dirname "$hash_file")"
+  printf '%s\n' "$body_hash" > "$hash_file"
+}
+
+# Hash the findings bullets only (one bullet per line). Excludes the team
+# header + timestamp so dedup survives the every-tick header churn.
+_atmux_whip_body_hash() {
+  local f
+  for f in "$@"; do
+    printf '%s\n' "$f"
+  done | sha256sum | awk '{print $1}'
 }
