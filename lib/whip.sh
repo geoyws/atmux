@@ -55,6 +55,7 @@ main() {
   local fmtime_new=""
   _atmux_whip_check_decisions
   _atmux_whip_check_flags
+  _atmux_whip_check_brief_versions
 
   # ---- "Since last tick" delta (E2/S7 t-ac42591e) ----
   # Computed BEFORE the session-DOWN early-exit so a DOWN tick still surfaces
@@ -388,6 +389,32 @@ _atmux_whip_advance_flags_cursor() {
   local fcursor_file; fcursor_file="$(atmux::state_dir)/flags-cursor"
   mkdir -p "$(dirname "$fcursor_file")"
   echo "$fmtime_new" > "$fcursor_file"
+}
+
+# Brief-version drift detector (E3/S3 t-de3bdd69). For each member, compare
+# the brief version they last received (.atmux/state/brief-versions.json,
+# stamped by start.sh / rotate.sh / reload.sh) against the current brief
+# template version (atmux::brief_version <role>). When they differ, surface
+# a one-line nudge naming the reload command. Cold-start safety: silent
+# no-op when brief-versions.json is absent (a fresh session before any
+# spawn-time recording has happened) — the next start/rotate/reload will
+# create the file. Mirrors _atmux_whip_check_decisions in shape.
+_atmux_whip_check_brief_versions() {
+  local bvfile; bvfile="$(atmux::state_dir)/brief-versions.json"
+  [[ -f "$bvfile" ]] || return 0
+  local tj; tj="$(atmux::team_json)"
+  [[ -f "$tj" ]] || return 0
+
+  local member role pasted current
+  while IFS=$'\t' read -r member role; do
+    [[ -z "$member" ]] && continue
+    pasted="$(jq -r --arg m "$member" '.[$m].version // empty' "$bvfile" 2>/dev/null || true)"
+    [[ -z "$pasted" ]] && continue
+    current="$(atmux::brief_version "$role" 2>/dev/null || echo v0)"
+    if [[ "$current" != "$pasted" ]]; then
+      findings+=("📋 brief $role $current available (was $pasted) — atmux reload brief-reload $member")
+    fi
+  done < <(jq -r '.members[] | [.name, (.role // "member")] | @tsv' "$tj" 2>/dev/null || true)
 }
 
 # For the `failover` budget policy: find a peer with the same role that still
