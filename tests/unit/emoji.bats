@@ -33,6 +33,18 @@ teardown() {
   [ "$output" = "🐝" ]
 }
 
+@test "emoji: planner and dba pools exist with role-appropriate picks" {
+  run atmux::emoji_default_for_role planner
+  [ "$output" = "🗺️" ]
+  run atmux::emoji_default_for_role dba
+  [ "$output" = "🗄️" ]
+}
+
+@test "emoji: gitter pool uses 🌿 (renamed role from git-committer)" {
+  run atmux::emoji_default_for_role gitter
+  [ "$output" = "🌿" ]
+}
+
 @test "emoji: mode defaults to 'random' when nothing is configured" {
   unset ATMUX_EMOJI_MODE
   # No team.json in fresh sandbox.

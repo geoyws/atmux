@@ -13,7 +13,7 @@ setup() {
   "members": [
     {"name": "lead",     "role": "team-lead",     "tui": "shell", "model": "default", "cwd": "$PWD"},
     {"name": "reviewer", "role": "reviewer",      "tui": "shell", "model": "default", "cwd": "$PWD"},
-    {"name": "gitter",   "role": "git-committer", "tui": "shell", "model": "default", "cwd": "$PWD"},
+    {"name": "gitter",   "role": "gitter",        "tui": "shell", "model": "default", "cwd": "$PWD"},
     {"name": "w1",       "role": "member",        "tui": "shell", "model": "default", "cwd": "$PWD"}
   ],
   "whip":   {"intervalMins": 5, "staleMin": 30, "leadMaxMin": 60},

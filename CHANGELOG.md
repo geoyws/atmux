@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added
 
+- **`planner` + `dba` as canonical staff roles.** Planner owns task
+  decomposition + ADR authorship, so the lead's context budget goes to
+  coordination only (per the CLAUDE.md doctrine "team-lead never plans").
+  DBA owns schema + migrations + data integrity. Both are toggleable in
+  the wizard (`planner` on by default, `dba` off by default). New brief
+  templates in `templates/briefs/planner.md` and `templates/briefs/dba.md`.
+- **Wizard preset modes.** New top-of-wizard prompt: `perf` (all claude),
+  `default` (claude staff + cursor/opencode/kimi workers cycled),
+  `eco` (all opencode / MiniMax), `custom` (prompt each worker individually).
+  Preset drives staff + worker TUI defaults; other prompts still run so the
+  user confirms team shape.
+- **Feature-lane worker naming convention.** README + wizard suggest
+  `fe-auth`, `be-auth`, `db-auth`, etc. over `cursor-1` / `kimi-2` —
+  surfaces ownership and makes kanban/status readable at a glance.
+- **Ephemeral specialists pattern.** Documented in README +
+  GETTING_STARTED: `atmux add-member planner-auth --role planner`
+  spawns a feature-scoped specialist when canonical staff is saturated.
+  No new code; formalises an existing capability.
+- **`docs/adr/` with 6 initial ADRs** covering planner role, preset modes,
+  emoji architecture, ephemeral specialists, doctor preflight, and bare
+  `atmux`. Planner uses this directory for new ADRs going forward.
+
+### ♻️ Changed
+
+- **Role rename: `git-committer` → `gitter`.** Role value, brief file,
+  emoji pool, status fallback, docs + README + template all updated.
+  Shorter + matches the wizard prompt. Existing team.json files with
+  `role: "git-committer"` keep working via status.sh fallback but should
+  be migrated.
+
 - **Per-member emojis — auto-assigned, displayed everywhere.** Each member in
   `team.json` now carries an optional `.emoji` field, stamped at wizard /
   add-member time. Three assignment modes (`team.emojis.mode`, override via

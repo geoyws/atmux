@@ -4,10 +4,20 @@
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type. atmux appends --model <model> unless the prefix already has one. Example: \"claude\": \"claude --plugin-dir=$HOME/work/journals/.sb/claude-skills\""
   },
+  "emojis": {
+    "mode": "random"
+  },
   "members": [
     {
       "name": "lead",
       "role": "team-lead",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "planner",
+      "role": "planner",
       "tui": "claude",
       "model": "default",
       "cwd": "."
@@ -21,7 +31,7 @@
     },
     {
       "name": "gitter",
-      "role": "git-committer",
+      "role": "gitter",
       "tui": "claude",
       "model": "default",
       "cwd": "."
@@ -34,21 +44,28 @@
       "cwd": "."
     },
     {
-      "name": "cursor-1",
+      "name": "dba",
+      "role": "dba",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "fe-auth",
+      "role": "member",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "be-auth",
       "role": "member",
       "tui": "cursor",
       "model": "default",
       "cwd": "."
     },
     {
-      "name": "kimi-1",
-      "role": "member",
-      "tui": "kimi",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "minimax-1",
+      "name": "db-auth",
       "role": "member",
       "tui": "opencode",
       "model": "default",

@@ -19,9 +19,11 @@ atmux::emoji_pool() {
   case "$1" in
     driver)        echo "🎮 🎬 🎤 🕹️ 🎯" ;;
     team-lead)     echo "🧭 🪄 🎼 👷 🗺️" ;;
+    planner)       echo "🗺️ 🧠 🧩 📐 🎯" ;;
     reviewer)      echo "🔍 🕵️ 📐 🧪 👓" ;;
-    git-committer) echo "🌿 📝 🗃️ 🪢 🧵" ;;
+    gitter)        echo "🌿 📝 🗃️ 🪢 🧵" ;;
     devops)        echo "⚙️ 🛠️ 🔧 🧰 📦" ;;
+    dba)           echo "🗄️ 💾 🐘 🧮 📊" ;;
     member|*)      echo "🐝 🦊 🦉 🐢 🦀 🐙 🦜 🐿️ 🦩 🦥 🐺 🦦 🦝 🦙 🦔" ;;
   esac
 }

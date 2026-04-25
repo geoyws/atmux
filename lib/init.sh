@@ -147,10 +147,25 @@ _atmux_init_wizard() {
 
   local team_name; _atmux_prompt team_name "Team name" "$default_team"
 
-  local include_reviewer include_gitter include_devops
-  _atmux_prompt_choice include_reviewer "Include reviewer member" "y" y n
-  _atmux_prompt_choice include_gitter   "Include git-committer member" "y" y n
-  _atmux_prompt_choice include_devops   "Include devops member" "n" y n
+  # Preset mode determines default TUI assignment for staff + workers.
+  #   perf     → every member on claude (highest capability, most expensive)
+  #   default  → staff claude + workers spread across cursor/opencode/kimi   [DEFAULT]
+  #   eco      → every member on opencode (MiniMax) — cheapest, lowest capability
+  #   custom   → each worker prompted for its TUI individually
+  local preset
+  _atmux_prompt_choice preset \
+    "Preset (perf=all-claude / default=staff-claude+cheap-workers / eco=all-MiniMax / custom=prompt each)" \
+    "default" perf default eco custom
+
+  local staff_tui="claude"
+  [[ "$preset" == "eco" ]] && staff_tui="opencode"
+
+  local include_planner include_reviewer include_gitter include_devops include_dba
+  _atmux_prompt_choice include_planner  "Include planner member (owns decomposition + ADRs)" "y" y n
+  _atmux_prompt_choice include_reviewer "Include reviewer member"  "y" y n
+  _atmux_prompt_choice include_gitter   "Include gitter member (git commits + push)" "y" y n
+  _atmux_prompt_choice include_devops   "Include devops member"    "n" y n
+  _atmux_prompt_choice include_dba      "Include dba member (schema / migrations / SQL)" "n" y n
 
   local n_workers; _atmux_prompt n_workers "Number of worker members" "3"
   [[ "$n_workers" =~ ^[0-9]+$ ]] || { atmux::warn "wizard: bad count, defaulting to 3"; n_workers=3; }
@@ -202,45 +217,76 @@ _atmux_init_wizard() {
 
   [[ "$emoji_mode" == "ai" ]] && atmux::log "emoji mode=ai — asking claude to pick per member (slower)"
 
-  _append_member "$(jq -n --arg cwd "$PWD" \
-    '{name:"lead", role:"team-lead", tui:"claude", model:"default", cwd:$cwd}')"
+  _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+    '{name:"lead", role:"team-lead", tui:$tui, model:"default", cwd:$cwd}')"
 
+  if [[ "$include_planner" == "y" ]]; then
+    _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+      '{name:"planner", role:"planner", tui:$tui, model:"default", cwd:$cwd}')"
+  fi
   if [[ "$include_reviewer" == "y" ]]; then
-    _append_member "$(jq -n --arg cwd "$PWD" \
-      '{name:"reviewer", role:"reviewer", tui:"claude", model:"default", cwd:$cwd}')"
+    _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+      '{name:"reviewer", role:"reviewer", tui:$tui, model:"default", cwd:$cwd}')"
   fi
   if [[ "$include_gitter" == "y" ]]; then
-    _append_member "$(jq -n --arg cwd "$PWD" \
-      '{name:"gitter", role:"git-committer", tui:"claude", model:"default", cwd:$cwd}')"
+    _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+      '{name:"gitter", role:"gitter", tui:$tui, model:"default", cwd:$cwd}')"
   fi
   if [[ "$include_devops" == "y" ]]; then
-    _append_member "$(jq -n --arg cwd "$PWD" \
-      '{name:"devops", role:"devops", tui:"claude", model:"default", cwd:$cwd}')"
+    _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+      '{name:"devops", role:"devops", tui:$tui, model:"default", cwd:$cwd}')"
   fi
+  if [[ "$include_dba" == "y" ]]; then
+    _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+      '{name:"dba", role:"dba", tui:$tui, model:"default", cwd:$cwd}')"
+  fi
+
+  # Preset-driven worker TUI picker.
+  # Returns the TUI for worker index $i under the active preset, or "" if the
+  # caller should prompt (custom preset). Standard cycles cursor/opencode/kimi
+  # to spread workers across TUIs for cost + latency variety.
+  _preset_worker_tui() {
+    local idx="$1"
+    case "$preset" in
+      perf)    echo "claude" ;;
+      eco)     echo "opencode" ;;
+      default)
+        local cycle=(cursor opencode kimi)
+        echo "${cycle[$(( (idx - 1) % 3 ))]}"
+        ;;
+      *) echo "" ;;  # custom: caller prompts
+    esac
+  }
+
+  # Suggested name for a worker: feature-lane prefix by default. User always
+  # gets a prompt so they can rename to "fe-auth" / "be-invoice" / etc.
+  _suggested_worker_name() {
+    local idx="$1" tui="$2"
+    case "$tui" in
+      claude)   echo "claude-$idx" ;;
+      opencode) echo "minimax-$idx" ;;
+      kimi)     echo "kimi-$idx" ;;
+      cursor)   echo "cursor-$idx" ;;
+      shell)    echo "shell-$idx" ;;
+    esac
+  }
 
   local i
   for ((i=1; i<=n_workers; i++)); do
     echo ""
     echo "  — worker #$i —"
-    local tui; _atmux_prompt_choice tui "  TUI" "cursor" claude opencode kimi cursor shell
-    local default_model
-    case "$tui" in
-      claude)   default_model="default" ;;
-      opencode) default_model="default" ;;
-      kimi)     default_model="default" ;;
-      cursor)   default_model="default" ;;
-      shell)    default_model="default" ;;
-    esac
-    local model; _atmux_prompt model "  model (default uses atmux default for this TUI)" "$default_model"
-    local suggested_name
-    case "$tui" in
-      claude)   suggested_name="claude-$i" ;;
-      opencode) suggested_name="minimax-$i" ;;
-      kimi)     suggested_name="kimi-$i" ;;
-      cursor)   suggested_name="cursor-$i" ;;
-      shell)    suggested_name="shell-$i" ;;
-    esac
-    local mname; _atmux_prompt mname "  member name" "$suggested_name"
+    local tui
+    local preset_tui; preset_tui="$(_preset_worker_tui "$i")"
+    if [[ -n "$preset_tui" ]]; then
+      tui="$preset_tui"
+      printf '    tui:   %s  %s(preset=%s)%s\n' \
+        "$tui" "$atmux_c_dim" "$preset" "$atmux_c_rst"
+    else
+      _atmux_prompt_choice tui "  TUI" "cursor" claude opencode kimi cursor shell
+    fi
+    local model; _atmux_prompt model "  model (default uses atmux default for this TUI)" "default"
+    local suggested_name; suggested_name="$(_suggested_worker_name "$i" "$tui")"
+    local mname; _atmux_prompt mname "  member name (e.g. fe-auth, be-invoice, db-orders)" "$suggested_name"
 
     _append_member "$(jq -n \
       --arg name "$mname" --arg tui "$tui" --arg model "$model" --arg cwd "$PWD" \

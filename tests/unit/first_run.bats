@@ -53,11 +53,11 @@ teardown() {
     skip "script(1) not available"
   fi
   # Input: wizard-offer=y, then wizard answers.
-  # wizard answers: team-name, reviewer y, gitter y, devops n, n_workers=1,
-  # emoji_mode=static, discord="", 4× tui_cmd_* accept default, worker tui=shell,
-  # model=default, worker name=w1
+  # wizard answers: team-name, preset=custom, planner y, reviewer y, gitter y,
+  # devops n, dba n, n_workers=1, emoji_mode=static, discord="",
+  # 4× tui_cmd_* accept default, worker tui=shell, model=default, worker name=w1
   local tmp; tmp="$(mktemp)"
-  printf 'y\nfresh\ny\ny\nn\n1\nstatic\n\n\n\n\n\nshell\ndefault\nw1\n' > "$tmp"
+  printf 'y\nfresh\ncustom\ny\ny\ny\nn\nn\n1\nstatic\n\n\n\n\n\nshell\ndefault\nw1\n' > "$tmp"
   run script -q -c "'$ATMUX_BIN' status" /dev/null < "$tmp"
   # script returns the wrapped command's exit code; the wizard exec'd the init,
   # which succeeds and exits 0.

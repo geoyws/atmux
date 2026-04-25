@@ -6,7 +6,7 @@
 
 A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
 
-**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **team-lead, reviewer, git-committer, and devops stay on Claude** (they need the reasoning), while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput. The driver (you, in a Claude Code REPL) talks to the lead; the lead dispatches to workers.
+**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, gitter, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition), then dispatches to workers.
 
 ## How it works
 
@@ -23,16 +23,26 @@ A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent termina
 ┌───────────────────────────────────────────────────────────────────┐
 │ tmux session: atmux-<team>                                         │
 │                                                                    │
+│  🧭 STAFF                                                          │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐      │
-│  │ 🧭 lead    │ │ 🔍 reviewer│ │ 🌿 gitter  │ │ ⚙️  devops │      │
+│  │ 🧭 lead    │ │ 🗺️  planner │ │ 🔍 reviewer│ │ 🌿 gitter  │      │
 │  │ claude     │ │ claude     │ │ claude     │ │ claude     │      │
 │  └─────┬──────┘ └────────────┘ └────────────┘ └────────────┘      │
-│        │ tmux send-keys                                            │
+│  ┌────────────┐ ┌────────────┐                                     │
+│  │ ⚙️  devops │ │ 🗄️  dba    │                                     │
+│  │ claude     │ │ claude     │                                     │
+│  └────────────┘ └────────────┘                                     │
+│        │ dispatch per feature lane                                 │
 │        ▼                                                           │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐      │
-│  │ 🐢 claude-1│ │ 🐝 cursor-1│ │ 🦊 kimi-1  │ │ 🦉 minimax │      │
-│  │ claude     │ │ cursor-agt │ │ kimi       │ │ opencode   │      │
-│  └────────────┘ └────────────┘ └────────────┘ └────────────┘      │
+│  🐝 WORKERS   (one per feature × surface; name = surface-feature)  │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐                     │
+│  │ 🐝 fe-auth │ │ 🦊 be-auth │ │ 🦉 db-auth │   ← auth lane       │
+│  │ claude     │ │ cursor-agt │ │ opencode   │                     │
+│  └────────────┘ └────────────┘ └────────────┘                     │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐                     │
+│  │ 🐙 fe-inv  │ │ 🦀 be-inv  │ │ 🐢 db-inv  │   ← invoice lane    │
+│  │ claude     │ │ kimi       │ │ opencode   │                     │
+│  └────────────┘ └────────────┘ └────────────┘                     │
 │                                                                    │
 │  shared state: .atmux/{team.json,kanban.json,inboxes/,logs/}       │
 └───────────────────────────────────────────────────────────────────┘
@@ -48,29 +58,54 @@ A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent termina
 # 1. Install
 curl -fsSL https://raw.githubusercontent.com/geoyws/atmux/main/install.sh | bash
 
-# 2. In your project — any command offers the wizard on first run:
+# 2. In your project:
 cd ~/code/my-project
-atmux start                  # 🧙 no team.json yet? atmux will offer to run the wizard
+atmux                         # one-stop: wizard (if new) → doctor → start → attach
 # …or do it explicitly:
-atmux init --wizard          # interactive setup
-atmux init                   # defaults (7-member template)
+atmux init --wizard           # interactive setup only
+atmux doctor                  # environment check (deps / team.json / TUI PATH / webhook)
+atmux start                   # spawn the team
+atmux attach                  # tmux attach to watch
 
-# 3. Launch the team:
-atmux start
-atmux attach                  # (optional) tmux attach to watch
-atmux status
-
-# 4. Kick things off via the lead:
+# 3. Drive the team:
 atmux tell-lead "build a /healthz endpoint with 100% test coverage"
+atmux status                  # team pulse
+atmux outbox                  # read lead's async replies
 
-# 5. Automate the watchdog (cron):
+# 4. Automate the watchdog (cron):
 crontab -e
 # */5 * * * *  cd ~/code/my-project && /usr/local/bin/atmux whip  >> .atmux/logs/cron.log 2>&1
 # */30 * * * * cd ~/code/my-project && /usr/local/bin/atmux report >> .atmux/logs/cron.log 2>&1
 
-# 6. When done:
+# 5. When done:
 atmux stop
 ```
+
+### Preset modes
+
+The wizard asks for a preset up front — governs default TUI assignment:
+
+| Preset  | Staff            | Workers                                   | When to pick it                        |
+|---------|------------------|-------------------------------------------|----------------------------------------|
+| `perf`    | all `claude`   | all `claude`                              | Capability > cost. Production-grade work. |
+| `default` | all `claude`   | cycles `cursor` → `opencode` → `kimi`     | The balanced default — Claude staff + cheap workers per feature lane. |
+| `eco`     | all `opencode` | all `opencode` (MiniMax)                  | Cost > capability. Prototyping, throwaway branches. |
+| `custom`  | prompted       | prompted per worker                       | Fine-grained control. Falls back to the per-worker TUI prompt. |
+
+### Ephemeral feature specialists
+
+atmux's default staff is one of each role. For a big feature with heavy planning or DB work, spin up a specialist just for that lane — no config change, just `add-member`:
+
+```bash
+atmux add-member planner-auth --role planner --tui claude --cwd "$PWD"
+atmux add-member dba-invoice  --role dba     --tui claude --cwd "$PWD"
+atmux add-member planner-mig  --role planner --tui claude --cwd "$PWD"
+
+# Remove them when the lane ships — or pause while idle:
+atmux pause planner-auth
+```
+
+They share the same brief template as the canonical role, so the lead treats them as parallel staff. Useful when the main planner's queue is deep or a feature needs a dedicated schema reviewer.
 
 ## TUIs supported
 
@@ -128,11 +163,13 @@ Default role→TUI mapping:
 
 | Role              | Default TUI | Reason                                        |
 |-------------------|-------------|-----------------------------------------------|
-| `team-lead`       | `claude`    | Coordination + judgment — needs Opus          |
+| `team-lead`       | `claude`    | Routes asks + dispatches; never plans itself  |
+| `planner`         | `claude`    | Decomposition + ADRs — owns the cognitive load the lead used to carry |
 | `reviewer`        | `claude`    | Quality gate — needs Opus                     |
-| `git-committer`   | `claude`    | Commit msg + hooks discipline                 |
+| `gitter`          | `claude`    | Commit msg + hooks discipline                 |
 | `devops`          | `claude`    | Infra judgment calls                          |
-| `member`          | any         | Parallel throughput — pick cheapest that works |
+| `dba`             | `claude`    | Schema + migrations + data integrity (optional) |
+| `member`          | any         | Parallel throughput per feature lane — pick cheapest that works |
 
 ## Commands
 

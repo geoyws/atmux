@@ -68,9 +68,11 @@ main() {
     if [[ -z "$emoji" || "$emoji" == "null" ]]; then
       case "$role" in
         team-lead)     emoji="🧭" ;;
+        planner)       emoji="🗺️ " ;;
         reviewer)      emoji="🔍" ;;
-        git-committer) emoji="🌿" ;;
+        gitter)        emoji="🌿" ;;
         devops)        emoji="⚙️ " ;;
+        dba)           emoji="🗄️ " ;;
         *)             emoji="🐝" ;;
       esac
     fi

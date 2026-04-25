@@ -12,11 +12,13 @@
 | Role            | Window position | Default TUI | What it does |
 |-----------------|-----------------|-------------|--------------|
 | `driver`        | — (not in tmux) | (any)       | Relays human intent via `atmux tell-lead` + `atmux send` |
-| `team-lead`     | 1               | claude      | Decomposes asks, dispatches, surfaces blockers           |
-| `reviewer`      | 2               | claude      | Reviews diffs, approves commits                          |
-| `git-committer` | 3               | claude      | The only member allowed to commit + push                 |
-| `devops`        | 4               | claude      | Deploys, env, CI/CD, infra                               |
-| `member`        | 5…n             | any         | Workers — do the coding work                              |
+| `team-lead`     | 1               | claude      | Routes asks + dispatches tasks; never plans itself       |
+| `planner`       | 2               | claude      | Decomposes asks into kanban tasks + writes ADRs          |
+| `reviewer`      | 3               | claude      | Reviews diffs, approves commits                          |
+| `gitter`        | 4               | claude      | The only member allowed to commit + push                 |
+| `devops`        | 5               | claude      | Deploys, env, CI/CD, infra                               |
+| `dba`           | 6               | claude      | Schema + migrations + SQL (optional)                     |
+| `member`        | 7…n             | any         | Workers — do the coding work per feature lane            |
 
 ## Driver → Lead routing
 

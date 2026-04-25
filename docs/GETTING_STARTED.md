@@ -47,13 +47,26 @@ Bare `atmux` runs the full onboarding flow: offers to run the wizard if there's 
 
 The wizard (invoked on first run) asks:
 
-- Team name (default: directory name)
-- How many `member` workers? (default: 3)
-- For each worker: which TUI? (claude / opencode / kimi / cursor / shell)
-- For each worker: custom model? (Enter for default)
-- Discord webhook URL? (optional; skip with Enter)
+- **Team name** (default: directory name)
+- **Preset** (`perf` / `default` / `eco` / `custom`) — governs TUI assignment per member.
+- **Staff toggles**: include `planner` (default yes), `reviewer`, `gitter`, `devops`, `dba` — each `[y/n]`.
+- **Number of `member` workers** (default: 3)
+- **Per-worker TUI** (only if preset=custom) and name. Suggested names: feature-lane form like `fe-auth`, `be-invoice`, `db-orders`.
+- **Emoji mode** (`static` / `random` / `ai`) — governs how each member's emoji is assigned.
+- **Discord webhook URL** (optional)
 
 This produces `.atmux/team.json`. Inspect it; tweak manually if needed.
+
+### Ephemeral specialists
+
+Spin up an extra planner or dba for a single feature lane — no wizard re-run, just:
+
+```bash
+atmux add-member planner-auth --role planner --tui claude
+atmux add-member dba-invoice  --role dba     --tui claude
+```
+
+They pick up the same brief template as the canonical role. `atmux pause <name>` when the lane is quiet; remove from `team.json` when done.
 
 If you prefer explicit verbs:
 
