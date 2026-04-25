@@ -163,6 +163,30 @@ atmux::find_lead_member() {
      "$(atmux::team_json)"
 }
 
+# atmux::brief_version <role>
+#
+# Read the brief-version marker from the first line of
+# templates/briefs/<role>.md (`<!-- brief-version: vN -->`). Echoes the
+# captured version. Falls back to `v0` when:
+#   - the brief file is missing
+#   - the marker line is absent
+#   - the marker doesn't match the expected shape
+#
+# `v0` is reserved for legacy briefs predating the marker convention so
+# downstream consumers (lib/start.sh's spawn-time recorder, the brief-
+# version delta check in whip) can treat all members uniformly.
+atmux::brief_version() {
+  local role="$1"
+  local brief_path; brief_path="$(atmux::brief_path "$role")"
+  [[ -f "$brief_path" ]] || { printf 'v0\n'; return 0; }
+  local first; first="$(head -1 "$brief_path" 2>/dev/null || true)"
+  if [[ "$first" =~ ^\<!--[[:space:]]*brief-version:[[:space:]]*(v[0-9]+)[[:space:]]*--\>$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    printf 'v0\n'
+  fi
+}
+
 # atmux::task_append_note <task_id> <line>
 #
 # Append a single line to the task's `.note` field, newline-separated.

@@ -146,4 +146,22 @@ _atmux_paste_brief() {
   sleep 1
   tmux send-keys -t "$target" Enter
   rm -f "$tmp"
+
+  _atmux_record_brief_version "$member" "$role"
+}
+
+# Record the brief version + paste timestamp for this member in
+# .atmux/state/brief-versions.json. Lets whip diff currently-pasted vs
+# on-disk brief versions and nudge for re-paste when the template ships
+# a `<!-- brief-version: vN+1 -->` bump.
+_atmux_record_brief_version() {
+  local member="$1" role="$2"
+  local version; version="$(atmux::brief_version "$role")"
+  local now; now="$(atmux::now_epoch)"
+  local f; f="$(atmux::state_dir)/brief-versions.json"
+  mkdir -p "$(dirname "$f")"
+  [[ -s "$f" ]] || echo '{}' > "$f"
+  atmux::jq_update "$f" \
+    '. + { ($m): { role: $r, version: $v, pastedAt: ($t | tonumber) } }' \
+    --arg m "$member" --arg r "$role" --arg v "$version" --arg t "$now"
 }
