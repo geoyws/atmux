@@ -99,16 +99,44 @@ main() {
       continue
     fi
 
-    # Banner detection.
+    # Banner detection. Track `preclear_banner` for the autoRotate-gated
+    # auto-preclear: rate-limit / approaching-limit / compacting are all
+    # "rotate would help" signals; queued-message banner is informational
+    # only (no rotation).
     local state; state=$(atmux::capture_pane "$name" 30)
+    local preclear_banner=""
     if echo "$state" | grep -qi 'hit your limit\|rate.?limit'; then
       findings+=("🔴 $name: rate-limited banner visible")
+      preclear_banner="rate-limited"
+    fi
+    if echo "$state" | grep -qi 'approaching usage limit'; then
+      findings+=("🟡 $name: approaching usage limit")
+      preclear_banner="${preclear_banner:-approaching-limit}"
     fi
     if echo "$state" | grep -qi 'Compacting conversation'; then
       findings+=("⏳ $name: compacting — skip sends until done")
+      preclear_banner="${preclear_banner:-compacting}"
     fi
     if echo "$state" | grep -qi 'Press up to edit queued messages'; then
       findings+=("📥 $name: messages queued but not submitted")
+    fi
+
+    # AUTO-PRECLEAR (E2/S3 t-50ca6f09): when AUTO_ROTATE=true and a
+    # rotation-trigger banner is visible, exec `atmux rotate <member>`
+    # immediately. Debounce: skip if the member was rotated <5min ago,
+    # since banners can persist across capture-pane scrolls and we don't
+    # want to thrash. The rotate verb writes a fresh `<member>-rotated.epoch`
+    # so the next tick's debounce check naturally suppresses re-fires.
+    if [[ -n "$preclear_banner" && "$AUTO_ROTATE" == "true" ]]; then
+      local _now_e; _now_e="$(atmux::now_epoch)"
+      local _mrot;  _mrot="$(_atmux_whip_member_rotated_epoch "$name")"
+      if (( _now_e - _mrot >= 300 )); then
+        if "$ATMUX_BIN_DIR/atmux" rotate "$name" >/dev/null 2>&1; then
+          findings+=("♻️ AUTO-PRECLEAR $name (banner=$preclear_banner)")
+        else
+          findings+=("⚠️ auto-preclear $name attempted but failed")
+        fi
+      fi
     fi
 
     # Stale-task heuristic — count inbox entries whose effective anchor is
