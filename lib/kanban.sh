@@ -367,3 +367,6 @@ _atmux_task_rm() {
   jq --arg id "$id" '.tasks |= map(select(.id != $id))' "$k" > "${k}.tmp" && mv "${k}.tmp" "$k"
   atmux::ok "task $id removed"
 }
+
+# atmux::task_append_note lives in lib/common.sh so non-kanban callers
+# (lib/flags.sh's --task linkage) can reach it without sourcing this file.

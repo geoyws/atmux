@@ -29,7 +29,6 @@ main() {
 
   local STALE_MIN="${ATMUX_STALE_MIN:-30}"
   local LEAD_MAX_MIN="${ATMUX_LEAD_MAX_MIN:-60}"
-
   local findings=()
   local ts; ts="$(atmux::now_myt)"
 
@@ -39,6 +38,22 @@ main() {
   # cursor advance below. Appends a flag-only pointer to findings if N > 0.
   local dmtime_new=""
   _atmux_whip_check_decisions
+
+  # ---- "Since last tick" delta (E2/S7 t-ac42591e) ----
+  # Computed BEFORE the session-DOWN early-exit so a DOWN tick still surfaces
+  # what shipped during the gap (commits + done tasks are kanban / git state,
+  # both independent of tmux liveness). Anchor is mtime of whip-last.hash; no
+  # baseline ⇒ skip section entirely.
+  local hash_file; hash_file="$(atmux::state_dir)/whip-last.hash"
+  if [[ -f "$hash_file" ]]; then
+    local since_epoch
+    since_epoch=$(stat -c '%Y' "$hash_file" 2>/dev/null || stat -f '%m' "$hash_file" 2>/dev/null || echo 0)
+    if [[ "$since_epoch" -gt 0 ]]; then
+      local delta_block
+      delta_block="$(_atmux_whip_delta_since "$since_epoch")"
+      [[ -n "$delta_block" ]] && findings+=("$delta_block")
+    fi
+  fi
 
   # ---- 1. session liveness ----
   if ! atmux::tmux_session_exists; then
@@ -309,6 +324,72 @@ _atmux_whip_body_hash() {
   for f in "$@"; do
     printf '%s\n' "$f"
   done | sha256sum | awk '{print $1}'
+}
+
+# Build the "Since last tick" body block from positive events that landed
+# after $since_epoch — git commits, kanban tasks marked done. Echoes the
+# multi-line block (header + indented bullets) when ≥1 event exists, else
+# empty. story-advance tracking deferred (no .advancedAt schema field yet).
+#
+# Caller (whip's main) pushes the block as ONE finding entry; the body
+# builder prefixes the first line with `- ` and embedded newlines render
+# subsequent lines verbatim — that's why the inner bullets are 2-space
+# indented `- ` lines.
+_atmux_whip_delta_since() {
+  local since="$1"
+  [[ "$since" =~ ^[0-9]+$ ]] || return 0
+  local now; now=$(atmux::now_epoch)
+  local elapsed=$(( now - since ))
+  (( elapsed > 0 )) || return 0
+  local elapsed_str
+  if (( elapsed < 3600 )); then
+    elapsed_str=$(( elapsed / 60 ))min
+  else
+    local h=$(( elapsed / 3600 )) m=$(( (elapsed % 3600) / 60 ))
+    if (( m == 0 )); then elapsed_str="${h}h"; else elapsed_str="${h}h${m}m"; fi
+  fi
+
+  # Commits since $since via git log (ignore errors when not in a repo).
+  local commits=()
+  if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && commits+=("$line")
+    done < <(git log --since="@$since" --pretty=format:'%h' 2>/dev/null || true)
+  fi
+
+  # Done tasks since $since — completedAt > since.
+  local done_ids=()
+  local k; k="$(atmux::kanban_json)"
+  if [[ -f "$k" ]]; then
+    local id
+    while IFS= read -r id; do
+      [[ -n "$id" ]] && done_ids+=("$id")
+    done < <(jq -r --argjson s "$since" \
+        '[.tasks[]? | select((.completedAt // 0) > $s)] | sort_by(.completedAt) | .[].id' \
+        "$k" 2>/dev/null || true)
+  fi
+
+  # Skip the whole section when both buckets are empty — quiet tick.
+  if [[ ${#commits[@]} -eq 0 && ${#done_ids[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  local out="📊 **Since last tick** ($elapsed_str ago):"
+  if [[ ${#commits[@]} -gt 0 ]]; then
+    local n=${#commits[@]}
+    local shown=("${commits[@]:0:5}")
+    local line; line="$(printf '%s ' "${shown[@]}")"; line="${line% }"
+    if (( n > 5 )); then line="$line (+$((n - 5)) more)"; fi
+    out+=$'\n  - ✅ '"$n commits: $line"
+  fi
+  if [[ ${#done_ids[@]} -gt 0 ]]; then
+    local n=${#done_ids[@]}
+    local shown=("${done_ids[@]:0:5}")
+    local line; line="$(printf '%s ' "${shown[@]}")"; line="${line% }"
+    if (( n > 5 )); then line="$line (+$((n - 5)) more)"; fi
+    out+=$'\n  - 🏁 '"$n tasks done: $line"
+  fi
+  printf '%s' "$out"
 }
 
 # Read <member>-rotated.epoch as an integer; 0 if absent or non-numeric.

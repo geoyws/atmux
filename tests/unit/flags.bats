@@ -63,8 +63,10 @@ teardown() {
 }
 
 @test "flags: add --task persists task id; absent → null" {
-  local id; id=$("$ATMUX_BIN" flags add "with task" --severity p1 --needs review --as reviewer --task t-abc12345 | tail -1)
-  grep -q "^- \*\*task\*\*: t-abc12345$" .atmux/flags.md
+  # E4/S3: --task is now validated against kanban.json — use a real task id.
+  local tid; tid=$("$ATMUX_BIN" task add "linked work" | tail -1)
+  local id; id=$("$ATMUX_BIN" flags add "with task" --severity p1 --needs review --as reviewer --task "$tid" | tail -1)
+  grep -q "^- \*\*task\*\*: ${tid}$" .atmux/flags.md
   local id2; id2=$("$ATMUX_BIN" flags add "no task" --severity p2 --needs context --as lead | tail -1)
   grep -q "^- \*\*task\*\*: null$" .atmux/flags.md
   # both ids show up
@@ -192,4 +194,70 @@ teardown() {
   # Single-line bullet — no embedded newline.
   run grep -c "^- \*\*message\*\*: one two$" .atmux/flags.md
   [ "$output" = "1" ]
+}
+
+# ---------- --task linkage (E4/S3 / t-31ea6239) ----------
+
+@test "flags: add --task <missing> errors before writing the log" {
+  run "$ATMUX_BIN" flags add "x" --severity p1 --needs unblock --as lead --task t-deadbeef
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "does not exist" ]]
+  [ ! -f .atmux/flags.md ]
+}
+
+@test "flags: add --task --needs unblock flips the linked task to blocked + appends note" {
+  local tid; tid=$("$ATMUX_BIN" task add "real work" | tail -1)
+  local fid; fid=$("$ATMUX_BIN" flags add "wedged" --severity p1 --needs unblock --as lead --task "$tid" | tail -1)
+  [ -n "$tid" ]; [ -n "$fid" ]
+
+  local s; s="$("$ATMUX_BIN" task show "$tid" | jq -r '.status')"
+  [ "$s" = "blocked" ]
+  local note; note="$("$ATMUX_BIN" task show "$tid" | jq -r '.note // ""')"
+  [[ "$note" =~ "flag $fid" ]]
+  [[ "$note" =~ "p1/unblock" ]]
+  [[ "$note" =~ "wedged" ]]
+}
+
+@test "flags: add --task without --needs unblock leaves status alone, only appends note" {
+  local tid; tid=$("$ATMUX_BIN" task add "real work" | tail -1)
+  "$ATMUX_BIN" task move "$tid" in-progress >/dev/null
+  local fid; fid=$("$ATMUX_BIN" flags add "fyi" --severity p2 --needs review --as lead --task "$tid" | tail -1)
+
+  local s; s="$("$ATMUX_BIN" task show "$tid" | jq -r '.status')"
+  [ "$s" = "in-progress" ]   # unchanged
+  local note; note="$("$ATMUX_BIN" task show "$tid" | jq -r '.note // ""')"
+  [[ "$note" =~ "flag $fid" ]]
+  [[ "$note" =~ "p2/review" ]]
+}
+
+@test "flags: task_append_note is idempotent on duplicate line" {
+  local tid; tid=$("$ATMUX_BIN" task add "x" | tail -1)
+  local fid; fid=$("$ATMUX_BIN" flags add "msg" --severity p2 --needs review --as lead --task "$tid" | tail -1)
+  local note_before; note_before="$("$ATMUX_BIN" task show "$tid" | jq -r '.note')"
+  atmux_source_libs
+  # shellcheck source=../../lib/kanban.sh
+  . "$ATMUX_LIB_DIR/kanban.sh"
+  atmux::task_append_note "$tid" "flag $fid (p2/review): msg"
+  local note_after; note_after="$("$ATMUX_BIN" task show "$tid" | jq -r '.note')"
+  [ "$note_before" = "$note_after" ]
+}
+
+@test "flags: resolve surfaces linked task id + 'consider task move' when blocked" {
+  local tid; tid=$("$ATMUX_BIN" task add "x" | tail -1)
+  local fid; fid=$("$ATMUX_BIN" flags add "stuck" --severity p1 --needs unblock --as lead --task "$tid" | tail -1)
+  # task is now blocked; resolve should hint about the move.
+  run "$ATMUX_BIN" flags resolve "$fid" --as devops --note "fixed"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "$tid" ]]
+  [[ "$output" =~ "consider" ]]
+  [[ "$output" =~ "in-progress" ]]
+}
+
+@test "flags: resolve does NOT auto-flip the blocked task back to in-progress" {
+  local tid; tid=$("$ATMUX_BIN" task add "x" | tail -1)
+  local fid; fid=$("$ATMUX_BIN" flags add "stuck" --severity p1 --needs unblock --as lead --task "$tid" | tail -1)
+  "$ATMUX_BIN" flags resolve "$fid" --as devops >/dev/null
+
+  local s; s="$("$ATMUX_BIN" task show "$tid" | jq -r '.status')"
+  [ "$s" = "blocked" ]   # left for the lead/member to decide
 }

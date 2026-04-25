@@ -156,6 +156,43 @@ atmux::member_json() {
     || atmux::die "no such member in team.json: $name"
 }
 
+# Resolve the team-lead member's name from team.json. Empty stdout when no
+# member has role=="team-lead" (Solo Mode / single-member teams).
+atmux::find_lead_member() {
+  jq -r 'first(.members[] | select(.role == "team-lead") | .name) // empty' \
+     "$(atmux::team_json)"
+}
+
+# atmux::task_append_note <task_id> <line>
+#
+# Append a single line to the task's `.note` field, newline-separated.
+# Idempotent: if the line is already present in `.note`, the call is a
+# no-op. Errors when the task id doesn't exist. Lives here (not in
+# lib/kanban.sh) so cross-module callers — currently lib/flags.sh's
+# --task linkage — can reach it without sourcing kanban.sh's main().
+atmux::task_append_note() {
+  local id="$1" line="$2"
+  [[ -n "$id"   ]] || atmux::die "task_append_note: <id> required"
+  [[ -n "$line" ]] || atmux::die "task_append_note: <line> required"
+  local k; k="$(atmux::kanban_json)"
+  local exists
+  exists="$(jq --arg id "$id" '[.tasks[]? | select(.id == $id)] | length' "$k")"
+  (( exists == 1 )) || atmux::die "task_append_note: no such task: $id"
+  atmux::jq_update "$k" \
+    '.tasks |= map(
+       if .id == $id then
+         if (.note // "") == "" then
+           .note = $line
+         elif ((.note | split("\n")) | index($line)) then
+           .
+         else
+           .note = (.note + "\n" + $line)
+         end
+       else . end
+     )' \
+    --arg id "$id" --arg line "$line"
+}
+
 # ---------- tmux helpers ----------
 
 atmux::tmux_session_exists() {

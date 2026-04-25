@@ -181,6 +181,15 @@ _atmux_flags_add() {
     atmux::die "flags add: message exceeds 60 chars (Discord ≤80 budget); rewrite tighter"
   fi
 
+  # --task linkage: validate the kanban task exists BEFORE writing the
+  # markdown record so the log doesn't capture dangling references.
+  if [[ -n "$task" ]]; then
+    local _k; _k="$(atmux::kanban_json)"
+    local _texists
+    _texists="$(jq --arg id "$task" '[.tasks[]? | select(.id == $id)] | length' "$_k" 2>/dev/null || echo 0)"
+    (( _texists == 1 )) || atmux::die "flags add: --task $task does not exist in kanban"
+  fi
+
   local member; member="$(_flags_resolve_member "$who")"
   local id; id="$(_flags_gen_id)"
   local epoch; epoch="$(atmux::now_epoch)"
@@ -190,8 +199,60 @@ _atmux_flags_add() {
   atmux::with_lock "$f" _flags_append_entry \
     "$f" "$id" "$epoch" "$hhmm" "$member" "$severity" "$needs" "$task" "$message" "$note"
 
+  # --task linkage: append a one-line back-reference to the task's `.note`
+  # so `atmux task show` carries the cross-link. When --needs unblock,
+  # additionally flip the task to `blocked` so claim --next skips it until
+  # the flag is resolved.
+  if [[ -n "$task" ]]; then
+    atmux::task_append_note "$task" "flag $id ($severity/$needs): $message"
+    if [[ "$needs" == "unblock" ]]; then
+      atmux::jq_update "$(atmux::kanban_json)" \
+        '.tasks |= map(if .id == $id then .status = "blocked" else . end)' \
+        --arg id "$task"
+      atmux::ok "flags: task $task → blocked (linked to $id)"
+    fi
+  fi
+
+  _flags_notify_lead "$id" "$member" "$message"
+
   atmux::ok "flags: recorded $id"
   printf '%s\n' "$id"
+}
+
+# Post-add side-effect: nudge the lead pane via tmux send-keys with a
+# one-line summary so the lead sees the flag in their conversation stream
+# without polling flags.md. The markdown record is the source of truth —
+# this is best-effort. Skip silently when (a) tmux isn't running, (b) the
+# lead isn't defined, (c) the lead window is missing, OR (d) the pane has
+# a banner that would swallow the keystrokes (compaction/limit) — that
+# last case is logged so the operator knows the nudge was withheld.
+_flags_notify_lead() {
+  local id="$1" member="$2" message="$3"
+  command -v tmux >/dev/null 2>&1 || return 0
+
+  local lead; lead="$(atmux::find_lead_member 2>/dev/null || true)"
+  [[ -n "$lead" ]] || return 0
+  atmux::tmux_window_exists "$lead" 2>/dev/null || return 0
+
+  local pane_state
+  pane_state="$(atmux::capture_pane "$lead" 30 2>/dev/null || true)"
+  if echo "$pane_state" | grep -qi 'Compacting conversation\|hit your limit'; then
+    atmux::log "flags: lead pane busy (banner) — skipped tmux send-keys for $id"
+    return 0
+  fi
+
+  # Truncate the summary at 80 chars including the prefix to stay inside the
+  # one-line ping budget. Prefix `📍 flag from <member>: ` ≈ 18+len(member),
+  # so for typical 8–10-char member names the message body gets ~50–55 chars.
+  local prefix="📍 flag from $member: "
+  local pingline="${prefix}${message}"
+  if (( ${#pingline} > 80 )); then
+    pingline="${pingline:0:77}..."
+  fi
+
+  tmux send-keys -t "$(atmux::tmux_target "$lead")" "$pingline" Enter 2>/dev/null \
+    || atmux::log "flags: tmux send-keys to lead failed for $id"
+  return 0
 }
 
 _flags_append_entry() {
@@ -370,6 +431,28 @@ _atmux_flags_resolve() {
 
   atmux::with_lock "$f" _flags_append_resolution \
     "$f" "$rid" "$id" "$epoch" "$hhmm" "$member" "$note"
+
+  # --task linkage surfaced on resolve: if the original flag carried a
+  # --task reference, echo it AND surface a "consider task move" hint when
+  # the task is currently `blocked` (likely flipped here by --needs unblock
+  # at add time). We deliberately do NOT auto-flip — re-claiming after a
+  # resolved blocker is a member/lead judgment call, not an automation.
+  local linked_task
+  linked_task="$(awk -v id="$id" '
+    /^### / && $2 == id { capture=1; next }
+    /^### / && capture { exit }
+    capture && /^- \*\*task\*\*:/ { v=$0; sub(/^- \*\*task\*\*: */,"",v); print v; exit }
+  ' "$f")"
+  if [[ -n "$linked_task" && "$linked_task" != "null" ]]; then
+    local linked_status
+    linked_status="$(jq -r --arg id "$linked_task" \
+                       '.tasks[]? | select(.id == $id) | .status // empty' \
+                       "$(atmux::kanban_json)" 2>/dev/null || true)"
+    atmux::log "flags: $id linked to task $linked_task (status=${linked_status:-unknown})"
+    if [[ "$linked_status" == "blocked" ]]; then
+      atmux::log "flags: consider \`atmux task move $linked_task in-progress\` now that $id is resolved"
+    fi
+  fi
 
   atmux::ok "flags: $id resolved by $member ($rid)"
   printf '%s\n' "$rid"
