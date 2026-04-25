@@ -259,8 +259,11 @@ _atmux_decisions_add() {
   if [[ "$reversibility" == "high" ]]; then
     _decisions_export_webhook
     local team; team="$(atmux::team_name)"
+    # Renderer signature mirrors _decisions_append: positional args first,
+    # then context/impact/decided_by, then options_count + options[*].
     local body; body="$(_decisions_render_discord \
-      "$id" "$question" "$default" "$reversibility" "$note" "$team" "$hhmm")"
+      "$id" "$question" "$default" "$reversibility" "$note" "$team" "$hhmm" \
+      "$context" "$impact" "$decided_by" "${#options[@]}" "${options[@]}")"
     atmux::discord_ping "$body"
   fi
 
@@ -320,22 +323,78 @@ EOF
 
 _decisions_render_discord() {
   local id="$1" question="$2" default="$3" rev="$4" note="$5" team="$6" hhmm="$7"
-  local emoji; emoji="$(_decisions_rev_emoji "$rev")"
+  local context="${8:-}" impact="${9:-}" decided_by="${10:-}"
+  local options_count="${11:-0}"
+  shift 11 || shift $#
+  local options=("$@")
 
-  # All three user-supplied fields are length-validated in _atmux_decisions_add
-  # (≤60 chars each). Renderer just emits — no per-field truncation.
-  printf '📋 **[atmux-decisions]** · `%s` · %s\n\n' "$team" "$hhmm"
-  printf '🔵 %s\n' "$question"
-  printf '✅ default: %s\n' "$default"
-  printf '%s reversibility: %s\n' "$emoji" "$rev"
-  if [[ -n "$note" ]]; then
-    printf '📝 note: %s\n' "$note"
+  local emoji; emoji="$(_decisions_rev_emoji "$rev")"
+  local truncation_marker="↳ atmux decisions show $id for full"
+
+  # E2/S9 §S9 of ADR-008: optional sections are skipped entirely when
+  # empty — the line is omitted, no `🌐 context: ` empty-value emission.
+  # Field order (per AC):  question · default · decided-by · context ·
+  # options · impact · note · reversibility · show · override.
+  #
+  # Discord 2000-char body cap. Worst-case all-fields ≈ 3.2KB, so when
+  # the body exceeds 2000 we drop optional sections in this order: note
+  # → impact → options → context (per ADR-008 §S9). The truncated body
+  # ships with a `↳ atmux decisions show <id> for full` marker so the
+  # human can recover the dropped detail. Required fields (question,
+  # default, reversibility, decided-by, show/override) are never
+  # dropped — those are signoff-relevant.
+  local include_note=1 include_impact=1 include_options=1 include_context=1
+  local body truncated=0 attempt
+  for attempt in 0 1 2 3 4; do
+    body=""
+    body+="📋 **[atmux-decisions]** · \`$team\` · $hhmm"$'\n\n'
+    body+="🔵 question: $question"$'\n'
+    body+="✅ default: $default"$'\n'
+    if [[ -n "$decided_by" ]]; then
+      body+="👤 decided-by: $decided_by"$'\n'
+    fi
+    if (( include_context )) && [[ -n "$context" ]]; then
+      body+="🌐 context: $context"$'\n'
+    fi
+    if (( include_options )) && (( options_count > 0 )); then
+      body+="⚖️ options:"$'\n'
+      local _opt
+      for _opt in "${options[@]}"; do
+        body+="  - $_opt"$'\n'
+      done
+    fi
+    if (( include_impact )) && [[ -n "$impact" ]]; then
+      body+="💥 impact: $impact"$'\n'
+    fi
+    if (( include_note )) && [[ -n "$note" ]]; then
+      body+="📝 note: $note"$'\n'
+    fi
+    body+="$emoji reversibility: $rev"$'\n'
+    body+="📍 atmux decisions show $id"$'\n'
+    body+="↪ atmux send lead \"override $id: <new>\""
+
+    # Reserve marker headroom only on iterations where we've already
+    # decided to truncate — first pass tries the full body unbudgeted.
+    local cap=2000
+    if (( truncated == 1 )); then
+      cap=$(( 2000 - ${#truncation_marker} - 1 ))
+    fi
+    if (( ${#body} <= cap )); then
+      break
+    fi
+    truncated=1
+    case "$attempt" in
+      0) include_note=0 ;;
+      1) include_impact=0 ;;
+      2) include_options=0 ;;
+      3) include_context=0 ;;
+    esac
+  done
+
+  if (( truncated == 1 )); then
+    body+=$'\n'"$truncation_marker"
   fi
-  # Two bullets — concatenating into one renders ~90 chars, breaking the
-  # ≤80-char/bullet Discord template budget (same vulnerability class as the
-  # 60-char question/default validators above).
-  printf '📍 atmux decisions show %s\n' "$id"
-  printf '↪ atmux send lead "override %s: <new>"\n' "$id"
+  printf '%s' "$body"
 }
 
 # ---------- list ----------
