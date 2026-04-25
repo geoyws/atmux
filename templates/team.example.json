@@ -84,7 +84,8 @@
   "whip": {
     "intervalMins": 5,
     "staleMin": 30,
-    "leadMaxMin": 60
+    "leadMaxMin": 60,
+    "autoRotate": false
   },
   "report": {
     "intervalMins": 30

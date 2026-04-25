@@ -29,6 +29,12 @@ main() {
 
   local STALE_MIN="${ATMUX_STALE_MIN:-30}"
   local LEAD_MAX_MIN="${ATMUX_LEAD_MAX_MIN:-60}"
+  # team.whip.autoRotate gates whether whip recommends rotation (false) or
+  # executes it (true). Hoisted so the per-member banner-preclear check and
+  # the lead-uptime check share one read of team.json.
+  local AUTO_ROTATE
+  AUTO_ROTATE=$(jq -r '.whip.autoRotate // false' \
+                 "$(atmux::team_json)" 2>/dev/null || echo false)
   local findings=()
   local ts; ts="$(atmux::now_myt)"
 
@@ -179,7 +185,19 @@ main() {
       local uptime=$(( $(atmux::now_epoch) - anchor ))
       local uptime_min=$(( uptime / 60 ))
       if [[ "$uptime_min" -ge "$LEAD_MAX_MIN" ]]; then
-        findings+=("♻️  lead uptime=${uptime_min}min ≥ ${LEAD_MAX_MIN}min — consider \`atmux rotate-lead\`")
+        # AUTO_ROTATE==true → exec `atmux rotate-lead` and append a transparency
+        # finding so the Discord ping carries the action. The rotate verb writes
+        # a fresh `<lead>-rotated.epoch`, so the next tick reads uptime≈0 and
+        # self-debounces — no infinite-loop risk.
+        if [[ "$AUTO_ROTATE" == "true" ]]; then
+          if "$ATMUX_BIN_DIR/atmux" rotate-lead >/dev/null 2>&1; then
+            findings+=("♻️ AUTO-ROTATED lead at $(atmux::now_myt) (uptime=${uptime_min}min)")
+          else
+            findings+=("⚠️ auto-rotate attempted but failed — check \`atmux rotate-lead\` manually")
+          fi
+        else
+          findings+=("♻️  lead uptime=${uptime_min}min ≥ ${LEAD_MAX_MIN}min — consider \`atmux rotate-lead\`")
+        fi
       fi
     fi
   fi
