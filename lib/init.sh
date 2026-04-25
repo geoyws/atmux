@@ -33,6 +33,14 @@ main() {
 
   mkdir -p "$dir/inboxes" "$dir/logs" "$dir/state" "$dir/archive"
 
+  # Per t-2f13a2e4: --force overwrites are the only init path that touches
+  # an existing team.json. Capture a timestamped .bak before the write so
+  # an accidental --force (from a test fixture or otherwise) leaves a
+  # recovery point. Bare init never sees an existing file (gated above).
+  if [[ "$force" -eq 1 ]]; then
+    ATMUX_DIR="$dir" atmux::team_json_backup >/dev/null
+  fi
+
   if [[ "$wizard" -eq 1 ]]; then
     _atmux_init_wizard "$team_name" "$tj"
   else

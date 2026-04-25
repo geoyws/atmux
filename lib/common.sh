@@ -68,6 +68,32 @@ atmux::has_team() {
   [[ -f "$d/team.json" ]]
 }
 
+# atmux::team_json_backup
+#
+# Capture a timestamped copy of the existing team.json before a
+# subsequent write touches it. Called by every code path that mutates
+# team.json (init --force, add-member, reconfigure, reload, …) so a
+# botched write — wrong cwd, runaway test fixture, broken jq filter,
+# unintended `--force` — leaves a recoverable `team.json.bak.<epoch>`
+# behind. Echoes the backup path on success; silent no-op when
+# team.json doesn't exist (first-ever init has nothing to back up).
+#
+# Errors are non-fatal: refusing the write because cp failed would
+# wedge legitimate flows in low-disk / read-only edge cases. Backups
+# are best-effort safety net, not a precondition.
+#
+# Per t-2f13a2e4 (2026-04-25 production incident): a test fixture
+# overwrote a live team.json without sandboxing; recovery required
+# rebuilding from observed reality. This helper makes that recovery
+# automatic next time.
+atmux::team_json_backup() {
+  local tj; tj="$(atmux::team_json)"
+  [[ -f "$tj" ]] || return 0
+  local bak="${tj}.bak.$(atmux::now_epoch)"
+  cp -p "$tj" "$bak" 2>/dev/null || return 0
+  printf '%s\n' "$bak"
+}
+
 # First-run auto-wizard: if no team.json, we're on a TTY, and not suppressed,
 # offer to run `atmux init --wizard` before the caller's verb proceeds.
 # Exits the process after a successful wizard run (user re-runs their command).

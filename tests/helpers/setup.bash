@@ -51,6 +51,27 @@ atmux_source_libs() {
   . "$ATMUX_LIB_DIR/tui.sh"
 }
 
+# Paranoid guard — call BEFORE any atmux command in a test that might
+# write to .atmux/team.json. Hard-fails the test if `pwd` looks like
+# the repo's own working tree (the canonical 2026-04-25 incident: a
+# test fixture clobbered the live team.json because cwd had drifted).
+# Tests using atmux_setup_sandbox always pass; tests that ran
+# `cd "$ATMUX_REPO_ROOT"` mid-body (or never sandboxed) trip the
+# assertion before the write fires.
+atmux_assert_sandbox() {
+  if [[ "$PWD" == "$ATMUX_REPO_ROOT" || "$PWD" == "$ATMUX_REPO_ROOT"/* ]]; then
+    if [[ -z "${ATMUX_TEST_TMP:-}" || "$PWD" != "$ATMUX_TEST_TMP"/* ]]; then
+      printf 'atmux_assert_sandbox: refusing to run inside repo root (%s)\n' "$PWD" >&2
+      printf '  call atmux_setup_sandbox in setup() before any team.json mutation\n' >&2
+      return 1
+    fi
+  fi
+  if [[ -z "${ATMUX_TEST_TMP:-}" ]]; then
+    printf 'atmux_assert_sandbox: ATMUX_TEST_TMP unset — sandbox not initialized\n' >&2
+    return 1
+  fi
+}
+
 # Runs the atmux binary in a subshell with the sandbox env.
 atmux_run() {
   "$ATMUX_BIN" "$@"

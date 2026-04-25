@@ -68,6 +68,10 @@ main() {
   local seen; seen="$(jq -r '[.members[].emoji // ""] | map(select(. != "")) | join(" ")' "$tj")"
   local emoji; emoji="$(atmux::emoji_assign "$name" "$role" "$seen")"
 
+  # Per t-2f13a2e4: snapshot existing team.json before mutating so a botched
+  # jq_update (or wrong cwd) leaves a recoverable .bak.<epoch>.
+  atmux::team_json_backup >/dev/null
+
   atmux::jq_update "$tj" \
     '.members += [{name: $name, role: $role, tui: $tui, model: $model, cwd: $cwd, lane: $lane, emoji: $emoji}
       + (if $cmd == "" then {} else {command: $cmd} end)]' \
