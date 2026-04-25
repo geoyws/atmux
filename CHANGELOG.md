@@ -82,6 +82,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WILL be submitted when the current turn ends, not stale.
   (`lib/whip.sh`, `lib/kanban.sh`, `templates/team.example.json`.)
 
+- **decisions verb — richer template (4 new optional fields)** (E2/S9,
+  [ADR-008 §S9](docs/adr/008-decisions-verb.md)). New optional flags:
+  `--context` (the WHY behind the decision), `--option` (repeatable
+  up to 5 times — alternatives considered), `--impact` (what
+  breaks / who notices / what migrates if the default is wrong),
+  `--decided-by` (who landed the call: lead / planner / specific
+  teammate). Per-field byte caps were temporarily relaxed to
+  200/500 chars in the S9 ship and then dropped entirely in S10
+  (see chunker entry below). Discord template extended to render
+  the new sections in `question · default · decided-by · context ·
+  options · impact · note · reversibility` order, skipping any
+  empty section. Backwards-compat preserved: a no-new-flags entry
+  is bit-identical in `.atmux/decisions.md` to the pre-S9 4-field
+  shape; legacy entries also parse cleanly via the extended awk in
+  `_decisions_to_json_array`. Brief copy in lead.md + planner.md
+  documents per-field guidance + worked examples.
+  (`lib/decisions.sh`, `templates/briefs/lead.md`,
+  `templates/briefs/planner.md`.)
+
 - **decisions verb — Discord gating + inline preview + digest** (E2/S8,
   [ADR-009 §S8](docs/adr/009-auto-rotation.md)). Discord ping at
   add-time is now gated on `--reversibility high` only; `low` /
