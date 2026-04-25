@@ -67,10 +67,34 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
-@test "reload config-reload: errors when no spawn snapshot exists" {
+@test "reload config-reload: missing snapshot ⇒ self-heal bootstrap, zero drift on first run" {
+  # E3/S1-followup t-8cb0f47b: pre-snapshot teams (started before
+  # lib/start.sh learned to write spawn-snapshot.json) used to error
+  # out here. Now config-reload bootstraps the snapshot from the
+  # current team.json + reports zero drift on the first run; the
+  # snapshot file lands so subsequent edits diff cleanly.
+  [ ! -f .atmux/state/spawn-snapshot.json ]
   run "$ATMUX_BIN" reload config-reload
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "no spawn snapshot" ]] || [[ "$output" =~ "atmux start" ]]
+  [ "$status" -eq 0 ]
+  # Bootstrap notice + zero-drift summary both surface.
+  [[ "$output" =~ "spawn-snapshot bootstrapped" ]] || [[ "$output" =~ "📸" ]]
+  [[ "$output" =~ "0 member" ]] || [[ "$output" =~ "unchanged" ]]
+  # Snapshot file is now on disk for subsequent diffs.
+  [ -f .atmux/state/spawn-snapshot.json ]
+}
+
+@test "reload config-reload: snapshot bootstrapped from current team.json (round-trip)" {
+  # Self-heal must capture EXACTLY what config-reload then diffs
+  # against — i.e. the same {name, role, lane, model, tui} projection.
+  # Otherwise the very first post-bootstrap edit would falsely flag
+  # every member as drifted.
+  run "$ATMUX_BIN" reload config-reload
+  [ "$status" -eq 0 ]
+  [ -f .atmux/state/spawn-snapshot.json ]
+  # The snapshot has the same member count + names as team.json.
+  local snap_n; snap_n=$(jq '.members | length' .atmux/state/spawn-snapshot.json)
+  local team_n; team_n=$(jq '.members | length' .atmux/team.json)
+  [ "$snap_n" = "$team_n" ]
 }
 
 @test "reload config-reload: no drift ⇒ atmux::ok 'N notified, M unchanged' (no errors)" {

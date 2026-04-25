@@ -102,11 +102,25 @@ _atmux_reload_config() {
   [[ $# -eq 0 ]] || atmux::die "reload config-reload: takes no args"
 
   local snap; snap="$(atmux::state_dir)/spawn-snapshot.json"
-  if [[ ! -f "$snap" ]]; then
-    atmux::die "reload config-reload: no spawn snapshot at $snap (run 'atmux start' first)"
-  fi
-
   local tj; tj="$(atmux::team_json)"
+
+  # E3/S1-followup t-8cb0f47b: pre-snapshot teams (started before lib/
+  # start.sh learned to write spawn-snapshot.json) had no file on disk,
+  # so config-reload was unusable without a destructive stop+start.
+  # Self-heal: bootstrap the snapshot from the CURRENT team.json on
+  # first run — establishing "now" as the baseline. The first call
+  # always reports zero drift (since snap == team.json by definition);
+  # subsequent edits diff cleanly. One-time '📸' notice marks the
+  # bootstrap so a curious operator can grep the log.
+  if [[ ! -f "$snap" ]]; then
+    mkdir -p "$(dirname "$snap")"
+    jq '{members: [.members[] | {name, role: (.role // "member"),
+                                  lane: (.lane // "misc"),
+                                  model: (.model // "default"),
+                                  tui:   (.tui   // "claude")}]}' \
+      "$tj" > "$snap"
+    atmux::log "📸 spawn-snapshot bootstrapped for legacy team — baseline established at $snap"
+  fi
 
   # Build the per-member delta as TSV: name<tab>delta-message. Empty delta
   # rows skipped at emit time. Fields tracked: role, lane, model, tui.
