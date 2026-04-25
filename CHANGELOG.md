@@ -64,10 +64,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — Whip enrichment + richer decisions (Epic 2)
 
-<!-- Bullets land per-Story; this section will be populated by sibling
+<!-- Bullets land per-Story; this section is populated by sibling
      Tasks t-fc256867 (S7) / t-1b4d63ea (S8) / t-c6ae5307 (S9) and the
-     S10 entry below. Coordinate placement so the order tracks the
-     ADR-009 §S7→§S10 + ADR-008 §S9→§S10 narrative. -->
+     S10 entry below. Order tracks the ADR-009 §S7→§S10 + ADR-008
+     §S9→§S10 narrative. -->
+
+- **whip output noise reduction** (E2/S7,
+  [ADR-009 §S7](docs/adr/009-auto-rotation.md)). Dedup pings via
+  body-hash anchor (`.atmux/state/whip-last.hash`) so a single stuck
+  Task doesn't re-fire 12 identical pings/hour. New per-tick
+  "Since last tick" delta block with positive signal — commits +
+  done-Tasks + advanced-Stories that landed in the window. Raised
+  `staleMin` default `30 → 90` (demo-walk Tasks legitimately exceed
+  30 min); per-Task override via `atmux task add --stale-min N`.
+  Queued-msg flag suppressed when the pane is BUSY (mid-thinking /
+  active token-counter / `Esc to interrupt` banner) — those messages
+  WILL be submitted when the current turn ends, not stale.
+  (`lib/whip.sh`, `lib/kanban.sh`, `templates/team.example.json`.)
+
+- **decisions verb — Discord gating + inline preview + digest** (E2/S8,
+  [ADR-009 §S8](docs/adr/009-auto-rotation.md)). Discord ping at
+  add-time is now gated on `--reversibility high` only; `low` /
+  `medium` decisions skip the per-add ping and surface via whip's
+  inline preview block (`📋 N new decisions: …` with top-3 question +
+  default per entry) plus a new `atmux decisions digest` verb that
+  consolidates all skipped low/med entries since the last digest
+  cursor into ONE Discord post (with `[N/M]` split if it exceeds
+  2000 chars; silent on empty windows). Driver brief and planner
+  brief explain the new ladder + when each tier pings.
+  (`lib/decisions.sh`, `lib/whip.sh`, `templates/briefs/lead.md`,
+  `templates/briefs/planner.md`, `README.md` cron snippet.)
 
 - **decisions verb — drop per-field caps + section-aware multi-message
   Discord chunker** (E2/S10, [ADR-008 §S10](docs/adr/008-decisions-verb.md)).
