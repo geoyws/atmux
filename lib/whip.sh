@@ -18,6 +18,13 @@
 . "$ATMUX_LIB_DIR/cost.sh"
 # shellcheck source=pause.sh
 . "$ATMUX_LIB_DIR/pause.sh"
+# shellcheck source=tui.sh
+# tui.sh defines atmux::brief_path, used transitively via
+# atmux::brief_version in the brief-version drift detector below. Without
+# this source the drift check would silently return v0 for every member
+# (atmux::brief_path → command-not-found → empty path → file-test false →
+# fallback v0). E3/S3-followup t-db501123.
+. "$ATMUX_LIB_DIR/tui.sh"
 
 main() {
   atmux::require jq tmux
