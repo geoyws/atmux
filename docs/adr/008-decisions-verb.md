@@ -106,10 +106,104 @@ These can be a follow-up Epic; not blocking ship.
 
 ---
 
+## S8 Addendum: Decisions Discord gating — reversibility gate + whip inline preview + digest verb (added 2026-04-25)
+
+**Driver-ref**: `driver-inbox.md` @ 19:47 MYT 2026-04-25
+**Provenance**: Originally authored in `docs/adr/009-auto-rotation.md §S8`; relocated 2026-04-25 (driver-inbox @ 22:54 MYT) to consolidate decisions-verb evolution under ADR-008. D-numbering preserved (D11–D14) — pre-relocation cross-references resolve as-is.
+
+### Context
+
+ADR-008 (`atmux decisions add`) ships per-add Discord ping for every recorded decision. After S7's noise sweep on whip, the same noise pattern surfaced for decisions: each per-add ping is valuable for HIGH-reversibility calls (driver may want to override mid-flight) but floods the channel for LOW/MED calls (planner judgment, not driver-actionable in real time).
+
+Counts from today alone: 8 decisions logged across S7 decomposition + earlier sessions. Of those, 1 was reversibility=high (driver-actionable), 7 were low/med (planner judgment). The Discord channel got 8 pings; the channel-reader cared about ~1.
+
+S8 makes Discord visibility a function of *whether the driver should care now*, not *whether a decision was logged*.
+
+### Decisions
+
+#### D11 — Reversibility gates Discord ping
+
+In `_atmux_decisions_add` (lib/decisions.sh), the `atmux::discord_ping` call is conditional on `reversibility == "high"`. Low/medium still write to `.atmux/decisions.md` (markdown log unchanged) but skip the per-add Discord ping. High preserves today's behaviour — immediate ping, override channel intact.
+
+**Why**: Driver-override likelihood maps cleanly to reversibility tier. Low = planner can't be wrong in a way that hurts; med = planner default with documented trade-off; high = potentially-irreversible / driver-actionable. Gating on tier matches the actual signal class.
+
+**Why not**: Per-decision opt-out flag (`--no-ping`). Adds knob bloat; reversibility tier already encodes the right answer. Reviewer can lift this if a real use case for "high-reversibility but quiet" surfaces.
+
+#### D12 — `atmux decisions digest` verb consolidates skipped pings
+
+New verb. Reads `.atmux/state/decisions-digest-cursor`, lists decisions with `timestamp > cursor`, posts ONE consolidated Discord message (with [N/M] split if > 2000 chars), advances cursor on completion. Empty window → no ping (cron-friendly silence). Cron snippet in README documents hourly cadence.
+
+**Why**: Low/med decisions are still useful to surface to the driver — just not in real time. Hourly batch is the right cadence: low-frequency enough that the channel doesn't churn, frequent enough that decisions don't pile up before the driver can override (within the override window most low/med decisions implicitly carry).
+
+**Why not**: Email/RSS/file-only audit trail. Discord is already the team's primary low-friction notification surface; routing low/med decisions through a *second* channel splits attention. Same surface, different cadence.
+
+#### D13 — Digest cursor is separate from whip's decisions-cursor
+
+Two cursors:
+- `.atmux/state/decisions-cursor` — whip's per-tick check (S7/D7-aware, advances on every whip tick that fires a body-ping).
+- `.atmux/state/decisions-digest-cursor` — `atmux decisions digest`'s per-run cursor (advances only on hourly digest run).
+
+Independent state files, independent advancement.
+
+**Why**: The two consumers have different windows. Whip wants "since last 5min tick" (count + inline preview); digest wants "since last hour-mark" (consolidated body). Sharing one cursor would mean each consumer steals the window from the other — whip's tick advances the cursor, digest then has nothing to consolidate.
+
+#### D14 — 2000-char split: chunk by-decision with [N/M] continuation marker
+
+Discord webhook hard limit is 2000 chars per message. When digest body > 2000:
+- Chunk by-decision (never split mid-decision — each chunk's last bullet is a complete decision).
+- Prepend `[N/M]` to each chunk's header (e.g. `📋 **[atmux-digest]** [2/3] · ...`).
+- Sleep 1s between chunks (Discord per-webhook rate limit is 30/min; 1s is a safe margin).
+- Cursor advance happens after the LAST chunk pings (fire-and-warn — `discord_ping` swallows rc, so cursor advances regardless of partial-failure; matches existing whip decisions-cursor semantics).
+
+**Why**: 2000-char limit is real and atmux must handle it. Chunk-by-decision (vs split-mid-bullet) keeps each chunk human-readable. [N/M] makes ordering recoverable if Discord delivery is out-of-order.
+
+**Why not**: Truncate at 2000 with "+N more — see decisions show". Loses information in a domain (decisions log) where information loss has compliance cost. Split is strictly more transparent.
+
+### Cross-Story note: E4 inherits this pattern
+
+E4 (`atmux flag` verb, `e-186a469d`) ships a similar per-add Discord ping pattern (per Task t-5b96b9ee — `flag add --severity p0 → [atmux-flags] Discord template`). The same noise/signal trade-off applies: p0 should ping immediately, p1/p2 should batch. When E4 enters planning, the planner should:
+- Mirror D11 (severity=p0 pings, p1/p2 skip).
+- Add `atmux flag digest` verb mirroring D12.
+- Reuse the chunking helper from D14 (extract to `lib/discord.sh::atmux::discord_chunk_post` if both verbs need it — out of scope for S8, defer until E4 planner re-touches it).
+
+NOT folded into S8 because E4 is its own Epic with separate ADR-010. Logged here so the E4 planner has the context.
+
+### Consequences
+
+**What changes**
+
+- `lib/decisions.sh` gains the gate (D11) + new `digest` verb (D12).
+- `bin/atmux` dispatcher gains `decisions digest` route.
+- `lib/whip.sh` `_atmux_whip_check_decisions` gains inline preview of latest 3 (T4).
+- `.atmux/state/decisions-digest-cursor` — new state file.
+- `templates/briefs/lead.md` + `templates/briefs/planner.md` — reversibility ladder section.
+- `README.md` — cron snippet for digest.
+- 2 new bats files: `decisions_gating.bats`, `decisions_digest.bats`.
+- ADR-008 §S8 (this addendum) — Status remains `accepted`.
+- CHANGELOG v0.5.0 — single bullet alongside S7 + E2/E3/E4 entries.
+
+**What breaks**
+
+- For teams that relied on per-add Discord ping for low/med decisions: behavioural break. Mitigation: digest verb runs hourly via cron (documented). Override window for high-reversibility calls is unchanged.
+- decisions.md log shape unchanged — no migration needed.
+
+**What we give up**
+
+- Real-time visibility for low/med decisions. Trade is: noise reduction on the channel vs immediate driver awareness for non-driver-actionable calls. D12's hourly digest narrows the gap.
+- Per-decision opt-out flag (D11 alternative). Defer until friction.
+
+### Open questions
+
+- Should digest run on `atmux team start` to flush stale decisions from a long quiet period? Defer — cron handles steady state; manual `atmux decisions digest` covers warm-up.
+- Should E4's flag-digest reuse the same cursor as decisions-digest? Defer to E4 planner — likely no (different audiences) but the call belongs at E4-planning-time.
+- Should the chunking helper be hoisted to `lib/discord.sh` for reuse by E4? Defer — premature abstraction with one consumer; revisit when E4 lands.
+
+---
+
 ## S9 Addendum: Richer template — relax field length, context/options/impact/decided-by, backwards-compat (added 2026-04-25)
 
 **Driver-ref**: `driver-inbox.md` @ 21:55 MYT 2026-04-25
-**Companion to**: S8 (gating + digest verb) — addendum lives in `docs/adr/009-auto-rotation.md §S8` per planner's earlier co-location with E2's auto-rotation theme.
+**Companion to**: §S8 (gating + digest verb) — co-located in this ADR per the relocation noted in §S8 Provenance.
 
 ### Context
 
@@ -203,7 +297,7 @@ NOT chunked across multiple Discord posts (S8/D14's chunk-by-decision pattern is
 **Cross-Story coordination**
 
 - Brief edits in T4 (`t-9ea2302c`) touch the SAME files as S8/T6 (`t-aa471a63`). Workers should coordinate via gitter — ONE commit per brief file, not two. Avoids the lint-staged-MM trap (per global CLAUDE.md).
-- §S8 addendum lives in `docs/adr/009-auto-rotation.md §S8` (planner co-located with E2 auto-rotation theme — judgment call). If driver prefers ADR-008 to own all decisions-verb evolution, flag for migration. Otherwise: leave; cross-ref note above keeps both ADRs discoverable.
+- §S8 addendum is now co-located in this ADR (was originally in `docs/adr/009-auto-rotation.md §S8`; relocated 2026-04-25 to consolidate decisions-verb evolution under ADR-008). D-numbering preserved (D11–D14). Pre-relocation cross-refs (e.g. `S8/D14`) resolve as-is.
 
 ### Open questions
 

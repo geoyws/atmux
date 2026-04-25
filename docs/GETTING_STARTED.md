@@ -264,7 +264,7 @@ Sub-second runtime keeps it cheap to invoke repeatedly during recovery.
 ```bash
 atmux driver note "Kept push hold; merge-only on demo branch until S10 ships" \
   --reversibility medium \
-  --context "ADR-009 §S7 D11 sized noise; we'd over-emit on noisy branch"
+  --context "ADR-008 §S8 D11 sized noise; we'd over-emit on noisy branch"
 ```
 
 Mirrors `atmux decisions add` shape (same `--reversibility low|medium|high`,

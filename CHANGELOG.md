@@ -113,7 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`lib/whip.sh`, `lib/kanban.sh`, `templates/team.example.json`.)
 
 - **decisions verb — Discord gating + inline preview + digest** (E2/S8,
-  [ADR-009 §S8](docs/adr/009-auto-rotation.md)). Discord ping at
+  [ADR-008 §S8](docs/adr/008-decisions-verb.md)). Discord ping at
   add-time is now gated on `--reversibility high` only; `low` /
   `medium` decisions skip the per-add ping and surface via whip's
   inline preview block (`📋 N new decisions: …` with top-3 question +
@@ -183,7 +183,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `flag resolve <fid> [--note <text>]`. Replaces the silent-suffer
   pattern: workers stuck >10 min now fire a flag instead of grinding.
 - **`[atmux-flags]` Discord template at `--severity p0` ONLY**.
-  Mirrors ADR-009 §S8's reversibility-gates-Discord pattern: p0 pings
+  Mirrors ADR-008 §S8's reversibility-gates-Discord pattern: p0 pings
   the team channel immediately (driver gets phone visibility on
   demo-blocking issues); p1/p2 write to `flags.md` + send a tmux
   keystroke to the lead pane (kanban-visible, channel-quiet). Whip's
