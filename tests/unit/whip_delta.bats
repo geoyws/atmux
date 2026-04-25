@@ -111,11 +111,13 @@ case "$1" in
     exit 0
     ;;
   log)
-    # Emit one sha per line (trailing newline preserved). FAKEGIT_SHAS is
-    # space-separated in the env so the test caller stays one-liner.
+    # E2/S10 t-97143549: helper now expects TSV (sha<TAB>subject<TAB>author)
+    # to drive per-commit bullet rendering. Mock emits stub subject/author
+    # alongside the requested SHAs from FAKEGIT_SHAS so tests can assert
+    # on every field. Trailing newlines preserved per tformat semantics.
     local sha
     for sha in ${FAKEGIT_SHAS:-}; do
-      printf '%s\n' "$sha"
+      printf '%s\t%s\t%s\n' "$sha" "fake subject for $sha" "tester"
     done
     exit 0
     ;;
@@ -126,7 +128,7 @@ FAKE_EOF
   export PATH="$fakebin:$PATH"
 }
 
-@test "delta_since: 1 commit in window ⇒ ✅ commit bullet emitted" {
+@test "delta_since: 1 commit in window ⇒ ✅ commit bullet emitted (E2/S10 per-commit shape)" {
   _setup_fake_git
   _load_whip
   export FAKEGIT_SHAS="abc1234"
@@ -134,18 +136,22 @@ FAKE_EOF
   sleep 1
   run _atmux_whip_delta_since "$before"
   [[ "$output" =~ "Since last tick" ]]
-  [[ "$output" =~ "1 commits: abc1234" ]]
+  # New shape: '✅ `<sha>` <subject> — <author>'. SHA in backticks, then
+  # mock subject + author from _setup_fake_git.
+  [[ "$output" =~ "✅ \`abc1234\` fake subject for abc1234 — tester" ]]
 }
 
-@test "delta_since: 7 commits in window ⇒ 5 SHAs shown + (+2 more)" {
+@test "delta_since: 7 commits in window ⇒ 5 bullets + '+2 more' (E2/S10 per-commit shape)" {
   _setup_fake_git
   _load_whip
   export FAKEGIT_SHAS="s1 s2 s3 s4 s5 s6 s7"
   local before; before=$(date +%s)
   sleep 1
   run _atmux_whip_delta_since "$before"
-  [[ "$output" =~ "7 commits" ]]
-  [[ "$output" =~ "s1 s2 s3 s4 s5 (+2 more)" ]]
+  # Five emitted '✅' bullets + one '✅ +2 more' summary = six matches.
+  local commit_lines; commit_lines=$(grep -c '✅' <<<"$output")
+  [ "$commit_lines" -eq 6 ]
+  [[ "$output" =~ "✅ +2 more" ]]
   # Trailing SHAs s6/s7 must NOT appear — they're collapsed into "+2 more".
   # `[[ ! ... ]]` not `! [[ ... ]]` — Bats ≥1.5 only fails the last `!`
   # command, so the inverted-on-the-outside form silently no-ops mid-test.
@@ -153,7 +159,7 @@ FAKE_EOF
   [[ ! "$output" =~ "s7" ]]
 }
 
-@test "delta_since: commits + done tasks together ⇒ both bullets emitted (E2/S10 per-task shape)" {
+@test "delta_since: commits + done tasks together ⇒ both bullets emitted (E2/S10 per-bullet shape)" {
   _setup_fake_git
   _load_whip
   export FAKEGIT_SHAS="abc1234 def5678"
@@ -163,10 +169,9 @@ FAKE_EOF
   "$ATMUX_BIN" task move "$id" done >/dev/null
   run _atmux_whip_delta_since "$before"
   [[ "$output" =~ "Since last tick" ]]
-  # Commit line shape stays flat (one bullet, IDs joined).
-  [[ "$output" =~ "2 commits: abc1234 def5678" ]]
-  # Task shape now per-bullet — '🏁 `<id>` …'. The id appears inside
-  # backticks; check the substring without anchoring on the old flat form.
+  # Both shapes are now per-bullet (E2/S10).
+  [[ "$output" =~ "✅ \`abc1234\` fake subject for abc1234 — tester" ]]
+  [[ "$output" =~ "✅ \`def5678\` fake subject for def5678 — tester" ]]
   [[ "$output" =~ "$id" ]]
   [[ "$output" =~ 🏁 ]]
 }
@@ -187,18 +192,20 @@ _init_real_git_in_sandbox() {
   git config user.name  "t"   >/dev/null
 }
 
-@test "delta_since: REAL git, 1 commit ⇒ that commit appears in body (regression: format vs tformat)" {
+@test "delta_since: REAL git, 1 commit ⇒ that commit appears in body (regression: format vs tformat + per-commit shape)" {
   _init_real_git_in_sandbox
-  echo a > a; git add a; git commit -q -m a
+  echo a > a; git add a; git commit -q -m "real-subject"
   _load_whip
   local before; before=$(( $(date +%s) - 60 ))
   local sha; sha=$(git rev-parse --short HEAD)
   run _atmux_whip_delta_since "$before"
   [[ "$output" =~ "Since last tick" ]]
-  [[ "$output" =~ "1 commits: $sha" ]]
+  # Per-commit shape (E2/S10): '✅ `<sha>` <subject> — <author>'. The
+  # author is whatever `_init_real_git_in_sandbox` set (user.name=t).
+  [[ "$output" =~ "✅ \`$sha\` real-subject — t" ]]
 }
 
-@test "delta_since: REAL git, 3 commits ⇒ all 3 SHAs appear (none dropped)" {
+@test "delta_since: REAL git, 3 commits ⇒ all 3 SHAs appear (none dropped, per-commit bullets)" {
   _init_real_git_in_sandbox
   echo a > a; git add a; git commit -q -m a
   echo b > b; git add b; git commit -q -m b
@@ -210,7 +217,11 @@ _init_real_git_in_sandbox() {
   sha2=$(git rev-parse --short HEAD~1)
   sha3=$(git rev-parse --short HEAD)
   run _atmux_whip_delta_since "$before"
-  [[ "$output" =~ "3 commits" ]]
+  # Three '✅' bullets — one per commit. SHAs each appear in their own
+  # bullet line; format/tformat regression still caught because real
+  # git's tformat output flows through.
+  local commit_lines; commit_lines=$(grep -c '✅' <<<"$output")
+  [ "$commit_lines" -eq 3 ]
   [[ "$output" =~ "$sha1" ]]
   [[ "$output" =~ "$sha2" ]]
   [[ "$output" =~ "$sha3" ]]

@@ -535,11 +535,15 @@ _atmux_whip_delta_since() {
   # `format:` variant only puts the format string BETWEEN entries, so the
   # last commit lacks a trailing newline and `read` drops it (1 commit →
   # 0 captured, N → N-1 captured). Self-surfaced as flag f-3229e152.
+  # E2/S10 t-97143549: pull subject + author alongside %h so the
+  # renderer can emit one bullet per commit. Format string uses literal
+  # tabs (ANSI-C $'…') because git's tformat passes `\t` through as
+  # backslash-t literally — verified mid-edit.
   local commits=()
   if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
     while IFS= read -r line; do
       [[ -n "$line" ]] && commits+=("$line")
-    done < <(git log --since="@$since" --pretty=tformat:'%h' 2>/dev/null || true)
+    done < <(git log --since="@$since" --pretty=$'tformat:%h\t%s\t%an' 2>/dev/null || true)
   fi
 
   # Done tasks since $since — completedAt > since. Single jq pass that
@@ -566,11 +570,23 @@ _atmux_whip_delta_since() {
 
   local out="📊 **Since last tick** ($elapsed_str ago):"
   if [[ ${#commits[@]} -gt 0 ]]; then
+    # E2/S10 t-97143549: one bullet per commit — '✅ `<sha>` <subject>
+    # — <author>'. Per-bullet 80-char cap with `…` truncation; cap at 5
+    # displayed plus '✅ +N more' summary on overflow. Mirrors the
+    # done-task per-bullet shape from t-62249136.
     local n=${#commits[@]}
-    local shown=("${commits[@]:0:5}")
-    local line; line="$(printf '%s ' "${shown[@]}")"; line="${line% }"
-    if (( n > 5 )); then line="$line (+$((n - 5)) more)"; fi
-    out+=$'\n  - ✅ '"$n commits: $line"
+    local rec sha subj author bullet
+    for rec in "${commits[@]:0:5}"; do
+      IFS=$'\t' read -r sha subj author <<<"$rec"
+      bullet="✅ \`$sha\` $subj — $author"
+      if (( ${#bullet} > 80 )); then
+        bullet="${bullet:0:79}…"
+      fi
+      out+=$'\n  - '"$bullet"
+    done
+    if (( n > 5 )); then
+      out+=$'\n  - ✅ +'$((n - 5))" more"
+    fi
   fi
   if [[ ${#done_records[@]} -gt 0 ]]; then
     # E2/S10: one bullet per Task — '🏁 `<id>` <prefix> <subject-tail>
