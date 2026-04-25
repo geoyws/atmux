@@ -7,7 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### ✨ Added
+> Targets **v0.4.0**. Major theme: **pull-model kanban** — Epic / Story / Task
+> data model, lane-aware `claim --next` selection, auto-dispatched commit-Tasks
+> to gitter on Task `done`, Story-level reviewer signoff, `atmux decisions add`
+> verb. See [ADR-007](docs/adr/007-pull-kanban.md) for the pull-model spec and
+> [ADR-008](docs/adr/008-decisions-verb.md) for the decisions log.
+
+### ✨ Added — Pull-model kanban (Epic 1)
+
+- **Epic / Story / Task data model on `kanban.json`.** New top-level arrays
+  `epics[]` + `stories[]`. Tasks gain optional `.epic` / `.story` / `.lane` /
+  `.deliverable` fields. Backwards-compat preserved: legacy kanbans with only
+  `tasks[]` still load; `atmux::kanban_normalize` (in `lib/common.sh`) auto-adds
+  the new arrays on first mutation. Tasks without the new fields keep working
+  (treat missing as `null` on read).
+- **`atmux epic add | list | show | advance`** (S2). State machine:
+  `planning → ready → in-progress → review → done`. `epic show` renders a tree
+  view (Epic → Stories → child Tasks with statuses).
+- **`atmux story add | list | show | advance`** (S3). State machine:
+  `planning → ready → in-progress → testing → review → merging → done`. `--ac`
+  flag captures explicit acceptance criteria — empty `acceptanceCriteria` is an
+  automatic REJECT at reviewer signoff (per ADR-007 OQ2).
+- **`atmux task add` new flags** (S4): `--epic <eid>`, `--story <sid>`,
+  `--lane fe|be|db|ops|test|review|misc`, `--deliverable <text>`. Stories are
+  optional; small Epics skip them.
+- **`atmux claim --next [--lane <l>] [--as <m>]`** (S4). Pull-mode work
+  selection: filters Tasks with non-`done` deps, prefers caller's lane, falls
+  back across lanes when `team.kanban.crossLaneClaim` is `true` (default).
+  Atomic claim with race-aware retry (3 attempts).
+- **Auto-dispatch of commit-Tasks to gitter on `task move done`** (S4). When a
+  Task with `.epic` set flips to `done`, a `commit <id>` Task lands in gitter's
+  inbox automatically. Storyless-Epics auto-flip `in-progress → review` and
+  fire a `draft Epic summary` Task to the lead. Story-level test-lane completion
+  flips the Story `testing → review`.
+- **`.lane` on the team-member schema** (S5). `templates/team.example.json`
+  stamps lane explicitly; the wizard infers lane from member-name prefix
+  (`fe-foo` → `fe`, `be-bar` → `be`, etc.) with role overrides for staff
+  (`reviewer` → `review`, `devops` → `ops`, `dba` → `db`,
+  `team-lead`/`planner`/`gitter` → `misc`). `atmux status` adds a `LANE` column
+  (UPPER-CASE in display, lowercase in JSON). Backwards-compat: missing `.lane`
+  is inferred at read time.
+- **`atmux decisions add | list | show`** (S10, [ADR-008](docs/adr/008-decisions-verb.md)).
+  Append-only auto-mode-resolution log at `.atmux/decisions.md`. Each `add`
+  pings Discord (silent if no webhook). `--reversibility low|medium|high`
+  classifies the call. Question / default / note are truncated to fit the
+  ≤80-char Discord per-bullet budget; oversize inputs error rather than
+  silent-truncate. Whip integration surfaces a pointer for new decisions
+  since the last tick (S10).
+- **`team.kanban.crossLaneClaim`** config (default `true`). When `false`, an
+  empty caller-lane queue produces a hard error instead of falling back to
+  any-lane work.
+
+### ♻️ Changed — Briefs rewritten for pull model
+
+- **`templates/briefs/lead.md`** — explicit "DO NOT decompose / DO NOT dispatch
+  per-Task"; loop now (1) read `driver-inbox.md`, (2) route Epic asks to the
+  planner via `atmux send planner`, (3) compose Epic summary on `draft Epic
+  summary` request from `atmux epic show` + `git log`. New "Recording decisions"
+  section on `atmux decisions add` usage with reversibility tier explainer.
+- **`templates/briefs/planner.md`** — explicit "You decompose. You DON'T
+  dispatch. The lead routes; workers pull." Loop covers `atmux epic add` →
+  optional `atmux story add` → `atmux task add --epic --lane --deps` → `atmux
+  reply`. Lane vocabulary table (FE / BE / DB / OPS / TEST / REVIEW / MISC).
+  ADR template included. New "Recording resolved open questions" section.
+- **`templates/briefs/member.md`** — pull loop: `atmux claim --next` → execute
+  → `atmux done <id> --note "<commit subject>"`. Cross-lane handoff via deps;
+  surface-with-evidence pattern for cross-lane bugs. FE workers also own the
+  TEST-lane capstone for UI Stories. **DO NOT commit / DO NOT push** preserved
+  and reframed as "gitter commits on the back".
+- **`templates/briefs/reviewer.md`** — Story-level signoff on cumulative diff
+  (not per-commit). Empty `acceptanceCriteria` = automatic REJECT. Approve via
+  `atmux story advance --to merging`; reject via push-back + `--to in-progress`.
+  System-wide audit bar preserved (exhaustive grep + negative-space proof +
+  adjacent-class widening).
+- **`templates/briefs/gitter.md`** — three Task shapes auto-arrive:
+  `commit t-xxx` (one commit per Task), `merge s-xxx` (Story finalization on
+  `merging`), `persist deferred items` (one-shot, only allowed write outside
+  `/root/work/src/atmux/`). HEREDOC commit example with `Co-Authored-By:`
+  trailers. Hooks always run — never `--no-verify`, never `--amend` after a
+  hook failure.
+
+### 📚 Docs
+
+- **`README.md`** — new "Agile vocabulary" section (Epic, Story OPTIONAL,
+  Task definitions); revised "How it works" diagram showing pull-model flow
+  (driver → lead → planner → kanban → workers pull → gitter commits → lead
+  Epic summary). Commands section updated with `atmux epic` / `atmux story` /
+  `atmux task add --epic --story --lane --deliverable` / `atmux claim --next` /
+  `atmux decisions add | list | show`.
+- **`docs/ARCHITECTURE.md`** — Roles table redefined for the pull model
+  (lead routes, planner decomposes, reviewer signs off Stories, gitter auto-
+  dispatched, member pulls). New "Pull coordination" section covers the
+  kanban data model + 3 state machines + `claim --next` selection +
+  auto-dispatch flow with ASCII diagram. New "Lead → Planner routing" section
+  replaces the old push-model "Lead → Member routing".
+- **`docs/GETTING_STARTED.md`** — new "Driving an Epic" 6-step walkthrough
+  with realistic `/healthz` example, live `atmux epic show` tree-view
+  example mid-flight, example `git log` post-Epic showing one commit per
+  Task. Existing first-time-setup + cron + doctor sections preserved.
+- **Tab-completions** (`completions/_atmux` zsh, `completions/atmux.bash`
+  bash) — `epic`/`story`/`decisions` top-level verbs with sub-verbs;
+  `--lane` / `--reversibility` / `--to` / `--status` enum completions
+  (state-machine aware: epic-states for `epic advance --to`, story-states
+  for `story advance --to`); `task add` new-flag matrix; `claim --next` +
+  `--lane` + `--as`.
+
+### 🚨 Breaking changes
+
+- **Brief templates rewritten**. Existing teams should re-init briefs from
+  `templates/briefs/*.md` (or run `atmux reconfigure`). Old push-model
+  briefs are stale; the lead/member/reviewer/gitter behaviour described
+  in them no longer matches the runtime.
+- **Lead no longer dispatches per-Task by default**. Workers pull. Manual
+  `atmux dispatch <member> <task-id>` is reserved for explicit driver-
+  requested priority overrides; default flow is `atmux claim --next`.
+
+### ✨ Added — pre-Epic-1 (already in Unreleased before this Epic)
 
 - **`planner` + `dba` as canonical staff roles.** Planner owns task
   decomposition + ADR authorship, so the lead's context budget goes to
