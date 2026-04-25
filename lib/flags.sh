@@ -20,6 +20,42 @@
 # OUT OF SCOPE for this Task (E4/S1): Discord pings, tmux integration, kanban
 # --task cross-validation. Those land in S2/S3/S4.
 
+# shellcheck source=discord.sh
+. "$ATMUX_LIB_DIR/discord.sh"
+
+# Resolve the Discord webhook from team.json into the env var
+# atmux::discord_ping expects. Mirrors lib/decisions.sh::_decisions_export_webhook
+# (intentional duplication — keeps the shared lib/discord.sh single-purpose
+# per ADR-008).
+_flags_export_webhook() {
+  [[ -n "${ATMUX_DISCORD_WEBHOOK:-}" ]] && return 0
+  local tj; tj="$(atmux::team_json)"
+  local hook
+  hook="$(jq -r '.discord.webhook // empty' "$tj" 2>/dev/null || true)"
+  if [[ -n "$hook" && "$hook" != "null" ]]; then
+    export ATMUX_DISCORD_WEBHOOK="$hook"
+  fi
+  return 0
+}
+
+# Build the [atmux-flags] Discord template per ADR-008 + driver's E4 split.
+# Header line + per-bullet emoji body (≤80 chars per bullet — message is
+# ≤60-char gated upstream so 🛑 + member + ": " + message ≈ ≤72 worst case).
+_flags_render_discord() {
+  local id="$1" member="$2" severity="$3" needs="$4" task="$5" \
+        message="$6" note="$7" team="$8" hhmm="$9"
+  printf '📍 **[atmux-flags]** · `%s` · %s\n\n' "$team" "$hhmm"
+  printf '🛑 %s: %s\n' "$member" "$message"
+  printf '📋 needs: %s\n' "$needs"
+  if [[ -n "$task" ]]; then
+    printf '📍 task: %s\n' "$task"
+  fi
+  if [[ -n "$note" ]]; then
+    printf '📝 %s\n' "$note"
+  fi
+  printf '↪ atmux flags resolve %s\n' "$id"
+}
+
 main() {
   atmux::require jq
   atmux::require_team
@@ -214,6 +250,17 @@ _atmux_flags_add() {
   fi
 
   _flags_notify_lead "$id" "$member" "$message"
+
+  # p0 → Discord ping. p1/p2 stay silent on Discord (kanban + tmux ping only)
+  # to keep the channel for genuine emergencies. Webhook chain inherited from
+  # decisions.sh: team.discord.webhook → ATMUX_DISCORD_WEBHOOK env → silent.
+  if [[ "$severity" == "p0" ]]; then
+    _flags_export_webhook
+    local team; team="$(atmux::team_name)"
+    local body; body="$(_flags_render_discord \
+      "$id" "$member" "$severity" "$needs" "$task" "$message" "$note" "$team" "$hhmm")"
+    atmux::discord_ping "$body"
+  fi
 
   atmux::ok "flags: recorded $id"
   printf '%s\n' "$id"
