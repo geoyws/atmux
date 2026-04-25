@@ -72,6 +72,8 @@ Automation:
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   rotate <member>             /clear the member and re-brief
   rotate-lead                 /clear the lead and re-bootstrap
+  brief-driver                Single-screen driver state recovery (read-only;
+                              kanban + git + driver-inbox + lead-outbox)
   reload brief-reload <m> [--force]
                               Re-paste role brief into member's pane without
                               /clear (context preserved); skips known blockers
@@ -129,6 +131,7 @@ verb_script="$ATMUX_LIB_DIR/${verb}.sh"
 case "$verb" in
   tell-lead) verb_script="$ATMUX_LIB_DIR/tell.sh" ;;
   rotate-lead) verb_script="$ATMUX_LIB_DIR/rotate.sh"; set -- "--lead" "$@" ;;
+  brief-driver) verb_script="$ATMUX_LIB_DIR/driver.sh"; set -- "brief-driver" "$@" ;;
   task) verb_script="$ATMUX_LIB_DIR/kanban.sh" ;;
   broadcast) verb_script="$ATMUX_LIB_DIR/send.sh"; set -- "--broadcast" "$@" ;;
   claim|done) verb_script="$ATMUX_LIB_DIR/claim.sh"; set -- "--$verb" "$@" ;;
