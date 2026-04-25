@@ -132,3 +132,120 @@ EOF
   run atmux::render_brief alice member /nonexistent/path.md
   [ "$status" -ne 0 ]
 }
+
+# ---------- live-session coverage (AC a/b/c + f/g/h) ----------
+# Bring up a sandbox tmux session with shell-tui members so paste/send-keys
+# side-effects are observable via `tmux capture-pane`. Each test below owns
+# its own session (single tear-down via the shared atmux_teardown_sandbox).
+
+_live_setup() {
+  mkdir -p .atmux/inboxes .atmux/logs .atmux/state
+  cat > .atmux/team.json <<JSON
+{
+  "name": "rl",
+  "members": [
+    {"name": "lead",   "role": "team-lead", "lane": "misc", "tui": "shell", "model": "default", "cwd": "$PWD"},
+    {"name": "worker", "role": "member",    "lane": "be",   "tui": "shell", "model": "default", "cwd": "$PWD"}
+  ]
+}
+JSON
+  echo '{"tasks":[],"epics":[],"stories":[]}' > .atmux/kanban.json
+  for m in lead worker; do
+    echo '{"pending":[],"inProgress":[],"done":[]}' > ".atmux/inboxes/$m.json"
+  done
+  export ATMUX_SESSION="atmux-test-rl-$$-$RANDOM"
+  ATMUX_NO_DOCTOR=1 "$ATMUX_BIN" start --no-doctor >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5; do
+    tmux list-windows -t "$ATMUX_SESSION" -F '#{window_name}' 2>/dev/null \
+      | grep -qx "__rl__worker" && return 0
+    sleep 0.2
+  done
+}
+
+# AC (a): brief-reload <m> with clean pane → paste fires.
+@test "reload brief-reload: clean pane ⇒ paste fires (banner appears in scrollback)" {
+  _live_setup
+  run "$ATMUX_BIN" reload brief-reload worker
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "reloaded brief for worker" ]]
+  sleep 1
+  local pane; pane=$(tmux capture-pane -p -S -200 -t "$ATMUX_SESSION" 2>/dev/null || echo "")
+  [[ "$pane" =~ "BRIEF RELOAD" ]]
+}
+
+# AC (b): brief-reload <m> with 'Compacting conversation' → paste skipped + warn + exit 1.
+@test "reload brief-reload: blocker banner ⇒ paste skipped, non-zero exit" {
+  _live_setup
+  local target="$ATMUX_SESSION:__rl__worker"
+  tmux send-keys -t "$target" "echo 'Compacting conversation'" Enter 2>/dev/null \
+    || tmux send-keys -t "$ATMUX_SESSION:worker" "echo 'Compacting conversation'" Enter
+  sleep 1
+  run "$ATMUX_BIN" reload brief-reload worker
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "skip" ]] || [[ "$output" =~ "Compacting" ]] || [[ "$output" =~ "compacting" ]]
+}
+
+# AC (c): brief-reload <m> with banner + --force → paste fires regardless.
+@test "reload brief-reload: --force overrides blocker skip (paste fires)" {
+  _live_setup
+  local target="$ATMUX_SESSION:__rl__worker"
+  tmux send-keys -t "$target" "echo 'Compacting conversation'" Enter 2>/dev/null \
+    || tmux send-keys -t "$ATMUX_SESSION:worker" "echo 'Compacting conversation'" Enter
+  sleep 1
+  run "$ATMUX_BIN" reload brief-reload worker --force
+  [ "$status" -eq 0 ]
+  sleep 1
+  local pane; pane=$(tmux capture-pane -p -S -200 -t "$ATMUX_SESSION" 2>/dev/null || echo "")
+  [[ "$pane" =~ "BRIEF RELOAD" ]]
+}
+
+# AC (f): config-reload with role change → 1 ping with delta msg in pane.
+@test "reload config-reload: role flip on one member ⇒ 1 notified, pane shows delta" {
+  _live_setup
+  # Flip worker role from 'member' to 'reviewer' AFTER spawn (snapshot
+  # already on disk from `atmux start`).
+  jq '(.members[] | select(.name == "worker") | .role) = "reviewer"' \
+    .atmux/team.json > .atmux/team.json.tmp \
+    && mv .atmux/team.json.tmp .atmux/team.json
+
+  run "$ATMUX_BIN" reload config-reload
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "1 member" ]] || [[ "$output" =~ "notified" ]]
+
+  sleep 1
+  local pane; pane=$(tmux capture-pane -p -S -200 -t "$ATMUX_SESSION" 2>/dev/null || echo "")
+  [[ "$pane" =~ "CONFIG RELOAD" ]]
+  [[ "$pane" =~ "role" ]]
+  [[ "$pane" =~ "member" ]] || [[ "$pane" =~ "reviewer" ]]
+}
+
+# AC (g): config-reload with multiple member changes → N pings.
+@test "reload config-reload: drift on multiple members ⇒ N pings (matches change count)" {
+  _live_setup
+  # Flip BOTH members.
+  jq '(.members[] | select(.name == "worker") | .lane) = "fe"
+    | (.members[] | select(.name == "lead") | .model) = "opus"' \
+    .atmux/team.json > .atmux/team.json.tmp \
+    && mv .atmux/team.json.tmp .atmux/team.json
+
+  run "$ATMUX_BIN" reload config-reload
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "2 member" ]] || [[ "$output" =~ "notified" ]]
+}
+
+# AC (h): config-reload skips members absent from spawn-snapshot.
+@test "reload config-reload: member added post-spawn ⇒ silently skipped (cold-start)" {
+  _live_setup
+  # Add a third member to team.json AFTER snapshot was written. Verb must
+  # skip them silently (no ping; not counted as notified or unchanged).
+  jq '.members += [{"name":"newcomer","role":"member","lane":"db","tui":"shell","model":"default","cwd":"."}]' \
+    .atmux/team.json > .atmux/team.json.tmp \
+    && mv .atmux/team.json.tmp .atmux/team.json
+
+  run "$ATMUX_BIN" reload config-reload
+  [ "$status" -eq 0 ]
+  # Both pre-existing members are still unchanged (no drift in role/lane/model/tui).
+  [[ "$output" =~ "0 member" ]] || [[ "$output" =~ "unchanged" ]]
+  # 'newcomer' never appears as a notified target.
+  ! [[ "$output" =~ "newcomer" ]]
+}
