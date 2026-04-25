@@ -132,17 +132,25 @@ _decisions_to_json_array() {
   ' | jq -s '.'
 }
 
-# Accept ISO date (`2026-04-25`), full ISO timestamp, or relative `Nh`/`Nd`.
-# Returns epoch seconds on stdout. Errors out on garbage.
+# Accept a raw epoch (`1777125613`), ISO date (`2026-04-25`), full ISO
+# timestamp, or relative `Nh`/`Nd`. Returns epoch seconds on stdout.
+# Errors out on garbage.
+#
+# Epoch handling lives here so whip's S8 inline-preview path (lib/whip.sh
+# reads the cursor file — an epoch — and pipes it via --since) never
+# falls through to the GNU `date -d` parser, which silently misreads
+# bare integers and would empty the preview body.
 _decisions_parse_since() {
   local s="$1"
-  if [[ "$s" =~ ^([0-9]+)h$ ]]; then
+  if [[ "$s" =~ ^[0-9]+$ ]]; then
+    echo "$s"
+  elif [[ "$s" =~ ^([0-9]+)h$ ]]; then
     echo $(( $(atmux::now_epoch) - BASH_REMATCH[1] * 3600 ))
   elif [[ "$s" =~ ^([0-9]+)d$ ]]; then
     echo $(( $(atmux::now_epoch) - BASH_REMATCH[1] * 86400 ))
   else
     if ! date -d "$s" +%s 2>/dev/null; then
-      atmux::die "decisions list: bad --since format '$s' (use ISO date or Nh/Nd)"
+      atmux::die "decisions list: bad --since format '$s' (use epoch, ISO date, or Nh/Nd)"
     fi
   fi
 }
@@ -190,39 +198,22 @@ _atmux_decisions_add() {
     options[_i]="$(_decisions_oneline "${options[_i]}")"
   done
 
-  # Length validators (E2/S9 — relaxed caps + new fields per ADR-008 §S9).
-  # ERROR not silent-truncate (preserved review-flag behavior). New caps:
-  #   question/default 200 · note/context/impact 500 · decided-by 80 ·
-  #   option 200/each, max 5 occurrences. Discord renderer (T2) chunks
-  #   long fields into bullet groups so the per-line ≤80-char budget
-  #   from §6 is preserved at the rendering layer, not the data layer.
-  if (( ${#question}   > 200 )); then
-    atmux::die "decisions add: question exceeds 200 chars (rewrite tighter)"
-  fi
-  if (( ${#default}    > 200 )); then
-    atmux::die "decisions add: default exceeds 200 chars (rewrite tighter)"
-  fi
-  if (( ${#note}       > 500 )); then
-    atmux::die "decisions add: --note exceeds 500 chars (rewrite tighter)"
-  fi
-  if (( ${#context}    > 500 )); then
-    atmux::die "decisions add: --context exceeds 500 chars (rewrite tighter)"
-  fi
-  if (( ${#impact}     > 500 )); then
-    atmux::die "decisions add: --impact exceeds 500 chars (rewrite tighter)"
-  fi
-  if (( ${#decided_by} > 80  )); then
-    atmux::die "decisions add: --decided-by exceeds 80 chars (use a short name/role)"
-  fi
+  # E2/S10 (was S9): per-field byte caps removed. Long fields are now
+  # accepted at the data layer; T2 (compose-time chunker) handles
+  # Discord's per-message 2000-char and per-line ≤80-char budgets at
+  # render time so users can write rich context once + have it chunked
+  # into multiple bullets/posts automatically.
+  #
+  # The ONE structural constraint that survives: max 5 --option
+  # occurrences. That's a UX shape limit on the options sub-list (a
+  # decision with 20 options isn't a decision; rewrite as a longer
+  # context block) — not a byte cap, so it stays here.
   if (( ${#options[@]} > 5 )); then
     atmux::die "decisions add: --option max 5 occurrences (got ${#options[@]})"
   fi
-  local _o
-  for _o in "${options[@]}"; do
-    if (( ${#_o} > 200 )); then
-      atmux::die "decisions add: --option entry exceeds 200 chars (rewrite tighter)"
-    fi
-  done
+  # TODO(T2): wire compose-time chunker — long fields are now legal at
+  # data layer; renderer + Discord ping must split into multiple
+  # bullets/posts per ADR-008 §S10.
 
   local f; f="$(_decisions_file)"
 
