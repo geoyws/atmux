@@ -38,6 +38,7 @@ EOF
 
   _doctor_reset
   _doctor_check_deps
+  _doctor_check_libs
   _doctor_check_team
   _doctor_check_tuis
   _doctor_check_state_dir
@@ -62,6 +63,7 @@ _doctor_reset() {
   _doctor_rows=()           # "status|label|detail|hint"
   _doctor_red_count=0
   _doctor_yellow_count=0
+  _doctor_verify_libs_json=""   # raw `verify-libs --json` output for --json passthrough
 }
 
 # status: green | yellow | red
@@ -100,6 +102,40 @@ _doctor_check_deps() {
       _doctor_row yellow "dep:$dep" "not installed (optional)" "$why — $(_doctor_install_hint "$dep")"
     fi
   done
+}
+
+# Source-check every lib/*.sh + assert function-presence via `atmux verify-libs`.
+# A red here means a lib won't load correctly under strict mode — caught BEFORE
+# `atmux start` spawns panes, so members never boot into a broken codebase.
+# Stash the raw JSON in `_doctor_verify_libs_json` so --json mode can echo the
+# detailed per-lib report alongside the doctor row summary.
+_doctor_check_libs() {
+  local out
+  out="$("$ATMUX_BIN_DIR/atmux" verify-libs --json 2>/dev/null || true)"
+  _doctor_verify_libs_json="$out"
+
+  if [[ -z "$out" ]] || ! jq -e . <<<"$out" >/dev/null 2>&1; then
+    _doctor_row red "libs" "verify-libs failed to produce JSON" \
+      "run \`atmux verify-libs\` directly for details"
+    return
+  fi
+
+  local total ok source_fail missing_fail
+  total=$(jq -r '.summary.total // 0'        <<<"$out")
+  ok=$(jq -r '.summary.ok // 0'              <<<"$out")
+  source_fail=$(jq -r '.summary.sourceFail // 0'   <<<"$out")
+  missing_fail=$(jq -r '.summary.missingFail // 0' <<<"$out")
+
+  if (( source_fail == 0 && missing_fail == 0 )); then
+    _doctor_row green "libs" "$ok/$total libs loaded"
+  else
+    local first
+    first=$(jq -r '.libs[] | select(.status != "OK") | "\(.name): \(.detail)"' \
+              <<<"$out" | head -1)
+    _doctor_row red "libs" \
+      "$ok/$total OK ($source_fail source-fail, $missing_fail missing-fn)" \
+      "first: ${first:-unknown}"
+  fi
 }
 
 _doctor_check_team() {
@@ -323,7 +359,15 @@ _doctor_render_json() {
       --arg s "$status" --arg l "$label" --arg d "$detail" --arg h "$hint" \
       '{status:$s, label:$l, detail:$d, hint:$h}'
   done
-  printf ']}\n'
+  # Include the verify-libs detailed report for downstream tooling that
+  # wants to surface per-lib status (`null` when the check didn't run or
+  # produced unparseable output — distinct from "no libs found").
+  if [[ -n "$_doctor_verify_libs_json" ]] \
+     && jq -e . <<<"$_doctor_verify_libs_json" >/dev/null 2>&1; then
+    printf '],"libs":%s}\n' "$_doctor_verify_libs_json"
+  else
+    printf '],"libs":null}\n'
+  fi
 }
 
 _doctor_try_fix() {
