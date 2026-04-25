@@ -74,6 +74,9 @@ Automation:
   rotate-lead                 /clear the lead and re-bootstrap
   brief-driver                Single-screen driver state recovery (read-only;
                               kanban + git + driver-inbox + lead-outbox)
+  driver note <msg> [--reversibility low|medium|high] [--note <txt>]
+                              Append driver self-note to driver-state.md
+                              (auto-rotating digest of last 5; no Discord)
   reload brief-reload <m> [--force]
                               Re-paste role brief into member's pane without
                               /clear (context preserved); skips known blockers
