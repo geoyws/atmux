@@ -11,7 +11,7 @@ main() {
   atmux::require jq tmux
   atmux::require_team
 
-  local name="" role="member" tui="claude" model="default" cwd="" cmd=""
+  local name="" role="member" tui="claude" model="default" cwd="" cmd="" lane=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --role)    role="$2"; shift 2 ;;
@@ -19,14 +19,43 @@ main() {
       --model)   model="$2"; shift 2 ;;
       --cwd)     cwd="$2"; shift 2 ;;
       --command) cmd="$2"; shift 2 ;;
+      --lane)    lane="$2"; shift 2 ;;
       -*) atmux::die "add-member: unknown flag: $1" ;;
       *)
         if [[ -z "$name" ]]; then name="$1"; else atmux::die "add-member: too many positional args"; fi
         shift ;;
     esac
   done
-  [[ -n "$name" ]] || atmux::die "usage: atmux add-member <name> [--role …] [--tui …] [--model …] [--cwd …] [--command …]"
+  [[ -n "$name" ]] || atmux::die "usage: atmux add-member <name> [--role …] [--tui …] [--model …] [--cwd …] [--command …] [--lane …]"
   [[ -z "$cwd" ]] && cwd="$PWD"
+
+  # Validate --lane up front (regardless of role — even though role-scoped
+  # members silently coerce, an invalid enum value should still fail loud).
+  if [[ -n "$lane" ]]; then
+    case "$lane" in
+      fe|be|db|ops|test|review|misc) ;;
+      *) atmux::die "add-member: --lane must be one of {fe,be,db,ops,test,review,misc} (got: $lane)" ;;
+    esac
+  fi
+
+  # Resolve final lane:
+  #   role != member          → role-derived (silently overrides --lane)
+  #   role == member + --lane → use --lane verbatim
+  #   role == member, no flag → infer from name prefix; warn-and-fall-back-to-misc
+  #                              when prefix doesn't match the enum.
+  if [[ "$role" != "member" ]]; then
+    if [[ -n "$lane" ]]; then
+      atmux::log "add-member: --lane=$lane ignored for role=$role (role-derived lane is used)"
+    fi
+    lane="$(atmux::lane_for_name "$name" "$role")"
+  elif [[ -z "$lane" ]]; then
+    local prefix="${name%%-*}"
+    case "$prefix" in
+      fe|be|db|ops|test|review|misc) ;;
+      *) atmux::warn "add-member: '$name' has no recognized lane prefix; defaulting to 'misc' (override with --lane)" ;;
+    esac
+    lane="$(atmux::lane_for_name "$name" "$role")"
+  fi
 
   local tj; tj="$(atmux::team_json)"
   local exists; exists=$(jq --arg n "$name" '[.members[] | select(.name == $n)] | length' "$tj")
@@ -40,11 +69,11 @@ main() {
   local emoji; emoji="$(atmux::emoji_assign "$name" "$role" "$seen")"
 
   atmux::jq_update "$tj" \
-    '.members += [{name: $name, role: $role, tui: $tui, model: $model, cwd: $cwd, emoji: $emoji}
+    '.members += [{name: $name, role: $role, tui: $tui, model: $model, cwd: $cwd, lane: $lane, emoji: $emoji}
       + (if $cmd == "" then {} else {command: $cmd} end)]' \
     --arg name "$name" --arg role "$role" --arg tui "$tui" \
     --arg model "$model" --arg cwd "$cwd" --arg cmd "$cmd" \
-    --arg emoji "$emoji"
+    --arg lane "$lane" --arg emoji "$emoji"
 
   # Prime inbox.
   local ib="$(atmux::inbox_dir)/$name.json"
