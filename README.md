@@ -96,8 +96,15 @@ atmux outbox                  # read lead's async replies
 
 # 4. Automate the watchdog (cron):
 crontab -e
-# */5 * * * *  cd ~/code/my-project && /usr/local/bin/atmux whip  >> .atmux/logs/cron.log 2>&1
-# */30 * * * * cd ~/code/my-project && /usr/local/bin/atmux report >> .atmux/logs/cron.log 2>&1
+# */5  * * * * cd ~/code/my-project && /usr/local/bin/atmux whip             >> .atmux/logs/cron.log 2>&1
+# */30 * * * * cd ~/code/my-project && /usr/local/bin/atmux report           >> .atmux/logs/cron.log 2>&1
+# 0    * * * * cd ~/code/my-project && /usr/local/bin/atmux decisions digest >> .atmux/logs/digest.log 2>&1
+
+# Whip emits per-tick (DOWN/blocker findings + delta block). Digest
+# consolidates the low/medium decisions whip skipped to Discord into
+# one hourly post — adjust cadence to taste (daily `0 0 * * *` is fine
+# for low-velocity teams; empty windows are silent so over-scheduling
+# costs nothing).
 
 # 5. When done:
 atmux stop
@@ -355,6 +362,44 @@ Two-phase:
 Either way, the target member gets the notes + the migrated in-flight tasks.
 `--pause-from` additionally calls `atmux pause <from>` so the source stops
 accepting new work.
+
+## 🔄 Driver rotation
+
+atmux can `/clear` team members (`atmux rotate <member>`, `atmux rotate-lead`,
+or auto-rotation when `team.whip.autoRotate=true`) but **it cannot `/clear`
+the driver** — that's you, the human at the keyboard. Your Claude Code
+session compacts on its own schedule, and when it does, the entire team's
+recent context goes opaque to your next session: who asked what, why the
+lead picked option (b), what's still pending in `driver-inbox.md`.
+
+`atmux brief-driver` is the recovery brief — single-screen (≤30 lines),
+sub-second runtime, on-demand only:
+
+```bash
+atmux brief-driver
+```
+
+Output bundles: kanban counts, branch ahead-of-origin, active loop, open
+`driver-inbox.md` entries, latest 3 `lead-outbox.md` entries, in-progress
+Tasks, and the recovery command sequence to fully re-bootstrap. Run it:
+
+- After every fresh `/clear` of your own session.
+- After an Epic ships (the wrap is in lead-outbox; brief-driver surfaces it).
+- Before stepping away >2h (read it now, you'll thank yourself on return).
+- Whenever `atmux outbox` looks foreign — fastest path to "where were we?"
+
+**`atmux driver note`** captures a judgment call so a future driver doesn't
+re-derive it. Mirrors `atmux decisions add` shape — same `--reversibility`
+flag, same field structure — but writes to `.atmux/driver-state.md` and
+**does not ping Discord** (you're the audience; pinging yourself is noise).
+Team-scoped (lead can `cat` the rationale on any whip turn) so judgment
+calls are visible to the team without round-tripping.
+
+```bash
+atmux driver note "S9 sandbox path option (c) — DB-side dispatcher" \
+  --reversibility medium \
+  --context "options (a)/(b) discarded after planner audit; (c) survives RLS gates"
+```
 
 ## Testing
 
