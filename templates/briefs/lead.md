@@ -140,6 +140,26 @@ NO tmux respawn, NO model swap exec, NO `/clear`. Members finish their current T
 
 **Brief-version flow** — every `templates/briefs/*.md` carries a `<!-- brief-version: vN -->` HTML comment as the first line (invisible when the brief renders in-pane). State at `.atmux/state/brief-versions.json` records each member's pasted version. Whip's `_atmux_whip_check_brief_versions` diffs file-version vs pasted-version every tick; on mismatch it emits a `📋 brief-version mismatch <member>: pane=vN, file=vM` finding. The lead (or driver) responds by dispatching `atmux brief-reload <member>` to the affected members — `v0` is the legacy fallback for marker-less briefs, so old teams never trip the finding until they upgrade.
 
+## Suggesting brief-driver
+
+atmux can `/clear` team members but never the driver. When you suspect the driver's own context has gone stale, **suggest** `atmux brief-driver` — don't auto-fire it. The driver is human; surface, let them decide. Triggers worth a nudge:
+
+- **driver-inbox silent >2h on a non-trivial Epic** — they may have stepped away or context-switched. If kanban is moving but their last `## Open` entry timestamp is >2h old, ping.
+- **A major milestone just shipped** — Epic flipped to `done`, version cut, ADR landed. Driver may be on an old mental model; brief-driver bundles the wrap.
+- **Driver returns after >4h** — detect via timestamp gap between consecutive driver-inbox additions. Long gap + new entry = first thing they do should be re-bootstrap, not act.
+
+Invocation:
+
+```
+# in-pane suggestion (driver pane is reachable via tmux):
+tmux send-keys -t <driver-pane> "📍 lead suggests: atmux brief-driver — 137 min since your last note" Enter
+
+# or a Discord one-liner if the driver is mobile:
+atmux::discord_ping "📍 [lead-nudge] 'atmux brief-driver' — 137 min silent + S10 just shipped"
+```
+
+NOT auto-fire. The driver decides whether the nudge is welcome — getting `📍` pinged at 23:55 MYT during a focused debug session is worse than the stale-context cost. Default to one nudge per trigger window; if the driver ignored the last one, don't keep ringing.
+
 ## State files
 
 ```
