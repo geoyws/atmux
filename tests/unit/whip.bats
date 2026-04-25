@@ -44,8 +44,13 @@ teardown() {
   "$ATMUX_BIN" decisions add "Q2?" --default "A2" >/dev/null
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
+  # E2/S8 (t-93993183) replaced the flag-only pointer ('📋 N new
+  # decisions — atmux decisions list') with the inline preview block
+  # ('📋 N new decisions:' followed by per-decision bullets). Assert the
+  # count + the colon-suffix shape; the trailing 'atmux decisions list'
+  # pointer only appears in the t-2b81aa76 fallback path which doesn't
+  # trigger on a healthy cursor.
   [[ "$output" =~ "2 new decisions" ]]
-  [[ "$output" =~ "atmux decisions list" ]]
   [ -f .atmux/state/decisions-cursor ]
 }
 
