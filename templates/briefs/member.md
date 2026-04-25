@@ -59,11 +59,38 @@ atmux task list --assignee {{MEMBER}}     # in-progress Tasks you owned
 
 Re-claim any in-progress Task you owned before the rotation — status persists in `kanban.json` across rotations, so the Task is still `in-progress` with `owner = {{MEMBER}}`. Pick up where you left off. If the Task body's AC was already partially satisfied by staged changes, those staged changes survive the rotation too (they're in the worktree, not the conversation); inspect with `git diff --staged`.
 
+## When to flag
+
+`atmux flag` is the structured replacement for silent-suffer. If you're stuck and silently retrying, you're costing the team more than the flag ping ever will. Fire one when any of these triggers fits:
+
+- **Stuck >10 min on the same problem** — same error, same retry, no new information. The 10-min ceiling is non-negotiable; the lead would rather hear "I'm stuck on X" at minute 11 than discover at minute 60 that you've been wedged.
+- **Tool returned ambiguous output you can't interpret** — bash exit code mismatched stdout, jq returned `null` where a value was expected, a CI check went green-but-empty. Surface the raw output + your read of it; let the lead arbitrate.
+- **Need a decision the lead must make** — scope ambiguity, two equally-good paths, an ADR question that wasn't answered in the Task body. Use `--severity p0` if it blocks a demo path; otherwise `p1` (lead acts within the turn) or `p2` (lead acts when convenient).
+- **Mid-rotation blocker** — your pane was auto-precleared and the in-progress Task body references state that no longer exists in your conversation. Flag with `--needs context` so the lead can paste the missing context back in.
+
+Worked examples:
+
+```
+# stuck on tool failure, can't unblock yourself, blocks downstream Task
+atmux flag "shellcheck monitor wedged 30+ min on lib/whip.sh; SIGKILL didn't free it" \
+  --severity p1 --needs unblock --task t-xxx
+
+# scope ambiguity blocking demo path
+atmux flag "reviewer rejected commit twice — need scope clarification on what 'minimal repro' means here" \
+  --severity p0 --needs decision
+
+# ambiguous tool output
+atmux flag "atmux task list returned 0 tasks but kanban.json shows 5 in-progress for my lane" \
+  --severity p1 --needs context
+```
+
+`--severity p0` pings Discord immediately (driver gets phone visibility). `p1` and `p2` write to `flags.md` + send a tmux keystroke to the lead pane — kanban-visible, but quiet on the channel. `--needs unblock --task <id>` flips that Task to `blocked` AND links the flag id in `task.note`, so the kanban state matches reality without you running two commands.
+
 ## Hard rules
 
 - **DO NOT commit. DO NOT push.** Mark done; gitter commits on the back.
 - DO NOT touch other members' branches or staged work.
-- If you get stuck > 10 min, surface to the lead with evidence (`file:line` + deterministic repro + fix sketch).
+- If you get stuck > 10 min, fire `atmux flag` (see §When to flag) — file:line + deterministic repro + fix sketch in the body.
 - Keep changes scoped. No drive-by refactors outside the Task body.
 - Write tests for any code you ship — the reviewer will block commits without TEST coverage on tracked paths. If your Task has a paired TEST-lane Task, that's the test commit; otherwise fold the test into your own commit.
 - Conventional-commits subject in the `--note`: `feat(scope): …`, `fix(scope): …`, `refactor(scope): …`, `docs(scope): …`. Gitter doesn't rewrite it.
