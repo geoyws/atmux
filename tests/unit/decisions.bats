@@ -46,58 +46,55 @@ _curl_payload_content() {
   grep -q "^- \*\*reversibility\*\*: low$" .atmux/decisions.md
 }
 
-@test "decisions: add ERRORS when question exceeds 60 chars (no silent truncation)" {
-  # Reviewer flag on ADR-008: prefer error over truncation so context isn't
-  # silently dropped from the Discord ping.
-  local long; long=$(printf '%.0sX' {1..61})
+@test "decisions: add ERRORS when question exceeds 200 chars (E2/S9 — relaxed cap)" {
+  # Pre-S9 cap was 60 (Discord ≤80 budget at the data layer). S9 moves the
+  # cap to 200 + delegates the per-line ≤80-char budget to the renderer
+  # (chunking + drop-order). ERROR-not-truncate behavior preserved.
+  local long; long=$(printf '%.0sX' {1..201})
   run "$ATMUX_BIN" decisions add "$long" --default "yes"
   [ "$status" -ne 0 ]
-  [[ "$output" =~ "exceeds 60 chars" ]]
-  [[ "$output" =~ "Discord ≤80 budget" ]]
+  [[ "$output" =~ "exceeds 200 chars" ]]
   [ ! -f .atmux/decisions.md ]
 }
 
-@test "decisions: add ERRORS when default exceeds 60 chars (no silent truncation)" {
-  local long; long=$(printf '%.0sY' {1..61})
+@test "decisions: add ERRORS when default exceeds 200 chars (E2/S9 — relaxed cap)" {
+  local long; long=$(printf '%.0sY' {1..201})
   run "$ATMUX_BIN" decisions add "Use pg-15?" --default "$long"
   [ "$status" -ne 0 ]
-  [[ "$output" =~ "exceeds 60 chars" ]]
+  [[ "$output" =~ "exceeds 200 chars" ]]
 }
 
-@test "decisions: add accepts question + default at the 60-char boundary" {
-  local sixty; sixty=$(printf '%.0sZ' {1..60})
-  run "$ATMUX_BIN" decisions add "$sixty" --default "$sixty"
+@test "decisions: add accepts question + default at the 200-char boundary (E2/S9)" {
+  local two_hundred; two_hundred=$(printf '%.0sZ' {1..200})
+  run "$ATMUX_BIN" decisions add "$two_hundred" --default "$two_hundred"
   [ "$status" -eq 0 ]
 }
 
-@test "decisions: add ERRORS when --note exceeds 60 chars (review-followup t-47361a6c)" {
-  # Per ADR-008 reviewer-flag pattern: note bullet was previously soft-truncated
-  # at 80 chars, then prefixed with '📝 note: ' (~9 chars) → bullet up to 89 chars,
-  # violating ≤80-char Discord template. Switched to ERROR-not-truncate at 60
-  # for consistency with question/default validators.
-  local long; long=$(printf '%.0sN' {1..61})
+@test "decisions: add ERRORS when --note exceeds 500 chars (E2/S9 — relaxed cap)" {
+  # Pre-S9 the note cap was 60 chars (review-followup t-47361a6c). S9 lifts
+  # it to 500 — the renderer handles oversize bodies via drop-order
+  # truncation (note→impact→options→context).
+  local long; long=$(printf '%.0sN' {1..501})
   run "$ATMUX_BIN" decisions add "Q?" --default "y" --note "$long"
   [ "$status" -ne 0 ]
-  [[ "$output" =~ "note exceeds 60 chars" ]]
-  [[ "$output" =~ "Discord ≤80 budget" ]]
+  [[ "$output" =~ "--note exceeds 500 chars" ]]
 }
 
-@test "decisions: add accepts --note at the 60-char boundary" {
-  local sixty; sixty=$(printf '%.0sN' {1..60})
-  run "$ATMUX_BIN" decisions add "Q?" --default "y" --note "$sixty"
+@test "decisions: add accepts --note at the 500-char boundary (E2/S9)" {
+  local five_hundred; five_hundred=$(printf '%.0sN' {1..500})
+  run "$ATMUX_BIN" decisions add "Q?" --default "y" --note "$five_hundred"
   [ "$status" -eq 0 ]
 }
 
-@test "decisions: --note=80 chars (the AC's repro case) ⇒ rejected, not truncated" {
-  # Repro from t-47361a6c: pre-fix, an 80-char note + '📝 note: ' prefix
-  # rendered an 89-char bullet. Post-fix, the validator stops it at the door.
+@test "decisions: --note=80 chars is accepted under S9 (was rejected pre-S9)" {
+  # Regression-pin: the pre-S9 t-47361a6c case (80-char note rejected at
+  # the 60-char cap) is now accepted because S9 lifted the cap to 500.
+  # Keep the old length to make the relaxation visible to a future reader
+  # who greps for "80 chars" expecting the ban — they land here and learn.
   local eighty; eighty=$(printf '%.0sN' {1..80})
   run "$ATMUX_BIN" decisions add "Q?" --default "y" --note "$eighty"
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "note exceeds 60 chars" ]]
-  # Log file should not have been written — validation happens before the
-  # mutex-protected append.
-  [ ! -f .atmux/decisions.md ]
+  [ "$status" -eq 0 ]
+  grep -q "^- \*\*note\*\*: $eighty\$" .atmux/decisions.md
 }
 
 @test "decisions: add rejects invalid --reversibility" {
@@ -175,7 +172,9 @@ _curl_payload_content() {
   [ -f "$ATMUX_TEST_TMP/curl-args.bin" ]
   local body; body=$(_curl_payload_content)
   [[ "$body" =~ "[atmux-decisions]" ]]
-  [[ "$body" =~ "🔵 ship now?" ]]
+  # E2/S9: question line gained a "question: " prefix to match the
+  # other field labels (default:/context:/impact:/note:/decided-by:).
+  [[ "$body" =~ "🔵 question: ship now?" ]]
   [[ "$body" =~ "default: yes" ]]
   [[ "$body" =~ "reversibility: high" ]]
   [[ "$body" =~ "atmux decisions show d-" ]]
@@ -296,4 +295,236 @@ _curl_payload_content() {
   # would corrupt show/list parsing.
   run grep -c '^### d-' .atmux/decisions.md
   [ "$output" = "1" ]
+}
+
+# ---------- E2/S9 data path: new optional fields ----------
+
+@test "decisions: old 4-field call ⇒ no new bullets in .md (backward compat)" {
+  # An entry with only the original flags must be bit-identical to today's
+  # format — no `- **context**:`, `- **options**:`, `- **impact**:`, or
+  # `- **decided-by**:` lines. External readers/greppers built on the old
+  # shape keep working.
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  "$ATMUX_BIN" decisions add "old shape?" --default "yes" --reversibility low --note "soak" >/dev/null
+  # `run !` not bare `!` — Bats ≥1.5 only fails the test on the LAST `!`
+  # command, so a mid-test bare `!` no-ops silently. `run !` records the
+  # negated exit code and we assert with `[ "$status" -eq 0 ]`.
+  run ! grep -q '^- \*\*context\*\*:'    .atmux/decisions.md
+  [ "$status" -eq 0 ]
+  run ! grep -q '^- \*\*options\*\*:'    .atmux/decisions.md
+  [ "$status" -eq 0 ]
+  run ! grep -q '^- \*\*impact\*\*:'     .atmux/decisions.md
+  [ "$status" -eq 0 ]
+  run ! grep -q '^- \*\*decided-by\*\*:' .atmux/decisions.md
+  [ "$status" -eq 0 ]
+  grep -q '^- \*\*note\*\*: soak$'   .atmux/decisions.md
+}
+
+@test "decisions: full call with all new fields ⇒ all bullets persisted in .md" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  "$ATMUX_BIN" decisions add "auth?" --default "OAuth" \
+    --context "team has no IdP yet" \
+    --option "OAuth" --option "SAML" --option "JWT" \
+    --impact "blocks t-aaa1" \
+    --decided-by "lead" >/dev/null
+  grep -q '^- \*\*context\*\*: team has no IdP yet$'    .atmux/decisions.md
+  grep -q '^- \*\*options\*\*:$'                         .atmux/decisions.md
+  grep -q '^  - OAuth$'                                  .atmux/decisions.md
+  grep -q '^  - SAML$'                                   .atmux/decisions.md
+  grep -q '^  - JWT$'                                    .atmux/decisions.md
+  grep -q '^- \*\*impact\*\*: blocks t-aaa1$'            .atmux/decisions.md
+  grep -q '^- \*\*decided-by\*\*: lead$'                 .atmux/decisions.md
+}
+
+@test "decisions: options sub-list is recoverable via 'decisions show'" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  "$ATMUX_BIN" decisions add "pick stack?" --default "node" \
+    --option "node" --option "deno" --option "bun" >/dev/null
+  local id; id=$(grep '^### d-' .atmux/decisions.md | head -1 | awk '{print $2}')
+  run "$ATMUX_BIN" decisions show "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "options" ]]
+  [[ "$output" =~ "node" ]]
+  [[ "$output" =~ "deno" ]]
+  [[ "$output" =~ "bun" ]]
+}
+
+@test "decisions: list --json exposes new fields (context/impact/decided-by/options)" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  "$ATMUX_BIN" decisions add "auth?" --default "OAuth" \
+    --context "ctx text" --impact "imp text" --decided-by "lead" \
+    --option "A" --option "B" >/dev/null
+  local json; json=$("$ATMUX_BIN" decisions list --json)
+  [ "$(jq -r '.[0].context'      <<<"$json")" = "ctx text" ]
+  [ "$(jq -r '.[0].impact'       <<<"$json")" = "imp text" ]
+  [ "$(jq -r '.[0]."decided-by"' <<<"$json")" = "lead" ]
+  [ "$(jq -r '.[0].options | length' <<<"$json")" = "2" ]
+  [ "$(jq -r '.[0].options[0]'   <<<"$json")" = "A" ]
+  [ "$(jq -r '.[0].options[1]'   <<<"$json")" = "B" ]
+}
+
+@test "decisions: list --json returns null/[] for absent new fields (backward compat)" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  "$ATMUX_BIN" decisions add "old shape?" --default "yes" >/dev/null
+  local json; json=$("$ATMUX_BIN" decisions list --json)
+  [ "$(jq -r '.[0].context // "NULL"'      <<<"$json")" = "NULL" ]
+  [ "$(jq -r '.[0].impact // "NULL"'       <<<"$json")" = "NULL" ]
+  [ "$(jq -r '.[0]."decided-by" // "NULL"' <<<"$json")" = "NULL" ]
+  [ "$(jq -r '.[0].options | length'       <<<"$json")" = "0" ]
+}
+
+@test "decisions: --context >500 chars ERRORS; 500 chars at boundary accepted" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  local cap;  cap=$(printf '%.0sC' {1..500})
+  local over; over=$(printf '%.0sC' {1..501})
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --context "$over"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "--context exceeds 500 chars" ]]
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --context "$cap"
+  [ "$status" -eq 0 ]
+}
+
+@test "decisions: --impact >500 chars ERRORS; 500 chars at boundary accepted" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  local cap;  cap=$(printf '%.0sI' {1..500})
+  local over; over=$(printf '%.0sI' {1..501})
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --impact "$over"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "--impact exceeds 500 chars" ]]
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --impact "$cap"
+  [ "$status" -eq 0 ]
+}
+
+@test "decisions: --decided-by >80 chars ERRORS; 80 chars at boundary accepted" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  local cap;  cap=$(printf '%.0sD' {1..80})
+  local over; over=$(printf '%.0sD' {1..81})
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --decided-by "$over"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "--decided-by exceeds 80 chars" ]]
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --decided-by "$cap"
+  [ "$status" -eq 0 ]
+}
+
+@test "decisions: --option entry >200 chars ERRORS; 5 options at max-count accepted" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  local big; big=$(printf '%.0so' {1..201})
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --option "$big"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "--option entry exceeds 200 chars" ]]
+  # Five entries at the 5-occurrence cap → accepted.
+  run "$ATMUX_BIN" decisions add "q?" --default "y" \
+    --option a --option b --option c --option d --option e
+  [ "$status" -eq 0 ]
+}
+
+@test "decisions: 6th --option ERRORS (max 5 occurrences)" {
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  run "$ATMUX_BIN" decisions add "q?" --default "y" \
+    --option a --option b --option c --option d --option e --option f
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "max 5 occurrences" ]]
+}
+
+@test "decisions: legacy .md (no S9 fields) parses cleanly via _decisions_to_json_array" {
+  # Backward-compat parser regression — synthesize an entry in the old
+  # 4-field shape (no context/options/impact/decided-by bullets), then
+  # confirm `decisions list --json` returns it with null/[] for the new
+  # fields. Catches an awk regression where adding the new bullets
+  # breaks the old shape.
+  unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
+  cat > .atmux/decisions.md <<'LEGACY_EOF'
+# atmux decisions — append-only log
+
+### d-deadbeef — legacy shape? [low] (10:00 MYT)
+
+- **timestamp**: 1700000000
+- **question**: legacy shape?
+- **default**: yes
+- **reversibility**: low
+- **override**: `atmux send lead "override d-deadbeef: <new>"`
+LEGACY_EOF
+  local json; json=$("$ATMUX_BIN" decisions list --json)
+  [ "$(jq -r '.[0].id'                     <<<"$json")" = "d-deadbeef" ]
+  [ "$(jq -r '.[0].question'               <<<"$json")" = "legacy shape?" ]
+  [ "$(jq -r '.[0].context // "NULL"'      <<<"$json")" = "NULL" ]
+  [ "$(jq -r '.[0].options | length'       <<<"$json")" = "0" ]
+  [ "$(jq -r '.[0]."decided-by" // "NULL"' <<<"$json")" = "NULL" ]
+}
+
+# ---------- E2/S9 render path: new fields in Discord template ----------
+
+@test "decisions: render — minimal call (no new fields) keeps required-only emoji" {
+  # Backward-compat: a high-rev decision with no new fields renders just
+  # the question/default/reversibility/show/override block (plus no
+  # 👤/🌐/⚖️/💥 lines) — bit-identical to today's body shape modulo the
+  # 'question:' prefix added in T2.
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "minimal?" --default "yes" --reversibility high >/dev/null
+  local body; body=$(_curl_payload_content)
+  [[ "$body" =~ "🔵 question: minimal?" ]]
+  [[ "$body" =~ "✅ default: yes" ]]
+  [[ "$body" =~ "🔴 reversibility: high" ]]
+  [[ "$body" =~ "📍 atmux decisions show d-" ]]
+  [[ ! "$body" =~ "👤 decided-by:" ]]
+  [[ ! "$body" =~ "🌐 context:" ]]
+  [[ ! "$body" =~ "⚖️ options:" ]]
+  [[ ! "$body" =~ "💥 impact:" ]]
+  [[ ! "$body" =~ "📝 note:" ]]
+}
+
+@test "decisions: render — full call emits 👤 🌐 ⚖️ 💥 in documented order" {
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "full?" \
+    --default "OAuth" --reversibility high \
+    --decided-by "lead" \
+    --context "no IdP yet" \
+    --option "OAuth" --option "SAML" --option "JWT" \
+    --impact "blocks t-aaa1" \
+    --note "soak 1 week" >/dev/null
+  local body; body=$(_curl_payload_content)
+  [[ "$body" =~ "👤 decided-by: lead" ]]
+  [[ "$body" =~ "🌐 context: no IdP yet" ]]
+  [[ "$body" =~ "⚖️ options:" ]]
+  [[ "$body" =~ "  - OAuth" ]]
+  [[ "$body" =~ "  - SAML" ]]
+  [[ "$body" =~ "  - JWT" ]]
+  [[ "$body" =~ "💥 impact: blocks t-aaa1" ]]
+  [[ "$body" =~ "📝 note: soak 1 week" ]]
+  # AC order: question · default · decided-by · context · options · impact · note · reversibility
+  # Verify decided-by appears before context, options before impact, etc.
+  local pos_dby; pos_dby=$(awk '/decided-by/{print NR; exit}' <<<"$body")
+  local pos_ctx; pos_ctx=$(awk '/context:/{print NR; exit}'    <<<"$body")
+  local pos_opt; pos_opt=$(awk '/options:/{print NR; exit}'    <<<"$body")
+  local pos_imp; pos_imp=$(awk '/impact:/{print NR; exit}'     <<<"$body")
+  local pos_nte; pos_nte=$(awk '/note:/{print NR; exit}'       <<<"$body")
+  (( pos_dby < pos_ctx ))
+  (( pos_ctx < pos_opt ))
+  (( pos_opt < pos_imp ))
+  (( pos_imp < pos_nte ))
+}
+
+@test "decisions: render — partial (--context only) ⇒ only 🌐 added" {
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "ctxonly?" \
+    --default "yes" --reversibility high --context "narrow scope" >/dev/null
+  local body; body=$(_curl_payload_content)
+  [[ "$body" =~ "🌐 context: narrow scope" ]]
+  [[ ! "$body" =~ "👤 decided-by:" ]]
+  [[ ! "$body" =~ "⚖️ options:" ]]
+  [[ ! "$body" =~ "💥 impact:" ]]
+}
+
+@test "decisions: render — options sub-list emits indented '  - <opt>' bullets" {
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "options?" \
+    --default "A" --reversibility high \
+    --option "alpha" --option "beta" >/dev/null
+  local body; body=$(_curl_payload_content)
+  [[ "$body" =~ "⚖️ options:" ]]
+  [[ "$body" =~ "  - alpha" ]]
+  [[ "$body" =~ "  - beta" ]]
+  # Bare lines like `alpha` (without `  - ` prefix) must NOT appear — the
+  # renderer always indents.
+  [[ ! "$body" =~ ^alpha$ ]]
 }
