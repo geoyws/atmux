@@ -8,6 +8,9 @@
 #   rm <id>
 #
 # kanban.json schema (top-level):
+# shellcheck source=send.sh
+. "$ATMUX_LIB_DIR/send.sh"
+
 #   {
 #     "tasks":   [ { id, subject, body, status, owner, deps, priority,
 #                    createdAt, claimedAt, completedAt, note,
@@ -361,6 +364,24 @@ _atmux_kanban_push_inbox() {
   jq --argjson t "$task_json" --argjson now "$now" \
      '.inProgress += [$t + {dispatchedAt: $now}]' \
      "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+
+  # tmux send-keys nudge so the recipient sees the new task immediately —
+  # without it, auto-dispatched commit-Tasks pile up silently while the
+  # gitter pane sits idle thinking its inbox is drained (the lead has
+  # surfaced this recurring "20-min lag before the next loop catches it"
+  # gap multiple times — t-9fd8d48e). Mirrors lib/dispatch.sh:85's
+  # explicit-dispatch ping. Pre-check window existence: send_to_member
+  # would atmux::die on a missing window, which would abort the whole
+  # `atmux done` chain. The kanban + inbox write above is the durable
+  # handoff; the ping is best-effort punctuation.
+  if atmux::tmux_window_exists "$member" 2>/dev/null; then
+    local subject; subject="$(jq -r '.subject // ""' <<<"$task_json")"
+    local ping="📨 auto-dispatch: $task_id — $subject"
+    atmux::send_to_member "$member" "$ping" 0 0 \
+      || atmux::log "kanban: auto-dispatch ping to $member failed (kanban write held)"
+  else
+    atmux::log "kanban: $member window missing — auto-dispatch ping skipped (kanban write held)"
+  fi
 }
 
 _atmux_task_assign() {

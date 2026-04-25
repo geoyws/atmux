@@ -130,6 +130,36 @@ teardown() {
   [ "$before" = "$after" ]
 }
 
+# ---------- auto-dispatch ping (E1/S4-followup-2 / t-9fd8d48e) ----------
+#
+# Background: when finish_task_done auto-dispatches a commit-Task to gitter,
+# it must also tmux send-keys a 1-line nudge — otherwise gitter sits idle
+# thinking its inbox is drained while commit-Tasks pile up (recurring lead
+# surface; ~20min/cycle latency before next loop catches up).
+
+@test "kanban: auto-dispatched commit-Task reaches the new send-keys nudge path" {
+  # finish_task_done's pre-check skips the ping when the recipient's tmux
+  # window is missing (avoids atmux::die aborting the done chain). In a
+  # bare-test environment no gitter window exists, so we expect the
+  # "window missing — skipped" log line — which proves the new code path
+  # is wired up. The actual tmux send-keys delivery is exercised by the
+  # send.bats integration suite (real-window path) and by gitter's runtime.
+  local eid; eid=$("$ATMUX_BIN" epic add "test epic" | tail -1)
+  "$ATMUX_BIN" task add "real work" --epic "$eid" >/dev/null
+  local id; id=$(jq -r '[.tasks[] | select(.subject=="real work")][0].id' .atmux/kanban.json)
+  run "$ATMUX_BIN" done "$id" --as worker --note "shipped"
+  [ "$status" -eq 0 ]
+  # The kanban write side still lands.
+  [ -f .atmux/inboxes/gitter.json ]
+  local pushed
+  pushed=$(jq '[.inProgress[] | select(.subject | startswith("commit "))] | length' \
+              .atmux/inboxes/gitter.json)
+  [ "$pushed" -ge 1 ]
+  # And the auto-dispatch ping branch was reached (skipped because no
+  # gitter window in the sandbox — but reached).
+  [[ "$output" =~ "auto-dispatch" ]] || [[ "$output" =~ "window missing" ]]
+}
+
 @test "schema: claim normalizes a legacy kanban without losing data" {
   # Arrange: a legacy kanban with one task already in-progress on a member.
   echo '{"tasks":[{"id":"t-legacy03","subject":"x","status":"todo","owner":"worker","deps":[],"priority":null,"createdAt":1,"claimedAt":null,"completedAt":null}]}' > .atmux/kanban.json
