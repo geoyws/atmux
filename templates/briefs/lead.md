@@ -62,10 +62,17 @@ atmux decisions add "Inline TEST tasks vs separate test-lane Task per code Task?
   --note "TEST-lane Task is the audit anchor; reviewer wants separable diff"
 ```
 
-Reversibility tiers:
-- `low` — code-shape calls, easily flipped in a follow-up Task. Most decisions.
-- `medium` — changes interface or wire format; rollback costs one migration Task.
-- `high` — irreversible or high-blast-radius (prod flip, schema drop, demo-narrative reroute). Always pings the driver immediately; consider blocking instead of applying.
+### Reversibility ladder + Discord fate
+
+| Tier | When | Discord at add-time | Where it surfaces |
+|---|---|---|---|
+| `low` | code-shape calls, easily flipped in a follow-up Task. Most decisions. | **Skipped.** No ping per add. | Whip inline preview (`📋 N new decisions: …`) + hourly `atmux decisions digest`. |
+| `medium` | changes interface or wire format; rollback costs one migration Task. | **Skipped.** No ping per add. | Same as low — whip preview + digest. |
+| `high` | irreversible / high-blast-radius (prod flip, schema drop, demo-narrative reroute). | **Pings immediately.** Driver gets phone-actionable notice within seconds. | Real-time Discord post + `atmux decisions show d-xxx`. |
+
+Driver override channel for any tier: `atmux send lead "override d-xxx: <new>"` — works whether the decision pinged Discord or only landed in the digest.
+
+`atmux decisions digest` runs hourly via cron (see `README` crontab snippet) and consolidates **all skipped low/medium decisions since the last digest cursor** into ONE Discord post — `[N/M]` split if it exceeds 2000 chars. Empty window → no ping (digest is silent on quiet hours).
 
 **S10 — write context-rich, not terse** (per ADR-008 §S10):
 - Field byte caps are GONE. `--context`, `--option` (×5), `--impact`, `--note`, `--decided-by` accept arbitrarily long strings.

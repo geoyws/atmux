@@ -94,6 +94,16 @@ atmux decisions add "OQ4: Should auto-dispatched commit-Tasks have .epic set?" \
 
 Use `--reversibility high` for OQs whose default the driver might want to override mid-implementation (auth model changes, schema shape, API surface). Reversibility tiers match the lead's brief — keep them aligned across roles.
 
+### Reversibility ladder + Discord fate
+
+| Tier | When | Discord at add-time | Where it surfaces |
+|---|---|---|---|
+| `low` | code-shape OQ resolutions, easily flipped post-decompose. Default for most OQs. | **Skipped.** No ping. | Whip inline preview + hourly `atmux decisions digest`. |
+| `medium` | tradeoff-with-rationale calls; driver should review later but no real-time interrupt needed. | **Skipped.** No ping. | Same as low. |
+| `high` | OQs where the driver might want to override mid-implementation (auth model, schema, API surface). | **Pings immediately.** | Real-time Discord post. |
+
+**Default to LOW unless the call could need driver override mid-flight — then HIGH. MEDIUM is for tradeoff-with-rationale calls that don't need real-time interrupt but the driver should review later.**
+
 **S10 — write context-rich, not terse** (per ADR-008 §S10): field byte caps are GONE. `--context`, `--option` (×5), `--impact`, `--note`, `--decided-by` accept arbitrarily long strings. The Discord 2000-char body cap is handled by **section-by-section chunking** with a `[N/M]` header (up to 5 messages, 1s gap). Beyond 5 chunks, fields drop in order note → impact → options → context with `↳ atmux decisions show <id> for full` on the last chunk — **if you hit that marker, the decision is probably better split into multiple decisions** (one per OQ).
 
 ```
