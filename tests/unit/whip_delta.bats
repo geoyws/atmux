@@ -226,3 +226,98 @@ _init_real_git_in_sandbox() {
   [[ "$output" =~ "$sha2" ]]
   [[ "$output" =~ "$sha3" ]]
 }
+
+# ---------- E2/S10 t-416c1b31: enriched-bullet shape coverage ----------
+
+@test "delta_since: done-task with [E#/S#] tag ⇒ bullet preserves bracketed prefix" {
+  _load_whip
+  local before; before=$(date +%s)
+  sleep 1
+  local id; id=$("$ATMUX_BIN" task add "[E2/S10] BE: render polish" --assignee fe-kanban | tail -1)
+  "$ATMUX_BIN" task move "$id" done >/dev/null
+  run _atmux_whip_delta_since "$before"
+  # Brackets retained; prefix + tail + owner present in single bullet.
+  [[ "$output" =~ "🏁 \`$id\` [E2/S10] BE: render polish — fe-kanban" ]]
+}
+
+@test "delta_since: done-task with no [E#/S#] tag ⇒ bullet has no prefix slot" {
+  _load_whip
+  local before; before=$(date +%s)
+  sleep 1
+  local id; id=$("$ATMUX_BIN" task add "no-tag subject" --assignee be-kanban | tail -1)
+  "$ATMUX_BIN" task move "$id" done >/dev/null
+  run _atmux_whip_delta_since "$before"
+  [[ "$output" =~ "🏁 \`$id\` no-tag subject — be-kanban" ]]
+  # Untagged subjects must NOT pick up a bracketed prefix from elsewhere.
+  [[ ! "$output" =~ "🏁 \`$id\` [" ]]
+}
+
+@test "delta_since: long-subject task ⇒ bullet truncates with '…' (≤80 chars)" {
+  _load_whip
+  local before; before=$(date +%s)
+  sleep 1
+  # 100-char subject + the bullet prefix push well past 80 chars.
+  local long; long=$(printf 'X%.0s' {1..100})
+  local id; id=$("$ATMUX_BIN" task add "[E2/S10] $long" --assignee fe-kanban | tail -1)
+  "$ATMUX_BIN" task move "$id" done >/dev/null
+  run _atmux_whip_delta_since "$before"
+  # Find the bullet line containing this id and assert it ends with '…'.
+  local line; line=$(grep -F "$id" <<<"$output" | head -1)
+  [ -n "$line" ]
+  [[ "$line" == *…* ]]
+}
+
+@test "delta_since: advanced-story bucket ⇒ '📈 \`<sid>\` [<eid>] <title> → <status>'" {
+  _load_whip
+  local before; before=$(date +%s)
+  sleep 1
+  local eid; eid=$("$ATMUX_BIN" epic add "test epic" | tail -1)
+  local sid; sid=$("$ATMUX_BIN" story add "demo flow" --epic "$eid" --ac "x" | tail -1)
+  "$ATMUX_BIN" story advance "$sid" --to ready >/dev/null
+  "$ATMUX_BIN" story advance "$sid" --to in-progress >/dev/null
+  run _atmux_whip_delta_since "$before"
+  # Story bullet present + arrow renders the new state.
+  [[ "$output" =~ "📈 \`$sid\` [$eid] demo flow → in-progress" ]]
+}
+
+@test "delta_since: >5 advanced stories ⇒ shows 5 bullets + '📈 +N more'" {
+  _load_whip
+  local before; before=$(date +%s)
+  sleep 1
+  local eid; eid=$("$ATMUX_BIN" epic add "biggie" | tail -1)
+  local i sid
+  for i in 1 2 3 4 5 6 7; do
+    sid=$("$ATMUX_BIN" story add "story-$i" --epic "$eid" --ac "x" | tail -1)
+    "$ATMUX_BIN" story advance "$sid" --to ready >/dev/null
+  done
+  run _atmux_whip_delta_since "$before"
+  # 5 bullets + 1 '+2 more' summary = six '📈' matches.
+  local bucket_lines; bucket_lines=$(grep -c '📈' <<<"$output")
+  [ "$bucket_lines" -eq 6 ]
+  [[ "$output" =~ "📈 +2 more" ]]
+}
+
+@test "delta_since: only commits, no done-tasks/stories ⇒ tasks + stories sections omitted" {
+  _setup_fake_git
+  _load_whip
+  export FAKEGIT_SHAS="abc1234"
+  local before; before=$(date +%s)
+  sleep 1
+  run _atmux_whip_delta_since "$before"
+  [[ "$output" =~ "✅" ]]
+  [[ ! "$output" =~ "🏁" ]]
+  [[ ! "$output" =~ "📈" ]]
+}
+
+@test "delta_since: only stories advanced, no commits/tasks ⇒ commits + tasks sections omitted" {
+  _load_whip
+  local before; before=$(date +%s)
+  sleep 1
+  local eid; eid=$("$ATMUX_BIN" epic add "alone" | tail -1)
+  local sid; sid=$("$ATMUX_BIN" story add "lone story" --epic "$eid" --ac "x" | tail -1)
+  "$ATMUX_BIN" story advance "$sid" --to ready >/dev/null
+  run _atmux_whip_delta_since "$before"
+  [[ "$output" =~ "📈" ]]
+  [[ ! "$output" =~ "✅" ]]
+  [[ ! "$output" =~ "🏁" ]]
+}
