@@ -249,13 +249,23 @@ atmux::finish_task_done() {
     return 0
   fi
 
-  local src_epic;  src_epic="$(jq  -r '.epic  // ""' <<<"$src_task")"
-  local src_story; src_story="$(jq -r '.story // ""' <<<"$src_task")"
-  local src_lane;  src_lane="$(jq  -r '.lane  // ""' <<<"$src_task")"
+  local src_epic;    src_epic="$(jq    -r '.epic    // ""' <<<"$src_task")"
+  local src_story;   src_story="$(jq   -r '.story   // ""' <<<"$src_task")"
+  local src_lane;    src_lane="$(jq    -r '.lane    // ""' <<<"$src_task")"
+  local src_subject; src_subject="$(jq -r '.subject // ""' <<<"$src_task")"
 
   local do_commit=0 do_story_flip=0 do_epic_flip=0
   local target_story_id="" target_epic_id=""
   [[ -n "$src_epic" ]] && do_commit=1
+  # E1/S4-followup t-15226e79: never auto-dispatch a commit-Task for a
+  # Task that IS itself a meta-Task (commit/merge/persist). gitter
+  # already hard-rules against batching so the recursion would stop
+  # at one cycle anyway, but the phantom 'done' Tasks pollute the
+  # kanban view + confuse 'task list' filters. Match the standard
+  # subject prefixes the dispatch helpers mint.
+  if [[ "$src_subject" =~ ^(commit|merge|persist)\  ]]; then
+    do_commit=0
+  fi
 
   if [[ -n "$src_story" && "$src_lane" == "test" ]]; then
     local story_status

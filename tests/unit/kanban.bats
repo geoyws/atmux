@@ -160,6 +160,56 @@ teardown() {
   [[ "$output" =~ "auto-dispatch" ]] || [[ "$output" =~ "window missing" ]]
 }
 
+# ---------- recursion guard (E1/S4-followup t-15226e79) ----------
+#
+# When a commit-Task itself completes (gitter marking its own queue
+# done), finish_task_done used to auto-dispatch ANOTHER commit-Task
+# for it ('commit t-xxx' → 'commit commit t-xxx' phantom chain). The
+# recursion stopped at one cycle (gitter no-ops on missing source
+# content) but polluted the kanban + confused 'task list' filters.
+# Fix: skip the auto-dispatch when subject matches /^(commit|merge|
+# persist) /.
+
+@test "kanban: completing a 'commit <id>' Task does NOT auto-dispatch another commit-Task (recursion guard)" {
+  local eid; eid=$("$ATMUX_BIN" epic add "test epic" | tail -1)
+  # Mint a meta-Task with the 'commit ' subject prefix that gitter
+  # would mint when a real Task lands. .epic is set (would normally
+  # trigger do_commit=1), so the guard must be the gating signal.
+  "$ATMUX_BIN" task add "commit t-fakesource" --epic "$eid" >/dev/null
+  local id; id=$(jq -r '[.tasks[] | select(.subject == "commit t-fakesource")][0].id' .atmux/kanban.json)
+
+  local before; before=$(jq '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  "$ATMUX_BIN" done "$id" --as gitter --note "irrelevant" >/dev/null 2>&1
+  local after;  after=$(jq  '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+
+  # No new 'commit ' Task minted on the kanban.
+  [ "$after" -eq "$before" ]
+}
+
+@test "kanban: completing a 'merge <id>' Task does NOT auto-dispatch a commit-Task" {
+  local eid; eid=$("$ATMUX_BIN" epic add "test epic" | tail -1)
+  "$ATMUX_BIN" task add "merge s-fakestory" --epic "$eid" >/dev/null
+  local id; id=$(jq -r '[.tasks[] | select(.subject == "merge s-fakestory")][0].id' .atmux/kanban.json)
+  local before; before=$(jq '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  "$ATMUX_BIN" done "$id" --as gitter --note "merged" >/dev/null 2>&1
+  local after;  after=$(jq  '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  [ "$after" -eq "$before" ]
+}
+
+@test "kanban: 'commitments' (full word that happens to start with 'commit') is NOT skipped" {
+  # Word-boundary regression check — the guard is `^(commit|merge|persist)\ `,
+  # i.e. requires a trailing space. A real Task subject like 'commitments
+  # plan: …' must still auto-dispatch its commit-Task.
+  local eid; eid=$("$ATMUX_BIN" epic add "test epic" | tail -1)
+  "$ATMUX_BIN" task add "commitments plan: research" --epic "$eid" >/dev/null
+  local id; id=$(jq -r '[.tasks[] | select(.subject == "commitments plan: research")][0].id' .atmux/kanban.json)
+  local before; before=$(jq '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  "$ATMUX_BIN" done "$id" --as worker --note "shipped" >/dev/null 2>&1
+  local after;  after=$(jq  '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  # One new 'commit ' Task should have appeared.
+  [ "$after" -eq "$((before + 1))" ]
+}
+
 @test "schema: claim normalizes a legacy kanban without losing data" {
   # Arrange: a legacy kanban with one task already in-progress on a member.
   echo '{"tasks":[{"id":"t-legacy03","subject":"x","status":"todo","owner":"worker","deps":[],"priority":null,"createdAt":1,"claimedAt":null,"completedAt":null}]}' > .atmux/kanban.json
