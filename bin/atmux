@@ -50,6 +50,12 @@ Task board (kanban):
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
 
+Epic / Story (pull-kanban hierarchy — ADR-007):
+  epic add <title> [--body <text>] [--driver-ref <ref>]
+  epic list [--status <s>] [--json]
+  epic show <id> [--json]
+  epic advance <id> [--to planning|ready|in-progress|review|done]
+
 Dispatch + work:
   dispatch <member> <task-id> Push task to member's inbox + ping them
   inbox <member>              Show member's inbox
