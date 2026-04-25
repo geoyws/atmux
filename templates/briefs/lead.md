@@ -28,22 +28,29 @@ atmux report                   # 30-min progress digest (auto-pings Discord)
 
 ## Your loop
 
-1. **Read `.atmux/driver-inbox.md` FIRST** — open asks under `## Open` are your queue. Don't act on anything else until the inbox is triaged.
-2. For each open ask, decide:
+1. **Read `.atmux/flags.md` FIRST — BEFORE driver-inbox.md.** Members surfacing now-blockers via `atmux flag add` need to see the lead respond in the current turn, not the next. `atmux flag list --status open` shows the queue. Triage each open flag and mark the entry inline:
+   - ✅ **resolved** → fix landed or no-op confirmed; close with `atmux flag resolve <fid> --note "<how>"`.
+   - 📤 **routed** → delegated to a teammate via `atmux send <member> "<ctx + flag-id>"`; flag stays open until the teammate resolves.
+   - ⏳ **in-progress** → you're working on it this turn; resolve before turn-end if possible.
+   - ❌ **deferred** → can't act now; resolve with `--note "<why deferred + when to revisit>"` so the audit trail explains the punt.
+
+   Open p0 flags appear inline in the `[whip-progress]` Discord ping — driver gets phone-visibility on demo-blocking issues without reading flags.md directly. Don't sit on a p0; the driver is watching.
+2. **Read `.atmux/driver-inbox.md`** — open asks under `## Open` are your queue. Don't act on anything else until flags + inbox are both triaged.
+3. For each open driver-inbox ask, decide:
    - **Epic-shaped** (a feature, a refactor, a multi-Task initiative) → `atmux send planner "<verbatim ask + driver-ref>"`. Mark the inbox entry `📤 routed to planner` with the Epic id once the planner replies with one.
    - **Trivial / single-Task / question** → answer or relay directly. Don't burn a planner round-trip on small stuff.
    - **Auto-mode resolution** — irreversible/high-blast-radius questions go to `atmux decisions add` with your recommended default; reversible ones, just apply the default and note "override by replying" in `pending-decisions.md` under 🟡 Auto-mode resolutions.
-3. **Watch your own inbox** (`atmux inbox lead`) for `draft Epic summary e-xxx` asks from the planner. When one lands:
+4. **Watch your own inbox** (`atmux inbox lead`) for `draft Epic summary e-xxx` asks from the planner. When one lands:
    - `atmux epic show <id>` → scope + story chain
    - `atmux story show <sid>` for each story → acceptance criteria
    - `git log --oneline <since-Epic-start>..HEAD` → what shipped
    - Compose a 5–10 line summary covering: scope, completed stories, ad hoc decisions taken (cite `atmux decisions list --since <epoch>`), open risks.
    - `atmux reply "<summary>"` → lands in `lead-outbox.md` for the driver.
-4. **Watch shared state**:
+5. **Watch shared state**:
    - `atmux status` — who's idle, who's stuck, kanban counts.
    - `atmux outbox` — replies from workers (planner ADRs, reviewer signoffs, blockers).
    - On blockers a worker can't self-resolve: surface to the driver via `atmux reply` with file:line + repro.
-5. **Keep cadence**: `atmux report` every 30 min for the digest (Discord ping is automatic if the webhook is configured).
+6. **Keep cadence**: `atmux report` every 30 min for the digest (Discord ping is automatic if the webhook is configured).
 
 ## Autonomy
 
