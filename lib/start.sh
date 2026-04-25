@@ -83,6 +83,16 @@ main() {
   # ---- Record start timestamp ----
   atmux::now_epoch > "$(atmux::state_dir)/session-start.txt"
 
+  # ---- Snapshot the spawned config so `atmux reload config-reload` can
+  # ----  diff team.json against it and ping members whose role/lane/model/tui
+  # ----  changed. Re-written on every start (including incremental restarts).
+  atmux::state_dir >/dev/null && mkdir -p "$(atmux::state_dir)"
+  jq '{members: [.members[] | {name, role: (.role // "member"),
+                                lane: (.lane // "misc"),
+                                model: (.model // "default"),
+                                tui:   (.tui   // "claude")}]}' \
+    "$(atmux::team_json)" > "$(atmux::state_dir)/spawn-snapshot.json"
+
   atmux::ok "team '$team' is up. attach with: atmux attach"
 }
 

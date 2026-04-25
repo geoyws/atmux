@@ -9,6 +9,14 @@
 #       Skips members whose pane shows a known blocker state (Compacting, queued
 #       input, near-/at-limit, mid-thinking) unless --force is passed; sending
 #       text in those states either gets dropped or merges with stale input.
+#
+#   config-reload
+#       Re-read team.json + diff against the spawn-time snapshot
+#       (.atmux/state/spawn-snapshot.json, written by `atmux start`). For each
+#       member whose role/lane/model/tui changed, send a one-line ping into
+#       the pane: `⚙️ CONFIG RELOAD by lead — your <field> <old>→<new>. Apply
+#       on next dispatch.` Members with no delta are silent. NO respawn, NO
+#       /clear, NO model swap exec — the worker adapts on next dispatch.
 
 # shellcheck source=tui.sh
 . "$ATMUX_LIB_DIR/tui.sh"
@@ -20,8 +28,9 @@ main() {
   local sub="${1:-}"; shift || true
   case "$sub" in
     brief-reload)  _atmux_reload_brief "$@" ;;
-    "") atmux::die "reload: missing subcommand (use brief-reload <member>)" ;;
-    *)  atmux::die "reload: unknown subcommand: $sub (use brief-reload)" ;;
+    config-reload) _atmux_reload_config "$@" ;;
+    "") atmux::die "reload: missing subcommand (use brief-reload <member> | config-reload)" ;;
+    *)  atmux::die "reload: unknown subcommand: $sub (use brief-reload | config-reload)" ;;
   esac
 }
 
@@ -82,4 +91,63 @@ _atmux_reload_brief() {
   rm -f "$tmp"
 
   atmux::ok "reloaded brief for $member"
+}
+
+# Diff team.json against the spawn-time snapshot (.atmux/state/spawn-snapshot.json,
+# written by lib/start.sh) and ping members whose role/lane/model/tui changed.
+# Members ADDED post-spawn are silently skipped — atmux start handles their
+# initial brief; config-reload only flags drift on already-spawned members.
+_atmux_reload_config() {
+  [[ $# -eq 0 ]] || atmux::die "reload config-reload: takes no args"
+
+  local snap; snap="$(atmux::state_dir)/spawn-snapshot.json"
+  if [[ ! -f "$snap" ]]; then
+    atmux::die "reload config-reload: no spawn snapshot at $snap (run 'atmux start' first)"
+  fi
+
+  local tj; tj="$(atmux::team_json)"
+
+  # Build the per-member delta as TSV: name<tab>delta-message. Empty delta
+  # rows skipped at emit time. Fields tracked: role, lane, model, tui.
+  local notified=0 unchanged=0
+  local m; while IFS= read -r m; do
+    [[ -z "$m" ]] && continue
+    local old; old=$(jq -c --arg n "$m" '.members[]? | select(.name == $n)' "$snap")
+    if [[ -z "$old" ]]; then
+      # New member added since spawn — start.sh handles their initial brief;
+      # nothing to diff against.
+      continue
+    fi
+    local new; new=$(jq -c --arg n "$m" '.members[]? | select(.name == $n)' "$tj")
+
+    local delta=""
+    local field
+    for field in role lane model tui; do
+      local o n
+      o=$(jq -r --arg f "$field" '.[$f] // ""' <<<"$old")
+      n=$(jq -r --arg f "$field" '.[$f] // ""' <<<"$new")
+      if [[ "$o" != "$n" ]]; then
+        if [[ -n "$delta" ]]; then
+          delta="$delta, $field $o→$n"
+        else
+          delta="$field $o→$n"
+        fi
+      fi
+    done
+
+    if [[ -z "$delta" ]]; then
+      unchanged=$((unchanged + 1))
+      continue
+    fi
+
+    if atmux::tmux_window_exists "$m"; then
+      local target; target="$(atmux::tmux_target "$m")"
+      tmux send-keys -t "$target" \
+        "⚙️ CONFIG RELOAD by lead — your $delta. Apply on next dispatch." Enter
+      notified=$((notified + 1))
+      atmux::log "config-reload: $m — $delta"
+    fi
+  done < <(jq -r '.members[]?.name' "$tj")
+
+  atmux::ok "config-reload: $notified member(s) notified, $unchanged unchanged"
 }
