@@ -82,6 +82,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WILL be submitted when the current turn ends, not stale.
   (`lib/whip.sh`, `lib/kanban.sh`, `templates/team.example.json`.)
 
+- **decisions verb — Discord gating + inline preview + digest** (E2/S8,
+  [ADR-009 §S8](docs/adr/009-auto-rotation.md)). Discord ping at
+  add-time is now gated on `--reversibility high` only; `low` /
+  `medium` decisions skip the per-add ping and surface via whip's
+  inline preview block (`📋 N new decisions: …` with top-3 question +
+  default per entry) plus a new `atmux decisions digest` verb that
+  consolidates all skipped low/med entries since the last digest
+  cursor into ONE Discord post (with `[N/M]` split if it exceeds
+  2000 chars; silent on empty windows). Driver brief and planner
+  brief explain the new ladder + when each tier pings.
+  (`lib/decisions.sh`, `lib/whip.sh`, `templates/briefs/lead.md`,
+  `templates/briefs/planner.md`, `README.md` cron snippet.)
+
 - **decisions verb — richer template (4 new optional fields)** (E2/S9,
   [ADR-008 §S9](docs/adr/008-decisions-verb.md)). New optional flags:
   `--context` (the WHY behind the decision), `--option` (repeatable
@@ -100,19 +113,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documents per-field guidance + worked examples.
   (`lib/decisions.sh`, `templates/briefs/lead.md`,
   `templates/briefs/planner.md`.)
-
-- **decisions verb — Discord gating + inline preview + digest** (E2/S8,
-  [ADR-009 §S8](docs/adr/009-auto-rotation.md)). Discord ping at
-  add-time is now gated on `--reversibility high` only; `low` /
-  `medium` decisions skip the per-add ping and surface via whip's
-  inline preview block (`📋 N new decisions: …` with top-3 question +
-  default per entry) plus a new `atmux decisions digest` verb that
-  consolidates all skipped low/med entries since the last digest
-  cursor into ONE Discord post (with `[N/M]` split if it exceeds
-  2000 chars; silent on empty windows). Driver brief and planner
-  brief explain the new ladder + when each tier pings.
-  (`lib/decisions.sh`, `lib/whip.sh`, `templates/briefs/lead.md`,
-  `templates/briefs/planner.md`, `README.md` cron snippet.)
 
 - **decisions verb — drop per-field caps + section-aware multi-message
   Discord chunker** (E2/S10, [ADR-008 §S10](docs/adr/008-decisions-verb.md)).
