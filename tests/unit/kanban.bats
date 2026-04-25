@@ -210,6 +210,53 @@ teardown() {
   [ "$after" -eq "$((before + 1))" ]
 }
 
+# ---------- recursion guard #2: gitter+MISC gate (E1/S4-followup-3 / t-1ff87709) ----------
+#
+# Planner-authored fold-Tasks like "[E#/S#] MISC: docs/adr/010..." slip past
+# the subject regex but ARE commit-flavored work owned by gitter. Gate on
+# assignee+lane: gitter's whole job is commit work; auto-dispatching a
+# child commit-Task for a gitter-MISC task is recursion. Both axes are
+# required — owner alone (gitter+FE) and lane alone (worker+MISC) still
+# auto-dispatch.
+
+@test "kanban: gitter+MISC fold-Task does NOT auto-dispatch a commit-Task" {
+  local eid; eid=$("$ATMUX_BIN" epic add "test epic" | tail -1)
+  # Planner-shaped fold-Task: subject doesn't match the commit/merge/persist
+  # regex, but assignee=gitter + lane=misc means it's already commit work.
+  "$ATMUX_BIN" task add "[E1/S1] MISC: fold ADR-010 + ADR-011 + CHANGELOG" \
+    --epic "$eid" --assignee gitter --lane misc >/dev/null
+  local id; id=$(jq -r '[.tasks[] | select(.subject == "[E1/S1] MISC: fold ADR-010 + ADR-011 + CHANGELOG")][0].id' .atmux/kanban.json)
+  local before; before=$(jq '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  "$ATMUX_BIN" done "$id" --as gitter --note "folded" >/dev/null 2>&1
+  local after;  after=$(jq  '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  # Guard fired: no child commit-Task minted.
+  [ "$after" -eq "$before" ]
+}
+
+@test "kanban: non-gitter MISC task STILL auto-dispatches (lane alone is not the gate)" {
+  # Lane=misc but owner=worker — this is a legitimate misc task by a
+  # regular worker, must still get its commit-Task. Both axes required.
+  local eid; eid=$("$ATMUX_BIN" epic add "test epic" | tail -1)
+  "$ATMUX_BIN" task add "wire env loader" --epic "$eid" --assignee worker --lane misc >/dev/null
+  local id; id=$(jq -r '[.tasks[] | select(.subject == "wire env loader")][0].id' .atmux/kanban.json)
+  local before; before=$(jq '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  "$ATMUX_BIN" done "$id" --as worker --note "shipped" >/dev/null 2>&1
+  local after;  after=$(jq  '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  [ "$after" -eq "$((before + 1))" ]
+}
+
+@test "kanban: gitter on a non-MISC lane STILL auto-dispatches (owner alone is not the gate)" {
+  # Hypothetical gitter-FE task — owner=gitter but lane=fe. Both axes
+  # required, so this still gets its commit-Task.
+  local eid; eid=$("$ATMUX_BIN" epic add "test epic" | tail -1)
+  "$ATMUX_BIN" task add "FE styling tweak" --epic "$eid" --assignee gitter --lane fe >/dev/null
+  local id; id=$(jq -r '[.tasks[] | select(.subject == "FE styling tweak")][0].id' .atmux/kanban.json)
+  local before; before=$(jq '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  "$ATMUX_BIN" done "$id" --as gitter --note "shipped" >/dev/null 2>&1
+  local after;  after=$(jq  '[.tasks[] | select(.subject | startswith("commit "))] | length' .atmux/kanban.json)
+  [ "$after" -eq "$((before + 1))" ]
+}
+
 @test "schema: claim normalizes a legacy kanban without losing data" {
   # Arrange: a legacy kanban with one task already in-progress on a member.
   echo '{"tasks":[{"id":"t-legacy03","subject":"x","status":"todo","owner":"worker","deps":[],"priority":null,"createdAt":1,"claimedAt":null,"completedAt":null}]}' > .atmux/kanban.json

@@ -253,6 +253,7 @@ atmux::finish_task_done() {
   local src_story;   src_story="$(jq   -r '.story   // ""' <<<"$src_task")"
   local src_lane;    src_lane="$(jq    -r '.lane    // ""' <<<"$src_task")"
   local src_subject; src_subject="$(jq -r '.subject // ""' <<<"$src_task")"
+  local src_owner;   src_owner="$(jq   -r '.owner   // ""' <<<"$src_task")"
 
   local do_commit=0 do_story_flip=0 do_epic_flip=0
   local target_story_id="" target_epic_id=""
@@ -264,6 +265,17 @@ atmux::finish_task_done() {
   # kanban view + confuse 'task list' filters. Match the standard
   # subject prefixes the dispatch helpers mint.
   if [[ "$src_subject" =~ ^(commit|merge|persist)\  ]]; then
+    do_commit=0
+  fi
+  # E1/S4-followup-3 t-1ff87709: same recursion class but caught on the
+  # assignee+lane axis, not the subject. Planner-authored MISC fold-Tasks
+  # ("[E#/S#] MISC: <docs/ADR/CHANGELOG/...>") slip past the regex above
+  # because their subjects don't start with commit/merge/persist — yet
+  # the work IS commit-flavored, so auto-dispatching another commit-Task
+  # to gitter is recursion by definition. Single-rule gate beats whack-a-
+  # mole regex maintenance: gitter's whole job is commit work, so a
+  # gitter-owned MISC task done never warrants a child commit-Task.
+  if [[ "$src_owner" == "gitter" && "$src_lane" == "misc" ]]; then
     do_commit=0
   fi
 
