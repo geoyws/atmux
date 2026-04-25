@@ -28,7 +28,7 @@ main() {
   done
 
   if [[ "$target_kind" == "lead" ]]; then
-    member="$(_atmux_find_lead_member)"
+    member="$(atmux::find_lead_member)"
     [[ -n "$member" ]] || atmux::die "rotate-lead: no team-lead defined in team.json"
   fi
   [[ -n "$member" ]] || atmux::die "usage: atmux rotate <member>  |  atmux rotate-lead"
@@ -79,6 +79,3 @@ main() {
   atmux::now_epoch > "$state_dir/${member}-rotated.epoch"
 }
 
-_atmux_find_lead_member() {
-  jq -r 'first(.members[] | select(.role == "team-lead") | .name) // empty' "$(atmux::team_json)"
-}
