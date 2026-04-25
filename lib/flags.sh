@@ -158,16 +158,22 @@ _flags_to_json() {
   '
 }
 
-# Accept ISO date / Nh / Nd. Same shape as lib/decisions.sh's _decisions_parse_since.
+# Accept raw epoch / ISO date / Nh / Nd. Mirrors lib/decisions.sh's
+# _decisions_parse_since (epoch path added in t-2b81aa76 there + here so
+# whip's per-cursor shellout can pass an epoch directly without going
+# through GNU `date -d`'s @ prefix dance — bare integers like 1777125613
+# fail `date -d` parsing).
 _flags_parse_since() {
   local s="$1"
-  if [[ "$s" =~ ^([0-9]+)h$ ]]; then
+  if [[ "$s" =~ ^[0-9]+$ ]]; then
+    echo "$s"
+  elif [[ "$s" =~ ^([0-9]+)h$ ]]; then
     echo $(( $(atmux::now_epoch) - BASH_REMATCH[1] * 3600 ))
   elif [[ "$s" =~ ^([0-9]+)d$ ]]; then
     echo $(( $(atmux::now_epoch) - BASH_REMATCH[1] * 86400 ))
   else
     if ! date -d "$s" +%s 2>/dev/null; then
-      atmux::die "flags list: bad --since format '$s' (use ISO date or Nh/Nd)"
+      atmux::die "flags list: bad --since format '$s' (use epoch, ISO date, or Nh/Nd)"
     fi
   fi
 }

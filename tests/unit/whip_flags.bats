@@ -62,19 +62,18 @@ teardown() {
 # ---------- AC (e): resolved p0 flags ⇒ no finding ----------
 
 @test "whip_flags: resolved p0 flag ⇒ NO finding (status=resolved excluded)" {
-  # Pending BE fix in lib/whip.sh:361-380 — the awk counts every p0 f- entry
-  # with ts>cursor, ignoring whether a `### r-` resolution block references
-  # it. Surfaced to lead via atmux send (whip_flags AC-e). Flip from `skip`
-  # to active assertions once BE patches the awk to subtract resolved f-ids.
-  skip "pending BE fix: _atmux_whip_check_flags counts resolved p0 as open (lib/whip.sh:361-380)"
-
+  # BE fix landed (t-3bcb7d83): _atmux_whip_check_flags now shellouts
+  # to `atmux flags list --status open --severity p0 --since <cursor>`
+  # — the authoritative reader excludes resolved flags via the
+  # .resolutions sub-array, so a flag raised AND resolved within the
+  # same window doesn't reach the findings array.
   local fid; fid=$("$ATMUX_BIN" flags add "to-resolve" --severity p0 --needs unblock --as devops | tail -1)
   [[ "$fid" =~ ^f-[0-9a-f]{8}$ ]]
   "$ATMUX_BIN" flags resolve "$fid" --as reviewer --note "fixed" >/dev/null
   rm -f .atmux/state/flags-cursor .atmux/state/whip-last.hash
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  ! [[ "$output" =~ "open p0 flags" ]]
+  [[ ! "$output" =~ "open p0 flags" ]]
 }
 
 # ---------- AC (f): cursor advances after ping ----------

@@ -354,30 +354,24 @@ _atmux_whip_check_flags() {
 
   (( fmtime_new > fcursor_old )) || return 0
 
-  # Count entries whose `### f-...` heading marks them p0 AND whose
-  # timestamp bullet falls after the cursor. Resolution blocks (`### r-`)
-  # are ignored — they're separate entries that never carry severity.
+  # Defer counting to `atmux flags list` — the authoritative reader has
+  # built-in resolved-state filtering (the .resolutions sub-array on each
+  # flag is consulted by the --status open filter). Pre-fix this code
+  # awk-counted every `### f-…` p0 header newer than the cursor, which
+  # double-flagged any p0 that was raised AND resolved within the same
+  # window (test-kanban surfaced via whip_flags AC-e, t-3bcb7d83).
+  #
+  # `--since` filters >= cutoff, so we pass cursor+1 to get strictly-
+  # after semantics (the cursor records the previous tick's anchor; we
+  # want flags strictly newer than that anchor, not equal-to).
+  #
+  # Shellout cost is one fork; the file is small. `--json | jq length`
+  # avoids any markdown re-parsing in this hot path.
+  local since_arg=$(( fcursor_old + 1 ))
   local n_new
-  n_new=$(awk -v c="$fcursor_old" '
-    BEGIN { sev=""; ts=0; in_entry=0 }
-    /^### f-/ {
-      # Header shape: `### f-xxxx <member> [<severity>/<needs>] (HH:MM MYT)`
-      sev=""
-      if (match($0, /\[p[0-2]\//)) {
-        sev=substr($0, RSTART+1, RLENGTH-2)  # strip `[` and trailing `/`
-      }
-      in_entry=1
-      ts=0
-    }
-    /^### r-/ { in_entry=0 }
-    /^- \*\*timestamp\*\*:/ && in_entry {
-      v=$0; sub(/^- \*\*timestamp\*\*: */,"",v)
-      ts=v+0
-      if (sev == "p0" && ts > c) { count++ }
-      in_entry=0
-    }
-    END { print count+0 }
-  ' "$ffile")
+  n_new=$("$ATMUX_BIN_DIR/atmux" flags list \
+            --status open --severity p0 --since "$since_arg" --json 2>/dev/null \
+          | jq -r 'length' 2>/dev/null || echo 0)
 
   if [[ "${n_new:-0}" -gt 0 ]]; then
     findings+=("📍 $n_new open p0 flags — atmux flag list")
