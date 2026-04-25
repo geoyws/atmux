@@ -74,6 +74,15 @@ main() {
   fi
 
   atmux::ok "rotated $member (role=$role, tui=$tui)"
+
+  # Stamp rotation epoch — whip's auto-rotation logic (E2/S2) reads this to
+  # decide when next to rotate. Both the claude /clear path and the non-claude
+  # warning path land here, so a successful warn-and-rebrief still updates the
+  # epoch (the rotate verb succeeded; auto-rotation should respect it).
+  # Format mirrors session-start.txt: single epoch integer + trailing newline.
+  local state_dir; state_dir="$(atmux::state_dir)"
+  mkdir -p "$state_dir"
+  atmux::now_epoch > "$state_dir/${member}-rotated.epoch"
 }
 
 _atmux_find_lead_member() {

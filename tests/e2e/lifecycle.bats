@@ -137,6 +137,38 @@ teardown() {
   (( hits >= 3 ))
 }
 
+@test "e2e: rotate stamps .atmux/state/<member>-rotated.epoch on success (E2/S1 t-9d90f3ac)" {
+  "$ATMUX_BIN" start
+  sleep 1
+  # Workers in the e2e roster use tui=shell, which hits the non-claude warning
+  # path in lib/rotate.sh — both paths must stamp the epoch per AC.
+  local before; before=$(date +%s)
+  run "$ATMUX_BIN" rotate w1
+  [ "$status" -eq 0 ]
+  [ -f .atmux/state/w1-rotated.epoch ]
+  local stamp; stamp=$(< .atmux/state/w1-rotated.epoch)
+  [[ "$stamp" =~ ^[0-9]+$ ]]
+  (( stamp >= before ))
+
+  # Re-rotation overwrites — second call's stamp >= first call's stamp.
+  sleep 1
+  "$ATMUX_BIN" rotate w1
+  local stamp2; stamp2=$(< .atmux/state/w1-rotated.epoch)
+  (( stamp2 >= stamp ))
+}
+
+@test "e2e: rotate-lead stamps the resolved team-lead's epoch (not literal 'lead')" {
+  "$ATMUX_BIN" start
+  sleep 1
+  # Resolve the team-lead by role so this test still passes if the lead member
+  # is renamed in a future roster shuffle.
+  local lead_name; lead_name=$(jq -r 'first(.members[] | select(.role=="team-lead") | .name)' .atmux/team.json)
+  [ -n "$lead_name" ]
+  run "$ATMUX_BIN" rotate-lead
+  [ "$status" -eq 0 ]
+  [ -f ".atmux/state/${lead_name}-rotated.epoch" ]
+}
+
 # ============================================================
 # S8 capstone — Epic end-to-end through pull-mode kanban
 # ============================================================
