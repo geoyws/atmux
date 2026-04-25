@@ -301,22 +301,29 @@ _atmux_story_advance() {
   local now; now="$(atmux::now_epoch)"
 
   # ----- atomic state flip (+ parent epic auto-flip when leaving ready) -----
+  # E2/S10 t-ff60d3e8: stamp .advancedAt on every transition so whip's
+  # 'Since last tick' delta block can surface story advances alongside
+  # commits + done-tasks. Old stories that pre-date the schema simply
+  # have .advancedAt absent; whip's bucket-filter (.advancedAt > since)
+  # excludes them naturally — we don't backfill.
   if [[ "$cur" == "ready" && "$target" == "in-progress" ]]; then
     # Single jq_update: flip story AND parent epic ready→in-progress (only if
     # epic is currently `ready`; later transitions don't re-flip).
     atmux::jq_update "$k" \
       '(.stories[]? | select(.id == $sid) | .status) = $target
+       | (.stories[]? | select(.id == $sid) | .advancedAt) = $now
        | (.epics[]?
            | select(.id == $eid and .status == "ready")
            | .status) = "in-progress"' \
-      --arg sid "$id" --arg eid "$eid" --arg target "$target"
+      --arg sid "$id" --arg eid "$eid" --arg target "$target" --argjson now "$now"
   else
     local extra=''
     if [[ "$target" == "done" ]]; then
       extra=' | (.stories[]? | select(.id == $sid) | .completedAt) = $now'
     fi
     atmux::jq_update "$k" \
-      "(.stories[]? | select(.id == \$sid) | .status) = \$target$extra" \
+      "(.stories[]? | select(.id == \$sid) | .status) = \$target
+       | (.stories[]? | select(.id == \$sid) | .advancedAt) = \$now$extra" \
       --arg sid "$id" --arg target "$target" --argjson now "$now"
   fi
 

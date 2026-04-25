@@ -510,7 +510,9 @@ _atmux_whip_body_hash() {
 # Build the "Since last tick" body block from positive events that landed
 # after $since_epoch — git commits, kanban tasks marked done. Echoes the
 # multi-line block (header + indented bullets) when ≥1 event exists, else
-# empty. story-advance tracking deferred (no .advancedAt schema field yet).
+# empty. Three buckets: commits, done-tasks, advanced-stories — each
+# rendered as per-bullet entries (E2/S10 t-62249136 + t-97143549 +
+# t-ff60d3e8).
 #
 # Caller (whip's main) pushes the block as ONE finding entry; the body
 # builder prefixes the first line with `- ` and embedded newlines render
@@ -563,8 +565,26 @@ _atmux_whip_delta_since() {
         "$k" 2>/dev/null || true)
   fi
 
-  # Skip the whole section when both buckets are empty — quiet tick.
-  if [[ ${#commits[@]} -eq 0 && ${#done_records[@]} -eq 0 ]]; then
+  # Stories advanced since $since — .advancedAt > since (schema field
+  # added in t-ff60d3e8; old stories without the field naturally
+  # excluded by the strict-greater-than). Single jq pass yields TSV with
+  # id/epic/title/status — bullet shape '📈 `<sid>` [E#] <title> →
+  # <status>'.
+  local advanced_records=()
+  if [[ -f "$k" ]]; then
+    local rec
+    while IFS= read -r rec; do
+      [[ -n "$rec" ]] && advanced_records+=("$rec")
+    done < <(jq -r --argjson s "$since" \
+        '[.stories[]? | select((.advancedAt // 0) > $s)]
+         | sort_by(.advancedAt)
+         | .[]
+         | [.id, (.epic // ""), (.title // ""), (.status // "?")] | @tsv' \
+        "$k" 2>/dev/null || true)
+  fi
+
+  # Skip the whole section when ALL three buckets are empty — quiet tick.
+  if [[ ${#commits[@]} -eq 0 && ${#done_records[@]} -eq 0 && ${#advanced_records[@]} -eq 0 ]]; then
     return 0
   fi
 
@@ -622,6 +642,30 @@ _atmux_whip_delta_since() {
     done
     if (( n > 5 )); then
       out+=$'\n  - 🏁 +'$((n - 5))" more"
+    fi
+  fi
+  if [[ ${#advanced_records[@]} -gt 0 ]]; then
+    # E2/S10 t-ff60d3e8: one bullet per advanced story —
+    # '📈 `<sid>` [<epic>] <title> → <status>'. We don't track prior
+    # state (would need an advanceLog array — YAGNI), so the arrow is
+    # one-sided. Same 80-char cap + cap-5-with-+N-more shape as the
+    # other two buckets.
+    local n=${#advanced_records[@]}
+    local rec sid epic title status bullet
+    for rec in "${advanced_records[@]:0:5}"; do
+      IFS=$'\t' read -r sid epic title status <<<"$rec"
+      if [[ -n "$epic" ]]; then
+        bullet="📈 \`$sid\` [$epic] $title → $status"
+      else
+        bullet="📈 \`$sid\` $title → $status"
+      fi
+      if (( ${#bullet} > 80 )); then
+        bullet="${bullet:0:79}…"
+      fi
+      out+=$'\n  - '"$bullet"
+    done
+    if (( n > 5 )); then
+      out+=$'\n  - 📈 +'$((n - 5))" more"
     fi
   fi
   printf '%s' "$out"
