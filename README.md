@@ -6,7 +6,21 @@
 
 A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
 
-**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, gitter, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition), then dispatches to workers.
+**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, gitter, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; gitter commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
+
+## Agile vocabulary
+
+atmux's kanban speaks Epic / Story / Task. The pull model only works when you keep these distinctions clear.
+
+- **Epic** — a feature or initiative scoped by the driver. State machine: `planning → ready → in-progress → review → done`. The driver hands the lead an Epic-shaped ask via `atmux tell-lead`; the lead routes it to the planner (`atmux send planner`); the planner decomposes it into Stories + Tasks. When every child Task is `done`, the Epic auto-flips to `review` and a "draft Epic summary" Task lands in the lead's inbox — the lead composes the wrap-up via `atmux epic show` + `git log` and `atmux reply`s back to the driver.
+
+- **Story** — a coherent slice of an Epic with explicit acceptance criteria. State machine: `planning → ready → in-progress → testing → review → merging → done`. **Stories are OPTIONAL.** Small Epics with ≤3 Tasks skip them. Use Stories when there are multiple distinct acceptance surfaces (schema vs. UI vs. e2e). Reviewer signoff happens at the Story level on the cumulative diff — empty `acceptanceCriteria` is an automatic REJECT.
+
+- **Task** — an atomic unit of work on the kanban with a lane (FE / BE / DB / OPS / TEST / REVIEW / MISC), optional `--epic` / `--story` tags, optional `--deliverable`, and explicit `--deps`. Workers **pull** the next claimable Task in their lane via `atmux claim --next`; selection prefers their lane, falls back across lanes when `crossLaneClaim=true` (default). Each Task with `.epic` set auto-dispatches a commit-Task to gitter on `move done`; one commit per Task, no batching.
+
+The **lead never decomposes and never dispatches per-Task** — that's the planner's and the kanban's job. The lead routes Epics to the planner, watches state, surfaces blockers, and composes Epic summaries. The **gitter never reviews** and never pushes by default. The **reviewer never commits** and never decomposes. Each role has a narrow surface; the kanban orchestrates.
+
+See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR + state-machine spec, and the implementation plan at `~/.claude/plans/pure-pondering-crane.md` for the rollout sequence.
 
 ## How it works
 
@@ -14,43 +28,51 @@ A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent termina
 ┌───────────────────────────────────────────────────────────────────┐
 │ Your terminal (the driver) — your Claude Code / shell             │
 │                                                                    │
-│     atmux tell-lead "implement auth flow, see RFC-12"             │
-│     atmux status                                                   │
-│     atmux report                                                   │
-└──────────────┬────────────────────────────────────────────────────┘
-               │ tmux send-keys
+│   atmux tell-lead "build auth flow, see RFC-12"   ┐               │
+│   atmux outbox                                     │ Epic ask      │
+│   atmux status / atmux report                      │               │
+└──────────────┬─────────────────────────────────────┴───────────────┘
+               │ tmux send-keys + driver-inbox.md
                ▼
 ┌───────────────────────────────────────────────────────────────────┐
 │ tmux session: atmux-<team>                                         │
 │                                                                    │
 │  🧭 STAFF                                                          │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐      │
-│  │ 🧭 lead    │ │ 🗺️  planner │ │ 🔍 reviewer│ │ 🌿 gitter  │      │
-│  │ claude     │ │ claude     │ │ claude     │ │ claude     │      │
-│  └─────┬──────┘ └────────────┘ └────────────┘ └────────────┘      │
-│  ┌────────────┐ ┌────────────┐                                     │
-│  │ ⚙️  devops │ │ 🗄️  dba    │                                     │
-│  │ claude     │ │ claude     │                                     │
-│  └────────────┘ └────────────┘                                     │
-│        │ dispatch per feature lane                                 │
-│        ▼                                                           │
-│  🐝 WORKERS   (one per feature × surface; name = surface-feature)  │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐                     │
-│  │ 🐝 fe-auth │ │ 🦊 be-auth │ │ 🦉 db-auth │   ← auth lane       │
-│  │ claude     │ │ cursor-agt │ │ opencode   │                     │
-│  └────────────┘ └────────────┘ └────────────┘                     │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐                     │
-│  │ 🐙 fe-inv  │ │ 🦀 be-inv  │ │ 🐢 db-inv  │   ← invoice lane    │
-│  │ claude     │ │ kimi       │ │ opencode   │                     │
-│  └────────────┘ └────────────┘ └────────────┘                     │
-│                                                                    │
-│  shared state: .atmux/{team.json,kanban.json,inboxes/,logs/}       │
-└───────────────────────────────────────────────────────────────────┘
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
+│  │ 🧭 lead    │  │ 🗺️  planner │  │ 🔍 reviewer│  │ 🌿 gitter  │   │
+│  │ ROUTES     │  │ DECOMPOSES │  │ STORY GATE │  │ COMMITS    │   │
+│  └──┬─────────┘  └─────┬──────┘  └──────┬─────┘  └────┬───────┘   │
+│     │ atmux send       │ atmux           │ atmux        │ on every  │
+│     │ planner          │ epic add        │ story        │ Task done │
+│     │                  │ story add       │ advance      │ (auto-    │
+│     │                  │ task add        │ --to merging │  dispatch)│
+│     │                  │  --epic --lane  │              │           │
+│     ▼                  ▼                 ▼              │           │
+│  ┌────────────────────────────────────────┐              │           │
+│  │ 📋 kanban.json (Epics + Stories + Tasks) │ ◄────────────┘           │
+│  └─────────┬──────────────────────────────┘                          │
+│            │ atmux claim --next  (lane-prefer; deps-aware)            │
+│            ▼                                                          │
+│  🐝 WORKERS   (one per feature × surface; name = lane-feature)        │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐                        │
+│  │ 🐝 fe-auth │ │ 🦊 be-auth │ │ 🦉 db-auth │   ← auth lane          │
+│  │ claude     │ │ cursor-agt │ │ opencode   │   pull FE / BE / DB    │
+│  └────────────┘ └────────────┘ └────────────┘   Tasks                │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐                        │
+│  │ 🐙 fe-inv  │ │ 🦀 be-inv  │ │ 🐢 db-inv  │   ← invoice lane       │
+│  │ claude     │ │ kimi       │ │ opencode   │                        │
+│  └────────────┘ └────────────┘ └────────────┘                        │
+│                                                                       │
+│  Final Task done → epic auto-flips → "draft Epic summary" → 🧭 lead   │
+│  shared state: .atmux/{team.json,kanban.json,decisions.md,inboxes/}   │
+└───────────────────────────────────────────────────────────────────────┘
                │ every 5 min                     every 30 min
                ▼                                 ▼
          atmux whip                        atmux report
          (stale panes? rate limits?)       (Discord digest)
 ```
+
+**Read this diagram top-to-bottom**: the driver hands the lead an Epic-shaped ask; the lead routes it to the planner via `atmux send planner`; the planner runs `atmux epic add` + (optional) `atmux story add` + `atmux task add --epic <eid> --lane <lane> --deps …` to lay the work onto the kanban; FE / BE / DB / TEST workers then pull whatever's claimable in their lane via `atmux claim --next`. The lead doesn't dispatch per-Task — that's a relic of the push model; the kanban routes itself.
 
 ## Quickstart
 
@@ -188,19 +210,35 @@ atmux tell-lead <msg...>                    # driver → lead (driver-inbox.md)
 atmux reply <msg...>                        # member → driver (lead-outbox.md)
 atmux outbox [--ack] [--json]               # driver reads lead-outbox
 
-📋 Task board
-atmux task add <subject> [--body <txt>] [--assignee <m>] [--deps <id,id>] [--priority <n>]
+📋 Kanban (Epic + Story + Task)
+atmux epic add <title> [--body <txt>] [--driver-ref <ref>]
+atmux epic list [--status <s>] [--json]
+atmux epic show <id>
+atmux epic advance <id> [--to <state>]              # planning→ready→in-progress→review→done
+atmux story add <title> --epic <eid> [--ac <text>] [--body <text>]
+atmux story list --epic <eid> [--status <s>] [--json]
+atmux story show <id>
+atmux story advance <id> [--to <state>]             # planning→ready→in-progress→testing→review→merging→done
+atmux task add <subject> [--body <txt>] [--epic <eid>] [--story <sid>] \
+                         [--lane fe|be|db|ops|test|review|misc] \
+                         [--deliverable <text>] [--assignee <m>] [--deps <id,id>] [--priority <n>]
 atmux task list [--status …] [--assignee <m>] [--json]
 atmux task show <id>
-atmux task move <id> <todo|in-progress|done|blocked>
+atmux task move <id> <todo|in-progress|done|blocked>   # done auto-dispatches commit-Task to gitter
 atmux task assign <id> <member>
 atmux task rm <id>
 
 📨 Dispatch / work
-atmux dispatch <member> <task-id> [--no-ping]   # blocked if deps unresolved
+atmux dispatch <member> <task-id> [--no-ping]   # priority override only; default flow is pull
 atmux inbox <member> [--json]
 atmux claim <task-id> [--as <member>]            # blocked if deps unresolved
-atmux done  <task-id> [--as <member>] [--note <text>]
+atmux claim --next [--as <member>] [--lane <l>]  # pull-mode: pick next claimable Task in your lane
+atmux done  <task-id> [--as <member>] [--note <text>]   # auto-fires commit-Task on Epic-tagged Tasks
+
+📓 Decisions log
+atmux decisions add "<question>" --default "<answer>" --reversibility low|medium|high [--note <text>]
+atmux decisions list [--since <when>] [--reversibility <level>] [--json]
+atmux decisions show <id>
 
 💰 Cost + budgets
 atmux cost [--member <m>] [--since <ts>] [--json]
