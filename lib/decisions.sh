@@ -73,34 +73,61 @@ _decisions_rev_emoji() {
 
 # Parse the markdown log into a JSON array. Empty array when the file is
 # missing. Field order in the awk's TSV must match the jq splat below.
+#
+# E2/S9 added 4 optional fields (context, impact, decided-by, options).
+# Old entries written before S9 don't have those bullets — awk inits each
+# field to "" on every entry boundary so missing → empty TSV cell → null
+# in the resulting JSON. options is a nested `  - <text>` sub-list; we
+# join entries with "|" inside the TSV cell and split() back in jq. The
+# pipe-separator caveat: an `--option` value containing a literal "|"
+# survives the validators but corrupts re-parse. T3 may surface this as
+# a follow-up if it bites.
 _decisions_to_json_array() {
   local f="$1"
   [[ -f "$f" ]] || { echo '[]'; return; }
   awk '
     function flush() {
       if (id != "") {
-        printf "%s\t%s\t%s\t%s\t%s\t%s\n", id, ts, rev, q, d, note
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
+          id, ts, rev, q, d, note, ctx, imp, dby, opts
       }
     }
     /^### / && $2 ~ /^d-/ {
       flush()
       id=$2
-      ts=0; q=""; d=""; rev=""; note=""
+      ts=0; q=""; d=""; rev=""; note=""; ctx=""; imp=""; dby=""; opts=""
+      in_opts=0
     }
-    /^- \*\*timestamp\*\*:/   { v=$0; sub(/^- \*\*timestamp\*\*: */,"",v);   ts=v+0 }
-    /^- \*\*question\*\*:/    { v=$0; sub(/^- \*\*question\*\*: */,"",v);    q=v }
-    /^- \*\*default\*\*:/     { v=$0; sub(/^- \*\*default\*\*: */,"",v);     d=v }
-    /^- \*\*reversibility\*\*:/ { v=$0; sub(/^- \*\*reversibility\*\*: */,"",v); rev=v }
-    /^- \*\*note\*\*:/        { v=$0; sub(/^- \*\*note\*\*: */,"",v);        note=v }
+    # Any top-level field bullet ends the options sub-list (rule order:
+    # this fires first, then specific field rules — and crucially before
+    # the **options** rule that re-arms in_opts).
+    /^- \*\*[^*]+\*\*:/ { in_opts=0 }
+    /^- \*\*timestamp\*\*:/      { v=$0; sub(/^- \*\*timestamp\*\*: */,"",v);      ts=v+0 }
+    /^- \*\*question\*\*:/       { v=$0; sub(/^- \*\*question\*\*: */,"",v);       q=v }
+    /^- \*\*default\*\*:/        { v=$0; sub(/^- \*\*default\*\*: */,"",v);        d=v }
+    /^- \*\*reversibility\*\*:/  { v=$0; sub(/^- \*\*reversibility\*\*: */,"",v);  rev=v }
+    /^- \*\*note\*\*:/           { v=$0; sub(/^- \*\*note\*\*: */,"",v);           note=v }
+    /^- \*\*context\*\*:/        { v=$0; sub(/^- \*\*context\*\*: */,"",v);        ctx=v }
+    /^- \*\*impact\*\*:/         { v=$0; sub(/^- \*\*impact\*\*: */,"",v);         imp=v }
+    /^- \*\*decided-by\*\*:/     { v=$0; sub(/^- \*\*decided-by\*\*: */,"",v);     dby=v }
+    /^- \*\*options\*\*:/ { in_opts=1 }
+    in_opts && /^  - / {
+      v=$0; sub(/^  - */,"",v)
+      opts = (opts == "") ? v : opts "|" v
+    }
     END { flush() }
   ' "$f" | jq -R '
     select(length > 0) | split("\t") | {
-      id: .[0],
-      timestamp: (.[1] | tonumber),
+      id:            .[0],
+      timestamp:     (.[1] | tonumber),
       reversibility: .[2],
-      question: .[3],
-      default: .[4],
-      note: (if (.[5] // "") == "" then null else .[5] end)
+      question:      .[3],
+      default:       .[4],
+      note:          (if (.[5] // "") == "" then null else .[5] end),
+      context:       (if (.[6] // "") == "" then null else .[6] end),
+      impact:        (if (.[7] // "") == "" then null else .[7] end),
+      "decided-by":  (if (.[8] // "") == "" then null else .[8] end),
+      options:       (if (.[9] // "") == "" then [] else (.[9] | split("|")) end)
     }
   ' | jq -s '.'
 }
@@ -124,11 +151,17 @@ _decisions_parse_since() {
 
 _atmux_decisions_add() {
   local question="" default="" reversibility="low" note=""
+  local context="" impact="" decided_by=""
+  local options=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --default)       default="$2"; shift 2 ;;
       --reversibility) reversibility="$2"; shift 2 ;;
       --note)          note="$2"; shift 2 ;;
+      --context)       context="$2"; shift 2 ;;
+      --option)        options+=("$2"); shift 2 ;;
+      --impact)        impact="$2"; shift 2 ;;
+      --decided-by)    decided_by="$2"; shift 2 ;;
       --) shift; question="$*"; break ;;
       -*) atmux::die "decisions add: unknown flag: $1" ;;
       *)
@@ -148,22 +181,48 @@ _atmux_decisions_add() {
   question="$(_decisions_oneline "$question")"
   default="$(_decisions_oneline "$default")"
   note="$(_decisions_oneline "$note")"
+  context="$(_decisions_oneline "$context")"
+  impact="$(_decisions_oneline "$impact")"
+  decided_by="$(_decisions_oneline "$decided_by")"
 
-  # Discord bullets must fit ≤80 chars. Question + default + note all render
-  # as raw values prefixed by an emoji + label, so we cap each at 60 chars
-  # and ERROR (not silent-truncate) — reviewer flag on ADR-008 signoff:
-  # truncation drops context; an error forces the planner to rewrite tight.
-  # Note's prefix is `📝 note: ` (~9 chars) so 60+9 = 69 ≤ 80 — comfortable
-  # margin and a single mental model across all three fields.
-  if (( ${#question} > 60 )); then
-    atmux::die "decisions add: question exceeds 60 chars (Discord ≤80 budget); rewrite tighter"
+  local _i
+  for _i in "${!options[@]}"; do
+    options[_i]="$(_decisions_oneline "${options[_i]}")"
+  done
+
+  # Length validators (E2/S9 — relaxed caps + new fields per ADR-008 §S9).
+  # ERROR not silent-truncate (preserved review-flag behavior). New caps:
+  #   question/default 200 · note/context/impact 500 · decided-by 80 ·
+  #   option 200/each, max 5 occurrences. Discord renderer (T2) chunks
+  #   long fields into bullet groups so the per-line ≤80-char budget
+  #   from §6 is preserved at the rendering layer, not the data layer.
+  if (( ${#question}   > 200 )); then
+    atmux::die "decisions add: question exceeds 200 chars (rewrite tighter)"
   fi
-  if (( ${#default} > 60 )); then
-    atmux::die "decisions add: default exceeds 60 chars (Discord ≤80 budget); rewrite tighter"
+  if (( ${#default}    > 200 )); then
+    atmux::die "decisions add: default exceeds 200 chars (rewrite tighter)"
   fi
-  if (( ${#note} > 60 )); then
-    atmux::die "decisions add: note exceeds 60 chars (Discord ≤80 budget); rewrite tighter"
+  if (( ${#note}       > 500 )); then
+    atmux::die "decisions add: --note exceeds 500 chars (rewrite tighter)"
   fi
+  if (( ${#context}    > 500 )); then
+    atmux::die "decisions add: --context exceeds 500 chars (rewrite tighter)"
+  fi
+  if (( ${#impact}     > 500 )); then
+    atmux::die "decisions add: --impact exceeds 500 chars (rewrite tighter)"
+  fi
+  if (( ${#decided_by} > 80  )); then
+    atmux::die "decisions add: --decided-by exceeds 80 chars (use a short name/role)"
+  fi
+  if (( ${#options[@]} > 5 )); then
+    atmux::die "decisions add: --option max 5 occurrences (got ${#options[@]})"
+  fi
+  local _o
+  for _o in "${options[@]}"; do
+    if (( ${#_o} > 200 )); then
+      atmux::die "decisions add: --option entry exceeds 200 chars (rewrite tighter)"
+    fi
+  done
 
   local f; f="$(_decisions_file)"
 
@@ -186,8 +245,12 @@ _atmux_decisions_add() {
   local epoch; epoch="$(atmux::now_epoch)"
   local hhmm; hhmm="$(atmux::now_myt)"
 
+  # _decisions_append signature: f id q d rev note epoch hhmm context impact
+  # decided_by options_count [options...]. Pass-through on the empty arrays
+  # is fine — `"${options[@]}"` expands to nothing when length is 0.
   atmux::with_lock "$f" _decisions_append \
-    "$f" "$id" "$question" "$default" "$reversibility" "$note" "$epoch" "$hhmm"
+    "$f" "$id" "$question" "$default" "$reversibility" "$note" "$epoch" "$hhmm" \
+    "$context" "$impact" "$decided_by" "${#options[@]}" "${options[@]}"
 
   # Reversibility gate: only `high` interrupts the driver in real time.
   # `low`/`medium` are planner judgment calls — log to the markdown file
@@ -207,6 +270,10 @@ _atmux_decisions_add() {
 
 _decisions_append() {
   local f="$1" id="$2" question="$3" default="$4" rev="$5" note="$6" epoch="$7" hhmm="$8"
+  local context="${9:-}" impact="${10:-}" decided_by="${11:-}"
+  local options_count="${12:-0}"
+  shift 12 || shift $#
+  local options=("$@")
 
   if [[ ! -f "$f" ]]; then
     cat > "$f" <<'EOF'
@@ -219,6 +286,9 @@ add (ADR-008).
 EOF
   fi
 
+  # Optional E2/S9 fields are emitted only when non-empty so an entry with
+  # no new flags is bit-identical to today's format (backward compat with
+  # any external readers + greppers that rely on the old field shape).
   {
     printf '\n### %s — %s [%s] (%s)\n\n' "$id" "$question" "$rev" "$hhmm"
     printf -- '- **timestamp**: %s\n' "$epoch"
@@ -227,6 +297,22 @@ EOF
     printf -- '- **reversibility**: %s\n' "$rev"
     if [[ -n "$note" ]]; then
       printf -- '- **note**: %s\n' "$note"
+    fi
+    if [[ -n "$context" ]]; then
+      printf -- '- **context**: %s\n' "$context"
+    fi
+    if (( options_count > 0 )); then
+      printf -- '- **options**:\n'
+      local _opt
+      for _opt in "${options[@]}"; do
+        printf -- '  - %s\n' "$_opt"
+      done
+    fi
+    if [[ -n "$impact" ]]; then
+      printf -- '- **impact**: %s\n' "$impact"
+    fi
+    if [[ -n "$decided_by" ]]; then
+      printf -- '- **decided-by**: %s\n' "$decided_by"
     fi
     printf -- '- **override**: `atmux send lead "override %s: <new>"`\n' "$id"
   } >> "$f"
