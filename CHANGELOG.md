@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Targets **v0.4.0**. Major theme: **pull-model kanban** — Epic / Story / Task
-> data model, lane-aware `claim --next` selection, auto-dispatched commit-Tasks
-> to gitter on Task `done`, Story-level reviewer signoff, `atmux decisions add`
-> verb. See [ADR-007](docs/adr/007-pull-kanban.md) for the pull-model spec and
-> [ADR-008](docs/adr/008-decisions-verb.md) for the decisions log.
+> Targets **v0.5.0**. Themes: **pull-model kanban** (Epic 1, see ADR-007)
+> — Epic/Story/Task data model, lane-aware `claim --next`, auto-dispatched
+> commit-Tasks, Story-level reviewer signoff, `atmux decisions add` verb;
+> plus **whip Since-last-tick delta enrichment + richer decisions** (Epic 2,
+> see ADR-009 §S7–§S10 + ADR-008 §S9–§S10) — per-bullet renders for done-
+> tasks/commits/advanced-stories with `[E#/S#]`/`<sha>`/`<sid>` anchors,
+> `story.advancedAt` schema field, decisions verb gains 4 optional fields
+> (`--context` / `--option` ×5 / `--impact` / `--decided-by`) with section-
+> aware multi-message Discord chunking + `[N/M]` headers.
 
 ### ✨ Added — Pull-model kanban (Epic 1)
 
@@ -57,6 +61,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`team.kanban.crossLaneClaim`** config (default `true`). When `false`, an
   empty caller-lane queue produces a hard error instead of falling back to
   any-lane work.
+
+### ✨ Added — Whip enrichment + richer decisions (Epic 2)
+
+<!-- Bullets land per-Story; this section will be populated by sibling
+     Tasks t-fc256867 (S7) / t-1b4d63ea (S8) / t-c6ae5307 (S9) and the
+     S10 entry below. Coordinate placement so the order tracks the
+     ADR-009 §S7→§S10 + ADR-008 §S9→§S10 narrative. -->
+
+- **decisions verb — drop per-field caps + section-aware multi-message
+  Discord chunker** (E2/S10, [ADR-008 §S10](docs/adr/008-decisions-verb.md)).
+  S9's per-field byte caps (200 chars on question/default, 500 on
+  note/context/impact, 80 on decided-by, 200/each on options) are gone —
+  the data layer accepts arbitrarily long input. The Discord renderer
+  now composes the full body, ships a single message when ≤1900 chars,
+  and otherwise splits **section-by-section** into up to 5 messages
+  with a `[N/M]` header per chunk and a 1s sleep between pings to stay
+  under Discord's rate-limit margin. Required fields (question, default,
+  decided-by, reversibility, show/override pointers) always live in
+  chunk 1; optional sections (context, options, impact, note) flow into
+  chunks 2–5 in keep-order. Beyond 5 chunks, fields drop in S9-truncate
+  order (note → impact → options → context) and the last chunk gets
+  `↳ atmux decisions show <id> for full`. Whip's "Since last tick"
+  delta block also gains per-bullet rendering for done-tasks
+  (`🏁 \`<id>\` [E#/S#] <subject> — <owner>`), commits
+  (`✅ \`<sha>\` <subject> — <author>`), and advanced-stories
+  (`📈 \`<sid>\` [<epic>] <title> → <status>`); each truncates to
+  ≤80 chars/bullet with cap-5-plus-`+N more`. New `story.advancedAt`
+  epoch schema field stamped on every transition; old stories pre-
+  dating the field are naturally excluded by the strict-greater-than
+  filter. Per-field cap regressions in `tests/unit/decisions.bats`
+  retargeted; new `tests/unit/whip_delta.bats` enriched-bullet
+  coverage (18/18 incl. real-git regression for the format→tformat
+  fix from f-3229e152).
 
 ### ♻️ Changed — Briefs rewritten for pull model
 
