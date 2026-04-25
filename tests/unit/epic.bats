@@ -162,6 +162,27 @@ teardown() {
   [ "$output" -ge 1 ]
 }
 
+@test "epic: advance --to review routes summary by ROLE (team-lead) not name (review-followup t-53051620)" {
+  # Pre-fix, the dispatch hardcoded owner="lead" + .atmux/inboxes/lead.json,
+  # so a team that named its team-lead anything else would lose the summary.
+  # Rename the team-lead member; the summary should follow the role.
+  jq '(.members[] | select(.role=="team-lead") | .name) = "captain"' \
+    .atmux/team.json > .atmux/team.json.tmp \
+    && mv .atmux/team.json.tmp .atmux/team.json
+
+  local eid; eid=$("$ATMUX_BIN" epic add "renamed-lead" | tail -1)
+  "$ATMUX_BIN" epic advance "$eid" --to ready >/dev/null
+  "$ATMUX_BIN" epic advance "$eid" --to in-progress >/dev/null
+  "$ATMUX_BIN" epic advance "$eid" --to review
+
+  # Summary lands in captain.json (the actual team-lead), with owner=captain.
+  [ -f .atmux/inboxes/captain.json ]
+  run jq -r --arg eid "$eid" \
+    '[.inProgress[], .pending[] | select(.subject | test("draft Epic summary " + $eid))] | .[0].owner' \
+    .atmux/inboxes/captain.json
+  [ "$output" = "captain" ]
+}
+
 @test "epic: advance unknown id ⇒ non-zero" {
   run "$ATMUX_BIN" epic advance e-deadbeef
   [ "$status" -ne 0 ]

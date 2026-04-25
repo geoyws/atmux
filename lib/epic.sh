@@ -274,11 +274,18 @@ _atmux_epic_advance() {
   fi
 }
 
-# Mint a `draft Epic summary <eid>` task in the kanban + push to lead's inbox
-# inProgress queue. Mirrors lib/dispatch.sh's two-step (kanban + inbox). Not
-# atomic across files, matching dispatch's existing semantics.
+# Mint a `draft Epic summary <eid>` task in the kanban + push to the
+# team-lead's inbox inProgress queue. Mirrors lib/dispatch.sh's two-step
+# (kanban + inbox). Not atomic across files, matching dispatch's existing
+# semantics. Looks the lead up by ROLE (matches lib/whip.sh / tell.sh /
+# rotate.sh patterns) so a team that named its lead anything other than
+# 'lead' still routes correctly.
 _atmux_epic_dispatch_summary() {
   local eid="$1"
+  local lead_name
+  lead_name="$(jq -r 'first(.members[] | select(.role == "team-lead") | .name) // empty' "$(atmux::team_json)")"
+  [[ -n "$lead_name" ]] || atmux::die "epic dispatch-summary: no member with role=team-lead in team.json"
+
   local k; k="$(atmux::kanban_json)"
   local now; now="$(atmux::now_epoch)"
   local tid; tid="$(atmux::gen_id)"
@@ -288,15 +295,15 @@ _atmux_epic_dispatch_summary() {
   atmux::jq_update "$k" \
     '.tasks += [{
        id: $tid, subject: $subject, body: $body,
-       status: "in-progress", owner: "lead",
+       status: "in-progress", owner: $owner,
        deps: [], priority: 1,
        createdAt: $now, claimedAt: $now, completedAt: null,
        epic: null, story: null, lane: "misc", deliverable: null
      }]' \
     --arg tid "$tid" --arg subject "$subject" --arg body "$body" \
-    --argjson now "$now"
+    --arg owner "$lead_name" --argjson now "$now"
 
-  local ib; ib="$(atmux::inbox_dir)/lead.json"
+  local ib; ib="$(atmux::inbox_dir)/$lead_name.json"
   mkdir -p "$(dirname "$ib")"
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
   local task_json
@@ -305,5 +312,5 @@ _atmux_epic_dispatch_summary() {
      '.inProgress += [$t + {dispatchedAt: $now}]' \
      "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
 
-  atmux::log "epic: dispatched summary task $tid → lead (review entry)"
+  atmux::log "epic: dispatched summary task $tid → $lead_name (role=team-lead, review entry)"
 }
