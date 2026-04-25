@@ -83,7 +83,7 @@
   ],
   "whip": {
     "intervalMins": 5,
-    "staleMin": 30,
+    "staleMin": 90,
     "leadMaxMin": 60,
     "autoRotate": false
   },

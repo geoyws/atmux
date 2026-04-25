@@ -27,7 +27,16 @@ main() {
   team="$(atmux::team_name)"
   session="$(atmux::session_name)"
 
-  local STALE_MIN="${ATMUX_STALE_MIN:-30}"
+  # Stale-task threshold resolution chain (per ADR-009 §S7 D9):
+  #   per-Task .staleMin (applied inline by the jq filter below)
+  #   ↳ ATMUX_STALE_MIN env override
+  #   ↳ team.json `whip.staleMin`
+  #   ↳ default 90 (raised from 30 in E2/S7 — demo-walk Tasks legitimately
+  #     run 60–90min and the old default was creating ping fatigue).
+  local TEAM_STALE_MIN
+  TEAM_STALE_MIN=$(jq -r '.whip.staleMin // 90' \
+                    "$(atmux::team_json)" 2>/dev/null || echo 90)
+  local STALE_MIN="${ATMUX_STALE_MIN:-$TEAM_STALE_MIN}"
   local LEAD_MAX_MIN="${ATMUX_LEAD_MAX_MIN:-60}"
   # team.whip.autoRotate gates whether whip recommends rotation (false) or
   # executes it (true). Hoisted so the per-member banner-preclear check and
@@ -117,8 +126,15 @@ main() {
       findings+=("⏳ $name: compacting — skip sends until done")
       preclear_banner="${preclear_banner:-compacting}"
     fi
+    # Queued-msg flag suppressed when the pane is concurrently BUSY: Claude
+    # actively running ('Esc to interrupt' / token counter / 'thinking with')
+    # WILL submit the queued text when the current turn ends. Without this
+    # suppression, every long tool-using turn produces a false-positive
+    # 'messages queued' ping (E2/S7 t-1a5205ea).
     if echo "$state" | grep -qi 'Press up to edit queued messages'; then
-      findings+=("📥 $name: messages queued but not submitted")
+      if ! _atmux_whip_pane_busy "$state"; then
+        findings+=("📥 $name: messages queued but not submitted")
+      fi
     fi
 
     # AUTO-PRECLEAR (E2/S3 t-50ca6f09): when AUTO_ROTATE=true and a
@@ -147,12 +163,13 @@ main() {
     if [[ -f "$ib" ]]; then
       local rotated; rotated=$(_atmux_whip_member_rotated_epoch "$name")
       local stale
-      stale=$(jq --argjson now "$(atmux::now_epoch)" --argjson s "$((STALE_MIN*60))" \
+      stale=$(jq --argjson now "$(atmux::now_epoch)" --argjson default_min "$STALE_MIN" \
                   --argjson rot "$rotated" \
         '[.inProgress[]
           | (.claimedAt // .dispatchedAt // 0) as $base
           | ([$base, $rot] | max) as $anchor
-          | select(($anchor + $s) < $now)
+          | ((.staleMin // $default_min) * 60) as $task_s
+          | select(($anchor + $task_s) < $now)
          ] | length' "$ib" 2>/dev/null || echo 0)
       if [[ "${stale:-0}" -gt 0 ]]; then
         findings+=("⏰ $name: $stale task(s) in-progress > ${STALE_MIN}min")
@@ -436,6 +453,21 @@ _atmux_whip_delta_since() {
     out+=$'\n  - 🏁 '"$n tasks done: $line"
   fi
   printf '%s' "$out"
+}
+
+# Detect whether a captured pane state is currently mid-turn (Claude
+# actively running). Used to suppress false-positive findings (queued-msg)
+# while the pane is doing real work. Returns 0 when busy, 1 when idle.
+# Caller passes the already-captured pane text — we don't re-capture, both
+# to save a tmux call and to keep the busy-check synchronized with the
+# state the rest of the per-member loop reasons about.
+_atmux_whip_pane_busy() {
+  local state="$1"
+  if echo "$state" | grep -qi \
+       'Esc to interrupt\|tokens · esc to interrupt\|thinking with'; then
+    return 0
+  fi
+  return 1
 }
 
 # Read <member>-rotated.epoch as an integer; 0 if absent or non-numeric.

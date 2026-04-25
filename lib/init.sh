@@ -321,7 +321,7 @@ _atmux_init_wizard() {
        tuiCommands: $tuis,
        members: $members,
        emojis: {mode: $emoji_mode},
-       whip:   {intervalMins: 5, staleMin: 30, leadMaxMin: 60},
+       whip:   {intervalMins: 5, staleMin: 90, leadMaxMin: 60},
        report: {intervalMins: 30}
      }
      + (if $hook == "" then {} else {discord: {webhook: $hook}} end)' > "$tj"

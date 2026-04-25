@@ -41,7 +41,7 @@ main() {
 
 _atmux_task_add() {
   local subject="" body="" assignee="" deps="" priority=""
-  local epic="" story="" lane="" deliverable=""
+  local epic="" story="" lane="" deliverable="" stale_min=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --body)        body="$2"; shift 2 ;;
@@ -52,6 +52,7 @@ _atmux_task_add() {
       --story)       story="$2"; shift 2 ;;
       --lane)        lane="$2"; shift 2 ;;
       --deliverable) deliverable="$2"; shift 2 ;;
+      --stale-min)   stale_min="$2"; shift 2 ;;
       --) shift; subject="$*"; break ;;
       -*) atmux::die "task add: unknown flag: $1" ;;
       *)
@@ -60,6 +61,13 @@ _atmux_task_add() {
     esac
   done
   [[ -n "$subject" ]] || atmux::die "task add: <subject> required"
+
+  # --stale-min N: positive integer, minutes. Whip prefers this over the
+  # team default for the per-Task stale heuristic (E2/S7 t-b8583298).
+  if [[ -n "$stale_min" ]]; then
+    [[ "$stale_min" =~ ^[1-9][0-9]*$ ]] \
+      || atmux::die "task add: --stale-min must be a positive integer of minutes (got: $stale_min)"
+  fi
 
   # Lane enum (per ADR-007). UPPER-CASE only at render boundary; persisted lowercase.
   if [[ -n "$lane" ]]; then
@@ -92,6 +100,8 @@ _atmux_task_add() {
   local deps_json; deps_json="$(jq -Rn --arg d "$deps" '[$d | split(",") | map(select(length>0))] | flatten')"
   local prio_json; prio_json="$(jq -Rn --arg p "$priority" 'if $p == "" then null else ($p | tonumber? // null) end')"
 
+  local stale_json; stale_json="$(jq -Rn --arg s "$stale_min" 'if $s == "" then null else ($s | tonumber? // null) end')"
+
   atmux::jq_update "$k" \
     '.tasks += [{
       id: $id, subject: $subject, body: $body,
@@ -101,6 +111,7 @@ _atmux_task_add() {
       story:       (if $story       == "" then null else $story       end),
       lane:        (if $lane        == "" then null else $lane        end),
       deliverable: (if $deliverable == "" then null else $deliverable end),
+      staleMin:    $staleMin,
       createdAt: $now, claimedAt: null, completedAt: null
     }]' \
     --arg id "$id" \
@@ -113,6 +124,7 @@ _atmux_task_add() {
     --arg story "$story" \
     --arg lane "$lane" \
     --arg deliverable "$deliverable" \
+    --argjson staleMin "$stale_json" \
     --argjson now "$now"
 
   atmux::ok "added task $id: $subject"
