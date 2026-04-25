@@ -32,10 +32,24 @@ atmux::require() {
 
 # ---------- paths ----------
 
-# atmux state dir. Default: $PWD/.atmux. Override via $ATMUX_DIR.
+# atmux state dir. Resolution order:
+#   1. $ATMUX_DIR              — explicit `.atmux/` path (most specific)
+#   2. $ATMUX_TEAM_DIR/.atmux  — project root override (cron-friendly)
+#   3. walk up from $PWD looking for `.atmux/`
+#   4. $PWD/.atmux             — last-resort fallback (may not exist)
+#
+# ATMUX_TEAM_DIR + the bin/atmux `--team-dir` flag exist so cron jobs and
+# subdirectory invocations can pin atmux at a known project root without
+# relying on cwd: `*/5 * * * * ATMUX_TEAM_DIR=/path/to/repo atmux whip`
+# or `atmux --team-dir /path/to/repo whip`. Without this, cron's $HOME-rooted
+# cwd makes verbs that depend on team.json silently fail.
 atmux::dir() {
   if [[ -n "${ATMUX_DIR:-}" ]]; then
     printf '%s\n' "$ATMUX_DIR"
+    return
+  fi
+  if [[ -n "${ATMUX_TEAM_DIR:-}" ]]; then
+    printf '%s/.atmux\n' "${ATMUX_TEAM_DIR%/}"
     return
   fi
   # Walk up looking for .atmux/

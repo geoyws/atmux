@@ -26,8 +26,13 @@ usage() {
   cat <<'EOF'
 atmux — agent teams multiplexer.
 
-Usage: atmux <verb> [args]
+Usage: atmux [--team-dir <project-root>] <verb> [args]
        atmux                        One-stop: wizard (if new) → doctor → start → attach
+
+  --team-dir <dir>             Pin atmux at <dir> (looks for <dir>/.atmux/).
+                               Cron-friendly: `atmux --team-dir /path whip`.
+                               Same as $ATMUX_TEAM_DIR. Without this, atmux
+                               walks up from cwd to find `.atmux/`.
 
 Setup:
   up                          Same as bare `atmux`: bring a team all the way up
@@ -115,11 +120,43 @@ Misc:
 Environment:
   ATMUX_DISCORD_WEBHOOK   Discord webhook URL for whip/report escalations
   ATMUX_DIR               Override state dir (default: ./.atmux)
+  ATMUX_TEAM_DIR          Project root containing .atmux/ — alternative to
+                          --team-dir flag; ATMUX_DIR (more specific) wins
+                          when both are set
   ATMUX_TEAM              Override team name (otherwise read from team.json)
 
 Docs:  https://github.com/geoyws/atmux
 EOF
 }
+
+# Global --team-dir flag: pin atmux at a project root before verb dispatch.
+# Cron-friendly equivalent of `cd <dir> && atmux <verb>`; also accepts
+# `--team-dir=<dir>`. Can appear before OR immediately after the verb.
+# Sets $ATMUX_TEAM_DIR which lib/common.sh's atmux::dir() reads.
+_atmux_consume_team_dir() {
+  case "${1:-}" in
+    --team-dir)
+      [[ $# -ge 2 ]] || { echo "atmux: --team-dir requires <dir>" >&2; exit 64; }
+      [[ -d "$2" ]] || { echo "atmux: --team-dir: not a directory: $2" >&2; exit 64; }
+      export ATMUX_TEAM_DIR="$2"
+      _atmux_team_dir_consumed=2
+      ;;
+    --team-dir=*)
+      local d="${1#--team-dir=}"
+      [[ -n "$d" ]] || { echo "atmux: --team-dir= requires a value" >&2; exit 64; }
+      [[ -d "$d" ]] || { echo "atmux: --team-dir: not a directory: $d" >&2; exit 64; }
+      export ATMUX_TEAM_DIR="$d"
+      _atmux_team_dir_consumed=1
+      ;;
+    *) _atmux_team_dir_consumed=0 ;;
+  esac
+}
+
+_atmux_consume_team_dir "$@"
+case "$_atmux_team_dir_consumed" in
+  2) shift 2 ;;
+  1) shift 1 ;;
+esac
 
 case "${1:-}" in
   help|--help|-h) usage; exit 0 ;;
@@ -128,6 +165,13 @@ case "${1:-}" in
 esac
 
 verb="$1"; shift
+
+# Also accept --team-dir immediately after the verb (e.g. `atmux whip --team-dir /path`).
+_atmux_consume_team_dir "$@"
+case "$_atmux_team_dir_consumed" in
+  2) shift 2 ;;
+  1) shift 1 ;;
+esac
 verb_script="$ATMUX_LIB_DIR/${verb}.sh"
 
 # Route aliased verbs:

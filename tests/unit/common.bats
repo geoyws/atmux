@@ -32,6 +32,33 @@ teardown() {
   [ "$output" = "$ATMUX_TEST_TMP/project/.atmux" ]
 }
 
+@test "common: atmux::dir honors ATMUX_TEAM_DIR (project-root override)" {
+  unset ATMUX_DIR
+  ATMUX_TEAM_DIR="$ATMUX_TEST_TMP/project" run atmux::dir
+  [ "$output" = "$ATMUX_TEST_TMP/project/.atmux" ]
+}
+
+@test "common: atmux::dir strips trailing slash from ATMUX_TEAM_DIR" {
+  unset ATMUX_DIR
+  ATMUX_TEAM_DIR="$ATMUX_TEST_TMP/project/" run atmux::dir
+  [ "$output" = "$ATMUX_TEST_TMP/project/.atmux" ]
+}
+
+@test "common: atmux::dir — ATMUX_DIR wins over ATMUX_TEAM_DIR" {
+  ATMUX_DIR="/tmp/explicit/.atmux" ATMUX_TEAM_DIR="/tmp/team-root" run atmux::dir
+  [ "$output" = "/tmp/explicit/.atmux" ]
+}
+
+@test "common: atmux::dir — ATMUX_TEAM_DIR resolves cron \$HOME breakage" {
+  # Repro of the cron-from-\$HOME bug: cwd has no .atmux/, walk-up finds nothing,
+  # so ATMUX_TEAM_DIR has to substitute for cd-into-project.
+  mkdir -p home
+  cd home
+  unset ATMUX_DIR
+  ATMUX_TEAM_DIR="$ATMUX_TEST_TMP/project" run atmux::dir
+  [ "$output" = "$ATMUX_TEST_TMP/project/.atmux" ]
+}
+
 @test "common: atmux::gen_id returns t-prefixed 10-char id" {
   run atmux::gen_id
   [ "$status" -eq 0 ]
