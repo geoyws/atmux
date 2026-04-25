@@ -283,7 +283,36 @@ _atmux_whip_check_decisions() {
   ' "$dfile")
 
   if [[ "${n_new:-0}" -gt 0 ]]; then
-    findings+=("📋 $n_new new decisions — atmux decisions list")
+    # Inline-preview the latest 3 decisions (E2/S8 t-93993183) so the whip
+    # ping carries the gist instead of a flag-only pointer. Decisions list
+    # is sorted DESC by timestamp; we pull the top 3 and emit each as its
+    # own bullet. Anything beyond 3 collapses into a `+M more — atmux
+    # decisions digest` tail pointer.
+    local preview_json=""
+    if "$ATMUX_BIN_DIR/atmux" decisions list --since "$dcursor_old" --json \
+         >"$(atmux::state_dir)/.whip-decisions-preview.tmp" 2>/dev/null; then
+      preview_json="$(cat "$(atmux::state_dir)/.whip-decisions-preview.tmp")"
+      rm -f "$(atmux::state_dir)/.whip-decisions-preview.tmp"
+    fi
+
+    if [[ -n "$preview_json" ]] && jq -e . <<<"$preview_json" >/dev/null 2>&1; then
+      findings+=("📋 $n_new new decisions:")
+      local emoji_map
+      emoji_map='{"low":"🟢","medium":"🟡","high":"🔴"}'
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && findings+=("  $line")
+      done < <(jq -r --argjson em "$emoji_map" \
+                 '.[:3] | .[] | "\($em[.reversibility] // "⚪") \(.id) \(.question) → \(.default)"' \
+                 <<<"$preview_json")
+      if (( n_new > 3 )); then
+        findings+=("  +$((n_new - 3)) more — atmux decisions digest")
+      fi
+    else
+      # Fallback to flag-only pointer if list --since fails (e.g. cursor
+      # in a strange state, jq malfunction). Better to surface the count
+      # than to silently drop the finding.
+      findings+=("📋 $n_new new decisions — atmux decisions list")
+    fi
   fi
 }
 

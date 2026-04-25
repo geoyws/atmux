@@ -87,13 +87,31 @@ _whip_payload() {
   [ -f .atmux/state/decisions-cursor ]
 }
 
-@test "whip+decisions: pointer is one line, never duplicates the body" {
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "no body dup?" --default "yes" >/dev/null
+@test "whip+decisions: inline preview surfaces top-3 question + default per decision (E2/S8 t-93993183)" {
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q-alpha?"  --default "a-alpha"  >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q-beta?"   --default "a-beta"   >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q-gamma?"  --default "a-gamma"  >/dev/null
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" whip >/dev/null 2>&1 || true
-  # Whip's body must NOT contain the question text (decisions add already pinged it).
   local payloads; payloads=$(_all_payloads)
-  ! grep -F "no body dup?" <<<"$payloads" | grep -qv "atmux-decisions"
+  # Whip ping should now inline the question + default (not just a flag pointer).
+  echo "$payloads" | grep -qE "📋 3 new decisions:"
+  echo "$payloads" | grep -q "q-alpha?"
+  echo "$payloads" | grep -q "q-beta?"
+  echo "$payloads" | grep -q "q-gamma?"
+  echo "$payloads" | grep -q "→ a-alpha"
+}
+
+@test "whip+decisions: > 3 decisions ⇒ shows 3 inline + '+N more — atmux decisions digest' tail" {
+  local i
+  for i in 1 2 3 4 5; do
+    PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q$i?" --default "a$i" >/dev/null
+  done
+  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" whip >/dev/null 2>&1 || true
+  local payloads; payloads=$(_all_payloads)
+  echo "$payloads" | grep -qE "📋 5 new decisions:"
+  echo "$payloads" | grep -qE "\+2 more — atmux decisions digest"
 }
 
 @test "whip+decisions: N decisions in a single window ⇒ count reflects all of them" {
