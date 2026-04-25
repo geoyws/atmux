@@ -19,7 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > infrastructure** (ADR-009 §S1–§S5) — opt-in `team.whip.autoRotate` flag,
 > per-member rotated.epoch anchor, banner preclear; plus **`atmux flag` verb**
 > (Epic 4, see ADR-010) — member→lead structured issue surfacing with p0
-> Discord gating + `--task --needs unblock` atomic blocked-state mutation.
+> Discord gating + `--task --needs unblock` atomic blocked-state mutation;
+> plus **hot reload** (Epic 3, see ADR-011) — `atmux brief-reload`,
+> `atmux config-reload`, `atmux verify-libs`, versioned briefs with whip
+> auto-detect (verbs 3 + 6 carved to recommended **E5** for pane lifecycle +
+> per-claim state work).
 
 ### ✨ Added — Pull-model kanban (Epic 1)
 
@@ -211,6 +215,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-rotation blocker) with 3 worked examples.
   (`lib/flags.sh`, `lib/whip.sh`, `lib/kanban.sh`, `bin/atmux`,
   `templates/briefs/lead.md`, `templates/briefs/member.md`.)
+
+### ✨ Added — Hot reload (Epic 3)
+
+Erlang/OTP-style hot code swap for atmux teams. Edit a brief, change
+team.json, or fix a `lib/*.sh` syntax error WITHOUT `/clear`-ing anyone
+or restarting the session. See [ADR-011](docs/adr/011-hot-reload.md).
+
+E3 ships verbs 1, 2, 4, 5 of the original 6-verb spec; verbs 3 (TUI
+swap) and 6 (Erlang per-claim brief snapshot) are carved into a
+recommended **E5** spinoff (multi-day foundational work that deserves
+its own ADR — pane lifecycle + per-claim state).
+
+- **`atmux brief-reload <member>`** — re-paste the latest
+  `templates/briefs/<role>.md` into the member's pane as a *prepended
+  notice* (no `/clear`, no context loss). Use mid-Epic when a brief
+  was edited and the member's understanding lags the file. Banner-skip
+  safety: if the pane shows `Compacting conversation` /
+  `Press up to edit queued messages` / `approaching usage limit` /
+  `hit your limit` / `thinking with`, the reload logs and exits 1
+  (pasting into those states scrambles queued buffers or interleaves
+  with model output). `--force` bypasses for stale-banner edge cases.
+- **`atmux config-reload [--member <m>]`** — re-read `team.json`,
+  compute per-member delta against `.atmux/state/spawn-snapshot.json`
+  (written at `atmux start`), and ping each affected member with
+  `⚙️ CONFIG RELOAD: your <field> changed: <old>→<new>. Apply on
+  next dispatch.` Members with no delta stay silent. NO tmux
+  respawn, NO model swap exec, NO `/clear` — verbal protocol, soft
+  cut. Members finish current Task on the OLD config (reasoning
+  continuity), apply on next dispatch. Schema-enforced per-claim
+  versioning is deferred to E5.
+- **`atmux verify-libs`** — sources every `lib/*.sh` in a subshell,
+  reports defined `atmux::*` functions per-file, fails fast on bash
+  parse errors. Catches "broken lib/whip.sh doesn't propagate to
+  running members until they re-shell" before it bites a live team.
+  Wired into `atmux doctor` as a `libs:` check (~10 LOC).
+- **Versioned briefs** — every `templates/briefs/*.md` carries a
+  `<!-- brief-version: vN -->` HTML comment as the first line
+  (invisible when the brief renders in-pane — markdown comments
+  don't render). State at `.atmux/state/brief-versions.json`
+  records each member's pasted version: `{<member>: {role, version,
+  pastedAt}}`. Whip's `_atmux_whip_check_brief_versions` diffs
+  file-version vs pasted-version every tick; on mismatch emits
+  `📋 brief-version mismatch <member>: pane=vN, file=vM`. Lead (or
+  driver) responds by dispatching `atmux brief-reload <member>`.
+  `v0` is the legacy fallback for marker-less briefs — old teams
+  never trip the finding until they upgrade.
+- **Brief updates**: `templates/briefs/lead.md` gains §"Hot reload"
+  (brief-reload semantics + banner-skip + config-reload delta-only +
+  brief-version flow). `templates/briefs/member.md` gains §"When
+  whip pings brief version available" (run brief-reload between
+  Tasks, NOT mid-Task; config-reload applies at next dispatch).
+  (`lib/reload.sh`, `lib/verify_libs.sh`, `lib/common.sh`,
+  `lib/start.sh`, `lib/rotate.sh`, `lib/whip.sh`, `lib/doctor.sh`,
+  `bin/atmux`, `templates/briefs/lead.md`,
+  `templates/briefs/member.md`, all 8 `templates/briefs/*.md`.)
 
 ### ♻️ Changed — Briefs rewritten for pull model
 
