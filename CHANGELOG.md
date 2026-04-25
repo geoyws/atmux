@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > tasks/commits/advanced-stories with `[E#/S#]`/`<sha>`/`<sid>` anchors,
 > `story.advancedAt` schema field, decisions verb gains 4 optional fields
 > (`--context` / `--option` ×5 / `--impact` / `--decided-by`) with section-
-> aware multi-message Discord chunking + `[N/M]` headers.
+> aware multi-message Discord chunking + `[N/M]` headers; plus **auto-rotation
+> infrastructure** (ADR-009 §S1–§S5) — opt-in `team.whip.autoRotate` flag,
+> per-member rotated.epoch anchor, banner preclear; plus **`atmux flag` verb**
+> (Epic 4, see ADR-010) — member→lead structured issue surfacing with p0
+> Discord gating + `--task --needs unblock` atomic blocked-state mutation.
 
 ### ✨ Added — Pull-model kanban (Epic 1)
 
@@ -161,6 +165,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retargeted; new `tests/unit/whip_delta.bats` enriched-bullet
   coverage (18/18 incl. real-git regression for the format→tformat
   fix from f-3229e152).
+
+### ✨ Added — atmux flag verb (Epic 4)
+
+- **`atmux flag` — member→lead structured issue surfacing** (E4,
+  [ADR-010](docs/adr/010-atmux-flag.md)). Symmetric counterpart to
+  `atmux decisions add` but in the reverse direction: members fire
+  `atmux flag "<msg>" --severity p0|p1|p2 --needs unblock|decision|review|context|rotate [--task <id>]`
+  to surface a structured issue to the lead. Append-only state at
+  `.atmux/flags.md` (one `### f-xxxxxxxx` heading per entry, fields
+  as bullets, parsed by awk — same shape as `decisions.md`). Verbs:
+  `flag add` / `flag list [--status open|resolved]` / `flag show <fid>` /
+  `flag resolve <fid> [--note <text>]`. Replaces the silent-suffer
+  pattern: workers stuck >10 min now fire a flag instead of grinding.
+- **`[atmux-flags]` Discord template at `--severity p0` ONLY**.
+  Mirrors ADR-009 §S8's reversibility-gates-Discord pattern: p0 pings
+  the team channel immediately (driver gets phone visibility on
+  demo-blocking issues); p1/p2 write to `flags.md` + send a tmux
+  keystroke to the lead pane (kanban-visible, channel-quiet). Whip's
+  `_atmux_whip_check_flags` surfaces `📍 N open p0 flags` inline in
+  the next `[whip-progress]` ping so even resolved-late p0s stay
+  visible.
+- **`--task <id> --needs unblock` is a single-call atomic mutation**.
+  When both flags are present, `atmux flag add` (a) writes the flag
+  entry to `flags.md`, (b) appends the flag id to `task.note` for
+  audit, AND (c) flips the linked Task to `blocked` state — kanban
+  state matches reality without forcing the worker to remember a
+  second command. Other `--needs` values with `--task` append to
+  `.note` only (no status change — could be "I need a clarification
+  but can keep working on adjacent stuff").
+- **Mid-rotation flag-send: lost-keystroke acceptable; flag persists
+  durably**. When a member fires `atmux flag` while the lead pane is
+  mid-`/clear` (E2 auto-rotate), the `tmux send-keys` "now signal"
+  may land in the void or as the first text in the freshly-bootstrapped
+  pane. The flag entry STILL writes to `flags.md` durably; whip
+  surfaces it on the next 5-min tick regardless. Banner-detect on
+  the lead pane (`Compacting conversation` / `hit your limit`) skips
+  the keystroke send pre-emptively.
+- **Brief updates**: `templates/briefs/lead.md` whip loop reads
+  `flags.md` FIRST (before driver-inbox.md) with triage markers
+  (✅ resolved / 📤 routed / ⏳ in-progress / ❌ deferred) plus a
+  callout that open p0 flags appear in `[whip-progress]` Discord
+  pings. `templates/briefs/member.md` gains §"When to flag" — 4
+  triggers (stuck >10 min / ambiguous tool output / decision needed /
+  mid-rotation blocker) with 3 worked examples.
+  (`lib/flags.sh`, `lib/whip.sh`, `lib/kanban.sh`, `bin/atmux`,
+  `templates/briefs/lead.md`, `templates/briefs/member.md`.)
 
 ### ♻️ Changed — Briefs rewritten for pull model
 
