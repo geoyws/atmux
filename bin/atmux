@@ -85,6 +85,7 @@ Decisions log:
   decisions add <q> --default <a> [--reversibility low|medium|high] [--note <t>]
   decisions list [--since <when>] [--reversibility <level>] [--json]
   decisions show <id>
+  decisions digest            Post consolidated Discord digest since cursor
 
 Flags log (operator escalations):
   flags add <message> --severity p0|p1|p2 --needs decision|review|context|unblock|rotate
