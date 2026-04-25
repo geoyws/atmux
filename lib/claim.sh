@@ -119,6 +119,20 @@ _atmux_claim_pick_next() {
   fi
 
   local tj; tj="$(atmux::team_json)"
+
+  # E1/S4-followup t-120a5382: reactive roles never poll. team-lead /
+  # planner / reviewer / gitter all receive work via dispatch (driver →
+  # lead, lead → planner, story-advance → reviewer, finish_task_done →
+  # gitter); polling claim --next leaks them into the cross-lane
+  # fallback, where they'd grab member-lane Tasks that should stay
+  # with their owners. Fail fast with a contract-stating message.
+  local role
+  role=$(jq -r --arg n "$who" '.members[]? | select(.name == $n) | .role // ""' "$tj")
+  case "$role" in
+    team-lead|planner|reviewer|gitter)
+      atmux::die "claim --next is for member roles only — '$who' is a $role (reactive — await dispatch)"
+      ;;
+  esac
   local lane="$override_lane"
   if [[ -z "$lane" ]]; then
     lane=$(jq -r --arg n "$who" '.members[]? | select(.name == $n) | .lane // ""' "$tj")

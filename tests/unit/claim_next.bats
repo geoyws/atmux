@@ -169,6 +169,51 @@ _set_cross_lane() {
   [ "$output" = "todo" ]
 }
 
+# ---------- E1/S4-followup t-120a5382: reactive-role gate ----------
+#
+# team-lead, planner, reviewer, gitter all receive work via dispatch
+# (driver→lead, lead→planner, story-advance→reviewer, finish_task_done→
+# gitter). They MUST NOT poll claim --next — the cross-lane fallback
+# would leak member-lane Tasks into their queues. Verb fails fast with
+# a contract-stating message.
+
+@test "claim --next: team-lead is rejected (reactive role)" {
+  # Default-init template ships with 'lead' as role=team-lead — use it directly.
+  run "$ATMUX_BIN" claim --next --as lead
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "reactive" ]] || [[ "$output" =~ "member roles only" ]]
+  [[ "$output" =~ "team-lead" ]]
+}
+
+@test "claim --next: planner is rejected (reactive role)" {
+  run "$ATMUX_BIN" claim --next --as planner
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "planner" ]]
+  [[ "$output" =~ "reactive" ]] || [[ "$output" =~ "member roles only" ]]
+}
+
+@test "claim --next: reviewer is rejected (reactive role)" {
+  run "$ATMUX_BIN" claim --next --as reviewer
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "reviewer" ]]
+  [[ "$output" =~ "reactive" ]] || [[ "$output" =~ "member roles only" ]]
+}
+
+@test "claim --next: gitter is rejected (reactive role)" {
+  run "$ATMUX_BIN" claim --next --as gitter
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "gitter" ]]
+  [[ "$output" =~ "reactive" ]] || [[ "$output" =~ "member roles only" ]]
+}
+
+@test "claim --next: member roles still claim normally (gate is reactive-only)" {
+  _seed_member_lane fe-worker fe
+  "$ATMUX_BIN" task add "for-member" --lane fe >/dev/null
+  run "$ATMUX_BIN" claim --next --as fe-worker
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "for-member" ]] || [[ "$output" =~ "claimed" ]]
+}
+
 @test "claim --next: prefers caller-preassigned over plain unclaimed at same priority" {
   _seed_member_lane fe-worker fe
   # Both at priority 1. Sort tie-break is createdAt asc → unassigned (added
