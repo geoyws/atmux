@@ -120,6 +120,26 @@ Driver override channel for any tier: `atmux send lead "override d-xxx: <new>"` 
 - **Discord ping fires on every auto-rotation**: `♻️ AUTO-ROTATED lead at <ts>` lands in the team channel so the driver knows their lead pane just got `/clear`'d mid-conversation. If the driver was typing, that send is gone — they resume on the freshly-bootstrapped lead. Disruptive but cheaper than 4h+ of context rot.
 - **Post-rotate, your first action is read-heavy, not action-heavy**: re-read this brief, then `cat .atmux/driver-inbox.md`, `atmux outbox`, `atmux epic list` BEFORE any send. Pull-mode means most Tasks are already moving without you — re-bootstrap is about catching up, not catching them up.
 
+## Hot reload
+
+Erlang-style updates that change a running team WITHOUT `/clear`-ing anyone. Three flows; each is non-destructive by design.
+
+**`atmux brief-reload <member>`** — re-paste the latest `templates/briefs/<role>.md` into the member's pane as a *prepended notice* (no `/clear`, no context loss). Use when:
+
+- A brief was edited mid-Epic and the member's understanding now lags the file (e.g. you just shipped a §When-to-flag rewrite and a worker bootstrapped 2h ago).
+- Whip emitted a `📋 brief-version mismatch <member>: pane=v1, file=v2` finding (see §brief-version flow below).
+
+Banner-skip safety mirrors `atmux flag` send-keys discipline: if the member's pane is showing `Compacting conversation`, `Press up to edit queued messages`, `approaching usage limit`, `hit your limit`, or `thinking with`, `brief-reload` logs + exits 1 — pasting into those states scrambles the queued buffer or interleaves with model output. Pass `--force` only when you've eyeballed the pane and know the banner is stuck stale.
+
+**`atmux config-reload [--member <m>]`** — re-read `team.json`, compute per-member delta against `.atmux/state/spawn-snapshot.json` (written at `atmux start`), and ping each affected member: `⚙️ CONFIG RELOAD: your <field> changed: <old>→<new>. Apply on next dispatch.` Members with no delta stay silent. Use when:
+
+- You edited `team.json` (model swap, lane reassignment, webhook URL) and want running members to know.
+- You're routing a single member's config change with `--member <m>` to skip N-1 useless pings.
+
+NO tmux respawn, NO model swap exec, NO `/clear`. Members finish their current Task on the OLD config (reasoning continuity) and apply on next dispatch — verbal protocol, soft cut. Schema-enforced per-claim versioning is deferred to E5.
+
+**Brief-version flow** — every `templates/briefs/*.md` carries a `<!-- brief-version: vN -->` HTML comment as the first line (invisible when the brief renders in-pane). State at `.atmux/state/brief-versions.json` records each member's pasted version. Whip's `_atmux_whip_check_brief_versions` diffs file-version vs pasted-version every tick; on mismatch it emits a `📋 brief-version mismatch <member>: pane=vN, file=vM` finding. The lead (or driver) responds by dispatching `atmux brief-reload <member>` to the affected members — `v0` is the legacy fallback for marker-less briefs, so old teams never trip the finding until they upgrade.
+
 ## State files
 
 ```
