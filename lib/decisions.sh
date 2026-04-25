@@ -70,17 +70,6 @@ _decisions_rev_emoji() {
   esac
 }
 
-# Truncate to N chars, append … if longer. Char-count, not byte-count, so
-# emoji/unicode in the input render right.
-_decisions_truncate() {
-  local s="$1" max="$2"
-  if (( ${#s} > max )); then
-    printf '%s…' "${s:0:$((max-1))}"
-  else
-    printf '%s' "$s"
-  fi
-}
-
 # Parse the markdown log into a JSON array. Empty array when the file is
 # missing. Field order in the awk's TSV must match the jq splat below.
 _decisions_to_json_array() {
@@ -159,15 +148,20 @@ _atmux_decisions_add() {
   default="$(_decisions_oneline "$default")"
   note="$(_decisions_oneline "$note")"
 
-  # Discord bullets must fit ≤80 chars. Question + default render as raw
-  # values prefixed by an emoji + label, so we cap each at 60 chars and
-  # ERROR (not silent-truncate) — reviewer flag on ADR-008 signoff:
+  # Discord bullets must fit ≤80 chars. Question + default + note all render
+  # as raw values prefixed by an emoji + label, so we cap each at 60 chars
+  # and ERROR (not silent-truncate) — reviewer flag on ADR-008 signoff:
   # truncation drops context; an error forces the planner to rewrite tight.
+  # Note's prefix is `📝 note: ` (~9 chars) so 60+9 = 69 ≤ 80 — comfortable
+  # margin and a single mental model across all three fields.
   if (( ${#question} > 60 )); then
     atmux::die "decisions add: question exceeds 60 chars (Discord ≤80 budget); rewrite tighter"
   fi
   if (( ${#default} > 60 )); then
     atmux::die "decisions add: default exceeds 60 chars (Discord ≤80 budget); rewrite tighter"
+  fi
+  if (( ${#note} > 60 )); then
+    atmux::die "decisions add: note exceeds 60 chars (Discord ≤80 budget); rewrite tighter"
   fi
 
   local f; f="$(_decisions_file)"
@@ -235,15 +229,14 @@ _decisions_render_discord() {
   local id="$1" question="$2" default="$3" rev="$4" note="$5" team="$6" hhmm="$7"
   local emoji; emoji="$(_decisions_rev_emoji "$rev")"
 
-  # question + default are length-validated in _atmux_decisions_add. Note is
-  # truncated softly because it's optional context, not a load-bearing field.
+  # All three user-supplied fields are length-validated in _atmux_decisions_add
+  # (≤60 chars each). Renderer just emits — no per-field truncation.
   printf '📋 **[atmux-decisions]** · `%s` · %s\n\n' "$team" "$hhmm"
   printf '🔵 %s\n' "$question"
   printf '✅ default: %s\n' "$default"
   printf '%s reversibility: %s\n' "$emoji" "$rev"
   if [[ -n "$note" ]]; then
-    local n_short; n_short="$(_decisions_truncate "$note" 80)"
-    printf '📝 note: %s\n' "$n_short"
+    printf '📝 note: %s\n' "$note"
   fi
   # Two bullets — concatenating into one renders ~90 chars, breaking the
   # ≤80-char/bullet Discord template budget (same vulnerability class as the

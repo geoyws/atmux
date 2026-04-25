@@ -70,6 +70,36 @@ _curl_payload_content() {
   [ "$status" -eq 0 ]
 }
 
+@test "decisions: add ERRORS when --note exceeds 60 chars (review-followup t-47361a6c)" {
+  # Per ADR-008 reviewer-flag pattern: note bullet was previously soft-truncated
+  # at 80 chars, then prefixed with '📝 note: ' (~9 chars) → bullet up to 89 chars,
+  # violating ≤80-char Discord template. Switched to ERROR-not-truncate at 60
+  # for consistency with question/default validators.
+  local long; long=$(printf '%.0sN' {1..61})
+  run "$ATMUX_BIN" decisions add "Q?" --default "y" --note "$long"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "note exceeds 60 chars" ]]
+  [[ "$output" =~ "Discord ≤80 budget" ]]
+}
+
+@test "decisions: add accepts --note at the 60-char boundary" {
+  local sixty; sixty=$(printf '%.0sN' {1..60})
+  run "$ATMUX_BIN" decisions add "Q?" --default "y" --note "$sixty"
+  [ "$status" -eq 0 ]
+}
+
+@test "decisions: --note=80 chars (the AC's repro case) ⇒ rejected, not truncated" {
+  # Repro from t-47361a6c: pre-fix, an 80-char note + '📝 note: ' prefix
+  # rendered an 89-char bullet. Post-fix, the validator stops it at the door.
+  local eighty; eighty=$(printf '%.0sN' {1..80})
+  run "$ATMUX_BIN" decisions add "Q?" --default "y" --note "$eighty"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "note exceeds 60 chars" ]]
+  # Log file should not have been written — validation happens before the
+  # mutex-protected append.
+  [ ! -f .atmux/decisions.md ]
+}
+
 @test "decisions: add rejects invalid --reversibility" {
   run "$ATMUX_BIN" decisions add "q?" --default "y" --reversibility BAD
   [ "$status" -ne 0 ]
