@@ -13,12 +13,19 @@ export ATMUX_LIB_DIR="$ATMUX_REPO_ROOT/lib"
 export ATMUX_TEMPLATES_DIR="$ATMUX_REPO_ROOT/templates"
 
 # Create an isolated per-test workspace.
+#
+# Tests run on a dedicated tmux socket (TMUX_TMPDIR=$ATMUX_TEST_TMP/tmux) so test
+# churn never touches the user's daily-driver tmux server. Without this, mass
+# teardown of N panes inside the shared default-socket server can wedge tmux 3.x
+# and take down unrelated sessions (incident: 2026-04-25).
 atmux_setup_sandbox() {
   ATMUX_TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/atmux-test-XXXXXX")"
   export ATMUX_TEST_TMP
-  mkdir -p "$ATMUX_TEST_TMP/project"
+  mkdir -p "$ATMUX_TEST_TMP/project" "$ATMUX_TEST_TMP/tmux"
   cd "$ATMUX_TEST_TMP/project" || return 1
   export ATMUX_DIR="$ATMUX_TEST_TMP/project/.atmux"
+  export TMUX_TMPDIR="$ATMUX_TEST_TMP/tmux"
+  unset TMUX  # detach inherited client so child tmux invocations spawn a fresh sandbox server
   # Don't spew colors in tests.
   export NO_COLOR=1
   # Fast spawn wait.
@@ -26,15 +33,10 @@ atmux_setup_sandbox() {
 }
 
 atmux_teardown_sandbox() {
-  # Kill any tmux sessions we created.
-  if [[ -n "${ATMUX_TEST_SESSION:-}" ]]; then
-    tmux kill-session -t "$ATMUX_TEST_SESSION" 2>/dev/null || true
-  fi
-  # Kill any session named atmux-* that we might have created.
-  if command -v tmux >/dev/null 2>&1; then
-    tmux list-sessions -F '#S' 2>/dev/null | grep -E '^atmux-test-' | while read -r s; do
-      tmux kill-session -t "$s" 2>/dev/null || true
-    done
+  # Tear down the sandbox tmux server in a single op — avoids the per-pane kill
+  # storm that wedged tmux on 2026-04-25.
+  if [[ -n "${TMUX_TMPDIR:-}" && -S "$TMUX_TMPDIR/default" ]]; then
+    tmux kill-server 2>/dev/null || true
   fi
   if [[ -n "${ATMUX_TEST_TMP:-}" && -d "$ATMUX_TEST_TMP" ]]; then
     rm -rf "$ATMUX_TEST_TMP"
