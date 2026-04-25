@@ -66,6 +66,11 @@ Automation:
   pause <member>              Mark member paused (dispatch refuses to queue)
   resume <member>             Unpause
 
+Decisions log:
+  decisions add <q> --default <a> [--reversibility low|medium|high] [--note <t>]
+  decisions list [--since <when>] [--reversibility <level>] [--json]
+  decisions show <id>
+
 Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
   reconfigure                 Re-run wizard against an existing team.json
