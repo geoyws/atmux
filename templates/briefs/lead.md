@@ -62,6 +62,32 @@ atmux decisions add "Inline TEST tasks vs separate test-lane Task per code Task?
   --note "TEST-lane Task is the audit anchor; reviewer wants separable diff"
 ```
 
+### When to provide each optional field
+
+The data layer accepts 4 optional fields beyond the required `<question>`/`--default`/`--reversibility`. **Provide them by default for non-trivial calls** — the chunker surfaces them across multiple Discord messages so context isn't a length tax (see §S10 below).
+
+- `--context` — WHY this decision is needed: the constraint, prior incident, blocking issue, or recent ADR that surfaced it. Always provide for non-trivial calls. Without context, the override window is shorter because the driver has to swap-in the framing manually.
+- `--option` (repeatable, max 5) — alternatives the planner/lead actively considered before picking the default. **Provide ≥2 for any high-reversibility call** so the driver can override to a known-considered branch instead of asking "what else did you try?".
+- `--impact` — what changes / what breaks / who notices if the default is wrong. Sizes the override window: small impact → narrow window OK; broad impact → driver wants longer review.
+- `--decided-by` — who actually made the call (`lead`, `planner`, or a specific teammate name). Default: `lead` if lead-resolved, `planner` if surfaced during decomposition.
+
+Worked example (high-reversibility schema call, all 4 fields):
+
+```
+atmux decisions add "Pin DocumentNo allocator to per-tenant sequence vs shared global?" \
+  --default "Per-tenant sequence behind RLS predicate; shared global deferred" \
+  --reversibility high \
+  --note "Prod migration cost ≈ 4h on the 50M-row docs table; one-shot, no rollback path" \
+  --context "Tenant A asked for monotonic doc# inside their org. Shared global breaks that — gaps surface when other tenants advance the counter. RLS already filters cross-tenant reads." \
+  --option "per-tenant sequence behind RLS predicate" \
+  --option "shared global with per-tenant offset packed into high bits" \
+  --option "logical replication + per-tenant master sequence" \
+  --impact "blocks t-7a4 (DocumentNo allocator hot-fix); unblocks t-9c1 (monotonic doc# demo)" \
+  --decided-by "lead"
+```
+
+Cross-ref: see *Reversibility ladder + Discord fate* below for which tiers ping Discord at add-time vs which land in the hourly `atmux decisions digest` recap.
+
 ### Reversibility ladder + Discord fate
 
 | Tier | When | Discord at add-time | Where it surfaces |
@@ -79,10 +105,13 @@ Driver override channel for any tier: `atmux send lead "override d-xxx: <new>"` 
 - The Discord 2000-char body cap is now handled by **section-by-section chunking** with a `[N/M]` header — up to 5 messages per high-rev decision, 1s gap between pings to stay under Discord's rate limit.
 - If a decision still won't fit at 5 chunks, fields drop in this order: note → impact → options → context, and the last surviving chunk ends with `↳ atmux decisions show <id> for full`. **If you hit the truncation marker, your decision is probably better split into multiple decisions.**
 
-## Rotation discipline
+## Auto-rotation
 
-- Auto-rotate at 60 min uptime — whip checks `lead-session-start.txt` (epoch) and prompts a `/clear`-and-re-bootstrap when the warning lands. Silent <45 min, warning 45–60 min, auto-rotate ≥60 min.
-- After `/clear`: re-read this brief, then re-read `driver-inbox.md` + `atmux outbox` + `atmux epic list` before any send. Pull-mode means most Tasks are already moving without you — your re-bootstrap is read-heavy, not action-heavy.
+- **`team.whip.autoRotate` flag, default `false`** — opt-in, set in `team.json` under the `whip` key. Default off because `/clear` destroys the lead pane's full conversation context; existing teams must not get auto-`/clear`'d on upgrade. Flip once with eyes open.
+- **When `false` (default)**: whip emits a "consider `atmux rotate-lead`" finding at uptime ≥ 60 min and stays out of the way. Silent <45 min, warning 45–60 min. You rotate manually via `atmux rotate-lead`.
+- **When `true`**: whip *auto-execs* `atmux rotate-lead` on either signal — uptime threshold (≥60 min, anchored to `.atmux/state/lead-rotated.epoch`, NOT session-start), OR a banner detection in the lead pane (`Compacting conversation`, `approaching usage limit`, `hit your limit`). One knob, two triggers. Banner-preclear is debounced 5 min via the same `lead-rotated.epoch` so a persistent Compacting banner doesn't re-rotate every cron tick.
+- **Discord ping fires on every auto-rotation**: `♻️ AUTO-ROTATED lead at <ts>` lands in the team channel so the driver knows their lead pane just got `/clear`'d mid-conversation. If the driver was typing, that send is gone — they resume on the freshly-bootstrapped lead. Disruptive but cheaper than 4h+ of context rot.
+- **Post-rotate, your first action is read-heavy, not action-heavy**: re-read this brief, then `cat .atmux/driver-inbox.md`, `atmux outbox`, `atmux epic list` BEFORE any send. Pull-mode means most Tasks are already moving without you — re-bootstrap is about catching up, not catching them up.
 
 ## State files
 

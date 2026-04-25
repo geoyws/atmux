@@ -94,6 +94,31 @@ atmux decisions add "OQ4: Should auto-dispatched commit-Tasks have .epic set?" \
 
 Use `--reversibility high` for OQs whose default the driver might want to override mid-implementation (auth model changes, schema shape, API surface). Reversibility tiers match the lead's brief — keep them aligned across roles.
 
+### When to provide each optional field
+
+The data layer takes 4 optional fields. **Use ALL 4 for any HIGH-reversibility OQ** — the driver needs them to override on phone without round-tripping for context. For low/med, `--context` and `--option`s are still strongly encouraged; they're cheap and the digest surfaces them later.
+
+- `--context` — WHY this OQ surfaced during decomposition (the constraint or design fork that forced the question). Empty context = the digest reader has to guess.
+- `--option` (repeatable, max 5) — the alternatives you weighed before picking the default. ≥2 for HIGH; if you didn't compare, the OQ wasn't a real fork.
+- `--impact` — what assumes the default; what migrates if the driver overrides; which Tasks block/unblock. Lets the driver size the override window.
+- `--decided-by` — who landed the call. Default: `planner` for OQ resolutions; `lead` if escalated for a recommended default.
+
+Planner OQ-resolution worked example (high-reversibility, all 4 fields):
+
+```
+atmux decisions add "OQ7: Tenancy model — soft (RLS) vs hard (schema-per-tenant)?" \
+  --default "Soft-tenant via RLS predicate; schema-per-tenant deferred to E5" \
+  --reversibility high \
+  --note "Schema-per-tenant means N migrations per release across 200+ accounts" \
+  --context "PropertyX has 200+ developer accounts and migrating each per release would dominate the deploy window. Soft-tenant scoped via RLS predicates keeps one schema and pushes the isolation cost to query-time filters." \
+  --option "soft-tenant + RLS predicates (recommended default)" \
+  --option "schema-per-tenant + per-release migration burden" \
+  --option "row-level multi-tenancy via per-tenant materialized views" \
+  --option "logical replication + per-tenant read replicas" \
+  --impact "blocks t-aaaa1 (RLS audit); unblocks t-bbbb2 (multi-org demo); driver overrideable inside the cheap window before the audit Task lands" \
+  --decided-by "planner"
+```
+
 ### Reversibility ladder + Discord fate
 
 | Tier | When | Discord at add-time | Where it surfaces |
@@ -104,22 +129,7 @@ Use `--reversibility high` for OQs whose default the driver might want to overri
 
 **Default to LOW unless the call could need driver override mid-flight — then HIGH. MEDIUM is for tradeoff-with-rationale calls that don't need real-time interrupt but the driver should review later.**
 
-**S10 — write context-rich, not terse** (per ADR-008 §S10): field byte caps are GONE. `--context`, `--option` (×5), `--impact`, `--note`, `--decided-by` accept arbitrarily long strings. The Discord 2000-char body cap is handled by **section-by-section chunking** with a `[N/M]` header (up to 5 messages, 1s gap). Beyond 5 chunks, fields drop in order note → impact → options → context with `↳ atmux decisions show <id> for full` on the last chunk — **if you hit that marker, the decision is probably better split into multiple decisions** (one per OQ).
-
-```
-atmux decisions add "OQ12: Tenancy model for multi-org rollout?" \
-  --default "Soft-tenant via accountID column, schema-per-tenant deferred" \
-  --reversibility high \
-  --context "PropertyX has 200+ developer accounts already; schema-per-tenant
-    means 200 migrations on every release. Soft-tenant scoped via RLS keeps
-    one schema and pushes the isolation cost to query-time predicate filters." \
-  --option "soft-tenant + RLS predicates" \
-  --option "schema-per-tenant + per-release migration burden" \
-  --option "row-level multi-tenancy via materialized views" \
-  --option "logical replication + per-tenant read replicas" \
-  --impact "blocks t-aaaa1 (RLS audit), unblocks t-bbbb2 (multi-org demo)" \
-  --decided-by "lead"
-```
+**S10 — write context-rich, not terse** (per ADR-008 §S10): field byte caps are GONE. `--context`, `--option` (×5), `--impact`, `--note`, `--decided-by` accept arbitrarily long strings. The Discord 2000-char body cap is handled by **section-by-section chunking** with a `[N/M]` header (up to 5 messages, 1s gap). Beyond 5 chunks, fields drop in order note → impact → options → context with `↳ atmux decisions show <id> for full` on the last chunk — **if you hit that marker, the decision is probably better split into multiple decisions** (one per OQ). See the OQ7 worked example above for the recommended shape.
 
 ## ADR format
 
