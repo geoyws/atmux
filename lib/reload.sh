@@ -90,6 +90,7 @@ _atmux_reload_brief() {
   tmux send-keys -t "$target" Enter
   rm -f "$tmp"
 
+  atmux::record_brief_version "$member" "$role"
   atmux::ok "reloaded brief for $member"
 }
 

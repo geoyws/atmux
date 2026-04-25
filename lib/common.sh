@@ -187,6 +187,25 @@ atmux::brief_version() {
   fi
 }
 
+# atmux::record_brief_version <member> <role>
+#
+# Stamp the just-pasted brief's version + epoch into
+# .atmux/state/brief-versions.json. Called by lib/start.sh (initial paste),
+# lib/rotate.sh (post-/clear re-paste), and lib/reload.sh (brief-reload
+# subcommand) so whip's brief-version delta check (T3.4) can compare
+# currently-pasted vs on-disk versions across all three paste paths.
+atmux::record_brief_version() {
+  local member="$1" role="$2"
+  local version; version="$(atmux::brief_version "$role")"
+  local now; now="$(atmux::now_epoch)"
+  local f; f="$(atmux::state_dir)/brief-versions.json"
+  mkdir -p "$(dirname "$f")"
+  [[ -s "$f" ]] || echo '{}' > "$f"
+  atmux::jq_update "$f" \
+    '. + { ($m): { role: $r, version: $v, pastedAt: ($t | tonumber) } }' \
+    --arg m "$member" --arg r "$role" --arg v "$version" --arg t "$now"
+}
+
 # atmux::task_append_note <task_id> <line>
 #
 # Append a single line to the task's `.note` field, newline-separated.

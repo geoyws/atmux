@@ -65,6 +65,7 @@ main() {
     sleep 1
     tmux send-keys -t "$target" Enter
     rm -f "$tmp"
+    atmux::record_brief_version "$member" "$role"
   fi
 
   atmux::ok "rotated $member (role=$role, tui=$tui)"
