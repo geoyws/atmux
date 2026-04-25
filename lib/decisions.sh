@@ -29,8 +29,9 @@ main() {
     add)      _atmux_decisions_add "$@" ;;
     list|ls)  _atmux_decisions_list "$@" ;;
     show|get) _atmux_decisions_show "$@" ;;
-    "")       atmux::die "decisions: missing verb (add|list|show)" ;;
-    *)        atmux::die "decisions: unknown verb: $verb (use add|list|show)" ;;
+    digest)   _atmux_decisions_digest "$@" ;;
+    "")       atmux::die "decisions: missing verb (add|list|show|digest)" ;;
+    *)        atmux::die "decisions: unknown verb: $verb (use add|list|show|digest)" ;;
   esac
 }
 
@@ -188,11 +189,17 @@ _atmux_decisions_add() {
   atmux::with_lock "$f" _decisions_append \
     "$f" "$id" "$question" "$default" "$reversibility" "$note" "$epoch" "$hhmm"
 
-  _decisions_export_webhook
-  local team; team="$(atmux::team_name)"
-  local body; body="$(_decisions_render_discord \
-    "$id" "$question" "$default" "$reversibility" "$note" "$team" "$hhmm")"
-  atmux::discord_ping "$body"
+  # Reversibility gate: only `high` interrupts the driver in real time.
+  # `low`/`medium` are planner judgment calls — log to the markdown file
+  # (already done above) but skip the per-add Discord ping. `high` is
+  # potentially-irreversible and warrants real-time visibility.
+  if [[ "$reversibility" == "high" ]]; then
+    _decisions_export_webhook
+    local team; team="$(atmux::team_name)"
+    local body; body="$(_decisions_render_discord \
+      "$id" "$question" "$default" "$reversibility" "$note" "$team" "$hhmm")"
+    atmux::discord_ping "$body"
+  fi
 
   atmux::ok "decisions: recorded $id"
   printf '%s\n' "$id"
@@ -312,4 +319,117 @@ _atmux_decisions_show() {
     atmux::die "decisions show: no entry with id $id"
   fi
   printf '%s\n' "$out"
+}
+
+# ---------- digest ----------
+#
+# Posts a single consolidated Discord digest of all decisions logged since
+# `.atmux/state/decisions-digest-cursor`. Designed for periodic crons that
+# want a low-noise "what got auto-resolved this hour/day?" recap, separate
+# from per-add high-rev pings (gated by `_atmux_decisions_add`) and from
+# whip's pointer-only cursor.
+#
+# Cursor advances only when ≥1 decision was emitted — empty window leaves
+# the cursor untouched so the next digest catches the first new decision.
+# Discord ping is fire-and-warn: cursor moves whether the ping succeeded
+# or not (discord_ping swallows curl rc per ADR-008).
+
+_atmux_decisions_digest() {
+  local f; f="$(_decisions_file)"
+  local cursor_file; cursor_file="$(atmux::state_dir)/decisions-digest-cursor"
+  local cursor=0
+  if [[ -f "$cursor_file" ]]; then
+    local raw; raw="$(cat "$cursor_file" 2>/dev/null || echo 0)"
+    [[ "$raw" =~ ^[0-9]+$ ]] && cursor="$raw"
+  fi
+
+  local entries; entries="$(_decisions_to_json_array "$f")"
+  local filtered
+  filtered="$(jq --argjson c "$cursor" \
+                 '[.[] | select(.timestamp > $c)] | sort_by(.timestamp)' \
+                 <<<"$entries")"
+  local n; n="$(jq 'length' <<<"$filtered")"
+
+  if [[ "$n" -eq 0 ]]; then
+    echo "no new decisions since digest cursor"
+    return 0
+  fi
+
+  local bullets=() emoji
+  local id rev question default
+  while IFS=$'\t' read -r id rev question default; do
+    emoji="$(_decisions_rev_emoji "$rev")"
+    bullets+=("$emoji $id $question → $default")
+  done < <(jq -r '.[] | [.id, .reversibility, .question, .default] | @tsv' \
+              <<<"$filtered")
+
+  local team; team="$(atmux::team_name)"
+  local hhmm; hhmm="$(atmux::now_myt)"
+  local since_str
+  if (( cursor > 0 )); then
+    since_str="$(date -d "@$cursor" +'%Y-%m-%d %H:%M' 2>/dev/null \
+              || date -r "$cursor"  +'%Y-%m-%d %H:%M' 2>/dev/null \
+              || echo "$cursor")"
+  else
+    since_str="beginning"
+  fi
+  local header
+  header="$(printf '📋 **[atmux-digest]** · `%s` · %s · %s decisions since %s' \
+            "$team" "$hhmm" "$n" "$since_str")"
+
+  # Reserve 16 chars of headroom in the chunker budget so the per-chunk
+  # `[N/M] ` prefix (6 chars at typical M<10) never tips us over 2000.
+  local budget=1984
+  local groups=()
+  mapfile -d '' groups < <(_decisions_chunk_for_discord "$header" "$budget" \
+                            "${bullets[@]}")
+  local total=${#groups[@]}
+
+  _decisions_export_webhook
+  local i body
+  for (( i=0; i<total; i++ )); do
+    if (( total > 1 )); then
+      body="[$((i + 1))/$total] $header"$'\n\n'"${groups[$i]}"
+    else
+      body="${header}"$'\n\n'"${groups[$i]}"
+    fi
+    atmux::discord_ping "$body"
+    if (( i < total - 1 )); then sleep 1; fi
+  done
+
+  mkdir -p "$(dirname "$cursor_file")"
+  atmux::now_epoch > "$cursor_file"
+
+  if (( total > 1 )); then
+    atmux::ok "decisions: digest sent ($n decisions, $total chunks)"
+  else
+    atmux::ok "decisions: digest sent ($n decisions)"
+  fi
+}
+
+# Group bullets into chunks such that `<header>\n\n<chunk>` fits within
+# $max chars. Bullets are atomic — never split mid-decision. Emits each
+# chunk's bullet block (header NOT included; caller composes per-chunk) on
+# stdout, NUL-separated for safe `mapfile -d ''` ingestion.
+_decisions_chunk_for_discord() {
+  local header="$1" max="$2"; shift 2
+  local hlen=$(( ${#header} + 2 ))   # +2 for the \n\n header→body separator
+  local group="" started=0 bullet candidate
+  for bullet in "$@"; do
+    if (( started == 0 )); then
+      candidate="$bullet"
+    else
+      candidate="${group}"$'\n'"${bullet}"
+    fi
+    if (( hlen + ${#candidate} > max )); then
+      printf '%s\0' "$group"
+      group="$bullet"
+    else
+      group="$candidate"
+    fi
+    started=1
+  done
+  if (( started == 1 )); then
+    printf '%s\0' "$group"
+  fi
 }
