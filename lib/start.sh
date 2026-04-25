@@ -127,15 +127,8 @@ _atmux_spawn_member() {
 
 _atmux_paste_brief() {
   local target="$1" member="$2" role="$3" brief_path="$4"
-  local team; team="$(atmux::team_name)"
   local tmp; tmp="$(mktemp /tmp/atmux-brief-XXXXXX.md)"
-  # Substitute template vars.
-  sed \
-    -e "s|{{TEAM}}|$team|g" \
-    -e "s|{{MEMBER}}|$member|g" \
-    -e "s|{{ROLE}}|$role|g" \
-    -e "s|{{ATMUX_DIR}}|$(atmux::dir)|g" \
-    "$brief_path" > "$tmp"
+  atmux::render_brief "$member" "$role" "$brief_path" > "$tmp"
 
   local buf="atmux_brief_${member}"
   tmux load-buffer -b "$buf" "$tmp"

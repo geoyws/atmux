@@ -57,13 +57,7 @@ main() {
   local brief; brief="$(atmux::brief_path "$role")"
   if [[ -f "$brief" ]]; then
     local tmp; tmp="$(mktemp /tmp/atmux-brief-XXXXXX.md)"
-    local team; team="$(atmux::team_name)"
-    sed \
-      -e "s|{{TEAM}}|$team|g" \
-      -e "s|{{MEMBER}}|$member|g" \
-      -e "s|{{ROLE}}|$role|g" \
-      -e "s|{{ATMUX_DIR}}|$(atmux::dir)|g" \
-      "$brief" > "$tmp"
+    atmux::render_brief "$member" "$role" "$brief" > "$tmp"
     local buf="atmux_brief_rot_${member}"
     tmux load-buffer -b "$buf" "$tmp"
     tmux paste-buffer -b "$buf" -d -t "$target" 2>/dev/null \

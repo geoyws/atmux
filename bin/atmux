@@ -72,6 +72,11 @@ Automation:
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   rotate <member>             /clear the member and re-brief
   rotate-lead                 /clear the lead and re-bootstrap
+  reload brief-reload <m> [--force]
+                              Re-paste role brief into member's pane without
+                              /clear (context preserved); skips known blockers
+  reload config-reload        Re-read team.json + ping members whose
+                              role/lane/model/tui drifted from spawn snapshot
   handoff <from> <to>         Move in-flight work from one member to another
   pause <member>              Mark member paused (dispatch refuses to queue)
   resume <member>             Unpause

@@ -229,6 +229,24 @@ atmux::gen_id() {
   printf 't-%s\n' "$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 }
 
+# ---------- brief rendering ----------
+
+# Read a brief template + substitute {{TEAM}}/{{MEMBER}}/{{ROLE}}/{{ATMUX_DIR}}.
+# Echoes the rendered content on stdout. Used by lib/start.sh (initial paste),
+# lib/rotate.sh (post-/clear repaste), and lib/reload.sh (mid-session reload).
+# Caller owns paste mechanics + tmpfile management.
+atmux::render_brief() {
+  local member="$1" role="$2" brief_path="$3"
+  [[ -f "$brief_path" ]] || return 1
+  local team; team="$(atmux::team_name)"
+  sed \
+    -e "s|{{TEAM}}|$team|g" \
+    -e "s|{{MEMBER}}|$member|g" \
+    -e "s|{{ROLE}}|$role|g" \
+    -e "s|{{ATMUX_DIR}}|$(atmux::dir)|g" \
+    "$brief_path"
+}
+
 # ---------- kanban schema ----------
 
 # Idempotently ensure kanban.json has the expected top-level shape:
