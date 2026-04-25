@@ -52,7 +52,9 @@ main() {
   # Sets `dmtime_new` if the file exists; that's used for the post-ping
   # cursor advance below. Appends a flag-only pointer to findings if N > 0.
   local dmtime_new=""
+  local fmtime_new=""
   _atmux_whip_check_decisions
+  _atmux_whip_check_flags
 
   # ---- "Since last tick" delta (E2/S7 t-ac42591e) ----
   # Computed BEFORE the session-DOWN early-exit so a DOWN tick still surfaces
@@ -75,6 +77,7 @@ main() {
     findings+=("🛑 session $session is DOWN")
     _atmux_report_and_exit "$ts" "$team" "${findings[@]}"
     _atmux_whip_advance_decisions_cursor
+    _atmux_whip_advance_flags_cursor
     return 0
   fi
 
@@ -249,6 +252,7 @@ main() {
 
   _atmux_report_and_exit "$ts" "$team" "${findings[@]}"
   _atmux_whip_advance_decisions_cursor
+  _atmux_whip_advance_flags_cursor
 }
 
 # Detect new decisions since the last whip cursor and append a flag-only
@@ -327,6 +331,63 @@ _atmux_whip_advance_decisions_cursor() {
   local dcursor_file; dcursor_file="$(atmux::state_dir)/decisions-cursor"
   mkdir -p "$(dirname "$dcursor_file")"
   echo "$dmtime_new" > "$dcursor_file"
+}
+
+# Open p0 flags pointer (E4/S6 t-874ef870). Mirrors the decisions-cursor
+# pattern: count p0 flag entries added since the last cursor mtime, append
+# a flag-only pointer (no body duplication — `atmux flag list` is the
+# authoritative renderer). Sets `fmtime_new` so the post-ping cursor
+# advance can move the cursor without us re-stat'ing the file.
+_atmux_whip_check_flags() {
+  local ffile; ffile="$(atmux::dir)/flags.md"
+  [[ -f "$ffile" ]] || return 0
+
+  fmtime_new=$(stat -c '%Y' "$ffile" 2>/dev/null || stat -f '%m' "$ffile" 2>/dev/null || echo 0)
+
+  local fcursor_file; fcursor_file="$(atmux::state_dir)/flags-cursor"
+  local fcursor_old=0
+  if [[ -f "$fcursor_file" ]]; then
+    fcursor_old=$(cat "$fcursor_file" 2>/dev/null || echo 0)
+    [[ "$fcursor_old" =~ ^[0-9]+$ ]] || fcursor_old=0
+  fi
+
+  (( fmtime_new > fcursor_old )) || return 0
+
+  # Count entries whose `### f-...` heading marks them p0 AND whose
+  # timestamp bullet falls after the cursor. Resolution blocks (`### r-`)
+  # are ignored — they're separate entries that never carry severity.
+  local n_new
+  n_new=$(awk -v c="$fcursor_old" '
+    BEGIN { sev=""; ts=0; in_entry=0 }
+    /^### f-/ {
+      # Header shape: `### f-xxxx <member> [<severity>/<needs>] (HH:MM MYT)`
+      sev=""
+      if (match($0, /\[p[0-2]\//)) {
+        sev=substr($0, RSTART+1, RLENGTH-2)  # strip `[` and trailing `/`
+      }
+      in_entry=1
+      ts=0
+    }
+    /^### r-/ { in_entry=0 }
+    /^- \*\*timestamp\*\*:/ && in_entry {
+      v=$0; sub(/^- \*\*timestamp\*\*: */,"",v)
+      ts=v+0
+      if (sev == "p0" && ts > c) { count++ }
+      in_entry=0
+    }
+    END { print count+0 }
+  ' "$ffile")
+
+  if [[ "${n_new:-0}" -gt 0 ]]; then
+    findings+=("📍 $n_new open p0 flags — atmux flag list")
+  fi
+}
+
+_atmux_whip_advance_flags_cursor() {
+  [[ -n "${fmtime_new:-}" ]] || return 0
+  local fcursor_file; fcursor_file="$(atmux::state_dir)/flags-cursor"
+  mkdir -p "$(dirname "$fcursor_file")"
+  echo "$fmtime_new" > "$fcursor_file"
 }
 
 # For the `failover` budget policy: find a peer with the same role that still
