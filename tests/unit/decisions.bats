@@ -306,17 +306,12 @@ _curl_payload_content() {
   # shape keep working.
   unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
   "$ATMUX_BIN" decisions add "old shape?" --default "yes" --reversibility low --note "soak" >/dev/null
-  # `run !` not bare `!` — Bats ≥1.5 only fails the test on the LAST `!`
-  # command, so a mid-test bare `!` no-ops silently. `run !` records the
-  # negated exit code and we assert with `[ "$status" -eq 0 ]`.
-  run ! grep -q '^- \*\*context\*\*:'    .atmux/decisions.md
-  [ "$status" -eq 0 ]
-  run ! grep -q '^- \*\*options\*\*:'    .atmux/decisions.md
-  [ "$status" -eq 0 ]
-  run ! grep -q '^- \*\*impact\*\*:'     .atmux/decisions.md
-  [ "$status" -eq 0 ]
-  run ! grep -q '^- \*\*decided-by\*\*:' .atmux/decisions.md
-  [ "$status" -eq 0 ]
+  # `[[ ! ... ]]`-shaped negation works on every Bats version; `run !`
+  # needs `bats_require_minimum_version 1.5.0` to behave consistently.
+  [[ ! $(grep -c '^- \*\*context\*\*:'    .atmux/decisions.md) -gt 0 ]]
+  [[ ! $(grep -c '^- \*\*options\*\*:'    .atmux/decisions.md) -gt 0 ]]
+  [[ ! $(grep -c '^- \*\*impact\*\*:'     .atmux/decisions.md) -gt 0 ]]
+  [[ ! $(grep -c '^- \*\*decided-by\*\*:' .atmux/decisions.md) -gt 0 ]]
   grep -q '^- \*\*note\*\*: soak$'   .atmux/decisions.md
 }
 

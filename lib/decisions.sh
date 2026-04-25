@@ -250,12 +250,19 @@ _atmux_decisions_add() {
   if [[ "$reversibility" == "high" ]]; then
     _decisions_export_webhook
     local team; team="$(atmux::team_name)"
-    # Renderer signature mirrors _decisions_append: positional args first,
-    # then context/impact/decided_by, then options_count + options[*].
-    local body; body="$(_decisions_render_discord \
+    # E2/S10: renderer emits 1..5 NUL-separated chunks (single-message
+    # path stays as 1 chunk, no `[N/M]` tag). Mirrors digest's
+    # mapfile-then-loop pattern from _atmux_decisions_digest. 1s sleep
+    # between chunks honors Discord's rate-limit margin.
+    local chunks=()
+    mapfile -d '' chunks < <(_decisions_render_discord \
       "$id" "$question" "$default" "$reversibility" "$note" "$team" "$hhmm" \
-      "$context" "$impact" "$decided_by" "${#options[@]}" "${options[@]}")"
-    atmux::discord_ping "$body"
+      "$context" "$impact" "$decided_by" "${#options[@]}" "${options[@]}")
+    local total=${#chunks[@]} _i
+    for (( _i=0; _i<total; _i++ )); do
+      atmux::discord_ping "${chunks[_i]}"
+      if (( _i < total - 1 )); then sleep 1; fi
+    done
   fi
 
   atmux::ok "decisions: recorded $id"
@@ -322,70 +329,128 @@ _decisions_render_discord() {
   local emoji; emoji="$(_decisions_rev_emoji "$rev")"
   local truncation_marker="↳ atmux decisions show $id for full"
 
-  # E2/S9 §S9 of ADR-008: optional sections are skipped entirely when
-  # empty — the line is omitted, no `🌐 context: ` empty-value emission.
-  # Field order (per AC):  question · default · decided-by · context ·
-  # options · impact · note · reversibility · show · override.
+  # E2/S10 (was S9 truncate-pattern). Renderer now emits 1..N NUL-
+  # separated chunks. Caller (mapfile -d '' chunks < <(...)) loops with
+  # a 1s sleep between to stay under Discord's rate-limit margin.
   #
-  # Discord 2000-char body cap. Worst-case all-fields ≈ 3.2KB, so when
-  # the body exceeds 2000 we drop optional sections in this order: note
-  # → impact → options → context (per ADR-008 §S9). The truncated body
-  # ships with a `↳ atmux decisions show <id> for full` marker so the
-  # human can recover the dropped detail. Required fields (question,
-  # default, reversibility, decided-by, show/override) are never
-  # dropped — those are signoff-relevant.
-  local include_note=1 include_impact=1 include_options=1 include_context=1
-  local body truncated=0 attempt
-  for attempt in 0 1 2 3 4; do
-    body=""
-    body+="📋 **[atmux-decisions]** · \`$team\` · $hhmm"$'\n\n'
-    body+="🔵 question: $question"$'\n'
-    body+="✅ default: $default"$'\n'
-    if [[ -n "$decided_by" ]]; then
-      body+="👤 decided-by: $decided_by"$'\n'
-    fi
-    if (( include_context )) && [[ -n "$context" ]]; then
-      body+="🌐 context: $context"$'\n'
-    fi
-    if (( include_options )) && (( options_count > 0 )); then
-      body+="⚖️ options:"$'\n'
-      local _opt
-      for _opt in "${options[@]}"; do
-        body+="  - $_opt"$'\n'
-      done
-    fi
-    if (( include_impact )) && [[ -n "$impact" ]]; then
-      body+="💥 impact: $impact"$'\n'
-    fi
-    if (( include_note )) && [[ -n "$note" ]]; then
-      body+="📝 note: $note"$'\n'
-    fi
-    body+="$emoji reversibility: $rev"$'\n'
-    body+="📍 atmux decisions show $id"$'\n'
-    body+="↪ atmux send lead \"override $id: <new>\""
+  # Single-message path: ≤1900 chars total ⇒ 1 chunk, no [N/M] tag,
+  # bit-identical to today's body shape (modulo the 'question:' prefix
+  # added in S9 T2).
+  #
+  # Multi-message path: chunk-1 ALWAYS holds required fields (question,
+  # default, decided-by, reversibility, show/override). Optional
+  # sections (context, options, impact, note) flow into chunks 2..5
+  # in keep-order (context→options→impact→note); each section is
+  # atomic (option list stays whole). Per chunk header gets the
+  # `[N/M]` tag mirroring digest's pattern.
+  #
+  # Last-resort drop: if even at 5 chunks some sections still don't
+  # fit, drop in S9 order — note → impact → options → context — and
+  # append the truncation marker to the LAST surviving chunk so the
+  # human can recover the dropped detail via `atmux decisions show`.
 
-    # Reserve marker headroom only on iterations where we've already
-    # decided to truncate — first pass tries the full body unbudgeted.
-    local cap=2000
-    if (( truncated == 1 )); then
-      cap=$(( 2000 - ${#truncation_marker} - 1 ))
-    fi
-    if (( ${#body} <= cap )); then
-      break
-    fi
-    truncated=1
-    case "$attempt" in
-      0) include_note=0 ;;
-      1) include_impact=0 ;;
-      2) include_options=0 ;;
-      3) include_context=0 ;;
-    esac
-  done
+  # Build the section blocks (each a multi-line string, no leading/
+  # trailing blank lines).
+  local req=""
+  req+="🔵 question: $question"$'\n'
+  req+="✅ default: $default"$'\n'
+  [[ -n "$decided_by" ]] && req+="👤 decided-by: $decided_by"$'\n'
+  req+="$emoji reversibility: $rev"$'\n'
+  req+="📍 atmux decisions show $id"$'\n'
+  req+="↪ atmux send lead \"override $id: <new>\""
 
-  if (( truncated == 1 )); then
-    body+=$'\n'"$truncation_marker"
+  local sec_ctx=""  sec_opts=""  sec_imp=""  sec_note=""
+  [[ -n "$context" ]] && sec_ctx="🌐 context: $context"
+  if (( options_count > 0 )); then
+    sec_opts="⚖️ options:"
+    local _o
+    for _o in "${options[@]}"; do
+      sec_opts+=$'\n'"  - $_o"
+    done
   fi
-  printf '%s' "$body"
+  [[ -n "$impact" ]] && sec_imp="💥 impact: $impact"
+  [[ -n "$note"   ]] && sec_note="📝 note: $note"
+
+  # ---- single-message try ----
+  local hdr_single="📋 **[atmux-decisions]** · \`$team\` · $hhmm"
+  local single="$hdr_single"$'\n\n'"$req"
+  local s
+  for s in "$sec_ctx" "$sec_opts" "$sec_imp" "$sec_note"; do
+    [[ -n "$s" ]] && single+=$'\n\n'"$s"
+  done
+  if (( ${#single} <= 1900 )); then
+    printf '%s\0' "$single"
+    return 0
+  fi
+
+  # ---- multi-message allocation ----
+  # Header overhead reserve: '📋 **[atmux-decisions]** [9/9] · `<team>` · HH:MM MYT'
+  # plus a trailing '\n\n' (separator). 80 chars covers any reasonable
+  # team name; bigger names just compress the body budget proportionally.
+  local hdr_overhead=80
+  local body_budget=$(( 1900 - hdr_overhead ))
+  local max_chunks=5
+
+  # Parallel arrays: section content (in keep-order — context first,
+  # note last). Drop order is the reverse so we evict tail-first.
+  local sections=()
+  [[ -n "$sec_ctx"  ]] && sections+=("$sec_ctx")
+  [[ -n "$sec_opts" ]] && sections+=("$sec_opts")
+  [[ -n "$sec_imp"  ]] && sections+=("$sec_imp")
+  [[ -n "$sec_note" ]] && sections+=("$sec_note")
+
+  # chunks[0] = required block (always present). chunks[1..] = optional
+  # sections, packed in order — each new section either appends to the
+  # current optional chunk (if it fits) or opens a fresh chunk.
+  local chunks=("$req")
+  local current=""           # in-progress optional chunk content
+  local skipped=0            # count of sections we couldn't fit anywhere
+
+  local sec
+  for sec in "${sections[@]}"; do
+    local candidate
+    if [[ -z "$current" ]]; then
+      candidate="$sec"
+    else
+      candidate="$current"$'\n\n'"$sec"
+    fi
+    if (( ${#candidate} <= body_budget )); then
+      current="$candidate"
+      continue
+    fi
+    # Doesn't fit appended — flush current to chunks[] (if any) and
+    # try opening a fresh chunk for this section.
+    if [[ -n "$current" ]]; then
+      chunks+=("$current")
+      current=""
+    fi
+    if (( ${#chunks[@]} >= max_chunks )); then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if (( ${#sec} <= body_budget )); then
+      current="$sec"
+    else
+      # Single section bigger than a fresh chunk's body budget — drop.
+      skipped=$((skipped + 1))
+    fi
+  done
+  [[ -n "$current" ]] && chunks+=("$current")
+
+  # If anything dropped, append the recovery pointer to the last chunk
+  # so the reader can `atmux decisions show <id>` for the full record.
+  if (( skipped > 0 )); then
+    local last=$(( ${#chunks[@]} - 1 ))
+    chunks[last]="${chunks[last]}"$'\n\n'"$truncation_marker"
+  fi
+
+  # ---- emit each chunk with [N/M] header, NUL-separated ----
+  local total=${#chunks[@]} i
+  for (( i=0; i<total; i++ )); do
+    local hdr="📋 **[atmux-decisions]** [$((i+1))/$total] · \`$team\` · $hhmm"
+    local body="$hdr"$'\n\n'"${chunks[i]}"
+    printf '%s\0' "$body"
+  done
 }
 
 # ---------- list ----------
