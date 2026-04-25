@@ -81,6 +81,14 @@ Decisions log:
   decisions list [--since <when>] [--reversibility <level>] [--json]
   decisions show <id>
 
+Flags log (operator escalations):
+  flags add <message> --severity p0|p1|p2 --needs decision|review|context|unblock|rotate
+                     [--as <member>] [--task <id>] [--note <text>]
+  flags list [--severity <s>] [--needs <n>] [--status open|resolved] [--since <w>]
+             [--member <m>] [--json]
+  flags show <id>
+  flags resolve <id> [--as <member>] [--note <text>]
+
 Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
   reconfigure                 Re-run wizard against an existing team.json
