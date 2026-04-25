@@ -9,16 +9,88 @@
 
 ## Roles
 
-| Role            | Window position | Default TUI | What it does |
-|-----------------|-----------------|-------------|--------------|
-| `driver`        | — (not in tmux) | (any)       | Relays human intent via `atmux tell-lead` + `atmux send` |
-| `team-lead`     | 1               | claude      | Routes asks + dispatches tasks; never plans itself       |
-| `planner`       | 2               | claude      | Decomposes asks into kanban tasks + writes ADRs          |
-| `reviewer`      | 3               | claude      | Reviews diffs, approves commits                          |
-| `gitter`        | 4               | claude      | The only member allowed to commit + push                 |
-| `devops`        | 5               | claude      | Deploys, env, CI/CD, infra                               |
-| `dba`           | 6               | claude      | Schema + migrations + SQL (optional)                     |
-| `member`        | 7…n             | any         | Workers — do the coding work per feature lane            |
+The pull model defines each role by what it *doesn't* do — narrow surfaces, no overlap. See [ADR-007](adr/007-pull-kanban.md) for the full spec.
+
+| Role        | Window | Default TUI | What it does (post pull-model)                                                                                                                          |
+|-------------|--------|-------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `driver`    | —      | (any)       | Relays human intent via `atmux tell-lead` + `atmux send`. Never inside the tmux session.                                                                |
+| `team-lead` | 1      | claude      | **Routes** Epic-shaped asks to the planner; composes Epic summary at end via `atmux epic show` + `git log`. **Never decomposes. Never dispatches per-Task.** |
+| `planner`   | 2      | claude      | **Owns decomposition**: Epic → (optional Stories) → Tasks, with `--lane`, `--deps`, `--deliverable`. Writes ADRs in `docs/adr/`. **Never dispatches.**  |
+| `reviewer`  | 3      | claude      | **Story-level signoff** on cumulative diff (not per-commit). Empty `acceptanceCriteria` is automatic REJECT. Never commits.                             |
+| `gitter`    | 4      | claude      | Commits on Task `done` via auto-dispatched commit-Tasks. Finalizes Stories on `merging`. Only member that commits. **Never pushes by default.**         |
+| `devops`    | 5      | claude      | Deploy / env / CI/CD / infra Tasks.                                                                                                                     |
+| `dba`       | 6      | claude      | Schema + migrations + SQL (optional).                                                                                                                   |
+| `member`    | 7…n    | any         | Lane workers — pull next claimable Task in their lane via `atmux claim --next`. **FE workers also own the TEST-lane capstone for UI Stories.**          |
+| `whip`      | (cron) | —           | 5-min watchdog: pane state, rate-limits, stale Tasks, lead uptime. Escalates to the lead only when auto-recovery fails.                                 |
+
+## Pull coordination
+
+The kanban — `.atmux/kanban.json` — is the source of truth for work. Three top-level arrays:
+
+```json
+{
+  "epics":   [ { "id": "e-…", "title", "body?", "driverRef?", "status",
+                 "stories": [], "tasks": [], "createdAt", "completedAt?" } ],
+  "stories": [ { "id": "s-…", "epic": "e-…", "title", "body?",
+                 "acceptanceCriteria", "status", "reviewSignoff",
+                 "mergeTaskId?", "createdAt", "completedAt?" } ],
+  "tasks":   [ { "id": "t-…", "subject", "body", "status", "owner", "deps",
+                 "priority", "epic?", "story?", "lane?", "deliverable?",
+                 "createdAt", "claimedAt?", "completedAt?", "note?" } ]
+}
+```
+
+`atmux::kanban_normalize` (in `lib/common.sh`) idempotently ensures `epics`/`stories`/`tasks` exist; legacy kanbans get the new arrays added on first mutation. `epic`/`story`/`lane`/`deliverable` on a Task are optional — missing reads as `null`.
+
+### State machines
+
+**Epic**: `planning → ready → in-progress → review → done`. The Epic auto-flips `in-progress → review` when its last child Task reaches `done` (storyless Epics) — and a `draft Epic summary` Task lands in the lead's inbox.
+
+**Story**: `planning → ready → in-progress → testing → review → merging → done`. A Story auto-flips `testing → review` when its last open child Task is `done` AND that Task is in the `test` lane (TEST capstone). Reviewer advances `review → merging`; gitter advances `merging → done` once the commit chain is clean.
+
+**Task**: `todo → in-progress → done` (or `blocked`). Tasks with non-`done` deps are filtered out of `claim --next` automatically.
+
+### Pull selection
+
+Workers run `atmux claim --next [--as <member>] [--lane <lane>]`. Selection (lib/claim.sh):
+
+1. Filter Tasks: `status=todo`, `owner=null`, `deps - done_ids = []`.
+2. First pass: `lane == caller's lane`. Sort by `priority asc, createdAt asc`. Pick first.
+3. If empty AND `team.kanban.crossLaneClaim != false`: any lane, same sort.
+4. Atomic claim: `jq_update` flips `owner`/`status`/`claimedAt` only if `owner` is still `null` post-read; race-aware with 3 retries.
+
+Lane vocabulary: `fe` / `be` / `db` / `ops` / `test` / `review` / `misc`. UPPER-CASE in prose ("FE worker"), lowercase in JSON / `--lane` args.
+
+### Auto-dispatch on Task done
+
+When `atmux task move <id> done` lands (or `atmux done <id>`), `lib/kanban.sh` decides side-effects atomically inside one `jq_update`:
+
+- **Always**: if the source Task has `.epic` set, append a new `commit <id>` Task targeting gitter (`owner=gitter`, `status=in-progress`, `lane=misc`, `claimedAt=now`, `epic=null` to prevent recursion). Mirror to `inboxes/gitter.json`.
+- **Story testing → review flip**: if the moved Task is the last open child of its Story AND its lane is `test` AND the Story is currently `testing`, set `story.status=review`.
+- **Storyless-Epic in-progress → review flip**: if the Epic has zero Stories AND the moved Task is the last open child of the Epic AND the Epic is `in-progress`, set `epic.status=review` AND append a `draft Epic summary <eid>` Task to the lead's inbox.
+
+Each side-effect is gated by a flag computed before the write, so the filter stays read-only when the gate is off — idempotent on `done → done`.
+
+```
+                  ┌────────────────────────────────────┐
+   member runs    │ atmux done t-aaa --note "feat: …"  │
+                  └─────────────┬──────────────────────┘
+                                │ kanban.json (atomic jq_update)
+                                ▼
+        ┌───────────────────────────────────────────────┐
+        │ tasks[t-aaa].status = done                     │
+        │ if .epic   → tasks += [commit-Task → gitter]  │
+        │ if last test-lane child of testing Story      │
+        │            → stories[s].status = review       │
+        │ if last child of storyless in-progress Epic   │
+        │            → epics[e].status = review +       │
+        │              tasks += [Epic summary → lead]   │
+        └───────────────────────────────────────────────┘
+                                │
+                                ▼
+        gitter / reviewer / lead inbox updates land via
+        _atmux_kanban_push_inbox (mirrors kanban → inbox)
+```
 
 ## Driver → Lead routing
 
@@ -27,22 +99,14 @@ Two paths; use both:
 1. **Durable**: `atmux tell-lead "..."` appends to `.atmux/driver-inbox.md`. Lead reads this first on every whip turn. Survives `/clear`, survives tmux restart.
 2. **Immediate**: the same command also fires a short heads-up via `tmux send-keys` to the lead's pane. Gives the lead a nudge to check the inbox.
 
-## Lead → Member routing
+## Lead → Planner routing (pull model)
 
-1. **Task board**: `atmux task add` + `atmux dispatch <member> <task-id>`. Writes to `inboxes/<member>.json`. Durable, re-queryable.
-2. **Immediate ping**: `dispatch` also sends a short notification into the member's pane via `tmux send-keys`. Member can then `atmux inbox <name>` to see details.
-3. **Broadcast**: `atmux broadcast "..."` for cross-cutting announcements.
+The lead does **not** decompose Tasks itself and does **not** `atmux dispatch` per-Task as the default flow:
 
-## Work-stealing
-
-Idle members can scan the kanban and pull unclaimed tasks:
-
-```bash
-atmux task list --status todo
-atmux claim <task-id> --as <member>
-```
-
-There is no lock: the first `claim` wins (file write is near-atomic on modern filesystems; jq temp-file + rename is atomic). If two members claim simultaneously, the second call will notice the task is already `in-progress` on next `status` and back off.
+1. **Lead reads `driver-inbox.md`**, decides Epic-shaped asks → `atmux send planner "<verbatim ask + driver-ref>"`.
+2. **Planner runs `atmux epic add` → `atmux story add` (optional) → `atmux task add --epic <eid> --lane <lane> --deps …`**, then `atmux reply` to the lead with task IDs + dependency notes.
+3. **Workers self-pull** via `atmux claim --next`. No manual dispatch by default; `atmux dispatch <member> <task-id>` is reserved for explicit driver-requested priority overrides.
+4. **Decisions log**: `atmux decisions add "<question>" --default "<answer>" --reversibility low|medium|high` for any non-trivial auto-mode resolution. Logs to `.atmux/decisions.md` AND pings Discord. See [ADR-008](adr/008-decisions-verb.md).
 
 ## Whip (watchdog) — every 5 min
 
