@@ -99,3 +99,27 @@ _curl_calls() {
   # hash file isn't pre-emptively touched by setup.
   [ ! -f .atmux/state/whip-last.hash ]
 }
+
+@test "whip_dedup: ping-suppressed tick still advances the decisions cursor (independent state)" {
+  # AC: decisions cursor advances regardless of dedup outcome. Set up a
+  # decisions.md entry, run tick 1 (cursor advances + ping fires), reset
+  # cursor to 0 so tick 2 produces the SAME body ("1 new decision") and
+  # gets dedup-suppressed — then verify cursor moved anyway.
+  "$ATMUX_BIN" decisions add "Q?" --default "A" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" whip >/dev/null
+  [ -f .atmux/state/decisions-cursor ]
+
+  # Reset cursor to 0 + clear hash so tick 2 sees "1 new decision" again
+  # but with a body identical to tick 1 ⇒ hash match ⇒ suppress.
+  echo 0 > .atmux/state/decisions-cursor
+  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
+
+  # decisions.md mtime hasn't changed; tick 2's findings include the same
+  # "1 new decisions" pointer. Hash matches; ping suppressed. Cursor must
+  # still advance past 0 (back to decisions.md's mtime).
+  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" whip
+  [ "$status" -eq 0 ]
+  [ "$(_curl_calls)" = "0" ]
+  local cursor; cursor=$(< .atmux/state/decisions-cursor)
+  [ "$cursor" -gt 0 ]
+}
