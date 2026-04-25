@@ -86,6 +86,14 @@ atmux flag "atmux task list returned 0 tasks but kanban.json shows 5 in-progress
 
 `--severity p0` pings Discord immediately (driver gets phone visibility). `p1` and `p2` write to `flags.md` + send a tmux keystroke to the lead pane — kanban-visible, but quiet on the channel. `--needs unblock --task <id>` flips that Task to `blocked` AND links the flag id in `task.note`, so the kanban state matches reality without you running two commands.
 
+## When whip pings brief version available
+
+If whip emits `📋 brief vN available` in a Discord ping or your pane, your brief template was upgraded by the lead — there's new guidance in `templates/briefs/<role>.md` that your conversation hasn't seen.
+
+Run `atmux brief-reload {{MEMBER}}` **between Tasks**, NOT mid-Task — wait for `atmux done` to land first. Your conversation context is preserved (no `/clear`); you'll see a `📨 BRIEF RELOAD` banner prepended to your pane with the new brief content. Apply the new guidance going forward — old reasoning stays valid for the just-finished Task; the next claim picks up under the new brief.
+
+Your pane may also receive a `⚙️ CONFIG RELOAD: your <field> changed: <old>→<new>` ping when the lead runs `atmux config-reload`. Apply on your **next dispatch**, not immediately — finish the current Task on the old config (model swap, lane reassignment, webhook), and the new value takes effect at your next `atmux claim`. Verbal protocol, not enforced — but the lead's snapshot diff is watching.
+
 ## Hard rules
 
 - **DO NOT commit. DO NOT push.** Mark done; gitter commits on the back.
