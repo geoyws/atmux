@@ -66,8 +66,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Bullets land per-Story; this section is populated by sibling
      Tasks t-fc256867 (S7) / t-1b4d63ea (S8) / t-c6ae5307 (S9) and the
-     S10 entry below. Order tracks the ADR-009 §S7→§S10 + ADR-008
-     §S9→§S10 narrative. -->
+     S10 entry below. Order tracks the ADR-009 §S1→§S5 / §S7→§S10 +
+     ADR-008 §S9→§S10 narrative. -->
+
+- **Auto-rotation infrastructure** (E2/S5,
+  [ADR-009](docs/adr/009-auto-rotation.md)). New `team.whip.autoRotate`
+  config flag (boolean, default `false`, opt-in for safety — `/clear`
+  is destructive so existing teams must NOT get auto-rotated on
+  upgrade). When `true`, whip auto-execs `atmux rotate-lead` at the
+  uptime threshold AND auto-execs `atmux rotate <member>` on banner
+  detection (`Compacting conversation` / `approaching usage limit` /
+  `hit your limit`). Per-member rotation anchor at
+  `.atmux/state/<member>-rotated.epoch` (written by `lib/rotate.sh`
+  on every successful rotation; whip's uptime calc switches from
+  session-anchored to rotation-anchored, falls back to session-start
+  when the anchor file is absent so existing teams see zero
+  behavioural change until their first rotation lands). Banner
+  preclear gated by the same flag and debounced 5 min via the same
+  `<member>-rotated.epoch` so a persistent banner doesn't re-rotate
+  every cron tick. Discord finding `♻️ AUTO-ROTATED <member> at <ts>`
+  fires on every auto-rotation so the driver knows their pane just
+  got `/clear`'d. Brief updates: `templates/briefs/lead.md`
+  §Auto-rotation rewrite + `templates/briefs/member.md` §Auto-preclear
+  callout. (`lib/rotate.sh`, `lib/whip.sh`, `templates/team.example.json`,
+  `templates/briefs/lead.md`, `templates/briefs/member.md`.)
 
 - **whip output noise reduction** (E2/S7,
   [ADR-009 §S7](docs/adr/009-auto-rotation.md)). Dedup pings via
