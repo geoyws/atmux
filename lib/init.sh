@@ -4,6 +4,9 @@
 # Default: non-interactive, scaffolds from templates/team.example.json.
 # --wizard: interactive prompts to build a team.json from scratch.
 
+# shellcheck source=emoji.sh
+. "$ATMUX_LIB_DIR/emoji.sh"
+
 main() {
   atmux::require jq
 
@@ -152,6 +155,11 @@ _atmux_init_wizard() {
   local n_workers; _atmux_prompt n_workers "Number of worker members" "3"
   [[ "$n_workers" =~ ^[0-9]+$ ]] || { atmux::warn "wizard: bad count, defaulting to 3"; n_workers=3; }
 
+  local emoji_mode
+  _atmux_prompt_choice emoji_mode \
+    "Emoji mode (static=fixed per role / random=varied per role / ai=claude picks per member)" \
+    "random" static random ai
+
   local discord_hook; _atmux_prompt discord_hook "Discord webhook URL (optional, Enter to skip)" ""
 
   # ---- TUI launch commands ----
@@ -173,11 +181,26 @@ _atmux_init_wizard() {
   _atmux_prompt tui_cmd_kimi     "  kimi launch command"      "$kimi_default"
   _atmux_prompt tui_cmd_cursor   "  cursor launch command"    "$cursor_default"
 
-  # Build members array.
+  # Mode resolution during the wizard reads from this env — team.json doesn't
+  # exist yet, so ATMUX_EMOJI_MODE is the only signal emoji.sh can see.
+  export ATMUX_EMOJI_MODE="$emoji_mode"
+
+  # Build members array. Each appended member gets an emoji stamped in,
+  # picked so duplicates within the team are avoided when possible.
   local members_json='[]'
+  local emojis_seen=""
   _append_member() {
-    members_json=$(jq --argjson add "$1" '. + [$add]' <<<"$members_json")
+    local mj="$1"
+    local mname mrole memoji
+    mname="$(jq -r '.name' <<<"$mj")"
+    mrole="$(jq -r '.role' <<<"$mj")"
+    memoji="$(atmux::emoji_assign "$mname" "$mrole" "$emojis_seen")"
+    emojis_seen="$emojis_seen $memoji"
+    mj="$(jq --arg e "$memoji" '. + {emoji: $e}' <<<"$mj")"
+    members_json=$(jq --argjson add "$mj" '. + [$add]' <<<"$members_json")
   }
+
+  [[ "$emoji_mode" == "ai" ]] && atmux::log "emoji mode=ai — asking claude to pick per member (slower)"
 
   _append_member "$(jq -n --arg cwd "$PWD" \
     '{name:"lead", role:"team-lead", tui:"claude", model:"default", cwd:$cwd}')"
@@ -244,11 +267,13 @@ _atmux_init_wizard() {
     --argjson members "$members_json" \
     --argjson tuis "$tui_commands" \
     --arg hook "$discord_hook" \
+    --arg emoji_mode "$emoji_mode" \
     '{
        name: $name,
        description: $desc,
        tuiCommands: $tuis,
        members: $members,
+       emojis: {mode: $emoji_mode},
        whip:   {intervalMins: 5, staleMin: 30, leadMaxMin: 60},
        report: {intervalMins: 30}
      }

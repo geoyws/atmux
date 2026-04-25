@@ -120,9 +120,22 @@ atmux::session_name() {
 }
 
 atmux::window_name() {
-  # window naming convention: __<team>__<member>
+  # window naming convention: __<team>__<emoji><member> if member has an .emoji
+  # stamped in team.json, else __<team>__<member>. The emoji is stamped at
+  # wizard / add-member time and stable thereafter.
   local member="$1"
-  printf '__%s__%s\n' "$(atmux::team_name)" "$member"
+  local team; team="$(atmux::team_name)"
+  local tj; tj="$(atmux::team_json)"
+  local emoji=""
+  if [[ -f "$tj" ]]; then
+    emoji="$(jq -r --arg n "$member" '.members[] | select(.name == $n) | .emoji // ""' "$tj" 2>/dev/null)"
+    [[ "$emoji" == "null" ]] && emoji=""
+  fi
+  if [[ -n "$emoji" ]]; then
+    printf '__%s__%s%s\n' "$team" "$emoji" "$member"
+  else
+    printf '__%s__%s\n' "$team" "$member"
+  fi
 }
 
 atmux::team_field() {

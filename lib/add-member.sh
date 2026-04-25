@@ -4,6 +4,8 @@
 
 # shellcheck source=tui.sh
 . "$ATMUX_LIB_DIR/tui.sh"
+# shellcheck source=emoji.sh
+. "$ATMUX_LIB_DIR/emoji.sh"
 
 main() {
   atmux::require jq tmux
@@ -32,17 +34,23 @@ main() {
     atmux::die "add-member: '$name' is already in team.json"
   fi
 
+  # Pick an emoji (mode from ATMUX_EMOJI_MODE / team.json / default "random").
+  # Exclude already-used emojis so the team gets variety.
+  local seen; seen="$(jq -r '[.members[].emoji // ""] | map(select(. != "")) | join(" ")' "$tj")"
+  local emoji; emoji="$(atmux::emoji_assign "$name" "$role" "$seen")"
+
   atmux::jq_update "$tj" \
-    '.members += [{name: $name, role: $role, tui: $tui, model: $model, cwd: $cwd}
+    '.members += [{name: $name, role: $role, tui: $tui, model: $model, cwd: $cwd, emoji: $emoji}
       + (if $cmd == "" then {} else {command: $cmd} end)]' \
     --arg name "$name" --arg role "$role" --arg tui "$tui" \
-    --arg model "$model" --arg cwd "$cwd" --arg cmd "$cmd"
+    --arg model "$model" --arg cwd "$cwd" --arg cmd "$cmd" \
+    --arg emoji "$emoji"
 
   # Prime inbox.
   local ib="$(atmux::inbox_dir)/$name.json"
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
 
-  atmux::ok "added member '$name' (role=$role, tui=$tui) to team.json"
+  atmux::ok "added member '$emoji $name' (role=$role, tui=$tui) to team.json"
 
   if atmux::tmux_session_exists; then
     atmux::log "  session is up — spawning the member now"

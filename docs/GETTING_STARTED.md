@@ -34,16 +34,18 @@ curl -fsSL https://raw.githubusercontent.com/geoyws/atmux/main/install.sh | bash
 
 This clones the repo to `~/.atmux-src` and symlinks `bin/atmux` into `/usr/local/bin/atmux`.
 
-## 3. Initialize your first team
+## 3. One-stop bring-up (recommended)
 
-In your project directory:
+From anywhere:
 
 ```bash
 cd ~/code/my-project
-atmux init --wizard
+atmux
 ```
 
-The wizard asks:
+Bare `atmux` runs the full onboarding flow: offers to run the wizard if there's no `team.json`, runs a doctor preflight, starts the tmux session, and attaches you. Re-running `atmux` later just reattaches — it's idempotent.
+
+The wizard (invoked on first run) asks:
 
 - Team name (default: directory name)
 - How many `member` workers? (default: 3)
@@ -53,11 +55,14 @@ The wizard asks:
 
 This produces `.atmux/team.json`. Inspect it; tweak manually if needed.
 
-## 4. Start the team
+If you prefer explicit verbs:
 
 ```bash
-atmux start
-atmux status
+atmux init --wizard    # scaffold only
+atmux doctor           # check environment
+atmux start            # spawn session + panes
+atmux attach           # attach to the session
+atmux status           # powerline overview
 ```
 
 `atmux start`:
@@ -110,9 +115,25 @@ atmux stop
 
 State is archived to `.atmux/archive/<timestamp>/`.
 
+## Doctor: diagnosing a broken setup
+
+`atmux doctor` is the `brew doctor` of atmux — it checks deps, the team.json schema, whether every member's TUI binary is on PATH, `.atmux/` writability, and Discord webhook reachability. `atmux start` runs these checks silently as a preflight and aborts with a pointer to `doctor` if anything's red.
+
+```bash
+atmux doctor               # full report
+atmux doctor --fix         # interactive remediation (re-run wizard on bad team.json)
+atmux doctor --json        # machine-readable
+atmux doctor --quiet       # no output, exit 0 on green / 1 on red (used by start preflight)
+
+atmux start --doctor       # verbose preflight before starting
+atmux start --no-doctor    # skip preflight entirely
+ATMUX_DOCTOR_ON_START=1    # env equivalent of --doctor (for cron)
+```
+
 ## Troubleshooting
 
-- **`atmux: no team.json at …`** — run `atmux init` in the project root.
+- **`atmux: no team.json at …`** — run `atmux init` in the project root (or `atmux doctor --fix` to launch the wizard).
+- **`atmux: preflight failed — run 'atmux doctor' to diagnose`** — some dep, TUI binary, or config is broken; `atmux doctor` prints the specifics.
 - **`atmux start` says "pane is `zsh` not `claude`"** — the TUI didn't launch. Check that `claude`/`opencode`/`kimi`/`cursor-agent` is on PATH for that member's cwd. Retry with `atmux start --force`.
 - **Messages go to a void** — the TUI is on its welcome screen. Give it `ATMUX_SPAWN_WAIT=10 atmux start` a longer runway.
 - **Lead keeps compacting** — run `atmux rotate-lead` to `/clear` + re-brief, or lower `ATMUX_LEAD_MAX_MIN`.

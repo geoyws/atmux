@@ -29,7 +29,7 @@ main() {
   local sess_emoji="🟢"
   [[ "$sess_state" == "down" ]] && sess_emoji="🔴"
 
-  printf '%s%s%s 🦅 TEAM%s %s  %ssession=%s%s\n' \
+  printf '%s%s%s 🧭 TEAM%s %s  %ssession=%s%s\n' \
     "$atmux_c_bld" "$atmux_c_cyn" "$sess_emoji" "$atmux_c_rst" \
     "$team" \
     "$atmux_c_dim" "$session [$sess_state]" "$atmux_c_rst"
@@ -45,10 +45,11 @@ main() {
   local members_json; members_json="$(jq -c '.members[]' "$(atmux::team_json)")"
   while IFS= read -r m; do
     [[ -z "$m" ]] && continue
-    local name role tui pane_cmd pending
+    local name role tui pane_cmd pending emoji
     name=$(jq -r '.name' <<<"$m")
     role=$(jq -r '.role // "member"' <<<"$m")
     tui=$(jq -r '.tui // "claude"' <<<"$m")
+    emoji=$(jq -r '.emoji // ""' <<<"$m")
 
     if atmux::tmux_window_exists "$name"; then
       pane_cmd=$(tmux list-panes -t "$(atmux::tmux_target "$name")" -F '#{pane_current_command}' 2>/dev/null | head -1)
@@ -63,16 +64,19 @@ main() {
       pending=0
     fi
 
-    local role_emoji="🐜"
-    case "$role" in
-      team-lead)     role_emoji="🦅" ;;
-      reviewer)      role_emoji="🔍" ;;
-      git-committer) role_emoji="📝" ;;
-      devops)        role_emoji="⚙️ " ;;
-    esac
+    # Fall back to a role-default if the member has no emoji stamped.
+    if [[ -z "$emoji" || "$emoji" == "null" ]]; then
+      case "$role" in
+        team-lead)     emoji="🧭" ;;
+        reviewer)      emoji="🔍" ;;
+        git-committer) emoji="🌿" ;;
+        devops)        emoji="⚙️ " ;;
+        *)             emoji="🐝" ;;
+      esac
+    fi
 
     printf '  %s %-12s %-14s %-10s %-14s %s\n' \
-      "$role_emoji" "$name" "$role" "$tui" "$pane_cmd" "📥 $pending pending"
+      "$emoji" "$name" "$role" "$tui" "$pane_cmd" "📥 $pending pending"
   done <<< "$members_json"
 
   # Kanban counts

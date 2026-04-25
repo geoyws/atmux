@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+# atmux doctor [--quiet] [--fix] [--json]
+#
+# Environment health check. Runs a battery of checks and reports green/red.
+# `atmux start` invokes this in --quiet mode as a preflight.
+#
+# Checks:
+#   - required deps: tmux, jq, git
+#   - optional deps: curl (discord), bats + shellcheck (dev)
+#   - .atmux/team.json exists and is valid JSON with required fields
+#   - every member's TUI binary is on PATH (or member.command / tuiCommands[tui] is)
+#   - .atmux/ is writable
+#   - Discord webhook is reachable (if configured via env or team.json)
+#
+# Exit codes: 0 = all green, 1 = one or more issues.
+
+main() {
+  local quiet=0 fix=0 json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --quiet|-q) quiet=1; shift ;;
+      --fix)      fix=1;   shift ;;
+      --json)     json=1;  shift ;;
+      -h|--help)
+        cat <<'EOF'
+atmux doctor — check environment health
+
+Usage: atmux doctor [--quiet] [--fix] [--json]
+
+  --quiet    suppress output; exit 0 on green, 1 on red (used by start preflight)
+  --fix      interactively remediate fixable issues (re-run wizard on bad team.json etc.)
+  --json     emit a JSON report on stdout
+EOF
+        return 0 ;;
+      *) atmux::die "doctor: unknown arg: $1" ;;
+    esac
+  done
+
+  _doctor_reset
+  _doctor_check_deps
+  _doctor_check_team
+  _doctor_check_tuis
+  _doctor_check_state_dir
+  _doctor_check_webhook
+
+  if [[ "$json" -eq 1 ]]; then
+    _doctor_render_json
+  elif [[ "$quiet" -ne 1 ]]; then
+    _doctor_render_human
+  fi
+
+  if [[ "$fix" -eq 1 && "$quiet" -ne 1 ]]; then
+    _doctor_try_fix
+  fi
+
+  [[ "$_doctor_red_count" -eq 0 ]]
+}
+
+# ---------- state ----------
+
+_doctor_reset() {
+  _doctor_rows=()           # "status|label|detail|hint"
+  _doctor_red_count=0
+  _doctor_yellow_count=0
+}
+
+# status: green | yellow | red
+_doctor_row() {
+  local status="$1" label="$2" detail="${3:-}" hint="${4:-}"
+  _doctor_rows+=("$status|$label|$detail|$hint")
+  case "$status" in
+    red)    _doctor_red_count=$((_doctor_red_count + 1)) ;;
+    yellow) _doctor_yellow_count=$((_doctor_yellow_count + 1)) ;;
+  esac
+}
+
+# ---------- checks ----------
+
+_doctor_check_deps() {
+  local dep path
+  for dep in tmux jq git; do
+    if path="$(command -v "$dep" 2>/dev/null)"; then
+      _doctor_row green "dep:$dep" "$path"
+    else
+      _doctor_row red "dep:$dep" "NOT on PATH" "install: $(_doctor_install_hint "$dep")"
+    fi
+  done
+
+  # Optional deps — yellow (warn), not red.
+  for dep in curl bats shellcheck; do
+    if path="$(command -v "$dep" 2>/dev/null)"; then
+      _doctor_row green "dep:$dep" "$path (optional)"
+    else
+      local why
+      case "$dep" in
+        curl)       why="needed for discord webhook + update check" ;;
+        bats)       why="needed for test suite" ;;
+        shellcheck) why="needed for lint pass in CI" ;;
+      esac
+      _doctor_row yellow "dep:$dep" "not installed (optional)" "$why — $(_doctor_install_hint "$dep")"
+    fi
+  done
+}
+
+_doctor_check_team() {
+  local tj; tj="$(atmux::team_json)"
+  if [[ ! -f "$tj" ]]; then
+    _doctor_row red "team.json" "missing at $tj" "run: atmux init --wizard"
+    return
+  fi
+  if ! jq -e . "$tj" >/dev/null 2>&1; then
+    _doctor_row red "team.json" "invalid JSON at $tj" "fix by hand or re-run: atmux init --force --wizard"
+    return
+  fi
+
+  local name members_n
+  name="$(jq -r '.name // ""' "$tj")"
+  members_n="$(jq -r '.members | length' "$tj" 2>/dev/null || echo 0)"
+
+  if [[ -z "$name" ]]; then
+    _doctor_row red "team.json" "missing .name" "add a name field to $tj"
+    return
+  fi
+  if [[ "$members_n" -eq 0 ]]; then
+    _doctor_row red "team.json" "no members defined" "run: atmux add-member <name> --role member --tui claude"
+    return
+  fi
+
+  # Per-member required fields.
+  local bad_members
+  bad_members="$(jq -r '
+    .members[]
+    | select(.name == null or .role == null or .tui == null)
+    | .name // "(unnamed)"' "$tj")"
+  if [[ -n "$bad_members" ]]; then
+    _doctor_row red "team.json" "members missing name/role/tui: $(tr "\n" " " <<<"$bad_members")" \
+      "edit $tj"
+    return
+  fi
+
+  _doctor_row green "team.json" "valid — team \"$name\", $members_n members"
+}
+
+_doctor_check_tuis() {
+  local tj; tj="$(atmux::team_json)"
+  [[ -f "$tj" ]] || return 0  # team.json check already red, skip
+  # Invalid JSON already caught by _doctor_check_team — don't double-report.
+  jq -e . "$tj" >/dev/null 2>&1 || return 0
+
+  # Collect "bin<TAB>member" rows, one per member (skipping shell).
+  local rows=""
+  local n; n="$(jq -r '.members | length' "$tj" 2>/dev/null || echo 0)"
+  local i
+  for ((i=0; i<n; i++)); do
+    local member tui override prefix bin
+    member="$(jq -r ".members[$i].name"     "$tj")"
+    tui="$(   jq -r ".members[$i].tui"      "$tj")"
+    override="$(jq -r ".members[$i].command // \"\"" "$tj")"
+    prefix="$(  jq -r --arg t "$tui" '.tuiCommands[$t] // ""' "$tj")"
+
+    if [[ -n "$override" ]]; then
+      bin="$(_doctor_first_bin "$override")"
+    elif [[ -n "$prefix" ]]; then
+      bin="$(_doctor_first_bin "$prefix")"
+    else
+      case "$tui" in
+        claude)           bin="${ATMUX_CLAUDE_BIN:-claude}" ;;
+        opencode)         bin="${ATMUX_OPENCODE_BIN:-opencode}" ;;
+        kimi)             bin="${ATMUX_KIMI_BIN:-kimi}" ;;
+        cursor)           bin="${ATMUX_CURSOR_BIN:-cursor-agent}" ;;
+        shell|bash|zsh)   continue ;;  # user's $SHELL, always present
+        *)
+          # Unknown tui type without override — start.sh will die on this.
+          _doctor_row red "tui:$tui" "unknown tui type used by $member" \
+            "register it in team.tuiCommands or use claude/opencode/kimi/cursor/shell"
+          continue ;;
+      esac
+    fi
+    rows+="$bin	$member"$'\n'
+  done
+
+  # Group rows by binary, then check each binary once.
+  local bin users path
+  for bin in $(printf '%s' "$rows" | awk -F'\t' 'NF==2 {print $1}' | sort -u); do
+    users="$(printf '%s' "$rows" | awk -F'\t' -v b="$bin" '$1==b {print $2}' | tr '\n' ' ')"
+    users="${users% }"
+    if path="$(command -v "$bin" 2>/dev/null)"; then
+      _doctor_row green "tui:$bin" "$path (members: $users)"
+    else
+      _doctor_row red "tui:$bin" "NOT on PATH (members: $users)" \
+        "install: $(_doctor_install_hint "$bin")"
+    fi
+  done
+}
+
+_doctor_check_state_dir() {
+  local d; d="$(atmux::dir)"
+  if [[ ! -d "$d" ]]; then
+    # Not fatal — init creates it. Check the parent is writable.
+    local parent; parent="$(dirname "$d")"
+    if [[ -w "$parent" ]]; then
+      _doctor_row yellow "state-dir" "not yet created at $d" "will be created on init/start"
+    else
+      _doctor_row red "state-dir" "parent $parent is not writable" "chown or pick a different cwd"
+    fi
+    return
+  fi
+  if [[ ! -w "$d" ]]; then
+    _doctor_row red "state-dir" "$d exists but is not writable" "chown -R \$USER $d"
+    return
+  fi
+  _doctor_row green "state-dir" "writable at $d"
+}
+
+_doctor_check_webhook() {
+  local tj; tj="$(atmux::team_json 2>/dev/null)"
+  local hook=""
+  if [[ -n "${ATMUX_DISCORD_WEBHOOK:-}" ]]; then
+    hook="$ATMUX_DISCORD_WEBHOOK"
+  elif [[ -f "$tj" ]]; then
+    hook="$(jq -r '.discord.webhook // ""' "$tj" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$hook" ]]; then
+    _doctor_row yellow "discord" "no webhook configured" \
+      "set ATMUX_DISCORD_WEBHOOK or team.discord.webhook to enable whip/report pings"
+    return
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    _doctor_row yellow "discord" "webhook configured but curl missing" \
+      "install curl to enable reachability check"
+    return
+  fi
+
+  local code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$hook" 2>/dev/null || echo 000)"
+  # Discord returns 405 on GET — that proves we reached it.
+  # 000 means DNS/connection failure.
+  if [[ "$code" == "000" ]]; then
+    _doctor_row red "discord" "webhook unreachable (DNS or connection failure)" \
+      "check network + verify webhook URL"
+  elif [[ "$code" =~ ^[23][0-9][0-9]$ || "$code" == "405" ]]; then
+    _doctor_row green "discord" "reachable (HTTP $code)"
+  elif [[ "$code" == "401" || "$code" == "403" || "$code" == "404" ]]; then
+    _doctor_row red "discord" "webhook rejected (HTTP $code) — likely revoked or wrong URL" \
+      "regenerate the webhook in Discord and update the config"
+  else
+    _doctor_row yellow "discord" "unexpected response HTTP $code — reachable but odd"
+  fi
+}
+
+# ---------- helpers ----------
+
+# Extract the first command-like token from a shell command string,
+# skipping KEY=value env assignments.
+_doctor_first_bin() {
+  local cmd="$1" tok
+  # shellcheck disable=SC2086
+  set -- $cmd
+  for tok in "$@"; do
+    case "$tok" in
+      *=*) continue ;;
+      *)   printf '%s\n' "$tok"; return ;;
+    esac
+  done
+}
+
+_doctor_install_hint() {
+  local name="$1"
+  local os
+  case "$(uname -s)" in
+    Darwin) os="brew install $name" ;;
+    Linux)  os="apt install $name  (or your distro's equivalent)" ;;
+    *)      os="see the project's install docs" ;;
+  esac
+  case "$name" in
+    claude)       echo "https://docs.anthropic.com/en/docs/claude-code" ;;
+    opencode)     echo "https://opencode.ai" ;;
+    kimi)         echo "https://platform.moonshot.ai" ;;
+    cursor-agent) echo "https://cursor.com/cli" ;;
+    *)            echo "$os" ;;
+  esac
+}
+
+# ---------- output ----------
+
+_doctor_render_human() {
+  printf '\n%s🩺 atmux doctor%s — environment check\n\n' "$atmux_c_cyn" "$atmux_c_rst" >&2
+  local row status label detail hint glyph color
+  for row in "${_doctor_rows[@]}"; do
+    IFS='|' read -r status label detail hint <<<"$row"
+    case "$status" in
+      green)  glyph='✅'; color="$atmux_c_grn" ;;
+      yellow) glyph='⚠️ '; color="$atmux_c_yel" ;;
+      red)    glyph='❌'; color="$atmux_c_red" ;;
+    esac
+    printf '  %s %s%-22s%s %s\n' "$glyph" "$color" "$label" "$atmux_c_rst" "$detail" >&2
+    if [[ -n "$hint" && "$status" != "green" ]]; then
+      printf '     %s→ %s%s\n' "$atmux_c_dim" "$hint" "$atmux_c_rst" >&2
+    fi
+  done
+  echo >&2
+  if [[ "$_doctor_red_count" -eq 0 && "$_doctor_yellow_count" -eq 0 ]]; then
+    printf '  %s✅ all green%s\n\n' "$atmux_c_grn" "$atmux_c_rst" >&2
+  elif [[ "$_doctor_red_count" -eq 0 ]]; then
+    printf '  %s⚠️  %d warning(s), no blockers%s\n\n' \
+      "$atmux_c_yel" "$_doctor_yellow_count" "$atmux_c_rst" >&2
+  else
+    printf '  %s❌ %d issue(s)%s — run with %s--fix%s to remediate\n\n' \
+      "$atmux_c_red" "$_doctor_red_count" "$atmux_c_rst" "$atmux_c_bld" "$atmux_c_rst" >&2
+  fi
+}
+
+_doctor_render_json() {
+  local row status label detail hint first=1
+  printf '{"red":%d,"yellow":%d,"checks":[' \
+    "$_doctor_red_count" "$_doctor_yellow_count"
+  for row in "${_doctor_rows[@]}"; do
+    IFS='|' read -r status label detail hint <<<"$row"
+    [[ "$first" -eq 0 ]] && printf ','
+    first=0
+    jq -cn \
+      --arg s "$status" --arg l "$label" --arg d "$detail" --arg h "$hint" \
+      '{status:$s, label:$l, detail:$d, hint:$h}'
+  done
+  printf ']}\n'
+}
+
+_doctor_try_fix() {
+  [[ "$_doctor_red_count" -eq 0 ]] && return 0
+
+  # The one failure we CAN auto-remediate is missing / invalid team.json — offer the wizard.
+  local row status label detail
+  for row in "${_doctor_rows[@]}"; do
+    IFS='|' read -r status label detail _ <<<"$row"
+    [[ "$status" == "red" ]] || continue
+    if [[ "$label" == "team.json" ]]; then
+      printf '\n%s🧙 atmux%s  team.json is the fixable issue — re-run wizard? %s[Y/n]%s: ' \
+        "$atmux_c_cyn" "$atmux_c_rst" "$atmux_c_dim" "$atmux_c_rst" >&2
+      local ans; IFS= read -r ans || ans=""
+      case "$ans" in
+        ""|y|Y|yes|YES)
+          local tj; tj="$(atmux::team_json)"
+          if [[ -f "$tj" ]]; then
+            cp "$tj" "$tj.broken.$(date +%s)"
+            atmux::warn "backed up existing team.json before overwrite"
+          fi
+          exec "$ATMUX_BIN_DIR/atmux" init --force --wizard ;;
+        *) : ;;
+      esac
+    fi
+  done
+
+  atmux::warn "remaining issues need manual remediation — see hints above"
+}

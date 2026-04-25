@@ -61,10 +61,10 @@ teardown() {
 
 @test "init: wizard produces valid JSON (non-interactive piped input)" {
   local tmp; tmp="$(mktemp)"
-  # team name | reviewer y | gitter y | devops n | n_workers=1 | discord=""
-  # | tui_cmd_claude="" | tui_cmd_opencode="" | tui_cmd_kimi="" | tui_cmd_cursor=""
+  # team name | reviewer y | gitter y | devops n | n_workers=1 | emoji_mode=static
+  # | discord="" | tui_cmd_claude="" | tui_cmd_opencode="" | tui_cmd_kimi="" | tui_cmd_cursor=""
   # | worker tui=shell | worker model=default | worker name
-  printf 'wiz-team\ny\ny\nn\n1\n\n\n\n\n\nshell\ndefault\nworker-1\n' > "$tmp"
+  printf 'wiz-team\ny\ny\nn\n1\nstatic\n\n\n\n\n\nshell\ndefault\nworker-1\n' > "$tmp"
   run bash -c "'$ATMUX_BIN' init --wizard --force < '$tmp'"
   [ "$status" -eq 0 ]
   [ -f .atmux/team.json ]

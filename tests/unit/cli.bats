@@ -11,10 +11,18 @@ teardown() {
   atmux_teardown_sandbox
 }
 
-@test "cli: no args prints help" {
+@test "cli: no args routes to 'up' one-stop flow" {
+  # Bare `atmux` is aliased to `atmux up` — in a fresh sandbox with no TTY
+  # and no team.json, up aborts with a clear "no team.json" message rather
+  # than printing help. Use `atmux help` / `--help` to get help.
   run "$ATMUX_BIN"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "no team.json" ]]
+}
+
+@test "cli: 'atmux help' prints help" {
+  run "$ATMUX_BIN" help
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "atmux" ]]
   [[ "$output" =~ "Usage:" ]]
 }
 

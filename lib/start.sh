@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# atmux start [--force]
+# atmux start [--force] [--doctor] [--no-doctor]
 # Creates the team's tmux session and spawns every member's TUI in its own window.
 # Driver (the user's own REPL) is NOT spawned — the driver is whoever runs atmux.
 
@@ -12,12 +12,31 @@ main() {
   atmux::ensure_dirs
 
   local force=0
+  local doctor_mode="preflight"  # preflight=silent check, verbose=full report, skip=off
+  [[ -n "${ATMUX_DOCTOR_ON_START:-}" ]] && doctor_mode="verbose"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --force|-f) force=1; shift ;;
+      --doctor) doctor_mode="verbose"; shift ;;
+      --no-doctor) doctor_mode="skip"; shift ;;
       *) atmux::die "start: unknown arg: $1" ;;
     esac
   done
+
+  # ---- Preflight via doctor. On red, abort with a pointer. ----
+  case "$doctor_mode" in
+    verbose)
+      if ! "$ATMUX_BIN_DIR/atmux" doctor; then
+        atmux::die "preflight failed — fix the red items above, then re-run 'atmux start'"
+      fi
+      ;;
+    preflight)
+      if ! "$ATMUX_BIN_DIR/atmux" doctor --quiet; then
+        atmux::die "preflight failed — run 'atmux doctor' to diagnose, or 'atmux start --no-doctor' to skip"
+      fi
+      ;;
+    skip) : ;;
+  esac
 
   local team session
   team="$(atmux::team_name)"

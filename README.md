@@ -1,6 +1,8 @@
 # atmux
 
-> 🎮 **Driver** (you) → 🦅 **Team Lead** → 🐜 **Team Members** — coordinated through tmux, not an API.
+**atmux** — *agent teams multiplexer.* One tmux session per project team, one tmux window per agent.
+
+> 🎮 **Driver** (you) → 🧭 **Team Lead** → 🐝 **Team Members** — coordinated through tmux, not an API.
 
 A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
 
@@ -22,15 +24,15 @@ A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent termina
 │ tmux session: atmux-<team>                                         │
 │                                                                    │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐      │
-│  │ 🦅 lead    │ │ 🔍 reviewer│ │ 📝 gitter  │ │ ⚙️  devops │      │
+│  │ 🧭 lead    │ │ 🔍 reviewer│ │ 🌿 gitter  │ │ ⚙️  devops │      │
 │  │ claude     │ │ claude     │ │ claude     │ │ claude     │      │
 │  └─────┬──────┘ └────────────┘ └────────────┘ └────────────┘      │
 │        │ tmux send-keys                                            │
 │        ▼                                                           │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐                     │
-│  │ 🐜 cursor-1│ │ 🐜 kimi-1  │ │ 🐜 minimax │                     │
-│  │ cursor-agt │ │ kimi       │ │ opencode   │                     │
-│  └────────────┘ └────────────┘ └────────────┘                     │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐      │
+│  │ 🐢 claude-1│ │ 🐝 cursor-1│ │ 🦊 kimi-1  │ │ 🦉 minimax │      │
+│  │ claude     │ │ cursor-agt │ │ kimi       │ │ opencode   │      │
+│  └────────────┘ └────────────┘ └────────────┘ └────────────┘      │
 │                                                                    │
 │  shared state: .atmux/{team.json,kanban.json,inboxes/,logs/}       │
 └───────────────────────────────────────────────────────────────────┘

@@ -8,6 +8,7 @@
 _atmux() {
   local -a verbs
   verbs=(
+    'up:One-stop bring-up (wizard → doctor → start → attach)'
     'init:Scaffold .atmux/team.json (optionally wizard)'
     'start:Create tmux session + spawn members'
     'stop:Kill session, archive state'
@@ -33,6 +34,8 @@ _atmux() {
     'resume:Resume a paused member'
     'add-member:Append a new member to team.json'
     'reconfigure:Re-run wizard against existing team.json'
+    'doctor:Check deps, team.json, TUI PATH, webhook reachability'
+    'dashboard:Live full-screen status panel'
     'version:Print version'
     'help:Print help'
   )

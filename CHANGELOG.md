@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added
+
+- **Per-member emojis — auto-assigned, displayed everywhere.** Each member in
+  `team.json` now carries an optional `.emoji` field, stamped at wizard /
+  add-member time. Three assignment modes (`team.emojis.mode`, override via
+  `ATMUX_EMOJI_MODE`):
+  - `static` — canonical per-role emoji, deterministic (lead=🧭, reviewer=🔍,
+    gitter=🌿, devops=⚙️, member=🐝).
+  - `random` (default) — random pick from a curated pool per role; avoids
+    duplicates within a team for variety.
+  - `ai` — `claude -p` picks per-member based on name+role. Falls back to
+    `random` if claude is missing or the call fails.
+  Display surfaces: tmux window names (`__<team>__<emoji><member>` when
+  stamped), `atmux status`, and any future surfaces via `atmux::member_emoji`
+  / `atmux::member_display` helpers.
+- **Bare `atmux` → one-stop bring-up.** Running `atmux` with no arguments is
+  now aliased to `atmux up`: offers the wizard if there's no team.json (with
+  the CWD shown prominently so you don't accidentally scaffold in the wrong
+  dir), runs doctor preflight, starts the session if it isn't already up, and
+  attaches you to it. Idempotent — re-running after the session is up just
+  reattaches. Help is still available via `atmux help` / `atmux --help`.
+- **`atmux doctor`** — `brew doctor`-style environment check. Validates required
+  deps (tmux, jq, git), optional deps (curl, bats, shellcheck), `team.json`
+  schema, every member's TUI binary on PATH, `.atmux/` writability, and
+  Discord webhook reachability. Flags: `--quiet` (exit-code-only, used by
+  start preflight), `--fix` (interactive remediation), `--json` (machine
+  readable).
+- **`atmux start` preflight.** `start` now runs `doctor --quiet` before
+  spawning panes. On red, aborts with a pointer to `atmux doctor`. Use
+  `--doctor` for a verbose preflight (or `ATMUX_DOCTOR_ON_START=1` for cron),
+  or `--no-doctor` to skip entirely.
+
 ## [0.3.0] — 2026-04-24
 
 ### ✨ Added

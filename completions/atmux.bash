@@ -14,7 +14,7 @@ _atmux_complete() {
     cword=$COMP_CWORD
   }
 
-  local verbs="init start stop attach status send broadcast tell-lead reply outbox task dispatch inbox claim done report whip cost rotate rotate-lead handoff pause resume add-member reconfigure version help"
+  local verbs="up init start stop attach status send broadcast tell-lead reply outbox task dispatch inbox claim done report whip cost rotate rotate-lead handoff pause resume add-member reconfigure doctor dashboard version help"
 
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$verbs" -- "$cur") )

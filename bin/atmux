@@ -24,11 +24,13 @@ export ATMUX_TEMPLATES_DIR="$ATMUX_ROOT/templates"
 
 usage() {
   cat <<'EOF'
-atmux — tmux-native multi-TUI agent orchestrator.
+atmux — agent teams multiplexer.
 
 Usage: atmux <verb> [args]
+       atmux                        One-stop: wizard (if new) → doctor → start → attach
 
 Setup:
+  up                          Same as bare `atmux`: bring a team all the way up
   init [--name <team>]        Scaffold .atmux/team.json in current dir
   start                       Create tmux session, spawn all members
   stop [--force]              Kill tmux session, archive state
@@ -68,6 +70,7 @@ Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
+  doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
 
 Misc:
   version
@@ -83,8 +86,9 @@ EOF
 }
 
 case "${1:-}" in
-  ""|help|--help|-h) usage; exit 0 ;;
+  help|--help|-h) usage; exit 0 ;;
   version|--version|-V) echo "atmux $(atmux::version)"; exit 0 ;;
+  "") set -- up ;;  # bare `atmux` → one-stop bring-up
 esac
 
 verb="$1"; shift
@@ -111,7 +115,7 @@ fi
 # First-run auto-wizard: if there's no team.json, no --team override, and this
 # isn't a verb that sets up / explains atmux itself, offer to run the wizard.
 case "$verb" in
-  init|wizard) ;;  # these don't need a team to already exist
+  init|wizard|doctor|up) ;;  # these handle the no-team case themselves
   *)
     if [[ -z "${ATMUX_TEAM:-}" ]]; then
       atmux::maybe_offer_wizard || true
