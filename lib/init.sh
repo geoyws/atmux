@@ -206,12 +206,13 @@ _atmux_init_wizard() {
   local emojis_seen=""
   _append_member() {
     local mj="$1"
-    local mname mrole memoji
+    local mname mrole memoji mlane
     mname="$(jq -r '.name' <<<"$mj")"
     mrole="$(jq -r '.role' <<<"$mj")"
     memoji="$(atmux::emoji_assign "$mname" "$mrole" "$emojis_seen")"
     emojis_seen="$emojis_seen $memoji"
-    mj="$(jq --arg e "$memoji" '. + {emoji: $e}' <<<"$mj")"
+    mlane="$(atmux::lane_for_name "$mname" "$mrole")"
+    mj="$(jq --arg e "$memoji" --arg l "$mlane" '. + {lane: $l, emoji: $e}' <<<"$mj")"
     members_json=$(jq --argjson add "$mj" '. + [$add]' <<<"$members_json")
   }
 

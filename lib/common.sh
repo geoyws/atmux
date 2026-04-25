@@ -241,3 +241,36 @@ atmux::kanban_normalize() {
   [[ -f "$k" ]] || echo '{"tasks":[],"epics":[],"stories":[]}' > "$k"
   atmux::jq_update "$k" '.tasks //= [] | .epics //= [] | .stories //= []'
 }
+
+# ---------- member lane ----------
+
+# Infer a team-member's lane from its name + role.
+# Lanes (lowercase in JSON, UPPER-CASE only in display): fe / be / db / ops /
+# test / review / misc. Role overrides win when the name has no lane prefix:
+#   reviewer → review · devops → ops · dba → db · team-lead/planner/gitter → misc.
+# Otherwise a name like "<lane>-<rest>" (e.g. fe-kanban, be-foo, db-bar) yields
+# the prefix; anything else falls back to "misc".
+atmux::lane_for_name() {
+  local name="${1:-}"
+  local role="${2:-member}"
+  local prefix="${name%%-*}"
+  case "$prefix" in
+    fe|be|db|ops|test|review|misc)
+      printf '%s\n' "$prefix"
+      return ;;
+  esac
+  case "$role" in
+    reviewer)               printf 'review\n' ;;
+    devops)                 printf 'ops\n' ;;
+    dba)                    printf 'db\n' ;;
+    team-lead|planner|gitter|*) printf 'misc\n' ;;
+  esac
+}
+
+# Render a lane in display form (UPPER-CASE). JSON values stay lowercase;
+# call this only at the rendering boundary.
+atmux::lane_display() {
+  local lane="${1:-misc}"
+  [[ -z "$lane" || "$lane" == "null" ]] && lane="misc"
+  printf '%s\n' "$lane" | tr '[:lower:]' '[:upper:]'
+}
