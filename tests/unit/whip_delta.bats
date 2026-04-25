@@ -83,3 +83,82 @@ _load_whip() {
   [[ "$output" =~ "Since last tick" ]]
   [[ "$output" =~ "$id" ]]
 }
+
+# ---------- commit-side coverage (AC cases 3, 4, 6) ----------
+#
+# The bats sandbox isn't a real git repo, so the helper's `git rev-parse
+# --git-dir` short-circuits and the commit-counting branch never fires
+# in the existing tests above. To exercise that branch we PATH-shadow
+# git with a tiny script that
+#   (1) makes `git rev-parse --git-dir` succeed (helper proceeds), and
+#   (2) emits a controlled list of SHAs from `git log` via FAKEGIT_SHAS.
+# Each emitted SHA is newline-terminated — that matches what the helper
+# expects to read line-by-line. The shadow is per-test; PATH unwinds
+# automatically when the bats test subshell exits.
+_setup_fake_git() {
+  local fakebin="$ATMUX_TEST_TMP/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/git" <<'FAKE_EOF'
+#!/usr/bin/env bash
+case "$1" in
+  rev-parse)
+    # Anything that looks like the helper's "are we in a repo?" probe ⇒ yes.
+    [[ "$*" == *--git-dir* ]] && { echo .git; exit 0; }
+    exit 0
+    ;;
+  log)
+    # Emit one sha per line (trailing newline preserved). FAKEGIT_SHAS is
+    # space-separated in the env so the test caller stays one-liner.
+    local sha
+    for sha in ${FAKEGIT_SHAS:-}; do
+      printf '%s\n' "$sha"
+    done
+    exit 0
+    ;;
+esac
+exit 0
+FAKE_EOF
+  chmod +x "$fakebin/git"
+  export PATH="$fakebin:$PATH"
+}
+
+@test "delta_since: 1 commit in window ⇒ ✅ commit bullet emitted" {
+  _setup_fake_git
+  _load_whip
+  export FAKEGIT_SHAS="abc1234"
+  local before; before=$(date +%s)
+  sleep 1
+  run _atmux_whip_delta_since "$before"
+  [[ "$output" =~ "Since last tick" ]]
+  [[ "$output" =~ "1 commits: abc1234" ]]
+}
+
+@test "delta_since: 7 commits in window ⇒ 5 SHAs shown + (+2 more)" {
+  _setup_fake_git
+  _load_whip
+  export FAKEGIT_SHAS="s1 s2 s3 s4 s5 s6 s7"
+  local before; before=$(date +%s)
+  sleep 1
+  run _atmux_whip_delta_since "$before"
+  [[ "$output" =~ "7 commits" ]]
+  [[ "$output" =~ "s1 s2 s3 s4 s5 (+2 more)" ]]
+  # Trailing SHAs s6/s7 must NOT appear — they're collapsed into "+2 more".
+  # `[[ ! ... ]]` not `! [[ ... ]]` — Bats ≥1.5 only fails the last `!`
+  # command, so the inverted-on-the-outside form silently no-ops mid-test.
+  [[ ! "$output" =~ "s6" ]]
+  [[ ! "$output" =~ "s7" ]]
+}
+
+@test "delta_since: commits + done tasks together ⇒ both bullets emitted" {
+  _setup_fake_git
+  _load_whip
+  export FAKEGIT_SHAS="abc1234 def5678"
+  local before; before=$(date +%s)
+  sleep 1
+  local id; id=$("$ATMUX_BIN" task add "x" | tail -1)
+  "$ATMUX_BIN" task move "$id" done >/dev/null
+  run _atmux_whip_delta_since "$before"
+  [[ "$output" =~ "Since last tick" ]]
+  [[ "$output" =~ "2 commits: abc1234 def5678" ]]
+  [[ "$output" =~ "1 tasks done: $id" ]]
+}
