@@ -8,6 +8,7 @@
 main() {
   atmux::require jq
   atmux::require_team
+  atmux::kanban_normalize
 
   local verb=""
   case "${1:-}" in

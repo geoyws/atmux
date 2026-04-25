@@ -6,12 +6,26 @@
 #   move <id> <todo|in-progress|done|blocked>
 #   assign <id> <member>
 #   rm <id>
+#
+# kanban.json schema (top-level):
+#   {
+#     "tasks":   [ { id, subject, body, status, owner, deps, priority,
+#                    createdAt, claimedAt, completedAt, note,
+#                    epic?, story?, lane?, deliverable? } ],
+#     "epics":   [ { id, title, status, driverRef, stories, tasks,
+#                    createdAt, completedAt } ],
+#     "stories": [ { id, epic, title, acceptanceCriteria, status, tasks,
+#                    createdAt, completedAt } ]
+#   }
+# `epic` / `story` / `lane` / `deliverable` on a task are optional — legacy
+# tasks without them remain valid (treat missing as null on read). Top-level
+# arrays are guaranteed present after `atmux::kanban_normalize` (see
+# lib/common.sh) which runs at the top of every kanban mutation.
 
 main() {
   atmux::require jq
   atmux::require_team
-  local k; k="$(atmux::kanban_json)"
-  [[ -f "$k" ]] || echo '{"tasks":[]}' > "$k"
+  atmux::kanban_normalize
 
   local verb="${1:-list}"; shift || true
   case "$verb" in

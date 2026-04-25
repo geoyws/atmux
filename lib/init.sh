@@ -39,7 +39,7 @@ main() {
     _atmux_init_template "$team_name" "$tj"
   fi
 
-  [[ -f "$(atmux::kanban_json)" ]] || echo '{"tasks":[]}' > "$(atmux::kanban_json)"
+  [[ -f "$(atmux::kanban_json)" ]] || echo '{"tasks":[],"epics":[],"stories":[]}' > "$(atmux::kanban_json)"
   [[ -f "$(atmux::driver_inbox)" ]] || : > "$(atmux::driver_inbox)"
 
   # Prime per-member inbox files (empty, but present) so inbox/dispatch don't

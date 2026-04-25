@@ -10,6 +10,7 @@
 main() {
   atmux::require jq
   atmux::require_team
+  atmux::kanban_normalize
 
   local no_ping=0
   local member="" id=""

@@ -228,3 +228,16 @@ atmux::now_myt()   { TZ='Asia/Kuala_Lumpur' date +'%H:%M MYT'; }
 atmux::gen_id() {
   printf 't-%s\n' "$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 }
+
+# ---------- kanban schema ----------
+
+# Idempotently ensure kanban.json has the expected top-level shape:
+#   {"tasks":[], "epics":[], "stories":[]}
+# Auto-creates the file if missing. Safe to call before any mutation; uses
+# `//=` so existing keys keep their data. Legacy kanbans that only have
+# `tasks` get `epics` and `stories` added on first call.
+atmux::kanban_normalize() {
+  local k; k="$(atmux::kanban_json)"
+  [[ -f "$k" ]] || echo '{"tasks":[],"epics":[],"stories":[]}' > "$k"
+  atmux::jq_update "$k" '.tasks //= [] | .epics //= [] | .stories //= []'
+}

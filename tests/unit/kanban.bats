@@ -87,3 +87,61 @@ teardown() {
   run jq -r --arg id "$id" '.tasks[] | select(.id==$id) | .deps | join(",")' .atmux/kanban.json
   [ "$output" = "t-aaa,t-bbb" ]
 }
+
+# ---- schema normalize (Epic / Story expansion) ----
+
+@test "schema: fresh init writes tasks[] + epics[] + stories[]" {
+  run jq -r '[.tasks, .epics, .stories] | map(type) | join(",")' .atmux/kanban.json
+  [ "$status" -eq 0 ]
+  [ "$output" = "array,array,array" ]
+}
+
+@test "schema: legacy kanban (tasks-only) survives a mutation and gains epics/stories" {
+  # Hand-craft a legacy shape — exactly what pre-v0.4 kanbans look like.
+  echo '{"tasks":[{"id":"t-legacy01","subject":"old","status":"todo","owner":null,"deps":[],"priority":null,"createdAt":1,"claimedAt":null,"completedAt":null}]}' > .atmux/kanban.json
+
+  # First mutation should auto-add the missing top-level arrays without
+  # losing the legacy task.
+  "$ATMUX_BIN" task add "fresh" >/dev/null
+
+  run jq -r '.epics | type' .atmux/kanban.json
+  [ "$output" = "array" ]
+  run jq -r '.stories | type' .atmux/kanban.json
+  [ "$output" = "array" ]
+  run jq -r '[.tasks[] | .id] | sort | join(",")' .atmux/kanban.json
+  [[ "$output" =~ t-legacy01 ]]
+}
+
+@test "schema: legacy task without epic/story/lane/deliverable reads back as null" {
+  echo '{"tasks":[{"id":"t-legacy02","subject":"old","status":"todo","owner":null,"deps":[],"priority":null,"createdAt":1,"claimedAt":null,"completedAt":null}]}' > .atmux/kanban.json
+  "$ATMUX_BIN" task add "noop-trigger" >/dev/null
+  run jq -r '.tasks[] | select(.id=="t-legacy02") | [.epic, .story, .lane, .deliverable] | map(. // "null") | join(",")' .atmux/kanban.json
+  [ "$output" = "null,null,null,null" ]
+}
+
+@test "schema: kanban_normalize is idempotent (running it twice is a no-op)" {
+  # Snapshot, normalize twice via two mutations, snapshot again — the
+  # top-level shape should be byte-identical between the two snapshots
+  # (only the new task differs, and we exclude .tasks from the diff).
+  local before; before=$(jq -S 'del(.tasks)' .atmux/kanban.json)
+  "$ATMUX_BIN" task add "first"  >/dev/null
+  "$ATMUX_BIN" task add "second" >/dev/null
+  local after;  after=$(jq -S 'del(.tasks)' .atmux/kanban.json)
+  [ "$before" = "$after" ]
+}
+
+@test "schema: claim normalizes a legacy kanban without losing data" {
+  # Arrange: a legacy kanban with one task already in-progress on a member.
+  echo '{"tasks":[{"id":"t-legacy03","subject":"x","status":"todo","owner":"worker","deps":[],"priority":null,"createdAt":1,"claimedAt":null,"completedAt":null}]}' > .atmux/kanban.json
+
+  run "$ATMUX_BIN" claim t-legacy03 --as worker
+  [ "$status" -eq 0 ]
+
+  # Top-level arrays present, status updated, task preserved.
+  run jq -r '.epics | type' .atmux/kanban.json
+  [ "$output" = "array" ]
+  run jq -r '.stories | type' .atmux/kanban.json
+  [ "$output" = "array" ]
+  run jq -r '.tasks[] | select(.id=="t-legacy03") | .status' .atmux/kanban.json
+  [ "$output" = "in-progress" ]
+}
