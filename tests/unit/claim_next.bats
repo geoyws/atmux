@@ -142,6 +142,47 @@ _set_cross_lane() {
   [[ "$output" =~ "t-legacy" ]]
 }
 
+# ---------- claim --next: preassign relax (d-515de5ce / t-5b75f839) ----------
+
+@test "claim --next: picks task preassigned to caller (.owner == caller)" {
+  _seed_member_lane fe-worker fe
+  local id; id=$("$ATMUX_BIN" task add "preassigned" --lane fe --assignee fe-worker | tail -1)
+  run "$ATMUX_BIN" claim --next --as fe-worker
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "$id" ]]
+  # Status flipped to in-progress + claimedAt set, like a normal claim.
+  run jq -r --arg id "$id" '.tasks[] | select(.id==$id) | .status' .atmux/kanban.json
+  [ "$output" = "in-progress" ]
+}
+
+@test "claim --next: skips task preassigned to a DIFFERENT worker" {
+  _seed_member_lane fe-one fe
+  _seed_member_lane fe-two fe
+  # Preassigned to fe-one; fe-two should NOT pick it.
+  "$ATMUX_BIN" task add "for-fe-one" --lane fe --assignee fe-one >/dev/null
+  run "$ATMUX_BIN" claim --next --as fe-two
+  # No claimable work for fe-two — exits 0 with no-claim, OR a non-zero
+  # under cross=false. Either way, the task's owner stays fe-one (not fe-two).
+  run jq -r '.tasks[] | select(.subject=="for-fe-one") | .owner' .atmux/kanban.json
+  [ "$output" = "fe-one" ]
+  run jq -r '.tasks[] | select(.subject=="for-fe-one") | .status' .atmux/kanban.json
+  [ "$output" = "todo" ]
+}
+
+@test "claim --next: prefers caller-preassigned over plain unclaimed at same priority" {
+  _seed_member_lane fe-worker fe
+  # Both at priority 1. Sort tie-break is createdAt asc → unassigned (added
+  # first) wins on tie. The relax must NOT change ordering — it only widens
+  # eligibility. Add the preassigned LATER so plain-unclaimed has earlier
+  # createdAt; assert plain-unclaimed wins (deterministic tie-break preserved).
+  local plain; plain=$("$ATMUX_BIN" task add "plain"        --lane fe --priority 1 | tail -1)
+  sleep 1
+  local pre;   pre=$("$ATMUX_BIN"   task add "preassigned"  --lane fe --priority 1 --assignee fe-worker | tail -1)
+  run "$ATMUX_BIN" claim --next --as fe-worker
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "$plain" ]]
+}
+
 # ---------- claim --next: paused member ----------
 
 @test "claim --next: paused member can't claim" {

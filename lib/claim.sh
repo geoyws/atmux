@@ -132,7 +132,7 @@ _atmux_claim_pick_next() {
     attempts=$(( attempts + 1 ))
 
     local pick_id
-    pick_id=$(_atmux_claim_select_next "$lane" "$cross")
+    pick_id=$(_atmux_claim_select_next "$lane" "$cross" "$who")
     if [[ -z "$pick_id" ]]; then
       if [[ "$cross" != "true" && -n "$lane" ]]; then
         local lane_disp; lane_disp=$(printf '%s' "$lane" | tr '[:lower:]' '[:upper:]')
@@ -161,20 +161,25 @@ _atmux_claim_pick_next() {
 # First pass: lane-matched (when caller has a lane). Second pass (if cross is
 # true OR caller has no lane): any lane. Sort: priority asc (1=highest),
 # then createdAt asc — tie-breaks deterministically per AC.
+#
+# Owner gate (per d-515de5ce): a task is claimable by $who when its owner is
+# null (unclaimed) OR equals $who (planner-preassigned to caller). Preassigned
+# tasks for OTHER workers are skipped — preassignment is a hint, not a
+# hard-claim, but cross-lane workers still respect intent.
 _atmux_claim_select_next() {
-  local lane="$1" cross="$2"
+  local lane="$1" cross="$2" who="$3"
   local k; k="$(atmux::kanban_json)"
 
   # First pass — only when we have a caller lane to prefer.
   if [[ -n "$lane" ]]; then
     local first
-    first=$(jq -r --arg lane "$lane" '
+    first=$(jq -r --arg lane "$lane" --arg who "$who" '
       . as $root
       | ($root.tasks | map(select(.status == "done") | .id)) as $done_ids
       | [
           $root.tasks[]?
           | select(.status == "todo")
-          | select((.owner // null) == null)
+          | select((.owner // null) == null or .owner == $who)
           | select(.lane == $lane)
           | select(((.deps // []) - $done_ids) | length == 0)
         ]
@@ -191,13 +196,13 @@ _atmux_claim_select_next() {
   # except when caller has no lane at all (then there's nothing to "cross"
   # from, so we always fall through).
   if [[ "$cross" == "true" || -z "$lane" ]]; then
-    jq -r '
+    jq -r --arg who "$who" '
       . as $root
       | ($root.tasks | map(select(.status == "done") | .id)) as $done_ids
       | [
           $root.tasks[]?
           | select(.status == "todo")
-          | select((.owner // null) == null)
+          | select((.owner // null) == null or .owner == $who)
           | select(((.deps // []) - $done_ids) | length == 0)
         ]
       | sort_by((.priority // 999), (.createdAt // 0))
@@ -206,9 +211,10 @@ _atmux_claim_select_next() {
   fi
 }
 
-# Atomic claim: only flips .owner/.status/.claimedAt when .owner is currently
-# null. Returns 0 if WE landed the claim (post-update .owner == $who), 1 if
-# someone else already had it (race lost).
+# Atomic claim: flips .owner/.status/.claimedAt when .owner is currently
+# null OR already preassigned to $who (per d-515de5ce relax). Returns 0 if WE
+# landed the claim (post-update .owner == $who AND .status == in-progress),
+# 1 if someone else won the race or we lost a preassignment.
 _atmux_claim_apply_atomic() {
   local task_id="$1" who="$2"
   local k; k="$(atmux::kanban_json)"
@@ -216,15 +222,18 @@ _atmux_claim_apply_atomic() {
 
   atmux::jq_update "$k" \
     '.tasks |= map(
-       if .id == $id and (.owner // null) == null then
+       if .id == $id and ((.owner // null) == null or .owner == $who) then
          .owner = $who | .status = "in-progress" | .claimedAt = $now
        else . end
      )' \
     --arg id "$task_id" --arg who "$who" --argjson now "$now"
 
-  local owner_after
-  owner_after=$(jq -r --arg id "$task_id" '.tasks[]? | select(.id == $id) | .owner // ""' "$k")
-  [[ "$owner_after" == "$who" ]]
+  local task_after
+  task_after=$(jq -c --arg id "$task_id" '.tasks[]? | select(.id == $id)' "$k")
+  local owner_after status_after
+  owner_after=$(jq -r '.owner // ""' <<<"$task_after")
+  status_after=$(jq -r '.status // ""' <<<"$task_after")
+  [[ "$owner_after" == "$who" && "$status_after" == "in-progress" ]]
 }
 
 _atmux_inbox_move() {
