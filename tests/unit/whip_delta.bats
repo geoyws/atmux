@@ -162,3 +162,48 @@ FAKE_EOF
   [[ "$output" =~ "2 commits: abc1234 def5678" ]]
   [[ "$output" =~ "1 tasks done: $id" ]]
 }
+
+# ---------- real-git regression coverage (flag f-3229e152) ----------
+#
+# The PATH-shadow tests above use a mock that emits trailing newlines per
+# SHA. Production helper hits real git, where `git log --pretty=format:%h`
+# omits the trailing newline on the last entry — `read -r` then silently
+# drops it. The fix swap (lib/whip.sh:541 `format:` → `tformat:`) is
+# trivial; what's important is a test that catches a future regression
+# the moment someone reverts. We init a real git repo, commit N times,
+# and assert ALL N commits appear in the body. Bypasses the mock so a
+# `format:` slip surfaces immediately.
+_init_real_git_in_sandbox() {
+  git init -q
+  git config user.email "t@t" >/dev/null
+  git config user.name  "t"   >/dev/null
+}
+
+@test "delta_since: REAL git, 1 commit ⇒ that commit appears in body (regression: format vs tformat)" {
+  _init_real_git_in_sandbox
+  echo a > a; git add a; git commit -q -m a
+  _load_whip
+  local before; before=$(( $(date +%s) - 60 ))
+  local sha; sha=$(git rev-parse --short HEAD)
+  run _atmux_whip_delta_since "$before"
+  [[ "$output" =~ "Since last tick" ]]
+  [[ "$output" =~ "1 commits: $sha" ]]
+}
+
+@test "delta_since: REAL git, 3 commits ⇒ all 3 SHAs appear (none dropped)" {
+  _init_real_git_in_sandbox
+  echo a > a; git add a; git commit -q -m a
+  echo b > b; git add b; git commit -q -m b
+  echo c > c; git add c; git commit -q -m c
+  _load_whip
+  local before; before=$(( $(date +%s) - 60 ))
+  local sha1 sha2 sha3
+  sha1=$(git rev-parse --short HEAD~2)
+  sha2=$(git rev-parse --short HEAD~1)
+  sha3=$(git rev-parse --short HEAD)
+  run _atmux_whip_delta_since "$before"
+  [[ "$output" =~ "3 commits" ]]
+  [[ "$output" =~ "$sha1" ]]
+  [[ "$output" =~ "$sha2" ]]
+  [[ "$output" =~ "$sha3" ]]
+}

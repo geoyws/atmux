@@ -530,11 +530,15 @@ _atmux_whip_delta_since() {
   fi
 
   # Commits since $since via git log (ignore errors when not in a repo).
+  # `tformat:` (not `format:`) terminates every entry with a newline — the
+  # `format:` variant only puts the format string BETWEEN entries, so the
+  # last commit lacks a trailing newline and `read` drops it (1 commit →
+  # 0 captured, N → N-1 captured). Self-surfaced as flag f-3229e152.
   local commits=()
   if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
     while IFS= read -r line; do
       [[ -n "$line" ]] && commits+=("$line")
-    done < <(git log --since="@$since" --pretty=format:'%h' 2>/dev/null || true)
+    done < <(git log --since="@$since" --pretty=tformat:'%h' 2>/dev/null || true)
   fi
 
   # Done tasks since $since — completedAt > since.
