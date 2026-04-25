@@ -542,20 +542,25 @@ _atmux_whip_delta_since() {
     done < <(git log --since="@$since" --pretty=tformat:'%h' 2>/dev/null || true)
   fi
 
-  # Done tasks since $since — completedAt > since.
-  local done_ids=()
+  # Done tasks since $since — completedAt > since. Single jq pass that
+  # emits TSV with id/subject/owner so the renderer below can compose
+  # one bullet per Task without re-shelling out (E2/S10 t-62249136).
+  local done_records=()
   local k; k="$(atmux::kanban_json)"
   if [[ -f "$k" ]]; then
-    local id
-    while IFS= read -r id; do
-      [[ -n "$id" ]] && done_ids+=("$id")
+    local rec
+    while IFS= read -r rec; do
+      [[ -n "$rec" ]] && done_records+=("$rec")
     done < <(jq -r --argjson s "$since" \
-        '[.tasks[]? | select((.completedAt // 0) > $s)] | sort_by(.completedAt) | .[].id' \
+        '[.tasks[]? | select((.completedAt // 0) > $s)]
+         | sort_by(.completedAt)
+         | .[]
+         | [.id, (.subject // ""), (.owner // "-")] | @tsv' \
         "$k" 2>/dev/null || true)
   fi
 
   # Skip the whole section when both buckets are empty — quiet tick.
-  if [[ ${#commits[@]} -eq 0 && ${#done_ids[@]} -eq 0 ]]; then
+  if [[ ${#commits[@]} -eq 0 && ${#done_records[@]} -eq 0 ]]; then
     return 0
   fi
 
@@ -567,12 +572,41 @@ _atmux_whip_delta_since() {
     if (( n > 5 )); then line="$line (+$((n - 5)) more)"; fi
     out+=$'\n  - ✅ '"$n commits: $line"
   fi
-  if [[ ${#done_ids[@]} -gt 0 ]]; then
-    local n=${#done_ids[@]}
-    local shown=("${done_ids[@]:0:5}")
-    local line; line="$(printf '%s ' "${shown[@]}")"; line="${line% }"
-    if (( n > 5 )); then line="$line (+$((n - 5)) more)"; fi
-    out+=$'\n  - 🏁 '"$n tasks done: $line"
+  if [[ ${#done_records[@]} -gt 0 ]]; then
+    # E2/S10: one bullet per Task — '🏁 `<id>` <prefix> <subject-tail>
+    # — <owner>'. <prefix> is the worker '[E#/S#]' marker if present;
+    # <subject-tail> is the subject minus that prefix. Per-bullet 80-char
+    # cap keeps the Discord template tidy; longer subjects truncate with
+    # `…`. Cap at 5 displayed, '+N more' pointer when truncated.
+    local n=${#done_records[@]}
+    local rec id subject owner prefix tail bullet
+    # Match the bracketed worker tag verbatim — AC asks for '[E#/S#]'
+    # in <prefix>, so capture the whole '[…]' run rather than the inner
+    # 'E#/S#' identifier.
+    local re='^(\[E[0-9]+/S[0-9]+\])[[:space:]]*(.*)$'
+    local i=0
+    for rec in "${done_records[@]:0:5}"; do
+      IFS=$'\t' read -r id subject owner <<<"$rec"
+      prefix=""
+      tail="$subject"
+      if [[ "$subject" =~ $re ]]; then
+        prefix="${BASH_REMATCH[1]}"
+        tail="${BASH_REMATCH[2]}"
+      fi
+      if [[ -n "$prefix" ]]; then
+        bullet="🏁 \`$id\` $prefix $tail — $owner"
+      else
+        bullet="🏁 \`$id\` $tail — $owner"
+      fi
+      if (( ${#bullet} > 80 )); then
+        bullet="${bullet:0:79}…"
+      fi
+      out+=$'\n  - '"$bullet"
+      i=$((i + 1))
+    done
+    if (( n > 5 )); then
+      out+=$'\n  - 🏁 +'$((n - 5))" more"
+    fi
   fi
   printf '%s' "$out"
 }

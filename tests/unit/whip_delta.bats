@@ -37,7 +37,7 @@ _load_whip() {
   [ -z "$output" ]
 }
 
-@test "delta_since: kanban tasks completed in window ⇒ 🏁 bullet emitted" {
+@test "delta_since: kanban tasks completed in window ⇒ 🏁 bullet emitted (E2/S10 per-task shape)" {
   _load_whip
   local before; before=$(date +%s)
   sleep 1
@@ -45,11 +45,13 @@ _load_whip() {
   "$ATMUX_BIN" task move "$id" done >/dev/null
   run _atmux_whip_delta_since "$before"
   [[ "$output" =~ "Since last tick" ]]
-  [[ "$output" =~ "tasks done" ]]
+  # New shape (E2/S10 t-62249136): one bullet per task — '🏁 `<id>` …'.
+  # The flat 'tasks done: id1 id2 …' line is gone.
+  [[ "$output" =~ 🏁 ]]
   [[ "$output" =~ "$id" ]]
 }
 
-@test "delta_since: > 5 done tasks ⇒ shows 5 + '+N more'" {
+@test "delta_since: > 5 done tasks ⇒ shows 5 bullets + '+N more' (E2/S10 per-task shape)" {
   _load_whip
   local before; before=$(date +%s)
   sleep 1
@@ -59,7 +61,9 @@ _load_whip() {
     "$ATMUX_BIN" task move "$id" done >/dev/null
   done
   run _atmux_whip_delta_since "$before"
-  [[ "$output" =~ "7 tasks done" ]]
+  # 5 emitted bullets + 1 '+2 more' summary line.
+  local bullet_count; bullet_count=$(grep -c '🏁' <<<"$output")
+  [ "$bullet_count" -eq 6 ]
   [[ "$output" =~ "+2 more" ]]
 }
 
@@ -149,7 +153,7 @@ FAKE_EOF
   [[ ! "$output" =~ "s7" ]]
 }
 
-@test "delta_since: commits + done tasks together ⇒ both bullets emitted" {
+@test "delta_since: commits + done tasks together ⇒ both bullets emitted (E2/S10 per-task shape)" {
   _setup_fake_git
   _load_whip
   export FAKEGIT_SHAS="abc1234 def5678"
@@ -159,8 +163,12 @@ FAKE_EOF
   "$ATMUX_BIN" task move "$id" done >/dev/null
   run _atmux_whip_delta_since "$before"
   [[ "$output" =~ "Since last tick" ]]
+  # Commit line shape stays flat (one bullet, IDs joined).
   [[ "$output" =~ "2 commits: abc1234 def5678" ]]
-  [[ "$output" =~ "1 tasks done: $id" ]]
+  # Task shape now per-bullet — '🏁 `<id>` …'. The id appears inside
+  # backticks; check the substring without anchoring on the old flat form.
+  [[ "$output" =~ "$id" ]]
+  [[ "$output" =~ 🏁 ]]
 }
 
 # ---------- real-git regression coverage (flag f-3229e152) ----------

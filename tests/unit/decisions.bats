@@ -46,22 +46,21 @@ _curl_payload_content() {
   grep -q "^- \*\*reversibility\*\*: low$" .atmux/decisions.md
 }
 
-@test "decisions: add ERRORS when question exceeds 200 chars (E2/S9 — relaxed cap)" {
-  # Pre-S9 cap was 60 (Discord ≤80 budget at the data layer). S9 moves the
-  # cap to 200 + delegates the per-line ≤80-char budget to the renderer
-  # (chunking + drop-order). ERROR-not-truncate behavior preserved.
-  local long; long=$(printf '%.0sX' {1..201})
+@test "decisions: add accepts long question (E2/S10 — caps dropped, chunker takes over)" {
+  # Pre-S10 the question was capped at 200 chars (S9 lifted from 60). S10
+  # T1 drops the per-field cap entirely: caller can pass arbitrarily long
+  # strings and the chunker (T2) handles overflow into multi-message posts.
+  local long; long=$(printf '%.0sX' {1..4000})
   run "$ATMUX_BIN" decisions add "$long" --default "yes"
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "exceeds 200 chars" ]]
-  [ ! -f .atmux/decisions.md ]
+  [ "$status" -eq 0 ]
+  [ -f .atmux/decisions.md ]
+  grep -q "^### d-" .atmux/decisions.md
 }
 
-@test "decisions: add ERRORS when default exceeds 200 chars (E2/S9 — relaxed cap)" {
-  local long; long=$(printf '%.0sY' {1..201})
+@test "decisions: add accepts long default (E2/S10 — caps dropped)" {
+  local long; long=$(printf '%.0sY' {1..4000})
   run "$ATMUX_BIN" decisions add "Use pg-15?" --default "$long"
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "exceeds 200 chars" ]]
+  [ "$status" -eq 0 ]
 }
 
 @test "decisions: add accepts question + default at the 200-char boundary (E2/S9)" {
@@ -70,14 +69,14 @@ _curl_payload_content() {
   [ "$status" -eq 0 ]
 }
 
-@test "decisions: add ERRORS when --note exceeds 500 chars (E2/S9 — relaxed cap)" {
-  # Pre-S9 the note cap was 60 chars (review-followup t-47361a6c). S9 lifts
-  # it to 500 — the renderer handles oversize bodies via drop-order
-  # truncation (note→impact→options→context).
-  local long; long=$(printf '%.0sN' {1..501})
+@test "decisions: add accepts long --note (E2/S10 — note cap dropped, chunker handles overflow)" {
+  # Pre-S10 the note cap was 500 chars (S9 lifted from 60). T1 of S10
+  # drops it entirely; the chunker spreads long notes across multiple
+  # Discord posts or drops them per S9 keep-order under the 5-chunk
+  # ceiling.
+  local long; long=$(printf '%.0sN' {1..8000})
   run "$ATMUX_BIN" decisions add "Q?" --default "y" --note "$long"
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "--note exceeds 500 chars" ]]
+  [ "$status" -eq 0 ]
 }
 
 @test "decisions: add accepts --note at the 500-char boundary (E2/S9)" {
@@ -368,47 +367,35 @@ _curl_payload_content() {
   [ "$(jq -r '.[0].options | length'       <<<"$json")" = "0" ]
 }
 
-@test "decisions: --context >500 chars ERRORS; 500 chars at boundary accepted" {
+@test "decisions: --context accepts long values (E2/S10 — cap dropped)" {
   unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
-  local cap;  cap=$(printf '%.0sC' {1..500})
-  local over; over=$(printf '%.0sC' {1..501})
-  run "$ATMUX_BIN" decisions add "q?" --default "y" --context "$over"
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "--context exceeds 500 chars" ]]
-  run "$ATMUX_BIN" decisions add "q?" --default "y" --context "$cap"
+  local big; big=$(printf '%.0sC' {1..2000})
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --context "$big"
   [ "$status" -eq 0 ]
 }
 
-@test "decisions: --impact >500 chars ERRORS; 500 chars at boundary accepted" {
+@test "decisions: --impact accepts long values (E2/S10 — cap dropped)" {
   unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
-  local cap;  cap=$(printf '%.0sI' {1..500})
-  local over; over=$(printf '%.0sI' {1..501})
-  run "$ATMUX_BIN" decisions add "q?" --default "y" --impact "$over"
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "--impact exceeds 500 chars" ]]
-  run "$ATMUX_BIN" decisions add "q?" --default "y" --impact "$cap"
+  local big; big=$(printf '%.0sI' {1..2000})
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --impact "$big"
   [ "$status" -eq 0 ]
 }
 
-@test "decisions: --decided-by >80 chars ERRORS; 80 chars at boundary accepted" {
+@test "decisions: --decided-by accepts long values (E2/S10 — cap dropped)" {
   unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
-  local cap;  cap=$(printf '%.0sD' {1..80})
-  local over; over=$(printf '%.0sD' {1..81})
-  run "$ATMUX_BIN" decisions add "q?" --default "y" --decided-by "$over"
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "--decided-by exceeds 80 chars" ]]
-  run "$ATMUX_BIN" decisions add "q?" --default "y" --decided-by "$cap"
+  local big; big=$(printf '%.0sD' {1..500})
+  run "$ATMUX_BIN" decisions add "q?" --default "y" --decided-by "$big"
   [ "$status" -eq 0 ]
 }
 
-@test "decisions: --option entry >200 chars ERRORS; 5 options at max-count accepted" {
+@test "decisions: --option per-entry cap dropped (E2/S10); 5-occurrence structural cap retained" {
   unset ATMUX_DISCORD_WEBHOOK DISCORD_WHIP_WEBHOOK
-  local big; big=$(printf '%.0so' {1..201})
+  # Per-entry byte cap removed by T1 (lib/decisions.sh).
+  local big; big=$(printf '%.0so' {1..600})
   run "$ATMUX_BIN" decisions add "q?" --default "y" --option "$big"
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "--option entry exceeds 200 chars" ]]
-  # Five entries at the 5-occurrence cap → accepted.
-  run "$ATMUX_BIN" decisions add "q?" --default "y" \
+  [ "$status" -eq 0 ]
+  # Five entries at the 5-occurrence structural cap → accepted (UX shape limit, not byte cap).
+  run "$ATMUX_BIN" decisions add "q2?" --default "y" \
     --option a --option b --option c --option d --option e
   [ "$status" -eq 0 ]
 }
@@ -522,4 +509,107 @@ LEGACY_EOF
   # Bare lines like `alpha` (without `  - ` prefix) must NOT appear — the
   # renderer always indents.
   [[ ! "$body" =~ ^alpha$ ]]
+}
+
+# ---------- E2/S10 render path: drop-caps + multi-message split ----------
+
+# Pull every captured curl --data-raw / -d JSON body. Multi-message renders
+# emit one curl per chunk → one body per chunk in invocation order.
+_curl_all_payloads() {
+  local f="$ATMUX_TEST_TMP/curl-args.bin"
+  [[ -f "$f" ]] || return 0
+  awk 'BEGIN{RS="\0"; pick=0} {
+    if (pick) { print; pick=0; next }
+    if ($0=="--data-raw" || $0=="-d" || $0=="--data") pick=1
+  }' "$f" | jq -r '.content // empty' 2>/dev/null
+}
+
+_curl_call_count() {
+  local f="$ATMUX_TEST_TMP/curl-args.bin"
+  [[ -f "$f" ]] || { echo 0; return; }
+  awk 'BEGIN{RS="\0"} /^http:/{n++} END{print n+0}' "$f"
+}
+
+@test "decisions: 2 mid-sized fields ⇒ ≥2 chunks; chunk1 has required fields; chunks carry [N/M]" {
+  # Per BE smoke (t-9a946e44): chunk1 ≈ 200 char required + ~1620 spare;
+  # fresh chunk budget ≈ 1820. Two ~1500-char fields force overflow into
+  # chunk 2 — but each individual field fits a fresh chunk so neither is
+  # dropped under the S9 keep-order rule.
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
+  local mid; mid=$(printf '%.0sN' {1..1500})
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "spill?" \
+    --default "yes" --reversibility high --context "$mid" --note "$mid" >/dev/null
+  local calls; calls=$(_curl_call_count)
+  [ "$calls" -ge 2 ]
+
+  local body; body=$(_curl_all_payloads)
+  # Chunk 1 must contain the required fields (renderer pinned).
+  [[ "$body" =~ "🔵 question: spill?" ]]
+  [[ "$body" =~ "default: yes" ]]
+  [[ "$body" =~ "reversibility: high" ]]
+  # Multi-chunk path: each chunk carries [N/M] header.
+  [[ "$body" =~ \[1/$calls\] ]]
+  [[ "$body" =~ \[$calls/$calls\] ]]
+}
+
+@test "decisions: all-fields-max (~10k total) ⇒ ≤5 chunks; keep-order across overflow" {
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
+  local fld; fld=$(printf '%.0sX' {1..1700})
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "all-fields?" \
+    --default "yes" --reversibility high \
+    --decided-by "lead" \
+    --context "$fld" --impact "$fld" --note "$fld" \
+    --option "$fld" --option "$fld" >/dev/null
+  local calls; calls=$(_curl_call_count)
+  [ "$calls" -ge 1 ]
+  [ "$calls" -le 5 ]
+}
+
+@test "decisions: beyond 5-chunk ceiling (~15k) ⇒ truncation marker on last chunk" {
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
+  local huge; huge=$(printf '%.0sH' {1..3500})
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "huge-body?" \
+    --default "yes" --reversibility high \
+    --context "$huge" --impact "$huge" --note "$huge" \
+    --option "$huge" --option "$huge" >/dev/null
+
+  local calls; calls=$(_curl_call_count)
+  [ "$calls" -le 5 ]
+  local body; body=$(_curl_all_payloads)
+  # Truncation marker fires when at least one optional section was dropped.
+  [[ "$body" =~ "atmux decisions show d-" ]]
+}
+
+@test "decisions: low-reversibility + long body ⇒ NO ping fired (S8 gate still applies); .md still records full content" {
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
+  local long; long=$(printf '%.0sL' {1..3000})
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "low-rev?" \
+    --default "yes" --reversibility low \
+    --context "$long" --note "$long" >/dev/null
+  # S8 gate: reversibility=low ⇒ no Discord ping.
+  [ "$(_curl_call_count)" = "0" ]
+  # But the markdown log still captures the full content.
+  [ -f .atmux/decisions.md ]
+  grep -q "low-rev?" .atmux/decisions.md
+  grep -q "^- \*\*context\*\*:" .atmux/decisions.md
+  grep -q "^- \*\*note\*\*:" .atmux/decisions.md
+}
+
+@test "decisions: long single field stays in chunk1 when it fits; only spillover migrates to chunk N" {
+  # Chunk 1 is the required-fields anchor — required content must always
+  # land in it. A medium-sized body (~1500 chars context only) should fit
+  # in a single chunk with no [N/M] tagging (single-message path).
+  export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
+  local mid; mid=$(printf '%.0sM' {1..1500})
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "mid-body?" \
+    --default "yes" --reversibility high --context "$mid" >/dev/null
+  local calls; calls=$(_curl_call_count)
+  [ "$calls" = "1" ]
+  local body; body=$(_curl_all_payloads)
+  ! [[ "$body" =~ \[1/ ]]   # no multi-chunk tag
 }
