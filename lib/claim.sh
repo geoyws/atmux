@@ -6,6 +6,13 @@
 # Invoked via alias: bin/atmux rewrites `atmux claim <id>` → `atmux claim --claim <id>`,
 # and `atmux done <id>` → `atmux claim --done <id>`. This lets both verbs share code.
 
+# Brings atmux::finish_task_done + _atmux_kanban_push_inbox into scope so the
+# `done` branch fires the same auto-dispatch chain as `atmux task move done`
+# (per d-98907819 / t-7d99e935). kanban.sh's main() is shadowed below by
+# claim.sh's main() — last function-def wins, which is the intended behaviour.
+# shellcheck source=kanban.sh
+. "$ATMUX_LIB_DIR/kanban.sh"
+
 main() {
   atmux::require jq
   atmux::require_team
@@ -71,11 +78,12 @@ main() {
       atmux::ok "$who claimed $id"
       ;;
     done)
-      atmux::jq_update "$k" \
-        '(.tasks[] | select(.id == $id) | .status) = "done"
-         | (.tasks[] | select(.id == $id) | .completedAt) = $now
-         | (.tasks[] | select(.id == $id) | .note) = $note' \
-        --arg id "$id" --arg who "$who" --arg note "$note" --argjson now "$now"
+      # Delegate kanban-side mutation + auto-dispatch to the shared helper —
+      # `atmux done` and `atmux task move done` MUST share one code path so a
+      # worker's natural verb triggers the same commit-Task / story-flip /
+      # epic-flip side effects as the operator's `task move done` (per
+      # d-98907819 / t-7d99e935).
+      atmux::finish_task_done "$id" "$note"
       _atmux_inbox_move "$who" "$task" "inProgress->done" "$now"
       atmux::ok "$who completed $id"
       ;;

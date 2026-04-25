@@ -179,79 +179,114 @@ _atmux_task_move() {
     *) atmux::die "task move: status must be todo|in-progress|done|blocked" ;;
   esac
 
+  if [[ "$status" == "done" ]]; then
+    # Delegate to the shared finisher so `atmux done` and `atmux task move done`
+    # always trigger the same auto-dispatch chain (commit → gitter, story flip,
+    # storyless-epic flip + summary → lead). Per d-98907819 / t-7d99e935.
+    atmux::finish_task_done "$id" ""
+    atmux::ok "task $id → done"
+    return 0
+  fi
+
+  local k; k="$(atmux::kanban_json)"
+  jq --arg id "$id" --arg status "$status" \
+     '(.tasks[]? | select(.id == $id) | .status) = $status' \
+     "$k" > "${k}.tmp" && mv "${k}.tmp" "$k"
+  atmux::ok "task $id → $status"
+}
+
+# atmux::finish_task_done <task_id> [<note>]
+#
+# Single source of truth for the `task → done` transition + side effects.
+# Called by both `_atmux_task_move done` and lib/claim.sh's `--done` branch
+# (per d-98907819) so worker `atmux done` and operator `atmux task move done`
+# share the same auto-dispatch chain.
+#
+# Idempotent: if the task is already in `done`, optionally updates `.note`
+# (when caller passed one) and returns — no double commit-Task dispatch.
+#
+# Side effects on a real done-transition (kanban side, single jq_update):
+#   • status → done, completedAt → now, .note → $note (when non-empty)
+#   • commit-Task (`commit <id>`) appended to .tasks for gitter when .epic != null
+#   • Story testing → review when this is the last open task of a story AND
+#     this task's lane == "test"
+#   • storyless-Epic in-progress → review + draft-summary task for lead
+#     when this is the last open task of the epic and the epic has no stories
+# Inbox pushes (gitter, lead) follow the kanban write — same two-step pattern
+# as lib/dispatch.sh.
+atmux::finish_task_done() {
+  local id="$1" note="${2:-}"
   local k; k="$(atmux::kanban_json)"
   local now; now="$(atmux::now_epoch)"
 
-  # Read source task once — auto-dispatch logic gates on .epic/.story/.lane
-  # AND on whether status is actually changing (idempotent on done→done).
   local src_task; src_task="$(jq --arg id "$id" '.tasks[]? | select(.id == $id)' "$k")"
-  [[ -n "$src_task" ]] || atmux::die "task move: no such task: $id"
+  [[ -n "$src_task" ]] || atmux::die "finish_task_done: no such task: $id"
   local src_status; src_status="$(jq -r '.status' <<<"$src_task")"
-  local src_epic;   src_epic="$(jq   -r '.epic  // ""' <<<"$src_task")"
-  local src_story;  src_story="$(jq  -r '.story // ""' <<<"$src_task")"
-  local src_lane;   src_lane="$(jq   -r '.lane  // ""' <<<"$src_task")"
 
-  # Decide auto-dispatch flags BEFORE the write, gated on a real transition
-  # to `done` (no-op moves don't re-dispatch — see "task move done twice"
-  # idempotency case in task_move_dispatch.bats).
+  # Idempotent on already-done. If the caller has a fresh note, persist it
+  # without re-firing dispatches.
+  if [[ "$src_status" == "done" ]]; then
+    if [[ -n "$note" ]]; then
+      atmux::jq_update "$k" \
+        '(.tasks[]? | select(.id == $id) | .note) = $note' \
+        --arg id "$id" --arg note "$note"
+    fi
+    return 0
+  fi
+
+  local src_epic;  src_epic="$(jq  -r '.epic  // ""' <<<"$src_task")"
+  local src_story; src_story="$(jq -r '.story // ""' <<<"$src_task")"
+  local src_lane;  src_lane="$(jq  -r '.lane  // ""' <<<"$src_task")"
+
   local do_commit=0 do_story_flip=0 do_epic_flip=0
   local target_story_id="" target_epic_id=""
-  if [[ "$status" == "done" && "$src_status" != "done" ]]; then
-    [[ -n "$src_epic" ]] && do_commit=1
+  [[ -n "$src_epic" ]] && do_commit=1
 
-    # Story testing → review: moved Task is the LAST open task of the story
-    # AND moved Task lane == test AND story currently in `testing`.
-    if [[ -n "$src_story" && "$src_lane" == "test" ]]; then
-      local story_status
-      story_status="$(jq -r --arg s "$src_story" '.stories[]? | select(.id == $s) | .status // ""' "$k")"
-      if [[ "$story_status" == "testing" ]]; then
-        local other_open
-        other_open="$(jq -r --arg s "$src_story" --arg id "$id" \
-          '[.tasks[]? | select(.story == $s and .id != $id and .status != "done")] | length' "$k")"
-        if [[ "$other_open" -eq 0 ]]; then
-          do_story_flip=1
-          target_story_id="$src_story"
-        fi
+  if [[ -n "$src_story" && "$src_lane" == "test" ]]; then
+    local story_status
+    story_status="$(jq -r --arg s "$src_story" '.stories[]? | select(.id == $s) | .status // ""' "$k")"
+    if [[ "$story_status" == "testing" ]]; then
+      local other_open
+      other_open="$(jq -r --arg s "$src_story" --arg id "$id" \
+        '[.tasks[]? | select(.story == $s and .id != $id and .status != "done")] | length' "$k")"
+      if [[ "$other_open" -eq 0 ]]; then
+        do_story_flip=1
+        target_story_id="$src_story"
       fi
     fi
+  fi
 
-    # Storyless-Epic auto-flip: epic has zero stories, moved Task is the
-    # last open task of the epic, epic currently in `in-progress` (only legal
-    # forward step to review).
-    if [[ -n "$src_epic" && -z "$src_story" ]]; then
-      local epic_has_stories
-      epic_has_stories="$(jq -r --arg e "$src_epic" '[.stories[]? | select(.epic == $e)] | length' "$k")"
-      if [[ "$epic_has_stories" -eq 0 ]]; then
-        local epic_status
-        epic_status="$(jq -r --arg e "$src_epic" '.epics[]? | select(.id == $e) | .status // ""' "$k")"
-        if [[ "$epic_status" == "in-progress" ]]; then
-          local other_open
-          other_open="$(jq -r --arg e "$src_epic" --arg id "$id" \
-            '[.tasks[]? | select(.epic == $e and .id != $id and .status != "done")] | length' "$k")"
-          if [[ "$other_open" -eq 0 ]]; then
-            do_epic_flip=1
-            target_epic_id="$src_epic"
-          fi
+  if [[ -n "$src_epic" && -z "$src_story" ]]; then
+    local epic_has_stories
+    epic_has_stories="$(jq -r --arg e "$src_epic" '[.stories[]? | select(.epic == $e)] | length' "$k")"
+    if [[ "$epic_has_stories" -eq 0 ]]; then
+      local epic_status
+      epic_status="$(jq -r --arg e "$src_epic" '.epics[]? | select(.id == $e) | .status // ""' "$k")"
+      if [[ "$epic_status" == "in-progress" ]]; then
+        local other_open
+        other_open="$(jq -r --arg e "$src_epic" --arg id "$id" \
+          '[.tasks[]? | select(.epic == $e and .id != $id and .status != "done")] | length' "$k")"
+        if [[ "$other_open" -eq 0 ]]; then
+          do_epic_flip=1
+          target_epic_id="$src_epic"
         fi
       fi
     fi
   fi
 
   local commit_tid="" summary_tid=""
-  [[ "$do_commit"     -eq 1 ]] && commit_tid="$(atmux::gen_id)"
-  [[ "$do_epic_flip"  -eq 1 ]] && summary_tid="$(atmux::gen_id)"
+  [[ "$do_commit"    -eq 1 ]] && commit_tid="$(atmux::gen_id)"
+  [[ "$do_epic_flip" -eq 1 ]] && summary_tid="$(atmux::gen_id)"
   local commit_subject="commit $id"
   local commit_body="commit $id — see \`atmux task show $id\`"
   local summary_subject="draft Epic summary $target_epic_id"
   local summary_body="Epic $target_epic_id has entered review. Compose summary: title, child stories, key decisions, deltas. Source: \`atmux epic show $target_epic_id\`."
 
-  # Single atomic kanban update: status flip + commit-Task append + child
-  # state-machine flips + summary-Task append. Each side-effect is gated by
-  # its $do_* flag so the filter is read-only when the gate is off.
   atmux::jq_update "$k" '
-    (.tasks[]? | select(.id == $id) | .status) = $status
-    | if $status == "done" then
-        (.tasks[]? | select(.id == $id) | .completedAt) = $now
+    (.tasks[]? | select(.id == $id) | .status) = "done"
+    | (.tasks[]? | select(.id == $id) | .completedAt) = $now
+    | if $note != "" then
+        (.tasks[]? | select(.id == $id) | .note) = $note
       else . end
     | if $do_commit == "1" then
         .tasks += [{
@@ -276,7 +311,7 @@ _atmux_task_move() {
           }]
       else . end
   ' \
-    --arg id "$id" --arg status "$status" --argjson now "$now" \
+    --arg id "$id" --arg note "$note" --argjson now "$now" \
     --arg do_commit "$do_commit" \
     --arg commit_tid "$commit_tid" \
     --arg commit_subject "$commit_subject" \
@@ -289,13 +324,10 @@ _atmux_task_move() {
     --arg summary_subject "$summary_subject" \
     --arg summary_body "$summary_body"
 
-  # Inbox pushes — kanban already has the new tasks, mirror them into the
-  # destination inboxes. Same two-step pattern as lib/dispatch.sh.
   [[ -n "$commit_tid" ]]  && _atmux_kanban_push_inbox "gitter" "$commit_tid"
   [[ -n "$summary_tid" ]] && _atmux_kanban_push_inbox "lead"   "$summary_tid"
 
-  atmux::ok "task $id → $status"
-  [[ "$do_commit" -eq 1 ]]    && atmux::log "task: dispatched commit task $commit_tid → gitter (source $id)"
+  [[ "$do_commit" -eq 1 ]]     && atmux::log "task: dispatched commit task $commit_tid → gitter (source $id)"
   [[ "$do_story_flip" -eq 1 ]] && atmux::log "task: story $target_story_id auto-flipped testing → review"
   [[ "$do_epic_flip" -eq 1 ]]  && atmux::log "task: epic  $target_epic_id  auto-flipped in-progress → review (summary $summary_tid → lead)"
   return 0

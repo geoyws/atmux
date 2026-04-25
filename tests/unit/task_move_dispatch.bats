@@ -141,3 +141,60 @@ _gitter_commit_tasks() {
   [ "$output" = "done" ]
   [ "$(_gitter_commit_tasks)" -ge 1 ]
 }
+
+# ---------- `atmux done` (claim.sh) parity with `task move done` (t-7d99e935) ----------
+
+@test "atmux done: Epic-scoped task ⇒ commit-Task lands in gitter inbox (parity with task move done)" {
+  read -r eid sid <<<"$(_make_epic_story)"
+  local id; id=$("$ATMUX_BIN" task add "real work" --epic "$eid" --story "$sid" --lane be | tail -1)
+  "$ATMUX_BIN" claim "$id" --as worker >/dev/null
+  "$ATMUX_BIN" done "$id" --as worker --note "feat(x): ship it" >/dev/null
+  [ "$(_gitter_commit_tasks)" -ge 1 ]
+  # Note from `--note` persists.
+  run jq -r --arg id "$id" '.tasks[] | select(.id==$id) | .note' .atmux/kanban.json
+  [ "$output" = "feat(x): ship it" ]
+}
+
+@test "atmux done: legacy/ad-hoc task (.epic=null) ⇒ NO auto-dispatch (regression preserved)" {
+  local id; id=$("$ATMUX_BIN" task add "ad-hoc" | tail -1)
+  "$ATMUX_BIN" claim "$id" --as worker >/dev/null
+  "$ATMUX_BIN" done "$id" --as worker >/dev/null
+  [ "$(_gitter_commit_tasks)" = "0" ]
+}
+
+@test "atmux done: idempotent — double-done is a no-op (no double commit-Task)" {
+  read -r eid sid <<<"$(_make_epic_story)"
+  local id; id=$("$ATMUX_BIN" task add "x" --epic "$eid" --story "$sid" --lane be | tail -1)
+  "$ATMUX_BIN" claim "$id" --as worker >/dev/null
+  "$ATMUX_BIN" done "$id" --as worker >/dev/null
+  # Second done from a different angle (operator path) — same task already done.
+  "$ATMUX_BIN" task move "$id" done >/dev/null 2>&1 || true
+  [ "$(_gitter_commit_tasks)" = "1" ]
+}
+
+@test "atmux done: last test-lane Task in testing ⇒ Story auto-flips to review (parity)" {
+  read -r eid sid <<<"$(_make_epic_story)"
+  local be_tid; be_tid=$("$ATMUX_BIN" task add "be-work" --epic "$eid" --story "$sid" --lane be | tail -1)
+  "$ATMUX_BIN" task move "$be_tid" done >/dev/null
+  "$ATMUX_BIN" story advance "$sid" --to ready       >/dev/null
+  "$ATMUX_BIN" story advance "$sid" --to in-progress >/dev/null
+  "$ATMUX_BIN" story advance "$sid" --to testing     >/dev/null
+  local te_tid; te_tid=$("$ATMUX_BIN" task add "test-work" --epic "$eid" --story "$sid" --lane test | tail -1)
+  "$ATMUX_BIN" claim "$te_tid" --as test-worker >/dev/null
+  "$ATMUX_BIN" done "$te_tid" --as test-worker >/dev/null
+  run jq -r --arg sid "$sid" '.stories[] | select(.id==$sid) | .status' .atmux/kanban.json
+  [ "$output" = "review" ]
+}
+
+@test "atmux done: last Task of storyless Epic ⇒ Epic auto-flips to review + summary dispatched to lead (parity)" {
+  local eid; eid=$("$ATMUX_BIN" epic add "no-stories" | tail -1)
+  "$ATMUX_BIN" epic advance "$eid" --to ready       >/dev/null
+  "$ATMUX_BIN" epic advance "$eid" --to in-progress >/dev/null
+  local id; id=$("$ATMUX_BIN" task add "lone" --epic "$eid" --lane misc | tail -1)
+  "$ATMUX_BIN" claim "$id" --as worker >/dev/null
+  "$ATMUX_BIN" done "$id" --as worker >/dev/null
+  run jq -r --arg eid "$eid" '.epics[] | select(.id==$eid) | .status' .atmux/kanban.json
+  [ "$output" = "review" ]
+  run jq --arg eid "$eid" '[.pending[], .inProgress[] | select((.subject // "") | test("draft Epic summary " + $eid))] | length' .atmux/inboxes/lead.json
+  [ "$output" -ge 1 ]
+}
