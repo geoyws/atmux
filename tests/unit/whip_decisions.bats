@@ -122,3 +122,40 @@ _whip_payload() {
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" whip >/dev/null 2>&1 || true
   _all_payloads | grep -qE "📋 3 new decisions"
 }
+
+@test "whip+decisions: cursor file containing a real epoch ⇒ inline preview fires (regression: --since rejected bare epoch pre-fix)" {
+  # Pre-fix repro for t-2b81aa76: when whip writes the decisions cursor
+  # (epoch integer) and the next tick reads it back via
+  # `decisions list --since "$epoch"`, the parser rejected the bare
+  # integer ("bad --since format"), the preview_json stayed empty, and
+  # whip fell through to the count-only fallback ("📋 N new decisions —
+  # atmux decisions list") instead of the S8 top-3 inline format. Every
+  # production whip tick was hitting this fallback.
+  #
+  # Setup: warm the cursor file with an epoch from BEFORE we add new
+  # decisions, then run whip. The whip body must show the colon-suffix
+  # `📋 N new decisions:` shape (inline) AND each question, NOT the
+  # em-dash fallback shape `📋 N new decisions — atmux decisions list`.
+  mkdir -p .atmux/state
+  local seed_epoch=$(( $(date +%s) - 1200 ))   # 20 minutes ago
+  echo "$seed_epoch" > .atmux/state/decisions-cursor
+
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "post-cursor-q1?" --default "p1" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "post-cursor-q2?" --default "p2" >/dev/null
+
+  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" whip >/dev/null 2>&1 || true
+  local payloads; payloads=$(_all_payloads)
+
+  # New (S8) format header — colon-suffix, NOT the em-dash fallback.
+  # The `:` discriminates the inline-preview path from the count-only
+  # fallback (`📋 N new decisions — atmux decisions list`); a passing
+  # grep here is itself a regression test against the pre-fix shape.
+  echo "$payloads" | grep -qE "📋 2 new decisions:"
+  # Each question + default inlined — proves the preview_json path
+  # executed and produced bullets.
+  echo "$payloads" | grep -q "post-cursor-q1?"
+  echo "$payloads" | grep -q "→ p1"
+  echo "$payloads" | grep -q "post-cursor-q2?"
+  echo "$payloads" | grep -q "→ p2"
+}
