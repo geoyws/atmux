@@ -165,16 +165,19 @@ _curl_payload_content() {
 
 # ---------- discord webhook integration (mocked curl) ----------
 
-@test "decisions: with webhook, curl is invoked with the [atmux-decisions] template" {
+@test "decisions: with webhook + reversibility=high, curl is invoked with the [atmux-decisions] template" {
+  # Post-t-398bc8a1: only reversibility=high triggers a Discord ping. Use
+  # high here so the template assertions still exercise the payload shape;
+  # the medium/low gate behaviour is asserted in decisions_gating.bats.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "ship now?" --default "yes" --reversibility medium
+  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "ship now?" --default "yes" --reversibility high
   [ "$status" -eq 0 ]
   [ -f "$ATMUX_TEST_TMP/curl-args.bin" ]
   local body; body=$(_curl_payload_content)
   [[ "$body" =~ "[atmux-decisions]" ]]
   [[ "$body" =~ "🔵 ship now?" ]]
   [[ "$body" =~ "default: yes" ]]
-  [[ "$body" =~ "reversibility: medium" ]]
+  [[ "$body" =~ "reversibility: high" ]]
   [[ "$body" =~ "atmux decisions show d-" ]]
   # Override CTA — the literal `override:` substring went away when the
   # 📍 pointer was split into two bullets to fit the ≤80-char budget;
@@ -183,8 +186,10 @@ _curl_payload_content() {
 }
 
 @test "decisions: discord template uses the team name from team.json in the header" {
+  # Use --reversibility high so the gate (post-t-398bc8a1) lets the ping
+  # through. We're only verifying header content here, not gate semantics.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "named?" --default "y" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "named?" --default "y" --reversibility high >/dev/null
   local body; body=$(_curl_payload_content)
   # Header format: 📋 **[atmux-decisions]** · `<team>` · HH:MM MYT
   # Team was set via `init --name k` in setup.
@@ -194,7 +199,7 @@ _curl_payload_content() {
 
 @test "decisions: discord template — every body line ≤80 chars per global format spec" {
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "tight q?" --default "tight a" --note "short ctx" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "tight q?" --default "tight a" --reversibility high --note "short ctx" >/dev/null
   local body; body=$(_curl_payload_content)
   # Char count, not byte count — emoji are multi-byte.
   while IFS= read -r line; do
@@ -204,33 +209,42 @@ _curl_payload_content() {
   done <<<"$body"
 }
 
-@test "decisions: reversibility emoji maps low→🟢, medium→🟡, high→🔴" {
+@test "decisions: reversibility=high maps to 🔴 in payload (low/medium gated, no ping)" {
+  # Post-t-398bc8a1: only high triggers a Discord ping. Low + medium are
+  # silent (logged-only). The emoji map itself still pre-exists in the
+  # template renderer; we just can't observe it via curl when the gate
+  # blocks the call. Verify high pings with 🔴; assert low/medium don't ping.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
 
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "low one?"  --default "a" --reversibility low >/dev/null
-  [[ "$(_curl_payload_content)" =~ 🟢 ]]
+  [ ! -f "$ATMUX_TEST_TMP/curl-args.bin" ]
 
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "med one?"  --default "a" --reversibility medium >/dev/null
-  [[ "$(_curl_payload_content)" =~ 🟡 ]]
+  [ ! -f "$ATMUX_TEST_TMP/curl-args.bin" ]
 
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "high one?" --default "a" --reversibility high >/dev/null
   [[ "$(_curl_payload_content)" =~ 🔴 ]]
 }
 
-@test "decisions: --note appears as 📝 line in discord payload" {
+@test "decisions: --note appears as 📝 line in discord payload (reversibility=high)" {
+  # --note semantics in the payload — needs a ping to fire. Use high so
+  # post-gate the curl call goes through.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "noteq?" --default "y" --note "extra context" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "noteq?" --default "y" --reversibility high --note "extra context" >/dev/null
   local body; body=$(_curl_payload_content)
   [[ "$body" =~ "📝 note: extra context" ]]
 }
 
-@test "decisions: no --note ⇒ no 📝 line in payload" {
+@test "decisions: no --note ⇒ no 📝 line in payload (reversibility=high)" {
+  # Use high so the gate lets the ping through; without it the body would
+  # be empty and the assertion would pass vacuously.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "nonote?" --default "y" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "nonote?" --default "y" --reversibility high >/dev/null
   local body; body=$(_curl_payload_content)
+  [ -n "$body" ]
   ! [[ "$body" =~ "📝 note:" ]]
 }
 
