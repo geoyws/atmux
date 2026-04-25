@@ -58,6 +58,42 @@ teardown() {
   [[ ! "$output" =~ "new decision" ]]
 }
 
+@test "whip: stale_anchor returns max(claimed, rotated.epoch) — rotation overrides stale anchor (E2/S7 t-59ffacfd)" {
+  atmux_source_libs
+  # shellcheck source=../../lib/whip.sh
+  . "$ATMUX_LIB_DIR/whip.sh"
+
+  mkdir -p .atmux/state
+
+  # No rotated.epoch ⇒ falls through to claimed.
+  rm -f .atmux/state/w1-rotated.epoch
+  run _atmux_whip_stale_anchor w1 1500
+  [ "$output" = "1500" ]
+
+  # Rotated.epoch newer than claimed ⇒ rotated wins (a fresh rotation makes
+  # the prior claimedAt irrelevant for stale-task gating).
+  echo 2000 > .atmux/state/w1-rotated.epoch
+  run _atmux_whip_stale_anchor w1 1500
+  [ "$output" = "2000" ]
+
+  # Rotated.epoch older than claimed ⇒ claimed wins.
+  echo 100 > .atmux/state/w1-rotated.epoch
+  run _atmux_whip_stale_anchor w1 1500
+  [ "$output" = "1500" ]
+
+  # Garbage in the file ⇒ treated as 0.
+  echo "junk" > .atmux/state/w1-rotated.epoch
+  run _atmux_whip_stale_anchor w1 1500
+  [ "$output" = "1500" ]
+
+  # Empty/missing claimed arg ⇒ 0.
+  rm -f .atmux/state/w1-rotated.epoch
+  run _atmux_whip_stale_anchor w1
+  [ "$output" = "0" ]
+}
+
+
+
 @test "whip: pointer survives session-DOWN early-exit path" {
   # Decisions check must be independent of tmux session liveness — under
   # the bats sandbox no session exists, so this exercises the early-return

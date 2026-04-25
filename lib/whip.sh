@@ -90,13 +90,21 @@ main() {
       findings+=("📥 $name: messages queued but not submitted")
     fi
 
-    # Idle heuristic: check pane activity timestamp if tmux supports #{pane_current_command_start}.
-    # Simpler: count in-progress inbox entries that are older than STALE_MIN.
+    # Stale-task heuristic — count inbox entries whose effective anchor is
+    # older than STALE_MIN. The anchor is max(claimedAt, dispatchedAt,
+    # <member>-rotated.epoch): a recent rotation means the member resumed
+    # clean and shouldn't be flagged for tasks that were claimed pre-rotation.
     local ib="$(atmux::inbox_dir)/$name.json"
     if [[ -f "$ib" ]]; then
+      local rotated; rotated=$(_atmux_whip_member_rotated_epoch "$name")
       local stale
       stale=$(jq --argjson now "$(atmux::now_epoch)" --argjson s "$((STALE_MIN*60))" \
-        '[.inProgress[] | select(((.claimedAt // .dispatchedAt // 0) + $s) < $now)] | length' "$ib" 2>/dev/null || echo 0)
+                  --argjson rot "$rotated" \
+        '[.inProgress[]
+          | (.claimedAt // .dispatchedAt // 0) as $base
+          | ([$base, $rot] | max) as $anchor
+          | select(($anchor + $s) < $now)
+         ] | length' "$ib" 2>/dev/null || echo 0)
       if [[ "${stale:-0}" -gt 0 ]]; then
         findings+=("⏰ $name: $stale task(s) in-progress > ${STALE_MIN}min")
       fi
@@ -298,4 +306,30 @@ _atmux_whip_body_hash() {
   for f in "$@"; do
     printf '%s\n' "$f"
   done | sha256sum | awk '{print $1}'
+}
+
+# Read <member>-rotated.epoch as an integer; 0 if absent or non-numeric.
+# Used inline by the stale-task jq filter so we don't shell-out per-task.
+_atmux_whip_member_rotated_epoch() {
+  local member="$1"
+  local f; f="$(atmux::state_dir)/${member}-rotated.epoch"
+  [[ -f "$f" ]] || { echo 0; return; }
+  local v; v=$(cat "$f" 2>/dev/null || echo 0)
+  [[ "$v" =~ ^[0-9]+$ ]] || v=0
+  echo "$v"
+}
+
+# Per AC of t-59ffacfd: returns max(<claimed_or_dispatched>, <member>-rotated.epoch).
+# Reusable for any caller that wants the stale-anchor for a single task; the
+# whip stale-check inlines this logic inside jq for batch efficiency, but the
+# bash entrypoint exists for unit-test + future-reuse callers (T3.1 timing).
+_atmux_whip_stale_anchor() {
+  local member="$1" claimed="${2:-0}"
+  [[ "$claimed" =~ ^[0-9]+$ ]] || claimed=0
+  local rotated; rotated=$(_atmux_whip_member_rotated_epoch "$member")
+  if (( rotated > claimed )); then
+    printf '%s\n' "$rotated"
+  else
+    printf '%s\n' "$claimed"
+  fi
 }
