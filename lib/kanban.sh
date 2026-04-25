@@ -12,7 +12,7 @@
 #     "tasks":   [ { id, subject, body, status, owner, deps, priority,
 #                    createdAt, claimedAt, completedAt, note,
 #                    epic?, story?, lane?, deliverable? } ],
-#     "epics":   [ { id, title, status, driverRef, stories, tasks,
+#     "epics":   [ { id, title, body?, status, driverRef?,
 #                    createdAt, completedAt } ],
 #     "stories": [ { id, epic, title, acceptanceCriteria, status, tasks,
 #                    createdAt, completedAt } ]
