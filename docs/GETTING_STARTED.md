@@ -214,7 +214,67 @@ Set `ATMUX_DISCORD_WEBHOOK` in `~/.zshrc` / `~/.bashrc` for Discord escalation:
 export ATMUX_DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 ```
 
-## 7. Shut down cleanly
+## 7. Driver rotation: surviving your own `/clear`
+
+atmux can `/clear` team members but never the driver — that's you in your
+Claude Code REPL. Your session compacts on its own clock, and when it does,
+the team's recent context goes opaque. `atmux brief-driver` is the
+recovery brief.
+
+```bash
+atmux brief-driver
+```
+
+Sample output (single-screen, ≤30 lines, sub-second):
+
+```
+🟢 atmux driver brief — 2026-04-25 23:18 MYT
+─────────────────────────────────────────────
+Branch: main (29 commits ahead of origin)
+Active loop: /loop kanban-pull (started 18:42 MYT)
+Kanban: 2 epics in-progress · 14 tasks todo · 3 in-progress · 2 review
+
+📥 driver-inbox.md (2 open)
+  • RESUME-2 18:30 — 'lead drift after 4h; auto-rotation needed'
+  • F.6 21:15 — 'flag verb mid-rotation corner case — defer to E5?'
+
+📤 lead-outbox.md (latest 3)
+  • 22:55 [planner] e-186a469d ready · 5 Stories / 28 Tasks / ADR-010
+  • 22:14 [reviewer] s-108f62c5 approved · 3 Tasks landed clean
+  • 21:42 [be-kanban] t-5b96b9ee shipped · flag.sh + Discord template
+
+🚧 in-progress: t-9e8ea33a (fe-kanban) · t-5b96b9ee (be-kanban)
+
+▶ Resume: atmux outbox --ack ; atmux status
+```
+
+**When to run `brief-driver`:**
+
+- Every time YOUR Claude Code session compacts or `/clear`s.
+- After an Epic ships — `brief-driver` surfaces the lead's wrap-up from
+  `lead-outbox.md` so you don't have to scan the file.
+- Before stepping away >2h — read it once now, glance again on return.
+- Whenever `atmux outbox` reads as unfamiliar — fastest "where were we?".
+
+NOT auto-fired on team start, NOT cron-scheduled — it's an on-demand verb.
+Sub-second runtime keeps it cheap to invoke repeatedly during recovery.
+
+**`atmux driver note` — capture judgment so future-driver doesn't re-derive.**
+
+```bash
+atmux driver note "Kept push hold; merge-only on demo branch until S10 ships" \
+  --reversibility medium \
+  --context "ADR-009 §S7 D11 sized noise; we'd over-emit on noisy branch"
+```
+
+Mirrors `atmux decisions add` shape (same `--reversibility low|medium|high`,
+same optional `--context` / `--option` / `--impact` / `--note`) but writes
+to `.atmux/driver-state.md` and **does not ping Discord** — the driver is
+the audience, pinging yourself is noise. Team-scoped so the lead can `cat`
+the rationale on any whip turn. Use it when you make a call you'll forget
+the reasoning behind by tomorrow.
+
+## 8. Shut down cleanly
 
 ```bash
 atmux stop
