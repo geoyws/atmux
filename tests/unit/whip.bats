@@ -29,3 +29,43 @@ teardown() {
   ATMUX_STALE_MIN=1 ATMUX_LEAD_MAX_MIN=1 run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
 }
+
+# ---- decisions cursor (ADR-008 / T10.2) ----
+
+@test "whip: no-op silently when .atmux/decisions.md is absent" {
+  [ ! -f .atmux/decisions.md ]
+  run "$ATMUX_BIN" whip
+  [ "$status" -eq 0 ]
+  [ ! -f .atmux/state/decisions-cursor ]
+}
+
+@test "whip: flags new decisions and creates cursor on first tick" {
+  "$ATMUX_BIN" decisions add "Q1?" --default "A1" >/dev/null
+  "$ATMUX_BIN" decisions add "Q2?" --default "A2" >/dev/null
+  run "$ATMUX_BIN" whip
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "2 new decisions" ]]
+  [[ "$output" =~ "atmux decisions list" ]]
+  [ -f .atmux/state/decisions-cursor ]
+}
+
+@test "whip: cursor suppresses re-flagging on the next tick" {
+  "$ATMUX_BIN" decisions add "Stale Q?" --default "A" >/dev/null
+  "$ATMUX_BIN" whip >/dev/null
+  # Second tick with no new entries — pointer must NOT appear.
+  run "$ATMUX_BIN" whip
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ "new decision" ]]
+}
+
+@test "whip: pointer survives session-DOWN early-exit path" {
+  # Decisions check must be independent of tmux session liveness — under
+  # the bats sandbox no session exists, so this exercises the early-return
+  # branch where session is DOWN.
+  "$ATMUX_BIN" decisions add "Down-path Q?" --default "A" >/dev/null
+  run "$ATMUX_BIN" whip
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "DOWN" ]]
+  [[ "$output" =~ "1 new decisions" ]]
+  [ -f .atmux/state/decisions-cursor ]
+}

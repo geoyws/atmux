@@ -33,10 +33,18 @@ main() {
   local findings=()
   local ts; ts="$(atmux::now_myt)"
 
+  # ---- decisions cursor (ADR-008 / T10.2) ----
+  # Runs regardless of session liveness — decisions.md is independent state.
+  # Sets `dmtime_new` if the file exists; that's used for the post-ping
+  # cursor advance below. Appends a flag-only pointer to findings if N > 0.
+  local dmtime_new=""
+  _atmux_whip_check_decisions
+
   # ---- 1. session liveness ----
   if ! atmux::tmux_session_exists; then
     findings+=("🛑 session $session is DOWN")
     _atmux_report_and_exit "$ts" "$team" "${findings[@]}"
+    _atmux_whip_advance_decisions_cursor
     return 0
   fi
 
@@ -151,6 +159,56 @@ main() {
   fi
 
   _atmux_report_and_exit "$ts" "$team" "${findings[@]}"
+  _atmux_whip_advance_decisions_cursor
+}
+
+# Detect new decisions since the last whip cursor and append a flag-only
+# pointer to the parent's `findings` array. Sets `dmtime_new` (parent local)
+# to the file's current mtime if the file exists — used by the cursor-advance
+# helper after the ping fires. Silent no-op if decisions.md is absent.
+_atmux_whip_check_decisions() {
+  local dfile; dfile="$(atmux::dir)/decisions.md"
+  [[ -f "$dfile" ]] || return 0
+
+  dmtime_new=$(stat -c '%Y' "$dfile" 2>/dev/null || stat -f '%m' "$dfile" 2>/dev/null || echo 0)
+
+  local dcursor_file; dcursor_file="$(atmux::state_dir)/decisions-cursor"
+  local dcursor_old=0
+  if [[ -f "$dcursor_file" ]]; then
+    dcursor_old=$(cat "$dcursor_file" 2>/dev/null || echo 0)
+    [[ "$dcursor_old" =~ ^[0-9]+$ ]] || dcursor_old=0
+  fi
+
+  (( dmtime_new > dcursor_old )) || return 0
+
+  local n_new
+  n_new=$(awk -v c="$dcursor_old" '
+    BEGIN { in_entry=0; count=0 }
+    /^### / && $2 ~ /^d-/ { in_entry=1; next }
+    /^- \*\*timestamp\*\*:/ {
+      v=$0; sub(/^- \*\*timestamp\*\*: */,"",v)
+      if (in_entry && (v+0) > c) { count++ }
+      in_entry=0
+    }
+    END { print count }
+  ' "$dfile")
+
+  if [[ "${n_new:-0}" -gt 0 ]]; then
+    findings+=("📋 $n_new new decisions — atmux decisions list")
+  fi
+}
+
+# Advance the cursor to the mtime captured by _atmux_whip_check_decisions.
+# Runs AFTER report-and-exit so the cursor only moves once the ping has been
+# attempted. discord_ping is fire-and-warn (warns on curl failure, swallows
+# rc), so we can't distinguish ping-fail from ping-success — the cursor moves
+# either way. Real retry-on-failure would need discord_ping to surface its
+# rc; out of scope per ADR-008's "do not modify discord.sh" rule.
+_atmux_whip_advance_decisions_cursor() {
+  [[ -n "${dmtime_new:-}" ]] || return 0
+  local dcursor_file; dcursor_file="$(atmux::state_dir)/decisions-cursor"
+  mkdir -p "$(dirname "$dcursor_file")"
+  echo "$dmtime_new" > "$dcursor_file"
 }
 
 # For the `failover` budget policy: find a peer with the same role that still
