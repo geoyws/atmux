@@ -100,6 +100,8 @@ Maintenance:
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
+  verify-libs [--quiet] [--json]
+                              Source-check every lib/*.sh + assert function presence
 
 Misc:
   version
@@ -133,6 +135,7 @@ case "$verb" in
   reply) verb_script="$ATMUX_LIB_DIR/reply.sh"; set -- "--reply" "$@" ;;
   outbox) verb_script="$ATMUX_LIB_DIR/reply.sh"; set -- "--outbox" "$@" ;;
   pause|resume) verb_script="$ATMUX_LIB_DIR/pause.sh"; set -- "$verb" "$@" ;;
+  verify-libs) verb_script="$ATMUX_LIB_DIR/verify_libs.sh" ;;
 esac
 
 if [[ ! -f "$verb_script" ]]; then
