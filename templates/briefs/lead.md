@@ -67,6 +67,11 @@ Reversibility tiers:
 - `medium` — changes interface or wire format; rollback costs one migration Task.
 - `high` — irreversible or high-blast-radius (prod flip, schema drop, demo-narrative reroute). Always pings the driver immediately; consider blocking instead of applying.
 
+**S10 — write context-rich, not terse** (per ADR-008 §S10):
+- Field byte caps are GONE. `--context`, `--option` (×5), `--impact`, `--note`, `--decided-by` accept arbitrarily long strings.
+- The Discord 2000-char body cap is now handled by **section-by-section chunking** with a `[N/M]` header — up to 5 messages per high-rev decision, 1s gap between pings to stay under Discord's rate limit.
+- If a decision still won't fit at 5 chunks, fields drop in this order: note → impact → options → context, and the last surviving chunk ends with `↳ atmux decisions show <id> for full`. **If you hit the truncation marker, your decision is probably better split into multiple decisions.**
+
 ## Rotation discipline
 
 - Auto-rotate at 60 min uptime — whip checks `lead-session-start.txt` (epoch) and prompts a `/clear`-and-re-bootstrap when the warning lands. Silent <45 min, warning 45–60 min, auto-rotate ≥60 min.

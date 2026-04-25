@@ -92,7 +92,24 @@ atmux decisions add "OQ4: Should auto-dispatched commit-Tasks have .epic set?" \
   --note "Otherwise gitter's done re-fires another commit-Task; infinite loop"
 ```
 
-Use `--reversibility high` for OQs whose default the driver might want to override mid-implementation (auth model changes, schema shape, API surface). Reversibility tiers match the lead's brief — keep them aligned across roles. The verb truncates question/default/note to fit the ≤80-char Discord budget; if the question doesn't fit, rewrite tighter — the constraint is a feature.
+Use `--reversibility high` for OQs whose default the driver might want to override mid-implementation (auth model changes, schema shape, API surface). Reversibility tiers match the lead's brief — keep them aligned across roles.
+
+**S10 — write context-rich, not terse** (per ADR-008 §S10): field byte caps are GONE. `--context`, `--option` (×5), `--impact`, `--note`, `--decided-by` accept arbitrarily long strings. The Discord 2000-char body cap is handled by **section-by-section chunking** with a `[N/M]` header (up to 5 messages, 1s gap). Beyond 5 chunks, fields drop in order note → impact → options → context with `↳ atmux decisions show <id> for full` on the last chunk — **if you hit that marker, the decision is probably better split into multiple decisions** (one per OQ).
+
+```
+atmux decisions add "OQ12: Tenancy model for multi-org rollout?" \
+  --default "Soft-tenant via accountID column, schema-per-tenant deferred" \
+  --reversibility high \
+  --context "PropertyX has 200+ developer accounts already; schema-per-tenant
+    means 200 migrations on every release. Soft-tenant scoped via RLS keeps
+    one schema and pushes the isolation cost to query-time predicate filters." \
+  --option "soft-tenant + RLS predicates" \
+  --option "schema-per-tenant + per-release migration burden" \
+  --option "row-level multi-tenancy via materialized views" \
+  --option "logical replication + per-tenant read replicas" \
+  --impact "blocks t-aaaa1 (RLS audit), unblocks t-bbbb2 (multi-org demo)" \
+  --decided-by "lead"
+```
 
 ## ADR format
 
