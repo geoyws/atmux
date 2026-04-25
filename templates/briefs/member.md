@@ -45,6 +45,20 @@ If you find a bug **inside** a teammate's submodule / area, default to **surface
 
 If you're in the **FE lane** and your Story has a `test`-lane Task, you also own that Task — it's the e2e capstone for the Story. Don't leave it for someone else; the FE worker is the one who knows the user-facing flow well enough to write the spec.
 
+## Auto-preclear
+
+If `team.whip.autoRotate=true` in `team.json`, your pane may be auto-rotated by whip when a Compacting / approaching-usage-limit / hit-your-limit banner appears in your pane — *not* on uptime threshold (that's lead-only today). The signal: your conversation gets `/clear`'d and re-bootstrapped from this brief.
+
+On resume after auto-preclear, your first action is read-heavy:
+
+```
+atmux inbox {{MEMBER}}                    # what's in your queue
+atmux outbox                              # team activity since you went quiet
+atmux task list --assignee {{MEMBER}}     # in-progress Tasks you owned
+```
+
+Re-claim any in-progress Task you owned before the rotation — status persists in `kanban.json` across rotations, so the Task is still `in-progress` with `owner = {{MEMBER}}`. Pick up where you left off. If the Task body's AC was already partially satisfied by staged changes, those staged changes survive the rotation too (they're in the worktree, not the conversation); inspect with `git diff --staged`.
+
 ## Hard rules
 
 - **DO NOT commit. DO NOT push.** Mark done; gitter commits on the back.
