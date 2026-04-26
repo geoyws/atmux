@@ -177,6 +177,28 @@ atmux::session_name() {
   if [[ -n "$override" ]]; then
     echo "$override"; return
   fi
+
+  # Single-session mode (E7/Sa t-8b801474): atmux start writes the
+  # captured driver-tmux session name to .atmux/state/session.txt. When
+  # that state file is present, EVERY atmux verb resolves the same
+  # session name without needing to re-detect $TMUX. Tooling running
+  # outside the driver tmux (cron, --team-dir invocations, scripts)
+  # picks up the session via the file, not the env. The flag-set-but-
+  # state-missing case is fatal-by-design — silently falling through
+  # to "atmux-<team>" would leak two divergent session names across the
+  # same team's processes.
+  local stored; stored="$(atmux::dir)/state/session.txt"
+  if [[ -f "$stored" ]]; then
+    cat "$stored"
+    return
+  fi
+
+  local single
+  single="$(jq -r '.singleSession // false' "$(atmux::team_json)" 2>/dev/null || echo false)"
+  if [[ "$single" == "true" || -n "${ATMUX_DRIVER_SESSION:-}" ]]; then
+    atmux::die "single-session enabled but no .atmux/state/session.txt — run 'atmux start' to seed it"
+  fi
+
   echo "atmux-$(atmux::team_name)"
 }
 

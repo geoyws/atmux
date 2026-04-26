@@ -23,6 +23,32 @@ main() {
     esac
   done
 
+  # ---- Single-session resolution (E7/Sa t-8b801474) ----
+  # Single-session mode = team windows live INSIDE the driver's existing
+  # tmux session instead of a dedicated `atmux-<team>` session. Triggered
+  # by team.json:.singleSession=true OR ATMUX_DRIVER_SESSION=1. When set,
+  # we capture $TMUX's #S, persist it to state/session.txt (so every
+  # subsequent verb's atmux::session_name resolves consistently), and
+  # SKIP `tmux new-session -d -s atmux-<team>` below. --force is fatal
+  # under single-session — kill-session would nuke the driver shell.
+  local single
+  single="$(jq -r '.singleSession // false' "$(atmux::team_json)" 2>/dev/null || echo false)"
+  [[ -n "${ATMUX_DRIVER_SESSION:-}" ]] && single=true
+
+  if [[ "$single" == "true" ]]; then
+    if [[ "$force" -eq 1 ]]; then
+      atmux::die "start --force is unsafe under single-session mode (would kill driver tmux); rerun without --force"
+    fi
+    [[ -n "${TMUX:-}" ]] || atmux::die "single-session requested but \$TMUX is unset (run from inside driver tmux)"
+    local driver_session
+    driver_session="$(tmux display-message -p '#S')"
+    [[ -n "$driver_session" ]] || atmux::die "single-session: tmux display-message returned empty session name"
+    mkdir -p "$(atmux::dir)/state"
+    printf '%s\n' "$driver_session" > "$(atmux::dir)/state/session.txt"
+    atmux::ok "single-session mode: spawning into driver session '$driver_session'"
+    atmux::jq_update "$(atmux::team_json)" '.singleSession = true'
+  fi
+
   # ---- Preflight via doctor. On red, abort with a pointer. ----
   case "$doctor_mode" in
     verbose)
@@ -59,8 +85,9 @@ main() {
   # and bats-exec-suite blocks forever in pipe_read after bats-exec-test
   # exits. Production interactive use never has fd 3 open at this point,
   # so the closure is a no-op there. See ADR-012.
-  if ! atmux::tmux_session_exists; then
-    tmux new-session -d -s "$session" -n "__atmux__home" -c "$PWD" 3>&- 4>&-
+  local home_win; home_win="$(printf '__%s__home' "$team")"
+  if [[ "$single" != "true" ]] && ! atmux::tmux_session_exists; then
+    tmux new-session -d -s "$session" -n "$home_win" -c "$PWD" 3>&- 4>&-
     atmux::ok "created tmux session: $session"
   fi
 
@@ -78,11 +105,13 @@ main() {
   done <<< "$names"
 
   # ---- Close the placeholder __home window if members exist ----
-  if [[ "$any_spawned" -eq 1 ]] && tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -qx "__atmux__home"; then
+  # Per-team prefix (__<team>__home) avoids collision when two teams
+  # share the same tmux session under single-session mode.
+  if [[ "$any_spawned" -eq 1 ]] && tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -qx "$home_win"; then
     # only close home if there are other windows
-    local wc; wc=$(tmux list-windows -t "$session" -F '#{window_name}' | grep -cv '^__atmux__home$' || true)
+    local wc; wc=$(tmux list-windows -t "$session" -F '#{window_name}' | grep -cv "^${home_win}\$" || true)
     if [[ "$wc" -gt 0 ]]; then
-      tmux kill-window -t "$session:__atmux__home" 2>/dev/null || true
+      tmux kill-window -t "$session:$home_win" 2>/dev/null || true
     fi
   fi
 
