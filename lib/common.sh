@@ -258,8 +258,15 @@ atmux::task_append_note() {
   [[ -n "$id"   ]] || atmux::die "task_append_note: <id> required"
   [[ -n "$line" ]] || atmux::die "task_append_note: <line> required"
   local k; k="$(atmux::kanban_json)"
+  # E6/S5 t-7ae355e9 (A11) — propagate jq existence-probe failure.
+  # If jq parses the filter but the read fails (corrupt kanban), the
+  # exit code surfaces here rather than coercing to 0 via command
+  # substitution alone.
   local exists
-  exists="$(jq --arg id "$id" '[.tasks[]? | select(.id == $id)] | length' "$k")"
+  if ! exists="$(jq --arg id "$id" '[.tasks[]? | select(.id == $id)] | length' "$k" 2>/dev/null)"; then
+    atmux::warn "task_append_note: jq failed reading $k"
+    return 1
+  fi
   (( exists == 1 )) || atmux::die "task_append_note: no such task: $id"
   atmux::jq_update "$k" \
     '.tasks |= map(
@@ -431,10 +438,27 @@ atmux::jq_update() {
   exec {lockfd}>"${file}.lock"
   flock "$lockfd"
   local tmp; tmp="$(mktemp "${file}.XXXXXX")"
+  # E6/S5 t-7ae355e9 (A11) — propagate jq parse / runtime failures.
+  # Pre-A11: a malformed filter wrote an empty/partial $tmp then `mv`'d
+  # over the live JSON, silently corrupting shared state. Now the jq
+  # rc is checked; on failure, drop the lock, scrub the temp, surface
+  # a warn, and return nonzero so the caller's `if ! jq_update …` path
+  # is reachable. Same shape on both the populated-file and seed (-n)
+  # branches.
   if [[ -s "$file" ]]; then
-    jq "$@" "$filter" "$file" >"$tmp"
+    if ! jq "$@" "$filter" "$file" >"$tmp" 2>/dev/null; then
+      rm -f "$tmp"
+      exec {lockfd}>&-
+      atmux::warn "jq_update: filter failed on $file (left untouched)"
+      return 1
+    fi
   else
-    jq -n "$@" "$filter" >"$tmp"
+    if ! jq -n "$@" "$filter" >"$tmp" 2>/dev/null; then
+      rm -f "$tmp"
+      exec {lockfd}>&-
+      atmux::warn "jq_update: filter failed seeding $file (left untouched)"
+      return 1
+    fi
   fi
   mv "$tmp" "$file"
   exec {lockfd}>&-

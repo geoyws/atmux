@@ -164,6 +164,18 @@ JSON
   [ "$output" = "[1,2]" ]
 }
 
+@test "common: atmux::jq_update returns nonzero on bad filter + leaves file intact (A11)" {
+  # E6/S5 t-7ae355e9 — pre-A11 a malformed filter silently emitted an
+  # empty tmp + mv'd over the live JSON. Now jq's nonzero rc surfaces
+  # and the source file is preserved.
+  local f="$ATMUX_TEST_TMP/preserved.json"
+  echo '{"keep":"me"}' > "$f"
+  local before; before="$(cat "$f")"
+  run atmux::jq_update "$f" '.this is not valid jq @@@'
+  [ "$status" -ne 0 ]
+  [ "$(cat "$f")" = "$before" ]
+}
+
 @test "common: atmux::ensure_dirs creates subdirs" {
   mkdir -p .atmux
   echo '{"name":"t","members":[]}' > .atmux/team.json
