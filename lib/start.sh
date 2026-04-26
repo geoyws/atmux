@@ -100,6 +100,23 @@ main() {
     "$(atmux::team_json)" > "$(atmux::state_dir)/spawn-snapshot.json"
 
   atmux::ok "team '$team' is up. attach with: atmux attach"
+
+  # ---- Cron auto-install (E6/Sc t-ac7197cf) ----
+  # Wire whip + report + decisions-digest into the user's crontab unless
+  # team.json explicitly opts out via kanban.cronAutoInstall=false. Default
+  # = true — most teams want the watchdog. Failures here are non-fatal:
+  # cron install is a convenience, not a precondition for `start` to be
+  # considered successful.
+  local cron_optout
+  cron_optout=$(jq -r '.kanban.cronAutoInstall // true' "$(atmux::team_json)" 2>/dev/null || echo true)
+  if [[ "$cron_optout" != "false" ]]; then
+    # shellcheck source=cron.sh
+    . "$ATMUX_LIB_DIR/cron.sh"
+    if atmux::cron_install "$team" "$(atmux::dir)"; then
+      atmux::ok "installed cron entries (whip */5, report */30, decisions digest 0 */4)"
+      atmux::log "  inspect: crontab -l | grep 'atmux:team=$team'"
+    fi
+  fi
 }
 
 _atmux_spawn_member() {

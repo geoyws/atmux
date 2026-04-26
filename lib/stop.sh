@@ -38,6 +38,18 @@ main() {
 
   tmux kill-session -t "$session" 2>/dev/null || true
   atmux::ok "session $session stopped"
+
+  # ---- Cron auto-remove (E6/Sc t-ac7197cf) ----
+  # Drop the team's marker-bounded crontab block. Idempotent — cron_remove
+  # is a no-op when no markers exist (first-stop case, or when the user
+  # opted out of auto-install via team.json kanban.cronAutoInstall=false).
+  # Errors are non-fatal: a stop should still succeed even if crontab
+  # manipulation fails (crond uninstalled, permissions, etc).
+  # shellcheck source=cron.sh
+  . "$ATMUX_LIB_DIR/cron.sh"
+  if atmux::cron_remove "$(atmux::team_name)"; then
+    atmux::ok "removed cron entries"
+  fi
 }
 
 _atmux_archive_state() {
