@@ -276,6 +276,49 @@ atmux::task_append_note() {
     --arg id "$id" --arg line "$line"
 }
 
+# atmux::find_phantom_inbox_ids
+#
+# Pure introspection — scans every `<member>.json` in .atmux/inboxes/ and
+# returns a JSON array of `{member, id, subject}` objects for inProgress
+# entries whose `id` is NOT present in `kanban.tasks[]`. These "phantom"
+# entries arise when a concurrent bare `jq … | mv` writer clobbers a
+# parallel `atmux::jq_update` write — the inbox keeps a claim whose
+# kanban-side task was rolled back. Helper is the safety-net detector;
+# whip's auto-prune sweep + doctor's diagnostic both consume this output.
+#
+# No side effects: read-only on inboxes/ + kanban.json. Echoes `[]` when
+# kanban.json is absent or no inbox files exist (cold-start / fresh-init
+# edge cases) so callers can branch on `length == 0` uniformly.
+atmux::find_phantom_inbox_ids() {
+  local k; k="$(atmux::kanban_json)"
+  local idir; idir="$(atmux::inbox_dir)"
+  [[ -f "$k" && -d "$idir" ]] || { printf '[]\n'; return 0; }
+
+  # Build the canonical task-id set once so per-inbox jq calls don't
+  # re-read kanban.json. `[.tasks[]?.id]` tolerates a kanban with no
+  # tasks key (legacy shape pre-S1) — `?` swallows the type-error.
+  local task_ids_json
+  task_ids_json="$(jq -c '[.tasks[]?.id]' "$k" 2>/dev/null || echo '[]')"
+
+  local out='[]' inbox member entries
+  for inbox in "$idir"/*.json; do
+    [[ -f "$inbox" ]] || continue
+    member="$(basename "$inbox" .json)"
+    # Bind the entry to `$e` before the kanban-membership test — without
+    # the binding, `$kanban | index(.id)` pipes the array into `index(...)`
+    # and `.id` resolves against the array itself (jq error: "Cannot index
+    # array with string"). The `as $e` capture pins the entry context.
+    entries="$(jq -c --argjson kanban "$task_ids_json" --arg m "$member" \
+      '[.inProgress[]?
+        | . as $e
+        | select($kanban | index($e.id) | not)
+        | {member: $m, id: $e.id, subject: ($e.subject // "")}]' \
+      "$inbox" 2>/dev/null || echo '[]')"
+    out="$(jq -c --argjson new "$entries" '. + $new' <<<"$out")"
+  done
+  printf '%s\n' "$out"
+}
+
 # ---------- tmux helpers ----------
 
 atmux::tmux_session_exists() {

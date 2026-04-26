@@ -200,6 +200,15 @@ main() {
     fi
   done <<< "$mj"
 
+  # ---- phantom-inbox sweep (E6/S1 t-5a8d148f) ----
+  # Runs after the per-member stale scan so its findings ride the same
+  # whip ping. Auto-prunes inProgress entries whose id is missing from
+  # kanban.tasks[] + emits a rate-limited '🩹 phantom: pruned …' bullet.
+  # B1 root cause IS A1 (concurrent bare jq+mv races); A1 sweep closes
+  # the leak going forward — this hook mops up past damage + catches
+  # any future leak class as a defense-in-depth.
+  _atmux_whip_phantom_sweep
+
   # ---- budget check ----
   local tj; tj="$(atmux::team_json)"
   local budget_total budget_per_member overrun_policy
@@ -791,6 +800,92 @@ _atmux_whip_stale_anchor() {
   else
     printf '%s\n' "$claimed"
   fi
+}
+
+# Phantom-inbox sweep (E6/S1 t-5a8d148f). For each inProgress entry in
+# any inbox whose id is no longer present in kanban.tasks[], prune the
+# entry and emit a rate-limited '🩹 phantom: pruned <id> from <member>
+# inbox' finding. Rate-limit ledger: .atmux/state/whip-phantom-seen.json
+# (`{ "<id>": <first-seen-epoch> }`) — entries are emitted ONCE per id;
+# subsequent sweeps prune silently (the bare-jq-clobber leak class can
+# repeat if A1 sites regress, so we want re-pruning to remain idempotent
+# without ping spam).
+#
+# Reaches into the caller's `findings` array via dynamic scoping —
+# matches the convention of _atmux_whip_check_decisions / _check_flags.
+_atmux_whip_phantom_sweep() {
+  local phantoms_json
+  phantoms_json="$(atmux::find_phantom_inbox_ids 2>/dev/null || echo '[]')"
+  local n
+  n="$(jq -r 'length' <<<"$phantoms_json" 2>/dev/null || echo 0)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+
+  if (( n == 0 )); then
+    _atmux_whip_phantom_ledger_gc
+    return 0
+  fi
+
+  local ledger; ledger="$(atmux::state_dir)/whip-phantom-seen.json"
+  mkdir -p "$(dirname "$ledger")"
+  [[ -s "$ledger" ]] || echo '{}' > "$ledger"
+
+  local now; now="$(atmux::now_epoch)"
+
+  local member id subject seen ib
+  while IFS=$'\t' read -r member id subject; do
+    [[ -z "$id" || -z "$member" ]] && continue
+    seen="$(jq -r --arg id "$id" '.[$id] // empty' "$ledger" 2>/dev/null || true)"
+
+    # Prune from inbox unconditionally — the entry is invalid regardless
+    # of ledger state. Idempotent: re-running on a clean inbox is a no-op
+    # (find_phantom_inbox_ids returns [] in that case + we never reach here).
+    ib="$(atmux::inbox_dir)/$member.json"
+    if [[ -f "$ib" ]]; then
+      atmux::jq_update "$ib" \
+        '.inProgress = ((.inProgress // []) | map(select(.id != $id)))' \
+        --arg id "$id"
+    fi
+
+    # Discord notice gated on ledger — once per id per cron-session.
+    # Subject is captured for log forensics but the bullet keeps to the
+    # AC shape (id + member only) to stay under the 80-char per-bullet cap.
+    if [[ -z "$seen" ]]; then
+      findings+=("🩹 phantom: pruned \`$id\` from \`$member\` inbox")
+      atmux::jq_update "$ledger" \
+        '. + {($id): ($t | tonumber)}' \
+        --arg id "$id" --arg t "$now"
+    fi
+    : "$subject"  # captured for whip.log line; intentionally unused in body
+  done < <(jq -r '.[] | [.member, .id, (.subject // "")] | @tsv' <<<"$phantoms_json")
+
+  _atmux_whip_phantom_ledger_gc
+}
+
+# Daily-rate prune of the phantom seen-ledger — entries older than 7d
+# removed. Marker file `whip-phantom-gc.epoch` debounces to one cleanup
+# per rolling 24h, so we don't re-write the ledger on every 5-min tick.
+# 7d TTL means a phantom that re-appears more than a week after first
+# pruning will re-emit a notice — surfacing a recurring regression rather
+# than silently swallowing it.
+_atmux_whip_phantom_ledger_gc() {
+  local ledger; ledger="$(atmux::state_dir)/whip-phantom-seen.json"
+  [[ -f "$ledger" ]] || return 0
+
+  local marker; marker="$(atmux::state_dir)/whip-phantom-gc.epoch"
+  local now; now="$(atmux::now_epoch)"
+  local last=0
+  if [[ -f "$marker" ]]; then
+    last=$(cat "$marker" 2>/dev/null || echo 0)
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  fi
+  (( now - last >= 86400 )) || return 0
+
+  local cutoff=$(( now - 7*86400 ))
+  atmux::jq_update "$ledger" \
+    'with_entries(select(.value >= $c))' \
+    --argjson c "$cutoff"
+  mkdir -p "$(dirname "$marker")"
+  echo "$now" > "$marker"
 }
 
 # Resolve the "last refresh" anchor for a member as
