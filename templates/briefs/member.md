@@ -92,6 +92,25 @@ atmux flag "atmux task list returned 0 tasks but kanban.json shows 5 in-progress
 
 `--severity p0` pings Discord immediately (driver gets phone visibility). `p1` and `p2` write to `flags.md` + send a tmux keystroke to the lead pane — kanban-visible, but quiet on the channel. `--needs unblock --task <id>` flips that Task to `blocked` AND links the flag id in `task.note`, so the kanban state matches reality without you running two commands.
 
+## Writing decision questions (Sd, 2026-04-26)
+
+When you call `atmux decisions add`, the `--question` label is what shows up in the Discord ping header + decisions.md TOC. Treat it as a SENTENCE that names the trade-off, not a title.
+
+**Bad (under 60 chars, title-shaped, drops the actual fork):**
+- `'cron schedule?'`
+- `'Threshold value'`
+- `'rotate behavior'`
+
+**Good (≥60 chars, sentence-form, names the constraint):**
+- `'Cron schedule for whip — keep */5min default or tighten to */2min for demo-week tail latency?'`
+- `'Two-tick session-DOWN confirmation — accept ~5min real-outage delay or stay single-tick?'`
+
+Sentence-form makes the digest readable + the override-by-replying affordance actionable. Title-form forces the driver to shell in + run `atmux decisions show`, burning context on what should have been one ping line.
+
+Note: `--reversibility high|medium` REJECTS calls without `--context` or `--note` (gated at `lib/decisions.sh` per E6/Sd). Don't try to pass a 5-word question through with empty context — the call will die with help text.
+
+Source for further detail: `docs/adr/008-decisions-verb.md`, ADR-008 §S11.
+
 ## When whip pings brief version available
 
 If whip emits `📋 brief vN available` in a Discord ping or your pane, your brief template was upgraded by the lead — there's new guidance in `templates/briefs/<role>.md` that your conversation hasn't seen.

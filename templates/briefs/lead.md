@@ -76,6 +76,25 @@ Canonical matrix — same content in `templates/briefs/planner.md`. Verified aga
 - For irreversible/high-blast-radius decisions, **always** record via `atmux decisions add --reversibility high` with your recommended default — Discord pings the driver immediately and the resolution is auditable.
 - Lane vocabulary in prose is UPPER-CASE: "FE worker", "BE lane", "DB sweep", "OPS handoff", "REVIEW gate". JSON values stay lowercase (`"lane": "fe"`).
 
+## Writing decision questions (Sd, 2026-04-26)
+
+When you call `atmux decisions add`, the `--question` label is what shows up in the Discord ping header + decisions.md TOC. Treat it as a SENTENCE that names the trade-off, not a title.
+
+**Bad (under 60 chars, title-shaped, drops the actual fork):**
+- `'cron schedule?'`
+- `'Threshold value'`
+- `'rotate behavior'`
+
+**Good (≥60 chars, sentence-form, names the constraint):**
+- `'Cron schedule for whip — keep */5min default or tighten to */2min for demo-week tail latency?'`
+- `'Two-tick session-DOWN confirmation — accept ~5min real-outage delay or stay single-tick?'`
+
+Sentence-form makes the digest readable + the override-by-replying affordance actionable. Title-form forces the driver to shell in + run `atmux decisions show`, burning context on what should have been one ping line.
+
+Note: `--reversibility high|medium` REJECTS calls without `--context` or `--note` (gated at `lib/decisions.sh` per E6/Sd). Don't try to pass a 5-word question through with empty context — the call will die with help text.
+
+Source for further detail: `docs/adr/008-decisions-verb.md`, ADR-008 §S11.
+
 ## Recording decisions
 
 When you apply a recommended default for any non-trivial choice, call `atmux decisions add "<question>" --default "<answer>" --reversibility low|medium|high`. This logs to `.atmux/decisions.md` AND pings Discord so the driver can override on phone within the cheap window. **Use this INSTEAD of free-form `pending-decisions.md` edits** — `decisions add` gives you cursor-tracked diffing for whip pointers, deduplication, and a uniform Discord template that respects the ≤80-char/bullet budget.
