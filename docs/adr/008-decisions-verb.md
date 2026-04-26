@@ -407,6 +407,42 @@ Per ADR-007 OQ-resolution pattern, recorded via `atmux decisions add`:
 - Should the section-aware chunker be invoked for `low`/`medium` reversibility entries too, even though they don't ping per-add (only via digest)? Today: chunker fires inside `_decisions_render_discord`, which is only called from the high-rev path + the digest path. Digest already chunks bullets (decisions-as-bullets). Verdict: out of scope — digest's bullet chunker is bounded by per-decision body, not per-field; if a single decision's bullet exceeds 1900 chars in a digest, that's a separate issue (revisit if surfaced).
 - Should the `[N/M]` chunks share a thread-id / common identifier so Discord clients can group them visually? Defer — Discord webhooks don't support thread continuation natively. Revisit if a downstream consumer (Discord→Slack bridge, etc.) wants it.
 
+
+---
+
+## §S11 — Medium-reversibility decisions get the rich Discord ping (B2 from E6/S1)
+
+**Status**: accepted
+**Date**: 2026-04-26
+
+### Why
+
+Pre-S11, only `high` reversibility decisions invoked `_decisions_render_discord` — the rich, section-by-section chunked render with `[N/M]` headers. `medium` and `low` decisions only surfaced via the whip-tick inline preview (`🟢 d-xxxxxxxx Question → Default`), which drops `--context`, `--option`, `--impact`, and `--decided-by`.
+
+Driver flagged this as "still not informative enough" for `medium` calls (the typical demo-shaping decisions where override windows matter). Two options:
+- (a) fire rich ping for `medium` too; `low` stays whip-batched.
+- (b) enrich the whip preview with a 1-line `🌐 ctx · ⚖️ N opts · 👤 by`.
+
+**Decision: (a).** Real-time visibility for `medium` is the higher-value affordance. `low` decisions remain whip-batched for noise control — the digest path already covers them.
+
+### What changes
+
+`lib/decisions.sh:250` — gate broadens from `if [[ "$reversibility" == "high" ]]` to `if [[ "$reversibility" =~ ^(high|medium)$ ]]`. Same `_decisions_render_discord` chunked render fires for both. `low` path unchanged.
+
+`tests/unit/decisions_gating.bats` extended (T1.4) — high case unchanged; new medium case asserts rich render fires; new low case asserts rich render skipped.
+
+### What breaks
+
+- Discord channel volume: medium-rev pings now fire in real-time instead of batched into the whip tick. Expected ~2-5× increase in decisions-channel ping count, depending on planner's medium/low ratio. Acceptable — driver explicitly flagged this as desired.
+
+### What we give up
+
+- The "low/medium are batched" mental model. New model: `low` is batched (digest only); `medium` is real-time (rich ping); `high` is real-time (rich ping). Slightly more nuance, more useful.
+
+### Open questions
+
+(none — small, focused change; no OQ-resolution pings warranted.)
+
 ---
 
 ## staleMin Resolution Chain (cross-ref: ADR-009 §S7 D9)

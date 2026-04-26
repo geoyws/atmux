@@ -243,11 +243,14 @@ _atmux_decisions_add() {
     "$f" "$id" "$question" "$default" "$reversibility" "$note" "$epoch" "$hhmm" \
     "$context" "$impact" "$decided_by" "${#options[@]}" "${options[@]}"
 
-  # Reversibility gate: only `high` interrupts the driver in real time.
-  # `low`/`medium` are planner judgment calls — log to the markdown file
-  # (already done above) but skip the per-add Discord ping. `high` is
-  # potentially-irreversible and warrants real-time visibility.
-  if [[ "$reversibility" == "high" ]]; then
+  # Reversibility gate (E6/S1 §S11): `high` AND `medium` interrupt the
+  # driver in real time with the rich, section-by-section chunked render.
+  # `low` stays whip-batched (markdown already appended above; the whip
+  # tick's inline preview surfaces the count + 1-line gist + digest
+  # pointer) for noise control. Medium decisions are typical demo-
+  # shaping calls where override windows matter — driver explicitly
+  # opted into the higher channel volume to gain real-time visibility.
+  if [[ "$reversibility" =~ ^(high|medium)$ ]]; then
     _decisions_export_webhook
     local team; team="$(atmux::team_name)"
     # E2/S10: renderer emits 1..5 NUL-separated chunks (single-message
