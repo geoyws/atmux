@@ -41,6 +41,11 @@ Setup:
   stop [--force]              Kill tmux session, archive state
   attach                      tmux attach to the team session
   status                      Powerline team overview
+  migrate-to-driver-session [<team>]
+                              Move team windows from dedicated atmux-<team>
+                              session into the driver's $TMUX session
+                              (single-session topology, ADR-016). Refuses on
+                              any in-flight pane state; idempotent.
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
@@ -201,6 +206,7 @@ case "$verb" in
   outbox) verb_script="$ATMUX_LIB_DIR/reply.sh"; set -- "--outbox" "$@" ;;
   pause|resume) verb_script="$ATMUX_LIB_DIR/pause.sh"; set -- "$verb" "$@" ;;
   verify-libs) verb_script="$ATMUX_LIB_DIR/verify_libs.sh" ;;
+  migrate-to-driver-session) verb_script="$ATMUX_LIB_DIR/migrate.sh" ;;
 esac
 
 if [[ ! -f "$verb_script" ]]; then
