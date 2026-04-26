@@ -308,9 +308,11 @@ _atmux_epic_dispatch_summary() {
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
   local task_json
   task_json="$(jq --arg id "$tid" '.tasks[]? | select(.id == $id)' "$k")"
-  jq --argjson t "$task_json" --argjson now "$now" \
-     '.inProgress += [$t + {dispatchedAt: $now}]' \
-     "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+  # E6/S1 t-8b0fdbb4 (A1 site 4/6) — atmux::jq_update for flock'd
+  # atomic write per ADR-013. Filter logic preserved verbatim.
+  atmux::jq_update "$ib" \
+    '.inProgress += [$t + {dispatchedAt: ($now | tonumber)}]' \
+    --argjson t "$task_json" --arg now "$now"
 
   atmux::log "epic: dispatched summary task $tid → $lead_name (role=team-lead, review entry)"
 }
