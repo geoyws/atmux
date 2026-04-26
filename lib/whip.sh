@@ -477,19 +477,30 @@ _atmux_report_and_exit() {
   local logf="$(atmux::logs_dir)/whip.log"
   mkdir -p "$(dirname "$logf")"
 
-  # Cron-dupe guard. The canonical cron line redirects our stdout to the
-  # same whip.log we're about to printf-append. Without this guard, an
-  # additional `echo "$body"` here AND the printf both write to the file
-  # (via cron's `>>` and via direct fd) — every block doubles in the log.
-  # Detect the redundancy by reading our /proc/self/fd/1 symlink: when it
-  # already points at the log file, skip the echo path. Interactive shells
-  # and bats `run` calls have fd 1 → tty / pipe / other file, so they DO
-  # take the echo path. /proc is Linux-only; macOS falls through to "echo
-  # always", which is correct (macOS isn't typically the cron host).
+  # Cron-dupe guard (rev 2). The canonical cron line redirects our
+  # stdout to whip.log via `>> ... 2>&1` AND we printf-append to the
+  # same file directly — without a guard, every block doubles. The
+  # naive readlink check (rev 1) failed because real cron wraps stdout
+  # in a pipe (fd1 → `pipe:[N]`, not the file path), so the path
+  # equality check ALWAYS evaluated false in cron and the dupe persisted.
+  #
+  # Rev 2 detects "batch mode" via the absence of any TTY on stdin/
+  # stdout/stderr AND the absence of the bats sentinel env. Three
+  # cases:
+  #   - Interactive shell: at least one TTY → echo + printf (terminal
+  #     sees output, log file persists)
+  #   - bats test runner: BATS_TEST_NAME set → echo + printf (run
+  #     captures stdout for assertions, logfile available for
+  #     file-existence assertions)
+  #   - Cron / non-interactive batch: no TTY + no BATS env → printf-
+  #     to-file only, skip echo (cron's `>>` redirect captures NOTHING
+  #     extra → no dupe in the log). Same for systemd timers, nohup,
+  #     etc — anything that runs unattended writes via the file path.
   local _dup_stdout=1
-  if [[ -L /proc/self/fd/1 ]]; then
-    local _fd1; _fd1="$(readlink /proc/self/fd/1 2>/dev/null || echo)"
-    [[ "$_fd1" == "$logf" ]] && _dup_stdout=0
+  if [[ -z "${BATS_TEST_NAME:-}" ]]; then
+    if [[ ! -t 0 && ! -t 1 && ! -t 2 ]]; then
+      _dup_stdout=0
+    fi
   fi
 
   if [[ "${#findings[@]}" -eq 0 ]]; then
