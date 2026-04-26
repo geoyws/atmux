@@ -536,6 +536,17 @@ _atmux_kanban_push_inbox() {
   mkdir -p "$(dirname "$ib")"
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
   local now; now="$(atmux::now_epoch)"
+
+  # E6/S2 t-a27f217b — inbox cap guard. Auto-dispatch chain has the
+  # higher overflow risk (recursion-gate slip → ballooning inProgress)
+  # so the cap fires here as well as in lib/dispatch.sh. Cap-refused:
+  # auto-mint kanban entry already landed via finish_task_done's main
+  # jq filter; only the inbox copy + ping are skipped.
+  if ! atmux::inbox_push_guard "$ib"; then
+    atmux::inbox_cap_warn "$member"
+    return 0
+  fi
+
   jq --argjson t "$task_json" --argjson now "$now" \
      '.inProgress += [$t + {dispatchedAt: $now}]' \
      "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"

@@ -289,6 +289,78 @@ atmux::task_append_note() {
 # No side effects: read-only on inboxes/ + kanban.json. Echoes `[]` when
 # kanban.json is absent or no inbox files exist (cold-start / fresh-init
 # edge cases) so callers can branch on `length == 0` uniformly.
+# atmux::inbox_push_guard <ib_path>
+#
+# Cheap insurance against runaway dispatch: returns 1 (refuse) when the
+# inbox's `.inProgress[]` length is at or above $ATMUX_INBOX_CAP (default
+# 20), otherwise 0 (allow). Caller decides what to do on refusal —
+# typically `atmux::inbox_cap_warn <member>` + skip the push. Pure
+# read-only; the kanban-side mint should land regardless so the task
+# isn't lost, only the inbox copy is denied. Missing inbox file ⇒ allow
+# (length 0). E6/S2 t-a27f217b.
+atmux::inbox_push_guard() {
+  local ib="$1"
+  local cap="${ATMUX_INBOX_CAP:-20}"
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap=20
+  [[ -f "$ib" ]] || return 0
+  local n
+  n="$(jq -r '(.inProgress // []) | length' "$ib" 2>/dev/null || echo 0)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  (( n < cap ))
+}
+
+# atmux::inbox_cap_warn <member>
+#
+# Companion to inbox_push_guard. Emits atmux::warn unconditionally + a
+# ledger-rate-limited Discord notice (.atmux/state/inbox-cap-warned.json
+# `{member: lastWarnEpoch}`, 1h suppression window). The Discord call is
+# guarded on `declare -F atmux::discord_ping` so common.sh stays free of
+# a hard dep on lib/discord.sh — callers that already source discord.sh
+# (whip, kanban, dispatch, decisions, flags) get the ping; cold-path
+# callers fall back to atmux::warn alone.
+atmux::inbox_cap_warn() {
+  local member="$1"
+  local cap="${ATMUX_INBOX_CAP:-20}"
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap=20
+
+  atmux::warn "inbox full: $member (cap=$cap, push refused)"
+
+  local ledger; ledger="$(atmux::state_dir)/inbox-cap-warned.json"
+  mkdir -p "$(dirname "$ledger")"
+  [[ -s "$ledger" ]] || echo '{}' > "$ledger"
+
+  local now; now="$(atmux::now_epoch)"
+  local last
+  last="$(jq -r --arg m "$member" '.[$m] // 0' "$ledger" 2>/dev/null || echo 0)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+
+  if (( now - last < 3600 )); then
+    return 0
+  fi
+
+  if [[ -z "${ATMUX_DISCORD_WEBHOOK:-}" ]]; then
+    local hook
+    hook="$(jq -r '.discord.webhook // empty' "$(atmux::team_json)" 2>/dev/null || true)"
+    if [[ -n "$hook" && "$hook" != "null" ]]; then
+      export ATMUX_DISCORD_WEBHOOK="$hook"
+    fi
+  fi
+
+  if declare -F atmux::discord_ping >/dev/null 2>&1 \
+     && [[ -n "${ATMUX_DISCORD_WEBHOOK:-}" ]]; then
+    local team; team="$(atmux::team_name 2>/dev/null || echo unknown)"
+    local ts; ts="$(atmux::now_myt)"
+    local body="⚠️ **[atmux-inbox-cap]** · \`$team\` · $ts"
+    body+=$'\n\n'"- 📥 \`$member\` inbox at cap ($cap) — pushes refused"
+    body+=$'\n'"- 📍 inspect: \`atmux inbox $member\`"
+    atmux::discord_ping "$body" >/dev/null 2>&1 || true
+  fi
+
+  atmux::jq_update "$ledger" \
+    '. + {($m): ($t | tonumber)}' \
+    --arg m "$member" --arg t "$now"
+}
+
 atmux::find_phantom_inbox_ids() {
   local k; k="$(atmux::kanban_json)"
   local idir; idir="$(atmux::inbox_dir)"

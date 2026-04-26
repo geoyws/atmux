@@ -58,12 +58,19 @@ main() {
      | (.tasks[] | select(.id == $id) | .claimedAt) = $now' \
     --arg id "$id" --arg who "$member" --argjson now "$(atmux::now_epoch)"
 
-  # Append to member inbox.
+  # Append to member inbox — gated by inbox_push_guard (E6/S2 t-a27f217b).
+  # Cap-refused: kanban-side assign + status flip already landed above;
+  # only the inbox copy is denied. The member will see the task via
+  # `atmux task list --assignee <name>` even without the inbox entry.
   local ib; ib="$(atmux::inbox_dir)/$member.json"
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
-  jq --argjson task "$task" --argjson now "$(atmux::now_epoch)" \
-     '.inProgress += [$task + {dispatchedAt: $now}]' \
-     "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+  if atmux::inbox_push_guard "$ib"; then
+    jq --argjson task "$task" --argjson now "$(atmux::now_epoch)" \
+       '.inProgress += [$task + {dispatchedAt: $now}]' \
+       "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+  else
+    atmux::inbox_cap_warn "$member"
+  fi
 
   atmux::ok "dispatched $id → $member"
 
