@@ -10,6 +10,8 @@
 # kanban.json schema (top-level):
 # shellcheck source=send.sh
 . "$ATMUX_LIB_DIR/send.sh"
+# shellcheck source=discord.sh
+. "$ATMUX_LIB_DIR/discord.sh"
 
 #   {
 #     "tasks":   [ { id, subject, body, status, owner, deps, priority,
@@ -272,6 +274,22 @@ atmux::finish_task_done() {
   local src_subject; src_subject="$(jq -r '.subject // ""' <<<"$src_task")"
   local src_owner;   src_owner="$(jq   -r '.owner   // ""' <<<"$src_task")"
 
+  # E6/S2 t-eeb06966 — auto-dispatch depth guard. Read incoming depth
+  # from env (default 0). Existing recursion gates (subject-prefix +
+  # gitter+misc lane) catch known recursion classes; this depth cap is
+  # defense-in-depth for unknown classes (e.g. planner-authored review
+  # tasks that themselves trigger commits). Cap = 3: legitimate chains
+  # max out at depth 2 (parent done → commit-Task = 1; commit-of-commit
+  # would be depth 2 but is blocked by the subject-prefix gate already).
+  # Depth ≥ 3 is genuinely abnormal — refuse the mint with audit trail.
+  local _dispatch_depth_in="${ATMUX_DISPATCH_DEPTH:-0}"
+  [[ "$_dispatch_depth_in" =~ ^[0-9]+$ ]] || _dispatch_depth_in=0
+  local _dispatch_depth_new=$(( _dispatch_depth_in + 1 ))
+  local _dispatch_depth_capped=0
+  if (( _dispatch_depth_new >= 3 )); then
+    _dispatch_depth_capped=1
+  fi
+
   local do_commit=0 do_story_flip=0 do_epic_flip=0
   local target_story_id="" target_epic_id=""
   [[ -n "$src_epic" ]] && do_commit=1
@@ -294,6 +312,17 @@ atmux::finish_task_done() {
   # gitter-owned MISC task done never warrants a child commit-Task.
   if [[ "$src_owner" == "gitter" && "$src_lane" == "misc" ]]; then
     do_commit=0
+  fi
+
+  # Apply the depth gate AFTER the subject/owner heuristics so the warn
+  # only fires when the depth cap is the binding constraint. If commit
+  # was already suppressed by a recursion gate, the depth log would be
+  # noise.
+  if (( _dispatch_depth_capped == 1 )) && [[ "$do_commit" -eq 1 || -n "${target_epic_id:-}" ]]; then
+    atmux::warn "auto-dispatch depth limit hit (parent=$id, depth=$_dispatch_depth_new) — not minting commit-Task"
+    _atmux_kanban_notify_dispatch_depth_capped "$id" "$_dispatch_depth_new"
+    do_commit=0
+    do_epic_flip=0
   fi
 
   if [[ -n "$src_story" && "$src_lane" == "test" ]]; then
@@ -348,7 +377,8 @@ atmux::finish_task_done() {
           status: "in-progress", owner: "gitter",
           deps: [], priority: 1,
           epic: null, story: null, lane: "misc", deliverable: null,
-          createdAt: $now, claimedAt: $now, completedAt: null
+          createdAt: $now, claimedAt: $now, completedAt: null,
+          createdFrom: {parentTaskId: $id, depth: ($depth | tonumber)}
         }]
       else . end
     | if $do_story_flip == "1" then
@@ -361,7 +391,8 @@ atmux::finish_task_done() {
             status: "in-progress", owner: "lead",
             deps: [], priority: 1,
             epic: null, story: null, lane: "misc", deliverable: null,
-            createdAt: $now, claimedAt: $now, completedAt: null
+            createdAt: $now, claimedAt: $now, completedAt: null,
+            createdFrom: {parentTaskId: $id, depth: ($depth | tonumber)}
           }]
       else . end
   ' \
@@ -376,7 +407,14 @@ atmux::finish_task_done() {
     --arg epic_id "$target_epic_id" \
     --arg summary_tid "$summary_tid" \
     --arg summary_subject "$summary_subject" \
-    --arg summary_body "$summary_body"
+    --arg summary_body "$summary_body" \
+    --arg depth "$_dispatch_depth_new"
+
+  # Defense-in-depth: any nested atmux call from within this chain
+  # inherits the new depth via env. tmux send-keys doesn't pass env, so
+  # cross-pane chains rely on .createdFrom; this export covers any
+  # future in-process subshell that re-enters atmux.
+  export ATMUX_DISPATCH_DEPTH="$_dispatch_depth_new"
 
   # Dispatch-suppression hook. ATMUX_FINISH_TASK_NO_DISPATCH=1 (set by
   # claim.sh's --no-dispatch flag, or by ATMUX_NO_AUTO_DISPATCH=1 in the
@@ -422,6 +460,46 @@ atmux::finish_task_done() {
     fi
   fi
   return 0
+}
+
+# Discord notice for dispatch-depth-cap events (E6/S2 t-eeb06966).
+# Rate-limited per parent task id via .atmux/state/dispatch-depth-seen.
+# json — once per parent per cron-session. Mirrors the phantom-sweep
+# ledger pattern: bounded growth, idempotent on re-entry. Webhook
+# resolution chain matches lib/decisions.sh::_decisions_export_webhook
+# (env override → team.json field → silent no-op).
+_atmux_kanban_notify_dispatch_depth_capped() {
+  local parent="$1" depth="$2"
+
+  local ledger; ledger="$(atmux::state_dir)/dispatch-depth-seen.json"
+  mkdir -p "$(dirname "$ledger")"
+  [[ -s "$ledger" ]] || echo '{}' > "$ledger"
+
+  local seen
+  seen="$(jq -r --arg p "$parent" '.[$p] // empty' "$ledger" 2>/dev/null || true)"
+  [[ -n "$seen" ]] && return 0
+
+  if [[ -z "${ATMUX_DISCORD_WEBHOOK:-}" ]]; then
+    local hook
+    hook="$(jq -r '.discord.webhook // empty' "$(atmux::team_json)" 2>/dev/null || true)"
+    if [[ -n "$hook" && "$hook" != "null" ]]; then
+      export ATMUX_DISCORD_WEBHOOK="$hook"
+    fi
+  fi
+
+  if [[ -n "${ATMUX_DISCORD_WEBHOOK:-}" ]]; then
+    local team; team="$(atmux::team_name 2>/dev/null || echo unknown)"
+    local ts; ts="$(atmux::now_myt)"
+    local body="🛑 **[atmux-dispatch-depth]** · \`$team\` · $ts"
+    body+=$'\n\n'"- ⛔ refused commit-Task mint: parent=\`$parent\`, depth=$depth"
+    body+=$'\n'"- 📍 source: \`atmux task show $parent\`"
+    atmux::discord_ping "$body" >/dev/null 2>&1 || true
+  fi
+
+  local now; now="$(atmux::now_epoch)"
+  atmux::jq_update "$ledger" \
+    '. + {($p): ($t | tonumber)}' \
+    --arg p "$parent" --arg t "$now"
 }
 
 # Walk every member inbox + drop any inProgress[] entry matching <task_id>.
