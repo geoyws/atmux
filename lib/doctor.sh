@@ -43,6 +43,7 @@ EOF
   _doctor_check_tuis
   _doctor_check_state_dir
   _doctor_check_webhook
+  _doctor_check_crontab
 
   if [[ "$json" -eq 1 ]]; then
     _doctor_render_json
@@ -282,6 +283,75 @@ _doctor_check_webhook() {
       "regenerate the webhook in Discord and update the config"
   else
     _doctor_row yellow "discord" "unexpected response HTTP $code — reachable but odd"
+  fi
+}
+
+# Stale-crontab detector. When the project moves on disk (rename, relocation,
+# checkout under a new path), cron entries still point at the old absolute
+# path; whip / report / cleanup silently fail until someone re-runs `crontab
+# -e`. This check reads the current user's crontab, finds atmux invocations
+# (any line containing `atmux whip` / `atmux report` / `atmux cleanup`), and
+# warns when ATMUX_DIR / --team-dir embedded in the line doesn't resolve to
+# this project's actual .atmux dir.
+#
+# Yellow on mismatch (not red — many users intentionally run cron against a
+# different team than their cwd, e.g. central watchdog of multiple teams).
+_doctor_check_crontab() {
+  if ! command -v crontab >/dev/null 2>&1; then
+    return
+  fi
+  local cron
+  cron="$(crontab -l 2>/dev/null || true)"
+  if [[ -z "$cron" ]]; then
+    return
+  fi
+
+  local atmux_lines
+  atmux_lines="$(grep -E 'atmux (whip|report|cleanup|decisions)' <<<"$cron" | grep -v '^#' || true)"
+  if [[ -z "$atmux_lines" ]]; then
+    return
+  fi
+
+  local current_atmux_dir; current_atmux_dir="$(atmux::dir 2>/dev/null || echo)"
+  [[ -n "$current_atmux_dir" ]] || return
+
+  local mismatched=0 matched=0
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    # Pull either ATMUX_DIR=<path> or --team-dir <path> from the cron line.
+    # Tolerate quoting variants but keep the regex narrow — false positives
+    # here mean a noisy warning, false negatives mean missed staleness.
+    local cron_atmux_dir=""
+    if [[ "$line" =~ ATMUX_DIR=([^[:space:]]+) ]]; then
+      cron_atmux_dir="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ --team-dir[[:space:]]+([^[:space:]]+) ]]; then
+      # --team-dir resolves to <path>/.atmux at runtime
+      cron_atmux_dir="${BASH_REMATCH[1]}/.atmux"
+    fi
+    [[ -z "$cron_atmux_dir" ]] && continue
+
+    if [[ "$cron_atmux_dir" == "$current_atmux_dir" ]]; then
+      matched=$((matched + 1))
+    else
+      # Resolve symlinks before comparing — a moved project where the user
+      # added a symlink shim shouldn't trip the warning.
+      local cron_real curr_real
+      cron_real="$(readlink -f "$cron_atmux_dir" 2>/dev/null || echo "$cron_atmux_dir")"
+      curr_real="$(readlink -f "$current_atmux_dir" 2>/dev/null || echo "$current_atmux_dir")"
+      if [[ "$cron_real" == "$curr_real" ]]; then
+        matched=$((matched + 1))
+      else
+        mismatched=$((mismatched + 1))
+      fi
+    fi
+  done <<< "$atmux_lines"
+
+  if [[ "$mismatched" -gt 0 ]]; then
+    _doctor_row yellow "cron-config" \
+      "$mismatched atmux cron entr$( ((mismatched==1)) && echo y || echo ies ) point to a different ATMUX_DIR than $current_atmux_dir" \
+      "if the project moved, run \`crontab -e\` and update ATMUX_DIR / --team-dir"
+  elif [[ "$matched" -gt 0 ]]; then
+    _doctor_row green "cron-config" "$matched atmux cron entr$( ((matched==1)) && echo y || echo ies ) match this project"
   fi
 }
 
