@@ -33,10 +33,23 @@ atmux_setup_sandbox() {
 }
 
 atmux_teardown_sandbox() {
-  # Tear down the sandbox tmux server in a single op — avoids the per-pane kill
-  # storm that wedged tmux on 2026-04-25.
-  if [[ -n "${TMUX_TMPDIR:-}" && -S "$TMUX_TMPDIR/default" ]]; then
-    tmux kill-server 2>/dev/null || true
+  # Tear down the sandbox tmux server in a single op — avoids the per-pane
+  # kill storm that wedged tmux on 2026-04-25.
+  #
+  # tmux actually creates its socket at $TMUX_TMPDIR/tmux-$UID/default
+  # (not the bare $TMUX_TMPDIR/default the prior check looked at), so the
+  # earlier teardown silently no-op'd against the existence test and every
+  # test leaked an orphan tmux server. Use an explicit `-S <socket>` glob
+  # walk over the tmux-N subdirs + the legacy direct path as belt+suspenders.
+  # Each `tmux -S <path> kill-server` reaps that specific server, which is
+  # what we want — bare `kill-server` doesn't honour TMUX_TMPDIR on the
+  # kill path on every tmux build.
+  if [[ -n "${TMUX_TMPDIR:-}" ]]; then
+    local socket
+    for socket in "$TMUX_TMPDIR"/tmux-*/default "$TMUX_TMPDIR/default"; do
+      [[ -S "$socket" ]] || continue
+      tmux -S "$socket" kill-server 2>/dev/null || true
+    done
   fi
   if [[ -n "${ATMUX_TEST_TMP:-}" && -d "$ATMUX_TEST_TMP" ]]; then
     rm -rf "$ATMUX_TEST_TMP"
