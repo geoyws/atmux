@@ -223,9 +223,11 @@ _atmux_task_move() {
   fi
 
   local k; k="$(atmux::kanban_json)"
-  jq --arg id "$id" --arg status "$status" \
-     '(.tasks[]? | select(.id == $id) | .status) = $status' \
-     "$k" > "${k}.tmp" && mv "${k}.tmp" "$k"
+  # E6/S1 t-354a1b6b (A1 site 6/6) — atmux::jq_update for ADR-013
+  # atomicity. Filter logic preserved verbatim.
+  atmux::jq_update "$k" \
+    '(.tasks[]? | select(.id == $id) | .status) = $status' \
+    --arg id "$id" --arg status "$status"
   atmux::ok "task $id → $status"
 }
 
@@ -516,9 +518,13 @@ _atmux_kanban_prune_inboxes() {
   for ib in "$ib_dir"/*.json; do
     [[ -f "$ib" ]] || continue
     if jq -e --arg id "$task_id" 'any(.inProgress[]?; .id == $id)' "$ib" >/dev/null 2>&1; then
-      jq --arg id "$task_id" \
-         '.inProgress = [.inProgress[]? | select(.id != $id)]' \
-         "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+      # E6/S1 t-354a1b6b (A1 site 6/6) — atmux::jq_update for ADR-013
+      # atomicity. Filter logic preserved verbatim. The jq -e existence
+      # check above stays a read-only fast path; only the rewriter
+      # converts.
+      atmux::jq_update "$ib" \
+        '.inProgress = [.inProgress[]? | select(.id != $id)]' \
+        --arg id "$task_id"
     fi
   done
 }
@@ -547,9 +553,12 @@ _atmux_kanban_push_inbox() {
     return 0
   fi
 
-  jq --argjson t "$task_json" --argjson now "$now" \
-     '.inProgress += [$t + {dispatchedAt: $now}]' \
-     "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+  # E6/S1 t-354a1b6b (A1 site 6/6) — atmux::jq_update for ADR-013
+  # atomicity. Filter logic preserved verbatim; \$now passed via --arg
+  # + tonumber to keep filter shape identical.
+  atmux::jq_update "$ib" \
+    '.inProgress += [$t + {dispatchedAt: ($now | tonumber)}]' \
+    --argjson t "$task_json" --arg now "$now"
 
   # tmux send-keys nudge so the recipient sees the new task immediately —
   # without it, auto-dispatched commit-Tasks pile up silently while the
@@ -574,16 +583,24 @@ _atmux_task_assign() {
   local id="${1:-}" who="${2:-}"
   [[ -n "$id" && -n "$who" ]] || atmux::die "task assign: <id> <member>"
   local k; k="$(atmux::kanban_json)"
-  jq --arg id "$id" --arg who "$who" \
-     '(.tasks[] | select(.id == $id) | .owner) = $who' "$k" > "${k}.tmp" \
-     && mv "${k}.tmp" "$k"
+  # E6/S1 t-354a1b6b (A1 site 6/6) — atmux::jq_update for ADR-013
+  # atomicity. Filter logic preserved verbatim.
+  atmux::jq_update "$k" \
+    '(.tasks[] | select(.id == $id) | .owner) = $who' \
+    --arg id "$id" --arg who "$who"
   atmux::ok "task $id assigned → $who"
 }
 
 _atmux_task_rm() {
   local id="${1:-}"; [[ -n "$id" ]] || atmux::die "task rm: <id> required"
   local k; k="$(atmux::kanban_json)"
-  jq --arg id "$id" '.tasks |= map(select(.id != $id))' "$k" > "${k}.tmp" && mv "${k}.tmp" "$k"
+  # E6/S1 t-354a1b6b (A1 site 6/6) — atmux::jq_update for ADR-013
+  # atomicity. Filter logic preserved verbatim. _atmux_task_rm racing
+  # finish_task_done's commit-Task append IS the documented B1 phantom
+  # scenario per ADR-013 §Context — closing this site is the headline.
+  atmux::jq_update "$k" \
+    '.tasks |= map(select(.id != $id))' \
+    --arg id "$id"
   atmux::ok "task $id removed"
 }
 
