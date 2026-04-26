@@ -6,6 +6,11 @@
 
 # shellcheck source=send.sh
 . "$ATMUX_LIB_DIR/send.sh"
+# shellcheck source=discord.sh
+# inbox_cap_warn (called on cap-refused dispatches per E6/S2 t-a27f217b)
+# guards on `declare -F atmux::discord_ping` — without sourcing here,
+# the cap notice never reaches Discord even when a webhook is configured.
+. "$ATMUX_LIB_DIR/discord.sh"
 
 main() {
   atmux::require jq
