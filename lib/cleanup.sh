@@ -109,9 +109,11 @@ _atmux_cleanup_inboxes() {
         '[.done[]? | select((.completedAt // 0) >= $c or (.completedAt // 0) == 0)] | length' \
         "$ib" 2>/dev/null || echo "$before")
     else
-      jq --argjson c "$cutoff" \
+      # E6/S1 t-04b79538 (A1 site 3/6) — atmux::jq_update for flock'd
+      # atomic write per ADR-013. Filter logic preserved verbatim.
+      atmux::jq_update "$ib" \
         '.done = [.done[]? | select((.completedAt // 0) >= $c or (.completedAt // 0) == 0)]' \
-        "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+        --argjson c "$cutoff"
       after=$(jq '.done | length' "$ib")
     fi
 
