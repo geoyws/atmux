@@ -44,6 +44,8 @@ EOF
   _doctor_check_state_dir
   _doctor_check_webhook
   _doctor_check_crontab
+  _doctor_check_whip_hash
+  _doctor_check_phantom_inboxes
 
   if [[ "$json" -eq 1 ]]; then
     _doctor_render_json
@@ -355,6 +357,60 @@ _doctor_check_crontab() {
   fi
 }
 
+# Stale whip-last.hash detector (E6/S3 t-d0c2e85a A5). Whip writes
+# .atmux/state/whip-last.hash on every tick that produces findings (or
+# resamples on the power-of-2 backoff schedule). If the session is up
+# and the hash mtime is > 24h old, cron is almost certainly broken or
+# the cron entry was dropped — surface yellow with a probe hint. Skipped
+# silently when no tmux session exists (whip can't run anyway) or when
+# the hash file has never been written (cold-start: first whip tick will
+# create it, no need to nag).
+_doctor_check_whip_hash() {
+  local hash_file; hash_file="$(atmux::state_dir)/whip-last.hash"
+  [[ -f "$hash_file" ]] || return 0
+
+  if ! atmux::tmux_session_exists 2>/dev/null; then
+    return 0
+  fi
+
+  local mtime now age_h
+  mtime=$(stat -c '%Y' "$hash_file" 2>/dev/null || stat -f '%m' "$hash_file" 2>/dev/null || echo 0)
+  [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
+  now=$(atmux::now_epoch)
+  age_h=$(( (now - mtime) / 3600 ))
+
+  if (( age_h >= 24 )); then
+    _doctor_row yellow "whip-cron" \
+      "whip-last.hash stale (${age_h}h old) — cron likely broken" \
+      "check crontab; ATMUX_DEBUG=1 atmux whip --once"
+  fi
+}
+
+# Phantom inbox detector (E6/S3 t-d0c2e85a A6). Consumes
+# atmux::find_phantom_inbox_ids — for each entry whose id is in some
+# inbox.inProgress[] but missing from kanban.tasks[], surface a yellow
+# row. The whip auto-prune sweep (t-5a8d148f) handles ongoing pruning
+# in production; doctor fills the operator-driven inspection role +
+# `--fix` re-runs the prune for the snapshot the operator just saw.
+_doctor_check_phantom_inboxes() {
+  if ! declare -F atmux::find_phantom_inbox_ids >/dev/null 2>&1; then
+    return 0
+  fi
+  local phantoms_json
+  phantoms_json="$(atmux::find_phantom_inbox_ids 2>/dev/null || echo '[]')"
+  local n
+  n=$(jq -r 'length' <<<"$phantoms_json" 2>/dev/null || echo 0)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  (( n == 0 )) && return 0
+
+  while IFS=$'\t' read -r member id subject; do
+    [[ -z "$id" || -z "$member" ]] && continue
+    _doctor_row yellow "phantom-inbox" \
+      "$member inbox.inProgress contains phantom $id (\"$subject\")" \
+      "atmux doctor --fix prunes; whip auto-prune sweep also handles in-flight"
+  done < <(jq -r '.[] | [.member, .id, (.subject // "")] | @tsv' <<<"$phantoms_json")
+}
+
 # ---------- helpers ----------
 
 # Extract the first command-like token from a shell command string,
@@ -441,11 +497,12 @@ _doctor_render_json() {
 }
 
 _doctor_try_fix() {
-  # Two fix paths: the existing team.json wizard (only on red), and the
-  # new cleanup-driven log/inbox sweep (runs whenever --fix is passed,
-  # regardless of red/yellow status — cleanup is always safe and the
-  # operator opted in by passing --fix).
+  # Three fix paths: the existing team.json wizard (only on red), the
+  # cleanup-driven log/inbox sweep, and the phantom-inbox pruner. All of
+  # the safe ones run whenever --fix is passed, regardless of red/yellow
+  # status — operator opted in.
   _doctor_try_fix_cleanup
+  _doctor_try_fix_phantom_inboxes
 
   [[ "$_doctor_red_count" -eq 0 ]] && return 0
 
@@ -487,4 +544,41 @@ _doctor_try_fix_cleanup() {
   printf '\n%s🧹 atmux%s  doctor --fix: running cleanup all\n' \
     "$atmux_c_cyn" "$atmux_c_rst" >&2
   "$ATMUX_BIN_DIR/atmux" cleanup all >&2 || true
+}
+
+# Prune phantom inProgress[] entries detected by
+# _doctor_check_phantom_inboxes. Re-runs find_phantom_inbox_ids so the
+# fix is independent of the row state captured during the check pass —
+# matters when --fix runs after a slow check that another writer might
+# have raced. atmux::jq_update for the prune (ADR-013). Idempotent: a
+# clean tree exits silently with a "0 pruned" line.
+_doctor_try_fix_phantom_inboxes() {
+  if ! declare -F atmux::find_phantom_inbox_ids >/dev/null 2>&1; then
+    return 0
+  fi
+  local phantoms_json
+  phantoms_json="$(atmux::find_phantom_inbox_ids 2>/dev/null || echo '[]')"
+  local n
+  n=$(jq -r 'length' <<<"$phantoms_json" 2>/dev/null || echo 0)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  if (( n == 0 )); then
+    printf '%s🩹 atmux%s  doctor --fix: 0 phantom inbox entries\n' \
+      "$atmux_c_cyn" "$atmux_c_rst" >&2
+    return 0
+  fi
+
+  printf '\n%s🩹 atmux%s  doctor --fix: pruning %d phantom inbox entr%s\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" "$n" "$( ((n==1)) && echo y || echo ies )" >&2
+
+  local member id subject ib
+  while IFS=$'\t' read -r member id subject; do
+    [[ -z "$id" || -z "$member" ]] && continue
+    ib="$(atmux::inbox_dir)/$member.json"
+    if [[ -f "$ib" ]]; then
+      atmux::jq_update "$ib" \
+        '.inProgress = ((.inProgress // []) | map(select(.id != $id)))' \
+        --arg id "$id"
+      printf '  ✅ pruned phantom %s from %s ("%s")\n' "$id" "$member" "$subject" >&2
+    fi
+  done < <(jq -r '.[] | [.member, .id, (.subject // "")] | @tsv' <<<"$phantoms_json")
 }
