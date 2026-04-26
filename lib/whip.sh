@@ -27,8 +27,20 @@
 . "$ATMUX_LIB_DIR/tui.sh"
 
 main() {
-  atmux::require jq tmux
+  atmux::require jq tmux flock
   atmux::require_team
+
+  # Single-instance lock — prevents double-firing if a slow tick overlaps
+  # the next cron interval, or if someone hand-fires `atmux whip` while a
+  # previous cron tick is still resolving. Non-blocking: a contended lock
+  # skips this tick rather than queueing. Releases automatically on exit.
+  local _whip_lock; _whip_lock="$(atmux::state_dir)/whip.lock"
+  mkdir -p "$(dirname "$_whip_lock")"
+  exec 9>"$_whip_lock"
+  if ! flock -n 9; then
+    atmux::log "whip: another instance is running — skipping this tick"
+    return 0
+  fi
 
   local team session
   team="$(atmux::team_name)"
@@ -465,6 +477,21 @@ _atmux_report_and_exit() {
   local logf="$(atmux::logs_dir)/whip.log"
   mkdir -p "$(dirname "$logf")"
 
+  # Cron-dupe guard. The canonical cron line redirects our stdout to the
+  # same whip.log we're about to printf-append. Without this guard, an
+  # additional `echo "$body"` here AND the printf both write to the file
+  # (via cron's `>>` and via direct fd) — every block doubles in the log.
+  # Detect the redundancy by reading our /proc/self/fd/1 symlink: when it
+  # already points at the log file, skip the echo path. Interactive shells
+  # and bats `run` calls have fd 1 → tty / pipe / other file, so they DO
+  # take the echo path. /proc is Linux-only; macOS falls through to "echo
+  # always", which is correct (macOS isn't typically the cron host).
+  local _dup_stdout=1
+  if [[ -L /proc/self/fd/1 ]]; then
+    local _fd1; _fd1="$(readlink /proc/self/fd/1 2>/dev/null || echo)"
+    [[ "$_fd1" == "$logf" ]] && _dup_stdout=0
+  fi
+
   if [[ "${#findings[@]}" -eq 0 ]]; then
     echo "[$ts] whip: all clean" >> "$logf"
     atmux::log "whip: all clean"
@@ -478,21 +505,49 @@ _atmux_report_and_exit() {
   done
 
   printf '[%s]\n%s\n\n' "$ts" "$body" >> "$logf"
-  echo "$body"
-  # ---- body-hash dedup (E2/S7 / t-96390734) ----
-  # Hash bullet content only — header + timestamp change every tick and would
-  # defeat dedup. If the hash matches the last successful ping, the findings
-  # haven't changed; skip the Discord post but keep logging + cursor advance.
+  (( _dup_stdout == 1 )) && echo "$body"
+
+  # ---- body-hash dedup + log-backoff resampler (E2/S7 / t-96390734 +
+  # robustness pass) ----
+  # The hash is computed over NORMALIZED findings — volatile elapsed-time
+  # numerics (uptime=NNNmin, "Nmin ago", "+N more") are masked so a quiet
+  # team where only the clock advances doesn't repeatedly invalidate the
+  # cache. Combined with the quiet-count log-backoff below, an unchanging
+  # state pings on power-of-2 ticks (5, 10, 20, 40, 80, 160min ...) instead
+  # of every 5min. Hash CHANGE always pings + resets the counter.
   local body_hash; body_hash="$(_atmux_whip_body_hash "${findings[@]}")"
   local hash_file; hash_file="$(atmux::state_dir)/whip-last.hash"
+  local quiet_file; quiet_file="$(atmux::state_dir)/whip-quiet-count"
   local prev_hash=""
   [[ -f "$hash_file" ]] && prev_hash="$(cat "$hash_file" 2>/dev/null || echo "")"
 
   if [[ "$body_hash" == "$prev_hash" ]]; then
-    atmux::log "whip: body unchanged since last tick — skipping Discord ping (hash=$body_hash)"
+    local quiet_count=0
+    if [[ -f "$quiet_file" ]]; then
+      quiet_count=$(cat "$quiet_file" 2>/dev/null || echo 0)
+      [[ "$quiet_count" =~ ^[0-9]+$ ]] || quiet_count=0
+    fi
+    quiet_count=$((quiet_count + 1))
+    mkdir -p "$(dirname "$quiet_file")"
+    echo "$quiet_count" > "$quiet_file"
+    # Power-of-2 sampler starting at count≥2 → ping at quiet ticks 2, 4,
+    # 8, 16, 32, ... (10min, 20min, 40min, 80min, 160min ≈ 2.7h on the
+    # default 5-min cron). The first quiet tick (count=1, 5min after the
+    # last real change) stays silent — that's the "no flap" contract from
+    # the original dedup. `(n & (n-1)) == 0` is the bit-trick for "n is a
+    # power of 2".
+    if (( quiet_count > 1 && (quiet_count & (quiet_count - 1)) == 0 )); then
+      atmux::log "whip: log-backoff resample (quiet_count=$quiet_count) — pinging"
+      atmux::discord_ping "$body"
+    else
+      atmux::log "whip: body unchanged (quiet_count=$quiet_count) — skipping ping"
+    fi
     return 0
   fi
 
+  # Hash changed → real news. Reset the quiet counter, ping, persist hash.
+  mkdir -p "$(dirname "$quiet_file")"
+  echo 0 > "$quiet_file"
   atmux::discord_ping "$body"
   mkdir -p "$(dirname "$hash_file")"
   printf '%s\n' "$body_hash" > "$hash_file"
@@ -500,11 +555,26 @@ _atmux_report_and_exit() {
 
 # Hash the findings bullets only (one bullet per line). Excludes the team
 # header + timestamp so dedup survives the every-tick header churn.
+#
+# Volatile elapsed-time numerics are masked before hashing. Without this,
+# a steady-state team whose only "change" is uptime ticking from 274 →
+# 279 → 284 min would invalidate the hash every cycle and re-ping Discord
+# at the same 5-min cadence as a busy team. The masks below cover the
+# patterns whip itself emits: lead-uptime, since-last-tick elapsed
+# windows, and the "+N more" tail in commit/done/decision summaries.
+# Content-bearing numbers (task counts in stale-warnings, decision
+# counts) are intentionally left as-is — they ARE state changes worth
+# pinging on.
 _atmux_whip_body_hash() {
   local f
   for f in "$@"; do
     printf '%s\n' "$f"
-  done | sha256sum | awk '{print $1}'
+  done | sed -E '
+    s/uptime=[0-9]+min/uptime=Nmin/g
+    s/\(([0-9]+)min ago\)/(Nmin ago)/g
+    s/\(([0-9]+)h([0-9]*m?) ago\)/(NhNm ago)/g
+    s/\+[0-9]+ more/+N more/g
+  ' | sha256sum | awk '{print $1}'
 }
 
 # Build the "Since last tick" body block from positive events that landed
