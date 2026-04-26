@@ -280,19 +280,23 @@ _atmux_inbox_move() {
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
   local id; id="$(jq -r '.id' <<<"$task")"
 
+  # E6/S1 t-0aee1385 (A1 site 2/6) — atmux::jq_update for flock'd
+  # atomic write per ADR-013. Worker hot path: claim.sh races
+  # finish_task_done's commit-Task append (B1 phantom scenario).
+  # Filter logic preserved verbatim; only invocation changes.
   case "$direction" in
     "pending->inProgress")
-      jq --arg id "$id" --argjson task "$task" --argjson now "$now" \
-         '.pending |= map(select(.id != $id))
-          | if any(.inProgress[]; .id == $id) then .
-            else .inProgress += [$task + {claimedAt: $now}] end' \
-         "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+      atmux::jq_update "$ib" \
+        '.pending |= map(select(.id != $id))
+         | if any(.inProgress[]; .id == $id) then .
+           else .inProgress += [$task + {claimedAt: ($now | tonumber)}] end' \
+        --arg id "$id" --argjson task "$task" --arg now "$now"
       ;;
     "inProgress->done")
-      jq --arg id "$id" --argjson task "$task" --argjson now "$now" \
-         '.inProgress |= map(select(.id != $id))
-          | .done += [$task + {completedAt: $now}]' \
-         "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+      atmux::jq_update "$ib" \
+        '.inProgress |= map(select(.id != $id))
+         | .done += [$task + {completedAt: ($now | tonumber)}]' \
+        --arg id "$id" --argjson task "$task" --arg now "$now"
       ;;
   esac
 }
