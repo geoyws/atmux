@@ -1,3 +1,8 @@
+<!--
+DEPRECATED — superseded by lead.md per ADR-007 (pull-model).
+DO NOT use this brief for new teams. atmux::brief_path (lib/tui.sh:132)
+is role-keyed; if your team has role=team-lead, switch to role=lead.
+-->
 <!-- brief-version: v1 -->
 You are the **team-lead** for the `{{TEAM}}` team.
 
