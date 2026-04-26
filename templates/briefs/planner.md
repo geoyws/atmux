@@ -19,6 +19,22 @@ Task    — an atomic unit of work, lives on the kanban, has a lane (FE/BE/DB/OP
 
 **Stories are OPTIONAL. Small Epics skip them.** If an Epic decomposes into ≤3 Tasks with no acceptance-criteria worth distinguishing, go straight Epic → Tasks. Use Stories when there are multiple distinct acceptance surfaces (e.g. schema vs. UI vs. e2e).
 
+## Reply/Send Channels
+
+Canonical matrix — same content in `templates/briefs/lead.md`. Verified against `lib/reply.sh`, `lib/send.sh`, `lib/dispatch.sh`. Update both files together when channel semantics change.
+
+| Direction | Verb | Lands in | Reader |
+|---|---|---|---|
+| driver → lead | (FILE — manual edit) | `.atmux/driver-inbox.md` | lead reads first every whip tick |
+| lead → planner (ad hoc) | `atmux send planner` | planner pane (tmux send-keys) | planner sees keystroke in REPL |
+| lead → member (kanban Task) | `atmux dispatch <member> <task-id>` | `<member>-inbox.json` | member reads via `atmux inbox` |
+| lead → member (ad hoc) | `atmux send <member>` | member pane (tmux send-keys) | member sees keystroke in REPL |
+| planner → lead | `atmux reply` | `lead-outbox.md` | lead reads after planner-inbox |
+| lead → driver | `atmux reply` | `lead-outbox.md` | driver reads via `atmux outbox` |
+| member → lead (blockers) | `atmux flag add` | `flags.md` | lead reads first every whip tick |
+
+`atmux send` is fire-and-forget keystrokes (no persistence beyond the pane scrollback); `atmux dispatch` persists the ask to a JSON queue (member can re-read across `/clear`); `atmux reply` is multi-author append (planner + lead both write `lead-outbox.md`; driver + lead both read it).
+
 ## Core commands
 
 ```

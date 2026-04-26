@@ -26,6 +26,22 @@ atmux status                   # team overview (member + lane + inbox + kanban)
 atmux report                   # 30-min progress digest (auto-pings Discord)
 ```
 
+## Reply/Send Channels
+
+Canonical matrix — same content in `templates/briefs/planner.md`. Verified against `lib/reply.sh`, `lib/send.sh`, `lib/dispatch.sh`. Update both files together when channel semantics change.
+
+| Direction | Verb | Lands in | Reader |
+|---|---|---|---|
+| driver → lead | (FILE — manual edit) | `.atmux/driver-inbox.md` | lead reads first every whip tick |
+| lead → planner (ad hoc) | `atmux send planner` | planner pane (tmux send-keys) | planner sees keystroke in REPL |
+| lead → member (kanban Task) | `atmux dispatch <member> <task-id>` | `<member>-inbox.json` | member reads via `atmux inbox` |
+| lead → member (ad hoc) | `atmux send <member>` | member pane (tmux send-keys) | member sees keystroke in REPL |
+| planner → lead | `atmux reply` | `lead-outbox.md` | lead reads after planner-inbox |
+| lead → driver | `atmux reply` | `lead-outbox.md` | driver reads via `atmux outbox` |
+| member → lead (blockers) | `atmux flag add` | `flags.md` | lead reads first every whip tick |
+
+`atmux send` is fire-and-forget keystrokes (no persistence beyond the pane scrollback); `atmux dispatch` persists the ask to a JSON queue (member can re-read across `/clear`); `atmux reply` is multi-author append (planner + lead both write `lead-outbox.md`; driver + lead both read it).
+
 ## Your loop
 
 > **Driver→Lead routing is via FILE, not SendMessage.** Per CLAUDE.md §120, `SendMessage to:team-lead` from the driver self-loops and silently drops because the harness shares session context between driver and lead — a known bug. The driver instead appends asks to `.atmux/driver-inbox.md` under `## Open`; you read that file every whip turn (step 2 below). Treat driver-inbox.md as the only reliable channel for driver intent; if you ever see "the driver said X" without a corresponding inbox entry, ask via `atmux reply` rather than acting on it. ADR-007 documents the broader pull-model rationale.
