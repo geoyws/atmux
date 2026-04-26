@@ -13,6 +13,7 @@ load '../helpers/setup'
 setup() {
   atmux_setup_sandbox
   "$ATMUX_BIN" init --name w >/dev/null
+  atmux_disable_down_confirm
 
   ATMUX_MOCK_BIN="$ATMUX_TEST_TMP/mock-bin"
   mkdir -p "$ATMUX_MOCK_BIN"

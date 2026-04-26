@@ -56,6 +56,17 @@ atmux_teardown_sandbox() {
   fi
 }
 
+# Force single-tick session-DOWN alerting (E6/S1 t-9e85a35c). Many whip
+# tests use the inert-sandbox tmux state as a synthetic finding source —
+# they need the first DOWN tick to surface immediately rather than wait
+# for the two-tick confirmation. Tests that exercise the two-tick gate
+# itself (whip_session_down.bats) MUST NOT call this helper.
+atmux_disable_down_confirm() {
+  local tj="$ATMUX_DIR/team.json"
+  [[ -f "$tj" ]] || return 1
+  jq '.whip.downConfirmTicks = 1' "$tj" > "$tj.tmp" && mv "$tj.tmp" "$tj"
+}
+
 # Sources lib files for direct function-level unit tests.
 atmux_source_libs() {
   # shellcheck source=../../lib/common.sh

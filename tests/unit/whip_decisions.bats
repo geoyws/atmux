@@ -16,6 +16,7 @@ load '../helpers/setup'
 setup() {
   atmux_setup_sandbox
   "$ATMUX_BIN" init --name w >/dev/null
+  atmux_disable_down_confirm
 
   # Mock curl — capture each Discord ping's payload to a NUL-delimited file
   # so we can assert the "N new decisions" pointer made it into the body.

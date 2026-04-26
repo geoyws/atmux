@@ -16,7 +16,7 @@ setup() {
     {"name": "gitter",   "role": "gitter",        "tui": "shell", "model": "default", "cwd": "$PWD"},
     {"name": "w1",       "role": "member",        "tui": "shell", "model": "default", "cwd": "$PWD"}
   ],
-  "whip":   {"intervalMins": 5, "staleMin": 30, "leadMaxMin": 60},
+  "whip":   {"intervalMins": 5, "staleMin": 30, "leadMaxMin": 60, "downConfirmTicks": 1},
   "report": {"intervalMins": 30}
 }
 JSON
@@ -192,7 +192,7 @@ _e2e_rebuild_pullmode_team() {
     {"name": "db-test", "role": "member",    "lane": "db",   "tui": "shell", "model": "default", "cwd": "$PWD"}
   ],
   "kanban": {"crossLaneClaim": true},
-  "whip":   {"intervalMins": 5, "staleMin": 30, "leadMaxMin": 60},
+  "whip":   {"intervalMins": 5, "staleMin": 30, "leadMaxMin": 60, "downConfirmTicks": 1},
   "report": {"intervalMins": 30}
 }
 JSON

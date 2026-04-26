@@ -12,6 +12,7 @@ load '../helpers/setup'
 setup() {
   atmux_setup_sandbox
   "$ATMUX_BIN" init --name fp >/dev/null
+  atmux_disable_down_confirm
   # Drop any prior cursor so the first whip tick observes a fresh state.
   rm -f .atmux/state/flags-cursor .atmux/state/whip-last.hash
 }

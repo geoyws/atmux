@@ -16,6 +16,7 @@ load '../helpers/setup'
 setup() {
   atmux_setup_sandbox
   "$ATMUX_BIN" init --name b >/dev/null
+  atmux_disable_down_confirm
   rm -f .atmux/state/whip-last.hash .atmux/state/brief-versions.json
 }
 

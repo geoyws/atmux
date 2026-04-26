@@ -10,6 +10,7 @@ load '../helpers/setup'
 setup() {
   atmux_setup_sandbox
   "$ATMUX_BIN" init --name w >/dev/null
+  atmux_disable_down_confirm
 }
 
 teardown() {

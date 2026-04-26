@@ -92,14 +92,30 @@ main() {
     fi
   fi
 
-  # ---- 1. session liveness ----
-  if ! atmux::tmux_session_exists; then
-    findings+=("🛑 session $session is DOWN")
-    _atmux_report_and_exit "$ts" "$team" "${findings[@]}"
-    _atmux_whip_advance_decisions_cursor
-    _atmux_whip_advance_flags_cursor
-    return 0
-  fi
+  # ---- 1. session liveness (E6/S1 t-9e85a35c — two-tick confirm) ----
+  # 2026-04-25 incident: whip false-flagged 'session DOWN' for 5 consecutive
+  # ticks while tmux was actually continuous (likely tmux server momentarily
+  # unresponsive under cron/swap pressure). Single-tick check ⇒ N false
+  # alerts; two-tick gate ⇒ 0 false alerts (false alert needs 2 unrelated
+  # tmux blips back-to-back, exponentially less likely). Real outage cost:
+  # 1 tick (~5min) delay to the page.
+  local _session_state
+  _session_state="$(_atmux_whip_session_state_check)"
+  case "$_session_state" in
+    report)
+      findings+=("🛑 session $session is DOWN")
+      _atmux_report_and_exit "$ts" "$team" "${findings[@]}"
+      _atmux_whip_advance_decisions_cursor
+      _atmux_whip_advance_flags_cursor
+      return 0
+      ;;
+    suppress)
+      # Below confirmation threshold — log only, no Discord, no findings.
+      # Decision / flag cursors stay put; if a real outage continues, the
+      # next tick promotes to `report` and the deltas accumulate naturally.
+      return 0
+      ;;
+  esac
 
   # ---- per-member checks ----
   local mj; mj="$(jq -c '.members[]' "$(atmux::team_json)")"
@@ -799,6 +815,58 @@ _atmux_whip_stale_anchor() {
     printf '%s\n' "$rotated"
   else
     printf '%s\n' "$claimed"
+  fi
+}
+
+# Session-liveness state machine (E6/S1 t-9e85a35c). Returns one of:
+#   `up`       — session is alive; caller should proceed with per-member checks.
+#   `report`   — session has been DOWN for ≥ threshold consecutive ticks;
+#                caller emits the '🛑 session DOWN' finding as before.
+#   `suppress` — session is DOWN but below threshold (typically the first
+#                tick of a transient blip); caller bails silently.
+#
+# State file `.atmux/state/whip-session-state.json` shape:
+#   {"lastDown": {"epoch": <unix>, "count": <int>}}
+# UP wipes `.lastDown`; DOWN bumps `.count` and stamps `.epoch`. Threshold
+# from team.json `whip.downConfirmTicks` (default 2). atmux::jq_update for
+# the writes — flock'd per-file under the broader whip.lock that gates
+# the whole tick, so there's no cross-tick interleaving.
+_atmux_whip_session_state_check() {
+  local sf; sf="$(atmux::state_dir)/whip-session-state.json"
+  mkdir -p "$(dirname "$sf")"
+  [[ -s "$sf" ]] || echo '{}' > "$sf"
+
+  local threshold
+  threshold=$(jq -r '.whip.downConfirmTicks // 2' \
+                "$(atmux::team_json)" 2>/dev/null || echo 2)
+  [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=2
+
+  if atmux::tmux_session_exists; then
+    local prev_count
+    prev_count=$(jq -r '.lastDown.count // 0' "$sf" 2>/dev/null || echo 0)
+    [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    if (( prev_count > 0 )); then
+      atmux::jq_update "$sf" 'del(.lastDown)'
+      atmux::log "whip: session UP — clearing DOWN tick counter (was $prev_count)"
+    fi
+    printf 'up\n'
+    return 0
+  fi
+
+  local now; now="$(atmux::now_epoch)"
+  atmux::jq_update "$sf" \
+    '.lastDown = {epoch: ($now | tonumber), count: ((.lastDown.count // 0) + 1)}' \
+    --arg now "$now"
+
+  local count
+  count=$(jq -r '.lastDown.count // 0' "$sf" 2>/dev/null || echo 0)
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+
+  if (( count >= threshold )); then
+    printf 'report\n'
+  else
+    atmux::log "whip: session DOWN (tick $count/$threshold) — suppressing finding pending confirmation"
+    printf 'suppress\n'
   fi
 }
 
