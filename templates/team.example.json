@@ -85,7 +85,7 @@
     "intervalMins": 5,
     "staleMin": 90,
     "leadMaxMin": 60,
-    "autoRotate": false
+    "autoRotate": true
   },
   "report": {
     "intervalMins": 30
