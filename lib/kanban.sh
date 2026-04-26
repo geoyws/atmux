@@ -245,11 +245,29 @@ _atmux_task_move() {
 
   local k; k="$(atmux::kanban_json)"
   # E6/S1 t-354a1b6b (A1 site 6/6) — atmux::jq_update for ADR-013
-  # atomicity. Filter logic preserved verbatim.
+  # atomicity.
+  # E6/Sm t-04c8b243 (Bug 2) — when the target status is `todo`, also
+  # clear .owner / .claimedAt / .claimedFrom. A bounce-back ('claimed
+  # the wrong lane, return it to the pool') previously left ownership
+  # stamped: the next worker's claim --next select gate then rejected
+  # the task because owner was somebody-else != caller. fe-kanban
+  # bouncing t-09e761c4 wedged be-kanban's queue for 222 min during E6.
+  # Other status targets (in-progress, blocked) leave ownership
+  # untouched — only `todo` triggers the clear because returning to the
+  # pool is the only flow where ownership becomes meaningless.
   atmux::jq_update "$k" \
-    '(.tasks[]? | select(.id == $id) | .status) = $status' \
+    '(.tasks[]? | select(.id == $id) | .status) = $status
+     | if $status == "todo" then
+         (.tasks[]? | select(.id == $id) | .owner) = null
+         | (.tasks[]? | select(.id == $id) | .claimedAt) = null
+         | (.tasks[]? | select(.id == $id) | .claimedFrom) = null
+       else . end' \
     --arg id "$id" --arg status "$status"
-  atmux::ok "task $id → $status"
+  if [[ "$status" == "todo" ]]; then
+    atmux::ok "task $id → $status (ownership cleared)"
+  else
+    atmux::ok "task $id → $status"
+  fi
 }
 
 # atmux::finish_task_done <task_id> [<note>]
