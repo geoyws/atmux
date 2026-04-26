@@ -44,6 +44,7 @@ Setup:
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
+  tell <member> <msg...>      Alias for send (symmetry with tell-lead)
   broadcast <msg...>          Send to every member except the driver
   tell-lead <msg...>          Driver-only: send to lead + append to driver-inbox.md
   reply <msg...>              Member → driver: write to lead-outbox.md
@@ -179,6 +180,14 @@ verb_script="$ATMUX_LIB_DIR/${verb}.sh"
 # Route aliased verbs:
 case "$verb" in
   tell-lead) verb_script="$ATMUX_LIB_DIR/tell.sh" ;;
+  # `atmux tell <member> <msg>` was previously an undefined verb that
+  # silently fell through to lib/tell.sh (the file `${verb}.sh` resolves
+  # to `tell.sh` for verb `tell`), and tell.sh treated `$*` as the
+  # message → the member name became part of the message body and was
+  # routed to the lead. Symmetry fix: `tell <member>` is now an alias
+  # for `send <member>` (direct pane ping). `tell-lead` keeps its
+  # distinct durable inbox-write semantics.
+  tell) verb_script="$ATMUX_LIB_DIR/send.sh" ;;
   rotate-lead) verb_script="$ATMUX_LIB_DIR/rotate.sh"; set -- "--lead" "$@" ;;
   brief-driver) verb_script="$ATMUX_LIB_DIR/driver.sh"; set -- "brief-driver" "$@" ;;
   task) verb_script="$ATMUX_LIB_DIR/kanban.sh" ;;
