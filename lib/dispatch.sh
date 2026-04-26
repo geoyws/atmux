@@ -65,9 +65,13 @@ main() {
   local ib; ib="$(atmux::inbox_dir)/$member.json"
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
   if atmux::inbox_push_guard "$ib"; then
-    jq --argjson task "$task" --argjson now "$(atmux::now_epoch)" \
-       '.inProgress += [$task + {dispatchedAt: $now}]' \
-       "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+    # E6/S1 t-9d0c0270 (A1 site 1/6) — jq_update for atomic write under
+    # flock. Bare `jq … > tmp && mv` lost writes when a concurrent claim
+    # / done landed mid-flight. Filter logic preserved verbatim; only
+    # the invocation changes.
+    atmux::jq_update "$ib" \
+      '.inProgress += [$task + {dispatchedAt: ($now | tonumber)}]' \
+      --argjson task "$task" --arg now "$(atmux::now_epoch)"
   else
     atmux::inbox_cap_warn "$member"
   fi
