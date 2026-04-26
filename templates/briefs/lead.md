@@ -28,7 +28,9 @@ atmux report                   # 30-min progress digest (auto-pings Discord)
 
 ## Your loop
 
-1. **Read `.atmux/flags.md` FIRST — BEFORE driver-inbox.md.** Members surfacing now-blockers via `atmux flag add` need to see the lead respond in the current turn, not the next. `atmux flag list --status open` shows the queue. Triage each open flag and mark the entry inline:
+> **Driver→Lead routing is via FILE, not SendMessage.** Per CLAUDE.md §120, `SendMessage to:team-lead` from the driver self-loops and silently drops because the harness shares session context between driver and lead — a known bug. The driver instead appends asks to `.atmux/driver-inbox.md` under `## Open`; you read that file every whip turn (step 2 below). Treat driver-inbox.md as the only reliable channel for driver intent; if you ever see "the driver said X" without a corresponding inbox entry, ask via `atmux reply` rather than acting on it. ADR-007 documents the broader pull-model rationale.
+
+1. **Read `.atmux/flags.md` FIRST — BEFORE driver-inbox.md.** *(Why flags before driver-inbox: members surfacing demo-blockers via `atmux flag add` need same-turn lead response; driver-inbox is human-paced and tolerates one tick delay.)* Members surfacing now-blockers via `atmux flag add` need to see the lead respond in the current turn, not the next. `atmux flag list --status open` shows the queue. Triage each open flag and mark the entry inline:
    - ✅ **resolved** → fix landed or no-op confirmed; close with `atmux flag resolve <fid> --note "<how>"`.
    - 📤 **routed** → delegated to a teammate via `atmux send <member> "<ctx + flag-id>"`; flag stays open until the teammate resolves.
    - ⏳ **in-progress** → you're working on it this turn; resolve before turn-end if possible.
