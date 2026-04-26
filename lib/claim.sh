@@ -257,12 +257,24 @@ _atmux_claim_apply_atomic() {
   local k; k="$(atmux::kanban_json)"
   local now; now="$(atmux::now_epoch)"
 
+  # E6/Sm t-437af404 (Bug 1) — apply-time deps gate. Defense-in-depth on
+  # top of select_next's deps check (lines 215+). The select+apply window
+  # admits TOCTOU drift (deps amended post-create, concurrent dones, etc).
+  # Re-check '(deps - $done_ids) | length == 0' inside the same jq filter
+  # that does the flip, so the read-modify-write is one transaction under
+  # the file flock. Failure mode below distinguishes race-loss from
+  # deps-rejection so the caller surfaces a clear message.
   atmux::jq_update "$k" \
-    '.tasks |= map(
-       if .id == $id and ((.owner // null) == null or .owner == $who) then
-         .owner = $who | .status = "in-progress" | .claimedAt = $now
-       else . end
-     )' \
+    '. as $root
+     | ($root.tasks | map(select(.status == "done") | .id)) as $done_ids
+     | .tasks |= map(
+         if .id == $id
+            and ((.owner // null) == null or .owner == $who)
+            and (((.deps // []) - $done_ids) | length == 0)
+         then
+           .owner = $who | .status = "in-progress" | .claimedAt = $now
+         else . end
+       )' \
     --arg id "$task_id" --arg who "$who" --argjson now "$now"
 
   local task_after
@@ -270,7 +282,28 @@ _atmux_claim_apply_atomic() {
   local owner_after status_after
   owner_after=$(jq -r '.owner // ""' <<<"$task_after")
   status_after=$(jq -r '.status // ""' <<<"$task_after")
-  [[ "$owner_after" == "$who" && "$status_after" == "in-progress" ]]
+  if [[ "$owner_after" == "$who" && "$status_after" == "in-progress" ]]; then
+    return 0
+  fi
+
+  # Distinguish deps-rejection from race-loss. Race-loss = some other
+  # owner won the flip; deps-rejection = owner still null + status still
+  # todo. The second case is fatal-by-design: callers should not silently
+  # retry against an unmet-dep task; surface the unresolved deps so the
+  # operator (or planner) can intervene.
+  if [[ -z "$owner_after" && "$status_after" == "todo" ]]; then
+    local unresolved
+    unresolved=$(jq -r --arg id "$task_id" '
+      . as $root
+      | ($root.tasks | map(select(.status == "done") | .id)) as $done_ids
+      | (($root.tasks[] | select(.id == $id) | .deps // []) - $done_ids)
+      | join(",")
+    ' "$k")
+    if [[ -n "$unresolved" ]]; then
+      atmux::die "claim: $task_id apply rejected — unresolved deps: $unresolved"
+    fi
+  fi
+  return 1
 }
 
 _atmux_inbox_move() {
