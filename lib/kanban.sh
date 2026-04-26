@@ -78,6 +78,23 @@ _atmux_task_add() {
       fe|be|db|ops|test|review|misc) ;;
       *) atmux::die "task add: --lane must be one of {fe,be,db,ops,test,review,misc} (got: $lane)" ;;
     esac
+
+    # Warn (don't reject) when no member of this team carries the lane.
+    # Surfaced today via t-d3c52862 — a planner-authored task with
+    # lane=ops sat unclaimable forever because the team had no ops
+    # member. crossLaneClaim=true (default) would still rescue it, but
+    # the silent-orphan failure mode is worth a heads-up at create time.
+    # `misc` is the universal fallback lane for non-aligned tasks; never
+    # warn on it (every team has misc-eligible workers).
+    if [[ "$lane" != "misc" ]]; then
+      local _has_lane
+      _has_lane=$(jq -r --arg l "$lane" \
+        '[.members[]? | select((.lane // "misc") == $l)] | length' \
+        "$(atmux::team_json)" 2>/dev/null || echo 0)
+      if [[ "${_has_lane:-0}" -eq 0 ]]; then
+        atmux::warn "task add: no team member has lane=$lane — task will be claimable only via crossLaneClaim fallback or explicit --assignee. Add a member with lane=$lane or pick a different --lane."
+      fi
+    fi
   fi
 
   local k; k="$(atmux::kanban_json)"
