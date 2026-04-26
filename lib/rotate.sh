@@ -92,7 +92,7 @@ main() {
 
   local brief; brief="$(atmux::brief_path "$role")"
   if [[ -f "$brief" ]]; then
-    local tmp; tmp="$(mktemp /tmp/atmux-brief-XXXXXX.md)"
+    local tmp; tmp="$(atmux::tmp_path brief md)"
     atmux::render_brief "$member" "$role" "$brief" > "$tmp"
     local buf="atmux_brief_rot_${member}"
     tmux load-buffer -b "$buf" "$tmp"

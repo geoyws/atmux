@@ -75,7 +75,7 @@ _atmux_reload_brief() {
   [[ -f "$brief" ]] || atmux::die "reload: no brief at $brief for role=$role"
 
   local target; target="$(atmux::tmux_target "$member")"
-  local tmp; tmp="$(mktemp /tmp/atmux-brief-reload-XXXXXX.md)"
+  local tmp; tmp="$(atmux::tmp_path brief-reload md)"
   local hhmm; hhmm="$(atmux::now_myt)"
   {
     printf '📨 BRIEF RELOAD by lead at %s — apply going forward, your context is preserved\n\n' "$hhmm"

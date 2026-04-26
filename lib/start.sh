@@ -145,7 +145,7 @@ _atmux_spawn_member() {
 
 _atmux_paste_brief() {
   local target="$1" member="$2" role="$3" brief_path="$4"
-  local tmp; tmp="$(mktemp /tmp/atmux-brief-XXXXXX.md)"
+  local tmp; tmp="$(atmux::tmp_path brief md)"
   atmux::render_brief "$member" "$role" "$brief_path" > "$tmp"
 
   local buf="atmux_brief_${member}"

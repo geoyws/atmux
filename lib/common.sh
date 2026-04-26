@@ -455,6 +455,32 @@ atmux::with_lock() {
   return "$rc"
 }
 
+# atmux::tmp_path <prefix> [<ext>]
+#
+# Mints a per-team-scoped tempfile under .atmux/tmp/. Pre-A9, the four
+# main paste/render call sites used /tmp/atmux-*-XXXXXX which shared a
+# namespace across all atmux teams on the host (multi-team setups would
+# observe each other's transient files). Scoping to the team's .atmux/
+# dir gives clean isolation; cleanup remains the caller's responsibility
+# (each call site already pairs the mktemp with `rm -f "$tmp"`).
+#
+# Returns the path on stdout. <ext> is appended after XXXXXX with a `.`
+# separator when non-empty; mktemp gets the dotted form so the random
+# segment is the suffix-free portion. E6/S5 t-6d1ac10c.
+atmux::tmp_path() {
+  local prefix="${1:?atmux::tmp_path: <prefix> required}"
+  local ext="${2:-}"
+  local d; d="$(atmux::dir)/tmp"
+  mkdir -p "$d"
+  local template
+  if [[ -n "$ext" ]]; then
+    template="$d/atmux-${prefix}-XXXXXX.$ext"
+  else
+    template="$d/atmux-${prefix}-XXXXXX"
+  fi
+  mktemp "$template"
+}
+
 atmux::now_epoch() { date +%s; }
 atmux::now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
 atmux::now_myt()   { TZ='Asia/Kuala_Lumpur' date +'%H:%M MYT'; }

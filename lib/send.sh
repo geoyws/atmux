@@ -74,7 +74,7 @@ atmux::send_to_member() {
   fi
 
   # ---- Write msg to tmp file, load-buffer + paste ----
-  local tmp; tmp="$(mktemp /tmp/atmux-msg-XXXXXX)"
+  local tmp; tmp="$(atmux::tmp_path msg)"
   # Single trailing newline after the body; we submit with Enter separately.
   printf '%s' "$msg" > "$tmp"
 
