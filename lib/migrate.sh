@@ -95,46 +95,57 @@ main() {
   fi
 
   # ---- Move per-window ----
+  # tmux target-window grammar: `<session>:<window>` where `=<name>` forces
+  # exact-name match (without `=`, leading-underscore window names like
+  # `__team-x__bee` get parsed as relative window references and tmux
+  # reports "can't find window"). For the destination, naked `<session>:`
+  # auto-picks the next available index AND preserves the source window
+  # name — that's the right semantic for the no-rename path. The named-
+  # destination form `<session>:<name>` is reserved for swap-replace; we
+  # don't want that.
+  #
   # Window-name mapping:
   #  - `__atmux__home` (legacy buggy literal-prefix from pre-Sa starts) ⇒
-  #    rename to `__<team>__home` per Sa's window-naming convention.
+  #    rename to `__<team>__home` post-move (move-then-rename is the only
+  #    way to land at a specific name; tmux move-window's -t can't
+  #    create-with-name).
   #  - everything else ⇒ keep the name as-is (the `__<team>__*` prefix
   #    already encodes the team, so collisions in the shared driver
-  #    session are avoided).
+  #    session don't occur in practice).
   # On any move-window failure: atmux::die WITHOUT cleaning up the
   # already-moved windows or stamping singleSession — partial state is
-  # inspectable + recoverable. The user can either move the stragglers
-  # back manually or fix the root cause and re-run (idempotent on the
-  # already-moved subset because tmux move-window errors when the dest
-  # name collides — but our pre-flight ensures clean source names).
+  # inspectable + recoverable. The user can move the stragglers back
+  # manually or fix the root cause and re-run.
   local target_home; target_home="$(printf '__%s__home' "$team")"
   local moved=0 home_renamed=0
   while IFS= read -r win; do
     [[ -z "$win" ]] && continue
-    local dest="$win"
-    if [[ "$win" == "__atmux__home" && "$team" != "atmux" ]]; then
-      dest="$target_home"
-      home_renamed=1
-    fi
-    if tmux move-window -s "$src_session:$win" -t "$driver_session:$dest" 2>/dev/null; then
-      if [[ "$win" != "$dest" ]]; then
-        atmux::log "  · moved + renamed: $src_session:$win → $driver_session:$dest"
-      else
-        atmux::log "  · moved: $src_session:$win → $driver_session:$dest"
-      fi
-      moved=$((moved + 1))
-    else
+    if ! tmux move-window -s "$src_session:=$win" -t "$driver_session:" 2>/dev/null; then
       atmux::die "migrate-to-driver-session: failed to move '$win' ($src_session → $driver_session) — aborting. $moved window(s) already moved into '$driver_session'; '$src_session' still holds the rest. Inspect with: tmux list-windows -t '$src_session'"
     fi
+    if [[ "$win" == "__atmux__home" && "$team" != "atmux" ]]; then
+      tmux rename-window -t "$driver_session:=$win" "$target_home" 2>/dev/null \
+        || atmux::warn "migrate-to-driver-session: moved '$win' but rename to '$target_home' failed — driver-session window left under legacy name"
+      home_renamed=1
+      atmux::log "  · moved + renamed: $src_session:$win → $driver_session:$target_home"
+    else
+      atmux::log "  · moved: $src_session:$win → $driver_session:$win"
+    fi
+    moved=$((moved + 1))
   done <<<"$src_windows"
 
   # ---- Verify zero windows remain in src_session ----
-  # tmux list-windows on a dead/empty session returns non-zero + empty
-  # output. Both cases are "0 remaining" for our purposes; we only refuse
-  # when there's a positive count of windows still attached.
-  local remaining
-  remaining="$(tmux list-windows -t "$src_session" -F '#{window_name}' 2>/dev/null | wc -l | tr -d ' ')"
-  [[ "$remaining" =~ ^[0-9]+$ ]] || remaining=0
+  # tmux auto-kills sessions when their last window departs, so the
+  # has-session probe is the canonical "still alive?" check. If the
+  # session is gone, remaining=0 and the cleanup gate passes. The bare
+  # `tmux list-windows | wc -l` pipeline fails under pipefail when the
+  # session has already been auto-killed — gate behind has-session so
+  # `set -e` stays unfussed.
+  local remaining=0
+  if tmux has-session -t "$src_session" 2>/dev/null; then
+    remaining="$(tmux list-windows -t "$src_session" -F '#{window_name}' 2>/dev/null | wc -l | tr -d ' ')"
+    [[ "$remaining" =~ ^[0-9]+$ ]] || remaining=0
+  fi
   if (( remaining != 0 )); then
     atmux::die "migrate-to-driver-session: $remaining window(s) still in source session '$src_session' after move — refusing cleanup. Inspect with: tmux list-windows -t '$src_session'"
   fi
