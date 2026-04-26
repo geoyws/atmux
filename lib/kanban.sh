@@ -175,22 +175,43 @@ _atmux_task_list() {
   fi
 
   local k; k="$(atmux::kanban_json)"
-  local base='.tasks'
-  [[ -n "$filter_status" ]]   && base="$base | map(select(.status == \"$filter_status\"))"
-  [[ -n "$filter_assignee" ]] && base="$base | map(select(.owner == \"$filter_assignee\"))"
-  [[ -n "$filter_epic" ]]     && base="$base | map(select(.epic  == \"$filter_epic\"))"
-  [[ -n "$filter_story" ]]    && base="$base | map(select(.story == \"$filter_story\"))"
+
+  # E6/S2 t-6a0e6daa (A3) — filter dimensions bind via --arg/$param
+  # rather than shell-interpolation. Values are validated upstream
+  # (status enum, lane enum, etc.) so this isn't a security fix —
+  # it's the consistency contract that the rest of the codebase
+  # already follows (atmux::jq_update everywhere uses --arg).
+  # Empty-string args resolve via `$x == ""` short-circuit so absent
+  # filters skip the corresponding map step.
+  local base='
+    .tasks
+    | (if $status   != "" then map(select(.status == $status))   else . end)
+    | (if $assignee != "" then map(select(.owner  == $assignee)) else . end)
+    | (if $epic     != "" then map(select(.epic   == $epic))     else . end)
+    | (if $story    != "" then map(select(.story  == $story))    else . end)
+    | (if $lane     != "" then map(select(.lane   == $lane))     else . end)
+  '
   # --lane explicitly excludes legacy tasks (.lane absent/null) — they have no
   # lane to match on, so a lane filter shouldn't sweep them in by default.
-  [[ -n "$filter_lane" ]]     && base="$base | map(select(.lane  == \"$filter_lane\"))"
 
   if [[ "$json" -eq 1 ]]; then
-    jq "$base" "$k"
+    jq --arg status "$filter_status" \
+       --arg assignee "$filter_assignee" \
+       --arg epic "$filter_epic" \
+       --arg story "$filter_story" \
+       --arg lane "$filter_lane" \
+       "$base" "$k"
     return
   fi
 
   local f="$base | sort_by(.priority // 99) | .[] | [.id, .status, (.owner // \"-\"), ((.priority // \"-\") | tostring), ((.lane // \"-\") | ascii_upcase), .subject] | @tsv"
-  local rows; rows="$(jq -r "$f" "$k")"
+  local rows
+  rows="$(jq -r --arg status "$filter_status" \
+                --arg assignee "$filter_assignee" \
+                --arg epic "$filter_epic" \
+                --arg story "$filter_story" \
+                --arg lane "$filter_lane" \
+                "$f" "$k")"
   if [[ -z "$rows" ]]; then
     echo "(no tasks)"
     return
