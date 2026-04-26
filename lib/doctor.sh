@@ -44,6 +44,7 @@ EOF
   _doctor_check_state_dir
   _doctor_check_webhook
   _doctor_check_crontab
+  _doctor_check_cron_orphans
   _doctor_check_whip_hash
   _doctor_check_phantom_inboxes
 
@@ -357,6 +358,37 @@ _doctor_check_crontab() {
   fi
 }
 
+# Cron-orphan detector (E6/Sc t-d948b6a0). Lazy-source lib/cron.sh
+# since most doctor invocations don't need the cron API. Calls
+# atmux::cron_orphans (returns JSON [{team, atmux_dir}, ...] for marker
+# blocks whose ATMUX_DIR path is missing on disk) and surfaces one
+# yellow row per orphan. Empty / crontab-unavailable returns no rows.
+# Mirror-shape with _doctor_check_phantom_inboxes (cleanup-needed, not
+# breakage — yellow not red).
+_doctor_check_cron_orphans() {
+  if [[ -f "$ATMUX_LIB_DIR/cron.sh" ]] && ! declare -F atmux::cron_orphans >/dev/null 2>&1; then
+    # shellcheck source=cron.sh
+    . "$ATMUX_LIB_DIR/cron.sh"
+  fi
+  if ! declare -F atmux::cron_orphans >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local orphans_json
+  orphans_json="$(atmux::cron_orphans 2>/dev/null || echo '[]')"
+  local n
+  n=$(jq -r 'length' <<<"$orphans_json" 2>/dev/null || echo 0)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  (( n == 0 )) && return 0
+
+  while IFS=$'\t' read -r team atmux_dir; do
+    [[ -z "$team" ]] && continue
+    _doctor_row yellow "cron-orphan" \
+      "team '$team' has orphan cron block — ATMUX_DIR '$atmux_dir' missing on disk" \
+      "run 'atmux doctor --fix' OR 'crontab -e' to remove"
+  done < <(jq -r '.[] | [.team, .atmux_dir] | @tsv' <<<"$orphans_json")
+}
+
 # Stale whip-last.hash detector (E6/S3 t-d0c2e85a A5). Whip writes
 # .atmux/state/whip-last.hash on every tick that produces findings (or
 # resamples on the power-of-2 backoff schedule). If the session is up
@@ -503,6 +535,7 @@ _doctor_try_fix() {
   # status — operator opted in.
   _doctor_try_fix_cleanup
   _doctor_try_fix_phantom_inboxes
+  _doctor_try_fix_cron_orphans
 
   [[ "$_doctor_red_count" -eq 0 ]] && return 0
 
@@ -581,4 +614,43 @@ _doctor_try_fix_phantom_inboxes() {
       printf '  ✅ pruned phantom %s from %s ("%s")\n' "$id" "$member" "$subject" >&2
     fi
   done < <(jq -r '.[] | [.member, .id, (.subject // "")] | @tsv' <<<"$phantoms_json")
+}
+
+# Prune orphan cron blocks detected by _doctor_check_cron_orphans
+# (E6/Sc t-d948b6a0). Re-runs atmux::cron_orphans so the fix is
+# independent of the row state captured during the check pass — matters
+# under concurrent crontab edits. atmux::cron_remove handles the actual
+# block deletion (idempotent — a clean tree exits silently with the
+# "0 orphan blocks" line below). Skipped silently if cron.sh isn't
+# loadable (cron API missing on this host).
+_doctor_try_fix_cron_orphans() {
+  if [[ -f "$ATMUX_LIB_DIR/cron.sh" ]] && ! declare -F atmux::cron_orphans >/dev/null 2>&1; then
+    # shellcheck source=cron.sh
+    . "$ATMUX_LIB_DIR/cron.sh"
+  fi
+  if ! declare -F atmux::cron_orphans >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local orphans_json
+  orphans_json="$(atmux::cron_orphans 2>/dev/null || echo '[]')"
+  local n
+  n=$(jq -r 'length' <<<"$orphans_json" 2>/dev/null || echo 0)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  if (( n == 0 )); then
+    printf '%s🧹 atmux%s  doctor --fix: 0 orphan cron blocks\n' \
+      "$atmux_c_cyn" "$atmux_c_rst" >&2
+    return 0
+  fi
+
+  printf '\n%s🧹 atmux%s  doctor --fix: pruning %d orphan cron block%s\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" "$n" "$( ((n==1)) && echo "" || echo "s" )" >&2
+
+  local team atmux_dir
+  while IFS=$'\t' read -r team atmux_dir; do
+    [[ -z "$team" ]] && continue
+    if atmux::cron_remove "$team"; then
+      atmux::ok "pruned orphan cron block for team $team (was → $atmux_dir)"
+    fi
+  done < <(jq -r '.[] | [.team, .atmux_dir] | @tsv' <<<"$orphans_json")
 }
