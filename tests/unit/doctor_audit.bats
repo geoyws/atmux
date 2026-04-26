@@ -203,3 +203,57 @@ EOF
   # yellow count >= 1 (phantom-inbox finding).
   [ "$(jq -r '.yellow' <<<"$out_json")" -ge 1 ]
 }
+
+# ---------- E6/Sc: cron-orphan detector (paired with cron_install.bats) ----------
+# _doctor_check_cron_orphans (lib/doctor.sh:392) calls atmux::cron_orphans
+# which shells out to `crontab -l`. We sandbox that with a PATH-prepended
+# crontab shim that read/writes $ATMUX_TEST_CRONTAB instead of touching the
+# runner's actual crond. The shim mirrors the one in cron_install.bats —
+# kept colocated rather than cross-loaded so each file is grep-self-evident.
+
+_install_crontab_mock() {
+  ATMUX_MOCK_BIN="$ATMUX_TEST_TMP/mock-bin"
+  mkdir -p "$ATMUX_MOCK_BIN"
+  export ATMUX_TEST_CRONTAB="$ATMUX_TEST_TMP/crontab.txt"
+  cat > "$ATMUX_MOCK_BIN/crontab" <<'EOF'
+#!/usr/bin/env bash
+sf="${ATMUX_TEST_CRONTAB:?}"
+case "$1" in
+  -l) [[ -f "$sf" ]] && { cat "$sf"; exit 0; } || exit 1 ;;
+  -r) rm -f "$sf"; exit 0 ;;
+  *)  [[ -f "$1" ]] && { cp "$1" "$sf"; exit 0; } || exit 2 ;;
+esac
+EOF
+  chmod +x "$ATMUX_MOCK_BIN/crontab"
+}
+
+@test "doctor_audit: cron-orphan block (ATMUX_DIR missing on disk) ⇒ yellow finding cites team + dir" {
+  _install_crontab_mock
+  _load_doctor
+
+  # Seed crontab with a marker block whose ATMUX_DIR points at a path that
+  # doesn't exist (simulates `rm -rf <worktree>` without `atmux stop`).
+  local dead_dir="$ATMUX_TEST_TMP/dead-team/.atmux"
+  printf '# >>> atmux:team=ghost — managed by atmux start; do not edit by hand\n*/5 * * * * ATMUX_DIR=%s atmux whip\n# <<< atmux:team=ghost\n' "$dead_dir" \
+    > "$ATMUX_TEST_CRONTAB"
+  [[ ! -d "$dead_dir" ]]
+
+  PATH="$ATMUX_MOCK_BIN:$PATH" _doctor_check_cron_orphans
+  _row_has yellow "ghost"
+  _row_has yellow "$dead_dir"
+}
+
+@test "doctor_audit: cron-orphan check silent when ATMUX_DIR resolves on disk" {
+  _install_crontab_mock
+  _load_doctor
+
+  # Live block: ATMUX_DIR points at a real directory.
+  local live_dir="$ATMUX_TEST_TMP/live-team"
+  mkdir -p "$live_dir"
+  printf '# >>> atmux:team=live — managed by atmux start; do not edit by hand\n*/5 * * * * ATMUX_DIR=%s atmux whip\n# <<< atmux:team=live\n' "$live_dir" \
+    > "$ATMUX_TEST_CRONTAB"
+
+  PATH="$ATMUX_MOCK_BIN:$PATH" _doctor_check_cron_orphans
+  ! _row_has yellow "cron-orphan"
+  ! _row_has yellow "live"
+}
