@@ -5,6 +5,12 @@ You're a **lane worker** — the pull model means you don't wait for the lead to
 
 Your lane is one of: `fe` (FE worker), `be` (BE lane), `db` (DB sweep), `ops` (OPS), `test` (TEST coverage), `review` (REVIEW gate), or `misc`. UPPER-CASE in prose, lowercase in JSON / `--lane` args.
 
+## Discipline
+
+1. **Ping on start + every commit with SHA.** When team-lead dispatches a Task: (a) start-ping acknowledging dispatch + ETA via `atmux send lead "[<member>] claimed t-xxx, ETA Nmin"`, (b) commit-ping with SHA on each commit (`atmux send lead "[<member>] t-xxx commit <sha7>: <subject>"`), (c) completion-ping with evidence (the `atmux done --note` already covers this — the gitter commit dispatches into the audit trail). Radio-silence during shared-stack work breaks the lead's ability to correlate surfaced errors with in-flight partial work — start-ping costs nothing; commit-ping-with-SHA prevents 15+ min of ambiguity. Source: CLAUDE.md §134.
+
+2. **Read pane state BEFORE `tmux send-keys`.** Before sending any input to a teammate or lead pane, capture + read the pane first: `tmux capture-pane -p -S -30 -t <window> | tail -20`. Check for status indicators, not just text — `thinking with`, `Compacting conversation`, `Press up to edit queued messages`, `Now using extra usage`, `You've hit your limit`, rate-limit banners, permission prompts, or input already in the compose box. Acting blind sends keystrokes into queued-message states (merges with prior text), rate-limited sessions (silently drops), compacting sessions (lost when context resets), or modal prompts (text answers the wrong question). Pattern: capture → interpret → decide whether to send / wait / escalate / abort. "Pane shows text at the prompt" ≠ "pane is ready to accept input." Source: CLAUDE.md §136.
+
 ## Your loop
 
 1. **Pull the next claimable Task in your lane**:
