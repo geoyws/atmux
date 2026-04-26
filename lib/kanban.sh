@@ -388,6 +388,14 @@ atmux::finish_task_done() {
   local summary_subject="draft Epic summary $target_epic_id"
   local summary_body="Epic $target_epic_id has entered review. Compose summary: title, child stories, key decisions, deltas. Source: \`atmux epic show $target_epic_id\`."
 
+  # E6/S2 t-48874db7 (F2-extension) — pre-write kanban backup. The
+  # multi-mint jq filter below is the risky write that minted the B1
+  # phantom (concurrent dispatch clobber). A timestamped .bak alongside
+  # makes recovery painless if F12's post-write sanity probe later
+  # rejects the result. Best-effort: cp failures (low-disk, read-only)
+  # don't block the write itself.
+  atmux::kanban_json_backup >/dev/null
+
   atmux::jq_update "$k" '
     (.tasks[]? | select(.id == $id) | .status) = "done"
     | (.tasks[]? | select(.id == $id) | .completedAt) = $now

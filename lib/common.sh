@@ -108,6 +108,27 @@ atmux::team_json_backup() {
   printf '%s\n' "$bak"
 }
 
+# atmux::kanban_json_backup
+#
+# Snapshot kanban.json to '<path>.bak.<epoch>' before risky multi-step
+# writes (E6/S2 t-48874db7 / F2-extension). Pairs with F12's post-write
+# JSON sanity probe in atmux::jq_update — sanity catches corruption
+# immediately, this backup makes recovery painless. Same shape as
+# atmux::team_json_backup so the existing recovery muscle generalises.
+#
+# Errors are non-fatal: refusing the write because cp failed would wedge
+# legitimate flows in low-disk / read-only edge cases. Echoes the backup
+# path on success; silent no-op when kanban.json doesn't exist (cold-
+# start before any task add). Cleanup of stale .bak files is out of
+# scope here (followup task can sweep .bak.<old-epoch> > 7d).
+atmux::kanban_json_backup() {
+  local kj; kj="$(atmux::kanban_json)"
+  [[ -f "$kj" ]] || return 0
+  local bak="${kj}.bak.$(atmux::now_epoch)"
+  cp -p "$kj" "$bak" 2>/dev/null || return 0
+  printf '%s\n' "$bak"
+}
+
 # First-run auto-wizard: if no team.json, we're on a TTY, and not suppressed,
 # offer to run `atmux init --wizard` before the caller's verb proceeds.
 # Exits the process after a successful wizard run (user re-runs their command).

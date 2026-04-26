@@ -222,6 +222,29 @@ teardown() {
 
 # ---------- 6. F12 post-write sanity check ----------
 
+@test "atomicity: finish_task_done writes kanban.json.bak.<epoch> snapshot (F2-ext t-48874db7)" {
+  # E6/S2 t-48874db7 — pre-write backup makes B1-style multi-mint
+  # corruption recoverable. Verify a .bak file exists alongside
+  # kanban.json after a finish_task_done run.
+  atmux_source_libs
+
+  # Create a real epic + a task pinned to it so finish_task_done's
+  # commit-Task mint path runs (kanban_json_backup hooks alongside it).
+  local eid; eid=$("$ATMUX_BIN" epic add "F2-bak" | tail -1)
+  local id;  id=$("$ATMUX_BIN" task add "F2-bak-target" --epic "$eid" | tail -1)
+  ATMUX_FINISH_TASK_NO_DISPATCH=1 "$ATMUX_BIN" task move "$id" done >/dev/null 2>&1
+
+  # At least one '.bak.<digits>' alongside kanban.json.
+  local k; k=".atmux/kanban.json"
+  local n; n=$(find "$(dirname "$k")" -maxdepth 1 -name 'kanban.json.bak.*' 2>/dev/null | wc -l)
+  [ "$n" -ge 1 ]
+
+  # The first .bak should be a syntactically-valid JSON snapshot
+  # (i.e. cp -p captured the live file, not an empty stub).
+  local bak; bak=$(find "$(dirname "$k")" -maxdepth 1 -name 'kanban.json.bak.*' | head -1)
+  jq -e . "$bak" >/dev/null
+}
+
 @test "atomicity: jq_update post-write sanity catches truncation (F12 t-dd78c8a5)" {
   # Simulate the disk-full / kernel-truncation failure mode by patching
   # `mv` to leave an empty file at the target — exactly what would
