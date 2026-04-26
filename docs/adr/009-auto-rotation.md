@@ -383,3 +383,18 @@ Two different rendering surfaces, two different constraint sets. Same project, s
 - Should `advancedAt` also track **WHO** advanced the story (lead vs gitter vs auto-by-claim-completion)? Defer — current `_atmux_story_advance` callers are all human-issued or gitter-issued; if auto-advance ever lands, surface "by" then.
 - Should the advanced-story bullet show `from → to` once an `advanceLog` exists? Defer — ties to D17 alternative; revisit if downstream consumers ask.
 - Should whip surface stories that moved **backward** (e.g., review → in-progress because reviewer rejected)? Today: the same `📈` bullet renders regardless of direction — `→ in-progress` reads correctly for either direction. Acceptable; revisit only if directionality becomes a UX issue.
+
+---
+
+## staleMin Resolution Chain (cross-ref: ADR-008 §staleMin Resolution Chain)
+
+§S7 D9 above introduced `task.staleMin` as a per-Task override of the team default. The full lookup is a four-level chain, highest-precedence first:
+
+1. **per-Task `task.staleMin`** — optional integer field on the Task itself (`atmux task add --stale-min N`, persisted in `kanban.json`). Wins for this Task only. Consumed inline by the jq filter in `lib/whip.sh:194` (`((.staleMin // $default_min) * 60) as $task_s`).
+2. **`$ATMUX_STALE_MIN` env override** — process-scoped, applies to every Task that didn't set its own. Consumed at `lib/whip.sh:58` (`local STALE_MIN="${ATMUX_STALE_MIN:-$TEAM_STALE_MIN}"`).
+3. **team.json `whip.staleMin`** — durable team-wide default. Read at `lib/whip.sh:56` (`jq -r '.whip.staleMin // 90'`).
+4. **default 90 minutes** — applies when team.json omits the field entirely. Hard-coded both in the jq fallback at `lib/whip.sh:56-57` and in the fresh-init template at `lib/init.sh:332` (`whip: {intervalMins: 5, staleMin: 90, leadMaxMin: 60}`).
+
+Verify via `grep -rn staleMin lib/` — the matches in `lib/whip.sh` (lines 50–58, 194), `lib/kanban.sh` (lines 123, 134, 147), and `lib/init.sh:332` cover the entire chain.
+
+D9's prose treats `whip.staleMin=90` as the operative value because at the time of writing only level 3 (and 4) were exercised. Levels 1 + 2 are first-class today: per-Task overrides handle outlier e2e Tasks (4h+ rehearsals), and the env var is the cheapest mid-session knob (driver `export ATMUX_STALE_MIN=120` for one debugging session, no team.json edit, no task-level scatter).

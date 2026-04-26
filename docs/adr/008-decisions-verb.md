@@ -406,3 +406,18 @@ Per ADR-007 OQ-resolution pattern, recorded via `atmux decisions add`:
 
 - Should the section-aware chunker be invoked for `low`/`medium` reversibility entries too, even though they don't ping per-add (only via digest)? Today: chunker fires inside `_decisions_render_discord`, which is only called from the high-rev path + the digest path. Digest already chunks bullets (decisions-as-bullets). Verdict: out of scope — digest's bullet chunker is bounded by per-decision body, not per-field; if a single decision's bullet exceeds 1900 chars in a digest, that's a separate issue (revisit if surfaced).
 - Should the `[N/M]` chunks share a thread-id / common identifier so Discord clients can group them visually? Defer — Discord webhooks don't support thread continuation natively. Revisit if a downstream consumer (Discord→Slack bridge, etc.) wants it.
+
+---
+
+## staleMin Resolution Chain (cross-ref: ADR-009 §S7 D9)
+
+Several places in this ADR cite `$ATMUX_STALE_MIN=90` as if it were a fixed knob. The actual lookup is a four-level chain, highest-precedence first:
+
+1. **per-Task `task.staleMin`** — optional integer field on the Task itself (`atmux task add --stale-min N`, persisted in `kanban.json`). Wins for this Task only. Consumed inline by the jq filter in `lib/whip.sh:194` (`((.staleMin // $default_min) * 60) as $task_s`).
+2. **`$ATMUX_STALE_MIN` env override** — process-scoped, applies to every Task that didn't set its own. Consumed at `lib/whip.sh:58` (`local STALE_MIN="${ATMUX_STALE_MIN:-$TEAM_STALE_MIN}"`).
+3. **team.json `whip.staleMin`** — durable team-wide default. Read at `lib/whip.sh:56` (`jq -r '.whip.staleMin // 90'`).
+4. **default 90 minutes** — applies when team.json omits the field entirely. Hard-coded both in the jq fallback at `lib/whip.sh:56-57` and in the fresh-init template at `lib/init.sh:332` (`whip: {intervalMins: 5, staleMin: 90, leadMaxMin: 60}`).
+
+Verify via `grep -rn staleMin lib/` — the matches in `lib/whip.sh` (lines 50–58, 194), `lib/kanban.sh` (lines 123, 134, 147), and `lib/init.sh:332` cover the entire chain.
+
+When this ADR (or downstream prose) says "$ATMUX_STALE_MIN=90", read it as "the effective staleMin, which today resolves to 90 by default but is overridable at three levels above".
