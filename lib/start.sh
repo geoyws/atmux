@@ -53,8 +53,14 @@ main() {
   fi
 
   # ---- Create session if missing. A hidden __home window hosts the session. ----
+  # `3>&- 4>&-` closes fd 3 and 4 so the daemonised tmux server doesn't
+  # inherit them. bats reserves fd 3 as its status pipe; an inherited
+  # tmux server keeps that pipe open across the entire test process tree
+  # and bats-exec-suite blocks forever in pipe_read after bats-exec-test
+  # exits. Production interactive use never has fd 3 open at this point,
+  # so the closure is a no-op there. See ADR-012.
   if ! atmux::tmux_session_exists; then
-    tmux new-session -d -s "$session" -n "__atmux__home" -c "$PWD"
+    tmux new-session -d -s "$session" -n "__atmux__home" -c "$PWD" 3>&- 4>&-
     atmux::ok "created tmux session: $session"
   fi
 
@@ -110,7 +116,9 @@ _atmux_spawn_member() {
   win="$(atmux::window_name "$member")"
   target="$session:$win"
 
-  tmux new-window -d -t "$session" -n "$win" -c "$cwd"
+  # Same fd-3/4 closure as the session-create path above — daemonised
+  # tmux servers must not inherit bats's status pipe. ADR-012.
+  tmux new-window -d -t "$session" -n "$win" -c "$cwd" 3>&- 4>&-
   atmux::log "  · $member ($tui, role=$role): spawned window $win"
 
   # Ensure inbox file exists.

@@ -106,7 +106,8 @@ _atmux_addmember_spawn() {
   session="$(atmux::session_name)"
   win="$(atmux::window_name "$member")"
 
-  tmux new-window -d -t "$session" -n "$win" -c "$cwd"
+  # fd-3/4 closure — same rationale as lib/start.sh. ADR-012.
+  tmux new-window -d -t "$session" -n "$win" -c "$cwd" 3>&- 4>&-
   local cmd; cmd="$(atmux::tui_cmd "$tui" "$model" "$cwd" "$member" "$role" "$mj")"
   tmux send-keys -t "$session:$win" "$cmd" Enter
   atmux::ok "spawned $member in $session:$win"
