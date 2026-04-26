@@ -378,9 +378,11 @@ _atmux_story_dispatch() {
   [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
   local task_json
   task_json="$(jq --arg id "$tid" '.tasks[]? | select(.id == $id)' "$k")"
-  jq --argjson t "$task_json" --argjson now "$now" \
-     '.inProgress += [$t + {dispatchedAt: $now}]' \
-     "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+  # E6/S1 t-b1b315f1 (A1 site 5/6) — atmux::jq_update for flock'd
+  # atomic write per ADR-013. Filter logic preserved verbatim.
+  atmux::jq_update "$ib" \
+    '.inProgress += [$t + {dispatchedAt: ($now | tonumber)}]' \
+    --argjson t "$task_json" --arg now "$now"
 
   atmux::log "story: dispatched $verb task $tid → $member (story $sid)"
 }
