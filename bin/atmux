@@ -93,6 +93,10 @@ Automation:
   handoff <from> <to>         Move in-flight work from one member to another
   pause <member>              Mark member paused (dispatch refuses to queue)
   resume <member>             Unpause
+  cleanup <logs|inboxes|all> [--max-size N] [--max-age-days N] [--dry-run]
+                              Rotate big logs (>1MB → .log.1), prune old
+                              done[] entries from inboxes (>7d default).
+                              Idempotent + cron-safe.
 
 Decisions log:
   decisions add <q> --default <a> [--reversibility low|medium|high] [--note <t>]
