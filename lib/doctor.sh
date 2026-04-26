@@ -441,6 +441,12 @@ _doctor_render_json() {
 }
 
 _doctor_try_fix() {
+  # Two fix paths: the existing team.json wizard (only on red), and the
+  # new cleanup-driven log/inbox sweep (runs whenever --fix is passed,
+  # regardless of red/yellow status — cleanup is always safe and the
+  # operator opted in by passing --fix).
+  _doctor_try_fix_cleanup
+
   [[ "$_doctor_red_count" -eq 0 ]] && return 0
 
   # The one failure we CAN auto-remediate is missing / invalid team.json — offer the wizard.
@@ -466,4 +472,19 @@ _doctor_try_fix() {
   done
 
   atmux::warn "remaining issues need manual remediation — see hints above"
+}
+
+# Run cleanup as part of `doctor --fix`. Idempotent — running it on a
+# clean tree is a no-op + a "0 rotated, 0 pruned" status line. Doesn't
+# count as a fixable item in _doctor_red_count tally; it's preventative
+# maintenance rather than red-state remediation. Skipped silently if
+# cleanup verb isn't available (defensive — bin/atmux always routes it,
+# but let's keep doctor robust if a future refactor moves it).
+_doctor_try_fix_cleanup() {
+  if [[ ! -f "$ATMUX_LIB_DIR/cleanup.sh" ]]; then
+    return 0
+  fi
+  printf '\n%s🧹 atmux%s  doctor --fix: running cleanup all\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" >&2
+  "$ATMUX_BIN_DIR/atmux" cleanup all >&2 || true
 }
