@@ -24,17 +24,23 @@ main() {
     *) atmux::die "claim.sh called without verb flag (internal error)" ;;
   esac
 
-  local id="" who="" note="" pick_next=0 pick_lane=""
+  local id="" who="" note="" pick_next=0 pick_lane="" no_dispatch=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --as)   who="$2"; shift 2 ;;
       --note) note="$2"; shift 2 ;;
       --next) pick_next=1; shift ;;
       --lane) pick_lane="$2"; shift 2 ;;
+      --no-dispatch) no_dispatch=1; shift ;;
       -*) atmux::die "$verb: unknown flag: $1" ;;
       *) if [[ -z "$id" ]]; then id="$1"; shift; else atmux::die "$verb: too many args"; fi ;;
     esac
   done
+
+  # ATMUX_NO_AUTO_DISPATCH=1 in the environment is equivalent to passing
+  # --no-dispatch on every call — useful for cron / automation scripts
+  # that batch-finalize tasks without wanting per-task gitter wakes.
+  [[ "${ATMUX_NO_AUTO_DISPATCH:-0}" == "1" ]] && no_dispatch=1
 
   if [[ "$pick_next" -eq 1 ]]; then
     [[ "$verb" == "claim" ]] || atmux::die "--next is only valid with claim, not $verb"
@@ -83,7 +89,16 @@ main() {
       # worker's natural verb triggers the same commit-Task / story-flip /
       # epic-flip side effects as the operator's `task move done` (per
       # d-98907819 / t-7d99e935).
-      atmux::finish_task_done "$id" "$note"
+      #
+      # --no-dispatch (or ATMUX_NO_AUTO_DISPATCH=1) suppresses the
+      # commit-Task → gitter dispatch + the lead-summary auto-dispatch.
+      # Use case: driver is committing manually and doesn't want gitter
+      # woken on every `atmux done`. The kanban write still happens; the
+      # epic-flip / story-flip side effects also still run (those are
+      # state transitions, not dispatches). Token cost saved per call:
+      # 1 send-keys to gitter pane + the gitter turn that follows.
+      ATMUX_FINISH_TASK_NO_DISPATCH="$no_dispatch" \
+        atmux::finish_task_done "$id" "$note"
       _atmux_inbox_move "$who" "$task" "inProgress->done" "$now"
       atmux::ok "$who completed $id"
       ;;

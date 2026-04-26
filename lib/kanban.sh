@@ -361,8 +361,20 @@ atmux::finish_task_done() {
     --arg summary_subject "$summary_subject" \
     --arg summary_body "$summary_body"
 
-  [[ -n "$commit_tid" ]]  && _atmux_kanban_push_inbox "gitter" "$commit_tid"
-  [[ -n "$summary_tid" ]] && _atmux_kanban_push_inbox "lead"   "$summary_tid"
+  # Dispatch-suppression hook. ATMUX_FINISH_TASK_NO_DISPATCH=1 (set by
+  # claim.sh's --no-dispatch flag, or by ATMUX_NO_AUTO_DISPATCH=1 in the
+  # environment for cron / automation) keeps the kanban write but skips
+  # the inbox push + pane ping for the auto-dispatched commit-Task and
+  # the lead-summary task. State transitions (story-flip, epic-flip)
+  # still run — those are local to the kanban, not dispatches. Use case:
+  # driver is committing manually and doesn't want gitter woken on every
+  # finalize. The minted commit-Task lands on the kanban in the inbox
+  # of nobody; whatever picks up next (whip-driven dispatcher, manual
+  # `atmux dispatch`) sees it.
+  if [[ "${ATMUX_FINISH_TASK_NO_DISPATCH:-0}" != "1" ]]; then
+    [[ -n "$commit_tid" ]]  && _atmux_kanban_push_inbox "gitter" "$commit_tid"
+    [[ -n "$summary_tid" ]] && _atmux_kanban_push_inbox "lead"   "$summary_tid"
+  fi
 
   # Prune any stale inbox.inProgress[] entry for this task. The kanban is
   # the authoritative completion ledger; inbox copies only matter for
@@ -377,9 +389,21 @@ atmux::finish_task_done() {
   # most rewrite-skipped via the jq -e existence guard) and idempotent.
   _atmux_kanban_prune_inboxes "$id"
 
-  [[ "$do_commit" -eq 1 ]]     && atmux::log "task: dispatched commit task $commit_tid → gitter (source $id)"
+  if [[ "$do_commit" -eq 1 ]]; then
+    if [[ "${ATMUX_FINISH_TASK_NO_DISPATCH:-0}" == "1" ]]; then
+      atmux::log "task: minted commit task $commit_tid (gitter — DISPATCH SUPPRESSED) source $id"
+    else
+      atmux::log "task: dispatched commit task $commit_tid → gitter (source $id)"
+    fi
+  fi
   [[ "$do_story_flip" -eq 1 ]] && atmux::log "task: story $target_story_id auto-flipped testing → review"
-  [[ "$do_epic_flip" -eq 1 ]]  && atmux::log "task: epic  $target_epic_id  auto-flipped in-progress → review (summary $summary_tid → lead)"
+  if [[ "$do_epic_flip" -eq 1 ]]; then
+    if [[ "${ATMUX_FINISH_TASK_NO_DISPATCH:-0}" == "1" ]]; then
+      atmux::log "task: epic $target_epic_id auto-flipped in-progress → review (summary $summary_tid — DISPATCH SUPPRESSED)"
+    else
+      atmux::log "task: epic  $target_epic_id  auto-flipped in-progress → review (summary $summary_tid → lead)"
+    fi
+  fi
   return 0
 }
 

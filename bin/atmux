@@ -69,7 +69,9 @@ Dispatch + work:
   dispatch <member> <task-id> Push task to member's inbox + ping them
   inbox <member>              Show member's inbox
   claim <task-id>             Claim a task from kanban (as a member)
-  done <task-id>              Mark claimed task complete
+  done <task-id> [--no-dispatch]  Mark claimed task complete
+                              (--no-dispatch skips auto commit-Task → gitter;
+                               also opt-in via ATMUX_NO_AUTO_DISPATCH=1)
 
 Automation:
   report                      Post 30-min progress digest to Discord
