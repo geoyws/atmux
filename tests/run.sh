@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Run all atmux tests (unit + e2e), optionally in parallel.
 # Usage: ./tests/run.sh [--jobs N] [--shellcheck]
+#
+# Unit tier defaults to --jobs 4 (parallel) — became safe once
+# tests/helpers/setup.bash's teardown started reaping orphan tmux
+# servers via explicit -S socket flags. Pre-reap the parallel run leaked
+# 50+ tmux servers per pass and accumulated zombie state. e2e tier
+# stays serial below — those tests share global tmux session names and
+# would race each other.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-jobs=1
+jobs=4
 shellcheck_pass=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
