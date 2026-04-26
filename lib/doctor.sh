@@ -45,6 +45,7 @@ EOF
   _doctor_check_webhook
   _doctor_check_crontab
   _doctor_check_cron_orphans
+  _doctor_check_orphan_sessions
   _doctor_check_whip_hash
   _doctor_check_phantom_inboxes
 
@@ -355,6 +356,29 @@ _doctor_check_crontab() {
       "if the project moved, run \`crontab -e\` and update ATMUX_DIR / --team-dir"
   elif [[ "$matched" -gt 0 ]]; then
     _doctor_row green "cron-config" "$matched atmux cron entr$( ((matched==1)) && echo y || echo ies ) match this project"
+  fi
+}
+
+# Orphan-session detector (E7/Sa t-a5216115). After a team migrates to
+# singleSession=true, the legacy `atmux-<team>` tmux session may still
+# exist (left over from pre-migration starts). Surface it so the user
+# can run the migrate verb to consolidate. Skipped silently when the
+# team isn't single-session — pre-migration teams legitimately use the
+# dedicated session.
+#
+# No --fix auto-action: the migrate verb has its own pre-flight
+# (active-work check) that doctor can't safely re-validate; the row
+# hint points the user at the verb.
+_doctor_check_orphan_sessions() {
+  local single
+  single=$(jq -r '.singleSession // false' "$(atmux::team_json)" 2>/dev/null || echo false)
+  [[ "$single" == "true" ]] || return 0
+
+  local team_session; team_session="atmux-$(atmux::team_name)"
+  if tmux has-session -t "$team_session" 2>/dev/null; then
+    _doctor_row yellow "orphan-session" \
+      "team is single-session but legacy session '$team_session' still exists" \
+      "run 'atmux migrate-to-driver-session $(atmux::team_name)' to consolidate"
   fi
 }
 

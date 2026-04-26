@@ -185,6 +185,19 @@ _atmux_init_wizard() {
 
   local discord_hook; _atmux_prompt discord_hook "Discord webhook URL (optional, Enter to skip)" ""
 
+  # E7/Sa t-a5216115 — singleSession topology opt-in. Default false
+  # (legacy: dedicated atmux-<team> session). When true, atmux start
+  # spawns team windows INSIDE the driver's existing tmux session —
+  # cleaner `tmux ls`, team-switch becomes window-hop, only safe when
+  # the user runs atmux from inside a tmux already.
+  echo ""
+  echo "Single-session mode spawns team windows INSIDE your existing tmux"
+  echo "instead of a dedicated 'atmux-<team>' session. Cleaner tmux ls;"
+  echo "team-switch becomes window-hop. Recommended if you usually run"
+  echo "atmux from inside an existing tmux session."
+  local single_session
+  _atmux_prompt_choice single_session "Spawn into driver tmux session?" "n" y n
+
   # ---- TUI launch commands ----
   # Ask the user for custom launch commands for every TUI we'll end up using.
   # This is how users plug in aliases like `claude --plugin-dir=/path` or a
@@ -316,6 +329,9 @@ _atmux_init_wizard() {
      + (if $kimi     != "" and $kimi     != "kimi"          then {kimi:     $kimi}     else {} end)
      + (if $cursor   != "" and $cursor   != "cursor-agent"  then {cursor:   $cursor}   else {} end)')"
 
+  local single_session_bool=false
+  [[ "${single_session:-n}" == "y" ]] && single_session_bool=true
+
   jq -n \
     --arg name "$team_name" \
     --arg desc "atmux team — created via wizard" \
@@ -323,6 +339,7 @@ _atmux_init_wizard() {
     --argjson tuis "$tui_commands" \
     --arg hook "$discord_hook" \
     --arg emoji_mode "$emoji_mode" \
+    --argjson single "$single_session_bool" \
     '{
        name: $name,
        description: $desc,
@@ -330,7 +347,8 @@ _atmux_init_wizard() {
        members: $members,
        emojis: {mode: $emoji_mode},
        whip:   {intervalMins: 5, staleMin: 90, leadMaxMin: 60},
-       report: {intervalMins: 30}
+       report: {intervalMins: 30},
+       singleSession: $single
      }
      + (if $hook == "" then {} else {discord: {webhook: $hook}} end)' > "$tj"
 
