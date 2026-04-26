@@ -364,10 +364,44 @@ atmux::finish_task_done() {
   [[ -n "$commit_tid" ]]  && _atmux_kanban_push_inbox "gitter" "$commit_tid"
   [[ -n "$summary_tid" ]] && _atmux_kanban_push_inbox "lead"   "$summary_tid"
 
+  # Prune any stale inbox.inProgress[] entry for this task. The kanban is
+  # the authoritative completion ledger; inbox copies only matter for
+  # whip's stale-task heuristic (lib/whip.sh:177) and pull-based claim
+  # filtering. When a task is completed via `atmux task move done` (or
+  # via `atmux done` from a member that wasn't the dispatched recipient,
+  # e.g. lead-driven planner asks where the dispatch put the task in
+  # planner.inProgress[] but the lead later moves it done directly), the
+  # kanban update lands but the inbox copy lingers. Whip then perpetually
+  # warns "N task(s) in-progress > 90min" against phantoms. Walking all
+  # inboxes once per `done` transition is cheap (≤10 small JSON files,
+  # most rewrite-skipped via the jq -e existence guard) and idempotent.
+  _atmux_kanban_prune_inboxes "$id"
+
   [[ "$do_commit" -eq 1 ]]     && atmux::log "task: dispatched commit task $commit_tid → gitter (source $id)"
   [[ "$do_story_flip" -eq 1 ]] && atmux::log "task: story $target_story_id auto-flipped testing → review"
   [[ "$do_epic_flip" -eq 1 ]]  && atmux::log "task: epic  $target_epic_id  auto-flipped in-progress → review (summary $summary_tid → lead)"
   return 0
+}
+
+# Walk every member inbox + drop any inProgress[] entry matching <task_id>.
+# Idempotent: inboxes that don't contain the id are skipped without rewrite
+# (the jq -e existence check is a read-only fast path; only files that
+# actually need pruning are reserialized). Used by atmux::finish_task_done
+# to keep whip's stale-task heuristic anchored to live work, not phantoms.
+_atmux_kanban_prune_inboxes() {
+  local task_id="$1"
+  [[ -n "$task_id" ]] || return 0
+  local ib_dir; ib_dir="$(atmux::inbox_dir)"
+  [[ -d "$ib_dir" ]] || return 0
+  local ib
+  for ib in "$ib_dir"/*.json; do
+    [[ -f "$ib" ]] || continue
+    if jq -e --arg id "$task_id" 'any(.inProgress[]?; .id == $id)' "$ib" >/dev/null 2>&1; then
+      jq --arg id "$task_id" \
+         '.inProgress = [.inProgress[]? | select(.id != $id)]' \
+         "$ib" > "${ib}.tmp" && mv "${ib}.tmp" "$ib"
+    fi
+  done
 }
 
 # Look up <task_id> in kanban + push it to <member>'s inbox.inProgress.
