@@ -33,7 +33,12 @@ if [[ "$shellcheck_pass" -eq 1 ]]; then
 fi
 
 echo "--- unit tests (jobs=$jobs) ---"
-if bats --jobs "$jobs" tests/unit/; then
+# BATS_TEST_TIMEOUT caps wall time per test. Belt-and-suspenders for the
+# fd-3 hygiene fix in lib/start.sh (ADR-012): if a future regression
+# reintroduces fd-3 leakage (or any other hang), the suite terminates
+# instead of hanging CI for hours. 120s is comfortable for the heaviest
+# unit test (a few seconds typical).
+if BATS_TEST_TIMEOUT=120 bats --jobs "$jobs" tests/unit/; then
   echo "unit: OK"
 else
   fail=1
@@ -43,7 +48,9 @@ fi
 echo ""
 echo "--- e2e tests ---"
 # e2e tests share tmux global state — keep serial to avoid session-name races.
-if bats tests/e2e/; then
+# 300s timeout — longer than unit tests because e2e walks real tmux + claim
+# flows, but still bounded so a wedge can't burn CI for hours. ADR-012.
+if BATS_TEST_TIMEOUT=300 bats tests/e2e/; then
   echo "e2e: OK"
 else
   fail=1
