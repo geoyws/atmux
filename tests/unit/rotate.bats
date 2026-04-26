@@ -67,7 +67,14 @@ _start_session() {
   "$ATMUX_BIN" rotate worker >/dev/null 2>&1
   local first; first=$(cat .atmux/state/worker-rotated.epoch)
   sleep 1
-  "$ATMUX_BIN" rotate worker >/dev/null 2>&1
+  # --force on the re-rotate skips the pre-flight pane-state check.
+  # In a shell-tui sandbox the prior brief paste leaves blocker phrases
+  # (`Press up to edit queued messages`, documented in member.md §12)
+  # in scrollback — the pre-flight matches them and bails. Real-world
+  # operator intent on an explicit re-rotate is to override anyway, so
+  # this matches the ergonomics. E6/S1 t-09e761c4 (F10) added a sleep+
+  # capture-pane settle that exposed the latent flake.
+  "$ATMUX_BIN" rotate worker --force >/dev/null 2>&1
   local second; second=$(cat .atmux/state/worker-rotated.epoch)
   [[ "$second" =~ ^[0-9]+$ ]]
   [ "$second" -ge "$first" ]
@@ -155,6 +162,43 @@ _start_session() {
   run "$ATMUX_BIN" rotate worker
   [ "$status" -ne 0 ]
   [ ! -f .atmux/state/worker-rotated.epoch ]
+}
+
+# ---------- F10 post-paste validation (E6/S1 t-09e761c4) ----------
+
+@test "rotate: brief paste with no marker in pane ⇒ skip epoch + warn (F10)" {
+  # Simulate a silent-paste-failure mode by swapping the resolved brief
+  # template (atmux::brief_path uses \$ATMUX_ROOT/templates/briefs/<role>.md)
+  # to a marker-less version. rotate runs to completion (paste-buffer +
+  # send-keys still execute), but the post-paste grep for
+  # 'brief-version:|You are' against pane scrollback returns false,
+  # so validation bails BEFORE record_brief_version + epoch write.
+  # Pre-F10, the epoch was stamped regardless and whip thought the
+  # member was freshly rotated.
+  _start_session
+  rm -f .atmux/state/worker-rotated.epoch
+
+  # Build a sandbox ATMUX_ROOT that mirrors the real layout but with a
+  # marker-less brief for role=member. bin/atmux resolves ATMUX_ROOT
+  # via `readlink + cd -P` on its own path — so symlinks resolve to the
+  # real repo. We copy bin/atmux as a regular file (not symlink) so
+  # ATMUX_ROOT lands inside the sandbox; lib stays a symlink because
+  # the lib resolution is via ATMUX_LIB_DIR which the binary derives
+  # from its own real-path.
+  local fake_root="$ATMUX_TEST_TMP/fake-root"
+  mkdir -p "$fake_root/bin" "$fake_root/lib" "$fake_root/templates/briefs"
+  cp "$ATMUX_REPO_ROOT/bin/atmux" "$fake_root/bin/atmux"
+  for f in "$ATMUX_REPO_ROOT"/lib/*.sh "$ATMUX_REPO_ROOT"/lib/*.json; do
+    [[ -f "$f" ]] && cp "$f" "$fake_root/lib/"
+  done
+  cat > "$fake_root/templates/briefs/member.md" <<'EOF'
+no_marker_text_payload_xyz
+EOF
+
+  run "$fake_root/bin/atmux" rotate worker
+  [ "$status" -eq 0 ]
+  [ ! -f .atmux/state/worker-rotated.epoch ]
+  [[ "$output" =~ "paste appears to have failed" ]]
 }
 
 # ---------- pre-flight pane-state check (added 2026-04-26) ----------

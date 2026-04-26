@@ -151,8 +151,11 @@ teardown() {
   (( stamp >= before ))
 
   # Re-rotation overwrites — second call's stamp >= first call's stamp.
+  # --force on the re-rotate skips pre-flight; the prior brief paste left
+  # blocker phrases in shell-tui scrollback. See rotate.bats:65 for the
+  # detailed analogue (E6/S1 t-09e761c4 F10 sleep+settle exposed it).
   sleep 1
-  "$ATMUX_BIN" rotate w1
+  "$ATMUX_BIN" rotate w1 --force
   local stamp2; stamp2=$(< .atmux/state/w1-rotated.epoch)
   (( stamp2 >= stamp ))
 }

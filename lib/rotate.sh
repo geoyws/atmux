@@ -101,6 +101,25 @@ main() {
     sleep 1
     tmux send-keys -t "$target" Enter
     rm -f "$tmp"
+
+    # E6/S1 t-09e761c4 (F10) — post-paste validation. paste-buffer +
+    # send-keys can silently no-op (target window destroyed mid-flight,
+    # tmux server stall, buffer-name collision under concurrent rotates).
+    # Without this check, a failed paste still wrote rotated.epoch ⇒
+    # whip thought the member was freshly rotated while the pane sat
+    # with stale brief / blank state. Capture-pane + grep for the
+    # brief's stable header markers (`brief-version:` from line 1 of
+    # every brief; `You are` from the opening sentence). Absence ⇒
+    # warn + bail BEFORE record_brief_version + epoch write so the
+    # next whip tick re-fires the rotation.
+    sleep 1
+    local pane_state
+    pane_state="$(tmux capture-pane -p -S -50 -t "$target" 2>/dev/null || true)"
+    if ! grep -qE 'brief-version:|You are' <<<"$pane_state"; then
+      atmux::warn "rotate $member: brief paste appears to have failed (no marker in pane); skipping rotated.epoch write — whip will retry next tick"
+      return 0
+    fi
+
     atmux::record_brief_version "$member" "$role"
   fi
 
