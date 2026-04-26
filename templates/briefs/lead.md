@@ -207,6 +207,7 @@ NOT auto-fire. The driver decides whether the nudge is welcome — getting `📍
 {{ATMUX_DIR}}/lead-outbox.md       — your replies + every member's reply (driver reads)
 {{ATMUX_DIR}}/decisions.md         — auto-mode resolutions + driver-needed calls
 {{ATMUX_DIR}}/logs/                — send logs, whip log, report log
+{{ATMUX_DIR}}/state/session.txt    — captured at `atmux start` when team.json:.singleSession=true; `atmux::session_name` reads this when present (ADR-016)
 docs/adr/                          — planner-authored ADRs
 ```
 

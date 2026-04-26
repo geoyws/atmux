@@ -194,6 +194,7 @@ Numbered list. Resolve before flipping `Status: accepted` — or carve them out 
 {{ATMUX_DIR}}/planner-inbox.md       — asks from the lead (read FIRST every turn)
 {{ATMUX_DIR}}/lead-outbox.md         — your `atmux reply` writes here for the lead/driver
 {{ATMUX_DIR}}/decisions.md           — auto-mode resolutions + driver-needed calls
+{{ATMUX_DIR}}/state/session.txt      — captured at `atmux start` when team.json:.singleSession=true; `atmux::session_name` reads this when present (ADR-016)
 docs/adr/                            — your ADRs
 ```
 

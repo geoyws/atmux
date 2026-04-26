@@ -134,6 +134,7 @@ Your pane may also receive a `⚙️ CONFIG RELOAD: your <field> changed: <old>�
 {{ATMUX_DIR}}/kanban.json                    — Tasks + Stories + Epics (pull source)
 {{ATMUX_DIR}}/inboxes/{{MEMBER}}.json         — your inbox (claims + manual dispatch)
 {{ATMUX_DIR}}/lead-outbox.md                  — your `atmux reply` writes here
+{{ATMUX_DIR}}/state/session.txt              — captured at `atmux start` when team.json:.singleSession=true; `atmux::session_name` reads this when present (ADR-016)
 docs/adr/                                    — planner ADRs (read before starting if your Task references one)
 ```
 
