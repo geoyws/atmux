@@ -270,7 +270,7 @@ JSON
   [ "$output" = "be-test" ]
 }
 
-@test "e2e: decisions add fires Discord webhook + persists to .atmux/decisions.md" {
+@test "e2e: decisions add (high reversibility) fires Discord webhook + persists to .atmux/decisions.md" {
   _e2e_rebuild_pullmode_team
 
   # Mock curl — capture argv NUL-separated so we can recover the JSON payload.
@@ -285,7 +285,12 @@ EOF
   chmod +x "$mockbin/curl"
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
 
-  PATH="$mockbin:$PATH" run "$ATMUX_BIN" decisions add "ship pull-mode now?" --default "yes" --reversibility medium
+  # Use --reversibility high — per ADR-008 §S8 (gating) only `high`
+  # triggers a per-add Discord ping. low/medium write to decisions.md
+  # but skip the webhook (covered by unit tests in decisions_gating.bats).
+  # Pre-gating this test used `medium` and silently failed once the gate
+  # landed; the assertion was stale relative to the contract.
+  PATH="$mockbin:$PATH" run "$ATMUX_BIN" decisions add "ship pull-mode now?" --default "yes" --reversibility high
   [ "$status" -eq 0 ]
   local id; id=$(echo "$output" | tail -1)
   [[ "$id" =~ ^d-[0-9a-f]{8}$ ]]
@@ -301,5 +306,5 @@ EOF
   payload=$(awk 'BEGIN{RS="\0"} prev=="-d"{print; exit} {prev=$0}' "$ATMUX_TEST_TMP/curl-args.bin" | jq -r '.content // empty')
   [[ "$payload" =~ "[atmux-decisions]" ]]
   [[ "$payload" =~ "ship pull-mode now?" ]]
-  [[ "$payload" =~ "reversibility: medium" ]]
+  [[ "$payload" =~ "reversibility: high" ]]
 }
