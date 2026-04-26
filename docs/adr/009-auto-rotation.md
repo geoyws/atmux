@@ -398,3 +398,78 @@ Two different rendering surfaces, two different constraint sets. Same project, s
 Verify via `grep -rn staleMin lib/` — the matches in `lib/whip.sh` (lines 50–58, 194), `lib/kanban.sh` (lines 123, 134, 147), and `lib/init.sh:332` cover the entire chain.
 
 D9's prose treats `whip.staleMin=90` as the operative value because at the time of writing only level 3 (and 4) were exercised. Levels 1 + 2 are first-class today: per-Task overrides handle outlier e2e Tasks (4h+ rehearsals), and the env var is the cheapest mid-session knob (driver `export ATMUX_STALE_MIN=120` for one debugging session, no team.json edit, no task-level scatter).
+
+---
+
+## S11 Addendum: Cron auto-install via `atmux start` / `atmux stop` (added 2026-04-26)
+
+**Driver-ref**: E6/Sc — `s-5abf7c33` (auto-install whip cron block per team).
+**Companion to**: this ADR's main body (which assumed manual `crontab -e` to wire the watchdog).
+
+### Context
+
+The original ADR-009 main body shipped robust auto-rotation infrastructure (D1–D5) and assumed the operator wires `atmux whip` into cron by hand — README §Quickstart step 4 was a literal `crontab -e` block the user copy-pasted. That assumption breaks the "atmux start just works" UX promise: a freshly bootstrapped team has zero rotation safety until the operator remembers to install three cron lines, and the lines themselves bake in the project path so they rot the moment the worktree relocates.
+
+Concretely, a fresh team without manual cron has:
+- No `atmux whip` ticks → no banner-driven preclear, no stale-task surfacing, no DOWN-session detection.
+- No `atmux report` ticks → no Discord progress digest.
+- No `atmux decisions digest` ticks → low/medium decisions silently accumulate without driver visibility.
+
+E6/Sc closes this gap by making `atmux start` install the block and `atmux stop` remove it, scoped per team via marker comments.
+
+### Decisions
+
+#### D19 — `atmux start` auto-installs the cron block; opt out via `team.json` `kanban.cronAutoInstall=false`
+
+After the team session bootstrap, `lib/start.sh` reads `kanban.cronAutoInstall` from `team.json` (default `true` when absent), sources `lib/cron.sh`, and calls `atmux::cron_install <team> <atmux_dir>`. The marker scheme (`# >>> atmux:team=<name>` … `# <<< atmux:team=<name>`) means re-running `atmux start` is idempotent — same team, same block, byte-identical crontab.
+
+The opt-out lives in `team.json` rather than as an `atmux start --no-cron` flag so there is one durable source of truth: a team that opts out stays opted out across every restart, no per-invocation re-flagging.
+
+**Why**: Convenience is the point. The cron block is the *enabling* infrastructure for everything in this ADR's main body — auto-rotation can't fire without `atmux whip` actually running. Opt-in framing (require `kanban.cronAutoInstall=true` to install) was rejected: the new-user gap between "I started a team" and "rotation safety actually exists" is the cost we're paying down.
+
+**Why not `atmux start --no-cron`**: Two sources of truth (team.json + per-invocation flag) means a team can drift between operator habits ("I always pass --no-cron") and team config ("cronAutoInstall: true"). One config field, one resolution path.
+
+#### D20 — `atmux stop` always tries `atmux::cron_remove`; failures are non-fatal
+
+`lib/stop.sh` unconditionally sources `lib/cron.sh` and invokes `atmux::cron_remove` after the `tmux kill-session`. Idempotent: a no-op if no marker block exists for this team (first-stop case, or team that never installed). Errors (crond uninstalled mid-stop, permission failures, missing `crontab` binary) are caught and logged but do NOT fail the stop — a `stop` that can't manipulate cron should still succeed at killing the session.
+
+**Why unconditional remove (vs. mirror the install opt-out)**: An operator who set `cronAutoInstall=false` mid-team-life has a leftover block from before the opt-out flipped. Always-try-remove cleans those up; the idempotent no-op path means it costs nothing for teams that never installed.
+
+#### D21 — `atmux doctor` orphan detection covers ATMUX_DIR drift after worktree moves
+
+When the operator deletes a worktree without `atmux stop` (`rm -rf` then forgets), the cron block survives in their crontab pointing at a path that no longer exists. `lib/doctor.sh::_doctor_check_cron_orphans` scans `crontab -l` for marker blocks whose `ATMUX_DIR` is missing on disk and surfaces one yellow `cron-orphan` row per orphan. `atmux doctor --fix` calls `atmux::cron_remove` on each orphan team (since the worktree is gone, the per-team `atmux stop` path is unavailable).
+
+This is the cleanup gate for "atmux start moved my project, then I deleted the old one" — without it, every subsequent `atmux whip` run from the orphan cron line writes a `command not found` error log every 5 min forever.
+
+**Why yellow not red**: Cleanup-needed, not breakage. The orphan cron lines fail silently (no whip data lost from the live team); the operator just sees noise in their crontab. Mirror-shape with `_doctor_check_phantom_inboxes`.
+
+### Consequences
+
+**What changes**
+
+- `lib/start.sh` calls `atmux::cron_install` post-bootstrap unless `kanban.cronAutoInstall=false` (E6/Sc t-ac7197cf, landed).
+- `lib/stop.sh` calls `atmux::cron_remove` unconditionally after session kill (same Task).
+- `lib/cron.sh` provides the marker-bounded install/remove/orphans API (E6/Sc t-7dab9a96, landed).
+- `lib/doctor.sh` gains `_doctor_check_cron_orphans` + `--fix` prune (E6/Sc t-d948b6a0, landed).
+- README §Quickstart step 4 rewritten — auto-install paragraph replaces the manual `crontab -e` block; new §Troubleshooting section explains `cron-config` + `cron-orphan` doctor rows and the `cronAutoInstall=false` opt-out (this Task, E6/Sc t-e1fab5d7).
+- `templates/briefs/lead.md` + `templates/briefs/planner.md` §State files gain a crontab-markers callout so future leads/planners know `atmux start`/`atmux stop` is the canonical install path (this Task).
+
+**What breaks**
+
+- Existing teams that already had a manual cron block from a prior `crontab -e`: on first `atmux start` post-upgrade, `atmux::cron_install` writes a new marker-bounded block alongside the old manual lines. Outcome is duplicate ticks (whip fires twice every 5 min) until the operator deletes their old manual lines. Documented in CHANGELOG; not auto-migrated because heuristic detection of "is this manual line equivalent to my managed line?" is fragile.
+
+**What we give up**
+
+- Per-team cron schedules. Today the schedules are baked in `lib/cron.sh::_atmux_cron_render_lines` (`*/5`, `*/30`, `0 */4`). A future team that wants `*/2` whip for demo-week tail latency would have to either (a) opt out + manage cron manually, or (b) wait for a follow-up that plumbs `team.json` schedule overrides through `cron_install`. Deferred — out of scope for the auto-install MVP.
+- Webhook inlined in cron lines. Intentionally NOT inlined; webhook is resolved at runtime via `team.discord.webhook` so the secret stays out of `crontab -l` dumps and rotation works without re-installing the block.
+
+**Cross-Story coordination**
+
+- ADR-009 main body (D1–D5) assumed cron exists. S11 makes that assumption load-bearing by installing it. The chain is: `atmux start` → cron block lands → `*/5 atmux whip` fires → whip detects banner / uptime threshold → `autoRotate=true` triggers `atmux rotate-lead`. Without S11, the chain breaks at step 2 unless the operator manually wires cron.
+- E6/Sc test coverage: T_C4 (`tests/unit/cron.bats`) covers the install/remove/idempotency/opt-out path; doctor orphan detection has its own paired test under E6/Sc t-d948b6a0.
+
+### Open questions
+
+- Should `kanban.cronAutoInstall` move to `whip.cronAutoInstall` for naming consistency with the rest of the whip-cron coupling? Defer — the schedule lines cover whip + report + decisions-digest (three verbs, two of which aren't whip), so `kanban.*` is the closer fit. Revisit only if a future opt-out wants to disable a subset.
+- Should `atmux start` warn when `cronAutoInstall=true` but `crontab` is unavailable on the host? Today `atmux::cron_install` warns + bails silently. Consider promoting to a yellow doctor row. Defer until a real install hits this path.
+- Should the cron schedules be configurable per-team via `team.json` (`whip.cronInterval: "*/2"`)? Defer per "what we give up" above — wait for a real demand.

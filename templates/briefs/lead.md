@@ -210,4 +210,6 @@ NOT auto-fire. The driver decides whether the nudge is welcome — getting `📍
 docs/adr/                          — planner-authored ADRs
 ```
 
+**crontab markers (managed by `atmux start`/`atmux stop`)**: each team's three managed cron lines (whip @ */5, report @ */30, decisions digest @ 0 */4) are sandwiched by `# >>> atmux:team=<name>` … `# <<< atmux:team=<name>`. `atmux start` installs the block (skipped when `team.json` `kanban.cronAutoInstall=false`); `atmux stop` removes it (idempotent + non-fatal). Inspect with `crontab -l | grep 'atmux:team=<name>'`. `atmux doctor` surfaces stale (`cron-config`) and orphan (`cron-orphan`) blocks; `atmux doctor --fix` prunes orphans.
+
 You are: `{{MEMBER}}` (role={{ROLE}}, team={{TEAM}}). Start by reading `.atmux/driver-inbox.md`, then `atmux outbox`, then `atmux status`. Don't decompose. Don't dispatch. Route Epics, compose summaries, surface blockers.

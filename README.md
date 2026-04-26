@@ -94,21 +94,37 @@ atmux tell-lead "build a /healthz endpoint with 100% test coverage"
 atmux status                  # team pulse
 atmux outbox                  # read lead's async replies
 
-# 4. Automate the watchdog (cron):
-crontab -e
-# */5  * * * * cd ~/code/my-project && /usr/local/bin/atmux whip             >> .atmux/logs/cron.log 2>&1
-# */30 * * * * cd ~/code/my-project && /usr/local/bin/atmux report           >> .atmux/logs/cron.log 2>&1
-# 0    * * * * cd ~/code/my-project && /usr/local/bin/atmux decisions digest >> .atmux/logs/digest.log 2>&1
-
-# Whip emits per-tick (DOWN/blocker findings + delta block). Digest
-# consolidates the low/medium decisions whip skipped to Discord into
-# one hourly post — adjust cadence to taste (daily `0 0 * * *` is fine
-# for low-velocity teams; empty windows are silent so over-scheduling
-# costs nothing).
+# 4. Automation is wired for you.
+# `atmux start` automatically installs three crontab entries scoped per team
+# via marker comments (`# >>> atmux:team=<name>` … `# <<< atmux:team=<name>`):
+#   */5  * * * * atmux whip              # watchdog: stale panes, blockers, delta
+#   */30 * * * * atmux report            # digest: progress to Discord
+#   0 */4 * * * atmux decisions digest   # consolidates low/medium decision pings
+# `atmux stop` removes the block (idempotent — safe to re-run). Inspect with
+# `crontab -l | grep atmux:team=<your-team>`.
+#
+# Disable auto-install via team.json (then manage cron yourself):
+#   { "kanban": { "cronAutoInstall": false } }
 
 # 5. When done:
 atmux stop
 ```
+
+### Single-session mode (opt-in)
+
+By default, `atmux start <team>` creates a dedicated tmux session named `atmux-<team>` per team. **Single-session mode** (opt-in) spawns members into your existing driver tmux session instead — cleaner `tmux ls`, plus team-switching becomes a window-hop (`Ctrl+B w`) rather than a session-hop (`Ctrl+B s`).
+
+```bash
+# Opt-in via team.json (preferred — sticky across starts):
+jq '.singleSession = true' .atmux/team.json | sponge .atmux/team.json
+
+# …or one-shot at start time via env:
+ATMUX_DRIVER_SESSION=1 atmux start
+```
+
+`atmux init --wizard` surfaces the flag at team-create time. **Existing teams stay on dedicated sessions** — opt in retroactively via `atmux migrate-to-driver-session <team>` (lands in Phase 2 / Story Sb).
+
+See [docs/adr/016-single-session-topology.md](docs/adr/016-single-session-topology.md) for the design + risk register.
 
 ### Preset modes
 
@@ -425,6 +441,21 @@ mkdir -p ~/.zsh/completions
 ln -s /root/.atmux-src/completions/_atmux ~/.zsh/completions/_atmux
 # then in ~/.zshrc: fpath=(~/.zsh/completions $fpath) && autoload -Uz compinit && compinit
 ```
+
+## Troubleshooting
+
+**"My whip stopped pinging."** Run `atmux doctor`. It surfaces two cron-related conditions:
+
+- `cron-config` (yellow) — atmux cron entries point at a different `ATMUX_DIR` than the current project. Common after the project moved on disk (rename, relocation, fresh checkout under a new path). Fix: `crontab -e` and update the path, or re-run `atmux start` from the new path.
+- `cron-orphan` (yellow) — a marker block exists for a team whose `ATMUX_DIR` is missing on disk (e.g. you `rm -rf`'d a worktree without `atmux stop`). Fix: `atmux doctor --fix` prunes the orphan block automatically, or `crontab -e` to remove by hand.
+
+**"I don't want atmux touching my crontab."** Set `kanban.cronAutoInstall: false` in `team.json` before the first `atmux start`. If you've already started, `atmux stop` removes the block, then add the opt-out, then `atmux start` again.
+
+## FAQ
+
+**Why two topology options (dedicated session vs single-session)?**
+
+Dedicated session keeps team isolation strong — `kill-session` is a clean shutdown that can't accidentally take down the driver shell, and `tmux ls` lists each team explicitly. Single-session is the modern default for solo-driver setups (most users); members spawn alongside the driver's windows so `tmux ls` stops accumulating `atmux-*` entries and team-switching becomes a window-hop. Pick dedicated when you run multiple teams in parallel and want hard isolation; pick single-session when you primarily drive one team at a time and want a clean tmux surface. ADR-016 has the full tradeoff.
 
 ## Comparison vs plugin-orch
 

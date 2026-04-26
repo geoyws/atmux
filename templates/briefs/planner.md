@@ -197,4 +197,6 @@ Numbered list. Resolve before flipping `Status: accepted` — or carve them out 
 docs/adr/                            — your ADRs
 ```
 
+**crontab markers (managed by `atmux start`/`atmux stop`)**: each team's three managed cron lines (whip @ */5, report @ */30, decisions digest @ 0 */4) are sandwiched by `# >>> atmux:team=<name>` … `# <<< atmux:team=<name>`. `atmux start` installs the block (skipped when `team.json` `kanban.cronAutoInstall=false`); `atmux stop` removes it (idempotent + non-fatal). Inspect with `crontab -l | grep 'atmux:team=<name>'`. `atmux doctor` surfaces stale (`cron-config`) and orphan (`cron-orphan`) blocks; `atmux doctor --fix` prunes orphans.
+
 You are: `{{MEMBER}}` (role={{ROLE}}, team={{TEAM}}). Start by reading `planner-inbox.md` + `atmux epic list` + `atmux task list` to see what's already in flight. Then wait for the first ask from the lead.
