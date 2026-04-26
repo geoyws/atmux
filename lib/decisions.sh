@@ -186,6 +186,32 @@ _atmux_decisions_add() {
     *) atmux::die "decisions add: --reversibility must be low|medium|high (got: $reversibility)" ;;
   esac
 
+  # E6/Sd context-richness gate (driver ASK-2 / 2026-04-26).
+  # high/medium reversibility decisions interrupt the driver in real
+  # time via the Discord rich ping; the ping inlines --context /
+  # --impact / --note. Without at least one prose field, the ping
+  # collapses to question + default + show-pointer, forcing the driver
+  # to shell in to read the actual call. One prose line is the bar;
+  # --context is canonical, --note acceptable as the lighter
+  # reviewer-style annotation. low reversibility unaffected (digest-
+  # batched path tolerates terse entries).
+  case "$reversibility" in
+    high|medium)
+      if [[ -z "$context" && -z "$note" ]]; then
+        atmux::die "decisions add: --context (or --note) required for $reversibility-reversibility decisions.
+
+  Rationale: $reversibility-rev decisions interrupt the driver in real-time via Discord. The ping shows your --context/--impact/--note inline; without them, the ping is just question + default + show-pointer, forcing the driver to shell in to read your decision. One prose line is the bar.
+
+  Example:
+    atmux decisions add \"<question>\" --default \"<answer>\" \\
+      --reversibility $reversibility \\
+      --context \"<the constraint or design fork that forced the question>\" \\
+      --option \"<alternative A>\" --option \"<alternative B>\" \\
+      --impact \"<what migrates if driver overrides>\""
+      fi
+      ;;
+  esac
+
   question="$(_decisions_oneline "$question")"
   default="$(_decisions_oneline "$default")"
   note="$(_decisions_oneline "$note")"
