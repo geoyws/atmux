@@ -219,3 +219,34 @@ teardown() {
   local phantoms; phantoms=$(atmux::find_phantom_inbox_ids 2>/dev/null)
   [ "$(jq -r 'length' <<<"$phantoms")" = "0" ]
 }
+
+# ---------- 6. F12 post-write sanity check ----------
+
+@test "atomicity: jq_update post-write sanity catches truncation (F12 t-dd78c8a5)" {
+  # Simulate the disk-full / kernel-truncation failure mode by patching
+  # `mv` to leave an empty file at the target — exactly what would
+  # happen if write() returned partial bytes and jq's pipe buffer
+  # was lost during the rename. Pre-F12 the jq_update happily exited
+  # 0 here; post-F12 the jq -e sanity probe rejects the empty file
+  # and the helper returns nonzero so callers see the failure.
+  atmux_source_libs
+
+  local f="$ATMUX_TEST_TMP/sanity.json"
+  echo '{"keep":"original"}' > "$f"
+
+  # Override mv inside this test only — make it truncate-on-rename.
+  mv() {
+    if [[ "$1" == "$f".* && "$2" == "$f" ]]; then
+      command mv "$1" "$2"
+      : > "$2"
+    else
+      command mv "$@"
+    fi
+  }
+  export -f mv
+
+  run atmux::jq_update "$f" '.keep = "patched"'
+  [ "$status" -ne 0 ]
+  # Cleanup the override so other tests aren't affected.
+  unset -f mv
+}

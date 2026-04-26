@@ -461,6 +461,20 @@ atmux::jq_update() {
     fi
   fi
   mv "$tmp" "$file"
+  # E6/S1 t-dd78c8a5 (F12) — post-write sanity. Even when jq exits 0,
+  # the bytes that landed on disk may not be valid JSON: disk-full
+  # mid-mv, kernel I/O truncation on cheap VPS storage, jq bug
+  # emitting incomplete output. atmux::jq_update is the chokepoint
+  # for ~75+ shared-state writes (every kanban / inbox / state-file
+  # mutation), so three lines here protect every caller that opted
+  # into the atomic helper. Returns nonzero on detection so
+  # `if ! atmux::jq_update …` paths fire; pairs with F2 (kanban_json
+  # backup) for non-traumatic recovery.
+  if ! jq -e . "$file" >/dev/null 2>&1; then
+    atmux::warn "jq_update: post-write JSON invalid at $file (disk-full / truncation / jq bug?)"
+    exec {lockfd}>&-
+    return 1
+  fi
   exec {lockfd}>&-
 }
 
