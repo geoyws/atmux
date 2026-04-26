@@ -1,13 +1,16 @@
 #!/usr/bin/env bats
 # Unit tests for the reversibility-gated Discord ping in atmux decisions
-# (E2/S8 / t-398bc8a1). Per ADR-008 + the t-398bc8a1 ship: only
-# reversibility=high triggers a Discord post; low + medium are
-# silent (recorded in decisions.md, no ping). All three reversibility
-# levels otherwise produce identical decisions.md state and identical
-# `atmux decisions show / list` output.
+# (E2/S8 / t-398bc8a1, broadened in E6/S1 / t-d0750a1b).
 #
-# Mocks curl on PATH to count Discord ping invocations — same pattern as
-# tests/unit/decisions.bats and tests/unit/whip_dedup.bats.
+# Current gate (lib/decisions.sh:253) — `^(high|medium)$` fires the rich,
+# section-by-section chunked Discord render in real time. `low` stays
+# whip-batched (markdown still appended; whip's tick surfaces count + 1-line
+# preview + digest pointer). All three levels otherwise produce identical
+# decisions.md state and identical `atmux decisions show / list` output.
+#
+# Mocks curl on PATH to count Discord ping invocations + capture body
+# payloads — same pattern as tests/unit/decisions.bats and
+# tests/unit/whip_dedup.bats.
 
 load '../helpers/setup'
 
@@ -40,42 +43,62 @@ _curl_calls() {
   awk 'BEGIN{RS="\0"} /^http:/{n++} END{print n+0}' "$f"
 }
 
+# True if any captured curl arg contains the rich-render's required-block
+# fingerprint. Markers chosen to be unique to _decisions_render_discord —
+# they don't appear in whip's batched preview path or any other ping.
+_curl_received_rich_render() {
+  local f="$ATMUX_TEST_TMP/curl-args.bin"
+  [[ -f "$f" ]] || return 1
+  grep -aq '🔵 question:' "$f" || return 1
+  grep -aq '📍 atmux decisions show' "$f" || return 1
+}
+
 # ---------- gate behaviour per reversibility level ----------
 
-@test "gating: reversibility=high ⇒ exactly 1 ping fired + decisions.md gains entry" {
+@test "gating: reversibility=high ⇒ rich render fires + decisions.md gains entry" {
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "ship?" --default "y" --reversibility high
   [ "$status" -eq 0 ]
-  [ "$(_curl_calls)" = "1" ]
+  [ "$(_curl_calls)" -ge 1 ]
+  _curl_received_rich_render
   [ -f .atmux/decisions.md ]
   grep -q "ship?" .atmux/decisions.md
   grep -q "reversibility.*high" .atmux/decisions.md
 }
 
-@test "gating: reversibility=medium ⇒ NO ping fired, decisions.md still written" {
+@test "gating: reversibility=medium ⇒ rich render fires (E6/S1 t-d0750a1b broadened gate)" {
+  # Pre-S1 contract: medium was silent. New contract: medium now fires the
+  # same chunked render as high — captured curl payload must carry the rich
+  # render's required-block fingerprint, not just a count > 0.
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "switch?" --default "n" --reversibility medium
   [ "$status" -eq 0 ]
-  [ "$(_curl_calls)" = "0" ]
+  [ "$(_curl_calls)" -ge 1 ]
+  _curl_received_rich_render
   [ -f .atmux/decisions.md ]
   grep -q "switch?" .atmux/decisions.md
   grep -q "reversibility.*medium" .atmux/decisions.md
 }
 
-@test "gating: reversibility=low ⇒ NO ping fired, decisions.md still written" {
+@test "gating: reversibility=low ⇒ rich render skipped (whip-batched path), decisions.md still written" {
+  # Low explicitly stays out of the rich-ping path — whip's tick surfaces a
+  # batched count + 1-line preview instead. Mock curl tmpfile must remain
+  # absent / empty (no `_decisions_render_discord` chunks reached it).
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "tweak?" --default "ok" --reversibility low
   [ "$status" -eq 0 ]
   [ "$(_curl_calls)" = "0" ]
+  ! _curl_received_rich_render
   grep -q "tweak?" .atmux/decisions.md
   grep -q "reversibility.*low" .atmux/decisions.md
 }
 
-@test "gating: reversibility omitted ⇒ defaults to low ⇒ NO ping" {
+@test "gating: reversibility omitted ⇒ defaults to low ⇒ rich render skipped" {
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "default?" --default "y"
   [ "$status" -eq 0 ]
   [ "$(_curl_calls)" = "0" ]
+  ! _curl_received_rich_render
   grep -q "default?" .atmux/decisions.md
 }
 
@@ -126,10 +149,23 @@ _curl_calls() {
 
 # ---------- mixed-stream sanity ----------
 
-@test "gating: 3 adds (low/med/high) ⇒ exactly 1 ping fired (only the high one)" {
+@test "gating: 3 adds (low/med/high) ⇒ rich render fires twice (medium + high), low silent" {
+  # Post-E6/S1: medium now fires alongside high. Each rich-render call is
+  # 1 chunk in the no-options/no-context shape these adds use (well under
+  # the 1900-char single-message threshold) — so curl-call count maps 1:1
+  # to "decisions that fired the rich path".
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "lo?"  --default "a" --reversibility low    >/dev/null
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "md?"  --default "a" --reversibility medium >/dev/null
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "hi?"  --default "a" --reversibility high   >/dev/null
-  [ "$(_curl_calls)" = "1" ]
+  [ "$(_curl_calls)" = "2" ]
+  # Both surviving rich payloads carry the required-block fingerprint —
+  # rules out a regression that fires curl but silently truncates the body.
+  local md_hits hi_hits
+  md_hits=$(grep -ac 'md?' "$ATMUX_TEST_TMP/curl-args.bin" || echo 0)
+  hi_hits=$(grep -ac 'hi?' "$ATMUX_TEST_TMP/curl-args.bin" || echo 0)
+  [ "$md_hits" -ge 1 ]
+  [ "$hi_hits" -ge 1 ]
+  # Low question NEVER reached the curl tmpfile — it stayed batched.
+  ! grep -aq 'lo?' "$ATMUX_TEST_TMP/curl-args.bin"
 }
