@@ -13,6 +13,18 @@
 main() {
   atmux::require jq tmux
 
+  # ---- 0. arg parsing ----
+  # Mirror lib/start.sh:19-26: --force overrides topology drift refusal
+  # (ADR-027). The flag is symmetric with `atmux start --force` so the
+  # escape hatch works on whichever entry point the user invokes.
+  local force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force|-f) force=1; shift ;;
+      *) atmux::die "up: unknown arg: $1" ;;
+    esac
+  done
+
   # ---- 1. wizard gate ----
   if ! atmux::has_team; then
     _up_prompt_wizard || exit 1
@@ -27,10 +39,9 @@ main() {
 
   # ---- 2a. Topology invariant gate (ADR-027) ----
   # Targeted topology probe after the generic preflight so drift surfaces
-  # the row content + suggested fix verbatim. atmux up has no --force
-  # flag — escape hatches are `atmux start --force` (legacy non-single-
-  # session only) or fixing the drift via `atmux team rename`. Yellow
-  # rows warn loud; red rows die.
+  # the row content + suggested fix verbatim. --force mirrors
+  # lib/start.sh:88-91: red rows refuse unless --force flips the gate
+  # into warn-and-proceed. Yellow rows always warn loud but never refuse.
   # shellcheck source=doctor.sh
   . "$ATMUX_LIB_DIR/doctor.sh"
   _doctor_reset
@@ -42,9 +53,10 @@ main() {
         red\|topology:*|yellow\|topology:*) atmux::warn "${_row//|/  }" ;;
       esac
     done
-    if (( _doctor_red_count > 0 )); then
-      atmux::die "topology drift detected (ADR-027) — fix the red row above, or 'atmux start --force' / 'atmux start --no-doctor' to bypass"
+    if (( _doctor_red_count > 0 )) && [[ "$force" -ne 1 ]]; then
+      atmux::die "topology drift detected (ADR-027) — fix the red row above, rerun with --force to override, or fix the drift via 'atmux team rename'"
     fi
+    (( _doctor_red_count > 0 )) && atmux::warn "topology drift overridden by --force; proceeding"
   fi
 
   # ---- 3. start if not up ----
@@ -64,7 +76,7 @@ main() {
     atmux::log "not on a TTY — skipping attach (session: $session)"
     return 0
   fi
-  exec tmux attach-session -t "$session"
+  exec tmux attach-session -t "=$session"
 }
 
 # Interactive prompt offering to run the wizard. Shows the CWD prominently so
