@@ -1,6 +1,9 @@
 {
   "name": "my-team",
   "description": "atmux team — edit this to match your project",
+  "tmuxTmpdir": "/tmp/atmux-tmpdir-my-team",
+  "_comment_singleSession": "Default true per ADR-026 — driver + members share one tmux session for at-a-glance state. Set false ONLY for non-human-driven teams or detached observer setups (declared escape hatch, no longer wizard-prompted).",
+  "singleSession": true,
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type. atmux appends --model <model> unless the prefix already has one. Example: \"claude\": \"claude --plugin-dir=$HOME/work/journals/.sb/claude-skills\""
   },
@@ -57,6 +60,22 @@
       "cwd": "."
     },
     {
+      "name": "unblocker",
+      "role": "unblocker",
+      "lane": "misc",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "discorder",
+      "role": "discorder",
+      "lane": "misc",
+      "tui": "claude",
+      "model": "claude-sonnet-4-6",
+      "cwd": "."
+    },
+    {
       "name": "fe-auth",
       "role": "member",
       "lane": "fe",
@@ -89,5 +108,11 @@
   },
   "report": {
     "intervalMins": 30
+  },
+  "_comment_discord": "Optional. webhook = pings target (env ATMUX_DISCORD_WEBHOOK overrides). color = hex override for embed (auto-derived from team-name hash if absent, see ADR-019 §16-color palette). emoji = leading title glyph (defaults to 🤖). Strip any field to fall back to defaults.",
+  "discord": {
+    "webhook": "https://discord.com/api/webhooks/REPLACE_ME",
+    "color": "#7287fd",
+    "emoji": "🌊"
   }
 }
