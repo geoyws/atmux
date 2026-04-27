@@ -112,6 +112,27 @@ main() {
   ATMUX_RENAME_ROLLBACK_STACK+=("lock")
   _atmux_team_rename_log "step1: lock at $lock_file"
 
+  # ---- Step 1a: --migrate-session post-step (best-effort, pre-rename) ----
+  # Per Task t-130ab37a / flag f-5ba51c1c: --migrate-session was a parsed-
+  # but-dead flag. The verb's contract (lib/migrate.sh) hardcodes
+  # src_session = atmux-$team-name, so the call MUST happen BEFORE
+  # team.json:.name flips to $new (otherwise migrate would resolve
+  # src=atmux-$new which doesn't exist). Failure does NOT trigger
+  # rollback — rename will proceed; operator retries migration manually
+  # via 'atmux migrate-to-driver-session $new' once the new name is
+  # active. Cron consumers honour the rename.lock so the migrate verb
+  # runs alone. $TMUX precondition fails outside driver tmux —
+  # operator-facing surface.
+  if [[ "$migrate_session" == "1" ]]; then
+    if "$ATMUX_BIN_DIR/atmux" migrate-to-driver-session "$old" >&2; then
+      _atmux_team_rename_log "step1a: migrate-to-driver-session $old succeeded"
+    else
+      atmux::warn "team rename: --migrate-session step failed; rename will continue but windows may remain in '$old_session'"
+      atmux::warn "  retry once rename completes: atmux migrate-to-driver-session $new"
+      _atmux_team_rename_log "step1a: migrate-to-driver-session $old FAILED (best-effort, no rollback)"
+    fi
+  fi
+
   # ---- Step 2: team.json rewrite ----
   local backup
   if ! backup="$(_atmux_team_rename_step_team_json "$tj" "$new")"; then
@@ -124,8 +145,8 @@ main() {
   # ---- Step 3: tmux windows + (optional) session rename ----
   local rename_session_ok=0
   if [[ "$single_session" != "true" && "$old_session" != "$new_session" ]]; then
-    if tmux has-session -t "$old_session" 2>/dev/null; then
-      if tmux rename-session -t "$old_session" "$new_session" 2>/dev/null; then
+    if tmux has-session -t "=$old_session" 2>/dev/null; then
+      if tmux rename-session -t "=$old_session" "$new_session" 2>/dev/null; then
         rename_session_ok=1
         ATMUX_RENAME_ROLLBACK_STACK+=("tmux_session:$old_session:$new_session")
         _atmux_team_rename_log "step3a: tmux rename-session $old_session → $new_session"
@@ -172,8 +193,24 @@ main() {
   fi
 
   # ---- Step 6: registry update ----
+  # Preserve OLD entry's createdAt across the rename so the new-name entry
+  # carries the original creation epoch (ADR-025 history-preserving semantic
+  # — rename is a name-change, not a re-creation). f-159786bb was filed when
+  # rename treated the post-deregister upsert as a fresh registration. Empty
+  # old_created (legacy / pre-ADR-025 entry) → registry_upsert falls back
+  # to now_epoch on its own; we just don't pass --created-at in that case.
+  local old_created=""
+  if [[ -s "$rpath" ]]; then
+    old_created="$(jq -r --arg t "$old" '.[] | select(.name == $t) | .createdAt // empty' "$rpath" 2>/dev/null || true)"
+  fi
   atmux::registry_deregister "$old" >/dev/null 2>&1 || true
-  if ! atmux::registry_upsert "$new" "$proj_root" "$new_session" >/dev/null 2>&1; then
+  local _upsert_rc=0
+  if [[ -n "$old_created" ]]; then
+    atmux::registry_upsert "$new" "$proj_root" "$new_session" --created-at "$old_created" >/dev/null 2>&1 || _upsert_rc=$?
+  else
+    atmux::registry_upsert "$new" "$proj_root" "$new_session" >/dev/null 2>&1 || _upsert_rc=$?
+  fi
+  if (( _upsert_rc != 0 )); then
     _atmux_team_rename_log "step6: registry_upsert FAILED — rolling back"
     _atmux_team_rename_rollback "$old" "$new" "$old_session" "$new_session" "$tj" "$proj_root" "$lock_file"
     atmux::die "team rename: registry_upsert '$new' failed — rolled back"
@@ -237,7 +274,7 @@ _atmux_team_rename_step_team_json() {
 _atmux_team_rename_step_windows() {
   local old="$1" new="$2" session="$3"
   command -v tmux >/dev/null 2>&1 || return 0
-  tmux has-session -t "$session" 2>/dev/null || return 0
+  tmux has-session -t "=$session" 2>/dev/null || return 0
   local out=""
   while IFS=' ' read -r wid wname; do
     [[ -z "$wid" || -z "$wname" ]] && continue
@@ -247,7 +284,7 @@ _atmux_team_rename_step_windows() {
         out+="$wid:$wname:$new_wname "
       fi
     fi
-  done < <(tmux list-windows -t "$session" -F '#{window_id} #{window_name}' 2>/dev/null)
+  done < <(tmux list-windows -t "=$session" -F '#{window_id} #{window_name}' 2>/dev/null)
   printf '%s\n' "${out% }"
 }
 
@@ -276,8 +313,8 @@ _atmux_team_rename_rollback() {
       tmux_session)
         # rest = "<old_session>:<new_session>"
         local os="${rest%%:*}" ns="${rest#*:}"
-        if tmux has-session -t "$ns" 2>/dev/null; then
-          tmux rename-session -t "$ns" "$os" 2>/dev/null \
+        if tmux has-session -t "=$ns" 2>/dev/null; then
+          tmux rename-session -t "=$ns" "$os" 2>/dev/null \
             && _atmux_team_rename_log "rollback: tmux session $ns → $os"
         fi
         ;;
@@ -294,7 +331,7 @@ _atmux_team_rename_rollback() {
           local rest2="${triple#*:}"
           local told="${rest2%%:*}"
           local tnew="${rest2#*:}"
-          if tmux has-session -t "$sess" 2>/dev/null; then
+          if tmux has-session -t "=$sess" 2>/dev/null; then
             tmux rename-window -t "$twid" "$told" 2>/dev/null \
               && _atmux_team_rename_log "rollback: tmux window $tnew → $told"
           fi

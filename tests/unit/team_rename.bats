@@ -322,38 +322,37 @@ EOF
 # ---------- AC8: --migrate-session — legacy dedicated → driver consolidation ----------
 
 @test "team-rename: --migrate-session moves windows from atmux-old INTO driver's 'atmux' session" {
-  # Per Task t-c8d8fe80 AC8: "fixture: legacy dedicated session 'atmux-old';
-  # new session is driver's 'atmux'; invoke rename --migrate-session; assert
-  # windows moved INTO 'atmux' session (not just renamed in place)."
-  #
-  # Skipped until E10/Se BE lands the --migrate-session orchestration. The
-  # flag is currently parsed (lib/team-rename.sh:37) but never consumed by
-  # the orchestrator — `migrate_session` is dead in the rename body. See
-  # flag f-* (filed alongside this spec); follow-up Task should:
-  #   1. Read --migrate-session as the trigger to invoke
-  #      lib/migrate.sh::main on each __old__* window before the regular
-  #      rename-window pass, or
-  #   2. tmux move-window -s atmux-old:__old__N -t atmux:__new__N for each.
-  # When that lands, replace the skip with the assertions sketched below.
-  skip "BE gap: --migrate-session flag is parsed but unused in lib/team-rename.sh; spec deferred until orchestration lands"
-
-  jq '.singleSession = true' .atmux/team.json > .atmux/team.json.tmp \
-    && mv .atmux/team.json.tmp .atmux/team.json
-  mkdir -p .atmux/state
-  printf 'atmux\n' > .atmux/state/session.txt
+  # Per Task t-c8d8fe80 AC8 + E10/Se BE landing (t-130ab37a): rename
+  # invokes migrate-to-driver-session pre-team.json-edit when
+  # --migrate-session is set. Migrate moves windows from the legacy
+  # dedicated session into the driver session; then step 3b renames
+  # __old__* → __new__*.
 
   # Driver session 'atmux' is the migration TARGET; legacy dedicated
-  # 'atmux-old' carries the team's panes today.
+  # 'atmux-old' carries the team's panes today. Seed driver FIRST so
+  # migrate's $TMUX precondition + display-message can resolve to it.
   tmux new-session -d -s "atmux"     -n "shell"      3>&- 4>&-
   _seed_team_tmux_session "atmux-old" alpha
+
+  # Construct $TMUX env mimicking migrate_to_driver_session.bats: the
+  # migrate verb requires $TMUX set + display-message resolves to the
+  # driver's session via TMUX_PANE.
+  local sock pid sid pane
+  sock="$(tmux display-message -p '#{socket_path}')"
+  pid="$(tmux display-message -p '#{pid}')"
+  sid="$(tmux display-message -p -t atmux '#{session_id}' | tr -d '$')"
+  pane="$(tmux display-message -p -t atmux:shell '#{pane_id}')"
+  export TMUX="$sock,$pid,$sid"
+  export TMUX_PANE="$pane"
 
   run "$ATMUX_BIN" team rename old new --session atmux --migrate-session
   [ "$status" -eq 0 ]
 
-  # Windows moved into 'atmux', not just renamed in atmux-old.
+  # Windows moved into 'atmux', renamed __old__* → __new__*. Source
+  # session 'atmux-old' is killed by migrate's cleanup gate.
   local names; names="$(_tmux_window_names "atmux")"
-  [[ "$names" == *"__new__"* ]]
-  ! tmux has-session -t "atmux-old" 2>/dev/null
+  [[ "$names" == *"__new__alpha"* ]]
+  ! tmux has-session -t "=atmux-old" 2>/dev/null
 }
 
 # ---------- AC9: registry createdAt preservation across rename ----------
@@ -371,18 +370,13 @@ EOF
   run "$ATMUX_BIN" team rename old new
   [ "$status" -eq 0 ]
 
-  # SPEC ASSERTION (per Task body AC9): new entry inherits createdAt=1000.
-  # Skipped until E10/Se BE lands createdAt preservation. Current impl
-  # (lib/team-rename.sh:174-181) does deregister(old) + upsert(new); the
-  # upsert path always records createdAt=$NOW for entries it creates fresh.
-  # Follow-up Task should: in the orchestrator step6, read old.createdAt
-  # via `jq -r '.[] | select(.name==$o) | .createdAt'` BEFORE the
-  # deregister, then post-upsert jq-write it onto the new entry under the
-  # same flock as the upsert.
-  #
-  # Spec stays in place so a future BE patch can flip the skip → assertion.
-  skip "BE gap: registry_upsert always sets createdAt=now for new entries; team-rename does not pre-read old.createdAt"
-
+  # E10/Se landed createdAt preservation: orchestrator step6 reads old's
+  # createdAt before deregister, threads it through registry_upsert via
+  # the new --created-at flag, lib/registry.sh applies it to the freshly
+  # appended new-name entry. lastSeenAt should still be fresh (rename IS
+  # an event).
   local created; created="$(jq -r '.[] | select(.name=="new") | .createdAt' "$ATMUX_REGISTRY")"
   [ "$created" = "1000" ]
+  local last_seen; last_seen="$(jq -r '.[] | select(.name=="new") | .lastSeen' "$ATMUX_REGISTRY")"
+  [ "$last_seen" -gt 1000 ]
 }
