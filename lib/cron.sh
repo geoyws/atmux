@@ -36,11 +36,19 @@ _atmux_cron_resolve_bin() {
 
 # Render the 3-line cron block (no markers) for a team rooted at <atmux_dir>.
 # Schedules are baked here; future ADR can plumb team.json overrides.
+#
+# E8/Sc t-d49032e2 (ADR-018): when <tmuxTmpdir> is non-empty, the cron
+# lines prepend `TMUX_TMPDIR=<value> ` so cron-fired whip/report/decisions
+# digest invocations land on the team's isolated tmux socket. Without
+# this, `atmux::session_name`-resolved sessions live on a different
+# socket than what cron sees, and whip reports session DOWN forever.
 _atmux_cron_render_lines() {
-  local atmux_dir="$1" bin="$2"
-  printf '*/5 * * * * ATMUX_DIR=%s %s whip >> %s/logs/whip.log 2>&1\n'                  "$atmux_dir" "$bin" "$atmux_dir"
-  printf '*/30 * * * * ATMUX_DIR=%s %s report >> %s/logs/report.log 2>&1\n'             "$atmux_dir" "$bin" "$atmux_dir"
-  printf '0 */4 * * * ATMUX_DIR=%s %s decisions digest >> %s/logs/decisions-digest.log 2>&1\n' "$atmux_dir" "$bin" "$atmux_dir"
+  local atmux_dir="$1" bin="$2" tmuxtmpdir="${3:-}"
+  local prefix=""
+  [[ -n "$tmuxtmpdir" ]] && prefix="TMUX_TMPDIR=$tmuxtmpdir "
+  printf '*/5 * * * * %sATMUX_DIR=%s %s whip >> %s/logs/whip.log 2>&1\n'                  "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+  printf '*/30 * * * * %sATMUX_DIR=%s %s report >> %s/logs/report.log 2>&1\n'             "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+  printf '0 */4 * * * %sATMUX_DIR=%s %s decisions digest >> %s/logs/decisions-digest.log 2>&1\n' "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
 }
 
 # Drop the marker-bounded block (header + body + footer) for <team> from
@@ -100,6 +108,17 @@ atmux::cron_install() {
     return 0
   fi
 
+  # E8/Sc t-d49032e2 (ADR-018): if team.json declares an isolated tmux
+  # socket, propagate it into every emitted cron line. Empty / missing /
+  # malformed team.json → no prefix (legacy behaviour). jq absent ⇒
+  # silent no-op for the same reason cron_install tolerates a bare
+  # crontab missing — schedule features are best-effort.
+  local tmuxtmpdir=""
+  if command -v jq >/dev/null 2>&1 && [[ -f "$atmux_dir/team.json" ]]; then
+    tmuxtmpdir="$(jq -r '.tmuxTmpdir // empty' "$atmux_dir/team.json" 2>/dev/null)"
+    [[ "$tmuxtmpdir" == "null" ]] && tmuxtmpdir=""
+  fi
+
   local current
   current="$(crontab -l 2>/dev/null || true)"
 
@@ -111,7 +130,7 @@ atmux::cron_install() {
 
   local block
   block="# >>> atmux:team=$team — managed by atmux start; do not edit by hand"$'\n'
-  block+="$(_atmux_cron_render_lines "$atmux_dir" "$bin")"$'\n'
+  block+="$(_atmux_cron_render_lines "$atmux_dir" "$bin" "$tmuxtmpdir")"$'\n'
   block+="# <<< atmux:team=$team"
 
   local out
