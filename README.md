@@ -576,6 +576,64 @@ atmux super-tell sopx-mvp lead "rotate-lead — uptime over 4h, context rotting"
 
 The session sits idle when not in use. There is **no whip-cycle in Phase 1** — the driver invokes `super-attach` when fleet-wide coordination is needed, works, then exits. No 5-min watchdog, no 30-min digest, no idle Opus burn.
 
+### `atmux super-status`
+
+Cross-team triage in one shot. Reads every entry in `~/.claude/teams/registry.json`, assembles a per-team digest, and tops it with a fleet rollup. Read-only by default — no auto-mutation of registry state.
+
+**What it shows, per team:**
+
+- `name`, `projectRoot`, `sessionName`, liveness `status`.
+- Kanban rollup: `todo` / `in-progress` / `blocked` counts + `opsPending` (lane=`ops` Tasks not yet `done`).
+- Lead-outbox tail — last 3 lines of `<projectRoot>/.atmux/lead-outbox.md`.
+- Git: `git log --oneline -5` on `projectRoot` + ahead/behind vs `origin/<branch>`.
+- `lastCommit` + `lastOutbox` epoch timestamps (drives the fleet `idleTeams` rollup).
+
+**Fleet rollup section:**
+
+- Team count by status (running / stopped / stale).
+- `promoteReadyEpics` — Epics across all teams in `status: "review"` or with all-Stories-done.
+- `staleClaims` — `in-progress` Tasks whose `claimedAt` is older than 24h on any team.
+- `idleTeams` — no commit AND no lead-outbox activity in the last 24h (`stopped` teams skipped — that's operator-intentional, not a fleet anomaly).
+
+**Liveness check semantics.** Per registry entry: `tmux has-session -t <sessionName>` AND `<projectRoot>/.atmux/` directory present. Both pass → render `status: "running"`. Either fails → render `status: "stale"`. The check **never mutates the registry** — `--prune` is the only operator-explicit channel that flips an entry's stored status.
+
+**`--json` mode** for downstream consumption (dashboards, alert pipelines, ad-hoc `jq` queries). Schema is stable across releases:
+
+```jsonc
+{
+  "teams": [
+    {
+      "name": "atmux-kanban",
+      "projectRoot": "/root/work/src/atmux",
+      "sessionName": "atmux-kanban",
+      "status": "running",            // running | stopped | stale
+      "kanban": { "todo": 12, "inProgress": 3, "blocked": 1, "opsPending": 0 },
+      "leadOutbox": ["…last 3 non-blank lines…"],
+      "gitLog": ["abc1234 feat(x): …", "…"],   // up to 5
+      "branch": { "ahead": 2, "behind": 0 },
+      "lastCommit": 1777200000,        // epoch seconds
+      "lastOutbox": 1777199500
+    }
+  ],
+  "fleet": {
+    "counts": { "running": 2, "stopped": 0, "stale": 1, "total": 3 },
+    "promoteReadyEpics": [ { "team": "…", "id": "e-…", "title": "…", "status": "review" } ],
+    "staleClaims":       [ { "team": "…", "id": "t-…", "owner": "…", "claimedAt": 1777, "ageSec": 90000 } ],
+    "idleTeams":         [ { "name": "…", "lastCommit": 1777, "lastOutbox": 1777 } ]
+  }
+}
+```
+
+**`--prune` semantics.** Operator-explicit cleanup of liveness-failed registry entries — flips their stored `.status` to `"stale"` (no delete; ADR-025 keeps history). Default reads do NOT mutate. Run `super-status` first to see what will be flipped, then `super-status --prune` to apply:
+
+```bash
+atmux super-status                # read-only triage; renders 'stale' marker
+atmux super-status --prune        # operator-explicit; flips stored status
+```
+
+Cross-link: full mechanism + risk register in [`docs/adr/025-superdriver-phase-1.md`](docs/adr/025-superdriver-phase-1.md).
+
+
 ### Architectural posture
 
 - **Registry-as-file** at `~/.claude/teams/registry.json` — single source of truth for "what teams exist." flock-guarded writes mirror the `kanban.json.lock` pattern (bare `jq + mv` writes are a documented foot-gun and intentionally not used).
