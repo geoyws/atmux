@@ -46,6 +46,7 @@ EOF
   _doctor_check_crontab
   _doctor_check_cron_orphans
   _doctor_check_orphan_sessions
+  _doctor_check_topology_invariant
   _doctor_check_whip_hash
   _doctor_check_phantom_inboxes
   _doctor_check_logout_kill
@@ -510,6 +511,126 @@ _doctor_check_whip_hash() {
     _doctor_row yellow "whip-cron" \
       "whip-last.hash stale (${age_h}h old) — cron likely broken" \
       "check crontab; ATMUX_DEBUG=1 atmux whip --once"
+  fi
+}
+
+# Topology-invariant check (ADR-027 §invariant check). Confirms each
+# running registry entry maps to the right tmux session + correct window
+# count, and that the canonical `atmux-superdriver` session is up when
+# any team is running. Three severity rows + suggested fixes:
+#
+#   - red    "topology:<team> session-missing"   — registry says session
+#            <S> but `tmux has-session -t <S>` fails AND no other session
+#            holds the team's `__<team>__*` windows.
+#   - red    "topology:<team> wrong-session"     — registry says <S> but
+#            the team's windows live in <T> (T != S).
+#   - yellow "topology:<team> window-count"      — windows match the
+#            registry session but their count != team.json:.members[]
+#            length.
+#   - red    "topology:superdriver"              — at least one team is
+#            running but `atmux-superdriver` session is absent.
+#   - green  on full match.
+#
+# Skipped silently when: tmux unavailable, jq unavailable, registry empty,
+# or atmux::registry_list undefined (lazy-source path matches super-status).
+_doctor_check_topology_invariant() {
+  command -v tmux >/dev/null 2>&1 || return 0
+  command -v jq   >/dev/null 2>&1 || return 0
+
+  if ! declare -F atmux::registry_list >/dev/null 2>&1; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh" 2>/dev/null || return 0
+  fi
+
+  local rjson
+  rjson="$(atmux::registry_list --json 2>/dev/null || echo '[]')"
+  jq -e . <<<"$rjson" >/dev/null 2>&1 || return 0
+  [[ "$(jq 'length' <<<"$rjson")" -gt 0 ]] || return 0
+
+  local running
+  running="$(jq -c '[.[] | select(.status == "running")]' <<<"$rjson")"
+  local n_running; n_running="$(jq 'length' <<<"$running")"
+
+  # All currently-known tmux sessions — used for wrong-session detection
+  # when the registry-claimed session is missing or empty for the team.
+  local all_sessions
+  all_sessions="$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)"
+
+  local entry name proj sess
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    name="$(jq -r '.name'         <<<"$entry")"
+    proj="$(jq -r '.projectRoot'  <<<"$entry")"
+    sess="$(jq -r '.sessionName // ""' <<<"$entry")"
+    [[ -z "$name" || -z "$sess" ]] && continue
+
+    # Expected member count from the team's own team.json. Treat a
+    # missing/invalid file as "unknown expected count" — surface that
+    # as a yellow row rather than asserting against 0.
+    local tj="$proj/.atmux/team.json"
+    local expected=-1
+    if [[ -f "$tj" ]] && jq -e . "$tj" >/dev/null 2>&1; then
+      expected="$(jq -r '.members | length' "$tj" 2>/dev/null || echo -1)"
+      [[ "$expected" =~ ^[0-9]+$ ]] || expected=-1
+    fi
+
+    # Window count in the registry-claimed session.
+    local in_sess=0
+    if tmux has-session -t "$sess" 2>/dev/null; then
+      in_sess="$(tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null \
+                  | grep -c "^__${name}__" || true)"
+      [[ "$in_sess" =~ ^[0-9]+$ ]] || in_sess=0
+    fi
+
+    if (( in_sess > 0 )); then
+      if (( expected >= 0 )) && (( in_sess != expected )); then
+        _doctor_row yellow "topology:$name" \
+          "session=$sess has $in_sess windows but team.json expects $expected members" \
+          "audit member-by-member: tmux list-windows -t $sess | grep '^__${name}__'"
+      else
+        _doctor_row green "topology:$name" \
+          "session=$sess $in_sess members in $sess:*"
+      fi
+      continue
+    fi
+
+    # Registry-claimed session has no team windows. Look for them in any
+    # other session — drift from a rename or hand-moved windows.
+    local other_sess="" other_n=0 s n
+    while IFS= read -r s; do
+      [[ -z "$s" || "$s" == "$sess" ]] && continue
+      n="$(tmux list-windows -t "$s" -F '#{window_name}' 2>/dev/null \
+            | grep -c "^__${name}__" || true)"
+      [[ "$n" =~ ^[0-9]+$ ]] || n=0
+      if (( n > 0 )); then
+        other_sess="$s"
+        other_n="$n"
+        break
+      fi
+    done <<<"$all_sessions"
+
+    if [[ -n "$other_sess" ]]; then
+      _doctor_row red "topology:$name" \
+        "registry says session=$sess but $other_n windows live in $other_sess" \
+        "atmux team rename $name --session $other_sess --migrate-session OR atmux team rename $name --session $sess"
+    else
+      _doctor_row red "topology:$name" \
+        "session=$sess not found and no other session holds __${name}__ windows" \
+        "atmux team rename $name --session <actual> --migrate-session OR restart with atmux start"
+    fi
+  done < <(jq -c '.[]' <<<"$running")
+
+  # Superdriver: when ≥1 team is running, expect the canonical
+  # `atmux-superdriver` session to exist (per ADR-025 — fleet aggregator
+  # session). Absent → red row pointing at `atmux super-attach`.
+  if (( n_running > 0 )); then
+    if tmux has-session -t atmux-superdriver 2>/dev/null; then
+      _doctor_row green "topology:superdriver" "atmux-superdriver session up"
+    else
+      _doctor_row red "topology:superdriver" \
+        "atmux-superdriver session absent — fleet aggregator unavailable" \
+        "atmux super-attach"
+    fi
   fi
 }
 
