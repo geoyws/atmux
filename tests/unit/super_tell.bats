@@ -215,3 +215,66 @@ JSON
   [ "$status" -ne 0 ]
   [[ "$output" =~ "stopped" || "$output" =~ "prune" ]]
 }
+
+# ---------- durability fix (E10/Sc t-418db05a) — inbox is written FIRST so
+# ----------  preflight refuses + send-keys failures both leave a record
+# ----------  (README:688 contract: "the ask is never lost").
+
+@test "super-tell: durability — busy-pane refuse STILL writes driver-inbox entry" {
+  # Trigger Compacting refuse, same as test 4 — but assert the audit trail
+  # landed despite the refuse. Pre-fix this cell would FAIL because the
+  # inbox write was downstream of the busy-grep atmux::die.
+  tmux send-keys -t alpha:__alpha__lead "echo 'Compacting conversation in progress'" Enter
+  sleep 0.2
+
+  run "$ATMUX_BIN" super-tell alpha lead "ask-survives-refuse"
+  [ "$status" -ne 0 ]
+
+  # The ask landed in driver-inbox.md before the refuse fired.
+  [ -f "$TEAM_PROJ/.atmux/driver-inbox.md" ]
+  run grep -F "ask-survives-refuse" "$TEAM_PROJ/.atmux/driver-inbox.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "super-tell: durability — empty capture but window EXISTS proceeds (soft path)" {
+  # Spawn a fresh window with no shell prompt so capture-pane returns
+  # empty bytes — pre-fix, super-tell would atmux::die with 'window
+  # missing?'. Post-fix, the existence check distinguishes empty-but-
+  # exists from truly-missing.
+  tmux new-window -t alpha -n "__alpha__be-empty" 3>&- 4>&-
+  # Note: NO send-keys / no echo. Capture is intentionally empty.
+
+  # Add member to team.json so super-tell's `lead` resolution doesn't
+  # interfere (we target by literal name, not the lead sentinel).
+  jq '.members += [{"name":"be-empty","role":"member"}]' \
+    "$TEAM_PROJ/.atmux/team.json" > "$TEAM_PROJ/.atmux/team.json.tmp"
+  mv "$TEAM_PROJ/.atmux/team.json.tmp" "$TEAM_PROJ/.atmux/team.json"
+
+  run "$ATMUX_BIN" super-tell alpha be-empty "ping-empty-window"
+  [ "$status" -eq 0 ]
+
+  # Inbox entry landed AND send-keys delivered to the previously-empty pane.
+  run grep -F "ping-empty-window" "$TEAM_PROJ/.atmux/driver-inbox.md"
+  [ "$status" -eq 0 ]
+  local pane; pane="$(tmux capture-pane -p -t alpha:__alpha__be-empty -S -50 2>/dev/null)"
+  [[ "$pane" == *"ping-empty-window"* ]] || [[ "$pane" == *"super-tell"* ]]
+}
+
+@test "super-tell: durability — window truly missing dies, BUT inbox still records the ask" {
+  # Target a member literal that doesn't have a corresponding window —
+  # registry resolution succeeds (member listed in team.json) but the
+  # tmux window is absent. Pre-fix this matched the empty-capture branch
+  # and atmux::die'd with 'window missing?' before any inbox write.
+  # Post-fix: inbox write happens FIRST, then existence check fires die.
+  jq '.members += [{"name":"be-ghost","role":"member"}]' \
+    "$TEAM_PROJ/.atmux/team.json" > "$TEAM_PROJ/.atmux/team.json.tmp"
+  mv "$TEAM_PROJ/.atmux/team.json.tmp" "$TEAM_PROJ/.atmux/team.json"
+
+  run "$ATMUX_BIN" super-tell alpha be-ghost "typo-survives-die"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "no such window" ]]
+
+  # README:688 contract — even typo'd asks land for operator review.
+  run grep -F "typo-survives-die" "$TEAM_PROJ/.atmux/driver-inbox.md"
+  [ "$status" -eq 0 ]
+}

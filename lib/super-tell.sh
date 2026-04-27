@@ -96,23 +96,15 @@ main() {
     _tmux=(env "TMUX_TMPDIR=$tmpdir" tmux)
   fi
 
-  "${_tmux[@]}" has-session -t "$sess" 2>/dev/null \
+  "${_tmux[@]}" has-session -t "=$sess" 2>/dev/null \
     || atmux::die "super-tell: tmux session '$sess' missing for team '$team' — run 'atmux super-status --prune'"
 
-  # Pane-state preflight — refuse-don't-queue per OQ G4. Mirrors send.sh's
-  # readiness markers but escalates to die rather than warn-then-paste:
-  # cross-team channel can't tolerate a merged-with-queued-message edge
-  # case (the recipient lacks the local context to spot it).
-  local pane_state
-  pane_state="$("${_tmux[@]}" capture-pane -p -S -40 -t "$target" 2>/dev/null || true)"
-  [[ -n "$pane_state" ]] \
-    || atmux::die "super-tell: cannot capture pane '$target' — window '$win' missing in session '$sess'?"
-  if echo "$pane_state" | grep -Eiq 'thinking with|Compacting conversation|Press up to edit queued messages'; then
-    atmux::die "super-tell: target '$target_member' pane busy (thinking/compacting/queued) — retry once it clears"
-  fi
-
-  # Audit trail — append to target's driver-inbox.md BEFORE the pane ping
-  # so a failed send-keys still leaves a durable record of the ask.
+  # Audit trail FIRST — append to target's driver-inbox.md BEFORE any
+  # pane-state preflight. README:688 contract: "the ask is never lost".
+  # Pre-fix, a busy-pane refuse atmux::die'd before this write, dropping
+  # the ask. Now both pane-busy refuses AND send-keys failures leave a
+  # durable record (typo'd window names also get logged so the operator
+  # can clean up later — see preflight branch below).
   local di="$proot/.atmux/driver-inbox.md"
   mkdir -p "$(dirname "$di")"
   if [[ ! -f "$di" ]]; then
@@ -128,6 +120,28 @@ Keep entries bulleted, terse, and timestamped. Move >24h entries to "## Archive"
 EOF
   fi
   printf -- '- [%s] (super-tell → %s) %s\n' "$(atmux::now_myt)" "$target_member" "$msg" >> "$di"
+
+  # Pane-state preflight — refuse-don't-queue per OQ G4. Mirrors send.sh's
+  # readiness markers but escalates to die rather than warn-then-paste:
+  # cross-team channel can't tolerate a merged-with-queued-message edge
+  # case (the recipient lacks the local context to spot it).
+  local pane_state
+  pane_state="$("${_tmux[@]}" capture-pane -p -S -40 -t "$target" 2>/dev/null || true)"
+  if [[ -z "$pane_state" ]]; then
+    # Empty capture is ambiguous: freshly-spawned windows are bytewise
+    # empty for ~100ms before their shell renders a prompt. Distinguish
+    # window-exists-but-unrendered (soft path: proceed; send-keys works
+    # on empty windows too) from window-truly-missing (hard die).
+    local windows
+    windows="$("${_tmux[@]}" list-windows -t "=$sess" -F '#{window_name}' 2>/dev/null || true)"
+    if ! grep -qx -F -- "$win" <<<"$windows"; then
+      atmux::die "super-tell: no such window '$win' in session '$sess' (typo or stale registry — entry left in $di for cleanup)"
+    fi
+    # Window exists, content unrendered. Skip the busy-pane grep (empty
+    # content can't match the markers) and continue to send-keys.
+  elif echo "$pane_state" | grep -Eiq 'thinking with|Compacting conversation|Press up to edit queued messages'; then
+    atmux::die "super-tell: target '$target_member' pane busy (thinking/compacting/queued) — retry once it clears (audit: $di)"
+  fi
 
   # Heads-up paste. Short by design — the durable detail lives in
   # driver-inbox.md (just appended above); the pane-side message is just
