@@ -287,13 +287,20 @@ exit 0
 EOF
   chmod +x "$mockbin/curl"
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  # Force plain {content:<body>} shape so the .content extractor below stays
+  # valid post-ad23a89 embed-ping switch in lib/decisions.sh.
+  export ATMUX_DISCORD_PLAINTEXT=1
 
   # Use --reversibility high — per ADR-008 §S8 (gating) only `high`
   # triggers a per-add Discord ping. low/medium write to decisions.md
   # but skip the webhook (covered by unit tests in decisions_gating.bats).
   # Pre-gating this test used `medium` and silently failed once the gate
   # landed; the assertion was stale relative to the contract.
-  PATH="$mockbin:$PATH" run "$ATMUX_BIN" decisions add "ship pull-mode now?" --default "yes" --reversibility high
+  # --context is mandatory for high-reversibility per E6/Sd bf5d77f — driver
+  # interrupt-pings need inline rationale or the ping is empty noise.
+  PATH="$mockbin:$PATH" run "$ATMUX_BIN" decisions add "ship pull-mode now?" \
+    --default "yes" --reversibility high \
+    --context "pull-mode is the demo path; auto-dispatch already proven E10/Sd"
   [ "$status" -eq 0 ]
   local id; id=$(echo "$output" | tail -1)
   [[ "$id" =~ ^d-[0-9a-f]{8}$ ]]
