@@ -167,6 +167,8 @@ atmux decisions add "OQ7: Tenancy model — soft (RLS) vs hard (schema-per-tenan
 
 **S10 — write context-rich, not terse** (per ADR-008 §S10): field byte caps are GONE. `--context`, `--option` (×5), `--impact`, `--note`, `--decided-by` accept arbitrarily long strings. The Discord 2000-char body cap is handled by **section-by-section chunking** with a `[N/M]` header (up to 5 messages, 1s gap). Beyond 5 chunks, fields drop in order note → impact → options → context with `↳ atmux decisions show <id> for full` on the last chunk — **if you hit that marker, the decision is probably better split into multiple decisions** (one per OQ). See the OQ7 worked example above for the recommended shape.
 
+**Sb — high-rev rich-fields, medium/low compact** (per ADR-020): the renderer gates on `$rev` independent of the chunker. **`high`** gets full multi-section Discord expansion with a ~400-char per-field cap (single `↳ atmux decisions show <id> for full` marker if any field truncates). **`medium`/`low`** render COMPACT — only the required block (question/default/decided-by/reversibility/show-pointer/override) hits Discord; `--context`/`--option`/`--impact`/`--note` are SKIPPED from the ping body. Fields still persist to `decisions.md` in full regardless of `$rev`; the show-pointer is the recovery surface for compact-mode pings. **Implication for OQ resolutions**: on `--reversibility high`, ALWAYS pass `--context` AND `--impact` AND ≥2 `--option` flags so the inlined ping is self-sufficient (the driver shouldn't have to shell in to override). On medium/low, optional fields are still cheap to provide — the hourly digest surfaces them — but they won't appear on the immediate add-time ping.
+
 ## ADR format
 
 ```md

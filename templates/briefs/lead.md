@@ -149,6 +149,11 @@ Driver override channel for any tier: `atmux send lead "override d-xxx: <new>"` 
 - The Discord 2000-char body cap is now handled by **section-by-section chunking** with a `[N/M]` header — up to 5 messages per high-rev decision, 1s gap between pings to stay under Discord's rate limit.
 - If a decision still won't fit at 5 chunks, fields drop in this order: note → impact → options → context, and the last surviving chunk ends with `↳ atmux decisions show <id> for full`. **If you hit the truncation marker, your decision is probably better split into multiple decisions.**
 
+**Sb — high-rev rich-fields, medium/low compact** (per ADR-020): the renderer gates on `$rev` independent of the chunker.
+- **`high`** — full multi-section Discord expansion with a ~400-char per-field cap. Single `↳ atmux decisions show <id> for full` marker on the last chunk if any field truncates.
+- **`medium`/`low`** — COMPACT mode. Only the required block (question/default/decided-by/reversibility/show-pointer/override) hits Discord; `--context`/`--option`/`--impact`/`--note` are SKIPPED from the ping body. Fields still persist in full to `decisions.md` regardless of `$rev`; show-pointer is the recovery surface for compact pings.
+- **Implication for the lead.** When you escalate a recommended default via `atmux decisions add --reversibility high`, ALWAYS pass `--context` AND `--impact` AND ≥2 `--option` flags so the inlined ping is self-sufficient (the driver shouldn't have to shell in to override on phone). On medium/low, optional fields are still cheap and the hourly digest surfaces them — but they won't appear on the immediate add-time ping.
+
 ## Auto-rotation
 
 - **`team.whip.autoRotate` flag, default `false`** — opt-in, set in `team.json` under the `whip` key. Default off because `/clear` destroys the lead pane's full conversation context; existing teams must not get auto-`/clear`'d on upgrade. Flip once with eyes open.
