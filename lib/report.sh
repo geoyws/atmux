@@ -77,7 +77,7 @@ main() {
 
   echo "$body"
   if [[ "$push_discord" -eq 1 ]]; then
-    atmux::discord_ping "$body"
+    atmux::discord_embed_ping "$body"
   fi
 
   echo "$now" > "$last_file"

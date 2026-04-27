@@ -22,6 +22,11 @@ for arg in "\$@"; do printf '%s\0' "\$arg"; done
 exit 0
 EOF
   chmod +x "$ATMUX_MOCK_BIN/curl"
+
+  # Force plain {content:<body>} shape so the existing .content-based
+  # payload extractors stay valid post-ADR-019 embed switch. Embed-shape
+  # coverage lives in tests/unit/discord_palette.bats.
+  export ATMUX_DISCORD_PLAINTEXT=1
 }
 
 teardown() {
@@ -116,7 +121,7 @@ _curl_payload_content() {
 
 @test "decisions: list --json returns parseable JSON array" {
   "$ATMUX_BIN" decisions add "Q1?" --default "A1" --reversibility low    >/dev/null
-  "$ATMUX_BIN" decisions add "Q2?" --default "A2" --reversibility medium >/dev/null
+  "$ATMUX_BIN" decisions add "Q2?" --default "A2" --reversibility medium --context "Q2 ctx" >/dev/null
   run "$ATMUX_BIN" decisions list --json
   [ "$status" -eq 0 ]
   # Two entries, sorted DESC by timestamp (Q2 added second → first in output).
@@ -126,7 +131,7 @@ _curl_payload_content() {
 
 @test "decisions: list --reversibility filters" {
   "$ATMUX_BIN" decisions add "Q-low?"  --default "A1" --reversibility low    >/dev/null
-  "$ATMUX_BIN" decisions add "Q-high?" --default "A2" --reversibility high   >/dev/null
+  "$ATMUX_BIN" decisions add "Q-high?" --default "A2" --reversibility high   --context "Q-high ctx" >/dev/null
   local listed; listed=$("$ATMUX_BIN" decisions list --reversibility high --json)
   [ "$(jq -r 'length' <<<"$listed")" = "1" ]
   [ "$(jq -r '.[0].question' <<<"$listed")" = "Q-high?" ]
@@ -166,7 +171,7 @@ _curl_payload_content() {
   # high here so the template assertions still exercise the payload shape;
   # the medium/low gate behaviour is asserted in decisions_gating.bats.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "ship now?" --default "yes" --reversibility high
+  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "ship now?" --default "yes" --reversibility high --context "ship-now ctx"
   [ "$status" -eq 0 ]
   [ -f "$ATMUX_TEST_TMP/curl-args.bin" ]
   local body; body=$(_curl_payload_content)
@@ -187,7 +192,7 @@ _curl_payload_content() {
   # Use --reversibility high so the gate (post-t-398bc8a1) lets the ping
   # through. We're only verifying header content here, not gate semantics.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "named?" --default "y" --reversibility high >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "named?" --default "y" --reversibility high --context "named ctx" >/dev/null
   local body; body=$(_curl_payload_content)
   # Header format: 📋 **[atmux-decisions]** · `<team>` · HH:MM MYT
   # Team was set via `init --name k` in setup.
@@ -207,11 +212,10 @@ _curl_payload_content() {
   done <<<"$body"
 }
 
-@test "decisions: reversibility=high maps to 🔴 in payload (low/medium gated, no ping)" {
-  # Post-t-398bc8a1: only high triggers a Discord ping. Low + medium are
-  # silent (logged-only). The emoji map itself still pre-exists in the
-  # template renderer; we just can't observe it via curl when the gate
-  # blocks the call. Verify high pings with 🔴; assert low/medium don't ping.
+@test "decisions: reversibility=high maps to 🔴 in payload (low gated silent)" {
+  # Post-E6/S1 (t-d0750a1b): high + medium both trigger the rich ping;
+  # low stays whip-batched. This test focuses on the high → 🔴 mapping;
+  # low/medium gate behaviour is asserted in decisions_gating.bats.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
 
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
@@ -219,11 +223,7 @@ _curl_payload_content() {
   [ ! -f "$ATMUX_TEST_TMP/curl-args.bin" ]
 
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "med one?"  --default "a" --reversibility medium >/dev/null
-  [ ! -f "$ATMUX_TEST_TMP/curl-args.bin" ]
-
-  rm -f "$ATMUX_TEST_TMP/curl-args.bin"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "high one?" --default "a" --reversibility high >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "high one?" --default "a" --reversibility high --context "high ctx" >/dev/null
   [[ "$(_curl_payload_content)" =~ 🔴 ]]
 }
 
@@ -240,7 +240,7 @@ _curl_payload_content() {
   # Use high so the gate lets the ping through; without it the body would
   # be empty and the assertion would pass vacuously.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "nonote?" --default "y" --reversibility high >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "nonote?" --default "y" --reversibility high --context "nonote ctx" >/dev/null
   local body; body=$(_curl_payload_content)
   [ -n "$body" ]
   ! [[ "$body" =~ "📝 note:" ]]
@@ -436,20 +436,19 @@ LEGACY_EOF
 
 # ---------- E2/S9 render path: new fields in Discord template ----------
 
-@test "decisions: render — minimal call (no new fields) keeps required-only emoji" {
-  # Backward-compat: a high-rev decision with no new fields renders just
-  # the question/default/reversibility/show/override block (plus no
-  # 👤/🌐/⚖️/💥 lines) — bit-identical to today's body shape modulo the
-  # 'question:' prefix added in T2.
+@test "decisions: render — minimal call (context only) emits required block + 🌐, no 👤/⚖️/💥/📝" {
+  # E6/Sd: --context (or --note) is required for high-rev. Use --context
+  # as the minimal optional payload; assert the required block + 🌐 fire,
+  # but no other optional emoji (👤/⚖️/💥/📝) appear.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "minimal?" --default "yes" --reversibility high >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "minimal?" --default "yes" --reversibility high --context "minimal ctx" >/dev/null
   local body; body=$(_curl_payload_content)
   [[ "$body" =~ "🔵 question: minimal?" ]]
   [[ "$body" =~ "✅ default: yes" ]]
   [[ "$body" =~ "🔴 reversibility: high" ]]
   [[ "$body" =~ "📍 atmux decisions show d-" ]]
+  [[ "$body" =~ "🌐 context: minimal ctx" ]]
   [[ ! "$body" =~ "👤 decided-by:" ]]
-  [[ ! "$body" =~ "🌐 context:" ]]
   [[ ! "$body" =~ "⚖️ options:" ]]
   [[ ! "$body" =~ "💥 impact:" ]]
   [[ ! "$body" =~ "📝 note:" ]]
@@ -500,7 +499,7 @@ LEGACY_EOF
 @test "decisions: render — options sub-list emits indented '  - <opt>' bullets" {
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "options?" \
-    --default "A" --reversibility high \
+    --default "A" --reversibility high --context "opts ctx" \
     --option "alpha" --option "beta" >/dev/null
   local body; body=$(_curl_payload_content)
   [[ "$body" =~ "⚖️ options:" ]]
@@ -530,16 +529,25 @@ _curl_call_count() {
   awk 'BEGIN{RS="\0"} /^http:/{n++} END{print n+0}' "$f"
 }
 
-@test "decisions: 2 mid-sized fields ⇒ ≥2 chunks; chunk1 has required fields; chunks carry [N/M]" {
-  # Per BE smoke (t-9a946e44): chunk1 ≈ 200 char required + ~1620 spare;
-  # fresh chunk budget ≈ 1820. Two ~1500-char fields force overflow into
-  # chunk 2 — but each individual field fits a fresh chunk so neither is
-  # dropped under the S9 keep-order rule.
+@test "decisions: 4 capped fields ⇒ ≥2 chunks; chunk1 has required fields; chunks carry [N/M]" {
+  # ad23a89 (E9/Sb t-b9dcf15b) added a 400-char per-field cap applied
+  # BEFORE chunker assembly — so the pre-Sb "2 × 1500-char fields → 2
+  # chunks" pattern collapses into 1 chunk after capping (2 × 400 + req
+  # ≈ 1050 chars, well under the 1900-char single-message budget).
+  #
+  # New trigger: pass 4 capped sections (context/options/impact/note)
+  # all just over the cap. Single-message budget (~1900) overflows
+  # because 4 × ~415 + req + hdr ≈ 2000; multi-chunk path packs all 4
+  # capped sections into chunks[1], yielding 2 chunks total. Each
+  # individual capped section still fits a fresh chunk's body_budget
+  # (~1820), so none get dropped under the S9 keep-order rule.
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
-  local mid; mid=$(printf '%.0sN' {1..1500})
+  local cap_plus; cap_plus=$(printf '%.0sN' {1..401})
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "spill?" \
-    --default "yes" --reversibility high --context "$mid" --note "$mid" >/dev/null
+    --default "yes" --reversibility high \
+    --context "$cap_plus" --option "$cap_plus" --option "$cap_plus" \
+    --impact "$cap_plus" --note "$cap_plus" >/dev/null
   local calls; calls=$(_curl_call_count)
   [ "$calls" -ge 2 ]
 

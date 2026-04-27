@@ -27,6 +27,10 @@ EOF
   chmod +x "$ATMUX_MOCK_BIN/curl"
 
   export ATMUX_DISCORD_WEBHOOK="http://mock.test/hook"
+  # Force plain {content:<body>} shape so existing .content-based payload
+  # extractors stay valid post-ADR-019 embed switch. Embed-shape coverage
+  # lives in tests/unit/discord_palette.bats.
+  export ATMUX_DISCORD_PLAINTEXT=1
 }
 
 teardown() {

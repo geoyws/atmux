@@ -265,7 +265,7 @@ _atmux_flags_add() {
     local team; team="$(atmux::team_name)"
     local body; body="$(_flags_render_discord \
       "$id" "$member" "$severity" "$needs" "$task" "$message" "$note" "$team" "$hhmm")"
-    atmux::discord_ping "$body"
+    atmux::discord_embed_ping "$body"
   fi
 
   atmux::ok "flags: recorded $id"

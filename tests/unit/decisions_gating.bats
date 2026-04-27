@@ -57,7 +57,7 @@ _curl_received_rich_render() {
 
 @test "gating: reversibility=high ⇒ rich render fires + decisions.md gains entry" {
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
-  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "ship?" --default "y" --reversibility high
+  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "ship?" --default "y" --reversibility high --context "ship ctx"
   [ "$status" -eq 0 ]
   [ "$(_curl_calls)" -ge 1 ]
   _curl_received_rich_render
@@ -71,7 +71,7 @@ _curl_received_rich_render() {
   # same chunked render as high — captured curl payload must carry the rich
   # render's required-block fingerprint, not just a count > 0.
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
-  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "switch?" --default "n" --reversibility medium
+  PATH="$ATMUX_MOCK_BIN:$PATH" run "$ATMUX_BIN" decisions add "switch?" --default "n" --reversibility medium --context "switch ctx"
   [ "$status" -eq 0 ]
   [ "$(_curl_calls)" -ge 1 ]
   _curl_received_rich_render
@@ -106,8 +106,8 @@ _curl_received_rich_render() {
 
 @test "gating: show <id> output is identical shape across all 3 reversibility levels" {
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "low-q?"  --default "a" --reversibility low    >/dev/null
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "med-q?"  --default "a" --reversibility medium >/dev/null
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "high-q?" --default "a" --reversibility high   >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "med-q?"  --default "a" --reversibility medium --context "med-q ctx" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "high-q?" --default "a" --reversibility high   --context "high-q ctx" >/dev/null
 
   local low_id med_id high_id
   low_id=$("$ATMUX_BIN" decisions list --json | jq -r '.[] | select(.question=="low-q?") | .id')
@@ -126,8 +126,8 @@ _curl_received_rich_render() {
 
 @test "gating: list returns all 3 entries regardless of ping path" {
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q-low?"  --default "a" --reversibility low    >/dev/null
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q-med?"  --default "a" --reversibility medium >/dev/null
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q-high?" --default "a" --reversibility high   >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q-med?"  --default "a" --reversibility medium --context "q-med ctx" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "q-high?" --default "a" --reversibility high   --context "q-high ctx" >/dev/null
   run "$ATMUX_BIN" decisions list --json
   [ "$status" -eq 0 ]
   [ "$(jq -r 'length' <<<"$output")" = "3" ]
@@ -137,8 +137,8 @@ _curl_received_rich_render() {
 
 @test "gating: list --reversibility filter unaffected by ping path (all 3 levels listable)" {
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "Q-low?"  --default "a" --reversibility low    >/dev/null
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "Q-med?"  --default "a" --reversibility medium >/dev/null
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "Q-high?" --default "a" --reversibility high   >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "Q-med?"  --default "a" --reversibility medium --context "Q-med ctx" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "Q-high?" --default "a" --reversibility high   --context "Q-high ctx" >/dev/null
 
   for level in low medium high; do
     local listed; listed=$("$ATMUX_BIN" decisions list --reversibility "$level" --json)
@@ -156,8 +156,8 @@ _curl_received_rich_render() {
   # to "decisions that fired the rich path".
   rm -f "$ATMUX_TEST_TMP/curl-args.bin"
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "lo?"  --default "a" --reversibility low    >/dev/null
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "md?"  --default "a" --reversibility medium >/dev/null
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "hi?"  --default "a" --reversibility high   >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "md?"  --default "a" --reversibility medium --context "md ctx" >/dev/null
+  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" decisions add "hi?"  --default "a" --reversibility high   --context "hi ctx" >/dev/null
   [ "$(_curl_calls)" = "2" ]
   # Both surviving rich payloads carry the required-block fingerprint —
   # rules out a regression that fires curl but silently truncates the body.

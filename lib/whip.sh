@@ -574,7 +574,7 @@ _atmux_report_and_exit() {
     # power of 2".
     if (( quiet_count > 1 && (quiet_count & (quiet_count - 1)) == 0 )); then
       atmux::log "whip: log-backoff resample (quiet_count=$quiet_count) — pinging"
-      atmux::discord_ping "$body"
+      atmux::discord_embed_ping "$body"
     else
       atmux::log "whip: body unchanged (quiet_count=$quiet_count) — skipping ping"
     fi
@@ -584,7 +584,7 @@ _atmux_report_and_exit() {
   # Hash changed → real news. Reset the quiet counter, ping, persist hash.
   mkdir -p "$(dirname "$quiet_file")"
   echo 0 > "$quiet_file"
-  atmux::discord_ping "$body"
+  atmux::discord_embed_ping "$body"
   mkdir -p "$(dirname "$hash_file")"
   printf '%s\n' "$body_hash" > "$hash_file"
 }

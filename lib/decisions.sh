@@ -289,7 +289,7 @@ _atmux_decisions_add() {
       "$context" "$impact" "$decided_by" "${#options[@]}" "${options[@]}")
     local total=${#chunks[@]} _i
     for (( _i=0; _i<total; _i++ )); do
-      atmux::discord_ping "${chunks[_i]}"
+      atmux::discord_embed_ping "${chunks[_i]}"
       if (( _i < total - 1 )); then sleep 1; fi
     done
   fi
@@ -676,7 +676,7 @@ _atmux_decisions_digest() {
     else
       body="${header}"$'\n\n'"${groups[$i]}"
     fi
-    atmux::discord_ping "$body"
+    atmux::discord_embed_ping "$body"
     if (( i < total - 1 )); then sleep 1; fi
   done
 
