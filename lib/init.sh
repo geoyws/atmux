@@ -59,6 +59,23 @@ main() {
     [[ -f "$ib" ]] || echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"
   done < <(jq -r '.members[].name' "$tj")
 
+  # E10/Sa t-1f2bcb96 (ADR-025) — register the team in the global fleet
+  # registry so super-status / cross-team helpers can enumerate without
+  # filesystem heuristics. Single-session teams (per ADR-016) use the
+  # legacy `atmux-<team>` name as a placeholder here; lib/start.sh's
+  # registry_touch hook refreshes the sessionName to the actual driver
+  # session once .atmux/state/session.txt is seeded. Best-effort —
+  # registry lock contention / perms / missing-helper shouldn't fail
+  # init; the team can still operate locally without registry presence.
+  if [[ -f "$ATMUX_LIB_DIR/registry.sh" ]]; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh"
+    if declare -F atmux::registry_upsert >/dev/null 2>&1; then
+      atmux::registry_upsert "$team_name" "$PWD" "atmux-$team_name" 2>/dev/null \
+        || atmux::warn "registry_upsert failed for '$team_name' — team initialized but not in fleet registry"
+    fi
+  fi
+
   atmux::ok "initialized atmux team '$team_name' at $dir"
   echo ""
   echo "Next:"
