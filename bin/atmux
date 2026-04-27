@@ -126,6 +126,11 @@ Superdriver (cross-team / fleet — ADR-025):
   super-attach                Attach (or spawn) the global atmux-superdriver
                               tmux session — single Claude (Opus) pane for
                               cross-team coordination. Not team-bound.
+  super-status [--json] [--prune]
+                              Per-team digest + fleet rollup across every
+                              registered team. Read-only by default; --prune
+                              flips liveness-failed entries to status='stale'
+                              in the registry (preserves entry per ADR-025).
 
 Misc:
   version
