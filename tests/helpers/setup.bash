@@ -45,6 +45,14 @@ atmux_setup_sandbox() {
   # that slipped through (e.g. tests that override the var, or pre-SB_T1
   # code paths that miss the env-var gate).
   export ATMUX_NO_CRON=1
+  # Sandbox HISTFILE so panes spawned by `atmux start` (which run
+  # `exec $SHELL` in their initial command) don't append their brief +
+  # member-init noise to the operator's real ~/.zsh_history. Observed
+  # 2026-04-27: 1.2 MB of leaked brief content / `export ATMUX_MEMBER=...`
+  # lines after a single full test run. HISTFILE is honored by both bash
+  # and zsh; setting it before pane spawn confines all writes to the
+  # sandbox tmpdir, which the teardown rm-rf reaps.
+  export HISTFILE="$ATMUX_TEST_TMP/zsh_history"
 }
 
 atmux_teardown_sandbox() {
@@ -103,6 +111,43 @@ _atmux_teardown_cron_sweep() {
     [[ -n "$team" ]] || continue
     atmux::cron_remove "$team" >/dev/null 2>&1 || true
   done < <(find "$ATMUX_TEST_TMP" -name team.json -path '*/.atmux/team.json' 2>/dev/null)
+
+  # 2026-04-27 reinforcement: the team.json walk above only catches lines
+  # whose sandbox dir still exists. A prior test process killed mid-run
+  # (BATS_TEST_TIMEOUT, OOM, ^C) leaks a crontab line whose ATMUX_DIR
+  # points into a now-deleted /tmp/atmux-test-XXXXXX. Those lines fire
+  # every minute against the OPERATOR's default tmux socket (cron has no
+  # TMUX_TMPDIR) — the documented vector for the 2026-04-22..27 daily-
+  # driver tmux deaths. Path-based sweep below scrubs every line whose
+  # ATMUX_DIR points at /tmp/atmux-{test,stop}-* regardless of which
+  # bats run created it. Runs always — independent of the team.json walk.
+  _atmux_teardown_cron_path_sweep
+}
+
+# Path-based crontab purge — scrubs every line containing /tmp/atmux-
+# sandbox prefixes from the host's crontab, atomically. Runs in addition
+# to the team.json walk so crashed-mid-test runs from PREVIOUS sessions
+# can't continue firing whip/report/digest against the operator's real
+# tmux socket every minute.
+_atmux_teardown_cron_path_sweep() {
+  command -v crontab >/dev/null 2>&1 || return 0
+  local current
+  current="$(crontab -l 2>/dev/null || true)"
+  [[ -z "$current" ]] && return 0
+
+  # Drop lines mentioning /tmp/atmux-test- or /tmp/atmux-stop- — the
+  # mktemp prefixes used by atmux_setup_sandbox + tests/unit/stop.bats.
+  local stripped
+  stripped="$(printf '%s\n' "$current" \
+    | grep -vE '/tmp/atmux-(test|stop)-' || true)"
+
+  # No-op when nothing changed (avoids needless crontab swap mtime bump).
+  [[ "$stripped" == "$current" || "$stripped" == "$current"$'\n' ]] && return 0
+
+  local tmp; tmp="$(mktemp /tmp/atmux-cron-sweep-XXXXXX)"
+  printf '%s\n' "$stripped" > "$tmp"
+  crontab "$tmp" 2>/dev/null || true
+  rm -f "$tmp"
 }
 
 # Force single-tick session-DOWN alerting (E6/S1 t-9e85a35c). Many whip

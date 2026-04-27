@@ -1,7 +1,7 @@
 {
   "name": "my-team",
   "description": "atmux team — edit this to match your project",
-  "tmuxTmpdir": "/tmp/atmux-tmpdir-my-team",
+  "tmuxTmpdir": "/tmp/atmux-tmux-my-team",
   "_comment_singleSession": "Default true per ADR-026 — driver + members share one tmux session for at-a-glance state. Set false ONLY for non-human-driven teams or detached observer setups (declared escape hatch, no longer wizard-prompted).",
   "singleSession": true,
   "tuiCommands": {

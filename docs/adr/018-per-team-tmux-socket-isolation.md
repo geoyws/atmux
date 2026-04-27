@@ -42,7 +42,20 @@ After this Epic ships, set `tmuxTmpdir: "/tmp/atmux-tmux-atmux-kanban"` in `/roo
 ## Open questions
 
 1. **OQ3: auto-create `tmuxTmpdir` if missing?** Resolved: yes — `mkdir -p` in bin/atmux. Consistent with `atmux_setup_sandbox`. (low-rev.)
-2. **OQ4: should init wizard prompt for tmuxTmpdir?** Resolved: NO. Manual edit only; README documents. Field is for advanced dogfooding setups, not first-run UX. (low-rev — easy to add wizard prompt later.)
+2. **OQ4: should init wizard prompt for tmuxTmpdir?** Originally resolved NO. **Reversed 2026-04-27** (see amendment below). Wizard now defaults to cage isolation with explicit prompt + opt-out; `bin/atmux-tmux` ships as a sibling binary that resolves the socket from team.json so operators never type the path. Original reasoning ("advanced dogfooding only") was invalidated by 6 daily-driver tmux deaths in 5 days from teams sharing the operator's default socket.
 3. **Out-of-scope carve-out**: `lib/attach.sh` does NOT need a `-S <socket>` plumbing change because bin/atmux exports `TMUX_TMPDIR` globally before attach runs. If a future ADR allows attaching to a team WITHOUT going through the bin/atmux entrypoint (e.g. systemd user service), revisit this.
 
 All resolutions logged to `.atmux/decisions.md` via `atmux decisions add`.
+
+## Amendment — 2026-04-27 (cage-isolation as wizard default)
+
+After 6 daily-driver tmux deaths (2026-04-22 through 2026-04-27), the original "advanced dogfooding only" framing is wrong. Every actively-iterated team — not just dogfooding — benefits from the blast-radius firewall. Concrete change set:
+
+- **Wizard prompts for cage isolation, default `y`** (`lib/init.sh` adds `_atmux_prompt_choice cage_isolation` after the singleSession block). Auto-derives path as `/tmp/atmux-tmux-<team>` (note the naming change from the OQ3-era `/tmp/atmux-tmpdir-<team>` for consistency with the `atmux-tmux` binary name).
+- **Template-init code path** (`atmux init` non-wizard) also uses `/tmp/atmux-tmux-<team>` by default. No opt-out at template-init level — too rare a use case to warrant a flag.
+- **`bin/atmux-tmux` ships as a sibling binary.** Walks up from CWD to find `.atmux/team.json`, reads `.tmuxTmpdir`, exec's `tmux -S <tmpdir>/tmux-$UID/default "$@"`. Falls back to bare `tmux` outside any atmux project, so it's a transparent drop-in. `install.sh` symlinks it alongside `atmux`.
+- **Wizard tip-block** on completion shows the cage path, the `atmux-tmux attach` command, and a one-line note that all atmux verbs invoked from the project dir auto-target the cage.
+- **Naming convention**: `/tmp/atmux-tmux-<team>` — `<team>` is the team.json `.name` field verbatim. The existing `atmux` dogfooding team uses the bare `/tmp/atmux-tmux` (no suffix) because the team is literally named `atmux` and the doubled `atmux-tmux-atmux` was awkward; this is the only allowed deviation from the convention.
+- **Opt-out path stays**: declining the wizard prompt omits `tmuxTmpdir` from team.json entirely → bin/atmux's `_atmux_resolve_tmux_tmpdir` early-returns (operator-empty TMUX_TMPDIR) → team falls back to default socket. For observer-only teams that never run destructive verbs, this is fine.
+
+The 4-team migration that motivated this amendment (`atmux`, `ifca_aix`, `ifca_sopx`, `unum_beads` all moved from default socket to per-team cages on 2026-04-27) is the canonical rollout reference.

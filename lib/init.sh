@@ -88,8 +88,17 @@ _atmux_init_template() {
   local team_name="$1" tj="$2"
   local tmpl="$ATMUX_ROOT/templates/team.example.json"
   [[ -f "$tmpl" ]] || atmux::die "template missing: $tmpl"
+  # tmuxTmpdir defaults to /tmp/atmux-tmux-<name> so a buggy or stress-test
+  # team can never wedge the user's daily-driver tmux server. Incident
+  # 2026-04-27: a `smoke-stop` scaffold ran on the shared default socket and
+  # a SIGCHLD storm from ~30 simultaneous pane teardowns wedged tmux 3.x for
+  # every other session on the box. Per-team socket = blast-radius firewall.
+  # Pair `atmux-tmux attach` with the field — that wrapper resolves the
+  # socket from team.json so operators don't have to remember the path.
   jq --arg name "$team_name" --arg cwd "$PWD" \
-    '.name = $name | (.members[] |= (.cwd = $cwd))' \
+    '.name = $name
+     | .tmuxTmpdir = "/tmp/atmux-tmux-" + $name
+     | (.members[] |= (.cwd = $cwd))' \
     "$tmpl" > "$tj"
 }
 
@@ -185,12 +194,14 @@ _atmux_init_wizard() {
   local staff_tui="claude"
   [[ "$preset" == "eco" ]] && staff_tui="opencode"
 
-  local include_planner include_reviewer include_gitter include_devops include_dba
-  _atmux_prompt_choice include_planner  "Include planner member (owns decomposition + ADRs)" "y" y n
-  _atmux_prompt_choice include_reviewer "Include reviewer member"  "y" y n
-  _atmux_prompt_choice include_gitter   "Include gitter member (git commits + push)" "y" y n
-  _atmux_prompt_choice include_devops   "Include devops member"    "n" y n
-  _atmux_prompt_choice include_dba      "Include dba member (schema / migrations / SQL)" "n" y n
+  local include_planner include_reviewer include_gitter include_devops include_dba include_unblocker include_discorder
+  _atmux_prompt_choice include_planner    "Include planner member (owns decomposition + ADRs)" "y" y n
+  _atmux_prompt_choice include_reviewer   "Include reviewer member"  "y" y n
+  _atmux_prompt_choice include_gitter     "Include gitter member (git commits + push)" "y" y n
+  _atmux_prompt_choice include_devops     "Include devops member"    "n" y n
+  _atmux_prompt_choice include_dba        "Include dba member (schema / migrations / SQL)" "n" y n
+  _atmux_prompt_choice include_unblocker  "Include unblocker member (jam-buster — pulls stuck Tasks across lanes)" "n" y n
+  _atmux_prompt_choice include_discorder  "Include discorder member (scheduled Discord pings — progress digest + heartbeat)" "n" y n
 
   local n_workers; _atmux_prompt n_workers "Number of worker members" "3"
   [[ "$n_workers" =~ ^[0-9]+$ ]] || { atmux::warn "wizard: bad count, defaulting to 3"; n_workers=3; }
@@ -202,18 +213,27 @@ _atmux_init_wizard() {
 
   local discord_hook; _atmux_prompt discord_hook "Discord webhook URL (optional, Enter to skip)" ""
 
-  # E7/Sa t-a5216115 — singleSession topology opt-in. Default false
-  # (legacy: dedicated atmux-<team> session). When true, atmux start
-  # spawns team windows INSIDE the driver's existing tmux session —
-  # cleaner `tmux ls`, team-switch becomes window-hop, only safe when
-  # the user runs atmux from inside a tmux already.
-  echo ""
-  echo "Single-session mode spawns team windows INSIDE your existing tmux"
-  echo "instead of a dedicated 'atmux-<team>' session. Cleaner tmux ls;"
-  echo "team-switch becomes window-hop. Recommended if you usually run"
-  echo "atmux from inside an existing tmux session."
-  local single_session
-  _atmux_prompt_choice single_session "Spawn into driver tmux session?" "n" y n
+  # ADR-026: every team defaults to singleSession=true (supersedes the
+  # ADR-016 opt-in prompt). The wizard no longer asks; team.json gets
+  # `singleSession: true` unconditionally below. The `singleSession=false`
+  # legacy mode (dedicated `atmux-<team>` session) is retained as a
+  # declared (not prompted) escape hatch — operators set it by hand in
+  # team.json for non-human-driven teams or detached observer setups.
+
+  # ADR-018: cage tmux socket isolation. Default y after the 2026-04-27
+  # incident — 6 daily-driver tmux deaths in 5 days because the dogfood
+  # team shared the operator's default socket. Opt-out for shared-socket
+  # mode (where attach is `tmux attach`, no need to remember the cage
+  # path) is rare — typically observer-only teams that never run
+  # destructive verbs. Most users want y. The `atmux-tmux` sibling binary
+  # auto-resolves the socket from team.json, so the operator never has
+  # to type the path themselves.
+  local cage_isolation
+  _atmux_prompt_choice cage_isolation \
+    "Run team on its own isolated tmux socket? (recommended — protects your daily-driver tmux from buggy kill-session calls; attach via 'atmux-tmux attach')" \
+    "y" y n
+  local cage_tmpdir=""
+  [[ "$cage_isolation" == "y" ]] && cage_tmpdir="/tmp/atmux-tmux-$team_name"
 
   # ---- TUI launch commands ----
   # Ask the user for custom launch commands for every TUI we'll end up using.
@@ -278,6 +298,14 @@ _atmux_init_wizard() {
   if [[ "$include_dba" == "y" ]]; then
     _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
       '{name:"dba", role:"dba", tui:$tui, model:"default", cwd:$cwd}')"
+  fi
+  if [[ "$include_unblocker" == "y" ]]; then
+    _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+      '{name:"unblocker", role:"unblocker", tui:$tui, model:"default", cwd:$cwd}')"
+  fi
+  if [[ "$include_discorder" == "y" ]]; then
+    _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+      '{name:"discorder", role:"discorder", tui:$tui, model:"default", cwd:$cwd}')"
   fi
 
   # Preset-driven worker TUI picker.
@@ -346,9 +374,11 @@ _atmux_init_wizard() {
      + (if $kimi     != "" and $kimi     != "kimi"          then {kimi:     $kimi}     else {} end)
      + (if $cursor   != "" and $cursor   != "cursor-agent"  then {cursor:   $cursor}   else {} end)')"
 
-  local single_session_bool=false
-  [[ "${single_session:-n}" == "y" ]] && single_session_bool=true
-
+  # tmuxTmpdir from the wizard prompt above — empty string means user opted
+  # out of cage isolation (shared default-socket mode). See _atmux_init_template
+  # comment for the 2026-04-27 incident that motivated default-on isolation.
+  # singleSession hardcoded true per ADR-026 — escape hatch is manual
+  # team.json edit, not a wizard prompt.
   jq -n \
     --arg name "$team_name" \
     --arg desc "atmux team — created via wizard" \
@@ -356,7 +386,7 @@ _atmux_init_wizard() {
     --argjson tuis "$tui_commands" \
     --arg hook "$discord_hook" \
     --arg emoji_mode "$emoji_mode" \
-    --argjson single "$single_session_bool" \
+    --arg cage "$cage_tmpdir" \
     '{
        name: $name,
        description: $desc,
@@ -365,12 +395,20 @@ _atmux_init_wizard() {
        emojis: {mode: $emoji_mode},
        whip:   {intervalMins: 5, staleMin: 90, leadMaxMin: 60},
        report: {intervalMins: 30},
-       singleSession: $single
+       singleSession: true
      }
-     + (if $hook == "" then {} else {discord: {webhook: $hook}} end)' > "$tj"
+     + (if $cage == "" then {} else {tmuxTmpdir: $cage}              end)
+     + (if $hook == "" then {} else {discord: {webhook: $hook}}      end)' > "$tj"
 
   echo ""
   atmux::ok "wizard complete — wrote $tj"
+  if [[ -n "$cage_tmpdir" ]]; then
+    echo ""
+    echo "  Cage tmux socket: $cage_tmpdir"
+    echo "  Attach with:        atmux-tmux attach"
+    echo "                      (or:  tmux -S $cage_tmpdir/tmux-\$UID/default attach)"
+    echo "  All atmux verbs invoked from this dir auto-target the cage."
+  fi
   if [[ -n "$discord_hook" ]]; then
     echo ""
     echo "  Tip: export your webhook so whip/report can ping it:"
