@@ -22,6 +22,8 @@
 
 # shellcheck source=discord.sh
 . "$ATMUX_LIB_DIR/discord.sh"
+# shellcheck source=socket-pubsub.sh
+. "$ATMUX_LIB_DIR/socket-pubsub.sh"
 
 # Resolve the Discord webhook from team.json into the env var
 # atmux::discord_ping expects. Mirrors lib/decisions.sh::_decisions_export_webhook
@@ -268,6 +270,20 @@ _atmux_flags_add() {
     atmux::discord_embed_ping "$body"
   fi
 
+  # E13/Sc: real-time signal to the lead's supervisor — member-side
+  # blocker surfacing reaches the lead in <1s vs the 5-min cron-whip
+  # baseline. Solo Mode (no team-lead) skips silently.
+  local _lead; _lead="$(atmux::find_lead_member 2>/dev/null || true)"
+  if [[ -n "$_lead" ]]; then
+    local _evt
+    _evt="$(jq -cn \
+      --arg id "$id" --arg sev "$severity" --arg from "$member" \
+      --argjson ts "$epoch" \
+      '{type:"flag-add", ts:$ts, from:$from,
+        payload:{id:$id, severity:$sev}}')"
+    atmux::sock_publish "$_lead" "$_evt"
+  fi
+
   atmux::ok "flags: recorded $id"
   printf '%s\n' "$id"
 }
@@ -505,6 +521,18 @@ _atmux_flags_resolve() {
     if [[ "$linked_status" == "blocked" ]]; then
       atmux::log "flags: consider \`atmux task move $linked_task in-progress\` now that $id is resolved"
     fi
+  fi
+
+  # E13/Sc: signal the lead's supervisor of the resolution. Mirrors flag-
+  # add — Solo Mode skips silently; sock_publish is non-fatal on absent
+  # listener.
+  local _lead; _lead="$(atmux::find_lead_member 2>/dev/null || true)"
+  if [[ -n "$_lead" ]]; then
+    local _evt
+    _evt="$(jq -cn \
+      --arg id "$id" --arg from "$member" --argjson ts "$epoch" \
+      '{type:"flag-resolve", ts:$ts, from:$from, payload:{id:$id}}')"
+    atmux::sock_publish "$_lead" "$_evt"
   fi
 
   atmux::ok "flags: $id resolved by $member ($rid)"

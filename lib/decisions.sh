@@ -19,6 +19,8 @@
 
 # shellcheck source=discord.sh
 . "$ATMUX_LIB_DIR/discord.sh"
+# shellcheck source=socket-pubsub.sh
+. "$ATMUX_LIB_DIR/socket-pubsub.sh"
 
 main() {
   atmux::require jq
@@ -292,6 +294,22 @@ _atmux_decisions_add() {
       atmux::discord_embed_ping "${chunks[_i]}"
       if (( _i < total - 1 )); then sleep 1; fi
     done
+  fi
+
+  # E13/Sc: signal the lead's supervisor of the new decision so the lead
+  # picks it up in real time (vs the 5-min cron-whip baseline). Solo Mode
+  # (no team-lead role) skips silently; absent listener / unreachable
+  # socket is non-fatal in atmux::sock_publish itself.
+  local _lead; _lead="$(atmux::find_lead_member 2>/dev/null || true)"
+  if [[ -n "$_lead" ]]; then
+    local _from="${decided_by:-${ATMUX_MEMBER:-}}"
+    local _evt
+    _evt="$(jq -cn \
+      --arg id "$id" --arg rev "$reversibility" --arg from "$_from" \
+      --argjson ts "$epoch" \
+      '{type:"decisions-add", ts:$ts, from:$from,
+        payload:{id:$id, reversibility:$rev}}')"
+    atmux::sock_publish "$_lead" "$_evt"
   fi
 
   atmux::ok "decisions: recorded $id"
