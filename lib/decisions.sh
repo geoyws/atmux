@@ -362,16 +362,28 @@ _decisions_render_discord() {
   # separated chunks. Caller (mapfile -d '' chunks < <(...)) loops with
   # a 1s sleep between to stay under Discord's rate-limit margin.
   #
+  # Richness gate (E9/Sb, ADR-020): rev=="high" gets full optional-
+  # section expansion (multi-chunk if needed). rev=="medium"|"low" gets
+  # COMPACT mode — only the required block; optional sections are
+  # SKIPPED from the ping body. _decisions_append still records full
+  # fields to decisions.md regardless of rev; show-pointer is the
+  # recovery surface for compact-mode pings.
+  #
   # Single-message path: ≤1900 chars total ⇒ 1 chunk, no [N/M] tag,
   # bit-identical to today's body shape (modulo the 'question:' prefix
   # added in S9 T2).
   #
-  # Multi-message path: chunk-1 ALWAYS holds required fields (question,
-  # default, decided-by, reversibility, show/override). Optional
-  # sections (context, options, impact, note) flow into chunks 2..5
-  # in keep-order (context→options→impact→note); each section is
-  # atomic (option list stays whole). Per chunk header gets the
-  # `[N/M]` tag mirroring digest's pattern.
+  # Multi-message path (high-rev only): chunk-1 ALWAYS holds required
+  # fields (question, default, decided-by, reversibility, show/
+  # override). Optional sections (context, options, impact, note) flow
+  # into chunks 2..5 in keep-order (context→options→impact→note); each
+  # section is atomic (option list stays whole). Per chunk header gets
+  # the `[N/M]` tag mirroring digest's pattern.
+  #
+  # Per-field truncation (high-rev only): each of context/impact/
+  # individual option/note is capped at ~400 chars BEFORE chunker
+  # assembly. `truncated` flips on first cap-hit; on emit the
+  # truncation marker is appended once to the last surviving chunk.
   #
   # Last-resort drop: if even at 5 chunks some sections still don't
   # fit, drop in S9 order — note → impact → options → context — and
@@ -388,17 +400,55 @@ _decisions_render_discord() {
   req+="📍 atmux decisions show $id"$'\n'
   req+="↪ atmux send lead \"override $id: <new>\""
 
+  # Compact mode (medium/low): emit only the required block, single
+  # chunk, no [N/M] tag. Optional sections are intentionally omitted
+  # from the wire — show-pointer recovers the full record.
+  if [[ "$rev" != "high" ]]; then
+    local hdr_compact="📋 **[atmux-decisions]** · \`$team\` · $hhmm"
+    printf '%s\0' "$hdr_compact"$'\n\n'"$req"
+    return 0
+  fi
+
+  # High-rev: build optional sections with ~400-char per-field cap.
+  local field_cap=400
+  local truncated=0
   local sec_ctx=""  sec_opts=""  sec_imp=""  sec_note=""
-  [[ -n "$context" ]] && sec_ctx="🌐 context: $context"
+  if [[ -n "$context" ]]; then
+    if (( ${#context} > field_cap )); then
+      sec_ctx="🌐 context: ${context:0:field_cap}"
+      truncated=1
+    else
+      sec_ctx="🌐 context: $context"
+    fi
+  fi
   if (( options_count > 0 )); then
     sec_opts="⚖️ options:"
     local _o
     for _o in "${options[@]}"; do
-      sec_opts+=$'\n'"  - $_o"
+      if (( ${#_o} > field_cap )); then
+        sec_opts+=$'\n'"  - ${_o:0:field_cap}"
+        truncated=1
+      else
+        sec_opts+=$'\n'"  - $_o"
+      fi
     done
   fi
-  [[ -n "$impact" ]] && sec_imp="💥 impact: $impact"
-  [[ -n "$note"   ]] && sec_note="📝 note: $note"
+  if [[ -n "$impact" ]]; then
+    if (( ${#impact} > field_cap )); then
+      sec_imp="💥 impact: ${impact:0:field_cap}"
+      truncated=1
+    else
+      sec_imp="💥 impact: $impact"
+    fi
+  fi
+  if [[ -n "$note" ]]; then
+    if (( ${#note} > field_cap )); then
+      sec_note="📝 note: ${note:0:field_cap}"
+      truncated=1
+    else
+      sec_note="📝 note: $note"
+    fi
+  fi
 
   # ---- single-message try ----
   local hdr_single="📋 **[atmux-decisions]** · \`$team\` · $hhmm"
@@ -408,6 +458,7 @@ _decisions_render_discord() {
     [[ -n "$s" ]] && single+=$'\n\n'"$s"
   done
   if (( ${#single} <= 1900 )); then
+    (( truncated > 0 )) && single+=$'\n\n'"$truncation_marker"
     printf '%s\0' "$single"
     return 0
   fi
@@ -466,9 +517,11 @@ _decisions_render_discord() {
   done
   [[ -n "$current" ]] && chunks+=("$current")
 
-  # If anything dropped, append the recovery pointer to the last chunk
-  # so the reader can `atmux decisions show <id>` for the full record.
-  if (( skipped > 0 )); then
+  # If anything dropped OR per-field truncation hit the 400-char cap,
+  # append the recovery pointer to the last chunk so the reader can
+  # `atmux decisions show <id>` for the full record. One marker covers
+  # both conditions.
+  if (( skipped > 0 || truncated > 0 )); then
     local last=$(( ${#chunks[@]} - 1 ))
     chunks[last]="${chunks[last]}"$'\n\n'"$truncation_marker"
   fi
