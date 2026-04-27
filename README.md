@@ -131,6 +131,35 @@ ATMUX_DRIVER_SESSION=1 atmux start
 
 See [docs/adr/016-single-session-topology.md](docs/adr/016-single-session-topology.md) for the design + risk register.
 
+### Per-team tmux socket isolation (opt-in)
+
+By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UID/default` — alongside the driver's daily-driver shells, other worktree windows, and any other atmux teams. **Per-team socket isolation** moves a team onto its own tmux server (its own `TMUX_TMPDIR`), so a buggy `kill-session -a` from a misbehaving lib change can't reach unrelated sessions.
+
+**When to pick it.** You're the dev-on-itself team editing atmux internals (or another tool that runs dangerous `tmux` ops). The blast-radius firewall is worth the changed-attach UX. Most teams do NOT need this — leave the field unset.
+
+```json
+{
+  "tmuxTmpdir": "/tmp/atmux-tmux-<team>"
+}
+```
+
+**What changes when set:**
+
+- `bin/atmux` exports `TMUX_TMPDIR=<value>` immediately on entry — every subsequent `tmux` call routes to the isolated socket. The directory is auto-created (`mkdir -p`). Existing `$TMUX_TMPDIR` env wins over the team.json value.
+- `lib/cron.sh` prepends `TMUX_TMPDIR=<value>` to every emitted `whip` / `report` / `decisions digest` cron line — without this the cron jobs would look at the wrong server and report session DOWN forever.
+- Bare `tmux attach` no longer reaches the team. Use either:
+
+  ```bash
+  atmux attach                                                # honours team.json
+  tmux -S /tmp/atmux-tmux-<team>/tmux-$UID/default attach     # raw tmux fallback
+  ```
+
+- `atmux doctor` adds a `tmuxTmpdir` row asserting the directory is writable and (when a session exists) the isolated socket is reachable.
+
+**Caveat.** Orthogonal to single-session mode (ADR-016): `singleSession=true` + `tmuxTmpdir` set means windows live in the driver's session **on the team's isolated socket**. Setting both is supported; pick whichever subset of the two flags fits the team's posture.
+
+The init wizard does not prompt for this field — opt-in is a manual `team.json` edit, since the field is for advanced/dogfooding setups. See [docs/adr/018-per-team-tmux-socket-isolation.md](docs/adr/018-per-team-tmux-socket-isolation.md) for the full design + risk register.
+
 ### Preset modes
 
 The wizard asks for a preset up front — governs default TUI assignment:
