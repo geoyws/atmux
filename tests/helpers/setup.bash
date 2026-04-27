@@ -30,20 +30,31 @@ atmux_setup_sandbox() {
   export NO_COLOR=1
   # Fast spawn wait.
   export ATMUX_SPAWN_WAIT=0
+  # E8/Sb t-14365bea — opt out of `atmux start`'s cron auto-install so test
+  # runs never touch the host's crontab. SB_T1 (atmux::cron_install) honors
+  # this var; setting it here covers every sandbox without requiring tests
+  # to remember the explicit `kanban.cronAutoInstall: false` team.json
+  # field. Belt-and-suspenders teardown sweep below catches any cron lines
+  # that slipped through (e.g. tests that override the var, or pre-SB_T1
+  # code paths that miss the env-var gate).
+  export ATMUX_NO_CRON=1
 }
 
 atmux_teardown_sandbox() {
-  # Tear down the sandbox tmux server in a single op — avoids the per-pane
-  # kill storm that wedged tmux on 2026-04-25.
+  # Sweep order:
+  #   1. cron_remove BEFORE everything — atmux::cron_remove edits the
+  #      host's crontab; once we wipe ATMUX_TEST_TMP the team's name
+  #      isn't recoverable from team.json, and skipping this would leak
+  #      orphan crontab lines into the operator's environment.
+  #   2. tmux kill-server — single-op reaping (per the 2026-04-25 wedge
+  #      incident); explicit `-S <socket>` because bare `kill-server`
+  #      doesn't honour TMUX_TMPDIR on every tmux build.
+  #   3. rm -rf the test tmpdir.
   #
-  # tmux actually creates its socket at $TMUX_TMPDIR/tmux-$UID/default
-  # (not the bare $TMUX_TMPDIR/default the prior check looked at), so the
-  # earlier teardown silently no-op'd against the existence test and every
-  # test leaked an orphan tmux server. Use an explicit `-S <socket>` glob
-  # walk over the tmux-N subdirs + the legacy direct path as belt+suspenders.
-  # Each `tmux -S <path> kill-server` reaps that specific server, which is
-  # what we want — bare `kill-server` doesn't honour TMUX_TMPDIR on the
-  # kill path on every tmux build.
+  # cron_remove is no-op on hosts without crontab (matches the
+  # cron_remove implementation's own behavior), so this sweep is safe in
+  # CI / minimal containers / macOS-without-cron envs.
+  _atmux_teardown_cron_sweep
   if [[ -n "${TMUX_TMPDIR:-}" ]]; then
     local socket
     for socket in "$TMUX_TMPDIR"/tmux-*/default "$TMUX_TMPDIR/default"; do
@@ -54,6 +65,37 @@ atmux_teardown_sandbox() {
   if [[ -n "${ATMUX_TEST_TMP:-}" && -d "$ATMUX_TEST_TMP" ]]; then
     rm -rf "$ATMUX_TEST_TMP"
   fi
+}
+
+# E8/Sb t-14365bea — belt+suspenders crontab cleanup. ATMUX_NO_CRON=1 in
+# setup should already block install at source, but a test that overrides
+# the env var, or a pre-SB_T1 binary path that misses the gate, would
+# leak crontab lines past the rm-rf. Parse every team.json under the
+# sandbox dir, look up the team name, call atmux::cron_remove. Idempotent
+# + no-op when there's nothing to remove.
+_atmux_teardown_cron_sweep() {
+  [[ -n "${ATMUX_TEST_TMP:-}" && -d "$ATMUX_TEST_TMP" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  if ! declare -F atmux::cron_remove >/dev/null 2>&1; then
+    [[ -f "${ATMUX_LIB_DIR:-}/cron.sh" ]] || return 0
+    # cron.sh consumes atmux::* helpers (atmux::warn / atmux::log) which
+    # live in common.sh; load common first if it's not already in scope.
+    if ! declare -F atmux::warn >/dev/null 2>&1; then
+      # shellcheck source=../../lib/common.sh
+      . "$ATMUX_LIB_DIR/common.sh" 2>/dev/null || return 0
+    fi
+    # shellcheck source=../../lib/cron.sh
+    . "$ATMUX_LIB_DIR/cron.sh" 2>/dev/null || return 0
+  fi
+  declare -F atmux::cron_remove >/dev/null 2>&1 || return 0
+
+  local tj team
+  while IFS= read -r tj; do
+    team="$(jq -r '.name // empty' "$tj" 2>/dev/null)"
+    [[ -n "$team" ]] || continue
+    atmux::cron_remove "$team" >/dev/null 2>&1 || true
+  done < <(find "$ATMUX_TEST_TMP" -name team.json -path '*/.atmux/team.json' 2>/dev/null)
 }
 
 # Force single-tick session-DOWN alerting (E6/S1 t-9e85a35c). Many whip
