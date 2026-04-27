@@ -74,6 +74,20 @@ atmux::cron_install() {
   [[ -n "$team"      ]] || atmux::die "cron_install: <team> required"
   [[ -n "$atmux_dir" ]] || atmux::die "cron_install: <atmux_dir> required"
 
+  # ATMUX_NO_CRON=1 (or any non-empty truthy value) disables cron writes
+  # entirely. Used by test sandboxes + operators who manage cron out-of-band.
+  # Quiet by default — surfaces only when ATMUX_DEBUG is set so test runs
+  # don't get spammed. Companion atmux::cron_remove still runs unconditionally
+  # (cleanup ops are the safety-net path; gating them would leave residue).
+  case "${ATMUX_NO_CRON:-}" in
+    ''|0|false|FALSE|False) ;;
+    *)
+      [[ -n "${ATMUX_DEBUG:-}" ]] && \
+        printf 'cron_install: ATMUX_NO_CRON set, no-op\n' >&2
+      return 0
+      ;;
+  esac
+
   if ! command -v crontab >/dev/null 2>&1; then
     atmux::warn "cron_install: crontab not on PATH — skipping (install crond to enable scheduled whip/report/digest)"
     return 0
