@@ -303,6 +303,55 @@ Default role→TUI mapping:
 | `dba`             | `claude`    | Schema + migrations + data integrity (optional) |
 | `member`          | any         | Parallel throughput per feature lane — pick cheapest that works |
 
+### 🧠 Per-member model selection
+
+The Claude CLI accepts `--model <id>`; atmux propagates a per-member `model`
+field in `team.json` through that flag at spawn time
+(`lib/start.sh` → `lib/tui.sh::atmux::tui_claude`). Default semantics:
+`.model == "default"` OR field absent → claude CLI's default model (Opus
+today via the global `CLAUDE_CODE_EFFORT_LEVEL=xhigh` env). Explicit model
+IDs (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`,
+…) propagate verbatim.
+
+Per-role assignment for an atmux team (per
+[ADR-024](docs/adr/024-per-member-model-selection.md), revised
+2026-04-27 07:55 MYT per decision `d-c3f8d980`):
+
+| Role | Model | Rationale |
+|---|---|---|
+| `lead` | Opus | coordination + dispatch |
+| `planner` | Opus | decomposition + ADRs |
+| `be-kanban` / `fe-kanban` / `test-kanban` | Opus | writes code |
+| `gitter` | Opus | commit composition + lint-staged-trap + scope-check |
+| `reviewer` | Opus | audit-bar judgment on others' work (exhaustive grep + negative-space + class-widening) |
+| `unblocker` | Opus | `/team clear` blast-radius + classify-and-route on others' work |
+| `auditor` | Opus | exhaustive-grep + verdict pattern on already-committed code |
+| `discorder` | **Sonnet** (`claude-sonnet-4-6`) | pure narrative formatter; writes Discord pings only; no judgment-on-correctness |
+| (`lib/llm-judge.sh` helper, **not** a team member) | Sonnet | ad-hoc `claude --print` invocation from `lib/whip.sh` SOFT-tier path; see [ADR-023](docs/adr/023-rate-limit-three-tier-llm-judge.md) |
+
+**Driver narrow-carve-out note.** atmux teams override the global
+`~/.claude/CLAUDE.md` "Team members always use Opus" rule **only** for
+the pure narrative formatter (`discorder`). Sonnet-fit means
+read-and-summarise *without judgment-on-correctness*. `reviewer`,
+`unblocker`, and `auditor` were originally proposed for Sonnet (decision
+`d-a26b4211`) but reverted per `d-c3f8d980` — they make consequential
+calls on others' work and stay on Opus.
+
+**Per-member override.** One `jq` edit + a rotate is enough to flip a
+member to Sonnet (or any other model):
+
+```bash
+jq '(.members[] | select(.name == "discorder") | .model) = "claude-sonnet-4-6"' \
+  .atmux/team.json > .atmux/team.json.tmp \
+  && mv .atmux/team.json.tmp .atmux/team.json
+atmux rotate discorder
+```
+
+Restart with `atmux rotate <name>` to re-spawn the pane under the new
+model, or wait for the next natural rotation if the running session is
+mid-work. `CLAUDE_CODE_EFFORT_LEVEL=xhigh` stays global for all members —
+Sonnet members inherit `xhigh` effort by design.
+
 ## Commands
 
 ```
