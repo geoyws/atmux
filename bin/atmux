@@ -116,6 +116,9 @@ Flags log (operator escalations):
 
 Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+  team rename <old> <new> [--session <s>] [--migrate-session] [--force]
+                              Atomic rename across team.json / tmux / cron / registry
+                              with rollback on partial failure (ADR-027).
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
@@ -257,6 +260,14 @@ case "$verb" in
   pause|resume) verb_script="$ATMUX_LIB_DIR/pause.sh"; set -- "$verb" "$@" ;;
   verify-libs) verb_script="$ATMUX_LIB_DIR/verify_libs.sh" ;;
   migrate-to-driver-session) verb_script="$ATMUX_LIB_DIR/migrate.sh" ;;
+  # ADR-027 team-rename: `atmux team rename …` routes to lib/team-rename.sh.
+  team)
+    case "${1:-}" in
+      rename) verb_script="$ATMUX_LIB_DIR/team-rename.sh"; shift ;;
+      "") echo "atmux team: subverb required (try: rename)" >&2; exit 64 ;;
+      *)  echo "atmux team: unknown subverb '${1}' (try: rename)" >&2; exit 64 ;;
+    esac
+    ;;
 esac
 
 if [[ ! -f "$verb_script" ]]; then
