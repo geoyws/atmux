@@ -41,6 +41,7 @@ EOF
   _doctor_check_libs
   _doctor_check_team
   _doctor_check_tuis
+  _doctor_check_claude_accounts
   _doctor_check_state_dir
   _doctor_check_tmux_tmpdir
   _doctor_check_webhook
@@ -238,6 +239,44 @@ _doctor_check_tuis() {
   done
 }
 
+# Per-member claudeAccount sanity — when a member has
+# `claudeAccount: "ifca"`, the spawn cmd prepends `CLAUDE_CONFIG_DIR=
+# $HOME/.claude-ifca`. If that directory is missing on disk, claude will
+# silently re-run its first-time auth flow on next spawn — surprising the
+# operator mid-rotation. This check enumerates members with the field
+# set + asserts the resolved dir exists and is readable. red on missing
+# (load-bearing — claude flow breaks); silent when no member uses the
+# field. Mirrors the per-TUI binary check shape from _doctor_check_tuis.
+_doctor_check_claude_accounts() {
+  local tj; tj="$(atmux::team_json 2>/dev/null || true)"
+  [[ -f "$tj" ]] || return 0
+  jq -e . "$tj" >/dev/null 2>&1 || return 0
+
+  local rows
+  rows="$(jq -r '
+    .members[]?
+    | select((.claudeAccount // "") != "" and (.claudeAccount // "") != "default" and (.claudeAccount // "") != "null")
+    | [.name, .claudeAccount] | @tsv' "$tj" 2>/dev/null || true)"
+  [[ -z "$rows" ]] && return 0
+
+  local member account dir
+  while IFS=$'\t' read -r member account; do
+    [[ -z "$member" || -z "$account" ]] && continue
+    dir="$HOME/.claude-${account}"
+    if [[ -d "$dir" && -r "$dir" ]]; then
+      _doctor_row green "claude-account:$member" "$dir"
+    elif [[ ! -e "$dir" ]]; then
+      _doctor_row red "claude-account:$member" \
+        "$dir missing on disk" \
+        "create the dir + auth: CLAUDE_CONFIG_DIR=$dir claude /login"
+    else
+      _doctor_row red "claude-account:$member" \
+        "$dir exists but unreadable" \
+        "chown -R \$USER $dir"
+    fi
+  done <<<"$rows"
+}
+
 _doctor_check_state_dir() {
   local d; d="$(atmux::dir)"
   if [[ ! -d "$d" ]]; then
@@ -414,7 +453,7 @@ _doctor_check_orphan_sessions() {
   [[ "$single" == "true" ]] || return 0
 
   local team_session; team_session="atmux-$(atmux::team_name)"
-  if tmux has-session -t "$team_session" 2>/dev/null; then
+  if tmux has-session -t "=$team_session" 2>/dev/null; then
     _doctor_row yellow "orphan-session" \
       "team is single-session but legacy session '$team_session' still exists" \
       "run 'atmux migrate-to-driver-session $(atmux::team_name)' to consolidate"
@@ -606,18 +645,31 @@ _doctor_check_topology_invariant() {
     # as a yellow row rather than asserting against 0.
     local tj="$proj/.atmux/team.json"
     local expected=-1
+    local team_tmpdir=""
     if [[ -f "$tj" ]] && jq -e . "$tj" >/dev/null 2>&1; then
       expected="$(jq -r '.members | length' "$tj" 2>/dev/null || echo -1)"
       [[ "$expected" =~ ^[0-9]+$ ]] || expected=-1
+      # ADR-018: each team may declare its own isolated tmux socket via
+      # `tmuxTmpdir`. The bare `tmux has-session` calls below would
+      # query the operator's CURRENT TMUX_TMPDIR socket — which sees
+      # only the cage of whatever team's project dir doctor was invoked
+      # from. Other teams' cages are invisible → false-red topology
+      # rows. Resolve the team's own socket here + thread it through
+      # `tmux -S <socket>` for the per-team queries. Empty/null →
+      # bare tmux (default-socket legacy non-cage'd teams).
+      team_tmpdir="$(jq -r '.tmuxTmpdir // empty' "$tj" 2>/dev/null || true)"
+      [[ "$team_tmpdir" == "null" ]] && team_tmpdir=""
     fi
+    local tmux_q=(tmux)
+    [[ -n "$team_tmpdir" ]] && tmux_q=(tmux -S "$team_tmpdir/tmux-$(id -u)/default")
 
     # Window count in the registry-claimed session. Use `=$sess` exact-match
     # form: bare `tmux has-session -t beta` is a PREFIX match and returns
     # true when only "beta-other" exists, which would silently mark a
     # wrong-session drift as green. Per ADR-027 invariant correctness.
     local in_sess=0
-    if tmux has-session -t "=$sess" 2>/dev/null; then
-      in_sess="$(tmux list-windows -t "=$sess" -F '#{window_name}' 2>/dev/null \
+    if "${tmux_q[@]}" has-session -t "=$sess" 2>/dev/null; then
+      in_sess="$("${tmux_q[@]}" list-windows -t "=$sess" -F '#{window_name}' 2>/dev/null \
                   | grep -c "^__${name}__" || true)"
       [[ "$in_sess" =~ ^[0-9]+$ ]] || in_sess=0
     fi
@@ -635,11 +687,15 @@ _doctor_check_topology_invariant() {
     fi
 
     # Registry-claimed session has no team windows. Look for them in any
-    # other session — drift from a rename or hand-moved windows.
+    # other session ON THIS TEAM'S SOCKET — drift from a rename or
+    # hand-moved windows. Cross-socket drift detection is not in scope
+    # (would require enumerating sockets — file follow-up if needed).
+    local team_all_sessions
+    team_all_sessions="$("${tmux_q[@]}" list-sessions -F '#{session_name}' 2>/dev/null || true)"
     local other_sess="" other_n=0 s n
     while IFS= read -r s; do
       [[ -z "$s" || "$s" == "$sess" ]] && continue
-      n="$(tmux list-windows -t "$s" -F '#{window_name}' 2>/dev/null \
+      n="$("${tmux_q[@]}" list-windows -t "=$s" -F '#{window_name}' 2>/dev/null \
             | grep -c "^__${name}__" || true)"
       [[ "$n" =~ ^[0-9]+$ ]] || n=0
       if (( n > 0 )); then
@@ -647,7 +703,7 @@ _doctor_check_topology_invariant() {
         other_n="$n"
         break
       fi
-    done <<<"$all_sessions"
+    done <<<"$team_all_sessions"
 
     if [[ -n "$other_sess" ]]; then
       _doctor_row red "topology:$name" \
@@ -664,7 +720,7 @@ _doctor_check_topology_invariant() {
   # `atmux-superdriver` session to exist (per ADR-025 — fleet aggregator
   # session). Absent → red row pointing at `atmux super-attach`.
   if (( n_running > 0 )); then
-    if tmux has-session -t atmux-superdriver 2>/dev/null; then
+    if tmux has-session -t =atmux-superdriver 2>/dev/null; then
       _doctor_row green "topology:superdriver" "atmux-superdriver session up"
     else
       _doctor_row red "topology:superdriver" \

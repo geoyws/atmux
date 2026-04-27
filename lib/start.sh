@@ -66,6 +66,32 @@ main() {
     skip) : ;;
   esac
 
+  # ---- Topology invariant gate (ADR-027) ----
+  # After the generic preflight, run a targeted topology probe so a
+  # session-missing / wrong-session / superdriver-absent drift surfaces
+  # the row content + suggested fix verbatim — far more actionable than
+  # the generic "preflight failed" message. --force overrides red;
+  # --no-doctor skips the entire gate. Yellow rows warn loud but do
+  # NOT refuse (window-count drift is degraded-but-functional).
+  if [[ "$doctor_mode" != "skip" ]]; then
+    # shellcheck source=doctor.sh
+    . "$ATMUX_LIB_DIR/doctor.sh"
+    _doctor_reset
+    _doctor_check_topology_invariant
+    if (( _doctor_red_count > 0 )) || (( _doctor_yellow_count > 0 )); then
+      local _row
+      for _row in "${_doctor_rows[@]}"; do
+        case "$_row" in
+          red\|topology:*|yellow\|topology:*) atmux::warn "${_row//|/  }" ;;
+        esac
+      done
+      if (( _doctor_red_count > 0 )) && [[ "$force" -ne 1 ]]; then
+        atmux::die "topology drift detected (ADR-027) — fix the red row above, rerun with --force to override, or --no-doctor to skip"
+      fi
+      (( _doctor_red_count > 0 )) && atmux::warn "topology drift overridden by --force; proceeding"
+    fi
+  fi
+
   # ---- Logout-kill exposure banner (E8/Sa, ADR-017) ----
   # The generic --quiet preflight swallows row detail. Re-invoke the
   # logout-kill probe so an unmissable warning surfaces every start when
@@ -90,7 +116,7 @@ main() {
       atmux::warn "session $session already exists. Running start in incremental mode (existing windows kept)."
     else
       atmux::warn "force: killing existing session $session"
-      tmux kill-session -t "$session" 2>/dev/null || true
+      tmux kill-session -t "=$session" 2>/dev/null || true
     fi
   fi
 
@@ -102,8 +128,19 @@ main() {
   # exits. Production interactive use never has fd 3 open at this point,
   # so the closure is a no-op there. See ADR-012.
   local home_win; home_win="$(printf '__%s__home' "$team")"
+  # Sandbox HISTFILE per pane (ADR-018 cage extension): the daemonised
+  # tmux server inherits the operator's HISTFILE (~/.zsh_history typically),
+  # and every send-keys text — `export ATMUX_MEMBER=… && cd … && claude …` —
+  # gets recorded as a history line on the OPERATOR's shell. 132 leaked
+  # lines per session observed pre-fix. Pass `-e HISTFILE=<per-pane-path>`
+  # to new-session/new-window so the spawned shell's history lands inside
+  # .atmux/ instead. tmux 3.2+ supports `-e key=value` on both verbs.
+  local sd; sd="$(atmux::state_dir)"
+  mkdir -p "$sd"
+  local home_histfile="$sd/__home.history"
   if [[ "$single" != "true" ]] && ! atmux::tmux_session_exists; then
-    tmux new-session -d -s "$session" -n "$home_win" -c "$PWD" 3>&- 4>&-
+    tmux new-session -d -s "$session" -n "$home_win" -c "$PWD" \
+      -e "HISTFILE=$home_histfile" 3>&- 4>&-
     atmux::ok "created tmux session: $session"
   fi
 
@@ -157,9 +194,9 @@ main() {
   # ---- Close the placeholder __home window if members exist ----
   # Per-team prefix (__<team>__home) avoids collision when two teams
   # share the same tmux session under single-session mode.
-  if [[ "$any_spawned" -eq 1 ]] && tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -qx "$home_win"; then
+  if [[ "$any_spawned" -eq 1 ]] && tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null | grep -qx "$home_win"; then
     # only close home if there are other windows
-    local wc; wc=$(tmux list-windows -t "$session" -F '#{window_name}' | grep -cv "^${home_win}\$" || true)
+    local wc; wc=$(tmux list-windows -t "=$session" -F '#{window_name}' | grep -cv "^${home_win}\$" || true)
     if [[ "$wc" -gt 0 ]]; then
       tmux kill-window -t "$session:$home_win" 2>/dev/null || true
     fi
@@ -250,9 +287,18 @@ _atmux_spawn_member() {
   win="$(atmux::window_name "$member")"
   target="$session:$win"
 
+  # Per-member HISTFILE sandbox (see new-session above for the rationale).
+  # Each spawned member-pane gets its own .atmux/state/<member>.history so
+  # operator's ~/.zsh_history stays clean of brief content + ATMUX_MEMBER
+  # env exports.
+  local sd; sd="$(atmux::state_dir)"
+  mkdir -p "$sd"
+  local member_histfile="$sd/${member}.history"
+
   # Same fd-3/4 closure as the session-create path above — daemonised
   # tmux servers must not inherit bats's status pipe. ADR-012.
-  tmux new-window -d -t "$session" -n "$win" -c "$cwd" 3>&- 4>&-
+  tmux new-window -d -t "$session" -n "$win" -c "$cwd" \
+    -e "HISTFILE=$member_histfile" 3>&- 4>&-
   atmux::log "  · $member ($tui, role=$role): spawned window $win"
 
   # Ensure inbox file exists.
