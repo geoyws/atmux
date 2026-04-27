@@ -147,3 +147,29 @@ _task_owner() {
   [ "$(_task_status "$bid")" = "in-progress" ]
   [ "$(_task_owner "$bid")" = "fe-test" ]
 }
+
+# ---------- AUDIT t-ac338265 — dispatch path pin (H5 / OQ3) ----------
+# Audit verdict: claim --next / explicit-id paths gate correctly (CELLs 1-7
+# above prove it). Production failure (fe-kanban + be-kanban-2 auto-claiming
+# review Tasks) routed through `atmux dispatch` — owner-mutation site at
+# lib/dispatch.sh:60-64 has NO lane refuse-gate. Per d-7a648d40 OQ3 the
+# dispatch-time gate was punted; this cell documents the gap so a future
+# OQ3 reopen flips assertion direction (status==todo + owner==null) at
+# the same time the gate ships.
+
+@test "atmux dispatch <review-id> to lane=fe member: SUCCEEDS today (H5/OQ3 gap — lib/dispatch.sh has no lane gate)" {
+  local rid; rid="$(_seed_review_task)"
+
+  # Pre-create the recipient's tmux window so dispatch's send-keys nudge
+  # doesn't die on missing-window. We only care about the kanban-side
+  # mutation here.
+  if command -v tmux >/dev/null 2>&1 && [[ -n "${TMUX_TMPDIR:-}" ]]; then
+    tmux new-session -d -s "atmux-lprt" -n "__lprt__fe-test" 3>&- 4>&-  || true
+  fi
+
+  run "$ATMUX_BIN" dispatch fe-test "$rid"
+  # The kanban-side write lands regardless of tmux send-keys outcome —
+  # owner gets stamped to fe-test. THIS IS THE BUG SURFACE per t-ac338265.
+  [ "$(_task_owner "$rid")" = "fe-test" ]
+  [ "$(_task_status "$rid")" = "in-progress" ]
+}
