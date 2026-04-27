@@ -66,6 +66,20 @@ main() {
     skip) : ;;
   esac
 
+  # ---- Logout-kill exposure banner (E8/Sa, ADR-017) ----
+  # The generic --quiet preflight swallows row detail. Re-invoke the
+  # logout-kill probe so an unmissable warning surfaces every start when
+  # the linger/KillUserProcesses+session shape would lose the tmux
+  # server on disconnect. Does NOT refuse — driver may legitimately
+  # want short-lived runs (ADR-017 OQ5).
+  if [[ "$doctor_mode" != "skip" ]]; then
+    _doctor_reset
+    _doctor_check_logout_kill
+    if (( _doctor_red_count > 0 )) || (( _doctor_yellow_count > 0 )); then
+      atmux::warn "logout-kill exposure: tmux server will die when this SSH session closes. Run 'atmux doctor --fix' to enable linger."
+    fi
+  fi
+
   local team session
   team="$(atmux::team_name)"
   session="$(atmux::session_name)"
