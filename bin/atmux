@@ -125,6 +125,11 @@ Maintenance:
   verify-libs [--quiet] [--json]
                               Source-check every lib/*.sh + assert function presence
 
+Superdriver (cross-team / fleet — ADR-025):
+  super-attach                Attach (or spawn) the global atmux-superdriver
+                              tmux session — single Claude (Opus) pane for
+                              cross-team coordination. Not team-bound.
+
 Misc:
   version
   help | --help | -h
@@ -219,6 +224,7 @@ fi
 # isn't a verb that sets up / explains atmux itself, offer to run the wizard.
 case "$verb" in
   init|wizard|doctor|up) ;;  # these handle the no-team case themselves
+  super-attach|super-status|super-tell) ;;  # global / fleet verbs — not team-bound
   *)
     if [[ -z "${ATMUX_TEAM:-}" ]]; then
       atmux::maybe_offer_wizard || true
