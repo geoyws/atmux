@@ -5,6 +5,8 @@
 
 # shellcheck source=tui.sh
 . "$ATMUX_LIB_DIR/tui.sh"
+# shellcheck source=emoji.sh
+. "$ATMUX_LIB_DIR/emoji.sh"
 
 main() {
   atmux::require jq tmux
@@ -91,6 +93,40 @@ main() {
     atmux::ok "created tmux session: $session"
   fi
 
+  # ---- Registry touch (E10/Sa t-638f6504, ADR-025 §Decision start hook) ----
+  # Bump lastSeen on every successful start so the fleet aggregator
+  # (super-status) knows this team is alive. Backfill via upsert when the
+  # entry is missing — the common case for teams whose `atmux init`
+  # predates SA_T2's registry hook (silent, no atmux::ok). All failures
+  # here are non-fatal: the registry is coordination/observability infra,
+  # not a precondition for the team being up.
+  #
+  # Runs BEFORE the spawn loop so the team's registry entry exists in time
+  # for atmux::resolve_member_emoji's write-through (ADR-030):
+  # registry_set_emoji silently no-ops when the team isn't yet registered,
+  # so a post-spawn placement would lose the first-spawn random emoji and
+  # break immutability for pre-ADR-025 teams on their first 1-2 starts.
+  if [[ -f "$ATMUX_LIB_DIR/registry.sh" ]]; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh"
+    local _atmux_registry _atmux_registered=false
+    _atmux_registry="$(atmux::registry_path)"
+    if [[ -s "$_atmux_registry" ]] \
+       && jq -e --arg n "$team" 'any(.[]?; .name == $n)' "$_atmux_registry" >/dev/null 2>&1; then
+      _atmux_registered=true
+    fi
+    if [[ "$_atmux_registered" == "true" ]]; then
+      atmux::registry_touch "$team" \
+        || atmux::warn "registry_touch failed for '$team' (non-fatal)"
+    else
+      local _atmux_root; _atmux_root="$(dirname "$(atmux::dir)")"
+      atmux::registry_upsert "$team" "$_atmux_root" "$session" \
+        || atmux::warn "registry_upsert backfill failed for '$team' (non-fatal)"
+    fi
+  else
+    atmux::warn "lib/registry.sh missing — skipping registry touch (non-fatal)"
+  fi
+
   # ---- Spawn each member ----
   local names; names="$(atmux::members_names)"
   local any_spawned=0
@@ -130,34 +166,6 @@ main() {
 
   atmux::ok "team '$team' is up. attach with: atmux attach"
 
-  # ---- Registry touch (E10/Sa t-638f6504, ADR-025 §Decision start hook) ----
-  # Bump lastSeen on every successful start so the fleet aggregator
-  # (super-status) knows this team is alive. Backfill via upsert when the
-  # entry is missing — the common case for teams whose `atmux init`
-  # predates SA_T2's registry hook (silent, no atmux::ok). All failures
-  # here are non-fatal: the registry is coordination/observability infra,
-  # not a precondition for the team being up.
-  if [[ -f "$ATMUX_LIB_DIR/registry.sh" ]]; then
-    # shellcheck source=registry.sh
-    . "$ATMUX_LIB_DIR/registry.sh"
-    local _atmux_registry _atmux_registered=false
-    _atmux_registry="$(atmux::registry_path)"
-    if [[ -s "$_atmux_registry" ]] \
-       && jq -e --arg n "$team" 'any(.[]?; .name == $n)' "$_atmux_registry" >/dev/null 2>&1; then
-      _atmux_registered=true
-    fi
-    if [[ "$_atmux_registered" == "true" ]]; then
-      atmux::registry_touch "$team" \
-        || atmux::warn "registry_touch failed for '$team' (non-fatal)"
-    else
-      local _atmux_root; _atmux_root="$(dirname "$(atmux::dir)")"
-      atmux::registry_upsert "$team" "$_atmux_root" "$session" \
-        || atmux::warn "registry_upsert backfill failed for '$team' (non-fatal)"
-    fi
-  else
-    atmux::warn "lib/registry.sh missing — skipping registry touch (non-fatal)"
-  fi
-
   # ---- Cron auto-install (E6/Sc t-ac7197cf) ----
   # Wire whip + report + decisions-digest into the user's crontab unless
   # team.json explicitly opts out via kanban.cronAutoInstall=false. Default
@@ -184,6 +192,17 @@ _atmux_spawn_member() {
   model="$(jq -r '.model // "default"' <<<"$mj")"
   cwd="$(jq -r '.cwd // "."' <<<"$mj")"
   role="$(jq -r '.role // "member"' <<<"$mj")"
+
+  # ADR-030: resolve+persist the member's emoji BEFORE atmux::window_name reads
+  # it back. The resolver runs the priority chain (registry → team.json → random
+  # fallback via emoji_assign) and write-throughs to the registry on steps 2 + 3
+  # — converting the first-spawn random pick into a durable assignment that
+  # survives every future restart. Failures are swallowed: emoji is cosmetic,
+  # not a precondition for the spawn.
+  if declare -f atmux::resolve_member_emoji >/dev/null 2>&1; then
+    local _team; _team="$(atmux::team_name)"
+    atmux::resolve_member_emoji "$_team" "$member" "$role" >/dev/null 2>&1 || true
+  fi
 
   local session win target
   session="$(atmux::session_name)"

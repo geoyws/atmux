@@ -63,10 +63,21 @@ main() {
     atmux::die "add-member: '$name' is already in team.json"
   fi
 
-  # Pick an emoji (mode from ATMUX_EMOJI_MODE / team.json / default "random").
-  # Exclude already-used emojis so the team gets variety.
-  local seen; seen="$(jq -r '[.members[].emoji // ""] | map(select(. != "")) | join(" ")' "$tj")"
-  local emoji; emoji="$(atmux::emoji_assign "$name" "$role" "$seen")"
+  # ADR-030: resolve emoji via the priority chain (registry → team.json → random).
+  # The resolver writes through to the registry on steps 2 + 3 — for a fresh
+  # member, this is the random fallback path: pick once, persist forever.
+  # Re-adding a previously-removed member returns the registry's prior emoji
+  # (immutable-once-written) so visual identity survives remove/add cycles.
+  # team.json is still seeded with the resolved value below for cold-start
+  # consumers (atmux::member_emoji and any downstream tool that reads team.json
+  # without consulting the registry).
+  local emoji
+  if declare -f atmux::resolve_member_emoji >/dev/null 2>&1; then
+    emoji="$(atmux::resolve_member_emoji "$(atmux::team_name)" "$name" "$role")"
+  else
+    local seen; seen="$(jq -r '[.members[].emoji // ""] | map(select(. != "")) | join(" ")' "$tj")"
+    emoji="$(atmux::emoji_assign "$name" "$role" "$seen")"
+  fi
 
   # Per t-2f13a2e4: snapshot existing team.json before mutating so a botched
   # jq_update (or wrong cwd) leaves a recoverable .bak.<epoch>.

@@ -203,17 +203,37 @@ atmux::session_name() {
 }
 
 atmux::window_name() {
-  # window naming convention: __<team>__<emoji><member> if member has an .emoji
-  # stamped in team.json, else __<team>__<member>. The emoji is stamped at
-  # wizard / add-member time and stable thereafter.
+  # window naming convention: __<team>__<emoji><member> if a stable emoji can be
+  # resolved for the member, else __<team>__<member>. ADR-030 changed the
+  # source-of-truth ordering: registry first (durable, immutable), team.json
+  # second (cold-start seed). The random-fallback step lives in
+  # atmux::resolve_member_emoji and is invoked at spawn time only — this
+  # read-only resolver never picks new emojis itself.
   local member="$1"
   local team; team="$(atmux::team_name)"
-  local tj; tj="$(atmux::team_json)"
   local emoji=""
-  if [[ -f "$tj" ]]; then
-    emoji="$(jq -r --arg n "$member" '.members[] | select(.name == $n) | .emoji // ""' "$tj" 2>/dev/null)"
-    [[ "$emoji" == "null" ]] && emoji=""
+
+  # Step 1: registry. Lazy-source so common.sh remains usable even when
+  # registry.sh is genuinely absent (older atmux installs / test sandboxes).
+  if [[ -f "${ATMUX_LIB_DIR:-}/registry.sh" ]] \
+     && ! declare -f atmux::registry_get_emoji >/dev/null 2>&1; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh"
   fi
+  if declare -f atmux::registry_get_emoji >/dev/null 2>&1; then
+    emoji="$(atmux::registry_get_emoji "$team" "$member" 2>/dev/null || true)"
+  fi
+
+  # Step 2: team.json fallback when registry has nothing yet (pre-spawn,
+  # cold-start cases).
+  if [[ -z "$emoji" || "$emoji" == "null" ]]; then
+    local tj; tj="$(atmux::team_json 2>/dev/null)"
+    if [[ -f "$tj" ]]; then
+      emoji="$(jq -r --arg n "$member" '.members[] | select(.name == $n) | .emoji // ""' "$tj" 2>/dev/null)"
+      [[ "$emoji" == "null" ]] && emoji=""
+    fi
+  fi
+
   if [[ -n "$emoji" ]]; then
     printf '__%s__%s%s\n' "$team" "$emoji" "$member"
   else
