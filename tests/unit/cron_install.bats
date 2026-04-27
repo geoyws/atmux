@@ -68,10 +68,22 @@ _with_mock_crontab() {
   PATH="$ATMUX_MOCK_BIN:$PATH" "$@"
 }
 
+# Tests in this file exercise the install path, which the ATMUX_NO_CRON
+# gate (t-7223951b — lib/cron.sh:78-89) short-circuits to a no-op. The
+# atmux_setup_sandbox helper exports ATMUX_NO_CRON=1 by default to keep
+# OTHER suites' tests from leaking cron lines into the host's crontab —
+# which means an install-path test must explicitly unset it to actually
+# exercise the install. Tests that target the gate itself (cases 9-10)
+# manage the env directly and do NOT call this helper.
+_force_install_path() {
+  unset ATMUX_NO_CRON
+}
+
 # ---------- cases 1-6: install/remove primitives ----------
 
 @test "cron_install: empty crontab ⇒ marker block + 3 cron lines land" {
   _load_cron
+  _force_install_path
   rm -f "$ATMUX_TEST_CRONTAB"
   PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$ATMUX_TEST_TMP/sandbox-x"
   [ -f "$ATMUX_TEST_CRONTAB" ]
@@ -85,6 +97,7 @@ _with_mock_crontab() {
 
 @test "cron_install: idempotent — re-running yields byte-identical crontab" {
   _load_cron
+  _force_install_path
   rm -f "$ATMUX_TEST_CRONTAB"
   PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$ATMUX_TEST_TMP/sandbox-x"
   local first; first=$(cat "$ATMUX_TEST_CRONTAB")
@@ -97,6 +110,7 @@ _with_mock_crontab() {
 
 @test "cron_install: replaces existing block when atmux_dir changes (no stale entries)" {
   _load_cron
+  _force_install_path
   rm -f "$ATMUX_TEST_CRONTAB"
   PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$ATMUX_TEST_TMP/path-a"
   grep -q "ATMUX_DIR=$ATMUX_TEST_TMP/path-a" "$ATMUX_TEST_CRONTAB"
@@ -110,6 +124,7 @@ _with_mock_crontab() {
 
 @test "cron_remove: drops marker block + cron lines (back to clean crontab)" {
   _load_cron
+  _force_install_path
   rm -f "$ATMUX_TEST_CRONTAB"
   PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$ATMUX_TEST_TMP/sandbox-x"
   PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_remove team-x
@@ -133,6 +148,7 @@ _with_mock_crontab() {
 
 @test "cron_install: multiple teams coexist — install x + y; remove x leaves y intact" {
   _load_cron
+  _force_install_path
   rm -f "$ATMUX_TEST_CRONTAB"
   PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$ATMUX_TEST_TMP/path-x"
   PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-y "$ATMUX_TEST_TMP/path-y"
@@ -166,10 +182,12 @@ EOF
 
 @test "atmux start: installs cron block; atmux stop: removes it" {
   _seed_min_team
+  _force_install_path
   rm -f "$ATMUX_TEST_CRONTAB"
 
-  # Live start with sandbox crontab on PATH.
-  PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" start --no-doctor >/dev/null 2>&1 || true
+  # Live start with sandbox crontab on PATH. Inherit the unset gate into
+  # the child via env -u so the subprocess actually exercises the install.
+  env -u ATMUX_NO_CRON PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" start --no-doctor >/dev/null 2>&1 || true
 
   # Marker block landed.
   [ -f "$ATMUX_TEST_CRONTAB" ]
@@ -200,4 +218,76 @@ EOF
 
   # Cleanup any spawned tmux state.
   PATH="$ATMUX_MOCK_BIN:$PATH" "$ATMUX_BIN" stop --force >/dev/null 2>&1 || true
+}
+
+# ---------- cases 9-10: ATMUX_NO_CRON env gate + teardown sweep (E8/Sb) ----------
+#
+# The ATMUX_NO_CRON env gate (t-7223951b — lib/cron.sh:78-89) lets test
+# sandboxes opt out of cron writes at the source: atmux::cron_install
+# returns 0 immediately when the var is non-empty/non-0/non-false, with
+# no crontab swap. atmux_setup_sandbox exports ATMUX_NO_CRON=1 by default
+# so every sandboxed test gets this protection without remembering it.
+#
+# The teardown sweep (_atmux_teardown_cron_sweep — tests/helpers/setup.bash)
+# is the belt-and-suspenders catch: any test that overrides the gate, or
+# any code path that misses it, would leak cron lines past the rm-rf of
+# the sandbox dir. The sweep walks every team.json under ATMUX_TEST_TMP
+# and calls atmux::cron_remove so orphan blocks never escape into the
+# host's crontab.
+
+@test "cron_install: ATMUX_NO_CRON=1 ⇒ no crontab swap (env gate honoured)" {
+  atmux_assert_sandbox
+  _load_cron
+
+  # Pre-seed a baseline so we can prove "unchanged" by content equality
+  # rather than mere absence of our markers.
+  printf '# user-line\n0 0 * * * /bin/echo hello\n' > "$ATMUX_TEST_CRONTAB"
+  local before; before=$(cat "$ATMUX_TEST_CRONTAB")
+
+  # ATMUX_NO_CRON=1 is exported by atmux_setup_sandbox. Reassert here so
+  # the test reads as self-contained — future setup-helper edits won't
+  # silently invalidate the gate-under-test.
+  export ATMUX_NO_CRON=1
+
+  # Call install. The early-return at lib/cron.sh:78-89 should fire
+  # before any crontab read/write. Suppress stderr so the optional
+  # ATMUX_DEBUG message (gated separately, default off) doesn't leak.
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install foo "$ATMUX_TEST_TMP/sandbox-foo" 2>/dev/null
+
+  # Crontab must be byte-identical to the baseline — no swap, no marker
+  # block appended, no stripping of the user line.
+  local after; after=$(cat "$ATMUX_TEST_CRONTAB")
+  [ "$before" = "$after" ]
+  ! grep -q '^# >>> atmux:team=foo' "$ATMUX_TEST_CRONTAB"
+}
+
+@test "teardown sweep: cron block leaked past env gate is removed by atmux_teardown_sandbox" {
+  atmux_assert_sandbox
+  _load_cron
+
+  # Force the install path: the setup helper exports ATMUX_NO_CRON=1, so
+  # we unset it here to simulate either a rogue test override or a pre-gate
+  # binary path that bypasses the env check. The sweep is the safety net
+  # exactly for this scenario.
+  unset ATMUX_NO_CRON
+  rm -f "$ATMUX_TEST_CRONTAB"
+
+  # Install for team "g" (matches the .atmux/team.json from setup's
+  # `atmux init --name g` invocation). The teardown sweep finds team.json
+  # by walking $ATMUX_TEST_TMP and calls cron_remove with the .name field.
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install g "$ATMUX_TEST_TMP/sandbox-g"
+  grep -q '^# >>> atmux:team=g' "$ATMUX_TEST_CRONTAB"
+
+  # Invoke the sweep with the mock on PATH so the inner cron_remove call
+  # writes to the sandbox crontab file rather than the host's crond.
+  PATH="$ATMUX_MOCK_BIN:$PATH" _atmux_teardown_cron_sweep
+
+  # Block must be gone — sweep has reached every team.json under the
+  # sandbox + called cron_remove for each .name. Either the file is
+  # absent (cron_remove stripped the only block) or it contains no
+  # marker for team "g".
+  if [[ -f "$ATMUX_TEST_CRONTAB" ]]; then
+    ! grep -q '^# >>> atmux:team=g' "$ATMUX_TEST_CRONTAB"
+    ! grep -q "ATMUX_DIR=$ATMUX_TEST_TMP/sandbox-g" "$ATMUX_TEST_CRONTAB"
+  fi
 }
