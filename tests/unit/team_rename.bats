@@ -355,6 +355,49 @@ EOF
   ! tmux has-session -t "=atmux-old" 2>/dev/null
 }
 
+# ---------- AC8b: singleSession step3b session-arg hygiene (f-d79872d3) ----------
+
+@test "team-rename: singleSession=true ⇒ step3b targets driver session (old_session), windows renamed in place" {
+  # Per t-12cf5835 / f-d79872d3: orchestrator no longer threads
+  # new_session into step3b unconditionally. In singleSession mode
+  # without --migrate-session, no session is renamed, so new_session
+  # would be a non-existent name — step3b targets old_session (the
+  # driver session, where the team's windows actually live) instead.
+  # Window prefix __old__* → __new__* still happens so post-rename
+  # atmux::window_name lookups continue to resolve.
+
+  # Driver session pre-seeded with team windows. State/session.txt pins
+  # the rename's atmux::session_name resolution to the driver session.
+  local driver_session="atmux-driver-$$"
+  _seed_team_tmux_session "$driver_session" alpha
+  echo "$driver_session" > .atmux/state/session.txt
+
+  jq '.singleSession = true | .members = [{"name":"alpha","role":"member"}]' \
+    .atmux/team.json > .atmux/team.json.tmp && mv .atmux/team.json.tmp .atmux/team.json
+
+  _load_libs
+  ATMUX_REGISTRY="$ATMUX_REGISTRY" atmux::registry_upsert "old" "$PWD" "$driver_session" >/dev/null
+
+  run "$ATMUX_BIN" team rename old new
+  [ "$status" -eq 0 ]
+
+  # team.json renamed, registry rolled forward.
+  [ "$(jq -r '.name' .atmux/team.json)" = "new" ]
+  [ "$(jq -r '.[] | select(.name=="new") | .status' "$ATMUX_REGISTRY")" = "running" ]
+
+  # Windows in the driver session got renamed __old__* → __new__*.
+  # Pinning this confirms step3b operates on old_session (the live
+  # session), not the misleading new_session that would have been a
+  # non-existent name in singleSession mode.
+  local names; names="$(_tmux_window_names "$driver_session")"
+  [[ "$names" == *"__new__alpha"* ]]
+  [[ "$names" != *"__old__alpha"* ]]
+
+  # Rollback log records the actual session targeted — pinning the
+  # log line surfaces future regressions in the param-hygiene logic.
+  grep -q "step3b: tmux rename-window in '$driver_session'" .atmux/state/rename-rollback.log
+}
+
 # ---------- AC9: registry createdAt preservation across rename ----------
 
 @test "team-rename: old registry entry's createdAt carries to new entry (NOT now())" {

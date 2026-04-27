@@ -156,11 +156,29 @@ main() {
     fi
   fi
 
+  # Step 3b session arg — the session that ACTUALLY holds the team's
+  # windows right now. Threading new_session unconditionally was misleading
+  # per f-d79872d3: in singleSession mode without --migrate-session no
+  # session is renamed at all, so new_session is the new TEAM name, NOT a
+  # real tmux session. Pick the live target explicitly:
+  #   - multi-session post step3a rename → new_session
+  #   - multi-session no rename (old==new) → old_session
+  #   - singleSession + --migrate-session → new_session (= driver session
+  #     via --session; step1a moved windows there)
+  #   - singleSession, no migrate → old_session (driver session, never
+  #     renamed; windows already live there as __<old>__*)
+  local step3b_session="$old_session"
+  if (( rename_session_ok == 1 )); then
+    step3b_session="$new_session"
+  elif [[ "$single_session" == "true" && "$migrate_session" == "1" ]]; then
+    step3b_session="$new_session"
+  fi
+
   local renamed_windows
-  renamed_windows="$(_atmux_team_rename_step_windows "$old" "$new" "$new_session")"
+  renamed_windows="$(_atmux_team_rename_step_windows "$old" "$new" "$step3b_session")"
   if [[ -n "$renamed_windows" ]]; then
-    ATMUX_RENAME_ROLLBACK_STACK+=("tmux_windows:$renamed_windows:$new_session")
-    _atmux_team_rename_log "step3b: tmux rename-window: $renamed_windows"
+    ATMUX_RENAME_ROLLBACK_STACK+=("tmux_windows:$renamed_windows:$step3b_session")
+    _atmux_team_rename_log "step3b: tmux rename-window in '$step3b_session': $renamed_windows"
   fi
 
   # ---- Step 4: state/session.txt rewrite ----
@@ -271,9 +289,13 @@ _atmux_team_rename_step_team_json() {
 
 # Step 3b: rename every __<old>__* window in <session> to __<new>__*. Echoes a
 # space-separated list of "<window_id>:<old_name>:<new_name>" for rollback use.
+# Empty <session> arg → no-op (per f-d79872d3: orchestrator passes empty in
+# singleSession mode where no session was renamed; refuses cleanly here so
+# the misleading new_session never makes it to tmux has-session).
 _atmux_team_rename_step_windows() {
   local old="$1" new="$2" session="$3"
   command -v tmux >/dev/null 2>&1 || return 0
+  [[ -n "$session" ]] || return 0
   tmux has-session -t "=$session" 2>/dev/null || return 0
   local out=""
   while IFS=' ' read -r wid wname; do
