@@ -151,6 +151,30 @@ main() {
     fi
   fi
 
+  # ---- Auto-spawn the supervisor window (ADR-032 §Supervisor lifecycle) ----
+  # One __<team>__supervisor window per team runs lib/supervisor.sh, which
+  # listens on .atmux/sockets/<member>.sock for events and gates send-keys
+  # injection through the migrate-grade NBSP-aware preflight. Idempotent:
+  # if the window already exists from a prior `atmux start` (or a crashed
+  # window that wasn't reaped), we leave it alone — its own SIGCHLD trap
+  # respawns dead subscribers from the inside. team.json:.supervisor=false
+  # opts out for legacy / single-process teams.
+  local sup_optout sup_win sup_cwd
+  sup_optout="$(jq -r '.supervisor // true' "$(atmux::team_json)" 2>/dev/null || echo true)"
+  sup_win="__${team}__supervisor"
+  sup_cwd="$(dirname "$(atmux::dir)")"
+  if [[ "$sup_optout" != "false" ]]; then
+    if atmux::tmux_window_exists "$sup_win"; then
+      atmux::log "supervisor: window $sup_win already running, skipping spawn"
+    else
+      tmux new-window -d -t "$session" -n "$sup_win" \
+        -c "$sup_cwd" \
+        "$ATMUX_BIN_DIR/atmux supervisor-start" 3>&- 4>&- \
+        || atmux::warn "supervisor: failed to spawn window $sup_win (non-fatal)"
+      atmux::ok "supervisor: spawned $sup_win"
+    fi
+  fi
+
   # ---- Record start timestamp ----
   atmux::now_epoch > "$(atmux::state_dir)/session-start.txt"
 
@@ -189,6 +213,9 @@ _atmux_spawn_member() {
   local mj; mj="$(atmux::member_json "$member")"
   local tui model cwd role
   tui="$(jq -r '.tui // "claude"' <<<"$mj")"
+  # ADR-024: model="default" → claude CLI default model (Opus today via global
+  # CLAUDE_CODE_EFFORT_LEVEL=xhigh); explicit IDs (claude-sonnet-4-6, etc)
+  # propagate verbatim through atmux::tui_cmd → atmux::tui_claude → `--model <id>`.
   model="$(jq -r '.model // "default"' <<<"$mj")"
   cwd="$(jq -r '.cwd // "."' <<<"$mj")"
   role="$(jq -r '.role // "member"' <<<"$mj")"
