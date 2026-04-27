@@ -25,6 +25,13 @@ atmux_setup_sandbox() {
   cd "$ATMUX_TEST_TMP/project" || return 1
   export ATMUX_DIR="$ATMUX_TEST_TMP/project/.atmux"
   export TMUX_TMPDIR="$ATMUX_TEST_TMP/tmux"
+  # Sandbox the fleet registry too. The new init/start hooks (E10/Sa
+  # registry_upsert + registry_touch) write to $HOME/.claude/teams/
+  # registry.json by default — without this override, every `atmux init`
+  # / `atmux start` in a test pollutes the user's real fleet registry
+  # (incident: 9 leaked entries observed 2026-04-27). registry.sh honors
+  # $ATMUX_REGISTRY explicitly for this sandbox case.
+  export ATMUX_REGISTRY="$ATMUX_TEST_TMP/registry.json"
   unset TMUX  # detach inherited client so child tmux invocations spawn a fresh sandbox server
   # Don't spew colors in tests.
   export NO_COLOR=1
