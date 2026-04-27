@@ -25,6 +25,28 @@ main() {
     atmux::die "preflight failed — fix the red items above, then re-run 'atmux'"
   fi
 
+  # ---- 2a. Topology invariant gate (ADR-027) ----
+  # Targeted topology probe after the generic preflight so drift surfaces
+  # the row content + suggested fix verbatim. atmux up has no --force
+  # flag — escape hatches are `atmux start --force` (legacy non-single-
+  # session only) or fixing the drift via `atmux team rename`. Yellow
+  # rows warn loud; red rows die.
+  # shellcheck source=doctor.sh
+  . "$ATMUX_LIB_DIR/doctor.sh"
+  _doctor_reset
+  _doctor_check_topology_invariant
+  if (( _doctor_red_count > 0 )) || (( _doctor_yellow_count > 0 )); then
+    local _row
+    for _row in "${_doctor_rows[@]}"; do
+      case "$_row" in
+        red\|topology:*|yellow\|topology:*) atmux::warn "${_row//|/  }" ;;
+      esac
+    done
+    if (( _doctor_red_count > 0 )); then
+      atmux::die "topology drift detected (ADR-027) — fix the red row above, or 'atmux start --force' / 'atmux start --no-doctor' to bypass"
+    fi
+  fi
+
   # ---- 3. start if not up ----
   local session; session="$(atmux::session_name)"
   if atmux::tmux_session_exists; then
