@@ -507,6 +507,32 @@ ln -s /root/.atmux-src/completions/_atmux ~/.zsh/completions/_atmux
 
 **"I don't want atmux touching my crontab."** Set `kanban.cronAutoInstall: false` in `team.json` before the first `atmux start`. If you've already started, `atmux stop` removes the block, then add the opt-out, then `atmux start` again.
 
+### Preflight: logout-kill exposure
+
+**Why it matters.** On modern Linux (systemd ≥230), `KillUserProcesses=yes` is the stock default. When your SSH session ends, systemd-logind reaps the entire user cgroup — your tmux server, every atmux team in it, and any orphan helper scopes all die together. The 2026-04-26 incident on hax cost both `sopx-mvp` and `atmux-kanban` their mid-flight state when an SSH session-3.scope ended; whip cron survived (it lives in crontab, outside the user session) and proceeded to ping Discord with "session DOWN" every 5 min until manually disabled. The fix is one `loginctl` call, but the **detection** has to happen before you start the team.
+
+**The check.** `atmux doctor` runs `_doctor_check_logout_kill` as part of its preflight battery. It reads `loginctl show-user --property=Linger` + `/etc/systemd/logind.conf` and surfaces one of three rows:
+
+- `logout-kill` (green) — `Linger=yes`. Your tmux server survives logout; nothing to do.
+- `logout-kill` (yellow) — exposed (linger off + `KillUserProcesses` on/unset) on a **local TTY** session. The driver may legitimately accept this risk for local dev.
+- `logout-kill` (red) — exposed on an **SSH** session (detected via `loginctl show-session "$XDG_SESSION_ID"` or `$SSH_CONNECTION` non-empty). This is the incident shape — your team is one logout away from extinction.
+
+**`atmux start` warns but does not refuse.** Start invokes `atmux doctor --quiet`; when the logout-kill row is non-green, start prints an unmissable `⚠️ logout-kill exposure: tmux server will die when this SSH session closes. Run \`atmux doctor --fix\` to enable linger.` and proceeds. The driver may legitimately want to spin up an ad-hoc team for a single session; refusal would be paternalistic.
+
+**How to dismiss.** Two paths, both run-once:
+
+```bash
+atmux doctor --fix                              # tries `loginctl enable-linger`; on
+                                                # EPERM prints the sudo invocation.
+sudo loginctl enable-linger "$(id -un)"         # manual, when --fix can't elevate.
+```
+
+After enabling linger, re-run `atmux doctor` to confirm the row flips to green. Linger persists across reboots — one-time fix per host.
+
+**macOS / non-systemd hosts.** `loginctl` is absent, the check skips silently, no row is emitted either way. The exposure isn't a Linux-stock-default problem outside systemd-init systems.
+
+Full rationale + risk register + open-question resolutions: see [`docs/adr/017-logout-kill-preflight.md`](docs/adr/017-logout-kill-preflight.md).
+
 ## FAQ
 
 **Why two topology options (dedicated session vs single-session)?**
