@@ -654,3 +654,21 @@ atmux::lane_display() {
   [[ -z "$lane" || "$lane" == "null" ]] && lane="misc"
   printf '%s\n' "$lane" | tr '[:lower:]' '[:upper:]'
 }
+
+# ---------- push-target refuse-gate (ADR-028) ----------
+
+# Hard refuse-gate for git-push targets. Per ADR-028, main/master is the
+# exclusive PR-merge target; agents never push directly. Callers wire this
+# in BEFORE constructing any `git push` invocation. --force does NOT
+# override (intentional — mirrors lib/stop.sh's destructive-op refuse
+# pattern). The escape hatch is the human-driven PR path:
+#   gh pr create --base main --head <wip-branch>
+# followed by human-clicked merge in Github UI (or human-invoked
+# `gh pr merge`). No agent flag (--force-push-main) is provided —
+# flags drift in autonomous mode.
+atmux::guard_push_target() {
+  local branch="${1:-}"
+  if [[ "$branch" =~ ^(main|master)$ ]]; then
+    atmux::die "push-target refuse: $branch is PR-only per ADR-028 — open a PR (gh pr create --base $branch); gh pr merge is human-only"
+  fi
+}
