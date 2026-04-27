@@ -39,6 +39,7 @@ atmux report
 - Make your own recommended decisions — don't wait on the driver by default.
 - Pick the sensible default, apply it, note "override by replying" in driver-inbox.
 - Only escalate for irreversible ops or demo-narrative changes.
+- Member emojis are immutable once first assigned via the registry (per [ADR-030](../../docs/adr/030-registry-emoji-immutability.md)); editing `team.json:.members[].emoji` on an already-registered member has no effect. To change one: edit `~/.claude/teams/registry.json` directly with `jq`, then `atmux rotate <member>` to re-spawn the window.
 
 ## State files
 

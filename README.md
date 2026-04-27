@@ -186,6 +186,34 @@ atmux pause planner-auth
 
 They share the same brief template as the canonical role, so the lead treats them as parallel staff. Useful when the main planner's queue is deep or a feature needs a dedicated schema reviewer.
 
+### Member emoji stability
+
+Each member spawns into a tmux window named `__<team>__<emoji><member>` — the leading emoji is the visual shorthand the driver builds up over weeks of operation ("🐰 is be-kanban", "🦁 is lead"). To keep that shorthand intact across restarts, atmux records each member's emoji to the cross-team registry at `~/.claude/teams/registry.json` (see [ADR-025](docs/adr/025-superdriver-phase-1.md)) and treats it as **immutable once first written**.
+
+**Lookup priority at spawn time** (`lib/start.sh`, `lib/add-member.sh`, anywhere a member's emoji is resolved):
+
+1. **Registry** — `registry.json:teams[name=$team].members[name=$member].emoji`. Present + non-empty → use it.
+2. **`team.json`** — `.members[name=$member].emoji`. Present + non-empty → use it AND write it through to the registry. Subsequent spawns hit step 1.
+3. **Random fallback** — pick from the animal palette → use it AND write it through to the registry. The first random pick is the durable assignment; subsequent restarts keep that animal.
+
+The persist-back step on (2) and (3) is load-bearing — without it, "🐰 = be-kanban" would re-roll on every restart and the driver's mental model would never stabilise.
+
+**Why this is immutable.** Driver feedback before ADR-030: every `atmux stop` + `atmux start` cycle re-randomised any member without a baked `team.json` emoji, breaking the visual shorthand. Bulk-rename windows (4 sequential renames in one Sg burst) compounded the churn. Registry-as-source-of-truth + immutability fixes both — once a member has an emoji, that emoji is permanent.
+
+**Override path.** Editing `team.json:.members[].emoji` on an **already-registered** member has NO effect at spawn time — the registry wins per the lookup priority. To change a registered member's emoji:
+
+```bash
+# Operator-explicit: edit the registry directly, then rotate the member.
+jq --arg t atmux-kanban --arg m be-kanban --arg e 🐺 \
+   '(.teams[] | select(.name == $t) | .members[] | select(.name == $m) | .emoji) = $e' \
+   ~/.claude/teams/registry.json | sponge ~/.claude/teams/registry.json
+atmux rotate be-kanban
+```
+
+The rotate is what re-spawns the window under the new emoji name; until then the live tmux window keeps the old name.
+
+See [docs/adr/030-registry-emoji-immutability.md](docs/adr/030-registry-emoji-immutability.md) for the full design + risk register.
+
 ## TUIs supported
 
 | TUI         | Binary            | Default model                           | Switchable? |
