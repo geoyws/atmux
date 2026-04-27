@@ -1,7 +1,9 @@
 # ADR-016: Single-session topology — opt-in flag + Phase 2 migrate verb
 
-**Status**: accepted
+**Status**: superseded by [ADR-026](./026-always-single-session-topology.md) (default policy only — Phase 1 implementation surface and Phase 2 migrate verb stand)
 **Date**: 2026-04-26
+
+> **Note 2026-04-27**: ADR-026 inverts the default — single-session becomes the *only* mode the wizard creates; `team.json:.singleSession=false` retained as a declared escape hatch. The opt-in flag, refuse-gate, window-name normalisation, and migrate verb described below remain in force. See [ADR-026](./026-always-single-session-topology.md) for the policy pivot.
 
 ## Context
 
