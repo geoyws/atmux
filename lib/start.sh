@@ -130,6 +130,34 @@ main() {
 
   atmux::ok "team '$team' is up. attach with: atmux attach"
 
+  # ---- Registry touch (E10/Sa t-638f6504, ADR-025 §Decision start hook) ----
+  # Bump lastSeen on every successful start so the fleet aggregator
+  # (super-status) knows this team is alive. Backfill via upsert when the
+  # entry is missing — the common case for teams whose `atmux init`
+  # predates SA_T2's registry hook (silent, no atmux::ok). All failures
+  # here are non-fatal: the registry is coordination/observability infra,
+  # not a precondition for the team being up.
+  if [[ -f "$ATMUX_LIB_DIR/registry.sh" ]]; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh"
+    local _atmux_registry _atmux_registered=false
+    _atmux_registry="$(atmux::registry_path)"
+    if [[ -s "$_atmux_registry" ]] \
+       && jq -e --arg n "$team" 'any(.[]?; .name == $n)' "$_atmux_registry" >/dev/null 2>&1; then
+      _atmux_registered=true
+    fi
+    if [[ "$_atmux_registered" == "true" ]]; then
+      atmux::registry_touch "$team" \
+        || atmux::warn "registry_touch failed for '$team' (non-fatal)"
+    else
+      local _atmux_root; _atmux_root="$(dirname "$(atmux::dir)")"
+      atmux::registry_upsert "$team" "$_atmux_root" "$session" \
+        || atmux::warn "registry_upsert backfill failed for '$team' (non-fatal)"
+    fi
+  else
+    atmux::warn "lib/registry.sh missing — skipping registry touch (non-fatal)"
+  fi
+
   # ---- Cron auto-install (E6/Sc t-ac7197cf) ----
   # Wire whip + report + decisions-digest into the user's crontab unless
   # team.json explicitly opts out via kanban.cronAutoInstall=false. Default
