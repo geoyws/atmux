@@ -422,6 +422,57 @@ atmux driver note "S9 sandbox path option (c) — DB-side dispatcher" \
   --context "options (a)/(b) discarded after planner audit; (c) survives RLS gates"
 ```
 
+## 🛰️ atmux-superdriver Phase 1
+
+When the driver runs more than one atmux team on a single host (today: hax with `atmux-kanban` + `sopx-mvp` + future Unum / IFCA product teams), per-team oversight fragments fast: "what teams exist? which are alive? which have OPS gates pending?" is answered today by `tmux ls` + `cd <project> && atmux status` per team — linear in team count, no rollup. Per-team `tell-lead` is the only cross-context channel, so pushing a "rotate your lead" to `sopx-mvp` from any other shell costs a `cd` + an inbox edit. **atmux-superdriver Phase 1** is a read-only fleet aggregator + safe write channel that goes through each team's existing `tell-lead` durability layer — no new write surface to learn, no new audit trail to police.
+
+### Phase 1 surface
+
+| Verb | Purpose |
+|---|---|
+| `atmux super-attach` | Attach-or-spawn the dedicated `atmux-superdriver` tmux session. Spawns a single Claude pane with the superdriver brief auto-injected if the session is absent. |
+| `atmux super-status` | Per-team digest (status, kanban rollup, OPS gates, last lead-outbox entries, branch ahead/behind, recent commits) + fleet rollup (total teams, promote-ready Epics, cross-fleet stale claims, idle teams >24h). `--json` for downstream consumption; `--prune` for operator-explicit cleanup of stale registry entries. |
+| `atmux super-tell <team> <member> <msg>` | Cross-team write via `tell-lead` durability — registry lookup → projectRoot resolution → write target's `driver-inbox.md` + tmux send-keys heads-up to the target's lead pane. Honors target's pane-state preflight (refuses on `thinking with` / `Compacting conversation` / queued messages). Same channel as a regular driver running `atmux tell-lead` inside the target project. |
+
+### How to use
+
+```bash
+atmux super-attach          # opens dedicated atmux-superdriver session
+                            # (spawn-or-attach; ON-DEMAND, no whip-cycle)
+atmux super-status          # triage cross-team digest
+atmux super-tell sopx-mvp lead "rotate-lead — uptime over 4h, context rotting"
+```
+
+The session sits idle when not in use. There is **no whip-cycle in Phase 1** — the driver invokes `super-attach` when fleet-wide coordination is needed, works, then exits. No 5-min watchdog, no 30-min digest, no idle Opus burn.
+
+### Architectural posture
+
+- **Registry-as-file** at `~/.claude/teams/registry.json` — single source of truth for "what teams exist." flock-guarded writes mirror the `kanban.json.lock` pattern (bare `jq + mv` writes are a documented foot-gun and intentionally not used).
+- **Read-only on cross-team state.** `super-status` reads any registered team's `kanban.json` / `lead-outbox.md` / git state but never writes. The only sanctioned cross-team writes are `super-tell` (which goes through each team's `tell-lead` chain) and `super-status --prune` (operator-explicit registry cleanup).
+- **NO bypass of `tell-lead`.** Every cross-team write routes through the target team's existing durability layer — no separate cross-team kanban, no shadow audit trail.
+
+### Phase 2 deferral
+
+These verbs / behaviors are **explicitly deferred to Phase 2** and DO NOT exist in Phase 1:
+
+- Cross-team Task pushing (writing directly into another team's `kanban.json`).
+- Cross-team Epics that span multiple teams' kanban files.
+- Cross-team conflict arbitration that edits both teams' state.
+- Superdriver whip-cycle (recurring 5-min/30-min digest from the superdriver pane).
+
+The Phase 2 commit gate is empirical: when the superdriver finds itself wanting to bypass `tell-lead` (push directly, arbitrate, write a cross-team Epic), it logs the incident in `~/.claude/teams/superdriver-bypass-log.md` with timestamp + situation + what it wanted to bypass + **why the `tell-lead` chain was insufficient**. Driver reviews the log periodically; consistent themes drive a Phase 2 ADR. Empty log after weeks of use = Phase 1 was sufficient.
+
+### Risk register summary
+
+| Risk | Mitigation |
+|---|---|
+| Registry corruption from concurrent atmux start/stop | flock on `registry.json.lock` mirrors the kanban-lock pattern; bare `jq + mv` rejected. |
+| Cross-team tmux send-keys collision | `super-tell` honors target pane's preflight (refuse on `thinking with` / `Compacting` / queued). |
+| Stale registry entries (team killed without `atmux stop`) | `super-status` liveness check (tmux session + `.atmux/` dir) marks `stale`; `--prune` for operator-explicit cleanup — NO auto-mutate from reads. |
+| Privacy / blast (super-status reads ALL teams) | Acceptable on hax (single-user box). Multi-tenant deferred indefinitely. |
+
+Full risk register + open-question resolutions: see [`docs/adr/025-superdriver-phase-1.md`](docs/adr/025-superdriver-phase-1.md).
+
 ## Testing
 
 ```bash
