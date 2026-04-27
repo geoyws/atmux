@@ -64,6 +64,15 @@ main() {
 
   case "$verb" in
     claim)
+      # ADR-033 driver-only gate (explicit-id form). Refuses claim when
+      # the Task's .driverOnly is true and the caller's resolved scope
+      # isn't "driver". Bookkeeping transitions (todo|blocked) go through
+      # `atmux task move`, not `atmux claim`; this gate covers the
+      # in-progress-flip path only.
+      if atmux::is_driver_only_blocked "$id"; then
+        atmux::die "claim: $id is a driver-only Task — only the driver scope can claim it. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry."
+      fi
+
       # Enforce deps: can't claim a task whose deps are not all "done".
       local unresolved
       unresolved=$(jq --arg id "$id" '
@@ -161,6 +170,12 @@ _atmux_claim_pick_next() {
                  then .kanban.crossLaneClaim
                  else true end' "$tj")
 
+  # ADR-033 driver-only gate. Resolved once per pick — drives the
+  # selection filter so driver-only Tasks stay invisible to non-driver
+  # claimers (Task remains `todo`, never consumed). Driver-scoped
+  # callers see them like any other Task.
+  local scope; scope="$(atmux::resolve_caller_scope)"
+
   # Race-aware retry loop. The atomic claim filter only mutates if .owner is
   # still null, so a losing racer just falls through to a re-select on the
   # next iteration. Bound to 3 retries per AC.
@@ -169,7 +184,7 @@ _atmux_claim_pick_next() {
     attempts=$(( attempts + 1 ))
 
     local pick_id
-    pick_id=$(_atmux_claim_select_next "$lane" "$cross" "$who")
+    pick_id=$(_atmux_claim_select_next "$lane" "$cross" "$who" "$scope")
     if [[ -z "$pick_id" ]]; then
       if [[ "$cross" != "true" && -n "$lane" ]]; then
         local lane_disp; lane_disp=$(printf '%s' "$lane" | tr '[:lower:]' '[:upper:]')
@@ -204,13 +219,13 @@ _atmux_claim_pick_next() {
 # tasks for OTHER workers are skipped — preassignment is a hint, not a
 # hard-claim, but cross-lane workers still respect intent.
 _atmux_claim_select_next() {
-  local lane="$1" cross="$2" who="$3"
+  local lane="$1" cross="$2" who="$3" scope="${4:-member}"
   local k; k="$(atmux::kanban_json)"
 
   # First pass — only when we have a caller lane to prefer.
   if [[ -n "$lane" ]]; then
     local first
-    first=$(jq -r --arg lane "$lane" --arg who "$who" '
+    first=$(jq -r --arg lane "$lane" --arg who "$who" --arg scope "$scope" '
       . as $root
       | ($root.tasks | map(select(.status == "done") | .id)) as $done_ids
       | [
@@ -219,6 +234,7 @@ _atmux_claim_select_next() {
           | select((.owner // null) == null or .owner == $who)
           | select(.lane == $lane)
           | select(((.deps // []) - $done_ids) | length == 0)
+          | select((.driverOnly // false) == false or $scope == "driver")
         ]
       | sort_by((.priority // 999), (.createdAt // 0))
       | .[0].id // empty
@@ -233,7 +249,7 @@ _atmux_claim_select_next() {
   # except when caller has no lane at all (then there's nothing to "cross"
   # from, so we always fall through).
   if [[ "$cross" == "true" || -z "$lane" ]]; then
-    jq -r --arg who "$who" '
+    jq -r --arg who "$who" --arg scope "$scope" '
       . as $root
       | ($root.tasks | map(select(.status == "done") | .id)) as $done_ids
       | [
@@ -241,6 +257,7 @@ _atmux_claim_select_next() {
           | select(.status == "todo")
           | select((.owner // null) == null or .owner == $who)
           | select(((.deps // []) - $done_ids) | length == 0)
+          | select((.driverOnly // false) == false or $scope == "driver")
         ]
       | sort_by((.priority // 999), (.createdAt // 0))
       | .[0].id // empty

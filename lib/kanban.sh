@@ -242,6 +242,20 @@ _atmux_task_move() {
     *) atmux::die "task move: status must be todo|in-progress|done|blocked" ;;
   esac
 
+  # ADR-033 driver-only gate. Refuse `in-progress` and `done` transitions
+  # when the Task is driverOnly:true and the caller's resolved scope
+  # isn't "driver". `todo` and `blocked` transitions stay allowed because
+  # those are bookkeeping (releasing a mis-claimed Task back to the pool;
+  # marking a flag-blocked Task) — only forward-progress transitions
+  # require driver scope.
+  case "$status" in
+    in-progress|done)
+      if atmux::is_driver_only_blocked "$id"; then
+        atmux::die "task move: $id is a driver-only Task — only the driver scope can move it to '$status'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry."
+      fi
+      ;;
+  esac
+
   if [[ "$status" == "done" ]]; then
     # Delegate to the shared finisher so `atmux done` and `atmux task move done`
     # always trigger the same auto-dispatch chain (commit → gitter, story flip,

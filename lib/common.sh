@@ -266,6 +266,89 @@ atmux::find_lead_member() {
      "$(atmux::team_json)"
 }
 
+# atmux::resolve_caller_scope
+#
+# Returns "driver" or "member" on stdout. Default is "member" (fail-secure
+# — only an explicit driver-shaped caller gets the "driver" verdict, since
+# member panes outnumber driver panes and the driverOnly gate is the
+# load-bearing protection per ADR-033).
+#
+# Resolution order:
+#   1. Defense-in-depth window-name check FIRST. Inside tmux, if the
+#      current window's name matches the spawn convention `__<team>__*`
+#      (the prefix every member pane carries per ADR-030), force scope=
+#      "member" regardless of any env var. Members can `export
+#      ATMUX_CALLER_SCOPE=driver` from inside their REPL — this kills
+#      that bypass before the env-read.
+#   2. If we've cleared the window-name check, read the env. Tmux
+#      session env (set by `tmux set-environment`) takes precedence over
+#      process env, so the driver pane's bootstrap can stamp scope on
+#      the session and have it survive shell respawns.
+#   3. If env says exactly "driver", return "driver". Anything else
+#      (unset, "member", garbage) → "member".
+#
+# Interim env-gate per ADR-033 §Caller scope detection. Will be replaced
+# by the canonical `atmux::resolve_caller_scope` per ADR-029 once E10/Si
+# lands; this is the placeholder shape so callers can wire up now.
+atmux::resolve_caller_scope() {
+  if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    local win
+    win="$(tmux display-message -p '#{window_name}' 2>/dev/null || true)"
+    if [[ "$win" =~ ^__[a-z0-9_-]+__ ]]; then
+      printf 'member\n'
+      return 0
+    fi
+  fi
+
+  local env_scope=""
+  if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    env_scope="$(tmux show-environment ATMUX_CALLER_SCOPE 2>/dev/null \
+                  | sed -n 's/^ATMUX_CALLER_SCOPE=//p' || true)"
+  fi
+  if [[ -z "$env_scope" ]]; then
+    env_scope="${ATMUX_CALLER_SCOPE:-}"
+  fi
+
+  if [[ "$env_scope" == "driver" ]]; then
+    printf 'driver\n'
+  else
+    printf 'member\n'
+  fi
+}
+
+# atmux::is_driver_only_blocked <task-id>
+#
+# Returns 0 (success — "yes, blocked, refuse the action") when:
+#   - the Task exists in kanban.json
+#   - its `.driverOnly` field is `true` (default `false` via `// false`)
+#   - the caller's resolved scope is not `driver`
+#
+# Returns non-zero (1) in every other case — including the Task not
+# existing or the kanban being unreadable. Fail-open at the
+# infrastructure layer: missing field / missing kanban shouldn't break
+# every claim/move; only the explicit `driverOnly:true` plus non-driver
+# scope triggers the refuse.
+#
+# Callers (lib/claim.sh selection loop + explicit-id form, lib/kanban.sh
+# task move) wrap this in their refuse logic per ADR-033 §Refuse-gate
+# sites.
+atmux::is_driver_only_blocked() {
+  local task_id="$1"
+  [[ -n "$task_id" ]] || return 1
+
+  local k; k="$(atmux::kanban_json 2>/dev/null)" || return 1
+  [[ -f "$k" ]] || return 1
+
+  local driver_only
+  driver_only="$(jq -r --arg id "$task_id" \
+                   '.tasks[]? | select(.id == $id) | .driverOnly // false' \
+                   "$k" 2>/dev/null)"
+  [[ "$driver_only" == "true" ]] || return 1
+
+  local scope; scope="$(atmux::resolve_caller_scope)"
+  [[ "$scope" != "driver" ]]
+}
+
 # atmux::brief_version <role>
 #
 # Read the brief-version marker from the first line of
@@ -465,13 +548,17 @@ atmux::find_phantom_inbox_ids() {
 
 atmux::tmux_session_exists() {
   local s; s="$(atmux::session_name)"
-  tmux has-session -t "$s" 2>/dev/null
+  # `=` prefix on target = exact-match (per tmux(1) §SESSIONS, "Names").
+  # Bare `-t $s` is prefix-match: 'atmux-k' would falsely succeed
+  # against 'atmux-kanban'. SEC sweep t-0dbfe104.
+  tmux has-session -t "=$s" 2>/dev/null
 }
 
 atmux::tmux_window_exists() {
   local s; s="$(atmux::session_name)"
   local w; w="$(atmux::window_name "$1")"
-  tmux list-windows -t "$s" -F '#{window_name}' 2>/dev/null | grep -qx "$w"
+  # Same prefix-match flaw applies to list-windows' session arg.
+  tmux list-windows -t "=$s" -F '#{window_name}' 2>/dev/null | grep -qx "$w"
 }
 
 atmux::tmux_target() {
