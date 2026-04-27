@@ -19,9 +19,6 @@ export ATMUX_ROOT ATMUX_BIN_DIR
 export ATMUX_LIB_DIR="$ATMUX_ROOT/lib"
 export ATMUX_TEMPLATES_DIR="$ATMUX_ROOT/templates"
 
-# shellcheck source=../lib/common.sh
-. "$ATMUX_LIB_DIR/common.sh"
-
 usage() {
   cat <<'EOF'
 atmux — agent teams multiplexer.
@@ -174,6 +171,49 @@ case "$_atmux_team_dir_consumed" in
   2) shift 2 ;;
   1) shift 1 ;;
 esac
+
+# E8/Sc t-e179f289 (ADR-018) — early TMUX_TMPDIR export from team.json's
+# optional `tmuxTmpdir` field. Per-team socket isolation needs to land
+# BEFORE common.sh sources because every common.sh-defined helper that
+# shells out to `tmux` reads $TMUX_TMPDIR at invocation time; a late
+# export risks an early call landing on the wrong socket. Honors any
+# pre-existing $TMUX_TMPDIR (operator override wins). Silent no-op when
+# jq is absent or team.json is malformed/missing — atmux startup must
+# stay graceful for first-run (no .atmux/) cases.
+_atmux_resolve_tmux_tmpdir() {
+  [[ -n "${TMUX_TMPDIR:-}" ]] && return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  # Resolve team.json the same way atmux::dir() will once common.sh loads:
+  # explicit ATMUX_DIR > ATMUX_TEAM_DIR/.atmux > walk up from cwd.
+  local tj=""
+  if [[ -n "${ATMUX_DIR:-}" && -f "${ATMUX_DIR%/}/team.json" ]]; then
+    tj="${ATMUX_DIR%/}/team.json"
+  elif [[ -n "${ATMUX_TEAM_DIR:-}" && -f "${ATMUX_TEAM_DIR%/}/.atmux/team.json" ]]; then
+    tj="${ATMUX_TEAM_DIR%/}/.atmux/team.json"
+  else
+    local d="$PWD"
+    while [[ -n "$d" && "$d" != "/" ]]; do
+      if [[ -f "$d/.atmux/team.json" ]]; then
+        tj="$d/.atmux/team.json"
+        break
+      fi
+      d="$(dirname "$d")"
+    done
+  fi
+  [[ -n "$tj" ]] || return 0
+
+  local val
+  val="$(jq -r '.tmuxTmpdir // empty' "$tj" 2>/dev/null)"
+  [[ -n "$val" && "$val" != "null" ]] || return 0
+
+  mkdir -p "$val" 2>/dev/null || true
+  export TMUX_TMPDIR="$val"
+}
+_atmux_resolve_tmux_tmpdir
+
+# shellcheck source=../lib/common.sh
+. "$ATMUX_LIB_DIR/common.sh"
 
 case "${1:-}" in
   help|--help|-h) usage; exit 0 ;;
