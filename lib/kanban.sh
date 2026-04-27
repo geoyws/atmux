@@ -47,6 +47,7 @@ main() {
 _atmux_task_add() {
   local subject="" body="" assignee="" deps="" priority=""
   local epic="" story="" lane="" deliverable="" stale_min=""
+  local driver_only=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --body)        body="$2"; shift 2 ;;
@@ -58,6 +59,7 @@ _atmux_task_add() {
       --lane)        lane="$2"; shift 2 ;;
       --deliverable) deliverable="$2"; shift 2 ;;
       --stale-min)   stale_min="$2"; shift 2 ;;
+      --driver-only) driver_only=1; shift ;;
       --) shift; subject="$*"; break ;;
       -*) atmux::die "task add: unknown flag: $1" ;;
       *)
@@ -124,6 +126,10 @@ _atmux_task_add() {
 
   local stale_json; stale_json="$(jq -Rn --arg s "$stale_min" 'if $s == "" then null else ($s | tonumber? // null) end')"
 
+  # driverOnly (bool) — load-bearing gate per ADR-033. New Tasks always
+  # write the field explicitly; existing pre-ADR-033 Tasks lack it and
+  # are read via `// false` coalesce in claim/move sites (E14/T2).
+  local driver_only_json; driver_only_json=$(( driver_only )) # bash 0|1 → JSON via --argjson + ternary
   atmux::jq_update "$k" \
     '.tasks += [{
       id: $id, subject: $subject, body: $body,
@@ -134,6 +140,7 @@ _atmux_task_add() {
       lane:        (if $lane        == "" then null else $lane        end),
       deliverable: (if $deliverable == "" then null else $deliverable end),
       staleMin:    $staleMin,
+      driverOnly:  ($driverOnly == 1),
       createdAt: $now, claimedAt: null, completedAt: null
     }]' \
     --arg id "$id" \
@@ -147,6 +154,7 @@ _atmux_task_add() {
     --arg lane "$lane" \
     --arg deliverable "$deliverable" \
     --argjson staleMin "$stale_json" \
+    --argjson driverOnly "$driver_only_json" \
     --argjson now "$now"
 
   atmux::ok "added task $id: $subject"
