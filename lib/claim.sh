@@ -84,6 +84,21 @@ main() {
         atmux::die "claim: task $id blocked by unresolved deps: ${unresolved//\"/}"
       fi
 
+      # E16 refuse-gate: REVIEW-lane Tasks may only be claimed by review-lane
+      # callers. Allow-list semantics per d-016afdeb OQ1 — gated on role+lane,
+      # not name pattern, so a renamed reviewer (reviewer-2 etc.) carrying
+      # lane="review" still claims. team-lead/planner/gitter (reactive roles
+      # — caught for `claim --next` at line 156+) bypass here too: only
+      # role=="member" non-review-lane callers are refused.
+      local task_lane caller_lane caller_role
+      local tj; tj="$(atmux::team_json)"
+      task_lane=$(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | .lane // ""' "$k")
+      caller_lane=$(jq -r --arg n "$who" '.members[]? | select(.name == $n) | .lane // ""' "$tj")
+      caller_role=$(jq -r --arg n "$who" '.members[]? | select(.name == $n) | .role // ""' "$tj")
+      if [[ "$task_lane" == "review" && "$caller_role" == "member" && "$caller_lane" != "review" ]]; then
+        atmux::die "claim: $id is REVIEW-lane — only review-lane callers can claim (caller=$who, lane=$caller_lane). Release with 'atmux task assign $id -' if claimed in error."
+      fi
+
       atmux::jq_update "$k" \
         '(.tasks[] | select(.id == $id) | .owner) = $who
          | (.tasks[] | select(.id == $id) | .status) = "in-progress"
@@ -248,8 +263,14 @@ _atmux_claim_select_next() {
   # Fallback — any lane (or no-lane legacy tasks). Gated on crossLaneClaim
   # except when caller has no lane at all (then there's nothing to "cross"
   # from, so we always fall through).
+  #
+  # E16 refuse-gate: REVIEW-lane Tasks are excluded from the cross-lane
+  # fallback unless caller's own lane is review. Per d-016afdeb OQ1,
+  # we gate on lane == "review" (not name pattern) so a renamed
+  # reviewer (reviewer-2 etc.) with lane=review still slots in. First
+  # pass at line 226+ is already lane-pinned, so no change needed there.
   if [[ "$cross" == "true" || -z "$lane" ]]; then
-    jq -r --arg who "$who" --arg scope "$scope" '
+    jq -r --arg who "$who" --arg scope "$scope" --arg caller_lane "$lane" '
       . as $root
       | ($root.tasks | map(select(.status == "done") | .id)) as $done_ids
       | [
@@ -258,6 +279,7 @@ _atmux_claim_select_next() {
           | select((.owner // null) == null or .owner == $who)
           | select(((.deps // []) - $done_ids) | length == 0)
           | select((.driverOnly // false) == false or $scope == "driver")
+          | select(.lane != "review" or $caller_lane == "review")
         ]
       | sort_by((.priority // 999), (.createdAt // 0))
       | .[0].id // empty
