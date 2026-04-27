@@ -42,6 +42,7 @@ EOF
   _doctor_check_team
   _doctor_check_tuis
   _doctor_check_state_dir
+  _doctor_check_tmux_tmpdir
   _doctor_check_webhook
   _doctor_check_crontab
   _doctor_check_cron_orphans
@@ -50,6 +51,7 @@ EOF
   _doctor_check_whip_hash
   _doctor_check_phantom_inboxes
   _doctor_check_logout_kill
+  _doctor_check_supervisor_liveness
 
   if [[ "$json" -eq 1 ]]; then
     _doctor_render_json
@@ -253,6 +255,41 @@ _doctor_check_state_dir() {
     return
   fi
   _doctor_row green "state-dir" "writable at $d"
+}
+
+# atmux::doctor :: tmux-socket — verify the team's isolated tmuxTmpdir is
+# writable + reachable. team.json:.tmuxTmpdir set by lib/init.sh as
+# /tmp/atmux-tmpdir-<team> (default per ADR-018) so cron-fired whip /
+# report / decisions hit the team's own socket instead of the operator's
+# default tmux server. Three states:
+#   - red   : path not writable (mkdir -p fails OR -w fails)
+#   - yellow: writable but no session yet (cold start, server not running)
+#   - green : writable + session reachable
+# Silent no-op when team.json is missing or .tmuxTmpdir is unset (legacy
+# shared-socket teams predate ADR-018; refusing them would break upgrade
+# paths). Per ADR-018 §Decision.
+_doctor_check_tmux_tmpdir() {
+  local tj; tj="$(atmux::team_json 2>/dev/null)"
+  [[ -f "$tj" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local tmpdir=""
+  tmpdir="$(jq -r '.tmuxTmpdir // empty' "$tj" 2>/dev/null || true)"
+  [[ -z "$tmpdir" || "$tmpdir" == "null" ]] && return 0
+
+  if ! mkdir -p "$tmpdir" 2>/dev/null || [[ ! -w "$tmpdir" ]]; then
+    _doctor_row red "tmux-socket" "tmuxTmpdir $tmpdir not writable" \
+      "mkdir -p $tmpdir && chown -R \$USER $tmpdir"
+    return
+  fi
+
+  local socket="$tmpdir/tmux-$(id -u)/default"
+  if [[ -S "$socket" ]] && TMUX_TMPDIR="$tmpdir" tmux -S "$socket" ls >/dev/null 2>&1; then
+    _doctor_row green "tmux-socket" "isolated $tmpdir healthy"
+  else
+    _doctor_row yellow "tmux-socket" "isolated tmpdir ready, no session active yet" \
+      "atmux start to spin up the team"
+  fi
 }
 
 _doctor_check_webhook() {
@@ -574,10 +611,13 @@ _doctor_check_topology_invariant() {
       [[ "$expected" =~ ^[0-9]+$ ]] || expected=-1
     fi
 
-    # Window count in the registry-claimed session.
+    # Window count in the registry-claimed session. Use `=$sess` exact-match
+    # form: bare `tmux has-session -t beta` is a PREFIX match and returns
+    # true when only "beta-other" exists, which would silently mark a
+    # wrong-session drift as green. Per ADR-027 invariant correctness.
     local in_sess=0
-    if tmux has-session -t "$sess" 2>/dev/null; then
-      in_sess="$(tmux list-windows -t "$sess" -F '#{window_name}' 2>/dev/null \
+    if tmux has-session -t "=$sess" 2>/dev/null; then
+      in_sess="$(tmux list-windows -t "=$sess" -F '#{window_name}' 2>/dev/null \
                   | grep -c "^__${name}__" || true)"
       [[ "$in_sess" =~ ^[0-9]+$ ]] || in_sess=0
     fi
@@ -657,6 +697,61 @@ _doctor_check_phantom_inboxes() {
       "$member inbox.inProgress contains phantom $id (\"$subject\")" \
       "atmux doctor --fix prunes; whip auto-prune sweep also handles in-flight"
   done < <(jq -r '.[] | [.member, .id, (.subject // "")] | @tsv' <<<"$phantoms_json")
+}
+
+# Supervisor liveness (ADR-032 §Supervisor lifecycle). Two-signal probe:
+# heartbeat-file mtime fresh (< 30s) AND the __<team>__supervisor tmux
+# window exists. Either signal stale → yellow row pointing operators at
+# `atmux supervisor-start` to re-spawn. Skipped entirely when the team
+# opted out via team.json:.supervisor=false (legacy single-process teams).
+# Skipped silently when the team's tmux session isn't up — no point
+# alarming about a sleeping team.
+_doctor_check_supervisor_liveness() {
+  local optout
+  optout="$(jq -r '.supervisor // true' "$(atmux::team_json)" 2>/dev/null || echo true)"
+  [[ "$optout" == "false" ]] && return 0
+  atmux::tmux_session_exists 2>/dev/null || return 0
+
+  local team win
+  team="$(atmux::team_name)"
+  win="__${team}__supervisor"
+
+  local hb_file; hb_file="$(atmux::state_dir)/supervisor.heartbeat"
+  local hb_age=-1
+  if [[ -f "$hb_file" ]]; then
+    local hb_mtime now
+    hb_mtime=$(stat -c '%Y' "$hb_file" 2>/dev/null || stat -f '%m' "$hb_file" 2>/dev/null || echo 0)
+    [[ "$hb_mtime" =~ ^[0-9]+$ ]] || hb_mtime=0
+    now=$(atmux::now_epoch)
+    hb_age=$(( now - hb_mtime ))
+  fi
+
+  local win_alive=0
+  atmux::tmux_window_exists "$win" 2>/dev/null && win_alive=1
+
+  if (( win_alive == 1 )) && (( hb_age >= 0 )) && (( hb_age < 30 )); then
+    _doctor_row green "supervisor-liveness" \
+      "$win up + heartbeat ${hb_age}s old"
+    return 0
+  fi
+
+  if (( win_alive == 0 )) && (( hb_age < 0 )); then
+    _doctor_row yellow "supervisor-liveness" \
+      "$win missing + no heartbeat file" \
+      "atmux supervisor-start (or set team.json:.supervisor=false to opt out)"
+    return 0
+  fi
+
+  if (( win_alive == 0 )); then
+    _doctor_row yellow "supervisor-liveness" \
+      "$win window missing (heartbeat ${hb_age}s old — process may have died)" \
+      "atmux supervisor-start"
+    return 0
+  fi
+
+  _doctor_row yellow "supervisor-liveness" \
+    "$win up but heartbeat stale (${hb_age}s old; alarm threshold 30s)" \
+    "atmux supervisor-stop && atmux supervisor-start"
 }
 
 # ---------- helpers ----------
