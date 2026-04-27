@@ -636,6 +636,17 @@ _atmux_decisions_show() {
 # or not (discord_ping swallows curl rc per ADR-008).
 
 _atmux_decisions_digest() {
+  # Rename in progress (E10/Se ADR-027 OQ H4): the digest path is the
+  # cron'd consumer of decisions.md + state/decisions-digest-cursor — a
+  # mid-rename tick could advance the cursor against a stale team-named
+  # webhook. Guard ONLY this helper, not main() — `decisions add` /
+  # `list` / `show` paths must continue working through the rename window
+  # (otherwise high/medium-rev decisions are silently dropped).
+  if [[ -f "$(atmux::state_dir)/rename.lock" ]]; then
+    atmux::log "decisions digest: rename in progress — skipping tick"
+    return 0
+  fi
+
   local f; f="$(_decisions_file)"
   local cursor_file; cursor_file="$(atmux::state_dir)/decisions-digest-cursor"
   local cursor=0

@@ -30,6 +30,15 @@ main() {
   atmux::require jq tmux flock
   atmux::require_team
 
+  # Rename in progress (E10/Se ADR-027 OQ H4): skip the tick rather than
+  # observe a half-renamed kanban / tmux / cron snapshot. Cleared by
+  # team-rename's step 7 (or by rollback). Read-only file-test; no flock
+  # needed since we only no-op on its presence.
+  if [[ -f "$(atmux::state_dir)/rename.lock" ]]; then
+    atmux::log "whip: rename in progress — skipping tick"
+    return 0
+  fi
+
   # Single-instance lock — prevents double-firing if a slow tick overlaps
   # the next cron interval, or if someone hand-fires `atmux whip` while a
   # previous cron tick is still resolving. Non-blocking: a contended lock
