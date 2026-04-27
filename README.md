@@ -666,6 +666,34 @@ atmux super-status --prune        # operator-explicit; flips stored status
 
 Cross-link: full mechanism + risk register in [`docs/adr/025-superdriver-phase-1.md`](docs/adr/025-superdriver-phase-1.md).
 
+### `atmux super-tell`
+
+Cross-team write that goes through the **target team's existing `tell-lead` durability layer** — same channel a regular driver running `atmux tell-lead` inside the target project would use. The superdriver doesn't get a side-channel; every cross-team ask flows through the inbox + pane-state guard the target team already enforces.
+
+```bash
+atmux super-tell <team> <member> <msg…>
+```
+
+The verb resolves `<team>` via `~/.claude/teams/registry.json`, `cd`'s into the target's `projectRoot`, and:
+
+1. Appends the entry to `<projectRoot>/.atmux/driver-inbox.md` — the same file the target's lead reads at the top of every whip tick.
+2. Sends a `📬 super-tell → <member>: <truncated-msg>` heads-up keystroke to the target's lead pane via `tmux send-keys`.
+
+**Pane-state preflight (refuses, doesn't fall through).** Before sending the keystroke, super-tell captures the target lead's pane and checks for the same status indicators every member-side `tmux send-keys` honors — `thinking with`, `Compacting conversation`, `Press up to edit queued messages`, rate-limit banners. Any of these fires a refuse with a "retry once it clears" message; the driver-inbox write happens regardless, so the ask is never lost — only the keystroke heads-up is gated. Re-running super-tell once the pane is idle is safe (idempotent on the inbox if the message body is identical).
+
+**Audit trail.** super-tell entries land in `<projectRoot>/.atmux/driver-inbox.md` alongside regular `tell-lead` entries. The line carries an explicit `(super-tell → <member>)` provenance tag so post-hoc audit (grep / lead's whip read) can distinguish a cross-team ask from a same-team driver ask, but the file format and the lead's reading discipline are identical:
+
+```
+- [09:30 MYT] (super-tell → lead) rotate-lead — uptime over 4h, context rotting
+- [09:32 MYT] check the deploy-staging gate before merging E10
+```
+
+The first line is a super-tell; the second is a same-team `atmux tell-lead`. Both are read in the same lead loop. No new audit channel; no shadow log.
+
+**Phase 2 carve-out reminder.** super-tell is intentionally constrained — no cross-team Task push, no cross-team Epics, no arbitration that edits both teams' kanban. When fleet operation surfaces an ask the `tell-lead` chain genuinely cannot carry, the discipline is to **log the incident** in `~/.claude/teams/superdriver-bypass-log.md` with timestamp + situation + what the superdriver wanted to bypass + **why `tell-lead` was insufficient** — driver reviews the log periodically; consistent themes drive a Phase 2 ADR. Empty log after weeks of operation = Phase 1 was sufficient. The superdriver brief at `templates/briefs/superdriver.md` carries the same reminder for the agent that runs in the dedicated `atmux-superdriver` session.
+
+Cross-link: [`docs/adr/025-superdriver-phase-1.md`](docs/adr/025-superdriver-phase-1.md) — full design + risk register + Phase 2 deferral list.
+
 
 ### Architectural posture
 
