@@ -189,14 +189,17 @@ _atmux_super_status_team_digest() {
 _atmux_super_status_fleet() {
   local teams="$1" now="$2" stale_threshold="$3"
 
-  # Counts by status.
+  # Counts by status. `total` is the sum of the three buckets — kept as
+  # an explicit field per README schema so downstream consumers don't
+  # have to recompute it (the human renderer at line 281 derives it the
+  # same way).
   local counts
   counts="$(jq -n --argjson t "$teams" '
     {
       running: [$t[] | select(.status == "running")] | length,
       stopped: [$t[] | select(.status == "stopped")] | length,
       stale:   [$t[] | select(.status == "stale")]   | length
-    }')"
+    } | .total = (.running + .stopped + .stale)')"
 
   # Promote-ready epics — walk each running team's kanban for epics in 'review'
   # OR epics whose every story is 'done' (and at least 1 story exists).
