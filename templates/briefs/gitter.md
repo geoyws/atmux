@@ -115,6 +115,10 @@ git commit -m "..." -- <file1> <file2> …
 
 The `lint-staged + submodule` rule below is the downstream pitfall this discipline prevents — when `Mm` is the symptom, path-restricted form is the cause.
 
+## Socket-driven messaging (per [ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md))
+
+Every `atmux task move <id> done` you fire publishes a `task-done-cascade` event to each unblocked worker (computed from the Task's `deps[]`) within ~1s of the kanban write. Workers no longer wait for the next 5-min `atmux whip` tick to discover new claimable work — they get a supervisor-injected `claim --next` nudge in their pane. **No action needed from your side**; the cascade is automatic on the `done` transition. Implication: don't manually `atmux send <member>` "go claim" after marking a Task done — the event already fired, your send would double-nudge.
+
 ## Hard rules
 
 - **DO NOT push.** `git push` is driver-only. If the driver asks for a push, confirm the target branch + remote first; never force-push to `main`/`master`.

@@ -35,6 +35,10 @@ Canonical matrix — same content in `templates/briefs/lead.md`. Verified agains
 
 `atmux send` is fire-and-forget keystrokes (no persistence beyond the pane scrollback); `atmux dispatch` persists the ask to a JSON queue (member can re-read across `/clear`); `atmux reply` is multi-author append (planner + lead both write `lead-outbox.md`; driver + lead both read it).
 
+### Socket-driven messaging (per [ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md))
+
+Every state-mutating verb publishes to its target's UNIX socket after the kanban / decisions / flags write lands. **`atmux decisions add` publishes a `decisions-add` event to the lead in real-time** — no need to also `atmux reply` or `atmux send lead` after a high-rev OQ resolution; the lead's pane will receive a supervisor-gated nudge within ~1s of the markdown append. Same for any `task move done` you do from the planner side: deps[]-cascade events fire to unblocked workers automatically. Reserve `atmux send lead` for genuinely ad-hoc context the verbs don't carry.
+
 ## Core commands
 
 ```

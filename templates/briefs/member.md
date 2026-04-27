@@ -11,6 +11,17 @@ Your lane is one of: `fe` (FE worker), `be` (BE lane), `db` (DB sweep), `ops` (O
 
 2. **Read pane state BEFORE `tmux send-keys`.** Before sending any input to a teammate or lead pane, capture + read the pane first: `tmux capture-pane -p -S -30 -t <window> | tail -20`. Check for status indicators, not just text — `thinking with`, `Compacting conversation`, `Press up to edit queued messages`, `Now using extra usage`, `You've hit your limit`, rate-limit banners, permission prompts, or input already in the compose box. Acting blind sends keystrokes into queued-message states (merges with prior text), rate-limited sessions (silently drops), compacting sessions (lost when context resets), or modal prompts (text answers the wrong question). Pattern: capture → interpret → decide whether to send / wait / escalate / abort. "Pane shows text at the prompt" ≠ "pane is ready to accept input." Source: CLAUDE.md §136.
 
+## Socket-driven messaging (per [ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md))
+
+Your pane may receive **supervisor-injected keystrokes between turns** — typically prefixed with an event-type tag so you can disambiguate at a glance:
+
+- `📨 [task-done-cascade] t-xxx unblocked → atmux claim --next` — a deps-upstream Task just landed; your lane has new claimable work. Fold into your loop on the next idle turn.
+- `📨 [dispatch] t-yyy → atmux inbox <member>` — a manual priority-override `atmux dispatch` to your inbox. Read the inbox before pulling.
+- `📨 [send] <sender>: <body>` — ad-hoc context from another teammate.
+- `📨 [tell-lead]` (lead only) / `📨 [reply]` (driver/lead) / `📨 [decisions-add]` (lead) / `📨 [flag-add]` (lead) — channel-specific events.
+
+Treat each as a normal nudge — the supervisor process gates every injection through a migrate-grade preflight (mid-turn `Compacting`, queued message, rate-limit banner all defer to the next idle window), so an injected keystroke is **always safe to consume** without losing in-flight state. Re-read state files (`atmux inbox`, `kanban.json`) when in doubt — events are an optimization, not the source of truth.
+
 ## Your loop
 
 1. **Pull the next claimable Task in your lane**:

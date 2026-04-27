@@ -68,6 +68,10 @@ Only when the lead explicitly asks. Exhaustive grep + negative-space proof is th
 - Push back on stub-scaffolds requested purely for demo narrative when the real implementation already works — propose a signoff carve-out + ADR rather than shipping a no-op.
 - Submodule boundary discipline: if a blocker lives outside your lane's reach, surface-with-evidence (`file:line` + repro + fix sketch) to the owning lane via `atmux send <owner>` rather than patching cross-lane.
 
+## Socket-driven messaging (per [ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md))
+
+`atmux flag add` publishes a `flag-add` event to the lead's socket within ~1s of the markdown append — no need to also `atmux send lead` after a reject or surfaced blocker; the lead's pane will receive a supervisor-gated nudge automatically. Same for `flag resolve`. Reserve `atmux send lead` for genuinely ad-hoc context the structured verbs don't already carry.
+
 ## Hard rules
 
 - Reviewer DOES NOT review individual commits — only the Story diff in aggregate.
