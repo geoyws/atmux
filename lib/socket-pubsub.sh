@@ -147,6 +147,136 @@ except Exception:
   return 0
 }
 
+# atmux::sock_publish_debounced <member> <event-json> [window-ms]
+#
+# Per-target debounce wrapper around atmux::sock_publish. Multiple events
+# for the same <member> within <window-ms> coalesce into a single
+# downstream sock_publish: the first arrival schedules one background
+# flush timer; subsequent arrivals append to a per-member pending file
+# and ride the already-scheduled timer. After the window elapses, the
+# timer wakes, merges payload.unblocked_task_ids (de-duped) across every
+# queued event, stamps a fresh ts, and fires ONE sock_publish.
+#
+# Default window 100ms per ADR-032 OQ4 (per-target — different members
+# contend on different lock/state files, so they publish independently).
+#
+# State (per member, under .atmux/state/cascade-debounce/):
+#   <member>.last_ms — epoch-ms of the most recent published cascade
+#   <member>.pending — JSONL of accumulated events awaiting flush
+#   <member>.lock    — flock target serialising read/append/schedule
+#
+# Out-of-window calls bypass the queue and publish synchronously.
+# atmux::sock_publish is non-fatal on dead listener so a member with no
+# supervisor running silently drops the event; cron-whip's 5 min floor
+# is the safety net.
+atmux::sock_publish_debounced() {
+  local member="${1:?sock_publish_debounced: <member> required}"
+  local event_json="${2:?sock_publish_debounced: <event-json> required}"
+  local window_ms="${3:-100}"
+
+  local d; d="$(atmux::state_dir)/cascade-debounce"
+  mkdir -p "$d"
+  local last_f="$d/$member.last_ms"
+  local pend_f="$d/$member.pending"
+  local lock_f="$d/$member.lock"
+
+  local now_ms; now_ms="$(_atmux_now_ms)"
+  local last_ms=0
+
+  local lockfd
+  exec {lockfd}>"$lock_f"
+  flock "$lockfd"
+
+  if [[ -s "$last_f" ]]; then
+    last_ms="$(head -c 32 "$last_f" 2>/dev/null || echo 0)"
+    [[ "$last_ms" =~ ^[0-9]+$ ]] || last_ms=0
+  fi
+
+  local since=$(( now_ms - last_ms ))
+  if (( since < window_ms )); then
+    local was_empty=1
+    [[ -s "$pend_f" ]] && was_empty=0
+    printf '%s\n' "$event_json" >> "$pend_f"
+    exec {lockfd}>&-
+    if (( was_empty == 1 )); then
+      local sleep_ms=$(( window_ms - since ))
+      (( sleep_ms < 1 )) && sleep_ms=1
+      ( _atmux_sock_debounce_flush "$member" "$sleep_ms" >/dev/null 2>&1 & disown ) 2>/dev/null \
+        || _atmux_sock_debounce_flush "$member" "$sleep_ms" >/dev/null 2>&1 &
+    fi
+    return 0
+  fi
+
+  printf '%s' "$now_ms" > "$last_f"
+  exec {lockfd}>&-
+  atmux::sock_publish "$member" "$event_json"
+}
+
+# Background flush worker scheduled by sock_publish_debounced. Sleeps for
+# the remaining debounce window, then merges every queued event for
+# <member> into a single coalesced sock_publish. Idempotent on empty
+# pending file (returns silently) so racing schedulers don't double-fire.
+_atmux_sock_debounce_flush() {
+  local member="$1" sleep_ms="${2:-100}"
+
+  local secs
+  if (( sleep_ms >= 1000 )); then
+    secs="$(awk "BEGIN { printf \"%.3f\", $sleep_ms/1000 }")"
+  else
+    secs="0.$(printf '%03d' "$sleep_ms")"
+  fi
+  sleep "$secs" 2>/dev/null || sleep 1
+
+  local d; d="$(atmux::state_dir)/cascade-debounce"
+  local last_f="$d/$member.last_ms"
+  local pend_f="$d/$member.pending"
+  local lock_f="$d/$member.lock"
+
+  local lockfd
+  exec {lockfd}>"$lock_f"
+  flock "$lockfd"
+
+  if [[ ! -s "$pend_f" ]]; then
+    exec {lockfd}>&-
+    return 0
+  fi
+
+  local merged
+  merged="$(jq -s -c '
+    . as $events
+    | {
+        type: "task-done-cascade",
+        ts:   (now | floor),
+        from: ($events[0].from // ""),
+        payload: {
+          unblocked_task_ids: ([ $events[].payload.unblocked_task_ids[]? ] | unique),
+          from_task_ids:      ([ $events[].payload.from_task_id?       ] | map(select(. != null)) | unique)
+        }
+      }' "$pend_f" 2>/dev/null || true)"
+
+  : > "$pend_f"
+  local now_ms; now_ms="$(_atmux_now_ms)"
+  printf '%s' "$now_ms" > "$last_f"
+  exec {lockfd}>&-
+
+  [[ -n "$merged" ]] && atmux::sock_publish "$member" "$merged"
+}
+
+# Epoch milliseconds. GNU date supports %3N on Linux/Hetzner; falls back
+# to python3 for hosts without nanosecond date (older macOS / busybox),
+# and ultimately to second-precision×1000 if neither is reachable so a
+# missing dep can't wedge the debounce path entirely.
+_atmux_now_ms() {
+  local ms
+  ms="$(date +%s%3N 2>/dev/null)"
+  if [[ "$ms" =~ ^[0-9]{13,}$ ]]; then
+    printf '%s\n' "$ms"
+    return 0
+  fi
+  python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null \
+    || printf '%s000\n' "$(date +%s)"
+}
+
 # Long-running accept-loop. Binds (idempotent), then listens with the
 # selected backend and invokes <handler> with each received line as $1.
 # Used by the supervisor (Sb) only — Sa ships this helper, not the

@@ -12,6 +12,8 @@
 . "$ATMUX_LIB_DIR/send.sh"
 # shellcheck source=discord.sh
 . "$ATMUX_LIB_DIR/discord.sh"
+# shellcheck source=socket-pubsub.sh
+. "$ATMUX_LIB_DIR/socket-pubsub.sh"
 
 #   {
 #     "tasks":   [ { id, subject, body, status, owner, deps, priority,
@@ -481,6 +483,35 @@ atmux::finish_task_done() {
     --arg summary_body "$summary_body" \
     --arg depth "$_dispatch_depth_new"
 
+  # Auto-flip Story.reviewSignoff when this Task is review-lane + tied to
+  # a Story. Bridges the gap between reviewer-marks-done and
+  # `story advance --to merging` (lib/story.sh:282-285 dies with
+  # reviewSignoff=false). E16 d-016afdeb allow-list: only review-shaped
+  # callers (caller's role!=member OR caller's lane==review) can fire the
+  # flip — defense-in-depth if E16 claim-side gate has not landed yet.
+  if [[ "$src_lane" == "review" && -n "$src_story" && "$src_story" != "null" ]]; then
+    local _atmux_caller="${ATMUX_MEMBER:-}"
+    local _caller_role="" _caller_lane=""
+    if [[ -n "$_atmux_caller" ]]; then
+      local _tj; _tj="$(atmux::team_json 2>/dev/null)"
+      if [[ -f "$_tj" ]]; then
+        _caller_role="$(jq -r --arg n "$_atmux_caller" \
+          '.members[]? | select(.name == $n) | .role // ""' "$_tj" 2>/dev/null)"
+        _caller_lane="$(jq -r --arg n "$_atmux_caller" \
+          '.members[]? | select(.name == $n) | .lane // ""' "$_tj" 2>/dev/null)"
+      fi
+    fi
+    if [[ "$_caller_lane" == "review" \
+          || ( -n "$_caller_role" && "$_caller_role" != "member" ) ]]; then
+      atmux::jq_update "$k" \
+        '.stories |= map(if .id == $sid then .reviewSignoff = true else . end)' \
+        --arg sid "$src_story"
+      atmux::log "task: story $src_story reviewSignoff=true via $id auto-flip (caller=$_atmux_caller)"
+    else
+      atmux::warn "review-Task $id finished by non-review caller '$_atmux_caller' (role=$_caller_role lane=$_caller_lane); story $src_story signoff NOT auto-flipped — re-run as reviewer or hand-flip"
+    fi
+  fi
+
   # Defense-in-depth: any nested atmux call from within this chain
   # inherits the new depth via env. tmux send-keys doesn't pass env, so
   # cross-pane chains rely on .createdFrom; this export covers any
@@ -514,6 +545,12 @@ atmux::finish_task_done() {
   # inboxes once per `done` transition is cheap (≤10 small JSON files,
   # most rewrite-skipped via the jq -e existence guard) and idempotent.
   _atmux_kanban_prune_inboxes "$id"
+
+  # Cascade publish — wake every member whose Tasks just became
+  # claimable because this Task closed. Per ADR-032 §Verb wire-in +
+  # OQ4 default (per-target 100ms debounce). Non-fatal: dead listeners
+  # warn-and-drop; cron-whip 5min floor catches anything missed.
+  _atmux_kanban_publish_cascade "$id" "$src_owner"
 
   if [[ "$do_commit" -eq 1 ]]; then
     if [[ "${ATMUX_FINISH_TASK_NO_DISPATCH:-0}" == "1" ]]; then
@@ -646,6 +683,89 @@ _atmux_kanban_push_inbox() {
   else
     atmux::log "kanban: $member window missing — auto-dispatch ping skipped (kanban write held)"
   fi
+}
+
+# Compute the set of Tasks now-unblocked by closer_id's done-transition,
+# group by target member, and fire one task-done-cascade event per member
+# via atmux::sock_publish_debounced (per ADR-032 §Verb wire-in + OQ4
+# per-target 100ms debounce).
+#
+# Owner resolution per unblocked Task:
+#   - .owner set         → publish to that member.
+#   - .owner null + .lane → publish to ALL team members carrying that lane
+#                            (first-claim-wins; cascade is a wake-up nudge).
+#   - both null          → skip (no addressable target; whip floor catches
+#                            unscheduled work on its next 5 min tick).
+#
+# Filter to Tasks whose deps[] include closer_id AND whose deps[] are now
+# all done. Tasks unblocked by a previous close don't get re-broadcast —
+# their cascade fired then.
+_atmux_kanban_publish_cascade() {
+  local closer_id="$1" closer_owner="$2"
+  local k; k="$(atmux::kanban_json)"
+  local tj; tj="$(atmux::team_json)"
+
+  local unblocked
+  unblocked="$(jq -c --arg closer "$closer_id" '
+    . as $root
+    | ($root.tasks | map(select(.status == "done") | .id)) as $done
+    | [ $root.tasks[]
+        | select(.status == "todo")
+        | select((.deps // []) | index($closer))
+        | select((.deps // []) | all(. as $d | $done | index($d)))
+        | { id, owner: (.owner // null), lane: (.lane // null) }
+      ]' "$k" 2>/dev/null || echo '[]')"
+
+  local n_unblocked
+  n_unblocked="$(jq 'length' <<<"$unblocked" 2>/dev/null || echo 0)"
+  [[ "$n_unblocked" -gt 0 ]] || return 0
+
+  # Expand each unblocked Task to (member, task_id) pairs. Lane-only
+  # tasks (owner null + lane set) fan out to every team member carrying
+  # that lane — first-claim-wins. Tasks with neither owner nor lane are
+  # dropped here (no addressable target).
+  local pairs
+  pairs="$(jq -c --slurpfile team "$tj" '
+    [ .[]
+      | . as $t
+      | if ($t.owner != null and $t.owner != "") then
+          [{ member: $t.owner, task_id: $t.id }]
+        elif ($t.lane != null and $t.lane != "") then
+          (($team[0].members // [])
+           | map(select((.lane // "misc") == $t.lane))
+           | map({ member: .name, task_id: $t.id }))
+        else
+          []
+        end
+    ] | flatten' <<<"$unblocked" 2>/dev/null || echo '[]')"
+
+  local by_member
+  by_member="$(jq -c '
+    group_by(.member)
+    | map({ member: .[0].member, task_ids: ([.[].task_id] | unique) })' \
+    <<<"$pairs" 2>/dev/null || echo '[]')"
+
+  local count
+  count="$(jq 'length' <<<"$by_member" 2>/dev/null || echo 0)"
+  [[ "$count" -gt 0 ]] || return 0
+
+  local now; now="$(atmux::now_epoch)"
+  local i=0
+  while (( i < count )); do
+    local m ids_json event
+    m="$(jq -r ".[$i].member" <<<"$by_member")"
+    ids_json="$(jq -c ".[$i].task_ids" <<<"$by_member")"
+    event="$(jq -c -n \
+      --arg type "task-done-cascade" \
+      --argjson ts "$now" \
+      --arg from "${closer_owner:-}" \
+      --arg from_task "$closer_id" \
+      --argjson ids "$ids_json" \
+      '{type: $type, ts: $ts, from: $from,
+        payload: {unblocked_task_ids: $ids, from_task_id: $from_task}}')"
+    atmux::sock_publish_debounced "$m" "$event" 100
+    i=$((i+1))
+  done
 }
 
 _atmux_task_assign() {
