@@ -160,6 +160,39 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 
 The init wizard does not prompt for this field — opt-in is a manual `team.json` edit, since the field is for advanced/dogfooding setups. See [docs/adr/018-per-team-tmux-socket-isolation.md](docs/adr/018-per-team-tmux-socket-isolation.md) for the full design + risk register.
 
+### Renaming a team
+
+`atmux team rename` renames a team **atomically across every surface** the team-name appears in: `team.json:.name`, tmux session + window names, cron markers, the fleet registry, and the single-session capture file. ~150 LOC of orchestration plus a rollback engine — the verb refuses unsafe states up front rather than half-committing on failure ([ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md)).
+
+```bash
+atmux team rename <old> <new> [--session <new-session>] [--migrate-session] [--force]
+```
+
+**Pre-flight refuse-gates** (any one fails → refuse with a specific error):
+
+- Any kanban Task with `status=="in-progress"` → refuse. Mid-flight work would land in indeterminate naming state. **Overridable with `--force`** when the operator accepts the risk.
+- `<new>` already exists in the registry → refuse. Hard refuse (NOT `--force`-overridable) — collisions can't be safely resolved automatically.
+- `<new>` doesn't match `[a-z0-9_-]+` → refuse. Hard refuse.
+
+**Orchestration sequence** — each step rollback-staged; a partial failure invokes rollback in reverse order (full detail in ADR-027 §Orchestration sequence):
+
+1. Set the `rename.lock` state file. Cron'd consumers (whip, super-status, decisions digest, cron orphan-detect) check this at entry and return 0 silently — no concurrent state mutation while the rename runs.
+2. `jq`-edit `team.json:.name` → `<new>`. Backup at `team.json.bak.<epoch>`.
+3. `tmux rename-window` per `__<old>__*` window → `__<new>__*`. If `--session <new-session>` differs from the current session name, also `tmux rename-session` (or `--migrate-session` invokes the ADR-016 Phase 2 migrate path for legacy dedicated→driver-session moves).
+4. Rewrite `state/session.txt` for single-session teams.
+5. **Cron re-install with NEW marker first, then remove the OLD marker.** Install-new-then-remove-old is the explicit ordering — avoids any window where the team has zero cron coverage (per ADR-027 OQ H3). Brief overlap of two markers is harmless; whip is flock-guarded so duplicate fires no-op.
+6. Registry update: `atmux::registry_deregister <old>` + `atmux::registry_upsert <new> <projectRoot> <new-session>`. `createdAt` is preserved on the new entry — rename, not re-init.
+7. Clear `rename.lock`.
+8. Return success.
+
+**Rollback semantics.** Any step ≥2 failure triggers reverse-order rollback: cron re-remove → `state/session.txt` restore → `tmux rename-window` back → `tmux rename-session` back → `team.json` restore from backup → registry rollback → clear lock. The full attempt log writes to `<projectRoot>/.atmux/state/rename-rollback.log` for operator inspection.
+
+Rollback is **best-effort**. Some terminal failure modes (the tmux session dying mid-rename, registry write contention with a parallel `atmux start`) require manual recovery — the rollback log records what was attempted and what state the operator is left holding. The verb logs a final `manual recovery: see rename-rollback.log` line so the failure can't pass silently.
+
+**Historical entries are NOT rewritten.** `kanban.json` archive entries, `lead-outbox.md`, `driver-inbox.md`, and `decisions.md` retain old-team-name references in their archived bodies — archive-don't-rewrite. New entries written after the rename use the new name. Operators grepping for the old name reach the archive layer directly; this preserves auditability across the rename boundary at the cost of one mental "this was named differently before" step on grep.
+
+`.atmux/` itself is **not moved** — the directory is pinned to `projectRoot`, not to the team name.
+
 ### Preset modes
 
 The wizard asks for a preset up front — governs default TUI assignment:
