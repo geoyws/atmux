@@ -48,6 +48,7 @@ EOF
   _doctor_check_orphan_sessions
   _doctor_check_whip_hash
   _doctor_check_phantom_inboxes
+  _doctor_check_logout_kill
 
   if [[ "$json" -eq 1 ]]; then
     _doctor_render_json
@@ -382,6 +383,76 @@ _doctor_check_orphan_sessions() {
   fi
 }
 
+# Logout-kill exposure detector (E8/Sa t-ebb284b1, ADR-017). systemd
+# `KillUserProcesses=yes` (default since systemd ≥230) reaps every
+# user-owned process on logout — including the team's tmux server.
+# `loginctl enable-linger` is the documented escape hatch. The 2026-04-26
+# incident lost two team supervisors mid-flight + a 2h27m orphan
+# atmux-spawn before whip cron noticed.
+#
+# Severity matrix:
+#   - Linger=yes                                                                            → green (covered)
+#   - Linger=no + KillUserProcesses!=yes                                                    → green (no-kill policy)
+#   - Linger=no + KillUserProcesses=yes/unset + session=local-tty             → yellow (driver may accept)
+#   - Linger=no + KillUserProcesses=yes/unset + session=ssh                   → red (incident shape)
+#
+# Skipped silently on macOS / non-systemd hosts — `loginctl` absent
+# means the policy doesn't apply.
+_doctor_check_logout_kill() {
+  command -v loginctl >/dev/null 2>&1 || return 0
+
+  local user; user="$(id -un)"
+  local linger
+  linger="$(loginctl show-user "$user" --property=Linger 2>/dev/null | sed -n 's/^Linger=//p')"
+  [[ -z "$linger" ]] && linger="no"
+
+  if [[ "$linger" == "yes" ]]; then
+    _doctor_row green "logout-kill" "linger enabled — tmux survives logout"
+    return 0
+  fi
+
+  # KillUserProcesses: unset/commented = default `yes` on systemd ≥230.
+  # We treat any non-`yes` explicit value as no-kill (most distros that
+  # carve out exceptions write `KillUserProcesses=no` literally).
+  local kup="yes"
+  if [[ -r /etc/systemd/logind.conf ]]; then
+    local k
+    k="$(grep -E '^[[:space:]]*KillUserProcesses=' /etc/systemd/logind.conf 2>/dev/null \
+          | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+    [[ -n "$k" ]] && kup="$k"
+  fi
+  if [[ "$kup" != "yes" ]]; then
+    _doctor_row green "logout-kill" "KillUserProcesses=$kup — tmux survives logout"
+    return 0
+  fi
+
+  # Session-type detection: prefer loginctl on the current XDG session,
+  # fall back to $SSH_CONNECTION presence (covers the case where
+  # XDG_SESSION_ID isn't exported, e.g. nohup'd shells).
+  local session_type="" remote=""
+  if [[ -n "${XDG_SESSION_ID:-}" ]]; then
+    session_type="$(loginctl show-session "$XDG_SESSION_ID" --property=Type 2>/dev/null \
+                      | sed -n 's/^Type=//p')"
+    remote="$(loginctl show-session "$XDG_SESSION_ID" --property=Remote 2>/dev/null \
+                      | sed -n 's/^Remote=//p')"
+  fi
+  local is_ssh="no"
+  if [[ "$remote" == "yes" || "$session_type" == "ssh" || -n "${SSH_CONNECTION:-}" ]]; then
+    is_ssh="yes"
+  fi
+
+  local hint="run 'atmux doctor --fix' to enable linger, or: sudo loginctl enable-linger $user"
+  if [[ "$is_ssh" == "yes" ]]; then
+    _doctor_row red "logout-kill" \
+      "ssh session + Linger=no + KillUserProcesses=$kup — tmux server dies on disconnect" \
+      "$hint"
+  else
+    _doctor_row yellow "logout-kill" \
+      "local-tty session + Linger=no + KillUserProcesses=$kup — tmux server dies on logout" \
+      "$hint"
+  fi
+}
+
 # Cron-orphan detector (E6/Sc t-d948b6a0). Lazy-source lib/cron.sh
 # since most doctor invocations don't need the cron API. Calls
 # atmux::cron_orphans (returns JSON [{team, atmux_dir}, ...] for marker
@@ -560,6 +631,7 @@ _doctor_try_fix() {
   _doctor_try_fix_cleanup
   _doctor_try_fix_phantom_inboxes
   _doctor_try_fix_cron_orphans
+  _doctor_try_fix_logout_kill
 
   [[ "$_doctor_red_count" -eq 0 ]] && return 0
 
@@ -677,4 +749,34 @@ _doctor_try_fix_cron_orphans() {
       atmux::ok "pruned orphan cron block for team $team (was → $atmux_dir)"
     fi
   done < <(jq -r '.[] | [.team, .atmux_dir] | @tsv' <<<"$orphans_json")
+}
+
+# Enable linger for the current user (E8/Sa t-ebb284b1, ADR-017 OQ1).
+# Idempotent: if Linger=yes already, no-op + return 0. On EPERM (typical
+# for non-root users without polkit auth), prints the sudo invocation
+# hint and returns non-zero — automatic sudo elevation is intentionally
+# off (operator must opt in by re-running with sudo). Skipped silently
+# on macOS / non-systemd hosts where loginctl is absent.
+_doctor_try_fix_logout_kill() {
+  command -v loginctl >/dev/null 2>&1 || return 0
+
+  local user; user="$(id -un)"
+  local linger
+  linger="$(loginctl show-user "$user" --property=Linger 2>/dev/null | sed -n 's/^Linger=//p')"
+  if [[ "$linger" == "yes" ]]; then
+    return 0
+  fi
+
+  printf '\n%s🛡️  atmux%s  doctor --fix: enabling linger for %s\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" "$user" >&2
+
+  if loginctl enable-linger "$user" 2>/dev/null; then
+    atmux::ok "linger enabled for $user — tmux server now survives logout"
+    return 0
+  fi
+
+  printf '%s⚠️  atmux%s  loginctl enable-linger refused (likely EPERM). Run manually:\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" >&2
+  printf '    sudo loginctl enable-linger %s\n' "$user" >&2
+  return 1
 }
