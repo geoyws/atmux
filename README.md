@@ -214,6 +214,31 @@ The rotate is what re-spawns the window under the new emoji name; until then the
 
 See [docs/adr/030-registry-emoji-immutability.md](docs/adr/030-registry-emoji-immutability.md) for the full design + risk register.
 
+### Discord palette per team
+
+When multiple atmux teams ping into the same Discord channel, the team-name backticks alone aren't enough to distinguish pings at a glance — under load (20+ pings/hour, 2–3 teams), the wall blurs together. atmux solves this by rendering each ping as a Discord webhook **embed** with a **per-team color** (a 16-color Catppuccin-Frappe-aligned palette) and a **leading glyph** in the embed title.
+
+**Default (no config — works out of the box).** Each team gets a deterministic auto-color via `sha256(team-name)[0] mod 16` → palette index. `atmux-kanban` always renders one fixed color, `sopx-mvp` always another — no operator config required, and the assignment is stable across restarts.
+
+**Override (when the auto-color clashes).** Both fields are optional and live in `team.json:.discord`:
+
+```json
+{
+  "discord": {
+    "webhook": "https://discord.com/api/webhooks/...",
+    "color":   "#7287fd",
+    "emoji":   "🌊"
+  }
+}
+```
+
+- `color` — hex string (with or without leading `#`), e.g. `#7287fd`. Wins over the hash-derived palette index.
+- `emoji` — single glyph rendered before the team name in the embed title (default: `🤖`).
+
+**Test escape.** `ATMUX_DISCORD_PLAINTEXT=1` forces the embed sender to fall back to the plain `{content: <body>}` shape. Used by test fixtures that assert on `.content`, and as a runtime kill-switch if a Discord-side embed regression appears.
+
+The palette is locked at decompose time — adding a new color is a one-line append, but reordering or removing entries shifts every existing team's auto-color, so the order is intentionally stable. See [docs/adr/019-discord-domain-separator.md](docs/adr/019-discord-domain-separator.md) for the full design + 16-color list.
+
 ## TUIs supported
 
 | TUI         | Binary            | Default model                           | Switchable? |

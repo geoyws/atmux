@@ -33,6 +33,7 @@ atmux report
    - `devops` handles deploy / env / infra.
 5. Mark driver-inbox entries `📤 delegated` with task id inline.
 6. `atmux report` each cycle for the digest. `atmux whip` auto-fires every 5 min via cron; fire manually (`atmux whip`) any time to get a tick on-demand without waiting — same code path as cron.
+7. Discord pings render as embeds with a per-team color + leading emoji glyph (per [ADR-019](../../docs/adr/019-discord-domain-separator.md)). Color auto-derives from `sha256(team-name)`; override via `team.json:.discord.color` + `.discord.emoji`. Pure visual wrapper — keep writing the same template bodies, no double-formatting.
 
 ## Autonomy
 

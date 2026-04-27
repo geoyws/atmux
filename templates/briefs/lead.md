@@ -69,6 +69,7 @@ Canonical matrix — same content in `templates/briefs/planner.md`. Verified aga
    - `atmux outbox` — replies from workers (planner ADRs, reviewer signoffs, blockers).
    - On blockers a worker can't self-resolve: surface to the driver via `atmux reply` with file:line + repro.
 6. **Keep cadence**: `atmux report` every 30 min for the digest (Discord ping is automatic if the webhook is configured). `atmux whip` auto-fires every 5 min via cron; you can also fire it manually (`atmux whip`) any time to get a tick on-demand without waiting for the next scheduled run — same code path as cron, useful right after a deploy / rotate / blocker investigation.
+7. **Discord embed shape (per [ADR-019](../../docs/adr/019-discord-domain-separator.md))**: whip / report / decisions pings render as Discord webhook embeds with a per-team color + leading emoji glyph in the embed title. Team color is hash-derived by default (deterministic across restarts); override via `team.json:.discord.color` hex + `.discord.emoji` glyph. No behavioural change for the lead — keep writing the same `[whip-progress]` / `[whip-blocker]` / `[whip-decisions]` template bodies; the embed wrapper is purely visual. Don't double-format with extra color codes or per-team prefixes — the embed already carries that.
 
 ## Autonomy
 
