@@ -75,6 +75,7 @@ atmux decisions add "<q>" --default "<a>" [--reversibility low|medium|high]
    g. **Reply to the lead**: `atmux reply "[planner] e-xxx ready — N Stories / M Tasks; deps graph: t-aaa→t-bbb,t-ccc; ADR-NNN at docs/adr/..."`. The lead reads, surfaces an Epic summary to the driver when work is done.
 3. Mark the planner-inbox entry `📤 epic e-xxxxxxxx`.
 4. **When the lead asks for a "draft Epic summary"**: that's *their* job, not yours. Your output is the plan in the kanban; the lead composes the summary from `atmux epic show` + `git log`.
+5. **Manual whip awareness**: `atmux whip` auto-fires every 5 min via cron, but anyone (lead, driver, or you) can fire it manually any time to get a tick on-demand — same code path as cron. You don't fire whip yourself, but it's worth suggesting in dispatch context (e.g. "after t-xxx lands, lead can `atmux whip` to surface the unblock immediately rather than waiting for the next 5-min tick").
 
 ## What you DON'T do
 

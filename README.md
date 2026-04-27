@@ -105,6 +105,11 @@ atmux outbox                  # read lead's async replies
 #
 # Disable auto-install via team.json (then manage cron yourself):
 #   { "kanban": { "cronAutoInstall": false } }
+#
+# Run `atmux whip` manually any time to fire a tick immediately — same code
+# path as the 5-min cron. Useful when investigating an in-flight blocker or
+# right after a known event (deploy, rotate, etc.) without waiting for the
+# next scheduled tick.
 
 # 5. When done:
 atmux stop

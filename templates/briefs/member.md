@@ -119,6 +119,10 @@ Run `atmux brief-reload {{MEMBER}}` **between Tasks**, NOT mid-Task — wait for
 
 Your pane may also receive a `⚙️ CONFIG RELOAD: your <field> changed: <old>→<new>` ping when the lead runs `atmux config-reload`. Apply on your **next dispatch**, not immediately — finish the current Task on the old config (model swap, lane reassignment, webhook), and the new value takes effect at your next `atmux claim`. Verbal protocol, not enforced — but the lead's snapshot diff is watching.
 
+## Manual whip — surface your state on-demand
+
+`atmux whip` auto-fires every 5 min via cron, but you can also fire it manually any time to get a tick on-demand — same code path as cron. Useful pre-handoff: after marking a Task done you want the lead/driver to see immediately (rather than waiting up to 5 min for the next scheduled tick), `atmux whip` surfaces your state right now. Cheap to invoke; honors the body-hash dedup so it won't re-ping if nothing changed.
+
 ## Hard rules
 
 - **DO NOT commit. DO NOT push.** Mark done; gitter commits on the back.

@@ -32,7 +32,7 @@ atmux report
    - `gitter` commits + pushes. Never commit yourself.
    - `devops` handles deploy / env / infra.
 5. Mark driver-inbox entries `📤 delegated` with task id inline.
-6. `atmux report` each cycle for the digest.
+6. `atmux report` each cycle for the digest. `atmux whip` auto-fires every 5 min via cron; fire manually (`atmux whip`) any time to get a tick on-demand without waiting — same code path as cron.
 
 ## Autonomy
 

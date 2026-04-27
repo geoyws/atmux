@@ -68,7 +68,7 @@ Canonical matrix — same content in `templates/briefs/planner.md`. Verified aga
    - `atmux status` — who's idle, who's stuck, kanban counts.
    - `atmux outbox` — replies from workers (planner ADRs, reviewer signoffs, blockers).
    - On blockers a worker can't self-resolve: surface to the driver via `atmux reply` with file:line + repro.
-6. **Keep cadence**: `atmux report` every 30 min for the digest (Discord ping is automatic if the webhook is configured).
+6. **Keep cadence**: `atmux report` every 30 min for the digest (Discord ping is automatic if the webhook is configured). `atmux whip` auto-fires every 5 min via cron; you can also fire it manually (`atmux whip`) any time to get a tick on-demand without waiting for the next scheduled run — same code path as cron, useful right after a deploy / rotate / blocker investigation.
 
 ## Autonomy
 
