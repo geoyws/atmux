@@ -783,6 +783,44 @@ After enabling linger, re-run `atmux doctor` to confirm the row flips to green. 
 
 Full rationale + risk register + open-question resolutions: see [`docs/adr/017-logout-kill-preflight.md`](docs/adr/017-logout-kill-preflight.md).
 
+### Topology invariant check
+
+**Why it matters.** With every team running in single-session topology ([ADR-026](docs/adr/026-always-single-session-topology.md)) plus the fleet registry tracking each team's `sessionName`, drift between "what the registry says" and "what tmux actually has" becomes detectable. Hand-renamed sessions, partially-applied `atmux team rename` rollbacks, manually-killed windows, and a missing superdriver session all leave the team in a state where the next `atmux start` would spawn into the wrong place. The topology invariant check ([ADR-027 §invariant check](docs/adr/027-team-rename-verb-and-topology-invariant.md)) catches all four shapes.
+
+**The check.** `atmux doctor` runs `_doctor_check_topology_invariant` as part of its preflight battery. For each registry entry with `status="running"` it asserts:
+
+1. `tmux has-session -t <registry.sessionName>` succeeds.
+2. The team's windows (`__<team>__*`) live in that session — and the count matches `team.json:.members | length`.
+
+Plus a fleet-level rule: when ≥1 team is running, the canonical `atmux-superdriver` session must exist.
+
+Three severities, with action hints attached:
+
+- `topology:<team>` (**green**) — registry session matches tmux state and member count agrees with `team.json`. Sample: `✅ topology:atmux-kanban  session=atmux 9 members in atmux:*`.
+- `topology:<team>` (**yellow**) — windows match the registry session but their count differs from `team.json:.members[]` length. Could be a half-killed pane or a mid-flight `add-member`. Hint: `audit member-by-member: tmux list-windows -t <session> | grep '^__<team>__'`.
+- `topology:<team>` (**red**) — registry-claimed session doesn't hold the team's windows. The check sub-classifies:
+  - **Wrong-session match** — windows live in a different session than the registry says. Hint: `atmux team rename <team> --session <actual> --migrate-session OR atmux team rename <team> --session <registry.sessionName>`.
+  - **Session missing entirely** — neither the registry-claimed session nor any other session holds `__<team>__*` windows. Hint: `atmux team rename <team> --session <actual> --migrate-session OR restart with atmux start`.
+- `topology:superdriver` (**red**) — at least one team is running but the canonical `atmux-superdriver` session is absent. Hint: `atmux super-attach`.
+
+Sample rows from `atmux doctor`:
+
+```
+  ✅ topology:atmux-kanban    session=atmux 9 members in atmux:*
+  ⚠️  topology:sopx-mvp        session=atmux has 11 windows but team.json expects 12 members
+     → audit member-by-member: tmux list-windows -t atmux | grep '^__sopx-mvp__'
+  ❌ topology:aix-root         registry says session=atmux-aix but 5 windows live in atmux
+     → atmux team rename aix-root --session atmux --migrate-session OR atmux team rename aix-root --session atmux-aix
+  ❌ topology:superdriver      atmux-superdriver session absent — fleet aggregator unavailable
+     → atmux super-attach
+```
+
+**`atmux start` / `atmux up` refuse on red.** Both verbs invoke the topology check in their preflight; a `red` row aborts the spawn with the row's content + suggestion text and a final "use `--force` to override" line. `--force` overrides the refuse-gate (operator accepts the drift); `yellow` rows warn and proceed without `--force`. Standalone `atmux doctor` invocations **never refuse** — they only report. The refuse-gate applies exclusively to mutating verbs (`start`, `up`); a read-only doctor run always exits with the row count, not a hard error.
+
+**Skipped silently when** tmux or `jq` is missing, the registry is empty, or `atmux::registry_list` isn't present (cold-start before any `atmux init` has registered a team). Same skip discipline as the rest of the doctor checks — no rows means "nothing to assert against," not "everything's fine."
+
+Full mechanism + ADR-026 single-session topology rationale that justifies the invariant: [`docs/adr/027-team-rename-verb-and-topology-invariant.md`](docs/adr/027-team-rename-verb-and-topology-invariant.md) + [`docs/adr/026-always-single-session-topology.md`](docs/adr/026-always-single-session-topology.md).
+
 ## FAQ
 
 **Why two topology options (dedicated session vs single-session)?**
