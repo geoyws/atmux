@@ -25,6 +25,13 @@
 # (atmux::brief_path → command-not-found → empty path → file-test false →
 # fallback v0). E3/S3-followup t-db501123.
 . "$ATMUX_LIB_DIR/tui.sh"
+# shellcheck source=llm-judge.sh
+# atmux::llm_judge — Sonnet-by-default judge wrapper used by SOFT-tier
+# rate-limit classifier (ADR-023 §Decision). Invocation gated on banner
+# presence; cost ledger appended per call. Failure path returns a
+# canonical {decision:"unavailable",...} line — caller picks a
+# conservative deterministic fallback.
+. "$ATMUX_LIB_DIR/llm-judge.sh"
 
 main() {
   atmux::require jq tmux flock
@@ -156,20 +163,28 @@ main() {
       continue
     fi
 
-    # Banner detection. Track `preclear_banner` for the autoRotate-gated
-    # auto-preclear: rate-limit / approaching-limit / compacting are all
-    # "rotate would help" signals; queued-message banner is informational
-    # only (no rotation).
+    # Banner detection — three-tier rate-limit classification per ADR-023.
+    # HARD ('hit your limit') = unrecoverable; rotate immediately on the
+    # AUTO_ROTATE path, no judge call. SOFT ('approaching usage limit'
+    # OR 'N% of limit/window used') = ambiguous; pass to the Sonnet judge
+    # so we don't thrash mid-valuable-work. NONE = no rate-limit signal.
+    # Compacting + queued-msg branches stay deterministic (independent
+    # signals; not part of the rate-limit ladder).
     local state; state=$(atmux::capture_pane "$name" 30)
+    local rl_tier="NONE"
+    if echo "$state" | grep -qi 'hit your limit'; then
+      rl_tier="HARD"
+      findings+=("🔴 $name: rate-limited banner visible (HARD)")
+    elif echo "$state" | grep -qiE 'approaching usage limit|[0-9]+% of (limit|window) used'; then
+      rl_tier="SOFT"
+      findings+=("🟡 $name: rate-limit soft-warning (SOFT — judge consult)")
+    fi
+
     local preclear_banner=""
-    if echo "$state" | grep -qi 'hit your limit\|rate.?limit'; then
-      findings+=("🔴 $name: rate-limited banner visible")
-      preclear_banner="rate-limited"
-    fi
-    if echo "$state" | grep -qi 'approaching usage limit'; then
-      findings+=("🟡 $name: approaching usage limit")
-      preclear_banner="${preclear_banner:-approaching-limit}"
-    fi
+    case "$rl_tier" in
+      HARD) preclear_banner="rate-limited" ;;
+    esac
+
     if echo "$state" | grep -qi 'Compacting conversation'; then
       findings+=("⏳ $name: compacting — skip sends until done")
       preclear_banner="${preclear_banner:-compacting}"
@@ -183,6 +198,32 @@ main() {
       if ! _atmux_whip_pane_busy "$state"; then
         findings+=("📥 $name: messages queued but not submitted")
       fi
+    fi
+
+    # SOFT-tier judge consult — gated on banner presence, so a typical
+    # tick has zero invocations. Render prompt slots, invoke
+    # atmux::llm_judge (Sonnet by default), parse `.decision`. The
+    # judge's failure path emits {decision:"unavailable"} which we
+    # treat as conservative-rotate (same as HARD) so a downed `claude`
+    # CLI doesn't silently wedge stalled members in the queue. The
+    # 5-min cron debounce stays in place as a thrash floor.
+    if [[ "$rl_tier" == "SOFT" ]]; then
+      local judge_decision judge_reason
+      judge_decision="$(_atmux_whip_judge_soft "$name" "$state")"
+      judge_reason="$(_atmux_whip_judge_last_reason)"
+      case "$judge_decision" in
+        rotate)
+          findings+=("♻️ judge: rotate $name — ${judge_reason:-no reason}")
+          preclear_banner="${preclear_banner:-rate-limit-soft-rotate}"
+          ;;
+        skip)
+          findings+=("♻️ judge: skip $name — ${judge_reason:-no reason}")
+          ;;
+        unavailable|*)
+          findings+=("⚠️ judge unavailable for $name — conservative rotate")
+          preclear_banner="${preclear_banner:-rate-limit-soft-fallback}"
+          ;;
+      esac
     fi
 
     # AUTO-PRECLEAR (E2/S3 t-50ca6f09): when AUTO_ROTATE=true and a
@@ -987,4 +1028,85 @@ _atmux_whip_anchor_for() {
   else
     printf '%s\n' "$sess"
   fi
+}
+
+# SOFT-tier rate-limit judge consult per ADR-023.
+#
+# Renders templates/prompts/rate-limit-judge.md by substituting 5 slots
+# ({member_name}, {tier}, {claim_age_min}, {recent_commits},
+# {pane_snapshot}), invokes atmux::llm_judge, parses `.decision` from
+# the model output, and stashes the `.reason` in a per-tick file so the
+# caller can read it without re-parsing.
+#
+# Echoes the decision string on stdout: "rotate" | "skip" | "unavailable"
+# (or whatever the model emits — caller's case statement defaults
+# unrecognised verdicts to "unavailable" via the wildcard arm).
+#
+# Failure paths:
+#   - prompt template missing → unavailable
+#   - jq parse fails           → unavailable (atmux::llm_judge already
+#                                 returns a canonical fallback line; we
+#                                 just propagate)
+_atmux_whip_judge_soft() {
+  local member="$1" pane_snapshot="$2"
+  local prompt_tpl="$ATMUX_TEMPLATES_DIR/prompts/rate-limit-judge.md"
+  if [[ ! -f "$prompt_tpl" ]]; then
+    atmux::warn "whip: rate-limit-judge prompt template missing at $prompt_tpl"
+    printf 'unavailable\n'
+    return 0
+  fi
+
+  local recent_commits claim_age_min
+  recent_commits="$(git log -3 --pretty='format:%h %s' 2>/dev/null \
+                    | sed 's/^/  /' || true)"
+  [[ -z "$recent_commits" ]] && recent_commits="  (no recent commits)"
+
+  local now; now="$(atmux::now_epoch)"
+  local oldest_claim
+  oldest_claim="$(jq -r --arg m "$member" '
+    [.tasks[]? | select(.status == "in-progress" and .owner == $m)
+               | (.claimedAt // 0)]
+    | map(select(. > 0))
+    | min // 0' "$(atmux::kanban_json)" 2>/dev/null || echo 0)"
+  [[ "$oldest_claim" =~ ^[0-9]+$ ]] || oldest_claim=0
+  if (( oldest_claim > 0 )); then
+    claim_age_min=$(( (now - oldest_claim) / 60 ))
+  else
+    claim_age_min=0
+  fi
+
+  local rendered; rendered="$(mktemp -t atmux-judge-prompt.XXXXXX)"
+  awk -v member="$member" -v tier="SOFT" \
+      -v claim_age="$claim_age_min" \
+      -v commits="$recent_commits" \
+      -v snapshot="$pane_snapshot" '
+    {
+      gsub(/{member_name}/,   member)
+      gsub(/{tier}/,          tier)
+      gsub(/{claim_age_min}/, claim_age)
+      gsub(/{recent_commits}/, commits)
+      gsub(/{pane_snapshot}/, snapshot)
+      print
+    }
+  ' "$prompt_tpl" > "$rendered"
+
+  local raw decision reason
+  raw="$(atmux::llm_judge "$rendered" --caller whip-rate-limit --member "$member")"
+  rm -f "$rendered"
+
+  decision="$(jq -r '.decision // "unavailable"' <<<"$raw" 2>/dev/null \
+              || printf 'unavailable')"
+  reason="$(jq -r '.reason // ""' <<<"$raw" 2>/dev/null || printf '')"
+
+  # Stash reason for the caller — single in-process value; per-tick
+  # file is simpler than threading a global var through the loop.
+  printf '%s\n' "$reason" > "$(atmux::state_dir)/.judge-last-reason"
+  printf '%s\n' "$decision"
+}
+
+# Read the most recent judge reason that _atmux_whip_judge_soft wrote.
+# Empty string if the file is missing (no judge invocation yet this tick).
+_atmux_whip_judge_last_reason() {
+  local f; f="$(atmux::state_dir)/.judge-last-reason"
+  [[ -f "$f" ]] && cat "$f" || true
 }
