@@ -44,7 +44,7 @@ Three Task shapes auto-arrive:
 
    d. **Compose the body** from the worker's `note` (one paragraph, focus on **why**, not the diff itself). Append the `Co-Authored-By:` trailer for the worker who did the work, then the Claude Code trailer.
 
-   e. **Commit with HEREDOC**:
+   e. **Commit with HEREDOC + path-restricted pathspec** (race-staging defense — see §Path-restricted commits below; the `--` + explicit file list is the DEFAULT form, not an option):
 
       ```bash
       git commit -m "$(cat <<'EOF'
@@ -55,12 +55,26 @@ Three Task shapes auto-arrive:
       Co-Authored-By: <worker> <noreply@anthropic.com>
       Co-Authored-By: Claude <noreply@anthropic.com>
       EOF
-      )"
+      )" -- <file1> <file2> …
       ```
+
+      Argument order matters — `-m '<msg>'` MUST come BEFORE `--`; post-`--` args are pathspecs, not flags. The Task subject body lists the files the worker touched; use that list verbatim.
 
    f. **If a pre-commit hook fails**: FIX the underlying issue. NEVER `--no-verify`. NEVER `core.hooksPath=/dev/null`. NEVER `HUSKY=0`. Re-stage, create a NEW commit (don't `--amend` after a hook failure — the original commit didn't happen, and amending modifies the previous one). If the hook itself is broken, surface to the lead with repro + commit body documenting `Approved bypass: <reason>` AFTER explicit lead ack.
 
-   g. **Mark done**:
+   g. **Post-commit verification — MANDATORY**. Confirm the recorded commit matches the staged set you intended:
+
+      ```bash
+      git show --stat --format= HEAD
+      ```
+
+      Compare against the file list passed after `--`. If wider (a parallel worker's hunks swept in — typical when `Mm` worktree state caused the path-restricted form to record extra unstaged deltas, see §Path-restricted commits below), DO NOT mark the Task done. Instead:
+
+      1. `atmux flag add --severity high --subject "race-staging swept commit-Task <task-id> SHA <sha7>" --body "<diff-detail>"`
+      2. `atmux tell-lead "[gitter] race-staging swept t-xxx — see flag <fid>; needs triage"`
+      3. Either `git reset --soft HEAD~1` + restage cleanly, OR leave the commit (if it bundles already-merged content) and document the carve-out in the flag body.
+
+   h. **Mark done**:
 
       ```
       atmux done <commit-task-id> --as {{MEMBER}} \
@@ -82,13 +96,32 @@ Three Task shapes auto-arrive:
    d. The Task body should also include any in-repo metadata changes (e.g. CHANGELOG note); commit those normally.
    e. Mark done with `--note "persist-deferred: 9 JSON files written to /root/.claude/tasks/atmux/"`.
 
+## Path-restricted commits — race-staging defense
+
+Parallel atmux workers stage into the shared index between your `git diff --cached --stat` check and your `git commit`. The classic `git add → git diff --cached → git commit` flow is racy: another worker's `git add` can sneak into your commit. **Default to the path-restricted form** — every gitter commit lists explicit paths after `--`:
+
+```bash
+git commit -m "..." -- <file1> <file2> …
+```
+
+`-m '<msg>'` MUST come BEFORE `--`; post-`--` args are pathspecs, not flags. Path-restricted form scopes the commit to the listed files only — other workers' staged changes outside that set are left for their own gitter pass. Reference: `feedback_path_restricted_commit.md` in the team's auto-memory.
+
+**Critical `Mm` nuance.** Path-restricted commits record the **WORKTREE** state of the listed paths, NOT the index state. For files in `Mm` state (staged delta with unstaged delta on top — see `git status` second column), `git commit -- <file>` combines BOTH deltas into the commit. If `git status` shows `Mm` on any file you're about to commit, the path-restricted form is **UNSAFE** for that file. In that case:
+
+1. Skip the path-restricted form for that file.
+2. Build a curated patch: `git diff HEAD -- <file>` → filter hunks to only your Task's content → `git apply --cached <patch>`.
+3. Plain commit (no `-- <files>` — the index now contains exactly your hunks): `git commit -m "..."`.
+4. Verify immediately via `git show --stat --format= HEAD` per step 2.g above.
+
+The `lint-staged + submodule` rule below is the downstream pitfall this discipline prevents — when `Mm` is the symptom, path-restricted form is the cause.
+
 ## Hard rules
 
 - **DO NOT push.** `git push` is driver-only. If the driver asks for a push, confirm the target branch + remote first; never force-push to `main`/`master`.
 - **NEVER skip hooks.** No `--no-verify`, `--no-gpg-sign`, `core.hooksPath=/dev/null`, `HUSKY=0`, `LEFTHOOK=0`, removing `.git/hooks/pre-commit`. Outcome rule: hooks didn't run = bypass, regardless of mechanism.
 - **NEVER amend after hook failure.** The commit didn't happen; `--amend` rewrites the *previous* commit. Always make a NEW commit.
 - One commit per Task. No squashing, no batching multiple Tasks into one commit. The kanban + git history must align 1:1 on Tasks.
-- **lint-staged + submodule discipline**: if `git status` shows `Mm` or ` m` on a submodule at commit time, split commits — plain files first, submodule pointer second. Never let lint-staged's stash/unstash dance sweep unrelated changes in.
+- **lint-staged + submodule discipline**: if `git status` shows `Mm` or ` m` on a submodule at commit time, split commits — plain files first, submodule pointer second. Never let lint-staged's stash/unstash dance sweep unrelated changes in. (Path-restricted commits — see §Path-restricted commits — are the upstream defense; this `Mm`-trap is the downstream pitfall when path-restricted form is itself unsafe.)
 - Conventional-commits in subject; UPPER-CASE lane tokens in *prose body* only (the subject scope is lowercase: `feat(fe)`, `fix(be)`).
 - `Co-Authored-By:` trailer for the worker; `Co-Authored-By: Claude` trailer when a Claude-driven worker did the work.
 
