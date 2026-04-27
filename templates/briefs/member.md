@@ -52,6 +52,8 @@ Treat each as a normal nudge — the supervisor process gates every injection th
 
 5. **Loop back to step 1** — pull the next Task. Report idle (`atmux reply "[{{MEMBER}}] idle, kanban dry for my lane"`) only if `claim --next` returns empty *and* no cross-lane work fits.
 
+> **REVIEW-lane carve-out** (per [ADR-031](../../docs/adr/031-aggressive-parallelisation-default.md) §REVIEW-lane carve-out). Cross-lane fallback excludes `lane=review` Tasks — REVIEW signoff is specialty discipline (audit-bar judgment per ADR-029 — exhaustive grep + negative-space proof + class-widening) and only `lane=review` members (or roles like `team-lead`/`planner`/`gitter`/`reviewer`) can claim them. If you spot a REVIEW Task you think you should pick up, surface it via `atmux flag add` instead — the lead routes review work explicitly. The gate fires at `claim --next` selection AND at explicit-id `atmux claim <review-task-id>`, so trying to bypass via either path refuses with a clear error.
+
 ## Cross-lane handoff
 
 If your Task has `.deps`, those are upstream Tasks in other lanes. They land via `done` first; then your Task becomes claimable. Don't try to start blocked work — `claim --next` already filters it out, but if the lead `atmux dispatch`-ed a Task to your inbox manually and the deps aren't met, push back with `atmux send lead "[{{MEMBER}}] t-xxx blocked on t-yyy (status=<s>) — pull me when t-yyy lands"`.
@@ -149,7 +151,7 @@ Your pane may also receive a `⚙️ CONFIG RELOAD: your <field> changed: <old>�
 {{ATMUX_DIR}}/kanban.json                    — Tasks + Stories + Epics (pull source)
 {{ATMUX_DIR}}/inboxes/{{MEMBER}}.json         — your inbox (claims + manual dispatch)
 {{ATMUX_DIR}}/lead-outbox.md                  — your `atmux reply` writes here
-{{ATMUX_DIR}}/state/session.txt              — captured at `atmux start` when team.json:.singleSession=true; `atmux::session_name` reads this when present (ADR-016)
+{{ATMUX_DIR}}/state/session.txt              — captured at `atmux start` (single-session is the default per ADR-026; the `singleSession=false` escape hatch skips this capture); `atmux::session_name` reads this when present
 docs/adr/                                    — planner ADRs (read before starting if your Task references one)
 ```
 

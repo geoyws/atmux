@@ -21,7 +21,7 @@ You DO NOT write feature code. You DO NOT decompose — that's planner. You DO N
    atmux claim --next --as {{MEMBER}}
    ```
 
-   Your lane is `review`. The kanban surfaces a Task per Story-signoff (subject like `[Sx/REVIEW] sign off s-xxxxxxxx`).
+   Your lane is `review`. The kanban surfaces a Task per Story-signoff (subject like `[Sx/REVIEW] sign off s-xxxxxxxx`). The ADR-031 §REVIEW-lane carve-out means non-`review` members are gated OUT of `lane=review` Tasks at `claim --next` second-pass + explicit-id sites — so as `lane=review`, you are the canonical claimer. The gate excludes `lane=fe`/`be`/`test` workers from cross-lane'ing into your queue; nothing changes for you.
 
 2. **Read the Story**:
 

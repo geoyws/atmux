@@ -1,4 +1,4 @@
-# ADR-030: Aggressive parallelisation as the team default
+# ADR-031: Aggressive parallelisation as the team default
 
 **Status**: accepted
 **Date**: 2026-04-27
@@ -53,6 +53,19 @@ Lead's brief carries this nuance: "if your lane is dry, claim --next from any op
 ### Driver-override priority
 
 Driver retains the right to force priority-0 on critical-path Tasks (via direct `kanban.json` edit until `atmux task edit --priority` verb ships). Aggressive default + driver-override = fastest possible queue collapse for critical work.
+
+### REVIEW-lane carve-out
+
+Aggressive cross-lane fallback (the second-pass any-lane filter in `claim --next`) does NOT apply to `lane=review` Tasks. REVIEW signoff is specialty discipline (per [ADR-029](./029-team-scope-tiers.md) audit bar — exhaustive grep + negative-space proof + vulnerability-class widening); a `lane=fe` / `lane=be` / `lane=test` member cannot meaningfully deputize on it. The refuse-gate sits at two sites in `lib/claim.sh`:
+
+- `_atmux_claim_select_next` second-pass any-lane filter — `lane=review` Tasks excluded when caller's `lane != review`.
+- `main` `claim` branch (explicit-id form) — explicit `atmux claim <review-task-id>` refuses unless caller is review-shaped.
+
+**Callers refused.** `role == "member"` AND `member.lane != "review"`.
+
+**Callers allowed.** `member.lane == "review"` (e.g. `reviewer`, `reviewer-2`) OR `role IN {team-lead, planner, gitter, reviewer}` OR explicit `--lane review` override on the claim invocation (operator opt-in).
+
+**Origin.** 2026-04-27: `fe-kanban` cross-lane'd into REVIEW Task `t-c88fc825` and `test-kanban` cross-lane'd into `t-5385881d` via the second-pass fallback before self-recognising the lane-purity violation and releasing back. The `feedback_reviewer_lane_gate.md` memory was the discipline rule; this carve-out makes the gate structural rather than relying on member-side judgment.
 
 ## Consequences
 
