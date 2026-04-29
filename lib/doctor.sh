@@ -397,7 +397,29 @@ _doctor_check_crontab() {
   local current_atmux_dir; current_atmux_dir="$(atmux::dir 2>/dev/null || echo)"
   [[ -n "$current_atmux_dir" ]] || return
 
-  local mismatched=0 matched=0
+  # Build a set of registered-team .atmux dirs (real paths). Cron entries
+  # pointing to ANY registered team are legitimate multi-team scheduling, not
+  # stale config. The orphan-cron check (_doctor_check_cron_orphans) already
+  # surfaces entries whose ATMUX_DIR is missing on disk — leaving cron-config
+  # as a "this project moved" detector, not a multi-team noise generator.
+  local registered_dirs=""
+  if [[ -f "$ATMUX_LIB_DIR/registry.sh" ]] \
+     && ! declare -F atmux::registry_path >/dev/null 2>&1; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh"
+  fi
+  if declare -F atmux::registry_path >/dev/null 2>&1; then
+    local reg; reg="$(atmux::registry_path 2>/dev/null || echo)"
+    if [[ -n "$reg" && -f "$reg" ]]; then
+      registered_dirs="$(jq -r '.[] | .projectRoot | select(. != null and . != "")' "$reg" 2>/dev/null \
+                          | while IFS= read -r root; do
+                              [[ -n "$root" ]] || continue
+                              readlink -f "$root/.atmux" 2>/dev/null || echo "$root/.atmux"
+                            done)"
+    fi
+  fi
+
+  local mismatched=0 matched=0 known_other=0
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     # Pull either ATMUX_DIR=<path> or --team-dir <path> from the cron line.
@@ -422,6 +444,10 @@ _doctor_check_crontab() {
       curr_real="$(readlink -f "$current_atmux_dir" 2>/dev/null || echo "$current_atmux_dir")"
       if [[ "$cron_real" == "$curr_real" ]]; then
         matched=$((matched + 1))
+      elif [[ -n "$registered_dirs" ]] \
+           && grep -qxF "$cron_real" <<<"$registered_dirs"; then
+        # Cron line points to another registered team — legitimate.
+        known_other=$((known_other + 1))
       else
         mismatched=$((mismatched + 1))
       fi
@@ -433,7 +459,12 @@ _doctor_check_crontab() {
       "$mismatched atmux cron entr$( ((mismatched==1)) && echo y || echo ies ) point to a different ATMUX_DIR than $current_atmux_dir" \
       "if the project moved, run \`crontab -e\` and update ATMUX_DIR / --team-dir"
   elif [[ "$matched" -gt 0 ]]; then
-    _doctor_row green "cron-config" "$matched atmux cron entr$( ((matched==1)) && echo y || echo ies ) match this project"
+    local msg="$matched atmux cron entr$( ((matched==1)) && echo y || echo ies ) match this project"
+    (( known_other > 0 )) && msg="$msg (+$known_other for other registered team$( ((known_other==1)) || echo s ))"
+    _doctor_row green "cron-config" "$msg"
+  elif (( known_other > 0 )); then
+    _doctor_row green "cron-config" \
+      "$known_other atmux cron entr$( ((known_other==1)) && echo y || echo ies ) for other registered team$( ((known_other==1)) || echo s )"
   fi
 }
 
@@ -667,10 +698,14 @@ _doctor_check_topology_invariant() {
     # form: bare `tmux has-session -t beta` is a PREFIX match and returns
     # true when only "beta-other" exists, which would silently mark a
     # wrong-session drift as green. Per ADR-027 invariant correctness.
+    # Exclude `__<team>__supervisor` — it's an infrastructure window, not a
+    # team.json member, and counting it would always overshoot expected by 1
+    # for every cage'd team that has a supervisor (the default).
     local in_sess=0
     if "${tmux_q[@]}" has-session -t "=$sess" 2>/dev/null; then
       in_sess="$("${tmux_q[@]}" list-windows -t "=$sess" -F '#{window_name}' 2>/dev/null \
-                  | grep -c "^__${name}__" || true)"
+                  | grep "^__${name}__" \
+                  | grep -cv "^__${name}__supervisor$" || true)"
       [[ "$in_sess" =~ ^[0-9]+$ ]] || in_sess=0
     fi
 
@@ -696,7 +731,8 @@ _doctor_check_topology_invariant() {
     while IFS= read -r s; do
       [[ -z "$s" || "$s" == "$sess" ]] && continue
       n="$("${tmux_q[@]}" list-windows -t "=$s" -F '#{window_name}' 2>/dev/null \
-            | grep -c "^__${name}__" || true)"
+            | grep "^__${name}__" \
+            | grep -cv "^__${name}__supervisor$" || true)"
       [[ "$n" =~ ^[0-9]+$ ]] || n=0
       if (( n > 0 )); then
         other_sess="$s"
@@ -763,14 +799,28 @@ _doctor_check_phantom_inboxes() {
 # Skipped silently when the team's tmux session isn't up — no point
 # alarming about a sleeping team.
 _doctor_check_supervisor_liveness() {
+  local tj; tj="$(atmux::team_json)"
   local optout
-  optout="$(jq -r '.supervisor // true' "$(atmux::team_json)" 2>/dev/null || echo true)"
+  optout="$(jq -r '.supervisor // true' "$tj" 2>/dev/null || echo true)"
   [[ "$optout" == "false" ]] && return 0
-  atmux::tmux_session_exists 2>/dev/null || return 0
 
-  local team win
+  # Per-team cage socket (ADR-018). When doctor is invoked from inside the
+  # daily-driver tmux ($TMUX is set), bare `tmux` ignores TMUX_TMPDIR and
+  # talks to the daily-driver socket — where __<team>__supervisor never
+  # lives. Thread the cage socket explicitly via `tmux -S` like the topology
+  # check does. Empty/null tmuxTmpdir → bare tmux (legacy non-cage'd teams).
+  local team_tmpdir
+  team_tmpdir="$(jq -r '.tmuxTmpdir // empty' "$tj" 2>/dev/null || true)"
+  [[ "$team_tmpdir" == "null" ]] && team_tmpdir=""
+  local tmux_q=(tmux)
+  [[ -n "$team_tmpdir" ]] && tmux_q=(tmux -S "$team_tmpdir/tmux-$(id -u)/default")
+
+  local team session win
   team="$(atmux::team_name)"
+  session="$(atmux::session_name)"
   win="__${team}__supervisor"
+
+  "${tmux_q[@]}" has-session -t "=$session" 2>/dev/null || return 0
 
   local hb_file; hb_file="$(atmux::state_dir)/supervisor.heartbeat"
   local hb_age=-1
@@ -782,8 +832,12 @@ _doctor_check_supervisor_liveness() {
     hb_age=$(( now - hb_mtime ))
   fi
 
+  # Literal window-name match — don't go through atmux::tmux_window_exists,
+  # which re-runs the input through atmux::window_name and double-prefixes
+  # an already-prefixed `__<team>__supervisor` to `__<team>____<team>__supervisor`.
   local win_alive=0
-  atmux::tmux_window_exists "$win" 2>/dev/null && win_alive=1
+  "${tmux_q[@]}" list-windows -t "=$session" -F '#{window_name}' 2>/dev/null \
+    | grep -qx "$win" && win_alive=1
 
   if (( win_alive == 1 )) && (( hb_age >= 0 )) && (( hb_age < 30 )); then
     _doctor_row green "supervisor-liveness" \
