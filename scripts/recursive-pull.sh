@@ -4,14 +4,15 @@
 # Usage:  recursive-pull.sh <branch> [<repo-root>]
 # Default repo-root = $PWD.
 #
-# For each repo (root + every nested submodule, recursively):
-#   - if not on <branch>: WARN, skip (use recursive-checkout.sh first)
-#   - else: git pull --ff-only origin <branch>
+# Pre-flight scans every repo's current branch and refuses to proceed if any
+# repo is not on <branch> — partial pulls leave the tree in a half-state where
+# some repos advanced and others didn't. Use recursive-checkout.sh first to
+# unify, then re-run this.
 #
 # --ff-only refuses merge commits — keeps the sweep mechanical, never produces
 # a merge anyone forgot to expect.
 #
-# Exit code = number of repos that failed to pull (skipped count NOT included).
+# Exit code: 0 = all clean, 1 = pull failed somewhere, 2 = pre-flight refused.
 
 set -uo pipefail
 
@@ -23,19 +24,49 @@ root_abs="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   echo "ERR: $root is not inside a git repo" >&2; exit 2
 }
 
-fail=0
-skipped=0
+mapfile -t paths < <(cd "$root_abs" && git submodule foreach --recursive --quiet 'echo "$displaypath"')
 
+# ---- Pre-flight: every repo must be on <branch>, else refuse ----
+echo "=== pre-flight: branch consistency check (target=$branch) ==="
+mismatch=0
+mismatch_list=()
+_check_branch() {
+  local label="$1"
+  local current
+  current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  [ "$current" = "HEAD" ] && current="(detached)"
+  if [ "$current" = "$branch" ]; then
+    printf "  %-3s %s\n" "✓" "$label  [$current]"
+  else
+    printf "  %-3s %s\n" "✗" "$label  [$current]"
+    mismatch=$((mismatch + 1))
+    mismatch_list+=("$label [$current]")
+  fi
+}
+( cd "$root_abs" && _check_branch "(root)" )
+for path in "${paths[@]}"; do
+  ( cd "$root_abs/$path" && _check_branch "$path" )
+done
+
+if [ "$mismatch" -gt 0 ]; then
+  echo
+  echo "✗ REFUSE: $mismatch repo(s) not on '$branch':"
+  for m in "${mismatch_list[@]}"; do
+    echo "    - $m"
+  done
+  echo
+  echo "  Run: $(dirname "$0")/recursive-checkout.sh $branch"
+  echo "  Then re-run this command."
+  exit 2
+fi
+echo "✓ all repos on '$branch' — proceeding"
+echo
+
+# ---- Action: pull per repo (everyone confirmed on $branch) ----
+fail=0
 _pull_one() {
   local label="$1"
   echo "=== $label ==="
-  local current
-  current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  if [ "$current" != "$branch" ]; then
-    echo "  SKIP: on '$current', not '$branch' (run recursive-checkout.sh $branch first)"
-    skipped=$((skipped + 1))
-    return 0
-  fi
   if git pull --ff-only origin "$branch" 2>&1 | tail -3; then
     return 0
   else
@@ -47,12 +78,12 @@ _pull_one() {
 cd "$root_abs"
 _pull_one "(root) $root_abs" || fail=$((fail + 1))
 
-while IFS= read -r path; do
+for path in "${paths[@]}"; do
   ( cd "$root_abs/$path" && _pull_one "$path" )
   rc=$?
   [ "$rc" -ne 0 ] && fail=$((fail + 1))
-done < <(cd "$root_abs" && git submodule foreach --recursive --quiet 'echo "$displaypath"')
+done
 
 echo
-echo "=== summary: $fail failed, $skipped skipped (wrong branch), out of all repos ==="
+echo "=== summary: $fail failed out of $((${#paths[@]} + 1)) repos ==="
 exit "$fail"

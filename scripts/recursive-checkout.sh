@@ -14,6 +14,9 @@
 # Branch presence is per-repo: each submodule is independent (some may live on
 # ix-geoyws while siblings live on sopx-geoyws — script reports per-repo).
 #
+# A pre-flight scan reports each repo's CURRENT branch BEFORE any action — so
+# the user sees the divergent state before it gets unified.
+#
 # Exit code = number of repos that failed to checkout.
 
 set -uo pipefail
@@ -26,8 +29,35 @@ root_abs="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   echo "ERR: $root is not inside a git repo" >&2; exit 2
 }
 
-fail=0
+# Collect repo paths: root first, then every nested submodule.
+mapfile -t paths < <(cd "$root_abs" && git submodule foreach --recursive --quiet 'echo "$displaypath"')
 
+# ---- Pre-flight: report current branch per repo, flag mismatch vs target ----
+echo "=== pre-flight: current branch per repo (target=$branch) ==="
+mismatch=0
+_print_branch() {
+  local label="$1"
+  local current
+  current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  [ "$current" = "HEAD" ] && current="(detached)"
+  if [ "$current" = "$branch" ]; then
+    printf "  %-7s %s\n" "✓" "$label  [$current]"
+  else
+    printf "  %-7s %s\n" "✗" "$label  [$current]"
+    mismatch=$((mismatch + 1))
+  fi
+}
+( cd "$root_abs" && _print_branch "(root)" )
+for path in "${paths[@]}"; do
+  ( cd "$root_abs/$path" && _print_branch "$path" )
+done
+if [ "$mismatch" -gt 0 ]; then
+  echo "  WARN: $mismatch repo(s) not on '$branch' — they will be switched (or skipped if branch missing)"
+fi
+echo
+
+# ---- Action: checkout per repo ----
+fail=0
 _checkout_one() {
   local label="$1"
   echo "=== $label ==="
@@ -45,9 +75,9 @@ _checkout_one() {
 cd "$root_abs"
 _checkout_one "(root) $root_abs" || fail=$((fail + 1))
 
-while IFS= read -r path; do
+for path in "${paths[@]}"; do
   ( cd "$root_abs/$path" && _checkout_one "$path" ) || fail=$((fail + 1))
-done < <(cd "$root_abs" && git submodule foreach --recursive --quiet 'echo "$displaypath"')
+done
 
 echo
 echo "=== summary: $fail repo(s) failed to checkout $branch ==="

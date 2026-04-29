@@ -37,6 +37,13 @@ main() {
   # interactive use; required for bats green.
   tmux new-session -d -s "$ATMUX_SUPERDRIVER_SESSION" -n superdriver -c "$HOME" 3>&- 4>&-
 
+  # Superdriver tmux prefix override — `C-\` matches lib/start.sh cage
+  # default. Three-layer nesting (Mac C-b → hax C-a → superdriver) needs
+  # a non-colliding inner prefix.
+  tmux set-option -g prefix 'C-\' 2>/dev/null || true
+  tmux unbind-key C-b 2>/dev/null || true
+  tmux bind-key 'C-\' send-prefix 2>/dev/null || true
+
   local target="$ATMUX_SUPERDRIVER_SESSION:superdriver"
   local bin="${ATMUX_CLAUDE_BIN:-claude}"
   local effort="${ATMUX_CLAUDE_EFFORT:-xhigh}"

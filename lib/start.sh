@@ -144,6 +144,17 @@ main() {
     atmux::ok "created tmux session: $session"
   fi
 
+  # Cage tmux prefix override — `C-\` (Ctrl-Backslash). The default `C-b`
+  # collides with macOS-tmux for operators running 3-level nested tmux
+  # (Mac local C-b → SSH'd remote tmux C-a → cage C-b): the outermost
+  # layer eats every cage prefix before the cage sees it. C-\ is free of
+  # macOS bindings, bash/zsh readline, and emacs/vim habits — only
+  # SIGQUIT in raw terminals, which tmux's prefix-handling absorbs.
+  # Idempotent: applied on every `atmux start`, server-scope.
+  tmux set-option -g prefix 'C-\' 2>/dev/null || true
+  tmux unbind-key C-b 2>/dev/null || true
+  tmux bind-key 'C-\' send-prefix 2>/dev/null || true
+
   # ---- Registry touch (E10/Sa t-638f6504, ADR-025 §Decision start hook) ----
   # Bump lastSeen on every successful start so the fleet aggregator
   # (super-status) knows this team is alive. Backfill via upsert when the

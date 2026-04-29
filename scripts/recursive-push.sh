@@ -4,16 +4,15 @@
 # Usage:  recursive-push.sh <branch> [<repo-root>]
 # Default repo-root = $PWD.
 #
-# For each repo (root + every nested submodule, recursively):
-#   - if not on <branch>: WARN, skip (use recursive-checkout.sh first)
-#   - else: git push origin <branch>
+# Pre-flight scans every repo's current branch and refuses to proceed if any
+# repo is not on <branch> — pushing only some repos leaves origin in a state
+# where the parent's submodule pointers reference unpushed child commits OR
+# an inconsistent branch shape. Use recursive-checkout.sh first to unify.
 #
 # Push order is leaves-first (deepest submodules first) — git refuses a parent
 # push if the parent's submodule pointer references a commit not on origin.
-# We invert the recursive-checkout.sh / recursive-pull.sh top-down walk by
-# reversing the foreach output before pushing.
 #
-# Exit code = number of repos that failed to push.
+# Exit code: 0 = all clean, 1 = push failed somewhere, 2 = pre-flight refused.
 
 set -uo pipefail
 
@@ -25,19 +24,49 @@ root_abs="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   echo "ERR: $root is not inside a git repo" >&2; exit 2
 }
 
-fail=0
-skipped=0
+mapfile -t paths < <(cd "$root_abs" && git submodule foreach --recursive --quiet 'echo "$displaypath"')
 
+# ---- Pre-flight: every repo must be on <branch>, else refuse ----
+echo "=== pre-flight: branch consistency check (target=$branch) ==="
+mismatch=0
+mismatch_list=()
+_check_branch() {
+  local label="$1"
+  local current
+  current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  [ "$current" = "HEAD" ] && current="(detached)"
+  if [ "$current" = "$branch" ]; then
+    printf "  %-3s %s\n" "✓" "$label  [$current]"
+  else
+    printf "  %-3s %s\n" "✗" "$label  [$current]"
+    mismatch=$((mismatch + 1))
+    mismatch_list+=("$label [$current]")
+  fi
+}
+( cd "$root_abs" && _check_branch "(root)" )
+for path in "${paths[@]}"; do
+  ( cd "$root_abs/$path" && _check_branch "$path" )
+done
+
+if [ "$mismatch" -gt 0 ]; then
+  echo
+  echo "✗ REFUSE: $mismatch repo(s) not on '$branch':"
+  for m in "${mismatch_list[@]}"; do
+    echo "    - $m"
+  done
+  echo
+  echo "  Run: $(dirname "$0")/recursive-checkout.sh $branch"
+  echo "  Then re-run this command."
+  exit 2
+fi
+echo "✓ all repos on '$branch' — proceeding (leaves-first push order)"
+echo
+
+# ---- Action: push leaves-first ----
+fail=0
 _push_one() {
   local label="$1"
   echo "=== $label ==="
-  local current
-  current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  if [ "$current" != "$branch" ]; then
-    echo "  SKIP: on '$current', not '$branch' (run recursive-checkout.sh $branch first)"
-    skipped=$((skipped + 1))
-    return 0
-  fi
   if git push origin "$branch" 2>&1 | tail -3; then
     return 0
   else
@@ -46,9 +75,7 @@ _push_one() {
   fi
 }
 
-# Leaves first — collect all submodule paths, reverse, push each, then root last.
-mapfile -t paths < <(cd "$root_abs" && git submodule foreach --recursive --quiet 'echo "$displaypath"')
-# reverse
+# Submodules deepest-first (reverse of foreach output)
 for ((i = ${#paths[@]} - 1; i >= 0; i--)); do
   path="${paths[$i]}"
   ( cd "$root_abs/$path" && _push_one "$path" )
@@ -56,10 +83,10 @@ for ((i = ${#paths[@]} - 1; i >= 0; i--)); do
   [ "$rc" -ne 0 ] && fail=$((fail + 1))
 done
 
-# root last
+# Root last
 cd "$root_abs"
 _push_one "(root) $root_abs" || fail=$((fail + 1))
 
 echo
-echo "=== summary: $fail failed, $skipped skipped (wrong branch), out of all repos ==="
+echo "=== summary: $fail failed out of $((${#paths[@]} + 1)) repos ==="
 exit "$fail"
