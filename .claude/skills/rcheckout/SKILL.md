@@ -13,13 +13,13 @@ The user passes the target branch as the argument: `/rcheckout sopx-geoyws`.
 
 ## Implementation
 
-Run the script from the atmux scripts directory, against the user's current working directory:
-
 ```bash
-bash /root/work/src/atmux/scripts/recursive-checkout.sh "$BRANCH"
+bash "$(git rev-parse --show-toplevel)/scripts/recursive-checkout.sh" "$BRANCH"
 ```
 
-Where `$BRANCH` is the user-supplied argument. Do not change the working directory before invoking — the script defaults to `$PWD`, which is what the user wants.
+Where `$BRANCH` is the user-supplied argument. The script resolves the repo root from `$PWD`.
+
+**Branch arg is mandatory.** Per ADR-035, there is no "config-mode" default that reads `.gitmodules` — the branch identifies the calling member, which `.gitmodules` cannot capture.
 
 ## After running
 

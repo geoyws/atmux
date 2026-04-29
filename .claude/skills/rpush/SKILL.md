@@ -14,10 +14,12 @@ The user passes the target branch: `/rpush sopx-geoyws`.
 ## Implementation
 
 ```bash
-bash /root/work/src/atmux/scripts/recursive-push.sh "$BRANCH"
+bash "$(git rev-parse --show-toplevel)/scripts/recursive-push.sh" "$BRANCH"
 ```
 
-Where `$BRANCH` is the user-supplied argument. Do not change cwd — the script defaults to `$PWD`.
+Where `$BRANCH` is the user-supplied argument. The script resolves the repo root from `$PWD`.
+
+The branch is the **calling member's branch** (per-member-branch model, ADR-035). Branch arg is mandatory.
 
 ## Push order rationale
 

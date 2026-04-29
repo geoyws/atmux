@@ -14,10 +14,12 @@ The user passes the target branch: `/rpull sopx-geoyws`.
 ## Implementation
 
 ```bash
-bash /root/work/src/atmux/scripts/recursive-pull.sh "$BRANCH"
+bash "$(git rev-parse --show-toplevel)/scripts/recursive-pull.sh" "$BRANCH"
 ```
 
-Where `$BRANCH` is the user-supplied argument. Do not change cwd — the script defaults to `$PWD`.
+Where `$BRANCH` is the user-supplied argument. The script resolves the repo root from `$PWD` and recurses into every nested submodule on `<branch>`. Don't change cwd — be inside the target project's tree when invoking.
+
+The branch is the **calling member's branch** (`aix-geoyws`, `aix-yj`, `sopx-geoyws`, `geoyws-beads`, etc.). Per the per-member-branch model (ADR-035), the branch arg is mandatory — there is no `.gitmodules`-driven default.
 
 ## --ff-only rationale
 
