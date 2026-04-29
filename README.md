@@ -115,21 +115,27 @@ atmux outbox                  # read lead's async replies
 atmux stop
 ```
 
-### Single-session mode (opt-in)
+### Team topology — single-session by default
 
-By default, `atmux start <team>` creates a dedicated tmux session named `atmux-<team>` per team. **Single-session mode** (opt-in) spawns members into your existing driver tmux session instead — cleaner `tmux ls`, plus team-switching becomes a window-hop (`Ctrl+B w`) rather than a session-hop (`Ctrl+B s`).
+`atmux start <team>` spawns every member into your existing driver tmux session as a window prefixed `__<team>__<member>`. The driver and the team share one session — `tmux ls` stays clean, and team-switching is a window-hop (`Ctrl+B w`) rather than a session-hop (`Ctrl+B s`). This is the only mode `atmux init --wizard` creates ([ADR-026](docs/adr/026-always-single-session-topology.md)).
+
+**Escape hatch** (`singleSession=false`) is retained as a *declared* option for the rare case of a non-human-driven team or a detached observer setup that needs a dedicated `atmux-<team>` session. The wizard does not prompt for it; flip by hand:
 
 ```bash
-# Opt-in via team.json (preferred — sticky across starts):
-jq '.singleSession = true' .atmux/team.json | sponge .atmux/team.json
-
-# …or one-shot at start time via env:
-ATMUX_DRIVER_SESSION=1 atmux start
+jq '.singleSession = false' .atmux/team.json | sponge .atmux/team.json
 ```
 
-`atmux init --wizard` surfaces the flag at team-create time. **Existing teams stay on dedicated sessions** — opt in retroactively via `atmux migrate-to-driver-session <team>` (lands in Phase 2 / Story Sb).
+If you flip it on a team that's already running, restart the team to reconcile (`atmux stop && atmux start`).
 
-See [docs/adr/016-single-session-topology.md](docs/adr/016-single-session-topology.md) for the design + risk register.
+**Migrating an old dedicated-session team** to the current default uses the Phase 2 verb introduced in ADR-016:
+
+```bash
+atmux migrate-to-driver-session <team>
+```
+
+The verb refuses while a member is mid-task; run during a quiet window. ADR-016's Phase 2 migrate infrastructure remains the canonical move path even though [ADR-026](docs/adr/026-always-single-session-topology.md) supersedes ADR-016's *default policy*.
+
+See [docs/adr/026-always-single-session-topology.md](docs/adr/026-always-single-session-topology.md) for the rationale + window-count risk register, and [docs/adr/016-single-session-topology.md](docs/adr/016-single-session-topology.md) for the original opt-in design (default policy line is superseded; everything else stands).
 
 ### Per-team tmux socket isolation (opt-in)
 
@@ -156,7 +162,7 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 
 - `atmux doctor` adds a `tmuxTmpdir` row asserting the directory is writable and (when a session exists) the isolated socket is reachable.
 
-**Caveat.** Orthogonal to single-session mode (ADR-016): `singleSession=true` + `tmuxTmpdir` set means windows live in the driver's session **on the team's isolated socket**. Setting both is supported; pick whichever subset of the two flags fits the team's posture.
+**Caveat.** Orthogonal to the single-session default (ADR-026): every team is single-session today, so `tmuxTmpdir` simply moves the driver's *shared* session onto the team's isolated socket. If you've used the `singleSession=false` escape hatch, the dedicated `atmux-<team>` session lives on the isolated socket instead. Either combination is supported.
 
 The init wizard does not prompt for this field — opt-in is a manual `team.json` edit, since the field is for advanced/dogfooding setups. See [docs/adr/018-per-team-tmux-socket-isolation.md](docs/adr/018-per-team-tmux-socket-isolation.md) for the full design + risk register.
 
@@ -384,6 +390,26 @@ Restart with `atmux rotate <name>` to re-spawn the pane under the new
 model, or wait for the next natural rotation if the running session is
 mid-work. `CLAUDE_CODE_EFFORT_LEVEL=xhigh` stays global for all members —
 Sonnet members inherit `xhigh` effort by design.
+
+### 🔑 Per-member Claude account selection
+
+Same precedent as the model field above ([ADR-024](docs/adr/024-per-member-model-selection.md)) — a sugar layer on top of Claude Code's built-in `CLAUDE_CONFIG_DIR` env var. Set `claudeAccount` per member in `team.json` to declaratively route members across multiple Claude Max accounts (cost balance, rate-limit headroom, account-scoped scopes for IFCA-vs-personal work):
+
+```json
+{
+  "members": [
+    { "name": "lead",      "tui": "claude", "claudeAccount": "default" },
+    { "name": "be-kanban", "tui": "claude", "claudeAccount": "ifca"    },
+    { "name": "fe-kanban", "tui": "claude", "claudeAccount": "ifca"    }
+  ]
+}
+```
+
+Resolution: `claudeAccount: "<suffix>"` → spawn cmd prepends `CLAUDE_CONFIG_DIR=$HOME/.claude-<suffix>`. Absent or `"default"` → no env, claude uses `~/.claude` as usual. The auth flow itself is identical — first time you spawn a member with `claudeAccount: "ifca"`, run `CLAUDE_CONFIG_DIR=$HOME/.claude-ifca claude /login` once to seed the config dir; subsequent spawns reuse it.
+
+`atmux doctor` adds a `claude-account:<member>` row asserting the resolved dir exists and is readable when the field is set — a missing dir would silently re-trigger first-time auth on next rotation.
+
+**Override path interaction.** `member.command` (full override) and `team.tuiCommands[<tui>]` (custom prefix) paths bypass this auto-application — those are operator-owned envelopes; if you want the env var there, write it into the prefix/override yourself. The auto-apply is on the built-in claude path only.
 
 ## Commands
 
@@ -694,7 +720,6 @@ The first line is a super-tell; the second is a same-team `atmux tell-lead`. Bot
 
 Cross-link: [`docs/adr/025-superdriver-phase-1.md`](docs/adr/025-superdriver-phase-1.md) — full design + risk register + Phase 2 deferral list.
 
-
 ### Architectural posture
 
 - **Registry-as-file** at `~/.claude/teams/registry.json` — single source of truth for "what teams exist." flock-guarded writes mirror the `kanban.json.lock` pattern (bare `jq + mv` writes are a documented foot-gun and intentionally not used).
@@ -823,9 +848,11 @@ Full mechanism + ADR-026 single-session topology rationale that justifies the in
 
 ## FAQ
 
-**Why two topology options (dedicated session vs single-session)?**
+**Why is single-session the default — and when would I disable it?**
 
-Dedicated session keeps team isolation strong — `kill-session` is a clean shutdown that can't accidentally take down the driver shell, and `tmux ls` lists each team explicitly. Single-session is the modern default for solo-driver setups (most users); members spawn alongside the driver's windows so `tmux ls` stops accumulating `atmux-*` entries and team-switching becomes a window-hop. Pick dedicated when you run multiple teams in parallel and want hard isolation; pick single-session when you primarily drive one team at a time and want a clean tmux surface. ADR-016 has the full tradeoff.
+Driver + members share one tmux session because that's how a human actually drives the team: they want to see everything at a glance, hop between members with `prefix w`, and avoid the session-soup that dedicated sessions accumulate when you run multiple teams. Window-name prefix `__<team>__<member>` keeps choose-tree (`prefix s`) grouped visually, and `lib/stop.sh`'s refuse-gate prevents accidental `kill-session` on the driver shell. ADR-026 captures the rationale + window-count risk register.
+
+Flip `singleSession=false` only for teams that aren't being driven by a human — non-human-driven team or a detached observer setup that wants a dedicated `atmux-<team>` session it can attach to in isolation. The wizard does not prompt for it; the field is a declared escape hatch, edited by hand. ADR-016 holds the original opt-in design for context (its default policy line is superseded by ADR-026, but the migrate verb + refuse-gate infrastructure stand).
 
 ## Comparison vs plugin-orch
 

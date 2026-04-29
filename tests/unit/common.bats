@@ -185,3 +185,40 @@ JSON
   [ -d .atmux/state ]
   [ -d .atmux/archive ]
 }
+
+# ---------- atmux::guard_push_target — ADR-028 refuse-gate ----------
+
+@test "common: guard_push_target — refuses push to main" {
+  run atmux::guard_push_target main
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "PR-only" ]]
+  [[ "$output" =~ "ADR-028" ]]
+}
+
+@test "common: guard_push_target — refuses push to master" {
+  run atmux::guard_push_target master
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "PR-only" ]]
+  [[ "$output" =~ "ADR-028" ]]
+}
+
+@test "common: guard_push_target — refuses 'main' regardless of how caller resolved it (misconfigured branch.X.merge)" {
+  # Repro shape: caller resolves push target via `git config branch.foo.merge`
+  # which (drift bug) returns refs/heads/main. Caller strips refs/heads/ and
+  # passes "main" to the guard. Guard must refuse on the resolved string;
+  # provenance is irrelevant.
+  local resolved="refs/heads/main"
+  resolved="${resolved#refs/heads/}"
+  run atmux::guard_push_target "$resolved"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "PR-only" ]]
+}
+
+@test "common: guard_push_target — allows WIP branches (geoyws, feature-x)" {
+  run atmux::guard_push_target geoyws
+  [ "$status" -eq 0 ]
+  run atmux::guard_push_target feature-x
+  [ "$status" -eq 0 ]
+  run atmux::guard_push_target main-staging
+  [ "$status" -eq 0 ]
+}

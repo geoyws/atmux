@@ -211,6 +211,41 @@ _doctor_rows_matching() {
   [[ "$output" =~ "topology" || "$output" =~ "drift" ]]
 }
 
+# ---------- 7a. up --force override ----------
+
+@test "topology: atmux up --force proceeds despite red drift" {
+  local proj="$ATMUX_TEST_TMP/project"
+  _seed_project "$proj" iota lead
+  atmux::registry_upsert iota "$proj" "wrong-session" >/dev/null
+  _spawn_team_session decoy iota lead
+
+  # Symmetric with `atmux start --force` (cell 6). atmux up has no
+  # --no-doctor flag, so `atmux doctor --quiet` runs first and may
+  # surface the same drift via the preflight path — but the
+  # topology-gate's specific die message must NOT be the abort
+  # cause when --force is passed. Whether the run fully succeeds
+  # depends on TUI mocks / preflight; what's pinned is the
+  # topology gate's force-override behaviour.
+  ATMUX_DIR="$proj/.atmux" run "$ATMUX_BIN" up --force
+  [[ "$output" != *"topology drift detected (ADR-027)"* ]]
+}
+
+# ---------- 7b. up rejects unknown args ----------
+
+@test "topology: atmux up rejects unknown args" {
+  local proj="$ATMUX_TEST_TMP/project"
+  _seed_project "$proj" kappa lead
+  atmux::registry_upsert kappa "$proj" "wrong-session" >/dev/null
+  _spawn_team_session decoy kappa lead
+
+  # The new arg-parser is strict: any unrecognised flag dies before
+  # the wizard gate / doctor / topology check. Pinning this guards
+  # against accidental flag drift in the parser shape.
+  ATMUX_DIR="$proj/.atmux" run "$ATMUX_BIN" up --bogus
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "unknown arg" ]]
+}
+
 # ---------- 8. doctor standalone does NOT die on red ----------
 
 @test "topology: atmux doctor on red drift renders row but does not die" {

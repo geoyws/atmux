@@ -65,7 +65,7 @@ main() {
     atmux::die "migrate-to-driver-session: source session '$src_session' IS the driver session — already running under single-session topology? Set team.json:.singleSession=true and run 'atmux start' to seed state/session.txt"
   fi
 
-  if ! tmux has-session -t "$src_session" 2>/dev/null; then
+  if ! tmux has-session -t "=$src_session" 2>/dev/null; then
     atmux::die "migrate-to-driver-session: source session '$src_session' does not exist — nothing to migrate (was the team ever started?)"
   fi
 
@@ -75,7 +75,7 @@ main() {
   # also gate the migration. The verify-zero step below depends on us
   # moving every window, so the pre-flight scope must match.
   local src_windows
-  src_windows="$(tmux list-windows -t "$src_session" -F '#{window_name}' 2>/dev/null || true)"
+  src_windows="$(tmux list-windows -t "=$src_session" -F '#{window_name}' 2>/dev/null || true)"
   [[ -n "$src_windows" ]] || atmux::die "migrate-to-driver-session: source session '$src_session' has no windows (already empty?) — kill it manually with 'tmux kill-session -t $src_session' if appropriate"
 
   local refusals=""
@@ -142,8 +142,8 @@ main() {
   # session has already been auto-killed — gate behind has-session so
   # `set -e` stays unfussed.
   local remaining=0
-  if tmux has-session -t "$src_session" 2>/dev/null; then
-    remaining="$(tmux list-windows -t "$src_session" -F '#{window_name}' 2>/dev/null | wc -l | tr -d ' ')"
+  if tmux has-session -t "=$src_session" 2>/dev/null; then
+    remaining="$(tmux list-windows -t "=$src_session" -F '#{window_name}' 2>/dev/null | wc -l | tr -d ' ')"
     [[ "$remaining" =~ ^[0-9]+$ ]] || remaining=0
   fi
   if (( remaining != 0 )); then
@@ -154,8 +154,8 @@ main() {
   # tmux auto-destroys sessions when their last window is killed/moved,
   # so kill-session here is often a no-op — that's fine; the warn-level
   # log keeps the output honest about which path landed.
-  if tmux has-session -t "$src_session" 2>/dev/null; then
-    tmux kill-session -t "$src_session" 2>/dev/null \
+  if tmux has-session -t "=$src_session" 2>/dev/null; then
+    tmux kill-session -t "=$src_session" 2>/dev/null \
       || atmux::warn "migrate-to-driver-session: kill-session '$src_session' returned non-zero (already gone?)"
   fi
 

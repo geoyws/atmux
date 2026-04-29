@@ -39,11 +39,11 @@ main() {
   fi
 
   # Resolve final lane:
-  #   role != member          → role-derived (silently overrides --lane)
-  #   role == member + --lane → use --lane verbatim
-  #   role == member, no flag → infer from name prefix; warn-and-fall-back-to-misc
-  #                              when prefix doesn't match the enum.
-  if [[ "$role" != "member" ]]; then
+  #   role-scoped (planner/reviewer/gitter/devops/dba/team-lead) → role-derived (silently overrides --lane)
+  #   role == member or unblocker + --lane → use --lane verbatim (lane-flexible workers)
+  #   role == member or unblocker, no flag → infer from name prefix; warn-and-fall-back-to-misc
+  #                                            when prefix doesn't match the enum.
+  if [[ "$role" != "member" && "$role" != "unblocker" ]]; then
     if [[ -n "$lane" ]]; then
       atmux::log "add-member: --lane=$lane ignored for role=$role (role-derived lane is used)"
     fi
@@ -117,8 +117,15 @@ _atmux_addmember_spawn() {
   session="$(atmux::session_name)"
   win="$(atmux::window_name "$member")"
 
+  # Per-member HISTFILE sandbox (mirrors lib/start.sh::_atmux_spawn_member)
+  # so ad-hoc add-member spawns also keep operator's ~/.zsh_history clean.
+  local sd; sd="$(atmux::state_dir)"
+  mkdir -p "$sd"
+  local member_histfile="$sd/${member}.history"
+
   # fd-3/4 closure — same rationale as lib/start.sh. ADR-012.
-  tmux new-window -d -t "$session" -n "$win" -c "$cwd" 3>&- 4>&-
+  tmux new-window -d -t "$session" -n "$win" -c "$cwd" \
+    -e "HISTFILE=$member_histfile" 3>&- 4>&-
   local cmd; cmd="$(atmux::tui_cmd "$tui" "$model" "$cwd" "$member" "$role" "$mj")"
   tmux send-keys -t "$session:$win" "$cmd" Enter
   atmux::ok "spawned $member in $session:$win"

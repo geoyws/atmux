@@ -714,7 +714,8 @@ atmux::kanban_normalize() {
 # Infer a team-member's lane from its name + role.
 # Lanes (lowercase in JSON, UPPER-CASE only in display): fe / be / db / ops /
 # test / review / misc. Role overrides win when the name has no lane prefix:
-#   reviewer → review · devops → ops · dba → db · team-lead/planner/gitter → misc.
+#   reviewer → review · devops → ops · dba → db ·
+#   team-lead/planner/gitter/discorder/unblocker → misc.
 # Otherwise a name like "<lane>-<rest>" (e.g. fe-kanban, be-foo, db-bar) yields
 # the prefix; anything else falls back to "misc".
 atmux::lane_for_name() {
@@ -730,7 +731,7 @@ atmux::lane_for_name() {
     reviewer)               printf 'review\n' ;;
     devops)                 printf 'ops\n' ;;
     dba)                    printf 'db\n' ;;
-    team-lead|planner|gitter|*) printf 'misc\n' ;;
+    team-lead|planner|gitter|discorder|unblocker|*) printf 'misc\n' ;;
   esac
 }
 

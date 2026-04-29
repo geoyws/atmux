@@ -77,6 +77,7 @@ main() {
         gitter)        emoji="🌿" ;;
         devops)        emoji="⚙️ " ;;
         dba)           emoji="🗄️ " ;;
+        unblocker)     emoji="🔓" ;;
         *)             emoji="🐝" ;;
       esac
     fi

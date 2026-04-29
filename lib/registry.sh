@@ -51,17 +51,36 @@ atmux::_registry_seed() {
   fi
 }
 
-# atmux::registry_upsert <name> <projectRoot> [<sessionName>]
+# atmux::registry_upsert <name> <projectRoot> [<sessionName>] [--created-at <epoch>]
 #
 # Idempotent registration. Existing entry → update projectRoot (canonicalised
 # via realpath), sessionName (only if a non-empty value was passed; preserves
 # prior on empty arg), lastSeen=now, status=running, members preserved.
 # Missing → append with createdAt=now, lastSeen=now, status=running,
 # members=[].
+#
+# --created-at <epoch> overrides the createdAt stamp on a NEW entry only —
+# used by lib/team-rename.sh to thread the OLD team's createdAt forward when
+# the rename appears as a new registration under the new name. Per ADR-025
+# history-preserving semantic: rename is a name-change, not a re-creation.
+# Existing entries preserve their createdAt naturally (the if-branch never
+# touches it). Empty / unset → fall back to now (legacy + pre-ADR-025
+# entries with no createdAt).
 atmux::registry_upsert() {
-  local name="${1:-}"
-  local root="${2:-}"
-  local sess="${3:-}"
+  local name="" root="" sess="" override_created=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --created-at) override_created="$2"; shift 2 ;;
+      -*) atmux::die "registry_upsert: unknown flag: $1" ;;
+      *)
+        if [[ -z "$name" ]]; then name="$1"
+        elif [[ -z "$root" ]]; then root="$1"
+        elif [[ -z "$sess" ]]; then sess="$1"
+        else atmux::die "registry_upsert: unexpected arg: $1"
+        fi
+        shift ;;
+    esac
+  done
   [[ -n "$name" ]] || atmux::die "registry_upsert: <name> required"
   [[ -n "$root" ]] || atmux::die "registry_upsert: <projectRoot> required"
 
@@ -74,6 +93,10 @@ atmux::registry_upsert() {
   canonical="$(realpath "$root" 2>/dev/null || printf '%s' "$root")"
 
   local now; now="$(atmux::now_epoch)"
+  local created="$now"
+  if [[ -n "$override_created" && "$override_created" =~ ^[0-9]+$ ]]; then
+    created="$override_created"
+  fi
 
   atmux::_registry_seed
   local r; r="$(atmux::registry_path)"
@@ -94,13 +117,13 @@ atmux::registry_upsert() {
         name:        $name,
         projectRoot: $root,
         sessionName: $sess,
-        createdAt:   ($now | tonumber),
+        createdAt:   ($created | tonumber),
         lastSeen:    ($now | tonumber),
         status:      "running",
         members:     []
       }]
     end
-  ' --arg name "$name" --arg root "$canonical" --arg sess "$sess" --arg now "$now"
+  ' --arg name "$name" --arg root "$canonical" --arg sess "$sess" --arg now "$now" --arg created "$created"
 }
 
 # atmux::registry_touch <name>

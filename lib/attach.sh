@@ -8,5 +8,5 @@ main() {
   if ! atmux::tmux_session_exists; then
     atmux::die "session $session does not exist — run 'atmux start' first"
   fi
-  exec tmux attach-session -t "$session"
+  exec tmux attach-session -t "=$session"
 }

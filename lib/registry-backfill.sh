@@ -51,7 +51,7 @@ EOF
     [[ -z "$team" || -z "$session" ]] && continue
     [[ "$(jq -r '.status // ""' <<<"$entry")" == "running" ]] || continue
 
-    if ! tmux has-session -t "$session" 2>/dev/null; then
+    if ! tmux has-session -t "=$session" 2>/dev/null; then
       atmux::warn "registry-backfill: $team session=$session absent, skipping"
       continue
     fi
@@ -115,7 +115,7 @@ EOF
       else
         skipped=$((skipped + 1))
       fi
-    done < <(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null)
+    done < <(tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null)
   done < <(jq -c '.[]' <<<"$rj")
 
   if [[ "$dry_run" -eq 1 ]]; then

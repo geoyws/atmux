@@ -49,7 +49,7 @@ main() {
   # If --force, just nuke it. Otherwise politely C-c then kill.
   if [[ "$force" -ne 1 ]]; then
     # Send C-c to every window to give TUIs a chance to wind down.
-    local wins; wins=$(tmux list-windows -t "$session" -F '#{window_name}' | grep "^${team_window_prefix}" || true)
+    local wins; wins=$(tmux list-windows -t "=$session" -F '#{window_name}' | grep "^${team_window_prefix}" || true)
     while IFS= read -r w; do
       [[ -z "$w" ]] && continue
       tmux send-keys -t "$session:$w" C-c 2>/dev/null || true
@@ -64,7 +64,7 @@ main() {
   if [[ "$single" == "true" ]]; then
     # Single-session: kill team windows ONLY; leave the shared session
     # alive so the driver shell + any other team's windows survive.
-    local wins; wins=$(tmux list-windows -t "$session" -F '#{window_name}' | grep "^${team_window_prefix}" || true)
+    local wins; wins=$(tmux list-windows -t "=$session" -F '#{window_name}' | grep "^${team_window_prefix}" || true)
     local killed=0
     while IFS= read -r w; do
       [[ -z "$w" ]] && continue
@@ -73,8 +73,24 @@ main() {
     done <<< "$wins"
     atmux::ok "single-session: killed $killed window(s) from session $session"
   else
-    tmux kill-session -t "$session" 2>/dev/null || true
+    tmux kill-session -t "=$session" 2>/dev/null || true
     atmux::ok "session $session stopped"
+  fi
+
+  # ---- Registry deregister (E10/Sa t-8c063276, ADR-025 §Decision stop hook) ----
+  # Mark the team `status="stopped"` in the fleet registry. The entry is
+  # PRESERVED (per ADR-025 §Decision — history is the point of the
+  # registry), so super-status can still surface stopped-but-once-existed
+  # teams + the next start hooks can simply re-touch lastSeen + flip
+  # status back to running. Best-effort — registry contention shouldn't
+  # block stop from completing the cron-cleanup below.
+  if [[ -f "$ATMUX_LIB_DIR/registry.sh" ]]; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh"
+    if declare -F atmux::registry_deregister >/dev/null 2>&1; then
+      atmux::registry_deregister "$team" 2>/dev/null \
+        || atmux::warn "registry_deregister failed for '$team' (non-fatal)"
+    fi
   fi
 
   # ---- Cron auto-remove (E6/Sc t-ac7197cf) ----

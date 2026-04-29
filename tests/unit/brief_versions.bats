@@ -133,8 +133,17 @@ EOF
   # atmux::brief_path is defined when _atmux_whip_check_brief_versions
   # calls atmux::brief_version. Drift fires correctly when versions
   # differ.
-  local m; m=$(jq -r '.members[0].name'    .atmux/team.json)
-  local r; r=$(jq -r '.members[0].role // "member"' .atmux/team.json)
+  #
+  # Pick the first member with role=="member" — team.example.json's
+  # members[0] is `lead` (role=team-lead), and team-lead.md was deprecated
+  # (commit cef2db4) so its first line is the `<!--` deprecation banner
+  # instead of the v-marker. atmux::brief_version team-lead now returns
+  # v0; with the recorded fixture also at v0, no drift would fire and
+  # this test would silently pass-as-fail. role=member resolves to
+  # member.md which carries `<!-- brief-version: v1 -->` — drift fires
+  # cleanly v0→v1.
+  local m; m=$(jq -r 'first(.members[] | select(.role == "member") | .name)' .atmux/team.json)
+  local r="member"
   [ -n "$m" ] && [ -n "$r" ]
 
   mkdir -p .atmux/state
@@ -172,8 +181,12 @@ EOF
   # BE fix landed (t-db501123): tui.sh source in whip.sh makes the
   # drift detector functional; this AC(f) test now actively verifies
   # the silent-after-restamp transition.
-  local m; m=$(jq -r '.members[0].name'    .atmux/team.json)
-  local r; r=$(jq -r '.members[0].role // "member"' .atmux/team.json)
+  #
+  # Same member-selection caveat as the stale-fixture test above:
+  # role=member ensures the brief carries a v-marker, so the v0→v1
+  # transition is exercised end-to-end (vs. a vacuous v0=v0 noop).
+  local m; m=$(jq -r 'first(.members[] | select(.role == "member") | .name)' .atmux/team.json)
+  local r="member"
 
   # Tick 1: stale record ⇒ drift fires.
   mkdir -p .atmux/state

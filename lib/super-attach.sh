@@ -25,9 +25,9 @@ ATMUX_SUPERDRIVER_SESSION="atmux-superdriver"
 main() {
   atmux::require tmux
 
-  if tmux has-session -t "$ATMUX_SUPERDRIVER_SESSION" 2>/dev/null; then
+  if tmux has-session -t "=$ATMUX_SUPERDRIVER_SESSION" 2>/dev/null; then
     atmux::ok "superdriver session already up — attaching"
-    exec tmux attach-session -t "$ATMUX_SUPERDRIVER_SESSION"
+    exec tmux attach-session -t "=$ATMUX_SUPERDRIVER_SESSION"
   fi
 
   atmux::log "spawning superdriver session: $ATMUX_SUPERDRIVER_SESSION"
@@ -60,7 +60,7 @@ main() {
     atmux::warn "superdriver brief missing: $brief — skipping injection"
   fi
 
-  exec tmux attach-session -t "$ATMUX_SUPERDRIVER_SESSION"
+  exec tmux attach-session -t "=$ATMUX_SUPERDRIVER_SESSION"
 }
 
 # Paste-bracket brief injection — mirrors lib/start.sh:_atmux_paste_brief but

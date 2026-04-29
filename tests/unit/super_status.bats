@@ -241,6 +241,12 @@ _seed_git() {
   echo "$out" | jq -e '.fleet.counts.running == 1' >/dev/null
   echo "$out" | jq -e '.fleet.counts.stopped == 1' >/dev/null
   echo "$out" | jq -e '.fleet.counts.stale == 1' >/dev/null
+  # README schema (line 658) declares `total` alongside the bucket counts.
+  # Reviewer-1 caught the gap: it was missing from JSON emission. Pin it
+  # here as part of the JSON shape contract.
+  echo "$out" | jq -e '.fleet.counts | has("total")' >/dev/null
+  echo "$out" | jq -e '.fleet.counts.total == 3' >/dev/null
+  echo "$out" | jq -e '.fleet.counts.total == (.fleet.counts.running + .fleet.counts.stopped + .fleet.counts.stale)' >/dev/null
 
   # Each team's status surfaces individually under .teams[].
   run jq -r '.teams | map({(.name): .status}) | add | to_entries | map("\(.key)=\(.value)") | sort | join(",")' <<<"$out"

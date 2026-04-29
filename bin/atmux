@@ -260,6 +260,10 @@ case "$verb" in
   pause|resume) verb_script="$ATMUX_LIB_DIR/pause.sh"; set -- "$verb" "$@" ;;
   verify-libs) verb_script="$ATMUX_LIB_DIR/verify_libs.sh" ;;
   migrate-to-driver-session) verb_script="$ATMUX_LIB_DIR/migrate.sh" ;;
+  # ADR-032 supervisor lifecycle: both subverbs route to lib/supervisor.sh
+  # and prepend the subverb token so its main() can dispatch.
+  supervisor-start) verb_script="$ATMUX_LIB_DIR/supervisor.sh"; set -- "start" "$@" ;;
+  supervisor-stop)  verb_script="$ATMUX_LIB_DIR/supervisor.sh"; set -- "stop"  "$@" ;;
   # ADR-027 team-rename: `atmux team rename …` routes to lib/team-rename.sh.
   team)
     case "${1:-}" in

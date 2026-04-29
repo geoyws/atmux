@@ -24,6 +24,7 @@ atmux::emoji_pool() {
     gitter)        echo "🌿 📝 🗃️ 🪢 🧵" ;;
     devops)        echo "⚙️ 🛠️ 🔧 🧰 📦" ;;
     dba)           echo "🗄️ 💾 🐘 🧮 📊" ;;
+    unblocker)     echo "🔓 🪛 🧯 🧲 ⚡" ;;
     member|*)      echo "🐝 🦊 🦉 🐢 🦀 🐙 🦜 🐿️ 🦩 🦥 🐺 🦦 🦝 🦙 🦔" ;;
   esac
 }

@@ -218,3 +218,40 @@ _atmux_supervisor_on_sigchld() {
     fi
   done
 }
+
+# atmux supervisor-stop entry. Kills the per-team supervisor window (which
+# tears down the listener tree via tmux's kill-window cascade), removes the
+# heartbeat file so doctor stops claiming the supervisor is alive, and
+# preserves the per-member queue files (next supervisor-start drains them).
+atmux::supervisor_stop() {
+  atmux::require tmux
+  atmux::require_team
+
+  local team session win target
+  team="$(atmux::team_name)"
+  session="$(atmux::session_name)"
+  win="__${team}__supervisor"
+  target="${session}:${win}"
+
+  if atmux::tmux_window_exists "$win"; then
+    tmux kill-window -t "$target" 2>/dev/null \
+      || atmux::warn "supervisor: kill-window for $target failed"
+    atmux::ok "supervisor: window $win killed"
+  else
+    atmux::log "supervisor: window $win not found (already stopped?)"
+  fi
+
+  rm -f "$(atmux::state_dir)/supervisor.heartbeat"
+  atmux::ok "supervisor: heartbeat cleared (queues preserved at $(atmux::state_dir)/queues/)"
+}
+
+# Verb dispatcher. bin/atmux aliases `supervisor-start` and `supervisor-stop`
+# to this script and prepends the subverb token; we route on $1.
+main() {
+  local sub="${1:-start}"; shift || true
+  case "$sub" in
+    start) atmux::supervisor_run "$@" ;;
+    stop)  atmux::supervisor_stop "$@" ;;
+    *)     atmux::die "supervisor: unknown subverb '$sub' (use start|stop)" ;;
+  esac
+}

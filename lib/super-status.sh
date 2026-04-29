@@ -114,9 +114,9 @@ _atmux_super_status_team_digest() {
   fi
   if [[ -n "$sess" ]]; then
     if [[ -n "$tmpdir" ]]; then
-      TMUX_TMPDIR="$tmpdir" tmux has-session -t "$sess" 2>/dev/null && has_session=1
+      TMUX_TMPDIR="$tmpdir" tmux has-session -t "=$sess" 2>/dev/null && has_session=1
     else
-      tmux has-session -t "$sess" 2>/dev/null && has_session=1
+      tmux has-session -t "=$sess" 2>/dev/null && has_session=1
     fi
   fi
 

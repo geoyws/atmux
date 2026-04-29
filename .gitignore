@@ -3,3 +3,4 @@
 *.log
 node_modules/
 tmp/
+.claude/scheduled_tasks.lock

@@ -20,7 +20,7 @@ Three weeks of fleet operation surfaced the actual pattern:
 **Every atmux team defaults to `singleSession=true`.** The opt-in flag from ADR-016 inverts to opt-out:
 
 - `atmux init --wizard` no longer prompts for the topology choice. Single-session is the only mode the wizard creates.
-- `team.json:.singleSession=false` is retained as a *declared* (not hidden) escape hatch for the rare case of a non-human-driven team or detached observer setup. Documented in `templates/team.json.tmpl` and README, NOT prompted.
+- `team.json:.singleSession=false` is retained as a *declared* (not hidden) escape hatch for the rare case of a non-human-driven team or detached observer setup. Documented in `templates/team.example.json` and README, NOT prompted.
 - `lib/init.sh::_atmux_prompt_choice single_session ...` is removed. Wizard writes `singleSession=true` unconditionally.
 - All existing dedicated-session teams should be retroactively migrated via `atmux migrate-to-driver-session <team>` during quiet windows. ADR-016 Phase 2's migrate verb already handles the move with pre-flight pane-state safety.
 - README pivot: the "single-session is the default" framing replaces "single-session is an opt-in flag". Document `singleSession=false` as the dedicated-session escape hatch.
