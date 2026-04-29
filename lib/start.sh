@@ -144,16 +144,20 @@ main() {
     atmux::ok "created tmux session: $session"
   fi
 
-  # Cage tmux prefix override — `C-\` (Ctrl-Backslash). The default `C-b`
-  # collides with macOS-tmux for operators running 3-level nested tmux
-  # (Mac local C-b → SSH'd remote tmux C-a → cage C-b): the outermost
-  # layer eats every cage prefix before the cage sees it. C-\ is free of
-  # macOS bindings, bash/zsh readline, and emacs/vim habits — only
-  # SIGQUIT in raw terminals, which tmux's prefix-handling absorbs.
-  # Idempotent: applied on every `atmux start`, server-scope.
-  tmux set-option -g prefix 'C-\' 2>/dev/null || true
-  tmux unbind-key C-b 2>/dev/null || true
-  tmux bind-key 'C-\' send-prefix 2>/dev/null || true
+  # Cage-only tmux prefix override — `C-\` (Ctrl-Backslash). The default
+  # `C-b` collides with macOS-tmux for operators running 3-level nested
+  # tmux (Mac local C-b → SSH'd remote tmux C-a → cage C-b): the
+  # outermost layer eats every cage prefix before the cage sees it. C-\
+  # is free of macOS bindings, bash/zsh readline, and emacs/vim habits.
+  # Gated on TMUX_TMPDIR being set to the team's cage path — without
+  # the cage isolation, this would clobber the operator's default
+  # tmux socket prefix (where the daily-driver session lives). Cage
+  # tmpdirs all match `*/atmux-tmux*`. Idempotent on every `atmux start`.
+  if [[ -n "${TMUX_TMPDIR:-}" && "$TMUX_TMPDIR" == */atmux-tmux* ]]; then
+    tmux set-option -g prefix 'C-\' 2>/dev/null || true
+    tmux unbind-key C-b 2>/dev/null || true
+    tmux bind-key 'C-\' send-prefix 2>/dev/null || true
+  fi
 
   # ---- Registry touch (E10/Sa t-638f6504, ADR-025 §Decision start hook) ----
   # Bump lastSeen on every successful start so the fleet aggregator
