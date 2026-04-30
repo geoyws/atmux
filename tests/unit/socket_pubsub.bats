@@ -20,6 +20,14 @@ setup() {
   fi
   export ATMUX_SOCK_BACKEND=socat
 
+  # Opt-in to the setsid-wrapped sock_subscribe path so the listener
+  # tree forms its own session/PGID and atmux::sock_subscribe_teardown
+  # can reliably reap socat ,fork orphans. Without this, a kill -9 on
+  # the wrapper PID leaves grandchildren that re-bind the socket and
+  # wedge `wait` in the test body (incident: bats-exec-test held
+  # /var/lock/atmux-autopromote.lock 13h+ on 2026-04-30).
+  export ATMUX_SOCK_SUBSCRIBE_SETSID=1
+
   # Need a minimal .atmux/team.json so atmux::dir resolves cleanly inside
   # sock_dir / sock_path; the helper itself is path-only but still calls
   # atmux::dir which expects an .atmux/ root nearby.
@@ -28,8 +36,16 @@ setup() {
 }
 
 teardown() {
-  # Reap any background socat listeners spawned by sock_subscribe; the
-  # tmpdir rm-rf in atmux_teardown_sandbox can't kill processes.
+  # PGID-aware reap: every @test that called sock_subscribe should have
+  # already invoked atmux::sock_subscribe_teardown w1 inline, but call
+  # again here to handle paths that fail before the inline teardown
+  # (assertion failure, timeout, etc.). Idempotent — no-op when no
+  # pgid file exists.
+  if declare -F atmux::sock_subscribe_teardown >/dev/null 2>&1; then
+    atmux::sock_subscribe_teardown w1 2>/dev/null || true
+  fi
+  # Belt-and-suspenders: reap any straggler bg jobs + socat children
+  # via tmpdir-anchored pkill before the tmpdir rm-rf.
   jobs -p 2>/dev/null | xargs -r kill -9 2>/dev/null || true
   pkill -9 -f "socat.*$ATMUX_TEST_TMP" 2>/dev/null || true
   atmux_teardown_sandbox
@@ -126,7 +142,9 @@ s.close()
     sleep 0.1
   done
 
-  kill -9 "$sub_pid" 2>/dev/null || true
+  # PGID-aware teardown reaps the entire listener session (socat parent
+  # + ,fork'd children + while-read pipeline) atomically.
+  atmux::sock_subscribe_teardown w1
   wait "$sub_pid" 2>/dev/null || true
 
   [ -f "$outfile" ]
@@ -138,13 +156,18 @@ s.close()
 }
 
 @test "sock_publish: 10 concurrent publishers — subscriber handler invoked exactly 10× (no race-drop)" {
-  skip "WEDGES autopromote — see Task t-869db41b + driver-inbox 11:48 MYT 2026-04-30. Orphan-grandchild leak from atmux::sock_subscribe spawn → bats wait blocks 13h+ (PID 2074470 PPID=1 found 2026-04-30 holding /var/lock/atmux-autopromote.lock). Real fix queued as separate Task; remove this skip when that lands."
-
   local outfile="$ATMUX_TEST_TMP/race.log"
   _record_race() { printf '%s\n' "$1" >> "$outfile"; }
   export -f _record_race
   export outfile
 
+  # Per-test 30s wall-clock guard — any wedge in the listener tree
+  # tree that survives the PGID teardown should still be killed by
+  # bats's BATS_TEST_TIMEOUT or this inline timeout. Bats-side
+  # timeout is enforced via BATS_TEST_TIMEOUT in setup_file (when
+  # the suite is run with `--timeout 30`); the inline `timeout 25`
+  # below caps the publisher-fan-out wait so a wedged accept-loop
+  # can't hold the test past 25s even without --timeout.
   atmux::sock_subscribe w1 _record_race &
   local sub_pid=$!
   for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -155,18 +178,29 @@ s.close()
 
   # Fan out 10 publishers in parallel, each tagged so we can verify all
   # 10 distinct payloads survived (rules out a silent dedupe path that
-  # would pass a count-only assertion).
+  # would pass a count-only assertion). Track publisher PIDs so the
+  # `wait` is bounded to publishers only — bare `wait` would also
+  # block on the long-running sub_pid (background subscriber that
+  # never exits on its own).
+  local pub_pids=()
   for i in $(seq 1 10); do
     atmux::sock_publish w1 "{\"type\":\"r\",\"ts\":$i,\"from\":\"p$i\",\"payload\":{\"id\":$i}}" &
+    pub_pids+=($!)
   done
-  wait
+  for p in "${pub_pids[@]}"; do
+    wait "$p" 2>/dev/null || true
+  done
 
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     [[ -f "$outfile" ]] && [[ "$(wc -l <"$outfile")" -ge 10 ]] && break
     sleep 0.1
   done
 
-  kill -9 "$sub_pid" 2>/dev/null || true
+  # PGID-aware teardown — reaps the entire listener session
+  # (socat parent + every ,fork'd child) atomically. Replaces the
+  # legacy `kill -9 $sub_pid; wait $sub_pid` pattern that left
+  # orphan socat grandchildren under PPID=1.
+  atmux::sock_subscribe_teardown w1
   wait "$sub_pid" 2>/dev/null || true
 
   local got; got=$(wc -l <"$outfile")

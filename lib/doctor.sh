@@ -53,8 +53,10 @@ EOF
   _doctor_check_phantom_inboxes
   _doctor_check_logout_kill
   _doctor_check_supervisor_liveness
+  _doctor_check_wedged_bats_exec
   _doctor_check_caged_windows_outside_cage
   _doctor_check_daily_driver_launchers
+  _doctor_check_daily_driver_prefix_leak
 
   if [[ "$json" -eq 1 ]]; then
     _doctor_render_json
@@ -866,6 +868,51 @@ _doctor_check_supervisor_liveness() {
     "atmux supervisor-stop && atmux supervisor-start"
 }
 
+# Wedged bats-exec-test detector. A bats-exec-test process alive longer
+# than ATMUX_DOCTOR_WEDGED_BATS_THRESHOLD_S (default 1800s = 30min) is
+# almost certainly stuck on a `wait` against an orphan-grandchild —
+# the exact shape of the 2026-04-30 socket_pubsub.bats wedge that held
+# /var/lock/atmux-autopromote.lock for 13h+ before manual SIGKILL.
+# Yellow at threshold; red at 2x. --fix offers SIGKILL of the wedged
+# process. Mirrors _doctor_check_supervisor_liveness's shape (probe →
+# severity-from-age → action hint).
+#
+# Skipped silently when no bats-exec-test is running (the common case).
+_doctor_check_wedged_bats_exec() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+
+  local threshold="${ATMUX_DOCTOR_WEDGED_BATS_THRESHOLD_S:-1800}"
+  local red_threshold=$(( threshold * 2 ))
+
+  # Match the actual bats-exec-test script invocation (`bash
+  # /usr/libexec/bats-core/bats-exec-test …`), not any process whose
+  # commandline merely *contains* the literal `bats-exec-test` (e.g.
+  # this very pgrep call, or grep/awk searching for the same string).
+  # The `^bash ` anchor + trailing space avoids self-match. Also drop
+  # our own PID defensively so a re-arranged pgrep flag set can't
+  # surface us as wedged.
+  local pids
+  pids="$(pgrep -f '^bash .*/bats-exec-test ' 2>/dev/null \
+            | grep -v "^$$\$" || true)"
+  [[ -z "$pids" ]] && return 0
+
+  local pid age_s
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    age_s="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [[ "$age_s" =~ ^[0-9]+$ ]] || continue
+    if (( age_s >= red_threshold )); then
+      _doctor_row red "wedged-bats-exec:$pid" \
+        "bats-exec-test pid=$pid alive ${age_s}s (>2× threshold ${threshold}s)" \
+        "kill -9 $pid (likely orphan-grandchild wait — see ADR-NEW socket-pubsub PGID teardown)"
+    elif (( age_s >= threshold )); then
+      _doctor_row yellow "wedged-bats-exec:$pid" \
+        "bats-exec-test pid=$pid alive ${age_s}s (>threshold ${threshold}s)" \
+        "kill -9 $pid if it stays wedged; check 'pgrep -af socat' for orphan grandchildren"
+    fi
+  done <<<"$pids"
+}
+
 # Iterator helper — yields tab-separated `<name>\t<projectRoot>\t<cage_sock>`
 # for every registered cage'd team whose cage socket actually has a session
 # matching the team's name. Drops registry status from the gating logic
@@ -1051,6 +1098,7 @@ _doctor_try_fix() {
   _doctor_try_fix_cron_orphans
   _doctor_try_fix_logout_kill
   _doctor_try_fix_daily_driver_launchers
+  _doctor_try_fix_daily_driver_prefix_leak
 
   [[ "$_doctor_red_count" -eq 0 ]] && return 0
 
@@ -1207,6 +1255,43 @@ _doctor_try_fix_logout_kill() {
 # into the cage. Idempotent — already-present launchers are silent.
 # Skipped silently when $TMUX is unset (no daily-driver to populate;
 # cron path) or when registry is unavailable.
+# Cage-prefix-leak detector. The cage convention is `C-\` (set on every
+# cage server by start.sh — gated to TMUX_TMPDIR=*/atmux-tmux*). Any
+# daily-driver server reporting `C-\` strongly suggests it was clobbered
+# by a pre-b39d9f4 `atmux start` invoked with $TMUX pointing at the
+# daily-driver socket — the bare `tmux set-option -g prefix 'C-\'` ran
+# on the wrong server because $TMUX overrides $TMUX_TMPDIR. The
+# safeguard at start.sh:54-79 prevents new occurrences but pre-existing
+# pollution sticks until restored. Yellow row + `--fix` re-sources
+# ~/.tmux.conf to put back whatever the operator's config defines (no
+# baked-in default value — the operator might use C-a, C-b, C-Space,
+# etc., and we don't want doctor to know better than .tmux.conf).
+#
+# Skipped silently when:
+#   - $TMUX is unset (no daily-driver to inspect)
+#   - the daily-driver socket IS a cage socket (operator inside cage)
+#   - daily-driver prefix is anything other than C-\ (no leak signal)
+_doctor_check_daily_driver_prefix_leak() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  local daily_sock="${TMUX%%,*}"
+
+  # If we ARE on a cage socket, C-\ is the expected value, not a leak.
+  case "$daily_sock" in
+    */atmux-tmux*/tmux-*/default) return 0 ;;
+  esac
+
+  local current
+  current="$(env -u TMUX tmux -S "$daily_sock" show-options -gv prefix 2>/dev/null || true)"
+  [[ "$current" == 'C-\' ]] || return 0
+
+  local hint="atmux doctor --fix re-sources ~/.tmux.conf"
+  [[ -f "$HOME/.tmux.conf" ]] || hint="set the prefix back manually: tmux set-option -g prefix <YourKey>"
+
+  _doctor_row yellow "daily-driver-prefix-leak" \
+    "daily-driver prefix is C-\\ (cage convention) — likely clobbered by a pre-b39d9f4 atmux start" \
+    "$hint"
+}
+
 _doctor_try_fix_daily_driver_launchers() {
   [[ -n "${TMUX:-}" ]] || return 0
   local daily_sock="${TMUX%%,*}"
@@ -1237,4 +1322,42 @@ _doctor_try_fix_daily_driver_launchers() {
 
   printf '%s🚀 atmux%s  doctor --fix: %d launcher(s) created, %d already up\n' \
     "$atmux_c_cyn" "$atmux_c_rst" "$created" "$skipped" >&2
+}
+
+# Re-source ~/.tmux.conf on the daily-driver socket to restore the
+# operator's intended prefix when a cage-prefix leak was detected.
+# Idempotent — no-op when ~/.tmux.conf is missing or when the prefix
+# isn't currently the cage value.
+_doctor_try_fix_daily_driver_prefix_leak() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  local daily_sock="${TMUX%%,*}"
+  case "$daily_sock" in
+    */atmux-tmux*/tmux-*/default) return 0 ;;
+  esac
+
+  local current
+  current="$(env -u TMUX tmux -S "$daily_sock" show-options -gv prefix 2>/dev/null || true)"
+  [[ "$current" == 'C-\' ]] || return 0
+
+  if [[ ! -f "$HOME/.tmux.conf" ]]; then
+    printf '\n%s🛠️  atmux%s  doctor --fix: ~/.tmux.conf missing — restore prefix manually\n' \
+      "$atmux_c_cyn" "$atmux_c_rst" >&2
+    return 1
+  fi
+
+  printf '\n%s🛠️  atmux%s  doctor --fix: re-sourcing ~/.tmux.conf to restore daily-driver prefix\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" >&2
+
+  if env -u TMUX tmux -S "$daily_sock" source-file "$HOME/.tmux.conf" 2>/dev/null; then
+    local after
+    after="$(env -u TMUX tmux -S "$daily_sock" show-options -gv prefix 2>/dev/null || true)"
+    if [[ "$after" == 'C-\' ]]; then
+      printf '  %s⚠️%s  prefix still C-\\ after source-file — your config explicitly sets C-\\?\n' \
+        "$atmux_c_cyn" "$atmux_c_rst" >&2
+    else
+      atmux::ok "daily-driver prefix restored to $after"
+    fi
+  else
+    printf '  ❌ source-file failed — restore manually: tmux source-file ~/.tmux.conf\n' >&2
+  fi
 }

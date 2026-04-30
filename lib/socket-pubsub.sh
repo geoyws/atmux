@@ -281,9 +281,50 @@ _atmux_now_ms() {
 # selected backend and invokes <handler> with each received line as $1.
 # Used by the supervisor (Sb) only — Sa ships this helper, not the
 # consumer wiring.
+#
+# Process-group hygiene (ADR-NEW: socat ,fork orphan-grandchild leak).
+# When ATMUX_SOCK_SUBSCRIBE_SETSID=1, the listener tree is wrapped in
+# `setsid -w bash -c …` so children form their own session/PGID. The
+# session-leader PID is recorded to .atmux/state/socksub-<member>.pgid
+# and atmux::sock_subscribe_teardown <member> kills the whole group via
+# `kill -- -$pgid`. Without this, a `kill -9 $sub_pid; wait $sub_pid`
+# pattern leaves orphan socat ,fork children that re-bind the socket,
+# wedging callers (bats-exec-test wedged 13h+ on 2026-04-30 holding
+# /var/lock/atmux-autopromote.lock).
+#
+# Default OFF so the supervisor (which uses a closure-shaped handler
+# the setsid'd bash can't see without explicit `export -f`) keeps
+# working. Tests opt-in via export ATMUX_SOCK_SUBSCRIBE_SETSID=1 in
+# their setup, which means handlers must be `export -f`'d (the test
+# pattern already does this for `_record_race`). Supervisor adopts
+# the env var + export pattern in its own follow-up.
 atmux::sock_subscribe() {
   local member="${1:?sock_subscribe: <member> required}"
   local handler="${2:?sock_subscribe: <handler> required}"
+
+  # Re-exec under setsid when opted in AND we're not already a session
+  # leader. The detection compares our PID to our SID — equality means
+  # we're already leading a session, so the re-exec already happened
+  # (or someone else made us leader for free). Stash PGID-as-PID to
+  # the per-member file before sourcing libs so teardown finds us even
+  # if the lib-source step trips.
+  if [[ -n "${ATMUX_SOCK_SUBSCRIBE_SETSID:-}" ]] \
+     && [[ "$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')" != "$$" ]]; then
+    local _pgid_file; _pgid_file="$(atmux::state_dir)/socksub-${member}.pgid"
+    mkdir -p "$(dirname "$_pgid_file")"
+    # setsid -w forks a session leader, runs the body, waits for it to
+    # exit. From the caller's pov, atmux::sock_subscribe still blocks
+    # until the listener returns — preserving the existing call shape
+    # `atmux::sock_subscribe & sub_pid=$!`.
+    setsid -w bash -c '
+      echo $$ > "$1"
+      ATMUX_SOCK_SUBSCRIBE_SETSID="" \
+        . "$2/common.sh"
+      . "$2/socket-pubsub.sh"
+      atmux::sock_subscribe "$3" "$4"
+    ' _ "$_pgid_file" "$ATMUX_LIB_DIR" "$member" "$handler"
+    return $?
+  fi
 
   local sock
   sock="$(atmux::sock_bind "$member")" || return 1
@@ -339,4 +380,38 @@ while True:
       atmux::die "sock_subscribe: unknown backend '$backend' (set ATMUX_SOCK_BACKEND to socat or python3)"
       ;;
   esac
+}
+
+
+# atmux::sock_subscribe_teardown <member>
+#
+# Counterpart to atmux::sock_subscribe under ATMUX_SOCK_SUBSCRIBE_SETSID=1.
+# Reads the recorded session-leader PID from
+# .atmux/state/socksub-<member>.pgid and kills the entire process
+# group via `kill -- -$pgid`. Idempotent: missing pgid file ⇒ no-op
+# return 0. Two-stage shutdown: SIGTERM first (gives socat ,fork
+# children a clean exit), 100ms grace, then SIGKILL.
+#
+# Use this in bats teardown to reliably reap socat ,fork orphans:
+#   teardown() { atmux::sock_subscribe_teardown w1; atmux_teardown_sandbox; }
+atmux::sock_subscribe_teardown() {
+  local member="${1:?sock_subscribe_teardown: <member> required}"
+  local pgid_file; pgid_file="$(atmux::state_dir)/socksub-${member}.pgid"
+  [[ -f "$pgid_file" ]] || return 0
+
+  local pgid; pgid="$(cat "$pgid_file" 2>/dev/null | tr -d ' ')"
+  if [[ ! "$pgid" =~ ^[0-9]+$ ]] || [[ "$pgid" -le 1 ]]; then
+    rm -f "$pgid_file"
+    return 0
+  fi
+
+  # SIGTERM the group; sleep 100ms; then SIGKILL anything that didn't
+  # exit. `kill -- -$pgid` addresses the process group; the leading
+  # `--` keeps `-` from being interpreted as a flag.
+  kill -TERM -- -"$pgid" 2>/dev/null || true
+  sleep 0.1
+  kill -KILL -- -"$pgid" 2>/dev/null || true
+
+  rm -f "$pgid_file"
+  return 0
 }
