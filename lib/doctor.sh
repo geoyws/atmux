@@ -49,6 +49,7 @@ EOF
   _doctor_check_cron_orphans
   _doctor_check_orphan_sessions
   _doctor_check_topology_invariant
+  _doctor_check_repair_rename_needed
   _doctor_check_whip_hash
   _doctor_check_phantom_inboxes
   _doctor_check_logout_kill
@@ -485,13 +486,27 @@ _doctor_check_crontab() {
 _doctor_check_orphan_sessions() {
   local single
   single=$(jq -r '.singleSession // false' "$(atmux::team_json)" 2>/dev/null || echo false)
-  [[ "$single" == "true" ]] || return 0
 
-  local team_session; team_session="atmux-$(atmux::team_name)"
-  if tmux has-session -t "=$team_session" 2>/dev/null; then
-    _doctor_row yellow "orphan-session" \
-      "team is single-session but legacy session '$team_session' still exists" \
-      "run 'atmux migrate-to-driver-session $(atmux::team_name)' to consolidate"
+  if [[ "$single" == "true" ]]; then
+    # 2026-04-30 reversal — singleSession opts out of cage isolation on
+    # the daily-driver socket (where every operator already has 10+
+    # unrelated sessions). The side-channel pollution class (cage-prefix
+    # leak, partial-rename mess, cross-socket spawn) all exploit this.
+    # The launcher-session work in 1c1808b restored the at-a-glance UX
+    # benefit on top of cage isolation, so the original ADR-026
+    # justification no longer applies. Yellow row points the operator
+    # at the migration path; doesn't refuse — existing teams transition
+    # opportunistically rather than under pressure.
+    _doctor_row yellow "single-session-discouraged" \
+      "team has singleSession=true — cage isolation (ADR-018) is now the recommended path" \
+      "set team.json:.singleSession=false + add tmuxTmpdir; atmux team migrate-to-cage <team> (when verb lands per umbrella t-36ec8c01)"
+
+    local team_session; team_session="atmux-$(atmux::team_name)"
+    if tmux has-session -t "=$team_session" 2>/dev/null; then
+      _doctor_row yellow "orphan-session" \
+        "team is single-session but legacy session '$team_session' still exists" \
+        "run 'atmux migrate-to-driver-session $(atmux::team_name)' to consolidate"
+    fi
   fi
 }
 
@@ -768,6 +783,72 @@ _doctor_check_topology_invariant() {
         "atmux super-attach"
     fi
   fi
+}
+
+# repair-rename-needed detector (t-2a25f7bd / ADR-027 ADDENDUM 11). For
+# each registry team, surface a yellow row when declarative state
+# (team.json:.name + registry sessionName) outran imperative live state
+# (cage tmpdir basename + cage internal session name + window prefixes).
+# The fix is `atmux team repair-rename <team>` — also reused by the
+# convention-wide tmpdir hyphen→underscore sweep (t-36ec8c01).
+#
+# Yellow not red: the team is functional (kanban + panes + work continues
+# on the old paths); the drift is an audit/coherence issue, not an
+# outage. Red would over-trigger preflight refusals.
+_doctor_check_repair_rename_needed() {
+  command -v tmux >/dev/null 2>&1 || return 0
+  command -v jq   >/dev/null 2>&1 || return 0
+
+  if ! declare -F atmux::registry_list >/dev/null 2>&1; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh" 2>/dev/null || return 0
+  fi
+  local rj; rj="$(atmux::registry_list --json 2>/dev/null || echo '[]')"
+  jq -e . <<<"$rj" >/dev/null 2>&1 || return 0
+  [[ "$(jq 'length' <<<"$rj")" -gt 0 ]] || return 0
+
+  local entry name proj tj tmpdir base derived sock sess stale_count
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    name="$(jq -r '.name'        <<<"$entry")"
+    proj="$(jq -r '.projectRoot' <<<"$entry")"
+    [[ -n "$name" && -n "$proj" && -d "$proj" ]] || continue
+    tj="$proj/.atmux/team.json"
+    [[ -f "$tj" ]] || continue
+    tmpdir="$(jq -r '.tmuxTmpdir // ""' "$tj" 2>/dev/null)"
+    [[ -z "$tmpdir" || "$tmpdir" == "null" ]] && continue
+
+    # Indicator 1: tmpdir basename != team name (after stripping known prefixes).
+    base="$(basename "$tmpdir")"
+    derived="${base#atmux-tmux-}"
+    derived="${derived#atmux_tmux_}"
+    derived="${derived#atmux-tmux_}"
+    if [[ "$derived" != "$name" && "$base" != "atmux-tmux" ]]; then
+      _doctor_row yellow "repair-rename-needed:$name" \
+        "tmpdir basename '$base' ≠ team name '$name' (drift)" \
+        "atmux team repair-rename $name"
+      continue
+    fi
+
+    # Indicator 2/3: cage live + session-name or window-prefix mismatch.
+    sock="$tmpdir/tmux-0/default"
+    [[ -S "$sock" ]] || continue
+    sess="$(tmux -S "$sock" list-sessions -F '#{session_name}' 2>/dev/null | head -1)"
+    if [[ -n "$sess" && "$sess" != "$name" ]]; then
+      _doctor_row yellow "repair-rename-needed:$name" \
+        "cage internal session '$sess' ≠ team name '$name' (drift)" \
+        "atmux team repair-rename $name"
+      continue
+    fi
+    stale_count="$(tmux -S "$sock" list-windows -a -F '#{window_name}' 2>/dev/null \
+      | grep -E '^__[a-z0-9_-]+__' | grep -cv "^__${name}__" 2>/dev/null || true)"
+    [[ "$stale_count" =~ ^[0-9]+$ ]] || stale_count=0
+    if (( stale_count > 0 )); then
+      _doctor_row yellow "repair-rename-needed:$name" \
+        "$stale_count window(s) with stale __<old>__* prefix in cage" \
+        "atmux team repair-rename $name"
+    fi
+  done < <(jq -c '.[]' <<<"$rj")
 }
 
 # Phantom inbox detector (E6/S3 t-d0c2e85a A6). Consumes

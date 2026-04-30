@@ -265,11 +265,17 @@ case "$verb" in
   supervisor-start) verb_script="$ATMUX_LIB_DIR/supervisor.sh"; set -- "start" "$@" ;;
   supervisor-stop)  verb_script="$ATMUX_LIB_DIR/supervisor.sh"; set -- "stop"  "$@" ;;
   # ADR-027 team-rename: `atmux team rename …` routes to lib/team-rename.sh.
+  # ADR-027 ADDENDUM 11 (t-2a25f7bd): `atmux team repair-rename` recovers
+  # teams whose declarative state (team.json:.name + registry) outran
+  # imperative live state (cage tmpdir + tmux session + window prefixes
+  # + cron). Verb is reused by the convention-wide sweep under the
+  # migrate-naming epic (t-36ec8c01) — same code path.
   team)
     case "${1:-}" in
-      rename) verb_script="$ATMUX_LIB_DIR/team-rename.sh"; shift ;;
-      "") echo "atmux team: subverb required (try: rename)" >&2; exit 64 ;;
-      *)  echo "atmux team: unknown subverb '${1}' (try: rename)" >&2; exit 64 ;;
+      rename)        verb_script="$ATMUX_LIB_DIR/team-rename.sh";        shift ;;
+      repair-rename) verb_script="$ATMUX_LIB_DIR/team-repair-rename.sh"; shift ;;
+      "") echo "atmux team: subverb required (try: rename | repair-rename)" >&2; exit 64 ;;
+      *)  echo "atmux team: unknown subverb '${1}' (try: rename | repair-rename)" >&2; exit 64 ;;
     esac
     ;;
 esac

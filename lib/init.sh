@@ -88,16 +88,20 @@ _atmux_init_template() {
   local team_name="$1" tj="$2"
   local tmpl="$ATMUX_ROOT/templates/team.example.json"
   [[ -f "$tmpl" ]] || atmux::die "template missing: $tmpl"
-  # tmuxTmpdir defaults to /tmp/atmux-tmux-<name> so a buggy or stress-test
+  # tmuxTmpdir defaults to /tmp/atmux-tmux_<name> so a buggy or stress-test
   # team can never wedge the user's daily-driver tmux server. Incident
   # 2026-04-27: a `smoke-stop` scaffold ran on the shared default socket and
   # a SIGCHLD storm from ~30 simultaneous pane teardowns wedged tmux 3.x for
   # every other session on the box. Per-team socket = blast-radius firewall.
   # Pair `atmux-tmux attach` with the field — that wrapper resolves the
   # socket from team.json so operators don't have to remember the path.
+  # Separator convention (per memory feedback_path_separator_convention.md):
+  # underscore between domains (atmux-tmux + <team>), hyphen reserved for
+  # within-name compounds. So a team named `unum_beads` resolves to
+  # /tmp/atmux-tmux_unum_beads (not the mixed-separator …-unum_beads).
   jq --arg name "$team_name" --arg cwd "$PWD" \
     '.name = $name
-     | .tmuxTmpdir = "/tmp/atmux-tmux-" + $name
+     | .tmuxTmpdir = "/tmp/atmux-tmux_" + $name
      | (.members[] |= (.cwd = $cwd))' \
     "$tmpl" > "$tj"
 }
@@ -213,12 +217,18 @@ _atmux_init_wizard() {
 
   local discord_hook; _atmux_prompt discord_hook "Discord webhook URL (optional, Enter to skip)" ""
 
-  # ADR-026: every team defaults to singleSession=true (supersedes the
-  # ADR-016 opt-in prompt). The wizard no longer asks; team.json gets
-  # `singleSession: true` unconditionally below. The `singleSession=false`
-  # legacy mode (dedicated `atmux-<team>` session) is retained as a
-  # declared (not prompted) escape hatch — operators set it by hand in
-  # team.json for non-human-driven teams or detached observer setups.
+  # 2026-04-30: ADR-026 reversed by driver directive. New teams default
+  # to `singleSession=false` (cage-isolated, ADR-018). The earlier "see
+  # everything at a glance" rationale prioritized UX over isolation;
+  # in practice singleSession opted-out of cage protection on the most-
+  # touched server (daily-driver), and the side-channel pollution class
+  # (cage-prefix leak, partial-rename mess, orphan Claude REPLs from
+  # cross-socket spawn) all bit. Cage isolation prevents them
+  # structurally. The launcher-session work in 1c1808b restored the
+  # at-a-glance benefit on top of cage isolation, so the original
+  # tradeoff doesn't exist anymore. singleSession=true remains a
+  # declared (not prompted) escape hatch for non-human-driven teams or
+  # detached observer setups — operators set it by hand in team.json.
 
   # ADR-018: cage tmux socket isolation. Default y after the 2026-04-27
   # incident — 6 daily-driver tmux deaths in 5 days because the dogfood
@@ -233,7 +243,7 @@ _atmux_init_wizard() {
     "Run team on its own isolated tmux socket? (recommended — protects your daily-driver tmux from buggy kill-session calls; attach via 'atmux-tmux attach')" \
     "y" y n
   local cage_tmpdir=""
-  [[ "$cage_isolation" == "y" ]] && cage_tmpdir="/tmp/atmux-tmux-$team_name"
+  [[ "$cage_isolation" == "y" ]] && cage_tmpdir="/tmp/atmux-tmux_$team_name"
 
   # ---- TUI launch commands ----
   # Ask the user for custom launch commands for every TUI we'll end up using.
@@ -377,8 +387,11 @@ _atmux_init_wizard() {
   # tmuxTmpdir from the wizard prompt above — empty string means user opted
   # out of cage isolation (shared default-socket mode). See _atmux_init_template
   # comment for the 2026-04-27 incident that motivated default-on isolation.
-  # singleSession hardcoded true per ADR-026 — escape hatch is manual
-  # team.json edit, not a wizard prompt.
+  # singleSession defaults to false (2026-04-30 reversal of ADR-026); cage
+  # isolation is the safe path. driverTui defaults to claude — atmux start
+  # auto-spawns it in the cage's driver window so attach drops you into a
+  # working REPL without manual `claude` typing. Set driverTui to null in
+  # team.json to opt out (e.g. for non-human-driven teams).
   jq -n \
     --arg name "$team_name" \
     --arg desc "atmux team — created via wizard" \
@@ -395,7 +408,8 @@ _atmux_init_wizard() {
        emojis: {mode: $emoji_mode},
        whip:   {intervalMins: 5, staleMin: 90, leadMaxMin: 60},
        report: {intervalMins: 30},
-       singleSession: true
+       singleSession: false,
+       driverTui: "claude"
      }
      + (if $cage == "" then {} else {tmuxTmpdir: $cage}              end)
      + (if $hook == "" then {} else {discord: {webhook: $hook}}      end)' > "$tj"

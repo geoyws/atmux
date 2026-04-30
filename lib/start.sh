@@ -253,6 +253,45 @@ main() {
     fi
   fi
 
+  # ---- Auto-spawn the driver window with the operator's TUI ----
+  # 2026-04-30: when team.json:.driverTui is set (default 'claude' for new
+  # teams), populate the cage's driver pane on start so attach drops the
+  # operator into a working REPL without manual `claude` typing. Skipped
+  # under singleSession=true (the operator IS the driver; their daily-driver
+  # session window is the driver pane, atmux doesn't spawn into it). Skipped
+  # when driverTui is null/empty/false. Idempotent: if a "driver" window
+  # already exists in the session, leave its current command alone — don't
+  # nuke the operator's in-flight work. Cwd is the project root (parent of
+  # .atmux/) so the operator lands where they expect.
+  if [[ "$single" != "true" ]]; then
+    local driver_tui driver_cmd driver_win="driver" driver_cwd
+    driver_tui="$(jq -r '.driverTui // "claude"' "$(atmux::team_json)" 2>/dev/null || echo claude)"
+    [[ "$driver_tui" == "null" || "$driver_tui" == "false" ]] && driver_tui=""
+    driver_cwd="$(dirname "$(atmux::dir)")"
+
+    if [[ -n "$driver_tui" ]]; then
+      if tmux list-windows -t "=$session" -F '#{window_name}' 2>/dev/null | grep -qx "$driver_win"; then
+        atmux::log "driver: window '$driver_win' already up, skipping auto-spawn"
+      elif ! declare -f atmux::tui_cmd >/dev/null 2>&1; then
+        atmux::warn "driver: atmux::tui_cmd unavailable — skipping auto-spawn"
+      else
+        # Resolve via lib/tui.sh (honors team.tuiCommands[<tui>] override,
+        # adds export ATMUX_MEMBER=driver + cd to project root). Treat the
+        # driver pane like a member with name=driver, role=driver, model=default.
+        driver_cmd="$(atmux::tui_cmd "$driver_tui" "default" "$driver_cwd" "driver" "driver" "" 2>/dev/null || true)"
+        if [[ -z "$driver_cmd" ]]; then
+          atmux::warn "driver: tui_cmd returned empty for '$driver_tui' — skipping auto-spawn"
+        else
+          tmux new-window -d -t "$session" -n "$driver_win" \
+            -c "$driver_cwd" \
+            "$driver_cmd" 3>&- 4>&- \
+            && atmux::ok "driver: spawned '$driver_win' running $driver_tui" \
+            || atmux::warn "driver: failed to spawn '$driver_win' (non-fatal)"
+        fi
+      fi
+    fi
+  fi
+
   # ---- Auto-spawn the supervisor window (ADR-032 §Supervisor lifecycle) ----
   # One __<team>__supervisor window per team runs lib/supervisor.sh, which
   # listens on .atmux/sockets/<member>.sock for events and gates send-keys
