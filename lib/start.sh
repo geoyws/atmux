@@ -343,10 +343,24 @@ main() {
     # shellcheck source=cron.sh
     . "$ATMUX_LIB_DIR/cron.sh"
     if atmux::cron_install "$team" "$(atmux::dir)"; then
-      atmux::ok "installed cron entries (whip */5, report */30, decisions digest 0 */4)"
+      atmux::ok "installed cron entries (whip */5, report */30, decisions digest 0 */4, groom 0 4)"
       atmux::log "  inspect: crontab -l | grep 'atmux:team=$team'"
     fi
   fi
+
+  # On-activate groom — passive sweep so cron-less hosts (and any team
+  # whose crontab line hasn't fired yet today) still get the stale-state
+  # archival. Idempotent: most days a no-op. Backgrounded so a slow
+  # archive flush on a multi-MB driver-inbox doesn't gate `atmux start`'s
+  # return on attach. Failures are non-fatal (groom itself logs warnings;
+  # we never want a botched groom to refuse a team start).
+  case "${ATMUX_NO_GROOM:-}" in
+    ''|0|false|FALSE|False)
+      ( ATMUX_DIR="$(atmux::dir)" "$ATMUX_BIN_DIR/atmux" groom --quiet \
+          >> "$(atmux::logs_dir)/groom.log" 2>&1 || true ) &
+      atmux::log "groom: on-activate sweep dispatched (background; tail .atmux/logs/groom.log)"
+      ;;
+  esac
 }
 
 _atmux_spawn_member() {

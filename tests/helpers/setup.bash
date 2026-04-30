@@ -45,6 +45,12 @@ atmux_setup_sandbox() {
   # that slipped through (e.g. tests that override the var, or pre-SB_T1
   # code paths that miss the env-var gate).
   export ATMUX_NO_CRON=1
+  # Same reasoning for groom: lib/start.sh fires a backgrounded
+  # `atmux groom --quiet` on team activation. Tests that exercise other
+  # paths don't want a parallel fork mutating .atmux/archive/ + .bak
+  # files mid-test. tests/unit/groom.bats explicitly unsets this in the
+  # one test that needs the verb's own behavior.
+  export ATMUX_NO_GROOM=1
   # Sandbox HISTFILE so panes spawned by `atmux start` (which run
   # `exec $SHELL` in their initial command) don't append their brief +
   # member-init noise to the operator's real ~/.zsh_history. Observed

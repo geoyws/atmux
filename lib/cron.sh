@@ -49,6 +49,12 @@ _atmux_cron_render_lines() {
   printf '*/5 * * * * %sATMUX_DIR=%s %s whip >> %s/logs/whip.log 2>&1\n'                  "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
   printf '*/30 * * * * %sATMUX_DIR=%s %s report >> %s/logs/report.log 2>&1\n'             "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
   printf '0 */4 * * * %sATMUX_DIR=%s %s decisions digest >> %s/logs/decisions-digest.log 2>&1\n' "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+  # Daily groom — sweep stale archived inbox/outbox/decisions content +
+  # summarize done kanban cards out of the hot file. Fires at 04:00 local
+  # to land in the quietest window. Lib/start.sh also fires `atmux groom
+  # --quiet` on activation so cron-less hosts (or a brand-new team that
+  # hasn't passed its first 04:00 yet) still get a passive sweep.
+  printf '0 4 * * * %sATMUX_DIR=%s %s groom --quiet >> %s/logs/groom.log 2>&1\n' "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
 }
 
 # Drop the marker-bounded block (header + body + footer) for <team> from

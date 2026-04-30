@@ -99,6 +99,14 @@ Automation:
                               Rotate big logs (>1MB → .log.1), prune old
                               done[] entries from inboxes (>7d default).
                               Idempotent + cron-safe.
+  groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
+                              Sweep stale shared state into .atmux/archive/:
+                              flushes driver-inbox/lead-outbox `## Archive`
+                              tails into dated archives, summarizes done/
+                              cancelled kanban cards >N days into a
+                              kanban-log-YYYY-MM.md, archives old decisions
+                              entries, culls .bak.* families. Fires daily
+                              via cron + once on every `atmux start`.
 
 Decisions log:
   decisions add <q> --default <a> [--reversibility low|medium|high] [--note <t>]
