@@ -57,6 +57,7 @@ EOF
   _doctor_check_wedged_bats_exec
   _doctor_check_caged_windows_outside_cage
   _doctor_check_daily_driver_launchers
+  _doctor_check_orphan_atmux_sessions
   _doctor_check_daily_driver_prefix_leak
 
   if [[ "$json" -eq 1 ]]; then
@@ -1083,6 +1084,71 @@ _doctor_check_daily_driver_launchers() {
         "atmux doctor --fix creates it"
     fi
   done < <(_doctor_iter_running_caged_teams)
+}
+
+# Orphan atmux-namespace session detector (ADR-037). Operator-socket only,
+# scoped strictly to names matching `^atmux(_|$)` so the user's daily-driver
+# project sessions (`__main`, `convoke`, `paste`, etc.) are invisible to this
+# check by construction — never flagged, never proposed for cleanup.
+#
+# Allowlist:
+#   - bare `atmux` (the dogfood team's own launcher per ADR-018 carve-out)
+#   - `atmux_superdriver` (per ADR-025 fleet aggregator)
+#   - `atmux_<team>` for every team in ~/.claude/teams/registry.json
+#
+# Anything matching `^atmux(_|$)` outside that allowlist → yellow row.
+# Surface-only — no `--fix` action; driver decides whether the orphan is
+# stale (removed team's launcher) or in-flight work (rename mid-flight).
+# Skipped when $TMUX is unset (cron path) or when the operator IS currently
+# attached to a cage socket (cage list is governed by ADR-018, not here).
+_doctor_check_orphan_atmux_sessions() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  local daily_sock="${TMUX%%,*}"
+  # Skip when current socket is itself a cage — `*/atmux*tmux*` covers both
+  # the legacy `atmux-tmux*` (hyphen) and ADDENDUM-11 `atmux_tmux_*` forms.
+  case "$daily_sock" in
+    */atmux-tmux*/tmux-*/default|*/atmux_tmux_*/tmux-*/default) return 0 ;;
+  esac
+
+  command -v jq >/dev/null 2>&1 || return 0
+
+  # Lazy-source registry.sh — same pattern as _doctor_check_topology_invariant.
+  if ! declare -F atmux::registry_list >/dev/null 2>&1; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh" 2>/dev/null || return 0
+  fi
+
+  # Build allowlist: `atmux`, `atmux_superdriver`, plus `atmux_<team>` for
+  # every registry entry. Newline-separated, used as fixed-string set.
+  local allowlist
+  allowlist="$(printf 'atmux\natmux_superdriver\n'; \
+    atmux::registry_list --json 2>/dev/null \
+      | jq -r '.[].name | "atmux_\(.)"' 2>/dev/null || true)"
+
+  local sess created_epoch idle_hint now
+  now="$(atmux::now_epoch 2>/dev/null || date +%s)"
+  while IFS='|' read -r sess created_epoch; do
+    [[ -z "$sess" ]] && continue
+    # Namespace gate — anything not matching `^atmux(_|$)` is invisible.
+    [[ "$sess" =~ ^atmux(_|$) ]] || continue
+    # Allowlist gate — recognized launchers are silent (too noisy to row).
+    grep -Fxq "$sess" <<<"$allowlist" && continue
+
+    # Compose detail with creation timestamp if available. Fallback:
+    # plain "name" without timestamp on tmux builds that don't expose
+    # session_created.
+    idle_hint=""
+    if [[ "$created_epoch" =~ ^[0-9]+$ ]]; then
+      local age_s=$(( now - created_epoch ))
+      if (( age_s > 0 )); then
+        idle_hint=" (alive ~$(( age_s / 60 ))min)"
+      fi
+    fi
+
+    _doctor_row yellow "orphan-atmux-session:$sess" \
+      "operator-socket session matches atmux launcher pattern but no registry entry${idle_hint}" \
+      "investigate before killing — could be a stale launcher from a removed team or a rename mid-flight; no auto-fix"
+  done < <(env -u TMUX tmux -S "$daily_sock" list-sessions -F '#{session_name}|#{session_created}' 2>/dev/null)
 }
 
 # ---------- helpers ----------
