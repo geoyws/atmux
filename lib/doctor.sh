@@ -53,6 +53,8 @@ EOF
   _doctor_check_phantom_inboxes
   _doctor_check_logout_kill
   _doctor_check_supervisor_liveness
+  _doctor_check_caged_windows_outside_cage
+  _doctor_check_daily_driver_launchers
 
   if [[ "$json" -eq 1 ]]; then
     _doctor_render_json
@@ -864,6 +866,96 @@ _doctor_check_supervisor_liveness() {
     "atmux supervisor-stop && atmux supervisor-start"
 }
 
+# Iterator helper — yields tab-separated `<name>\t<projectRoot>\t<cage_sock>`
+# for every registered cage'd team whose cage socket actually has a session
+# matching the team's name. Drops registry status from the gating logic
+# entirely (stale/running labels lag the actual cage state by hours; the
+# tmux probe is authoritative). Skipped silently if the registry helper
+# is unavailable.
+_doctor_iter_running_caged_teams() {
+  if [[ -f "$ATMUX_LIB_DIR/registry.sh" ]] \
+     && ! declare -F atmux::registry_path >/dev/null 2>&1; then
+    # shellcheck source=registry.sh
+    . "$ATMUX_LIB_DIR/registry.sh"
+  fi
+  declare -F atmux::registry_path >/dev/null 2>&1 || return 0
+  local reg; reg="$(atmux::registry_path)"
+  [[ -s "$reg" ]] || return 0
+
+  local name root team_tmpdir cage_sock
+  while IFS=$'\t' read -r name root; do
+    [[ -z "$name" ]] && continue
+    [[ -d "$root/.atmux" ]] || continue
+    team_tmpdir=$(jq -r '.tmuxTmpdir // empty' "$root/.atmux/team.json" 2>/dev/null)
+    [[ -n "$team_tmpdir" && "$team_tmpdir" != "null" ]] || continue
+    cage_sock="$team_tmpdir/tmux-$(id -u)/default"
+    # Only emit when the cage server is actually up + has the team's session.
+    env -u TMUX tmux -S "$cage_sock" has-session -t "=$name" 2>/dev/null \
+      && printf '%s\t%s\t%s\n' "$name" "$root" "$cage_sock"
+  done < <(jq -r '.[] | [.name, .projectRoot] | @tsv' "$reg" 2>/dev/null)
+}
+
+# Stray-cage-window detector. After the start.sh cage-socket safeguard
+# (b39d9f4) any new `atmux start` invoked from outside the cage refuses
+# instead of spawning member windows on the daily-driver socket — but
+# pre-safeguard pollution can still be sitting there from prior bad
+# starts. Probe the daily-driver socket for any window matching
+# `^__<team>__` for any cage'd team that has a live cage server. RED row
+# per find — these are zombie Claude REPLs consuming tokens on the wrong
+# server. Skipped silently when $TMUX is unset (cron path).
+_doctor_check_caged_windows_outside_cage() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  local daily_sock="${TMUX%%,*}"
+
+  # Pre-fetch all daily-driver socket window names once — cheaper than
+  # one tmux call per team.
+  local all_wins
+  all_wins=$(env -u TMUX tmux -S "$daily_sock" list-windows -a -F '#{session_name}|#{window_name}' 2>/dev/null || true)
+  [[ -n "$all_wins" ]] || return 0
+
+  local name root cage_sock
+  while IFS=$'\t' read -r name root cage_sock; do
+    # Daily-driver socket IS the cage socket → no concept of "outside".
+    [[ "$daily_sock" == "$cage_sock" ]] && continue
+
+    local strays
+    strays=$(awk -F'|' -v p="^__${name}__" '$2 ~ p {print $1 ":" $2}' <<<"$all_wins" || true)
+    if [[ -n "$strays" ]]; then
+      local count; count=$(wc -l <<<"$strays")
+      _doctor_row red "stray-cage:$name" \
+        "$count window(s) for cage'd team '$name' live on daily-driver socket — should be in cage at $cage_sock" \
+        "tmux kill-window -t \"=<session>:<idx>\" for each (e.g. $(head -1 <<<"$strays")); env -u TMUX atmux start re-spawns into the cage"
+    fi
+  done < <(_doctor_iter_running_caged_teams)
+}
+
+# Daily-driver launcher session detector. For every cage'd team with a
+# live cage server, ensure a single-window session named `atmux_<team>`
+# exists on the operator's daily-driver socket whose pane runs `tmux -S
+# <cage-sock> attach -t <team>` — selecting that session in the daily-
+# driver's session list (prefix-s) drops the operator into the team's
+# cage in one keystroke. Yellow row per missing launcher; `--fix`
+# creates them all. Skipped silently when $TMUX is unset (cron path)
+# or when the operator IS currently on the cage's socket.
+_doctor_check_daily_driver_launchers() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  local daily_sock="${TMUX%%,*}"
+
+  local name root cage_sock
+  while IFS=$'\t' read -r name root cage_sock; do
+    [[ "$daily_sock" == "$cage_sock" ]] && continue
+    local launch_sess="atmux_${name}"
+    if env -u TMUX tmux -S "$daily_sock" has-session -t "=$launch_sess" 2>/dev/null; then
+      _doctor_row green "launcher:$name" \
+        "session $launch_sess up on daily-driver"
+    else
+      _doctor_row yellow "launcher:$name" \
+        "missing daily-driver launcher session $launch_sess (one-keystroke jump into cage)" \
+        "atmux doctor --fix creates it"
+    fi
+  done < <(_doctor_iter_running_caged_teams)
+}
+
 # ---------- helpers ----------
 
 # Extract the first command-like token from a shell command string,
@@ -958,6 +1050,7 @@ _doctor_try_fix() {
   _doctor_try_fix_phantom_inboxes
   _doctor_try_fix_cron_orphans
   _doctor_try_fix_logout_kill
+  _doctor_try_fix_daily_driver_launchers
 
   [[ "$_doctor_red_count" -eq 0 ]] && return 0
 
@@ -1105,4 +1198,43 @@ _doctor_try_fix_logout_kill() {
     "$atmux_c_cyn" "$atmux_c_rst" >&2
   printf '    sudo loginctl enable-linger %s\n' "$user" >&2
   return 1
+}
+
+# Create daily-driver launcher sessions for every running cage'd team
+# that doesn't already have one. Each launcher = single-window session
+# `atmux_<team>` whose pane execs `tmux -S <cage-sock> attach -t <team>`,
+# so prefix-s in daily-driver lists every team and one keystroke jumps
+# into the cage. Idempotent — already-present launchers are silent.
+# Skipped silently when $TMUX is unset (no daily-driver to populate;
+# cron path) or when registry is unavailable.
+_doctor_try_fix_daily_driver_launchers() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  local daily_sock="${TMUX%%,*}"
+
+  printf '\n%s🚀 atmux%s  doctor --fix: ensuring daily-driver launchers\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" >&2
+
+  local created=0 skipped=0
+  local name root cage_sock
+  while IFS=$'\t' read -r name root cage_sock; do
+    [[ "$daily_sock" == "$cage_sock" ]] && continue
+
+    local launch_sess="atmux_${name}"
+    if env -u TMUX tmux -S "$daily_sock" has-session -t "=$launch_sess" 2>/dev/null; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    if env -u TMUX tmux -S "$daily_sock" new-session -d -s "$launch_sess" \
+        -n "$name" \
+        "exec env -u TMUX tmux -S '$cage_sock' attach-session -t '$name'" 2>/dev/null; then
+      created=$((created + 1))
+      printf '  ✅ created %s → %s\n' "$launch_sess" "$cage_sock" >&2
+    else
+      printf '  ❌ failed to create %s\n' "$launch_sess" >&2
+    fi
+  done < <(_doctor_iter_running_caged_teams)
+
+  printf '%s🚀 atmux%s  doctor --fix: %d launcher(s) created, %d already up\n' \
+    "$atmux_c_cyn" "$atmux_c_rst" "$created" "$skipped" >&2
 }
