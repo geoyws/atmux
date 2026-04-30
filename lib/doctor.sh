@@ -772,14 +772,15 @@ _doctor_check_topology_invariant() {
   done < <(jq -c '.[]' <<<"$running")
 
   # Superdriver: when ≥1 team is running, expect the canonical
-  # `atmux-superdriver` session to exist (per ADR-025 — fleet aggregator
-  # session). Absent → red row pointing at `atmux super-attach`.
+  # `atmux_superdriver` session to exist (per ADR-025 — fleet aggregator
+  # session, underscore separator per 2026-04-30 fleet-wide naming
+  # convention). Absent → red row pointing at `atmux super-attach`.
   if (( n_running > 0 )); then
-    if tmux has-session -t =atmux-superdriver 2>/dev/null; then
-      _doctor_row green "topology:superdriver" "atmux-superdriver session up"
+    if tmux has-session -t =atmux_superdriver 2>/dev/null; then
+      _doctor_row green "topology:superdriver" "atmux_superdriver session up"
     else
       _doctor_row red "topology:superdriver" \
-        "atmux-superdriver session absent — fleet aggregator unavailable" \
+        "atmux_superdriver session absent — fleet aggregator unavailable" \
         "atmux super-attach"
     fi
   fi

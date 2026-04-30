@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
-# atmux super-attach — attach (or spawn) the global atmux-superdriver session.
+# atmux super-attach — attach (or spawn) the global atmux_superdriver session.
 #
-# atmux-superdriver is a fleet-wide driver session running Claude (Opus) for
+# atmux_superdriver is a fleet-wide driver session running Claude (Opus) for
 # cross-team coordination via super-status (read-only) and super-tell (write
 # via per-team tell-lead chain). Phase 1 per ADR-025: single window, single
 # Claude pane, ON-DEMAND only — no whip-cycle.
 #
 # Idempotent. If the tmux session already exists, attach. Otherwise:
-#   1. tmux new-session -d -s atmux-superdriver -n superdriver -c $HOME
+#   1. tmux new-session -d -s atmux_superdriver -n superdriver -c $HOME
 #   2. send-keys the Claude (Opus) launch command into the pane
 #   3. wait $ATMUX_SPAWN_WAIT seconds for the welcome screen to render
 #   4. paste-buffer the brief from templates/briefs/superdriver.md
-#   5. tmux attach-session -t atmux-superdriver
+#   5. tmux attach-session -t atmux_superdriver
 #
 # Skips brief paste when templates/briefs/superdriver.md is absent — the
 # brief lives in a sibling task (E10/Sd FE) and may not yet be on disk
 # when this verb is first wired.
 
-# Canonical fixed name per ADR-025 §OQ G5 (driver-specified). Does NOT
-# resolve via atmux::session_name — the superdriver is global, not bound
-# to any team.json.
-ATMUX_SUPERDRIVER_SESSION="atmux-superdriver"
+# Canonical fixed name per ADR-025 §OQ G5 — underscore separator per the
+# fleet-wide naming convention (`-` for spaces, `_` for domain boundaries).
+# Pre-2026-04-30 this was `atmux-superdriver` with a hyphen. Driver renamed
+# in-place; verb default updated for fresh installs. Does NOT resolve via
+# atmux::session_name — the superdriver is global, not bound to any team.json.
+ATMUX_SUPERDRIVER_SESSION="atmux_superdriver"
 
 main() {
   atmux::require tmux
