@@ -37,6 +37,32 @@ main() {
   single="$(jq -r '.singleSession // false' "$(atmux::team_json)" 2>/dev/null || echo false)"
   [[ -n "${ATMUX_DRIVER_SESSION:-}" ]] && single=true
 
+  # ---- Cage-socket safeguard (ADR-018 §cross-socket) ----
+  # When team.json declares a per-team `tmuxTmpdir` (cage isolation), every
+  # tmux op in this start invocation MUST land on that cage's socket — not
+  # the operator's daily-driver socket. Per tmux(1), a set $TMUX env var
+  # silently overrides $TMUX_TMPDIR for bare `tmux` invocations, so a start
+  # invoked from inside daily-driver tmux would otherwise spawn the team's
+  # member windows in the daily-driver session (10+ orphan Claude REPLs
+  # consuming tokens on the wrong server, observed 2026-04-30). The earlier
+  # bin/atmux pre-export of TMUX_TMPDIR is necessary but not sufficient —
+  # $TMUX wins. Refuse the start with an actionable hint rather than
+  # silently corrupt topology. Runs BEFORE the single-session capture
+  # below so a doomed start can't rewrite state/session.txt with a
+  # daily-driver session name.
+  #
+  # Allowed shapes:
+  #   - $TMUX unset (cron / fresh shell): bare tmux honors TMUX_TMPDIR ✅
+  #   - $TMUX set, current socket == cage socket (already attached) ✅
+  #   - $TMUX set, current socket == DIFFERENT socket: REFUSE
+  if [[ -n "${TMUX_TMPDIR:-}" && "$TMUX_TMPDIR" == */atmux-tmux* && -n "${TMUX:-}" ]]; then
+    local _cage_sock="$TMUX_TMPDIR/tmux-$(id -u)/default"
+    local _current_sock="${TMUX%%,*}"
+    if [[ "$_current_sock" != "$_cage_sock" ]]; then
+      atmux::die "cage-socket mismatch: this team is cage-gated to '$_cage_sock' but \$TMUX points to '$_current_sock'. Bare tmux would spawn member windows on the wrong socket and consume tokens orphaned outside the cage. Re-run as: env -u TMUX atmux start  (or attach to the cage first: atmux attach)"
+    fi
+  fi
+
   if [[ "$single" == "true" ]]; then
     if [[ "$force" -eq 1 ]]; then
       atmux::die "start --force is unsafe under single-session mode (would kill driver tmux); rerun without --force"
@@ -153,10 +179,20 @@ main() {
   # the cage isolation, this would clobber the operator's default
   # tmux socket prefix (where the daily-driver session lives). Cage
   # tmpdirs all match `*/atmux-tmux*`. Idempotent on every `atmux start`.
+  #
+  # Cross-socket gotcha (mirrors c5f56ef in lib/attach.sh): when `atmux
+  # start` runs from inside daily-driver tmux, $TMUX is set and points to
+  # the daily-driver socket. Per tmux(1), $TMUX overrides $TMUX_TMPDIR for
+  # bare `tmux` invocations — so a naked `tmux set-option -g prefix 'C-\'`
+  # would clobber the OPERATOR'S daily-driver prefix while leaving the
+  # cage's prefix at whatever ~/.tmux.conf set on cage server start. Force
+  # the explicit cage socket via `-S` AND drop $TMUX with `env -u TMUX` so
+  # tmux doesn't second-guess us via the inherited env var.
   if [[ -n "${TMUX_TMPDIR:-}" && "$TMUX_TMPDIR" == */atmux-tmux* ]]; then
-    tmux set-option -g prefix 'C-\' 2>/dev/null || true
-    tmux unbind-key C-b 2>/dev/null || true
-    tmux bind-key 'C-\' send-prefix 2>/dev/null || true
+    local cage_sock="$TMUX_TMPDIR/tmux-$(id -u)/default"
+    env -u TMUX tmux -S "$cage_sock" set-option -g prefix 'C-\' 2>/dev/null || true
+    env -u TMUX tmux -S "$cage_sock" unbind-key C-b 2>/dev/null || true
+    env -u TMUX tmux -S "$cage_sock" bind-key 'C-\' send-prefix 2>/dev/null || true
   fi
 
   # ---- Registry touch (E10/Sa t-638f6504, ADR-025 §Decision start hook) ----
