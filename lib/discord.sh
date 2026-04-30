@@ -34,12 +34,12 @@ atmux::discord_ping() {
   local url="${ATMUX_DISCORD_WEBHOOK:-${DISCORD_WHIP_WEBHOOK:-}}"
   if [[ -z "$url" ]]; then
     atmux::log "discord: ATMUX_DISCORD_WEBHOOK not set — skipping"
+    _atmux_discord_log skip "" 0 "" "ATMUX_DISCORD_WEBHOOK not set" "$msg" "" 0
     return 0
   fi
   atmux::require curl jq
-  curl -fsS -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg c "$msg" '{content:$c}')" \
-    "$url" >/dev/null || atmux::warn "discord: ping failed"
+  local payload; payload="$(jq -n --arg c "$msg" '{content:$c}')"
+  _atmux_discord_send_with_log "plain" "$msg" "$payload" "$url"
 }
 
 # atmux::discord_embed_ping <body>
@@ -55,6 +55,7 @@ atmux::discord_embed_ping() {
   local url="${ATMUX_DISCORD_WEBHOOK:-${DISCORD_WHIP_WEBHOOK:-}}"
   if [[ -z "$url" ]]; then
     atmux::log "discord: ATMUX_DISCORD_WEBHOOK not set — skipping"
+    _atmux_discord_log skip "" 0 "" "ATMUX_DISCORD_WEBHOOK not set" "$msg" "" 0
     return 0
   fi
   atmux::require curl jq
@@ -90,9 +91,113 @@ atmux::discord_embed_ping() {
     --arg     desc  "$msg" \
     '{embeds:[{color:$color, title:$title, description:$desc}]}')"
 
-  curl -fsS -H 'Content-Type: application/json' \
+  _atmux_discord_send_with_log "embed" "$msg" "$payload" "$url"
+}
+
+# Internal — issues the actual curl POST, captures status + body + duration,
+# emits a jsonl record to .atmux/logs/discord.log, and surfaces the same
+# warn line existing callers expect on failure. The caller-set
+# $ATMUX_DISCORD_TRIGGER (whip / report / decisions / dispatch / etc.)
+# is recorded as the trigger field; defaults to "unknown".
+#
+# Args: <shape> <body> <payload> <url>
+# Globals consumed: ATMUX_DISCORD_TRIGGER (optional, default "unknown")
+_atmux_discord_send_with_log() {
+  local shape="$1" body="$2" payload="$3" url="$4"
+  local trigger="${ATMUX_DISCORD_TRIGGER:-unknown}"
+
+  local started; started="$(date +%s%N 2>/dev/null || date +%s)"
+  local resp_file; resp_file="$(mktemp 2>/dev/null || echo "/tmp/atmux-discord-resp.$$")"
+  local http_status duration_ms
+  http_status="$(curl -sS -o "$resp_file" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    --max-time 10 \
     -d "$payload" \
-    "$url" >/dev/null || atmux::warn "discord: embed ping failed"
+    "$url" 2>>"$resp_file" || echo 000)"
+  local ended; ended="$(date +%s%N 2>/dev/null || date +%s)"
+  if [[ "$started" =~ ^[0-9]{15,}$ ]]; then
+    duration_ms=$(( (ended - started) / 1000000 ))
+  else
+    duration_ms=$(( (ended - started) * 1000 ))
+  fi
+
+  local resp_body; resp_body="$(head -c 500 "$resp_file" 2>/dev/null || true)"
+  rm -f "$resp_file" 2>/dev/null
+
+  local result="ok"
+  if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+    result="fail"
+    atmux::warn "discord: $shape ping failed (HTTP $http_status)"
+  fi
+
+  _atmux_discord_log "$result" "$shape" "$http_status" "$trigger" \
+    "${resp_body//$'\n'/\\n}" "$body" "$payload" "$duration_ms"
+}
+
+# Append a jsonl record to .atmux/logs/discord.log. All-failure-tolerant
+# (silent no-op when .atmux/ unavailable, jq missing, atmux::dir not
+# resolved). Contract: never breaks the calling discord_*_ping.
+#
+# Args: <result> <shape> <http_status> <trigger> <error_or_resp> <body> <payload> <duration_ms>
+_atmux_discord_log() {
+  local result="$1" shape="$2" http_status="$3" trigger="$4"
+  local err_or_resp="$5" body="$6" payload="$7" duration_ms="$8"
+
+  command -v jq >/dev/null 2>&1 || return 0
+  declare -F atmux::dir >/dev/null 2>&1 || return 0
+
+  local logdir log
+  logdir="$(atmux::dir 2>/dev/null)/logs" || return 0
+  [[ -n "$logdir" ]] || return 0
+  mkdir -p "$logdir" 2>/dev/null || return 0
+  log="$logdir/discord.log"
+
+  local ts
+  ts="$(TZ='Asia/Kuala_Lumpur' date '+%Y-%m-%dT%H:%M:%S+08')"
+
+  local team_name=""
+  if declare -F atmux::team_name >/dev/null 2>&1; then
+    team_name="$(atmux::team_name 2>/dev/null || echo unknown)"
+  fi
+
+  # Truncate body / payload preview at 500 bytes to keep the log
+  # line-oriented and greppable. body_sha256 lets you correlate the
+  # full content with whip.log / report.log entries.
+  local body_preview="${body:0:500}"
+  local payload_preview="${payload:0:500}"
+
+  local body_sha=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    body_sha="$(printf '%s' "$body" | sha256sum | cut -c1-16)"
+  fi
+
+  jq -nc \
+    --arg ts            "$ts" \
+    --arg trigger       "$trigger" \
+    --arg team          "$team_name" \
+    --arg shape         "$shape" \
+    --arg result        "$result" \
+    --arg http_status   "$http_status" \
+    --arg duration_ms   "$duration_ms" \
+    --arg body_sha      "$body_sha" \
+    --arg body_preview  "$body_preview" \
+    --arg payload_pre   "$payload_preview" \
+    --arg err_or_resp   "$err_or_resp" \
+    --arg payload_bytes "${#payload}" \
+    '{
+      ts: $ts,
+      trigger: $trigger,
+      team: $team,
+      shape: $shape,
+      result: $result,
+      http_status: ($http_status | tonumber? // 0),
+      duration_ms: ($duration_ms | tonumber? // 0),
+      payload_bytes: ($payload_bytes | tonumber? // 0),
+      body_sha256_16: $body_sha,
+      body_preview: $body_preview,
+      payload_preview: $payload_pre,
+      response_or_error: $err_or_resp
+    }' >> "$log" 2>/dev/null || true
 }
 
 # sha256 first byte mod 16 → palette hex. macOS shasum -a 256 fallback.
