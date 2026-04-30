@@ -145,7 +145,7 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 
 ```json
 {
-  "tmuxTmpdir": "/tmp/atmux-tmux-<team>"
+  "tmuxTmpdir": "/tmp/atmux-tmux_<team>"
 }
 ```
 
@@ -157,7 +157,7 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 
   ```bash
   atmux attach                                                # honours team.json
-  tmux -S /tmp/atmux-tmux-<team>/tmux-$UID/default attach     # raw tmux fallback
+  tmux -S /tmp/atmux-tmux_<team>/tmux-$UID/default attach     # raw tmux fallback
   ```
 
 - `atmux doctor` adds a `tmuxTmpdir` row asserting the directory is writable and (when a session exists) the isolated socket is reachable.

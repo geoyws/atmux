@@ -13,7 +13,7 @@ Today every atmux team shares the user's main tmux server at `/tmp/tmux-$UID/def
 Three implementation shapes considered:
 
 - **A (chosen)** — opt-in `team.tmuxTmpdir` field in `team.json`. `bin/atmux` reads it before any verb dispatch and exports `TMUX_TMPDIR` early. `lib/cron.sh` includes the env var in every emitted cron line. Default: unset → shared socket (today's behaviour).
-- **B (rejected)** — make per-team isolation the default. Breaks every existing user's mental model + tmux-attach workflow (they'd have to `tmux -S /tmp/atmux-tmux-<team>/default attach` instead of `tmux attach`). Aggressive flip-default change for a benefit only the dev-on-itself team needs.
+- **B (rejected)** — make per-team isolation the default. Breaks every existing user's mental model + tmux-attach workflow (they'd have to `tmux -S /tmp/atmux-tmux_<team>/default attach` instead of `tmux attach`). Aggressive flip-default change for a benefit only the dev-on-itself team needs.
 - **C (rejected)** — auto-isolate based on a heuristic (e.g. team name == repo dir basename → dogfooding team). Magic detection that's almost always wrong; explicit opt-in is clearer.
 
 The interaction with ADR-016 (single-session topology) is benign: `singleSession=true` + `tmuxTmpdir` set means windows live in the driver's session **on the team's isolated socket**. Driver who opts into both attaches via `tmux -S <tmpdir>/tmux-$UID/default attach`. The two flags are orthogonal; neither implies the other.
@@ -27,7 +27,7 @@ The interaction with ADR-016 (single-session topology) is benign: `singleSession
 - `lib/doctor.sh` adds `_doctor_check_tmux_tmpdir`: when the field is set, asserts the directory is writable + (if a session exists) `tmux -S <tmpdir>/tmux-$UID/default ls` succeeds. Yellow on writable-but-no-session (cold start), green on healthy, red on unwritable / wrong-socket-detected.
 - `lib/init.sh` wizard does NOT prompt for `tmuxTmpdir`. Opt-in is manual `team.json` edit; documented in README. (Wizard bloat avoided; the field is for advanced/dogfooding setups.)
 
-After this Epic ships, set `tmuxTmpdir: "/tmp/atmux-tmux-atmux-kanban"` in `/root/work/src/atmux/.atmux/team.json` (the dev-on-itself team) + restart atmux-kanban on its own socket. `sopx-mvp` stays on the main socket (it's not the dev-on-itself team).
+After this Epic ships, set `tmuxTmpdir: "/tmp/atmux-tmux_atmux-kanban"` in `/root/work/src/atmux/.atmux/team.json` (the dev-on-itself team) + restart atmux-kanban on its own socket. `sopx-mvp` stays on the main socket (it's not the dev-on-itself team).
 
 ## Consequences
 
@@ -51,11 +51,32 @@ All resolutions logged to `.atmux/decisions.md` via `atmux decisions add`.
 
 After 6 daily-driver tmux deaths (2026-04-22 through 2026-04-27), the original "advanced dogfooding only" framing is wrong. Every actively-iterated team — not just dogfooding — benefits from the blast-radius firewall. Concrete change set:
 
-- **Wizard prompts for cage isolation, default `y`** (`lib/init.sh` adds `_atmux_prompt_choice cage_isolation` after the singleSession block). Auto-derives path as `/tmp/atmux-tmux-<team>` (note the naming change from the OQ3-era `/tmp/atmux-tmpdir-<team>` for consistency with the `atmux-tmux` binary name).
-- **Template-init code path** (`atmux init` non-wizard) also uses `/tmp/atmux-tmux-<team>` by default. No opt-out at template-init level — too rare a use case to warrant a flag.
+- **Wizard prompts for cage isolation, default `y`** (`lib/init.sh` adds `_atmux_prompt_choice cage_isolation` after the singleSession block). Auto-derives path as `/tmp/atmux-tmux_<team>` (note the naming change from the OQ3-era `/tmp/atmux-tmpdir-<team>` for consistency with the `atmux-tmux` binary name; separator between prefix and team is underscore — see addendum 2026-04-30).
+- **Template-init code path** (`atmux init` non-wizard) also uses `/tmp/atmux-tmux_<team>` by default. No opt-out at template-init level — too rare a use case to warrant a flag.
 - **`bin/atmux-tmux` ships as a sibling binary.** Walks up from CWD to find `.atmux/team.json`, reads `.tmuxTmpdir`, exec's `tmux -S <tmpdir>/tmux-$UID/default "$@"`. Falls back to bare `tmux` outside any atmux project, so it's a transparent drop-in. `install.sh` symlinks it alongside `atmux`.
 - **Wizard tip-block** on completion shows the cage path, the `atmux-tmux attach` command, and a one-line note that all atmux verbs invoked from the project dir auto-target the cage.
-- **Naming convention**: `/tmp/atmux-tmux-<team>` — `<team>` is the team.json `.name` field verbatim. The existing `atmux` dogfooding team uses the bare `/tmp/atmux-tmux` (no suffix) because the team is literally named `atmux` and the doubled `atmux-tmux-atmux` was awkward; this is the only allowed deviation from the convention.
+- **Naming convention**: `/tmp/atmux-tmux_<team>` — `<team>` is the team.json `.name` field verbatim, joined with an underscore (separator convention: underscore between domains, hyphen reserved for within-name compounds; see addendum 2026-04-30). The existing `atmux` dogfooding team uses the bare `/tmp/atmux-tmux` (no suffix) because the team is literally named `atmux` and the doubled `atmux-tmux_atmux` was awkward; this is the only allowed deviation from the convention.
 - **Opt-out path stays**: declining the wizard prompt omits `tmuxTmpdir` from team.json entirely → bin/atmux's `_atmux_resolve_tmux_tmpdir` early-returns (operator-empty TMUX_TMPDIR) → team falls back to default socket. For observer-only teams that never run destructive verbs, this is fine.
 
 The 4-team migration that motivated this amendment (`atmux`, `ifca_aix`, `ifca_sopx`, `unum_beads` all moved from default socket to per-team cages on 2026-04-27) is the canonical rollout reference.
+
+## Amendment — 2026-04-30 (separator convention: underscore between prefix and team)
+
+The 2026-04-27 amendment introduced the cage-tmpdir path but used a hyphen between the multi-word prefix (`atmux-tmux`) and the team name (`unum_beads`, `ifca_aix`), producing `/tmp/atmux-tmux-unum_beads` — three separators of mixed type in one path. Driver flagged this on 2026-04-28 as a convention violation; canonical convention (memory: `feedback_path_separator_convention.md`) is **underscore between domains, hyphen within a name**:
+
+- `atmux-tmux` is one domain (compound name, internal hyphens).
+- `<team>` is another domain (own internal compound: `unum_beads`, `ifca-aix`, etc).
+- The boundary between them is a domain boundary → underscore.
+
+Canonical form going forward: `/tmp/atmux-tmux_<team>` (e.g. `/tmp/atmux-tmux_unum_beads`, `/tmp/atmux-tmux_ifca-aix`). Code change set (this ADR's amendment commit):
+
+- `lib/init.sh:100` (template default) — `"/tmp/atmux-tmux-" + $name` → `"/tmp/atmux-tmux_" + $name`.
+- `lib/init.sh:236` (wizard cage path) — `"/tmp/atmux-tmux-$team_name"` → `"/tmp/atmux-tmux_$team_name"`.
+- `templates/team.example.json:4` — `/tmp/atmux-tmux-my-team` → `/tmp/atmux-tmux_my-team`.
+- README §Per-team tmux socket isolation — example + raw-tmux fallback now show underscore form.
+
+**Live-state migration is OUT OF SCOPE** of this amendment. Existing on-disk cages (`/tmp/atmux-tmux-aux`, `/tmp/atmux-tmux-ifca_aix`, `/tmp/atmux-tmux-ifca_sopx`, `/tmp/atmux-tmux-unum_beads`) are left intact; the driver fires destructive stop/rename/start manually per team in a quiet window. Lead surfaces ready-to-fire migration instructions to driver-inbox once this commit lands green. Future-team scaffolds + wizard runs naturally produce the corrected form.
+
+**Dogfood `atmux` carve-out unchanged.** Bare `/tmp/atmux-tmux` (no suffix) for the literally-named-`atmux` team stays — the corrected path would be `/tmp/atmux-tmux_atmux` which still has the doubled-name awkwardness the original carve-out avoided. Hand-edited team.json continues to maintain the bare path; wizard default for a hypothetical new `atmux` team would now produce `/tmp/atmux-tmux_atmux` (acceptable; less awkward than the old `/tmp/atmux-tmux-atmux` because the underscore visually separates the doubling).
+
+Test coverage: `tests/unit/init_cage_tmpdir_separator.bats` asserts both code paths (template + wizard) emit the underscore form for a multi-word team name.
