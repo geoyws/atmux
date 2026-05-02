@@ -625,6 +625,49 @@ Everything lives in `.atmux/` at the project root (or wherever `ATMUX_DIR` point
 └── archive/<timestamp>/   # created on atmux stop
 ```
 
+## Conventions
+
+Two rules govern how atmux verbs emit state to agents. Both target the same problem — token cost on long-running teams — at different layers. Reviewer flags violations of either rule during signoff.
+
+### Agents see slices, never full state files
+
+Every `lib/*.sh` callsite that reads `.atmux/kanban.json` (or `decisions.md`, `flags.md`, `lead-outbox.md`, `driver-inbox.md`) for **agent-facing output** uses an explicit `jq` slice — by status, lane, member, story, epic, or recency window — before emitting. Whole-file emit is reserved for tooling-internal callsites (`atmux groom`, `atmux doctor`, `atmux audit`).
+
+Concrete defaults:
+
+- `atmux task list` emits ID/subject/status/owner only; full body via `--full`.
+- `atmux claim --next` returns just the claimed Task (ID + subject + body + deps), never the surrounding kanban.
+- `atmux inbox <member>`, `atmux status` emit per-member-and-current-state slices.
+- `atmux super-status` emits a per-team summary, never per-team kanban contents.
+
+Token math (informal — atmux dogfood team, ~1.2 MB kanban):
+
+| Read shape          | Tokens     | When                                  |
+|---------------------|------------|---------------------------------------|
+| Whole `kanban.json` | ~300K      | groom / doctor / audit (admin tools)  |
+| Per-purpose slice   | ~500–2K    | every claim, every inbox, every tick  |
+
+Per-tick win: ~99% of kanban-read budget on long-running teams. See [ADR-041](docs/adr/041-token-savings-kanban-slicing.md) for the per-callsite audit table + slice helper inventory.
+
+### `--full` flag — operator escape hatch
+
+`--full` bypasses the default slice and emits whole content. Reserved for:
+
+- Operator debug at the shell (`atmux task list --full | grep …`).
+- Tooling-internal callsites (groom, doctor) that traverse the whole kanban by design.
+
+`--full` in agent-facing context is a discipline regression — the reviewer flags it during signoff. If you need richer info inside an agent loop, pull a per-purpose slice (`atmux task list --status todo --epic <id>`, `atmux task show <id>`) instead of `--full`-ing the whole kanban into your context window.
+
+### Stable-first, churn-last brief ordering
+
+Member briefs (`templates/briefs/*.md`) are paste-targets for every spawned pane and the dominant input to the Anthropic prompt cache (5-min TTL). Ordering matters:
+
+1. **Top — stable preamble.** Role identity, channels matrix, ADR cross-refs, lane vocabulary. Cached across the whole session.
+2. **Middle — semi-stable rules.** Per-loop cadence, what-you-do / what-you-don't, hard rules.
+3. **Bottom — pointers to churning state.** `kanban.json`, `inboxes/<member>.json`, `lead-outbox.md`. The pointers are stable; the *files they point at* churn faster than the cache TTL, so the references go LAST so the cached preamble survives every tick.
+
+See [ADR-041 §Prompt-cache discipline](docs/adr/041-token-savings-kanban-slicing.md) for the full rationale + claim-reply / `task list` / whip-prelude levers. Roll-out is incremental (per ADR-041 OQ D2 resolution): each brief touched in normal evolution gets reordered if needed; reviewer flags ordering on changes. Mass restructure was rejected — cache-discipline wins are cumulative.
+
 ## Configuration (environment variables)
 
 | Var                                  | Default                                      | Purpose                                             |
