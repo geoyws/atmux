@@ -305,9 +305,9 @@ Today (S7):
 S10:
 
 ```
-✅ `117c47e` feat(decisions): relax caps to 200/500 + 4 new flags … — George Yong
-✅ `f322141` test(verify-libs): verify_libs.bats — green/red … — George Yong
-✅ `d700f8b` test(flags): flags_discord.bats — p0/p1/p2 gate … — George Yong
+✅ `117c47e` feat(decisions): relax caps to 200/500 + 4 new flags … — the maintainer
+✅ `f322141` test(verify-libs): verify_libs.bats — green/red … — the maintainer
+✅ `d700f8b` test(flags): flags_discord.bats — p0/p1/p2 gate … — the maintainer
 ```
 
 - `git log --since="@$since" --pretty=tformat:'%h\t%s\t%an'` — `tformat:` (NOT `format:`) preserves the trailing newline fix from `f-3229e152` (S7 self-surfaced flag — `format:` drops the last entry's terminator and `read` skips one commit).

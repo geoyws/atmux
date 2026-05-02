@@ -7,7 +7,7 @@
 
 ## Context
 
-`atmux start <team>` today creates a dedicated tmux session named `atmux-<team>` (lib/common.sh:175 — `atmux::session_name`). Production hax has accumulated three sessions for three teams: driver `atmux` (7 windows) + `atmux-atmux-kanban` (7) + `atmux-sopx-mvp` (12) = 26 windows across 3 sessions. Symptoms:
+`atmux start <team>` today creates a dedicated tmux session named `atmux-<team>` (lib/common.sh:175 — `atmux::session_name`). Production the-host has accumulated three sessions for three teams: driver `atmux` (7 windows) + `atmux-atmux-kanban` (7) + `atmux-myteam-alpha` (12) = 26 windows across 3 sessions. Symptoms:
 
 - `tmux ls` is polluted with `atmux-*` entries that aren't user-attachable.
 - Team-switch is a session-hop (Ctrl+B s) instead of a window-hop (Ctrl+B w) — disrupts driver flow.
@@ -50,7 +50,7 @@ Window-name placeholder `__atmux__home` → `__<team>__home` to prevent cross-te
 - **One refactor surface** at `atmux::session_name`. All 14+ callers transparently flip topology — no duplicate session-resolution logic.
 - **Refuse-gate at stop is non-negotiable.** A bug that resolves the stop target to the driver's session would kill the driver shell. `atmux::die` short-circuits before any kill operation.
 - **Window-name normalisation** is a one-time convention change. Per-team prefix `__<team>__home` is the canonical placeholder name post-merge.
-- **Phase 2 ships in the same Epic** but driver runs the verb manually per team during quiet windows — atmux-kanban + sopx-mvp will NOT live-migrate from this Epic's promote.
+- **Phase 2 ships in the same Epic** but driver runs the verb manually per team during quiet windows — atmux-kanban + myteam-alpha will NOT live-migrate from this Epic's promote.
 - **Rollback:** revert Phase 1's atmux::session_name branch; teams resolve back to literal `atmux-<team>` names. State files become inert; new starts use legacy topology. Phase 2 verb is additive; revert is `git rm lib/migrate.sh`.
 
 ### Risk register (from driver's body)

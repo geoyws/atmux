@@ -9,7 +9,7 @@ Switch root + every nested submodule onto `<branch>`. Handles detached HEADs by 
 
 ## Invocation
 
-`/rcheckout <branch>` — e.g. `/rcheckout aix-geoyws`. **Branch arg is mandatory.** Per ADR-035, there is no "config-mode" default that reads `.gitmodules` — the branch identifies the calling member, which `.gitmodules` cannot capture.
+`/rcheckout <branch>` — e.g. `/rcheckout myteam-beta-dev`. **Branch arg is mandatory.** Per ADR-035, there is no "config-mode" default that reads `.gitmodules` — the branch identifies the calling member, which `.gitmodules` cannot capture.
 
 ## Implementation
 

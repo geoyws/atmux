@@ -97,8 +97,8 @@ _atmux_init_template() {
   # socket from team.json so operators don't have to remember the path.
   # Separator convention (per memory feedback_path_separator_convention.md):
   # underscore between domains (atmux-tmux + <team>), hyphen reserved for
-  # within-name compounds. So a team named `unum_beads` resolves to
-  # /tmp/atmux-tmux_unum_beads (not the mixed-separator …-unum_beads).
+  # within-name compounds. So a team named `myteam-c` resolves to
+  # /tmp/atmux-tmux_myteam-c (not the mixed-separator …-myteam-c).
   jq --arg name "$team_name" --arg cwd "$PWD" \
     '.name = $name
      | .tmuxTmpdir = "/tmp/atmux-tmux_" + $name

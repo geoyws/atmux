@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# scripts/autopromote.sh — hourly cron job: pull origin/geoyws into an isolated
+# scripts/autopromote.sh — hourly cron job: pull origin/<branch> into an isolated
 # staging tree, run the test suite, rsync to /opt/atmux-stable IF tests don't
 # regress vs the last successful promote. Discord-pings outcome.
+#
+# Override branch via ATMUX_PROMOTE_BRANCH env (default: main).
 #
 # Why isolated staging tree (not pulling /root/work/src/atmux directly):
 #   - /root/work/src/atmux is the live atmux dogfooding team's worktree.
 #     `git pull` there would clobber the team's in-flight uncommitted work
 #     (workers stage files between commits via the pre-commit MM trap).
 #   - Promote pipeline owns its own checkout at /root/.atmux-promote-staging/.
-#     Idempotent: clones on first run, fetch+reset --hard origin/geoyws after.
+#     Idempotent: clones on first run, fetch+reset --hard origin/$BRANCH after.
 #
 # Failure budget — promote ABORTS when:
 #   - Test fail count > baseline fail count (last successfully promoted SHA's
@@ -16,7 +18,7 @@
 #   - rsync fails (filesystem error, permission, etc).
 #
 # Idempotent re-runs: same-SHA-as-last-examined → exit immediately (no test
-# re-run, no Discord spam). Only re-tests when origin/geoyws moves.
+# re-run, no Discord spam). Only re-tests when origin/$BRANCH moves.
 
 set -euo pipefail
 
@@ -30,7 +32,7 @@ LAST_PROMOTED_SHA_FILE="${ATMUX_PROMOTE_LAST_PROMOTED:-/root/.atmux-promote-last
 LAST_EXAMINED_SHA_FILE="${ATMUX_PROMOTE_LAST_EXAMINED:-/root/.atmux-promote-last-examined-sha}"
 TEST_LOG_DIR="${ATMUX_PROMOTE_TEST_LOG_DIR:-$DEV_ATMUX_DIR/logs}"
 REPO_URL="${ATMUX_REPO_URL:-https://github.com/geoyws/atmux.git}"
-BRANCH="${ATMUX_PROMOTE_BRANCH:-geoyws}"
+BRANCH="${ATMUX_PROMOTE_BRANCH:-main}"
 
 mkdir -p "$(dirname "$LOG")" "$TEST_LOG_DIR"
 

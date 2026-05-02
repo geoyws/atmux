@@ -150,7 +150,7 @@ atmux decisions add "OQ7: Tenancy model — soft (RLS) vs hard (schema-per-tenan
   --default "Soft-tenant via RLS predicate; schema-per-tenant deferred to E5" \
   --reversibility high \
   --note "Schema-per-tenant means N migrations per release across 200+ accounts" \
-  --context "PropertyX has 200+ developer accounts and migrating each per release would dominate the deploy window. Soft-tenant scoped via RLS predicates keeps one schema and pushes the isolation cost to query-time filters." \
+  --context "DemoProduct has 200+ developer accounts and migrating each per release would dominate the deploy window. Soft-tenant scoped via RLS predicates keeps one schema and pushes the isolation cost to query-time filters." \
   --option "soft-tenant + RLS predicates (recommended default)" \
   --option "schema-per-tenant + per-release migration burden" \
   --option "row-level multi-tenancy via per-tenant materialized views" \

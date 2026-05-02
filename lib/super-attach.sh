@@ -40,7 +40,7 @@ main() {
   tmux new-session -d -s "$ATMUX_SUPERDRIVER_SESSION" -n superdriver -c "$HOME" 3>&- 4>&-
 
   # NOTE: NO `set-option -g prefix` here. Superdriver runs on the operator's
-  # default tmux socket (shared with the daily-driver hax tmux); a
+  # default tmux socket (shared with the host's daily-driver tmux); a
   # server-scope prefix change would clobber every other session on that
   # socket. Cage prefix override lives in lib/start.sh, gated on the
   # cage's per-team TMUX_TMPDIR socket where blast radius is contained.

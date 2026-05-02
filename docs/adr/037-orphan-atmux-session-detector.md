@@ -19,7 +19,7 @@ Two categories of orphan to think about:
 
 Logic:
 
-1. **Skip when not on operator socket.** The check only runs when `$TMUX` points at the operator-socket equivalent (i.e., NOT inside a cage). On hax this is `/tmp/tmux-$UID/default`. Otherwise return early — cage sockets are atmux-owned by definition; their session list is governed by the cage-isolation contract (ADR-018).
+1. **Skip when not on operator socket.** The check only runs when `$TMUX` points at the operator-socket equivalent (i.e., NOT inside a cage). On the-host this is `/tmp/tmux-$UID/default`. Otherwise return early — cage sockets are atmux-owned by definition; their session list is governed by the cage-isolation contract (ADR-018).
 
 2. **Build allowlist of recognized atmux session names:**
    - `atmux` (the dogfood team — bare session per ADR-018 carve-out for the team literally named `atmux`).

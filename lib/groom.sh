@@ -470,7 +470,7 @@ _groom_cull_bak() {
 
 # ---------- size guard ----------
 
-# Warn (non-fatal) when archive/ growth crosses thresholds. Lets George
+# Warn (non-fatal) when archive/ growth crosses thresholds. Lets the driver
 # know if a single team's grooming is producing more log volume than the
 # token-saving payoff justifies.
 _groom_size_check() {
@@ -484,7 +484,7 @@ _groom_size_check() {
   local mb=$(( total_bytes / 1024 / 1024 ))
   # 50 MB total archive — warn. Indicates the team has been very busy
   # OR the kanban-summarize sub-op is mis-tuned (maybe --kanban-days too
-  # aggressive, retaining too much detail). George's call.
+  # aggressive, retaining too much detail). operator's call.
   if [[ $mb -ge 50 ]]; then
     atmux::warn "groom: archive/ at ${mb} MB — consider raising --kanban-days or pruning oldest archive files manually"
   fi

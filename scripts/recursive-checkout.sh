@@ -11,8 +11,8 @@
 #   - else: WARN, skip (continues with other repos — never aborts the sweep)
 #
 # Detached HEAD repos are switched onto <branch> if available.
-# Branch presence is per-repo: each submodule is independent (some may live on
-# ix-geoyws while siblings live on sopx-geoyws — script reports per-repo).
+# Branch presence is per-repo: each submodule is independent (some may live
+# on a feature branch while siblings live on another — script reports per-repo).
 #
 # A pre-flight scan reports each repo's CURRENT branch BEFORE any action — so
 # the user sees the divergent state before it gets unified.

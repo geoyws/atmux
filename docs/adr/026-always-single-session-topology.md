@@ -10,7 +10,7 @@
 
 Three weeks of fleet operation surfaced the actual pattern:
 
-- Drivers running 4 teams (`atmux-kanban`, `sopx-mvp`, `aix-root`, `geoyws-beads`) accumulated 5 sessions in `tmux ls`. Session-hop via `prefix s` is meaningfully slower than window-hop via `prefix n/p` and `prefix w` — felt every time the driver checks state.
+- Drivers running 4 teams (`atmux-kanban`, `myteam-alpha`, `myteam-beta-root`, `myteam-c-dev`) accumulated 5 sessions in `tmux ls`. Session-hop via `prefix s` is meaningfully slower than window-hop via `prefix n/p` and `prefix w` — felt every time the driver checks state.
 - New users discover dedicated sessions only via `tmux ls` surprise; nothing in `atmux start` output telegraphs that a separate session exists.
 - The original concerns about flipping the default — collision risk, accidental `kill-session` of the driver shell — were already mitigated in ADR-016's Phase 1 (window-name prefix `__<team>__<member>`, refuse-gate in `lib/stop.sh:39`). The two-mode complexity outweighs the safety margin.
 - Driver feedback 2026-04-27 08:30 MYT: *"we should always have the driver + members all in the same session so that the user can see everything at a glance. usually users are actively going around checking. it's more elegant and simpler this way. separation sessions really pollute the session space."*
@@ -29,12 +29,12 @@ Three weeks of fleet operation surfaced the actual pattern:
 
 ## Consequences
 
-- **Window count in driver session grows linearly** with active team count × member count. Today's fleet collapsed into one driver session = ~31 windows (1 driver + 7 atmux-kanban + 12 sopx-mvp + 5 aix-root + 6 geoyws-beads). Mitigation: window-name prefix `__<team>__<member>` is grep/choose-tree friendly — `prefix w` shows a flat list, `prefix s` (choose-tree) groups visually by name prefix.
+- **Window count in driver session grows linearly** with active team count × member count. Today's fleet collapsed into one driver session = ~31 windows (1 driver + 7 atmux-kanban + 12 myteam-alpha + 5 myteam-beta-root + 6 myteam-c-dev). Mitigation: window-name prefix `__<team>__<member>` is grep/choose-tree friendly — `prefix w` shows a flat list, `prefix s` (choose-tree) groups visually by name prefix.
 - **Backward-compat is soft.** Existing dedicated-session teams continue to work until migrated; no forced flip. Teams created from now on are single-session-only.
 - **Refuse-gate at `lib/stop.sh:39` becomes load-bearing for every team**, not just opt-in users. Already present and tested per ADR-016; this just promotes it from per-team to fleet-wide invariant.
 - **`atmux doctor` orphan-session detector** (ADR-016 Phase 1) keeps relevance — flags teams with `singleSession=true` whose state has not yet been migrated. With the new default, it becomes the canonical "did you remember to migrate?" surface.
 - **Eject path is still missing.** Once a team's windows are in the driver session, removing them is manual `tmux move-window` work. ADR-016 Phase 2 does not ship an `eject-from-driver-session` verb. Acceptable for now (rare op); revisit if it surfaces as pain.
-- **Multi-driver scenarios** (one human driving, one observer attaching) become slightly muddier — the observer attaches into a session containing all teams' windows, not just the one they want to watch. Acceptable for single-user hax setups; flag for ADR revision if multi-user becomes real.
+- **Multi-driver scenarios** (one human driving, one observer attaching) become slightly muddier — the observer attaches into a session containing all teams' windows, not just the one they want to watch. Acceptable for single-user the-host setups; flag for ADR revision if multi-user becomes real.
 
 ## References
 

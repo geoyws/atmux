@@ -12,9 +12,9 @@ Three forces converge:
 2. **ADR-025 introduced the registry** — `~/.claude/teams/registry.json` is the single source of truth for "what teams exist + which session they live in." Currently populated only by init/start/stop hooks.
 3. **Driver wants to flatten team names** — kill the `atmux-` session prefix that legacy dedicated-session teams accumulated. Maps:
    - `atmux-kanban` (sess `atmux-atmux-kanban`) → `atmux` (sess `atmux`)
-   - `sopx-mvp` (sess `atmux-sopx-mvp`) → `ifca_sopx` (sess `ifca_sopx`)
-   - `aix-root` (sess `atmux-aix-root`) → `ifca_aix` (sess `ifca_aix`)
-   - `geoyws-beads` (sess `atmux-geoyws-beads`) → `unum_beads` (sess `unum_beads`)
+   - `myteam-alpha` (sess `atmux-myteam-alpha`) → `myteam-alpha` (sess `myteam-alpha`)
+   - `myteam-beta-root` (sess `atmux-myteam-beta-root`) → `myteam-beta` (sess `myteam-beta`)
+   - `myteam-c-dev` (sess `atmux-myteam-c-dev`) → `myteam-c` (sess `myteam-c`)
 
 Today there is no atomic team-rename surface. Doing the rename by hand requires:
 

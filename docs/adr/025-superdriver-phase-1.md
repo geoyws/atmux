@@ -5,10 +5,10 @@
 
 ## Context
 
-A driver running multiple atmux teams on a single host (today: hax with `atmux-kanban` + `sopx-mvp` + future Unum and IFCA product teams) faces fragmented oversight:
+A driver running multiple atmux teams on a single host (e.g. `atmux-kanban` + `myteam-alpha` + future product teams) faces fragmented oversight:
 
 - **No fleet view.** "What teams exist? Which are alive? Which have OPS gates pending?" — answered today by `tmux ls` + `cd <project> && atmux status` per-team. Linear in team count, no rollup.
-- **Per-team tell-lead** is the only cross-context channel. Driver in superdriver context can't push a "rotate your lead and re-bootstrap" to `sopx-mvp` without `cd /path/to/sopx && atmux tell-lead "..."`. Friction discourages cross-team coordination.
+- **Per-team tell-lead** is the only cross-context channel. Driver in superdriver context can't push a "rotate your lead and re-bootstrap" to `myteam-alpha` without `cd /path/to/myteam-alpha && atmux tell-lead "..."`. Friction discourages cross-team coordination.
 - **No persistent registry of teams.** `~/.claude/teams/<uuid>/` directories exist (per-Claude-Code-session memory dirs) but don't enumerate atmux team projectRoots. Discovery is ad-hoc.
 
 The driver chose **Phase 1 only** (Decision A): build a read-only fleet aggregator + safe write channel that goes through each team's existing tell-lead durability layer. Defer cross-team Task pushing, cross-team Epics, and whip-cycle for the superdriver to Phase 2 — only commit to those after Phase 1 logs at least one "I had to bypass tell-lead" incident.
@@ -106,7 +106,7 @@ NO bypass — same channel as a regular driver running `atmux tell-lead` inside 
 | Registry corruption from concurrent atmux start/stop | yes | flock on registry.json.lock — mirrors `kanban.json.lock` pattern; bare jq+mv writes are foot-gun (per user memory). |
 | Cross-team tmux send-keys collision | yes | super-tell honors target's pane-state preflight (refuse on `thinking with` / `Compacting` / queued). Same `_atmux_pane_busy` shape as `atmux send`. |
 | Stale registry entries (team killed without atmux stop) | yes | super-status liveness check (tmux session exists + .atmux/ dir present) marks `stale`; `--prune` flag for operator-explicit cleanup. NO auto-mutate from reads. |
-| Privacy / blast (super-status reads ALL teams' state) | yes | acceptable on hax (single-user box); document in ADR + README. Multi-tenant deferred indefinitely. |
+| Privacy / blast (super-status reads ALL teams' state) | yes | acceptable on the-host (single-user box); document in ADR + README. Multi-tenant deferred indefinitely. |
 | Registry race during init across concurrent project-creation | derived | flock-guarded `atmux::registry_upsert` is atomic; idempotent on duplicate names (last-write-wins on lastSeen). |
 | Symlink farm in projectRoot (worktrees) | derived | `realpath` projectRoot before storing in registry; canonical paths only. |
 

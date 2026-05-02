@@ -2,7 +2,7 @@
 # atmux attach — tmux attach-session to the team.
 #
 # Cross-socket nesting note: when the operator runs `atmux attach` from inside
-# another tmux session (e.g. hax daily-driver tmux on the default socket) and
+# another tmux session (e.g. the host's daily-driver tmux on the default socket) and
 # the team's cage lives on a different socket (per ADR-018 TMUX_TMPDIR), the
 # inner `tmux` invocation must NOT inherit the operator's $TMUX env var —
 # otherwise tmux looks for the cage session on the current socket and fails

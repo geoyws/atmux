@@ -19,7 +19,7 @@ Root cause discovered during decomp: `atmux::jq_update` (lib/common.sh:310) acqu
 
 **Every mutation of shared JSON state in `lib/` routes through `atmux::jq_update` (or `atmux::with_lock`).** Bare `jq … > tmp && mv` patterns are forbidden on shared files. The forbidden set is enumerated as **6 per-file Tasks in S1** (one commit per site for fast bisect, per driver constraint 2026-04-26 18:?? MYT addendum): lib/dispatch.sh, lib/claim.sh, lib/cleanup.sh, lib/epic.sh, lib/story.sh, lib/kanban.sh. The reviewer's signoff (S1 REVIEW Task) verifies post-sweep coverage via independent grep + negative-space proof.
 
-**Atomicity ships in S1, not S2.** Re-shaped from initial decomp per driver: S1 = bug-fix-now-please for sopx exposure (atomicity + B1/B2/B3); S2 = broader refactor (depth guard + jq --arg + inbox cap). Both Stories ship in the same Epic-end promote bundle.
+**Atomicity ships in S1, not S2.** Re-shaped from initial decomp per driver: S1 = bug-fix-now-please for myteam-alpha exposure (atomicity + B1/B2/B3); S2 = broader refactor (depth guard + jq --arg + inbox cap). Both Stories ship in the same Epic-end promote bundle.
 
 **Per-file flock granularity is sufficient.** Cross-file transactional writes (e.g. updating `kanban.json` and `inbox/<member>.json` atomically together) are explicitly out of scope. atmux's load profile (single-host, ~10 concurrent processes max) does not justify a global lock. Per-file locks at every site close the observed leak.
 

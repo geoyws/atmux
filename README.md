@@ -257,7 +257,7 @@ See [docs/adr/030-registry-emoji-immutability.md](docs/adr/030-registry-emoji-im
 
 When multiple atmux teams ping into the same Discord channel, the team-name backticks alone aren't enough to distinguish pings at a glance — under load (20+ pings/hour, 2–3 teams), the wall blurs together. atmux solves this by rendering each ping as a Discord webhook **embed** with a **per-team color** (a 16-color Catppuccin-Frappe-aligned palette) and a **leading glyph** in the embed title.
 
-**Default (no config — works out of the box).** Each team gets a deterministic auto-color via `sha256(team-name)[0] mod 16` → palette index. `atmux-kanban` always renders one fixed color, `sopx-mvp` always another — no operator config required, and the assignment is stable across restarts.
+**Default (no config — works out of the box).** Each team gets a deterministic auto-color via `sha256(team-name)[0] mod 16` → palette index. `atmux-kanban` always renders one fixed color, `myteam-alpha` always another — no operator config required, and the assignment is stable across restarts.
 
 **Override (when the auto-color clashes).** Both fields are optional and live in `team.json:.discord`:
 
@@ -393,7 +393,7 @@ Sonnet members inherit `xhigh` effort by design.
 
 ### 🔑 Per-member Claude account selection
 
-Same precedent as the model field above ([ADR-024](docs/adr/024-per-member-model-selection.md)) — a sugar layer on top of Claude Code's built-in `CLAUDE_CONFIG_DIR` env var. Set `claudeAccount` per member in `team.json` to declaratively route members across multiple Claude Max accounts (cost balance, rate-limit headroom, account-scoped scopes for IFCA-vs-personal work):
+Same precedent as the model field above ([ADR-024](docs/adr/024-per-member-model-selection.md)) — a sugar layer on top of Claude Code's built-in `CLAUDE_CONFIG_DIR` env var. Set `claudeAccount` per member in `team.json` to declaratively route members across multiple Claude Max accounts (cost balance, rate-limit headroom, account-scoped scopes for internal-vs-personal work):
 
 ```json
 {
@@ -614,7 +614,7 @@ atmux driver note "S9 sandbox path option (c) — DB-side dispatcher" \
 
 ## 🛰️ atmux-superdriver Phase 1
 
-When the driver runs more than one atmux team on a single host (today: hax with `atmux-kanban` + `sopx-mvp` + future Unum / IFCA product teams), per-team oversight fragments fast: "what teams exist? which are alive? which have OPS gates pending?" is answered today by `tmux ls` + `cd <project> && atmux status` per team — linear in team count, no rollup. Per-team `tell-lead` is the only cross-context channel, so pushing a "rotate your lead" to `sopx-mvp` from any other shell costs a `cd` + an inbox edit. **atmux-superdriver Phase 1** is a read-only fleet aggregator + safe write channel that goes through each team's existing `tell-lead` durability layer — no new write surface to learn, no new audit trail to police.
+When the driver runs more than one atmux team on a single host (e.g. `atmux-kanban` + `myteam-alpha` + future product teams), per-team oversight fragments fast: "what teams exist? which are alive? which have OPS gates pending?" is answered today by `tmux ls` + `cd <project> && atmux status` per team — linear in team count, no rollup. Per-team `tell-lead` is the only cross-context channel, so pushing a "rotate your lead" to `myteam-alpha` from any other shell costs a `cd` + an inbox edit. **atmux-superdriver Phase 1** is a read-only fleet aggregator + safe write channel that goes through each team's existing `tell-lead` durability layer — no new write surface to learn, no new audit trail to police.
 
 ### Phase 1 surface
 
@@ -630,7 +630,7 @@ When the driver runs more than one atmux team on a single host (today: hax with 
 atmux super-attach          # opens dedicated atmux-superdriver session
                             # (spawn-or-attach; ON-DEMAND, no whip-cycle)
 atmux super-status          # triage cross-team digest
-atmux super-tell sopx-mvp lead "rotate-lead — uptime over 4h, context rotting"
+atmux super-tell myteam-alpha lead "rotate-lead — uptime over 4h, context rotting"
 ```
 
 The session sits idle when not in use. There is **no whip-cycle in Phase 1** — the driver invokes `super-attach` when fleet-wide coordination is needed, works, then exits. No 5-min watchdog, no 30-min digest, no idle Opus burn.
@@ -744,7 +744,7 @@ The Phase 2 commit gate is empirical: when the superdriver finds itself wanting 
 | Registry corruption from concurrent atmux start/stop | flock on `registry.json.lock` mirrors the kanban-lock pattern; bare `jq + mv` rejected. |
 | Cross-team tmux send-keys collision | `super-tell` honors target pane's preflight (refuse on `thinking with` / `Compacting` / queued). |
 | Stale registry entries (team killed without `atmux stop`) | `super-status` liveness check (tmux session + `.atmux/` dir) marks `stale`; `--prune` for operator-explicit cleanup — NO auto-mutate from reads. |
-| Privacy / blast (super-status reads ALL teams) | Acceptable on hax (single-user box). Multi-tenant deferred indefinitely. |
+| Privacy / blast (super-status reads ALL teams) | Acceptable on the-host (single-user box). Multi-tenant deferred indefinitely. |
 
 Full risk register + open-question resolutions: see [`docs/adr/025-superdriver-phase-1.md`](docs/adr/025-superdriver-phase-1.md).
 
@@ -784,7 +784,7 @@ ln -s /root/.atmux-src/completions/_atmux ~/.zsh/completions/_atmux
 
 ### Preflight: logout-kill exposure
 
-**Why it matters.** On modern Linux (systemd ≥230), `KillUserProcesses=yes` is the stock default. When your SSH session ends, systemd-logind reaps the entire user cgroup — your tmux server, every atmux team in it, and any orphan helper scopes all die together. The 2026-04-26 incident on hax cost both `sopx-mvp` and `atmux-kanban` their mid-flight state when an SSH session-3.scope ended; whip cron survived (it lives in crontab, outside the user session) and proceeded to ping Discord with "session DOWN" every 5 min until manually disabled. The fix is one `loginctl` call, but the **detection** has to happen before you start the team.
+**Why it matters.** On modern Linux (systemd ≥230), `KillUserProcesses=yes` is the stock default. When your SSH session ends, systemd-logind reaps the entire user cgroup — your tmux server, every atmux team in it, and any orphan helper scopes all die together. The 2026-04-26 incident on the-host cost both `myteam-alpha` and `atmux-kanban` their mid-flight state when an SSH session-3.scope ended; whip cron survived (it lives in crontab, outside the user session) and proceeded to ping Discord with "session DOWN" every 5 min until manually disabled. The fix is one `loginctl` call, but the **detection** has to happen before you start the team.
 
 **The check.** `atmux doctor` runs `_doctor_check_logout_kill` as part of its preflight battery. It reads `loginctl show-user --property=Linger` + `/etc/systemd/logind.conf` and surfaces one of three rows:
 
@@ -832,10 +832,10 @@ Sample rows from `atmux doctor`:
 
 ```
   ✅ topology:atmux-kanban    session=atmux 9 members in atmux:*
-  ⚠️  topology:sopx-mvp        session=atmux has 11 windows but team.json expects 12 members
-     → audit member-by-member: tmux list-windows -t atmux | grep '^__sopx-mvp__'
-  ❌ topology:aix-root         registry says session=atmux-aix but 5 windows live in atmux
-     → atmux team rename aix-root --session atmux --migrate-session OR atmux team rename aix-root --session atmux-aix
+  ⚠️  topology:myteam-alpha        session=atmux has 11 windows but team.json expects 12 members
+     → audit member-by-member: tmux list-windows -t atmux | grep '^__myteam-alpha__'
+  ❌ topology:myteam-beta-root         registry says session=atmux-myteam-beta but 5 windows live in atmux
+     → atmux team rename myteam-beta-root --session atmux --migrate-session OR atmux team rename myteam-beta-root --session atmux-myteam-beta
   ❌ topology:superdriver      atmux-superdriver session absent — fleet aggregator unavailable
      → atmux super-attach
 ```

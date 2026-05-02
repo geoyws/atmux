@@ -2,7 +2,7 @@
 
 **Status**: accepted
 **Date**: 2026-04-27
-**Revision**: 2026-04-27 07:55 MYT — narrowed Sonnet carve-out from 4 roles to discorder-only after George's review (decision d-c3f8d980 supersedes d-a26b4211).
+**Revision**: 2026-04-27 07:55 MYT — narrowed Sonnet carve-out from 4 roles to discorder-only after the maintainer's review (decision d-c3f8d980 supersedes d-a26b4211).
 
 ## Context
 
@@ -10,7 +10,7 @@ Global `~/.claude/CLAUDE.md` (Model Selection §) reads:
 
 > **Team members always use Opus.** Sonnet is only acceptable for Agent-tool subagents doing read-only work… Anything that writes code, makes judgment calls, or acts on behalf of the user runs on Opus.
 
-The original v1 of this ADR (07:34 MYT) proposed extending Sonnet to four atmux roles (reviewer, discorder, unblocker, auditor) as read-only-judgment carve-outs. George's 07:55 MYT review reverted: Sonnet-fit is **read-and-summarise WITHOUT judgment-on-correctness**. Of the four originally proposed:
+The original v1 of this ADR (07:34 MYT) proposed extending Sonnet to four atmux roles (reviewer, discorder, unblocker, auditor) as read-only-judgment carve-outs. the maintainer's 07:55 MYT review reverted: Sonnet-fit is **read-and-summarise WITHOUT judgment-on-correctness**. Of the four originally proposed:
 
 - **discorder** — qualifies. Pure narrative formatter; writes Discord pings only; never makes calls about correctness of others' work.
 - **reviewer** — does NOT qualify. Audit-bar judgment (exhaustive grep + negative-space proof + class-widening verdict per global CLAUDE.md §Review/Audit Discipline) is consequential calls on others' work.

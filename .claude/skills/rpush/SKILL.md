@@ -9,7 +9,7 @@ Push each repo (root + nested submodules) currently on `<branch>` to `origin/<br
 
 ## Invocation
 
-The user passes the target branch: `/rpush sopx-geoyws`.
+The user passes the target branch: `/rpush myteam-alpha-dev`.
 
 ## Implementation
 
@@ -27,7 +27,7 @@ Submodules are pushed deepest-first via `git submodule foreach --recursive`'s ou
 
 ## Push policy reminder
 
-This script delegates branch decisions to the caller. **Per project push policy**, primary staging branches (`<product>-staging`) are George-manual ONLY — never auto-push to those. WIP / per-developer branches (`<product>-<dev>` / `<product>-<dev>-staging`) are fine. The script does not enforce this — the **caller must.**
+This script delegates branch decisions to the caller. **Per project push policy**, primary staging branches (`<product>-staging`) are the driver-manual ONLY — never auto-push to those. WIP / per-developer branches (`<product>-<dev>` / `<product>-<dev>-staging`) are fine. The script does not enforce this — the **caller must.**
 
 ## After running
 

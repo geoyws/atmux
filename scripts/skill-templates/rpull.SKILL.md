@@ -7,11 +7,11 @@ description: Recursively `git pull --ff-only origin <branch>` on root + every ne
 
 Fast-forward each repo (root + nested submodules) on `<branch>` against `origin/<branch>`. Refuses if any repo is on a different branch — partial pulls leave the tree in a half-state.
 
-The branch is the **calling member's branch** (`aix-geoyws`, `aix-yj`, `sopx-geoyws`, `geoyws-beads`, etc.). Per the per-member-branch model (ADR-035), the branch arg is mandatory — there is no `.gitmodules`-driven default.
+The branch is the **calling member's branch** (`myteam-beta-dev`, `myteam-beta-bob`, `myteam-alpha-dev`, `myteam-c-dev`, etc.). Per the per-member-branch model (ADR-035), the branch arg is mandatory — there is no `.gitmodules`-driven default.
 
 ## Invocation
 
-`/rpull <branch>` — e.g. `/rpull aix-geoyws`.
+`/rpull <branch>` — e.g. `/rpull myteam-beta-dev`.
 
 ## Implementation
 

@@ -8,13 +8,13 @@
 
 Agents (gitter, member-direct-commit roles, lead, unblocker) have demonstrated push capability via the existing tooling: `git push origin <branch>`, `atmux task add ... commit-Task ...`, `atmux dispatch gitter`. The previously-encoded push policy (memory `project_push_policy.md`) treated branch classes by allow/deny:
 
-- WIP branches (`geoyws`, `sopx-geoyws`, `aix-geoyws`, `geoyws-beads`): agents auto-push OK.
-- `*-staging` branches (`sopx-staging`, `aix-staging`, etc.): George-manual only — agents refuse.
+- WIP branches (`feature-x`, `myteam-alpha-dev`, `myteam-beta-dev`, `myteam-c-dev`): agents auto-push OK.
+- `*-staging` branches (`myteam-alpha-staging`, `myteam-beta-staging`, etc.): the driver-manual only — agents refuse.
 - `main` / `master`: previously documented as "surface before any push" — too soft.
 
 Driver feedback 2026-04-27 09:30 MYT: *"agents can never push to main/master. that is PR-only domain."*
 
-The "surface before any push" framing leaves room for agents to interpret edge cases (a Task body says "push to main"; a CI pipeline says "merge fix"; a stale config has `branch.foo.merge = refs/heads/main`). Soft policy = drift risk. The actual invariant George wants is **hard refuse**: `main` / `master` is exclusively the PR-merge target, not an agent push destination — even with explicit driver authorisation in conversation. The path to `main` is open-PR → review → merge-via-Github (or equivalent), with a human being the merger.
+The "surface before any push" framing leaves room for agents to interpret edge cases (a Task body says "push to main"; a CI pipeline says "merge fix"; a stale config has `branch.foo.merge = refs/heads/main`). Soft policy = drift risk. The actual invariant the driver wants is **hard refuse**: `main` / `master` is exclusively the PR-merge target, not an agent push destination — even with explicit driver authorisation in conversation. The path to `main` is open-PR → review → merge-via-Github (or equivalent), with a human being the merger.
 
 This is also why the existing `lib/stop.sh` refuse-gate model is the right precedent: certain destructive ops are short-circuited regardless of caller intent. Push-to-main is now in that class.
 
@@ -35,13 +35,13 @@ This is also why the existing `lib/stop.sh` refuse-gate model is the right prece
 - Agents may open a Github PR using `gh pr create --base main --head <wip-branch>` — opening a PR is NOT pushing-to-main.
 - The merge itself (PR → main) is **human-clicked** in Github UI (or `gh pr merge` invoked by the human). No agent runs `gh pr merge` without driver-explicit-per-PR-call.
 
-**This applies fleet-wide**: atmux, ifca_sopx, ifca_aix, unum_beads, and all future teams. Lead briefs across all teams must carry the refuse-gate reference.
+**This applies fleet-wide**: atmux, myteam-alpha, myteam-beta, myteam-c, and all future teams. Lead briefs across all teams must carry the refuse-gate reference.
 
 ## Consequences
 
 - **PR-discipline becomes structural**, not procedural. Agents physically cannot push to `main` / `master`; the policy is enforced by tooling, not by goodwill.
-- **Edge cases get surfaced, not interpreted.** A misconfigured `branch.foo.merge` pointing to `refs/heads/main` (the same shape as the aix-root upstream-misconfig incident, but pointing to main instead of staging) hits the refuse-gate and surfaces — agents do not auto-correct or auto-push.
-- **Driver-explicit `--force-push-main` flag is NOT introduced.** The escape hatch is "George does it manually outside the agent stack" — no agent gets a path through the gate, even with a flag, because flags drift in autonomous mode.
+- **Edge cases get surfaced, not interpreted.** A misconfigured `branch.foo.merge` pointing to `refs/heads/main` (the same shape as the myteam-beta-root upstream-misconfig incident, but pointing to main instead of staging) hits the refuse-gate and surfaces — agents do not auto-correct or auto-push.
+- **Driver-explicit `--force-push-main` flag is NOT introduced.** The escape hatch is "the driver does it manually outside the agent stack" — no agent gets a path through the gate, even with a flag, because flags drift in autonomous mode.
 - **Reviewer's job widens slightly**: must scope-check Task acceptance criteria for the prohibited phrasing. Bats coverage on the reviewer brief verb tests this.
 - **Initial implementation is brief-only** (text-level enforcement) until the `atmux::guard_push_target` helper lands. Brief-level enforcement is sufficient for trustworthy agents (Opus + xhigh) but the helper is the load-bearing version.
 - **`master` included alongside `main`** for forward-compat with any older repo that still uses `master` as the protected line. Same refuse-gate applies; reviewer/gitter check both names.

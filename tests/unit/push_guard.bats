@@ -5,7 +5,7 @@
 # Contract under test (lib/common.sh:670):
 #   - branch == 'main' OR 'master' → atmux::die with 'push-target refuse'
 #     message; exit code != 0.
-#   - any other branch (geoyws WIP, <product>-<dev>-staging, feature
+#   - any other branch (WIP, <product>-<dev>-staging, feature
 #     branches) → silent return 0.
 #   - extra args after the branch (e.g. --force) are ignored — the gate
 #     does NOT honor any override flag (intentional; ADR-028 §Decision).
@@ -89,13 +89,13 @@ teardown() {
 
 # ---------- AC4: push-allowed-WIP (the policy's positive space) ----------
 
-@test "push_guard: WIP branch names (geoyws / <product>-<dev>-staging) pass through silently" {
+@test "push_guard: WIP branch names (feature / <product>-<dev>-staging) pass through silently" {
   # The whole point of the gate is to refuse main/master while leaving
   # the rest of the branch namespace untouched — agents push to their
   # WIP trunk + per-developer staging URLs all day. Negative-space test:
   # if any of these refuse, the gate is over-broad.
-  for branch in geoyws sopx-geoyws aix-geoyws \
-                sopx-geoyws-staging aix-px-ai-geoyws-swc-staging \
+  for branch in feature myteam-alpha-dev myteam-beta-dev \
+                myteam-alpha-dev-staging myteam-feature-staging \
                 feature/x-y wip-2026-04-27 ifca-product-staging; do
     run atmux::guard_push_target "$branch"
     [ "$status" -eq 0 ] || { echo "branch '$branch' was refused (expected pass)"; false; }

@@ -11,7 +11,7 @@ The branch is the **calling member's branch** (per-member-branch model, ADR-035)
 
 ## Invocation
 
-`/rpush <branch>` — e.g. `/rpush aix-geoyws`.
+`/rpush <branch>` — e.g. `/rpush myteam-beta-dev`.
 
 ## Implementation
 
@@ -23,7 +23,7 @@ Where `$BRANCH` is the user-supplied argument. The script resolves the repo root
 
 ## Push policy reminder
 
-**Never push to primary staging** (`<product>-staging` — e.g. `aix-staging`, `sopx-staging`) — those are George-manual ONLY (see CLAUDE.md "Push Policy"). Per-member branches (`aix-geoyws`, `aix-yj`, `sopx-geoyws`, `geoyws-beads`, etc.) auto-push freely. The script does not enforce this — the **caller must.**
+**Never push to primary staging** (`<product>-staging` — e.g. `myteam-beta-staging`, `myteam-alpha-staging`) — those are the driver-manual ONLY (see CLAUDE.md "Push Policy"). Per-member branches (`myteam-beta-dev`, `myteam-beta-bob`, `myteam-alpha-dev`, `myteam-c-dev`, etc.) auto-push freely. The script does not enforce this — the **caller must.**
 
 ## After running
 

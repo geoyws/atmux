@@ -262,7 +262,7 @@ _atmux_sock_debounce_flush() {
   [[ -n "$merged" ]] && atmux::sock_publish "$member" "$merged"
 }
 
-# Epoch milliseconds. GNU date supports %3N on Linux/Hetzner; falls back
+# Epoch milliseconds. GNU date supports %3N on Linux/cloud; falls back
 # to python3 for hosts without nanosecond date (older macOS / busybox),
 # and ultimately to second-precision×1000 if neither is reachable so a
 # missing dep can't wedge the debounce path entirely.

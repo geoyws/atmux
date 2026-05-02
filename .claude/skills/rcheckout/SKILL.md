@@ -1,6 +1,6 @@
 ---
 name: rcheckout
-description: Recursively checkout a branch on the root repo + every nested git submodule, including detached HEAD or wrong-branch repos. Use when the user types `/rcheckout <branch>` or asks to "switch all submodules to <branch>" / "rcheckout <branch>". For monorepos with deeply nested submodules (e.g. sopx-root tree). Wraps `scripts/recursive-checkout.sh` from the atmux repo.
+description: Recursively checkout a branch on the root repo + every nested git submodule, including detached HEAD or wrong-branch repos. Use when the user types `/rcheckout <branch>` or asks to "switch all submodules to <branch>" / "rcheckout <branch>". For monorepos with deeply nested submodules (e.g. myteam-alpha-root tree). Wraps `scripts/recursive-checkout.sh` from the atmux repo.
 ---
 
 # rcheckout — recursive submodule checkout
@@ -9,7 +9,7 @@ Switch the current repo and every nested submodule onto `<branch>`. Handles deta
 
 ## Invocation
 
-The user passes the target branch as the argument: `/rcheckout sopx-geoyws`.
+The user passes the target branch as the argument: `/rcheckout myteam-alpha-dev`.
 
 ## Implementation
 

@@ -214,8 +214,8 @@ JSON
   [[ "$output" =~ "PR-only" ]]
 }
 
-@test "common: guard_push_target — allows WIP branches (geoyws, feature-x)" {
-  run atmux::guard_push_target geoyws
+@test "common: guard_push_target — allows WIP branches (feature-x, dev-y)" {
+  run atmux::guard_push_target dev-y
   [ "$status" -eq 0 ]
   run atmux::guard_push_target feature-x
   [ "$status" -eq 0 ]

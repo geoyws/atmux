@@ -9,7 +9,7 @@
 # team.json, state/*) are NEVER touched — those are authoritative.
 #
 # Why this exists: whip + report + dispatch logs grow append-only forever.
-# After 6 months on hax `report.log` was 750KB+, `be-kanban.json` inbox
+# After 6 months in production `report.log` was 750KB+, `be-kanban.json` inbox
 # was 108KB (mostly stale `.done[]` entries from completed tasks). Long-
 # running teams need a periodic broom; the alternative is operators
 # remembering to `>` the files manually, which they don't.

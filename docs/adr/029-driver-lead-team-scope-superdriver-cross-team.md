@@ -6,14 +6,14 @@
 
 ## Context
 
-Today, any tmux pane running `atmux --team-dir <any-team> <write-verb>` can message any team. Driver of `atmux` team can `atmux --team-dir /root/work/ifca/src/sopx-root tell-lead "..."` and write into sopx-mvp's driver-inbox + send-keys to its lead pane. There is no caller-identity check; the only gate is filesystem access to the target's `.atmux/` directory.
+Today, any tmux pane running `atmux --team-dir <any-team> <write-verb>` can message any team. Driver of `atmux` team can `atmux --team-dir /root/work/ifca/src/myteam-alpha-root tell-lead "..."` and write into myteam-alpha's driver-inbox + send-keys to its lead pane. There is no caller-identity check; the only gate is filesystem access to the target's `.atmux/` directory.
 
-This breaks an architectural invariant George wants to enforce: **drivers are scoped to one team's project; leads are scoped to one team's members; cross-team coordination requires the superdriver tier**.
+This breaks an architectural invariant the driver wants to enforce: **drivers are scoped to one team's project; leads are scoped to one team's members; cross-team coordination requires the superdriver tier**.
 
 Driver feedback 2026-04-27 09:55 MYT: *"make sure that only drivers and leads are scoped to their own projects... only the superdriver can message anyone."*
 
 The current uncontrolled cross-team write surface has produced concrete drift today:
-- The atmux-team driver dispatched commit+push directives to sopx-mvp + aix-root + geoyws-beads in conversation. Workflow-fine, but architecturally this should have flowed: driver → superdriver → other team-leads. The driver-of-atmux is NOT the driver-of-sopx; same human at the keyboard does not transfer scope.
+- The atmux-team driver dispatched commit+push directives to myteam-alpha + myteam-beta-root + myteam-c-dev in conversation. Workflow-fine, but architecturally this should have flowed: driver → superdriver → other team-leads. The driver-of-atmux is NOT the driver-of-myteam-alpha; same human at the keyboard does not transfer scope.
 - Without the gate, a buggy script or wedged automation could write to every team's kanban from any pane.
 
 The scope policy must be enforced at the tool surface, not via discipline alone.
@@ -55,7 +55,7 @@ The scope policy must be enforced at the tool surface, not via discipline alone.
 Every cross-team write from the superdriver appends one line to `~/.claude/teams/registry.json:.superdriver.writeAuditLog` (or a sibling file `~/.claude/teams/superdriver-writes.jsonl` for size discipline):
 
 ```jsonl
-{"ts":"2026-04-27T09:55:00+08:00","verb":"tell-lead","targetTeam":"ifca_sopx","caller":"superdriver:__superdriver__home","msgFirstLine":"[driver 09:25 MYT] REROUTE commit+push triage..."}
+{"ts":"2026-04-27T09:55:00+08:00","verb":"tell-lead","targetTeam":"myteam-alpha","caller":"superdriver:__superdriver__home","msgFirstLine":"[driver 09:25 MYT] REROUTE commit+push triage..."}
 ```
 
 Rationale: the superdriver tier IS the trust escalation; auditing it preserves the "who-told-whom-what" trail when cross-team writes happen.
@@ -70,7 +70,7 @@ Superdriver workflow: `atmux super-attach` (E10/Sd verb) drops user into `superd
 
 - **Architectural invariant becomes load-bearing.** A team driver that drifts into "managing two teams from one pane" hits a hard refuse-gate; either attach to superdriver or stay scoped.
 - **Multi-team incidents (concurrent fleet-wide directives) require superdriver-pane attach.** Adds one workflow step (`atmux super-attach`) for the human, but enforces the audit + identity discipline.
-- **Read-side aggregation is unaffected.** Driver of atmux-team can `atmux --team-dir /sopx super-status` or `atmux --team-dir /sopx task list` to peek; just can't write.
+- **Read-side aggregation is unaffected.** Driver of atmux-team can `atmux --team-dir /myteam-alpha super-status` or `atmux --team-dir /myteam-alpha task list` to peek; just can't write.
 - **Members are intentionally allowed only `reply`** — narrow channel back to lead/driver. They cannot `send` or `dispatch` to peers (existing convention; this ADR codifies it).
 - **`unknown` caller** (running atmux from outside any registered tmux pane — e.g., a cron job, a script) is refuse-by-default for writes. Cron-friendly verbs (`atmux whip`, `atmux report`) are read-mostly with narrow controlled writes (whip writes to its own ledger, not cross-team kanban). They run under a special caller-scope `cron` set via env var `ATMUX_CALLER_SCOPE=cron` — explicit declaration, not implicit elevation.
 - **First-spawn / no-registry-yet edge case**: until `~/.claude/teams/registry.json` exists (E10/Sa lands), `atmux::resolve_caller_scope` falls back to "any-can-write" with a deprecation warning to stderr. Once registry exists, the gate is hard.

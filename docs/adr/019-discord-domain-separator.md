@@ -16,7 +16,7 @@ Three shapes considered:
 - **B (rejected)** — per-team webhook URL → per-team Discord channel. Full visual isolation, but defeats single-channel cross-team awareness (driver loses the "everything happening" gestalt). Also requires manual webhook provisioning per team.
 - **C (rejected)** — Discord forum-channel threads (Discord-native isolation, single channel). Adds Discord-side complexity (threads have their own surfaces, mobile UX is mixed); requires forum-channel webhook variant which our `atmux::discord_ping` doesn't speak today. Bigger lift.
 
-A hash-based palette gives deterministic per-team color without operator config: `atmux-kanban` always renders cyan, `sopx-mvp` always magenta, etc. The `team.json:.discord.color` hex override exists for the "this team's auto-color clashes" escape hatch.
+A hash-based palette gives deterministic per-team color without operator config: `atmux-kanban` always renders cyan, `myteam-alpha` always magenta, etc. The `team.json:.discord.color` hex override exists for the "this team's auto-color clashes" escape hatch.
 
 ## Decision
 

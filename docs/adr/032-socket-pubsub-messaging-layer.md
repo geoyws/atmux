@@ -46,7 +46,7 @@ Three helpers wrap the chosen socket implementation:
 - `atmux::sock_publish <member> <event-json>` — connect, write JSONL line, disconnect. Non-blocking when listener absent (returns warn, does not fail).
 - `atmux::sock_subscribe <member> <handler>` — accept loop; for each line, invoke `<handler> <event-json>`.
 
-Implementation choice (OQ1 below): `socat UNIX-LISTEN:…,fork` for the listener, `socat - UNIX-CONNECT:…` for the publisher. Smallest dep, ubiquitous on Ubuntu/macOS/Hetzner-base, well-tested for fork-mode UNIX-LISTEN. Falls back to `python3 -c socketserver` only if socat is absent.
+Implementation choice (OQ1 below): `socat UNIX-LISTEN:…,fork` for the listener, `socat - UNIX-CONNECT:…` for the publisher. Smallest dep, ubiquitous on Ubuntu/macOS/Linux, well-tested for fork-mode UNIX-LISTEN. Falls back to `python3 -c socketserver` only if socat is absent.
 
 ### Supervisor lifecycle — `lib/supervisor.sh` (Story Sb)
 
@@ -98,7 +98,7 @@ After REVIEW signoff on Sa-Se, `lib/whip.sh` removes its `claim --next` polling 
 
 **For BE lane:** `lib/send.sh`, `lib/dispatch.sh`, `lib/tell.sh`, `lib/reply.sh`, `lib/kanban.sh`, `lib/decisions.sh`, `lib/flags.sh` all gain `sock_publish` calls after state mutation. `lib/start.sh` auto-spawns `__<team>__supervisor` window. New `atmux supervisor-start` verb. New `lib/socket-pubsub.sh`, `lib/supervisor.sh`.
 
-**For TEST lane:** New bats files (socket_pubsub.bats, supervisor.bats, verb_publish.bats, plus an e2e socket lifecycle spec). Adds `socat` as a test-time dep — `tests/helpers/setup.bash` skips socket tests if socat absent (Hetzner base has it; macOS dev has it via brew).
+**For TEST lane:** New bats files (socket_pubsub.bats, supervisor.bats, verb_publish.bats, plus an e2e socket lifecycle spec). Adds `socat` as a test-time dep — `tests/helpers/setup.bash` skips socket tests if socat absent (cloud base has it; macOS dev has it via brew).
 
 **For OPS lane:** New tmux window in every running team (one per session). `atmux stop` gains a step to terminate the supervisor process and remove the heartbeat file. `atmux doctor` gains a `supervisor-liveness` row.
 

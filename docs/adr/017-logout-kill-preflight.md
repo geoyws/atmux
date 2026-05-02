@@ -5,7 +5,7 @@
 
 ## Context
 
-On 2026-04-26 17:37:46 MYT, the driver's SSH session-3.scope ended. systemd-logind reaped the cgroup; both atmux teams (`sopx-mvp` + `atmux-kanban`) died with the user's tmux server. Root cause: Ubuntu's stock systemd shipped `KillUserProcesses=yes` since systemd 230, and the user did not have `Linger=yes` set via `loginctl`. Effect:
+On 2026-04-26 17:37:46 MYT, the driver's SSH session-3.scope ended. systemd-logind reaped the cgroup; both atmux teams (`myteam-alpha` + `atmux-kanban`) died with the user's tmux server. Root cause: Ubuntu's stock systemd shipped `KillUserProcesses=yes` since systemd 230, and the user did not have `Linger=yes` set via `loginctl`. Effect:
 
 - Two team supervisors lost mid-flight state.
 - One orphan `atmux-spawn` scope kept burning CPU for 2h27m before being noticed.

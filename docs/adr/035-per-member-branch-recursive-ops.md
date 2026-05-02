@@ -6,19 +6,19 @@
 
 ## Context
 
-Across IFCA monorepos with submodules (`aix-root`, `sopx-root`) and Unum, members work on **per-member branches** — `aix-yj` for YJ, `aix-geoyws` for George's aix work, `sopx-geoyws` for George's sopx work, `geoyws-beads` for George's Unum beads work. The branch identifies the member, not the product or the staging tier.
+Across monorepos with submodules (`myteam-beta-root`, `myteam-alpha-root`, `myteam-c-root`), members work on **per-member branches** — e.g. `myteam-beta-bob` for member Bob, `myteam-beta-alice` for Alice. The branch identifies the member, not the product or the staging tier.
 
 When a member enters their working state, root + every nested submodule is on **their** branch. Their pointer-bumps and code edits flow through that branch and the corresponding submodule branches. Other members' branches are not modified.
 
 Three failure modes were observed before this ADR:
 
-1. **macOS-hardcoded slash commands.** `aix-root/.claude/commands/r{pull,push,checkout}.md` had absolute paths like `/Users/geoyws/work/ifca/src/aix-root` baked in. Non-functional on hax (Linux). Created by a Mac-side session and never tested cross-machine.
+1. **macOS-hardcoded slash commands.** `myteam-beta-root/.claude/commands/r{pull,push,checkout}.md` had absolute paths like `/Users/dev/work/src/myteam-beta-root` baked in. Non-functional on Linux hosts. Created by a Mac-side session and never tested cross-machine.
 
-2. **`.gitmodules` config-mode default.** The same aix slash commands defaulted to reading `submodule.<name>.branch` from `.gitmodules` to "unify" each submodule on its declared branch when invoked with no arg. `.gitmodules` cannot capture *which member is currently working* — it's a fixed declaration. Any "default" it produces is correct for at most one member and wrong for all others.
+2. **`.gitmodules` config-mode default.** The same myteam-beta slash commands defaulted to reading `submodule.<name>.branch` from `.gitmodules` to "unify" each submodule on its declared branch when invoked with no arg. `.gitmodules` cannot capture *which member is currently working* — it's a fixed declaration. Any "default" it produces is correct for at most one member and wrong for all others.
 
-3. **Override-mode-as-blanket-policy.** During a fleet audit 2026-04-29, the superdriver ran `recursive-checkout.sh aix-geoyws` against aix-root's 17 submodules to "unify on the root branch." The immediate ops fast-forwarded cleanly, but the model is wrong: it erases per-member branch state in submodules and creates collisions next time a different member checks out their branch (their submodule branches may not exist locally, or will be stale).
+3. **Override-mode-as-blanket-policy.** During a fleet audit 2026-04-29, the superdriver ran `recursive-checkout.sh myteam-beta-dev` against myteam-beta-root's 17 submodules to "unify on the root branch." The immediate ops fast-forwarded cleanly, but the model is wrong: it erases per-member branch state in submodules and creates collisions next time a different member checks out their branch (their submodule branches may not exist locally, or will be stale).
 
-The driver corrected: *"the intent is that each team member has their own branch... so no all-in on aix-geoyws."*
+The driver corrected: *"the intent is that each team member has their own branch... so no all-in on myteam-beta-dev."*
 
 ## Decision
 
@@ -53,23 +53,23 @@ Not promoted to `~/.claude/skills/` (global). Reasons:
 
 ### 4. `.gitmodules` `branch = ` is metadata, not a working-state directive
 
-`branch = aix-geoyws` in `.gitmodules` means: *when someone runs `git submodule update --remote`, fetch the latest commit from this branch into the parent's pin.* It does NOT mean "all members must have this submodule on this branch." Treat it as a remote-tracking hint for SHA bumps, not a checkout target.
+`branch = myteam-beta-dev` in `.gitmodules` means: *when someone runs `git submodule update --remote`, fetch the latest commit from this branch into the parent's pin.* It does NOT mean "all members must have this submodule on this branch." Treat it as a remote-tracking hint for SHA bumps, not a checkout target.
 
 ## Consequences
 
 **Removed (2026-04-29):**
-- `aix-root/.claude/commands/rpull.md` — macOS-pathed, config-mode default. Superseded by `aix-root/.claude/skills/rpull/SKILL.md` (per-team) wrapping `aix-root/scripts/recursive-pull.sh`.
-- `aix-root/.claude/commands/rpush.md` — same reasons.
-- `aix-root/.claude/commands/rcheckout.md` — same reasons.
+- `myteam-beta-root/.claude/commands/rpull.md` — macOS-pathed, config-mode default. Superseded by `myteam-beta-root/.claude/skills/rpull/SKILL.md` (per-team) wrapping `myteam-beta-root/scripts/recursive-pull.sh`.
+- `myteam-beta-root/.claude/commands/rpush.md` — same reasons.
+- `myteam-beta-root/.claude/commands/rcheckout.md` — same reasons.
 
 **Added per-team (2026-04-29):**
-- `aix-root/scripts/recursive-{pull,push,checkout}.sh` (copy of atmux canon)
-- `aix-root/.claude/skills/r{pull,push,checkout}/SKILL.md`
-- `sopx-root/scripts/recursive-{pull,push,checkout}.sh`
-- `sopx-root/.claude/skills/r{pull,push,checkout}/SKILL.md`
-- Unum geoyws-beads worktree: same pair (pending — has no submodules so /rpull /rpush /rcheckout degrade to root-only ops, but the uniform interface is still useful)
+- `myteam-beta-root/scripts/recursive-{pull,push,checkout}.sh` (copy of atmux canon)
+- `myteam-beta-root/.claude/skills/r{pull,push,checkout}/SKILL.md`
+- `myteam-alpha-root/scripts/recursive-{pull,push,checkout}.sh`
+- `myteam-alpha-root/.claude/skills/r{pull,push,checkout}/SKILL.md`
+- `myteam-c-dev` worktree: same pair (pending — has no submodules so /rpull /rpush /rcheckout degrade to root-only ops, but the uniform interface is still useful)
 
-**Push policy reminder (unchanged from CLAUDE.md):** primary staging branches (`<product>-staging`) are George-manual ONLY. `/rpush` does NOT auto-detect staging — the **caller** must respect the policy. Per-member branches (`aix-geoyws`, `aix-yj`, `sopx-geoyws`, `geoyws-beads`) are auto-pushable.
+**Push policy reminder (unchanged from CLAUDE.md):** primary staging branches (`<product>-staging`) are the driver-manual ONLY. `/rpush` does NOT auto-detect staging — the **caller** must respect the policy. Per-member branches (`myteam-beta-dev`, `myteam-beta-bob`, `myteam-alpha-dev`, `myteam-c-dev`) are auto-pushable.
 
 ## Notes for the future
 

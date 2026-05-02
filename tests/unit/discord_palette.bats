@@ -71,9 +71,9 @@ _hash_color_for() {
 @test "palette: hash is deterministic — multiple teams keep their distinct hex stable" {
   local a1 a2 s1 s2
   a1="$(_hash_color_for "atmux-kanban")"
-  s1="$(_hash_color_for "sopx-mvp")"
+  s1="$(_hash_color_for "myteam-alpha")"
   a2="$(_hash_color_for "atmux-kanban")"
-  s2="$(_hash_color_for "sopx-mvp")"
+  s2="$(_hash_color_for "myteam-alpha")"
   [ "$a1" = "$a2" ]
   [ "$s1" = "$s2" ]
 }

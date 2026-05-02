@@ -5,7 +5,7 @@
 
 ## Context
 
-`d-bccdc154` enforced a minimum `--context` length on high/medium reversibility decisions (per ADR-008 §Sd). The motivation was that high-rev pings interrupt the driver in real time; a terse one-liner forces the driver to shell into hax + run `atmux decisions show <id>` to read the full reasoning — friction at the worst possible moment (driver on phone, mid-walk, etc).
+`d-bccdc154` enforced a minimum `--context` length on high/medium reversibility decisions (per ADR-008 §Sd). The motivation was that high-rev pings interrupt the driver in real time; a terse one-liner forces the driver to shell into the-host + run `atmux decisions show <id>` to read the full reasoning — friction at the worst possible moment (driver on phone, mid-walk, etc).
 
 Field-length enforcement helped, but it's only half the answer:
 

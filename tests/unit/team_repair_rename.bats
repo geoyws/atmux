@@ -88,22 +88,22 @@ JSON
 }
 
 @test "repair-rename: --dry-run renders the plan but applies no changes" {
-  local proj; proj="$(_seed_drifted_team aux ifca_aux)"
+  local proj; proj="$(_seed_drifted_team aux myteam-aux)"
 
-  run env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename ifca_aux --dry-run
+  run env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename myteam-aux --dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "atmux_tmux_ifca_aux" ]]
+  [[ "$output" =~ "atmux_tmux_myteam-aux" ]]
   [[ "$output" =~ "rename-session" ]]
   [[ "$output" =~ "rename-window" ]]
 
   # Pre-state preserved.
   [ -d "$ATMUX_TEST_TMP/atmux-tmux-aux" ]
-  ! [ -d "$ATMUX_TEST_TMP/atmux_tmux_ifca_aux" ]
+  ! [ -d "$ATMUX_TEST_TMP/atmux_tmux_myteam-aux" ]
   [ "$(jq -r '.tmuxTmpdir' "$proj/.atmux/team.json")" = "$ATMUX_TEST_TMP/atmux-tmux-aux" ]
 }
 
 @test "repair-rename: live fire converges all 6 fields" {
-  local proj; proj="$(_seed_drifted_team aux ifca_aux)"
+  local proj; proj="$(_seed_drifted_team aux myteam-aux)"
 
   # The verb's hardcoded /tmp/atmux_tmux_<team> output path is the
   # production convention; for the sandbox we redirect via the verb's
@@ -115,35 +115,35 @@ JSON
   # sandbox override, or (b) accept that this cell exercises the live
   # /tmp path and clean up after.
   #
-  # Going with (b): write to /tmp/atmux_tmux_ifca_aux for this single
+  # Going with (b): write to /tmp/atmux_tmux_myteam-aux for this single
   # cell, then teardown reaps. This isolates the bats run from the
-  # operator's real fleet (no real ifca_aux exists in the sandbox
+  # operator's real fleet (no real myteam-aux exists in the sandbox
   # registry beyond what _seed_drifted_team added).
 
-  run env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename ifca_aux
+  run env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename myteam-aux
   [ "$status" -eq 0 ]
 
   # 1. tmpdir converged: new path exists, old gone.
-  [ -d "/tmp/atmux_tmux_ifca_aux" ]
+  [ -d "/tmp/atmux_tmux_myteam-aux" ]
   ! [ -d "$ATMUX_TEST_TMP/atmux-tmux-aux" ]
 
   # 2. team.json:.tmuxTmpdir reflects new path.
-  [ "$(jq -r '.tmuxTmpdir' "$proj/.atmux/team.json")" = "/tmp/atmux_tmux_ifca_aux" ]
+  [ "$(jq -r '.tmuxTmpdir' "$proj/.atmux/team.json")" = "/tmp/atmux_tmux_myteam-aux" ]
 
-  # 3. cage internal session = ifca_aux.
-  local sess; sess="$(tmux -S /tmp/atmux_tmux_ifca_aux/tmux-0/default \
+  # 3. cage internal session = myteam-aux.
+  local sess; sess="$(tmux -S /tmp/atmux_tmux_myteam-aux/tmux-0/default \
                       list-sessions -F '#{session_name}' 2>/dev/null | head -1)"
-  [ "$sess" = "ifca_aux" ]
+  [ "$sess" = "myteam-aux" ]
 
   # 4. Window prefixes converged.
-  local wins; wins="$(tmux -S /tmp/atmux_tmux_ifca_aux/tmux-0/default \
+  local wins; wins="$(tmux -S /tmp/atmux_tmux_myteam-aux/tmux-0/default \
                       list-windows -a -F '#{window_name}' 2>/dev/null)"
-  [[ "$wins" == *"__ifca_aux__lead"* ]]
-  [[ "$wins" == *"__ifca_aux__worker"* ]]
+  [[ "$wins" == *"__myteam-aux__lead"* ]]
+  [[ "$wins" == *"__myteam-aux__worker"* ]]
   [[ "$wins" != *"__aux__"* ]]
 
   # 5. state/session.txt synced.
-  [ "$(cat "$proj/.atmux/state/session.txt")" = "ifca_aux" ]
+  [ "$(cat "$proj/.atmux/state/session.txt")" = "myteam-aux" ]
 
   # 6. Rollback log written.
   [ -f "$proj/.atmux/state/repair-rename-rollback.log" ]
@@ -152,32 +152,32 @@ JSON
   grep -q 'step3: rename-window'  "$proj/.atmux/state/repair-rename-rollback.log"
 
   # Cleanup the live /tmp dir we wrote to.
-  tmux -S /tmp/atmux_tmux_ifca_aux/tmux-0/default kill-server 2>/dev/null || true
-  rm -rf /tmp/atmux_tmux_ifca_aux
+  tmux -S /tmp/atmux_tmux_myteam-aux/tmux-0/default kill-server 2>/dev/null || true
+  rm -rf /tmp/atmux_tmux_myteam-aux
 }
 
 @test "repair-rename: idempotent — second run on converged team is no-op" {
-  local proj; proj="$(_seed_drifted_team aux ifca_aux)"
-  env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename ifca_aux >/dev/null
+  local proj; proj="$(_seed_drifted_team aux myteam-aux)"
+  env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename myteam-aux >/dev/null
 
   # Second run: every signal converged, expect no-op success.
-  run env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename ifca_aux
+  run env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename myteam-aux
   [ "$status" -eq 0 ]
   [[ "$output" =~ "already converged" ]] || [[ "$output" =~ "no-op" ]]
 
   # Cleanup.
-  tmux -S /tmp/atmux_tmux_ifca_aux/tmux-0/default kill-server 2>/dev/null || true
-  rm -rf /tmp/atmux_tmux_ifca_aux
+  tmux -S /tmp/atmux_tmux_myteam-aux/tmux-0/default kill-server 2>/dev/null || true
+  rm -rf /tmp/atmux_tmux_myteam-aux
 }
 
 @test "repair-rename: refuses when target tmpdir already exists (clobber-guard)" {
-  local proj; proj="$(_seed_drifted_team aux ifca_aux)"
+  local proj; proj="$(_seed_drifted_team aux myteam-aux)"
   # Pre-create the target — simulates a half-finished prior run leaving
   # crud behind. Verb must refuse rather than mv-clobber.
-  mkdir -p /tmp/atmux_tmux_ifca_aux/tmux-0
-  : > /tmp/atmux_tmux_ifca_aux/tmux-0/default
+  mkdir -p /tmp/atmux_tmux_myteam-aux/tmux-0
+  : > /tmp/atmux_tmux_myteam-aux/tmux-0/default
 
-  run env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename ifca_aux
+  run env ATMUX_DIR="$proj/.atmux" "$ATMUX_BIN" team repair-rename myteam-aux
   [ "$status" -ne 0 ]
   [[ "$output" =~ "already exists" ]] || [[ "$output" =~ "refusing" ]]
 
@@ -185,5 +185,5 @@ JSON
   [ -d "$ATMUX_TEST_TMP/atmux-tmux-aux" ]
   [ "$(jq -r '.tmuxTmpdir' "$proj/.atmux/team.json")" = "$ATMUX_TEST_TMP/atmux-tmux-aux" ]
 
-  rm -rf /tmp/atmux_tmux_ifca_aux
+  rm -rf /tmp/atmux_tmux_myteam-aux
 }

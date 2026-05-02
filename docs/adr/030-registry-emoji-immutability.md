@@ -9,10 +9,10 @@
 
 `team.json:.members[].emoji` is currently optional. When absent, `team.json:.emojis.mode = "random"` triggers fresh random picks per spawn from a hardcoded animal palette. Today's fleet snapshot (2026-04-27 09:50 MYT):
 
-- `aix-root` — entire roster has no `.emoji` field; each `atmux start` randomises.
-- `sopx-mvp` — only the unblocker has a baked emoji; everyone else randomises.
+- `myteam-beta-root` — entire roster has no `.emoji` field; each `atmux start` randomises.
+- `myteam-alpha` — only the unblocker has a baked emoji; everyone else randomises.
 - `atmux-kanban` — only the unblocker has one.
-- `geoyws-beads` — only the unblocker has one.
+- `myteam-c-dev` — only the unblocker has one.
 
 Visible window-name emojis in `tmux list-windows` ARE displayed today (the `__<team>__<emoji><member>` window-name pattern), but they are **fresh on every restart**. Driver feedback: emojis should be stable forever once first assigned — the visual shorthand the driver builds up over weeks of operation is invalidated by every restart cycle.
 

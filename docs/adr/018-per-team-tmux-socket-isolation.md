@@ -5,9 +5,9 @@
 
 ## Context
 
-Today every atmux team shares the user's main tmux server at `/tmp/tmux-$UID/default`. Both `sopx-mvp` and `atmux-kanban` ran on the same socket as the driver's daily-driver shell sessions and worktree windows. Two failure modes this exposes:
+Today every atmux team shares the user's main tmux server at `/tmp/tmux-$UID/default`. Both `myteam-alpha` and `atmux-kanban` ran on the same socket as the driver's daily-driver shell sessions and worktree windows. Two failure modes this exposes:
 
-- **Blast radius on dangerous tmux ops.** atmux is in active development; a buggy `tmux kill-session -a` from a malformed `lib/stop.sh` change, or `atmux start --force` against the wrong team, can nuke unrelated sessions (other worktree shells, sopx-mvp, the user's daily REPL).
+- **Blast radius on dangerous tmux ops.** atmux is in active development; a buggy `tmux kill-session -a` from a malformed `lib/stop.sh` change, or `atmux start --force` against the wrong team, can nuke unrelated sessions (other worktree shells, myteam-alpha, the user's daily REPL).
 - **Pre-existing precedent in the test sandbox.** `tests/helpers/setup.bash` already exports `TMUX_TMPDIR=$ATMUX_TEST_TMP/tmux` so test churn never touches `/tmp/tmux-$UID/default` — incident 2026-04-25 (mass per-pane teardown wedged tmux 3.x). The same pattern applies one level up: the dev-on-itself team that's editing atmux internals deserves the same blast-radius firewall.
 
 Three implementation shapes considered:
@@ -27,7 +27,7 @@ The interaction with ADR-016 (single-session topology) is benign: `singleSession
 - `lib/doctor.sh` adds `_doctor_check_tmux_tmpdir`: when the field is set, asserts the directory is writable + (if a session exists) `tmux -S <tmpdir>/tmux-$UID/default ls` succeeds. Yellow on writable-but-no-session (cold start), green on healthy, red on unwritable / wrong-socket-detected.
 - `lib/init.sh` wizard does NOT prompt for `tmuxTmpdir`. Opt-in is manual `team.json` edit; documented in README. (Wizard bloat avoided; the field is for advanced/dogfooding setups.)
 
-After this Epic ships, set `tmuxTmpdir: "/tmp/atmux-tmux_atmux-kanban"` in `/root/work/src/atmux/.atmux/team.json` (the dev-on-itself team) + restart atmux-kanban on its own socket. `sopx-mvp` stays on the main socket (it's not the dev-on-itself team).
+After this Epic ships, set `tmuxTmpdir: "/tmp/atmux-tmux_atmux-kanban"` in `/root/work/src/atmux/.atmux/team.json` (the dev-on-itself team) + restart atmux-kanban on its own socket. `myteam-alpha` stays on the main socket (it's not the dev-on-itself team).
 
 ## Consequences
 
@@ -58,24 +58,24 @@ After 6 daily-driver tmux deaths (2026-04-22 through 2026-04-27), the original "
 - **Naming convention**: `/tmp/atmux-tmux_<team>` — `<team>` is the team.json `.name` field verbatim, joined with an underscore (separator convention: underscore between domains, hyphen reserved for within-name compounds; see addendum 2026-04-30). The existing `atmux` dogfooding team uses the bare `/tmp/atmux-tmux` (no suffix) because the team is literally named `atmux` and the doubled `atmux-tmux_atmux` was awkward; this is the only allowed deviation from the convention.
 - **Opt-out path stays**: declining the wizard prompt omits `tmuxTmpdir` from team.json entirely → bin/atmux's `_atmux_resolve_tmux_tmpdir` early-returns (operator-empty TMUX_TMPDIR) → team falls back to default socket. For observer-only teams that never run destructive verbs, this is fine.
 
-The 4-team migration that motivated this amendment (`atmux`, `ifca_aix`, `ifca_sopx`, `unum_beads` all moved from default socket to per-team cages on 2026-04-27) is the canonical rollout reference.
+The 4-team migration that motivated this amendment (`atmux`, `myteam-beta`, `myteam-alpha`, `myteam-c` all moved from default socket to per-team cages on 2026-04-27) is the canonical rollout reference.
 
 ## Amendment — 2026-04-30 (separator convention: underscore between prefix and team)
 
-The 2026-04-27 amendment introduced the cage-tmpdir path but used a hyphen between the multi-word prefix (`atmux-tmux`) and the team name (`unum_beads`, `ifca_aix`), producing `/tmp/atmux-tmux-unum_beads` — three separators of mixed type in one path. Driver flagged this on 2026-04-28 as a convention violation; canonical convention (memory: `feedback_path_separator_convention.md`) is **underscore between domains, hyphen within a name**:
+The 2026-04-27 amendment introduced the cage-tmpdir path but used a hyphen between the multi-word prefix (`atmux-tmux`) and the team name (`myteam-c`, `myteam-beta`), producing `/tmp/atmux-tmux-myteam-c` — three separators of mixed type in one path. Driver flagged this on 2026-04-28 as a convention violation; canonical convention (memory: `feedback_path_separator_convention.md`) is **underscore between domains, hyphen within a name**:
 
 - `atmux-tmux` is one domain (compound name, internal hyphens).
-- `<team>` is another domain (own internal compound: `unum_beads`, `ifca-aix`, etc).
+- `<team>` is another domain (own internal compound: `myteam-c`, `ifca-myteam-beta`, etc).
 - The boundary between them is a domain boundary → underscore.
 
-Canonical form going forward: `/tmp/atmux-tmux_<team>` (e.g. `/tmp/atmux-tmux_unum_beads`, `/tmp/atmux-tmux_ifca-aix`). Code change set (this ADR's amendment commit):
+Canonical form going forward: `/tmp/atmux-tmux_<team>` (e.g. `/tmp/atmux-tmux_myteam-c`, `/tmp/atmux-tmux_ifca-myteam-beta`). Code change set (this ADR's amendment commit):
 
 - `lib/init.sh:100` (template default) — `"/tmp/atmux-tmux-" + $name` → `"/tmp/atmux-tmux_" + $name`.
 - `lib/init.sh:236` (wizard cage path) — `"/tmp/atmux-tmux-$team_name"` → `"/tmp/atmux-tmux_$team_name"`.
 - `templates/team.example.json:4` — `/tmp/atmux-tmux-my-team` → `/tmp/atmux-tmux_my-team`.
 - README §Per-team tmux socket isolation — example + raw-tmux fallback now show underscore form.
 
-**Live-state migration is OUT OF SCOPE** of this amendment. Existing on-disk cages (`/tmp/atmux-tmux-aux`, `/tmp/atmux-tmux-ifca_aix`, `/tmp/atmux-tmux-ifca_sopx`, `/tmp/atmux-tmux-unum_beads`) are left intact; the driver fires destructive stop/rename/start manually per team in a quiet window. Lead surfaces ready-to-fire migration instructions to driver-inbox once this commit lands green. Future-team scaffolds + wizard runs naturally produce the corrected form.
+**Live-state migration is OUT OF SCOPE** of this amendment. Existing on-disk cages (`/tmp/atmux-tmux-aux`, `/tmp/atmux-tmux-myteam-beta`, `/tmp/atmux-tmux-myteam-alpha`, `/tmp/atmux-tmux-myteam-c`) are left intact; the driver fires destructive stop/rename/start manually per team in a quiet window. Lead surfaces ready-to-fire migration instructions to driver-inbox once this commit lands green. Future-team scaffolds + wizard runs naturally produce the corrected form.
 
 **Dogfood `atmux` carve-out unchanged.** Bare `/tmp/atmux-tmux` (no suffix) for the literally-named-`atmux` team stays — the corrected path would be `/tmp/atmux-tmux_atmux` which still has the doubled-name awkwardness the original carve-out avoided. Hand-edited team.json continues to maintain the bare path; wizard default for a hypothetical new `atmux` team would now produce `/tmp/atmux-tmux_atmux` (acceptable; less awkward than the old `/tmp/atmux-tmux-atmux` because the underscore visually separates the doubling).
 
