@@ -199,6 +199,44 @@ Rollback is **best-effort**. Some terminal failure modes (the tmux session dying
 
 `.atmux/` itself is **not moved** — the directory is pinned to `projectRoot`, not to the team name.
 
+### Audit — declarative drift detection
+
+Operational state drifts from declared intent over time: a tmux session gets hand-renamed, a team migrates to a new cage path naming convention but stragglers remain, an empty cage dir gets left behind after `atmux stop`, a tmux config glyph gets locale-blind-downgraded to `_` after a rename. `atmux audit` is the declarative-vs-live drift detector ([ADR-038](docs/adr/038-declarative-live-audit-model.md)) — it reads the three sources of truth (`team.json`, `~/.claude/teams/registry.json`, `~/.tmux.conf`), compares to live tmux + filesystem state, and classifies every finding into one of six classes with documented blast-radius and auto-fix gating.
+
+```bash
+atmux audit                       # detect-only; human render of findings
+atmux audit --quiet               # whip's sub-pass shape: exit 0 green / 1 drift, no output
+atmux audit --json                # findings array for whip / external dashboards
+atmux audit --fix                 # apply fixes; defaults to safe classes (D, E, F)
+atmux audit --fix --class a       # narrow to a specific class
+atmux audit --dry-run             # print fix plan, no mutations (default for blast≥medium)
+```
+
+**Class taxonomy + remediation gating:**
+
+| Class | Name | Detector signal | Blast | Auto-fix? | Runbook |
+|---|---|---|---|---|---|
+| **A** | driver-window naming | `tmux list-windows` shows bare `driver` instead of `__<team>__driver` | medium | ✅ gated on driver-pane idle (no claude REPL, no modal, no rate-limit banner) | `atmux audit --fix --class a` (whip auto-fires when idle; surfaces `⚠️` otherwise) |
+| **B** | cage path separator | `team.json:.tmuxTmpdir` matches old hyphen form `/tmp/atmux-tmux-*` instead of `/tmp/atmux_tmux_*` | high | ❌ surface only — driver fires | wraps `lib/team-repair-rename.sh` with rollback per [ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md) |
+| **C** | window position drift | driver pane window position ≠ 1 OR team-lead position ≠ 2 | high | ❌ surface only — driver fires | `tmux swap-window` × N, no atomic wrapper today |
+| **D** | rename residue | window name has trailing-dash or partial-match pattern (`__ifca_aix__🪄lead-`) | low | ✅ | strip trailing dash via `tmux rename-window` |
+| **E** | stray empty cage dirs | `/tmp/atmux-tmux-*` or `/tmp/atmux_tmux_*` exist with no live socket AND no registry entry | low | ✅ | `rmdir` with `[ -z "$(ls -A)" ]` guard |
+| **F** | tmux config glyph mismatch | per-cage `tmux show-option -gv status-left` ≠ `~/.tmux.conf`-derived expansion (locale-blind tooling downgrades nerd-font glyph to `_`) | low | ✅ | `atmux tmux-conf-restore <cage-socket>` shared primitive |
+
+**Auto-fix gating policy.** Low-blast (D, E, F) auto-fires; pane state irrelevant — D/F are tmux metadata, E is filesystem. Medium-blast (A) auto-fires only when the driver pane is at shell idle (no `claude` REPL, no `Compacting conversation`, no `Press up to edit queued messages`, no rate-limit modal); on not-idle, surfaces as `⚠️` with the ready-to-fire command for driver review. High-blast (B, C) **never** auto-fires — surfaces with `⚠️` only; driver fires after eyeballing.
+
+**When to invoke.**
+
+- **Ad-hoc**: after a fleet-wide convention shift (an ADR amendment, a rename burst, a manual `tmux` op that touched topology) — `atmux audit` shows the drift inventory; pick fixes class-by-class.
+- **Whip auto** (per [ADR-040](docs/adr/040-audit-whip-integration.md)): every 5-min whip tick invokes `atmux audit --quiet --fix` as a sub-pass; low-blast classes auto-fire, medium gates on idle, high surfaces. Zero operator action required for D/E/F drift.
+- **Daily backstop**: a once-a-day cron (operator opt-in) ensures classes that whip might have skipped (target pane busy all day) eventually surface. Phase 2 of the enforcer agent (ADR-039) may take this over fleet-wide.
+
+**Fleet scope.** Per-team is the default invocation. Fleet aggregation walks `~/.claude/teams/registry.json`, runs the per-team audit on each entry, and rolls up findings — that's the **enforcer** role's job ([ADR-039](docs/adr/039-enforcer-agent-role.md)). Cross-team patterns (≥2 teams hitting the same class = convention shift, not 3 independent bugs) become visible at fleet scope.
+
+**Convergence with ELEVATION.** When the ELEVATION manifest + reconciler ships, `atmux audit` becomes a thin wrapper around `atmux diff --class drift` (detect) + `atmux apply --selected-class <a|b|c|d|e|f>` (fix). The class taxonomy migrates verbatim; gating policy survives. The class vocabulary (A–F + future additions) is the durable artifact.
+
+**See also**: [ADR-038](docs/adr/038-declarative-live-audit-model.md) (audit model + sources of truth + class taxonomy + per-class detector/fixer pair pattern); [ADR-039](docs/adr/039-enforcer-agent-role.md) (fleet-level enforcer agent that aggregates per-team audit findings); [ADR-040](docs/adr/040-audit-whip-integration.md) (whip sub-pass that auto-fires safe classes); `docs/audit.md` (operator guide — runbooks per class).
+
 ### Preset modes
 
 The wizard asks for a preset up front — governs default TUI assignment:
