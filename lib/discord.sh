@@ -200,6 +200,57 @@ _atmux_discord_log() {
     }' >> "$log" 2>/dev/null || true
 }
 
+# _atmux_whip_audit_format <findings_json> <fix_outcomes_json>
+#
+# Per ADR-040 §Discord template (E14/Sd t-361003b9). Renders the
+# `[whip-audit]` body — three bulleted sections, each omitted entirely
+# when empty (per ADR-040 empty-tick discipline). Header
+# (`🛡️ **[whip-audit]** · \`<team>\` · HH:MM MYT`) is composed by the
+# caller — this helper has no team / timestamp context.
+#
+# Inputs are JSON arrays:
+#   findings_json     — per ADR-038 emit schema:
+#                       {class, severity, team, detail, fix_hint, ...}
+#   fix_outcomes_json — rows from this tick's audit-fix.log delta:
+#                       {class, result, action, detail}
+#
+# Routing (per ADR-040 examples + tests/unit/whip_audit.bats):
+#   D, E, F + matching ok outcome → 🔧 Auto-corrected (detail only)
+#   A, B                          → ⚠️ Surfaced — driver action
+#                                      (detail + `· fire: <fix_hint>`)
+#   C + everything else           → 🛑 Refused (detail + `· manual: <fix_hint>`)
+#
+# Bullet shape: `<emoji> class <X> · <detail>[ · fire|manual: <fix_hint>]`.
+# Returns 0 always; emits empty stdout when no section has bullets.
+_atmux_whip_audit_format() {
+  local findings_json="${1:-[]}" fix_outcomes_json="${2:-[]}"
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -n -r \
+    --argjson f "$findings_json" \
+    --argjson o "$fix_outcomes_json" '
+    def fixed_classes:
+      [$o[] | select(.result == "ok") | .class] | unique;
+    def auto: [
+      $f[] | select(.class as $c | $c | IN("D","E","F"))
+           | select(.class as $c | (fixed_classes | index($c)))
+           | "🛠️ class \(.class) · \(.detail)"
+    ];
+    def surf: [
+      $f[] | select(.class as $c | $c | IN("A","B"))
+           | "⚠️ class \(.class) · \(.detail) · fire: \(.fix_hint)"
+    ];
+    def refsd: [
+      $f[] | select(.class == "C")
+           | "🛑 class \(.class) · \(.detail) · manual: \(.fix_hint)"
+    ];
+    [
+      ( auto  | if length>0 then "🔧 **Auto-corrected** (low-blast):\n" + join("\n") else "" end ),
+      ( surf  | if length>0 then "⚠️ **Surfaced — driver action**:\n" + join("\n") else "" end ),
+      ( refsd | if length>0 then "🛑 **Refused** (high-blast, manual only):\n" + join("\n") else "" end )
+    ] | map(select(length > 0)) | join("\n\n")
+  '
+}
+
 # sha256 first byte mod 16 → palette hex. macOS shasum -a 256 fallback.
 _atmux_discord_hash_color() {
   local name="$1"
@@ -212,4 +263,102 @@ _atmux_discord_hash_color() {
   byte=$((16#${hash}))
   idx=$(( byte % 16 ))
   printf '%s\n' "${ATMUX_DISCORD_PALETTE_HEX[$idx]}"
+}
+
+# _atmux_chunk_for_embed <header> <max_body> <max_chunks> <truncation_marker> <section1> [section2] ...
+#
+# Shared chunker for Discord embed renders. Allocates an ordered list of
+# section blocks into 1..max_chunks NUL-separated body chunks, each fitting
+# within (max_body − header overhead) bytes.
+#
+# Behavior:
+# - chunks[0] is the REQUIRED block — section1 always lands there.
+# - Subsequent sections (section2..N) pack greedily into chunks[1..max_chunks]:
+#     * append to the current open chunk if {current + "\n\n" + section} fits;
+#     * else flush the open chunk to chunks[] and start a new chunk holding
+#       the section.
+# - Per-section atomic — a section is never split across chunks. A section
+#   bigger than body_budget on its own gets dropped.
+# - Over-cap — once chunks[] reaches max_chunks, remaining sections drop.
+# - On any drop (cap-hit or oversized-section), the supplied
+#   truncation_marker is appended to the LAST surviving chunk (joined with
+#   a "\n\n" separator). Pass empty marker to skip the append.
+# - Byte budget = max_body − (#header + 16 slack for " [N/M]" tag + newlines).
+#   Floored to 100 to avoid degenerate inputs producing zero-budget loops.
+#
+# The header parameter exists ONLY for byte-budget overhead — emitted chunks
+# are body-only. Caller composes "<header>\n\n<chunk>" per message and adds
+# any [N/M] tag to the header itself.
+#
+# Output: emits each chunk as a NUL-terminated string on stdout. Caller reads
+# via `mapfile -d '' chunks < <(_atmux_chunk_for_embed ...)`.
+#
+# Returns 0 always; emits nothing when section list is empty.
+_atmux_chunk_for_embed() {
+  local header="${1:-}" max_body="${2:-1900}" max_chunks="${3:-5}"
+  local marker="${4:-}"
+  shift 4 || shift $#
+  local sections=("$@")
+
+  local n=${#sections[@]}
+  (( n > 0 )) || return 0
+
+  local hdr_overhead=$(( ${#header} + 16 ))
+  local body_budget=$(( max_body - hdr_overhead ))
+  (( body_budget < 100 )) && body_budget=100
+
+  # Single-chunk fast path: every non-empty section concatenated fits.
+  local single="${sections[0]}"
+  local i
+  for (( i=1; i<n; i++ )); do
+    [[ -n "${sections[i]}" ]] && single+=$'\n\n'"${sections[i]}"
+  done
+  if (( ${#single} <= body_budget )); then
+    printf '%s\0' "$single"
+    return 0
+  fi
+
+  # Multi-chunk: chunks[0] = required block (sections[0]), rest pack greedily.
+  local chunks=("${sections[0]}")
+  local current=""
+  local skipped=0
+
+  for (( i=1; i<n; i++ )); do
+    local sec="${sections[i]}"
+    [[ -z "$sec" ]] && continue
+    local candidate
+    if [[ -z "$current" ]]; then
+      candidate="$sec"
+    else
+      candidate="$current"$'\n\n'"$sec"
+    fi
+    if (( ${#candidate} <= body_budget )); then
+      current="$candidate"
+      continue
+    fi
+    if [[ -n "$current" ]]; then
+      chunks+=("$current")
+      current=""
+    fi
+    if (( ${#chunks[@]} >= max_chunks )); then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if (( ${#sec} <= body_budget )); then
+      current="$sec"
+    else
+      skipped=$((skipped + 1))
+    fi
+  done
+  [[ -n "$current" ]] && chunks+=("$current")
+
+  if (( skipped > 0 )) && [[ -n "$marker" ]]; then
+    local last=$(( ${#chunks[@]} - 1 ))
+    chunks[last]="${chunks[last]}"$'\n\n'"$marker"
+  fi
+
+  local total=${#chunks[@]}
+  for (( i=0; i<total; i++ )); do
+    printf '%s\0' "${chunks[i]}"
+  done
 }
