@@ -108,6 +108,16 @@ main() {
       atmux::ok "$who claimed $id"
       ;;
     done)
+      # ADR-033 driver-only gate. `atmux done <id>` is the worker's
+      # natural verb for marking a Task complete — must enforce the same
+      # forward-progress refuse-gate as `atmux task move done`
+      # (lib/kanban.sh:255). Without this, a non-driver caller could
+      # close the Task even though they couldn't have claimed it.
+      # GAP-1 from t-8312e5e0 reviewer-2 signoff.
+      if atmux::is_driver_only_blocked "$id"; then
+        atmux::die "done: $id is a driver-only Task — only the driver scope can move it to 'done'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry."
+      fi
+
       # Delegate kanban-side mutation + auto-dispatch to the shared helper —
       # `atmux done` and `atmux task move done` MUST share one code path so a
       # worker's natural verb triggers the same commit-Task / story-flip /

@@ -162,6 +162,42 @@ _add_task() {
   [ "$s" = "in-progress" ]
 }
 
+# ---------- explicit-id done refuse (GAP-1 from t-8312e5e0 review) ----------
+
+@test "driver-only: 'atmux done <id>' as non-driver refuses with same error shape as task move done" {
+  # Drive the Task into in-progress as the driver (so the done branch has
+  # something to close); then attempt 'atmux done' as non-driver and
+  # assert the gate refuses. Mirrors lib/kanban.sh:255 error shape — the
+  # claim.sh:110 code path must enforce parity (GAP-1).
+  local id; id="$(_add_task "drv" --driver-only --lane fe)"
+
+  ATMUX_CALLER_SCOPE=driver run "$ATMUX_BIN" claim "$id" --as fe-kanban
+  [ "$status" -eq 0 ]
+
+  # Non-driver attempts to close the Task via the worker verb.
+  run "$ATMUX_BIN" done "$id" --as fe-kanban
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"driver-only Task"* ]]
+  [[ "$output" == *"done"* ]]
+
+  # Status unchanged — refuse-gate aborted before finish_task_done ran.
+  local s; s="$(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | .status' .atmux/kanban.json)"
+  [ "$s" = "in-progress" ]
+}
+
+@test "driver-only: 'atmux done <id>' as driver succeeds (gate allows driver-scope close)" {
+  local id; id="$(_add_task "drv" --driver-only --lane fe)"
+
+  ATMUX_CALLER_SCOPE=driver run "$ATMUX_BIN" claim "$id" --as fe-kanban
+  [ "$status" -eq 0 ]
+
+  ATMUX_CALLER_SCOPE=driver run "$ATMUX_BIN" done "$id" --as fe-kanban
+  [ "$status" -eq 0 ]
+
+  local s; s="$(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | .status' .atmux/kanban.json)"
+  [ "$s" = "done" ]
+}
+
 # ---------- legacy / pre-ADR-033 tasks ----------
 
 @test "driver-only: pre-ADR-033 task without driverOnly field reads as not-driver-only (// false coalesce)" {
