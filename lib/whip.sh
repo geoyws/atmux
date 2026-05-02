@@ -108,6 +108,12 @@ main() {
     fi
   fi
 
+  # ---- audit sub-pass (E14/Sd t-e3291557, ADR-040) ----
+  # Slot per ADR-040 OQ C3: middle of the embed (after delta-since-last-tick,
+  # before per-member findings). Reaches into the parent's findings[] array
+  # via dynamic scoping; same convention as _atmux_whip_check_decisions.
+  _atmux_whip_check_audit
+
   # ---- 1. session liveness (E6/S1 t-9e85a35c — two-tick confirm) ----
   # 2026-04-25 incident: whip false-flagged 'session DOWN' for 5 consecutive
   # ticks while tmux was actually continuous (likely tmux server momentarily
@@ -516,6 +522,114 @@ _atmux_whip_check_brief_versions() {
       findings+=("📋 brief $role $current available (was $pasted) — atmux reload brief-reload $member")
     fi
   done < <(jq -r '.members[] | [.name, (.role // "member")] | @tsv' "$tj" 2>/dev/null || true)
+}
+
+# Audit sub-pass per ADR-040 (E14/Sd t-e3291557). Invokes `atmux audit
+# --json`, buckets findings by ADR-038 class, fires low-blast fixes
+# (D/E/F), surfaces medium-blast (A) when driver pane is busy, surfaces
+# high-blast (B) with ready-to-fire command, refuses high-blast (C) with
+# manual instructions. Composes a [whip-audit] body block per the named-
+# template format and appends it to the parent's findings[] (dynamic
+# scoping, same as _atmux_whip_check_decisions / _check_flags).
+#
+# Skip-gate: team.json:.audit.enabled == false → no-op (default true).
+# Failure mode: audit verb non-zero or non-JSON → log to whip.log + skip
+# section without affecting other checks. Idempotence: zero findings →
+# omit section entirely (no "audit clean" heartbeat).
+_atmux_whip_check_audit() {
+  local tj; tj="$(atmux::team_json 2>/dev/null || true)"
+  local enabled
+  # jq's `//` treats `false` as null and falls through, so we test the
+  # raw value for explicit `== false` and default to enabled in every
+  # other case (null / missing / true). Edge: `false // true == true`.
+  enabled=$(jq -r 'if .audit.enabled == false then "false" else "true" end' \
+              "$tj" 2>/dev/null || echo true)
+  [[ "$enabled" == "true" ]] || return 0
+
+  local findings_json rc=0
+  findings_json="$("$ATMUX_BIN_DIR/atmux" audit --json 2>/dev/null)" || rc=$?
+  if (( rc != 0 )) || ! jq -e . <<<"$findings_json" >/dev/null 2>&1; then
+    atmux::log "whip-audit: audit verb failed or emitted non-JSON (rc=$rc) — skipping section"
+    return 0
+  fi
+  local n; n=$(jq -r 'length' <<<"$findings_json" 2>/dev/null || echo 0)
+  [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) || return 0
+
+  local pane_busy=0
+  if jq -e 'any(.[]; .class == "A")' <<<"$findings_json" >/dev/null 2>&1; then
+    local driver_state
+    driver_state="$(tmux capture-pane -p -t "$(atmux::session_name):driver" -S -10 2>/dev/null || true)"
+    [[ -n "$driver_state" ]] && _atmux_whip_pane_busy "$driver_state" && pane_busy=1
+  fi
+
+  local fix_log; fix_log="$(atmux::logs_dir)/audit-fix.log"
+  local auto_corrected=() surfaced=() refused=()
+  local fired_classes=" "
+  local f class detail fix_hint lc
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    class=$(jq -r '.class' <<<"$f")
+    detail=$(jq -r '.detail' <<<"$f")
+    fix_hint=$(jq -r '.fix_hint' <<<"$f")
+    lc=$(printf '%s' "$class" | tr 'A-Z' 'a-z')
+    case "$class" in
+      D|E|F)
+        if [[ "$fired_classes" != *" $class "* ]]; then
+          "$ATMUX_BIN_DIR/atmux" audit --fix --class "$lc" >/dev/null 2>&1 || true
+          fired_classes+="$class "
+        fi
+        auto_corrected+=("🛠️ class $class · $detail")
+        ;;
+      A)
+        if (( pane_busy )); then
+          surfaced+=("⚠️ class A · driver-pane busy — fire later: $fix_hint")
+        else
+          local pre=0
+          [[ -f "$fix_log" ]] && pre=$(wc -l < "$fix_log" 2>/dev/null || echo 0)
+          "$ATMUX_BIN_DIR/atmux" audit --fix --class a >/dev/null 2>&1 || true
+          local post=0
+          [[ -f "$fix_log" ]] && post=$(wc -l < "$fix_log" 2>/dev/null || echo 0)
+          local new_lines=""
+          if (( post > pre )); then
+            new_lines="$(tail -n +$((pre + 1)) "$fix_log" 2>/dev/null || true)"
+          fi
+          if grep -q 'class=A result=ok' <<<"$new_lines"; then
+            auto_corrected+=("🛠️ class A · $detail")
+          else
+            surfaced+=("⚠️ class A · $detail · fire: $fix_hint")
+          fi
+        fi
+        ;;
+      B)
+        surfaced+=("⚠️ class B · $detail · fire: $fix_hint")
+        ;;
+      C)
+        refused+=("🛑 class C · $detail · manual: $fix_hint")
+        ;;
+    esac
+  done < <(jq -c '.[]' <<<"$findings_json")
+
+  local total_bullets=$(( ${#auto_corrected[@]} + ${#surfaced[@]} + ${#refused[@]} ))
+  (( total_bullets > 0 )) || return 0
+
+  local team; team="$(atmux::team_name 2>/dev/null || echo unknown)"
+  local ats; ats="$(atmux::now_myt 2>/dev/null || date +'%H:%M %Z')"
+  local out="🛡️ **[whip-audit]** · \`$team\` · $ats"
+  local b
+  if (( ${#auto_corrected[@]} > 0 )); then
+    out+=$'\n  '$'\n  🔧 **Auto-corrected** (low-blast):'
+    for b in "${auto_corrected[@]}"; do out+=$'\n  - '"$b"; done
+  fi
+  if (( ${#surfaced[@]} > 0 )); then
+    out+=$'\n  '$'\n  ⚠️ **Surfaced — driver action**:'
+    for b in "${surfaced[@]}"; do out+=$'\n  - '"$b"; done
+  fi
+  if (( ${#refused[@]} > 0 )); then
+    out+=$'\n  '$'\n  🛑 **Refused** (high-blast, manual only):'
+    for b in "${refused[@]}"; do out+=$'\n  - '"$b"; done
+  fi
+
+  findings+=("$out")
 }
 
 # For the `failover` budget policy: find a peer with the same role that still
