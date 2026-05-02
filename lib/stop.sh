@@ -61,6 +61,17 @@ main() {
     _atmux_archive_state
   fi
 
+  # ---- Graceful supervisor stop (E13/Sb t-2691746f, ADR-032) ----
+  # Tear down the per-team `__<team>__supervisor` window cleanly + clear
+  # `.atmux/state/supervisor.heartbeat` so doctor's supervisor-liveness row
+  # stops claiming the supervisor is alive. `.atmux/state/queues/` is left
+  # in place — the next `atmux start` re-spawns the supervisor, which
+  # drains the queue files on its first sweep. Idempotent: safe to call
+  # for teams that opted out (.supervisor=false) or never had a window.
+  # Best-effort — failures here must not block kill-session / kill-window.
+  "$ATMUX_BIN_DIR/atmux" supervisor-stop 2>/dev/null \
+    || atmux::warn "supervisor-stop failed (non-fatal)"
+
   if [[ "$single" == "true" ]]; then
     # Single-session: kill team windows ONLY; leave the shared session
     # alive so the driver shell + any other team's windows survive.
