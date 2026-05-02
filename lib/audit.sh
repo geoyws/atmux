@@ -524,13 +524,11 @@ _atmux_audit_class_a_fix() {
 
   # Re-capture pane state at fix time (-S -10 = last 10 scrollback
   # lines). State at detect time may be 100s of ms stale by the time we
-  # fire; the safety gate has to reason about the LIVE pane.
+  # fire; the safety gate has to reason about the LIVE pane. Empty
+  # capture (rare; freshly-spawned pane that hasn't rendered its first
+  # prompt) falls through to the preflight, which refuses on no-prompt.
   local state
   state="$(tmux capture-pane -p -t "$target" -S -10 2>/dev/null || true)"
-  if [[ -z "$state" ]]; then
-    _atmux_audit_log_fix A fail "could not capture pane state for '$target'" "$detail"
-    return 1
-  fi
 
   local idle_reason
   idle_reason="$(_atmux_audit_pane_idle_reason "$state")"
