@@ -80,13 +80,21 @@ main() {
   esac
 
   # --fix gate. Se ships D + E (low-blast auto-fix); Sf adds A (medium-
-  # blast, gated on driver-pane idle inside the fixer's preflight). F's
-  # fixer is a stub paired with the F detector stub (Sk-deferred). B, C
-  # are high-blast (surface-only per ADR-038); refuse hard.
+  # blast, gated on driver-pane idle inside the fixer's preflight). Sg
+  # adds B (high-blast cage-path migration) gated on
+  # ATMUX_AUDIT_DRIVER_FIRED=YES so whip / cron can NEVER auto-fire
+  # this — driver must explicitly opt in. F's fixer is a stub paired
+  # with the F detector stub (Sk-deferred). C remains surface-only
+  # (ADR-038 §gating: never auto-fixed; manual tmux swap-window).
   if [[ "$fix" -eq 1 ]]; then
     case "$class_filter" in
-      b|c)
-        atmux::die "audit: --fix --class $class_filter is high-blast (surface-only per ADR-038); never auto-fixed — use \`atmux team repair-rename\` (B) or \`tmux swap-window\` manually (C)"
+      b)
+        if [[ "${ATMUX_AUDIT_DRIVER_FIRED:-}" != "YES" ]]; then
+          atmux::die "audit: --fix --class b is high-blast — re-run with ATMUX_AUDIT_DRIVER_FIRED=YES to confirm driver authorization (ADR-038 §gating)"
+        fi
+        ;;
+      c)
+        atmux::die "audit: --fix --class c is high-blast (surface-only per ADR-038); use \`tmux swap-window\` manually"
         ;;
     esac
   fi
@@ -473,13 +481,14 @@ _atmux_audit_dispatch_action() {
     class="$(jq -r '.class' <<<"$f")"
     case "$class" in
       A) _atmux_audit_class_a_fix "$f" || true ;;
+      B) _atmux_audit_class_b_fix "$f" || true ;;
       D) _atmux_audit_class_d_fix "$f" || true ;;
       E) _atmux_audit_class_e_fix "$f" || true ;;
       F) _atmux_audit_class_f_fix "$f" || true ;;
-      B|C)
-        # Caller has filtered these out via --class gating in main();
-        # reaching here means a future Story landed an emit for one of
-        # these classes without wiring a fixer. Best-effort: log + skip.
+      C)
+        # main()'s --fix gate hard-refuses class C; reaching here means
+        # someone bypassed the gate (test harness / future fleet
+        # walker). Log + skip rather than running an unwired fixer.
         _atmux_audit_log_fix "$class" "skip" "no fixer wired for class $class" "$(jq -r '.detail' <<<"$f")"
         ;;
     esac
@@ -562,6 +571,64 @@ _atmux_audit_class_a_fix() {
   fi
   _atmux_audit_log_fix A fail "tmux rename-window failed for '$target'" "$detail"
   return 1
+}
+
+# Class B fixer: high-blast cage-path migration. Wraps `atmux team
+# repair-rename <team>` (per ADR-027 ADDENDUM 11) which atomically mvs
+# the cage tmpdir, renames the cage internal session, rewrites window
+# prefixes, and updates team.json + cron. Schema's `auto_fixable=false`
+# stays accurate — whip / cron never auto-fire this; the driver must
+# set ATMUX_AUDIT_DRIVER_FIRED=YES at the shell.
+#
+# Two gates protect the live cage:
+#   1. main()'s --fix flag-parser refuses without the env var (so
+#      `atmux audit --fix` from a misconfigured cron never reaches this
+#      fixer body).
+#   2. This function re-checks the env var so direct callers (tests,
+#      future fleet walkers) can't bypass via the dispatch_action path.
+#
+# Per-team rollback artifact lives at the team's
+# `.atmux/state/repair-rename-rollback.log` (per the verb's contract);
+# our audit-fix.log row names the team so operators can locate it.
+_atmux_audit_class_b_fix() {
+  local f="$1"
+  local detail; detail="$(jq -r '.detail' <<<"$f")"
+  local team;   team="$(jq -r '.team' <<<"$f")"
+
+  if [[ "${ATMUX_AUDIT_DRIVER_FIRED:-}" != "YES" ]]; then
+    _atmux_audit_log_fix B skip "ATMUX_AUDIT_DRIVER_FIRED=YES not set — class B is driver-fired only (ADR-038 §gating)" "$detail"
+    return 1
+  fi
+
+  if [[ -z "$team" || "$team" == "null" ]]; then
+    _atmux_audit_log_fix B fail "no team in finding (cannot resolve repair-rename target)" "$detail"
+    return 1
+  fi
+
+  if [[ "${_atmux_audit_dry_run:-0}" -eq 1 ]]; then
+    _atmux_audit_log_fix B dry-run "would invoke \`atmux team repair-rename $team\` (atomic mv + session/window rename + cron rewrite)" "$detail"
+    return 0
+  fi
+
+  local rc=0 out
+  out="$(_atmux_audit_invoke_repair_rename "$team" 2>&1)" || rc=$?
+  if (( rc == 0 )); then
+    _atmux_audit_log_fix B ok "atmux team repair-rename $team succeeded (rollback log at <projectRoot>/.atmux/state/repair-rename-rollback.log)" "$detail"
+    return 0
+  fi
+  # First line of the verb's stderr is usually the most useful pointer;
+  # truncate so a multi-page rollback log doesn't bloat audit-fix.log.
+  local first; first="$(printf '%s' "$out" | head -1)"
+  _atmux_audit_log_fix B fail "atmux team repair-rename $team failed (rc=$rc): ${first:-no output}" "$detail"
+  return 1
+}
+
+# Indirection so tests can stub the verb invocation without spinning up
+# a real cage tmpdir + tmux server. Production path is the literal
+# bin/atmux dispatcher call.
+_atmux_audit_invoke_repair_rename() {
+  local team="$1"
+  "$ATMUX_BIN_DIR/atmux" team repair-rename "$team"
 }
 
 # Pane-idle preflight evaluator. Echoes "ok" when the captured state
