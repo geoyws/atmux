@@ -544,9 +544,13 @@ _doctor_check_logout_kill() {
   # carve out exceptions write `KillUserProcesses=no` literally).
   local kup="yes"
   if [[ -r /etc/systemd/logind.conf ]]; then
+    # `|| true` guards against `set -e + pipefail` aborting the doctor
+    # when logind.conf has only commented `#KillUserProcesses=` (or no
+    # line at all): grep exits 1 and pipefail propagates. Default kup
+    # remains "yes" in that case, which matches systemd ≥230 behavior.
     local k
     k="$(grep -E '^[[:space:]]*KillUserProcesses=' /etc/systemd/logind.conf 2>/dev/null \
-          | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+          | tail -1 | cut -d= -f2 | tr -d '[:space:]' || true)"
     [[ -n "$k" ]] && kup="$k"
   fi
   if [[ "$kup" != "yes" ]]; then
