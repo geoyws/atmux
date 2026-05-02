@@ -79,14 +79,24 @@ main() {
     *) atmux::die "audit: --class must be one of {a,b,c,d,e,f,all}" ;;
   esac
 
-  # Sb is detect-only. --fix lands in Sc/Sd; refuse early so operators
-  # don't think a fix happened when nothing did.
+  # --fix gate. Se ships D + E (low-blast auto-fix); Sf adds A (medium-
+  # blast, gated on driver-pane idle inside the fixer's preflight). F's
+  # fixer is a stub paired with the F detector stub (Sk-deferred). B, C
+  # are high-blast (surface-only per ADR-038); refuse hard.
   if [[ "$fix" -eq 1 ]]; then
-    atmux::die "audit: --fix is not yet implemented (deferred to Sc/Sd per ADR-038); use detect-only or atmux audit --json | jq for triage"
+    case "$class_filter" in
+      b|c)
+        atmux::die "audit: --fix --class $class_filter is high-blast (surface-only per ADR-038); never auto-fixed — use \`atmux team repair-rename\` (B) or \`tmux swap-window\` manually (C)"
+        ;;
+    esac
   fi
-  if [[ "$dry_run" -eq 1 ]]; then
-    atmux::die "audit: --dry-run is paired with --fix and not yet implemented (Sc/Sd)"
+  if [[ "$dry_run" -eq 1 && "$fix" -ne 1 ]]; then
+    atmux::die "audit: --dry-run requires --fix"
   fi
+
+  # Globals consumed by _atmux_audit_dispatch_action.
+  _atmux_audit_fix_mode="$fix"
+  _atmux_audit_dry_run="$dry_run"
 
   _atmux_audit_findings=()
 
@@ -151,10 +161,11 @@ atmux audit [--quiet] [--fix [--class <a|b|c|d|e|f|all>]] [--json] [--dry-run]
 
   Flags:
     --quiet       suppress output; exit 1 on any drift, 0 on green (whip sub-pass).
-    --fix         Sc/Sd (not implemented in Sb).
+    --fix         apply per-class fixes. Low-blast classes (D, E, F) auto-fix.
+                  A is idle-gated (deferred); B and C never auto-fix (surface only).
     --class C     narrow detection / fix scope to one class.
     --json        emit findings array per ADR-038 schema.
-    --dry-run     print fix plan; default for blast≥medium classes.
+    --dry-run     paired with --fix: print fix plan, mutate nothing.
 EOF
 }
 
@@ -444,9 +455,259 @@ _atmux_audit_render_json() {
   printf '%s\n' "${_atmux_audit_findings[@]}" | jq -s '.'
 }
 
-# Dispatcher hook. Sc/Sd land per-class fixer routing here. Today it's a
-# no-op so the main flow has a fixed shape regardless of the Story that
-# wires the action surface.
+# Dispatcher hook. When --fix is in effect, routes each finding to its
+# class-specific fixer (Se ships D + E; F is a stub paired with the F
+# detector). When --fix is absent, no-ops so detect-only callers see the
+# findings array as emitted by the detectors. --dry-run takes the same
+# routing path but each fixer short-circuits without mutating anything.
 _atmux_audit_dispatch_action() {
+  [[ "${_atmux_audit_fix_mode:-0}" -eq 1 ]] || return 0
+
+  # Each fixer's rc is intentionally swallowed here. A failed fix is
+  # logged via _atmux_audit_log_fix (caller can grep for `result=fail`);
+  # propagating up would short-circuit the loop on the first failure
+  # and starve the remaining findings, which is the wrong policy for a
+  # mixed-class batch. Operators read the log for the per-finding outcome.
+  local f class
+  for f in "${_atmux_audit_findings[@]}"; do
+    class="$(jq -r '.class' <<<"$f")"
+    case "$class" in
+      A) _atmux_audit_class_a_fix "$f" || true ;;
+      D) _atmux_audit_class_d_fix "$f" || true ;;
+      E) _atmux_audit_class_e_fix "$f" || true ;;
+      F) _atmux_audit_class_f_fix "$f" || true ;;
+      B|C)
+        # Caller has filtered these out via --class gating in main();
+        # reaching here means a future Story landed an emit for one of
+        # these classes without wiring a fixer. Best-effort: log + skip.
+        _atmux_audit_log_fix "$class" "skip" "no fixer wired for class $class" "$(jq -r '.detail' <<<"$f")"
+        ;;
+    esac
+  done
+}
+
+# Class A fixer: rename a bare 'driver' window to '__<team>__driver',
+# but ONLY when the driver pane is at a bare shell prompt — never while
+# the operator's claude TUI is mid-turn or in a recoverable banner state.
+# Per ADR-038 §Pane-state safety gate. Schema's `auto_fixable=false`
+# stays accurate: external readers see a finding that cannot be fixed
+# unattended, even though THIS process may successfully fix it when the
+# pane happens to be idle.
+#
+# Refuse-list (any match → skip): TUI mid-turn / compaction / queued-msg
+# backbuffer / rate-limit modal / 'Now using extra usage' / 'Esc to
+# interrupt' (token counter while reasoning).
+#
+# Accept regex: last non-empty line ends in <prompt-char><whitespace>
+# where prompt-char ∈ {$, ❯, »}. Per the brief's regex literally — we
+# don't widen because false-accept is unsafe (rename mid-turn would
+# disrupt the operator's REPL); false-reject is safe (operator can
+# re-fire later or rename manually).
+_atmux_audit_class_a_fix() {
+  local f="$1"
+  local detail; detail="$(jq -r '.detail' <<<"$f")"
+
+  local team session
+  if ! atmux::dir >/dev/null 2>&1; then
+    _atmux_audit_log_fix A fail "no team context (atmux::dir unavailable)" "$detail"
+    return 1
+  fi
+  team="$(atmux::team_name)"
+  session="$(atmux::session_name)"
+
+  local target="$session:driver"
+
+  if ! atmux::tmux_session_exists; then
+    _atmux_audit_log_fix A fail "session '$session' is DOWN" "$detail"
+    return 1
+  fi
+
+  # Re-capture pane state at fix time (-S -10 = last 10 scrollback
+  # lines). State at detect time may be 100s of ms stale by the time we
+  # fire; the safety gate has to reason about the LIVE pane.
+  local state
+  state="$(tmux capture-pane -p -t "$target" -S -10 2>/dev/null || true)"
+  if [[ -z "$state" ]]; then
+    _atmux_audit_log_fix A fail "could not capture pane state for '$target'" "$detail"
+    return 1
+  fi
+
+  local idle_reason
+  idle_reason="$(_atmux_audit_pane_idle_reason "$state")"
+  if [[ "$idle_reason" != "ok" ]]; then
+    _atmux_audit_log_fix A skip "$idle_reason" "$detail"
+    return 1
+  fi
+
+  if [[ "${_atmux_audit_dry_run:-0}" -eq 1 ]]; then
+    _atmux_audit_log_fix A dry-run "would rename driver window → '__${team}__driver'" "$detail"
+    return 0
+  fi
+
+  if tmux rename-window -t "$target" "__${team}__driver" 2>/dev/null; then
+    _atmux_audit_log_fix A ok "renamed driver window → '__${team}__driver'" "$detail"
+    return 0
+  fi
+  _atmux_audit_log_fix A fail "tmux rename-window failed for '$target'" "$detail"
+  return 1
+}
+
+# Pane-idle preflight evaluator. Echoes "ok" when the captured state
+# represents an idle, bare-prompt shell pane safe for class A's rename.
+# Otherwise echoes a short reason string (used as the audit-fix.log
+# `action=` field). Pure function on the captured state — extracted from
+# _atmux_audit_class_a_fix so tests can drive it without tmux setup.
+_atmux_audit_pane_idle_reason() {
+  local state="$1"
+
+  if echo "$state" | grep -qiE \
+       'thinking with|Compacting conversation|Press up to edit queued messages|hit your limit|Now using extra usage|Esc to interrupt'; then
+    printf 'claude TUI banner detected — refusing rename\n'
+    return 0
+  fi
+
+  local last_line
+  last_line="$(echo "$state" | grep -v '^[[:space:]]*$' | tail -1 || true)"
+  if [[ ! "$last_line" =~ [\$❯»][[:space:]]*$ ]]; then
+    printf "pane not at bare prompt (last_line='%s')\n" "$last_line"
+    return 0
+  fi
+
+  printf 'ok\n'
+}
+
+# Class D fixer: tmux rename-window to strip trailing punctuation residue.
+# Auto-fix per ADR-038 §gating (low-blast, no pane-state gate). Idempotent:
+# a re-run on an already-clean window is a no-op because the detector
+# emits no D finding for a clean window — this fixer never sees it.
+#
+# Defensive re-derivation: parse the detail's quoted '<wname>' rather
+# than trusting an out-of-band data field. The detail format is owned
+# by _atmux_audit_class_d_detect (this lib); changes there must update
+# this regex in the same diff.
+_atmux_audit_class_d_fix() {
+  local f="$1"
+  local detail; detail="$(jq -r '.detail' <<<"$f")"
+
+  # detail = "window 'OLD' has trailing punctuation residue (canonical: 'NEW')"
+  local re="window '([^']+)' has trailing punctuation residue \\(canonical: '([^']+)'\\)"
+  if [[ ! "$detail" =~ $re ]]; then
+    _atmux_audit_log_fix D fail "could not parse target window from detail" "$detail"
+    return 1
+  fi
+  local old_name="${BASH_REMATCH[1]}"
+  local new_name="${BASH_REMATCH[2]}"
+
+  if [[ "${_atmux_audit_dry_run:-0}" -eq 1 ]]; then
+    _atmux_audit_log_fix D dry-run "would rename window '$old_name' → '$new_name'" "$detail"
+    return 0
+  fi
+
+  local session
+  session="$(atmux::session_name 2>/dev/null || true)"
+  if [[ -z "$session" ]]; then
+    _atmux_audit_log_fix D fail "no session context (team unavailable?)" "$detail"
+    return 1
+  fi
+
+  if tmux rename-window -t "$session:$old_name" "$new_name" 2>/dev/null; then
+    _atmux_audit_log_fix D ok "renamed window '$old_name' → '$new_name'" "$detail"
+    return 0
+  fi
+  _atmux_audit_log_fix D fail "tmux rename-window failed for '$session:$old_name'" "$detail"
+  return 1
+}
+
+# Class E fixer: rmdir a stray empty cage tmpdir. Three-clause guard
+# enforced AT FIX TIME (state can change between detect and fix):
+#   1. path matches /tmp/atmux*tmux* shape
+#   2. no live tmux socket inside (no */default file of socket type)
+#   3. no registered team's tmuxTmpdir references the path
+# Uses rmdir (refuses non-empty) — never rm -rf — so any unexpected
+# content surfaces as a fail rather than a silent data loss.
+_atmux_audit_class_e_fix() {
+  local f="$1"
+  local detail; detail="$(jq -r '.detail' <<<"$f")"
+
+  # detail = "stray cage tmpdir 'PATH' (no live socket + no registry entry)"
+  local re="stray cage tmpdir '([^']+)'"
+  if [[ ! "$detail" =~ $re ]]; then
+    _atmux_audit_log_fix E fail "could not parse target path from detail" "$detail"
+    return 1
+  fi
+  local path="${BASH_REMATCH[1]}"
+
+  # Clause 1: /tmp/atmux*tmux* shape. Tightened to either form (hyphen
+  # or underscore) under the configured scan root.
+  local tmp_root="${ATMUX_AUDIT_TMP_ROOT:-/tmp}"
+  if [[ "$path" != "$tmp_root"/atmux-tmux-* && "$path" != "$tmp_root"/atmux_tmux_* ]]; then
+    _atmux_audit_log_fix E fail "refusing rmdir — path '$path' not under '$tmp_root/atmux*tmux*'" "$detail"
+    return 1
+  fi
+
+  # Clause 2: no live socket inside. Walk every <path>/tmux-*/default
+  # candidate; ANY socket-typed file aborts the fix.
+  local sock
+  for sock in "$path"/tmux-*/default; do
+    if [[ -S "$sock" ]]; then
+      _atmux_audit_log_fix E fail "refusing rmdir — live socket at '$sock'" "$detail"
+      return 1
+    fi
+  done
+
+  # Clause 3: no registry entry references the path.
+  if grep -qxF -- "$path" <<<"$(_atmux_audit_registered_tmpdirs)"; then
+    _atmux_audit_log_fix E fail "refusing rmdir — '$path' matches a registered team's tmuxTmpdir" "$detail"
+    return 1
+  fi
+
+  if [[ "${_atmux_audit_dry_run:-0}" -eq 1 ]]; then
+    _atmux_audit_log_fix E dry-run "would rmdir '$path' (and any empty tmux-*/ subdirs)" "$detail"
+    return 0
+  fi
+
+  # Reap empty tmux-*/ subdirs first; rmdir refuses non-empty so this is
+  # the same defensive shape — the parent dir contains those subdirs (no
+  # socket, but the dirs themselves are empty), so without this step the
+  # parent rmdir would always fail.
+  local sub
+  for sub in "$path"/tmux-*/; do
+    [[ -d "$sub" ]] || continue
+    rmdir "$sub" 2>/dev/null \
+      || { _atmux_audit_log_fix E fail "rmdir failed on subdir '$sub' (non-empty?)" "$detail"; return 1; }
+  done
+
+  if rmdir "$path" 2>/dev/null; then
+    _atmux_audit_log_fix E ok "rmdir '$path'" "$detail"
+    return 0
+  fi
+  _atmux_audit_log_fix E fail "rmdir failed on '$path' (non-empty?)" "$detail"
+  return 1
+}
+
+# Class F fixer stub. Sk lands the real fixer alongside the real
+# detector. Today the F detector emits no findings → this fixer never
+# fires. The function exists for the dispatch_action's case statement to
+# stay exhaustive without a wildcard branch.
+_atmux_audit_class_f_fix() {
   return 0
+}
+
+# Append a fix-result row to .atmux/logs/audit-fix.log. Best-effort —
+# log-write failure (read-only fs, race on log rotation) doesn't fail
+# the fix. Operators tail this file for an audit trail of every
+# rename / rmdir the auto-fixer has performed; classifies as ok / fail
+# / dry-run / skip so a grep for `result=fail` surfaces problems fast.
+_atmux_audit_log_fix() {
+  local class="$1" result="$2" action="$3" detail="${4:-}"
+  local logf
+  if atmux::dir >/dev/null 2>&1; then
+    logf="$(atmux::logs_dir)/audit-fix.log"
+  else
+    logf="${ATMUX_AUDIT_FIX_LOG:-/tmp/atmux-audit-fix.log}"
+  fi
+  mkdir -p "$(dirname "$logf")" 2>/dev/null || true
+  local ts; ts="$(atmux::now_myt 2>/dev/null || date +'%H:%M %Z')"
+  printf '[%s] class=%s result=%s action=%s detail=%s\n' \
+    "$ts" "$class" "$result" "$action" "$detail" >> "$logf" 2>/dev/null || true
 }

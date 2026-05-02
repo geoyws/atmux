@@ -66,16 +66,38 @@ _source_audit() {
   [[ "$output" =~ "[]" ]]
 }
 
-@test "audit: --fix errors out as not-yet-implemented" {
-  run "$ATMUX_BIN" audit --fix
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "not yet implemented" ]]
+@test "audit: --fix --class a accepted (Sf added pane-idle gate)" {
+  # Sandbox has no driver pane → no class A finding → fixer no-op success.
+  run "$ATMUX_BIN" audit --fix --class a
+  [ "$status" -eq 0 ]
 }
 
-@test "audit: --dry-run errors out as paired with --fix" {
+@test "audit: --fix --class b refused (high-blast surface-only)" {
+  run "$ATMUX_BIN" audit --fix --class b
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "high-blast" ]] || [[ "$output" =~ "surface-only" ]]
+}
+
+@test "audit: --fix --class c refused (high-blast surface-only)" {
+  run "$ATMUX_BIN" audit --fix --class c
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "high-blast" ]] || [[ "$output" =~ "surface-only" ]]
+}
+
+@test "audit: --fix --class d on green sandbox is no-op success" {
+  run "$ATMUX_BIN" audit --fix --class d
+  [ "$status" -eq 0 ]
+}
+
+@test "audit: --fix on green sandbox dispatches but no fixers fire" {
+  run "$ATMUX_BIN" audit --fix
+  [ "$status" -eq 0 ]
+}
+
+@test "audit: --dry-run without --fix is rejected" {
   run "$ATMUX_BIN" audit --dry-run
   [ "$status" -ne 0 ]
-  [[ "$output" =~ "not yet implemented" ]]
+  [[ "$output" =~ "requires --fix" ]]
 }
 
 @test "audit: --class with bogus value rejected" {
@@ -362,8 +384,322 @@ _atmux_audit_kill_tmux_session() {
 
 # ---- Dispatcher hook ---------------------------------------------------
 
-@test "dispatch_action: no-op stub returns 0" {
+@test "dispatch_action: no-op when fix_mode is off" {
   _source_audit
+  _atmux_audit_fix_mode=0
   run _atmux_audit_dispatch_action
   [ "$status" -eq 0 ]
+}
+
+# ---- Class D fixer -----------------------------------------------------
+
+@test "class D fix: rename-window strips trailing dash" {
+  _source_audit
+  _atmux_audit_seed_tmux_session "auFD"
+  tmux new-window -d -t "=auFD" -n "__auFD__lead-" 3>&- 4>&-
+
+  _atmux_audit_class_d_detect || true
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+  _atmux_audit_dispatch_action
+
+  local wins
+  wins="$(tmux list-windows -t "=auFD" -F '#{window_name}' 2>/dev/null)"
+  _atmux_audit_kill_tmux_session "auFD"
+
+  [[ "$wins" =~ "__auFD__lead" ]]
+  [[ ! "$wins" =~ "__auFD__lead-" ]]
+}
+
+@test "class D fix: idempotent — second run on clean window is no-op" {
+  _source_audit
+  _atmux_audit_seed_tmux_session "auFD2"
+  tmux new-window -d -t "=auFD2" -n "__auFD2__lead-" 3>&- 4>&-
+
+  _atmux_audit_class_d_detect || true
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+  _atmux_audit_dispatch_action
+
+  # Re-detect on the now-clean state should produce no D findings.
+  _atmux_audit_findings=()
+  _atmux_audit_class_d_detect
+
+  _atmux_audit_kill_tmux_session "auFD2"
+
+  [ "${#_atmux_audit_findings[@]}" -eq 0 ]
+}
+
+@test "class D fix: --dry-run does not mutate" {
+  _source_audit
+  _atmux_audit_seed_tmux_session "auFD3"
+  tmux new-window -d -t "=auFD3" -n "__auFD3__lead-" 3>&- 4>&-
+
+  _atmux_audit_class_d_detect || true
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=1
+  _atmux_audit_dispatch_action
+
+  local wins
+  wins="$(tmux list-windows -t "=auFD3" -F '#{window_name}' 2>/dev/null)"
+  _atmux_audit_kill_tmux_session "auFD3"
+
+  # Window still has the trailing dash.
+  [[ "$wins" =~ "__auFD3__lead-" ]]
+}
+
+# ---- Class E fixer -----------------------------------------------------
+
+@test "class E fix: rmdir reaps stray empty cage dir" {
+  _source_audit
+  local stray="$ATMUX_AUDIT_TMP_ROOT/atmux_tmux_orphan_$$"
+  mkdir -p "$stray/tmux-0"
+
+  _atmux_audit_class_e_detect || true
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+  _atmux_audit_dispatch_action
+
+  ! [ -d "$stray" ]
+}
+
+@test "class E fix: refuses when live socket exists (defensive re-check)" {
+  _source_audit
+  local livedir="$ATMUX_AUDIT_TMP_ROOT/atmux_tmux_live_$$"
+  mkdir -p "$livedir/tmux-0"
+
+  # Synthesize a stale finding (detail names this path) — force the
+  # fixer to evaluate the 3-clause guard at fix time. After the
+  # detector ran in this test, we simulate someone spawning a socket
+  # between detect and fix.
+  _atmux_audit_findings=("$(jq -nc \
+    --arg path "$livedir" \
+    '{class:"E", severity:"low", team:"t", detail:("stray cage tmpdir '"'"'" + $path + "'"'"' (stale)"),
+      fix_hint:"rmdir", auto_fixable:true, blast_radius:"low"}')")
+
+  python3 -c "
+import socket
+s = socket.socket(socket.AF_UNIX)
+s.bind('$livedir/tmux-0/default')
+" 2>/dev/null
+
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+  _atmux_audit_dispatch_action
+
+  [ -d "$livedir" ]
+  rm -rf "$livedir"
+}
+
+@test "class E fix: refuses when path doesn't match /tmp/atmux*tmux* shape" {
+  _source_audit
+  local outside="$ATMUX_TEST_TMP/random-path"
+  mkdir -p "$outside/tmux-0"
+
+  # Stale finding pointing OUTSIDE the allowed shape — fixer must
+  # refuse rather than rmdir.
+  _atmux_audit_findings=("$(jq -nc \
+    --arg path "$outside" \
+    '{class:"E", severity:"low", team:"t", detail:("stray cage tmpdir '"'"'" + $path + "'"'"' (stale)"),
+      fix_hint:"rmdir", auto_fixable:true, blast_radius:"low"}')")
+
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+  _atmux_audit_dispatch_action
+
+  [ -d "$outside" ]
+  rm -rf "$outside"
+}
+
+@test "class E fix: --dry-run does not mutate" {
+  _source_audit
+  local stray="$ATMUX_AUDIT_TMP_ROOT/atmux_tmux_dry_$$"
+  mkdir -p "$stray/tmux-0"
+
+  _atmux_audit_class_e_detect || true
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=1
+  _atmux_audit_dispatch_action
+
+  [ -d "$stray" ]
+  rm -rf "$stray"
+}
+
+# ---- Class A fixer: pane-idle gate -------------------------------------
+
+@test "pane-idle: accepts bare bash prompt" {
+  _source_audit
+  local state='~/foo $ '
+  run _atmux_audit_pane_idle_reason "$state"
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+}
+
+@test "pane-idle: accepts starship/powerline ❯ prompt" {
+  _source_audit
+  local state='~/foo ❯ '
+  run _atmux_audit_pane_idle_reason "$state"
+  [ "$output" = "ok" ]
+}
+
+@test "pane-idle: accepts » prompt" {
+  _source_audit
+  local state='~/foo » '
+  run _atmux_audit_pane_idle_reason "$state"
+  [ "$output" = "ok" ]
+}
+
+@test "pane-idle: refuses on 'Compacting conversation' banner" {
+  _source_audit
+  local state='✻ Compacting conversation… (4k tokens)
+~/foo $ '
+  run _atmux_audit_pane_idle_reason "$state"
+  [[ "$output" =~ "TUI banner detected" ]]
+}
+
+@test "pane-idle: refuses on 'Press up to edit queued messages'" {
+  _source_audit
+  local state='Press up to edit queued messages
+~/foo $ '
+  run _atmux_audit_pane_idle_reason "$state"
+  [[ "$output" =~ "TUI banner detected" ]]
+}
+
+@test "pane-idle: refuses on 'hit your limit' rate-limit modal" {
+  _source_audit
+  local state='You hit your limit — try again in 1h
+~/foo $ '
+  run _atmux_audit_pane_idle_reason "$state"
+  [[ "$output" =~ "TUI banner detected" ]]
+}
+
+@test "pane-idle: refuses on 'thinking with' mid-turn signal" {
+  _source_audit
+  local state='✶ thinking with extended reasoning…'
+  run _atmux_audit_pane_idle_reason "$state"
+  [[ "$output" =~ "TUI banner detected" ]]
+}
+
+@test "pane-idle: refuses on 'Esc to interrupt' token counter" {
+  _source_audit
+  local state='1.2k tokens · esc to interrupt'
+  run _atmux_audit_pane_idle_reason "$state"
+  [[ "$output" =~ "TUI banner detected" ]]
+}
+
+@test "pane-idle: refuses when last line is non-prompt output" {
+  _source_audit
+  local state='running build...'
+  run _atmux_audit_pane_idle_reason "$state"
+  [[ "$output" =~ "not at bare prompt" ]]
+}
+
+@test "class A fix: idle pane → renames driver → '__<team>__driver'" {
+  _source_audit
+  _atmux_audit_seed_tmux_session "auFA"
+  tmux new-window -d -t "=auFA" -n "driver" 3>&- 4>&-
+
+  # Force the preflight to accept regardless of the actual pane state.
+  # The spawned bash's prompt depends on operator config and may not
+  # match the canonical [$❯»] regex — but we're testing the fixer's
+  # rename path, not the regex (covered by the pane-idle: tests above).
+  _atmux_audit_pane_idle_reason() { printf 'ok\n'; }
+
+  _atmux_audit_class_a_detect || true
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+  _atmux_audit_dispatch_action
+
+  local renamed bare
+  renamed="$(tmux list-windows -t "=auFA" -F '#{window_name}' 2>/dev/null \
+              | grep -cxF '__auFA__driver' || true)"
+  bare="$(tmux list-windows -t "=auFA" -F '#{window_name}' 2>/dev/null \
+              | grep -cxF 'driver' || true)"
+  _atmux_audit_kill_tmux_session "auFA"
+
+  [ "$renamed" = "1" ]
+  [ "$bare" = "0" ]
+  [ -f .atmux/logs/audit-fix.log ]
+  grep -q 'class=A.*result=ok' .atmux/logs/audit-fix.log
+}
+
+@test "class A fix: --dry-run on idle pane logs would-rename + skips mutation" {
+  _source_audit
+  _atmux_audit_seed_tmux_session "auFAd"
+  tmux new-window -d -t "=auFAd" -n "driver" 3>&- 4>&-
+
+  _atmux_audit_pane_idle_reason() { printf 'ok\n'; }
+
+  _atmux_audit_class_a_detect || true
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=1
+  _atmux_audit_dispatch_action
+
+  local bare
+  bare="$(tmux list-windows -t "=auFAd" -F '#{window_name}' 2>/dev/null \
+            | grep -cxF 'driver' || true)"
+  _atmux_audit_kill_tmux_session "auFAd"
+
+  # Bare 'driver' window untouched.
+  [ "$bare" = "1" ]
+  [ -f .atmux/logs/audit-fix.log ]
+  grep -q 'class=A.*result=dry-run' .atmux/logs/audit-fix.log
+}
+
+@test "class A fix: refuses on busy pane (banner detected) — logs skip" {
+  _source_audit
+  _atmux_audit_seed_tmux_session "auFAb"
+  tmux new-window -d -t "=auFAb" -n "driver" 3>&- 4>&-
+
+  # Force preflight to refuse with a banner reason.
+  _atmux_audit_pane_idle_reason() {
+    printf 'claude TUI banner detected — refusing rename\n'
+  }
+
+  _atmux_audit_class_a_detect || true
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+  _atmux_audit_dispatch_action
+
+  local bare
+  bare="$(tmux list-windows -t "=auFAb" -F '#{window_name}' 2>/dev/null \
+            | grep -cxF 'driver' || true)"
+  _atmux_audit_kill_tmux_session "auFAb"
+
+  # No rename happened.
+  [ "$bare" = "1" ]
+  [ -f .atmux/logs/audit-fix.log ]
+  grep -q 'class=A.*result=skip.*banner' .atmux/logs/audit-fix.log
+}
+
+@test "class A fix: refuses when no team context is available" {
+  _source_audit
+  _atmux_audit_findings=("$(jq -nc \
+    '{class:"A", severity:"medium", team:"", detail:"window driver test",
+      fix_hint:"...", auto_fixable:false, blast_radius:"medium"}')")
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+
+  # Override atmux::dir to fail — simulates running outside a team dir.
+  # log_fix's fallback path writes to $ATMUX_AUDIT_FIX_LOG; pin it under
+  # the sandbox so we can assert.
+  export ATMUX_AUDIT_FIX_LOG="$ATMUX_TEST_TMP/audit-fix.log"
+  atmux::dir() { return 1; }
+
+  _atmux_audit_dispatch_action
+
+  [ -f "$ATMUX_AUDIT_FIX_LOG" ]
+  grep -q 'class=A.*result=fail' "$ATMUX_AUDIT_FIX_LOG"
+}
+
+# ---- log_fix -----------------------------------------------------------
+
+@test "log_fix: appends a result line under .atmux/logs/audit-fix.log" {
+  _source_audit
+  _atmux_audit_log_fix D ok "renamed window" "test detail"
+  [ -f .atmux/logs/audit-fix.log ]
+  run cat .atmux/logs/audit-fix.log
+  [[ "$output" =~ class=D ]]
+  [[ "$output" =~ result=ok ]]
+  [[ "$output" =~ "renamed window" ]]
 }
