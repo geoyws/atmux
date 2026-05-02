@@ -1,7 +1,8 @@
 # ADR-025: atmux-superdriver Phase 1 — read-only fleet aggregator
 
-**Status**: accepted
+**Status**: accepted (Phase 2 commit-gate superseded by ADR-034; implementation-shape detailed in ADR-042)
 **Date**: 2026-04-27
+**See also**: [ADR-034](./034-superdriver-phase-2-commit.md) (Phase 2 unblocked 2026-04-28; supersedes §"Phase 2 commit gate"), [ADR-042](./042-superdriver-phase-2-implementation.md) (Phase 2A/2B/2C/2D verb surface + dependency graph).
 
 ## Context
 

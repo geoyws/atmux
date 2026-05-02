@@ -1,8 +1,8 @@
 # ADR-029: Driver + lead are scoped to own team; only superdriver messages cross-team
 
-**Status**: accepted
+**Status**: accepted (audit-storage detail superseded by ADR-042 — JSONL file replaces `registry.json:.superdriver.writeAuditLog`; rest of ADR stands)
 **Date**: 2026-04-27
-**Related**: [ADR-025](./025-superdriver-phase-1.md) (superdriver Phase 1 read-only), [ADR-027](./027-team-rename-verb-and-topology-invariant.md) (registry as identity source of truth)
+**Related**: [ADR-025](./025-superdriver-phase-1.md) (superdriver Phase 1 read-only), [ADR-027](./027-team-rename-verb-and-topology-invariant.md) (registry as identity source of truth), [ADR-042](./042-superdriver-phase-2-implementation.md) (Phase 2 implementation; relocates cross-team write audit to `~/.claude/teams/superdriver-writes.jsonl`)
 
 ## Context
 
