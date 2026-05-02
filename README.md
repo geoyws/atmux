@@ -289,6 +289,42 @@ The unblocker is the *detector*; the lead remains the urgent-Discord *voice*. (W
 
 **See also**: [ADR-021](docs/adr/021-unblocker-role.md) (role rationale + per-tick spec + open questions); `templates/briefs/unblocker.md` (canonical brief loaded at spawn time).
 
+### Discorder role
+
+Optional dedicated narrative-composition member, spawned at `role=discorder, lane=misc`. Owns the team's **scheduled** Discord pings — 30-min `whip-progress` digest + 60-min `whip-heartbeat` — while the team-lead keeps the **urgent** voice (`whip-blocker`, `whip-decisions`, `whip-critical`). Read-only on kanban / git-log / decisions; never claims, never plans, never sends urgent pings.
+
+**What it does.** Per [ADR-022](docs/adr/022-discorder-role.md): on a scheduled cron tick, snapshots `kanban.json` + recent commit log + new entries since the last decisions cursor, composes a `whip-progress` digest body matching the canonical `~/.claude/CLAUDE.md` Discord-format rule (header + bulleted body + per-bullet emoji), and routes via `~/.claude/skills/whip/scripts/ping-discord.sh`. Hourly the same loop fires a `whip-heartbeat` — single bullet, "team alive, last commit Nm ago, kanban: todo=X / in-progress=Y." See `templates/briefs/discorder.md` for the per-tick loop, the section discipline, and the one-line escalation rule (anything that needs judgment-on-correctness routes to lead via `atmux send lead`).
+
+**Ownership split.** The lead retains every event-driven ping; the discorder owns the routine narrative:
+
+| Ping template          | Owner       | Why                                                                     |
+|------------------------|-------------|-------------------------------------------------------------------------|
+| `whip-blocker`         | **lead**    | Caused by the lead's own dispatch + coordination events.                |
+| `whip-decisions`       | **lead**    | High-rev decisions interrupt the driver in real time; lead authored.   |
+| `whip-critical` / 🚨   | **lead**    | Same urgency tier — lead saw it, lead pings.                            |
+| `whip-progress` (30m)  | **discorder** | Routine narrative summary. Composes 200–400 tokens — bigger than lead's coordination budget can absorb every tick. |
+| `whip-heartbeat` (60m) | **discorder** | Same shape: routine, no judgment-on-correctness.                        |
+| `team-bootstrap`       | **lead**    | Lifecycle event — lead's authority.                                      |
+
+**When to add it.** Bundling narrative composition into the lead has two costs: (1) the 200–400 token progress-digest compose competes with the lead's dispatch attention every 30 min, and (2) the same role writing both urgent and routine creates tone drift — either heartbeats sound too urgent or blockers sound too summary-style. Add a discorder once the team is **≥4 members** AND the lead's progress-digest pings are starting to ship late or feel rushed. Smaller teams don't generate enough narrative volume to justify the extra member; the lead can absorb it. Skip it for solo or 2-member teams.
+
+```bash
+atmux add-member discorder --role discorder --tui claude --lane misc --cwd "$PWD"
+```
+
+For `role=discorder` the model is **Sonnet** (`claude-sonnet-4-6`) per [ADR-024](docs/adr/024-per-member-model-selection.md) — pure narrative formatter, no judgment-on-correctness. The discorder is the **single carve-out** from the global "Team members always use Opus" rule (`~/.claude/CLAUDE.md` Model Selection §). Standard member spawn — `+1 window` per team. To pause while idle: `atmux pause discorder`. To remove permanently: `atmux remove-member discorder`.
+
+**Cadence + cron behaviour.** `lib/cron.sh::atmux::cron_install` emits two scheduled lines when `team.json` has a member with `role: discorder`:
+
+```
+*/30 * * * * … atmux discorder progress    # 30-min progress digest
+0    * * * * … atmux discorder heartbeat   # 60-min heartbeat
+```
+
+The legacy `atmux report` cron line — pre-discorder, lead-composed report — is **auto-suppressed** when a discorder member exists (cron-rewrite skips that block on next `atmux start`). Manual `atmux report` still works for one-off invocations from any context, regardless of discorder presence; only the cron auto-fire is suppressed to avoid duplicate routine pings into the channel.
+
+**See also**: [ADR-022](docs/adr/022-discorder-role.md) (role rationale + ownership split + open questions); `templates/briefs/discorder.md` (canonical brief loaded at spawn time); [ADR-024](docs/adr/024-per-member-model-selection.md) (per-member model + the discorder Sonnet carve-out).
+
 ### Member emoji stability
 
 Each member spawns into a tmux window named `__<team>__<emoji><member>` — the leading emoji is the visual shorthand the driver builds up over weeks of operation ("🐰 is be-kanban", "🦁 is lead"). To keep that shorthand intact across restarts, atmux records each member's emoji to the cross-team registry at `~/.claude/teams/registry.json` (see [ADR-025](docs/adr/025-superdriver-phase-1.md)) and treats it as **immutable once first written**.
