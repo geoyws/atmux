@@ -52,16 +52,17 @@ teardown() {
   #   7  include_dba              n
   #   8  include_unblocker        n
   #   9  include_discorder        n
-  #  10  n_workers                0
-  #  11  emoji_mode (default)
-  #  12  discord_hook (default = "")
-  #  13  cage_isolation (default y) — ADR-018 isolated tmux socket
-  #  14  tui_cmd_claude (default)
-  #  15  tui_cmd_opencode (default)
-  #  16  tui_cmd_kimi (default)
-  #  17  tui_cmd_cursor (default)
+  #  10  include_enforcer         n
+  #  11  n_workers                0
+  #  12  emoji_mode (default)
+  #  13  discord_hook (default = "")
+  #  14  cage_isolation (default y) — ADR-018 isolated tmux socket
+  #  15  tui_cmd_claude (default)
+  #  16  tui_cmd_opencode (default)
+  #  17  tui_cmd_kimi (default)
+  #  18  tui_cmd_cursor (default)
   local feed; feed=$(mktemp)
-  printf '\ndefault\nn\nn\nn\nn\nn\nn\nn\n0\nrandom\n\ny\n\n\n\n\n' > "$feed"
+  printf '\ndefault\nn\nn\nn\nn\nn\nn\nn\nn\n0\nrandom\n\ny\n\n\n\n\n' > "$feed"
   run bash -c "'$ATMUX_BIN' init --wizard --force < '$feed'"
   rm -f "$feed"
   [ "$status" -eq 0 ]
@@ -78,7 +79,7 @@ teardown() {
   #   - "Spawn into driver tmux session?" — the prompt itself.
   #   - "Single-session mode spawns team windows" — the 4-line preamble.
   local feed; feed=$(mktemp)
-  printf '\ndefault\nn\nn\nn\nn\nn\nn\nn\n0\nrandom\n\ny\n\n\n\n\n' > "$feed"
+  printf '\ndefault\nn\nn\nn\nn\nn\nn\nn\nn\n0\nrandom\n\ny\n\n\n\n\n' > "$feed"
   run bash -c "'$ATMUX_BIN' init --wizard --force < '$feed' 2>&1"
   rm -f "$feed"
   [ "$status" -eq 0 ]

@@ -52,11 +52,11 @@ teardown() {
 @test "init --wizard: cage tmpdir uses underscore separator" {
   local tmp; tmp="$(mktemp)"
   # team_name=cage-test | preset=custom | planner y | reviewer y | gitter y |
-  # devops n | dba n | unblocker n | discorder n | n_workers=1 |
+  # devops n | dba n | unblocker n | discorder n | enforcer n | n_workers=1 |
   # emoji_mode=static | discord="" | cage_isolation=y |
   # tui_cmd_claude="" | tui_cmd_opencode="" | tui_cmd_kimi="" | tui_cmd_cursor="" |
   # worker tui=shell | worker model=default | worker name
-  printf 'cage-test\ncustom\ny\ny\ny\nn\nn\nn\nn\n1\nstatic\n\ny\n\n\n\n\nshell\ndefault\nworker-1\n' > "$tmp"
+  printf 'cage-test\ncustom\ny\ny\ny\nn\nn\nn\nn\nn\n1\nstatic\n\ny\n\n\n\n\nshell\ndefault\nworker-1\n' > "$tmp"
   run bash -c "'$ATMUX_BIN' init --wizard --force < '$tmp'"
   [ "$status" -eq 0 ]
   run jq -r '.tmuxTmpdir' .atmux/team.json
