@@ -263,6 +263,32 @@ atmux pause planner-auth
 
 They share the same brief template as the canonical role, so the lead treats them as parallel staff. Useful when the main planner's queue is deep or a feature needs a dedicated schema reviewer.
 
+### Unblocker role
+
+Optional dedicated blocker-triage member, spawned at `role=unblocker, lane=misc`. Reads pane state + kanban every 2 minutes, classifies wedged work, and routes the unblock action — surface-only, never claims, never plans, never auto-mutates the kanban.
+
+**What it does.** Per [ADR-021](docs/adr/021-unblocker-role.md): on a 2-min cron tick, enumerates `tasks[]` with `status == "blocked"` OR (`status == "in-progress"` AND `claimedAt` mtime > 30 min with no commit-Task downstream). For each candidate, captures the assigned member's pane (`tmux capture-pane`) + recent activity, then classifies into one of **WEDGED** (modal/permission/rate-limit banner — surface to `lead-outbox.md` for `/team clear` approval), **IDLE** (no progress > 30 min — nudge via `atmux send <member>`), **LEGITIMATELY-SLOW** (active build/e2e — no action), or **WEDGED-WITH-DRIVER-NEEDED** (escalate to `driver-inbox.md` tagged `🚨 needs driver`). See `templates/briefs/unblocker.md` for the per-tick loop and action-authority table.
+
+**When to add it.** The lead's whip cycle bundles dispatch + rotation + Discord composition + blocker triage into a single 5-min budget. As teams grow past **~4–5 members** and stale `in-progress` claims start slipping past a full whip tick, the lead's blocker-triage attention gets crowded out. A dedicated unblocker at 2-min cadence isolates the cost. Skip it for small teams (≤3 members) — the lead's whip is enough.
+
+**How to add it.** No config edit needed; `atmux add-member` does the team.json mutation + spawn:
+
+```bash
+atmux add-member unblocker --role unblocker --tui claude --lane misc --cwd "$PWD"
+```
+
+For `role=unblocker` the `--lane` flag is honored verbatim (`misc` is conventional but `--lane` accepts any of `{fe,be,db,ops,test,review,misc}`). Standard member spawn — `+1 window` per team. To pause while idle: `atmux pause unblocker`. To remove permanently: `atmux remove-member unblocker`.
+
+**Cadence + Discord behaviour.** `lib/cron.sh::atmux::cron_install` emits a `*/2 * * * * … atmux unblocker tick` line when `team.json` has a member with `role: unblocker` (otherwise no-op). The unblocker itself **does not send Discord pings directly** — its outputs are:
+
+- **Nudges** — `atmux send <member>` (tmux send-keys; no Discord).
+- **Surfaces** — `atmux flag add` (writes `flags.md`; the lead picks up the `flag-add` socket event per [ADR-032](docs/adr/032-socket-pubsub-messaging-layer.md) and composes a `whip-blocker` Discord ping at its next whip tick).
+- **Driver escalations** — appended to `.atmux/driver-inbox.md` (no Discord; driver reads on-demand).
+
+The unblocker is the *detector*; the lead remains the urgent-Discord *voice*. (When a discorder is also present, scheduled `whip-progress` digests will mention surfaced blockers inline as a bullet — see [ADR-022](docs/adr/022-discorder-role.md).)
+
+**See also**: [ADR-021](docs/adr/021-unblocker-role.md) (role rationale + per-tick spec + open questions); `templates/briefs/unblocker.md` (canonical brief loaded at spawn time).
+
 ### Member emoji stability
 
 Each member spawns into a tmux window named `__<team>__<emoji><member>` — the leading emoji is the visual shorthand the driver builds up over weeks of operation ("🐰 is be-kanban", "🦁 is lead"). To keep that shorthand intact across restarts, atmux records each member's emoji to the cross-team registry at `~/.claude/teams/registry.json` (see [ADR-025](docs/adr/025-superdriver-phase-1.md)) and treats it as **immutable once first written**.
