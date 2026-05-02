@@ -198,7 +198,7 @@ _atmux_init_wizard() {
   local staff_tui="claude"
   [[ "$preset" == "eco" ]] && staff_tui="opencode"
 
-  local include_planner include_reviewer include_gitter include_devops include_dba include_unblocker include_discorder
+  local include_planner include_reviewer include_gitter include_devops include_dba include_unblocker include_discorder include_enforcer
   _atmux_prompt_choice include_planner    "Include planner member (owns decomposition + ADRs)" "y" y n
   _atmux_prompt_choice include_reviewer   "Include reviewer member"  "y" y n
   _atmux_prompt_choice include_gitter     "Include gitter member (git commits + push)" "y" y n
@@ -206,6 +206,7 @@ _atmux_init_wizard() {
   _atmux_prompt_choice include_dba        "Include dba member (schema / migrations / SQL)" "n" y n
   _atmux_prompt_choice include_unblocker  "Include unblocker member (jam-buster — pulls stuck Tasks across lanes)" "n" y n
   _atmux_prompt_choice include_discorder  "Include discorder member (scheduled Discord pings — progress digest + heartbeat)" "n" y n
+  _atmux_prompt_choice include_enforcer   "Include enforcer member (fleet-level audit consumer — superdriver team only, ADR-039)" "n" y n
 
   local n_workers; _atmux_prompt n_workers "Number of worker members" "3"
   [[ "$n_workers" =~ ^[0-9]+$ ]] || { atmux::warn "wizard: bad count, defaulting to 3"; n_workers=3; }
@@ -316,6 +317,10 @@ _atmux_init_wizard() {
   if [[ "$include_discorder" == "y" ]]; then
     _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
       '{name:"discorder", role:"discorder", tui:$tui, model:"default", cwd:$cwd}')"
+  fi
+  if [[ "$include_enforcer" == "y" ]]; then
+    _append_member "$(jq -n --arg cwd "$PWD" --arg tui "$staff_tui" \
+      '{name:"enforcer", role:"enforcer", tui:$tui, model:"default", cwd:$cwd}')"
   fi
 
   # Preset-driven worker TUI picker.
