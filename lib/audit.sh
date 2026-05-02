@@ -542,6 +542,20 @@ _atmux_audit_class_a_fix() {
     return 0
   fi
 
+  # Pre-flight collision guard (E14/Sf-followup t-263aaeaa). tmux's
+  # `rename-window` is permissive on duplicate names — it succeeds rc=0
+  # and silently produces TWO windows sharing the canonical name, after
+  # which the driver pane is no longer addressable by `=$session:driver`.
+  # Exact-match list-windows scan refuses BEFORE the rename so both
+  # windows survive intact and the operator can resolve the prior
+  # canonical window manually.
+  if tmux list-windows -t "=$session" -F '#W' 2>/dev/null \
+       | grep -qxF "__${team}__driver"; then
+    _atmux_audit_log_fix A skip \
+      "collision: window '__${team}__driver' already exists" "$detail"
+    return 1
+  fi
+
   if tmux rename-window -t "$target" "__${team}__driver" 2>/dev/null; then
     _atmux_audit_log_fix A ok "renamed driver window → '__${team}__driver'" "$detail"
     return 0
