@@ -32,6 +32,18 @@
 # Sourced from lib/common.sh so every messaging verb can call
 # atmux::sock_publish without an extra `. "$ATMUX_LIB_DIR/..."` line.
 
+# Re-entry guard. Multiple verb scripts (lib/tell.sh, lib/send.sh,
+# lib/dispatch.sh, lib/reply.sh, lib/decisions.sh, lib/flags.sh,
+# lib/kanban.sh) each `. "$ATMUX_LIB_DIR/socket-pubsub.sh"` at top-of-file
+# so atmux::sock_publish is in scope without depending on common.sh's
+# transitive source. Without a guard, every re-source RE-DEFINES the
+# helpers — which silently overwrites any test-time monkey-patch (test
+# setup defines stubs, then the verb's source re-defines and the stubs
+# are gone). Tests setting ATMUX_SOCKET_PUBSUB_LOADED=1 before sourcing
+# the verb script keep their stubs intact; production use sees no change.
+[[ -n "${_ATMUX_SOCKET_PUBSUB_LOADED:-}" ]] && return 0
+_ATMUX_SOCKET_PUBSUB_LOADED=1
+
 atmux::sock_dir()  { printf '%s/sockets\n' "$(atmux::dir)"; }
 atmux::sock_path() { printf '%s/%s.sock\n' "$(atmux::sock_dir)" "$1"; }
 
