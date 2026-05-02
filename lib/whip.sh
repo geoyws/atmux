@@ -189,6 +189,19 @@ main() {
       findings+=("⏳ $name: compacting — skip sends until done")
       preclear_banner="${preclear_banner:-compacting}"
     fi
+    # Claude Code auto-`/clear` recovery banner (observed 2026-05-01 on
+    # unum lead). When the long-running pane hits its own context limit,
+    # CC clears + posts `● Context cleared. Ready for your next
+    # instruction.` — which wipes the role brief along with everything
+    # else. Without an explicit detector, whip's snapshot stays unchanged
+    # tick after tick (same N stale teammates) so quiet_count rises and
+    # no rotate fires; driver-inbox silently accumulates ASKs for hours.
+    # Treat it as a rotate trigger so the brief is re-pasted via the same
+    # AUTO-PRECLEAR path that handles compacting / rate-limit signals.
+    if echo "$state" | grep -qiE 'Context cleared\.\s*Ready for'; then
+      findings+=("🧹 $name: context cleared (CC auto-clear) — re-bootstrap brief")
+      preclear_banner="${preclear_banner:-context-cleared}"
+    fi
     # Queued-msg flag suppressed when the pane is concurrently BUSY: Claude
     # actively running ('Esc to interrupt' / token counter / 'thinking with')
     # WILL submit the queued text when the current turn ends. Without this
