@@ -291,3 +291,109 @@ EOF
     ! grep -q "ATMUX_DIR=$ATMUX_TEST_TMP/sandbox-g" "$ATMUX_TEST_CRONTAB"
   fi
 }
+
+# ---------- E9/Sc t-be778e9e: per-team unblocker cron line ----------
+#
+# Render-time check on team.json:.members[] | select(.role=="unblocker").
+# Helpers below seed a real $ATMUX_DIR/team.json (the install helper ignores
+# the absent-team-json case in earlier tests because the path is synthetic);
+# the new line emits ONLY when an unblocker member is declared.
+
+# Seed a team.json at $1 with the listed roles ($2..). Used by the
+# unblocker-cron tests below to drive the role-list gate inside
+# _atmux_cron_render_lines without spinning up the wizard.
+_seed_team_json_with_roles() {
+  local atmux_dir="$1"; shift
+  mkdir -p "$atmux_dir"
+  local members='[]' role
+  for role in "$@"; do
+    members=$(jq -c --arg r "$role" --arg n "m-$role" \
+      '. + [{name:$n, role:$r, lane:"misc", tui:"shell"}]' <<<"$members")
+  done
+  jq -n --arg name "team-x" --argjson members "$members" \
+    '{name:$name, members:$members}' > "$atmux_dir/team.json"
+}
+
+@test "cron_install: team WITHOUT unblocker member ⇒ no unblocker cron line" {
+  _load_cron
+  _force_install_path
+  rm -f "$ATMUX_TEST_CRONTAB"
+
+  local d="$ATMUX_TEST_TMP/sandbox-no-unblocker"
+  _seed_team_json_with_roles "$d" team-lead reviewer gitter
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$d"
+
+  ! grep -q 'unblocker tick' "$ATMUX_TEST_CRONTAB"
+  # Existing 4 lines still present.
+  grep -q 'whip ' "$ATMUX_TEST_CRONTAB"
+  grep -q 'report ' "$ATMUX_TEST_CRONTAB"
+  grep -q 'decisions digest ' "$ATMUX_TEST_CRONTAB"
+  grep -q 'groom --quiet' "$ATMUX_TEST_CRONTAB"
+}
+
+@test "cron_install: team WITH unblocker member ⇒ 2-min unblocker tick line emitted" {
+  _load_cron
+  _force_install_path
+  rm -f "$ATMUX_TEST_CRONTAB"
+
+  local d="$ATMUX_TEST_TMP/sandbox-unblocker"
+  _seed_team_json_with_roles "$d" team-lead reviewer gitter unblocker
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$d"
+
+  # Single emission of the unblocker line — 2-min schedule + tick subverb +
+  # log redirect into <atmux_dir>/logs/unblocker.log per ADR-021.
+  [ "$(grep -c 'unblocker tick' "$ATMUX_TEST_CRONTAB")" = "1" ]
+  grep -qE '^\*/2 \* \* \* \* .*ATMUX_DIR='"$d"' .*unblocker tick' "$ATMUX_TEST_CRONTAB"
+  grep -qE 'unblocker tick >> '"$d"'/logs/unblocker.log 2>&1' "$ATMUX_TEST_CRONTAB"
+}
+
+@test "cron_install: team WITH unblocker — re-run yields byte-identical crontab (idempotent)" {
+  _load_cron
+  _force_install_path
+  rm -f "$ATMUX_TEST_CRONTAB"
+
+  local d="$ATMUX_TEST_TMP/sandbox-idem"
+  _seed_team_json_with_roles "$d" team-lead unblocker
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$d"
+  local first; first=$(cat "$ATMUX_TEST_CRONTAB")
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$d"
+  local second; second=$(cat "$ATMUX_TEST_CRONTAB")
+  [ "$first" = "$second" ]
+  [ "$(grep -c 'unblocker tick' "$ATMUX_TEST_CRONTAB")" = "1" ]
+}
+
+@test "cron_install: team WITH unblocker + tmuxTmpdir ⇒ unblocker line carries TMUX_TMPDIR prefix" {
+  _load_cron
+  _force_install_path
+  rm -f "$ATMUX_TEST_CRONTAB"
+
+  local d="$ATMUX_TEST_TMP/sandbox-tmpdir"
+  _seed_team_json_with_roles "$d" team-lead unblocker
+  # Add the tmuxTmpdir field so the same conditional that prefixes whip /
+  # report / digest / groom also prefixes the unblocker line (E8/Sc shape).
+  jq '.tmuxTmpdir = "/tmp/atmux_tmux_team_x"' "$d/team.json" > "$d/team.json.tmp"
+  mv "$d/team.json.tmp" "$d/team.json"
+
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$d"
+
+  grep -qE '^\*/2 \* \* \* \* TMUX_TMPDIR=/tmp/atmux_tmux_team_x ATMUX_DIR='"$d"' .* unblocker tick' \
+    "$ATMUX_TEST_CRONTAB"
+}
+
+@test "cron_install: removing unblocker member from team.json drops the line on next install" {
+  _load_cron
+  _force_install_path
+  rm -f "$ATMUX_TEST_CRONTAB"
+
+  local d="$ATMUX_TEST_TMP/sandbox-toggle"
+  _seed_team_json_with_roles "$d" team-lead unblocker
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$d"
+  grep -q 'unblocker tick' "$ATMUX_TEST_CRONTAB"
+
+  # Remove the unblocker member, re-install — line must disappear.
+  jq '.members |= map(select(.role != "unblocker"))' "$d/team.json" > "$d/team.json.tmp"
+  mv "$d/team.json.tmp" "$d/team.json"
+  PATH="$ATMUX_MOCK_BIN:$PATH" atmux::cron_install team-x "$d"
+
+  ! grep -q 'unblocker tick' "$ATMUX_TEST_CRONTAB"
+}

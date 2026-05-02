@@ -55,6 +55,24 @@ _atmux_cron_render_lines() {
   # --quiet` on activation so cron-less hosts (or a brand-new team that
   # hasn't passed its first 04:00 yet) still get a passive sweep.
   printf '0 4 * * * %sATMUX_DIR=%s %s groom --quiet >> %s/logs/groom.log 2>&1\n' "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+
+  # E9/Sc t-be778e9e (ADR-021): teams with a declared 'unblocker' role
+  # member get a 2-min `unblocker tick` cron line. Reads team.json
+  # role-list directly so adding/removing the unblocker member via
+  # add-member/remove-member surfaces in the next install. jq absent or
+  # team.json missing ⇒ silent skip (matches the cron_install
+  # best-effort posture). TMUX_TMPDIR prefix inherited so cron-fired
+  # ticks see the team's isolated socket per E8/Sc.
+  if command -v jq >/dev/null 2>&1 && [[ -f "$atmux_dir/team.json" ]]; then
+    local has_unblocker
+    has_unblocker=$(jq -r '[.members[]? | select(.role == "unblocker")] | length' \
+                      "$atmux_dir/team.json" 2>/dev/null || echo 0)
+    [[ "$has_unblocker" =~ ^[0-9]+$ ]] || has_unblocker=0
+    if (( has_unblocker > 0 )); then
+      printf '*/2 * * * * %sATMUX_DIR=%s %s unblocker tick >> %s/logs/unblocker.log 2>&1\n' \
+        "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+    fi
+  fi
 }
 
 # Drop the marker-bounded block (header + body + footer) for <team> from
