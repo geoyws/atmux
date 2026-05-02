@@ -72,10 +72,17 @@ _source_audit() {
   [ "$status" -eq 0 ]
 }
 
-@test "audit: --fix --class b refused (high-blast surface-only)" {
+@test "audit: --fix --class b refused without driver env" {
+  unset ATMUX_AUDIT_DRIVER_FIRED
   run "$ATMUX_BIN" audit --fix --class b
   [ "$status" -ne 0 ]
-  [[ "$output" =~ "high-blast" ]] || [[ "$output" =~ "surface-only" ]]
+  [[ "$output" =~ "ATMUX_AUDIT_DRIVER_FIRED=YES" ]]
+}
+
+@test "audit: --fix --class b accepted with ATMUX_AUDIT_DRIVER_FIRED=YES" {
+  # Sandbox has no class B finding → fixer no-op success.
+  ATMUX_AUDIT_DRIVER_FIRED=YES run "$ATMUX_BIN" audit --fix --class b
+  [ "$status" -eq 0 ]
 }
 
 @test "audit: --fix --class c refused (high-blast surface-only)" {
@@ -523,6 +530,113 @@ s.bind('$livedir/tmux-0/default')
 
   [ -d "$stray" ]
   rm -rf "$stray"
+}
+
+# ---- Class B fixer: cage-path migration (driver-fired) -----------------
+
+@test "class B fix: refuses when ATMUX_AUDIT_DRIVER_FIRED is unset" {
+  _source_audit
+  unset ATMUX_AUDIT_DRIVER_FIRED
+  _atmux_audit_findings=("$(jq -nc \
+    '{class:"B", severity:"high", team:"foo",
+      detail:"team.json:.tmuxTmpdir uses hyphen-form '"'"'/tmp/atmux-tmux-foo'"'"' (canonical: /tmp/atmux_tmux_foo)",
+      fix_hint:"...", auto_fixable:false, blast_radius:"high"}')")
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+
+  # Stub repair-rename so the test can't accidentally fire it.
+  _atmux_audit_invoke_repair_rename() { echo "STUB INVOKED for $1" >&2; return 99; }
+
+  _atmux_audit_dispatch_action
+
+  [ -f .atmux/logs/audit-fix.log ]
+  grep -q 'class=B.*result=skip.*ATMUX_AUDIT_DRIVER_FIRED' .atmux/logs/audit-fix.log
+  # Stub must NOT have fired (the gate refused first).
+  ! grep -q 'STUB INVOKED' .atmux/logs/audit-fix.log
+}
+
+@test "class B fix: --dry-run with env logs would-invoke without firing" {
+  _source_audit
+  export ATMUX_AUDIT_DRIVER_FIRED=YES
+  _atmux_audit_findings=("$(jq -nc \
+    '{class:"B", severity:"high", team:"foo",
+      detail:"team.json:.tmuxTmpdir uses hyphen-form '"'"'/tmp/atmux-tmux-foo'"'"' (canonical: /tmp/atmux_tmux_foo)",
+      fix_hint:"...", auto_fixable:false, blast_radius:"high"}')")
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=1
+
+  local invoked=0
+  _atmux_audit_invoke_repair_rename() { invoked=$((invoked + 1)); return 0; }
+
+  _atmux_audit_dispatch_action
+
+  [ "$invoked" -eq 0 ]
+  [ -f .atmux/logs/audit-fix.log ]
+  grep -q 'class=B.*result=dry-run.*team repair-rename foo' .atmux/logs/audit-fix.log
+}
+
+@test "class B fix: with env + non-dry, invokes repair-rename + logs ok" {
+  _source_audit
+  export ATMUX_AUDIT_DRIVER_FIRED=YES
+  _atmux_audit_findings=("$(jq -nc \
+    '{class:"B", severity:"high", team:"foo",
+      detail:"team.json:.tmuxTmpdir uses hyphen-form '"'"'/tmp/atmux-tmux-foo'"'"' (canonical: /tmp/atmux_tmux_foo)",
+      fix_hint:"...", auto_fixable:false, blast_radius:"high"}')")
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+
+  _atmux_audit_invoke_repair_rename() {
+    [ "$1" = "foo" ] || return 1
+    return 0
+  }
+
+  _atmux_audit_dispatch_action
+
+  [ -f .atmux/logs/audit-fix.log ]
+  grep -q 'class=B.*result=ok.*repair-rename foo succeeded' .atmux/logs/audit-fix.log
+}
+
+@test "class B fix: failed repair-rename logs fail with truncated stderr" {
+  _source_audit
+  export ATMUX_AUDIT_DRIVER_FIRED=YES
+  _atmux_audit_findings=("$(jq -nc \
+    '{class:"B", severity:"high", team:"foo",
+      detail:"team.json:.tmuxTmpdir uses hyphen-form '"'"'/tmp/atmux-tmux-foo'"'"' (canonical: /tmp/atmux_tmux_foo)",
+      fix_hint:"...", auto_fixable:false, blast_radius:"high"}')")
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+
+  _atmux_audit_invoke_repair_rename() {
+    printf 'repair-rename: target tmpdir already exists\nadditional context line\n'
+    return 1
+  }
+
+  _atmux_audit_dispatch_action
+
+  [ -f .atmux/logs/audit-fix.log ]
+  grep -q 'class=B.*result=fail.*target tmpdir already exists' .atmux/logs/audit-fix.log
+  # Second line of stderr should NOT make it into the log row (truncated to first).
+  ! grep -q 'class=B.*additional context line' .atmux/logs/audit-fix.log
+}
+
+@test "class B fix: empty team field logs fail (cannot resolve target)" {
+  _source_audit
+  export ATMUX_AUDIT_DRIVER_FIRED=YES
+  _atmux_audit_findings=("$(jq -nc \
+    '{class:"B", severity:"high", team:"",
+      detail:"hyphen-form drift", fix_hint:"...",
+      auto_fixable:false, blast_radius:"high"}')")
+  _atmux_audit_fix_mode=1
+  _atmux_audit_dry_run=0
+
+  local invoked=0
+  _atmux_audit_invoke_repair_rename() { invoked=$((invoked + 1)); return 0; }
+
+  _atmux_audit_dispatch_action
+
+  [ "$invoked" -eq 0 ]
+  [ -f .atmux/logs/audit-fix.log ]
+  grep -q 'class=B.*result=fail.*no team in finding' .atmux/logs/audit-fix.log
 }
 
 # ---- Class A fixer: pane-idle gate -------------------------------------
