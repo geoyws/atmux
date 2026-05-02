@@ -325,6 +325,32 @@ The legacy `atmux report` cron line — pre-discorder, lead-composed report — 
 
 **See also**: [ADR-022](docs/adr/022-discorder-role.md) (role rationale + ownership split + open questions); `templates/briefs/discorder.md` (canonical brief loaded at spawn time); [ADR-024](docs/adr/024-per-member-model-selection.md) (per-member model + the discorder Sonnet carve-out).
 
+### Enforcer role
+
+Optional fleet-level audit consumer member, spawned on the **superdriver team** at `role=enforcer, lane=misc`. Walks `~/.claude/teams/registry.json` per tick, invokes `atmux audit --json` per registered team, aggregates findings, and routes by class — surface-only, never claims, never plans, never auto-fires high-blast fixes.
+
+**What it does.** Per [ADR-039](docs/adr/039-enforcer-agent-role.md): on each ON-DEMAND tick, reads `atmux super-status --json` + per-team `atmux audit --json` (per [ADR-038](docs/adr/038-declarative-live-audit-model.md)) and classifies every finding into one of four shapes — **fleet-wide pattern** (≥2 teams hitting the same audit class — surface as a digest entry to driver via `super-tell` OR append to `~/.claude/teams/superdriver-bypass-log.md`), **isolated finding** (one team only — no-op; whip's per-team auto-fix already owns it), **ambiguous medium/high-blast** (whip surfaced as `⚠️` — propose a fix command + safety gate; surface to driver), or **convention regression suggesting new class** (draft an ADR-038 amendment + route via planner). Maintains `docs/audit.md` operator guide + the ADR-038 class table via the planner ADR flow. See `templates/briefs/enforcer.md` for the per-tick loop, action-authority table, and channel matrix.
+
+**When to add it.** Per-team `atmux audit` is necessary but not sufficient: cross-team patterns (a class hitting 3-of-4 teams = fleet-wide convention shift, not 3 independent bugs) are invisible to per-team whip. Add an enforcer once the fleet has **≥2 teams** running `atmux audit` and you've noticed yourself grepping across team logs by hand to spot patterns. Skip it for a single-team setup — there's nothing to aggregate. The role is opt-in on the superdriver team only; existing per-team teams need no change.
+
+```bash
+# Superdriver team's team.json — manual edit (wizard not yet aware of enforcer):
+atmux add-member enforcer --role enforcer --tui claude --lane misc --cwd "$PWD"
+```
+
+For `role=enforcer` the model is `claude-opus-4-7` with `CLAUDE_CODE_EFFORT_LEVEL=xhigh` per [ADR-024](docs/adr/024-per-member-model-selection.md) — cross-team audit is judgment-heavy work, not mechanical pattern-matching, so Sonnet is *not* the right fit (ADR-039 §B3). Standard member spawn — `+1 window` on the superdriver team.
+
+**Cadence + Discord behaviour.** **ON-DEMAND in v1**, mirroring the superdriver itself ([ADR-025](docs/adr/025-superdriver-phase-1.md)) — NO cron schedule, NO whip cycle. Driver invokes after fleet-wide changes (ADR amendments, convention shifts, post-incident sweeps). The enforcer's outputs are:
+
+- **Digests** — `atmux super-tell driver "<digest>"` (cross-team, real-time; no direct Discord).
+- **Async audit log** — appended to `~/.claude/teams/superdriver-bypass-log.md` (driver reviews at next `super-attach`).
+- **ADR amendment drafts** — routed to the superdriver team's planner via `atmux send planner` (planner integrates via the normal ADR flow; enforcer never bypasses planner).
+- **Operator guide updates** — `docs/audit.md` edits routed via planner review.
+
+The enforcer is the *cross-team aggregator*; the planner remains the ADR *author*; the driver remains the high-blast *decider*. Phase 2 may add a low-cadence cron (e.g. daily 06:00) — deferred until v1 logs ≥3 missed-pattern incidents per ADR-039 §Open questions B2.
+
+**See also**: [ADR-039](docs/adr/039-enforcer-agent-role.md) (role rationale + per-tick spec + role taxonomy comparison); [ADR-038](docs/adr/038-declarative-live-audit-model.md) (the audit model + class taxonomy enforcer consumes); `templates/briefs/enforcer.md` (canonical brief loaded at spawn time).
+
 ### Member emoji stability
 
 Each member spawns into a tmux window named `__<team>__<emoji><member>` — the leading emoji is the visual shorthand the driver builds up over weeks of operation ("🐰 is be-kanban", "🦁 is lead"). To keep that shorthand intact across restarts, atmux records each member's emoji to the cross-team registry at `~/.claude/teams/registry.json` (see [ADR-025](docs/adr/025-superdriver-phase-1.md)) and treats it as **immutable once first written**.
