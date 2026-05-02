@@ -75,8 +75,31 @@ Canonical form going forward: `/tmp/atmux-tmux_<team>` (e.g. `/tmp/atmux-tmux_my
 - `templates/team.example.json:4` — `/tmp/atmux-tmux-my-team` → `/tmp/atmux-tmux_my-team`.
 - README §Per-team tmux socket isolation — example + raw-tmux fallback now show underscore form.
 
-**Live-state migration is OUT OF SCOPE** of this amendment. Existing on-disk cages (`/tmp/atmux-tmux-aux`, `/tmp/atmux-tmux-myteam-beta`, `/tmp/atmux-tmux-myteam-alpha`, `/tmp/atmux-tmux-myteam-c`) are left intact; the driver fires destructive stop/rename/start manually per team in a quiet window. Lead surfaces ready-to-fire migration instructions to driver-inbox once this commit lands green. Future-team scaffolds + wizard runs naturally produce the corrected form.
+**Live-state migration was deferred** in the original 2026-04-30 amendment landing — see "Live-state migration is now executable" amendment 2026-05-02 below. Existing on-disk cages at amendment time (`/tmp/atmux-tmux-aux`, `/tmp/atmux-tmux-myteam-beta`, `/tmp/atmux-tmux-myteam-alpha`, `/tmp/atmux-tmux-myteam-c`) were left intact pending tooling. Future-team scaffolds + wizard runs naturally produce the corrected form starting from this amendment.
 
 **Dogfood `atmux` carve-out unchanged.** Bare `/tmp/atmux-tmux` (no suffix) for the literally-named-`atmux` team stays — the corrected path would be `/tmp/atmux-tmux_atmux` which still has the doubled-name awkwardness the original carve-out avoided. Hand-edited team.json continues to maintain the bare path; wizard default for a hypothetical new `atmux` team would now produce `/tmp/atmux-tmux_atmux` (acceptable; less awkward than the old `/tmp/atmux-tmux-atmux` because the underscore visually separates the doubling).
 
 Test coverage: `tests/unit/init_cage_tmpdir_separator.bats` asserts both code paths (template + wizard) emit the underscore form for a multi-word team name.
+
+## Amendment — 2026-05-02 (live-state migration is now executable via `atmux audit`)
+
+The 2026-04-30 amendment deferred live-state cage-tmpdir migration to the driver's manual quiet-window invocation. With ADR-038 (declarative-vs-live audit model) and ADR-040 (whip-audit integration) landing, the migration is now executable as a verb:
+
+- **Class B** in the audit class taxonomy (ADR-038 §Drift class taxonomy) is exactly this drift: `team.json:.tmuxTmpdir` matching the old hyphen form `/tmp/atmux-tmux-*` instead of the canonical `/tmp/atmux_tmux_*`.
+- **Detection**: `atmux audit --json` lists each drifted team as a class-B finding.
+- **Fix**: `atmux audit --fix --class b` wraps `lib/team-repair-rename.sh` (ADR-027 ADDENDUM 11). Atomic per team with rollback log at `.atmux/state/repair-rename-rollback.log`.
+- **Gating**: class B is HIGH blast radius. Whip surfaces with `⚠️` + ready-to-fire command; **never auto-fires**. Driver invokes manually per team.
+
+Operator runbook for the four pending hyphen-form cages:
+
+```bash
+# Inspect drift (no mutation)
+atmux audit --class b
+
+# Per-team manual fix (driver invokes; high-blast)
+cd /root/work/src/atmux/teams/<team>
+atmux audit --fix --class b --dry-run   # review plan
+atmux audit --fix --class b              # apply
+```
+
+The wizard + template paths from the 2026-04-30 amendment continue producing the underscore form for new teams; the audit verb addresses the live-state legacy. The ADR-038 class taxonomy is the durable home for this drift class; future cage-path naming changes amend ADR-038's class table rather than this ADR.
