@@ -84,9 +84,9 @@ tests/parity/
 | stderr | Same | Same; reviewer rule §9.5 means stderr divergence is a real signal |
 | exit code | `proc.exited` | Strict equality |
 | `.atmux/` post-state | Walk + read every file under `$ATMUX_DIR` after the verb returns | JSON files diffed via Zod-parsed canonical form; markdown/text byte-exact (after timestamp mask); inbox files match by `(member, lineCount, lastMsgID)` tuple to allow stable ordering |
-| Discord webhook calls | `ATMUX_DISCORD_WEBHOOK_URL=file:///tmp/atmux-parity-XXXX/webhook.jsonl` — both runners write each POST as a JSONL line with `{ts, payload, runner: bash|ts}` | JSON-array semantic diff with `ts` masked; per-bullet emoji + named-template assertions per CLAUDE.md Discord format rule |
+| Discord webhook calls | Recording stub injected via env override (mechanism owned by ADR-008) — both runners emit each call as a JSONL line `{ts, payload, runner: bash|ts}` to a harness-managed sink | JSON-array semantic diff with `ts` masked; per-bullet emoji + named-template assertions per CLAUDE.md Discord format rule |
 
-Bash side currently has no Discord-webhook-override env var; the harness adds one (`ATMUX_DISCORD_WEBHOOK_URL` already used elsewhere is shadowed for bats — here we layer a `file://` interceptor) as the FIRST harness commit before any verb is exercised. Implementation: a thin shell shim (`tests/parity/scripts/curl-shim.sh`) that's prepended to `PATH` for the bash subprocess and writes JSONL instead of curling. TS side calls the same JSONL writer when `ATMUX_DISCORD_WEBHOOK_URL` starts with `file://`.
+**Discord interception — mechanism deferred to ADR-008; contract owned here.** The implementation choice (override `ATMUX_DISCORD_WEBHOOK_URL=file://...`, or override `ATMUX_DISCORD_PING_SCRIPT` to a recording stub that replaces `~/.claude/skills/whip/scripts/ping-discord.sh`) belongs to ADR-008 (Discord webhook layer). What this ADR contracts: every parity run produces an array `DiscordCall[] = {ts: ISO8601, payload: {content: string, ...}, runner: "bash" | "ts"}` and the harness compares them post-mask. Both bash and TS atmux MUST honour the same env-override knob — ADR-008 chooses which knob and ratifies the recording-stub shape.
 
 **Runner contract:**
 
@@ -120,7 +120,34 @@ compare(bash: ParityRun, ts: ParityRun): Divergence[]
 
 **TS side stub for Phase 0.** Until a real TS verb exists, `runVerb("ts", …)` returns `exit=2`, `stdout=""`, `stderr="atmux-bun: not implemented"`. The Phase 0 deliverable is the harness *shape* — diff pipeline operational end-to-end on the stub. Phase 1 swaps the stub for the real `atmux-bun` binary as verbs land.
 
-**Exit-status semantics.** A parity test passes when `compare()` returns `[]`. Any divergence fails the test with a structured report (the 5-element bug-report shape from CLAUDE.md test-finding pattern: state-snapshot, containment, fix sketch, residue inventory, severity).
+**Exit-status semantics — strict, no warning tier.** A parity test passes IFF `compare()` returns `[]`. Any non-empty `Divergence[]` fails the test, hard. There is no "soft" / "warning" / "expected-divergence-allowlist" tier — divergences are either fixed in code or addressed via an explicit ADR carve-out (CLAUDE.md "structural honesty over demo narrative"). This applies channel-by-channel:
+
+- **exit code:** byte-equal int. `bash exit 1` ≠ `ts exit 2`. No "both nonzero" coalescing.
+- **stdout:** byte-equal after masking only the documented timestamp pattern (`\d{2}:\d{2} MYT`). Any other diff is a real signal — silent whitespace drift, trailing-newline drift, ANSI escape drift all fail.
+- **stderr:** byte-equal under the same mask. Reviewer rule §9.5 (no silent-error swallows) means stderr is part of the contract, not a debug channel.
+- **fs state:** Zod-canonicalised JSON byte-equal; non-JSON files byte-equal; inbox files match by `(member, lineCount, lastMsgID)` tuple to allow stable tail ordering without losing append-only semantics.
+- **discord:** every call's `payload` byte-equal in order, post-`ts`-mask.
+
+Any divergence emits the 5-element bug-report shape (CLAUDE.md test-finding pattern): state-snapshot at every step, containment analysis, fix sketch with file:line, residue inventory, severity-with-context.
+
+### 3.5 Reviewer regex enforcement (codified in CI alongside coverage)
+
+PLAN.md §9 lists the 8-check gate by category; this ADR enumerates the exact regexes the reviewer (and CI lint pass) enforces. Coverage gating alone is necessary-not-sufficient — these regexes catch shape violations coverage can't see.
+
+| Rule | Regex (multiline, `src/**/*.ts` only unless noted) | Allowed exception |
+|---|---|---|
+| No `JSON.parse` in domain code | `\bJSON\.parse\s*\(` | `src/schema/**` (validators wrap parse in zod-safe-parse) |
+| No silent-error swallows | `catch\s*\([^)]*\)\s*\{\s*\}` and `\.catch\s*\(\s*\(\s*\)\s*=>\s*(?:null\|undefined\|void 0)\s*\)` | Inline preceding comment `// expected-empty: <reason>` |
+| No bash-style stderr suppression escapees | `2\s*>\s*\/dev\/null` (only matches if it leaks into TS as a literal string) | `src/abstractions/spawn.ts` (the spawn wrapper that justifies it once, ADR-007) |
+| No raw `Date` formatting outside `time.ts` | `new Date\([^)]*\)\.toLocale|new Date\([^)]*\)\.toIso|Date\.now\(\)\.toString\(36\)` | `src/abstractions/time.ts` (ADR-012) |
+| No raw `fetch` outside `http.ts` | `\bfetch\s*\(` | `src/abstractions/http.ts` (ADR-008 owns Discord layer on top) |
+| No `Bun.spawn` outside `spawn.ts` | `\bBun\.spawn\s*\(` | `src/abstractions/spawn.ts` (ADR-007), `tests/parity/runner.ts` (harness needs raw spawn) |
+| Conventional commit subject | `^(feat\|fix\|chore\|refactor\|test\|docs)(\(.+\))?:` (commitlint or git-hook) | None |
+| ADR cross-ref on new src module | A `// ADR-NNN: <title>` comment within first 20 lines of any new `src/**/*.ts` (excluding generated, tests, fixtures) | Files with no architectural decision (pure helpers) explicitly carve out via `// ADR: pure helper, no design decision` |
+
+Reviewer runs these as a `biome` plugin (preferred — single-tool config) or as a hand-rolled `tests/lint-rules.ts` invoked from CI before `bun test`. Implementation choice: TBD by foundation porter during ADR-007/008 work; this ADR ratifies the **rule set**, not the runner.
+
+Each rule violation blocks the commit. The "explicit carve-out" mechanism — same as bypass discipline — requires a commit-body line `Approved exception: <reason>` AND a one-line code comment naming the rule waived. Lead acks via DM before reviewer merge-ok.
 
 ### 4. Bats spec port plan — `tests/e2e/<verb>.test.ts`
 
