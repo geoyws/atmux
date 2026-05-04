@@ -56,7 +56,6 @@ EOF
   _doctor_check_supervisor_liveness
   _doctor_check_wedged_bats_exec
   _doctor_check_caged_windows_outside_cage
-  _doctor_check_daily_driver_launchers
   _doctor_check_orphan_atmux_sessions
   _doctor_check_daily_driver_prefix_leak
 
@@ -1067,32 +1066,14 @@ _doctor_check_caged_windows_outside_cage() {
   done < <(_doctor_iter_running_caged_teams)
 }
 
-# Daily-driver launcher session detector. For every cage'd team with a
-# live cage server, ensure a single-window session named `atmux_<team>`
-# exists on the operator's daily-driver socket whose pane runs `tmux -S
-# <cage-sock> attach -t <team>` — selecting that session in the daily-
-# driver's session list (prefix-s) drops the operator into the team's
-# cage in one keystroke. Yellow row per missing launcher; `--fix`
-# creates them all. Skipped silently when $TMUX is unset (cron path)
-# or when the operator IS currently on the cage's socket.
-_doctor_check_daily_driver_launchers() {
-  [[ -n "${TMUX:-}" ]] || return 0
-  local daily_sock="${TMUX%%,*}"
-
-  local name root cage_sock
-  while IFS=$'\t' read -r name root cage_sock; do
-    [[ "$daily_sock" == "$cage_sock" ]] && continue
-    local launch_sess="atmux_${name}"
-    if env -u TMUX tmux -S "$daily_sock" has-session -t "=$launch_sess" 2>/dev/null; then
-      _doctor_row green "launcher:$name" \
-        "session $launch_sess up on daily-driver"
-    else
-      _doctor_row yellow "launcher:$name" \
-        "missing daily-driver launcher session $launch_sess (one-keystroke jump into cage)" \
-        "atmux doctor --fix creates it"
-    fi
-  done < <(_doctor_iter_running_caged_teams)
-}
+# Daily-driver launcher session detector — REMOVED 2026-05-04. The
+# launcher concept (separate `atmux_<team>` session on the daily socket
+# whose pane re-attaches to a cage) presumed cages were the durable team
+# topology. ADR-044 (driver-as-window-1 of the team session) made that
+# concept dead: the team session is the operator's destination, no
+# launcher hop needed. The function + its --fix counterpart were
+# removed; surrounding `_doctor_check_caged_windows_outside_cage` and
+# orphan-session detectors stay (still useful).
 
 # Orphan atmux-namespace session detector (ADR-037). Operator-socket only,
 # scoped strictly to names matching `^atmux(_|$)` so the user's daily-driver
@@ -1253,7 +1234,6 @@ _doctor_try_fix() {
   _doctor_try_fix_phantom_inboxes
   _doctor_try_fix_cron_orphans
   _doctor_try_fix_logout_kill
-  _doctor_try_fix_daily_driver_launchers
   _doctor_try_fix_daily_driver_prefix_leak
 
   [[ "$_doctor_red_count" -eq 0 ]] && return 0
@@ -1446,38 +1426,6 @@ _doctor_check_daily_driver_prefix_leak() {
   _doctor_row yellow "daily-driver-prefix-leak" \
     "daily-driver prefix is C-\\ (cage convention) — likely clobbered by a pre-b39d9f4 atmux start" \
     "$hint"
-}
-
-_doctor_try_fix_daily_driver_launchers() {
-  [[ -n "${TMUX:-}" ]] || return 0
-  local daily_sock="${TMUX%%,*}"
-
-  printf '\n%s🚀 atmux%s  doctor --fix: ensuring daily-driver launchers\n' \
-    "$atmux_c_cyn" "$atmux_c_rst" >&2
-
-  local created=0 skipped=0
-  local name root cage_sock
-  while IFS=$'\t' read -r name root cage_sock; do
-    [[ "$daily_sock" == "$cage_sock" ]] && continue
-
-    local launch_sess="atmux_${name}"
-    if env -u TMUX tmux -S "$daily_sock" has-session -t "=$launch_sess" 2>/dev/null; then
-      skipped=$((skipped + 1))
-      continue
-    fi
-
-    if env -u TMUX tmux -S "$daily_sock" new-session -d -s "$launch_sess" \
-        -n "$name" \
-        "exec env -u TMUX tmux -S '$cage_sock' attach-session -t '$name'" 2>/dev/null; then
-      created=$((created + 1))
-      printf '  ✅ created %s → %s\n' "$launch_sess" "$cage_sock" >&2
-    else
-      printf '  ❌ failed to create %s\n' "$launch_sess" >&2
-    fi
-  done < <(_doctor_iter_running_caged_teams)
-
-  printf '%s🚀 atmux%s  doctor --fix: %d launcher(s) created, %d already up\n' \
-    "$atmux_c_cyn" "$atmux_c_rst" "$created" "$skipped" >&2
 }
 
 # Re-source ~/.tmux.conf on the daily-driver socket to restore the
