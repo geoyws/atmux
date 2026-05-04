@@ -7,10 +7,20 @@
 coverage = true
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
-coverageThreshold = { line = 1.0, function = 1.0 }
+# Per ADR-009 §2 — line/function/statement/branch all 100%.
+coverageThreshold = { line = 1.0, function = 1.0, statement = 1.0, branch = 1.0 }
 # Test files don't count toward the denominator (they execute themselves
 # at 100% trivially — including them dilutes the signal).
 coverageSkipTestFiles = true
+# Narrowed denominator (ADR-009 §2). Code outside these patterns is
+# tracked at 100%; matching paths are excluded from the gate.
+coveragePathIgnorePatterns = [
+  "src/types/generated/",
+  "src/cli.ts",
+  "**/index.ts",
+  "tests/",
+  "**/*.fixtures.ts",
+]
 
 [install]
 # CI must use the committed bun.lock verbatim. Locally, override with
