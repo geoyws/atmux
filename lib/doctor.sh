@@ -839,7 +839,11 @@ _doctor_check_repair_rename_needed() {
     # Indicator 2/3: cage live + session-name or window-prefix mismatch.
     sock="$tmpdir/tmux-0/default"
     [[ -S "$sock" ]] || continue
-    sess="$(tmux -S "$sock" list-sessions -F '#{session_name}' 2>/dev/null | head -1)"
+    # Trailing `|| true` neutralises set -e + pipefail when the cage
+    # socket is alive but has no sessions (tmux exits 1, pipefail
+    # propagates, set -e fires on the assignment). Same class as the
+    # logind.conf pipeline-crash guard in 846dca8.
+    sess="$(tmux -S "$sock" list-sessions -F '#{session_name}' 2>/dev/null | head -1 || true)"
     if [[ -n "$sess" && "$sess" != "$name" ]]; then
       _doctor_row yellow "repair-rename-needed:$name" \
         "cage internal session '$sess' ≠ team name '$name' (drift)" \

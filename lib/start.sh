@@ -164,10 +164,44 @@ main() {
   local sd; sd="$(atmux::state_dir)"
   mkdir -p "$sd"
   local home_histfile="$sd/__home.history"
+
+  # ADR-044: when team.json:.driverSession is configured, the driver lives
+  # in the team session as the FIRST window (window 1, before any member),
+  # and members get spawned after — preserving the declarative topology
+  # `driver → lead → members`. Read the gate early so session creation
+  # below can use driver as the initial window in lieu of __home.
+  local _has_driver_session
+  _has_driver_session="$(jq -r 'has("driverSession")' "$(atmux::team_json)" 2>/dev/null || echo false)"
+  local _driver_initial=0
+
   if [[ "$single" != "true" ]] && ! atmux::tmux_session_exists; then
-    tmux new-session -d -s "$session" -n "$home_win" -c "$PWD" \
-      -e "HISTFILE=$home_histfile" 3>&- 4>&-
-    atmux::ok "created tmux session: $session"
+    if [[ "$_has_driver_session" == "true" ]]; then
+      # Resolve driver TUI + command. On any resolution failure we fall
+      # through to the legacy __home placeholder so session creation
+      # never blocks on driver-spawn issues.
+      local _drv_tui _drv_cmd _drv_cwd
+      _drv_cwd="$(dirname "$(atmux::dir)")"
+      _drv_tui="$(jq -r '.driverSession.tui // .driverTui // "claude"' \
+                    "$(atmux::team_json)" 2>/dev/null || echo claude)"
+      if declare -f atmux::tui_cmd >/dev/null 2>&1 \
+         && [[ -n "$_drv_tui" && "$_drv_tui" != "null" && "$_drv_tui" != "false" ]]; then
+        _drv_cmd="$(atmux::tui_cmd "$_drv_tui" "default" "$_drv_cwd" "driver" "driver" "" 2>/dev/null || true)"
+      fi
+      if [[ -n "${_drv_cmd:-}" ]]; then
+        tmux new-session -d -s "$session" -n "driver" -c "$_drv_cwd" \
+          -e "HISTFILE=$sd/driver.history" \
+          "$_drv_cmd" 3>&- 4>&-
+        atmux::ok "created tmux session: $session (driver at window 1, $_drv_tui)"
+        _driver_initial=1
+      else
+        atmux::warn "driver-initial: could not resolve command for tui='$_drv_tui' — falling back to __home placeholder"
+      fi
+    fi
+    if [[ "$_driver_initial" -eq 0 ]]; then
+      tmux new-session -d -s "$session" -n "$home_win" -c "$PWD" \
+        -e "HISTFILE=$home_histfile" 3>&- 4>&-
+      atmux::ok "created tmux session: $session"
+    fi
   fi
 
   # Cage-only tmux prefix override — `C-\` (Ctrl-Backslash). The default
@@ -253,24 +287,13 @@ main() {
     fi
   fi
 
-  # ---- Auto-spawn the driver window with the operator's TUI ----
-  # 2026-04-30: when team.json:.driverTui is set (default 'claude' for new
-  # teams), populate the cage's driver pane on start so attach drops the
-  # operator into a working REPL without manual `claude` typing. Skipped
-  # under singleSession=true (the operator IS the driver; their daily-driver
-  # session window is the driver pane, atmux doesn't spawn into it). Skipped
-  # when driverTui is null/empty/false. Idempotent: if a "driver" window
-  # already exists in the session, leave its current command alone — don't
-  # nuke the operator's in-flight work. Cwd is the project root (parent of
-  # .atmux/) so the operator lands where they expect.
-  #
-  # ADR-044: when team.json:.driverSession is configured, the driver lives
-  # in a separate tmux session on the operator's default server (NOT inside
-  # the team session) — the in-team driver window auto-spawn is suppressed
-  # to avoid two driver REPLs burning tokens in parallel.
-  local _has_driver_session
-  _has_driver_session="$(jq -r 'has("driverSession")' "$(atmux::team_json)" 2>/dev/null || echo false)"
-
+  # ---- Legacy at-end driver auto-spawn (pre-ADR-044) ----
+  # When team.json has NO `driverSession` configured but DOES set
+  # `driverTui`, fall back to the 2026-04-30 behavior: append a `driver`
+  # window AFTER all members. Teams using the modern declarative
+  # `driverSession` path get their driver as window 1 at session
+  # creation (above) — this block is the legacy path, kept for backward
+  # compat. Skipped under singleSession=true.
   if [[ "$single" != "true" && "$_has_driver_session" != "true" ]]; then
     local driver_tui driver_cmd driver_win="driver" driver_cwd
     driver_tui="$(jq -r '.driverTui // "claude"' "$(atmux::team_json)" 2>/dev/null || echo claude)"
@@ -283,9 +306,6 @@ main() {
       elif ! declare -f atmux::tui_cmd >/dev/null 2>&1; then
         atmux::warn "driver: atmux::tui_cmd unavailable — skipping auto-spawn"
       else
-        # Resolve via lib/tui.sh (honors team.tuiCommands[<tui>] override,
-        # adds export ATMUX_MEMBER=driver + cd to project root). Treat the
-        # driver pane like a member with name=driver, role=driver, model=default.
         driver_cmd="$(atmux::tui_cmd "$driver_tui" "default" "$driver_cwd" "driver" "driver" "" 2>/dev/null || true)"
         if [[ -z "$driver_cmd" ]]; then
           atmux::warn "driver: tui_cmd returned empty for '$driver_tui' — skipping auto-spawn"
@@ -293,22 +313,12 @@ main() {
           tmux new-window -d -t "$session" -n "$driver_win" \
             -c "$driver_cwd" \
             "$driver_cmd" 3>&- 4>&- \
-            && atmux::ok "driver: spawned '$driver_win' running $driver_tui" \
+            && atmux::ok "driver: spawned '$driver_win' running $driver_tui (at end — legacy)" \
             || atmux::warn "driver: failed to spawn '$driver_win' (non-fatal)"
         fi
       fi
     fi
   fi
-
-  # ---- Ensure the operator's driver session on the default tmux server (ADR-044) ----
-  # When team.json:.driverSession is configured, atmux start guarantees a
-  # NAMED tmux session exists on the operator's default tmux server (NOT the
-  # cage / team socket) running the operator's TUI. This is the operator's
-  # driver pane — separate from the team session so member panes can live on
-  # an isolated cage socket while the operator's daily-driver REPL stays on
-  # their default tmux server alongside any other manual sessions they keep.
-  # Idempotent: if the named session already exists, we leave it alone.
-  _atmux_ensure_driver_session
 
   # ---- Auto-spawn the supervisor window (ADR-032 §Supervisor lifecycle) ----
   # One __<team>__supervisor window per team runs lib/supervisor.sh, which
@@ -442,71 +452,6 @@ _atmux_spawn_member() {
     if [[ -f "$brief" ]]; then
       _atmux_paste_brief "$target" "$member" "$role" "$brief"
     fi
-  fi
-}
-
-# Ensures a named tmux session exists on the operator's default tmux
-# server per team.json:.driverSession config (ADR-044). Idempotent —
-# existing session is left alone. Failure is non-fatal: the team session
-# itself is up and the operator can still attach to that.
-#
-# team.json:.driverSession shape (all fields optional):
-#   {
-#     "name":    "<session-name>",  // default: "atmux_<team>" with - → _
-#     "cwd":     "<path>",           // default: project root (parent of .atmux/)
-#     "tui":     "claude|opencode|shell|...", // default: .driverTui // "claude"
-#     "command": "<override>",       // default: derived via atmux::tui_cmd
-#     "enabled": <bool>              // default: true
-#   }
-#
-# Cage isolation: this helper deliberately drops $TMUX and $TMUX_TMPDIR
-# for its tmux invocations so the session lands on the operator's default
-# tmux server even when atmux start was invoked from inside a per-team
-# cage socket. That's the whole point — the driver's home is the daily
-# socket, not the cage.
-_atmux_ensure_driver_session() {
-  local cfg
-  cfg="$(jq -c '.driverSession // empty' "$(atmux::team_json)" 2>/dev/null || echo "")"
-  [[ -z "$cfg" ]] && return 0
-
-  # NOTE: jq's `//` operator treats `false` as falsy, so `.enabled // true`
-  # would return `true` even when `enabled: false`. Use `if-then-else` to
-  # only fall back when the field is absent (null), preserving an explicit
-  # boolean false.
-  local enabled
-  enabled="$(jq -r 'if has("enabled") then .enabled else true end' <<<"$cfg" 2>/dev/null || echo true)"
-  [[ "$enabled" != "true" ]] && return 0
-
-  local team
-  team="$(atmux::team_name)"
-  local default_name; default_name="atmux_${team//-/_}"
-  local name; name="$(jq -r --arg d "$default_name" '.name // $d' <<<"$cfg")"
-  local default_cwd; default_cwd="$(dirname "$(atmux::dir)")"
-  local cwd; cwd="$(jq -r --arg d "$default_cwd" '.cwd // $d' <<<"$cfg")"
-  local default_tui
-  default_tui="$(jq -r '.driverTui // "claude"' "$(atmux::team_json)" 2>/dev/null || echo claude)"
-  local tui; tui="$(jq -r --arg d "$default_tui" '.tui // $d' <<<"$cfg")"
-  local cmd_override; cmd_override="$(jq -r '.command // empty' <<<"$cfg")"
-
-  if env -u TMUX -u TMUX_TMPDIR tmux has-session -t "=$name" 2>/dev/null; then
-    atmux::log "driver-session: '$name' already exists on default tmux server — skipping"
-    return 0
-  fi
-
-  local cmd="$cmd_override"
-  if [[ -z "$cmd" ]] && declare -f atmux::tui_cmd >/dev/null 2>&1; then
-    cmd="$(atmux::tui_cmd "$tui" "default" "$cwd" "driver" "driver" "" 2>/dev/null || true)"
-  fi
-  if [[ -z "$cmd" ]]; then
-    atmux::warn "driver-session: could not resolve command for tui='$tui' — skipping (non-fatal)"
-    return 0
-  fi
-
-  if env -u TMUX -u TMUX_TMPDIR tmux new-session -d -s "$name" -c "$cwd" "$cmd" 3>&- 4>&- 2>/dev/null; then
-    atmux::ok "driver-session: spawned '$name' running $tui on default tmux server"
-    atmux::log "  attach: tmux attach -t $name"
-  else
-    atmux::warn "driver-session: failed to create '$name' on default tmux server (non-fatal)"
   fi
 }
 

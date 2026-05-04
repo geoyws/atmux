@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
-# Unit tests for `atmux start`'s driverSession bring-up (ADR-044).
+# Unit tests for `atmux start`'s driverSession topology (ADR-044).
 #
-# When team.json:.driverSession is set, `atmux start` ensures a NAMED
-# tmux session exists on the operator's default tmux server (NOT the
-# cage / team socket). Idempotent on re-run; non-fatal on tmux failure.
+# When team.json:.driverSession is configured, atmux start creates the
+# team session with "driver" as the FIRST window (window 1), then spawns
+# members AFTER — preserving the declarative topology
+# `driver → lead → members` per team.json order.
 
 load '../helpers/setup'
 
@@ -14,7 +15,8 @@ setup() {
 {
   "name": "dst",
   "members": [
-    {"name": "alpha", "role": "team-lead", "lane": "misc", "tui": "shell", "model": "default", "cwd": "$PWD"}
+    {"name": "alpha", "role": "team-lead", "lane": "misc", "tui": "shell", "model": "default", "cwd": "$PWD"},
+    {"name": "bee",   "role": "member",    "lane": "be",   "tui": "shell", "model": "default", "cwd": "$PWD"}
   ],
   "kanban": {"cronAutoInstall": false},
   "supervisor": false,
@@ -22,94 +24,87 @@ setup() {
 }
 JSON
   echo '{"tasks":[],"epics":[],"stories":[]}' > .atmux/kanban.json
-  echo '{"pending":[],"inProgress":[],"done":[]}' > .atmux/inboxes/alpha.json
+  for m in alpha bee; do
+    echo '{"pending":[],"inProgress":[],"done":[]}' > ".atmux/inboxes/$m.json"
+  done
   atmux_disable_down_confirm
 }
 
 teardown() {
-  # Clean up any default-socket sessions these tests can create. Belt-and-
-  # suspenders: kill TEST_DRIVER_SESSION (if set by the test body) AND the
-  # well-known names so a test-leaked session can't pollute siblings.
-  for s in "${TEST_DRIVER_SESSION:-}" atmux_dst; do
-    [[ -z "$s" ]] && continue
-    env -u TMUX -u TMUX_TMPDIR tmux kill-session -t "=$s" 2>/dev/null || true
-  done
-  env -u TMUX -u TMUX_TMPDIR tmux list-sessions -F '#{session_name}' 2>/dev/null \
-    | grep '^my-custom-driver-' \
-    | xargs -I{} env -u TMUX -u TMUX_TMPDIR tmux kill-session -t "={}" 2>/dev/null || true
   atmux_teardown_sandbox
 }
 
-@test "driverSession: absent — no separate session created" {
-  TEST_DRIVER_SESSION="dst-test-absent-$$"
+@test "driverSession: absent — legacy at-end driver placement (after members)" {
+  # Legacy 2026-04-30 behavior: when driverSession is unset but driverTui
+  # defaults to "claude", driver window appended AFTER members. ADR-044
+  # supersedes this with driverSession-driven at-front placement, but the
+  # legacy path persists for backward compat.
   run "$ATMUX_BIN" start --no-doctor
   [ "$status" -eq 0 ]
-  ! env -u TMUX -u TMUX_TMPDIR tmux has-session -t "=$TEST_DRIVER_SESSION" 2>/dev/null
+  local indices
+  indices="$(tmux list-windows -t atmux-dst -F '#{window_index}:#{window_name}' | sort -n)"
+  # If a driver window exists at all, it must be AFTER alpha and bee
+  if echo "$indices" | grep -q ':driver$'; then
+    local driver_idx alpha_idx
+    driver_idx="$(echo "$indices" | grep ':driver$' | cut -d: -f1)"
+    alpha_idx="$(echo "$indices" | grep alpha | cut -d: -f1)"
+    [ "$driver_idx" -gt "$alpha_idx" ]
+  fi
 }
 
-@test "driverSession: enabled — creates session with default name on default tmux server" {
-  TEST_DRIVER_SESSION="atmux_dst"
+@test "driverSession: configured — driver is window 1, members 2..N in team.json order" {
   jq '.driverSession = {tui: "shell"}' .atmux/team.json > .atmux/team.json.tmp
   mv .atmux/team.json.tmp .atmux/team.json
 
   run "$ATMUX_BIN" start --no-doctor
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "driver-session: spawned 'atmux_dst'" ]]
-  env -u TMUX -u TMUX_TMPDIR tmux has-session -t "=atmux_dst" 2>/dev/null
+  [[ "$output" =~ "driver at window 1" ]]
+
+  local order
+  order="$(tmux list-windows -t atmux-dst -F '#{window_index}:#{window_name}' | sort -n)"
+  # Window 1 must be the driver
+  [[ "$(echo "$order" | head -1)" =~ ^1:driver$ ]]
+  # Window 2 must be the lead (alpha)
+  [[ "$(echo "$order" | sed -n '2p')" =~ ^2:__dst__.*alpha$ ]]
+  # Window 3 must be bee
+  [[ "$(echo "$order" | sed -n '3p')" =~ ^3:__dst__.*bee$ ]]
 }
 
-@test "driverSession: explicit name override is honored" {
-  TEST_DRIVER_SESSION="my-custom-driver-$$"
-  jq --arg n "$TEST_DRIVER_SESSION" \
-     '.driverSession = {name: $n, tui: "shell"}' \
-     .atmux/team.json > .atmux/team.json.tmp
+@test "driverSession: with explicit tui — that tui runs in driver pane" {
+  jq '.driverSession = {tui: "shell"}' .atmux/team.json > .atmux/team.json.tmp
   mv .atmux/team.json.tmp .atmux/team.json
 
   run "$ATMUX_BIN" start --no-doctor
   [ "$status" -eq 0 ]
-  env -u TMUX -u TMUX_TMPDIR tmux has-session -t "=$TEST_DRIVER_SESSION" 2>/dev/null
+  # driver window's pane runs a shell (via atmux::tui_cmd's shell branch)
+  local pane_cmd
+  pane_cmd="$(tmux list-panes -t atmux-dst:driver -F '#{pane_current_command}' 2>/dev/null)"
+  [[ "$pane_cmd" =~ ^(zsh|bash|sh)$ ]]
 }
 
-@test "driverSession: enabled=false — no separate session created" {
-  TEST_DRIVER_SESSION="atmux_dst"
-  jq '.driverSession = {enabled: false, tui: "shell"}' .atmux/team.json > .atmux/team.json.tmp
-  mv .atmux/team.json.tmp .atmux/team.json
-
-  run "$ATMUX_BIN" start --no-doctor
-  [ "$status" -eq 0 ]
-  ! env -u TMUX -u TMUX_TMPDIR tmux has-session -t "=atmux_dst" 2>/dev/null
-}
-
-@test "driverSession: idempotent — second start leaves existing session alone" {
-  TEST_DRIVER_SESSION="atmux_dst"
+@test "driverSession: idempotent — second start leaves running driver alone" {
   jq '.driverSession = {tui: "shell"}' .atmux/team.json > .atmux/team.json.tmp
   mv .atmux/team.json.tmp .atmux/team.json
 
   "$ATMUX_BIN" start --no-doctor >/dev/null 2>&1
-  env -u TMUX -u TMUX_TMPDIR tmux has-session -t "=atmux_dst"
-
-  # Capture the session's creation epoch — idempotency means it must not
-  # change across the second start. tmux's session_created is monotonic
-  # per-session: a recreated session would get a fresh epoch.
   local first_created
-  first_created="$(env -u TMUX -u TMUX_TMPDIR tmux display-message -p -t atmux_dst '#{session_created}')"
+  first_created="$(tmux display-message -p -t atmux-dst '#{session_created}')"
 
   run "$ATMUX_BIN" start --no-doctor
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "driver-session: 'atmux_dst' already exists" ]]
 
   local second_created
-  second_created="$(env -u TMUX -u TMUX_TMPDIR tmux display-message -p -t atmux_dst '#{session_created}')"
+  second_created="$(tmux display-message -p -t atmux-dst '#{session_created}')"
   [ "$first_created" = "$second_created" ]
 }
 
-@test "driverSession: suppresses in-team driver window when configured" {
+@test "driverSession: no separate atmux_dst session is created on default socket" {
   jq '.driverSession = {tui: "shell"}' .atmux/team.json > .atmux/team.json.tmp
   mv .atmux/team.json.tmp .atmux/team.json
-  TEST_DRIVER_SESSION="atmux_dst"
 
   run "$ATMUX_BIN" start --no-doctor
   [ "$status" -eq 0 ]
-  # No in-team "driver" window inside the team session
-  ! tmux list-windows -t atmux-dst -F '#{window_name}' 2>/dev/null | grep -qx driver
+  # ADR-044's earlier separate-session model is dead — a `atmux_dst` session
+  # must NOT be created on the default tmux server alongside the team session.
+  ! env -u TMUX -u TMUX_TMPDIR tmux has-session -t "=atmux_dst" 2>/dev/null
 }
