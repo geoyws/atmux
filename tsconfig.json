@@ -46,17 +46,6 @@
   //              and tests/helpers/*.bash via the include-only-.ts filter)
   // Excludes lib/ entirely — bash reference is read-only input to the
   // parity harness, never compiled.
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "tests/**/*.ts",
-    "tests/**/*.tsx"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "coverage",
-    "lib",
-    "bin"
-  ]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"],
+  "exclude": ["node_modules", "dist", "coverage", "lib", "bin"]
 }
