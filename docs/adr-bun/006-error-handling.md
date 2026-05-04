@@ -235,7 +235,9 @@ Exit-code convention follows BSD `sysexits.h` for the categories that map cleanl
 - **R6.** Every `throw` in `src/abstractions/*` and `src/core/*` throws a subclass of `AtmuxError`. Plain `throw new Error(...)` is allowed only in `src/verbs/*` for programmer-error invariants AND must carry a `// invariant: <reason>` comment.
 - **R7.** No `process.exit()` outside `src/cli.ts`. Verbs return exit codes from `run()`.
 
-The custom lint script (`scripts/lint-discipline.ts`, foundation-porter task) bundles R1, R2, R6, R7. Biome's `noRestrictedImports` covers R3, R4, R5.
+**Enforcement split — ADR captures rules, foundation-porter implements enforcer.** This ADR is the *spec* for the rules R1–R7. The mechanical enforcer is `scripts/lint-discipline.ts`, which is a **Phase 1 deliverable owned by foundation-porter**, not Phase 0 scope. The ADR ratifies the rule set so reviewers can hand-grade against it during the gap; once `lint-discipline.ts` lands, those rules fold into the automated 8-check.
+
+The custom lint script (`scripts/lint-discipline.ts`, foundation-porter Phase 1 task) bundles R1, R2, R6, R7. Biome's `noRestrictedImports` (configured in Phase 0 `biome.json`) covers R3, R4, R5.
 
 ## Consequences
 
