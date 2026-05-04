@@ -198,6 +198,29 @@ _add_task() {
   [ "$s" = "done" ]
 }
 
+# ---------- explicit-id dispatch refuse (GAP-2 from t-8312e5e0 review) ----------
+
+@test "driver-only: 'atmux dispatch <member> <id>' as non-driver refuses (GAP-2)" {
+  # dispatch flips .status=in-progress + .owner=<member> — same forward-
+  # progress mutation as claim / task move in-progress, so the gate must
+  # fire here too. Without the gap-2 fix, the lead could push a driver-
+  # only Task into a member's inbox even though that member couldn't have
+  # claimed it. lib/dispatch.sh:62 enforces parity with claim.sh:72.
+  local id; id="$(_add_task "drv" --driver-only --lane fe)"
+
+  run "$ATMUX_BIN" dispatch fe-kanban "$id"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"driver-only Task"* ]]
+  [[ "$output" == *"dispatch"* ]]
+
+  # Status + owner unchanged — refuse-gate aborted before the kanban write.
+  local s o
+  s="$(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | .status' .atmux/kanban.json)"
+  o="$(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | .owner // ""' .atmux/kanban.json)"
+  [ "$s" = "todo" ]
+  [ -z "$o" ]
+}
+
 # ---------- legacy / pre-ADR-033 tasks ----------
 
 @test "driver-only: pre-ADR-033 task without driverOnly field reads as not-driver-only (// false coalesce)" {

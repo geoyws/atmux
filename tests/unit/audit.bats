@@ -85,10 +85,19 @@ _source_audit() {
   [ "$status" -eq 0 ]
 }
 
-@test "audit: --fix --class c refused (high-blast surface-only)" {
+@test "audit: --fix --class c without ATMUX_AUDIT_CONFIRM no longer hard-refuses (E14/Sh soft gate)" {
+  # E14/Sh: class C softened from hard-refuse to soft-confirm gate. Without
+  # ATMUX_AUDIT_CONFIRM=YES the fixer is dry-run-equivalent — emits the swap
+  # command operators can paste manually, but never executes it. With the env,
+  # the fixer runs the swap atomically (covered by tests/unit/audit_fix_c.bats).
+  # The contract pinned here is that --fix --class c no longer dies with the
+  # ADR-038 §gating "high-blast (surface-only per ADR-038)" hard refuse.
+  unset ATMUX_AUDIT_CONFIRM
   run "$ATMUX_BIN" audit --fix --class c
-  [ "$status" -ne 0 ]
-  [[ "$output" =~ "high-blast" ]] || [[ "$output" =~ "surface-only" ]]
+  # Detect-only on a clean sandbox emits zero C findings; verb returns 0 with
+  # no fixer dispatch. Either rc=0 or rc=1 (drift in unrelated classes) is fine.
+  [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
+  ! [[ "$output" =~ "surface-only per ADR-038" ]]
 }
 
 @test "audit: --fix --class d on green sandbox is no-op success" {

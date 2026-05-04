@@ -41,6 +41,7 @@ atmux report
 - Pick the sensible default, apply it, note "override by replying" in driver-inbox.
 - Only escalate for irreversible ops or demo-narrative changes.
 - Member emojis are immutable once first assigned via the registry (per [ADR-030](../../docs/adr/030-registry-emoji-immutability.md)); editing `team.json:.members[].emoji` on an already-registered member has no effect. To change one: edit `~/.claude/teams/registry.json` directly with `jq`, then `atmux rotate <member>` to re-spawn the window.
+- Scheduled Discord pings (`whip-progress`, `whip-heartbeat`) belong to the discorder when present (per [ADR-022](../../docs/adr/022-discorder-role.md)); you keep urgent (`whip-blocker`, `whip-decisions`, `whip-critical`). When no discorder member is in the team, you own all categories.
 
 ## State files
 

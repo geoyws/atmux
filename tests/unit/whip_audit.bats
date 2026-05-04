@@ -236,3 +236,122 @@ _seed_findings() {
   [[ "$body" =~ '🛡️ **[whip-audit]** · `a` ·' ]]
   [[ "$body" =~ "MYT" ]]
 }
+
+# ---- 10. class A medium-blast: driver pane busy → surfaced (no fix) -
+
+@test "whip-audit: class A + driver-pane busy → Surfaced bullet, no auto-fix invoked" {
+  _source_whip
+  # The pane-busy branch is gated on (1) atmux::session_name resolving to
+  # a real-looking session AND (2) tmux capture-pane returning non-empty
+  # AND (3) _atmux_whip_pane_busy returning 0. Function-shadow tmux to
+  # echo a busy marker, and override the pane-busy detector to confirm.
+  tmux() {
+    if [[ "$1" == "capture-pane" ]]; then
+      printf 'thinking with claude...\n'
+      return 0
+    fi
+    command tmux "$@"
+  }
+  _atmux_whip_pane_busy() { return 0; }
+
+  _seed_findings '[{"class":"A","severity":"medium","team":"a","detail":"bare driver window","fix_hint":"atmux audit --fix --class a","auto_fixable":true,"blast_radius":"medium"}]'
+
+  local findings=()
+  _atmux_whip_check_audit
+  [ "${#findings[@]}" -eq 1 ]
+  local body="${findings[0]}"
+
+  [[ "$body" =~ "Surfaced" ]]
+  [[ "$body" =~ "class A · driver-pane busy — fire later" ]]
+  [[ "$body" =~ "atmux audit --fix --class a" ]]
+  ! [[ "$body" =~ "Auto-corrected" ]]
+  # Pane-busy gate refused the auto-fix invocation entirely — no stub row.
+  ! grep -q 'class=A' "$ATMUX_TEST_FIX_LOG" 2>/dev/null
+}
+
+# ---- 11. class A pane-idle path → auto-fix fires + Auto-corrected ---
+
+@test "whip-audit: class A + driver-pane idle → auto-fix fires; ok result lands in Auto-corrected" {
+  _source_whip
+  # Same tmux shadow as test 10, but pane-busy detector reports idle so
+  # whip routes into the auto-fire branch. Stub returns result=ok per
+  # ATMUX_TEST_FIX_RESULT default; whip greps for `class=A result=ok`
+  # and routes the bullet into Auto-corrected.
+  tmux() {
+    if [[ "$1" == "capture-pane" ]]; then
+      printf '$ \n'   # bare-prompt shell idle
+      return 0
+    fi
+    command tmux "$@"
+  }
+  _atmux_whip_pane_busy() { return 1; }
+  export ATMUX_TEST_FIX_RESULT=ok
+
+  _seed_findings '[{"class":"A","severity":"medium","team":"a","detail":"bare driver window","fix_hint":"atmux audit --fix --class a","auto_fixable":true,"blast_radius":"medium"}]'
+
+  local findings=()
+  _atmux_whip_check_audit
+  [ "${#findings[@]}" -eq 1 ]
+  local body="${findings[0]}"
+
+  [[ "$body" =~ "Auto-corrected" ]]
+  [[ "$body" =~ "🛠️ class A · bare driver window" ]]
+  ! [[ "$body" =~ "Surfaced" ]]
+  # Stub fired exactly once.
+  [ "$(grep -c 'class=A' "$ATMUX_TEST_FIX_LOG")" = "1" ]
+  grep -q 'class=A result=ok' "$ATMUX_TEST_FIX_LOG"
+}
+
+# ---- 12. audit-fix.log row schema ------------------------------------
+
+@test "whip-audit: audit-fix.log row carries class + result + action + detail (greppable schema)" {
+  # ADR-040 §Auto-fix audit log specifies a `.atmux/logs/audit.log` jsonl
+  # row schema. Today the implementation in lib/audit.sh::_atmux_audit_log_fix
+  # writes to `audit-fix.log` in plain-text key=value form
+  # (`[ts] class=X result=Y action=Z detail=W`) — operator-greppable but
+  # NOT jsonl. This test pins the CURRENT shape so a future jsonl
+  # migration is a deliberate breaking change rather than silent drift.
+  # When the migration lands, flip the assertion to `jq -e .` per row.
+  _source_whip
+  _seed_findings '[
+    {"class":"D","severity":"low","team":"a","detail":"d-row","fix_hint":"hint-d","auto_fixable":true,"blast_radius":"low"},
+    {"class":"E","severity":"low","team":"a","detail":"e-row","fix_hint":"hint-e","auto_fixable":true,"blast_radius":"low"}
+  ]'
+
+  local findings=()
+  _atmux_whip_check_audit
+
+  [ -s "$ATMUX_TEST_FIX_LOG" ]
+  # Each row carries the four key=value fields the operator + whip
+  # rely on (class lookup, result→routing, action→narrative, detail→audit
+  # trail). Stub format mirrors the real `_atmux_audit_log_fix` shape.
+  while IFS= read -r row; do
+    [[ -z "$row" ]] && continue
+    [[ "$row" =~ class=([A-F]) ]]
+    [[ "$row" =~ result=(ok|fail|skip|dry-run) ]]
+    [[ "$row" =~ action= ]]
+    [[ "$row" =~ detail= ]]
+  done < "$ATMUX_TEST_FIX_LOG"
+}
+
+# ---- 13. whip.log records audit-verb error on non-zero rc -----------
+
+@test "whip-audit: audit verb rc!=0 → atmux::log emits to stderr (whip.log on cron path via 2>&1)" {
+  # AC body: 'whip.log records error'. atmux::log writes to stderr; the
+  # whip cron line redirects stderr to whip.log via `>> ... 2>&1`, so
+  # operator post-mortem grep finds the entry. In a unit context we
+  # capture stderr directly and assert the diagnostic shape.
+  _source_whip
+  _seed_findings '[{"class":"D","severity":"low","team":"a","detail":"x","fix_hint":"y","auto_fixable":true,"blast_radius":"low"}]'
+  export ATMUX_TEST_AUDIT_RC=2
+
+  local findings=()
+  local stderr_file="$ATMUX_TEST_TMP/stderr.txt"
+  _atmux_whip_check_audit 2>"$stderr_file"
+  [ "${#findings[@]}" -eq 0 ]   # no section appended (re-asserts test 7)
+
+  [ -s "$stderr_file" ]
+  grep -q "whip-audit:" "$stderr_file"
+  grep -q "rc=2" "$stderr_file"
+  grep -q "skipping section" "$stderr_file"
+}

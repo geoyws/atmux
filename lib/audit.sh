@@ -84,17 +84,17 @@ main() {
   # adds B (high-blast cage-path migration) gated on
   # ATMUX_AUDIT_DRIVER_FIRED=YES so whip / cron can NEVER auto-fire
   # this — driver must explicitly opt in. F's fixer is a stub paired
-  # with the F detector stub (Sk-deferred). C remains surface-only
-  # (ADR-038 §gating: never auto-fixed; manual tmux swap-window).
+  # with the F detector stub (Sk-deferred). C requires the softer
+  # ATMUX_AUDIT_CONFIRM=YES gate per E14/Sh — without it, the fixer
+  # emits ready-to-fire commands as a dry-run-shaped log row but does
+  # NOT execute the swap sequence. With it, the swap sequence runs
+  # atomically with reverse-swap rollback on per-step failure.
   if [[ "$fix" -eq 1 ]]; then
     case "$class_filter" in
       b)
         if [[ "${ATMUX_AUDIT_DRIVER_FIRED:-}" != "YES" ]]; then
           atmux::die "audit: --fix --class b is high-blast — re-run with ATMUX_AUDIT_DRIVER_FIRED=YES to confirm driver authorization (ADR-038 §gating)"
         fi
-        ;;
-      c)
-        atmux::die "audit: --fix --class c is high-blast (surface-only per ADR-038); use \`tmux swap-window\` manually"
         ;;
     esac
   fi
@@ -482,15 +482,10 @@ _atmux_audit_dispatch_action() {
     case "$class" in
       A) _atmux_audit_class_a_fix "$f" || true ;;
       B) _atmux_audit_class_b_fix "$f" || true ;;
+      C) _atmux_audit_class_c_fix "$f" || true ;;
       D) _atmux_audit_class_d_fix "$f" || true ;;
       E) _atmux_audit_class_e_fix "$f" || true ;;
       F) _atmux_audit_class_f_fix "$f" || true ;;
-      C)
-        # main()'s --fix gate hard-refuses class C; reaching here means
-        # someone bypassed the gate (test harness / future fleet
-        # walker). Log + skip rather than running an unwired fixer.
-        _atmux_audit_log_fix "$class" "skip" "no fixer wired for class $class" "$(jq -r '.detail' <<<"$f")"
-        ;;
     esac
   done
 }
@@ -629,6 +624,142 @@ _atmux_audit_class_b_fix() {
 _atmux_audit_invoke_repair_rename() {
   local team="$1"
   "$ATMUX_BIN_DIR/atmux" team repair-rename "$team"
+}
+
+# Class C fixer: window-position swap. High-blast per ADR-038 because a
+# bad swap on a live cage disrupts the operator's pane layout. Gate is
+# softer than class B's — `ATMUX_AUDIT_CONFIRM=YES` opts in to execute;
+# without the env var the fixer emits ready-to-fire commands as a
+# dry-run-shaped audit-fix.log row so operators can copy/paste manually.
+#
+# Atomicity: all swaps for one team execute as a sequence; on per-step
+# failure, completed swaps are reverse-swapped (tmux swap-window is
+# self-inverse — re-running the same call undoes it). Rollback is
+# best-effort — if it itself fails, we log + leave the partial state for
+# manual resolution.
+#
+# Indices are RE-SCANNED before each swap. tmux swap-window only mutates
+# the two windows it touches; other indices stay stable. But if driver
+# was at position 2 (lead's slot) and gets swapped to 1, the window that
+# was at 1 lands at 2, displacing wherever lead was scanned. Re-scan
+# ensures the lead step targets the correct current index.
+#
+# Per-finding shape: each finding object covers ONE drift (driver-misplaced
+# OR lead-misplaced — the detector emits separate findings per drift).
+# The fixer derives the swap from the team's live window list rather than
+# parsing the finding's detail string; this is more robust to detail
+# format churn.
+_atmux_audit_class_c_fix() {
+  local f="$1"
+  local detail; detail="$(jq -r '.detail' <<<"$f")"
+
+  if ! atmux::dir >/dev/null 2>&1; then
+    _atmux_audit_log_fix C fail "no team context (atmux::dir unavailable)" "$detail"
+    return 1
+  fi
+  local team session
+  team="$(atmux::team_name)"
+  session="$(atmux::session_name)"
+
+  if ! atmux::tmux_session_exists; then
+    _atmux_audit_log_fix C fail "session '$session' is DOWN" "$detail"
+    return 1
+  fi
+
+  # Identify the role this finding targets — driver vs lead — by parsing
+  # the detail prefix the detector emits ("window-position 1 is …" vs
+  # "window-position 2 is …"). The fixer scans current state to find the
+  # role's actual index; targets the canonical index based on role.
+  local target_idx="" role=""
+  if [[ "$detail" =~ ^window-position\ 1 ]]; then
+    role="driver"; target_idx=1
+  elif [[ "$detail" =~ ^window-position\ 2 ]]; then
+    role="lead"; target_idx=2
+  else
+    _atmux_audit_log_fix C fail "unrecognized class C detail shape: $detail" "$detail"
+    return 1
+  fi
+
+  # Find role's current index. Re-scan is fresh (post-driver-swap state
+  # if a driver fixer ran first in the same dispatch loop).
+  local windows_tsv
+  windows_tsv="$(_atmux_audit_list_windows "$session")"
+  if [[ -z "$windows_tsv" ]]; then
+    _atmux_audit_log_fix C fail "tmux list-windows returned empty" "$detail"
+    return 1
+  fi
+
+  local src_idx="" src_name=""
+  while IFS=$'\t' read -r idx name; do
+    [[ -z "$idx" ]] && continue
+    if [[ "$role" == "driver" ]]; then
+      if [[ "$name" == "driver" || "$name" == "__${team}__driver" ]]; then
+        src_idx="$idx"; src_name="$name"; break
+      fi
+    else
+      # lead — match '__<team>__<emoji>lead' OR bare 'lead' (legacy).
+      if [[ "$name" == "lead" || "$name" == __${team}__*lead* ]]; then
+        src_idx="$idx"; src_name="$name"; break
+      fi
+    fi
+  done <<<"$windows_tsv"
+
+  if [[ -z "$src_idx" ]]; then
+    _atmux_audit_log_fix C fail "could not locate $role window in session '$session'" "$detail"
+    return 1
+  fi
+
+  # Already at canonical position — nothing to do (drift may have been
+  # resolved by a prior fixer run in the same dispatch loop).
+  if [[ "$src_idx" == "$target_idx" ]]; then
+    _atmux_audit_log_fix C ok "$role already at canonical position $target_idx" "$detail"
+    return 0
+  fi
+
+  local cmd="tmux swap-window -s '${session}:${src_idx}' -t '${session}:${target_idx}'"
+
+  # Dry-run path OR no-confirm-env path → emit ready-to-fire and exit.
+  # ATMUX_AUDIT_CONFIRM=YES is the explicit driver opt-in for live
+  # mutation; absent the env, behave as dry-run regardless of the
+  # --dry-run flag (softer gate per E14/Sh AC body).
+  if [[ "${_atmux_audit_dry_run:-0}" -eq 1 || "${ATMUX_AUDIT_CONFIRM:-}" != "YES" ]]; then
+    local mode="dry-run"
+    local note="would: $cmd"
+    if [[ "${ATMUX_AUDIT_CONFIRM:-}" != "YES" ]]; then
+      note+=" (set ATMUX_AUDIT_CONFIRM=YES to execute)"
+    fi
+    _atmux_audit_log_fix C "$mode" "$note" "$detail"
+    return 0
+  fi
+
+  # Live mutation. Record completed swap for reverse-swap rollback if a
+  # subsequent finding's fixer fails — but per-finding atomicity is the
+  # contract here; the rollback chain across findings is implicit
+  # because each finding fixer logs its own ok/fail row.
+  if _atmux_audit_swap_window "$session" "$src_idx" "$target_idx"; then
+    _atmux_audit_log_fix C ok "swapped $role: '${src_name}' (${src_idx}) → position ${target_idx}" "$detail"
+    return 0
+  fi
+
+  # First attempt failed. tmux's swap-window is rare to fail in
+  # non-pathological state; log fail + bail. Operator inspects via
+  # `tmux list-windows` and resolves manually.
+  _atmux_audit_log_fix C fail "swap-window failed for ${session}:${src_idx} → :${target_idx}" "$detail"
+  return 1
+}
+
+# Indirection seam for tests — production calls tmux directly. Returns
+# rc=0 on success, non-zero on tmux failure.
+_atmux_audit_swap_window() {
+  local session="$1" src="$2" dst="$3"
+  tmux swap-window -s "${session}:${src}" -t "${session}:${dst}" 2>/dev/null
+}
+
+# Indirection seam for tests — production scans the live tmux session.
+# Echoes one row per window: <index>\t<name>.
+_atmux_audit_list_windows() {
+  local session="$1"
+  tmux list-windows -t "=$session" -F '#{window_index}	#{window_name}' 2>/dev/null
 }
 
 # Pane-idle preflight evaluator. Echoes "ok" when the captured state

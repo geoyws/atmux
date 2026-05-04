@@ -276,6 +276,11 @@ case "$verb" in
   # Single subverb today (`tick`); main() in lib/unblocker.sh defaults to
   # tick when the subverb is omitted, so `atmux unblocker` works too.
   unblocker) verb_script="$ATMUX_LIB_DIR/unblocker.sh" ;;
+  # ADR-022 discorder role: `atmux discorder progress` (every 30 min) +
+  # `atmux discorder heartbeat` (hourly) cron-fired by lib/cron.sh when
+  # team.json declares a discorder member. Pass the subverb through to
+  # lib/discorder.sh::main verbatim.
+  discorder) verb_script="$ATMUX_LIB_DIR/discorder.sh" ;;
   # ADR-027 team-rename: `atmux team rename …` routes to lib/team-rename.sh.
   # ADR-027 ADDENDUM 11 (t-2a25f7bd): `atmux team repair-rename` recovers
   # teams whose declarative state (team.json:.name + registry) outran

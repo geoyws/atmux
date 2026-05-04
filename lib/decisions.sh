@@ -468,88 +468,39 @@ _decisions_render_discord() {
     fi
   fi
 
-  # ---- single-message try ----
-  local hdr_single="📋 **[atmux-decisions]** · \`$team\` · $hhmm"
-  local single="$hdr_single"$'\n\n'"$req"
-  local s
-  for s in "$sec_ctx" "$sec_opts" "$sec_imp" "$sec_note"; do
-    [[ -n "$s" ]] && single+=$'\n\n'"$s"
-  done
-  if (( ${#single} <= 1900 )); then
-    (( truncated > 0 )) && single+=$'\n\n'"$truncation_marker"
-    printf '%s\0' "$single"
-    return 0
+  # Hand the assembled sections to the shared chunker. _atmux_chunk_for_embed
+  # (lib/discord.sh) packs greedily, drops over-cap or oversized sections,
+  # and appends $truncation_marker to the last surviving chunk on any drop.
+  # Per-field-truncation-only path: helper sees no drops, so we append the
+  # marker ourselves to the last received chunk after mapfile.
+  local _hdr_template="📋 **[atmux-decisions]** · \`$team\` · $hhmm"
+  local _sections=("$req")
+  [[ -n "$sec_ctx"  ]] && _sections+=("$sec_ctx")
+  [[ -n "$sec_opts" ]] && _sections+=("$sec_opts")
+  [[ -n "$sec_imp"  ]] && _sections+=("$sec_imp")
+  [[ -n "$sec_note" ]] && _sections+=("$sec_note")
+
+  local chunks=()
+  mapfile -d '' chunks < <(_atmux_chunk_for_embed \
+    "$_hdr_template" 1900 5 "$truncation_marker" "${_sections[@]}")
+
+  if (( truncated > 0 )) && (( ${#chunks[@]} > 0 )); then
+    local _last=$(( ${#chunks[@]} - 1 ))
+    if [[ "${chunks[_last]}" != *"$truncation_marker"* ]]; then
+      chunks[_last]="${chunks[_last]}"$'\n\n'"$truncation_marker"
+    fi
   fi
 
-  # ---- multi-message allocation ----
-  # Header overhead reserve: '📋 **[atmux-decisions]** [9/9] · `<team>` · HH:MM MYT'
-  # plus a trailing '\n\n' (separator). 80 chars covers any reasonable
-  # team name; bigger names just compress the body budget proportionally.
-  local hdr_overhead=80
-  local body_budget=$(( 1900 - hdr_overhead ))
-  local max_chunks=5
-
-  # Parallel arrays: section content (in keep-order — context first,
-  # note last). Drop order is the reverse so we evict tail-first.
-  local sections=()
-  [[ -n "$sec_ctx"  ]] && sections+=("$sec_ctx")
-  [[ -n "$sec_opts" ]] && sections+=("$sec_opts")
-  [[ -n "$sec_imp"  ]] && sections+=("$sec_imp")
-  [[ -n "$sec_note" ]] && sections+=("$sec_note")
-
-  # chunks[0] = required block (always present). chunks[1..] = optional
-  # sections, packed in order — each new section either appends to the
-  # current optional chunk (if it fits) or opens a fresh chunk.
-  local chunks=("$req")
-  local current=""           # in-progress optional chunk content
-  local skipped=0            # count of sections we couldn't fit anywhere
-
-  local sec
-  for sec in "${sections[@]}"; do
-    local candidate
-    if [[ -z "$current" ]]; then
-      candidate="$sec"
-    else
-      candidate="$current"$'\n\n'"$sec"
-    fi
-    if (( ${#candidate} <= body_budget )); then
-      current="$candidate"
-      continue
-    fi
-    # Doesn't fit appended — flush current to chunks[] (if any) and
-    # try opening a fresh chunk for this section.
-    if [[ -n "$current" ]]; then
-      chunks+=("$current")
-      current=""
-    fi
-    if (( ${#chunks[@]} >= max_chunks )); then
-      skipped=$((skipped + 1))
-      continue
-    fi
-    if (( ${#sec} <= body_budget )); then
-      current="$sec"
-    else
-      # Single section bigger than a fresh chunk's body budget — drop.
-      skipped=$((skipped + 1))
-    fi
-  done
-  [[ -n "$current" ]] && chunks+=("$current")
-
-  # If anything dropped OR per-field truncation hit the 400-char cap,
-  # append the recovery pointer to the last chunk so the reader can
-  # `atmux decisions show <id>` for the full record. One marker covers
-  # both conditions.
-  if (( skipped > 0 || truncated > 0 )); then
-    local last=$(( ${#chunks[@]} - 1 ))
-    chunks[last]="${chunks[last]}"$'\n\n'"$truncation_marker"
-  fi
-
-  # ---- emit each chunk with [N/M] header, NUL-separated ----
+  # ---- emit each chunk; single chunk uses no [N/M] tag, multi tags each ----
   local total=${#chunks[@]} i
   for (( i=0; i<total; i++ )); do
-    local hdr="📋 **[atmux-decisions]** [$((i+1))/$total] · \`$team\` · $hhmm"
-    local body="$hdr"$'\n\n'"${chunks[i]}"
-    printf '%s\0' "$body"
+    local hdr
+    if (( total == 1 )); then
+      hdr="📋 **[atmux-decisions]** · \`$team\` · $hhmm"
+    else
+      hdr="📋 **[atmux-decisions]** [$((i+1))/$total] · \`$team\` · $hhmm"
+    fi
+    printf '%s\0' "$hdr"$'\n\n'"${chunks[i]}"
   done
 }
 

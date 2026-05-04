@@ -57,28 +57,100 @@ main() {
     open_asks=$(awk '/^## Open/{flag=1;next}/^## /{flag=0}flag && /^- /' "$di")
   fi
 
-  local body="📊 **[atmux-report]** · \`$team\` · $ts"
-  body+=$'\n\n🏗️ **Shipped** (since last report): '"$shipped_n"
-  if [[ -n "$shipped_rows" ]]; then
-    body+=$'\n'"$shipped_rows"
-  fi
-  body+=$'\n\n🟡 **In-progress**'
+  # Stdout body — single concatenation for cron log readability. Discord
+  # path below pre-batches large row-blocks at row boundaries and feeds the
+  # shared chunker (lib/discord.sh _atmux_chunk_for_embed) so giant reports
+  # don't hit the 4096-byte embed-description cap (HTTP 400
+  # BASE_TYPE_MAX_LENGTH pre-fix).
+  local hdr_template="📊 **[atmux-report]** · \`$team\` · $ts"
+
+  local body="$hdr_template"
+  body+=$'\n\n'"🏗️ **Shipped** (since last report): $shipped_n"
+  [[ -n "$shipped_rows" ]] && body+=$'\n'"$shipped_rows"
+  body+=$'\n\n'"🟡 **In-progress**"
   if [[ -n "$ip_rows" ]]; then
     body+=$'\n'"$ip_rows"
   else
     body+=$'\n  (none)'
   fi
-  if [[ -n "$blocked_rows" ]]; then
-    body+=$'\n\n🛑 **Blocked**'$'\n'"$blocked_rows"
-  fi
-  if [[ -n "$open_asks" ]]; then
-    body+=$'\n\n🙏 **Open driver-inbox asks**'$'\n'"$open_asks"
-  fi
-
+  [[ -n "$blocked_rows" ]] && body+=$'\n\n'"🛑 **Blocked**"$'\n'"$blocked_rows"
+  [[ -n "$open_asks"    ]] && body+=$'\n\n'"🙏 **Open driver-inbox asks**"$'\n'"$open_asks"
   echo "$body"
+
   if [[ "$push_discord" -eq 1 ]]; then
-    ATMUX_DISCORD_TRIGGER="${ATMUX_DISCORD_TRIGGER:-report}" atmux::discord_embed_ping "$body"
+    # Pre-batch shipped rows at row boundaries so no single section exceeds
+    # the chunker's body_budget. Without this, sections[0] could exceed
+    # 4096 bytes and Discord rejects on the first chunk. Each batch fits
+    # in ~3500 chars, leaving headroom for the section-header line.
+    local row_batch_max=3500
+    local sections=()
+    sections+=("🏗️ **Shipped** (since last report): $shipped_n")
+    _atmux_report_emit_row_batches "$shipped_rows" "$row_batch_max" sections
+
+    sections+=("🟡 **In-progress**")
+    if [[ -n "$ip_rows" ]]; then
+      _atmux_report_emit_row_batches "$ip_rows" "$row_batch_max" sections
+    else
+      sections+=("  (none)")
+    fi
+
+    if [[ -n "$blocked_rows" ]]; then
+      sections+=("🛑 **Blocked**")
+      _atmux_report_emit_row_batches "$blocked_rows" "$row_batch_max" sections
+    fi
+
+    if [[ -n "$open_asks" ]]; then
+      sections+=("🙏 **Open driver-inbox asks**")
+      _atmux_report_emit_row_batches "$open_asks" "$row_batch_max" sections
+    fi
+
+    # max_body=4000 leaves margin under Discord's 4096 embed-description
+    # cap. max_chunks=10 covers ~30-40KB of content; over-cap drops with
+    # show-cmd marker.
+    local marker="↳ atmux report log for full"
+    local chunks=()
+    mapfile -d '' chunks < <(_atmux_chunk_for_embed \
+      "$hdr_template" 4000 10 "$marker" "${sections[@]}")
+
+    local total=${#chunks[@]} _i
+    for (( _i=0; _i<total; _i++ )); do
+      local hdr
+      if (( total == 1 )); then
+        hdr="$hdr_template"
+      else
+        hdr="📊 **[atmux-report]** [$((_i+1))/$total] · \`$team\` · $ts"
+      fi
+      ATMUX_DISCORD_TRIGGER="${ATMUX_DISCORD_TRIGGER:-report}" \
+        atmux::discord_embed_ping "$hdr"$'\n\n'"${chunks[_i]}"
+      (( _i < total - 1 )) && sleep 1
+    done
   fi
 
   echo "$now" > "$last_file"
+}
+
+# _atmux_report_emit_row_batches <rows> <max-bytes> <out-array-name>
+# Append <rows> to <out-array-name> as one or more batches. Each batch is
+# a multi-line block where consecutive rows pack greedily up to
+# <max-bytes>; row boundaries are preserved (never split a row mid-field).
+# Empty input → no append.
+_atmux_report_emit_row_batches() {
+  local rows="$1" max="$2" out_name="$3"
+  [[ -n "$rows" ]] || return 0
+  local batch="" row candidate
+  while IFS= read -r row; do
+    [[ -z "$row" ]] && continue
+    if [[ -z "$batch" ]]; then
+      candidate="$row"
+    else
+      candidate="$batch"$'\n'"$row"
+    fi
+    if (( ${#candidate} <= max )); then
+      batch="$candidate"
+      continue
+    fi
+    [[ -n "$batch" ]] && eval "$out_name+=(\"\$batch\")"
+    batch="$row"
+  done <<< "$rows"
+  [[ -n "$batch" ]] && eval "$out_name+=(\"\$batch\")"
 }

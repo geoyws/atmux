@@ -15,10 +15,7 @@ setup() {
   # shellcheck source=../../lib/socket-pubsub.sh
   . "$ATMUX_LIB_DIR/socket-pubsub.sh"
 
-  if ! command -v socat >/dev/null 2>&1; then
-    skip "socat not installed (apt: apt install socat | brew: brew install socat) — pubsub primitives are socat-pinned per ADR-032 OQ1"
-  fi
-  export ATMUX_SOCK_BACKEND=socat
+  require_socat
 
   # Opt-in to the setsid-wrapped sock_subscribe path so the listener
   # tree forms its own session/PGID and atmux::sock_subscribe_teardown

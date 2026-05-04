@@ -7,6 +7,8 @@
 
 # shellcheck source=send.sh
 . "$ATMUX_LIB_DIR/send.sh"
+# shellcheck source=socket-pubsub.sh
+. "$ATMUX_LIB_DIR/socket-pubsub.sh"
 
 main() {
   atmux::require jq tmux
@@ -38,6 +40,19 @@ EOF
   {
     printf -- '- [%s] %s\n' "$(atmux::now_myt)" "$msg"
   } >> "$di"
+
+  # E13/Sc: real-time signal to the lead's supervisor so the ask is picked
+  # up in <1s vs the 5-min cron-whip baseline. Listener absent → atmux::warn
+  # (non-fatal); the durable driver-inbox.md write above is the source of
+  # truth, the publish is only a wake-up nudge.
+  local _caller="${ATMUX_MEMBER:-driver}"
+  local _evt
+  _evt="$(jq -cn \
+    --arg from "$_caller" \
+    --arg snip "${msg:0:100}" \
+    --argjson ts "$(atmux::now_epoch)" \
+    '{type:"tell-lead", ts:$ts, from:$from, payload:{snippet:$snip}}')"
+  atmux::sock_publish "$lead" "$_evt"
 
   # 2) Ping the lead with the heads-up (short, so the lead can still finish in-flight work).
   local heads_up="📬 driver-inbox has a new ask: ${msg:0:80}$([[ ${#msg} -gt 80 ]] && echo "…")"

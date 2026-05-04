@@ -167,6 +167,18 @@ atmux_disable_down_confirm() {
   jq '.whip.downConfirmTicks = 1' "$tj" > "$tj.tmp" && mv "$tj.tmp" "$tj"
 }
 
+# skip-with-reason when socat is missing (apt install socat / brew install
+# socat). The pubsub primitives + supervisor listener side are socat-pinned
+# per ADR-032 OQ1; the python3 fallback is only exercised by the supervisor
+# Sb integration tests. Apply at the top of any setup() for socket tests
+# (Sa socket_pubsub.bats / Sb supervisor.bats / Se socket_lifecycle.bats).
+require_socat() {
+  if ! command -v socat >/dev/null 2>&1; then
+    skip "socat not installed (apt install socat | brew install socat) — pubsub primitives are socat-pinned per ADR-032 OQ1"
+  fi
+  export ATMUX_SOCK_BACKEND=socat
+}
+
 # Sources lib files for direct function-level unit tests.
 atmux_source_libs() {
   # shellcheck source=../../lib/common.sh
