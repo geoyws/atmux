@@ -3,3 +3,8 @@
 *.log
 node_modules/
 tmp/
+
+# TS port (PLAN.md, atmux-bun)
+coverage/
+dist/
+.bun/
