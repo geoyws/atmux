@@ -250,7 +250,7 @@ Considered. No locks; reader captures mtime, mutator writes only if mtime hasn't
 
 ### E. Single-writer architecture (one process owns all state writes; verbs send messages to it)
 
-Considered as a v3 idea. Out of scope for v1. Substantial architectural shift; would move atmux from "fork-and-die" CLI tool to "long-running daemon", which is currently being prototyped in bash WIP (`socket-pubsub.sh`, ADR-042). That whole design space is out of scope per PLAN.md §11 and ADR-013.
+Considered as a v3 idea. Out of scope for v1. Substantial architectural shift; would move atmux from "fork-and-die" CLI tool to "long-running daemon", which is currently being prototyped in bash WIP (`socket-pubsub.sh`, bash-side `docs/adr/042-socket-pubsub.md` — the legacy bash ADR series, distinct from this `docs/adr-bun/` numbering). That whole design space is out of scope per PLAN.md §11 and ADR-013 (WIP-bash deferral, this series).
 
 ## References
 
