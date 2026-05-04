@@ -26,11 +26,16 @@ coverageSkipTestFiles = true
 # the `**` for directory-recursive exclusion (ADR-009 §6 footnote).
 coveragePathIgnorePatterns = [
   "src/types/generated/**",
-  "src/cli.ts",
   "**/index.ts",
   "tests/**",
   "**/*.fixtures.ts",
 ]
+# NB: src/cli.ts WAS in this list per the original ADR-009 §2 draft;
+# architect's review-verdict refinement (`64898c7`) accepted that
+# cli.ts dispatch logic is unit-testable (alias routing, unknown-verb
+# → UsageError → exit 64, --help/--version, top-level catch) and
+# should be tracked, not excluded. Phase 1+ porters write unit tests
+# alongside any cli.ts addition; reviewer enforces 100%.
 
 # [install] frozenLockfile is intentionally NOT set here — bunfig.toml
 # applies to ALL bun invocations including `bun add`, which would then
