@@ -23,7 +23,7 @@ See `PLAN.md §7` for the full backlog. Architect owns 001–006, foundation own
 | 011 | TODO | Side-by-side cutover protocol |
 | 012 | TODO | Time + timezone handling |
 | 013 | TODO | WIP-bash deferral |
-| **014** | **proposed** | **Verb design debt — deferred v2 redesign (Phase 6)** |
+| 014 | accepted | Verb design debt — deferred v2 redesign (Phase 6) |
 | 015+ | — | Per-verb ADRs as needs surface |
 
 ## Format
