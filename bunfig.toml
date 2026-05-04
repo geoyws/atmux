@@ -9,16 +9,26 @@ coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
 # Per ADR-009 §2 — line/function/statement/branch all 100%.
 coverageThreshold = { line = 1.0, function = 1.0, statement = 1.0, branch = 1.0 }
+# NB: ADR-009 §6 (`600dc81`) — Bun 1.3.13 PARSES `coverageThreshold` but
+# silently NO-OPS. Empirically validated: a file at 66.67% line coverage
+# exits 0 with the threshold above. CI step 6 gates via a hand-rolled
+# `tests/lcov-gate.ts` (Phase 1 foundation deliverable) reading the
+# same `coveragePathIgnorePatterns` below as single source of truth.
+# Revisit when upstream Bun fixes the threshold-enforcement bug.
+
 # Test files don't count toward the denominator (they execute themselves
 # at 100% trivially — including them dilutes the signal).
 coverageSkipTestFiles = true
+
 # Narrowed denominator (ADR-009 §2). Code outside these patterns is
 # tracked at 100%; matching paths are excluded from the gate.
+# Glob shape: `tests/**` (recursive) NOT `tests/` — Bun 1.3.13 needs
+# the `**` for directory-recursive exclusion (ADR-009 §6 footnote).
 coveragePathIgnorePatterns = [
-  "src/types/generated/",
+  "src/types/generated/**",
   "src/cli.ts",
   "**/index.ts",
-  "tests/",
+  "tests/**",
   "**/*.fixtures.ts",
 ]
 
