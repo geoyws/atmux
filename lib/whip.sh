@@ -708,6 +708,7 @@ _atmux_report_and_exit() {
   if [[ "${#findings[@]}" -eq 0 ]]; then
     echo "[$ts] whip: all clean" >> "$logf"
     atmux::log "whip: all clean"
+    _atmux_whip_check_auto_stop 1
     return 0
   fi
 
@@ -755,6 +756,7 @@ _atmux_report_and_exit() {
     else
       atmux::log "whip: body unchanged (quiet_count=$quiet_count) — skipping ping"
     fi
+    _atmux_whip_check_auto_stop 1
     return 0
   fi
 
@@ -764,6 +766,7 @@ _atmux_report_and_exit() {
   atmux::discord_embed_ping "$body"
   mkdir -p "$(dirname "$hash_file")"
   printf '%s\n' "$body_hash" > "$hash_file"
+  _atmux_whip_check_auto_stop 0
 }
 
 # Hash the findings bullets only (one bullet per line). Excludes the team
@@ -1044,6 +1047,69 @@ _atmux_whip_session_state_check() {
   else
     atmux::log "whip: session DOWN (tick $count/$threshold) — suppressing finding pending confirmation"
     printf 'suppress\n'
+  fi
+}
+
+# Auto-stop on prolonged idleness (ADR-043). Increments / resets a
+# per-team idle-tick counter; when the counter reaches team.json
+# `whip.autoStopAfterIdleTicks` (default 0 = disabled), invokes
+# `atmux stop` to free the agent panes' token budget.
+#
+# Args:
+#   $1 — "1" if this tick observed no progress (idle); "0" otherwise.
+#
+# An "idle tick" here means the tick produced no fresh body-hash content —
+# either zero findings ("all clean" path) or findings byte-identical to
+# the previous tick (body-unchanged path). In both cases there were no
+# commits, no done/advanced kanban moves, no new decisions / flags /
+# audits since the previous tick, i.e. agent panes are spending tokens
+# without making progress.
+#
+# State file `.atmux/state/whip-idle-state.json` shape:
+#   {"idleTicks": <int>}
+# Activity wipes `.idleTicks`; idle bumps it. Counter is also wiped on
+# the auto-stop attempt itself to avoid re-firing if a stop racy-fails.
+_atmux_whip_check_auto_stop() {
+  local is_idle="$1"
+  local threshold
+  threshold=$(jq -r '.whip.autoStopAfterIdleTicks // 0' \
+                "$(atmux::team_json)" 2>/dev/null || echo 0)
+  [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=0
+  (( threshold > 0 )) || return 0
+
+  local sf; sf="$(atmux::state_dir)/whip-idle-state.json"
+  mkdir -p "$(dirname "$sf")"
+  [[ -s "$sf" ]] || echo '{}' > "$sf"
+
+  if [[ "$is_idle" != "1" ]]; then
+    local prev
+    prev=$(jq -r '.idleTicks // 0' "$sf" 2>/dev/null || echo 0)
+    [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+    if (( prev > 0 )); then
+      atmux::jq_update "$sf" 'del(.idleTicks)'
+      atmux::log "whip: activity detected — clearing idle tick counter (was $prev)"
+    fi
+    return 0
+  fi
+
+  atmux::jq_update "$sf" '.idleTicks = ((.idleTicks // 0) + 1)'
+  local count
+  count=$(jq -r '.idleTicks // 0' "$sf" 2>/dev/null || echo 0)
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+
+  if (( count < threshold )); then
+    atmux::log "whip: team idle (tick $count/$threshold) — counting toward auto-stop"
+    return 0
+  fi
+
+  atmux::jq_update "$sf" 'del(.idleTicks)'
+  local team
+  team="$(atmux::team_name)"
+  local msg="🛑 **[whip-autostop]** · \`$team\` · idle ${count} ticks → stopping team to save tokens"
+  atmux::log "whip: team idle ${count} ticks ≥ threshold ${threshold} — invoking atmux stop"
+  ATMUX_DISCORD_TRIGGER="whip-autostop" atmux::discord_embed_ping "$msg" 2>/dev/null || true
+  if ! "$ATMUX_BIN_DIR/atmux" stop >/dev/null 2>&1; then
+    atmux::log "whip: auto-stop invocation failed"
   fi
 }
 
