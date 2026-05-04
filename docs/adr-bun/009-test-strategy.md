@@ -28,15 +28,15 @@ Tracked (must hit 100% line + branch):
 
 - `src/verbs/**/*.ts` — domain verb handlers
 - `src/abstractions/**/*.ts` — tmux, json, http, lock, fs, time, spawn, discord
-- `src/lib/**/*.ts` — common/tui/send/pause core libs
+- `src/core/**/*.ts` — atmux-specific reusables (per ADR-003: 4 core libs `common`, `tui`, `send`, `pause`)
 - `src/schema/**/*.ts` — Zod schemas + validation helpers
-- `src/errors/**/*.ts` — typed error helpers
+- `src/errors.ts` — typed error helpers (single-file per ADR-006)
+- `src/cli.ts` — CLI dispatcher (per ADR-010): alias routing, unknown-verb→`UsageError`→exit 64, `--help` / `--version` paths, top-level catch→`AtmuxError`→tagged stderr. Pure dispatch logic, unit-testable without e2e — included in the tracked set per architect's review of this ADR.
 
 Excluded from the denominator (no coverage requirement):
 
 - `src/types/generated/**` — generated type files, if any
-- `src/cli.ts` (CLI dispatcher boilerplate) — covered by e2e + parity, not unit
-- Barrel re-exports (`index.ts` files that only re-export)
+- Barrel re-exports (`**/index.ts` files that only re-export)
 - `tests/**` — fixture data and helper code
 - `src/**/*.fixtures.ts` — co-located fixture factories
 
@@ -47,13 +47,14 @@ Configuration lives in `bunfig.toml`:
 coverage = true
 coverageThreshold = { line = 1.0, function = 1.0, statement = 1.0, branch = 1.0 }
 coveragePathIgnorePatterns = [
-  "src/types/generated/",
-  "src/cli.ts",
+  "src/types/generated/**",
   "**/index.ts",
-  "tests/",
+  "tests/**",
   "**/*.fixtures.ts",
 ]
 ```
+
+NB: glob shape — Bun 1.3.13 needs `tests/**` (recursive) not `tests/` (directory-prefix); see §6 "Bun threshold gap" below for the broader gap that necessitates `tests/lcov-gate.ts`.
 
 Reviewer enforces tests-with-code in the per-commit gate (PLAN.md §9 check 2). Code lands in the same commit as its tests — no "tests later" split.
 
@@ -86,7 +87,7 @@ tests/parity/
 | `.atmux/` post-state | Walk + read every file under `$ATMUX_DIR` after the verb returns | JSON files diffed via Zod-parsed canonical form; markdown/text byte-exact (after timestamp mask); inbox files match by `(member, lineCount, lastMsgID)` tuple to allow stable ordering |
 | Discord webhook calls | Recording stub injected via env override (mechanism owned by ADR-008) — both runners emit each call as a JSONL line `{ts, payload, runner: bash|ts}` to a harness-managed sink | JSON-array semantic diff with `ts` masked; per-bullet emoji + named-template assertions per CLAUDE.md Discord format rule |
 
-**Discord interception — mechanism deferred to ADR-008; contract owned here.** The implementation choice (override `ATMUX_DISCORD_WEBHOOK_URL=file://...`, or override `ATMUX_DISCORD_PING_SCRIPT` to a recording stub that replaces `~/.claude/skills/whip/scripts/ping-discord.sh`) belongs to ADR-008 (Discord webhook layer). What this ADR contracts: every parity run produces an array `DiscordCall[] = {ts: ISO8601, payload: {content: string, ...}, runner: "bash" | "ts"}` and the harness compares them post-mask. Both bash and TS atmux MUST honour the same env-override knob — ADR-008 chooses which knob and ratifies the recording-stub shape.
+**Discord interception — mechanism owned by ADR-008; contract owned here.** ADR-008 (committed `d6ed626`) ratifies the env-override knob — `ATMUX_DISCORD_RECORDER` pointing at a JSONL sink path, with both bash and TS sides honouring it via the canonical `~/.claude/skills/whip/scripts/ping-discord.sh` routing (script-override path preserves CLAUDE.md's "all sends route through ping-discord.sh" rule). What this ADR contracts: every parity run produces an array `DiscordCall[] = {ts: ISO8601, payload: {content: string, ...}, runner: "bash" | "ts"}` and the harness compares them post-mask. Bash-side support for `ATMUX_DISCORD_RECORDER` is a porter-B Phase 2 follow-up per ADR-008's references.
 
 **Runner contract:**
 
@@ -136,8 +137,8 @@ PLAN.md §9 lists the 8-check gate by category; this ADR enumerates the exact re
 
 | Rule | Regex (multiline, `src/**/*.ts` only unless noted) | Allowed exception |
 |---|---|---|
-| No `JSON.parse` in domain code | `\bJSON\.parse\s*\(` | `src/schema/**` (validators wrap parse in zod-safe-parse) |
-| No silent-error swallows | `catch\s*\([^)]*\)\s*\{\s*\}` and `\.catch\s*\(\s*\(\s*\)\s*=>\s*(?:null\|undefined\|void 0)\s*\)` | Inline preceding comment `// expected-empty: <reason>` |
+| No `JSON.parse` in domain code | `\bJSON\.parse\s*\(` | `src/abstractions/json.ts` ONLY (the IO boundary; ADR-005). Schemas use Zod's `schema.parse()` not raw `JSON.parse`. |
+| No silent-error swallows | Empty: `catch\s*(?:\([^)]*\))?\s*\{\s*\}`. Non-empty without rethrow / `expected:` marker: `catch\s*(?:\([^)]*\))?\s*\{(?![^}]*\bthrow\b)(?![^}]*\bexpected:)` (broadened per ADR-006 R1 — `catch (e) { logger.warn(e) }` IS silent) | Inline preceding comment `// expected: <reason>` (per ADR-006); rethrow within the catch body; or wrap in `tagAndRethrow()` from `src/errors.ts` |
 | No bash-style stderr suppression escapees | `2\s*>\s*\/dev\/null` (only matches if it leaks into TS as a literal string) | `src/abstractions/spawn.ts` (the spawn wrapper that justifies it once, ADR-007) |
 | No raw `Date` formatting outside `time.ts` | `new Date\([^)]*\)\.toLocale|new Date\([^)]*\)\.toIso|Date\.now\(\)\.toString\(36\)` | `src/abstractions/time.ts` (ADR-012) |
 | No raw `fetch` outside `http.ts` | `\bfetch\s*\(` | `src/abstractions/http.ts` (ADR-008 owns Discord layer on top) |
@@ -163,20 +164,20 @@ Mapping table maintained in `tests/e2e/PORT-MAP.md` so reviewer can verify 1:1 c
 
 ### 5. `lifecycle.bats` — sequenced 1x-cold-start spec
 
-The bats `lifecycle.bats` re-runs `setup()` per `@test`, making each step independent. The TS port at `tests/e2e/lifecycle.test.ts` **inverts this** — one `beforeAll` cold-start, then sequenced `test.step()` (or `test.serial()`) beats:
+The bats `lifecycle.bats` has 10 `@test` blocks each re-running `setup()` for independence. The TS port at `tests/e2e/lifecycle.test.ts` **inverts this** — one `beforeAll` cold-start, then 10 sequenced `test.step()` beats matching the bats blocks 1:1:
 
-1. `start` creates session + window-per-member
+1. `start` creates session + one window per member
 2. `send w1 "..."` lands text in pane
-3. `task add` returns task ID
-4. `dispatch w1 <id>` flips status to `in-progress`
-5. `done <id> --as w1` flips status to `done`
-6. `tell-lead` appends to driver-inbox + pings lead pane
-7. `status` reports `session=<name>` + `[up]`
-8. `whip` reports `all clean`
-9. `stop --force` then `whip` reports `DOWN`
-10. `stop` archives state
-11. `report --no-discord` produces shipped section with the completed task
-12. `broadcast` lands in non-driver panes
+3. `dispatch + claim + done round-trip` (`task add` → `dispatch w1 <id>` → `done <id> --as w1`; kanban full-cycle in one beat)
+4. `tell-lead` appends to driver-inbox + pings lead pane
+5. `status` reports `session=<name>` + `[up]`
+6. `whip` reports `all clean` while session is up
+7. `whip` reports `DOWN` after `stop --force` (subsidiary `start` again to restore state for beats 8–10)
+8. `stop` archives state (the second stop, post beat-7 restart)
+9. `report --no-discord` produces shipped section with a completed task
+10. `broadcast` lands in non-driver panes (requires fresh `start` if beat 8 stopped — sequenced spec opens a new tmux session for the broadcast beat per the bats `broadcast` test's setup expectations)
+
+NB: PLAN.md §8.3 says "11 sequenced steps" — that count predates this ADR's bats audit. The bats reality is 10 blocks; I propose PLAN.md update to "10 sequenced beats matching `tests/e2e/lifecycle.bats` block-for-block, with intra-beat sub-actions captured as `test.step()` children". Lead to adjudicate. Architect's count of 13 in their review reflects expanding the dispatch beat into its 3 atomic actions (`task add` / `dispatch` / `done`) — those become `test.step()` children inside beat 3, not top-level beats. The shape: 10 top-level beats matching bats, with sub-steps for atomicity inside.
 
 This is **stateful, non-idempotent — 1x cold-start+walk acceptance test**, NOT a streak-runnable smoke. CLAUDE.md test discipline requires this be documented in the spec's header docstring with the specific dependency chain.
 
@@ -186,9 +187,9 @@ This is **stateful, non-idempotent — 1x cold-start+walk acceptance test**, NOT
 /**
  * Lifecycle e2e — 1x cold-start sequenced acceptance test.
  *
- * Non-idempotent. State chain: start → send → dispatch → done → tell-lead
- * → status → whip(clean) → stop → whip(DOWN) → stop+archive → report
- * → broadcast.
+ * Non-idempotent. State chain (10 beats, 1:1 with lifecycle.bats blocks):
+ * start → send → dispatch+claim+done → tell-lead → status → whip(clean)
+ * → whip(DOWN after stop --force) → stop+archive → report → broadcast.
  *
  * DO NOT run this in a streak loop or stability soak. Each beat depends on
  * the prior beat's mutation (kanban row, archive dir, tmux session). Re-running
@@ -258,7 +259,7 @@ The parser lives at `tests/lcov-gate.ts` (lands in Phase 1; reviewer may wire fr
 - ADR-005 (architect, Phase 0) — Zod schemas for `team.json` / `kanban.json` / inboxes. Parity fixture factory cross-refs these once published; until then `tests/parity/fixtures/schemas.ts` is the interim owner.
 - ADR-007 (foundation, Phase 1) — `Bun.spawn` wrapper. Parity runner uses this for both bash and TS subprocess invocations; spawn pattern decisions feed back into runner.ts.
 - ADR-008 (foundation, Phase 1) — Discord webhook layer. The `file://` interceptor pattern is contracted here; ADR-008 ratifies it from the producer side.
-- ADR-010 (architect, Phase 0) — CLI dispatcher. The `tests/e2e/cli.test.ts` port (covers what `cli.bats` does today) lives in the e2e tier per §2's exclusion of `src/cli.ts` from unit coverage.
+- ADR-010 (architect, Phase 0) — CLI dispatcher. `src/cli.ts` is in the tracked-coverage set (§2); `tests/unit/cli.test.ts` covers alias routing / unknown-verb / help-version / top-level-catch unit-style. `tests/e2e/cli.test.ts` (port of `cli.bats`) covers the dispatch-as-process e2e path.
 
 ## Alternatives considered
 
