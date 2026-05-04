@@ -6,11 +6,15 @@
 #
 # Maps onto reviewer 8-check protocol (PLAN.md §9):
 #   step 1 typecheck         → "Typecheck" job step
-#   step 2 coverage 100%     → "Test + coverage" job step (gate from bunfig.toml)
+#   step 2 coverage 100%     → "Bun test + coverage" + "Coverage gate" steps
+#                              (emit lcov, then enforce via tests/lcov-gate.ts
+#                              per ADR-009 §6 — Bun's coverageThreshold is
+#                              parsed-but-no-op, validated in commit 600dc81)
 #   step 3 biome lint+format → "Biome check" job step
 #   step 4 parity green      → "Parity matrix" job step
 #   steps 5-8 (silent-swallow / schema / ADR / conv-commit) — manual review
-#                              + grep-based commit-msg check (added Phase 1).
+#                              + scripts/lint-discipline.ts (Phase 1 — ADR-006
+#                              R1/R2/R6/R7/R11; foundation-porter deliverable).
 
 name: ci-bun
 
@@ -67,11 +71,22 @@ jobs:
         # `biome lint . && biome format --check .` from v1 syntax.
         run: bunx biome check .
 
-      - name: Bun test + coverage (gate from bunfig.toml)
-        # Coverage threshold = 1.0 line/function/statement/branch enforced
-        # by Bun via bunfig.toml. ADR-009 §2 narrowed denominator excludes
-        # generated/CLI-dispatcher/index/tests/fixtures.
-        run: bun test --coverage
+      - name: Bun test + coverage (emit lcov)
+        # Bun's built-in `coverageThreshold` is parsed-but-no-op in 1.3.13
+        # (ADR-009 §6, empirically validated in commit 600dc81). Coverage
+        # is collected here; the gate fires in the next step via
+        # tests/lcov-gate.ts.
+        run: bun test --coverage --coverage-reporter=lcov
+
+      - name: Coverage gate (lcov-gate, hand-rolled)
+        # Per ADR-009 §6 + bunfig.toml header note: parses coverage/lcov.info,
+        # applies coveragePathIgnorePatterns from bunfig.toml as the single
+        # source of truth, computes per-file line/function/branch %, fails
+        # nonzero with structured per-file breach report. Replaces Bun's
+        # built-in self-enforce until upstream fixes the threshold no-op.
+        # Phase 0 empty-skeleton case: "tracked: 0 files — vacuously passes"
+        # is honest and explicit (no silent vacuous-green).
+        run: bun tests/lcov-gate.ts
 
       - name: Parity matrix (skeleton — empty until Phase 1)
         # ADR-009 §3 — parity harness lives at tests/parity/. In Phase 0
