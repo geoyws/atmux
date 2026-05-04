@@ -1,0 +1,90 @@
+# ci-bun — TS port gate (PLAN.md §4.1, ADR-009 §6, reviewer 8-check protocol)
+#
+# Runs alongside the legacy bash workflow (.github/workflows/test.yml). Both
+# stay green until cutover (PLAN.md Phase 4); after cutover, test.yml is
+# renamed to test-legacy.yml for the rollback window then deleted.
+#
+# Maps onto reviewer 8-check protocol (PLAN.md §9):
+#   step 1 typecheck         → "Typecheck" job step
+#   step 2 coverage 100%     → "Test + coverage" job step (gate from bunfig.toml)
+#   step 3 biome lint+format → "Biome check" job step
+#   step 4 parity green      → "Parity matrix" job step
+#   steps 5-8 (silent-swallow / schema / ADR / conv-commit) — manual review
+#                              + grep-based commit-msg check (added Phase 1).
+
+name: ci-bun
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: typecheck + lint + test + parity
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun (pin 1.3.13 per package.json engines)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Cache Bun install + node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Install runtime deps for parity (tmux >=3.4, jq)
+        # ubuntu-24.04 ships tmux 3.4 + jq 1.7 in apt — no PPA needed.
+        # Required from Phase 1 onwards once parity harness shells out
+        # to bash atmux. Installed here in Phase 0 as forward-readiness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux jq
+          tmux -V
+          jq --version
+
+      - name: Typecheck (tsc --noEmit, strict)
+        run: bun run typecheck
+
+      - name: Biome lint + format check
+        # `biome check` runs lint + format + assist in one pass; non-zero
+        # on any diff or rule violation. Equivalent of legacy
+        # `biome lint . && biome format --check .` from v1 syntax.
+        run: bunx biome check .
+
+      - name: Bun test + coverage (gate from bunfig.toml)
+        # Coverage threshold = 1.0 line/function/statement/branch enforced
+        # by Bun via bunfig.toml. ADR-009 §2 narrowed denominator excludes
+        # generated/CLI-dispatcher/index/tests/fixtures.
+        run: bun test --coverage
+
+      - name: Parity matrix (skeleton — empty until Phase 1)
+        # ADR-009 §3 — parity harness lives at tests/parity/. In Phase 0
+        # this runs an empty matrix (or stub-only divergences masked) to
+        # prove the runner type-checks + dispatches. Phase 2 onwards every
+        # ported verb adds a row to tests/parity/matrix.ts.
+        run: bun test tests/parity
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: warn
+          retention-days: 14
