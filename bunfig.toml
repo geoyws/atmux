@@ -22,7 +22,8 @@ coveragePathIgnorePatterns = [
   "**/*.fixtures.ts",
 ]
 
-[install]
-# CI must use the committed bun.lock verbatim. Locally, override with
-# `bun install --no-frozen-lockfile` when bumping deps.
-frozenLockfile = true
+# [install] frozenLockfile is intentionally NOT set here — bunfig.toml
+# applies to ALL bun invocations including `bun add`, which would then
+# fail to resolve new deps locally. CI invokes `bun install --frozen-lockfile`
+# explicitly (see .github/workflows/ci.yml) for the same gate without
+# the local-dev breakage.
