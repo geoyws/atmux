@@ -1,0 +1,18 @@
+# bunfig.toml — Bun runtime + test config
+# See: https://bun.sh/docs/runtime/bunfig
+
+[test]
+# Coverage gate per ADR-009 + PLAN.md §8.1 (100% narrowed denominator).
+# Reviewer's 8-check protocol step 2 enforces this on every commit.
+coverage = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageThreshold = { line = 1.0, function = 1.0 }
+# Test files don't count toward the denominator (they execute themselves
+# at 100% trivially — including them dilutes the signal).
+coverageSkipTestFiles = true
+
+[install]
+# CI must use the committed bun.lock verbatim. Locally, override with
+# `bun install --no-frozen-lockfile` when bumping deps.
+frozenLockfile = true
