@@ -19,7 +19,7 @@
 // foundation porter (Phase 1) wire the actual stub script and the
 // JSONL-reader.
 
-import type { DiscordCall, ParitySide } from "./runner.ts"
+import type { DiscordCall, ParitySide } from "./runner.ts";
 
 /**
  * Env-override descriptor returned by `prepareInterceptor`. The harness
@@ -31,15 +31,15 @@ import type { DiscordCall, ParitySide } from "./runner.ts"
  * `bun:test` `afterEach`).
  */
 export type DiscordInterceptor = {
-	/** Path to the JSONL sink (one line per call). */
-	sinkPath: string
-	/** Env vars the harness must export to the spawned atmux process. */
-	env: Readonly<Record<string, string>>
-	/** Read the sink and return the calls in append order. */
-	readCalls: (side: ParitySide) => Promise<DiscordCall[]>
-	/** Idempotent. Removes the sink file. */
-	cleanup: () => Promise<void>
-}
+  /** Path to the JSONL sink (one line per call). */
+  sinkPath: string;
+  /** Env vars the harness must export to the spawned atmux process. */
+  env: Readonly<Record<string, string>>;
+  /** Read the sink and return the calls in append order. */
+  readCalls: (side: ParitySide) => Promise<DiscordCall[]>;
+  /** Idempotent. Removes the sink file. */
+  cleanup: () => Promise<void>;
+};
 
 /**
  * Allocate a fresh JSONL sink for one parity-run pair.
@@ -51,9 +51,9 @@ export type DiscordInterceptor = {
  *   4. Return descriptor.
  */
 export async function prepareInterceptor(): Promise<DiscordInterceptor> {
-	throw new Error(
-		"prepareInterceptor(): not implemented (Phase 0 skeleton — ADR-008 ratifies env-knob choice; see ADR-009 §3)",
-	)
+  throw new Error(
+    "prepareInterceptor(): not implemented (Phase 0 skeleton — ADR-008 ratifies env-knob choice; see ADR-009 §3)",
+  );
 }
 
 /**
@@ -63,4 +63,4 @@ export async function prepareInterceptor(): Promise<DiscordInterceptor> {
  * with wall-clock data, and it's the only field that's expected to
  * differ between two otherwise-identical bash and TS runs.
  */
-export const DISCORD_TS_MASK = "<ts-masked>"
+export const DISCORD_TS_MASK = "<ts-masked>";

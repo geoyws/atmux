@@ -13,7 +13,7 @@
 // Phase 0: skeleton. Bodies throw `not-implemented`; the diff pipeline
 // shape (types + module boundaries) is the deliverable.
 
-import { resolve } from "node:path"
+import { resolve } from "node:path";
 
 /**
  * Which atmux binary this run targets.
@@ -21,7 +21,7 @@ import { resolve } from "node:path"
  * - `"ts"`   — `bin/atmux-bun` (port target). For Phase 0, returns a
  *              stub `exit=2`, `stderr="atmux-bun: not implemented"`.
  */
-export type ParitySide = "bash" | "ts"
+export type ParitySide = "bash" | "ts";
 
 /**
  * Captured filesystem snapshot of `.atmux/` after a verb returns.
@@ -34,13 +34,13 @@ export type ParitySide = "bash" | "ts"
  *     allow stable append-only ordering without losing append semantics.
  */
 export type FsSnapshot = {
-	[relativePath: string]: {
-		bytes: Uint8Array
-		mode: number
-		isJson: boolean
-		parsed?: unknown
-	}
-}
+  [relativePath: string]: {
+    bytes: Uint8Array;
+    mode: number;
+    isJson: boolean;
+    parsed?: unknown;
+  };
+};
 
 /**
  * One Discord webhook call captured by the recording stub.
@@ -50,16 +50,16 @@ export type FsSnapshot = {
  * outbound webhook call as a JSONL line in this form.
  */
 export type DiscordCall = {
-	/** ISO-8601 timestamp at intercept time. Masked during diff. */
-	ts: string
-	/** Webhook payload, e.g. `{ content: string, username?: string }`. */
-	payload: {
-		content: string
-		[k: string]: unknown
-	}
-	/** Which side emitted the call — populated by the runner. */
-	runner: ParitySide
-}
+  /** ISO-8601 timestamp at intercept time. Masked during diff. */
+  ts: string;
+  /** Webhook payload, e.g. `{ content: string, username?: string }`. */
+  payload: {
+    content: string;
+    [k: string]: unknown;
+  };
+  /** Which side emitted the call — populated by the runner. */
+  runner: ParitySide;
+};
 
 /**
  * Result of a single bash- or TS-side verb invocation against a fixture.
@@ -68,29 +68,29 @@ export type DiscordCall = {
  * returns `Divergence[]`. Empty array = parity-green for that row.
  */
 export type ParityRun = {
-	side: ParitySide
-	verb: string
-	args: ReadonlyArray<string>
-	/** Absolute path to the fixture root (the dir containing `.atmux/`). */
-	fixturePath: string
-	stdout: string
-	stderr: string
-	exit: number
-	fsState: FsSnapshot
-	discordCalls: ReadonlyArray<DiscordCall>
-	durationMs: number
-}
+  side: ParitySide;
+  verb: string;
+  args: ReadonlyArray<string>;
+  /** Absolute path to the fixture root (the dir containing `.atmux/`). */
+  fixturePath: string;
+  stdout: string;
+  stderr: string;
+  exit: number;
+  fsState: FsSnapshot;
+  discordCalls: ReadonlyArray<DiscordCall>;
+  durationMs: number;
+};
 
 /**
  * Options accepted by `runVerb` — kept extensible for Phase 1 additions
  * (env overrides, working-dir overrides, signal handling).
  */
 export type RunVerbOptions = {
-	/** Hard timeout in ms. Defaults to 30_000. Caller responsibility on long verbs. */
-	timeoutMs?: number
-	/** Extra env vars merged on top of the harness's sandbox env. */
-	env?: Record<string, string>
-}
+  /** Hard timeout in ms. Defaults to 30_000. Caller responsibility on long verbs. */
+  timeoutMs?: number;
+  /** Extra env vars merged on top of the harness's sandbox env. */
+  env?: Record<string, string>;
+};
 
 /**
  * Spawn one side against the fixture and capture the five parity channels.
@@ -112,15 +112,15 @@ export type RunVerbOptions = {
  * @throws on timeout, missing binary, fixture-path nonexistent
  */
 export async function runVerb(
-	side: ParitySide,
-	verb: string,
-	args: ReadonlyArray<string>,
-	fixturePath: string,
-	_options?: RunVerbOptions,
+  side: ParitySide,
+  verb: string,
+  args: ReadonlyArray<string>,
+  fixturePath: string,
+  _options?: RunVerbOptions,
 ): Promise<ParityRun> {
-	// TODO(phase-1): implement per the responsibilities above.
-	const _fixtureAbs = resolve(fixturePath)
-	throw new Error(
-		`runVerb(${side}, ${verb}, [${args.join(", ")}], ${_fixtureAbs}): not implemented (Phase 0 skeleton — see ADR-009 §3)`,
-	)
+  // TODO(phase-1): implement per the responsibilities above.
+  const _fixtureAbs = resolve(fixturePath);
+  throw new Error(
+    `runVerb(${side}, ${verb}, [${args.join(", ")}], ${_fixtureAbs}): not implemented (Phase 0 skeleton — see ADR-009 §3)`,
+  );
 }

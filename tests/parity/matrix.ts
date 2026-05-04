@@ -12,7 +12,7 @@
  *   - `lifecycle`   — 4-member template mirroring tests/e2e/lifecycle.bats
  *   - `multi-team`  — state shapes for atmux / sopx-mvp / ifca_aux / unum
  */
-export type FixturePreset = "minimal" | "lifecycle" | "multi-team"
+export type FixturePreset = "minimal" | "lifecycle" | "multi-team";
 
 /**
  * What the row's authors expect a parity-green outcome to look like.
@@ -20,21 +20,21 @@ export type FixturePreset = "minimal" | "lifecycle" | "multi-team"
  * semantic-aware diffing on stdout (ADR-009 §3 timestamp-mask rule).
  */
 export type ParityExpectation =
-	| "exit-zero-stable-stdout"
-	| "exit-zero-timestamped-stdout"
-	| "exit-nonzero-stable-stderr"
+  | "exit-zero-stable-stdout"
+  | "exit-zero-timestamped-stdout"
+  | "exit-nonzero-stable-stderr";
 
 export type ParityRow = {
-	verb: string
-	args: ReadonlyArray<string>
-	fixturePreset: FixturePreset
-	expect: ParityExpectation
-	/**
-	 * Optional human-readable label for the bun:test row name. Defaults
-	 * to `<verb> ${args.join(" ")} [${fixturePreset}]` if omitted.
-	 */
-	label?: string
-}
+  verb: string;
+  args: ReadonlyArray<string>;
+  fixturePreset: FixturePreset;
+  expect: ParityExpectation;
+  /**
+   * Optional human-readable label for the bun:test row name. Defaults
+   * to `<verb> ${args.join(" ")} [${fixturePreset}]` if omitted.
+   */
+  label?: string;
+};
 
 /**
  * The parity matrix. Empty in Phase 0; Phase 2 porters add one row per
@@ -44,4 +44,4 @@ export type ParityRow = {
  * matrix row in the same commit. The reviewer's 8-check gate enforces
  * this via `tests/e2e/PORT-MAP.md` cross-reference (ADR-009 §4).
  */
-export const PARITY_MATRIX: ReadonlyArray<ParityRow> = []
+export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [];
