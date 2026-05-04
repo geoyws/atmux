@@ -1,0 +1,25 @@
+# Force git to treat TypeScript and Markdown as text. Without this, files
+# with high non-ASCII density (em-dashes, §, →, ≠, …) trip git's binary
+# heuristic in `git show --stat` and PR diff renderers — see commit
+# 1f9f427 where tests/parity/compare.ts showed as "Bin" despite being
+# valid UTF-8 plain text.
+#
+# Reviewer flagged this as cosmetic-but-confusing. Setting `text` here
+# also normalises line-endings to LF on commit (per biome.json
+# `lineEnding: "lf"`), keeping cross-platform diffs clean.
+
+*.ts          text eol=lf diff
+*.tsx         text eol=lf diff
+*.js          text eol=lf diff
+*.jsx         text eol=lf diff
+*.md          text eol=lf diff
+*.json        text eol=lf diff
+*.toml        text eol=lf diff
+*.yml         text eol=lf diff
+*.yaml        text eol=lf diff
+*.sh          text eol=lf diff
+*.bash        text eol=lf diff
+*.bats        text eol=lf diff
+
+# Lockfiles — text but treated as generated for diff brevity.
+bun.lock      text eol=lf -diff
