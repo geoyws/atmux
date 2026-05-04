@@ -213,12 +213,28 @@ Pair this with PLAN.md §8.3 + any `DEMO.md` / `RUNBOOK.md` beat names — every
 1. `bun install --frozen-lockfile`
 2. `biome lint && biome format --check`
 3. `bun typecheck` (`tsc --noEmit`)
-4. `bun test --coverage` — unit + e2e + parity-stub all in one run; `bun:test` collects per-file coverage
+4. `bun test --coverage --coverage-reporter=lcov` — unit + e2e + parity-stub all in one run; `bun:test` collects per-file coverage and writes `coverage/lcov.info`
 5. `bash tests/run.sh --shellcheck` — bash side keeps running until cutover; parity needs the bash binary green
-6. Coverage threshold check via `bunfig.toml` (built-in fail)
+6. **Manual lcov threshold gate** (see "Bun threshold gap" below) — parse `coverage/lcov.info`, compute per-file + aggregate line/function/branch coverage against the narrowed denominator, fail nonzero if any tracked file is below 100%
 7. Upload `coverage/lcov.info` as artifact for trend-tracking
 
 Parity tests run in CI on every commit that touches `src/verbs/**`, `src/abstractions/**`, or `tests/parity/**`. Path-filter via GH Actions `paths:` — full matrix on `main` and on PRs whose touched paths intersect those globs.
+
+#### Bun threshold gap (1.3.13 — empirically validated)
+
+`bunfig.toml`'s `coverageThreshold` is **parsed but not enforced** in Bun 1.3.13. Verified during ADR-009 §3 parity-skeleton review (`501cb1d` follow-up): a probe with `coverageThreshold = 1.00` against an `uncovered.ts` showing 66.67% line coverage **exited 0** (no gate fire). Both inline-table (`{ line = 1.0, ... }`) and table-section (`[test.coverageThreshold]`) and scalar (`coverageThreshold = 1.00`) syntaxes parse without error and silently no-op.
+
+We can't rely on `bun test` self-enforcing the threshold today. Step 6 in the CI flow above replaces the built-in gate with a hand-rolled lcov parser that:
+
+1. Reads `coverage/lcov.info` (lcov format: `SF:<path>` then `DA:<line>,<hits>` etc.).
+2. Filters records by the narrowed denominator (apply `coveragePathIgnorePatterns` from `bunfig.toml` as the source of truth — single config point).
+3. Computes line-hit% / function-hit% / branch-hit% per file.
+4. Fails nonzero if any tracked file is below 100% on any of the four dimensions.
+5. Emits a structured failure report listing which file/dimension breached, so reviewer can triage without re-running.
+
+The parser lives at `tests/lcov-gate.ts` (lands in Phase 1; reviewer may wire from Phase 0 CI to fail the empty-skeleton case loudly with "no tracked files yet — gate vacuously passes" until `src/` lands). When upstream Bun fixes the threshold-enforcement bug we revisit this — likely keep the lcov parser anyway since it gives us per-file failure attribution Bun's built-in doesn't.
+
+`coveragePathIgnorePatterns` glob shape — Bun 1.3.13 also has glob-matching quirks. Use `tests/**` (recursive) not `tests/` (directory-prefix). The narrowed denominator's exclusion globs (§2 above) follow this convention. Verify post-bump with `bunx bun-lcov-gate --dry-run` (Phase 1 deliverable).
 
 ## Consequences
 
