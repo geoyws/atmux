@@ -11,7 +11,7 @@ See `PLAN.md §7` for the full backlog. Architect owns 001–006, foundation own
 | # | Status | Title |
 |---|---|---|
 | 001 | accepted | Why TypeScript on Bun (vs Go, Zig, staying in bash) |
-| 002 | TODO | Project layout |
+| 002 | accepted | Project layout |
 | 003 | TODO | Module taxonomy |
 | 004 | TODO | tmux abstraction interface |
 | 005 | TODO | JSON + locking model |
@@ -20,7 +20,7 @@ See `PLAN.md §7` for the full backlog. Architect owns 001–006, foundation own
 | 008 | TODO | Discord webhook + chunking |
 | 009 | accepted | Test strategy |
 | 010 | TODO | CLI dispatcher |
-| 011 | TODO | Side-by-side cutover protocol |
+| 011 | accepted | Side-by-side cutover protocol |
 | 012 | TODO | Time + timezone handling |
 | 013 | TODO | WIP-bash deferral |
 | 014 | accepted | Verb design debt — deferred v2 redesign (Phase 6) |
