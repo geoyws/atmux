@@ -163,7 +163,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | V-17 | `help` | `bin/atmux:25-86` | — | ✅ shipped |
 | V-18 | `dashboard` | `lib/dashboard.sh` | 41 | ✅ shipped |
 | V-19 | `reconfigure` | `lib/reconfigure.sh` | 59 | ✅ shipped |
-| V-20 | `handoff` | `lib/handoff.sh` | 135 | ⏳ pending |
+| V-20 | `handoff` | `lib/handoff.sh` | 135 | ✅ shipped |
 | V-21 | `report` | `lib/report.sh` | 84 | ⏳ pending |
 | V-22 | `cost` | `lib/cost.sh` | 170 | ⏳ pending |
 | V-23 | `rotate` / `rotate-lead` | `lib/rotate.sh` | 81 | ✅ shipped |

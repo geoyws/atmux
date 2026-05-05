@@ -34,6 +34,7 @@ import { attach } from "./verbs/attach.ts";
 import { claim, done } from "./verbs/claim.ts";
 import { dashboard } from "./verbs/dashboard.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
+import { handoff } from "./verbs/handoff.ts";
 import { help } from "./verbs/help.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
@@ -124,6 +125,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return rotate(argv.slice(1));
     case "rotate-lead":
       return rotateLead(argv.slice(1));
+    case "handoff":
+      return handoff(argv.slice(1));
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,
