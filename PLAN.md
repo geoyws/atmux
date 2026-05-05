@@ -1,7 +1,7 @@
 # atmux → Bun port — master plan
 
 **Worktree:** `.claude/worktrees/atmux-bun` (branch `worktree-atmux-bun`)
-**Source state:** clean atmux@2aadc3f (HEAD), bash reference frozen here for parity validation
+**Source state:** branch cut from main@`7366a1f` (2026-04-25, "planner + dba roles, wizard presets, feature-lane naming, 6 ADRs"). The worktree's checked-in `lib/**` IS the canonical frozen bash reference for parity validation — cite source from this worktree's `lib/`, not main's moving HEAD (per memory `feedback_parity_cite_from_frozen_ref.md`). The earlier `2aadc3f` framing was forward-looking when PLAN.md was drafted; main moved on after the branch was already cut, so the worktree's snapshot is what porters port from.
 **Coordination:** Claude Code native team primitives (`TeamCreate` + named background `Agent` spawns + `SendMessage` + shared `TaskList`). NOT atmux — atmux is the thing we're rewriting *because* it's broken.
 **Status:** plan; no code yet
 
@@ -11,11 +11,11 @@
 
 Port atmux from bash+tmux+jq to TypeScript on Bun, with **strict typing, 100% unit coverage (narrowed denominator), e2e parity against the bash reference, dedicated per-commit reviewer, and ADR-driven decisions**. Ship behind a side-by-side flag, burn in for ≥2 weeks across all 4 production teams (atmux, sopx-mvp, ifca_aux, unum), then promote and decommission bash.
 
-Success = TS atmux passes the parity harness on every verb (zero divergence vs bash@2aadc3f including the WIP modules from main checkout), 100% narrowed unit coverage in CI, v2 verb redesign per ADR-014 shipped. **No calendar/observation gates** — phases are sequential to avoid confusion, not to wait out a clock.
+Success = TS atmux passes the parity harness on every verb (zero divergence vs bash@worktree-frozen-lib including the WIP modules from main checkout), 100% narrowed unit coverage in CI, v2 verb redesign per ADR-014 shipped. **No calendar/observation gates** — phases are sequential to avoid confusion, not to wait out a clock.
 
 ---
 
-## 2. Scope (frozen at HEAD 2aadc3f)
+## 2. Scope (frozen at the worktree's checked-in `lib/**`, branched from main@`7366a1f`)
 
 **In scope** — what's actually committed at HEAD:
 
@@ -187,7 +187,7 @@ Bats specs port 1:1 to `tests/e2e/<verb>.test.ts` — every `@test` becomes a `t
 
 ### 8.3 The `lifecycle.bats` e2e
 
-Ported as `tests/e2e/lifecycle.test.ts`, 11 sequenced steps: start → send → task → dispatch → done → tell-lead → status → whip → stop → report → broadcast. This is **stateful, non-idempotent — 1x cold-start+walk** (per CLAUDE.md testing discipline). Documented in the spec's header docstring.
+Ported as `tests/e2e/lifecycle.test.ts`, **10 sequenced beats matching `tests/e2e/lifecycle.bats` block-for-block** (one `test()` per `@test` block). Intra-beat sub-actions (e.g. `task add` / `dispatch` / `done` inside the dispatch+claim+done round-trip beat) are captured as `test.step()` children for atomicity. This is **stateful, non-idempotent — 1x cold-start+walk** (per CLAUDE.md testing discipline). Documented in the spec's header docstring.
 
 ### 8.4 Functional parity (Phase 3)
 
@@ -303,7 +303,7 @@ Two milestones. Project is NOT closed until **both** are met.
 
 - [ ] All 23 domain verbs ported with 100% narrowed unit coverage, **at 1:1 verb-name + arg parity with bash**
 - [ ] All 24 bats specs ported as bun e2e tests, all passing
-- [ ] Parity harness green on all verbs vs bash@2aadc3f
+- [ ] Parity harness green on all verbs vs bash@worktree-frozen-lib
 - [ ] ADRs 001–014 written + accepted; per-verb ADRs where non-obvious
 - [ ] Parity harness green across every cron-fired and interactive verb (functional, no calendar wait)
 - [ ] Bash binary renamed to `/usr/local/bin/atmux-legacy`, TS promoted to `/usr/local/bin/atmux`
@@ -324,7 +324,9 @@ Two milestones. Project is NOT closed until **both** are met.
 
 ## 14. Auto-progression rules (autonomous mode)
 
-The driver session has authorized the lead to advance phases autonomously when each phase's exit gate is met, **without asking the driver for permission**. Driver only intervenes on gate failures, external triggers, or scheduled checkpoints.
+The driver session has authorized the lead to advance phases autonomously when each phase's exit gate is met, **without asking the driver for permission**. Driver only intervenes on (1) gate failures, (2) external triggers, (3) scheduled checkpoints, or (4) **mechanical agent spawns** (see below).
+
+**Spawn mechanics (runtime constraint):** Claude Code's team roster is flat — teammates cannot spawn other teammates via the Agent tool. Therefore: when a phase exit gate is met, **lead DMs driver** with `"ready to spawn <role>"`, and **driver performs the spawn** using the `Agent` tool within ~5 minutes, then DMs lead `"<role> spawned"`. This is NOT a permission gate — driver does NOT evaluate whether to spawn, only mechanically executes the spawn that lead has already approved. Lead is the decision-maker; driver is the spawn-executor for runtime reasons only.
 
 ### Exit gates
 
@@ -332,20 +334,20 @@ The driver session has authorized the lead to advance phases autonomously when e
 - ADRs 001–014 in `accepted` status (architect drafts, lead approves, reviewer merges)
 - Committed at branch HEAD: `package.json`, `bunfig.toml`, `tsconfig.json`, `biome.json`, `src/` skeleton dirs matching ADR-003 taxonomy, `tests/parity/` runner skeleton, `.github/workflows/ci.yml`
 - CI green on empty skeleton (typecheck + biome + bun test all pass)
-- Lead DMs driver: `"Phase 0 closed, spawning Phase 1 (porter-foundation)"`
+- Lead DMs driver: `"Phase 0 closed, ready to spawn porter-foundation for Phase 1"` (driver spawns within ~5min — see spawn mechanics above)
 
 **Phase 1 → Phase 2**
 - 8 abstraction modules + 4 core libs implemented in `src/`
 - 100% narrowed unit coverage (CI green)
 - Parity harness operational: can run a real bash verb against a TS verb stub and report semantic diff
 - ADRs 007 + 008 accepted
-- Lead DMs driver: `"Phase 1 closed, spawning Phase 2 (porter-a + porter-b)"`
+- Lead DMs driver: `"Phase 1 closed, ready to spawn porter-a + porter-b for Phase 2"` (driver spawns within ~5min)
 
 **Phase 2 → Phase 3**
 - All 23 domain verbs ported at 1:1 name+arg parity
 - 100% narrowed unit coverage on every ported file
 - All 24 bats specs ported as bun e2e tests, passing
-- Parity harness green on every verb vs bash@2aadc3f (zero divergence)
+- Parity harness green on every verb vs bash@worktree-frozen-lib (zero divergence)
 - Lead DMs driver: `"Phase 2 closed, beginning Phase 3 production parity on team atmux"`
 
 **Phase 3 → Phase 4** [functional gate only, no calendar wait]
@@ -394,7 +396,7 @@ Driver MAY check in proactively by DMing lead `"status?"` — lead replies with 
 ### What the driver session does NOT do (autonomous mode)
 
 - Approve phase transitions when gates are green.
-- Spawn Phase 1+ agents (lead spawns those).
+- Approve phase-spawn requests (driver mechanically spawns the role lead requests; the decision is lead's).
 - TaskCreate / TaskUpdate routine work.
 - Review individual commits.
 
