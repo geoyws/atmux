@@ -38,6 +38,7 @@ import { help } from "./verbs/help.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
 import { pause, resume } from "./verbs/pause.ts";
+import { reconfigure } from "./verbs/reconfigure.ts";
 import { outbox, reply } from "./verbs/reply.ts";
 import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
@@ -116,6 +117,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return resume(argv.slice(1));
     case "dashboard":
       return dashboard(argv.slice(1));
+    case "reconfigure":
+      return reconfigure(argv.slice(1));
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,
