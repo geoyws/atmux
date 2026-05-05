@@ -291,6 +291,91 @@ describe("cli.main — attach verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — dashboard verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/dashboard.test.ts) ----------
+
+describe("cli.main — dashboard verb dispatch", () => {
+  test("'dashboard --bogus-flag' dispatches into dashboard (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["dashboard", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — reconfigure verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/reconfigure.test.ts) ----------
+
+describe("cli.main — reconfigure verb dispatch", () => {
+  test("'reconfigure --bogus-flag' dispatches into reconfigure (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["reconfigure", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — rotate / rotate-lead verb routes (smoke; deep
+//                       behaviour in tests/unit/verbs/rotate.test.ts) ----------
+
+describe("cli.main — rotate verb dispatch", () => {
+  test("'rotate --bogus-flag' dispatches into rotate (UsageError on unknown flag)", async () => {
+    const { exit, stderr } = await captureMain(["rotate", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+describe("cli.main — rotate-lead verb dispatch", () => {
+  test("'rotate-lead --bogus-flag' dispatches into rotateLead (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["rotate-lead", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — handoff verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/handoff.test.ts) ----------
+
+describe("cli.main — handoff verb dispatch", () => {
+  test("'handoff' with no args dispatches into handoff (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["handoff"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — report verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/report.test.ts) ----------
+
+describe("cli.main — report verb dispatch", () => {
+  test("'report --bogus-flag' dispatches into report (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["report", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — cost verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/cost.test.ts) ----------
+
+describe("cli.main — cost verb dispatch", () => {
+  test("'cost --bogus-flag' dispatches into cost (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["cost", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — doctor verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/doctor.test.ts) ----------
+
+describe("cli.main — doctor verb dispatch", () => {
+  test("'doctor --bogus-flag' dispatches into doctor (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["doctor", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 // ---------- Dispatch — unknown verb (bash parity exit 64) ----------
 
 describe("cli.main — unknown-verb path (bash bin/atmux:324-328 byte-parity)", () => {
