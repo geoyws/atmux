@@ -1,8 +1,8 @@
 # ADR-004: tmux abstraction interface
 
-**Status:** accepted
-**Date:** 2026-05-04
-**Owner:** architect
+**Status:** accepted (amended 2026-05-05 — socket injection)
+**Date:** 2026-05-04 (original); 2026-05-05 (socket-injection amend)
+**Owner:** architect (original); foundation-porter (amend)
 
 ## Context
 
@@ -216,6 +216,53 @@ Every method in `tmux.ts` is a thin shell of argv-construction + `spawn()` call 
 
 For higher-layer tests (verb tests), `tmux.ts` is replaced wholesale via `bun:test` mock injection — every method swapped for a mock. Verb tests do not touch real tmux.
 
+### Socket injection (amend, 2026-05-05)
+
+**Incident.** On 2026-05-05 ~01:44 MYT, the in-flight `tests/unit/abstractions/tmux.test.ts` killed the operator's daily-driver tmux server during teardown. Root cause: the abstraction had no socket parameter, so every `tmux <subcmd>` call resolved to whatever server tmux happened to find — default socket, inherited `$TMUX`, or whatever `$TMUX_TMPDIR` pointed at. The test file had a partial env-only fix (`delete process.env.TMUX` + `process.env.TMUX_TMPDIR = tmpdir`) but env vars are not load-bearing — `tmux` ignores `TMUX_TMPDIR` in some configurations and the test process can still inherit/leak `$TMUX`. When `afterEach` ran `tmux kill-server`, it hit the operator's `/tmp/tmux-0/default`. Memory ref: `feedback_tmux_test_isolation.md`.
+
+User's exact words: *"all tests MUST BE ON A DIFFERENT TMUX SERVER BECAUSE U KEEP KILLING THE DEFAULT TMUX SERVER DURING UR TEARDOWN."*
+
+**Bash precedent.** The bash codebase reaches the same conclusion via `atmux::tmux_cage` (commits `c5f56ef` + `feb8b72`, ADR-018); this TS amend is the strict-typed equivalent — `-L <socket>` is enforced at the abstraction boundary so callers cannot regress to bare `tmux`. Where the bash helper relies on convention ("always call `atmux::tmux_cage tmux …` instead of bare `tmux …`"), the TS factory raises that convention to a compile-time invariant: there's no exported zero-arg surface for a caller to reach.
+
+**Decision.** The abstraction itself takes a socket parameter. Every tmux subprocess prepends `-L <name>` or `-S <abs-path>` to argv, before any subcommand. There is **no zero-arg / default `tmux` singleton** — callers obtain a namespace via:
+
+```ts
+import { createTmux } from "src/abstractions/tmux";
+
+// Short-name socket (resolves under $TMUX_TMPDIR or /tmp/tmux-<uid>/):
+const tmux = createTmux({ socket: "atmux-team-name" });
+
+// Absolute path (full control, used by tests + ADR-018 cage):
+const tmux = createTmux({ socketPath: "/tmp/atmux-cage-team/sock" });
+```
+
+The `TmuxConfig` type is a discriminated union with `?: never` on the unused field, so TypeScript rejects passing both / neither at compile time, plus an optional `configFile` for config-pinning:
+
+```ts
+type SocketConfig =
+  | { readonly socket: string;     readonly socketPath?: never }
+  | { readonly socketPath: string; readonly socket?: never };
+
+export type TmuxConfig = SocketConfig & {
+  readonly configFile?: string;  // -f <path>; tests pass "/dev/null"
+};
+```
+
+The factory captures the socket flag (and optional `-f <path>`) in a closure and routes every `tmuxRun` / `tmuxRunRaw` call (and the direct `loadBuffer` stdin path) through `[...socketArgs, ...subcmdArgv]`. By construction, no method on the returned namespace can issue a tmux command that omits the socket flag — including `server.killServer()`, which is the failure point of the original incident.
+
+**Config-pinning, same physical-impossibility argument.** Even on an isolated socket, `tmux` reads `~/.tmux.conf` by default — so an operator config that sets `base-index 1` / `pane-base-index 1` (common; matches default ifdef-tmux 3.0+ ergonomics) silently reshapes test fixtures that hardcode `:0`. Tests + parity harness pass `configFile: "/dev/null"` to get tmux's stock defaults, the same way they pass `socketPath` to get an isolated socket. Production code omits `configFile` to inherit operator config.
+
+**`hasServer()` probe correction.** The original ADR sketch suggested `tmux info` for `hasServer`. Empirically, `tmux info` exits 1 in non-TTY contexts (e.g. `bun test`) even with a healthy server — its output is terminal-info that requires an attached client. The amended implementation uses `list-sessions` exit code instead: exit 0 means the server is up with ≥1 session, exit 1 means no server (tmux exits its server when the last session closes). For atmux's usage (every team always has at least its lead window), this is the right semantic.
+
+**Consequences of removing the singleton.**
+
+- Every consumer must decide which socket they're driving. There is no "default" path. This is the point — a default would re-introduce the incident's failure mode.
+- Verb code (Phase 2) receives the namespace as a constructor argument or via a tiny per-verb factory that reads the team's socket from `team.json` (resolution lives in `src/core/common.ts`, Phase 1).
+- Tests instantiate per-test with `socketPath: join(tmpdir, "sock")` so teardown's `tmux.server.killServer()` hits only the per-test socket, by construction.
+- Belt-and-braces in tests: `delete process.env.TMUX` is kept with a comment that the load-bearing fix is the `-S` flag. If env-leak ever sneaks past, the `-S` still wins.
+
+**Reviewer enforcement (new check #9).** Reviewer regex blocks any tmux invocation that doesn't carry `-L` or `-S` immediately after `cmd: "tmux"`. The two valid call sites — `tmuxRunRaw` (centralized) and `buffer.loadBuffer` (direct due to stdin) — both prepend `socketArgs` from the closure; nothing else inside `src/abstractions/tmux.ts` calls `spawn({ cmd: "tmux", ... })`.
+
 ## Consequences
 
 **Positives:**
@@ -239,6 +286,7 @@ For higher-layer tests (verb tests), `tmux.ts` is replaced wholesale via `bun:te
 - Foundation porter implements `tmux.ts` as part of Phase 1; reviewer adds the layer-violation regex once committed.
 - Doctor verb (Phase 2) reads `tmux -V`, compares to engines hint, emits warning.
 - Future ADR (post-v1) — control-protocol abstraction `tmux-control.ts` if dashboard goes live.
+- **Phase 2 — `getDefaultSocket()` resolver (post-amend follow-up).** Verb code in Phase 2 needs a single source-of-truth for "which socket does this team use?" The factory accepts a socket explicitly, so each verb's entry point must resolve it before calling `createTmux`. Open questions for lead's Phase 2 spec: `$ATMUX_SOCKET` env var? a `socket` field in `.atmux/config.json` / `team.json`? a `--socket <name>` CLI flag override? cage-topology auto-derived from team name (ADR-018 bash precedent: `/tmp/atmux-cage-${team}/sock`)? Resolver lives in `src/core/common.ts` (Phase 1 placeholder) — wired to actual sources during Phase 2 once the decision lands.
 
 ## Alternatives considered
 
@@ -284,3 +332,4 @@ Surveyed. None of the existing packages cover all our subcommands, and most assu
 - ADR-011 (cutover — pins tmux minimum version into operator install path)
 - bash `lib/common.sh`, `lib/send.sh`, `lib/whip.sh`, `lib/start.sh` — primary tmux-shellout sites at worktree HEAD
 - `man tmux` command-group taxonomy — source of the bucket structure
+- `feedback_tmux_test_isolation.md` (memory) — incident motivation for the 2026-05-05 socket-injection amend

@@ -13,7 +13,7 @@ See `PLAN.md §7` for the full backlog. Architect owns 001–006, foundation own
 | 001 | accepted | Why TypeScript on Bun (vs Go, Zig, staying in bash) |
 | 002 | accepted | Project layout |
 | 003 | accepted | Module taxonomy |
-| 004 | accepted | tmux abstraction interface |
+| 004 | accepted (amended 2026-05-05) | tmux abstraction interface |
 | 005 | accepted | JSON + locking model |
 | 006 | accepted | Error handling discipline |
 | 007 | accepted | Subprocess spawn pattern |
@@ -24,7 +24,8 @@ See `PLAN.md §7` for the full backlog. Architect owns 001–006, foundation own
 | 012 | accepted | Time + timezone handling |
 | 013 | accepted | WIP-bash deferral |
 | 014 | accepted | Verb design debt — deferred v2 redesign (Phase 6) |
-| 015+ | — | Per-verb ADRs as needs surface |
+| **015** | **proposed** | **Team members work in isolated git worktrees by default (Phase 6 / v2)** |
+| 016+ | — | Per-verb ADRs as needs surface |
 
 ## Format
 
