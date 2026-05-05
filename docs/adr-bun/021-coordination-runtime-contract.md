@@ -34,7 +34,7 @@ Mirror the established `atmux task <verb>` pattern. Single top-level verb-IDs in
 | Sub-verb | Skill counterpart | Summary |
 |---|---|---|
 | `cont` | `/session cont` | Resume after `/clear`. Mode-detect (driver / lead-window / solo / no-team). Read handoff. Cross-check TaskList drift. Surface unresolved decisions. **In solo mode**, emit handoff content + standing decisions to stdout (currently the skill only re-dispatches to teammates; ADR-021 pins solo behavior as explicit). |
-| `preclear` | `/session preclear` | Save the current session's coordination state (handoff + memory + tasks). Mode-aware: driver = sanity+exit; solo/lead = full save. Never destructive. |
+| `preclear` | `/session preclear` | Save the current session's coordination state (handoff + memory + tasks). **Callable in every mode** — driver / solo / lead / no-team. Mode-aware behavior (see §4 below). Never destructive. |
 | `handoff` | `/session handoff` | Write a forward-going brief for a fresh claude in a new worktree/branch. Distinct from `preclear`. |
 | `stop` | `/session stop` | End-of-day full shutdown — `team stop` + `team cleanup` + `[FULL-STOP]`-marked handoff. |
 
@@ -91,16 +91,24 @@ Pin once, atmux writes them:
 | Lead-outbox (replies queue) | `~/.claude/teams/<team>/lead-outbox.md` | atmux writes (member-side `atmux reply`); driver reads | Global; same rationale as driver-inbox. Today's `atmux reply` + `atmux outbox` already use this path under one of two fallbacks — atmux stops fallback, makes it canonical. |
 | Last-discord-flush marker | `~/.claude/teams/<team>/last-discord-flush.txt` | atmux writes; whip + report read | Already used by V-21 report. |
 
-### 4. Solo-mode `cont` behavior
+### 4. Mode-aware behavior matrix
 
-When `atmux session cont` runs in solo mode (no `__{team}__team-lead` window detected), it:
+Both `cont` and `preclear` are **callable in every mode** — no mode silently no-ops or refuses. Mode is detected by inspecting the team-lead window's existence + the caller's own window:
 
-1. Reads handoff.md.
-2. Surfaces handoff content + standing decisions **to stdout** for the human REPL to read.
-3. Cross-references TaskList (`atmux task list`) for in-flight work + drift.
-4. Does NOT dispatch resume tasks (no teammates to dispatch to).
+| Mode | Detection | `preclear` behavior | `cont` behavior |
+|---|---|---|---|
+| **driver** | `team-lead` window exists, caller is NOT in it | Sanity check (lead-marker uptime, tmux windows present, live processes) + exit. Driver has no coordination state to save (lead owns handoff/memory/tasks/dispatches), so no file writes. **Drivers should still run `preclear` before `/clear`** as a discipline — it confirms team health before context flush, and gives a clean line in driver-inbox audit trail. | Re-dispatch resume tasks to teammates per handoff "next-session first actions"; surface unresolved decisions to driver-side stdout. |
+| **solo** | No `team-lead` window AND no `.claude/team.json` (OR `team.json` exists but no team-lead window — caller is the lead-in-disguise) | Full save: write handoff.md, sync memory, audit + clean TaskList. `/clear` will wipe context, so state must land on disk first. | Read handoff + surface content + standing decisions to stdout (per §below — was originally §4). Cross-check TaskList drift. No dispatch. |
+| **lead** | Caller IS in the `team-lead` window (rare — `cont` from inside the lead, e.g. post-rotation recovery) | Same as solo (lead-in-disguise) — save everything. State-save **primitive**; `/team rotate-lead` is the composite that does this + `/clear` + auto-reboot. | Pivot to `/team bootstrap` — fresh lead context isn't a session resume but a re-entry. |
+| **no-team** | No `.claude/team.json` at all | Bail gracefully — nothing to save. Print "no team configured." | Same — bail with "no team found." May suggest `atmux init` or `atmux team start`. |
 
-Currently the skill's `cont` only re-dispatches to teammates. ADR-021 pins solo behavior as a first-class output path — useful because atmux-bun itself is solo-mode (no team agents) yet has handoff.md content to surface.
+**Driver-mode preclear matters even though it's a no-op for state-save.** The discipline value is:
+
+- Pre-`/clear` health check: confirms lead is alive + responsive, no pending driver-inbox asks unattended, no rate-limit banner on lead-pane.
+- Audit trail: each preclear emits a one-line `📋 [preclear-driver]` Discord post (or stderr line in non-Discord configs) so the lead's own audit log shows when the driver `/clear`'d, and the lead can spot patterns (e.g. driver clears every 30min — context-window pressure to address).
+- Future-proofs: if any future mode adds driver-side coordination state (e.g. driver-local task cache, conversation memos), `preclear` already wraps it.
+
+So `preclear` is the canonical pre-`/clear` ritual in every mode — never "skip preclear because I'm the driver."
 
 ### 5. NOT in scope
 
