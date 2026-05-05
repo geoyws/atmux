@@ -52,9 +52,10 @@
 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 import { type DiscordSendOpts, send as discordSend } from "../abstractions/discord.ts";
 import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
-import { tryReadJson } from "../abstractions/json.ts";
+import { tryParseJsonString, tryReadJson } from "../abstractions/json.ts";
 import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
@@ -197,9 +198,20 @@ function parsePositiveInt(v: string | undefined): number | null {
 
 // ---------- Session-state 2-tick gate ----------
 
-export interface SessionState {
-  lastDown?: { epoch: number; count: number };
-}
+/** Schema for `<atmuxDir>/state/whip-session-state.json`. Inline rather
+ *  than promoted to `src/schema/` because the file is whip-private state
+ *  (no other verb reads or writes it). R3 still applies: this is the
+ *  one schema gate for the file, not a hand-rolled `JSON.parse` guard. */
+const SessionStateSchema = z.object({
+  lastDown: z
+    .object({
+      epoch: z.number(),
+      count: z.number(),
+    })
+    .optional(),
+});
+
+export type SessionState = z.infer<typeof SessionStateSchema>;
 
 export type SessionVerdict = "up" | "report" | "suppress";
 
@@ -245,20 +257,12 @@ async function readSessionState(atmuxDir: string): Promise<SessionState> {
   const path = join(stateDir(atmuxDir), SESSION_STATE_FILE);
   const text = await readTextOrNull(path);
   if (text === null) return {};
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (parsed === null || typeof parsed !== "object") return {};
-    const o = parsed as Record<string, unknown>;
-    const ld = o.lastDown;
-    if (ld === null || ld === undefined || typeof ld !== "object") return {};
-    const ldo = ld as Record<string, unknown>;
-    if (typeof ldo.epoch !== "number" || typeof ldo.count !== "number") return {};
-    return { lastDown: { epoch: ldo.epoch, count: ldo.count } };
-  } catch {
-    // Corrupt state file — treat as fresh. Same posture as bash
-    // `[[ -s "$sf" ]] || echo '{}' > "$sf"`.
-    return {};
-  }
+  // `tryParseJsonString` (NOT `tryReadJson`) — the latter throws
+  // SchemaError on existing-but-invalid; we want bash-parity "treat
+  // corrupt-or-fresh both as empty" semantics (mirrors bash
+  // `[[ -s "$sf" ]] || echo '{}' > "$sf"` at lib/whip.sh:1036). R3 is
+  // honoured by going through the json.ts abstraction either way.
+  return tryParseJsonString(text, SessionStateSchema) ?? {};
 }
 
 async function writeSessionState(atmuxDir: string, state: SessionState): Promise<void> {
@@ -634,6 +638,9 @@ async function checkMember(
 
   // Window existence — `displayMessage` returns "" + non-zero if absent.
   // Cleaner: `listWindows` + `.some(w => w.name === windowName)`.
+  // expected: tmux server transient unreachability (cron-window race against
+  // a stop / start) — degrade to "no windows" so the per-member loop surfaces
+  // the missing-window finding instead of crashing the whole tick.
   const windows = await tmux.window.listWindows(session).catch(() => []);
   const windowExists = windows.some((w) => w.name === windowName);
   if (!windowExists) {
@@ -681,6 +688,9 @@ async function checkMember(
     const driverDir = env.CLAUDE_CONFIG_DIR ?? "";
     const driverTag = accountFromConfigDir(driverDir);
     if (driverTag !== null) {
+      // expected: /proc/<pid>/environ unreadable (EACCES on cross-user pane,
+      // ESRCH on pane-died-mid-tick race, ENOENT on non-Linux) — skip the
+      // cross-account check for this member instead of crashing the tick.
       const memberEnv = await readMemberEnv(panePid).catch(() => null);
       if (memberEnv !== null) {
         const memberDir = memberEnv.CLAUDE_CONFIG_DIR ?? "";
