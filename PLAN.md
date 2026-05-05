@@ -164,7 +164,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | V-18 | `dashboard` | `lib/dashboard.sh` | 41 | ✅ shipped |
 | V-19 | `reconfigure` | `lib/reconfigure.sh` | 59 | ✅ shipped |
 | V-20 | `handoff` | `lib/handoff.sh` | 135 | ✅ shipped |
-| V-21 | `report` | `lib/report.sh` | 84 | ⏳ pending |
+| V-21 | `report` | `lib/report.sh` | 84 | ✅ shipped |
 | V-22 | `cost` | `lib/cost.sh` | 170 | ⏳ pending |
 | V-23 | `rotate` / `rotate-lead` | `lib/rotate.sh` | 81 | ✅ shipped |
 | V-24 | `doctor` | `lib/doctor.sh` | 355 | ⏳ pending |
