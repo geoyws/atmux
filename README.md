@@ -942,6 +942,34 @@ ln -s /root/.atmux-src/completions/_atmux ~/.zsh/completions/_atmux
 # then in ~/.zshrc: fpath=(~/.zsh/completions $fpath) && autoload -Uz compinit && compinit
 ```
 
+## Install (dev / dogfooding)
+
+The default `install.sh` puts atmux at `~/.atmux-src/` and symlinks `/usr/local/bin/atmux` there. Fine for users.
+
+For atmux **maintainers** who want their dev edits to be the runtime atmux (immediate dogfooding feedback, no `git pull` lag), point the symlink directly at the dev tree:
+
+```bash
+# One-time bootstrap — symlink directly at the dev clone:
+ln -sf /path/to/atmux-dev/bin/atmux      /usr/local/bin/atmux
+ln -sf /path/to/atmux-dev/bin/atmux-tmux /usr/local/bin/atmux-tmux
+```
+
+Optional second tier — keep a `/opt/atmux-stable/` "tested fallback" maintained by `scripts/autopromote.sh` (hourly cron: pull origin/main → run tests → rsync to `/opt/atmux-stable/` only if tests don't regress). When a dev edit breaks runtime atmux, swap the symlink in one line:
+
+```bash
+# Swap to stable fallback:
+ln -sf /opt/atmux-stable/bin/atmux      /usr/local/bin/atmux
+ln -sf /opt/atmux-stable/bin/atmux-tmux /usr/local/bin/atmux-tmux
+
+# Swap back to dev when fixed:
+ln -sf /path/to/atmux-dev/bin/atmux      /usr/local/bin/atmux
+ln -sf /path/to/atmux-dev/bin/atmux-tmux /usr/local/bin/atmux-tmux
+```
+
+The atmux binary is **self-locating** (`bin/atmux` walks `BASH_SOURCE` symlinks to find `lib/` + `templates/`) — no env var or shell-side state required. atmux changes are picked up immediately on the next `atmux <verb>` call; **sourcing `~/.zshrc` is NOT needed** for runtime updates. (Optional shell completions DO require sourcing on update — that's standard for any tool with completion.)
+
+**Don't** create manual `cp -r` snapshots of `/opt/atmux-stable/` (e.g. `.bak.<TS>` dirs) — they accumulate without retention and clutter `/opt/`. Git history at the promoted SHA is the rollback handle. Full rationale: `docs/adr/047-canonical-install-topology.md`.
+
 ## Troubleshooting
 
 **"My whip stopped pinging."** Run `atmux doctor`. It surfaces two cron-related conditions:
