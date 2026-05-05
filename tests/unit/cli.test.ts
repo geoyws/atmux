@@ -365,6 +365,17 @@ describe("cli.main — cost verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — whip verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/whip.test.ts) ----------
+
+describe("cli.main — whip verb dispatch", () => {
+  test("'whip --bogus-flag' dispatches into whip (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["whip", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 // ---------- Dispatch — doctor verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/doctor.test.ts) ----------
 

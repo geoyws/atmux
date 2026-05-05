@@ -43,7 +43,13 @@ export type DiscordTemplate =
   | "team-rotation"
   | "dispatch-task"
   | "tell-lead"
-  | "deploy-lifecycle";
+  | "deploy-lifecycle"
+  // I-6 per ADR-022 + PLAN.md §6.3: surfaced when the lead applies a
+  // recommended default without escalation. V-25 ships the template;
+  // invocation site is the lead's tell-discord-shaped flow, deferred to
+  // V-27 `team` per ADR-021. Adding the literal here costs nothing and
+  // unblocks the V-27 caller from a same-commit discord.ts edit.
+  | "autonomous-decision";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji = "🚨" | "🛑" | "⏰" | "📋" | "📊" | "💓" | "🚀" | "📍" | "🛠️";

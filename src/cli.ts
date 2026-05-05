@@ -52,6 +52,7 @@ import { stop } from "./verbs/stop.ts";
 import { task } from "./verbs/task.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
 import { version } from "./verbs/version.ts";
+import { whip } from "./verbs/whip.ts";
 
 /**
  * Entry point — process argv (sliced past binary + script name) and
@@ -136,6 +137,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cost(argv.slice(1));
     case "doctor":
       return doctor(argv.slice(1));
+    case "whip":
+      return whip(argv.slice(1));
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,
