@@ -181,6 +181,20 @@ describe("cli.main — dispatch verb dispatch", () => {
   });
 });
 
+describe("cli.main — reply / outbox verb dispatch", () => {
+  test("'reply' with no args dispatches into reply (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["reply"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+
+  test("'outbox' with bad arg dispatches into outbox (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["outbox", "bogus"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 describe("cli.main — inbox verb dispatch", () => {
   test("'inbox' with no args dispatches into inbox (UsageError)", async () => {
     const { exit, stderr } = await captureMain(["inbox"]);

@@ -36,6 +36,7 @@ import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
 import { pause, resume } from "./verbs/pause.ts";
+import { outbox, reply } from "./verbs/reply.ts";
 import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
 import { stop } from "./verbs/stop.ts";
@@ -79,6 +80,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return attach(argv.slice(1));
     case "add-member":
       return addMember(argv.slice(1));
+    case "reply":
+      return reply(argv.slice(1));
+    case "outbox":
+      return outbox(argv.slice(1));
     case "send":
       return send(argv.slice(1));
     case "task":
