@@ -238,7 +238,13 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   }
   const target = buildMemberTarget(sessionName, memberEntry.name, memberEntry.emoji);
   const atmuxDir = await getAtmuxDir(dirOpts);
-  await sendToMember(tmux, atmuxDir, { target, member: memberEntry.name }, parsed.msg, sendOpts);
+  await sendToMember(
+    tmux,
+    atmuxDir,
+    { target, member: memberEntry.name, team: team.name },
+    parsed.msg,
+    sendOpts,
+  );
   return 0;
 }
 
@@ -265,7 +271,13 @@ async function broadcastSend(
     if (!parsed.includeDriver && m.name === "driver") continue;
     const target = buildMemberTarget(sessionName, m.name, m.emoji);
     try {
-      await sendToMember(tmux, atmuxDir, { target, member: m.name }, parsed.msg, sendOpts);
+      await sendToMember(
+        tmux,
+        atmuxDir,
+        { target, member: m.name, team: team.name },
+        parsed.msg,
+        sendOpts,
+      );
     } catch (e) {
       anyFailed = true;
       const reason = e instanceof Error ? e.message : String(e);
@@ -274,4 +286,3 @@ async function broadcastSend(
   }
   return anyFailed ? 1 : 0;
 }
-

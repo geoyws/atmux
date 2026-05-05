@@ -26,7 +26,7 @@
 import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
-import { createTmux } from "../abstractions/tmux.ts";
+import { createTmux, type SendTarget } from "../abstractions/tmux.ts";
 import {
   archiveDir,
   buildWindowName,
@@ -156,11 +156,20 @@ async function sendCancelToMembers(
 ): Promise<void> {
   // ADR-017: window names are bare member names (or emoji+name); no
   // `__<team>__` prefix. Iterate roster + build window names directly.
+  // ADR-025: tag the lead member's pane with `kind: "lead"`; everyone
+  // else `kind: "member"`. Driver pane is never targeted (it's not in
+  // the roster), so the discriminated union's type-system gate is
+  // automatic here.
   for (const m of team.members) {
     const win = buildWindowName(m.name, m.emoji);
-    const target = `${sessionName}:${win}`;
+    const tmuxTarget = `${sessionName}:${win}`;
+    const role = typeof m.role === "string" ? m.role : "member";
+    const sendTarget: SendTarget =
+      role === "team-lead"
+        ? { kind: "lead", team: team.name, target: tmuxTarget }
+        : { kind: "member", member: m.name, team: team.name, target: tmuxTarget };
     try {
-      await tmux.pane.sendKeys({ target, keys: "C-c", enter: false });
+      await tmux.pane.sendKeys({ target: sendTarget, keys: "C-c", enter: false });
     } catch {
       // expected: window may not exist (member never spawned, or
       // already-killed). Bash uses `2>/dev/null || true` here.

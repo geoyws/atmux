@@ -126,7 +126,7 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   // Bash heads-up (lib/tell.sh:43): "📬 driver-inbox has a new ask: <msg≤80>…"
   const headsUp = buildHeadsUp(parsed.msg);
   try {
-    await sendToMember(tmux, atmuxDir, { target, member: lead.name }, headsUp, {
+    await sendToMember(tmux, atmuxDir, { target, member: lead.name, team: team.name }, headsUp, {
       verify: false,
     });
   } catch (e) {

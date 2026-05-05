@@ -62,7 +62,7 @@ describe("sendToMember — happy path", () => {
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "alice" },
+      { target, member: "alice", team: "test-team" },
       "hello-from-test",
       { sleep: NO_SLEEP, verify: false },
     );
@@ -79,7 +79,7 @@ describe("sendToMember — happy path", () => {
     await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "bob" },
+      { target, member: "bob", team: "test-team" },
       "line1\nline2",
       { sleep: NO_SLEEP, verify: false },
     );
@@ -95,20 +95,14 @@ describe("sendToMember — happy path", () => {
 
   test("multiple sends append (do not truncate)", async () => {
     const { target } = await spinCatSession(`${sessionPrefix}_c`);
-    await sendToMember(
-      tmux,
-      atmuxDir,
-      { target, member: "carol" },
-      "first",
-      { sleep: NO_SLEEP, verify: false },
-    );
-    await sendToMember(
-      tmux,
-      atmuxDir,
-      { target, member: "carol" },
-      "second",
-      { sleep: NO_SLEEP, verify: false },
-    );
+    await sendToMember(tmux, atmuxDir, { target, member: "carol", team: "test-team" }, "first", {
+      sleep: NO_SLEEP,
+      verify: false,
+    });
+    await sendToMember(tmux, atmuxDir, { target, member: "carol", team: "test-team" }, "second", {
+      sleep: NO_SLEEP,
+      verify: false,
+    });
     const logPath = join(logsDir(atmuxDir), "send-carol.log");
     const log = await readFile(logPath, "utf8");
     expect(log).toContain("  | first\n");
@@ -122,7 +116,7 @@ describe("sendToMember — happy path", () => {
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "dave" },
+      { target, member: "dave", team: "test-team" },
       "x",
       { sleep: NO_SLEEP, verify: false, bufferName: "my-named-buffer" },
     );
@@ -138,7 +132,7 @@ describe("sendToMember — noSubmit", () => {
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "queued" },
+      { target, member: "queued", team: "test-team" },
       "uncommitted-line",
       { sleep: NO_SLEEP, verify: false, noSubmit: true },
     );
@@ -165,7 +159,7 @@ describe("sendToMember — verify path", () => {
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "ver" },
+      { target, member: "ver", team: "test-team" },
       "small",
       { sleep: NO_SLEEP, verify: true },
     );
@@ -182,7 +176,7 @@ describe("sendToMember — verify path", () => {
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "v2" },
+      { target, member: "v2", team: "test-team" },
       "msg-without-prompt",
       { sleep: NO_SLEEP, verify: true },
     );
@@ -196,7 +190,7 @@ describe("sendToMember — pre-send classifier", () => {
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "pre" },
+      { target, member: "pre", team: "test-team" },
       "msg",
       { sleep: NO_SLEEP, verify: false },
     );
@@ -213,15 +207,14 @@ describe("sendToMember — pre-send classifier", () => {
     const session = `${sessionPrefix}_warn_${Math.random().toString(36).slice(2, 6)}`;
     await tmux.session.newSession({
       name: session,
-      shellCommand:
-        "sh -c \"printf 'Compacting conversation…\\n' && cat\"",
+      shellCommand: "sh -c \"printf 'Compacting conversation…\\n' && cat\"",
     });
     const target = `${session}:0.0`;
     await new Promise((r) => setTimeout(r, 200));
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "compact" },
+      { target, member: "compact", team: "test-team" },
       "msg",
       { sleep: NO_SLEEP, verify: false },
     );
@@ -235,15 +228,14 @@ describe("sendToMember — pre-send classifier", () => {
     const session = `${sessionPrefix}_rl_${Math.random().toString(36).slice(2, 6)}`;
     await tmux.session.newSession({
       name: session,
-      shellCommand:
-        "sh -c \"printf 'You hit your limit, retry later\\n' && cat\"",
+      shellCommand: "sh -c \"printf 'You hit your limit, retry later\\n' && cat\"",
     });
     const target = `${session}:0.0`;
     await new Promise((r) => setTimeout(r, 200));
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "rl" },
+      { target, member: "rl", team: "test-team" },
       "msg",
       { sleep: NO_SLEEP, verify: false },
     );
@@ -261,7 +253,7 @@ describe("sendToMember — sleep injection", () => {
     const out = await sendToMember(
       tmux,
       atmuxDir,
-      { target, member: "sl" },
+      { target, member: "sl", team: "test-team" },
       "msg",
       { preSubmitDelayMs: 0, verifyDelayMs: 0, verify: true },
     );
@@ -274,13 +266,11 @@ describe("sendToMember — sleep injection", () => {
     // happened, without depending on the exact value.
     const { target } = await spinCatSession(`${sessionPrefix}_sl2`);
     const t0 = Date.now();
-    await sendToMember(
-      tmux,
-      atmuxDir,
-      { target, member: "sl2" },
-      "msg",
-      { preSubmitDelayMs: 50, verifyDelayMs: 50, verify: true },
-    );
+    await sendToMember(tmux, atmuxDir, { target, member: "sl2", team: "test-team" }, "msg", {
+      preSubmitDelayMs: 50,
+      verifyDelayMs: 50,
+      verify: true,
+    });
     expect(Date.now() - t0).toBeGreaterThanOrEqual(100); // pre + verify
   });
 });

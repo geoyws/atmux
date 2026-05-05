@@ -43,6 +43,44 @@ export function serializeTarget(t: Target): string {
   return `${t.sessionName}:${t.windowIndex}`;
 }
 
+// ---------- SendTarget — input-injection target (ADR-025) ----------
+
+/**
+ * Discriminated union for tmux input-injection targets (`sendKeys` +
+ * `pasteBuffer`). The `kind` field gates the human-REPL guarantee: the
+ * driver pane is intentionally NOT a representable kind, so a caller
+ * attempting `{ kind: "driver", ... }` triggers a compile error rather
+ * than reaching production. ADR-025 has the rationale + migration
+ * matrix + interaction with future cage / super-driver topology.
+ *
+ * Read-only methods (`capturePane`, `displayMessage`, `listPanes`,
+ * `splitWindow`, `killPane`) keep `target: Target` — the rule guards
+ * input-injection only.
+ */
+export type SendTarget =
+  | {
+      readonly kind: "member";
+      /** Member name — audit metadata, surfaces in reviewer-grep. */
+      readonly member: string;
+      /** Team name — audit metadata, namespaces the assertion. */
+      readonly team: string;
+      /** Resolved tmux target (`PaneId | WindowId | string`). */
+      readonly target: Target;
+    }
+  | {
+      readonly kind: "lead";
+      readonly team: string;
+      readonly target: Target;
+    };
+
+/** Serialize the inner tmux target — pure pass-through to
+ *  `serializeTarget`. The kind / member / team fields are inert to
+ *  argv construction; they exist solely for compile-time intent
+ *  declaration. */
+export function serializeSendTarget(t: SendTarget): string {
+  return serializeTarget(t.target);
+}
+
 // ---------- Output parsing ----------
 
 /** Split stdout into rows, drop blank trailing line, split by `\t`. */
@@ -200,7 +238,8 @@ export interface TmuxNamespace {
   };
   readonly pane: {
     sendKeys(opts: {
-      target: Target;
+      /** ADR-025: discriminated union — driver pane intentionally absent. */
+      target: SendTarget;
       keys: string;
       literal?: boolean;
       enter?: boolean;
@@ -226,7 +265,12 @@ export interface TmuxNamespace {
   };
   readonly buffer: {
     loadBuffer(opts: { name?: string; data: string }): Promise<void>;
-    pasteBuffer(opts: { name?: string; target: Target; deleteAfter?: boolean }): Promise<void>;
+    pasteBuffer(opts: {
+      name?: string;
+      /** ADR-025: discriminated union — driver pane intentionally absent. */
+      target: SendTarget;
+      deleteAfter?: boolean;
+    }): Promise<void>;
     deleteBuffer(name: string): Promise<void>;
   };
   readonly client: {
@@ -421,9 +465,10 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
     // ============== pane ==============
 
     pane: {
-      /** `tmux send-keys -t <target> [-l] <keys> [Enter]`. */
+      /** `tmux send-keys -t <target> [-l] <keys> [Enter]`.
+       *  `target: SendTarget` — driver pane is type-banned per ADR-025. */
       async sendKeys(opts) {
-        const argv = ["send-keys", "-t", serializeTarget(opts.target)];
+        const argv = ["send-keys", "-t", serializeSendTarget(opts.target)];
         if (opts.literal) argv.push("-l");
         argv.push(opts.keys);
         if (opts.enter ?? true) argv.push("Enter");
@@ -528,12 +573,13 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
         }
       },
 
-      /** `tmux paste-buffer [-b <name>] [-d] -t <target>`. */
+      /** `tmux paste-buffer [-b <name>] [-d] -t <target>`.
+       *  `target: SendTarget` — driver pane is type-banned per ADR-025. */
       async pasteBuffer(opts) {
         const argv = ["paste-buffer"];
         if (opts.name) argv.push("-b", opts.name);
         if (opts.deleteAfter) argv.push("-d");
-        argv.push("-t", serializeTarget(opts.target));
+        argv.push("-t", serializeSendTarget(opts.target));
         await tmuxRun(argv);
       },
 

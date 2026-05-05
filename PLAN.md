@@ -181,7 +181,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | R-3 | Add §6.2 stable-ID checklist to PLAN.md | ✅ done |
 | R-4 | Drop TaskList refs from HANDOFF.md, link to §6.2 | ⏳ pending |
 | R-5 | ADR-020 — `Writer` abstraction + `core/io.ts` (lift duplicated default writers) | ✅ done |
-| R-6 | ADR-025 — `SendTarget` discriminated union (compile-time enforce "no send-keys to driver pane"); refactor `tmux.sendKeys` + `tmux.pasteBuffer` + 3 callers (rotate, send, stop) | ⏳ pending |
+| R-6 | ADR-025 — `SendTarget` discriminated union (compile-time enforce "no send-keys to driver pane"); refactor `tmux.sendKeys` + `tmux.pasteBuffer` + 3 callers (rotate, send, stop) | ✅ done |
 
 **Recommended next-batch order:** R-3 → R-4 → R-1 → R-2 → V-23 → V-20 → V-21 → V-22 → V-24 → R-5 → V-25 → V-01. Doctor before whip because whip calls into doctor in some flows. R-5 (Writer abstraction, ADR-020) lands before V-25 so whip writes against the canonical signature. **V-26 `session` + V-27 `team` are Phase-4 (post-cutover) per ADR-021** — paths canonicalized in ADR-021 so V-25 + V-01 use them from day one.
 

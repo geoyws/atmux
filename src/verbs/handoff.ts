@@ -426,9 +426,13 @@ export async function handoff(
   ) {
     const ask = buildHandoffNoteAsk(handoffFile);
     try {
-      await sendToMember(tmux, atmuxDir, { target: fromTarget, member: parsed.from }, ask, {
-        verify: false,
-      });
+      await sendToMember(
+        tmux,
+        atmuxDir,
+        { target: fromTarget, member: parsed.from, team: team.name },
+        ask,
+        { verify: false },
+      );
       const waitSec = resolveWaitSeconds(opts);
       const poller = opts.pollFile ?? pollForFile;
       nativeOk = await poller(handoffFile, waitSec * 1_000, 1_000);
@@ -489,9 +493,13 @@ export async function handoff(
   });
   if (await windowExists(tmux, sessionName, buildWindowName(toMember.name, toMember.emoji))) {
     try {
-      await sendToMember(tmux, atmuxDir, { target: toTarget, member: parsed.to }, briefBody, {
-        verify: false,
-      });
+      await sendToMember(
+        tmux,
+        atmuxDir,
+        { target: toTarget, member: parsed.to, team: team.name },
+        briefBody,
+        { verify: false },
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       stderr(`atmux: warn: handoff: ping to ${parsed.to} failed: ${msg}\n`);

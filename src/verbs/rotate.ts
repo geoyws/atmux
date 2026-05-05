@@ -11,7 +11,7 @@
 
 import { resolve } from "node:path";
 import { exists } from "../abstractions/fs.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, type SendTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
   getAtmuxDir,
@@ -211,10 +211,20 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
   const stdout = opts.stdout ?? defaultStdoutWrite;
   const stderr = opts.stderr ?? defaultStderrWrite;
 
+  // ADR-025 SendTarget: encode "this is a member or lead pane, NOT a
+  // driver pane". `kind: "lead"` for the team-lead role (rotate-lead
+  // path); `kind: "member"` otherwise. The compile-time gate is the
+  // discriminated union; the audit metadata (member/team) makes the
+  // intent reviewer-greppable.
+  const sendTarget: SendTarget =
+    role === "team-lead"
+      ? { kind: "lead", team: team.name, target: tmuxTarget }
+      : { kind: "member", member: target.name, team: team.name, target: tmuxTarget };
+
   // 1. /clear for claude — best-effort warn for other TUIs (parity
   //    with bash rotate.sh:47-55).
   if (tui === "claude") {
-    await tmux.pane.sendKeys({ target: tmuxTarget, keys: "/clear", enter: true });
+    await tmux.pane.sendKeys({ target: sendTarget, keys: "/clear", enter: true });
     await sleep(2_000);
   } else {
     stderr(`rotate: tui=${tui} has no /clear equivalent — will re-paste brief only\n`);
@@ -237,11 +247,11 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
     await tmux.buffer.loadBuffer({ name: bufferName, data: body });
     await tmux.buffer.pasteBuffer({
       name: bufferName,
-      target: tmuxTarget,
+      target: sendTarget,
       deleteAfter: true,
     });
     await sleep(1_000);
-    await tmux.pane.sendKeys({ target: tmuxTarget, keys: "Enter", enter: false });
+    await tmux.pane.sendKeys({ target: sendTarget, keys: "Enter", enter: false });
   }
 
   stdout(`rotated ${target.name} (role=${role}, tui=${tui})\n`);

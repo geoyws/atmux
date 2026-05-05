@@ -46,7 +46,7 @@
 import { join } from "node:path";
 import { appendText, ensureDir } from "../abstractions/fs.ts";
 import { nowIso } from "../abstractions/time.ts";
-import type { TmuxNamespace } from "../abstractions/tmux.ts";
+import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
 import { classifyPaneState, logsDir, type PaneStateSnapshot } from "./common.ts";
 
 // ---------- Public API ----------
@@ -79,13 +79,33 @@ export interface SendOpts {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export interface SendTarget {
+/**
+ * Delivery address for the per-member send pipeline. Carries the tmux
+ * target string + the member-name slug for log filename + the team
+ * name (for the abstraction's ADR-025 SendTarget construction).
+ *
+ * Renamed from `SendTarget` (R-6 / ADR-025) to disambiguate from the
+ * abstraction-layer `SendTarget` discriminated union. The two are
+ * related but distinct: this is the *call-site argument shape* for
+ * `sendToMember`; the abstraction's `SendTarget` is the *type-system
+ * gate* for `tmux.pane.sendKeys` / `tmux.buffer.pasteBuffer`. Inside
+ * `sendToMember`, this is converted to the abstraction's shape with
+ * `kind: "member"` (the lead is also a roster member; callsites that
+ * want the `kind: "lead"` audit tag construct the abstraction's
+ * SendTarget directly rather than routing through this pipeline).
+ */
+export interface MemberDeliveryTarget {
   /** tmux target spec. Built by the verb via
    *  `serializeTarget(...)` or `getSessionName + buildWindowName`. */
   target: string;
   /** Member name — used as the logging filename component
-   *  (`<atmuxDir>/logs/send-<member>.log`). */
+   *  (`<atmuxDir>/logs/send-<member>.log`) AND as the audit-metadata
+   *  field on the abstraction's SendTarget. */
   member: string;
+  /** Team name — audit-metadata field on the abstraction's SendTarget
+   *  (per ADR-025). The verb-layer caller has it in scope already; we
+   *  thread it through rather than re-resolving inside the core lib. */
+  team: string;
 }
 
 export interface SendOutcome {
@@ -118,10 +138,24 @@ export interface SendOutcome {
 export async function sendToMember(
   tmux: TmuxNamespace,
   atmuxDir: string,
-  target: SendTarget,
+  target: MemberDeliveryTarget,
   msg: string,
   opts?: SendOpts,
 ): Promise<SendOutcome> {
+  // ADR-025 SendTarget: lift the call-site delivery address into the
+  // abstraction's discriminated-union shape. Always `kind: "member"`
+  // here — the lead pane IS a roster member from this lib's perspective
+  // (the `kind: "lead"` audit tag is for callsites that explicitly
+  // address the lead role and want it surfaced in reviewer-grep, like
+  // `rotate-lead` and `stop`). The compile-time gate ("driver pane
+  // banned") is what's load-bearing; the kind discrimination is audit
+  // metadata.
+  const sendTarget: SendTarget = {
+    kind: "member",
+    member: target.member,
+    team: target.team,
+    target: target.target,
+  };
   const sleep = opts?.sleep ?? defaultSleep;
   const verify = opts?.verify ?? true;
   const noSubmit = opts?.noSubmit ?? false;
@@ -146,7 +180,7 @@ export async function sendToMember(
   await tmux.buffer.loadBuffer({ name: bufferName, data: msg });
   await tmux.buffer.pasteBuffer({
     name: bufferName,
-    target: target.target,
+    target: sendTarget,
     deleteAfter: true,
   });
 
@@ -162,7 +196,7 @@ export async function sendToMember(
   //    second Enter (`send-keys -t <target> Enter Enter`).
   await sleep(preSubmitDelayMs);
   await tmux.pane.sendKeys({
-    target: target.target,
+    target: sendTarget,
     keys: "Enter",
     enter: false,
   });

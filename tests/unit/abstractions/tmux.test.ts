@@ -27,6 +27,8 @@ import {
   parseSplitWindowIdsOrThrow,
   parseTabular,
   parseWindowIndexOrThrow,
+  type SendTarget,
+  serializeSendTarget,
   serializeTarget,
   type TmuxNamespace,
 } from "../../../src/abstractions/tmux.ts";
@@ -332,7 +334,12 @@ describe("pane operations", () => {
     const name = `${sessionPrefix}_pane`;
     await tmux.session.newSession({ name, shellCommand: "cat" });
     await tmux.pane.sendKeys({
-      target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      target: {
+        kind: "member",
+        member: "test-member",
+        team: "test-team",
+        target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      },
       keys: "hello-from-test",
     });
     // Allow tmux/cat to echo back.
@@ -348,7 +355,12 @@ describe("pane operations", () => {
     const name = `${sessionPrefix}_lit`;
     await tmux.session.newSession({ name, shellCommand: "cat" });
     await tmux.pane.sendKeys({
-      target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      target: {
+        kind: "member",
+        member: "test-member",
+        team: "test-team",
+        target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      },
       keys: "C-c-literal-text",
       literal: true,
       enter: false,
@@ -454,7 +466,12 @@ describe("buffer operations", () => {
     await tmux.buffer.loadBuffer({ name: buf, data: "loaded-content" });
     await tmux.buffer.pasteBuffer({
       name: buf,
-      target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      target: {
+        kind: "member",
+        member: "test-member",
+        team: "test-team",
+        target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      },
       deleteAfter: true,
     });
     await new Promise((r) => setTimeout(r, 100));
@@ -478,7 +495,12 @@ describe("buffer operations", () => {
     await tmux.session.newSession({ name, shellCommand: "cat" });
     await tmux.buffer.loadBuffer({ data: "default-buf-data" });
     await tmux.buffer.pasteBuffer({
-      target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      target: {
+        kind: "member",
+        member: "test-member",
+        team: "test-team",
+        target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      },
     });
     await new Promise((r) => setTimeout(r, 100));
     const captured = await tmux.pane.capturePane({
@@ -587,5 +609,52 @@ describe("error mapping", () => {
     await expect(
       tmux.session.killSession("definitely-no-such-session-foo-bar"),
     ).rejects.toBeInstanceOf(TmuxError);
+  });
+});
+
+// ---------- ADR-025: SendTarget compile-time gate ----------
+//
+// "Driver" kind is intentionally absent from `SendTarget`. Any caller
+// attempting `{ kind: "driver", ... }` triggers a compile error at the
+// source — the discriminated union is the load-bearing gate, not a
+// runtime check. The `// @ts-expect-error` directive below ASSERTS
+// that the line under it fails to typecheck. If the union is ever
+// widened to admit `"driver"`, the directive itself becomes a TS2578
+// "Unused @ts-expect-error directive" error → tsc fails the build.
+// The directive IS the gate.
+//
+// `serializeSendTarget` round-trip for the two valid kinds is also
+// asserted here — covers the function-coverage requirement on the
+// helper without needing a live tmux call.
+
+describe("ADR-025 — SendTarget compile-time gate", () => {
+  test("driver kind is intentionally absent from SendTarget", () => {
+    // The wrapper accepts SendTarget, so the kind-mismatch error fires
+    // inside the call expression. The `@ts-expect-error` directive
+    // immediately above MUST be consumed by that error, otherwise tsc
+    // emits TS2578 (Unused '@ts-expect-error') and the build fails —
+    // which is exactly the gate ADR-025 §5 specifies.
+    const accept = (t: SendTarget): SendTarget => t;
+    // @ts-expect-error — driver kind is absent from the discriminated union (ADR-025)
+    const _banned = accept({ kind: "driver", team: "demo", target: "atmux-demo:lead" });
+    // _banned is intentionally unused; the typecheck IS the assertion.
+    void _banned;
+    expect(true).toBe(true);
+  });
+
+  test("serializeSendTarget round-trips both valid kinds", () => {
+    const memberTarget: SendTarget = {
+      kind: "member",
+      member: "alice",
+      team: "demo",
+      target: "atmux-demo:🐝alice",
+    };
+    expect(serializeSendTarget(memberTarget)).toBe("atmux-demo:🐝alice");
+    const leadTarget: SendTarget = {
+      kind: "lead",
+      team: "demo",
+      target: { sessionName: "atmux-demo", windowIndex: 0, paneIndex: 0 },
+    };
+    expect(serializeSendTarget(leadTarget)).toBe("atmux-demo:0.0");
   });
 });

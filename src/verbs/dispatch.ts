@@ -172,7 +172,7 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       await sendToMember(
         tmux,
         atmuxDir,
-        { target, member: parsed.member },
+        { target, member: parsed.member, team: team.name },
         ping,
         // Bash passes `0 0` (no-submit=0, verify=0) — submit + skip-verify.
         { verify: false },

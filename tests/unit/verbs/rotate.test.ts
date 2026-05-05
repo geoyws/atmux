@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { serializeSendTarget, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   defaultBriefsDir,
@@ -220,9 +220,15 @@ function stubTmux(opts: {
       },
     },
     pane: {
-      async sendKeys(o: { target: unknown; keys: string; enter?: boolean }) {
+      // ADR-025: o.target is now SendTarget. Unwrap via serializeSendTarget
+      // so existing string-equality assertions stay byte-identical.
+      async sendKeys(o: {
+        target: import("../../../src/abstractions/tmux.ts").SendTarget;
+        keys: string;
+        enter?: boolean;
+      }) {
         calls.sendKeys.push({
-          target: String(o.target),
+          target: serializeSendTarget(o.target),
           keys: o.keys,
           enter: o.enter,
         });
@@ -232,10 +238,14 @@ function stubTmux(opts: {
       async loadBuffer(o: { name?: string; data: string }) {
         calls.loadBuffer.push({ name: o.name, data: o.data });
       },
-      async pasteBuffer(o: { name?: string; target: unknown; deleteAfter?: boolean }) {
+      async pasteBuffer(o: {
+        name?: string;
+        target: import("../../../src/abstractions/tmux.ts").SendTarget;
+        deleteAfter?: boolean;
+      }) {
         calls.pasteBuffer.push({
           name: o.name,
-          target: String(o.target),
+          target: serializeSendTarget(o.target),
           deleteAfter: o.deleteAfter,
         });
       },
