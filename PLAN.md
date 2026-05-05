@@ -236,7 +236,8 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | **024** | **Spawned-agent account matching — team members must run on driver's claude account; no cross-account spawns** | 2 | driver |
 | **025** | **`SendTarget` discriminated union — compile-time enforce "no send-keys to driver pane" (R-6 design)** | 2 | driver |
 | **026** | **Parity matrix iter-1 scope (refs ADR-009 §3) — matrix wire-up + lifecycle preset + 4 state-mutating verb rows; multi-team / cron / remaining 16 verbs / CI gate / lcov-gate harness deferred to iter 2+** | 3 | driver |
-| 027+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 + Phase 3 iter-2+ | 2/3 | porters |
+| **027** | **Parity channel-mask contract (Option B per George 2026-05-05) — per-row, per-channel mask config (`exitCode` / `stdout` / `stderr` / `stateAfter`) for stylistic divergence (error-rendering + state-after non-determinism); semantic divergence still gated** | 3 | driver |
+| 028+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 + Phase 3 iter-2+ | 2/3 | porters |
 
 ---
 
