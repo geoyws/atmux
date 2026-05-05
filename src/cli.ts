@@ -32,6 +32,7 @@ import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./erro
 import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
 import { init } from "./verbs/init.ts";
+import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
 import { version } from "./verbs/version.ts";
 
@@ -70,6 +71,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return attach(argv.slice(1));
     case "add-member":
       return addMember(argv.slice(1));
+    case "send":
+      return send(argv.slice(1));
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,

@@ -126,6 +126,20 @@ describe("cli.main — add-member verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — send verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/send.test.ts) ----------
+
+describe("cli.main — send verb dispatch", () => {
+  test("'send' with no args dispatches into send (UsageError)", async () => {
+    // parseSendArgs throws UsageError when the member positional is
+    // missing — exit 64. Pins the `case "send":` line; deep verb
+    // behaviour lives in tests/unit/verbs/send.test.ts.
+    const { exit, stderr } = await captureMain(["send"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 // ---------- Dispatch — start verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/start.test.ts) ----------
 
