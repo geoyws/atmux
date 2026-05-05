@@ -184,6 +184,19 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 
 When updating this checklist, flip the Status column **only** — never renumber. Stale rows (e.g. V-* shipped but PLAN.md not refreshed) should be amended in a small `docs(plan)` commit alongside the verb's `feat(verbs)` commit.
 
+### 6.3 Integration tasks — atmux ↔ `/coordination:*` skills (ADR-018)
+
+Pin the contract with the Claude skills plugin (`~/.claude/skills/coordination/`). Immediate items I-1 + I-2 land alongside or before V-25 (whip); items I-3 + I-4 are deferred until V-25's design surfaces real constraints.
+
+| Integration-ID | Title | Wave | Status |
+|---|---|---|---|
+| I-1 | Lead-uptime marker `~/.claude/teams/<team>/lead-session-start.txt` (write on lead spawn / rotate-lead, clear on stop) | immediate | ⏳ pending |
+| I-2 | Window-name detection: marker file `~/.claude/teams/<team>/lead-window-name.txt` + `atmux which <kind> [name]` subcommand | immediate | ⏳ pending |
+| I-3 | Driver-inbox path alignment (`.atmux/driver-inbox.md` ↔ `~/.claude/teams/<team>/driver-inbox.md`) — pick canonical | deferred (V-25) | ⏳ pending |
+| I-4 | `/coordination:team` skill shim — atmux as the runtime backend for `/team start|stop|cleanup|rotate-lead` | deferred (V-25) | ⏳ pending |
+
+I-* IDs (like R-* and V-*) are stable across `/clear` cycles; flip Status only, never renumber.
+
 ---
 
 ## 7. ADR backlog (`docs/adr-bun/`)
@@ -206,7 +219,11 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | 012 | Time + timezone handling (MYT discipline, UTC internals) | 0 | architect |
 | 013 | WIP-bash deferral (super-*, drive, migrate, socket-pubsub deferred to Phase 5) | 0 | lead |
 | **014** | **Verb design debt — deferred v2 redesign (Phase 6)** | 0 | lead |
-| 015+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
+| 015 | Team members work in isolated git worktrees by default (Phase 6 / v2) | 2 | architect |
+| 016 | Schema version field deferred until v2 | 2 | architect |
+| 017 | tmux window naming — drop `__<team>__` prefix | 2 | porter-foundation-3 |
+| **018** | **`/coordination:*` skills integration contract (window naming / marker files / inbox paths / `/team` shim)** | 2 | driver |
+| 019+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
 
 ---
 
