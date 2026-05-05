@@ -63,10 +63,21 @@ Detailed verb listing + LOC counts + bash-source paths: see **`PLAN.md` §6.2**.
 - New tmux session: `cockpit` · Window 0 = `superdriver` running Claude Opus 4.7 with xhigh effort, on the **`c-ic`** account
 - Reattach: `tmux attach -t cockpit`
 
-**Account routing for future agent spawns:** see `~/.claude-icloud/CLAUDE.md`. Spawn pattern:
+**Account routing for future agent spawns — match the driver's account per ADR-024.** Each cont detects the driver's `CLAUDE_CONFIG_DIR` and substitutes the matching wrapper. Spawn pattern (driver substitutes its own wrapper):
+
 ```bash
-CLAUDE_GUARD_AGENT=1 c-ic --permission-mode dontAsk --model claude-opus-4-7
+# Detect driver wrapper:
+case "${CLAUDE_CONFIG_DIR:-$(realpath ~/.claude 2>/dev/null)}" in
+  */.claude-unum*)    DRIVER_WRAPPER="c-u" ;;
+  */.claude-icloud*)  DRIVER_WRAPPER="c-ic" ;;
+  *)                  DRIVER_WRAPPER="claude" ;;
+esac
+
+# Spawn:
+CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode dontAsk --model claude-opus-4-7
 ```
+
+Never copy a hardcoded `c-ic` or `c-u` from a stale handoff — cross-account spawn trips Anthropic ToS flags + breaks cost/session-state observability. See ADR-024 for the full rule + V-25 whip-side enforcement.
 
 ---
 

@@ -232,7 +232,8 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | **021** | **atmux as runtime for `/coordination:session` + `/coordination:team` skills — verb contract** (V-26 + V-27 schedule, path canonicalization, I-3 + I-4 collapse) | 2 | driver |
 | **022** | **`whip` verb (V-25) port scope — in-scope subset + deferred bash-only checks** | 2 | driver |
 | **023** | **LLM judge cascade — Sonnet → Haiku → deterministic fallback (resilience contract for SOFT classifier + future judge call sites)** | 2 | driver |
-| 024+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
+| **024** | **Spawned-agent account matching — team members must run on driver's claude account; no cross-account spawns** | 2 | driver |
+| 025+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
 
 ---
 
