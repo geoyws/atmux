@@ -166,7 +166,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | V-20 | `handoff` | `lib/handoff.sh` | 135 | ⏳ pending |
 | V-21 | `report` | `lib/report.sh` | 84 | ⏳ pending |
 | V-22 | `cost` | `lib/cost.sh` | 170 | ⏳ pending |
-| V-23 | `rotate` / `rotate-lead` | `lib/rotate.sh` | 81 | ⏳ pending |
+| V-23 | `rotate` / `rotate-lead` | `lib/rotate.sh` | 81 | ✅ shipped |
 | V-24 | `doctor` | `lib/doctor.sh` | 355 | ⏳ pending |
 | V-25 | `whip` | `lib/whip.sh` | 218 | ⏳ pending |
 
@@ -174,8 +174,8 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 
 | Refactor-ID | Title | Status |
 |---|---|---|
-| R-1 | Extract `tests/helpers/capture.ts` (`captureStdout` / `captureMain`) | ⏳ pending |
-| R-2 | Lift `getDefaultSocket(team)` → `core/common.ts` | ⏳ pending |
+| R-1 | Extract `tests/helpers/capture.ts` (`captureStdout` / `captureMain`) | ✅ done |
+| R-2 | Lift `getDefaultSocket(team)` → `core/common.ts` | ✅ done |
 | R-3 | Add §6.2 stable-ID checklist to PLAN.md | ✅ done |
 | R-4 | Drop TaskList refs from HANDOFF.md, link to §6.2 | ⏳ pending |
 | R-5 | ADR-015 — `Writer` interface for verb signatures (between Phase-2 close and Phase-3) | ⏳ pending |

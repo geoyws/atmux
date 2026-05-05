@@ -40,6 +40,7 @@ import { init } from "./verbs/init.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
 import { outbox, reply } from "./verbs/reply.ts";
+import { rotate, rotateLead } from "./verbs/rotate.ts";
 import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
@@ -119,6 +120,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return dashboard(argv.slice(1));
     case "reconfigure":
       return reconfigure(argv.slice(1));
+    case "rotate":
+      return rotate(argv.slice(1));
+    case "rotate-lead":
+      return rotateLead(argv.slice(1));
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,
