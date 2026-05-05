@@ -45,9 +45,11 @@ describe("parity: version (first operational stub per PLAN.md §14)", () => {
 
   test("bash and ts both emit `atmux 0.3.0`, exit 0, no state, no discord", async () => {
     // Run both sides in parallel against the same fresh fixture cwd.
-    // The version verb doesn't read/write `.atmux/` so parallel is safe;
-    // verbs that touch state will need sequential runs against separate
-    // fixture clones (Phase 2 harness expansion).
+    // The version verb doesn't read/write `.atmux/` so parallel is safe.
+    // State-mutating verbs use the matrix-driven dispatcher in
+    // `index.test.ts`, which clones the fixture per-side before each
+    // pair (ADR-027 commit 3) — this standalone file keeps the
+    // shared-cwd shape for the read-only happy path.
     const [bash, ts] = await Promise.all([
       runVerb("bash", "version", [], fixture.path),
       runVerb("ts", "version", [], fixture.path),
