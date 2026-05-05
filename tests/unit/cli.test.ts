@@ -173,6 +173,14 @@ describe("cli.main — done verb dispatch", () => {
   });
 });
 
+describe("cli.main — dispatch verb dispatch", () => {
+  test("'dispatch' with no args dispatches into dispatch (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["dispatch"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 // ---------- Dispatch — start verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/start.test.ts) ----------
 
