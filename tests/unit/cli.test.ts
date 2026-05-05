@@ -181,6 +181,20 @@ describe("cli.main — dispatch verb dispatch", () => {
   });
 });
 
+describe("cli.main — pause/resume verb dispatch", () => {
+  test("'pause' with no args dispatches into pause (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["pause"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+
+  test("'resume' with no args dispatches into resume (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["resume"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 // ---------- Dispatch — start verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/start.test.ts) ----------
 
