@@ -31,6 +31,7 @@
 import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./errors.ts";
 import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
+import { claim, done } from "./verbs/claim.ts";
 import { init } from "./verbs/init.ts";
 import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
@@ -76,6 +77,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return send(argv.slice(1));
     case "task":
       return task(argv.slice(1));
+    case "claim":
+      return claim(argv.slice(1));
+    case "done":
+      return done(argv.slice(1));
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,

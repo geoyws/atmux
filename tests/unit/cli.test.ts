@@ -154,6 +154,25 @@ describe("cli.main — task verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — claim / done verb routes (smoke; deep behaviour
+//                       in tests/unit/verbs/claim.test.ts) ----------
+
+describe("cli.main — claim verb dispatch", () => {
+  test("'claim' with no args dispatches into claim (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["claim"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+describe("cli.main — done verb dispatch", () => {
+  test("'done' with no args dispatches into done (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["done"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 // ---------- Dispatch — start verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/start.test.ts) ----------
 
