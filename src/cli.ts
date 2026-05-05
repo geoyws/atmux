@@ -37,6 +37,7 @@ import { init } from "./verbs/init.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
+import { stop } from "./verbs/stop.ts";
 import { task } from "./verbs/task.ts";
 import { version } from "./verbs/version.ts";
 
@@ -71,6 +72,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return init(argv.slice(1));
     case "start":
       return start(argv.slice(1));
+    case "stop":
+      return stop(argv.slice(1));
     case "attach":
       return attach(argv.slice(1));
     case "add-member":

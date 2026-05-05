@@ -181,6 +181,14 @@ describe("cli.main — dispatch verb dispatch", () => {
   });
 });
 
+describe("cli.main — stop verb dispatch", () => {
+  test("'stop bogus' dispatches into stop (UsageError on unknown arg)", async () => {
+    const { exit, stderr } = await captureMain(["stop", "bogus"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 describe("cli.main — pause/resume verb dispatch", () => {
   test("'pause' with no args dispatches into pause (UsageError)", async () => {
     const { exit, stderr } = await captureMain(["pause"]);
