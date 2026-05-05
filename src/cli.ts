@@ -35,6 +35,7 @@ import { claim, done } from "./verbs/claim.ts";
 import { cost } from "./verbs/cost.ts";
 import { dashboard } from "./verbs/dashboard.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
+import { doctor } from "./verbs/doctor.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { help } from "./verbs/help.ts";
 import { inbox } from "./verbs/inbox.ts";
@@ -133,6 +134,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return report(argv.slice(1));
     case "cost":
       return cost(argv.slice(1));
+    case "doctor":
+      return doctor(argv.slice(1));
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,

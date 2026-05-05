@@ -167,7 +167,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | V-21 | `report` | `lib/report.sh` | 84 | ✅ shipped |
 | V-22 | `cost` | `lib/cost.sh` | 170 | ✅ shipped |
 | V-23 | `rotate` / `rotate-lead` | `lib/rotate.sh` | 81 | ✅ shipped |
-| V-24 | `doctor` | `lib/doctor.sh` | 355 | ⏳ pending |
+| V-24 | `doctor` | `lib/doctor.sh` | 355 | ✅ shipped (in-scope subset per ADR-019) |
 | V-25 | `whip` | `lib/whip.sh` | 218 | ⏳ pending |
 
 **Cross-cutting refactor IDs** (R-* — interleave with porting):

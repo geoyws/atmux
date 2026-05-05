@@ -162,6 +162,32 @@ export async function isReachable(
   }
 }
 
+/** Convenience: GET probe that returns the HTTP status code, or `0` on
+ *  network/timeout failure. Mirrors bash `curl -sS -o /dev/null -w '%{http_code}'
+ *  || echo 000`. Doctor's webhook check uses this — Discord returns 405 on
+ *  GET (not 2xx), so `isReachable` returns false even though the webhook IS
+ *  reachable; doctor needs the status code to distinguish 405 (green:
+ *  "rejected method, but reached") from 000 (red: "DNS / connection
+ *  failure") and 4xx-other (red: "webhook rejected — likely revoked"). */
+export async function probeStatus(
+  url: string,
+  opts?: Omit<HttpRequestOpts, "url" | "method" | "body" | "expectStatus" | "retry">,
+): Promise<number> {
+  try {
+    const r = await request({
+      ...opts,
+      url,
+      method: "GET",
+      expectStatus: { min: 0, max: 999 },
+    });
+    return r.status;
+  } catch (e) {
+    if (e instanceof HttpError) return 0; // network failure (status=0 on the error)
+    if (e instanceof HttpTimeoutError) return 0; // timeout = unreachable
+    throw e;
+  }
+}
+
 /**
  * Convenience: POST with JSON body + `Content-Type: application/json`.
  * Caller passes a value; we serialize via `JSON.stringify`. (R3 gates

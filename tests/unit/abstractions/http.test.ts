@@ -1,8 +1,14 @@
 // Unit tests for src/abstractions/http.ts (ADR-003).
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  HttpError,
+  isReachable,
+  postJson,
+  probeStatus,
+  request,
+} from "../../../src/abstractions/http.ts";
 import { ConfigError } from "../../../src/errors.ts";
-import { HttpError, isReachable, postJson, request } from "../../../src/abstractions/http.ts";
 
 // ---------- Local test server ----------
 
@@ -310,6 +316,34 @@ describe("isReachable", () => {
     let caught: Error | null = null;
     try {
       await isReachable("not-a-url");
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught?.constructor.name).toBe("ConfigError");
+  });
+});
+
+describe("probeStatus", () => {
+  test("returns 200 on a 2xx response", async () => {
+    expect(await probeStatus(server.url("/ok"))).toBe(200);
+  });
+
+  test("returns the 4xx status code (Discord webhook 405-on-GET pattern)", async () => {
+    expect(await probeStatus(server.url("/404"))).toBe(404);
+  });
+
+  test("returns 0 on network failure (connection refused)", async () => {
+    expect(await probeStatus("http://127.0.0.1:1/never")).toBe(0);
+  });
+
+  test("returns 0 on timeout (HttpTimeoutError swallowed)", async () => {
+    expect(await probeStatus(server.url("/slow"), { timeoutMs: 50 })).toBe(0);
+  });
+
+  test("re-throws non-Http errors (e.g. ConfigError on bad URL)", async () => {
+    let caught: Error | null = null;
+    try {
+      await probeStatus("not-a-url");
     } catch (e) {
       caught = e as Error;
     }

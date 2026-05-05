@@ -21,6 +21,7 @@
 
 import { appendFile } from "node:fs/promises";
 import { ConfigError, DiscordWebhookError } from "../errors.ts";
+import { readTextOrNull } from "./fs.ts";
 import { spawn } from "./spawn.ts";
 import { formatMyt, now, nowIso } from "./time.ts";
 
@@ -372,6 +373,60 @@ async function directFetch(
       detail: "direct-fetch non-2xx",
     });
   }
+}
+
+// ---------- Webhook resolution ----------
+
+export interface ResolveWebhookOpts {
+  /** Process env override (test injection). Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /** Pre-loaded team object — `team.discord.webhook` is consulted second
+   *  in the resolution chain. Pass `undefined` to skip the team-json step. */
+  team?: { discord?: unknown };
+}
+
+/**
+ * Resolve the Discord webhook URL per the bash `atmux::discord_resolve_webhook`
+ * cascade:
+ *
+ *   1. `$ATMUX_DISCORD_WEBHOOK` env var
+ *   2. `team.discord.webhook` (when caller passes the team)
+ *   3. `${XDG_CONFIG_HOME:-$HOME/.config}/atmux/discord-webhook` file (trimmed)
+ *
+ * Returns `null` when no source resolves a non-empty value. Mirrors the
+ * V-24 doctor + V-25 whip + future report cross-link consumers (see
+ * ADR-019 + ADR-008 §"Routing"); `discord.send`'s `directFetch` reads
+ * env directly today, but that's the lower-level fallback path —
+ * `resolveWebhookUrl` is the canonical resolution helper.
+ */
+export async function resolveWebhookUrl(opts: ResolveWebhookOpts = {}): Promise<string | null> {
+  const env = opts.env ?? process.env;
+
+  // 1. env
+  const fromEnv = env.ATMUX_DISCORD_WEBHOOK;
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+
+  // 2. team.discord.webhook
+  if (opts.team !== undefined) {
+    const d = opts.team.discord;
+    if (d !== undefined && d !== null && typeof d === "object") {
+      const w = (d as Record<string, unknown>).webhook;
+      if (typeof w === "string" && w.length > 0) return w;
+    }
+  }
+
+  // 3. XDG file
+  const xdg = env.XDG_CONFIG_HOME;
+  const home = env.HOME ?? "";
+  const base = xdg !== undefined && xdg !== "" ? xdg : `${home}/.config`;
+  const filePath = `${base}/atmux/discord-webhook`;
+  const text = await readTextOrNull(filePath);
+  if (text !== null) {
+    const trimmed = text.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+
+  return null;
 }
 
 // ---------- Test hooks ----------

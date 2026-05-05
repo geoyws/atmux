@@ -10,13 +10,14 @@
 //     ConfigError on no-webhook-no-script, DiscordWebhookError on non-2xx)
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   _resetFallbackWarnedForTest,
   type DiscordSection,
   type DiscordSendOpts,
+  resolveWebhookUrl,
   send,
 } from "../../../src/abstractions/discord.ts";
 import { ConfigError, DiscordWebhookError } from "../../../src/errors.ts";
@@ -549,5 +550,116 @@ describe("routing — direct-fetch fallback", () => {
     // which doesn't exist → fallback fires → fetch succeeds.
     await send(bullets({ bullets: ["✅ no-home"] }));
     expect(lastRequest?.body).toContain("✅ no-home");
+  });
+});
+
+describe("resolveWebhookUrl", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "atmux-resolve-webhook-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("env var wins over team.json + xdg file", async () => {
+    await mkdir(join(dir, ".config", "atmux"), { recursive: true });
+    await writeFile(join(dir, ".config", "atmux", "discord-webhook"), "from-file\n");
+    const got = await resolveWebhookUrl({
+      env: { ATMUX_DISCORD_WEBHOOK: "from-env", HOME: dir },
+      team: { discord: { webhook: "from-team" } },
+    });
+    expect(got).toBe("from-env");
+  });
+
+  test("team.json discord.webhook wins over xdg file when env empty", async () => {
+    await mkdir(join(dir, ".config", "atmux"), { recursive: true });
+    await writeFile(join(dir, ".config", "atmux", "discord-webhook"), "from-file\n");
+    const got = await resolveWebhookUrl({
+      env: { HOME: dir },
+      team: { discord: { webhook: "from-team" } },
+    });
+    expect(got).toBe("from-team");
+  });
+
+  test("xdg file when env + team are empty", async () => {
+    await mkdir(join(dir, ".config", "atmux"), { recursive: true });
+    await writeFile(join(dir, ".config", "atmux", "discord-webhook"), "  from-file  \n");
+    const got = await resolveWebhookUrl({ env: { HOME: dir } });
+    expect(got).toBe("from-file");
+  });
+
+  test("XDG_CONFIG_HOME respected over $HOME/.config", async () => {
+    const xdg = join(dir, "custom-xdg");
+    await mkdir(join(xdg, "atmux"), { recursive: true });
+    await writeFile(join(xdg, "atmux", "discord-webhook"), "from-xdg\n");
+    const got = await resolveWebhookUrl({
+      env: { XDG_CONFIG_HOME: xdg, HOME: dir },
+    });
+    expect(got).toBe("from-xdg");
+  });
+
+  test("returns null when env unset, no team, no xdg file", async () => {
+    expect(await resolveWebhookUrl({ env: { HOME: dir } })).toBeNull();
+  });
+
+  test("empty env value treated as unset", async () => {
+    await mkdir(join(dir, ".config", "atmux"), { recursive: true });
+    await writeFile(join(dir, ".config", "atmux", "discord-webhook"), "from-file\n");
+    expect(
+      await resolveWebhookUrl({
+        env: { ATMUX_DISCORD_WEBHOOK: "", HOME: dir },
+      }),
+    ).toBe("from-file");
+  });
+
+  test("team.discord absent / null / non-object skipped silently", async () => {
+    await mkdir(join(dir, ".config", "atmux"), { recursive: true });
+    await writeFile(join(dir, ".config", "atmux", "discord-webhook"), "from-file\n");
+    expect(await resolveWebhookUrl({ env: { HOME: dir }, team: {} })).toBe("from-file");
+    expect(await resolveWebhookUrl({ env: { HOME: dir }, team: { discord: null } })).toBe(
+      "from-file",
+    );
+    expect(await resolveWebhookUrl({ env: { HOME: dir }, team: { discord: "string" } })).toBe(
+      "from-file",
+    );
+  });
+
+  test("team.discord.webhook empty/non-string skipped", async () => {
+    await mkdir(join(dir, ".config", "atmux"), { recursive: true });
+    await writeFile(join(dir, ".config", "atmux", "discord-webhook"), "from-file\n");
+    expect(
+      await resolveWebhookUrl({
+        env: { HOME: dir },
+        team: { discord: { webhook: "" } },
+      }),
+    ).toBe("from-file");
+    expect(
+      await resolveWebhookUrl({
+        env: { HOME: dir },
+        team: { discord: { webhook: 42 } },
+      }),
+    ).toBe("from-file");
+  });
+
+  test("HOME unset + no XDG → falls back to /.config/atmux/discord-webhook (returns null)", async () => {
+    expect(await resolveWebhookUrl({ env: {} })).toBeNull();
+  });
+
+  test("xdg file present but empty after trim → returns null", async () => {
+    await mkdir(join(dir, ".config", "atmux"), { recursive: true });
+    await writeFile(join(dir, ".config", "atmux", "discord-webhook"), "   \n");
+    expect(await resolveWebhookUrl({ env: { HOME: dir } })).toBeNull();
+  });
+
+  test("uses process.env when opts.env omitted", async () => {
+    const prior = process.env.ATMUX_DISCORD_WEBHOOK;
+    process.env.ATMUX_DISCORD_WEBHOOK = "from-process-env";
+    try {
+      expect(await resolveWebhookUrl()).toBe("from-process-env");
+    } finally {
+      if (prior !== undefined) process.env.ATMUX_DISCORD_WEBHOOK = prior;
+      else delete process.env.ATMUX_DISCORD_WEBHOOK;
+    }
   });
 });
