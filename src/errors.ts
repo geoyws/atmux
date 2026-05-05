@@ -18,6 +18,8 @@ export type AtmuxErrorTag =
   | "lock"
   | "lock-timeout"
   | "fs"
+  | "http"
+  | "http-timeout"
   | "discord"
   | "config"
   | "usage";
@@ -137,6 +139,45 @@ export class FsError extends AtmuxError {
   }
 }
 
+/** HTTP failure: either a status outside the caller's accepted range OR a
+ *  network-level failure (DNS / refused / TLS / dropped connection). Network
+ *  failures set `status: 0` with `cause` carrying the underlying error;
+ *  status-rejection sets `status` to the response code with `body` carrying
+ *  the response payload. Caller branches on `status === 0` vs status code. */
+export class HttpError extends AtmuxError {
+  readonly tag = "http" as const;
+  readonly url: string;
+  readonly method: string;
+  readonly status: number;
+  readonly body: string;
+  constructor(opts: {
+    url: string;
+    method: string;
+    status: number;
+    body: string;
+    cause?: unknown;
+  }) {
+    super(`HTTP ${opts.status} from ${opts.method} ${opts.url}`, {
+      cause: opts.cause,
+      context: { ...opts },
+    });
+    this.url = opts.url;
+    this.method = opts.method;
+    this.status = opts.status;
+    this.body = opts.body;
+  }
+}
+
+/** HTTP request exceeded its timeout budget (after AbortController fired). */
+export class HttpTimeoutError extends AtmuxError {
+  readonly tag = "http-timeout" as const;
+  constructor(opts: { url: string; method: string; timeoutMs: number }) {
+    super(`http ${opts.method} ${opts.url} timed out after ${opts.timeoutMs}ms`, {
+      context: { ...opts },
+    });
+  }
+}
+
 /** Discord webhook send / format / validation failure. */
 export class DiscordWebhookError extends AtmuxError {
   readonly tag = "discord" as const;
@@ -186,12 +227,14 @@ export function exitCodeForTag(tag: AtmuxErrorTag): number {
       return 78; // EX_CONFIG
     case "lock-timeout":
     case "spawn-timeout":
+    case "http-timeout":
       return 75; // EX_TEMPFAIL — try again later
     case "schema":
       return 65; // EX_DATAERR
     case "tmux":
     case "spawn":
     case "fs":
+    case "http":
     case "discord":
     case "lock":
       return 1;

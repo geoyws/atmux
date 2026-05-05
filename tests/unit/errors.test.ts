@@ -12,6 +12,8 @@ import {
   exitCodeForTag,
   FsError,
   formatErrorChain,
+  HttpError,
+  HttpTimeoutError,
   LockError,
   LockTimeoutError,
   SchemaError,
@@ -117,6 +119,46 @@ describe("AtmuxError subclasses", () => {
     expect(e.message).toBe("fs read failed on /tmp/x");
   });
 
+  test("HttpError formats status + method + url", () => {
+    const cause = new TypeError("fetch failed");
+    const e = new HttpError({
+      url: "https://x/y",
+      method: "POST",
+      status: 503,
+      body: "Service Unavailable",
+      cause,
+    });
+    expect(e.tag).toBe("http");
+    expect(e.message).toBe("HTTP 503 from POST https://x/y");
+    expect(e.status).toBe(503);
+    expect(e.body).toBe("Service Unavailable");
+    expect(e.url).toBe("https://x/y");
+    expect(e.method).toBe("POST");
+    expect(e.cause).toBe(cause);
+  });
+
+  test("HttpError carries status=0 for network failures", () => {
+    const e = new HttpError({
+      url: "http://127.0.0.1:1/never",
+      method: "GET",
+      status: 0,
+      body: "",
+      cause: new TypeError("fetch failed"),
+    });
+    expect(e.status).toBe(0);
+    expect(e.message).toContain("HTTP 0");
+  });
+
+  test("HttpTimeoutError formats url + method + ms", () => {
+    const e = new HttpTimeoutError({
+      url: "https://x/y",
+      method: "GET",
+      timeoutMs: 5000,
+    });
+    expect(e.tag).toBe("http-timeout");
+    expect(e.message).toBe("http GET https://x/y timed out after 5000ms");
+  });
+
   test("DiscordWebhookError adds HTTP status when provided", () => {
     const e = new DiscordWebhookError({ template: "whip-progress", statusCode: 429 });
     expect(e.tag).toBe("discord");
@@ -166,10 +208,12 @@ describe("exitCodeForTag", () => {
     ["config", 78],
     ["lock-timeout", 75],
     ["spawn-timeout", 75],
+    ["http-timeout", 75],
     ["schema", 65],
     ["tmux", 1],
     ["spawn", 1],
     ["fs", 1],
+    ["http", 1],
     ["discord", 1],
     ["lock", 1],
   ])("tag %s → exit %d", (tag, expected) => {
