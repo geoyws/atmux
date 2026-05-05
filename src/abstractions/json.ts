@@ -110,6 +110,33 @@ export async function updateJson<T>(
   );
 }
 
+// ---------- Parse-from-string (JSONL line-readers) ----------
+
+/**
+ * Parse a JSON string + validate via `schema`. Returns the validated
+ * value on success, `null` on parse OR validation failure. The error-
+ * swallowing posture is intentional — the primary caller is the JSONL
+ * line reader (`src/verbs/cost.ts`), where heterogeneous line types
+ * (assistant / tool-result / sidechain / permission-mode / …) make
+ * "skip what doesn't match" the only sensible behaviour. Strict reads
+ * use `readJson` (file path) which still throws via `parseAndValidate`.
+ *
+ * Provided here (NOT in cost.ts) to honour the R3 invariant: this file
+ * is the only module allowed to call `JSON.parse` (per the file header
+ * + ADR-006). Other modules reach JSON-parsing via this helper or
+ * `readJson` / `tryReadJson`.
+ */
+export function tryParseJsonString<T>(text: string, schema: ZodType<T>): T | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null; // expected: line not JSON (truncated tail, prose, etc.)
+  }
+  const result = schema.safeParse(raw);
+  return result.success ? result.data : null;
+}
+
 // ---------- Internals ----------
 
 function parseAndValidate<T>(path: string, schema: ZodType<T>, text: string): T {

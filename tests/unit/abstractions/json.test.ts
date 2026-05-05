@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   readJson,
   readJsonOr,
+  tryParseJsonString,
   tryReadJson,
   updateJson,
   writeJson,
@@ -251,5 +252,25 @@ describe("updateJson", () => {
       lock: { timeoutMs: 2_000, retryDelayMs: 10 },
     });
     expect(out).toEqual(empty);
+  });
+});
+
+describe("tryParseJsonString", () => {
+  const Entry = z.object({ id: z.string(), n: z.number() });
+
+  test("returns the validated value on a well-formed line", () => {
+    expect(tryParseJsonString('{"id":"a","n":1}', Entry)).toEqual({ id: "a", n: 1 });
+  });
+
+  test("returns null on JSON.parse failure", () => {
+    expect(tryParseJsonString("not-json", Entry)).toBeNull();
+  });
+
+  test("returns null on schema-validation failure (silently skipped)", () => {
+    expect(tryParseJsonString('{"id":"a"}', Entry)).toBeNull();
+  });
+
+  test("returns null on empty string (parse fails)", () => {
+    expect(tryParseJsonString("", Entry)).toBeNull();
   });
 });
