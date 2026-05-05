@@ -42,6 +42,7 @@ import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { task } from "./verbs/task.ts";
+import { tellLead } from "./verbs/tell-lead.ts";
 import { version } from "./verbs/version.ts";
 
 /**
@@ -89,8 +90,12 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return outbox(argv.slice(1));
     case "send":
       return send(argv.slice(1));
+    case "broadcast":
+      return send(["--broadcast", ...argv.slice(1)]);
     case "task":
       return task(argv.slice(1));
+    case "tell-lead":
+      return tellLead(argv.slice(1));
     case "claim":
       return claim(argv.slice(1));
     case "done":

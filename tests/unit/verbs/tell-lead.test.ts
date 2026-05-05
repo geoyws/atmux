@@ -1,0 +1,237 @@
+// Unit tests for src/verbs/tell-lead.ts.
+// Bash spec: lib/tell.sh @ worktree-frozen.
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { ConfigError, UsageError } from "../../../src/errors.ts";
+import {
+  buildHeadsUp,
+  findLead,
+  parseTellLeadArgs,
+  tellLead,
+} from "../../../src/verbs/tell-lead.ts";
+
+let socketDir: string;
+let socketPath: string;
+let teamDir: string;
+let atmuxDir: string;
+let priorTmux: string | undefined;
+let tmux: TmuxNamespace;
+let sessionPrefix: string;
+
+beforeEach(async () => {
+  socketDir = await mkdtemp(join(tmpdir(), "atmux-tell-lead-sock-"));
+  socketPath = join(socketDir, "sock");
+  teamDir = await mkdtemp(join(tmpdir(), "atmux-tell-lead-team-"));
+  atmuxDir = join(teamDir, ".atmux");
+  await mkdir(atmuxDir, { recursive: true });
+  sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  priorTmux = process.env.TMUX;
+  delete process.env.TMUX;
+  tmux = createTmux({ socketPath, configFile: "/dev/null" });
+});
+
+afterEach(async () => {
+  try {
+    await tmux.server.killServer();
+  } catch {
+    // expected
+  }
+  if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  await rm(socketDir, { recursive: true, force: true });
+  await rm(teamDir, { recursive: true, force: true });
+});
+
+async function captureStdoutStderr<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; stdout: string; stderr: string }> {
+  let stdout = "";
+  let stderr = "";
+  const o1 = process.stdout.write.bind(process.stdout);
+  const o2 = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((s: string | Uint8Array) => {
+    stdout += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((s: string | Uint8Array) => {
+    stderr += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const result = await fn();
+    return { result, stdout, stderr };
+  } finally {
+    process.stdout.write = o1;
+    process.stderr.write = o2;
+  }
+}
+
+async function stageTeam(
+  members: ReadonlyArray<{ name: string; role?: string }>,
+  withSession: boolean,
+): Promise<{ teamName: string; sessionName: string }> {
+  const teamName = `${sessionPrefix}-team`;
+  const sessionName = `atmux-${teamName}`;
+  await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: teamName, members }));
+  if (withSession) {
+    const first = members[0];
+    if (first === undefined) throw new Error("test fail");
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName: first.name,
+    });
+    for (const m of members.slice(1)) {
+      await tmux.window.newWindow({ sessionName, name: m.name, shellCommand: "cat" });
+    }
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return { teamName, sessionName };
+}
+
+// ---------- Pure: parseTellLeadArgs ----------
+
+describe("parseTellLeadArgs", () => {
+  test("plain msg", () => {
+    expect(parseTellLeadArgs(["hello", "world"]).msg).toBe("hello world");
+  });
+
+  test("--socket / --team-dir consumed", () => {
+    const a = parseTellLeadArgs(["--socket", "/s", "--team-dir", "/x", "msg"]);
+    expect(a.socketPath).toBe("/s");
+    expect(a.teamDir).toBe("/x");
+  });
+
+  test("`--` ends flag parsing", () => {
+    expect(parseTellLeadArgs(["--", "--with-dashes"]).msg).toBe("--with-dashes");
+  });
+
+  test("missing msg → UsageError", () => {
+    expect(() => parseTellLeadArgs([])).toThrow(UsageError);
+  });
+
+  test("--socket without value → UsageError", () => {
+    expect(() => parseTellLeadArgs(["--socket"])).toThrow(UsageError);
+  });
+
+  test("--team-dir without value → UsageError", () => {
+    expect(() => parseTellLeadArgs(["--team-dir"])).toThrow(UsageError);
+  });
+
+  test("unknown -* flag → UsageError", () => {
+    expect(() => parseTellLeadArgs(["--bogus", "msg"])).toThrow(UsageError);
+  });
+});
+
+// ---------- Pure: findLead ----------
+
+describe("findLead", () => {
+  test("returns member with role=team-lead when present", () => {
+    const lead = findLead([
+      { name: "alpha" },
+      { name: "captain", role: "team-lead" },
+      { name: "lead" }, // would match by name but role wins
+    ]);
+    expect(lead?.name).toBe("captain");
+  });
+
+  test("falls back to member named 'lead' when no role match", () => {
+    const lead = findLead([{ name: "alpha" }, { name: "lead" }]);
+    expect(lead?.name).toBe("lead");
+  });
+
+  test("returns undefined when neither match", () => {
+    expect(findLead([{ name: "alpha" }, { name: "beta" }])).toBeUndefined();
+  });
+});
+
+// ---------- Pure: buildHeadsUp ----------
+
+describe("buildHeadsUp", () => {
+  test("short msg: full text, no ellipsis", () => {
+    expect(buildHeadsUp("short ask")).toBe("📬 driver-inbox has a new ask: short ask");
+  });
+
+  test("80-char msg: included full, no ellipsis", () => {
+    const msg = "a".repeat(80);
+    expect(buildHeadsUp(msg).endsWith(msg)).toBe(true);
+    expect(buildHeadsUp(msg)).not.toContain("…");
+  });
+
+  test("81+ char msg: truncated to 80 + ellipsis", () => {
+    const msg = "a".repeat(120);
+    const out = buildHeadsUp(msg);
+    expect(out).toContain("…");
+    expect(out).toContain("a".repeat(80));
+  });
+});
+
+// ---------- Integration ----------
+
+describe("tellLead — integration", () => {
+  test("happy path: appends to driver-inbox.md + pings lead", async () => {
+    await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    const { stdout } = await captureStdoutStderr(() =>
+      tellLead([
+        "--socket",
+        socketPath,
+        "--team-dir",
+        teamDir,
+        "review",
+        "the",
+        "migration",
+      ]),
+    );
+    expect(stdout).toContain("tell-lead → alpha");
+    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    expect(di).toContain("# Driver Inbox");
+    expect(di).toContain("review the migration");
+    // Send log written by sendToMember.
+    const log = await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).text();
+    expect(log).toContain("driver-inbox has a new ask");
+  });
+
+  test("falls back to member named 'lead' when no team-lead role", async () => {
+    await stageTeam([{ name: "alpha" }, { name: "lead" }], true);
+    const { stdout } = await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "msg"]),
+    );
+    expect(stdout).toContain("tell-lead → lead");
+  });
+
+  test("no lead defined → ConfigError", async () => {
+    await stageTeam([{ name: "alpha" }, { name: "beta" }], false);
+    await expect(
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "msg"]),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("ping failure: warn but still succeeds (durable inbox write is the contract)", async () => {
+    // Stage team WITHOUT a tmux session — the ping will TmuxError.
+    await stageTeam([{ name: "alpha", role: "team-lead" }], false);
+    const { result, stderr } = await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "ask body"]),
+    );
+    expect(result).toBe(0);
+    expect(stderr).toContain("tell-lead: ping to alpha failed");
+    // Inbox write succeeded.
+    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    expect(di).toContain("ask body");
+  });
+
+  test("multiple asks accumulate in driver-inbox", async () => {
+    await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "first"]),
+    );
+    await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "second"]),
+    );
+    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    expect(di).toContain("first");
+    expect(di).toContain("second");
+  });
+});

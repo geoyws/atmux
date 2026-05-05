@@ -181,6 +181,22 @@ describe("cli.main — dispatch verb dispatch", () => {
   });
 });
 
+describe("cli.main — tell-lead verb dispatch", () => {
+  test("'tell-lead' with no args dispatches into tellLead (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["tell-lead"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+describe("cli.main — broadcast alias dispatch", () => {
+  test("'broadcast' with no msg dispatches into send (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["broadcast"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 describe("cli.main — reply / outbox verb dispatch", () => {
   test("'reply' with no args dispatches into reply (UsageError)", async () => {
     const { exit, stderr } = await captureMain(["reply"]);
