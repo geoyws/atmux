@@ -91,6 +91,7 @@ import {
   defaultEmojiForRole,
   ensureAtmuxDirs,
   getAtmuxDir,
+  getDefaultSocket,
   getSessionName,
   loadTeam,
   stateDir,
@@ -196,16 +197,13 @@ export function parseStartArgs(
 }
 
 /**
- * Default socket path when neither `--socket` nor `--socket-path` is
- * supplied. `/tmp/atmux-<team>/sock` matches the bash cage convention
- * (see file header §"Socket resolver" — Phase 2 final resolver pending).
- *
- * Exported so the `init` verb can mirror the same default when seeding
- * a fresh team's tmpdir, and so tests have a stable expectation.
+ * Re-export of `core/common.ts::getDefaultSocket` under the old name.
+ * R-2 (PLAN.md §6.2) lifted the canonical implementation to common.ts;
+ * eight verb files imported `defaultSocketPath` from here historically,
+ * so the alias keeps that import surface stable. New code imports
+ * `getDefaultSocket` from `core/common.ts` directly.
  */
-export function defaultSocketPath(team: string): string {
-  return `/tmp/atmux-${team}/sock`;
-}
+export const defaultSocketPath = getDefaultSocket;
 
 // ---------- Verb entry ----------
 

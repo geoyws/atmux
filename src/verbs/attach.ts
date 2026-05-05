@@ -45,8 +45,17 @@
 // directly assertable.
 
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
-import { getSessionName, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import {
+  getDefaultSocket,
+  getSessionName,
+  type ResolveDirOpts,
+  requireTeam,
+} from "../core/common.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+
+/** Re-export for back-compat with existing tests; new code imports
+ *  `getDefaultSocket` from `core/common.ts` directly. */
+export const defaultSocketPath = getDefaultSocket;
 
 /** Parsed `attach` CLI args (post-flag-parsing). */
 export interface AttachArgs {
@@ -99,19 +108,6 @@ export function parseAttachArgs(argv: ReadonlyArray<string>): AttachArgs {
     throw new UsageError({ what: `attach: unknown argument: ${a ?? ""}`, hint: USAGE_HINT });
   }
   return out;
-}
-
-/**
- * Phase-2 placeholder for the `getDefaultSocket(team)` resolver promised
- * in ADR-004 amend §Consequences. Returns `/tmp/atmux-<team>/sock` per
- * the lead's task brief — matches the per-team cage convention bash
- * uses today (ADR-018: `lib/init.sh` writes `tmuxTmpdir` to the same
- * shape). When the official resolver lands in `src/core/common.ts`
- * (reading `team.tmuxTmpdir`, `$ATMUX_SOCKET`, etc.), this helper
- * deletes itself.
- */
-export function defaultSocketPath(teamName: string): string {
-  return `/tmp/atmux-${teamName}/sock`;
 }
 
 /**

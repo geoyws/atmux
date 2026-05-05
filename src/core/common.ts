@@ -490,32 +490,25 @@ export function classifyPaneState(state: string): PaneStateSnapshot {
   };
 }
 
-// ---------- Socket resolver (Phase 2 placeholder) ----------
+// ---------- Socket resolver ----------
 //
-// The tmux abstraction (ADR-004 amend, 2026-05-05) requires every
-// caller to specify a socket explicitly via createTmux({ socket } |
-// { socketPath }). Verb code in Phase 2 needs a single source of
-// truth for "which socket does this team's tmux server live on?".
+// Lifted from `verbs/start.ts::defaultSocketPath` + `verbs/attach.ts::
+// defaultSocketPath` — eight verb files (start, attach, status, send,
+// stop, add-member, dispatch, tell-lead) imported the start.ts version;
+// attach.ts had a duplicate. The R-2 refactor (PLAN.md §6.2) collapses
+// both into this canonical helper so doctor + every future verb has
+// one import target.
 //
-// Open questions for Phase 2's spec (per ADR-004 amend Consequences):
-//   - $ATMUX_SOCKET env var?
-//   - `socket` field in team.json?
-//   - `--socket <name>` CLI flag override?
-//   - cage-derived from team name (ADR-018: /tmp/atmux-cage-${team}/sock)?
+// Returns the cage path `/tmp/atmux-<team>/sock`. Bash mirror: every
+// `tmux -S "$socket"` invocation in `lib/start.sh` / `lib/attach.sh`
+// uses the same convention.
 //
-// Until that decision lands, calling the resolver throws a ConfigError
-// pointing at the open-question list. The placeholder lives here so
-// every verb has a deterministic import target — Phase 2 fills the body
-// without touching call sites.
-//
-// export interface SocketResolution {
-//   readonly socket?: string;
-//   readonly socketPath?: string;
-// }
-//
-// export function getDefaultSocket(_team: TeamShape): SocketResolution {
-//   throw new ConfigError({
-//     what: "getDefaultSocket: not implemented",
-//     hint: "Phase 2 spec pending — see ADR-004 amend Consequences §Phase 2.",
-//   });
-// }
+// The richer Phase-2 resolver (env vars, team.json overrides, --socket
+// short-name vs path) is still pending per ADR-004 amend §Consequences;
+// when it lands, this signature stays compatible — the body just gains
+// fallback resolution.
+
+/** Bash cage-socket path: `/tmp/atmux-<team>/sock`. */
+export function getDefaultSocket(teamName: string): string {
+  return `/tmp/atmux-${teamName}/sock`;
+}

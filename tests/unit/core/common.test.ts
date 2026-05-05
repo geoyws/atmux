@@ -18,6 +18,7 @@ import {
   emojiPoolForRole,
   ensureAtmuxDirs,
   getAtmuxDir,
+  getDefaultSocket,
   getSessionName,
   getTeamName,
   hasQueuedMessages,
@@ -644,5 +645,13 @@ describe("classifyPaneState", () => {
     const got = classifyPaneState("you hit your limit; Esc to interrupt");
     expect(got.rateLimit).toBe("hard");
     expect(got.busy).toBe(true);
+  });
+});
+
+describe("getDefaultSocket (R-2 lift from verbs/start.ts)", () => {
+  test("returns /tmp/atmux-<team>/sock — bash cage convention", () => {
+    expect(getDefaultSocket("atmux")).toBe("/tmp/atmux-atmux/sock");
+    expect(getDefaultSocket("unum")).toBe("/tmp/atmux-unum/sock");
+    expect(getDefaultSocket("ifca_aux")).toBe("/tmp/atmux-ifca_aux/sock");
   });
 });
