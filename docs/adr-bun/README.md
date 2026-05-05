@@ -25,7 +25,8 @@ See `PLAN.md §7` for the full backlog. Architect owns 001–006, foundation own
 | 013 | accepted | WIP-bash deferral |
 | 014 | accepted | Verb design debt — deferred v2 redesign (Phase 6) |
 | **015** | **proposed** | **Team members work in isolated git worktrees by default (Phase 6 / v2)** |
-| 016+ | — | Per-verb ADRs as needs surface |
+| 016 | accepted | Schema-version rollout deferred to Phase 6 |
+| 017+ | — | Per-verb ADRs as needs surface |
 
 ## Format
 
