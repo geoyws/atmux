@@ -16,9 +16,17 @@
 
 import { z } from "zod";
 
-/** TUI types atmux supports launching into a pane. Mirrors bash
- *  `lib/start.sh`'s case-on-tui — passthrough for forward-compat. */
-export const TuiKind = z.enum(["claude", "opencode", "kimi", "cursor"]);
+/** TUI types atmux supports launching into a pane.
+ *
+ * Bash `lib/tui.sh::atmux::tui_cmd` treats `tui` as a free-form name —
+ * known built-ins (claude/opencode/kimi/cursor/shell/bash/zsh) hit a
+ * hard-coded launcher; any other value MUST be registered in
+ * `team.tuiCommands` (see `tests/unit/tui_resolution.bats`). The schema
+ * therefore accepts `z.string()` rather than a closed enum: locking the
+ * enum to the built-ins would refuse legitimate `team.tuiCommands`
+ * names like `claude-fresh` / `opencode-minimax-fast` (live use,
+ * documented at `lib/tui.sh:21`). */
+export const TuiKind = z.string();
 export type TuiKind = z.infer<typeof TuiKind>;
 
 /** Member entry in `team.json :: members[]`. */
@@ -31,6 +39,10 @@ export const TeamMember = z
     model: z.string().optional(),
     cwd: z.string().optional(),
     emoji: z.string().optional(),
+    /** Per-member full-command override (lib/tui.sh:30-37 / lib/add-member.sh:21).
+     *  When present, `atmux::tui_cmd` uses it verbatim, ignoring `team.tuiCommands`
+     *  and built-in launchers. Stamped at `add-member` time via `--command <cmd>`. */
+    command: z.string().optional(),
   })
   .passthrough();
 export type TeamMember = z.infer<typeof TeamMember>;
