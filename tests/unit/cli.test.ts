@@ -181,6 +181,14 @@ describe("cli.main — dispatch verb dispatch", () => {
   });
 });
 
+describe("cli.main — inbox verb dispatch", () => {
+  test("'inbox' with no args dispatches into inbox (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["inbox"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 describe("cli.main — stop verb dispatch", () => {
   test("'stop bogus' dispatches into stop (UsageError on unknown arg)", async () => {
     const { exit, stderr } = await captureMain(["stop", "bogus"]);
