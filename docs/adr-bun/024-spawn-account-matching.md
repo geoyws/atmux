@@ -52,10 +52,12 @@ esac
 # Per-window spawn — driver substitutes $DRIVER_WRAPPER detected above
 tmux new-window -t <session> -n "<emoji><member>" -c "$PWD"
 tmux send-keys -t <session>:<window> \
-  "CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode dontAsk --model claude-opus-4-7" Enter
+  "CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode auto --model claude-opus-4-7" Enter
 ```
 
 `CLAUDE_GUARD_AGENT=1` bypasses the wrapper's interactive confirm (the spawn is non-interactive; the guard would otherwise prompt for a key press to acknowledge the cross-account warning, hanging the spawn). Bypass is **safe within the matching-account constraint** — guard exists for cross-account; matched-account always passes.
+
+`--permission-mode auto` enables continuous autonomous execution. Members spawned in any other mode (`dontAsk`, `acceptEdits`, `default`) stop on every tool call awaiting driver intervention — defeats parallelisation. If a member was spawned with the wrong mode (e.g. legacy handoff said `dontAsk`), cycle in-place via Shift+Tab (`tmux send-keys -t <window> BTab`) — **do not kill+respawn**. Cycle order (Claude Code v2.1.128): `don't ask on` → `accept edits on` → (default) → `auto mode on` → (default) → `don't ask on`; 3 BTabs from `dontAsk` reaches `auto`.
 
 ### HANDOFF.md spawn-pattern templating
 

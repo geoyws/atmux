@@ -74,7 +74,7 @@ case "${CLAUDE_CONFIG_DIR:-$(realpath ~/.claude 2>/dev/null)}" in
 esac
 
 # Spawn:
-CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode dontAsk --model claude-opus-4-7
+CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode auto --model claude-opus-4-7
 ```
 
 Never copy a hardcoded `c-ic` or `c-u` from a stale handoff — cross-account spawn trips Anthropic ToS flags + breaks cost/session-state observability. See ADR-024 for the full rule + V-25 whip-side enforcement.
