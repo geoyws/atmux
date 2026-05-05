@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendText,
   atomicWrite,
   ensureDir,
   exists,
@@ -125,6 +126,35 @@ describe("readText / readTextOrNull / writeText", () => {
     const p = join(dir, "y");
     await writeText(p, "abc");
     expect(await readTextOrNull(p)).toBe("abc");
+  });
+});
+
+describe("appendText", () => {
+  test("creates the file when absent (matches bash `printf … >> file`)", async () => {
+    const p = join(dir, "log.txt");
+    await appendText(p, "first\n");
+    expect(await readText(p)).toBe("first\n");
+  });
+
+  test("appends to an existing file without truncating", async () => {
+    const p = join(dir, "log.txt");
+    await writeText(p, "first\n");
+    await appendText(p, "second\n");
+    await appendText(p, "third\n");
+    expect(await readText(p)).toBe("first\nsecond\nthird\n");
+  });
+
+  test("creates missing parent dirs (mirrors writeText behaviour)", async () => {
+    const p = join(dir, "deep", "log", "file.txt");
+    await appendText(p, "hi\n");
+    expect(await readText(p)).toBe("hi\n");
+  });
+
+  test("FsError on a write-impossible target (parent path is a file)", async () => {
+    // Create a regular file, then try to append into a path nested beneath it.
+    const blocker = join(dir, "blocker");
+    await writeText(blocker, "x");
+    await expect(appendText(join(blocker, "child.log"), "x")).rejects.toBeInstanceOf(FsError);
   });
 });
 

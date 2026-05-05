@@ -7,6 +7,7 @@
 // `updateJson` on top.
 
 import {
+  appendFile as _appendFile,
   mkdir as _mkdir,
   open as _open,
   readFile as _readFile,
@@ -109,6 +110,22 @@ export async function writeText(path: string, content: string, mode = 0o644): Pr
   await ensureDir(dirname(path));
   try {
     await _writeFile(path, content, { encoding: "utf8", mode });
+  } catch (e) {
+    throw new FsError({ path, op: "write", cause: e });
+  }
+}
+
+/**
+ * Append text to a file, creating it (with `mode`) if absent. Ensures
+ * the parent directory exists. Used by log-write paths (`core/send.ts`'s
+ * `<atmuxDir>/logs/send-<member>.log`, etc.) — append-only files don't
+ * need atomic write, but they still need typed-error wrapping for the
+ * R6 invariant. Mirrors bash `printf … >> "$file"` semantics.
+ */
+export async function appendText(path: string, content: string, mode = 0o644): Promise<void> {
+  await ensureDir(dirname(path));
+  try {
+    await _appendFile(path, content, { encoding: "utf8", mode });
   } catch (e) {
     throw new FsError({ path, op: "write", cause: e });
   }
