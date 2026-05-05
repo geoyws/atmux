@@ -223,7 +223,8 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | 016 | Schema version field deferred until v2 | 2 | architect |
 | 017 | tmux window naming — drop `__<team>__` prefix | 2 | porter-foundation-3 |
 | **018** | **`/coordination:*` skills integration contract (window naming / marker files / inbox paths / `/team` shim)** | 2 | driver |
-| 019+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
+| **019** | **`doctor` verb (V-24) port scope — in-scope subset + deferred bash-only checks** | 2 | driver |
+| 020+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
 
 ---
 
