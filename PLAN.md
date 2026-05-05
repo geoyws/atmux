@@ -138,6 +138,52 @@ send, broadcast, tell-lead, reply/outbox, dispatch, whip, report, doctor, cost, 
 
 Whip is the highest-value verb (96% of cron firings). Porter-B owns it because it's tightly coupled to discord + cost + status, all of which are also B's territory. Doctor (355 LOC) is the largest single file; B can split if needed.
 
+### 6.2 Stable verb checklist (canonical resume reference)
+
+Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and TaskList task subjects. TaskList itself is volatile (rebuilt each session); the IDs below are the durable handles.
+
+| Verb-ID | Verb (CLI form) | Bash file | LOC | Status |
+|---|---|---|---|---|
+| V-01 | `up` | `lib/up.sh` | ~80 | ⏳ pending |
+| V-02 | `init` | `lib/init.sh` | — | ✅ shipped |
+| V-03 | `start` | `lib/start.sh` | — | ✅ shipped |
+| V-04 | `stop` | `lib/stop.sh` | — | ✅ shipped |
+| V-05 | `attach` | `lib/attach.sh` | — | ✅ shipped |
+| V-06 | `status` | `lib/status.sh` | — | ✅ shipped |
+| V-07 | `send` / `broadcast` | `lib/send.sh` | — | ✅ shipped |
+| V-08 | `tell-lead` | `lib/tell.sh` | — | ✅ shipped |
+| V-09 | `reply` / `outbox` | `lib/reply.sh` | — | ✅ shipped |
+| V-10 | `task` (sub-verbs) | `lib/kanban.sh` | — | ✅ shipped |
+| V-11 | `dispatch` | `lib/dispatch.sh` | — | ✅ shipped |
+| V-12 | `inbox` | `lib/inbox.sh` | — | ✅ shipped |
+| V-13 | `claim` / `done` | `lib/claim.sh` | — | ✅ shipped |
+| V-14 | `pause` / `resume` | `lib/pause.sh` | — | ✅ shipped |
+| V-15 | `add-member` | `lib/add-member.sh` | — | ✅ shipped |
+| V-16 | `version` | `lib/common.sh` | — | ✅ shipped |
+| V-17 | `help` | `bin/atmux:25-86` | — | ✅ shipped |
+| V-18 | `dashboard` | `lib/dashboard.sh` | 41 | ✅ shipped |
+| V-19 | `reconfigure` | `lib/reconfigure.sh` | 59 | ✅ shipped |
+| V-20 | `handoff` | `lib/handoff.sh` | 135 | ⏳ pending |
+| V-21 | `report` | `lib/report.sh` | 84 | ⏳ pending |
+| V-22 | `cost` | `lib/cost.sh` | 170 | ⏳ pending |
+| V-23 | `rotate` / `rotate-lead` | `lib/rotate.sh` | 81 | ⏳ pending |
+| V-24 | `doctor` | `lib/doctor.sh` | 355 | ⏳ pending |
+| V-25 | `whip` | `lib/whip.sh` | 218 | ⏳ pending |
+
+**Cross-cutting refactor IDs** (R-* — interleave with porting):
+
+| Refactor-ID | Title | Status |
+|---|---|---|
+| R-1 | Extract `tests/helpers/capture.ts` (`captureStdout` / `captureMain`) | ⏳ pending |
+| R-2 | Lift `getDefaultSocket(team)` → `core/common.ts` | ⏳ pending |
+| R-3 | Add §6.2 stable-ID checklist to PLAN.md | ✅ done |
+| R-4 | Drop TaskList refs from HANDOFF.md, link to §6.2 | ⏳ pending |
+| R-5 | ADR-015 — `Writer` interface for verb signatures (between Phase-2 close and Phase-3) | ⏳ pending |
+
+**Recommended next-batch order:** R-3 → R-4 → R-1 → R-2 → V-23 → V-20 → V-21 → V-22 → V-24 → V-25 → V-01. Doctor before whip because whip calls into doctor in some flows.
+
+When updating this checklist, flip the Status column **only** — never renumber. Stale rows (e.g. V-* shipped but PLAN.md not refreshed) should be amended in a small `docs(plan)` commit alongside the verb's `feat(verbs)` commit.
+
 ---
 
 ## 7. ADR backlog (`docs/adr-bun/`)
