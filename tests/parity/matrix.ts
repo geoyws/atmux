@@ -177,4 +177,85 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       },
     },
   },
+  // ADR-027 commit 5: error-rendering rows. Closes ADR-026 row 6.
+  // Per ADR-006: TS keeps BSD sysexits (exit 78 EX_CONFIG) + structured-tag
+  // stderr; bash uses exit 1 + 💥-emoji prefix. Per ADR-027 Option B
+  // (George 2026-05-05 ~20:35 MYT): mask the stylistic divergence,
+  // don't reconcile. Each row exercises an error path with the same
+  // 3-pattern stderr mask shape (prefix + per-side fixture-clone path
+  // suffix + bash/TS hint phrasing) — the latter omitted on init's
+  // already-initialized row where both sides emit identical em-dash +
+  // identical `— pass --force` hint phrasing.
+  //
+  // Probe-verified at /tmp/parity-probe (deleted post-confirmation):
+  //   bash: `💥 atmux <msg> at <path>.bash/.atmux/... <hint>\n` / exit 1
+  //   ts:   `atmux: <tag>: <msg> at <path>.ts/.atmux/...   <hint>\n` / exit 78 (or 64 for UsageError; init's already-initialized is ConfigError → 78)
+  //
+  // 4-of-4 ADR-026 row 6 verbs covered: init / start / send / add-member.
+  {
+    verb: "init",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "init [lifecycle: already-initialized error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 2-pattern mask — bash `💥 atmux ` prefix vs TS `atmux: <tag>: `
+      // prefix (ADR-027 error-rendering class) + per-side fixture-clone path
+      // suffix `.bash` / `.ts` before /.atmux/ (commit 3 cloning artefact).
+      // Both sides use ` — pass --force to overwrite` so no hint-phrase mask
+      // needed here (contrast no-team rows below).
+      stderr: /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)/g,
+    },
+  },
+  {
+    verb: "start",
+    args: [],
+    fixturePreset: "minimal",
+    label: "start [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask — bash `💥 atmux ` vs TS `atmux: config: ` prefix
+      // (ADR-027 error-rendering class) + per-side fixture-clone path suffix
+      // `.bash` / `.ts` before /.atmux/ (commit 3 cloning artefact) + hint
+      // phrasing divergence (bash ` — run …` em-dash vs TS ` (hint: run …)`
+      // parens form, ADR-027 error-rendering class)
+      stderr: /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "send",
+    args: ["lead", "hi"],
+    fixturePreset: "minimal",
+    label: "send [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask — bash `💥 atmux ` vs TS `atmux: config: ` prefix
+      // (ADR-027 error-rendering class) + per-side fixture-clone path suffix
+      // (commit 3 cloning artefact) + hint phrasing divergence (bash em-dash
+      // vs TS parens form, ADR-027 error-rendering class)
+      stderr: /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "add-member",
+    args: ["new-member"],
+    fixturePreset: "minimal",
+    label: "add-member [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask — bash `💥 atmux ` vs TS `atmux: config: ` prefix
+      // (ADR-027 error-rendering class) + per-side fixture-clone path suffix
+      // (commit 3 cloning artefact) + hint phrasing divergence (bash em-dash
+      // vs TS parens form, ADR-027 error-rendering class)
+      stderr: /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
 ];
