@@ -230,7 +230,9 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | **019** | **`doctor` verb (V-24) port scope — in-scope subset + deferred bash-only checks** | 2 | driver |
 | **020** | **`Writer` abstraction + `core/io.ts` — R-5 (lift duplicated default writers across verbs)** | 2 | driver |
 | **021** | **atmux as runtime for `/coordination:session` + `/coordination:team` skills — verb contract** (V-26 + V-27 schedule, path canonicalization, I-3 + I-4 collapse) | 2 | driver |
-| 022+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
+| **022** | **`whip` verb (V-25) port scope — in-scope subset + deferred bash-only checks** | 2 | driver |
+| **023** | **LLM judge cascade — Sonnet → Haiku → deterministic fallback (resilience contract for SOFT classifier + future judge call sites)** | 2 | driver |
+| 024+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
 
 ---
 
