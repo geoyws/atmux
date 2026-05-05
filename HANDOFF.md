@@ -8,7 +8,7 @@
 ## ✅ Working tree state (worktree)
 
 ```
-HEAD:   <V-01 commit pending>
+HEAD:   ec96c7e feat(verbs): up — composite wizard→doctor→start→attach (V-01)
 Tests:  1539 pass / 4 todo / 0 fail across 54 test files (1543 total)
 Build:  bunx tsc --noEmit + bun test green
 ```
@@ -24,7 +24,7 @@ Working tree clean post-V-01 commit. No uncommitted state in the bun port worktr
 ### Code commits (worktree branch `worktree-atmux-bun`)
 
 ```
-<pending> feat(verbs): up — composite wizard→doctor→start→attach (V-01)            ← up-impl
+ec96c7e feat(verbs): up — composite wizard→doctor→start→attach (V-01)            ← up-impl
 faffe45 docs(plan): V-25 status flip — whip shipped
 9269d32 feat(verbs): whip — 5-min watchdog (V-25, in-scope subset per ADR-022)   ← whip-impl
 4f23fc2 docs(adr,handoff): ADR-024 spawn pattern uses --permission-mode auto
