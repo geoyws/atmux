@@ -98,6 +98,83 @@ describe("cli.main — version verb (3-form parity with bash)", () => {
   });
 });
 
+// ---------- Dispatch — init verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/init.test.ts) ----------
+
+describe("cli.main — init verb dispatch", () => {
+  test("'init --bogus-flag' dispatches into init (UsageError on unknown flag)", async () => {
+    // Drive the dispatcher into the `case "init"` branch. parseInitArgs
+    // throws UsageError on unknown flags — exit 64. Pins the dispatch
+    // line; deep verb behaviour lives in tests/unit/verbs/init.test.ts.
+    const { exit, stderr } = await captureMain(["init", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — add-member verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/add-member.test.ts) ----------
+
+describe("cli.main — add-member verb dispatch", () => {
+  test("'add-member' with no args dispatches into addMember (UsageError)", async () => {
+    // parseAddMemberArgs throws UsageError when the member-name positional
+    // is missing — exit 64. Pins the `case "add-member":` line; deep verb
+    // behaviour lives in tests/unit/verbs/add-member.test.ts.
+    const { exit, stderr } = await captureMain(["add-member"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — start verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/start.test.ts) ----------
+
+describe("cli.main — start verb dispatch", () => {
+  test("'start' dispatches into the start verb (ConfigError when no team.json)", async () => {
+    // Drive the dispatcher into the `case "start"` branch without
+    // staging a real team. Pin ATMUX_DIR at a guaranteed-empty path so
+    // getAtmuxDir doesn't walk up and find a real .atmux somewhere in
+    // the worktree's parent tree. loadTeam then ConfigErrors on the
+    // missing team.json (config tag → exit 78). This pins the dispatch
+    // line; deep verb behaviour lives in tests/unit/verbs/start.test.ts.
+    const SAVED_DIR = process.env.ATMUX_DIR;
+    process.env.ATMUX_DIR = "/tmp/atmux-cli-test-nonexistent-dir";
+    try {
+      const { exit, stderr } = await captureMain(["start", "--no-doctor"]);
+      expect(exit).toBe(78);
+      expect(stderr).toContain("atmux: config:");
+      expect(stderr).toContain("no team.json");
+    } finally {
+      if (SAVED_DIR === undefined) delete process.env.ATMUX_DIR;
+      else process.env.ATMUX_DIR = SAVED_DIR;
+    }
+  });
+});
+
+// ---------- Dispatch — attach verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/attach.test.ts) ----------
+
+describe("cli.main — attach verb dispatch", () => {
+  test("'attach' dispatches into the attach verb (ConfigError when no team.json)", async () => {
+    // Same shape as the start dispatch test: pin ATMUX_DIR at a
+    // guaranteed-empty path so loadTeam ConfigErrors on the missing
+    // team.json (config tag → exit 78). Pins the `case "attach":` line
+    // in cli.ts; deep verb behaviour (arg parsing, session-existence
+    // check, TmuxError surfacing) lives in tests/unit/verbs/attach.test.ts.
+    const SAVED_DIR = process.env.ATMUX_DIR;
+    process.env.ATMUX_DIR = "/tmp/atmux-cli-attach-test-nonexistent-dir";
+    try {
+      const { exit, stderr } = await captureMain(["attach"]);
+      expect(exit).toBe(78);
+      expect(stderr).toContain("atmux: config:");
+      expect(stderr).toContain("no team.json");
+    } finally {
+      if (SAVED_DIR === undefined) delete process.env.ATMUX_DIR;
+      else process.env.ATMUX_DIR = SAVED_DIR;
+    }
+  });
+});
+
 // ---------- Dispatch — unknown verb (bash parity exit 64) ----------
 
 describe("cli.main — unknown-verb path (bash bin/atmux:324-328 byte-parity)", () => {

@@ -29,6 +29,9 @@
 // supported. This keeps `src/cli.ts` 100% unit-testable per ADR-009 §2.
 
 import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./errors.ts";
+import { addMember } from "./verbs/add-member.ts";
+import { attach } from "./verbs/attach.ts";
+import { init } from "./verbs/init.ts";
 import { start } from "./verbs/start.ts";
 import { version } from "./verbs/version.ts";
 
@@ -59,8 +62,14 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     case "--version":
     case "-V":
       return version(argv.slice(1));
+    case "init":
+      return init(argv.slice(1));
     case "start":
       return start(argv.slice(1));
+    case "attach":
+      return attach(argv.slice(1));
+    case "add-member":
+      return addMember(argv.slice(1));
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,
