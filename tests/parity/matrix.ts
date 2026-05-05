@@ -37,11 +37,29 @@ export type ParityRow = {
 };
 
 /**
- * The parity matrix. Empty in Phase 0; Phase 2 porters add one row per
- * verb invocation they're porting.
+ * The parity matrix. Phase 3 iter-1 (per ADR-026) wires the 2 currently
+ * parity-green verbs: `version` (happy-path proof) + unknown-verb
+ * (`not-a-verb`, exit-code-class divergence proof).
  *
- * Reviewer rule: every new verb in `src/verbs/**` MUST add at least one
- * matrix row in the same commit. The reviewer's 8-check gate enforces
- * this via `tests/e2e/PORT-MAP.md` cross-reference (ADR-009 §4).
+ * The 4 wired-but-`test.todo` skeletons (init/start/send/add-member)
+ * stay parked: a probe at `/tmp/parity-probe` (2026-05-05) confirmed
+ * real bash↔TS divergence on the no-team error path — bash emits
+ * `💥 atmux …`/exit 1, TS emits `atmux: config: …`/exit 78 (BSD
+ * sysexits). Reconciliation is per-verb porter work + an open
+ * meta-decision (mirror-bash vs parity-mask exit codes); see
+ * ADR-026's deferred table for the durable handle.
  */
-export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [];
+export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
+  {
+    verb: "version",
+    args: [],
+    fixturePreset: "minimal",
+    expect: "exit-zero-stable-stdout",
+  },
+  {
+    verb: "not-a-verb",
+    args: [],
+    fixturePreset: "minimal",
+    expect: "exit-nonzero-stable-stderr",
+  },
+];
