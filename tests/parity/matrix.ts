@@ -95,4 +95,86 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     fixturePreset: "minimal",
     expect: "exit-nonzero-stable-stderr",
   },
+  // ADR-027 commit 4: state-mutating happy-path rows. Per the lead's
+  // dispatch (`adjust which 4 verbs you row` license), all four exercise
+  // `task add` shape variations rather than {task, dispatch, inbox, done}
+  // — dispatch involves tmux ping side effects, inbox has stylistic
+  // header divergence, and done depends on dispatch + member inference.
+  // Four `task add` variants cleanly isolate the state-mutation INSERT
+  // class without bringing other systems' divergences into commit-4
+  // scope. Variant coverage: bare subject / --priority / --body /
+  // --assignee. All use `lifecycle` preset (so the .atmux/ shape is
+  // present + Zod-validated). ADR-026 row 3 closes through this set.
+  {
+    verb: "task",
+    args: ["add", "parity-add"],
+    fixturePreset: "lifecycle",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: random task ID echoed to stdout (ADR-027 state-after class)
+      stdout: /t-[0-9a-f]{8}/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux added task t-[0-9a-f]{8}: [^\n]*\n?/,
+      stateAfter: {
+        // reason: 8-hex random per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].id": /^t-[0-9a-f]{8}$/,
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].createdAt": /^\d{10,}$/,
+      },
+    },
+  },
+  {
+    verb: "task",
+    args: ["add", "parity-prio", "--priority", "5"],
+    fixturePreset: "lifecycle",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: random task ID echoed to stdout (ADR-027 state-after class)
+      stdout: /t-[0-9a-f]{8}/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux added task t-[0-9a-f]{8}: [^\n]*\n?/,
+      stateAfter: {
+        // reason: 8-hex random per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].id": /^t-[0-9a-f]{8}$/,
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].createdAt": /^\d{10,}$/,
+      },
+    },
+  },
+  {
+    verb: "task",
+    args: ["add", "parity-body", "--body", "detailed description"],
+    fixturePreset: "lifecycle",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: random task ID echoed to stdout (ADR-027 state-after class)
+      stdout: /t-[0-9a-f]{8}/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux added task t-[0-9a-f]{8}: [^\n]*\n?/,
+      stateAfter: {
+        // reason: 8-hex random per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].id": /^t-[0-9a-f]{8}$/,
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].createdAt": /^\d{10,}$/,
+      },
+    },
+  },
+  {
+    verb: "task",
+    args: ["add", "parity-assignee", "--assignee", "lead"],
+    fixturePreset: "lifecycle",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: random task ID echoed to stdout (ADR-027 state-after class)
+      stdout: /t-[0-9a-f]{8}/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux added task t-[0-9a-f]{8}: [^\n]*\n?/,
+      stateAfter: {
+        // reason: 8-hex random per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].id": /^t-[0-9a-f]{8}$/,
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].createdAt": /^\d{10,}$/,
+      },
+    },
+  },
 ];
