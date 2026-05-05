@@ -235,7 +235,8 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | **023** | **LLM judge cascade — Sonnet → Haiku → deterministic fallback (resilience contract for SOFT classifier + future judge call sites)** | 2 | driver |
 | **024** | **Spawned-agent account matching — team members must run on driver's claude account; no cross-account spawns** | 2 | driver |
 | **025** | **`SendTarget` discriminated union — compile-time enforce "no send-keys to driver pane" (R-6 design)** | 2 | driver |
-| 026+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
+| **026** | **Parity matrix iter-1 scope (refs ADR-009 §3) — matrix wire-up + lifecycle preset + 4 state-mutating verb rows; multi-team / cron / remaining 16 verbs / CI gate / lcov-gate harness deferred to iter 2+** | 3 | driver |
+| 027+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 + Phase 3 iter-2+ | 2/3 | porters |
 
 ---
 
@@ -267,6 +268,8 @@ Ported as `tests/e2e/lifecycle.test.ts`, **10 sequenced beats matching `tests/e2
 ### 8.4 Functional parity (Phase 3)
 
 Parity harness exercises every cron-fired scenario (whip, report, decisions-digest, groom) and every interactive verb against fixture `.atmux/` dirs simulating the 4 prod teams' state shapes. Zero divergence required — no production observation period.
+
+**Phase 3 iter-1 scope** is carved out by **ADR-026** — matrix wire-up + lifecycle preset + 4 state-mutating verb rows. Multi-team fixture variants, cron-fired scenario coverage, the remaining 16 verbs, CI gate wiring, and lcov-gate harness inclusion are durable handles deferred to iter 2+. This avoids the maximalist-port trap that ADR-019 (doctor) and ADR-022 (whip) carved out of, while still landing immediate parity progress on the highest-value vulnerability class (kanban UPDATE-path).
 
 ---
 
