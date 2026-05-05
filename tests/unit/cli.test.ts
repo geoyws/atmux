@@ -1,106 +1,243 @@
-// Unit tests for src/cli.ts (ADR-010).
-// Tracked under the ADR-009 §2 narrowed denominator — `src/cli.ts` was
-// pulled into the tracked set by architect's review-verdict refinement
-// (commit 64898c7) and the bunfig.toml comment ratifies it: cli.ts
-// dispatch logic IS unit-testable (alias routing, unknown-verb path,
-// version path) and SHOULD be tracked, not excluded. 100% required.
+// Unit tests for src/cli.ts (ADR-010 + ADR-006 top-level catch).
 //
-// The Phase-1 minimal dispatcher only routes `version` (+ aliases) and
-// emits `unknown verb` to stderr for everything else. These tests cover
-// every dispatch branch:
-//   - "version" → returns 0, prints version
-//   - "--version" alias → same
-//   - "-V" alias → same
-//   - unknown verb → exit 1 + stderr message
-//   - empty argv (verb defaults to "") → unknown-verb branch with "<none>" label
+// `src/cli.ts` is in the tracked coverage denominator per architect's
+// review-verdict refinement (commit `64898c7`) and the bunfig.toml
+// comment ratifies it: cli.ts dispatch logic IS unit-testable
+// (alias routing, unknown-verb exit code, reportError tag → exit
+// mapping) and SHOULD be tracked, not excluded. 100% required.
+//
+// Coverage map for the dispatcher + reportError:
+//   - "version" / "--version" / "-V" → exit 0 (bash parity, all 3 forms)
+//   - unknown verb → exit 64 + "atmux: unknown verb: <verb>" + 2-space
+//     hint line. Byte-matches bash `bin/atmux:324-328`.
+//   - empty argv → unknown-verb path with "<none>" label
+//   - reportError UsageError (no hint) — covers the no-hint branch
+//   - reportError other AtmuxError → exitCodeForTag mapping (e.g.
+//     FsError → 1, HttpTimeoutError → 75, ConfigError → 78)
+//   - reportError AtmuxError + ATMUX_DEBUG=1 → cause chain on stderr
+//   - reportError plain Error → exit 99 + stack
+//   - reportError Error without `.stack` → falls back to `.message`
+//   - reportError non-Error throw (e.g. string) → exit 99 + String(err)
 
-import { describe, expect, test } from "bun:test";
-import { main } from "../../src/cli.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { main, reportError } from "../../src/cli.ts";
+import { ConfigError, FsError, HttpTimeoutError, UsageError } from "../../src/errors.ts";
+
+// ---------- Test scaffolding ----------
+
+interface CapturedIO {
+  exit: number;
+  stdout: string;
+  stderr: string;
+}
 
 /**
- * Capture stdout + stderr of a `main()` invocation. Restoring the
- * originals in `finally` keeps the test runner's own logging intact
- * even if the assertion throws.
+ * Capture both `console.log` (the version verb's print) and
+ * `process.stderr.write` (reportError's output). Restores both in
+ * `finally` even if the assertion throws.
  */
-async function captureMain(argv: ReadonlyArray<string>): Promise<{
-  exit: number;
-  stdout: string[];
-  stderr: string[];
-}> {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
+async function captureMain(argv: ReadonlyArray<string>): Promise<CapturedIO> {
+  let stdoutBuf = "";
+  let stderrBuf = "";
   const origLog = console.log;
-  const origErr = console.error;
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
   console.log = (msg: unknown) => {
-    stdout.push(String(msg));
+    stdoutBuf += `${String(msg)}\n`;
   };
-  console.error = (msg: unknown) => {
-    stderr.push(String(msg));
-  };
+  process.stderr.write = ((s: string | Uint8Array) => {
+    stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return true;
+  }) as typeof process.stderr.write;
   try {
     const exit = await main(argv);
-    return { exit, stdout, stderr };
+    return { exit, stdout: stdoutBuf, stderr: stderrBuf };
   } finally {
     console.log = origLog;
-    console.error = origErr;
+    process.stderr.write = origStderrWrite;
   }
 }
 
-describe("cli.main — dispatch", () => {
-  test("'version' routes to the version verb (exit 0, prints `atmux 0.3.0`)", async () => {
+/** Capture only stderr around a synchronous `reportError` call. */
+function captureReport(err: unknown): { exit: number; stderr: string } {
+  let stderrBuf = "";
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((s: string | Uint8Array) => {
+    stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const exit = reportError(err);
+    return { exit, stderr: stderrBuf };
+  } finally {
+    process.stderr.write = origStderrWrite;
+  }
+}
+
+// ---------- Dispatch — happy paths (bash-parity aliases) ----------
+
+describe("cli.main — version verb (3-form parity with bash)", () => {
+  test("'version' → exit 0, prints 'atmux 0.3.0'", async () => {
     const { exit, stdout, stderr } = await captureMain(["version"]);
     expect(exit).toBe(0);
-    expect(stdout).toEqual(["atmux 0.3.0"]);
-    expect(stderr).toEqual([]);
+    expect(stdout).toBe("atmux 0.3.0\n");
+    expect(stderr).toBe("");
   });
 
-  test("'--version' alias routes to version verb", async () => {
+  test("'--version' alias → exit 0, prints 'atmux 0.3.0' (bash parity)", async () => {
     const { exit, stdout, stderr } = await captureMain(["--version"]);
     expect(exit).toBe(0);
-    expect(stdout).toEqual(["atmux 0.3.0"]);
-    expect(stderr).toEqual([]);
+    expect(stdout).toBe("atmux 0.3.0\n");
+    expect(stderr).toBe("");
   });
 
-  test("'-V' alias routes to version verb", async () => {
+  test("'-V' alias → exit 0, prints 'atmux 0.3.0' (bash parity)", async () => {
     const { exit, stdout, stderr } = await captureMain(["-V"]);
     expect(exit).toBe(0);
-    expect(stdout).toEqual(["atmux 0.3.0"]);
-    expect(stderr).toEqual([]);
-  });
-
-  test("unknown verb → exit 1 + named stderr line", async () => {
-    const { exit, stdout, stderr } = await captureMain(["bogus"]);
-    expect(exit).toBe(1);
-    expect(stdout).toEqual([]);
-    expect(stderr).toEqual(["atmux-bun: unknown verb: bogus"]);
-  });
-
-  test("empty argv → unknown-verb path with '<none>' label", async () => {
-    // `verb = argv[0] ?? ""` then the false-branch of `verb || "<none>"`
-    // fires — exercises the falsy-coalesce path explicitly, otherwise
-    // branch coverage for that `||` would miss the empty-string side.
-    const { exit, stdout, stderr } = await captureMain([]);
-    expect(exit).toBe(1);
-    expect(stdout).toEqual([]);
-    expect(stderr).toEqual(["atmux-bun: unknown verb: <none>"]);
+    expect(stdout).toBe("atmux 0.3.0\n");
+    expect(stderr).toBe("");
   });
 });
 
-describe("cli — bin/atmux-bun entrypoint integration", () => {
-  // `src/cli.ts` is a pure library (no module-level side effects per
-  // ADR-009 §2 + ADR-010). The canonical TS entrypoint is `bin/atmux-bun`,
-  // which forwards to `main(...)` and `process.exit`s with the result.
-  // These tests exercise the actual entrypoint as a subprocess so a
-  // refactor that breaks the bin shim's exit-code propagation surfaces
-  // here, not at parity-harness time.
-  //
-  // CLAUDE.md "verify green from the right path" — the bin shim is
-  // what cron / users invoke; testing only the library would miss
-  // shim-level regressions (wrong argv slicing, exit-code dropping).
+// ---------- Dispatch — unknown verb (bash parity exit 64) ----------
 
+describe("cli.main — unknown-verb path (bash bin/atmux:324-328 byte-parity)", () => {
+  test("unknown verb 'bogus' → exit 64 + bash-format two-line stderr", async () => {
+    const { exit, stdout, stderr } = await captureMain(["bogus"]);
+    // Exit code: bash bats spec `tests/unit/cli.bats:42` asserts 64.
+    expect(exit).toBe(64);
+    // No stdout — entire output is on stderr.
+    expect(stdout).toBe("");
+    // Byte-match bash's two-line format.
+    expect(stderr).toBe("atmux: unknown verb: bogus\n  run 'atmux help' for the list of verbs\n");
+  });
+
+  test("unknown verb 'fake' → exit 64 + verb name interpolated", async () => {
+    const { exit, stderr } = await captureMain(["fake"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux: unknown verb: fake");
+  });
+
+  test("empty argv → exit 64 + '<none>' label in stderr", async () => {
+    const { exit, stdout, stderr } = await captureMain([]);
+    expect(exit).toBe(64);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("atmux: unknown verb: <none>\n  run 'atmux help' for the list of verbs\n");
+  });
+});
+
+// ---------- reportError — branch-direct coverage ----------
+
+describe("reportError — UsageError variants", () => {
+  test("UsageError without hint → exit 64, no second line", () => {
+    const { exit, stderr } = captureReport(new UsageError({ what: "missing arg" }));
+    expect(exit).toBe(64);
+    expect(stderr).toBe("atmux: missing arg\n");
+  });
+
+  test("UsageError with hint → exit 64, hint on indented second line", () => {
+    const { exit, stderr } = captureReport(
+      new UsageError({ what: "bad flag", hint: "see 'atmux help'" }),
+    );
+    expect(exit).toBe(64);
+    expect(stderr).toBe("atmux: bad flag\n  see 'atmux help'\n");
+  });
+});
+
+describe("reportError — non-Usage AtmuxError → exitCodeForTag", () => {
+  // Restore ATMUX_DEBUG between tests so the debug-on test doesn't leak.
+  const SAVED_DEBUG = process.env.ATMUX_DEBUG;
+  beforeEach(() => {
+    delete process.env.ATMUX_DEBUG;
+  });
+  afterEach(() => {
+    if (SAVED_DEBUG === undefined) delete process.env.ATMUX_DEBUG;
+    else process.env.ATMUX_DEBUG = SAVED_DEBUG;
+  });
+
+  test("FsError → exit 1 (default tag mapping)", () => {
+    const err = new FsError({ path: "/nope", op: "read", cause: new Error("ENOENT") });
+    const { exit, stderr } = captureReport(err);
+    expect(exit).toBe(1);
+    expect(stderr).toContain("atmux: fs:");
+    expect(stderr).toContain("fs read failed on /nope");
+  });
+
+  test("HttpTimeoutError → exit 75 (EX_TEMPFAIL)", () => {
+    const err = new HttpTimeoutError({
+      url: "https://x/y",
+      method: "GET",
+      timeoutMs: 5000,
+    });
+    const { exit, stderr } = captureReport(err);
+    expect(exit).toBe(75);
+    expect(stderr).toContain("atmux: http-timeout:");
+  });
+
+  test("ConfigError → exit 78 (EX_CONFIG)", () => {
+    const err = new ConfigError({ what: "no team.json", hint: "run atmux init" });
+    const { exit, stderr } = captureReport(err);
+    expect(exit).toBe(78);
+    expect(stderr).toContain("atmux: config:");
+  });
+
+  test("ATMUX_DEBUG=1 appends cause chain to stderr", () => {
+    process.env.ATMUX_DEBUG = "1";
+    const root = new Error("ENOENT: no such file");
+    const err = new FsError({ path: "/x", op: "read", cause: root });
+    const { exit, stderr } = captureReport(err);
+    expect(exit).toBe(1);
+    expect(stderr).toContain("atmux: fs:");
+    // formatErrorChain output includes the cause's message.
+    expect(stderr).toContain("ENOENT: no such file");
+  });
+
+  test("ATMUX_DEBUG empty-string is treated as unset (no chain)", () => {
+    process.env.ATMUX_DEBUG = "";
+    const err = new FsError({ path: "/x", op: "read", cause: new Error("ENOENT") });
+    const { exit, stderr } = captureReport(err);
+    expect(exit).toBe(1);
+    // No chain — only the single header line.
+    expect(stderr).toBe("atmux: fs: fs read failed on /x\n");
+  });
+});
+
+describe("reportError — non-Atmux failures → exit 99", () => {
+  test("plain Error with stack → 'atmux: internal error' + stack", () => {
+    const e = new Error("kaboom");
+    const { exit, stderr } = captureReport(e);
+    expect(exit).toBe(99);
+    expect(stderr).toContain("atmux: internal error");
+    // Stack trace includes the error name + message.
+    expect(stderr).toContain("Error: kaboom");
+  });
+
+  test("Error without stack falls back to message", () => {
+    const e = new Error("no-stack-here");
+    // Force `.stack` to undefined (defensive fallback path).
+    Object.defineProperty(e, "stack", { value: undefined, configurable: true });
+    const { exit, stderr } = captureReport(e);
+    expect(exit).toBe(99);
+    expect(stderr).toContain("atmux: internal error");
+    expect(stderr).toContain("no-stack-here");
+  });
+
+  test("non-Error throw (string) → exit 99 + String(err)", () => {
+    const { exit, stderr } = captureReport("raw-string-thrown");
+    expect(exit).toBe(99);
+    expect(stderr).toContain("atmux: internal error");
+    expect(stderr).toContain("raw-string-thrown");
+  });
+});
+
+// ---------- bin/atmux-bun shim integration ----------
+
+describe("cli — bin/atmux-bun entrypoint integration", () => {
+  // CLAUDE.md "verify green from the right path" — the bin shim is what
+  // cron / users invoke. Testing only the library would miss shim-level
+  // regressions (wrong argv slicing, exit-code dropping at process.exit).
   const REPO_ROOT = import.meta.dir.replace(/\/tests\/unit$/, "");
 
-  test("`bin/atmux-bun version` exits 0 + prints `atmux 0.3.0`", async () => {
+  test("`bin/atmux-bun version` exits 0 + prints 'atmux 0.3.0'", async () => {
     const proc = Bun.spawn({
       cmd: ["bun", "run", "bin/atmux-bun", "version"],
       cwd: REPO_ROOT,
@@ -117,7 +254,7 @@ describe("cli — bin/atmux-bun entrypoint integration", () => {
     expect(stderr).toBe("");
   });
 
-  test("`bin/atmux-bun bogus` exits 1 + prints unknown-verb stderr", async () => {
+  test("`bin/atmux-bun bogus` exits 64 + prints bash-format unknown-verb stderr", async () => {
     const proc = Bun.spawn({
       cmd: ["bun", "run", "bin/atmux-bun", "bogus"],
       cwd: REPO_ROOT,
@@ -129,8 +266,8 @@ describe("cli — bin/atmux-bun entrypoint integration", () => {
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
-    expect(exit).toBe(1);
+    expect(exit).toBe(64);
     expect(stdout).toBe("");
-    expect(stderr).toBe("atmux-bun: unknown verb: bogus\n");
+    expect(stderr).toBe("atmux: unknown verb: bogus\n  run 'atmux help' for the list of verbs\n");
   });
 });

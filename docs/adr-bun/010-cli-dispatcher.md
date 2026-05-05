@@ -210,6 +210,26 @@ if (SUBCOMMAND_VERBS.has(verb)) {
 
 The flat-file convention (`src/verbs/whip.ts`) and folder-with-subs convention (`src/verbs/task/add.ts`) coexist. v1 ships flat-only; v2 adds folders without touching v1 verbs. Deprecation aliases for old top-level `claim`/`done` route to the new subcommands during the deprecation window.
 
+### Strict bash parity — exit-code mapping (2026-05-05 amend)
+
+**Context.** Bash `bin/atmux:324-328` emits a two-line stderr and exits with code 64 when the dispatched verb resolves to a missing `lib/<verb>.sh`:
+
+    atmux: unknown verb: <verb>
+      run 'atmux help' for the list of verbs
+
+The parity expectation is captured in `tests/unit/cli.bats:41-44`. The original TS dispatcher returned `1`. Caught by porter-foundation-2's source-cited audit during Task #9 review.
+
+**Decision.** The TS dispatcher uses typed-error routing (per ADR-006 R6) for ALL non-success exit paths. The unknown-verb branch throws `UsageError`, caught at the top-level dispatcher, mapped to exit code via `exitCodeForTag(err.tag)`. Bare numeric `return N` is forbidden in `src/cli.ts` outside the success-path `return 0`.
+
+**Consequences.**
+- Phase 2 verb dispatchers inherit this pattern: any new error path throws a tagged `AtmuxError` subclass; the dispatcher's top-level catch handles tag→exit-code mapping uniformly.
+- Adding a new exit-code-bearing error class (e.g., `LockTimeoutError` → 75 BSD `EX_TEMPFAIL`) requires only:
+  1. Subclass `AtmuxError` with the tag.
+  2. Add tag → exit code in `exitCodeForTag()` (ADR-006 §exit-code table).
+  3. Throw it from the relevant verb. Dispatcher needs no change.
+- Closes the original 1-vs-64 divergence with the bash reference at `bin/atmux:324-328`.
+- Unblocks the parity harness's `not-a-verb` exit-code-divergence proof (Task #11).
+
 ## Consequences
 
 **Positives:**
