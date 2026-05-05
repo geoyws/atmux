@@ -140,6 +140,20 @@ describe("cli.main — send verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — task verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/task.test.ts) ----------
+
+describe("cli.main — task verb dispatch", () => {
+  test("'task bogus' dispatches into task (UsageError on unknown subverb)", async () => {
+    // task verb throws UsageError on unknown subverb — exit 64. Pins
+    // the `case "task":` line; deep verb behaviour lives in
+    // tests/unit/verbs/task.test.ts.
+    const { exit, stderr } = await captureMain(["task", "bogus"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 // ---------- Dispatch — start verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/start.test.ts) ----------
 
