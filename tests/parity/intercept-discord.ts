@@ -1,24 +1,27 @@
-// ADR-009 §3 + ADR-008 (forthcoming): Discord recording stub.
+// ADR-009 §3 + ADR-008 §"Test interception": Discord recording stub.
 //
-// Both bash and TS atmux MUST honour the same env-override knob during
-// parity runs — instead of POSTing each Discord webhook call to the live
-// webhook, they write a JSONL line to a harness-managed sink. The harness
-// then reads the sink back as `DiscordCall[]` and feeds it into compare().
+// Both bash and TS atmux honour `ATMUX_DISCORD_RECORDER` — instead of
+// POSTing each Discord webhook call to the live webhook, they append a
+// JSONL line to the file at that path. The harness reads the sink back
+// as `DiscordCall[]` and feeds it into compare().
 //
-// The MECHANISM choice (env-override `ATMUX_DISCORD_WEBHOOK_URL=file://...`
-// vs script-override `ATMUX_DISCORD_PING_SCRIPT=stub.sh`) belongs to
-// ADR-008. This file ratifies the SHAPE bash + TS converge on:
-//
-//   - One JSONL line per Discord call.
-//   - Each line is `{"ts": "<ISO-8601>", "payload": <webhook-body>}`.
+// MECHANISM (ADR-008 §"Test interception"):
+//   - Env var `ATMUX_DISCORD_RECORDER=<sink-path>`
+//   - Each call appends one JSONL line: `{ts: ISO-8601, payload: <body>}`
 //   - The `runner: bash|ts` discriminator is added by the harness on
-//     read-back (the binaries themselves don't need to know which side
-//     they are — they just write JSONL to the sink path the harness sets).
+//     read-back (binaries don't need to know which side they are).
 //
-// Phase 0: skeleton. The functions throw `not-implemented`; ADR-008 +
-// foundation porter (Phase 1) wire the actual stub script and the
-// JSONL-reader.
+// Bash-side support for `ATMUX_DISCORD_RECORDER` is a porter-B Phase 2
+// follow-up per ADR-008's references. Until that lands, the bash side
+// will emit zero calls when `ATMUX_DISCORD_WEBHOOK=""` (the harness sets
+// this as a belt-and-suspenders no-pong guard) — both sides produce empty
+// `DiscordCall[]` and parity-green is honest. Verbs that emit Discord
+// (whip, report, ...) need the bash-side recorder support before they
+// become parity-testable.
 
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { DiscordCall, ParitySide } from "./runner.ts";
 
 /**
@@ -28,7 +31,7 @@ import type { DiscordCall, ParitySide } from "./runner.ts";
  *
  * `cleanup()` removes the sink file. Caller (`runner.ts`) MUST always
  * `await cleanup()` after reading, even on test failure (handled via
- * `bun:test` `afterEach`).
+ * try/finally in `runner.ts`).
  */
 export type DiscordInterceptor = {
   /** Path to the JSONL sink (one line per call). */
@@ -44,16 +47,70 @@ export type DiscordInterceptor = {
 /**
  * Allocate a fresh JSONL sink for one parity-run pair.
  *
- * Phase 1 implementation responsibilities (TODO):
- *   1. `mkdtemp` under `os.tmpdir()/atmux-parity-XXXX/`.
- *   2. Touch `webhook.jsonl`.
- *   3. Build `env` per ADR-008 (knob TBD).
+ * Steps:
+ *   1. `mkdtemp` under `os.tmpdir()/atmux-parity-discord-XXXX/`.
+ *   2. Touch `webhook.jsonl` (so empty-call runs read back `[]` cleanly).
+ *   3. Build `env` per ADR-008 §"Test interception".
  *   4. Return descriptor.
  */
 export async function prepareInterceptor(): Promise<DiscordInterceptor> {
-  throw new Error(
-    "prepareInterceptor(): not implemented (Phase 0 skeleton — ADR-008 ratifies env-knob choice; see ADR-009 §3)",
-  );
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "atmux-parity-discord-"));
+  const sinkPath = path.join(dir, "webhook.jsonl");
+  await fs.writeFile(sinkPath, "");
+
+  let cleaned = false;
+  return {
+    sinkPath,
+    env: {
+      ATMUX_DISCORD_RECORDER: sinkPath,
+    },
+    readCalls: async (side: ParitySide): Promise<DiscordCall[]> => {
+      let raw: string;
+      try {
+        raw = await fs.readFile(sinkPath, "utf8");
+      } catch (err) {
+        if (err instanceof Error && "code" in err && (err as { code?: string }).code === "ENOENT") {
+          return [];
+        }
+        throw err;
+      }
+      const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+      const calls: DiscordCall[] = [];
+      for (const line of lines) {
+        // tests/parity/ has the explicit JSON.parse carve-out (ADR-009
+        // §3.5 rule applies to src/**, not tests/**). Each malformed
+        // line surfaces as a synthetic record so the comparator emits
+        // a divergence rather than the harness throwing.
+        let parsed: { ts?: unknown; payload?: unknown };
+        try {
+          parsed = JSON.parse(line) as { ts?: unknown; payload?: unknown };
+        } catch {
+          calls.push({
+            ts: "<unparseable>",
+            payload: { content: line },
+            runner: side,
+          });
+          continue;
+        }
+        const ts = typeof parsed.ts === "string" ? parsed.ts : "<missing-ts>";
+        const payload =
+          parsed.payload && typeof parsed.payload === "object"
+            ? (parsed.payload as { content: string; [k: string]: unknown })
+            : { content: line };
+        calls.push({ ts, payload, runner: side });
+      }
+      return calls;
+    },
+    cleanup: async () => {
+      if (cleaned) return;
+      cleaned = true;
+      try {
+        await fs.rm(dir, { recursive: true, force: true });
+      } catch {
+        // expected: idempotent — already removed by another teardown path
+      }
+    },
+  };
 }
 
 /**

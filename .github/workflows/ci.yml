@@ -88,12 +88,15 @@ jobs:
         # is honest and explicit (no silent vacuous-green).
         run: bun tests/lcov-gate.ts
 
-      - name: Parity matrix (skeleton — empty until Phase 1)
-        # ADR-009 §3 — parity harness lives at tests/parity/. In Phase 0
-        # this runs an empty matrix (or stub-only divergences masked) to
-        # prove the runner type-checks + dispatches. Phase 2 onwards every
-        # ported verb adds a row to tests/parity/matrix.ts.
-        run: bun test tests/parity
+      - name: Parity harness (version verb — first operational stub)
+        # ADR-009 §3 — parity harness lives at tests/parity/. The
+        # `version` verb is the first operational parity-verb stub per
+        # PLAN.md §14 Phase 1 → Phase 2 exit gate ("parity harness
+        # operational with at least one stub TS verb"). Subsequent verbs
+        # add rows to tests/parity/matrix.ts as they land in Phase 2;
+        # this step runs the full parity dir so any new *.test.ts file
+        # gets exercised without further CI edits.
+        run: bun run test:parity
 
       - name: Upload coverage artifact
         if: always()
