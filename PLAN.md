@@ -194,6 +194,8 @@ Pin the contract with the Claude skills plugin (`~/.claude/skills/coordination/`
 | I-2 | Window-name detection: marker file `~/.claude/teams/<team>/lead-window-name.txt` + `atmux which <kind> [name]` subcommand | immediate | ⏳ pending |
 | I-3 | Driver-inbox path alignment (`.atmux/driver-inbox.md` ↔ `~/.claude/teams/<team>/driver-inbox.md`) — pick canonical | deferred (V-25) | ⏳ pending |
 | I-4 | `/coordination:team` skill shim — atmux as the runtime backend for `/team start|stop|cleanup|rotate-lead` | deferred (V-25) | ⏳ pending |
+| I-5 | `atmux cage attach <name>` UX — one-shot attach to a named cage (`unum` / `sopx` / `atmux` / etc.) without remembering the tmpdir socket. Probably `atmux cage <verb>` sub-namespace mirroring how `atmux task <verb>` is structured. **Captured 2026-05-05 — George's request: "make sure there's an easy way for users to attach to the cages."** | deferred (Phase 5 cage) | ⏳ pending |
+| I-6 | Discord decision-defence surfacing — every autonomous lead decision (planner-recommended default applied without escalation) posts a context+rationale bullet to Discord (`📋 [autonomous-decision]` named template). Driver/George can react to reverse or amend. Builds on the §"Lead makes its own recommended decisions" rule in CLAUDE.md — currently the rule is followed but the Discord surfacing isn't automated. Lands alongside V-25 whip (whip is already the Discord-pinging supervisor). **Captured 2026-05-05 — George's request: "surface context and decision defence to Discord for all autonomous decisions made so I can go in there to reverse or to add into the decision made."** | deferred (V-25 + new template) | ⏳ pending |
 
 I-* IDs (like R-* and V-*) are stable across `/clear` cycles; flip Status only, never renumber.
 
