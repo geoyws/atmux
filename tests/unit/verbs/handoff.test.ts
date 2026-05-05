@@ -23,8 +23,6 @@ import {
   buildHandoffNoteAsk,
   buildScreenCaptureNote,
   defaultBuildTmux,
-  defaultStderrWrite,
-  defaultStdoutWrite,
   handoff,
   handoffTimestamp,
   migrateInboxes,
@@ -258,36 +256,12 @@ describe("resolveCaptureLines", () => {
 
 // ---------- default helpers ----------
 
-describe("defaultBuildTmux / defaultStdoutWrite / defaultStderrWrite", () => {
-  test("defaultBuildTmux returns a TmuxNamespace pinned to socketPath (no spawn)", () => {
+describe("defaultBuildTmux", () => {
+  test("returns a TmuxNamespace pinned to socketPath (no spawn)", () => {
     const ns = defaultBuildTmux("/tmp/atmux-handoff-default-noop/sock");
     expect(typeof ns.window.listWindows).toBe("function");
     expect(typeof ns.pane.capturePane).toBe("function");
     expect(typeof ns.buffer.loadBuffer).toBe("function");
-  });
-
-  test("defaultStdoutWrite + defaultStderrWrite forward to process.stdout/stderr.write", () => {
-    let stdoutBuf = "";
-    let stderrBuf = "";
-    const origStdout = process.stdout.write.bind(process.stdout);
-    const origStderr = process.stderr.write.bind(process.stderr);
-    process.stdout.write = ((s: string | Uint8Array) => {
-      stdoutBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stdout.write;
-    process.stderr.write = ((s: string | Uint8Array) => {
-      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stderr.write;
-    try {
-      defaultStdoutWrite("ho-out\n");
-      defaultStderrWrite("ho-err\n");
-      expect(stdoutBuf).toBe("ho-out\n");
-      expect(stderrBuf).toBe("ho-err\n");
-    } finally {
-      process.stdout.write = origStdout;
-      process.stderr.write = origStderr;
-    }
   });
 });
 

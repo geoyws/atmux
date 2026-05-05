@@ -25,8 +25,6 @@ import {
   computeMemberCost,
   computeTeamCost,
   cost,
-  defaultStderrWrite,
-  defaultStdoutWrite,
   emptyDetail,
   formatEpochUtc,
   formatJsonReport,
@@ -585,34 +583,6 @@ describe("writeCostCache", () => {
     const parsed = JSON.parse(text) as CostDetail;
     expect(parsed.member).toBe("alpha");
     expect(text.endsWith("\n")).toBe(true);
-  });
-});
-
-// ---------- defaultStdoutWrite / defaultStderrWrite ----------
-
-describe("defaultStdoutWrite / defaultStderrWrite", () => {
-  test("forward to process.stdout/stderr.write", () => {
-    let stdoutBuf = "";
-    let stderrBuf = "";
-    const origStdout = process.stdout.write.bind(process.stdout);
-    const origStderr = process.stderr.write.bind(process.stderr);
-    process.stdout.write = ((s: string | Uint8Array) => {
-      stdoutBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stdout.write;
-    process.stderr.write = ((s: string | Uint8Array) => {
-      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stderr.write;
-    try {
-      defaultStdoutWrite("c-out\n");
-      defaultStderrWrite("c-err\n");
-      expect(stdoutBuf).toBe("c-out\n");
-      expect(stderrBuf).toBe("c-err\n");
-    } finally {
-      process.stdout.write = origStdout;
-      process.stderr.write = origStderr;
-    }
   });
 });
 

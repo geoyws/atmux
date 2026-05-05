@@ -21,8 +21,6 @@ import type { KanbanTask } from "../../../src/schema/kanban.ts";
 import {
   buildDiscordSections,
   buildReportBody,
-  defaultStderrWrite,
-  defaultStdoutWrite,
   formatTaskRow,
   parseReportArgs,
   readLastReportEpoch,
@@ -319,34 +317,6 @@ describe("readLastReportEpoch / writeLastReportEpoch", () => {
     await mkdir(join(dir, "state"), { recursive: true });
     await writeFile(join(dir, "state", "last-report.epoch"), "   42  \n");
     expect(await readLastReportEpoch(dir)).toBe(42);
-  });
-});
-
-// ---------- defaultStdoutWrite / defaultStderrWrite ----------
-
-describe("defaultStdoutWrite / defaultStderrWrite", () => {
-  test("forward to process.stdout/stderr.write", () => {
-    let stdoutBuf = "";
-    let stderrBuf = "";
-    const origStdout = process.stdout.write.bind(process.stdout);
-    const origStderr = process.stderr.write.bind(process.stderr);
-    process.stdout.write = ((s: string | Uint8Array) => {
-      stdoutBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stdout.write;
-    process.stderr.write = ((s: string | Uint8Array) => {
-      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stderr.write;
-    try {
-      defaultStdoutWrite("rep-out\n");
-      defaultStderrWrite("rep-err\n");
-      expect(stdoutBuf).toBe("rep-out\n");
-      expect(stderrBuf).toBe("rep-err\n");
-    } finally {
-      process.stdout.write = origStdout;
-      process.stderr.write = origStderr;
-    }
   });
 });
 

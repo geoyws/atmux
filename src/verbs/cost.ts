@@ -30,6 +30,7 @@ import { z } from "zod";
 import { exists, statOrNull } from "../abstractions/fs.ts";
 import { tryParseJsonString, tryReadJson } from "../abstractions/json.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDir } from "../core/common.ts";
+import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 import { DEFAULT_PRICING, Pricing, pricingFor } from "../schema/pricing.ts";
 import type { TeamMember } from "../schema/team.ts";
@@ -418,9 +419,9 @@ export function formatEpochUtc(epochSec: number): string {
 
 export interface CostOpts {
   /** stdout sink. Defaults to `process.stdout.write`. */
-  stdout?: (line: string) => void;
+  stdout?: Writer;
   /** stderr sink. Defaults to `process.stderr.write`. */
-  stderr?: (line: string) => void;
+  stderr?: Writer;
   /** ENV override (test injection). Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
   /** Home dir override; defaults to `os.homedir()`. */
@@ -429,14 +430,6 @@ export interface CostOpts {
   computeMember?: typeof computeMemberCost;
   /** writeCostCache override (test injection). */
   writeCache?: typeof writeCostCache;
-}
-
-export function defaultStdoutWrite(s: string): boolean {
-  return process.stdout.write(s);
-}
-
-export function defaultStderrWrite(s: string): boolean {
-  return process.stderr.write(s);
 }
 
 /** `atmux cost [--member <name>] [--since <iso|epoch>] [--json]`. */

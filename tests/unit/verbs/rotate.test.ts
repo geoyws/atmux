@@ -20,8 +20,6 @@ import {
   defaultBriefsDir,
   defaultBuildTmux,
   defaultSleep,
-  defaultStderrWrite,
-  defaultStdoutWrite,
   findLeadMember,
   getBriefPath,
   parseRotateArgs,
@@ -189,32 +187,6 @@ describe("defaultBuildTmux", () => {
     expect(typeof ns.window.listWindows).toBe("function");
     expect(typeof ns.pane.sendKeys).toBe("function");
     expect(typeof ns.buffer.loadBuffer).toBe("function");
-  });
-});
-
-describe("defaultStdoutWrite / defaultStderrWrite", () => {
-  test("forward to process.stdout.write / process.stderr.write", () => {
-    let stdoutBuf = "";
-    let stderrBuf = "";
-    const origStdout = process.stdout.write.bind(process.stdout);
-    const origStderr = process.stderr.write.bind(process.stderr);
-    process.stdout.write = ((s: string | Uint8Array) => {
-      stdoutBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stdout.write;
-    process.stderr.write = ((s: string | Uint8Array) => {
-      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stderr.write;
-    try {
-      defaultStdoutWrite("hi-out\n");
-      defaultStderrWrite("hi-err\n");
-      expect(stdoutBuf).toBe("hi-out\n");
-      expect(stderrBuf).toBe("hi-err\n");
-    } finally {
-      process.stdout.write = origStdout;
-      process.stderr.write = origStderr;
-    }
   });
 });
 

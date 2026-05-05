@@ -40,6 +40,7 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 import { Inbox } from "../schema/inbox.ts";
 import { Kanban } from "../schema/kanban.ts";
@@ -630,18 +631,10 @@ export function renderJson(report: DoctorReport): string {
 // ---------- Public verb entry ----------
 
 export interface DoctorOpts {
-  stdout?: (s: string) => void;
-  stderr?: (s: string) => void;
+  stdout?: Writer;
+  stderr?: Writer;
   /** Inject the underlying check executors (test override). */
   runChecks?: (atmuxDir: string, team: Team | null) => Promise<DoctorRow[]>;
-}
-
-export function defaultStdoutWrite(s: string): boolean {
-  return process.stdout.write(s);
-}
-
-export function defaultStderrWrite(s: string): boolean {
-  return process.stderr.write(s);
 }
 
 /** Default chain — all in-scope checks invoked in bash main() order. */

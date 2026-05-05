@@ -64,6 +64,7 @@ import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
+import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
@@ -165,7 +166,7 @@ export interface InitOptions {
   /** Logger override (test injection); defaults to stderr-bound default. */
   logger?: Logger;
   /** stdout sink override (test injection); defaults to `process.stdout.write`. */
-  stdout?: (line: string) => void;
+  stdout?: Writer;
 }
 
 /**
@@ -304,7 +305,7 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   // emit color-stripped output (bash via `[[ -t 1 ]]`; TS via
   // `defaultPalette`'s isTty + NO_COLOR detection in src/core/tui.ts).
   const logger = opts.logger ?? createLogger();
-  const stdout = opts.stdout ?? defaultStdout;
+  const stdout = opts.stdout ?? defaultStdoutWrite;
   logger.ok(`initialized atmux team '${teamName}' at ${dir}`);
   stdout("\n");
   stdout("Next:\n");
@@ -315,6 +316,3 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   return 0;
 }
 
-function defaultStdout(line: string): void {
-  process.stdout.write(line);
-}

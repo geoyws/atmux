@@ -26,8 +26,6 @@ import {
   checkTuis,
   checkWebhook,
   type DoctorRow,
-  defaultStderrWrite,
-  defaultStdoutWrite,
   doctor,
   findPhantomInboxes,
   firstBin,
@@ -706,34 +704,6 @@ describe("renderJson", () => {
     };
     expect(parsed.checks[0]?.detail).toBe("");
     expect(parsed.checks[0]?.hint).toBe("");
-  });
-});
-
-// ---------- defaultStdoutWrite / defaultStderrWrite ----------
-
-describe("defaultStdoutWrite / defaultStderrWrite", () => {
-  test("forward to process.stdout/stderr.write", () => {
-    let stdoutBuf = "";
-    let stderrBuf = "";
-    const origStdout = process.stdout.write.bind(process.stdout);
-    const origStderr = process.stderr.write.bind(process.stderr);
-    process.stdout.write = ((s: string | Uint8Array) => {
-      stdoutBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stdout.write;
-    process.stderr.write = ((s: string | Uint8Array) => {
-      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-      return true;
-    }) as typeof process.stderr.write;
-    try {
-      defaultStdoutWrite("d-out\n");
-      defaultStderrWrite("d-err\n");
-      expect(stdoutBuf).toBe("d-out\n");
-      expect(stderrBuf).toBe("d-err\n");
-    } finally {
-      process.stdout.write = origStdout;
-      process.stderr.write = origStderr;
-    }
   });
 });
 

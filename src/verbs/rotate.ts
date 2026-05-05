@@ -20,6 +20,7 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
@@ -144,9 +145,9 @@ export interface RotateOpts {
   /** Override the briefs directory (test injection). */
   briefsDir?: string;
   /** Override `process.stdout.write`-shaped sink (test injection). */
-  stdout?: (line: string) => void;
+  stdout?: Writer;
   /** Override `process.stderr.write`-shaped sink (test injection). */
-  stderr?: (line: string) => void;
+  stderr?: Writer;
   /** Sleep override — bash `sleep 2` after /clear, `sleep 1` after
    *  paste. Tests pass a no-op. */
   sleep?: (ms: number) => Promise<void>;
@@ -166,17 +167,6 @@ export function defaultSleep(ms: number): Promise<void> {
  *  rotate() verb. */
 export function defaultBuildTmux(socketPath: string): TmuxNamespace {
   return createTmux({ socketPath });
-}
-
-/** Default stdout sink — `process.stdout.write` passthrough. Exported
- *  so the no-opts path is reachable from a test. */
-export function defaultStdoutWrite(s: string): boolean {
-  return process.stdout.write(s);
-}
-
-/** Default stderr sink — `process.stderr.write` passthrough. */
-export function defaultStderrWrite(s: string): boolean {
-  return process.stderr.write(s);
 }
 
 /** `atmux rotate <member>` / `atmux rotate-lead`. Returns 0 on success. */

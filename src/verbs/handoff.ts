@@ -35,6 +35,7 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { pauseMember } from "../core/pause.ts";
 import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -335,9 +336,9 @@ export interface HandoffOpts {
   /** Sleep override (forwarded into pollFile when default). */
   sleep?: (ms: number) => Promise<void>;
   /** stdout sink. Defaults to `process.stdout.write`. */
-  stdout?: (line: string) => void;
+  stdout?: Writer;
   /** stderr sink. Defaults to `process.stderr.write`. */
-  stderr?: (line: string) => void;
+  stderr?: Writer;
   /** Clock — defaults to `Date.now`. */
   now?: () => number;
   /** Wait-for-handoff-file timeout in seconds. Defaults to
@@ -351,14 +352,6 @@ export interface HandoffOpts {
  *  without going through the rotate() / handoff() verb wiring. */
 export function defaultBuildTmux(socketPath: string): TmuxNamespace {
   return createTmux({ socketPath });
-}
-
-export function defaultStdoutWrite(s: string): boolean {
-  return process.stdout.write(s);
-}
-
-export function defaultStderrWrite(s: string): boolean {
-  return process.stderr.write(s);
 }
 
 /** Resolve the wait timeout from opts → env → default 30s. Exported so

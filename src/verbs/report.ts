@@ -21,6 +21,7 @@ import {
   requireTeam,
   stateDir,
 } from "../core/common.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
 
@@ -232,9 +233,9 @@ async function readDriverInbox(atmuxDir: string): Promise<string> {
 
 export interface ReportOpts {
   /** stdout sink. Defaults to `process.stdout.write`. */
-  stdout?: (line: string) => void;
+  stdout?: Writer;
   /** stderr sink. Defaults to `process.stderr.write`. */
-  stderr?: (line: string) => void;
+  stderr?: Writer;
   /** Clock — defaults to `Date.now`. */
   now?: () => number;
   /** Discord sender override (test injection). Defaults to
@@ -243,14 +244,6 @@ export interface ReportOpts {
   discordSend?: (opts: Parameters<typeof discordSend>[0]) => Promise<void>;
   /** Webhook override forwarded to discord.send (test injection). */
   webhookOverride?: string;
-}
-
-export function defaultStdoutWrite(s: string): boolean {
-  return process.stdout.write(s);
-}
-
-export function defaultStderrWrite(s: string): boolean {
-  return process.stderr.write(s);
 }
 
 /** `atmux report [--no-discord] [--team-dir <dir>]`. Returns 0 on success. */
