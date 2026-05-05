@@ -24,6 +24,32 @@ export type ParityExpectation =
   | "exit-zero-timestamped-stdout"
   | "exit-nonzero-stable-stderr";
 
+/**
+ * Per-row, per-channel mask config. ADR-027 contract.
+ *
+ *   - `exitCode: true` skips exit-code comparison entirely (e.g. bash
+ *     `exit 1` vs TS `exit 78` BSD-sysexits divergence per ADR-006).
+ *   - `stdout` / `stderr`: a `RegExp` or `string` pattern fed straight
+ *     to `String.replace(pattern, "")` on BOTH sides before byte-equal.
+ *     Patterns lacking a `/g` flag replace only the first match — by
+ *     design (anchored masks at line start are common).
+ *   - `stateAfter`: glob → regex map. Glob shape `<filename-stem>.<path>`
+ *     where `<filename-stem>` matches files like `*<stem>.json` in the
+ *     fs snapshot, and `<path>` is a dot-separated JSON path with `[*]`
+ *     wildcards for arrays. Matching string/number values are elided
+ *     from BOTH sides' parsed JSON before canonicalised diff.
+ *
+ * Reviewer rule (ADR-027 §4): every mask entry MUST carry an inline
+ * `// reason:` comment + ADR class label (`ADR-027 error-rendering
+ * class` / `ADR-027 state-after class`). Uncited masks fail review.
+ */
+export type ChannelMask = {
+  exitCode?: true;
+  stdout?: RegExp | string;
+  stderr?: RegExp | string;
+  stateAfter?: Record<string, RegExp>;
+};
+
 export type ParityRow = {
   verb: string;
   args: ReadonlyArray<string>;
@@ -34,6 +60,13 @@ export type ParityRow = {
    * to `<verb> ${args.join(" ")} [${fixturePreset}]` if omitted.
    */
   label?: string;
+  /**
+   * Optional channel-mask config (ADR-027). Absent = byte-equal /
+   * canonical-JSON exact comparison across all channels (existing
+   * `version` + `not-a-verb` rows). Present = per-channel mask
+   * applied symmetrically before comparison.
+   */
+  mask?: ChannelMask;
 };
 
 /**

@@ -24,7 +24,7 @@ describe("parity harness", () => {
           runVerb("bash", row.verb, row.args, fixture.path),
           runVerb("ts", row.verb, row.args, fixture.path),
         ]);
-        const divergences = compare(bashRun, tsRun);
+        const divergences = compare(bashRun, tsRun, row.mask);
         expect(divergences).toEqual([]);
       } finally {
         await fixture.cleanup();

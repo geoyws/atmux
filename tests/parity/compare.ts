@@ -12,6 +12,7 @@
 //         inbox files match by `(member, lineCount, lastMsgID)` tuple.
 //   - discord: ordered-array semantic equality with `ts` masked.
 
+import type { ChannelMask } from "./matrix.ts";
 import type { DiscordCall, FsSnapshot, ParityRun } from "./runner.ts";
 
 /**
@@ -60,18 +61,34 @@ export function maskTimestamps(input: string): string {
 }
 
 /**
+ * Sentinel value substituted into parsed JSON when a `stateAfter` mask
+ * matches. Identical on both sides so `canonicaliseJson` produces the
+ * same byte-string post-elision. Distinct enough that a real verb
+ * emitting this literal would be a wildly unusual divergence in itself.
+ */
+export const STATE_AFTER_MASKED_SENTINEL = "__ADR_027_MASKED__";
+
+/**
  * Compare two `ParityRun` captures and return `Divergence[]`.
  *
  * Contract:
  *   - Empty array IFF every channel is byte-equal post-mask.
  *   - Non-empty array = hard fail. Caller `expect`s length === 0;
  *     bun:test reports the array as the failure detail.
+ *   - Optional `mask` argument (ADR-027): per-row channel-mask config.
+ *     Absent = existing exact comparison stands. Present = each channel
+ *     branch consults its mask key:
+ *       - `mask.exitCode === true` → skip exit-code branch entirely.
+ *       - `mask.stdout` / `mask.stderr` → applied via `String.replace`
+ *         on BOTH sides before timestamp mask + byte-equal.
+ *       - `mask.stateAfter` → JSON-path glob → regex map applied
+ *         symmetrically to parsed JSON in `fsState` before canonical diff.
  *
  * Per CLAUDE.md test-finding 5-element pattern, this function emits
  * #1 (state-snapshot) + #2 (containment) inline; the test harness owns
  * #3 (fix sketch via runtime context), #4 (residue), #5 (severity).
  */
-export function compare(bash: ParityRun, ts: ParityRun): Divergence[] {
+export function compare(bash: ParityRun, ts: ParityRun, mask?: ChannelMask): Divergence[] {
   if (bash.verb !== ts.verb || bash.args.join(" ") !== ts.args.join(" ")) {
     // Sanity guard — caller wired the runner wrong.
     return [
@@ -87,8 +104,9 @@ export function compare(bash: ParityRun, ts: ParityRun): Divergence[] {
 
   const divergences: Divergence[] = [];
 
-  // 1. exit code — strict byte-equal int, no coalescing.
-  if (bash.exit !== ts.exit) {
+  // 1. exit code — strict byte-equal int, no coalescing. Skipped iff
+  //    ADR-027 mask explicitly opts out (e.g. bash exit 1 vs TS exit 78).
+  if (mask?.exitCode !== true && bash.exit !== ts.exit) {
     divergences.push({
       verb: bash.verb,
       channel: "exit",
@@ -98,9 +116,9 @@ export function compare(bash: ParityRun, ts: ParityRun): Divergence[] {
     });
   }
 
-  // 2. stdout — byte-equal after timestamp mask.
-  const bashStdout = maskTimestamps(bash.stdout);
-  const tsStdout = maskTimestamps(ts.stdout);
+  // 2. stdout — ADR-027 mask first (if any), then timestamp mask, then byte-equal.
+  const bashStdout = maskTimestamps(applyChannelMask(bash.stdout, mask?.stdout));
+  const tsStdout = maskTimestamps(applyChannelMask(ts.stdout, mask?.stdout));
   if (bashStdout !== tsStdout) {
     divergences.push({
       verb: bash.verb,
@@ -111,9 +129,9 @@ export function compare(bash: ParityRun, ts: ParityRun): Divergence[] {
     });
   }
 
-  // 3. stderr — same mask. Reviewer rule §9.5 means stderr is contract.
-  const bashStderr = maskTimestamps(bash.stderr);
-  const tsStderr = maskTimestamps(ts.stderr);
+  // 3. stderr — same mask order. Reviewer rule §9.5 means stderr is contract.
+  const bashStderr = maskTimestamps(applyChannelMask(bash.stderr, mask?.stderr));
+  const tsStderr = maskTimestamps(applyChannelMask(ts.stderr, mask?.stderr));
   if (bashStderr !== tsStderr) {
     divergences.push({
       verb: bash.verb,
@@ -124,8 +142,9 @@ export function compare(bash: ParityRun, ts: ParityRun): Divergence[] {
     });
   }
 
-  // 4. fs state — per-path diff. JSON canonicalised, non-JSON masked.
-  divergences.push(...diffFs(bash.verb, bash.fsState, ts.fsState));
+  // 4. fs state — per-path diff. JSON canonicalised (with optional ADR-027
+  //    state-after mask elision), non-JSON masked.
+  divergences.push(...diffFs(bash.verb, bash.fsState, ts.fsState, mask?.stateAfter));
 
   // 5. Discord calls — ordered, payload byte-equal after `ts` mask.
   divergences.push(...diffDiscord(bash.verb, bash.discordCalls, ts.discordCalls));
@@ -143,7 +162,12 @@ export function compare(bash: ParityRun, ts: ParityRun): Divergence[] {
  * verbs land. For Phase 1 (version verb), no inboxes exist so the rule
  * is unreachable; the regular byte-equal path applies.
  */
-function diffFs(verb: string, bashFs: FsSnapshot, tsFs: FsSnapshot): Divergence[] {
+function diffFs(
+  verb: string,
+  bashFs: FsSnapshot,
+  tsFs: FsSnapshot,
+  stateAfterMasks?: Record<string, RegExp>,
+): Divergence[] {
   const divergences: Divergence[] = [];
   const allPaths = new Set<string>([...Object.keys(bashFs), ...Object.keys(tsFs)]);
   const sortedPaths = [...allPaths].sort();
@@ -174,8 +198,10 @@ function diffFs(verb: string, bashFs: FsSnapshot, tsFs: FsSnapshot): Divergence[
     }
 
     if (b.isJson && t.isJson && b.parsed !== undefined && t.parsed !== undefined) {
-      const bCanon = canonicaliseJson(b.parsed);
-      const tCanon = canonicaliseJson(t.parsed);
+      const bElided = applyStateAfterMasks(b.parsed, relPath, stateAfterMasks);
+      const tElided = applyStateAfterMasks(t.parsed, relPath, stateAfterMasks);
+      const bCanon = canonicaliseJson(bElided);
+      const tCanon = canonicaliseJson(tElided);
       if (bCanon !== tCanon) {
         divergences.push({
           verb,
@@ -202,6 +228,95 @@ function diffFs(verb: string, bashFs: FsSnapshot, tsFs: FsSnapshot): Divergence[
   }
 
   return divergences;
+}
+
+/**
+ * Apply ADR-027 `mask.stdout` / `mask.stderr` config to a single channel
+ * string. Pattern is fed straight to `String.replace(pattern, "")` —
+ * non-global regex replaces first match only (anchored start-of-line
+ * masks are common). Absent mask passes through unchanged.
+ */
+function applyChannelMask(input: string, pattern?: RegExp | string): string {
+  if (pattern === undefined) return input;
+  return input.replace(pattern as RegExp, "");
+}
+
+/**
+ * Apply ADR-027 `mask.stateAfter` config to a parsed JSON value tied to
+ * one fs-snapshot file. Glob shape is `<filename-stem>.<json-path>` —
+ * filename-stem matches against the file's `path.basename` minus `.json`,
+ * json-path navigates into the parsed value with `[*]` array wildcards.
+ *
+ * Matching string/number leaves are replaced with
+ * `STATE_AFTER_MASKED_SENTINEL` on BOTH sides, so canonicaliseJson
+ * produces byte-equal output post-elision.
+ *
+ * Globs whose filename-stem doesn't match the current file are no-ops;
+ * globs whose path doesn't exist in the parsed value are no-ops; globs
+ * whose terminal value doesn't match the regex leave the value untouched.
+ */
+function applyStateAfterMasks(
+  parsed: unknown,
+  relPath: string,
+  masks?: Record<string, RegExp>,
+): unknown {
+  if (!masks) return parsed;
+  // Filename stem: ".atmux/kanban.json" → "kanban"; "kanban.json" → "kanban"
+  const base = relPath.split("/").pop() ?? relPath;
+  const stem = base.endsWith(".json") ? base.slice(0, -".json".length) : base;
+  let result = parsed;
+  for (const [glob, regex] of Object.entries(masks)) {
+    const dot = glob.indexOf(".");
+    if (dot < 1) continue; // need at least `<stem>.<path>`
+    const globStem = glob.slice(0, dot);
+    if (globStem !== stem) continue;
+    const tokens = parseStateAfterPath(glob.slice(dot + 1));
+    if (tokens.length === 0) continue;
+    result = elideAtPath(result, tokens, regex);
+  }
+  return result;
+}
+
+type PathToken = { kind: "key"; name: string } | { kind: "wildcard" };
+
+/**
+ * Tokenise a state-after path like `tasks[*].id` into
+ * `[{kind:"key",name:"tasks"},{kind:"wildcard"},{kind:"key",name:"id"}]`.
+ * Returns empty array on malformed input.
+ */
+function parseStateAfterPath(s: string): PathToken[] {
+  const tokens: PathToken[] = [];
+  for (const seg of s.split(".")) {
+    if (seg.length === 0) return [];
+    const m = seg.match(/^([^[]+)(\[\*\])?$/);
+    if (!m) return [];
+    const name = m[1];
+    const wildcard = m[2];
+    if (name === undefined) return [];
+    tokens.push({ kind: "key", name });
+    if (wildcard !== undefined) tokens.push({ kind: "wildcard" });
+  }
+  return tokens;
+}
+
+/** Walk `tokens` into `value`; elide leaves whose stringified value matches `regex`. */
+function elideAtPath(value: unknown, tokens: ReadonlyArray<PathToken>, regex: RegExp): unknown {
+  if (tokens.length === 0) {
+    if (typeof value === "string" && regex.test(value)) return STATE_AFTER_MASKED_SENTINEL;
+    if (typeof value === "number" && regex.test(String(value))) return STATE_AFTER_MASKED_SENTINEL;
+    return value;
+  }
+  const tok = tokens[0];
+  if (tok === undefined) return value;
+  const rest = tokens.slice(1);
+  if (tok.kind === "wildcard") {
+    if (!Array.isArray(value)) return value;
+    return value.map((v) => elideAtPath(v, rest, regex));
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const obj = value as Record<string, unknown>;
+  if (!(tok.name in obj)) return value;
+  return { ...obj, [tok.name]: elideAtPath(obj[tok.name], rest, regex) };
 }
 
 /**
