@@ -169,6 +169,8 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | V-23 | `rotate` / `rotate-lead` | `lib/rotate.sh` | 81 | ✅ shipped |
 | V-24 | `doctor` | `lib/doctor.sh` | 355 | ✅ shipped (in-scope subset per ADR-019) |
 | V-25 | `whip` | `lib/whip.sh` | 218 | ⏳ pending |
+| V-26 | `session` (sub-verbs: cont / preclear / handoff / stop) | `~/.claude/skills/coordination/skills/session/SKILL.md` | TBD | ⏳ pending (Phase 4 per ADR-021) |
+| V-27 | `team` (sub-verbs: start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member) | `~/.claude/skills/coordination/skills/team/SKILL.md` | TBD | ⏳ pending (Phase 4 per ADR-021) |
 
 **Cross-cutting refactor IDs** (R-* — interleave with porting):
 
@@ -180,20 +182,20 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | R-4 | Drop TaskList refs from HANDOFF.md, link to §6.2 | ⏳ pending |
 | R-5 | ADR-020 — `Writer` abstraction + `core/io.ts` (lift duplicated default writers) | ✅ done |
 
-**Recommended next-batch order:** R-3 → R-4 → R-1 → R-2 → V-23 → V-20 → V-21 → V-22 → V-24 → V-25 → V-01. Doctor before whip because whip calls into doctor in some flows.
+**Recommended next-batch order:** R-3 → R-4 → R-1 → R-2 → V-23 → V-20 → V-21 → V-22 → V-24 → R-5 → V-25 → V-01. Doctor before whip because whip calls into doctor in some flows. R-5 (Writer abstraction, ADR-020) lands before V-25 so whip writes against the canonical signature. **V-26 `session` + V-27 `team` are Phase-4 (post-cutover) per ADR-021** — paths canonicalized in ADR-021 so V-25 + V-01 use them from day one.
 
 When updating this checklist, flip the Status column **only** — never renumber. Stale rows (e.g. V-* shipped but PLAN.md not refreshed) should be amended in a small `docs(plan)` commit alongside the verb's `feat(verbs)` commit.
 
-### 6.3 Integration tasks — atmux ↔ `/coordination:*` skills (ADR-018)
+### 6.3 Integration tasks — atmux ↔ `/coordination:*` skills (ADR-018 + ADR-021)
 
-Pin the contract with the Claude skills plugin (`~/.claude/skills/coordination/`). Immediate items I-1 + I-2 land alongside or before V-25 (whip); items I-3 + I-4 are deferred until V-25's design surfaces real constraints.
+Pin the contract with the Claude skills plugin (`~/.claude/skills/coordination/`). Immediate items I-1 + I-2 land alongside or before V-25 (whip); items I-3 + I-4 are **resolved by ADR-021** — driver-inbox path canonicalized to `~/.claude/teams/<team>/driver-inbox.md`, and the `/team` shim collapses into V-27 `team` (post-cutover).
 
 | Integration-ID | Title | Wave | Status |
 |---|---|---|---|
 | I-1 | Lead-uptime marker `~/.claude/teams/<team>/lead-session-start.txt` (write on lead spawn / rotate-lead, clear on stop) | immediate | ⏳ pending |
 | I-2 | Window-name detection: marker file `~/.claude/teams/<team>/lead-window-name.txt` + `atmux which <kind> [name]` subcommand | immediate | ⏳ pending |
-| I-3 | Driver-inbox path alignment (`.atmux/driver-inbox.md` ↔ `~/.claude/teams/<team>/driver-inbox.md`) — pick canonical | deferred (V-25) | ⏳ pending |
-| I-4 | `/coordination:team` skill shim — atmux as the runtime backend for `/team start|stop|cleanup|rotate-lead` | deferred (V-25) | ⏳ pending |
+| I-3 | Driver-inbox path alignment — **resolved by ADR-021**: canonical path is `~/.claude/teams/<team>/driver-inbox.md` (global, lead-scoped); `.atmux/driver-inbox.md` deprecated. Implementation lands with V-27 `team`. | resolved (ADR-021) | ✅ resolved |
+| I-4 | `/coordination:team` skill shim — **resolved by ADR-021**: collapses into V-27 `team` verb-ID (sub-verbs start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member). Skill becomes thin shim post-cutover. | resolved (ADR-021) | ✅ resolved |
 | I-5 | `atmux cage attach <name>` UX — one-shot attach to a named cage (`unum` / `sopx` / `atmux` / etc.) without remembering the tmpdir socket. Probably `atmux cage <verb>` sub-namespace mirroring how `atmux task <verb>` is structured. **Captured 2026-05-05 — George's request: "make sure there's an easy way for users to attach to the cages."** | deferred (Phase 5 cage) | ⏳ pending |
 | I-6 | Discord decision-defence surfacing — every autonomous lead decision (planner-recommended default applied without escalation) posts a context+rationale bullet to Discord (`📋 [autonomous-decision]` named template). Driver/George can react to reverse or amend. Builds on the §"Lead makes its own recommended decisions" rule in CLAUDE.md — currently the rule is followed but the Discord surfacing isn't automated. Lands alongside V-25 whip (whip is already the Discord-pinging supervisor). **Captured 2026-05-05 — George's request: "surface context and decision defence to Discord for all autonomous decisions made so I can go in there to reverse or to add into the decision made."** | deferred (V-25 + new template) | ⏳ pending |
 
@@ -227,7 +229,8 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | **018** | **`/coordination:*` skills integration contract (window naming / marker files / inbox paths / `/team` shim)** | 2 | driver |
 | **019** | **`doctor` verb (V-24) port scope — in-scope subset + deferred bash-only checks** | 2 | driver |
 | **020** | **`Writer` abstraction + `core/io.ts` — R-5 (lift duplicated default writers across verbs)** | 2 | driver |
-| 021+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
+| **021** | **atmux as runtime for `/coordination:session` + `/coordination:team` skills — verb contract** (V-26 + V-27 schedule, path canonicalization, I-3 + I-4 collapse) | 2 | driver |
+| 022+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
 
 ---
 
