@@ -51,6 +51,7 @@ import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { task } from "./verbs/task.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
+import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
 import { whip } from "./verbs/whip.ts";
 
@@ -139,6 +140,11 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return doctor(argv.slice(1));
     case "whip":
       return whip(argv.slice(1));
+    case "up":
+      return up(argv.slice(1));
+    case "":
+      // bin/atmux:91 — bare `atmux` aliases to `up` (ADR-014).
+      return up([]);
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,

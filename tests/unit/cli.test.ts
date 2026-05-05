@@ -406,11 +406,59 @@ describe("cli.main — unknown-verb path (bash bin/atmux:324-328 byte-parity)", 
     expect(stderr).toContain("atmux: unknown verb: fake");
   });
 
-  test("empty argv → exit 64 + '<none>' label in stderr", async () => {
-    const { exit, stdout, stderr } = await captureMain([]);
+  // Note: empty argv no longer hits the unknown-verb path — V-01 wired
+  // `case "":` → `up([])` so `atmux` (bare) bring-up matches bash
+  // `bin/atmux:91`. Coverage of the bare-argv → up alias lives in the
+  // `cli.main — up verb dispatch` describe below.
+});
+
+// ---------- Dispatch — up verb route (V-01) + bare-argv alias ----------
+
+describe("cli.main — up verb dispatch (V-01)", () => {
+  let priorAtmuxDir: string | undefined;
+  let priorAtmuxNoWizard: string | undefined;
+  let priorTmux: string | undefined;
+
+  beforeEach(() => {
+    priorAtmuxDir = process.env.ATMUX_DIR;
+    priorAtmuxNoWizard = process.env.ATMUX_NO_WIZARD;
+    priorTmux = process.env.TMUX;
+    // Point at a definitely-empty atmux dir so up's wizard-gate fires
+    // deterministically; ATMUX_NO_WIZARD short-circuits to ConfigError
+    // before any sub-verb runs.
+    process.env.ATMUX_DIR = "/nonexistent/atmux-cli-test/.atmux";
+    process.env.ATMUX_NO_WIZARD = "1";
+    delete process.env.TMUX;
+  });
+
+  afterEach(() => {
+    if (priorAtmuxDir === undefined) delete process.env.ATMUX_DIR;
+    else process.env.ATMUX_DIR = priorAtmuxDir;
+    if (priorAtmuxNoWizard === undefined) delete process.env.ATMUX_NO_WIZARD;
+    else process.env.ATMUX_NO_WIZARD = priorAtmuxNoWizard;
+    if (priorTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = priorTmux;
+  });
+
+  test("'up --bogus' → UsageError (exit 64) — parseUpArgs rejects argv", async () => {
+    const { exit, stderr } = await captureMain(["up", "--bogus"]);
     expect(exit).toBe(64);
-    expect(stdout).toBe("");
-    expect(stderr).toBe("atmux: unknown verb: <none>\n  run 'atmux help' for the list of verbs\n");
+    expect(stderr).toContain("atmux:");
+    expect(stderr).toContain("--bogus");
+  });
+
+  test("'up' (no args) → routed to up() → ConfigError exit 78 in no-team-json env", async () => {
+    const { exit, stderr } = await captureMain(["up"]);
+    expect(exit).toBe(78);
+    expect(stderr).toContain("atmux: config:");
+    expect(stderr).toContain("ATMUX_NO_WIZARD");
+  });
+
+  test("bare argv (empty) → aliased to up([]) per bin/atmux:91 → same path", async () => {
+    const { exit, stderr } = await captureMain([]);
+    expect(exit).toBe(78);
+    expect(stderr).toContain("atmux: config:");
+    expect(stderr).toContain("ATMUX_NO_WIZARD");
   });
 });
 

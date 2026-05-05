@@ -144,7 +144,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 
 | Verb-ID | Verb (CLI form) | Bash file | LOC | Status |
 |---|---|---|---|---|
-| V-01 | `up` | `lib/up.sh` | ~80 | ⏳ pending |
+| V-01 | `up` | `lib/up.sh` | ~80 | ✅ shipped |
 | V-02 | `init` | `lib/init.sh` | — | ✅ shipped |
 | V-03 | `start` | `lib/start.sh` | — | ✅ shipped |
 | V-04 | `stop` | `lib/stop.sh` | — | ✅ shipped |

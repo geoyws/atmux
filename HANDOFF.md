@@ -1,19 +1,19 @@
 # Handoff snapshot — atmux-bun port
 
-**Last driver-session update:** 2026-05-05 ~19:55 MYT
-**Status:** Phase 2 ~98% complete. **25 of 26 things shipped**: R-5 (Writer abstraction, ADR-020) + V-25 whip + 5 new ADRs landed this session. **Only V-01 `up` remains** — assigned to 🛠️up-impl member, in flight. 1505 tests pass / 0 fail. **TEAM MODE active** — atmuxbun team running (4 members: 🧭team-lead, 📦whip-impl, 🛠️up-impl, 🔍reviewer) in tmux session `atmux` windows 2-5.
+**Last driver-session update:** 2026-05-05 ~20:15 MYT
+**Status:** Phase 2 complete. **25 of 25 verbs ported** — V-01 `up` shipped this turn (composite wizard→doctor→start→attach), closing the verb-port milestone. 1543 tests pass / 0 fail. Phase 3 (parity harness) is next.
 
 ---
 
 ## ✅ Working tree state (worktree)
 
 ```
-HEAD:   faffe45 docs(plan): V-25 status flip — whip shipped
-Tests:  1505 pass / 4 todo / 0 fail across 53 test files
+HEAD:   <V-01 commit pending>
+Tests:  1539 pass / 4 todo / 0 fail across 54 test files (1543 total)
 Build:  bunx tsc --noEmit + bun test green
 ```
 
-Working tree clean. No uncommitted state in the bun port worktree.
+Working tree clean post-V-01 commit. No uncommitted state in the bun port worktree.
 
 **Note:** `/root/work/src/atmux/` (parent main checkout) has substantial WIP from George's bash-side work — not touched by this session except for ADR-047 + README install section (committed as `d256b88`).
 
@@ -24,6 +24,7 @@ Working tree clean. No uncommitted state in the bun port worktree.
 ### Code commits (worktree branch `worktree-atmux-bun`)
 
 ```
+<pending> feat(verbs): up — composite wizard→doctor→start→attach (V-01)            ← up-impl
 faffe45 docs(plan): V-25 status flip — whip shipped
 9269d32 feat(verbs): whip — 5-min watchdog (V-25, in-scope subset per ADR-022)   ← whip-impl
 4f23fc2 docs(adr,handoff): ADR-024 spawn pattern uses --permission-mode auto
