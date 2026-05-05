@@ -118,11 +118,11 @@ If a member was spawned with the wrong permission-mode, `tmux send-keys -t <wind
 
 ## 📈 Tally
 
-- **Verbs:** 25/26 shipped (96%) — V-25 whip closed this session. **V-01 up only remaining for Phase 2 close.**
+- **Verbs:** 25/25 shipped (100%) — V-25 whip + V-01 up closed this session. **Phase 2 verb-port milestone closed.**
 - **Refactors:** R-1 through R-5 ALL DONE.
 - **Integration (§6.3):** I-1 + I-2 (immediate) — landed inside V-25 whip. I-3 + I-4 — resolved by ADR-021 (collapse into V-26 + V-27 post-cutover). I-5 cage-attach (Phase 5). I-6 Discord decision-defence — template added in V-25, invocation site moves to V-27 per ADR-022 amendment.
 - **ADRs added this session:** ADR-020, ADR-021, ADR-022, ADR-023, ADR-024 (worktree); ADR-047 (main).
-- **Phase status:** Phase 1 closed. Phase 2 ~98% through. Phase 3 (parity harness) starts after V-01 lands.
+- **Phase status:** Phase 1 closed. Phase 2 closed (verb ports + R-1..R-5). Phase 3 (parity harness) is next.
 
 Detailed verb listing + LOC counts + bash-source paths: see **`PLAN.md` §6.2**.
 
@@ -166,19 +166,17 @@ Never copy a hardcoded `c-ic` or `c-u` from a stale handoff — cross-account sp
 
 ## TL;DR for future driver
 
-You are the **driver** of the atmux-bun port. Team mode active (4 members in tmux session `atmux` windows 2-5). **25/26 things done, 1505 tests pass, V-25 whip JUST SHIPPED.** Only V-01 `up` remains for Phase 2 close — assigned to `🛠️up-impl` (window 4), in flight.
+You are the **driver** of the atmux-bun port. Team mode active (4 members in tmux session `atmux` windows 2-5). **25/25 verbs done, 1543 tests pass, V-01 up SHIPPED @ec96c7e (composite wizard→doctor→start→attach).** Phase 2 closed — verb ports + R-1..R-5 complete.
 
 After `/clear`:
 
 1. Read this file + PLAN.md §6.2/§6.3 + MEMORY.md
-2. Check team state: `tmux capture-pane -p -t atmux:4.1 -S -` for V-01 progress
-3. If V-01 still in flight, let it run; if shipped, congratulate + Phase 2 closes
-4. **Post-Phase-2 next batch (Phase 3 — parity harness)** — see PLAN.md §3 for shape
-5. **Pre-built dependencies for V-01** (already shipped): init.ts, doctor.ts, start.ts, attach.ts. V-01 is just the composite wrapper.
-6. **George's standing requests still in flight:**
+2. Check team state via tmux capture-pane on lead window for triage of any in-flight queue items (R-6 + ADR-025 queued post-V-01 per driver-inbox)
+3. **Post-Phase-2 next batch (Phase 3 — parity harness)** — see PLAN.md §3 for shape
+4. **George's standing requests still in flight:**
    - I-5 cage-attach (Phase 5)
    - I-6 Discord decision-defence — template added in V-25, invocation site = V-27 (post-cutover)
-7. **Driver-inbox:** `~/.claude/teams/atmuxbun/driver-inbox.md` — most recent entry marked `📤 dispatched 17:41 MYT` by team-lead; lead is autonomous on dispatch
-8. **Install topology** (per ADR-047): `/usr/local/bin/atmux` → dev tree (`/root/work/src/atmux/bin/atmux`). dev edits = live runtime atmux. Fall back to `/opt/atmux-stable` via symlink swap if dev breaks.
+5. **Driver-inbox:** `~/.claude/teams/atmuxbun/driver-inbox.md` — V-01 shipped entry at 18:34 MYT; R-6 + ADR-025 queued by lead post-Phase-2. Lead is autonomous on dispatch.
+6. **Install topology** (per ADR-047): `/usr/local/bin/atmux` → dev tree (`/root/work/src/atmux/bin/atmux`). dev edits = live runtime atmux. Fall back to `/opt/atmux-stable` via symlink swap if dev breaks.
 
 *Update this file when major state changes happen. The verb checklist itself lives in PLAN.md §6.2 — keep status flips there, not here.*
