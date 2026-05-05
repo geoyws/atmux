@@ -178,7 +178,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | R-2 | Lift `getDefaultSocket(team)` → `core/common.ts` | ✅ done |
 | R-3 | Add §6.2 stable-ID checklist to PLAN.md | ✅ done |
 | R-4 | Drop TaskList refs from HANDOFF.md, link to §6.2 | ⏳ pending |
-| R-5 | ADR-015 — `Writer` interface for verb signatures (between Phase-2 close and Phase-3) | ⏳ pending |
+| R-5 | ADR-020 — `Writer` abstraction + `core/io.ts` (lift duplicated default writers) | ✅ done |
 
 **Recommended next-batch order:** R-3 → R-4 → R-1 → R-2 → V-23 → V-20 → V-21 → V-22 → V-24 → V-25 → V-01. Doctor before whip because whip calls into doctor in some flows.
 
@@ -226,7 +226,8 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | 017 | tmux window naming — drop `__<team>__` prefix | 2 | porter-foundation-3 |
 | **018** | **`/coordination:*` skills integration contract (window naming / marker files / inbox paths / `/team` shim)** | 2 | driver |
 | **019** | **`doctor` verb (V-24) port scope — in-scope subset + deferred bash-only checks** | 2 | driver |
-| 020+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
+| **020** | **`Writer` abstraction + `core/io.ts` — R-5 (lift duplicated default writers across verbs)** | 2 | driver |
+| 021+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 | 2 | porters |
 
 ---
 
