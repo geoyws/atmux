@@ -20,50 +20,9 @@
 //   - reportError non-Error throw (e.g. string) → exit 99 + String(err)
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { main, reportError } from "../../src/cli.ts";
+import { reportError } from "../../src/cli.ts";
 import { ConfigError, FsError, HttpTimeoutError, UsageError } from "../../src/errors.ts";
-
-// ---------- Test scaffolding ----------
-
-interface CapturedIO {
-  exit: number;
-  stdout: string;
-  stderr: string;
-}
-
-/**
- * Capture `console.log` (verbs that use it — e.g. version), direct
- * `process.stdout.write` (verbs that bypass console.log to control
- * trailing-newline behaviour — e.g. help), and `process.stderr.write`
- * (reportError's output). All three originals are restored in
- * `finally` even if the assertion throws.
- */
-async function captureMain(argv: ReadonlyArray<string>): Promise<CapturedIO> {
-  let stdoutBuf = "";
-  let stderrBuf = "";
-  const origLog = console.log;
-  const origStdoutWrite = process.stdout.write.bind(process.stdout);
-  const origStderrWrite = process.stderr.write.bind(process.stderr);
-  console.log = (msg: unknown) => {
-    stdoutBuf += `${String(msg)}\n`;
-  };
-  process.stdout.write = ((s: string | Uint8Array) => {
-    stdoutBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-    return true;
-  }) as typeof process.stdout.write;
-  process.stderr.write = ((s: string | Uint8Array) => {
-    stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    const exit = await main(argv);
-    return { exit, stdout: stdoutBuf, stderr: stderrBuf };
-  } finally {
-    console.log = origLog;
-    process.stdout.write = origStdoutWrite;
-    process.stderr.write = origStderrWrite;
-  }
-}
+import { captureMain } from "../helpers/capture.ts";
 
 /** Capture only stderr around a synchronous `reportError` call. */
 function captureReport(err: unknown): { exit: number; stderr: string } {
