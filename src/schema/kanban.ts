@@ -1,0 +1,186 @@
+// ADR-005 + ADR-003: Zod schema for `<atmuxDir>/kanban.json`.
+//
+// Bash-shared schema per the carve-out documented in
+// `src/schema/README.md` § "Burn-in compatibility: bash-shared schemas".
+// This file is read AND written by both `atmux` (bash) and `atmux-bun`
+// (TS) during the burn-in window — adding a `schemaVersion` field here
+// would write a key bash never reads, breaking parity. Phase 6
+// (post-bash-decommission) introduces versioning per ADR-014. Same
+// pattern as `paused.ts:8-14` and `team.ts`.
+//
+// Source-of-truth for shape:
+//   - `lib/common.sh::atmux::kanban_normalize` (HEAD `2aadc3f` + live):
+//     guarantees `{tasks: [], epics: [], stories: []}` top-level.
+//   - `lib/kanban.sh::_atmux_task_add` lines 135-148 at HEAD:
+//     canonical task-add field set.
+//   - `lib/epic.sh:11` docstring: epic shape contract.
+//   - `lib/story.sh:21-23` docstring: story shape contract.
+//   - Live `.atmux/kanban.json` at the bash main checkout used as
+//     cross-check for the actual-on-disk field union.
+//
+// The schema uses `.passthrough()` everywhere so unknown / future-bash
+// fields don't fail parse (same posture as `team.ts`). Most fields are
+// `nullable().optional()` because bash routinely writes literal `null`
+// (e.g. `claimedAt: null` on a freshly-added task per `kanban.sh:147`)
+// AND omits fields on legacy entries from before a feature landed.
+// Tightening to `.strict()` + non-null fields is a Phase 6 concern.
+
+import { z } from "zod";
+
+// ---------- Enums (write-side validation; read is permissive) ----------
+
+/**
+ * Lane enum per `lib/kanban.sh:84` — bash validates at task-add time.
+ * Persisted lowercase. Read-side schema accepts any string for legacy
+ * entries; this enum is exported for use by core helpers / verbs that
+ * validate at the WRITE boundary.
+ */
+export const KanbanLane = z.enum(["fe", "be", "db", "ops", "test", "review", "misc"]);
+export type KanbanLane = z.infer<typeof KanbanLane>;
+
+// ---------- Per-task entry ----------
+
+/**
+ * One task. Field set derived from the union of:
+ *   1. `kanban.sh:_atmux_task_add` canonical writer.
+ *   2. `claim.sh::_atmux_inbox_move` claim-time mutations (`claimedAt`).
+ *   3. `kanban.sh::_atmux_task_move` bounce-back fields (`claimedFrom`).
+ *   4. Live kanban.json field union (adds `note`, `createdFrom`).
+ *
+ * `.passthrough()` because forward-compat with future bash additions
+ * matters more than strict-rejection of unknown keys (the bash side may
+ * land a new field before TS catches up; we'd rather parse than fail).
+ */
+export const KanbanTask = z
+  .object({
+    /** Bash writes `t-XXXXXXXX` (8 hex chars after `t-`). Schema doesn't
+     *  enforce the format — `gen_id`'s prefix could change in Phase 6. */
+    id: z.string().min(1),
+    subject: z.string().optional(),
+    /** Free-form prose body. May be empty string or null. */
+    body: z.string().nullable().optional(),
+    /** Lifecycle: `todo|in-progress|done|blocked|review` and Phase-2 additions.
+     *  Permissive `string()` — bash's set evolves; reading is forgiving. */
+    status: z.string().optional(),
+    /** Member name; `null` when unclaimed. */
+    owner: z.string().nullable().optional(),
+    /** Task IDs this task depends on. */
+    deps: z.array(z.string()).optional(),
+    /** Bash writes `null` or a number; lower = higher priority. */
+    priority: z.number().nullable().optional(),
+    /** Parent epic ID (`e-XXXXXXXX`) or `null`. */
+    epic: z.string().nullable().optional(),
+    /** Parent story ID (`s-XXXXXXXX`) or `null`. */
+    story: z.string().nullable().optional(),
+    /** Lane string — usually one of `KanbanLane` but read-permissive
+     *  for legacy entries. Bash validates at write time only. */
+    lane: z.string().nullable().optional(),
+    /** Free-form deliverable description, optional. */
+    deliverable: z.string().nullable().optional(),
+    /** Per-task stale-minutes override for whip's stale heuristic. */
+    staleMin: z.number().nullable().optional(),
+    /** ADR-033 driver-only gate. False / absent on pre-ADR-033 tasks. */
+    driverOnly: z.boolean().optional(),
+    /** Epoch seconds. Bash `date +%s` → integer. */
+    createdAt: z.number().int().optional(),
+    /** Epoch seconds; `null` while task remains unclaimed. */
+    claimedAt: z.number().int().nullable().optional(),
+    /** Epoch seconds; `null` until task transitions to `done`. */
+    completedAt: z.number().int().nullable().optional(),
+    /** Bounce-back ownership preservation per `kanban.sh::_atmux_task_move`
+     *  (Bug-2 fix t-04c8b243): when a task is moved back to `todo`, the
+     *  prior owner is recorded here for audit. */
+    claimedFrom: z.string().nullable().optional(),
+    /** Origin annotation (e.g. `commit`, `dispatch`). */
+    createdFrom: z.string().nullable().optional(),
+    /** Closing note from `done <id> --note <text>` per `claim.sh`. */
+    note: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type KanbanTask = z.infer<typeof KanbanTask>;
+
+// ---------- Per-epic entry ----------
+
+/**
+ * One epic. Per `lib/epic.sh:11` schema docstring + live kanban.json.
+ *
+ * State machine (ADR-007): `planning → ready → in-progress → done`.
+ * Children: stories belong to an epic via `story.epic == epic.id`;
+ * tasks belong via `task.epic == epic.id` (or via `task.story` whose
+ * story belongs to the epic). The `epics[].stories[]` field is a
+ * lazily-initialized list of child story IDs (NOT the source of truth
+ * — that's the top-level `stories[]` array).
+ */
+export const KanbanEpic = z
+  .object({
+    /** Bash writes `e-XXXXXXXX` (8 hex chars after `e-`). */
+    id: z.string().min(1),
+    title: z.string().optional(),
+    body: z.string().nullable().optional(),
+    /** Epic state per ADR-007. */
+    status: z.string().optional(),
+    /** Optional reference to a driver-side artifact (URL / path / name). */
+    driverRef: z.string().nullable().optional(),
+    createdAt: z.number().int().optional(),
+    completedAt: z.number().int().nullable().optional(),
+    /** Lazy-init array of child story IDs (//= [] on first append per
+     *  `lib/story.sh:23`). Source of truth is top-level `stories[]`. */
+    stories: z.array(z.string()).optional(),
+  })
+  .passthrough();
+export type KanbanEpic = z.infer<typeof KanbanEpic>;
+
+// ---------- Per-story entry ----------
+
+/**
+ * One story. Per `lib/story.sh:21-23` schema docstring + live kanban.json.
+ *
+ * State machine (ADR-007):
+ *   `planning → ready → in-progress → testing → review → merging → done`.
+ */
+export const KanbanStory = z
+  .object({
+    /** Bash writes `s-XXXXXXXX` (8 hex chars after `s-`). */
+    id: z.string().min(1),
+    /** Parent epic ID; nullable for orphaned / pre-epic stories. */
+    epic: z.string().nullable().optional(),
+    title: z.string().optional(),
+    body: z.string().nullable().optional(),
+    /** Free-form acceptance criteria prose. */
+    acceptanceCriteria: z.string().nullable().optional(),
+    status: z.string().optional(),
+    createdAt: z.number().int().optional(),
+    completedAt: z.number().int().nullable().optional(),
+    /** Last-state-transition timestamp. */
+    advancedAt: z.number().int().nullable().optional(),
+    /** True once reviewer has approved the story (gate for review→merging). */
+    reviewSignoff: z.boolean().optional(),
+    /** Task ID created by the auto-dispatched merge step. */
+    mergeTaskId: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type KanbanStory = z.infer<typeof KanbanStory>;
+
+// ---------- Top-level kanban.json ----------
+
+/**
+ * `.atmux/kanban.json` — top-level shape per `kanban_normalize`.
+ * Three arrays guaranteed present after normalize; pre-normalize files
+ * can be missing fields (bash hits the `//= []` defaults on first read).
+ *
+ * Reads should call `kanban_normalize`-equivalent BEFORE parse, OR use
+ * `KanbanSafe` (Phase 2 follow-up) which makes the arrays optional and
+ * defaults them to `[]`. v1 mandates the arrays present so we don't
+ * paper-over a corrupted on-disk file.
+ */
+export const Kanban = z
+  .object({
+    tasks: z.array(KanbanTask),
+    epics: z.array(KanbanEpic),
+    stories: z.array(KanbanStory),
+  })
+  .passthrough();
+export type Kanban = z.infer<typeof Kanban>;
+
+/** Alias for ergonomic import: `import { KanbanSchema } from "./schema/kanban.ts"`. */
+export const KanbanSchema = Kanban;
