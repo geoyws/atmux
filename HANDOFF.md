@@ -1,25 +1,19 @@
 # Handoff snapshot — atmux-bun port
 
-**Last driver-session update:** 2026-05-05 ~16:30 MYT
-**Status:** Phase 2 ~84% complete. **21 of 25 verbs ported** (V-19 reconfigure, V-23 rotate, V-20 handoff landed this session). 1185 tests pass / 0 fail. Solo-mode (no team agents).
+**Last driver-session update:** 2026-05-05 ~16:15 MYT
+**Status:** Phase 2 ~88% complete. **22 of 25 verbs ported** (V-21 report shipped this session). 1228 tests pass / 0 fail. Solo-mode (no team agents).
 
 ---
 
 ## ✅ Working tree state
 
 ```
-HEAD:   a70cb75 feat(verbs): handoff — two-phase work transfer between members
-Tests:  1185 pass / 4 todo / 0 fail across 47 test files
+HEAD:   e88d047 feat(verbs): report — 30-min progress digest (V-21)
+Tests:  1228 pass / 4 todo / 0 fail across 48 test files
 Build:  bunx tsc --noEmit + bun test green
 ```
 
-**Uncommitted (V-21 partial):**
-
-- `src/verbs/report.ts` — **new, ~270 LOC, typechecks cleanly, no tests yet, NOT wired into cli.ts.** Implements `parseReportArgs`, `selectShipped/InProgress/Blocked/OpenAsks`, `formatTaskRow`, `buildReportBody`, `buildDiscordSections`, `readLastReportEpoch`, `writeLastReportEpoch`, public `report()`. Mirrors `lib/report.sh` — 30-min digest, optional Discord push via `discord.send` with `template: "report-digest"`.
-- Note: I started V-21 but ran out of session before tests were written. **Three resume options for next session:**
-  - **(A) Finish + commit.** Write `tests/unit/verbs/report.test.ts` covering the pure helpers + public verb against a fixture .atmux/. Inject `discordSend` to capture sections without spinning fetch. Expect ~25 tests to hit 100% coverage. Recommended.
-  - **(B) Revert.** `rm src/verbs/report.ts` and re-port from scratch (the current implementation is a fine sketch though).
-  - **(C) Commit as-is.** Would fail CI coverage gate. Don't.
+Working tree clean. No uncommitted state.
 
 ---
 
@@ -28,10 +22,10 @@ Build:  bunx tsc --noEmit + bun test green
 The **canonical verb checklist + refactor IDs live in `PLAN.md` §6.2**. That file is the source of truth — this handoff is just the most-recent-state pointer.
 
 1. Read this file (`HANDOFF.md`)
-2. Read `PLAN.md` §6.2 for the V-01..V-25 + R-1..R-5 status table
-3. **Decide on V-21** per the three options above (default: finish + commit)
-4. Continue per recommended order: V-21 → V-22 (cost) → V-24 (doctor) → V-25 (whip) → V-01 (up)
-5. Pattern: write code → write tests → wire into cli.ts → typecheck + biome + 100% coverage gate → conventional commit. Flip §6.2 status alongside.
+2. Read `PLAN.md` §6.2 for V-01..V-25 + R-1..R-5 status
+3. Read `PLAN.md` §6.3 for I-1..I-4 integration tasks (new this session — ADR-018)
+4. Continue per recommended order: V-22 (cost) → V-24 (doctor) → V-25 (whip) → V-01 (up). Doctor before whip because whip calls into doctor.
+5. Pattern: write code → write tests → wire into cli.ts → typecheck + biome + 100% coverage gate (per-verb file) → conventional commit. Flip §6.2 status alongside in the same commit.
 
 For agent spawns: `CLAUDE_GUARD_AGENT=1 c-ic --permission-mode dontAsk --model claude-opus-4-7`
 
@@ -39,20 +33,17 @@ For agent spawns: `CLAUDE_GUARD_AGENT=1 c-ic --permission-mode dontAsk --model c
 
 ## 📊 This session's progress
 
-- **V-19 reconfigure** (commit `c9461bd`) — re-run wizard against existing team.json, drops tuiCommands defaults, discord webhook handling. 24 tests, 100% coverage.
-- **R-3 + R-4** (commit `1fef5a5`) — PLAN.md §6.2 stable verb-ID checklist (V-01..V-25 + R-1..R-5), HANDOFF.md trimmed to point at PLAN.md. **Fixes the post-/clear resume bug** where TaskList #21–#30 references became stale.
-- **R-1** (commit `513dd6d`) — `tests/helpers/capture.ts` with `captureStdio` + `captureMain`. cli.test.ts refactored to use it. Saves 6 future verb tests from re-implementing the monkey-patch dance.
-- **R-2** (commit `530be94`) — `getDefaultSocket(team)` lifted to `core/common.ts`. Eight verb call sites unchanged via re-export aliases (`defaultSocketPath` in attach.ts + start.ts).
-- **V-23 rotate / rotate-lead** (commit `a058073`) — `/clear` + brief re-paste, lead-resolution from roster, non-claude warn-and-continue. 37 tests, 100% coverage.
-- **V-20 handoff** (commit `a70cb75`) — two-phase capture (native ask with poll, capture-pane fallback), kanban + inbox migration, target ping, optional `--pause-from`. 57 tests, 100% coverage.
+- **V-21 report** (commit `e88d047`) — 30-min progress digest, mirrors `lib/report.sh`. Shipped/in-progress/blocked filters + open driver-inbox asks, structured Discord sections per ADR-008, soft Discord error handling, last-report.epoch state-tracking. 43 tests, 100% line + function coverage on `src/verbs/report.ts`.
+- **ADR-018** (commit `6082a4d`) — `/coordination:*` skills integration contract. Pins window-naming detection helper, `lead-session-start.txt` marker file (immediate items I-1 + I-2), defers driver-inbox path alignment + `/team` shim to V-25 (whip). PLAN.md gains §6.3 integration tasks subsection. Backlog rows for ADR-015/016/017/018 added to §7.
 
 ---
 
 ## 📈 Tally
 
-- **Verbs:** 21/25 shipped (84%). Remaining: **V-21 report (in-flight WIP)**, V-22 cost, V-24 doctor, V-25 whip, V-01 up.
+- **Verbs:** 22/25 shipped (88%). Remaining: V-22 cost, V-24 doctor, V-25 whip, V-01 up.
 - **Refactors:** R-1 + R-2 + R-3 + R-4 done. **R-5 pending** — `Writer` interface ADR after V-25 ships.
-- **Phase status:** Phase 1 closed. Phase 2 ~84% through. Phase 3 (parity harness) starts after V-25.
+- **Integration (new §6.3):** I-1, I-2 immediate (land alongside V-25); I-3, I-4 deferred to V-25 design.
+- **Phase status:** Phase 1 closed. Phase 2 ~88% through. Phase 3 (parity harness) starts after V-25.
 
 Detailed verb listing + LOC counts + bash-source paths: see **`PLAN.md` §6.2**.
 
@@ -72,36 +63,34 @@ CLAUDE_GUARD_AGENT=1 c-ic --permission-mode dontAsk --model claude-opus-4-7
 
 ## 📝 Discipline patterns reaffirmed this session
 
-- **Stable verb-IDs in PLAN.md §6.2** > volatile TaskList. Confirmed working — this session resumed from an even older HANDOFF and the §6.2 table made the recommended-next clear.
-- **Stub TmuxNamespace via opts.buildTmux injection** (rotate.ts, handoff.ts) — much cheaper than spinning real tmux for unit tests, and the verb still exercises the real `createTmux` path via `defaultBuildTmux` cover tests.
-- **Schema gotcha:** kanban.json fixtures must include `epics: []` and `stories: []` keys — Zod schema requires all three top-level arrays. The empty fixtures bash writes via `kanban_normalize` are NOT what bun:test mkdir+writeFile produces.
-- **env-var leak between test files** — when a test SETS `process.env.X` and the prior value was undefined, the afterEach must `delete` first then conditionally restore. Caught it leaking from rotate.test.ts → tell-lead.test.ts.
-- **`?? namedDefaultFn` over inline `?? ((x) => …)`** — coverage tools count the named-export function once even when the fallback isn't taken in every test. Inline arrows uncoverable without artificial roundtrips.
+- **ADR-018 split discipline**: immediate vs deferred items got distinct rationales (driver-inbox + `/team` shim deferred until V-25 whip surfaces real read-pattern constraints; window naming + lead-uptime marker resolvable now without waiting). Avoids double-rework.
+- **Single source of truth for ID flips** — PLAN.md §6.2 / §6.3 / §7. Status flip and feature commit in the same commit; never split the two (V-20 / V-23 / V-21 all followed this).
+- **Test injection patterns** for Discord — `discordSend` opt for assertion-grade interception; `ATMUX_DISCORD_RECORDER` env var for the default-branch coverage round-trip. Both kept the test free of real fetches.
 
 ---
 
 ## 🗂️ Recent commits this session
 
 ```
+e88d047 feat(verbs): report — 30-min progress digest (V-21)
+6082a4d docs(adr,plan): ADR-018 — /coordination skills integration contract
+f422f62 docs(handoff): refresh — V-19, V-23, V-20 shipped + V-21 WIP note
 a70cb75 feat(verbs): handoff — two-phase work transfer between members
 a058073 feat(verbs): rotate, rotate-lead — /clear + brief re-paste
 530be94 refactor(core): lift getDefaultSocket → core/common.ts
-513dd6d test(helpers): tests/helpers/capture.ts — shared stdio capture
-1fef5a5 docs(plan): stable verb-ID checklist in §6.2 + HANDOFF refresh
-c9461bd feat(verbs): reconfigure — re-run wizard against existing team.json
 ```
 
 ---
 
 ## TL;DR for future driver
 
-You are the **driver** of the atmux-bun port. Solo mode. **21/25 verbs done, 1185 tests pass.** 4 verbs left + 1 WIP (V-21 report sketch uncommitted at `src/verbs/report.ts`).
+You are the **driver** of the atmux-bun port. Solo mode. **22/25 verbs done, 1228 tests pass.** 3 verbs left + 1 deferred (V-01 up). New §6.3 integration tasks (I-1..I-4) land alongside V-25 (whip) per ADR-018.
 
 After `/clear`:
-1. Read this file + PLAN.md §6.2 + MEMORY.md
-2. **Decide on V-21**: finish+commit (write tests, recommended), or revert. The implementation is sound; just needs tests.
-3. Continue per §6.2 recommended order: V-21 → V-22 → V-24 → V-25 → V-01
+1. Read this file + PLAN.md §6.2 + §6.3 + MEMORY.md
+2. Continue per §6.2 recommended order: V-22 → V-24 → V-25 → V-01
+3. When picking up V-25, fold I-1 + I-2 (immediate integration items) into the same commit chain — they're 10-line marker-file writes the verb needs anyway. I-3 + I-4 design choices land alongside V-25.
 4. Use `CLAUDE_GUARD_AGENT=1 c-ic …` for any agent spawn
-5. Commit per-verb (typecheck + 100% coverage gate before each commit)
+5. Commit per-verb (typecheck + 100% file coverage gate before each commit; cli.ts dispatch case branches are tracked but pre-existing tech debt — do not block)
 
-*Update this file when major state changes happen. The verb checklist itself lives in PLAN.md §6.2 — keep status flips there.*
+*Update this file when major state changes happen. The verb checklist itself lives in PLAN.md §6.2 — keep status flips there, not here.*
