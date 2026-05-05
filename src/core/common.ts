@@ -206,19 +206,50 @@ export async function getSessionName(opts: SessionNameOpts = {}): Promise<string
   return `atmux-${team.name}`;
 }
 
-/** Bash `atmux::window_name`: `__<team>__<emoji><member>` or
- *  `__<team>__<member>` when no emoji is available. */
-export function buildWindowName(team: string, member: string, emoji?: string): string {
-  if (emoji !== undefined && emoji.length > 0) return `__${team}__${emoji}${member}`;
-  return `__${team}__${member}`;
+/**
+ * tmux window name for a member. Operator decision 2026-05-05 (memory
+ * `feedback_atmux_window_naming_no_prefix.md`, ADR-017): drop the
+ * pre-amend `__<team>__<emoji><member>` prefix to maximize horizontal
+ * space in tmux's window-list UI.
+ *
+ * **New form** — `<emoji><member>` when emoji is set, `<member>` when not.
+ * Concrete examples (5-char team `atmux`):
+ *   pre-amend:  `__atmux__🗺️lead`     (12 chars + emoji)
+ *   post-amend: `🗺️lead`              (4 chars + emoji)
+ *
+ * The bash side at HEAD 2aadc3f still uses the prefixed form
+ * (`lib/common.sh::atmux::window_name`); port-back is non-urgent and
+ * planned for the next bash atmux window-naming change (ADR-013 §"Phase
+ * 5 deferral" governs the cross-language drift while the prefixed form
+ * stays live in production bash).
+ */
+export function buildWindowName(member: string, emoji?: string): string {
+  if (emoji !== undefined && emoji.length > 0) return `${emoji}${member}`;
+  return member;
 }
 
-/** Detects whether a tmux window name carries the atmux spawn-convention
- *  prefix `__<team>__…` — used by bash `atmux::resolve_caller_scope` to
- *  refuse driver-scope from a member pane. Phase 2 verbs reuse this for
- *  the same refuse-gate. */
-export function isMemberWindowName(name: string): boolean {
-  return /^__[a-z0-9_-]+__/.test(name);
+/**
+ * Roster-based "is this name a member-spawned window?" check.
+ *
+ * Pre-amend (`__<team>__…` prefix) used a regex on the name alone — the
+ * prefix WAS the signal. Post-amend the new form has no prefix, so the
+ * check necessarily compares against the team's `members[]` roster.
+ *
+ * Returns true when `name` matches `buildWindowName(member.name,
+ * member.emoji)` for any entry. Names that begin with `__` are
+ * explicitly rejected — they're either pre-amend artifacts (cleaned up
+ * via `atmux start --force` or its successor) or atmux-internal
+ * placeholder windows like `__<team>__home` (start.ts).
+ *
+ * Used by Phase 2+ verbs (whip, dispatch, scope-refuse paths) to
+ * determine whether the calling pane is a member pane vs the driver's.
+ */
+export function isMemberWindowName(
+  name: string,
+  members: ReadonlyArray<{ name: string; emoji?: string }>,
+): boolean {
+  if (name.startsWith("__")) return false; // pre-amend artifact / non-atmux placeholder
+  return members.some((m) => name === buildWindowName(m.name, m.emoji));
 }
 
 // ---------- Name validation ----------
@@ -317,15 +348,7 @@ export function normalizeMemberName(input: string): string {
 /** Default fallback pool for unknown roles + the canonical "member"
  *  bucket. Defined first so ROLE_EMOJI_POOLS can reference it without
  *  the non-null-assertion dance. */
-const MEMBER_POOL: ReadonlyArray<string> = [
-  "🐝",
-  "🦊",
-  "🦉",
-  "🐢",
-  "🦀",
-  "🐙",
-  "🦜",
-];
+const MEMBER_POOL: ReadonlyArray<string> = ["🐝", "🦊", "🦉", "🐢", "🦀", "🐙", "🦜"];
 
 /** Curated emoji pool per role. Mirrors bash `lib/emoji.sh::atmux::emoji_pool`.
  *  First entry of each pool is the canonical "static" pick. */

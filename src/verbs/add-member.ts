@@ -30,7 +30,9 @@
 //   tui=…) to team.json" via atmux::ok.
 // - lib/add-member.sh:55-60 + 63-80 — if a tmux session is up at the
 //   resolved socket: spawn a new window for the member named via
-//   `common.buildWindowName(team, member, emoji)`. Else: log "run
+//   `common.buildWindowName(member, emoji)` (post-2026-05-05 amend, ADR-017
+//   — the team prefix was dropped to maximize tmux window-list space).
+//   Else: log "run
 //   'atmux start' …" pointer.
 //
 // **Spawn-path scoping (parity with start verb).** Per `src/verbs/start.ts`
@@ -443,7 +445,7 @@ async function maybeSpawn(
 
   // lib/add-member.sh:56-57 — log + spawn.
   logger.log("  session is up — spawning the member now");
-  const win = buildWindowName(teamName, parsed.name, emoji);
+  const win = buildWindowName(parsed.name, emoji);
   // Window name parity with `start.ts`. TUI launch deferred (file
   // header §"Spawn-path scoping").
   await tmux.window.newWindow({

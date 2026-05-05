@@ -305,27 +305,52 @@ describe("getSessionName", () => {
 });
 
 describe("buildWindowName / isMemberWindowName", () => {
-  test("with emoji: __team__<emoji><member>", () => {
-    expect(buildWindowName("foo", "alice", "🦊")).toBe("__foo__🦊alice");
+  // ADR-017 / operator decision 2026-05-05: drop the `__<team>__` prefix.
+  // New form: `<emoji><member>` when emoji is set, `<member>` when not.
+
+  test("with emoji: <emoji><member>", () => {
+    expect(buildWindowName("alice", "🦊")).toBe("🦊alice");
   });
 
-  test("without emoji: __team__<member>", () => {
-    expect(buildWindowName("foo", "alice")).toBe("__foo__alice");
+  test("without emoji: <member>", () => {
+    expect(buildWindowName("alice")).toBe("alice");
   });
 
   test("empty emoji string treated as absent", () => {
-    expect(buildWindowName("foo", "alice", "")).toBe("__foo__alice");
+    expect(buildWindowName("alice", "")).toBe("alice");
   });
 
-  test("isMemberWindowName: matches __team__ prefix", () => {
-    expect(isMemberWindowName("__atmux-bun__🦊alice")).toBe(true);
-    expect(isMemberWindowName("__t__lead")).toBe(true);
+  test("multi-byte emoji characters preserved (e.g. compound 🗺️)", () => {
+    expect(buildWindowName("lead", "🗺️")).toBe("🗺️lead");
   });
 
-  test("isMemberWindowName: rejects non-prefix", () => {
-    expect(isMemberWindowName("zsh")).toBe(false);
-    expect(isMemberWindowName("driver")).toBe(false);
-    expect(isMemberWindowName("__BAD__upper")).toBe(false); // uppercase team rejected
+  test("isMemberWindowName: roster match (with emoji)", () => {
+    const members = [{ name: "alice", emoji: "🦊" }];
+    expect(isMemberWindowName("🦊alice", members)).toBe(true);
+  });
+
+  test("isMemberWindowName: roster match (no emoji)", () => {
+    const members = [{ name: "lead" }];
+    expect(isMemberWindowName("lead", members)).toBe(true);
+  });
+
+  test("isMemberWindowName: not in roster → false", () => {
+    const members = [{ name: "alice", emoji: "🦊" }];
+    expect(isMemberWindowName("bob", members)).toBe(false);
+    expect(isMemberWindowName("🦊bob", members)).toBe(false);
+    expect(isMemberWindowName("🐝alice", members)).toBe(false); // wrong emoji
+  });
+
+  test("isMemberWindowName: pre-amend `__<team>__…` artifacts rejected", () => {
+    const members = [{ name: "alice", emoji: "🦊" }];
+    expect(isMemberWindowName("__atmux-bun__🦊alice", members)).toBe(false);
+    expect(isMemberWindowName("__t__lead", members)).toBe(false);
+    // `__<team>__home` placeholder stays out of member-window territory
+    expect(isMemberWindowName("__atmux__home", members)).toBe(false);
+  });
+
+  test("isMemberWindowName: empty roster → always false", () => {
+    expect(isMemberWindowName("anything", [])).toBe(false);
   });
 });
 

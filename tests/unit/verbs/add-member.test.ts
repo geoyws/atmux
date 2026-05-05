@@ -456,7 +456,8 @@ describe("addMember — spawn path", () => {
 
     // The new window exists under buildWindowName(team, name, emoji)
     const wins = await env.tmux.window.listWindows(session);
-    expect(wins.map((w) => w.name)).toContain(`__${env.team}__🧭alpha`);
+    // ADR-017: `<emoji><member>` (no `__<team>__` prefix).
+    expect(wins.map((w) => w.name)).toContain("🧭alpha");
 
     // log + ok lines fired
     expect(env.logs.some((l) => l.msg.includes("session is up"))).toBe(true);
