@@ -203,6 +203,14 @@ describe("cli.main — inbox verb dispatch", () => {
   });
 });
 
+describe("cli.main — status verb dispatch", () => {
+  test("'status bogus' dispatches into status (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["status", "bogus"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 describe("cli.main — stop verb dispatch", () => {
   test("'stop bogus' dispatches into stop (UsageError on unknown arg)", async () => {
     const { exit, stderr } = await captureMain(["stop", "bogus"]);
