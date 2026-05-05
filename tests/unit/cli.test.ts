@@ -32,18 +32,25 @@ interface CapturedIO {
 }
 
 /**
- * Capture both `console.log` (the version verb's print) and
- * `process.stderr.write` (reportError's output). Restores both in
+ * Capture `console.log` (verbs that use it — e.g. version), direct
+ * `process.stdout.write` (verbs that bypass console.log to control
+ * trailing-newline behaviour — e.g. help), and `process.stderr.write`
+ * (reportError's output). All three originals are restored in
  * `finally` even if the assertion throws.
  */
 async function captureMain(argv: ReadonlyArray<string>): Promise<CapturedIO> {
   let stdoutBuf = "";
   let stderrBuf = "";
   const origLog = console.log;
+  const origStdoutWrite = process.stdout.write.bind(process.stdout);
   const origStderrWrite = process.stderr.write.bind(process.stderr);
   console.log = (msg: unknown) => {
     stdoutBuf += `${String(msg)}\n`;
   };
+  process.stdout.write = ((s: string | Uint8Array) => {
+    stdoutBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return true;
+  }) as typeof process.stdout.write;
   process.stderr.write = ((s: string | Uint8Array) => {
     stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
     return true;
@@ -53,6 +60,7 @@ async function captureMain(argv: ReadonlyArray<string>): Promise<CapturedIO> {
     return { exit, stdout: stdoutBuf, stderr: stderrBuf };
   } finally {
     console.log = origLog;
+    process.stdout.write = origStdoutWrite;
     process.stderr.write = origStderrWrite;
   }
 }
@@ -94,6 +102,32 @@ describe("cli.main — version verb (3-form parity with bash)", () => {
     const { exit, stdout, stderr } = await captureMain(["-V"]);
     expect(exit).toBe(0);
     expect(stdout).toBe("atmux 0.3.0\n");
+    expect(stderr).toBe("");
+  });
+});
+
+// ---------- Dispatch — help verb (3-form parity with bash) ----------
+
+describe("cli.main — help verb (3-form parity with bash)", () => {
+  test("'help' → exit 0, writes usage block to stdout", async () => {
+    const { exit, stdout, stderr } = await captureMain(["help"]);
+    expect(exit).toBe(0);
+    expect(stdout).toContain("atmux — agent teams multiplexer.");
+    expect(stdout).toContain("Docs:  https://github.com/geoyws/atmux");
+    expect(stderr).toBe("");
+  });
+
+  test("'--help' alias → exit 0, writes usage block (bash parity)", async () => {
+    const { exit, stdout, stderr } = await captureMain(["--help"]);
+    expect(exit).toBe(0);
+    expect(stdout).toContain("atmux — agent teams multiplexer.");
+    expect(stderr).toBe("");
+  });
+
+  test("'-h' alias → exit 0, writes usage block (bash parity)", async () => {
+    const { exit, stdout, stderr } = await captureMain(["-h"]);
+    expect(exit).toBe(0);
+    expect(stdout).toContain("atmux — agent teams multiplexer.");
     expect(stderr).toBe("");
   });
 });

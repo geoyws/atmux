@@ -33,6 +33,7 @@ import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
 import { claim, done } from "./verbs/claim.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
+import { help } from "./verbs/help.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
 import { pause, resume } from "./verbs/pause.ts";
@@ -72,6 +73,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     case "--version":
     case "-V":
       return version(argv.slice(1));
+    case "help":
+    case "--help":
+    case "-h":
+      return help(argv.slice(1));
     case "init":
       return init(argv.slice(1));
     case "start":
