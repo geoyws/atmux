@@ -1226,6 +1226,100 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       stderr: /(💥 atmux |atmux: )|\n {2}usage: atmux add-member [^\n]+/g,
     },
   },
+  // ADR-032 commit D: 3 cross-lane error rows for usage-line divergence
+  // (rows 3, 4, 5 per ADR-032 §1 row table). Family A (#3 pure prefix —
+  // both sides keep `usage:` body) + family C (#4 + #5 per-side
+  // usage-line literal divergence — TS adds flag-suffix that bash USAGE
+  // omits, narrow per-row regex per ADR-027 §4 cite-locality).
+  //
+  // Coverage by mask shape:
+  //   - Row 3: tell-lead missing-msg (lib/tell.sh:16 USAGE_TELL_LEAD +
+  //     src/verbs/tell-lead.ts:86 USAGE) — both sides emit `usage:
+  //     atmux tell-lead <msg...>` body, only prefix differs (family A).
+  //   - Row 4: dispatch missing-args (lib/dispatch.sh:27 +
+  //     src/verbs/dispatch.ts USAGE) — bash USAGE = `atmux dispatch
+  //     <member> <task-id>`; TS adds ` [--no-ping]` flag-suffix
+  //     (family C, narrow per-row strip).
+  //   - Row 5: handoff missing-args (lib/handoff.sh:36 +
+  //     src/verbs/handoff.ts USAGE) — bash USAGE = `atmux handoff
+  //     <from> <to> [--reason <text>]`; TS adds ` [--no-native]
+  //     [--pause-from]` flag-suffix (family C, narrow per-row strip).
+  //
+  // Note row 4 + 5 mask asymmetry: bash USAGE wraps with `usage: ` body
+  // (lib/common.sh::usage prepends it); TS USAGE constants for these
+  // verbs DON'T include the literal `usage: ` substring — so mask
+  // strips `💥 atmux usage: ` from bash AND `atmux: ` from TS,
+  // collapsing both sides to `atmux <verb> <args> [...]`. Row 3 keeps
+  // `usage:` body on both sides because TS USAGE for tell-lead DOES
+  // start with `usage:` literal (probe-verified). All probe-verified
+  // at .atmux/notes-adr-032-research.md "Probe-rerun for ADR-032
+  // amendments" rows 3, 4, 5.
+  {
+    verb: "tell-lead",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "tell-lead [lifecycle: missing-msg error] (ADR-032 row 3)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: family A pure prefix (ADR-027 error-rendering class) —
+      // both sides emit identical body `usage: atmux tell-lead <msg...>`
+      // after prefix strip. Bash: `💥 atmux usage: atmux tell-lead
+      // <msg...>`; TS: `atmux: usage: atmux tell-lead <msg...>`. TS
+      // USAGE constant at src/verbs/tell-lead.ts:86 starts with `usage:`
+      // literal (unlike dispatch/handoff USAGE which omit it), so this
+      // row stays family A. Probe-verified at .atmux/notes-adr-032-
+      // research.md row 3.
+      stderr: /(💥 atmux |atmux: )/g,
+    },
+  },
+  {
+    verb: "dispatch",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "dispatch [lifecycle: missing-args error] (ADR-032 row 4)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: family C per-side usage-line literal divergence (ADR-027
+      // error-rendering class). Bash: `💥 atmux usage: atmux dispatch
+      // <member> <task-id>` (lib/common.sh::usage prepends `usage: `);
+      // TS: `atmux: atmux dispatch <member> <task-id> [--no-ping]` (TS
+      // USAGE constant at src/verbs/dispatch.ts has no `usage:` literal
+      // and includes ` [--no-ping]` flag suffix). Mask strips bash
+      // `💥 atmux usage: ` (16 chars) and TS `atmux: ` (7 chars) +
+      // narrow per-row TS-side ` [--no-ping]` flag-suffix elision per
+      // ADR-027 §4 cite-locality. Both sides reduce to `atmux dispatch
+      // <member> <task-id>`. Probe-verified at .atmux/notes-adr-032-
+      // research.md row 4.
+      stderr: /(💥 atmux usage: |atmux: )| \[--no-ping\]/g,
+    },
+  },
+  {
+    verb: "handoff",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "handoff [lifecycle: missing-args error] (ADR-032 row 5)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: family C per-side usage-line literal divergence (ADR-027
+      // error-rendering class). Bash: `💥 atmux usage: atmux handoff
+      // <from> <to> [--reason <text>]`; TS: `atmux: atmux handoff
+      // <from> <to> [--reason <text>] [--no-native] [--pause-from]` (TS
+      // USAGE constant at src/verbs/handoff.ts has no `usage:` literal
+      // and includes ` [--no-native] [--pause-from]` flag-suffix). Mask
+      // strips bash `💥 atmux usage: ` (16 chars) and TS `atmux: ` (7
+      // chars) + narrow per-row TS-side ` [--no-native] [--pause-from]`
+      // flag-suffix elision per ADR-027 §4 cite-locality. Both sides
+      // reduce to `atmux handoff <from> <to> [--reason <text>]`. Probe-
+      // verified at .atmux/notes-adr-032-research.md row 5.
+      stderr: /(💥 atmux usage: |atmux: )| \[--no-native\] \[--pause-from\]/g,
+    },
+  },
   // ADR-028 commit 4: 3 full-parity cron-fired rows.
   //
   // Row 1: `report --no-discord` on `lifecycle` (empty kanban). Exercises
