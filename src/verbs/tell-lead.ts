@@ -14,7 +14,7 @@
 //   3. Else: ConfigError ("no lead defined in team.json")
 
 import { writeText } from "../abstractions/fs.ts";
-import { formatMytFull } from "../abstractions/time.ts";
+import { formatMyt } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
@@ -158,7 +158,11 @@ async function appendDriverInbox(atmuxDir: string, msg: string): Promise<void> {
   const path = driverInboxPath(atmuxDir);
   const file = Bun.file(path);
   const existing = (await file.exists()) ? await file.text() : DRIVER_INBOX_HEADER;
-  const ts = formatMytFull();
+  // Per ADR-029 §F8 — bash atmux::now_myt emits HH:MM MYT (lib/common.sh:225,
+  // lib/tell.sh appends to driver-inbox.md); formatMyt mirrors. Earlier port
+  // used formatMytFull (YYYY-MM-DD HH:MM:SS MYT) which violated CLAUDE.md
+  // global timezone rule + diverged from bash.
+  const ts = formatMyt();
   const entry = `- [${ts}] ${msg}\n`;
   // Bash appends to EOF (not newest-first under `## Open`); mirror.
   const next = existing.endsWith("\n") ? existing + entry : `${existing}\n${entry}`;

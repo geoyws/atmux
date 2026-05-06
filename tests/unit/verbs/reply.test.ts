@@ -229,6 +229,19 @@ describe("reply verb — integration", () => {
     expect(idxBeta).toBeGreaterThan(0);
     expect(idxAlpha).toBeGreaterThan(idxBeta);
   });
+
+  test("entry timestamp is HH:MM MYT format (ADR-029 §F4)", async () => {
+    // Bash atmux::now_myt emits HH:MM MYT (lib/common.sh:225); the TS port
+    // earlier used formatMytFull (YYYY-MM-DD HH:MM:SS MYT) which violated
+    // CLAUDE.md global timezone rule + diverged from bash. Verify the
+    // correct shape after the F4 fix.
+    await captureStdout(() => reply(["--from", "alpha", "--team-dir", teamDir, "msg"]));
+    const ob = await Bun.file(join(atmuxDir, "lead-outbox.md")).text();
+    // Match `- [HH:MM MYT] **alpha**: msg` — exactly 5 chars before " MYT".
+    expect(ob).toMatch(/- \[\d{2}:\d{2} MYT\] \*\*alpha\*\*: msg/);
+    // Negative — no full-date form.
+    expect(ob).not.toMatch(/- \[\d{4}-\d{2}-\d{2}/);
+  });
 });
 
 // ---------- outbox verb integration ----------

@@ -28,7 +28,7 @@
 
 import { writeText } from "../abstractions/fs.ts";
 import { withLock } from "../abstractions/lock.ts";
-import { formatMytFull } from "../abstractions/time.ts";
+import { formatMyt } from "../abstractions/time.ts";
 import {
   getAtmuxDir,
   leadOutboxPath,
@@ -269,7 +269,7 @@ export async function outbox(argv: ReadonlyArray<string>): Promise<number> {
   if (parsed.ack && entries.length > 0) {
     await withLock(path, async () => {
       const cur = await Bun.file(path).text();
-      const ts = formatMytFull();
+      const ts = formatMyt();
       const result = archiveOpenEntries(cur, ts);
       await writeText(path, result.body);
     });
@@ -307,7 +307,10 @@ export function collectOpenEntries(body: string): string[] {
 async function appendOutboxEntry(path: string, from: string, msg: string): Promise<void> {
   const file = Bun.file(path);
   const existing = (await file.exists()) ? await file.text() : OUTBOX_HEADER;
-  const ts = formatMytFull();
+  // Per ADR-029 §F4 — bash atmux::now_myt emits HH:MM MYT (lib/common.sh:225);
+  // formatMyt mirrors. Earlier port used formatMytFull (YYYY-MM-DD HH:MM:SS
+  // MYT) which violated CLAUDE.md global timezone rule + diverged from bash.
+  const ts = formatMyt();
   const entry = `- [${ts}] **${from}**: ${msg}`;
   const next = insertOpenEntry(existing, entry);
   await writeText(path, next);

@@ -234,4 +234,18 @@ describe("tellLead — integration", () => {
     expect(di).toContain("first");
     expect(di).toContain("second");
   });
+
+  test("driver-inbox entry timestamp is HH:MM MYT format (ADR-029 §F8)", async () => {
+    // Bash atmux::now_myt emits HH:MM MYT (lib/common.sh:225); the TS port
+    // earlier used formatMytFull (YYYY-MM-DD HH:MM:SS MYT) which violated
+    // CLAUDE.md global timezone rule + diverged from bash. Verify the
+    // correct shape after the F8 fix.
+    await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "format check"]),
+    );
+    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    expect(di).toMatch(/- \[\d{2}:\d{2} MYT\] format check/);
+    expect(di).not.toMatch(/- \[\d{4}-\d{2}-\d{2}/);
+  });
 });
