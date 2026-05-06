@@ -279,6 +279,69 @@ describe("dispatch verb — integration", () => {
     ).rejects.toThrow(ConfigError);
   });
 
+  test("re-dispatch from owner A → member B drains A's inbox + warns on stderr (t-e452296b)", async () => {
+    await stageTeamWithMembers(["alpha", "beta"]);
+    const id = await addTask(atmuxDir, { subject: "x" });
+    // First dispatch: alpha owns + has the task in inbox.inProgress.
+    await captureStdoutStderr(() =>
+      dispatch([
+        "alpha",
+        id,
+        "--socket",
+        socketPath,
+        "--team-dir",
+        teamDir,
+        "--no-ping",
+      ]),
+    );
+    let alphaInbox = await loadInbox(atmuxDir, "alpha");
+    expect(alphaInbox.inProgress.map((t) => t.id)).toEqual([id]);
+
+    // Re-dispatch: beta picks up. alpha's inbox should be drained + a
+    // warning surfaces on stderr.
+    const { stderr, stdout } = await captureStdoutStderr(() =>
+      dispatch([
+        "beta",
+        id,
+        "--socket",
+        socketPath,
+        "--team-dir",
+        teamDir,
+        "--no-ping",
+      ]),
+    );
+    expect(stdout).toContain(`dispatched ${id} → beta`);
+    expect(stderr).toContain(`reassigning ${id} from alpha to beta`);
+
+    alphaInbox = await loadInbox(atmuxDir, "alpha");
+    const betaInbox = await loadInbox(atmuxDir, "beta");
+    expect(alphaInbox.inProgress).toEqual([]);
+    expect(betaInbox.inProgress.map((t) => t.id)).toEqual([id]);
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.owner).toBe("beta");
+  });
+
+  test("re-dispatch to the SAME owner is a quiet idempotent re-claim (no warning)", async () => {
+    await stageTeamWithMembers(["alpha"]);
+    const id = await addTask(atmuxDir, { subject: "x" });
+    await captureStdoutStderr(() =>
+      dispatch(["alpha", id, "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]),
+    );
+    const { stderr } = await captureStdoutStderr(() =>
+      dispatch(["alpha", id, "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]),
+    );
+    expect(stderr).not.toContain("reassigning");
+  });
+
+  test("first-time dispatch (no prior owner) does NOT emit a reassignment warning", async () => {
+    await stageTeamWithMembers(["alpha"]);
+    const id = await addTask(atmuxDir, { subject: "x" });
+    const { stderr } = await captureStdoutStderr(() =>
+      dispatch(["alpha", id, "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]),
+    );
+    expect(stderr).not.toContain("reassigning");
+  });
+
   test("ping failure does NOT abort the dispatch (warn + return 0)", async () => {
     // Stage team with member "ghost" that has NO tmux window — sendToMember
     // throws TmuxError, dispatch catches + warns + returns 0.

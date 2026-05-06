@@ -25,8 +25,8 @@
 // directly.
 
 import { createTmux } from "../abstractions/tmux.ts";
-import { appendDispatched } from "../core/inbox.ts";
-import { claimTask } from "../core/kanban.ts";
+import { appendDispatched, removeFromInProgress } from "../core/inbox.ts";
+import { claimTask, showTask } from "../core/kanban.ts";
 import { isPaused } from "../core/pause.ts";
 import { sendToMember } from "../core/send.ts";
 import {
@@ -145,6 +145,25 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     throw new ConfigError({
       what: `dispatch: ${parsed.member} is paused — resume with \`atmux resume ${parsed.member}\``,
     });
+  }
+
+  // t-e452296b §(b): a re-dispatch from owner A → member B left A's
+  // inbox.inProgress entry orphaned (the "cross-claim drift" the lead
+  // hit on docs.json holding t-706655ee while kanban owner was
+  // whip-impl). Pre-read the current owner; if reassigning, drain the
+  // old owner's inbox + emit a stderr warning so the operator sees
+  // they're stepping on an existing assignment. Refusal would break
+  // legitimate reassignments — warn-and-drain is the lighter touch.
+  const preOwn = await showTask(atmuxDir, parsed.id);
+  const oldOwner =
+    preOwn !== null && typeof preOwn.owner === "string" && preOwn.owner.length > 0
+      ? preOwn.owner
+      : null;
+  if (oldOwner !== null && oldOwner !== parsed.member) {
+    process.stderr.write(
+      `atmux: warn: dispatch: reassigning ${parsed.id} from ${oldOwner} to ${parsed.member} (draining old owner's inbox)\n`,
+    );
+    await removeFromInProgress(atmuxDir, oldOwner, parsed.id);
   }
 
   // claimTask enforces the deps gate AND the missing-id check + sets

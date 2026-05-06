@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addTask, loadKanban, moveTask } from "../../../src/core/kanban.ts";
+import { appendDispatched, loadInbox } from "../../../src/core/inbox.ts";
+import { addTask, assignTask, loadKanban, moveTask } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { parseAddArgs, parseListArgs, task } from "../../../src/verbs/task.ts";
 
@@ -316,5 +317,91 @@ describe("task verb — dispatch", () => {
 
   test("subverb --team-dir without value → UsageError", async () => {
     await expect(task(["show", "t-aaaaaaaa", "--team-dir"])).rejects.toThrow(UsageError);
+  });
+});
+
+// ---------- t-e452296b: kanban→inbox drift on parking transitions ----------
+
+describe("'task move' drains assignee inbox.inProgress on parking transitions", () => {
+  test("'move <id> blocked' drains owner's inbox.inProgress entry", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    await assignTask(atmuxDir, id, "alpha");
+    // Stage alpha's inbox as if dispatch had pushed the task.
+    await appendDispatched(atmuxDir, "alpha", { id, subject: "x" }, 1_700_000_000);
+    let inbox = await loadInbox(atmuxDir, "alpha");
+    expect(inbox.inProgress.map((t) => t.id)).toEqual([id]);
+
+    await captureStdout(() => task(["move", id, "blocked", "--team-dir", teamDir]));
+
+    inbox = await loadInbox(atmuxDir, "alpha");
+    expect(inbox.inProgress).toEqual([]);
+    // Kanban side still reflects the block + retains owner for audit.
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.status).toBe("blocked");
+    expect(k.tasks[0]?.owner).toBe("alpha");
+  });
+
+  test("'move <id> todo' drains owner's inbox.inProgress entry (un-claim parity)", async () => {
+    const id = await addTask(atmuxDir, { subject: "y" });
+    await assignTask(atmuxDir, id, "alpha");
+    await appendDispatched(atmuxDir, "alpha", { id, subject: "y" }, 1_700_000_000);
+
+    await captureStdout(() => task(["move", id, "todo", "--team-dir", teamDir]));
+
+    const inbox = await loadInbox(atmuxDir, "alpha");
+    expect(inbox.inProgress).toEqual([]);
+  });
+
+  test("'move <id> in-progress' does NOT drain (transition isn't parking)", async () => {
+    const id = await addTask(atmuxDir, { subject: "z" });
+    await assignTask(atmuxDir, id, "alpha");
+    await appendDispatched(atmuxDir, "alpha", { id, subject: "z" }, 1_700_000_000);
+
+    await captureStdout(() => task(["move", id, "in-progress", "--team-dir", teamDir]));
+
+    const inbox = await loadInbox(atmuxDir, "alpha");
+    expect(inbox.inProgress.map((t) => t.id)).toEqual([id]);
+  });
+
+  test("'move <id> blocked' on unowned task is a no-op (no member resolution needed)", async () => {
+    const id = await addTask(atmuxDir, { subject: "no-owner" });
+    // Stage alpha's inbox empty — simulating "ownership not yet set".
+    await captureStdout(() => task(["move", id, "blocked", "--team-dir", teamDir]));
+    const inbox = await loadInbox(atmuxDir, "alpha");
+    expect(inbox.inProgress).toEqual([]);
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.status).toBe("blocked");
+  });
+
+  test("'move <id> blocked' when entry not actually in inbox is idempotent", async () => {
+    // owner is "alpha" on kanban but alpha's inbox does NOT contain the
+    // entry — block transition should not throw / not corrupt the inbox.
+    const id = await addTask(atmuxDir, { subject: "ghosted" });
+    await assignTask(atmuxDir, id, "alpha");
+    // Don't stage alpha's inbox at all.
+
+    await captureStdout(() => task(["move", id, "blocked", "--team-dir", teamDir]));
+
+    const inbox = await loadInbox(atmuxDir, "alpha");
+    expect(inbox.inProgress).toEqual([]);
+  });
+
+  test("'move <id> done' continues to use moveTask completedAt stamp (not drained here)", async () => {
+    // The `atmux done` verb owns the inbox.inProgress → inbox.done
+    // transition; `task move <id> done` is the bare kanban-side path
+    // and intentionally doesn't migrate the inbox entry to .done.
+    const id = await addTask(atmuxDir, { subject: "kanban-done-only" });
+    await assignTask(atmuxDir, id, "alpha");
+    await appendDispatched(atmuxDir, "alpha", { id, subject: "kanban-done-only" }, 1_700_000_000);
+
+    await captureStdout(() => task(["move", id, "done", "--team-dir", teamDir]));
+
+    const inbox = await loadInbox(atmuxDir, "alpha");
+    // Bare task-move-done leaves the inbox entry alone — `atmux done`
+    // is the verb that drains+migrates. Pinning current behaviour.
+    expect(inbox.inProgress.map((t) => t.id)).toEqual([id]);
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.status).toBe("done");
+    expect(k.tasks[0]?.completedAt).toBeGreaterThan(0);
   });
 });

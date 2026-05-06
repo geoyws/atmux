@@ -163,6 +163,33 @@ export async function movePendingToInProgress(
 }
 
 /**
+ * Drain a task by id from a member's `.inProgress` without appending
+ * anywhere. Used by status transitions that orphan the inbox entry
+ * without going through `done` — e.g. `task move <id> blocked` parks
+ * the task on the kanban side, but bash's mirror left the assignee's
+ * inbox entry behind, causing whip's `inProgress > 90min` alert to
+ * fire on tasks that the lead had already shelved (t-e452296b drift).
+ *
+ * Idempotent: filtering removes 0 or 1 entries; absent ids are no-ops.
+ * The verb layer is responsible for member resolution + ownership
+ * checks; this primitive trusts its inputs.
+ */
+export async function removeFromInProgress(
+  atmuxDir: string,
+  member: string,
+  id: string,
+): Promise<void> {
+  await updateJson(
+    inboxPathFor(atmuxDir, member),
+    InboxSchema,
+    (i) => ({ ...i, inProgress: i.inProgress.filter((t) => t.id !== id) }),
+    // Same noLock semantics as the other inbox writers — single-writer
+    // -per-inbox convention preserved (ADR-029 §F2 + F9).
+    { initial: emptyInbox(), noLock: true },
+  );
+}
+
+/**
  * Member-side done mirror: remove from `.inProgress`, append to
  * `.done` with `completedAt` stamped. No idempotence guard — bash
  * lib/claim.sh:96-101 doesn't gate; mirror.

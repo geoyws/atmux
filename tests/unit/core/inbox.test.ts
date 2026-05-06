@@ -13,6 +13,7 @@ import {
   loadInbox,
   moveInProgressToDone,
   movePendingToInProgress,
+  removeFromInProgress,
 } from "../../../src/core/inbox.ts";
 import type { InboxEntry } from "../../../src/schema/inbox.ts";
 
@@ -155,6 +156,48 @@ describe("moveInProgressToDone", () => {
     await moveInProgressToDone(atmuxDir, "alpha", t, 200);
     const i = await loadInbox(atmuxDir, "alpha");
     expect(i.done).toHaveLength(2);
+  });
+});
+
+// ---------- removeFromInProgress (t-e452296b drift fix) ----------
+
+describe("removeFromInProgress", () => {
+  test("removes entry by id and leaves the rest of inProgress intact", async () => {
+    const a = task("t-aaaaaaaa");
+    const b = task("t-bbbbbbbb");
+    await appendDispatched(atmuxDir, "alpha", a, 1);
+    await appendDispatched(atmuxDir, "alpha", b, 2);
+    await removeFromInProgress(atmuxDir, "alpha", a.id);
+    const i = await loadInbox(atmuxDir, "alpha");
+    expect(i.inProgress.map((t) => t.id)).toEqual([b.id]);
+  });
+
+  test("absent id is a no-op (idempotent)", async () => {
+    await appendDispatched(atmuxDir, "alpha", task("t-aaaaaaaa"), 1);
+    await removeFromInProgress(atmuxDir, "alpha", "t-deadbeef");
+    const i = await loadInbox(atmuxDir, "alpha");
+    expect(i.inProgress).toHaveLength(1);
+  });
+
+  test("does not touch pending or done buckets", async () => {
+    const t = task("t-aaaaaaaa");
+    await appendPending(atmuxDir, "alpha", t);
+    await appendDispatched(atmuxDir, "alpha", task("t-bbbbbbbb"), 1);
+    await moveInProgressToDone(atmuxDir, "alpha", task("t-bbbbbbbb"), 1);
+    // Re-add a fresh inProgress entry, then drain it.
+    const c = task("t-cccccccc");
+    await appendDispatched(atmuxDir, "alpha", c, 2);
+    await removeFromInProgress(atmuxDir, "alpha", c.id);
+    const i = await loadInbox(atmuxDir, "alpha");
+    expect(i.pending.map((p) => p.id)).toEqual([t.id]);
+    expect(i.inProgress).toEqual([]);
+    expect(i.done.map((d) => d.id)).toEqual(["t-bbbbbbbb"]);
+  });
+
+  test("missing inbox file → empty inbox materialized, no throw", async () => {
+    await removeFromInProgress(atmuxDir, "ghost", "t-aaaaaaaa");
+    const i = await loadInbox(atmuxDir, "ghost");
+    expect(i).toEqual({ pending: [], inProgress: [], done: [] });
   });
 });
 
