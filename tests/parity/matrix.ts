@@ -67,6 +67,18 @@ export type ParityRow = {
    * applied symmetrically before comparison.
    */
   mask?: ChannelMask;
+  /**
+   * Optional row-level pre-state (ADR-029 §3). Each `<relPath>` is
+   * resolved against the cloned per-side fixture root and written
+   * BEFORE `runVerb` fires. JSON-shaped values stringify with 2-space
+   * indent + trailing newline; strings write verbatim. Both sides
+   * receive identical pre-state (per-side asymmetry is iter-4+ work).
+   *
+   * Reviewer rule: every entry MUST have an inline `// reason:` comment
+   * naming the verb-class need (e.g. `// reason: dispatch needs a
+   * pre-seeded task to UPDATE — ADR-029 row 1`).
+   */
+  preState?: Record<string, unknown>;
 };
 
 /**

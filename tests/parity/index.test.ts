@@ -21,6 +21,7 @@ import * as fs from "node:fs/promises";
 import { compare } from "./compare.ts";
 import { type FixtureHandle, makeFixture } from "./fixtures/factory.ts";
 import { PARITY_MATRIX, type ParityRow } from "./matrix.ts";
+import { applyPreState } from "./pre-state.ts";
 import { runVerb } from "./runner.ts";
 
 describe("parity harness", () => {
@@ -33,6 +34,14 @@ describe("parity harness", () => {
       await Promise.all([
         fs.cp(fixture.path, bashFixture, { recursive: true }),
         fs.cp(fixture.path, tsFixture, { recursive: true }),
+      ]);
+      // ADR-029 §3 — apply row-level pre-state to BOTH cloned sides
+      // identically, AFTER clone + BEFORE runVerb. State-mutating
+      // UPDATE-class rows seed kanban / inbox files here so dispatch /
+      // claim / done have something to operate on.
+      await Promise.all([
+        applyPreState(bashFixture, row.preState),
+        applyPreState(tsFixture, row.preState),
       ]);
       try {
         const [bashRun, tsRun] = await Promise.all([
