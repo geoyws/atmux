@@ -614,4 +614,68 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       },
     },
   },
+  // ADR-029 commit D: 2 claim rows. UPDATE-class — kanban.tasks[*] gets
+  // owner / status / claimedAt UPDATE; inboxes/<member>.json INSERTs the
+  // pre-update task into inProgress[] with claimedAt epoch. Same channel-
+  // asymmetric stdout/stderr shape as dispatch (bash atmux::ok via stderr,
+  // TS process.stdout.write).
+  //
+  // Discriminative axes: explicit --as varies (lead vs w1) for inbox-stem
+  // coverage; cwd-inferred member (no --as) deferred since lifecycle
+  // fixture's all-members-share-cwd shape would force `head -1` selection
+  // and add a second axis (inference path) on top of state mutation.
+  {
+    verb: "claim",
+    args: ["t-seed1", "--as", "lead"],
+    fixturePreset: "lifecycle",
+    label: "claim t-seed1 --as lead [lifecycle: UPDATE-class]",
+    expect: "exit-zero-stable-stdout",
+    preState: {
+      // reason: claim needs a pre-seeded todo task to UPDATE — ADR-029 row 3
+      ".atmux/kanban.json": {
+        tasks: [{ id: "t-seed1", subject: "seeded", status: "todo", createdAt: 1700000000 }],
+        epics: [],
+        stories: [],
+      },
+    },
+    mask: {
+      // reason: TS-only stdout confirmation (channel-asymmetric — ADR-027 error-rendering class)
+      stdout: /^lead claimed t-seed1\n?/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux lead claimed t-seed1\n?/,
+      stateAfter: {
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].claimedAt": /^\d{10,}$/,
+        // reason: Unix epoch per invocation; lead.json inbox stem (ADR-027 state-after class)
+        "lead.inProgress[*].claimedAt": /^\d{10,}$/,
+      },
+    },
+  },
+  {
+    verb: "claim",
+    args: ["t-seed2", "--as", "w1"],
+    fixturePreset: "lifecycle",
+    label: "claim t-seed2 --as w1 [lifecycle: UPDATE-class, member-role inbox stem]",
+    expect: "exit-zero-stable-stdout",
+    preState: {
+      // reason: claim needs a pre-seeded todo task to UPDATE — ADR-029 row 4
+      ".atmux/kanban.json": {
+        tasks: [{ id: "t-seed2", subject: "seeded-2", status: "todo", createdAt: 1700000000 }],
+        epics: [],
+        stories: [],
+      },
+    },
+    mask: {
+      // reason: TS-only stdout confirmation (channel-asymmetric — ADR-027 error-rendering class)
+      stdout: /^w1 claimed t-seed2\n?/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux w1 claimed t-seed2\n?/,
+      stateAfter: {
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].claimedAt": /^\d{10,}$/,
+        // reason: Unix epoch per invocation; w1.json inbox stem (ADR-027 state-after class)
+        "w1.inProgress[*].claimedAt": /^\d{10,}$/,
+      },
+    },
+  },
 ];
