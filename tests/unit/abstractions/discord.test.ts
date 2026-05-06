@@ -17,6 +17,9 @@ import {
   _resetFallbackWarnedForTest,
   type DiscordSection,
   type DiscordSendOpts,
+  renderEternalImprovementDone,
+  renderEternalImprovementProgress,
+  renderEternalImprovementStart,
   resolveWebhookUrl,
   send,
 } from "../../../src/abstractions/discord.ts";
@@ -661,5 +664,256 @@ describe("resolveWebhookUrl", () => {
       if (prior !== undefined) process.env.ATMUX_DISCORD_WEBHOOK = prior;
       else delete process.env.ATMUX_DISCORD_WEBHOOK;
     }
+  });
+});
+
+// ---------- ADR-052 eternal-improvement template renderers ----------
+
+describe("renderEternalImprovementStart", () => {
+  test("builds the 3-bullet [eternal-improvement-start] body per ADR-052", () => {
+    const out = renderEternalImprovementStart({
+      team: "atmux",
+      budgetSpec: "30%-wk",
+      budgetTotal: 1_500_000,
+      mode: "user-invoked",
+      runId: "ei-a3f2c814",
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("eternal-improvement-start");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🌱");
+    expect(out.bullets).toEqual([
+      "🌱 budget: 30%-wk = 1.5M tokens",
+      "🎯 mode: user-invoked",
+      "📍 runId: ei-a3f2c814",
+    ]);
+    expect(out.whenMs).toBe(FIXED_TS);
+  });
+
+  test("idle-fallback mode renders verbatim", () => {
+    const out = renderEternalImprovementStart({
+      team: "atmux",
+      budgetSpec: "30%-wk",
+      budgetTotal: 1_500_000,
+      mode: "idle-fallback",
+      runId: "ei-deadbeef",
+    });
+    expect(out.bullets?.[1]).toBe("🎯 mode: idle-fallback");
+  });
+
+  test("whenMs omitted → not present in opts (caller's send() falls through to time.now)", () => {
+    const out = renderEternalImprovementStart({
+      team: "atmux",
+      budgetSpec: "30%-wk",
+      budgetTotal: 1_500_000,
+      mode: "user-invoked",
+      runId: "ei-a3f2c814",
+    });
+    expect(out.whenMs).toBeUndefined();
+  });
+
+  test("end-to-end: round-trips through send() recorder with a single chunk (no overflow)", async () => {
+    const recorder = join(tmpRoot, "ei-start-e2e.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderEternalImprovementStart({
+        team: "atmux",
+        budgetSpec: "30%-wk",
+        budgetTotal: 1_500_000,
+        mode: "user-invoked",
+        runId: "ei-a3f2c814",
+        whenMs: FIXED_TS,
+      }),
+    );
+    const calls = await readJsonl<{ payload: { content: string } }>(recorder);
+    expect(calls.length).toBe(1);
+    const content = calls[0]?.payload.content ?? "";
+    expect(content).toBe(
+      [
+        "🌱 **[eternal-improvement-start]** · `atmux` · 11:44 MYT",
+        "",
+        "🌱 budget: 30%-wk = 1.5M tokens",
+        "🎯 mode: user-invoked",
+        "📍 runId: ei-a3f2c814",
+      ].join("\n"),
+    );
+    // Single-chunk: no (N/M) suffix.
+    expect(content).not.toContain("(1/");
+    expect(content.length).toBeLessThanOrEqual(2000);
+  });
+
+  test("token formatter: 200k mid-range, 2M whole", async () => {
+    const recorder = join(tmpRoot, "ei-start-tokens.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderEternalImprovementStart({
+        team: "atmux",
+        budgetSpec: "13%-wk",
+        budgetTotal: 200_000,
+        mode: "user-invoked",
+        runId: "ei-2k",
+        whenMs: FIXED_TS,
+      }),
+    );
+    await send(
+      renderEternalImprovementStart({
+        team: "atmux",
+        budgetSpec: "40%-wk",
+        budgetTotal: 2_000_000,
+        mode: "user-invoked",
+        runId: "ei-2m",
+        whenMs: FIXED_TS,
+      }),
+    );
+    const calls = await readJsonl<{ payload: { content: string } }>(recorder);
+    expect(calls[0]?.payload.content).toContain("200k tokens");
+    expect(calls[1]?.payload.content).toContain("2M tokens");
+  });
+});
+
+describe("renderEternalImprovementProgress", () => {
+  test("builds the 4-bullet [eternal-improvement-progress] body per ADR-052", () => {
+    const out = renderEternalImprovementProgress({
+      team: "atmux",
+      cycleN: 3,
+      tasksShipped: 2,
+      tokensSpent: 200_000,
+      budgetTotal: 1_500_000,
+      budgetRemaining: 1_300_000,
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("eternal-improvement-progress");
+    expect(out.category).toBe("🌱");
+    expect(out.bullets).toEqual([
+      "✅ cycle 3 closed — 2 tasks shipped",
+      "💰 tokens spent: 200k of 1.5M",
+      "📊 budget remaining: 1.3M",
+      "🔜 cycle 4 starting",
+    ]);
+  });
+
+  test("end-to-end: chunker fits whole body in one chunk", async () => {
+    const recorder = join(tmpRoot, "ei-progress-e2e.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderEternalImprovementProgress({
+        team: "atmux",
+        cycleN: 3,
+        tasksShipped: 2,
+        tokensSpent: 200_000,
+        budgetTotal: 1_500_000,
+        budgetRemaining: 1_300_000,
+        whenMs: FIXED_TS,
+      }),
+    );
+    const calls = await readJsonl<{ payload: { content: string } }>(recorder);
+    expect(calls.length).toBe(1);
+    const content = calls[0]?.payload.content ?? "";
+    expect(content.startsWith("🌱 **[eternal-improvement-progress]** · `atmux` ·")).toBe(true);
+    expect(content).toContain("🔜 cycle 4 starting");
+    expect(content).not.toContain("(1/");
+  });
+
+  test("cycle increment N→N+1 reflects in next-cycle bullet", () => {
+    const out = renderEternalImprovementProgress({
+      team: "atmux",
+      cycleN: 9,
+      tasksShipped: 1,
+      tokensSpent: 50_000,
+      budgetTotal: 1_500_000,
+      budgetRemaining: 1_450_000,
+    });
+    expect(out.bullets?.[3]).toBe("🔜 cycle 10 starting");
+  });
+});
+
+describe("renderEternalImprovementDone", () => {
+  test("Mode A run (no overage, no Mode B bullet)", () => {
+    const out = renderEternalImprovementDone({
+      team: "atmux",
+      cycleCount: 4,
+      totalTasksShipped: 12,
+      tokensConsumed: 1_400_000,
+      budgetTotal: 1_500_000,
+      durationMs: 6 * 60 * 60 * 1000 + 45 * 60 * 1000, // 6h45m
+      modeB: false,
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("eternal-improvement-done");
+    expect(out.category).toBe("🌱");
+    expect(out.bullets).toEqual([
+      "✅ run complete — 4 cycles, 12 tasks shipped",
+      "💰 tokens consumed: 1.4M of 1.5M",
+      "⏱️ duration: 6h45m",
+    ]);
+  });
+
+  test("Mode B run with mid-task overage matches ADR example shape", () => {
+    const out = renderEternalImprovementDone({
+      team: "atmux",
+      cycleCount: 4,
+      totalTasksShipped: 12,
+      tokensConsumed: 1_520_000, // 1.3% over 1.5M
+      budgetTotal: 1_500_000,
+      durationMs: 6 * 60 * 60 * 1000 + 45 * 60 * 1000,
+      modeB: true,
+      whenMs: FIXED_TS,
+    });
+    expect(out.bullets).toEqual([
+      "✅ run complete — 4 cycles, 12 tasks shipped",
+      "💰 tokens consumed: 1.52M of 1.5M (1.3% overage, mid-task)",
+      "⏱️ duration: 6h45m",
+      "🛑 (Mode B) team will now `atmux stop`",
+    ]);
+  });
+
+  test("end-to-end: Mode B body round-trips through send() in one chunk", async () => {
+    const recorder = join(tmpRoot, "ei-done-e2e.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderEternalImprovementDone({
+        team: "atmux",
+        cycleCount: 4,
+        totalTasksShipped: 12,
+        tokensConsumed: 1_520_000,
+        budgetTotal: 1_500_000,
+        durationMs: 6 * 60 * 60 * 1000 + 45 * 60 * 1000,
+        modeB: true,
+        whenMs: FIXED_TS,
+      }),
+    );
+    const calls = await readJsonl<{ payload: { content: string } }>(recorder);
+    expect(calls.length).toBe(1);
+    const content = calls[0]?.payload.content ?? "";
+    expect(content.startsWith("🌱 **[eternal-improvement-done]** · `atmux` ·")).toBe(true);
+    expect(content).toContain("🛑 (Mode B) team will now `atmux stop`");
+    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(content).not.toContain("(1/");
+  });
+
+  test("zero-budget edge case: no overage rendered (avoids divide-by-zero)", () => {
+    const out = renderEternalImprovementDone({
+      team: "atmux",
+      cycleCount: 0,
+      totalTasksShipped: 0,
+      tokensConsumed: 100,
+      budgetTotal: 0,
+      durationMs: 30_000,
+      modeB: false,
+    });
+    expect(out.bullets?.[1]).toBe("💰 tokens consumed: 100 of 0");
+  });
+
+  test("sub-minute duration formats as 1min", () => {
+    const out = renderEternalImprovementDone({
+      team: "atmux",
+      cycleCount: 1,
+      totalTasksShipped: 1,
+      tokensConsumed: 5_000,
+      budgetTotal: 1_500_000,
+      durationMs: 30_000,
+      modeB: false,
+    });
+    expect(out.bullets?.[2]).toBe("⏱️ duration: 1min");
   });
 });
