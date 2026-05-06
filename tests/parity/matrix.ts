@@ -945,4 +945,91 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       stdout: / — since [^\n]+|\$0(?:\.0+)?\s+(?=\d)/g,
     },
   },
+  // ADR-030 commit C: 4 read-only error-path rows (inbox usage / inbox config /
+  // dashboard no-team / cost no-team). Reuses iter-2 error-rendering vocabulary
+  // (ADR-027 §"error-rendering class") with two narrow extensions:
+  //   - inbox usage row 7: TS USAGE_INBOX adds ` [--json]` suffix vs bash's
+  //     bare `<member>` per lib/inbox.sh USAGE; mask absorbs the suffix on
+  //     both sides via a literal `\[--json\]` strip alongside the standard
+  //     `(💥 atmux usage: |atmux: usage: )` prefix mask.
+  //   - inbox config row 8: TS adds `inbox: ` verb-name tag in ConfigError
+  //     (`atmux: config: inbox: no such member …`) vs bash's bare config
+  //     prefix; same pattern as the existing pause/resume/rotate no-such-
+  //     member rows above (family c). The mask extends the optional
+  //     `(?:pause: |resume: |rotate: )?` group to also accept `inbox: `.
+  // Dashboard + cost no-team rows (9 + 10) reuse the standard 3-pattern
+  // family-a mask shared with start/send/add-member/stop/etc — bash 💥
+  // prefix vs TS structured-tag prefix + per-side fixture-clone path
+  // suffix + `init` hint phrasing divergence. No new mask shape needed.
+  {
+    verb: "inbox",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "inbox [lifecycle: usage error (no args)] (ADR-030 row 7)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 2-pattern mask (ADR-027 error-rendering class) — bash
+      // `💥 atmux usage: ` vs TS `atmux: usage: ` prefix on the usage line +
+      // strip ` [--json]` suffix that TS USAGE_INBOX includes (src/verbs/
+      // inbox.ts) but bash USAGE in lib/inbox.sh omits (bash USAGE = "atmux
+      // inbox <member>"). Post-mask both sides: "atmux inbox <member>\n".
+      // Lifecycle preset required — bash inbox.sh:6 calls atmux::require_team
+      // BEFORE the usage check, so minimal preset would fire the no-team
+      // error class instead.
+      stderr: /(💥 atmux usage: |atmux: usage: )| \[--json\]/g,
+    },
+  },
+  {
+    verb: "inbox",
+    args: ["bogus"],
+    fixturePreset: "lifecycle",
+    label: "inbox bogus [lifecycle: no-such-member error] (ADR-030 row 8)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 1-pattern mask (ADR-027 error-rendering class — family c
+      // shape) — bash `💥 atmux ` vs TS `atmux: config: inbox: ` prefix.
+      // Bash dies via atmux::member_json without verb prefix per lib/common.sh;
+      // TS adds verb-name tag in ConfigError what (src/verbs/inbox.ts).
+      // Inline the optional `(?:inbox: )?` for inbox-specific verb tag.
+      // Post-mask both sides: "no such member in team.json: bogus\n".
+      stderr: /(💥 atmux |atmux: \S+: (?:inbox: )?)/g,
+    },
+  },
+  {
+    verb: "dashboard",
+    args: [],
+    fixturePreset: "minimal",
+    label: "dashboard [minimal: no-team error] (ADR-030 row 9)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (ADR-027 error-rendering class — family a,
+      // identical shape to start/send/add-member/stop/pause-foo/etc rows
+      // above) — bash `💥 atmux ` vs TS `atmux: config: ` prefix + per-side
+      // fixture-clone path suffix `.bash`/`.ts` before /.atmux/ + bash em-
+      // dash vs TS parens hint phrasing on the `init` variant.
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "cost",
+    args: [],
+    fixturePreset: "minimal",
+    label: "cost [minimal: no-team error] (ADR-030 row 10)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (ADR-027 error-rendering class — family a,
+      // same as dashboard row 9 above)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
 ];
