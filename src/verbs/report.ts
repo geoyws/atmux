@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { type DiscordSection, send as discordSend } from "../abstractions/discord.ts";
 import { exists } from "../abstractions/fs.ts";
 import { tryReadJson } from "../abstractions/json.ts";
-import { formatMytFull } from "../abstractions/time.ts";
+import { formatMyt } from "../abstractions/time.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
@@ -261,7 +261,7 @@ export async function report(argv: ReadonlyArray<string>, opts: ReportOpts = {})
   const last = await readLastReportEpoch(atmuxDir);
   const nowMs = clock();
   const nowSec = Math.floor(nowMs / 1000);
-  const ts = formatMytFull(nowMs);
+  const ts = formatMyt(nowMs);
 
   const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), KanbanSchema);
   const tasks = kanban?.tasks ?? [];

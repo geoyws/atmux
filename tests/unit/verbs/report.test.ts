@@ -179,13 +179,13 @@ describe("buildReportBody", () => {
   test("all-empty state — header + Shipped:0 + In-progress (none)", () => {
     const body = buildReportBody({
       team: "demo",
-      timestamp: "2026-05-05 15:00:00 MYT",
+      timestamp: "15:00 MYT",
       shipped: [],
       inProgress: [],
       blocked: [],
       openAsks: [],
     });
-    expect(body).toContain("📊 **[atmux-report]** · `demo` · 2026-05-05 15:00:00 MYT");
+    expect(body).toContain("📊 **[atmux-report]** · `demo` · 15:00 MYT");
     expect(body).toContain("🏗️ **Shipped** (since last report): 0");
     expect(body).toContain("🟡 **In-progress**\n  (none)");
     expect(body).not.toContain("🛑 **Blocked**");
