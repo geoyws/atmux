@@ -314,10 +314,30 @@ describe("claimTask — dep enforcement (bash claim.sh:42-50 parity)", () => {
     setNow(() => 1_700_000_000_000);
     const id = await addTask(atmuxDir, { subject: "x" });
     setNow(() => 1_700_000_111_000);
-    const claimed = await claimTask(atmuxDir, id, "alpha");
-    expect(claimed.owner).toBe("alpha");
-    expect(claimed.status).toBe("in-progress");
-    expect(claimed.claimedAt).toBe(1_700_000_111);
+    const { post } = await claimTask(atmuxDir, id, "alpha");
+    expect(post.owner).toBe("alpha");
+    expect(post.status).toBe("in-progress");
+    expect(post.claimedAt).toBe(1_700_000_111);
+  });
+
+  test("returns pre-mutation snapshot — original task shape (ADR-029 §F1)", async () => {
+    // Bash dispatch + claim capture `$task` BEFORE jq_update
+    // (lib/dispatch.sh:39, lib/claim.sh:35); inbox entries carry the
+    // ORIGINAL task shape, not owner/status/claimedAt-mutated post.
+    // Verify claimTask exposes the pre-snapshot for the inbox-mirror
+    // write to use.
+    setNow(() => 1_700_000_000_000);
+    const id = await addTask(atmuxDir, { subject: "y" });
+    setNow(() => 1_700_000_222_000);
+    const { pre, post } = await claimTask(atmuxDir, id, "alpha");
+    // pre carries no owner/claimedAt — original todo shape
+    expect(pre.owner).toBeFalsy();
+    expect(pre.claimedAt).toBeFalsy();
+    expect(pre.status === "todo" || pre.status === undefined).toBe(true);
+    // post carries the mutated triple
+    expect(post.owner).toBe("alpha");
+    expect(post.status).toBe("in-progress");
+    expect(post.claimedAt).toBe(1_700_000_222);
   });
 
   test("dep not done → ConfigError with unresolved id list", async () => {
@@ -330,8 +350,8 @@ describe("claimTask — dep enforcement (bash claim.sh:42-50 parity)", () => {
     const depId = await addTask(atmuxDir, { subject: "dep" });
     await moveTask(atmuxDir, depId, "done");
     const id = await addTask(atmuxDir, { subject: "x", deps: [depId] });
-    const claimed = await claimTask(atmuxDir, id, "alpha");
-    expect(claimed.status).toBe("in-progress");
+    const { post } = await claimTask(atmuxDir, id, "alpha");
+    expect(post.status).toBe("in-progress");
   });
 
   test("missing task id → ConfigError", async () => {

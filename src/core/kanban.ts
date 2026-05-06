@@ -201,23 +201,30 @@ export async function removeTask(atmuxDir: string, id: string): Promise<void> {
 /**
  * Claim a task: enforce that all `deps[]` are in status "done", then
  * set owner + status="in-progress" + claimedAt. Mirrors `lib/claim.sh:
- * 41-60`.
+ * 41-60` and `lib/dispatch.sh:38-58`.
  *
  * Throws `KanbanDepsError` (subclass of `ConfigError`) when one or
  * more deps are not yet done — error context carries the unresolved
  * id list so the verb / operator gets the same diagnostic bash prints
  * ("claim: task <id> blocked by unresolved deps: <ids>").
  *
- * Returns the claimed task's snapshot (post-mutation) so the caller
- * can pass it to inbox-mirror writes without re-reading.
+ * Returns BOTH the pre-mutation snapshot (for inbox-mirror writes —
+ * bash captures `task` BEFORE jq_update at lib/dispatch.sh:39 and
+ * lib/claim.sh:35 then appends `$task + {dispatchedAt: $now}` /
+ * `$task + {claimedAt: $now}` to the inbox; the inbox entry should
+ * carry the ORIGINAL task shape, not the mutated owner/status/claimedAt
+ * triple) AND the post-mutation snapshot (for verb-level stdout +
+ * pings + ack messages). Per ADR-029 §F1 finding from parity-state-
+ * impl 12:33 outbox.
  */
 export async function claimTask(
   atmuxDir: string,
   id: string,
   who: string,
-): Promise<KanbanTask> {
+): Promise<{ pre: KanbanTask; post: KanbanTask }> {
   const claimedAt = nowEpoch();
-  let claimed!: KanbanTask;
+  let pre!: KanbanTask;
+  let post!: KanbanTask;
   await updateJson(
     kanbanJsonPath(atmuxDir),
     KanbanSchema,
@@ -232,7 +239,8 @@ export async function claimTask(
           what: `claim: task ${id} blocked by unresolved deps: ${unresolved.join(",")}`,
         });
       }
-      claimed = {
+      pre = task;
+      post = {
         ...task,
         owner: who,
         status: "in-progress",
@@ -240,12 +248,12 @@ export async function claimTask(
       };
       return {
         ...k,
-        tasks: k.tasks.map((t) => (t.id === id ? claimed : t)),
+        tasks: k.tasks.map((t) => (t.id === id ? post : t)),
       };
     },
     { initial: emptyKanban() },
   );
-  return claimed;
+  return { pre, post };
 }
 
 /**

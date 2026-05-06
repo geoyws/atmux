@@ -150,13 +150,19 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
   // claimTask enforces the deps gate AND the missing-id check + sets
   // owner/status="in-progress"/claimedAt — same kanban side-effect as
   // bash lib/dispatch.sh:55-58. The ConfigError it throws on missing-id
-  // / unresolved-deps surfaces with the exact bash text.
-  const claimed = await claimTask(atmuxDir, parsed.id, parsed.member);
+  // / unresolved-deps surfaces with the exact bash text. Returns BOTH
+  // pre-mutation + post-mutation snapshots per ADR-029 §F1 — bash
+  // lib/dispatch.sh:39 captures `task` BEFORE the jq_update at line 54,
+  // so the inbox entry at line 63-65 carries the ORIGINAL task shape
+  // plus only `dispatchedAt`, not the mutated owner/status/claimedAt.
+  const { pre, post } = await claimTask(atmuxDir, parsed.id, parsed.member);
 
   // Bash inbox-push (lib/dispatch.sh:62-65) stamps `dispatchedAt`
   // (NOT `claimedAt`) on the inbox entry — the inbox tracks the
   // dispatch event independently from the kanban claim. Mirror.
-  await appendDispatched(atmuxDir, parsed.member, claimed, claimed.claimedAt ?? 0);
+  // Use `pre` (pre-mutation snapshot) per F1 fix — bash inbox entry
+  // does NOT carry the post-mutation owner/status/claimedAt triple.
+  await appendDispatched(atmuxDir, parsed.member, pre, post.claimedAt ?? 0);
 
   process.stdout.write(`dispatched ${parsed.id} → ${parsed.member}\n`);
 
@@ -165,8 +171,8 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
     const tmux = createTmux({ socketPath });
     const target = `${sessionName}:${buildWindowName(memberEntry.name, memberEntry.emoji)}`;
-    const body = typeof claimed.body === "string" ? claimed.body : "";
-    const subject = typeof claimed.subject === "string" ? claimed.subject : "";
+    const body = typeof post.body === "string" ? post.body : "";
+    const subject = typeof post.subject === "string" ? post.subject : "";
     const ping = buildDispatchPing({ id: parsed.id, subject, body });
     try {
       await sendToMember(
