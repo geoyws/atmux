@@ -1115,6 +1115,117 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       stderr: /(💥 atmux |atmux: config: (?:dispatch: )?)/g,
     },
   },
+  // ADR-032 commit C: 5 cross-lane error rows mixing kanban subverb +
+  // arg-parse paths (rows 6, 7, 8, 9, 10 per ADR-032 §1 row table).
+  // Family B ("prefix + TS hint-line tail") covers rows 6, 7, 10; rows
+  // 8 + 9 reclassify to family A pure prefix (probe-confirmed: row 8
+  // TS USAGE has no `\n  ` continuation, row 9 already-exists is
+  // ConfigError without USAGE).
+  //
+  // Mask design note: TS UsageError rendering at src/cli.ts:175 is
+  // `atmux: ${ctx.what}\n` — verb-tag is body content, NOT a structured
+  // tag separator. Mask strips bash `💥 atmux ` (9 chars) and TS
+  // `atmux: ` (7 chars) ONLY; both sides retain verb-tag in body.
+  // Earlier draft used `atmux: \S+: ` which over-stripped TS asymmetric
+  // (probe-confirmed 2026-05-06 ~17:48 MYT on rows 6, 10).
+  {
+    verb: "task",
+    args: ["bogus"],
+    fixturePreset: "lifecycle",
+    label: "task bogus [lifecycle: unknown-subverb error] (ADR-032 row 6)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: family B mask (ADR-027 error-rendering class) — prefix
+      // divergence + TS-only hint-line tail. Bash: `💥 atmux task:
+      // unknown verb: bogus (use add|list|show|move|assign|rm)`; TS:
+      // `atmux: task: unknown verb: bogus (...)\n  atmux task <add|
+      // list|show|move|assign|rm> [args] (...)`. Hint-line `\n  atmux
+      // task <…>` is TS-only (UsageError ctx.hint at src/cli.ts:178).
+      // Probe-verified at .atmux/notes-adr-032-research.md row 6
+      // (probe id 16).
+      stderr: /(💥 atmux |atmux: )|\n {2}atmux task <[^\n]+/g,
+    },
+  },
+  {
+    verb: "task",
+    args: ["add"],
+    fixturePreset: "lifecycle",
+    label: "task add [lifecycle: missing-subject error] (ADR-032 row 7)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: family B mask (ADR-027 error-rendering class) — prefix
+      // divergence + TS-only hint-line tail. Bash: `💥 atmux task add:
+      // <subject> required`; TS: `atmux: task add: <subject>
+      // required\n  atmux task add <subject> [--body T] [--assignee M]
+      // [--deps a,b] [--priority N]`. Hint-line `\n  atmux task add
+      // <…>` is TS-only. Probe-verified at .atmux/notes-adr-032-
+      // research.md row 7 (probe id 15).
+      stderr: /(💥 atmux |atmux: )|\n {2}atmux task add <[^\n]+/g,
+    },
+  },
+  {
+    verb: "task",
+    args: ["show"],
+    fixturePreset: "lifecycle",
+    label: "task show [lifecycle: missing-id error] (ADR-032 row 8)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: family A pure prefix (ADR-027 error-rendering class) —
+      // probe-confirmed reclassify from B to A: TS USAGE for `task show`
+      // doesn't include the `\n  ` hint-line continuation other subverbs
+      // have (probe-verified at .atmux/notes-adr-032-research.md row 8 +
+      // ADR-032 deferred-row D17). Both sides emit identical body
+      // `task show: <id> required` after prefix strip.
+      stderr: /(💥 atmux |atmux: )/g,
+    },
+  },
+  {
+    verb: "add-member",
+    args: ["lead"],
+    fixturePreset: "lifecycle",
+    label: "add-member lead [lifecycle: already-exists error] (ADR-032 row 9)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: family A pure prefix (ADR-027 error-rendering class).
+      // Lifecycle preset already has `lead` in team.json, so re-adding
+      // hits the already-exists path on both sides. Bash dies via
+      // atmux::die `add-member: 'lead' is already in team.json`; TS
+      // throws ConfigError rendered as `atmux: config: add-member:
+      // 'lead' is already in team.json` (src/cli.ts:182 routes
+      // AtmuxError as `atmux: <tag>: <message>`). Both sides body
+      // `add-member: 'lead' is already in team.json` after prefix strip.
+      // Probe-verified at .atmux/notes-adr-032-research.md row 9 NEW
+      // (substituted from D15 send-bogus deferral).
+      stderr: /(💥 atmux |atmux: config: )/g,
+    },
+  },
+  {
+    verb: "add-member",
+    args: ["--bogus"],
+    fixturePreset: "lifecycle",
+    label: "add-member --bogus [lifecycle: unknown-flag error] (ADR-032 row 10)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: family B mask (ADR-027 error-rendering class) — prefix
+      // divergence + TS-only hint-line tail. Bash: `💥 atmux add-member:
+      // unknown flag: --bogus`; TS: `atmux: add-member: unknown flag:
+      // --bogus\n  usage: atmux add-member <name> [--role <role>] [--tui
+      // <tui>] [--model <model>] [--cwd <cwd>] [--command <command>]`.
+      // Hint-line `\n  usage: atmux add-member …` is TS-only. Probe-
+      // verified at .atmux/notes-adr-032-research.md row 10.
+      stderr: /(💥 atmux |atmux: )|\n {2}usage: atmux add-member [^\n]+/g,
+    },
+  },
   // ADR-028 commit 4: 3 full-parity cron-fired rows.
   //
   // Row 1: `report --no-discord` on `lifecycle` (empty kanban). Exercises
