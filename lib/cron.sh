@@ -46,8 +46,28 @@ _atmux_cron_render_lines() {
   local atmux_dir="$1" bin="$2" tmuxtmpdir="${3:-}"
   local prefix=""
   [[ -n "$tmuxtmpdir" ]] && prefix="TMUX_TMPDIR=$tmuxtmpdir "
+
+  # E9/Sd t-d2a520d2 (ADR-022 §Decision OQ-D4): teams declaring a
+  # `discorder` role member opt out of the legacy `report` cron line and
+  # instead get TWO new lines — `*/30 discorder progress` (replaces
+  # report's 30-min cadence) + `0 * discorder heartbeat` (hourly fleet
+  # heartbeat). Manual `atmux report` invocation still works; only the
+  # cron emission switches. jq absent / team.json missing ⇒ legacy
+  # 3-line shape (silent fallback, matches the unblocker block below).
+  local has_discorder=0
+  if command -v jq >/dev/null 2>&1 && [[ -f "$atmux_dir/team.json" ]]; then
+    has_discorder=$(jq -r '[.members[]? | select(.role == "discorder")] | length' \
+                      "$atmux_dir/team.json" 2>/dev/null || echo 0)
+    [[ "$has_discorder" =~ ^[0-9]+$ ]] || has_discorder=0
+  fi
+
   printf '*/5 * * * * %sATMUX_DIR=%s %s whip >> %s/logs/whip.log 2>&1\n'                  "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
-  printf '*/30 * * * * %sATMUX_DIR=%s %s report >> %s/logs/report.log 2>&1\n'             "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+  if (( has_discorder > 0 )); then
+    printf '*/30 * * * * %sATMUX_DIR=%s %s discorder progress >> %s/logs/discorder-progress.log 2>&1\n'   "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+    printf '0 * * * * %sATMUX_DIR=%s %s discorder heartbeat >> %s/logs/discorder-heartbeat.log 2>&1\n'   "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+  else
+    printf '*/30 * * * * %sATMUX_DIR=%s %s report >> %s/logs/report.log 2>&1\n'             "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
+  fi
   printf '0 */4 * * * %sATMUX_DIR=%s %s decisions digest >> %s/logs/decisions-digest.log 2>&1\n' "$prefix" "$atmux_dir" "$bin" "$atmux_dir"
   # Daily groom — sweep stale archived inbox/outbox/decisions content +
   # summarize done kanban cards out of the hot file. Fires at 04:00 local
@@ -94,6 +114,69 @@ _atmux_cron_strip_block() {
       if (!in_block) print
     }
   '
+}
+
+# Drop ANY marker-bounded block whose body contains ATMUX_DIR=<atmux_dir>,
+# regardless of team name in the marker. Stream filter; no I/O. Used by
+# install to catch rename-orphans (block written under team's PRIOR name,
+# pointing at the SAME atmux_dir as the current team) before re-emitting.
+# Without this dedupe, a team rename leaves two blocks firing the same
+# `atmux whip` concurrently against one cage — observed to crash tmux
+# servers under load (2026-05-06).
+_atmux_cron_strip_by_atmux_dir() {
+  local atmux_dir="$1"
+  awk -v dir="$atmux_dir" '
+    BEGIN { in_block = 0; buf_count = 0; match_dir = 0 }
+    /^# >>> atmux:team=/ {
+      in_block = 1; buf_count = 0; match_dir = 0
+      buf[buf_count++] = $0
+      next
+    }
+    in_block && /^# <<< atmux:team=/ {
+      buf[buf_count++] = $0
+      if (!match_dir) {
+        for (i = 0; i < buf_count; i++) print buf[i]
+      }
+      in_block = 0; buf_count = 0; match_dir = 0
+      next
+    }
+    in_block {
+      buf[buf_count++] = $0
+      if (index($0, "ATMUX_DIR=" dir " ") > 0 || index($0, "ATMUX_DIR=" dir "\t") > 0) {
+        match_dir = 1
+      }
+      next
+    }
+    { print }
+  '
+}
+
+# Drop atmux verb lines (whip/report/decisions/groom/discorder/unblocker)
+# that are NOT inside a marker block. Pre-marker eras of atmux wrote bare
+# cron lines; they remain orphaned forever unless explicitly scrubbed.
+_atmux_cron_strip_orphan_lines() {
+  awk '
+    /^# >>> atmux:team=/ { in_block = 1; print; next }
+    /^# <<< atmux:team=/ { in_block = 0; print; next }
+    in_block { print; next }
+    /atmux (whip|report|decisions|groom|discorder|unblocker)([[:space:]]|$)/ { next }
+    { print }
+  '
+}
+
+# Prepend SHELL/PATH/TERM env preamble if the crontab has any atmux:team=
+# block(s) and the preamble is not already present. Cron's bare env (no TERM,
+# narrow PATH) causes tmux 3.5a to segfault when invoked from atmux verbs.
+_atmux_cron_ensure_env_preamble() {
+  local body
+  body="$(cat)"
+  if grep -q '^# >>> atmux:team=' <<<"$body" && ! grep -q '^TERM=xterm-256color$' <<<"$body"; then
+    printf '# ─── env for atmux cron (avoids tmux segfaults from bare cron env) ───\n'
+    printf 'SHELL=/bin/bash\n'
+    printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+    printf 'TERM=xterm-256color\n\n'
+  fi
+  printf '%s' "$body"
 }
 
 # atmux::cron_install <team> <atmux_dir>
@@ -147,7 +230,18 @@ atmux::cron_install() {
   current="$(crontab -l 2>/dev/null || true)"
 
   local stripped
-  stripped="$(printf '%s\n' "$current" | _atmux_cron_strip_block "$team")"
+  # Strip in three passes (order matters):
+  #  1. Block matching this team's CURRENT name  — idempotent re-install.
+  #  2. Block matching this team's atmux_dir under any OTHER name — catches
+  #     rename-orphans (e.g. `ifca_sopx` → `sopx` leaves an `ifca_sopx`
+  #     block pointing at the same dir, firing duplicate `atmux whip`).
+  #  3. Bare atmux verb lines outside any marker — pre-marker orphans.
+  # Compounded by cron's bare env (no TERM/PATH), the resulting concurrent
+  # whip storm has been observed to crash cage tmux servers (2026-05-06).
+  stripped="$(printf '%s\n' "$current" \
+    | _atmux_cron_strip_block "$team" \
+    | _atmux_cron_strip_by_atmux_dir "$atmux_dir" \
+    | _atmux_cron_strip_orphan_lines)"
   # `crontab -l` returning empty produces a single newline through printf;
   # collapse to truly empty so the assembled output doesn't lead with one.
   [[ "$stripped" == $'\n' ]] && stripped=""
@@ -164,6 +258,11 @@ atmux::cron_install() {
   else
     out="$block"$'\n'
   fi
+
+  # Idempotent env preamble: prepended only if at least one atmux:team=
+  # block exists in the new output and the preamble isn't already present.
+  # Addresses cron-bare-env tmux segfaults observed 2026-05-06.
+  out="$(printf '%s' "$out" | _atmux_cron_ensure_env_preamble)"
 
   local tmp; tmp="$(mktemp /tmp/atmux-cron-XXXXXX)"
   printf '%s' "$out" > "$tmp"
