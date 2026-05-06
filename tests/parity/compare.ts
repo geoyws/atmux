@@ -214,8 +214,18 @@ function diffFs(
       continue;
     }
 
-    const bMasked = maskTimestamps(decode(b.bytes));
-    const tMasked = maskTimestamps(decode(t.bytes));
+    // Non-JSON path: byte-equal after global timestamp mask + per-file
+    // stateAfter content elision. ADR-028 commit 4: stateAfter for non-JSON
+    // files matches the file's full basename as the glob stem (e.g.
+    // `last-report.epoch.value` → matches file `state/last-report.epoch`,
+    // path token `value` is a sentinel that elides the entire byte content
+    // when the regex matches). Used for plain-text state files like the
+    // report verb's `last-report.epoch` whose content is a Unix epoch
+    // that drifts by one second across the parallel bash + TS spawn.
+    const bMaskedRaw = maskTimestamps(decode(b.bytes));
+    const tMaskedRaw = maskTimestamps(decode(t.bytes));
+    const bMasked = applyNonJsonStateMask(bMaskedRaw, relPath, stateAfterMasks);
+    const tMasked = applyNonJsonStateMask(tMaskedRaw, relPath, stateAfterMasks);
     if (bMasked !== tMasked) {
       divergences.push({
         verb,
@@ -275,6 +285,49 @@ function applyStateAfterMasks(
     result = elideAtPath(result, tokens, regex);
   }
   return result;
+}
+
+/**
+ * Apply ADR-027 `stateAfter` mask to a non-JSON file's byte content
+ * (post timestamp mask). For non-JSON files, the glob stem is matched
+ * against the file's FULL basename (no `.json` strip) — e.g. glob
+ * `last-report.epoch.value` matches file `state/last-report.epoch`.
+ * The path tail (`.value`) is a sentinel — when present, the entire
+ * content is replaced with `STATE_AFTER_MASKED_SENTINEL` if the regex
+ * matches the trimmed content.
+ *
+ * Used by ADR-028 commit-4 report rows whose `last-report.epoch` writes
+ * a Unix-epoch second that may differ across parallel bash + TS spawns.
+ *
+ * Globs whose terminal regex doesn't match the content leave the content
+ * unchanged — same fail-open semantics as the JSON path.
+ */
+function applyNonJsonStateMask(
+  content: string,
+  relPath: string,
+  masks?: Record<string, RegExp>,
+): string {
+  if (!masks) return content;
+  const base = relPath.split("/").pop() ?? relPath;
+  // Build candidate glob stems: full basename + the basename's prefix up
+  // to each dot. So `last-report.epoch` matches stems `last-report.epoch`
+  // (full) and `last-report` (pre-dot). This lets the same matcher cover
+  // future plain-text files whose extension acts like `.json` (e.g.
+  // `state/foo.txt` with stem `foo`).
+  const stems = new Set<string>([base]);
+  let i = base.indexOf(".");
+  while (i > 0) {
+    stems.add(base.slice(0, i));
+    i = base.indexOf(".", i + 1);
+  }
+  for (const [glob, regex] of Object.entries(masks)) {
+    const dot = glob.indexOf(".");
+    if (dot < 1) continue;
+    const globStem = glob.slice(0, dot);
+    if (!stems.has(globStem)) continue;
+    if (regex.test(content)) return STATE_AFTER_MASKED_SENTINEL;
+  }
+  return content;
 }
 
 type PathToken = { kind: "key"; name: string } | { kind: "wildcard" };

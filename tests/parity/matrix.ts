@@ -1032,4 +1032,80 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
         /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
     },
   },
+  // ADR-028 commit 4: 3 full-parity cron-fired rows.
+  //
+  // Row 1: `report --no-discord` on `lifecycle` (empty kanban). Exercises
+  //   the report verb's stdout body builder Shipped:0 + In-progress (none)
+  //   branches. `--no-discord` sidesteps the bash-recorder gap (bash side
+  //   doesn't honour ATMUX_DISCORD_RECORDER yet per
+  //   intercept-discord.ts:14-20). Both sides write `state/last-report.epoch`
+  //   post-invocation; the value is a Unix epoch that may differ by one
+  //   second across the parallel spawn — masked via stateAfter (commit-4
+  //   compare.ts extension wires non-JSON files through the same mask
+  //   path as JSON files, anchored on the file's full basename glob stem).
+  //
+  // Row 2: `report --no-discord` on `cron-tasks` (mixed kanban + 1 open ask).
+  //   Exercises ALL 4 body sections (Shipped + In-progress + Blocked + Open
+  //   asks). Pre-seeded kanban shape from `cron-tasks` preset (1 done + 1
+  //   in-progress + 1 blocked + 1 driver-inbox open ask). Same mask shape
+  //   as row 1 — only the body content differs.
+  //
+  // Row 3: `whip` on `minimal` (no team — refuses early). Both sides die
+  //   on require_team / requireTeam → exit-code class divergence (bash 1
+  //   vs TS 78 EX_CONFIG, ADR-006). Same 3-pattern stderr mask family as
+  //   the existing start/send/add-member no-team rows above.
+  {
+    verb: "report",
+    args: ["--no-discord"],
+    fixturePreset: "lifecycle",
+    label: "report --no-discord [lifecycle: empty kanban, Shipped:0 + In-progress (none)] (ADR-028 row 1)",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: bash atmux::log "report: ..." trace lines on stderr (atmux::log
+      // writes to stderr unconditionally per lib/common.sh) not emitted by TS
+      // (TS routes equivalent traces to .atmux/logs/report.log via append-mode,
+      // not stderr). ADR-027 error-rendering class.
+      stderr: /^atmux: report: [^\n]*\n/gm,
+      stateAfter: {
+        // reason: Unix epoch per invocation; non-JSON file (plain text). ADR-027
+        // state-after class. Glob stem `last-report.epoch` matches the file's
+        // full basename; commit-4 compare.ts extension applies the regex to
+        // byte content for non-JSON files.
+        "last-report.epoch.value": /^\d{10,}\n?$/,
+      },
+    },
+  },
+  {
+    verb: "report",
+    args: ["--no-discord"],
+    fixturePreset: "cron-tasks",
+    label: "report --no-discord [cron-tasks: mixed kanban (Shipped+In-progress+Blocked+open ask)] (ADR-028 row 2)",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: same as report row 1 — bash atmux::log trace lines on stderr (ADR-027 error-rendering class)
+      stderr: /^atmux: report: [^\n]*\n/gm,
+      stateAfter: {
+        // reason: same as report row 1 — Unix epoch on non-JSON last-report.epoch (ADR-027 state-after class)
+        "last-report.epoch.value": /^\d{10,}\n?$/,
+      },
+    },
+  },
+  {
+    verb: "whip",
+    args: [],
+    fixturePreset: "minimal",
+    label: "whip [minimal: no-team error] (ADR-028 row 3)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family a — same as start/send/add-member no-team rows) —
+      // bash `💥 atmux ` vs TS `atmux: <tag>: ` prefix (ADR-027 error-rendering class) +
+      // per-side fixture-clone path suffix `.bash` / `.ts` before /.atmux/ (commit 3
+      // cloning artefact) + bash em-dash vs TS parens hint phrasing (ADR-027 error-
+      // rendering class)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
 ];

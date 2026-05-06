@@ -35,6 +35,14 @@ function jsonFile(value: unknown): FsSnapshot[string] {
   };
 }
 
+function textFile(text: string): FsSnapshot[string] {
+  return {
+    bytes: encoder.encode(text),
+    mode: 0o644,
+    isJson: false,
+  };
+}
+
 function makeRun(overrides: Partial<ParityRun>): ParityRun {
   return {
     side: "bash",
@@ -284,6 +292,86 @@ describe("compare — ADR-027 channel-mask", () => {
       // Defensive: if a verb actually emitted the sentinel, that would itself
       // be wildly anomalous, but check the sentinel string is recognisable.
       expect(STATE_AFTER_MASKED_SENTINEL).toBe("__ADR_027_MASKED__");
+    });
+  });
+
+  describe("mask.stateAfter — non-JSON byte content elision (ADR-028)", () => {
+    test("elides matching epoch in plain-text file when full basename matches glob stem", () => {
+      const bash = makeRun({
+        fsState: { ".atmux/state/last-report.epoch": textFile("1700000001\n") },
+      });
+      const ts = makeRun({
+        side: "ts",
+        fsState: { ".atmux/state/last-report.epoch": textFile("1700000002\n") },
+      });
+      const mask: ChannelMask = {
+        stateAfter: { "last-report.epoch.value": /^\d{10,}\n?$/ },
+      };
+      expect(compare(bash, ts, mask)).toEqual([]);
+    });
+
+    test("non-matching content still flags fs divergence", () => {
+      const bash = makeRun({
+        fsState: { ".atmux/state/last-report.epoch": textFile("not-a-number\n") },
+      });
+      const ts = makeRun({
+        side: "ts",
+        fsState: { ".atmux/state/last-report.epoch": textFile("also-not\n") },
+      });
+      const mask: ChannelMask = {
+        stateAfter: { "last-report.epoch.value": /^\d{10,}\n?$/ },
+      };
+      expect(compare(bash, ts, mask)).toHaveLength(1);
+    });
+
+    test("pre-dot prefix matches glob stem (foo.txt → stem foo)", () => {
+      const bash = makeRun({ fsState: { ".atmux/state/foo.txt": textFile("123\n") } });
+      const ts = makeRun({
+        side: "ts",
+        fsState: { ".atmux/state/foo.txt": textFile("456\n") },
+      });
+      const mask: ChannelMask = { stateAfter: { "foo.value": /^\d+\n?$/ } };
+      expect(compare(bash, ts, mask)).toEqual([]);
+    });
+
+    test("malformed glob (no dot) is silently skipped — divergence stands", () => {
+      const bash = makeRun({
+        fsState: { ".atmux/state/last-report.epoch": textFile("1700000001\n") },
+      });
+      const ts = makeRun({
+        side: "ts",
+        fsState: { ".atmux/state/last-report.epoch": textFile("1700000002\n") },
+      });
+      const mask: ChannelMask = { stateAfter: { malformed: /.*/ } };
+      expect(compare(bash, ts, mask)).toHaveLength(1);
+    });
+
+    test("glob stem matching a different file is a no-op — divergence stands", () => {
+      const bash = makeRun({
+        fsState: { ".atmux/state/last-report.epoch": textFile("1700000001\n") },
+      });
+      const ts = makeRun({
+        side: "ts",
+        fsState: { ".atmux/state/last-report.epoch": textFile("1700000002\n") },
+      });
+      const mask: ChannelMask = { stateAfter: { "other-file.value": /^\d+\n?$/ } };
+      expect(compare(bash, ts, mask)).toHaveLength(1);
+    });
+
+    test("regex non-match leaves bytes unmasked — real divergence still flagged", () => {
+      const bash = makeRun({
+        fsState: { ".atmux/state/last-report.epoch": textFile("alpha\n") },
+      });
+      const ts = makeRun({
+        side: "ts",
+        fsState: { ".atmux/state/last-report.epoch": textFile("beta\n") },
+      });
+      // Regex demands digits but content is letters — fail-open path leaves
+      // bytes unmasked, so the byte-differ surfaces normally.
+      const mask: ChannelMask = {
+        stateAfter: { "last-report.epoch.value": /^\d{10,}\n?$/ },
+      };
+      expect(compare(bash, ts, mask)).toHaveLength(1);
     });
   });
 });
