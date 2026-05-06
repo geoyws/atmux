@@ -273,4 +273,223 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
         /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
     },
   },
+  // ADR-031 commit B: 13 lifecycle-lane error-path rows. Closes ADR-031
+  // §Decision row "13 error-path rows for up / start --bad-flag / stop /
+  // pause / resume / attach / rotate / rotate-lead / reconfigure".
+  // Per ADR-027 Option B: mask the stylistic divergence; ADR-006 stands
+  // (TS keeps BSD sysexits + structured-tag stderr; bash keeps 💥 + exit 1).
+  //
+  // Three mask shape families used here, each cited per-row:
+  //   (a) standard no-team `init` hint (7 rows: stop / pause-foo / resume-foo
+  //       / attach / rotate-foo / rotate-lead / reconfigure) — same shape
+  //       as the existing start/send/add-member rows above
+  //   (b) `up` no-team-no-tty `init --wizard` hint variant (1 row)
+  //   (c) lifecycle `no such member` rows (3 rows: pause / resume / rotate)
+  //       — adds a `(?:pause: |resume: |rotate: )?` verb-name prefix mask
+  //       absorbing TS-only verb-tag in ConfigError what
+  //   (d) UsageError no-args (2 rows: pause / rotate) — different mask shape
+  //       absorbing bash `💥 atmux usage:` vs TS `atmux: usage:` (or `atmux:`
+  //       for rotate whose USAGE constant lacks the literal "usage:" prefix).
+  //
+  // Rows referencing tmux session state (start happy path, stop --force,
+  // attach existing-session, rotate w1) are deferred to iter-3 per ADR-031
+  // §Decision — they need the new `tmuxAfter` channel.
+  {
+    verb: "up",
+    args: [],
+    fixturePreset: "minimal",
+    label: "up [minimal: no-team + no-tty error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family b — `init --wizard` hint variant) —
+      // bash `💥 atmux ` vs TS `atmux: <tag>: ` prefix (ADR-027 error-
+      // rendering class) + per-side fixture-clone path suffix + bash em-dash
+      // vs TS parens hint phrasing on the `init --wizard` variant
+      // (lib/up.sh:54-55 vs src/verbs/up.ts:264-269)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init --wizard' first\)?/g,
+    },
+  },
+  {
+    verb: "stop",
+    args: [],
+    fixturePreset: "minimal",
+    label: "stop [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family a — same as start/send/add-member rows)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "pause",
+    args: ["foo"],
+    fixturePreset: "minimal",
+    label: "pause [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family a)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "resume",
+    args: ["foo"],
+    fixturePreset: "minimal",
+    label: "resume [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family a)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "attach",
+    args: [],
+    fixturePreset: "minimal",
+    label: "attach [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family a)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "rotate",
+    args: ["foo"],
+    fixturePreset: "minimal",
+    label: "rotate [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family a)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "rotate-lead",
+    args: [],
+    fixturePreset: "minimal",
+    label: "rotate-lead [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family a)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "reconfigure",
+    args: [],
+    fixturePreset: "minimal",
+    label: "reconfigure [minimal: no-team error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 3-pattern mask (family a)
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+    },
+  },
+  {
+    verb: "pause",
+    args: ["unknown-foo"],
+    fixturePreset: "lifecycle",
+    label: "pause [lifecycle: no-such-member error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 2-pattern mask (family c) — bash `💥 atmux ` vs TS
+      // `atmux: config: pause: ` prefix (ADR-027 error-rendering class — TS
+      // adds verb-name tag in ConfigError what per src/verbs/pause.ts:115;
+      // bash dies via atmux::member_json without verb prefix per
+      // lib/common.sh:156). No path suffix needed (member name has no path);
+      // body is identical post-mask: "no such member in team.json: unknown-foo".
+      stderr: /(💥 atmux |atmux: \S+: (?:pause: |resume: |rotate: )?)/g,
+    },
+  },
+  {
+    verb: "resume",
+    args: ["unknown-foo"],
+    fixturePreset: "lifecycle",
+    label: "resume [lifecycle: no-such-member error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 2-pattern mask (family c) — same shape as pause no-such-member row above
+      stderr: /(💥 atmux |atmux: \S+: (?:pause: |resume: |rotate: )?)/g,
+    },
+  },
+  {
+    verb: "rotate",
+    args: ["unknown-foo"],
+    fixturePreset: "lifecycle",
+    label: "rotate [lifecycle: no-such-member error]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 2-pattern mask (family c) — same shape
+      stderr: /(💥 atmux |atmux: \S+: (?:pause: |resume: |rotate: )?)/g,
+    },
+  },
+  {
+    verb: "pause",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "pause [lifecycle: usage error (no args)]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 1-pattern mask (family d-pause) — bash `💥 atmux usage: ` vs TS
+      // `atmux: usage: ` prefix. Both surfaces include the literal "usage:" body
+      // (bash via atmux::die "usage: atmux pause <member>" pre-rendered, TS via
+      // UsageError what="usage: …" per src/verbs/pause.ts:76). Symmetric body
+      // after strip: "atmux pause <member>". Lifecycle preset required — bash
+      // pause.sh:6 calls atmux::require_team BEFORE the usage check, so
+      // minimal preset would fire the no-team error class instead.
+      stderr: /(💥 atmux usage: |atmux: usage: )/g,
+    },
+  },
+  {
+    verb: "rotate",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "rotate [lifecycle: usage error (no args)]",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 64 EX_USAGE (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 1-pattern mask (family d-rotate) — bash `💥 atmux usage: ` vs TS
+      // `atmux: ` prefix. Asymmetry: bash atmux::die "usage: atmux rotate …"
+      // includes literal "usage:" in the body; TS UsageError what="atmux rotate
+      // <member>  |  atmux rotate-lead" (rotate.ts:195) lacks the "usage:" prefix.
+      // After strip both sides yield "atmux rotate <member>  |  atmux rotate-lead".
+      // Lifecycle preset required (same require_team-before-usage rationale as
+      // pause-no-args row above).
+      stderr: /(💥 atmux usage: |atmux: )/g,
+    },
+  },
 ];
