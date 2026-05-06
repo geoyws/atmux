@@ -44,6 +44,7 @@ Dispatch + work:
 Automation:
   report                      Post 30-min progress digest to Discord
   whip                        Run 5-min watchdog (idle / blocker / budget / clear)
+  improve [--budget <spec>] [--status] [--dry-run]  Arm eternal-improvement loop (ADR-052)
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   rotate <member>             /clear the member and re-brief
   rotate-lead                 /clear the lead and re-bootstrap

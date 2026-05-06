@@ -38,6 +38,7 @@ import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { help } from "./verbs/help.ts";
+import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
 import { pause, resume } from "./verbs/pause.ts";
@@ -140,6 +141,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return doctor(argv.slice(1));
     case "whip":
       return whip(argv.slice(1));
+    case "improve":
+      return improve(argv.slice(1));
     case "up":
       return up(argv.slice(1));
     case "":
