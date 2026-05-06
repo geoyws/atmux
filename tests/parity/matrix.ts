@@ -534,4 +534,84 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       },
     },
   },
+  // ADR-029 commit C: 2 dispatch rows. UPDATE+INSERT class — kanban.tasks[*]
+  // gets `owner` / `status` / `claimedAt` UPDATE; inboxes/<member>.json gets
+  // `inProgress[]` INSERT with `dispatchedAt`. Both rows use `--no-ping` to
+  // suppress the tmux side-effect (fixture has no panes; bash `atmux::die`s
+  // on no-tmux-window post-write — out of scope for iter-3 UPDATE-class
+  // isolation; tmux-channel deferred to iter-4 per ADR-029 §Out of plan).
+  //
+  // Discriminative axes:
+  //   row 1: lead (team-lead role) — exercises lead.json inbox stem
+  //   row 2: w1 (member role)     — exercises w1.json inbox stem
+  //
+  // Pattern: same channel-asymmetric stdout/stderr shape as ADR-031 pause
+  // happy-path row (bash `atmux::ok` writes ✅ to stderr; TS writes
+  // `dispatched <id> → <member>` to stdout via process.stdout.write).
+  // ADR-029 NOTE: per ADR-029 §1 the planned row-2 axis was `--no-ping`
+  // flag presence, but probe at /tmp/run-dispatch-probe* (2026-05-06)
+  // showed bash dies on no-tmux post-write regardless of flag, requiring
+  // --no-ping on BOTH rows for clean UPDATE-class isolation; deviation
+  // documented as iter-3 mechanics-discovery (ADR-029 §1 may amend in
+  // close-commit if reviewer prefers).
+  {
+    verb: "dispatch",
+    args: ["lead", "t-seed1", "--no-ping"],
+    fixturePreset: "lifecycle",
+    label: "dispatch lead t-seed1 --no-ping [lifecycle: UPDATE-class]",
+    expect: "exit-zero-stable-stdout",
+    preState: {
+      // reason: dispatch needs a pre-seeded todo task to UPDATE — ADR-029 row 1
+      ".atmux/kanban.json": {
+        tasks: [
+          { id: "t-seed1", subject: "seeded", status: "todo", createdAt: 1700000000 },
+        ],
+        epics: [],
+        stories: [],
+      },
+    },
+    mask: {
+      // reason: TS-only stdout confirmation (channel-asymmetric — bash uses
+      // stderr via atmux::ok, TS uses stdout via process.stdout.write —
+      // ADR-027 error-rendering class)
+      stdout: /^dispatched t-seed1 → lead\n?/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux dispatched t-seed1 → lead\n?/,
+      stateAfter: {
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].claimedAt": /^\d{10,}$/,
+        // reason: Unix epoch per invocation; lead.json inbox stem (ADR-027 state-after class)
+        "lead.inProgress[*].dispatchedAt": /^\d{10,}$/,
+      },
+    },
+  },
+  {
+    verb: "dispatch",
+    args: ["w1", "t-seed2", "--no-ping"],
+    fixturePreset: "lifecycle",
+    label: "dispatch w1 t-seed2 --no-ping [lifecycle: UPDATE-class, member-role inbox stem]",
+    expect: "exit-zero-stable-stdout",
+    preState: {
+      // reason: dispatch needs a pre-seeded todo task to UPDATE — ADR-029 row 2
+      ".atmux/kanban.json": {
+        tasks: [
+          { id: "t-seed2", subject: "seeded-2", status: "todo", createdAt: 1700000000 },
+        ],
+        epics: [],
+        stories: [],
+      },
+    },
+    mask: {
+      // reason: TS-only stdout confirmation (channel-asymmetric — ADR-027 error-rendering class)
+      stdout: /^dispatched t-seed2 → w1\n?/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux dispatched t-seed2 → w1\n?/,
+      stateAfter: {
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].claimedAt": /^\d{10,}$/,
+        // reason: Unix epoch per invocation; w1.json inbox stem (ADR-027 state-after class)
+        "w1.inProgress[*].dispatchedAt": /^\d{10,}$/,
+      },
+    },
+  },
 ];
