@@ -678,4 +678,116 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       },
     },
   },
+  // ADR-029 commit E: 2 done rows. UPDATE-class — kanban.tasks[*] gets
+  // status="done" / completedAt / note UPDATE; inboxes/<member>.json
+  // moves the pre-update task from inProgress[] to done[] with
+  // completedAt epoch.
+  //
+  // Discriminative axes: empty-note path (row 5: --note "") vs
+  // non-empty-note path (row 6: --note "shipped"). Both rows pass
+  // --note explicitly to work around F10 (TS markTaskDone skips note
+  // field when undefined; bash always writes note: ""; key-set
+  // divergence canonicaliseJson cannot mask). F10 surfaced to lead;
+  // when fixed, a follow-up commit can add a no-flag row covering
+  // the implicit-empty-note path.
+  {
+    verb: "done",
+    args: ["t-seed3", "--as", "lead", "--note", ""],
+    fixturePreset: "lifecycle",
+    label: "done t-seed3 --as lead --note '' [lifecycle: UPDATE-class, empty-note path]",
+    expect: "exit-zero-stable-stdout",
+    preState: {
+      // reason: done needs a pre-seeded in-progress task to UPDATE — ADR-029 row 5
+      ".atmux/kanban.json": {
+        tasks: [
+          {
+            id: "t-seed3",
+            subject: "seeded-3",
+            status: "in-progress",
+            owner: "lead",
+            createdAt: 1700000000,
+            claimedAt: 1700000100,
+          },
+        ],
+        epics: [],
+        stories: [],
+      },
+      // reason: done expects task in member's inProgress[] to move to done[] — ADR-029 row 5
+      ".atmux/inboxes/lead.json": {
+        pending: [],
+        inProgress: [
+          {
+            id: "t-seed3",
+            subject: "seeded-3",
+            status: "in-progress",
+            createdAt: 1700000000,
+            claimedAt: 1700000100,
+          },
+        ],
+        done: [],
+      },
+    },
+    mask: {
+      // reason: TS-only stdout confirmation (channel-asymmetric — ADR-027 error-rendering class)
+      stdout: /^lead completed t-seed3\n?/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux lead completed t-seed3\n?/,
+      stateAfter: {
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].completedAt": /^\d{10,}$/,
+        // reason: Unix epoch per invocation; lead.json inbox stem (ADR-027 state-after class)
+        "lead.done[*].completedAt": /^\d{10,}$/,
+      },
+    },
+  },
+  {
+    verb: "done",
+    args: ["t-seed4", "--as", "w1", "--note", "shipped"],
+    fixturePreset: "lifecycle",
+    label: "done t-seed4 --as w1 --note 'shipped' [lifecycle: UPDATE-class, non-empty-note]",
+    expect: "exit-zero-stable-stdout",
+    preState: {
+      // reason: done needs a pre-seeded in-progress task to UPDATE — ADR-029 row 6
+      ".atmux/kanban.json": {
+        tasks: [
+          {
+            id: "t-seed4",
+            subject: "seeded-4",
+            status: "in-progress",
+            owner: "w1",
+            createdAt: 1700000000,
+            claimedAt: 1700000100,
+          },
+        ],
+        epics: [],
+        stories: [],
+      },
+      // reason: done expects task in member's inProgress[] to move to done[] — ADR-029 row 6
+      ".atmux/inboxes/w1.json": {
+        pending: [],
+        inProgress: [
+          {
+            id: "t-seed4",
+            subject: "seeded-4",
+            status: "in-progress",
+            createdAt: 1700000000,
+            claimedAt: 1700000100,
+          },
+        ],
+        done: [],
+      },
+    },
+    mask: {
+      // reason: TS-only stdout confirmation (channel-asymmetric — ADR-027 error-rendering class)
+      stdout: /^w1 completed t-seed4\n?/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux w1 completed t-seed4\n?/,
+      stateAfter: {
+        // reason: Unix epoch per invocation (ADR-027 state-after class)
+        "kanban.tasks[*].completedAt": /^\d{10,}$/,
+        // reason: Unix epoch per invocation; w1.json inbox stem (ADR-027 state-after class)
+        "w1.done[*].completedAt": /^\d{10,}$/,
+      },
+    },
+  },
 ];
