@@ -1032,6 +1032,89 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
         /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
     },
   },
+  // ADR-032 commit B (partial post-D18): 2 family-A cross-lane error
+  // rows. Rows 1+2 (claim/dispatch task-not-found) deferred to D18 —
+  // TS-side `claimTask` / `markTaskDone` (src/core/kanban.ts:225-261 +
+  // 270+) call `updateJson` (WITH lock) for the existence check, leaving
+  // a `.atmux/kanban.json.lock` sidecar that bash never creates (bash
+  // dies BEFORE jq_update at lib/claim.sh:36 + lib/dispatch.sh:40). Real
+  // fs-channel divergence; mask would be a presence-on-one-side
+  // absorption which ADR-027 §4 anti-broad-mask rule bans. Re-enable on
+  // up-impl hoisting the existence-check above the lock acquisition (see
+  // ADR-032 Out-of-plan §D18). Probe-verified at .atmux/notes-adr-032-
+  // research.md "Probe-rerun for ADR-032 amendments" + post-resume
+  // parity-test run @2026-05-06 ~17:25 MYT.
+  //
+  // Rows 11 + 12 fire BEFORE claimTask is reached (member-paused via
+  // dispatch.ts isPaused() check; member-not-in-team via dispatch.ts
+  // teamMembers validation), so they don't trigger the lock-leak. Both
+  // probe-clean Pattern A. Mirrors ADR-031 family-c precedent at line
+  // 454 `(?:pause: |resume: |rotate: )?` shape.
+  {
+    verb: "dispatch",
+    args: ["lead", "t-seed1", "--no-ping"],
+    fixturePreset: "lifecycle",
+    label: "dispatch lead t-seed1 --no-ping [lifecycle: member-paused error] (ADR-032 row 11)",
+    expect: "exit-nonzero-stable-stderr",
+    preState: {
+      // reason: dispatch needs a pre-seeded todo task (else hits task-
+      // not-found before the paused-check) — ADR-032 row 11
+      ".atmux/kanban.json": {
+        tasks: [{ id: "t-seed1", subject: "seeded", status: "todo", createdAt: 1700000000 }],
+        epics: [],
+        stories: [],
+      },
+      // reason: lead must be paused (state/paused.json drives the
+      // member-paused error path in lib/dispatch.sh:35 +
+      // src/verbs/dispatch.ts) — ADR-032 row 11
+      ".atmux/state/paused.json": { lead: { at: 1700000000, reason: "manual" } },
+    },
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: pure Pattern A prefix divergence (ADR-027 error-rendering
+      // class). Both sides emit identical body `dispatch: lead is paused
+      // — resume with \`atmux resume lead\`` after prefix strip — bash
+      // and TS both include the `dispatch:` verb-tag in body here (per
+      // lib/dispatch.sh:35 `atmux::die "dispatch: $m is paused …"` +
+      // dispatch.ts ConfigError "dispatch: $m is paused …"). Probe-
+      // verified at .atmux/notes-adr-032-research.md row 11.
+      stderr: /(💥 atmux |atmux: config: )/g,
+    },
+  },
+  {
+    verb: "dispatch",
+    args: ["no-such-member", "t-seed1", "--no-ping"],
+    fixturePreset: "lifecycle",
+    label: "dispatch no-such-member t-seed1 --no-ping [lifecycle: member-not-in-team error] (ADR-032 row 12)",
+    expect: "exit-nonzero-stable-stderr",
+    preState: {
+      // reason: dispatch validates the <member> arg via member-exists
+      // lookup (lib/dispatch.sh:40 + dispatch.ts teamMembers check). The
+      // pre-seeded task ensures both sides hit the member-not-in-team
+      // site for the same input regardless of internal check order —
+      // ADR-032 row 12
+      ".atmux/kanban.json": {
+        tasks: [{ id: "t-seed1", subject: "seeded", status: "todo", createdAt: 1700000000 }],
+        epics: [],
+        stories: [],
+      },
+    },
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: Pattern A prefix divergence + TS-only `dispatch: `
+      // verb-tag insertion (ADR-027 error-rendering class). Bash:
+      // `💥 atmux no such member in team.json: no-such-member` (no
+      // verb-tag); TS: `atmux: config: dispatch: no such member in
+      // team.json: no-such-member` (TS ConfigError prepends `dispatch: `
+      // verb-tag per dispatch.ts). Mask absorbs prefix on both sides +
+      // optional `dispatch: ` on TS side. Mirrors ADR-031 family-c at
+      // line 454 `(?:pause: |resume: |rotate: )?` shape. Probe-verified
+      // at .atmux/notes-adr-032-research.md row 12.
+      stderr: /(💥 atmux |atmux: config: (?:dispatch: )?)/g,
+    },
+  },
   // ADR-028 commit 4: 3 full-parity cron-fired rows.
   //
   // Row 1: `report --no-discord` on `lifecycle` (empty kanban). Exercises

@@ -121,8 +121,8 @@ probes clean Pattern A with optional TS-side `dispatch:` verb-tag).
 
 | # | Verb | Args (representative) | Fixture + preState | Error class | Mask family | ADR-027 class |
 |---|------|-----------------------|--------------------|-------------|-------------|---------------|
-| 1 | `claim` | `t-deadbeef --as lead` (no such task) | `lifecycle` | task-not-found ConfigError | A pure prefix | error-rendering |
-| 2 | `dispatch` | `lead t-deadbeef --no-ping` (no such task) | `lifecycle` | task-not-found ConfigError | A prefix + bash-only `dispatch:` verb-tag + ` id` word | error-rendering |
+| 1 | ~~`claim`~~ | ~~`t-deadbeef --as lead` (no such task)~~ | — | **DEFERRED → D18** | — | — |
+| 2 | ~~`dispatch`~~ | ~~`lead t-deadbeef --no-ping` (no such task)~~ | — | **DEFERRED → D18** | — | — |
 | 3 | `tell-lead` | (no args) | `lifecycle` | UsageError missing-msg | A pure prefix (both sides keep `usage:` body) | error-rendering |
 | 4 | `dispatch` | (no args) | `lifecycle` | UsageError missing-args | C per-side (TS adds ` [--no-ping]` flag suffix; bash uses `usage:` body but TS uses tag-only) | error-rendering |
 | 5 | `handoff` | (no args) | `lifecycle` | UsageError missing-args | C per-side (TS adds ` [--no-native] [--pause-from]` flag suffix) | error-rendering |
@@ -137,8 +137,9 @@ probes clean Pattern A with optional TS-side `dispatch:` verb-tag).
 Coverage by mask family (post-probe):
 
 - **Family A (prefix divergence with optional narrow body absorption)** —
-  7 rows (#1, #3, #8, #9, #11 = pure prefix; #2 + #12 = prefix + bash-only
-  or TS-only word/verb-tag elision). Pattern A is the canonical
+  ~~7 rows~~ **5 rows** (#3, #8, #9, #11 = pure prefix; #12 = prefix +
+  TS-only verb-tag elision). Rows #1 + #2 deferred post-probe to D18 per
+  fs-channel TS lock-leak finding (see D18). Pattern A is the canonical
   ADR-027 error-rendering shape; the variant rows reuse the existing
   ADR-031 family-c precedent at `tests/parity/matrix.ts:454`
   (`(?:pause: |resume: |rotate: )?` for verb-tag absorption).
@@ -153,7 +154,7 @@ Coverage by mask family (post-probe):
   decoration; TS UsageError USAGE constant carries it). Narrow per
   ADR-027 §4 cite-locality.
 
-Total: 7 + 3 + 2 = 12 rows ✓.
+Total: ~~7 + 3 + 2 = 12 rows~~ **5 + 3 + 2 = 10 rows** (post-D18 deferral). The 2 deferred rows (#1, #2) re-enable on the D18 fix landing.
 
 ### 2. Mask vocabulary verdict — no new classes
 
@@ -188,7 +189,7 @@ No fixture factory changes needed.
 | Commit | Subject | Rows |
 |---|---|---|
 | A (this) | `docs(adr-bun): ADR-032 — phase4a iter-3 error-class expansion lane scope` | 0 (this ADR + the deferred table) |
-| B | `test(parity): 4 error rows — task-not-found + member errors (ADR-032 family A)` | rows 1, 2, 11, 12 |
+| B | `test(parity): 2 error rows — member-paused + member-not-in-team (ADR-032 family A, partial post-D18)` | rows 11, 12 (rows 1, 2 deferred → D18) |
 | C | `test(parity): 5 error rows — kanban subverb + arg-parse (ADR-032 family B)` | rows 6, 7, 8, 9, 10 |
 | D | `test(parity): 3 error rows — usage-line divergence (ADR-032 family C)` | rows 3, 4, 5 |
 
@@ -221,6 +222,7 @@ reason for deferral, (c) re-enable trigger.
 | D15 | `send <member> --bogus` (lib/send.sh:30 unknown-flag site) | **Pattern D semantic check-order divergence** — probe-confirmed 2026-05-06 ~17:05 MYT: bash hits `:62 no-tmux-window-for-member` BEFORE arg-parse (the `--bogus` is consumed as msg body); TS hits a tmux-socket-not-found error at the lower-level tmux binding before arg-parse. Different error categories on the two sides; masking would absorb a real semantic divergence per ADR-027 §4 anti-broad-mask rule | When a fixture preset materialises an actual tmux session (iter-4+ tmux-channel infra per ADR-031 §"tmux-channel infrastructure" durable handle) so both sides reach the arg-parse layer. |
 | D16 | `claim <task-id> --as <bogus-member>` (lib/claim.sh + claim.ts non-validating `--as`) | **parity-CONSISTENT non-validation finding** — probe-confirmed 2026-05-06 ~17:05 MYT: BOTH `lib/claim.sh` and `src/verbs/claim.ts` accept any string as `--as` value without checking it against `team.json`. Both write `inboxes/<bogus>.json` and exit 0 with success message. This is parity-CONSISTENT (both agree, both miss the validation), not a divergence. Therefore not a parity-row candidate; it's a behavioural-quality bug captured here as a porter-cross-lane finding for the team-lead's pending-decisions queue. Substitution: row 12 uses `dispatch no-such-member` (which DOES validate in dispatch.sh + dispatch.ts — Pattern A clean) | When the team-lead's pending-decisions queue triages this as a non-iter-3 quality fix and lands a validation patch on both sides; a parity row could then be added testing the new error path. |
 | D17 | `task show` (no id), `task list` (with bad args), other UsageError sites with TS lacking hint-line tail | Subset of family-A reclassifications surfaced by post-probe verification 2026-05-06 — TS USAGE constants for some sub-paths don't include a `\n  ` continuation line, collapsing back to Pattern A (already covered for `task show` as row 8). Other subverb depth (move, assign, rm, list) NOT in iter-3 scope per row-budget convention | Iter-4 subverb-tree depth scope (paired with D12). |
+| D18 | `claim t-deadbeef --as lead` + `dispatch lead t-deadbeef --no-ping` (was rows #1 + #2) — task-not-found error path | **fs-channel TS lock-leak**: probe-confirmed 2026-05-06 ~17:25 MYT post-resume. TS-side `src/core/kanban.ts::claimTask` (lines 225–261) and `markTaskDone` (lines 270+) call `updateJson(WITH lock)` for the existence check; when the task is missing the inner ConfigError throws AFTER the lock acquisition has created `<atmuxDir>/.atmux/kanban.json.lock` sidecar. Bash dies BEFORE locking (`lib/claim.sh:36` `[[ -n "$task" ]] || atmux::die "no such task: $id"` runs before `atmux::jq_update`; same shape at `lib/dispatch.sh:40`). Real fs-channel divergence; mask would be a presence-on-one-side absorption which ADR-027 §4 anti-broad-mask rule bans (and the lock-leak is also a TS-side correctness concern: needless lock acquisition for a check-only error path). Substitution within ADR-032 commit B: deliver only rows 11 + 12 (member-paused + member-not-in-team) which fire BEFORE `claimTask` is reached (paused-check at `dispatch.ts isPaused()` + member-validation at `dispatch.ts teamMembers` lookup). | When TS-side hoists existence-check above the lock acquisition. Sketch: in `src/verbs/{claim,dispatch}.ts`, do `loadKanban` (already `noLock: true`) for the existence + paused/member checks first, then call `claimTask` only when about to mutate. Bash semantic exactly. Owner: up-impl (TS-port lane); see `.atmux/lead-outbox.md` whip-impl entry @2026-05-06 ~17:25 MYT for the surface. |
 
 ### Out of scope (durable)
 
@@ -258,6 +260,11 @@ When this ADR's deferred table is consumed:
   non-iter-3 behavioural-quality finding; not a parity-row candidate
   until both sides validate `--as`.
 - **D17** auto-triggers on iter-4 subverb-tree depth (paired with D12).
+- **D18** auto-triggers when up-impl lands the existence-check hoist on
+  `src/verbs/{claim,dispatch}.ts`. Re-add rows #1 + #2 to matrix.ts with
+  Pattern A masks per the original probe table (bash `💥 atmux ` vs TS
+  `atmux: config: ` prefix; row #2 also needs the bash-only `dispatch:`
+  verb-tag + ` id` word elision per probe).
 
 ## Consequences
 
