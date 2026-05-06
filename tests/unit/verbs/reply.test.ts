@@ -124,6 +124,17 @@ describe("insertOpenEntry", () => {
     expect(out).toContain("## Open");
     expect(out).toContain("- [ts] **a**: msg");
   });
+
+  // Per ADR-029 §F11 — bash awk's `print` always emits trailing `\n`. The
+  // earlier regex `/^## Open\s*$/m` greedy-consumed the trailing `\n` of a
+  // freshly-seeded `## Open\n` header, producing a file without terminal
+  // newline (TS 42b vs bash 43b). Lock this in.
+  test("preserves trailing newline when inserting into fresh `## Open\\n` header", () => {
+    const body = "# header\n\n## Open\n";
+    const out = insertOpenEntry(body, "- [ts] **a**: msg");
+    expect(out.endsWith("\n")).toBe(true);
+    expect(out).toBe("# header\n\n## Open\n- [ts] **a**: msg\n");
+  });
 });
 
 // ---------- Pure: collectOpenEntries ----------

@@ -145,8 +145,11 @@ export function insertOpenEntry(body: string, entry: string): string {
     work += `\n\n## Open\n`;
   }
   // Insert new entry on the line right after `## Open` — bash awk inserts
-  // BETWEEN `## Open` and the next line, which is newest-first.
-  return work.replace(/^## Open\s*$/m, `## Open\n${entry}`);
+  // BETWEEN `## Open` and the next line, which is newest-first. Match
+  // ONLY `## Open` (no `\s*$`) — greedy whitespace would swallow the
+  // trailing `\n` after a fresh `## Open\n` header, leaving the file
+  // without a terminal newline (bash awk `print` always emits `\n`).
+  return work.replace(/^## Open$/m, `## Open\n${entry}`);
 }
 
 /**
