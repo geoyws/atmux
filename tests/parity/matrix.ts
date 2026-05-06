@@ -790,4 +790,34 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       },
     },
   },
+  // ADR-029 commit H: 2 inbox auto-init rows. INSERT-class file-creation
+  // — `atmux inbox <member>` for a member whose inboxes/<member>.json
+  // doesn't yet exist lazily creates the file with the empty shape
+  // `{"pending":[],"inProgress":[],"done":[]}`. Both bash + TS emit the
+  // identical text-render to stdout (no divergence to mask) and write
+  // identical-canonical empty JSON (compact bash vs pretty-printed TS,
+  // canonicaliseJson handles).
+  //
+  // Discriminative axes: member stem varies (lead vs w1) — exercises
+  // the lazy-init path on both team-lead and member roles. The --json
+  // flag axis (originally planned for row 12) is deferred pending F12
+  // fix (TS atmux-bun --json prints pretty-printed multiline; bash uses
+  // `cat $f` literal compact form). Member-stem axis preserved.
+  {
+    verb: "inbox",
+    args: ["lead"],
+    fixturePreset: "lifecycle",
+    label: "inbox lead [lifecycle: INSERT auto-init + render]",
+    expect: "exit-zero-stable-stdout",
+    // No mask — render is byte-equal across both sides; JSON file is
+    // canonicalised by compare.ts.
+  },
+  {
+    verb: "inbox",
+    args: ["w1"],
+    fixturePreset: "lifecycle",
+    label: "inbox w1 [lifecycle: INSERT auto-init, member-role stem]",
+    expect: "exit-zero-stable-stdout",
+    // No mask — same as row 11; only the stem name differs (w1 vs lead).
+  },
 ];
