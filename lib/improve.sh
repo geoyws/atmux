@@ -192,11 +192,12 @@ main() {
   atmux::require_team
   atmux::ensure_dirs
 
-  local cli_budget="" status=0 dry_run=0 default_budget=0 idle_fallback=0 force=0
+  local cli_budget="" status=0 tick=0 dry_run=0 default_budget=0 idle_fallback=0 force=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --budget)         cli_budget="$2"; shift 2 ;;
       --status)         status=1; shift ;;
+      --tick)           tick=1; shift ;;
       --dry-run)        dry_run=1; shift ;;
       --default-budget) default_budget=1; shift ;;
       --idle-fallback)  idle_fallback=1; shift ;;
@@ -210,6 +211,13 @@ main() {
   # --status — read existing, emit JSON, exit 0.
   if (( status == 1 )); then
     _atmux_improve_state_read
+    return 0
+  fi
+
+  # --tick — poll one cycle iteration. ADR-052 T7 §"Loop mechanics".
+  # Idempotent; safe to call on a quiescent state.
+  if (( tick == 1 )); then
+    _atmux_improve_tick "$state_path"
     return 0
   fi
 
@@ -249,6 +257,69 @@ main() {
 
   atmux::with_lock "$state_path" _atmux_improve_arm_locked \
     "$state_path" "$force" "$now_epoch" "$run_id" "$mode" "$spec" "$total"
+
+  # ADR-052 T7: open cycle 1 + arm directive to lead. Skipped when
+  # _atmux_improve_arm_locked refused (active-run idempotent skip) —
+  # the state file's cycleN remains at the previous run's value, and
+  # this open-cycle call would clobber an existing currentCycle.
+  # Detect refusal by reading state's runId — if it matches what we
+  # just generated, the arm landed; otherwise skip.
+  if [[ -s "$state_path" ]] && [[ "$(jq -r '.runId // ""' "$state_path")" == "$run_id" ]]; then
+    _atmux_improve_cycle_open "$state_path" "$now_epoch"
+    local new_cycle_n; new_cycle_n="$(jq -r '.cycleN // 0' "$state_path")"
+    _atmux_improve_arm_directive "$run_id" "$new_cycle_n"
+  fi
+}
+
+# _atmux_improve_tick <state-file>
+# One cycle-loop iteration. Reads state + kanban; pauses on driver
+# preempt; closes the cycle when all dispatched tasks are done+committed
+# (completedAt non-null); terminates on budget exhaustion; otherwise
+# opens the next cycle + arms a new directive.
+_atmux_improve_tick() {
+  local state_path="$1"
+  [[ -s "$state_path" ]] || return 0
+  local active; active="$(jq -r '.active // false' "$state_path")"
+  [[ "$active" == "true" ]] || return 0
+  local has_cycle; has_cycle="$(jq -r '.currentCycle // empty | "yes"' "$state_path")"
+  [[ "$has_cycle" == "yes" ]] || return 0
+
+  # Mid-run preemption: driver Task in-progress with foreign epic.
+  if _atmux_improve_is_driver_preempt; then
+    local already_paused
+    already_paused="$(jq -r '.currentCycle.paused // false' "$state_path")"
+    if [[ "$already_paused" != "true" ]]; then
+      _atmux_improve_state_write_jq '.currentCycle.paused = true'
+      atmux::log "improve: driver Task in-flight — pausing cycle"
+    fi
+    return 0
+  fi
+
+  if ! _atmux_improve_is_cycle_closable "$state_path"; then
+    return 0
+  fi
+
+  local now_epoch; now_epoch="$(atmux::now_epoch)"
+  # Snap token-spend delta. Bash side defaults to 0; future T7-bash
+  # extension (or T6 whip integration) can pass a non-zero delta via
+  # `ATMUX_IMPROVE_TICK_DELTA_TOKENS` env.
+  local delta="${ATMUX_IMPROVE_TICK_DELTA_TOKENS:-0}"
+  _atmux_improve_cycle_close "$state_path" "$now_epoch" "$delta"
+
+  if _atmux_improve_should_terminate "$state_path"; then
+    _atmux_improve_state_write_jq '.active = false'
+    atmux::log "improve: budget exhausted — run terminated"
+    # Mode B: invoke `atmux stop` directly. Defer to caller for now —
+    # terminating bash-side requires its own atmux invocation which adds
+    # substantial test surface; T6 whip integration owns that wiring.
+    return 0
+  fi
+
+  # Re-arm: open next cycle + new directive.
+  _atmux_improve_cycle_open "$state_path" "$now_epoch"
+  local run_id; run_id="$(jq -r '.runId // ""' "$state_path")"
+  local new_cycle_n; new_cycle_n="$(jq -r '.cycleN // 0' "$state_path")"
+  _atmux_improve_arm_directive "$run_id" "$new_cycle_n"
 }
 
 # Body of the locked arm. Receives positional args because with_lock + bash
@@ -305,4 +376,134 @@ _atmux_improve_arm_locked() {
   fi
 
   return 0
+}
+
+# ---------- T7 cycle mechanics ----------
+
+readonly _ATMUX_IMPROVE_EPIC_ID="e-a25968cc"
+readonly _ATMUX_IMPROVE_DIRECTIVES_FILE="improve-directives.md"
+
+_atmux_improve_directives_path() {
+  printf '%s/%s\n' "$(atmux::dir)" "$_ATMUX_IMPROVE_DIRECTIVES_FILE"
+}
+
+# _atmux_improve_build_arm_message <cycleN>
+# Print the lead prompt body per ADR-052 §"Loop mechanics" step 1.
+_atmux_improve_build_arm_message() {
+  local cycle_n="$1"
+  printf '🌱 eternal-improvement cycle %s requested. Route to planner with: ask each lane member their top improvement candidate; score by impact-vs-cost; land top 1-3 Tasks; dispatch normally.\n' "$cycle_n"
+}
+
+# _atmux_improve_arm_directive <runId> <cycleN>
+# Append a timestamped entry to improve-directives.md (creating the
+# file with a header on first write). Mirrors src/core/improve-cycle.ts
+# armCycle. Returns 0 always — directives are durable; even if the
+# subsequent ping fails the lead can still pick up the entry.
+_atmux_improve_arm_directive() {
+  local run_id="$1" cycle_n="$2"
+  local f; f="$(_atmux_improve_directives_path)"
+  mkdir -p "$(dirname "$f")"
+  if [[ ! -f "$f" ]]; then
+    cat > "$f" <<'EOF'
+# Improve Directives — eternal-improvement cycle prompts
+
+Lead reads this file at the start of every whip turn to pick up
+fresh `atmux improve` cycle prompts. Each entry is timestamped
+and references the run's `runId` for cross-correlation with
+`.atmux/state/eternal-improvement.json`.
+
+## Open
+EOF
+  fi
+  local body; body="$(_atmux_improve_build_arm_message "$cycle_n")"
+  printf -- '- [%s] runId=%s cycle=%s — %s\n' \
+    "$(atmux::now_myt)" "$run_id" "$cycle_n" "$body" >> "$f"
+}
+
+# _atmux_improve_cycle_open <state-file> <nowEpoch>
+# Increment cycleN and initialize a fresh currentCycle in the state
+# file (under the file's flock via _atmux_improve_state_write_jq).
+_atmux_improve_cycle_open() {
+  local _state_file="$1" now_epoch="$2"
+  _atmux_improve_state_write_jq \
+    '. + {
+      cycleN: ((.cycleN // 0) + 1),
+      currentCycle: {
+        startedAt: $now,
+        tasksLanded: [],
+        tasksDispatched: [],
+        tasksDone: [],
+        tokensSpent: 0
+      }
+    }' --argjson now "$now_epoch"
+}
+
+# _atmux_improve_cycle_close <state-file> <nowEpoch> <tokensSpentDelta>
+# Move currentCycle to history (capped at HISTORY_RING_MAX), clear it,
+# decrement budgetRemaining by tokensSpent + delta, set lastCycleClosedAt.
+# No-op if currentCycle is null.
+_atmux_improve_cycle_close() {
+  local _state_file="$1" now_epoch="$2" delta="$3"
+  _atmux_improve_state_write_jq \
+    'if .currentCycle == null then . else
+      .currentCycle.tokensSpent = (.currentCycle.tokensSpent + $delta)
+      | .history = ((.history // []) + [{
+          cycleN: .cycleN,
+          startedAt: .currentCycle.startedAt,
+          closedAt: $now,
+          tasksLanded: (.currentCycle.tasksLanded | length),
+          tasksDone: (.currentCycle.tasksDone | length),
+          tokensSpent: .currentCycle.tokensSpent
+        }] | .[(- $cap):])
+      | .budgetRemaining = (.budgetRemaining - .currentCycle.tokensSpent)
+      | .lastCycleClosedAt = $now
+      | .currentCycle = null
+    end' --argjson now "$now_epoch" --argjson delta "$delta" --argjson cap "$_ATMUX_IMPROVE_HISTORY_MAX"
+}
+
+# _atmux_improve_is_cycle_closable <state-file>
+# Returns 0 if all currentCycle.tasksDispatched are status:'done' AND
+# completedAt is non-null. Returns 1 otherwise (also when no current
+# cycle / no dispatched tasks).
+_atmux_improve_is_cycle_closable() {
+  local state_file="$1"
+  local kanban_file; kanban_file="$(atmux::dir)/kanban.json"
+  [[ -s "$state_file" && -s "$kanban_file" ]] || return 1
+  local result
+  result=$(jq -nr --slurpfile s "$state_file" --slurpfile k "$kanban_file" '
+    ($s[0].currentCycle // null) as $cur
+    | if $cur == null or ($cur.tasksDispatched // [] | length) == 0 then "false"
+      else
+        ($k[0].tasks // []) as $tasks
+        | $cur.tasksDispatched
+        | all(. as $id |
+            ($tasks[] | select(.id == $id)) as $t
+            | $t.status == "done" and ($t.completedAt // null) != null)
+        | tostring
+      end
+  ')
+  [[ "$result" == "true" ]]
+}
+
+# _atmux_improve_should_terminate <state-file>
+# Returns 0 if budgetRemaining ≤ 0.
+_atmux_improve_should_terminate() {
+  local state_file="$1"
+  [[ -s "$state_file" ]] || return 1
+  local rem; rem="$(jq -r '.budgetRemaining // 0' "$state_file")"
+  (( rem <= 0 ))
+}
+
+# _atmux_improve_is_driver_preempt
+# Returns 0 if any kanban task is status:'in-progress' AND epic !== improvement.
+_atmux_improve_is_driver_preempt() {
+  local kanban_file; kanban_file="$(atmux::dir)/kanban.json"
+  [[ -s "$kanban_file" ]] || return 1
+  local result
+  result=$(jq -r --arg eid "$_ATMUX_IMPROVE_EPIC_ID" '
+    (.tasks // [])
+    | any(.status == "in-progress" and ((.epic // null) != $eid))
+    | tostring
+  ' "$kanban_file")
+  [[ "$result" == "true" ]]
 }

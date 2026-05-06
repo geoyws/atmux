@@ -12,6 +12,12 @@
 
 import { now } from "../abstractions/time.ts";
 import { withLock } from "../abstractions/lock.ts";
+import {
+  renderEternalImprovementDone,
+  renderEternalImprovementProgress,
+  renderEternalImprovementStart,
+  send as sendDiscord,
+} from "../abstractions/discord.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import {
   eternalImprovementStatePath,
@@ -29,6 +35,18 @@ import {
   resolveBudgetSpec,
   type ResolvedBudget,
 } from "../core/improve.ts";
+import {
+  armCycle,
+  closeCycle,
+  type CommitChecker,
+  defaultCommitChecker,
+  isCycleClosable,
+  isDriverPreempt,
+  openCycle,
+  pauseCycle,
+  shouldTerminate,
+} from "../core/improve-cycle.ts";
+import { loadKanban } from "../core/kanban.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 import type {
@@ -37,13 +55,17 @@ import type {
 } from "../schema/eternal-improvement.ts";
 
 const USAGE =
-  "atmux improve [--budget <spec>] [--status] [--dry-run] [--default-budget] [--idle-fallback] [--force]";
+  "atmux improve [--budget <spec>] [--status] [--tick] [--dry-run] [--default-budget] [--idle-fallback] [--force]";
 
 // ---------- Args ----------
 
 export interface ImproveArgs {
   budget?: string;
   status: boolean;
+  /** ADR-052 T7: poll one iteration of the cycle loop — detect close,
+   *  decide terminate vs re-arm, fire pings. Idempotent; safe to call
+   *  on a quiescent state. */
+  tick: boolean;
   dryRun: boolean;
   defaultBudget: boolean;
   idleFallback: boolean;
@@ -55,6 +77,7 @@ export interface ImproveArgs {
 export function parseImproveArgs(argv: ReadonlyArray<string>): ImproveArgs {
   let budget: string | undefined;
   let status = false;
+  let tick = false;
   let dryRun = false;
   let defaultBudget = false;
   let idleFallback = false;
@@ -74,6 +97,11 @@ export function parseImproveArgs(argv: ReadonlyArray<string>): ImproveArgs {
     }
     if (a === "--status") {
       status = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--tick") {
+      tick = true;
       i += 1;
       continue;
     }
@@ -108,7 +136,7 @@ export function parseImproveArgs(argv: ReadonlyArray<string>): ImproveArgs {
     }
     throw new UsageError({ what: `improve: unknown arg: ${a ?? ""}`, hint: USAGE });
   }
-  const out: ImproveArgs = { status, dryRun, defaultBudget, idleFallback, force };
+  const out: ImproveArgs = { status, tick, dryRun, defaultBudget, idleFallback, force };
   if (budget !== undefined) out.budget = budget;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
@@ -127,6 +155,25 @@ export interface ImproveOpts {
   nowMs?: () => number;
   /** runId factory override (test injection). */
   runIdFactory?: () => string;
+  /** ADR-052 T7 — Discord send override (test injection). Defaults to
+   *  `abstractions/discord.ts::send`. Tests override to capture the
+   *  rendered DiscordSendOpts without hitting the network. */
+  discordSend?: typeof sendDiscord;
+  /** ADR-052 T7 — commit-checker override. Defaults to
+   *  `defaultCommitChecker` (proxies on `completedAt !== null`). T8 / e2e
+   *  may inject an explicit `git log` probe. */
+  commitChecker?: CommitChecker;
+  /** ADR-052 T7 — token-spend snapshot for the just-closed cycle.
+   *  Wiring lands in T7-side helpers; verb accepts the value via this
+   *  hook so unit tests can pin a deterministic delta without mocking
+   *  the budget-probe filesystem. Defaults to `0` (no decrement) — the
+   *  verb still ticks `tokensSpent` from anywhere it has accounting. */
+  tokensSpentForClose?: () => Promise<number>;
+  /** ADR-052 T7 — Mode B termination hook. Mode A returns; Mode B fires
+   *  `atmux stop`. Verb provides the hook; default is a no-op so unit
+   *  tests don't shell out. T6's whip-hook integration wires the real
+   *  `atmux stop` invocation. */
+  onTerminate?: (state: EternalImprovementState) => Promise<void>;
 }
 
 /**
@@ -152,6 +199,10 @@ export async function improve(
   const env = opts.env ?? process.env;
   const nowFn = opts.nowMs ?? now;
   const runIdFactory = opts.runIdFactory ?? generateRunId;
+  const discord = opts.discordSend ?? sendDiscord;
+  const commitChecker = opts.commitChecker ?? defaultCommitChecker;
+  const tokensSpentForClose = opts.tokensSpentForClose ?? (async () => 0);
+  const onTerminate = opts.onTerminate ?? (async () => {});
 
   const statePath = eternalImprovementStatePath(atmuxDir);
 
@@ -165,6 +216,23 @@ export async function improve(
     }
     stdout(`${JSON.stringify(existing, null, 2)}\n`);
     return 0;
+  }
+
+  // --tick — poll one cycle iteration. Reads state + kanban, decides
+  // pause / close / terminate / re-arm. ADR-052 T7 §"Loop mechanics".
+  if (parsed.tick) {
+    return await tickCycle({
+      atmuxDir,
+      teamName: team.name,
+      nowSec: Math.floor(nowFn() / 1000),
+      nowMs: nowFn,
+      idleFallback: parsed.idleFallback,
+      commitChecker,
+      tokensSpentForClose,
+      discord,
+      onTerminate,
+      stderr,
+    });
   }
 
   // Resolve budget spec via ADR-052 precedence cascade.
@@ -219,7 +287,7 @@ export async function improve(
       }
     }
 
-    const next = buildInitialState({
+    const initial = buildInitialState({
       mode: parsed.idleFallback ? "idle-fallback" : "user-invoked",
       spec,
       resolved,
@@ -227,14 +295,24 @@ export async function improve(
       nowSec,
       previous: existing,
     });
-    await writeState(atmuxDir, next);
-    return next;
+    // ADR-052 T7: open cycle 1 immediately on arm. cycleN goes 0 → 1.
+    const armed = openCycle(initial, nowSec);
+    await writeState(atmuxDir, armed);
+    return armed;
   });
 
   if (written === null) return 0; // idempotent skip
 
-  // Discord 🌱 start ping (T3 owns templates; gated until they land).
-  await firePingIfWired(written, env);
+  // ADR-052 T7: arm directive to lead (file-based, mirrors tell-lead's
+  // append-to-driver-inbox + tmux ping pattern). The bash mirror in
+  // lib/improve.sh sends the actual tmux keystroke; the TS verb writes
+  // the durable file entry only — keeps the verb spawn-free + safely
+  // testable end-to-end without a live tmux.
+  await armCycle(atmuxDir, written);
+
+  // Fire 🌱 [eternal-improvement-start] Discord ping (best-effort —
+  // missing webhook is a no-op inside `send`).
+  await firePingStart(written, team.name, discord, nowFn);
 
   return 0;
 }
@@ -271,23 +349,168 @@ function buildInitialState(opts: BuildInitialOpts): EternalImprovementState {
   };
 }
 
-// ---------- Discord ping (T3 placeholder) ----------
+// ---------- Discord pings (T3 templates wired by T7) ----------
+
+/** 🌱 [eternal-improvement-start] — fired once per `atmux improve`
+ *  invocation that successfully writes initial state. Uses T3's
+ *  `renderEternalImprovementStart` builder + the `send()` boundary.
+ *  Best-effort: missing webhook URL is a no-op inside `send`. */
+async function firePingStart(
+  state: EternalImprovementState,
+  teamName: string,
+  discord: typeof sendDiscord,
+  nowFn: () => number,
+): Promise<void> {
+  await discord(
+    renderEternalImprovementStart({
+      team: teamName,
+      budgetSpec: state.budgetSpec,
+      budgetTotal: state.budgetTotal,
+      mode: state.mode,
+      runId: state.runId,
+      whenMs: nowFn(),
+    }),
+  );
+}
+
+/** 🌱 [eternal-improvement-progress] — fired on each cycle close
+ *  per ADR-052 §"Discord templates". Caller passes the just-closed
+ *  cycle's deltas. */
+async function firePingProgress(
+  state: EternalImprovementState,
+  teamName: string,
+  closedCycleN: number,
+  tasksShipped: number,
+  tokensSpent: number,
+  discord: typeof sendDiscord,
+  nowFn: () => number,
+): Promise<void> {
+  await discord(
+    renderEternalImprovementProgress({
+      team: teamName,
+      cycleN: closedCycleN,
+      tasksShipped,
+      tokensSpent,
+      budgetTotal: state.budgetTotal,
+      budgetRemaining: state.budgetRemaining,
+      whenMs: nowFn(),
+    }),
+  );
+}
+
+/** 🌱 [eternal-improvement-done] — fired on run termination. */
+async function firePingDone(
+  state: EternalImprovementState,
+  teamName: string,
+  discord: typeof sendDiscord,
+  nowFn: () => number,
+): Promise<void> {
+  // Total tasks shipped across history.
+  const totalTasksShipped = state.history.reduce((a, h) => a + h.tasksDone, 0);
+  // Total tokens consumed across the run = budgetTotal - budgetRemaining
+  // (clamped to 0 if budgetRemaining accidentally exceeded total).
+  const consumed = Math.max(0, state.budgetTotal - state.budgetRemaining);
+  const durationMs = (nowFn() - state.startedAt * 1000);
+  await discord(
+    renderEternalImprovementDone({
+      team: teamName,
+      cycleCount: state.cycleN,
+      totalTasksShipped,
+      tokensConsumed: consumed,
+      budgetTotal: state.budgetTotal,
+      durationMs: Math.max(0, durationMs),
+      modeB: state.mode === "idle-fallback",
+      whenMs: nowFn(),
+    }),
+  );
+}
+
+// ---------- --tick handler (ADR-052 T7 §"Loop mechanics") ----------
+
+interface TickCycleOpts {
+  atmuxDir: string;
+  teamName: string;
+  nowSec: number;
+  nowMs: () => number;
+  idleFallback: boolean;
+  commitChecker: CommitChecker;
+  tokensSpentForClose: () => Promise<number>;
+  discord: typeof sendDiscord;
+  onTerminate: (state: EternalImprovementState) => Promise<void>;
+  stderr: Writer;
+}
 
 /**
- * Fire the 🌱 [eternal-improvement-start] Discord ping when the
- * template is wired (T3 lands the literal-union extension + the
- * typed call site). Today this is a no-op gated on
- * ATMUX_DISCORD_TRIGGER env presence — keeps T1's AC unblocked
- * without committing to a template name T3 may rename.
+ * One cycle-loop iteration. Idempotent — safe to call on a quiescent
+ * state (no current cycle, or run already inactive). Returns 0 always;
+ * tick failures are non-fatal (state is the source of truth).
+ *
+ * Flow:
+ *   1. Read state. If null or `active: false` → no-op, return 0.
+ *   2. Read kanban tasks.
+ *   3. If `isDriverPreempt(kanban)` → pause cycle (write + return).
+ *   4. If `isCycleClosable(state, kanban, commitChecker)`:
+ *      a. Snap tokensSpent (caller-provided), tickTokens then close.
+ *      b. Fire 🌱 [eternal-improvement-progress].
+ *      c. If `shouldTerminate(closed)` → set inactive, fire done ping,
+ *         invoke onTerminate (Mode B: `atmux stop`), return.
+ *      d. Otherwise open cycleN+1, write, arm directive, fire start ping.
  */
-async function firePingIfWired(
-  _state: EternalImprovementState,
-  env: NodeJS.ProcessEnv,
-): Promise<void> {
-  const trigger = env.ATMUX_DISCORD_TRIGGER;
-  if (trigger !== "eternal-improvement-start") return;
-  // T3 fills this in. Keeping it a no-op until the typed template lands
-  // avoids both `as DiscordTemplate` casts (would fail R10) and a
-  // half-wired ping site that confuses T7's loop wiring.
-  return;
+async function tickCycle(opts: TickCycleOpts): Promise<number> {
+  const { atmuxDir, teamName, nowSec, nowMs, commitChecker, tokensSpentForClose, discord, onTerminate, stderr } = opts;
+  const state = await readState(atmuxDir);
+  if (state === null || state.active !== true) return 0;
+  if (state.currentCycle === null) return 0; // nothing to tick
+  const kanban = await loadKanban(atmuxDir);
+  const tasks = kanban.tasks;
+
+  // Mid-run preemption: driver Task in-progress with epic !== improvement
+  if (isDriverPreempt(tasks)) {
+    if (state.currentCycle.paused !== true) {
+      const paused = pauseCycle(state);
+      await writeState(atmuxDir, paused);
+      stderr("🌱 eternal-improvement: driver Task in-flight — pausing cycle\n");
+    }
+    return 0;
+  }
+
+  if (!isCycleClosable(state, tasks, commitChecker)) return 0;
+
+  // Snap token-spend delta, fold into currentCycle.tokensSpent, then close.
+  const delta = Math.max(0, await tokensSpentForClose());
+  const cur = state.currentCycle;
+  const totalSpent = cur.tokensSpent + delta;
+  const closed = closeCycle(
+    {
+      ...state,
+      currentCycle: { ...cur, tokensSpent: totalSpent },
+    },
+    nowSec,
+  );
+
+  // Fire 🌱 [eternal-improvement-progress].
+  await firePingProgress(
+    closed,
+    teamName,
+    state.cycleN,
+    cur.tasksDone.length,
+    totalSpent,
+    discord,
+    nowMs,
+  );
+
+  if (shouldTerminate(closed)) {
+    const terminated: EternalImprovementState = { ...closed, active: false };
+    await writeState(atmuxDir, terminated);
+    await firePingDone(terminated, teamName, discord, nowMs);
+    await onTerminate(terminated);
+    return 0;
+  }
+
+  // Re-arm: open the next cycle + write + arm directive + start ping.
+  const next = openCycle(closed, nowSec);
+  await writeState(atmuxDir, next);
+  await armCycle(atmuxDir, next);
+  await firePingStart(next, teamName, discord, nowMs);
+  return 0;
 }

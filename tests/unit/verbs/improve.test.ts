@@ -48,6 +48,7 @@ describe("parseImproveArgs", () => {
   test("defaults — all flags false, no budget", () => {
     expect(parseImproveArgs([])).toEqual({
       status: false,
+      tick: false,
       dryRun: false,
       defaultBudget: false,
       idleFallback: false,
@@ -58,12 +59,17 @@ describe("parseImproveArgs", () => {
   test("--budget <spec>", () => {
     expect(parseImproveArgs(["--budget", "30%-wk"])).toEqual({
       status: false,
+      tick: false,
       dryRun: false,
       defaultBudget: false,
       idleFallback: false,
       force: false,
       budget: "30%-wk",
     });
+  });
+
+  test("--tick parses to tick:true", () => {
+    expect(parseImproveArgs(["--tick"]).tick).toBe(true);
   });
 
   test("all flags", () => {
@@ -202,7 +208,7 @@ describe("improve --dry-run", () => {
 // ---------- --budget write path ----------
 
 describe("improve --budget", () => {
-  test("first invocation writes state-file with the budget total", async () => {
+  test("first invocation writes state-file with the budget total + opens cycle 1", async () => {
     const exit = await improve(["--budget", "1000000", "--team-dir", teamDir]);
     expect(exit).toBe(0);
     const path = join(atmuxDir, "state", "eternal-improvement.json");
@@ -212,9 +218,23 @@ describe("improve --budget", () => {
     expect(got.budgetRemaining).toBe(1000000);
     expect(got.budgetSpec).toBe("1000000");
     expect(got.mode).toBe("user-invoked");
-    expect(got.cycleN).toBe(0);
-    expect(got.currentCycle).toBeNull();
+    // ADR-052 T7: invocation opens cycle 1 immediately (cycleN 0 → 1).
+    expect(got.cycleN).toBe(1);
+    expect(got.currentCycle).not.toBeNull();
+    expect(got.currentCycle.tasksLanded).toEqual([]);
+    expect(got.currentCycle.tasksDispatched).toEqual([]);
+    expect(got.currentCycle.tasksDone).toEqual([]);
+    expect(got.currentCycle.tokensSpent).toBe(0);
     expect(got.runId).toMatch(/^ei-[0-9a-f]{8}$/);
+  });
+
+  test("first invocation appends arm directive to .atmux/improve-directives.md", async () => {
+    await improve(["--budget", "1000000", "--team-dir", teamDir]);
+    const directivesPath = join(atmuxDir, "improve-directives.md");
+    const text = await readFile(directivesPath, "utf8");
+    expect(text).toContain("Improve Directives");
+    expect(text).toContain("cycle 1 requested");
+    expect(text).toContain("ask each lane member");
   });
 
   test("--idle-fallback flips mode", async () => {
@@ -383,6 +403,267 @@ describe("improve — Discord ping gate", () => {
       env: { ATMUX_DISCORD_TRIGGER: "whip-progress" },
     });
     expect(exit).toBe(0);
+  });
+});
+
+// ---------- --tick (ADR-052 T7) ----------
+
+describe("improve --tick", () => {
+  /** Build a kanban.json that the verb can read. */
+  async function seedKanban(tasks: Array<Record<string, unknown>>) {
+    const kanbanPath = join(atmuxDir, "kanban.json");
+    await writeFile(
+      kanbanPath,
+      JSON.stringify({ tasks, epics: [], stories: [] }),
+    );
+  }
+
+  /** Seed a fresh-armed state file (cycle 1 open, no dispatched tasks). */
+  async function seedActiveCycle(overrides?: Record<string, unknown>) {
+    const path = join(atmuxDir, "state", "eternal-improvement.json");
+    const state = {
+      active: true,
+      runId: "ei-tickrun1",
+      startedAt: 1_800_000_000,
+      mode: "user-invoked",
+      budgetSpec: "1000000",
+      budgetTotal: 1_000_000,
+      budgetRemaining: 1_000_000,
+      cycleN: 1,
+      currentCycle: {
+        startedAt: 1_800_000_010,
+        tasksLanded: ["t-aaaaaaaa"],
+        tasksDispatched: ["t-aaaaaaaa"],
+        tasksDone: ["t-aaaaaaaa"],
+        tokensSpent: 0,
+      },
+      lastCycleClosedAt: null,
+      history: [],
+      ...overrides,
+    };
+    await writeFile(path, JSON.stringify(state));
+    return state;
+  }
+
+  test("missing state file → no-op exit 0", async () => {
+    await seedKanban([]);
+    const exit = await improve(["--tick", "--team-dir", teamDir]);
+    expect(exit).toBe(0);
+  });
+
+  test("active=false → no-op exit 0 (run already terminated)", async () => {
+    const path = join(atmuxDir, "state", "eternal-improvement.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        active: false,
+        runId: "ei-deadrun",
+        startedAt: 1,
+        mode: "user-invoked",
+        budgetSpec: "1000000",
+        budgetTotal: 1_000_000,
+        budgetRemaining: 0,
+        cycleN: 0,
+        currentCycle: null,
+        lastCycleClosedAt: null,
+        history: [],
+      }),
+    );
+    await seedKanban([]);
+    const exit = await improve(["--tick", "--team-dir", teamDir]);
+    expect(exit).toBe(0);
+  });
+
+  test("currentCycle null → no-op (nothing to tick)", async () => {
+    await seedActiveCycle({ currentCycle: null });
+    await seedKanban([]);
+    const exit = await improve(["--tick", "--team-dir", teamDir]);
+    expect(exit).toBe(0);
+  });
+
+  test("driver Task in-progress → cycle pauses", async () => {
+    await seedActiveCycle();
+    await seedKanban([
+      { id: "t-driver", status: "in-progress", epic: null },
+    ]);
+    let stderrCaptured = "";
+    const exit = await improve(["--tick", "--team-dir", teamDir], {
+      stderr: (s) => {
+        stderrCaptured += s;
+        return true;
+      },
+    });
+    expect(exit).toBe(0);
+    expect(stderrCaptured).toContain("driver Task in-flight");
+    const after = JSON.parse(
+      await readFile(join(atmuxDir, "state", "eternal-improvement.json"), "utf8"),
+    );
+    expect(after.currentCycle.paused).toBe(true);
+  });
+
+  test("dispatched task not yet done → no close, state unchanged", async () => {
+    await seedActiveCycle();
+    await seedKanban([
+      { id: "t-aaaaaaaa", status: "in-progress", epic: "e-a25968cc", completedAt: null },
+    ]);
+    const before = await readFile(
+      join(atmuxDir, "state", "eternal-improvement.json"),
+      "utf8",
+    );
+    const exit = await improve(["--tick", "--team-dir", teamDir]);
+    expect(exit).toBe(0);
+    const after = await readFile(
+      join(atmuxDir, "state", "eternal-improvement.json"),
+      "utf8",
+    );
+    expect(after).toBe(before);
+  });
+
+  test("all dispatched tasks done + committed → cycle closes + re-arms", async () => {
+    await seedActiveCycle();
+    await seedKanban([
+      {
+        id: "t-aaaaaaaa",
+        status: "done",
+        epic: "e-a25968cc",
+        completedAt: 1_800_000_500,
+      },
+    ]);
+    const sent: unknown[] = [];
+    const exit = await improve(["--tick", "--team-dir", teamDir], {
+      discordSend: (async (opts: unknown) => {
+        sent.push(opts);
+      }) as never,
+      tokensSpentForClose: async () => 5_000,
+      nowMs: () => 1_800_001_000_000,
+    });
+    expect(exit).toBe(0);
+    const after = JSON.parse(
+      await readFile(join(atmuxDir, "state", "eternal-improvement.json"), "utf8"),
+    );
+    // Cycle 1 closed → cycle 2 opened.
+    expect(after.cycleN).toBe(2);
+    expect(after.currentCycle).not.toBeNull();
+    // History got the closed cycle.
+    expect(after.history).toHaveLength(1);
+    expect(after.history[0].cycleN).toBe(1);
+    expect(after.history[0].tasksDone).toBe(1);
+    expect(after.history[0].tokensSpent).toBe(5_000);
+    // Budget decremented.
+    expect(after.budgetRemaining).toBe(995_000);
+    // Two pings sent: progress (close) + start (re-arm).
+    expect(sent).toHaveLength(2);
+    // Directive file got the re-arm entry.
+    const directives = await readFile(join(atmuxDir, "improve-directives.md"), "utf8");
+    expect(directives).toContain("cycle 2 requested");
+  });
+
+  test("budget exhaustion at close → terminate (active:false, done ping, onTerminate fires)", async () => {
+    await seedActiveCycle({ budgetRemaining: 5_000 });
+    await seedKanban([
+      {
+        id: "t-aaaaaaaa",
+        status: "done",
+        epic: "e-a25968cc",
+        completedAt: 1_800_000_500,
+      },
+    ]);
+    const sent: Array<Record<string, unknown>> = [];
+    let onTerminateFired = false;
+    const exit = await improve(["--tick", "--team-dir", teamDir], {
+      discordSend: (async (opts: Record<string, unknown>) => {
+        sent.push(opts);
+      }) as never,
+      tokensSpentForClose: async () => 10_000, // pushes remaining negative
+      onTerminate: async () => {
+        onTerminateFired = true;
+      },
+      nowMs: () => 1_800_001_000_000,
+    });
+    expect(exit).toBe(0);
+    const after = JSON.parse(
+      await readFile(join(atmuxDir, "state", "eternal-improvement.json"), "utf8"),
+    );
+    expect(after.active).toBe(false);
+    expect(after.budgetRemaining).toBeLessThan(0); // overage
+    expect(onTerminateFired).toBe(true);
+    // Two pings: progress + done.
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.template).toBe("eternal-improvement-done");
+  });
+
+  test("Mode B (idle-fallback) → done ping carries modeB:true", async () => {
+    await seedActiveCycle({
+      mode: "idle-fallback",
+      budgetRemaining: 1_000,
+    });
+    await seedKanban([
+      {
+        id: "t-aaaaaaaa",
+        status: "done",
+        epic: "e-a25968cc",
+        completedAt: 1_800_000_500,
+      },
+    ]);
+    const sent: Array<Record<string, unknown>> = [];
+    await improve(["--tick", "--team-dir", teamDir], {
+      discordSend: (async (opts: Record<string, unknown>) => {
+        sent.push(opts);
+      }) as never,
+      tokensSpentForClose: async () => 5_000,
+      nowMs: () => 1_800_001_000_000,
+    });
+    const doneOpts = sent.find((s) => s.template === "eternal-improvement-done");
+    expect(doneOpts).toBeDefined();
+    // The render renders modeB:true into a "🛑 (Mode B) team will now `atmux stop`" bullet.
+    const bullets = (doneOpts?.bullets as string[]) ?? [];
+    expect(bullets.some((b) => b.includes("Mode B"))).toBe(true);
+  });
+
+  test("driver preempt + already-paused cycle → no second pause-write", async () => {
+    await seedActiveCycle({
+      currentCycle: {
+        startedAt: 1_800_000_010,
+        tasksLanded: ["t-aaaaaaaa"],
+        tasksDispatched: ["t-aaaaaaaa"],
+        tasksDone: ["t-aaaaaaaa"],
+        tokensSpent: 0,
+        paused: true,
+      },
+    });
+    await seedKanban([
+      { id: "t-driver", status: "in-progress", epic: null },
+    ]);
+    let stderrCaptured = "";
+    const exit = await improve(["--tick", "--team-dir", teamDir], {
+      stderr: (s) => {
+        stderrCaptured += s;
+        return true;
+      },
+    });
+    expect(exit).toBe(0);
+    // Already paused — verb does NOT re-emit the pause log line.
+    expect(stderrCaptured).not.toContain("driver Task in-flight");
+  });
+});
+
+// ---------- Discord pings on initial arm ----------
+
+describe("improve initial arm — Discord pings", () => {
+  test("fires 🌱 [eternal-improvement-start] with rendered template", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    await improve(["--budget", "1000000", "--team-dir", teamDir], {
+      discordSend: (async (opts: Record<string, unknown>) => {
+        sent.push(opts);
+      }) as never,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.template).toBe("eternal-improvement-start");
+    expect(sent[0]?.team).toBe("smoke");
+    const bullets = sent[0]?.bullets as string[];
+    expect(bullets.some((b) => b.includes("budget:"))).toBe(true);
+    expect(bullets.some((b) => b.includes("mode: user-invoked"))).toBe(true);
+    expect(bullets.some((b) => b.includes("runId:"))).toBe(true);
   });
 });
 
