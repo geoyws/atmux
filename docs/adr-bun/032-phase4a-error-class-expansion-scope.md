@@ -64,11 +64,15 @@ by ADR-028 / 029 / 030 / 031 even after their row commits all land:
    ConfigError sites across kanban.sh / dispatch.sh / claim.sh / reply.sh /
    tell.sh / handoff.sh have **zero coverage** in matrix today. **Largest
    single gap surface** for this ADR.
-2. **Cron-fired error rows** — ADR-028 covers 4 verbs but Decision rows are
-   happy `report` + 1 `whip` no-session row (per ADR-028 §Decision). Both
-   bash and TS sides have arg-parse error sites (`report --bogus`, `whip
-   --bogus`, `report --team-dir` no-value, `whip --team-dir` no-value). NOT
-   in ADR-028 §Decision. Deferred-table entry until ADR-028 lands.
+2. **Cron-fired error rows** — ADR-028 (scope landed @`20d711e`) covers 4
+   verbs but Decision rows are happy `report` + 1 `whip` no-session row +
+   golden-file harness primitive + 3 decisions-digest baselines + 3
+   `groom --dry-run` baselines (per ADR-028 §Decision after the 2026-05-06
+   re-scope). Both bash and TS sides have arg-parse error sites (`report
+   --bogus`, `whip --bogus`, `report --team-dir` no-value, `whip
+   --team-dir` no-value). NOT in ADR-028 §Decision. Deferred-table entry
+   until ADR-028's row commits land (cron-impl mid-flight on commit 2 =
+   cron-tasks fixture preset family per `lead-outbox.md`).
 3. **Read-only error rows** — ADR-030 §Decision rows 7–10 cover 4 of 5
    read-only verbs' unknown-arg sites (status / doctor / dashboard / cost
    per `lead-outbox.md` 16:45 MYT reviewer reading); inbox too-many-args +
@@ -215,7 +219,8 @@ reason for deferral, (c) re-enable trigger.
 
 When this ADR's deferred table is consumed:
 
-- **D1–D6** auto-trigger on ADR-028 commit + decisions/groom TS port arrivals.
+- **D1–D6** auto-trigger on ADR-028 row commits (scope-ADR already landed
+  @`20d711e`) + decisions/groom TS port arrivals.
 - **D7–D8** auto-trigger on ADR-030 row commits.
 - **D9–D10** auto-trigger on iter-4 preState shape extension OR a porter's
   natural pickup of blocked-by-deps coverage in another lane.
