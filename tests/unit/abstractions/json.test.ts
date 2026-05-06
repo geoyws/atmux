@@ -253,6 +253,40 @@ describe("updateJson", () => {
     });
     expect(out).toEqual(empty);
   });
+
+  test("noLock: true skips the flock — no <path>.lock sidecar created", async () => {
+    // ADR-029 §F2 + F9 — bash inbox/auto-init paths don't lock, so the
+    // TS port mirrors per-callsite via this flag to keep fs-snapshot
+    // byte-equal symmetric on parity rows.
+    const p = join(dir, "kanban.json");
+    await writeFile(p, JSON.stringify(empty));
+    const out = await updateJson(
+      p,
+      Kanban,
+      (k) => ({
+        ...k,
+        tasks: [...k.tasks, { id: "t-001", subject: "no-lock", status: "todo" as const }],
+      }),
+      { noLock: true },
+    );
+    expect(out.tasks).toHaveLength(1);
+    // The sidecar `<path>.lock` MUST NOT exist on disk.
+    const { stat } = await import("node:fs/promises");
+    await expect(stat(`${p}.lock`)).rejects.toThrow(/ENOENT/);
+  });
+
+  test("noLock: true with initial fallback — no .lock for first-run write", async () => {
+    // Mirrors loadInbox / appendDispatched first-run path: file doesn't
+    // exist, `initial` provides the empty shape, write happens unlocked.
+    const p = join(dir, "first-run.json");
+    const out = await updateJson(p, Kanban, (k) => k, {
+      initial: empty,
+      noLock: true,
+    });
+    expect(out).toEqual(empty);
+    const { stat } = await import("node:fs/promises");
+    await expect(stat(`${p}.lock`)).rejects.toThrow(/ENOENT/);
+  });
 });
 
 describe("tryParseJsonString", () => {

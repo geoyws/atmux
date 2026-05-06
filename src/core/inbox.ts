@@ -60,6 +60,13 @@ export function emptyInbox(): Inbox {
 export async function loadInbox(atmuxDir: string, member: string): Promise<Inbox> {
   return await updateJson(inboxPathFor(atmuxDir, member), InboxSchema, (i) => i, {
     initial: emptyInbox(),
+    // Per ADR-029 §F2 + F9 (parity-state-impl 12:33 + 12:35 outbox):
+    // bash inbox writes don't use atmux::with_lock (lib/dispatch.sh:60-65,
+    // lib/claim.sh:81-101, lib/inbox.sh:23-24 — direct jq writes). The TS
+    // port matches to keep `<path>.lock` sidecar absence symmetric on the
+    // parity fs-snapshot byte-equal gate. Single-writer-per-inbox-file
+    // convention covers the operational concurrency story.
+    noLock: true,
   });
 }
 
@@ -84,7 +91,13 @@ export async function appendDispatched(
     inboxPathFor(atmuxDir, member),
     InboxSchema,
     (i) => ({ ...i, inProgress: [...i.inProgress, entry] }),
-    { initial: emptyInbox() },
+    // Per ADR-029 §F2 + F9 (parity-state-impl 12:33 + 12:35 outbox):
+    // bash inbox writes don't use atmux::with_lock (lib/dispatch.sh:60-65,
+    // lib/claim.sh:81-101, lib/inbox.sh:23-24 — direct jq writes). The TS
+    // port matches to keep `<path>.lock` sidecar absence symmetric on the
+    // parity fs-snapshot byte-equal gate. Single-writer-per-inbox-file
+    // convention covers the operational concurrency story.
+    { initial: emptyInbox(), noLock: true },
   );
 }
 
@@ -106,7 +119,13 @@ export async function appendPending(
     inboxPathFor(atmuxDir, member),
     InboxSchema,
     (i) => ({ ...i, pending: [...i.pending, entry] }),
-    { initial: emptyInbox() },
+    // Per ADR-029 §F2 + F9 (parity-state-impl 12:33 + 12:35 outbox):
+    // bash inbox writes don't use atmux::with_lock (lib/dispatch.sh:60-65,
+    // lib/claim.sh:81-101, lib/inbox.sh:23-24 — direct jq writes). The TS
+    // port matches to keep `<path>.lock` sidecar absence symmetric on the
+    // parity fs-snapshot byte-equal gate. Single-writer-per-inbox-file
+    // convention covers the operational concurrency story.
+    { initial: emptyInbox(), noLock: true },
   );
 }
 
@@ -133,7 +152,13 @@ export async function movePendingToInProgress(
       const inProgress = alreadyInProgress ? i.inProgress : [...i.inProgress, entry];
       return { ...i, pending, inProgress };
     },
-    { initial: emptyInbox() },
+    // Per ADR-029 §F2 + F9 (parity-state-impl 12:33 + 12:35 outbox):
+    // bash inbox writes don't use atmux::with_lock (lib/dispatch.sh:60-65,
+    // lib/claim.sh:81-101, lib/inbox.sh:23-24 — direct jq writes). The TS
+    // port matches to keep `<path>.lock` sidecar absence symmetric on the
+    // parity fs-snapshot byte-equal gate. Single-writer-per-inbox-file
+    // convention covers the operational concurrency story.
+    { initial: emptyInbox(), noLock: true },
   );
 }
 
@@ -157,6 +182,12 @@ export async function moveInProgressToDone(
       const done = [...i.done, entry];
       return { ...i, inProgress, done };
     },
-    { initial: emptyInbox() },
+    // Per ADR-029 §F2 + F9 (parity-state-impl 12:33 + 12:35 outbox):
+    // bash inbox writes don't use atmux::with_lock (lib/dispatch.sh:60-65,
+    // lib/claim.sh:81-101, lib/inbox.sh:23-24 — direct jq writes). The TS
+    // port matches to keep `<path>.lock` sidecar absence symmetric on the
+    // parity fs-snapshot byte-equal gate. Single-writer-per-inbox-file
+    // convention covers the operational concurrency story.
+    { initial: emptyInbox(), noLock: true },
   );
 }

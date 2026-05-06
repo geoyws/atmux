@@ -70,6 +70,16 @@ export interface UpdateOpts {
   initial?: unknown;
   /** Override flock timeout / retry — see `lock.ts::AcquireOpts`. */
   lock?: AcquireOpts;
+  /** Skip the flock entirely. Use ONLY when the bash spec also doesn't
+   *  lock (per-file parity rule). Mirroring bash semantics matters more
+   *  than concurrency safety because parity gates fs-snapshot byte-equal
+   *  on the `<path>.lock` sidecar — bash inbox/auto-init paths leave no
+   *  lockfile (lib/inbox.sh + lib/dispatch.sh:60-65 + lib/claim.sh:81-101
+   *  use direct `jq` writes; only `lib/common.sh::with_lock` callsites
+   *  produce sidecars). The TS port mirrors per-callsite via this flag.
+   *  Reviewer: every `noLock: true` MUST cite the bash-side line range
+   *  proving the no-lock convention there. */
+  noLock?: boolean;
 }
 
 /**
@@ -80,6 +90,12 @@ export interface UpdateOpts {
  * The mutator MAY return a different shape than it received; the schema
  * re-validates on output, catching mutator bugs that would otherwise persist
  * malformed state to disk.
+ *
+ * `noLock: true` skips the flock — used by parity-mirroring callsites where
+ * the bash spec also doesn't lock (e.g. inbox writes per ADR-005 §"single
+ * writer per file" and ADR-029 §F2 + F9 findings — bash dispatch/claim/
+ * inbox-auto-init use unlocked direct jq writes; the TS port matches to
+ * keep `<path>.lock` sidecar absence symmetric across both sides).
  */
 export async function updateJson<T>(
   path: string,
@@ -89,25 +105,23 @@ export async function updateJson<T>(
 ): Promise<T> {
   const lockOpts = opts?.lock;
   const initial = opts?.initial;
-  return await withLock(
-    path,
-    async (): Promise<T> => {
-      let current: T;
-      if (initial !== undefined) {
-        const text = await readTextOrNull(path);
-        current =
-          text === null ? validate(path, schema, initial) : parseAndValidate(path, schema, text);
-      } else {
-        current = await readJson(path, schema);
-      }
-      const next = await mutator(current);
-      const validated = validate(path, schema, next);
-      const body = `${JSON.stringify(validated, null, SERIALIZE_INDENT)}\n`;
-      await atomicWrite(path, body);
-      return validated;
-    },
-    lockOpts,
-  );
+  const body = async (): Promise<T> => {
+    let current: T;
+    if (initial !== undefined) {
+      const text = await readTextOrNull(path);
+      current =
+        text === null ? validate(path, schema, initial) : parseAndValidate(path, schema, text);
+    } else {
+      current = await readJson(path, schema);
+    }
+    const next = await mutator(current);
+    const validated = validate(path, schema, next);
+    const out = `${JSON.stringify(validated, null, SERIALIZE_INDENT)}\n`;
+    await atomicWrite(path, out);
+    return validated;
+  };
+  if (opts?.noLock === true) return await body();
+  return await withLock(path, body, lockOpts);
 }
 
 // ---------- Parse-from-string (JSONL line-readers) ----------
