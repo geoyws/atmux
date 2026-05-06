@@ -492,4 +492,46 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       stderr: /(💥 atmux usage: |atmux: )/g,
     },
   },
+  // ADR-031 commit C: pause happy-path state-after row. Closes ADR-031
+  // §Decision row "2 state-after rows for pause w1 happy path on
+  // lifecycle preset" — landed as 1 row, not 2: the `--reason
+  // custom-reason` variant was dropped during commit-C authoring after
+  // probing proved bash lib/pause.sh has NO --reason flag handling
+  // (lib/pause.sh:22 only honours $ATMUX_PAUSE_REASON env var). The TS
+  // port's --reason flag (pause.ts:48-55) diverges silently — bash
+  // writes reason="manual", TS writes reason="custom-reason". Cross-
+  // side parity requires identical reason values; the variant defers
+  // to iter-3 per-row env-var injection in the harness (re-enable
+  // handle: `ATMUX_PAUSE_REASON=custom-reason atmux pause w1` row that
+  // both sides honour symmetrically).
+  //
+  // `paused.json` is single-key state-after (no array wildcard); `at`
+  // field is Unix epoch (ADR-027 state-after-class mask).
+  //
+  // Channel-asymmetric rendering: bash emits `✅ atmux paused w1
+  // (dispatch/claim will refuse)` to stderr via atmux::ok
+  // (lib/pause.sh:23); TS emits `paused w1 (dispatch/claim will refuse)`
+  // to stdout (src/verbs/pause.ts:92). Mirror the task-add row pattern
+  // from `1890278` — mask both channels.
+  {
+    verb: "pause",
+    args: ["w1"],
+    fixturePreset: "lifecycle",
+    label: "pause [lifecycle: w1 happy path]",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: TS-only stdout confirmation (channel-asymmetric — bash uses
+      // stderr via atmux::ok, TS uses stdout via process.stdout.write —
+      // ADR-027 error-rendering class)
+      stdout: /^paused w1 \(dispatch\/claim will refuse\)\n?/,
+      // reason: bash atmux::ok confirmation line not emitted by TS (ADR-027 error-rendering class)
+      stderr: /^✅ atmux paused w1 \(dispatch\/claim will refuse\)\n?/,
+      stateAfter: {
+        // reason: Unix epoch per invocation (ADR-027 state-after class).
+        // Single-key glob — paused.json shape is `{<member>: {at, reason}}`;
+        // mask the `at` field on the `w1` member entry.
+        "paused.w1.at": /^\d{10,}$/,
+      },
+    },
+  },
 ];
