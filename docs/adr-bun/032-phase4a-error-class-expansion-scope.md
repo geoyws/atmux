@@ -266,6 +266,98 @@ When this ADR's deferred table is consumed:
   `atmux: config: ` prefix; row #2 also needs the bash-only `dispatch:`
   verb-tag + ` id` word elision per probe).
 
+## Iter-3 actual delivery
+
+**Landed:** 8 of 10 post-D18 in-scope rows (12 originally in §1 row table
+minus 2 deferred to D18 mid-flight) + 0 enabling fix commits (TS lock-leak
+is a deferred-row trigger handed to up-impl, not a row-blocking fix).
+PARITY_MATRIX grew net +8 rows across this ADR's commit chain.
+
+| Row | Verb | Args | Fixture | Status | Commit |
+|---|---|---|---|---|---|
+| 1 | `claim` | `t-deadbeef --as lead` | `lifecycle` | ⏸ deferred to D18 — TS-side lock-leak on task-not-found path; mask would broadly absorb fs-channel presence-divergence per ADR-027 §4 anti-broad-mask | (deferred) |
+| 2 | `dispatch` | `lead t-deadbeef --no-ping` | `lifecycle` | ⏸ deferred to D18 — same root cause as row 1 | (deferred) |
+| 3 | `tell-lead` | (none) | `lifecycle` | ✅ landed (family A pure prefix; both sides keep `usage:` body) | `00b3647` |
+| 4 | `dispatch` | (none) | `lifecycle` | ✅ landed (family C per-side; bash usage-prefix + TS ` [--no-ping]` flag-suffix strip) | `00b3647` |
+| 5 | `handoff` | (none) | `lifecycle` | ✅ landed (family C per-side; bash usage-prefix + TS ` [--no-native] [--pause-from]` strip) | `00b3647` |
+| 6 | `task` | `bogus` | `lifecycle` | ✅ landed (family B prefix + TS `\n  atmux task <…>` hint-tail strip) | `6aea87a` |
+| 7 | `task` | `add` | `lifecycle` | ✅ landed (family B prefix + TS `\n  atmux task add <…>` hint-tail strip) | `6aea87a` |
+| 8 | `task` | `show` | `lifecycle` | ✅ landed (family A pure prefix — reclassified per D17 — TS lacks hint-tail) | `6aea87a` |
+| 9 | `add-member` | `lead` | `lifecycle` | ✅ landed (family A pure prefix; ConfigError already-exists, substituted from D15 send-bogus deferral) | `6aea87a` |
+| 10 | `add-member` | `--bogus` | `lifecycle` | ✅ landed (family B prefix + TS `\n  usage: atmux add-member …` hint-tail strip) | `6aea87a` |
+| 11 | `dispatch` | `lead t-seed1 --no-ping` (paused) | `lifecycle` + `paused.json` preState | ✅ landed (family A pure prefix; member-paused fires before claimTask) | `76a176a` |
+| 12 | `dispatch` | `no-such-member t-seed1 --no-ping` | `lifecycle` + seeded-task preState | ✅ landed (family A prefix + TS-only `dispatch: ` verb-tag absorb) | `76a176a` |
+
+### Iter-3 mechanics-discovery findings
+
+Two probe-driven adjustments to the original §1 row table:
+
+1. **D18 deferral (rows 1 + 2).** Originally scoped as Pattern A pure prefix
+   (probe table at .atmux/notes-adr-032-research.md "Probe-rerun for
+   ADR-032 amendments" rows 1 + 2). Post-resume parity-test run @2026-05-06
+   ~17:25 MYT surfaced fs-channel divergence: TS-side `claimTask` /
+   `markTaskDone` (src/core/kanban.ts:225-261 + 270+) call `updateJson`
+   (WITH lock) for the existence check, leaving an `.atmux/kanban.json.lock`
+   sidecar that bash never creates (bash claim.sh:36 + dispatch.sh:40 die
+   BEFORE jq_update). Real fs-channel divergence; mask would be a
+   presence-on-one-side absorption which ADR-027 §4 anti-broad-mask rule
+   bans (and the lock-leak is also a TS-side correctness concern: needless
+   lock acquisition for a check-only error path). Re-enable trigger: D18
+   captured the fix sketch (loadKanban-noLock probe in
+   `src/verbs/{claim,dispatch}.ts` to mirror bash check-then-lock order)
+   for up-impl's lane.
+
+2. **Mask design correction (rows 6, 7, 8, 10).** Initial draft of commit C
+   used `(💥 atmux |atmux: \S+: )` — intent: strip TS `atmux: <verb-tag>: `
+   for rows where TS UsageError emits a verb-tag prefix. Probe @2026-05-06
+   ~17:48 MYT surfaced asymmetry: rows 6 + 10 had TS strip BOTH `atmux: `
+   and verb-tag (because `\S+: ` greedy-matched `task: ` / `add-member: `)
+   while bash kept the verb-tag in body (only `💥 atmux ` strip applied),
+   collapsing to non-equal post-mask byte counts. Rows 7 + 8 had a different
+   bug: `\S+: ` failed-to-match `task add: ` / `task show: ` because the
+   colon comes AFTER `add` / `show` (preceded by a space) which `\S+` can't
+   span — leaving TS prefix `atmux: ` un-stripped. Both bugs same root cause:
+   TS UsageError rendering at src/cli.ts:175 is `atmux: ${ctx.what}\n` —
+   verb-tag is body content, NOT a structured tag separator. Fix: strip
+   bash `💥 atmux ` (9 chars) and TS `atmux: ` (7 chars) ONLY; both sides
+   retain verb-tag in body. Probe-confirmed symmetric on second iteration
+   (all 5 rows GREEN). Mask design note inlined in commit C body for
+   reviewer + future-author cite-locality.
+
+### Two re-enable handles on this ADR's tail
+
+- **D18 → up-impl** (TS-side lock-leak hoist): pickup auto-triggers when
+  up-impl lands the existence-check refactor in `src/verbs/{claim,dispatch}.ts`.
+  Rows 1 + 2 then re-add as a follow-up `test(parity): 2 reply rows —
+  task-not-found error (post-D18, ADR-032 rows 1+2)` commit. Fix sketch
+  detail in D18 row of the deferred table above.
+- **D17 → iter-4 subverb-tree depth** (paired with D12): pickup on the
+  iter-4 ADR for subverb-tree coverage. Row 8 already lands as family A
+  via the same probe-driven reclassification.
+
+### Mask vocabulary delivered
+
+No new ADR-027 mask classes — this lane's verdict in §2 stood through
+delivery. All 8 landed rows reuse:
+- **`error-rendering` class (ADR-027)** — all 8 rows. Three narrow per-row
+  extensions to the family-c verb-tag-absorb shape from ADR-031:
+  - Rows 4 + 5: per-row TS-side flag-suffix strip (` [--no-ping]` /
+    ` [--no-native] [--pause-from]`)
+  - Rows 6 + 7: per-row TS-side hint-line tail strip
+    (`\n  atmux task <…>` / `\n  atmux task add <…>`)
+  - Row 10: per-row TS-side hint-line tail strip
+    (`\n  usage: atmux add-member …`)
+  - Row 12: TS-only `(?:dispatch: )?` verb-tag absorb (family-c
+    precedent reused)
+
+### preState mechanics confirmed
+
+Rows 11 + 12 used preState — rows 11 layered `kanban.json` (seeded task) +
+`paused.json` (lead paused) for the member-paused error path; row 12 used
+just the seeded `kanban.json` for the member-not-in-team error path (the
+seed ensures the validate-member check is reachable on both sides). Both
+are stable additions to the parity matrix's preState patterns.
+
 ## Consequences
 
 - **Cross-lane error coverage closes.** ADR-029 / ADR-030 / ADR-031 happy

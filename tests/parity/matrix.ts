@@ -859,6 +859,118 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     expect: "exit-zero-stable-stdout",
     // No mask — same as row 11; only the stem name differs (w1 vs lead).
   },
+  // ADR-029 commit F (post-F11): 2 reply rows. INSERT-class markdown
+  // line-append on lead-outbox.md.
+  //
+  // `reply --from <member> <msg>` appends a `- [HH:MM MYT] **<from>**:
+  // <msg>\n` line under `## Open` in `.atmux/lead-outbox.md` (lib/
+  // reply.sh:50-69 + src/verbs/reply.ts:140-160). Lifecycle preset does
+  // NOT seed lead-outbox.md (factory.ts:189 only seeds driver-inbox.md),
+  // so both sides hit the auto-create path: write the full markdown
+  // template (header + section labels + `## Open\n`) THEN insert the
+  // entry. Both sides emit byte-equal 284b (row 7) / 294b (row 8) post-
+  // F11 fix at @69119af (regex /^## Open$/m no longer greedy-consumes
+  // the trailing `\n` after the freshly-seeded header).
+  //
+  // Discriminative axes: --from lead (row 7, team-lead member) vs
+  // --from w1 (row 8, member-role) — exercises the from-name embedding
+  // in the entry line for both team-lead and worker member identities.
+  // Same auto-create + insert path; only the entry-line `<from>` token
+  // varies. Probe-verified 2026-05-06 17:58 MYT against post-F11 HEAD.
+  //
+  // Mask: stdout path-suffix elision for the success line `✅ atmux
+  // reply recorded (<from> → driver) in <ob-path>` — `<ob-path>` embeds
+  // the per-side fixture-clone artefact (`<root>.bash` / `<root>.ts`)
+  // per ADR-027 §3 path-suffix shape (introduced for error-rendering;
+  // carries forward to stdout for reply success line per ADR-029 §2).
+  // No stateAfter mask needed — fs byte-equal.
+  {
+    verb: "reply",
+    args: ["--from", "lead", "test msg"],
+    fixturePreset: "lifecycle",
+    label: "reply --from lead 'test msg' [lifecycle: auto-create + insert under ## Open] (ADR-029 row 7)",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: per-side fixture-clone path suffix `<root>.bash` / `<root>.ts`
+      // before /.atmux/ in the success line (ADR-027 error-rendering class —
+      // path-suffix shape, carries forward from stderr to stdout per ADR-029 §2)
+      stdout: /(\.bash|\.ts)(?=\/\.atmux\/)/g,
+    },
+  },
+  {
+    verb: "reply",
+    args: ["--from", "w1", "test msg from member"],
+    fixturePreset: "lifecycle",
+    label: "reply --from w1 'test msg from member' [lifecycle: member-role from-name, auto-create + insert] (ADR-029 row 8)",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: same as row 7 — per-side fixture-clone path suffix in the
+      // success line (ADR-027 error-rendering class — path-suffix shape)
+      stdout: /(\.bash|\.ts)(?=\/\.atmux\/)/g,
+    },
+  },
+  // ADR-029 commit G: 2 tell-lead rows. INSERT-class markdown line-append.
+  //
+  // `tell-lead <msg>` appends `- [HH:MM MYT] <msg>\n` to driver-inbox.md
+  // then dispatches a tmux send-keys heads-up to the lead's pane (lib/
+  // tell.sh:30-43 + src/verbs/tell-lead.ts:140-205). The lifecycle preset
+  // ships a 0-byte driver-inbox.md (factory.ts:189), so both sides hit
+  // the empty-file append path AND the no-tmux-window die path. Both
+  // bash and TS append the line, then atmux::send_to_member /
+  // sendToMember dies with "no tmux window for lead (is the team
+  // running?)" — exit 1 (bash) vs exit 78 (TS, ConfigError → EX_CONFIG).
+  //
+  // Discriminative axes: short msg (row 9) vs long 80+-char msg (row 10).
+  // The long-msg axis was originally chosen to exercise the heads-up
+  // truncation logic (`msg:0:80…` ellipsis suffix); since both sides die
+  // BEFORE send_to_member fires the tmux dispatch, the truncation path
+  // is unreached, but the long-msg axis still verifies the file-write
+  // path doesn't drift on payload size — both sides write 88-byte byte-
+  // equal `- [HH:MM MYT] <long-msg>\n` (probe-verified 2026-05-06 17:28
+  // MYT, fs.driver-inbox.md byte-equal both sides post-mask).
+  //
+  // ADR-029 §1 row spec originally listed `--from w1` flag axis; probe-
+  // verified at HEAD that neither bash (lib/tell.sh:16) nor TS (src/
+  // verbs/tell-lead.ts:86 USAGE) accepts `--from` — bash silently
+  // consumes as message body, TS rejects with usage error. Drop the
+  // `--from` axis; single-arg `<msg>` is the canonical bash-frozen shape.
+  // ADR-029 §1 row table is amended in this commit's deferred-row block.
+  {
+    verb: "tell-lead",
+    args: ["test ask"],
+    fixturePreset: "lifecycle",
+    label: "tell-lead 'test ask' [lifecycle: append-then-die-no-window short msg] (ADR-029 row 9)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: 1-pattern Pattern A prefix mask (ADR-027 error-rendering
+      // class) — bash `💥 atmux ` vs TS `atmux: config: ` prefix on the
+      // no-tmux-window die line. Both sides emit identical body `no tmux
+      // window for lead (is the team running?)` after prefix strip. The
+      // tell-lead verb-tag is NOT prepended on either side here (bash
+      // atmux::die from send_to_member, TS ConfigError without verb
+      // prefix per src/verbs/tell-lead.ts no-window path). Probe-verified
+      // 2026-05-06 17:25 MYT.
+      stderr: /(💥 atmux |atmux: config: )/g,
+    },
+  },
+  {
+    verb: "tell-lead",
+    args: ["test long ask with 80+ chars to exercise heads-up truncation logic mirror"],
+    fixturePreset: "lifecycle",
+    label: "tell-lead '<long-msg>' [lifecycle: append-then-die-no-window long msg] (ADR-029 row 10)",
+    expect: "exit-nonzero-stable-stderr",
+    mask: {
+      // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
+      exitCode: true,
+      // reason: same as row 9 — Pattern A prefix-only divergence (ADR-027
+      // error-rendering class). The long-msg payload doesn't change the
+      // die-line shape; both sides write 88-byte byte-equal driver-inbox.md
+      // line then die with identical no-tmux-window stderr body post-mask.
+      stderr: /(💥 atmux |atmux: config: )/g,
+    },
+  },
   // ADR-030 commit B: 4 read-only happy-path rows (status / doctor x2 / cost).
   // ADR-030 §Decision pinned a 10-row scope (rows 1-10); commit B was originally
   // 6 happy rows (1-6). Iter-3 mechanics-discovery reduced to 4:
