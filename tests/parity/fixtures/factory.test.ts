@@ -91,3 +91,94 @@ describe("parity fixture factory — multi-team preset (still deferred per ADR-0
     await expect(makeFixture({ preset: "multi-team" })).rejects.toThrow(/iter-2 per ADR-026/);
   });
 });
+
+describe("parity fixture factory — cron-tasks preset (ADR-028)", () => {
+  let fixture: FixtureHandle;
+
+  beforeEach(async () => {
+    fixture = await makeFixture({ preset: "cron-tasks" });
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup();
+  });
+
+  test("layers mixed-shape kanban (1 done + 1 in-progress + 1 blocked) on lifecycle base", async () => {
+    const atmuxDir = path.join(fixture.path, ".atmux");
+    const kanban = JSON.parse(await fs.readFile(path.join(atmuxDir, "kanban.json"), "utf8"));
+    expect(kanban.tasks).toHaveLength(3);
+    const statuses = kanban.tasks.map((t: { status: string }) => t.status).sort();
+    expect(statuses).toEqual(["blocked", "done", "in-progress"]);
+    // Lifecycle base is intact — team.json present + 4 members.
+    const team = JSON.parse(await fs.readFile(path.join(atmuxDir, "team.json"), "utf8"));
+    expect(team.members).toHaveLength(4);
+  });
+
+  test("driver-inbox.md ships 1 open ask under ## Open", async () => {
+    const inbox = await fs.readFile(
+      path.join(fixture.path, ".atmux", "driver-inbox.md"),
+      "utf8",
+    );
+    expect(inbox).toContain("## Open");
+    expect(inbox).toContain("need clarification on cron-tasks scope");
+    expect(inbox).toContain("## Archive");
+  });
+});
+
+describe("parity fixture factory — cron-tasks-decisions preset (ADR-028)", () => {
+  let fixture: FixtureHandle;
+
+  beforeEach(async () => {
+    fixture = await makeFixture({ preset: "cron-tasks-decisions" });
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup();
+  });
+
+  test("ships canonical decisions.md header + epoch-0 digest cursor", async () => {
+    const atmuxDir = path.join(fixture.path, ".atmux");
+    const decisions = await fs.readFile(path.join(atmuxDir, "decisions.md"), "utf8");
+    expect(decisions).toBe("# atmux decisions — append-only log\n\n");
+    const cursor = await fs.readFile(
+      path.join(atmuxDir, "state", "decisions-digest-cursor"),
+      "utf8",
+    );
+    expect(cursor).toBe("0\n");
+  });
+});
+
+describe("parity fixture factory — cron-tasks-groom preset (ADR-028)", () => {
+  let fixture: FixtureHandle;
+
+  beforeEach(async () => {
+    fixture = await makeFixture({ preset: "cron-tasks-groom" });
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup();
+  });
+
+  test("ships archive tails on driver-inbox + lead-outbox + 7 .bak.* per type", async () => {
+    const atmuxDir = path.join(fixture.path, ".atmux");
+    const driverInbox = await fs.readFile(path.join(atmuxDir, "driver-inbox.md"), "utf8");
+    expect(driverInbox).toContain("## Archive\n- [09:00 MYT]");
+    const leadOutbox = await fs.readFile(path.join(atmuxDir, "lead-outbox.md"), "utf8");
+    expect(leadOutbox).toContain("## Archive\n- [09:02 MYT]");
+
+    const entries = await fs.readdir(atmuxDir);
+    const kanbanBaks = entries.filter((e) => e.startsWith("kanban.json.bak."));
+    const teamBaks = entries.filter((e) => e.startsWith("team.json.bak."));
+    expect(kanbanBaks).toHaveLength(7);
+    expect(teamBaks).toHaveLength(7);
+  });
+
+  test("kanban ships 2 ancient tasks (done + cancelled) for sweep coverage", async () => {
+    const kanban = JSON.parse(
+      await fs.readFile(path.join(fixture.path, ".atmux", "kanban.json"), "utf8"),
+    );
+    expect(kanban.tasks).toHaveLength(2);
+    const statuses = kanban.tasks.map((t: { status: string }) => t.status).sort();
+    expect(statuses).toEqual(["cancelled", "done"]);
+  });
+});

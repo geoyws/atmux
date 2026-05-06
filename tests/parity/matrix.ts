@@ -8,11 +8,20 @@
 /**
  * Fixture preset names. The factory under `tests/parity/fixtures/`
  * publishes these once it lands (Phase 1, after ADR-005 ratifies schemas).
- *   - `minimal`     — 2-member team, empty kanban, no inboxes
- *   - `lifecycle`   — 4-member template mirroring tests/e2e/lifecycle.bats
- *   - `multi-team`  — state shapes for atmux / sopx-mvp / ifca_aux / unum
+ *   - `minimal`              — 2-member team, empty kanban, no inboxes
+ *   - `lifecycle`            — 4-member template mirroring tests/e2e/lifecycle.bats
+ *   - `multi-team`           — state shapes for atmux / sopx-mvp / ifca_aux / unum (deferred)
+ *   - `cron-tasks`           — lifecycle + mixed-shape kanban + open ask (ADR-028 commit 2)
+ *   - `cron-tasks-decisions` — lifecycle + decisions.md scaffold (ADR-028 commit 2)
+ *   - `cron-tasks-groom`     — lifecycle + archive tails + .bak.* + old kanban (ADR-028 commit 2)
  */
-export type FixturePreset = "minimal" | "lifecycle" | "multi-team";
+export type FixturePreset =
+  | "minimal"
+  | "lifecycle"
+  | "multi-team"
+  | "cron-tasks"
+  | "cron-tasks-decisions"
+  | "cron-tasks-groom";
 
 /**
  * What the row's authors expect a parity-green outcome to look like.

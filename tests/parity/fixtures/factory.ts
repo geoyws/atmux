@@ -32,7 +32,13 @@ import { Team } from "../../../src/schema/team.ts";
  * Fixture preset names. Mirrors `tests/parity/matrix.ts::FixturePreset`
  * — kept in sync there until ADR-005 publishes a single canonical type.
  */
-export type FixturePreset = "minimal" | "lifecycle" | "multi-team";
+export type FixturePreset =
+  | "minimal"
+  | "lifecycle"
+  | "multi-team"
+  | "cron-tasks"
+  | "cron-tasks-decisions"
+  | "cron-tasks-groom";
 
 /**
  * Handle returned by `makeFixture`. The caller (a `bun:test` `beforeEach`
@@ -75,6 +81,21 @@ export async function makeFixture(opts: MakeFixtureOpts): Promise<FixtureHandle>
 
     case "lifecycle":
       await materializeLifecyclePreset(dir);
+      break;
+
+    case "cron-tasks":
+      await materializeLifecyclePreset(dir);
+      await materializeCronTasksLayer(dir);
+      break;
+
+    case "cron-tasks-decisions":
+      await materializeLifecyclePreset(dir);
+      await materializeCronTasksDecisionsLayer(dir);
+      break;
+
+    case "cron-tasks-groom":
+      await materializeLifecyclePreset(dir);
+      await materializeCronTasksGroomLayer(dir);
       break;
 
     case "multi-team":
@@ -166,4 +187,144 @@ async function materializeLifecyclePreset(dir: string): Promise<void> {
   await fs.writeFile(path.join(atmuxDir, "team.json"), JSON.stringify(teamJson, null, 2));
   await fs.writeFile(path.join(atmuxDir, "kanban.json"), '{"tasks":[],"epics":[],"stories":[]}\n');
   await fs.writeFile(path.join(atmuxDir, "driver-inbox.md"), "");
+}
+
+/**
+ * Materialise the `cron-tasks` layer on top of `lifecycle`.
+ *
+ * Mixed-shape kanban (1 done + 1 in-progress + 1 blocked) + 1 driver-inbox
+ * open ask. Exercises all 4 body sections of `report` (Shipped /
+ * In-progress / Blocked / Open asks) in a single deterministic invocation.
+ *
+ * All timestamps are fixed literals so byte-equal post-mask is achievable
+ * without per-invocation drift. Task IDs are fixed `t-cron0NNN` literals
+ * (NOT random) — the mask vocabulary in matrix.ts already covers
+ * `/t-[0-9a-f]{8}/` for runtime-generated ids; deterministic ids here let
+ * `kanban.json` compare byte-equal without an extra mask.
+ */
+async function materializeCronTasksLayer(dir: string): Promise<void> {
+  const atmuxDir = path.join(dir, ".atmux");
+  const kanban = {
+    tasks: [
+      {
+        id: "t-cron0001",
+        subject: "shipped-task",
+        status: "done",
+        owner: "w1",
+        createdAt: 1700000000,
+        claimedAt: 1700000100,
+        completedAt: 1700000200,
+        note: "fix(cron): seed shipped task",
+      },
+      {
+        id: "t-cron0002",
+        subject: "in-progress-task",
+        status: "in-progress",
+        owner: "w1",
+        createdAt: 1700000300,
+        claimedAt: 1700000400,
+      },
+      {
+        id: "t-cron0003",
+        subject: "blocked-task",
+        status: "blocked",
+        owner: "w1",
+        createdAt: 1700000500,
+        note: "blocked on upstream review",
+      },
+    ],
+    epics: [],
+    stories: [],
+  };
+  await fs.writeFile(
+    path.join(atmuxDir, "kanban.json"),
+    `${JSON.stringify(kanban, null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(atmuxDir, "driver-inbox.md"),
+    "# driver-inbox\n\n## Open\n- [10:00 MYT] **w1**: need clarification on cron-tasks scope\n\n## Archive\n",
+  );
+}
+
+/**
+ * Materialise the `cron-tasks-decisions` layer.
+ *
+ * Empty `decisions.md` (canonical bash header) + `state/decisions-digest-cursor`
+ * at epoch 0 (so any added decision counts as "new since cursor"). Per-row
+ * `preState` overrides supply the actual decisions.md content for each
+ * scenario (empty / 1-entry / over-threshold).
+ *
+ * Bash side: `lib/decisions.sh:_decisions_file()` writes/reads
+ * `.atmux/decisions.md` directly; cursor lives at
+ * `.atmux/state/decisions-digest-cursor` per `_atmux_decisions_digest`.
+ */
+async function materializeCronTasksDecisionsLayer(dir: string): Promise<void> {
+  const atmuxDir = path.join(dir, ".atmux");
+  await fs.writeFile(
+    path.join(atmuxDir, "decisions.md"),
+    "# atmux decisions — append-only log\n\n",
+  );
+  await fs.writeFile(path.join(atmuxDir, "state", "decisions-digest-cursor"), "0\n");
+}
+
+/**
+ * Materialise the `cron-tasks-groom` layer.
+ *
+ * Kanban with old done tasks (createdAt 1700000000 = 2023; well past
+ * default --kanban-days 30) + driver-inbox + lead-outbox both with
+ * populated `## Archive` tails (groom flushes these to dated archive
+ * files) + several `kanban.json.bak.*` and `team.json.bak.*` rotation
+ * files (groom culls past `--keep-bak` count, default 5).
+ *
+ * Per-row `preState` overrides supply specific scenario shapes (clean
+ * kanban no-archive / orphaned-task / over-threshold archive tail).
+ */
+async function materializeCronTasksGroomLayer(dir: string): Promise<void> {
+  const atmuxDir = path.join(dir, ".atmux");
+  const oldKanban = {
+    tasks: [
+      {
+        id: "t-old0001",
+        subject: "ancient-shipped",
+        status: "done",
+        owner: "w1",
+        createdAt: 1700000000,
+        claimedAt: 1700000100,
+        completedAt: 1700000200,
+      },
+      {
+        id: "t-old0002",
+        subject: "ancient-cancelled",
+        status: "cancelled",
+        owner: "w1",
+        createdAt: 1700000300,
+      },
+    ],
+    epics: [],
+    stories: [],
+  };
+  await fs.writeFile(
+    path.join(atmuxDir, "kanban.json"),
+    `${JSON.stringify(oldKanban, null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(atmuxDir, "driver-inbox.md"),
+    "# driver-inbox\n\n## Open\n\n## Archive\n- [09:00 MYT] **w1**: ancient archived line 1\n- [09:01 MYT] **w1**: ancient archived line 2\n",
+  );
+  await fs.writeFile(
+    path.join(atmuxDir, "lead-outbox.md"),
+    "# lead-outbox\n\n## Open\n\n## Archive\n- [09:02 MYT] **lead**: ancient outbox line 1\n- [09:03 MYT] **lead**: ancient outbox line 2\n",
+  );
+  // 7 backup files (keep-bak default 5 → 2 culled per type)
+  const oldEpoch = 1700000000;
+  for (let i = 0; i < 7; i++) {
+    await fs.writeFile(
+      path.join(atmuxDir, `kanban.json.bak.${oldEpoch + i}`),
+      '{"tasks":[],"epics":[],"stories":[]}\n',
+    );
+    await fs.writeFile(
+      path.join(atmuxDir, `team.json.bak.${oldEpoch + i}`),
+      '{"name":"old","members":[]}\n',
+    );
+  }
 }
