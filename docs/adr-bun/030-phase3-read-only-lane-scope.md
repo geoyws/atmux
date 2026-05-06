@@ -1,6 +1,6 @@
 # ADR-030: Phase 4a parity matrix iter-3 read-only lane scope (refs ADR-026, ADR-027)
 
-**Status:** proposed
+**Status:** accepted (closed 2026-05-06)
 **Date:** 2026-05-06
 **Owner:** parity-read-impl
 
@@ -122,3 +122,59 @@ Each commit standalone-passes typecheck + 100% coverage gate (the parity tests t
 - **`cost` text mode rejects host-tz drift via timezone-render mask** rather than reconciling rendering. ADR-012 (time-and-timezone) keeps TS at UTC for determinism; bash keeps host-local for operator-friendliness; the harness absorbs the divergence.
 - **Reviewer's `mask:` grep target stays a single line** — every block has an adjacent `// reason:` cite. Adding read-render + timezone-render labels does not require new grep tooling.
 - **Iter-3 ships ~80 LOC of matrix-row entries** (≈ 8 LOC × 10 rows + masks) without `compare.ts` LOC. Compare iter-2's `14644d6` (132 LOC of `compare.ts` infra) — iter-3 is ~5× cheaper because the infrastructure was already paid for.
+
+## Iter-3 actual delivery
+
+**Landed:** 8 of 10 planned rows + 2 fix commits to enable them. PARITY_MATRIX grew 32 → 40 rows (commit-B-time baseline; cron-impl's parallel ADR-028 work also added rows in the same window). 8 rows × 100% green at @3064ce3.
+
+| Row | Verb | Args | Fixture | Status | Commit |
+|---|---|---|---|---|---|
+| 1 | `status` | (none) | `lifecycle` | ✅ landed (read-render mask) | `76bd071` (folded from intended commit B) |
+| 2 | `doctor` | `--quiet` | `lifecycle` | ✅ landed (no mask, exit-only) | `76bd071` |
+| 3 | `doctor` | `--quiet` | `minimal` | ✅ landed (no mask, exit-only) | `76bd071` |
+| 4 | `inbox` | `lead` | `lifecycle` | ⏭ deduplicated — already covered by ADR-029 commit H rows 11-12 | (n/a — pre-existing in matrix) |
+| 5 | `cost` | `--json` | `lifecycle` | ⏸ deferred to iter-4 — JSON-render `0.0000` vs `0` divergence on `totalUsd` not maskable per ADR-027 §4 anti-semantic-mask rule | (deferred) |
+| 6 | `cost` | (none) | `lifecycle` | ✅ landed (timezone-render + read-render masks combined) | `76bd071` |
+| 7 | `inbox` | (none) | `lifecycle` | ✅ landed (usage error mask + ` [--json]` suffix strip) | `3064ce3` |
+| 8 | `inbox` | `bogus` | `lifecycle` | ✅ landed (config error mask, `inbox: ` verb-tag extension to family-c) | `3064ce3` |
+| 9 | `dashboard` | (none) | `minimal` | ✅ landed (family-a 3-pattern no-team mask) | `3064ce3` |
+| 10 | `cost` | (none) | `minimal` | ✅ landed (family-a 3-pattern no-team mask) | `3064ce3` |
+
+### Iter-3 mechanics-discovery findings
+
+Two probe-driven adjustments to the original §Decision scope:
+
+1. **Row 4 deduplication.** `inbox lead [lifecycle]` was scoped as a no-mask byte-equal happy-path read. Probe confirmed it was already covered by ADR-029 commit H rows 11-12 (`inbox lead [lifecycle: INSERT auto-init]` + `inbox w1` member-stem variant) — same verb / args / preset / expect; bun:test's unique-test-name rule would reject re-adding. The ADR-029 row covers ADR-030's read-render coverage shape too.
+
+2. **Row 5 deferral.** `cost --json [lifecycle]` was scoped as no-mask byte-equal. Probe surfaced bash `"totalUsd": 0.0000` vs TS `"totalUsd": 0` divergence in the JSON `totalUsd` field — bash's `awk 'BEGIN{printf "%.4f"}'` accumulator at lib/cost.sh:70 is preserved by `jq --argjson` raw-input numeric formatting; TS's plain `number` accumulator at cost.ts:486 round-trips through `JSON.stringify` to the canonical `0`. Per ADR-027 §4 anti-semantic-mask rule (Banned: regex broad enough to absorb semantic content), a regex `0\.0+` → `0` mask would absorb actual usage values. Deferred to iter-4 pending JSON-canonical-stdout mask class (already named in §"Re-enable handles"); the per-member `usd` field doesn't trip this — only `totalUsd`.
+
+### Two fix commits gated row landing
+
+Probe surfaced two fs-channel parity divergences blocking row landing; both fixed standalone before row commits:
+
+- **`15139eb` `fix(parity): doctor probe cleanup + loadKanban noLock (ADR-030)`** — closes F-readonly-1 + F-readonly-2:
+  - F-readonly-1: TS `_doctor_check_state_dir` left a `.atmux/.doctor-write-probe` file post-check that bash never created (`[[ -w ]]` directory-bit test, no artefact). Fix: add `try/finally { removeFile(probe).catch(() => {}) }` so final fs state matches bash.
+  - F-readonly-2: TS `loadKanban` wrapped `updateJson` with default `withLock`, leaving `.atmux/kanban.json.lock` sidecar that bash never created (lib/status.sh:85-91 + lib/kanban.sh use direct unlocked `jq` reads). Fix: pass `noLock: true` per ADR-005 §"single writer per file" + ADR-029 F2/F9 precedent (commit `4e2e103`) — atomicWrite at writer guarantees readers see pre/post state, never partial.
+
+### Commit-attribution gap
+
+ADR-030 happy rows 1, 2, 3, 6 were intended to land in a discrete `test(parity): 4 read-only happy rows (status/doctor/cost, ADR-030 rows 1-3+6)` commit but instead got swept into cron-impl's `76bd071 feat(parity): golden-file harness mode` SHA via a worktree git-add collision (other porter ran `git add -A` while my matrix.ts edits were unstaged). The matrix entries are correct, only the commit attribution is off-trail. Surfaced via `atmux reply` for lead awareness; no history rewrite — the rows are green and the commit body is clear from the matrix-entry comments alone (the `// ADR-030 commit B:` block self-documents).
+
+### Mask vocabulary delivered
+
+- **`read-render` class (new, this ADR)** — fires on:
+  - `status` row 1: header column-widths line + `📬 driver-inbox open=0` conditional emission line
+  - `cost` row 6: per-row USD-column padding divergence (`$0` vs `$0.0000`)
+- **`timezone-render` class (new, this ADR)** — fires on:
+  - `cost` row 6: header `since YYYY-MM-DD HH:MM:SS` (bash host-tz) vs `since -` (TS UTC-pin epoch=0 placeholder)
+- **`error-rendering` class (ADR-027, reused)** — fires on rows 7, 8, 9, 10. Two narrow extensions:
+  - Row 7 inbox-usage: literal `\[--json\]` suffix strip (TS USAGE_INBOX has it, bash USAGE doesn't)
+  - Row 8 inbox-config: `(?:inbox: )?` verb-tag added to family-c shape
+
+### Re-enable handle status (post-iter-3)
+
+Unchanged from original §"Re-enable handles" table. Iter-4 candidates:
+- JSON-canonical-stdout mask class (re-enables row 5 + status/doctor `--json` rows from §"DEFER" inventory)
+- Doctor row-set carve-out (re-enables full doctor text/JSON coverage)
+- Dashboard interactive-loop runner (re-enables dashboard happy path)
+- `cost` `since` non-epoch-0 rows + cost-cache mtime-mask (when whip-cron writes invalidate)
