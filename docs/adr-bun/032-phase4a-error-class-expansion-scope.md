@@ -105,35 +105,55 @@ Per the survey's gap #1 (state-mutating, the largest gap), gaps #4 + #5
 (send / add-member beyond no-team), and gap #6 (handoff). Cron-fired (#2)
 + read-only (#3) defer to follow-up commits behind their lane-porters.
 
-| # | Verb | Args (representative) | Fixture | Error class | Mask family | ADR-027 class |
-|---|------|-----------------------|---------|-------------|-------------|---------------|
-| 1 | `claim` | `t-deadbeef` (no such task) | `lifecycle` | task-not-found | A (prefix-only) | error-rendering |
-| 2 | `dispatch` | `lead t-deadbeef --no-ping` (no such task) | `lifecycle` | task-not-found | A (prefix-only) | error-rendering |
-| 3 | `tell-lead` | (no args) | `lifecycle` | UsageError missing-msg | C (per-side usage-line literal divergence) | error-rendering |
-| 4 | `dispatch` | (no args) | `lifecycle` | UsageError missing-args | C (per-side usage-line literal divergence) | error-rendering |
-| 5 | `handoff` | (no args) | `lifecycle` | UsageError missing-args | C (per-side usage-line literal divergence) | error-rendering |
-| 6 | `task` | `bogus` (unknown subverb) | `lifecycle` | unknown-subverb | B (prefix + TS hint-line tail) | error-rendering |
-| 7 | `task` | `add` (missing subject) | `lifecycle` | UsageError missing-subject | B (prefix + TS hint-line tail) | error-rendering |
-| 8 | `task` | `show` (missing id) | `lifecycle` | UsageError missing-id | B (prefix + TS hint-line tail) | error-rendering |
-| 9 | `send` | `lead --bogus` | `lifecycle` | unknown-flag | B (prefix + TS hint-line tail) | error-rendering |
-| 10 | `add-member` | `--bogus` | `lifecycle` | unknown-flag | B (prefix + TS hint-line tail) | error-rendering |
-| 11 | `dispatch` | `lead t-seed1 --no-ping` (paused-member; `lifecycle` + preState `paused.json`) | `lifecycle` | member-paused | A (prefix-only, ConfigError shape) | error-rendering |
-| 12 | `claim` | `t-seed1 --as no-such-member` | `lifecycle` | member-not-in-team | A (prefix-only, ConfigError shape) | error-rendering |
+**ROW TABLE — final (post-probe verification 2026-05-06 ~17:05 MYT).** 21 fresh
+probes against `bin/atmux` + `bin/atmux-bun` on a `lifecycle` fixture (full
+listing in `.atmux/notes-adr-032-research.md` §"Probe-rerun for ADR-032
+amendments") drove three corrections from this ADR's first draft (now
+deferred-row entries D15–D17): row 8 reclassified from family B → A
+(`task show` no id has no TS hint-tail); row 9 substituted (`send lead
+--bogus` is Pattern D semantic divergence — bash hits no-tmux-window,
+TS hits tmux-socket-not-found — substituted with `add-member lead`
+already-exists which is clean Pattern A); row 12 substituted (`claim
+--as no-such-member` is a parity-CONSISTENT non-validation bug — both
+sides accept the bogus name and write `inboxes/no-such-member.json` —
+substituted with `dispatch no-such-member t-seed1 --no-ping` which
+probes clean Pattern A with optional TS-side `dispatch:` verb-tag).
 
-Coverage by mask family:
+| # | Verb | Args (representative) | Fixture + preState | Error class | Mask family | ADR-027 class |
+|---|------|-----------------------|--------------------|-------------|-------------|---------------|
+| 1 | `claim` | `t-deadbeef --as lead` (no such task) | `lifecycle` | task-not-found ConfigError | A pure prefix | error-rendering |
+| 2 | `dispatch` | `lead t-deadbeef --no-ping` (no such task) | `lifecycle` | task-not-found ConfigError | A prefix + bash-only `dispatch:` verb-tag + ` id` word | error-rendering |
+| 3 | `tell-lead` | (no args) | `lifecycle` | UsageError missing-msg | A pure prefix (both sides keep `usage:` body) | error-rendering |
+| 4 | `dispatch` | (no args) | `lifecycle` | UsageError missing-args | C per-side (TS adds ` [--no-ping]` flag suffix; bash uses `usage:` body but TS uses tag-only) | error-rendering |
+| 5 | `handoff` | (no args) | `lifecycle` | UsageError missing-args | C per-side (TS adds ` [--no-native] [--pause-from]` flag suffix) | error-rendering |
+| 6 | `task` | `bogus` (unknown subverb) | `lifecycle` | unknown-subverb UsageError | B prefix + TS hint-line tail | error-rendering |
+| 7 | `task` | `add` (missing subject) | `lifecycle` | UsageError missing-subject | B prefix + TS hint-line tail | error-rendering |
+| 8 | `task` | `show` (missing id) | `lifecycle` | UsageError missing-id | A pure prefix (TS doesn't emit hint here per probe) | error-rendering |
+| 9 | `add-member` | `lead` (already in team.json) | `lifecycle` | already-exists ConfigError | A pure prefix | error-rendering |
+| 10 | `add-member` | `--bogus` | `lifecycle` | UsageError unknown-flag | B prefix + TS hint-line tail | error-rendering |
+| 11 | `dispatch` | `lead t-seed1 --no-ping` (paused-member) | `lifecycle` + preState `kanban.json` (seeded) + `state/paused.json` (lead paused) | member-paused ConfigError | A pure prefix (both sides emit `dispatch:` verb-tag in body) | error-rendering |
+| 12 | `dispatch` | `no-such-member t-seed1 --no-ping` | `lifecycle` + preState `kanban.json` (seeded) | member-not-in-team ConfigError | A prefix + TS-only `dispatch:` verb-tag (mirrors ADR-031 family-c at line 454) | error-rendering |
 
-- **Family A (prefix-only)** — 4 rows (#1, #2, #11, #12). Mask shape:
-  `exitCode: true` + `stderr: /💥 atmux |atmux: (?:config: )?/g`. Reuses
-  ADR-031 family-a regex with `(?:config: )?` widening for ConfigError
-  shapes (vs UsageError which omits `config:`).
-- **Family B (prefix + TS hint-line tail)** — 5 rows (#6, #7, #8, #9, #10).
-  Mask shape: `exitCode: true` + `stderr: /💥 atmux |atmux: |\n  atmux \S+(?: [^\n]*)?/g`.
-  Extends ADR-031 family-d to verbs beyond pause/rotate.
-- **Family C (per-side usage-line literal divergence)** — 3 rows (#3, #4,
-  #5). Mask shape: `exitCode: true` + a per-row stderr regex tuned to the
-  specific verb's `usage:` divergence (TS adds flags bash doesn't document,
-  drops `usage: ` prefix on some). Less mask reuse — acceptable per ADR-027
-  §4 cite-locality (every row's regex is narrow + commented).
+Coverage by mask family (post-probe):
+
+- **Family A (prefix divergence with optional narrow body absorption)** —
+  7 rows (#1, #3, #8, #9, #11 = pure prefix; #2 + #12 = prefix + bash-only
+  or TS-only word/verb-tag elision). Pattern A is the canonical
+  ADR-027 error-rendering shape; the variant rows reuse the existing
+  ADR-031 family-c precedent at `tests/parity/matrix.ts:454`
+  (`(?:pause: |resume: |rotate: )?` for verb-tag absorption).
+- **Family B (prefix + TS-only hint-line tail)** — 3 rows (#6, #7, #10).
+  Mask shape: `exitCode: true` + `stderr: /(💥 atmux |atmux: \S+: )|\n  (?:atmux|usage:) [^\n]+/g`
+  per-verb-narrowed. Extends ADR-031 row 14 family-d to verbs beyond
+  pause/rotate.
+- **Family C (per-side usage-line literal divergence — TS-only flag suffix)**
+  — 2 rows (#4, #5). Mask shape: `exitCode: true` + a per-row stderr
+  regex tuned to the specific verb's TS-side `[--<flag>]` flag-suffix
+  divergence (bash atmux::die "usage:" pre-rendered without the flag
+  decoration; TS UsageError USAGE constant carries it). Narrow per
+  ADR-027 §4 cite-locality.
+
+Total: 7 + 3 + 2 = 12 rows ✓.
 
 ### 2. Mask vocabulary verdict — no new classes
 
@@ -198,6 +218,9 @@ reason for deferral, (c) re-enable trigger.
 | D12 | `task move <id> <bad-status>` (lib/kanban.sh:112 bad-status validation) | Subverb-tree gap — covered by row #6 `task bogus` representative; full subverb error-tree depth is iter-4+ per ADR-026 §Iter-3 row-budget convention | When iter-4 takes subverb-tree depth coverage. |
 | D13 | bash-only assertions (claim.sh:15, reply.sh:16, pause.sh:29) | Internal-routing assertions on the bash side; TS has no equivalent (the routing is type-enforced via the cli-dispatcher per ADR-010). One-sided emission means total channel divergence by construction; mask would be `.*`-broad which ADR-027 §4 bans | When/if TS surfaces an equivalent assertion path (no plan to). Skip-rows entry — likely permanent. |
 | D14 | `lib/reconfigure.sh` empty body | Bash-side verb is empty (no error sites); TS side `src/verbs/reconfigure.ts` is real. Per ADR-031 §"reconfigure" already noted | When bash port lands. Already tracked by ADR-031. |
+| D15 | `send <member> --bogus` (lib/send.sh:30 unknown-flag site) | **Pattern D semantic check-order divergence** — probe-confirmed 2026-05-06 ~17:05 MYT: bash hits `:62 no-tmux-window-for-member` BEFORE arg-parse (the `--bogus` is consumed as msg body); TS hits a tmux-socket-not-found error at the lower-level tmux binding before arg-parse. Different error categories on the two sides; masking would absorb a real semantic divergence per ADR-027 §4 anti-broad-mask rule | When a fixture preset materialises an actual tmux session (iter-4+ tmux-channel infra per ADR-031 §"tmux-channel infrastructure" durable handle) so both sides reach the arg-parse layer. |
+| D16 | `claim <task-id> --as <bogus-member>` (lib/claim.sh + claim.ts non-validating `--as`) | **parity-CONSISTENT non-validation finding** — probe-confirmed 2026-05-06 ~17:05 MYT: BOTH `lib/claim.sh` and `src/verbs/claim.ts` accept any string as `--as` value without checking it against `team.json`. Both write `inboxes/<bogus>.json` and exit 0 with success message. This is parity-CONSISTENT (both agree, both miss the validation), not a divergence. Therefore not a parity-row candidate; it's a behavioural-quality bug captured here as a porter-cross-lane finding for the team-lead's pending-decisions queue. Substitution: row 12 uses `dispatch no-such-member` (which DOES validate in dispatch.sh + dispatch.ts — Pattern A clean) | When the team-lead's pending-decisions queue triages this as a non-iter-3 quality fix and lands a validation patch on both sides; a parity row could then be added testing the new error path. |
+| D17 | `task show` (no id), `task list` (with bad args), other UsageError sites with TS lacking hint-line tail | Subset of family-A reclassifications surfaced by post-probe verification 2026-05-06 — TS USAGE constants for some sub-paths don't include a `\n  ` continuation line, collapsing back to Pattern A (already covered for `task show` as row 8). Other subverb depth (move, assign, rm, list) NOT in iter-3 scope per row-budget convention | Iter-4 subverb-tree depth scope (paired with D12). |
 
 ### Out of scope (durable)
 
@@ -228,6 +251,13 @@ When this ADR's deferred table is consumed:
 - **D12** auto-triggers on iter-4 subverb-tree-depth scope ADR.
 - **D13** parks indefinitely (likely permanent skip).
 - **D14** already tracked by ADR-031.
+- **D15** auto-triggers on iter-4+ tmux-channel infrastructure (ADR-031
+  durable handle) — once both sides reach the arg-parse layer with a real
+  tmux session present, `send --bogus` becomes a clean parity row.
+- **D16** lands in pending-decisions queue for team-lead triage as a
+  non-iter-3 behavioural-quality finding; not a parity-row candidate
+  until both sides validate `--as`.
+- **D17** auto-triggers on iter-4 subverb-tree depth (paired with D12).
 
 ## Consequences
 
