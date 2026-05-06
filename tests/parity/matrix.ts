@@ -882,7 +882,7 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
   // reply recorded (<from> → driver) in <ob-path>` — `<ob-path>` embeds
   // the per-side fixture-clone artefact (`<root>.bash` / `<root>.ts`)
   // per ADR-027 §3 path-suffix shape (introduced for error-rendering;
-  // carries forward to stdout for reply success line per ADR-029 §2).
+  // writes to stderr (atmux::ok) per lib/common.sh success line per ADR-029 §2).
   // No stateAfter mask needed — fs byte-equal.
   {
     verb: "reply",
@@ -893,8 +893,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     mask: {
       // reason: per-side fixture-clone path suffix `<root>.bash` / `<root>.ts`
       // before /.atmux/ in the success line (ADR-027 error-rendering class —
-      // path-suffix shape, carries forward from stderr to stdout per ADR-029 §2)
-      stdout: /(\.bash|\.ts)(?=\/\.atmux\/)/g,
+      // path-suffix shape on stderr per atmux::ok writing to stderr)
+      stderr: /(\.bash|\.ts)(?=\/\.atmux\/)/g,
     },
   },
   {
@@ -906,7 +906,7 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     mask: {
       // reason: same as row 7 — per-side fixture-clone path suffix in the
       // success line (ADR-027 error-rendering class — path-suffix shape)
-      stdout: /(\.bash|\.ts)(?=\/\.atmux\/)/g,
+      stderr: /(\.bash|\.ts)(?=\/\.atmux\/)/g,
     },
   },
   // ADR-029 commit G: 2 tell-lead rows. INSERT-class markdown line-append.
