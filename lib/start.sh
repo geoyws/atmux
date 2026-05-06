@@ -212,7 +212,8 @@ main() {
   # Gated on TMUX_TMPDIR being set to the team's cage path — without
   # the cage isolation, this would clobber the operator's default
   # tmux socket prefix (where the daily-driver session lives). Cage
-  # tmpdirs all match `*/atmux-tmux*`. Idempotent on every `atmux start`.
+  # tmpdirs match either `*/atmux-tmux*` (shared `/tmp/atmux-tmux_<team>`
+  # form per ADR-018) or `*/.atmux/tmux*` (project-local form). Idempotent.
   #
   # Cross-socket gotcha (mirrors c5f56ef in lib/attach.sh): when `atmux
   # start` runs from inside daily-driver tmux, $TMUX is set and points to
@@ -222,7 +223,7 @@ main() {
   # cage's prefix at whatever ~/.tmux.conf set on cage server start. Force
   # the explicit cage socket via `-S` AND drop $TMUX with `env -u TMUX` so
   # tmux doesn't second-guess us via the inherited env var.
-  if [[ -n "${TMUX_TMPDIR:-}" && "$TMUX_TMPDIR" == */atmux-tmux* ]]; then
+  if [[ -n "${TMUX_TMPDIR:-}" ]] && [[ "$TMUX_TMPDIR" == */atmux-tmux* || "$TMUX_TMPDIR" == */.atmux/tmux* ]]; then
     local cage_sock="$TMUX_TMPDIR/tmux-$(id -u)/default"
     env -u TMUX tmux -S "$cage_sock" set-option -g prefix 'C-\' 2>/dev/null || true
     env -u TMUX tmux -S "$cage_sock" unbind-key C-b 2>/dev/null || true
