@@ -53,6 +53,21 @@ async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; re
   }
 }
 
+async function captureStderr<T>(fn: () => Promise<T>): Promise<{ err: string; result: T }> {
+  let err = "";
+  const orig = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((s: string | Uint8Array) => {
+    err += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const result = await fn();
+    return { err, result };
+  } finally {
+    process.stderr.write = orig;
+  }
+}
+
 // ---------- Pure: parseReplyArgs ----------
 
 describe("parseReplyArgs", () => {
@@ -185,11 +200,14 @@ describe("parseOutboxArgs", () => {
 // ---------- reply verb integration ----------
 
 describe("reply verb — integration", () => {
-  test("first reply creates outbox file with header + entry", async () => {
-    const { out } = await captureStdout(() =>
+  test("first reply creates outbox file with header + entry (ADR-029 §F3)", async () => {
+    // Per ADR-029 §F3 — bash atmux::ok writes to STDERR with `✅ atmux `
+    // prefix (lib/common.sh:21, lib/reply.sh:43); TS now mirrors.
+    // Earlier port wrote a plain stdout line.
+    const { err } = await captureStderr(() =>
       reply(["--from", "alpha", "--team-dir", teamDir, "first", "message"]),
     );
-    expect(out).toContain("reply recorded (alpha → driver)");
+    expect(err).toContain("✅ atmux reply recorded (alpha → driver)");
     const ob = await Bun.file(join(atmuxDir, "lead-outbox.md")).text();
     expect(ob).toContain("# Lead Outbox");
     expect(ob).toContain("**alpha**: first message");

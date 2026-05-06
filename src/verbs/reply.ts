@@ -125,7 +125,11 @@ export async function reply(argv: ReadonlyArray<string>): Promise<number> {
   await withLock(path, async () => {
     await appendOutboxEntry(path, from, parsed.msg);
   });
-  process.stdout.write(`reply recorded (${from} → driver) in ${path}\n`);
+  // Per ADR-029 §F3 — bash lib/reply.sh:43 confirms via atmux::ok
+  // (lib/common.sh:21: stderr write with `✅ atmux ` prefix). Earlier
+  // TS port wrote a plain stdout line; channel-asymmetric divergence.
+  // Mirror exactly: prefix + stderr.
+  process.stderr.write(`✅ atmux reply recorded (${from} → driver) in ${path}\n`);
   return 0;
 }
 

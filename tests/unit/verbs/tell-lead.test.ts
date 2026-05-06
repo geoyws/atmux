@@ -172,9 +172,12 @@ describe("buildHeadsUp", () => {
 // ---------- Integration ----------
 
 describe("tellLead — integration", () => {
-  test("happy path: appends to driver-inbox.md + pings lead", async () => {
+  test("happy path: appends to driver-inbox.md + pings lead (ADR-029 §F3)", async () => {
+    // Per ADR-029 §F3 — bash atmux::ok writes to STDERR with `✅ atmux `
+    // prefix (lib/common.sh:21); TS now mirrors. Earlier port wrote to
+    // stdout with no prefix.
     await stageTeam([{ name: "alpha", role: "team-lead" }], true);
-    const { stdout } = await captureStdoutStderr(() =>
+    const { stderr } = await captureStdoutStderr(() =>
       tellLead([
         "--socket",
         socketPath,
@@ -185,7 +188,7 @@ describe("tellLead — integration", () => {
         "migration",
       ]),
     );
-    expect(stdout).toContain("tell-lead → alpha");
+    expect(stderr).toContain("✅ atmux tell-lead → alpha");
     const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
     expect(di).toContain("# Driver Inbox");
     expect(di).toContain("review the migration");
@@ -196,10 +199,10 @@ describe("tellLead — integration", () => {
 
   test("falls back to member named 'lead' when no team-lead role", async () => {
     await stageTeam([{ name: "alpha" }, { name: "lead" }], true);
-    const { stdout } = await captureStdoutStderr(() =>
+    const { stderr } = await captureStdoutStderr(() =>
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "msg"]),
     );
-    expect(stdout).toContain("tell-lead → lead");
+    expect(stderr).toContain("✅ atmux tell-lead → lead");
   });
 
   test("no lead defined → ConfigError", async () => {
@@ -209,15 +212,18 @@ describe("tellLead — integration", () => {
     ).rejects.toThrow(ConfigError);
   });
 
-  test("ping failure: warn but still succeeds (durable inbox write is the contract)", async () => {
-    // Stage team WITHOUT a tmux session — the ping will TmuxError.
+  test("ping failure → ConfigError 'no tmux window' after durable inbox write (ADR-029 §F6 + F7)", async () => {
+    // Per ADR-029 §F6 + F7 — bash lib/tell.sh:44 calls send_to_member
+    // unguarded; lib/send.sh:61-62 dies "no tmux window for <m> (is the
+    // team running?)" / exit 1 when the window is missing. Earlier TS
+    // port caught + warned + returned 0 (divergent). Now mirrors bash:
+    // throws ConfigError with bash-byte-equal body. Inbox write before
+    // the throw is durable and remains on disk.
     await stageTeam([{ name: "alpha", role: "team-lead" }], false);
-    const { result, stderr } = await captureStdoutStderr(() =>
+    await expect(
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "ask body"]),
-    );
-    expect(result).toBe(0);
-    expect(stderr).toContain("tell-lead: ping to alpha failed");
-    // Inbox write succeeded.
+    ).rejects.toThrow(/no tmux window for alpha \(is the team running\?\)/);
+    // Inbox write happened BEFORE the throw — durable.
     const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
     expect(di).toContain("ask body");
   });

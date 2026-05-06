@@ -130,14 +130,30 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
       verify: false,
     });
   } catch (e) {
-    // Bash atmux::send_to_member doesn't fail-loud here; the ask is
-    // already durable in the inbox file. Surface as warn so the
-    // operator sees the ping failed, but don't drop the inbox write.
-    const reason = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`atmux: warn: tell-lead: ping to ${lead.name} failed: ${reason}\n`);
+    // Per ADR-029 §F6 + F7 — bash lib/tell.sh:44 calls send_to_member
+    // unguarded; lib/send.sh:61-62 dies "no tmux window for <m> (is
+    // the team running?)" / exit 1 when the window is missing. The
+    // earlier TS port caught + warned + returned 0 (divergent — TS
+    // exit 0 vs bash exit 1; TS stderr "atmux: warn: tell-lead: ping
+    // failed: <reason>" vs bash "💥 atmux no tmux window for ..."
+    // body). Mirror exactly: throw ConfigError with bash-byte-equal
+    // body; the ADR-006 prefix divergence (`💥 atmux ` vs
+    // `atmux: config: `) + exit-code divergence (1 vs 78) get masked
+    // at parity-row level. The inbox write above is durable —
+    // appendDriverInbox already landed before this throw.
+    throw new ConfigError({
+      what: `no tmux window for ${lead.name} (is the team running?)`,
+      cause: e,
+    });
   }
 
-  process.stdout.write(`tell-lead → ${lead.name} (appended to ${driverInboxPath(atmuxDir)})\n`);
+  // Bash atmux::ok runs only AFTER successful send (lib/tell.sh:46);
+  // the success line goes to stderr with `✅ atmux ` prefix per
+  // lib/common.sh:21. F3 channel-asymmetry fix mirrors here too —
+  // earlier TS port wrote to stdout without the prefix.
+  process.stderr.write(
+    `✅ atmux tell-lead → ${lead.name} (appended to ${driverInboxPath(atmuxDir)})\n`,
+  );
   return 0;
 }
 
