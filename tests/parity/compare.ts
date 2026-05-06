@@ -395,3 +395,59 @@ function canonicaliseJson(value: unknown): string {
 function decode(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(bytes);
 }
+
+/**
+ * Compare a bash-side-only `ParityRun` against a checked-in golden snapshot.
+ *
+ * Used by ADR-028 golden-file harness mode for verbs whose TS port is
+ * absent (e.g. `decisions`, `groom` — bash exists at the parent atmux's
+ * `lib/`; worktree-bun's carve-out per ADR-022/026 omits them).
+ *
+ * Comparison shape:
+ *   - Channel `stdout` only — bash side's `stdout`, post-mask, vs the
+ *     golden file content. Returns 1 `Divergence` row on mismatch.
+ *   - Caller (`index.test.ts`) handles capture mode (env-var
+ *     `ATMUX_PARITY_UPDATE_GOLDENS=1`); when set, no comparison is run
+ *     and the golden file is overwritten with the post-mask bash stdout.
+ *
+ * Auto-promotion path: when `src/verbs/<verb>.ts` lands, the matrix row
+ * drops `bashOnly: true` and the comparator switches back to the
+ * existing bash↔TS path. The golden file becomes redundant; can stay
+ * as a historical baseline or be deleted in the same commit.
+ *
+ * Per-row mask runs FIRST (matching the bash↔TS comparator's order),
+ * then global `\d{2}:\d{2} MYT` mask. Both sides of the comparison see
+ * the same post-mask string. The golden file IS post-mask too — the
+ * capture path also writes post-mask bytes so a re-capture in the same
+ * harness yields the same golden (no infinite mask drift).
+ */
+export function compareGolden(
+  bash: ParityRun,
+  golden: string,
+  mask?: ChannelMask,
+): Divergence[] {
+  const divergences: Divergence[] = [];
+  const bashStdout = maskTimestamps(applyChannelMask(bash.stdout, mask?.stdout));
+  if (bashStdout !== golden) {
+    divergences.push({
+      verb: bash.verb,
+      channel: "stdout",
+      bashSide: bashStdout,
+      tsSide: golden,
+      detail: `golden mismatch (post-mask). bash=${bashStdout.length}b vs golden=${golden.length}b`,
+    });
+  }
+  return divergences;
+}
+
+/**
+ * Apply both per-row + global timestamp masks to a stdout/stderr channel
+ * — used by callers (notably `compareGolden`'s capture path in
+ * `index.test.ts`) that need post-mask bytes to write to disk.
+ *
+ * Mirrors the channel-mask order applied inside `compare()` so capture
+ * + comparison yield byte-equal output for an unchanged verb.
+ */
+export function maskChannel(input: string, pattern?: RegExp | string): string {
+  return maskTimestamps(applyChannelMask(input, pattern));
+}

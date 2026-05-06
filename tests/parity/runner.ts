@@ -126,6 +126,16 @@ export type RunVerbOptions = {
   timeoutMs?: number;
   /** Extra env vars merged on top of the harness's sandbox env. */
   env?: Record<string, string>;
+  /**
+   * Per-call override for the bash binary (ADR-028 golden-file mode).
+   * When `side === "bash"` AND this is set, spawns `<bashBin> verb args`
+   * instead of the harness default `BIN_BASH`. Used by bash-only golden
+   * rows to point at parent atmux's `/root/work/src/atmux/bin/atmux` so
+   * verbs like `groom` and `decisions` (excluded from worktree-bun's
+   * `lib/` per ADR-022/026 carve-out) can exercise their bash impl.
+   * Ignored when `side === "ts"`.
+   */
+  bashBin?: string;
 };
 
 /**
@@ -192,8 +202,12 @@ export async function runVerb(
     // directly (it's executable + has its own shebang). TS side goes
     // through `bun run bin/atmux-bun` so we don't depend on the shim's
     // shebang being executable in CI sandboxes.
+    //
+    // ADR-028 golden-file mode: per-call `options.bashBin` overrides
+    // BIN_BASH on the bash side. TS side ignores it.
+    const bashBin = options?.bashBin ?? BIN_BASH;
     const cmdLine: string[] =
-      side === "bash" ? [BIN_BASH, verb, ...args] : ["bun", "run", BIN_TS, verb, ...args];
+      side === "bash" ? [bashBin, verb, ...args] : ["bun", "run", BIN_TS, verb, ...args];
 
     const start = performance.now();
     const proc = Bun.spawn({

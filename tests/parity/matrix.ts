@@ -88,6 +88,36 @@ export type ParityRow = {
    * pre-seeded task to UPDATE — ADR-029 row 1`).
    */
   preState?: Record<string, unknown>;
+  /**
+   * Optional golden-file harness mode (ADR-028 §Golden-file harness mode).
+   *
+   * When `true`, only the bash side runs. Output is compared against a
+   * checked-in golden snapshot at `tests/parity/golden/<row-id>.txt`
+   * where `<row-id>` is the row's `label` slugified, falling back to
+   * `<verb>-<args.join("-")>`. Use for verbs whose TS port is absent
+   * (per ADR-028: `decisions`, `groom` — bash exists at the parent
+   * atmux's `lib/`; worktree-bun's carve-out per ADR-022/026 omits them).
+   * Auto-promotes to full bash↔TS parity when this field is removed AND
+   * the TS verb dispatcher routes the verb.
+   *
+   * Capture/update flag: `ATMUX_PARITY_UPDATE_GOLDENS=1 bun test
+   * tests/parity/` writes/overwrites the golden file with the bash
+   * side's current output (no comparison; pass unconditionally).
+   */
+  bashOnly?: true;
+  /**
+   * Per-row override for the bash binary path. Defaults to `runner.ts`'s
+   * `BIN_BASH` (worktree's `bin/atmux`). Use to point at parent atmux's
+   * `/root/work/src/atmux/bin/atmux` for verbs that exist on the parent's
+   * `lib/` but were excluded from worktree-bun's carve-out per
+   * ADR-022/026 (e.g. `decisions`, `groom`, `cron`).
+   *
+   * Reviewer rule: paired with `bashOnly: true` only — overriding the
+   * bash binary on a full bash↔TS row would compare two different
+   * implementations of bash atmux against TS, which isn't a parity
+   * statement worth shipping. Iter-2+ may relax if a use case emerges.
+   */
+  bashBin?: string;
 };
 
 /**
@@ -828,5 +858,91 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     label: "inbox w1 [lifecycle: INSERT auto-init, member-role stem]",
     expect: "exit-zero-stable-stdout",
     // No mask — same as row 11; only the stem name differs (w1 vs lead).
+  },
+  // ADR-030 commit B: 4 read-only happy-path rows (status / doctor x2 / cost).
+  // ADR-030 §Decision pinned a 10-row scope (rows 1-10); commit B was originally
+  // 6 happy rows (1-6). Iter-3 mechanics-discovery reduced to 4:
+  //   - Row 4 (`inbox lead [lifecycle]` no-mask byte-equal) is duplicated by
+  //     ADR-029 commit H rows 11-12 above (same verb/args/preset/expect — the
+  //     INSERT auto-init shape covers ADR-030's read-render coverage too).
+  //     Re-adding would fail bun:test's unique-test-name rule.
+  //   - Row 5 (`cost --json [lifecycle]`) deferred to iter-4: probe surfaced
+  //     bash `"totalUsd": 0.0000` vs TS `"totalUsd": 0` JSON-render divergence
+  //     in the totalUsd field (bash awk `printf "%.6f"` accumulator preserved
+  //     by jq `--argjson` raw-input vs TS plain `number` via `JSON.stringify`).
+  //     Per ADR-027 §4 anti-semantic-mask rule a regex `0\.0+` → `0` would
+  //     absorb actual usage values, so deferral pending iter-4 JSON-canonical-
+  //     stdout mask class (already named in ADR-030 §"Re-enable handles").
+  // Re-enable handles documented in ADR-030 §"Re-enable handles". Close-commit
+  // (commit D) updates ADR-030 §"Iter-3 actual delivery" mirroring ADR-026 shape.
+  {
+    verb: "status",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "status [lifecycle: read-render mask] (ADR-030 row 1)",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: 2-pattern stdout mask (ADR-030 read-render class) — bash + TS
+      // disagree on (a) the table header column-widths line (`member role tui
+      // pane inbox` with bash `\s` padding vs TS `\s` padding — different
+      // total widths; status.sh:64-68 vs status.ts:226-230) and (b) the
+      // `📬 driver-inbox  open=N` footer line (bash unconditionally emits per
+      // status.sh:120-122; TS gates on count > 0 per status.ts:258-260). Both
+      // anchored line-wise via `^…$\n` so post-mask body alignment is
+      // unaffected. /gm flags required: /g for multi-line line-anchored
+      // alternation, /m so `^`/`$` match line boundaries.
+      stdout: /(^member\s+role\s+tui\s+pane\s+inbox\s*$\n)|(^📬 driver-inbox  open=\d+\n)/gm,
+    },
+  },
+  {
+    verb: "doctor",
+    args: ["--quiet"],
+    fixturePreset: "lifecycle",
+    label: "doctor --quiet [lifecycle: green path, exit-only contract] (ADR-030 row 2)",
+    expect: "exit-zero-stable-stdout",
+    // No mask — `--quiet` skips render on both sides; stdout/stderr empty.
+    // Probe-confirmed: bash exit 0, TS exit 0, both channels empty. The
+    // green-path agreement IS the contract per ADR-030 §"Probe-time channel
+    // inventory" — no rendered output to mask, just exit-code parity.
+  },
+  {
+    verb: "doctor",
+    args: ["--quiet"],
+    fixturePreset: "minimal",
+    label: "doctor --quiet [minimal: red path, exit-only contract] (ADR-030 row 3)",
+    expect: "exit-nonzero-stable-stderr",
+    // No mask — `--quiet` skips render in red mode too; stdout/stderr empty.
+    // Probe-confirmed: bash exit 1 (no team.json → red), TS exit 1 (same).
+    // Both sides agree on exit-1-on-red without BSD-sysexits divergence
+    // because doctor's red path uses plain exit 1 (lib/doctor.sh:200 + the
+    // TS doctor `process.exit(1)` per src/verbs/doctor.ts), NOT the
+    // ConfigError → exit 78 path used by start/send/etc. Confirms the
+    // green-vs-red exit-code agreement is the contract regardless of preset.
+  },
+  {
+    verb: "cost",
+    args: [],
+    fixturePreset: "lifecycle",
+    label: "cost [lifecycle: read-render + timezone mask] (ADR-030 row 6)",
+    expect: "exit-zero-stable-stdout",
+    mask: {
+      // reason: 2-pattern stdout mask combining (a) ADR-030 timezone-render class
+      // — header ` — since 1970-01-01 01:00:00 (epoch 0)` (bash, host-local tz
+      // via `date -d @0 +'%Y-%m-%d %H:%M:%S'`, lib/cost.sh:84) vs ` — since -
+      // (epoch 0)` (TS, ADR-012 UTC-pin emits `-` placeholder when epoch=0,
+      // src/verbs/cost.ts:411-416) — strip ` — since [^\n]+` so both header
+      // lines collapse to `💰 cost (epoch 0)` post-mask; and (b) ADR-030
+      // read-render class — per-row USD column padding divergence (bash
+      // `$0         ` from `printf '%-12d'` for raw integer usd in
+      // lib/cost.sh:88 vs TS `$0.0000    ` from `m.usd.toFixed(4)` per
+      // cost.ts:397). Both renders pad to identical 11-char column width but
+      // the textual content differs; mask `\$0(?:\.0+)?\s+(?=\d)` strips the
+      // entire `$VALUE<padding>` segment up to the next column's leading digit
+      // (the tokens count). Anchored with positive-lookahead so we don't eat
+      // the tokens column. The TOTAL line `TOTAL: $0.0000` matches byte-for-
+      // byte (both sides use `%.4f` there, lib/cost.sh:91 vs cost.ts:401) so
+      // it survives the mask intact. /g flag for multiple per-row matches.
+      stdout: / — since [^\n]+|\$0(?:\.0+)?\s+(?=\d)/g,
+    },
   },
 ];

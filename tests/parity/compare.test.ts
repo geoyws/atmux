@@ -14,7 +14,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { compare, STATE_AFTER_MASKED_SENTINEL } from "./compare.ts";
+import {
+  compare,
+  compareGolden,
+  maskChannel,
+  STATE_AFTER_MASKED_SENTINEL,
+} from "./compare.ts";
 import type { ChannelMask } from "./matrix.ts";
 import type { FsSnapshot, ParityRun } from "./runner.ts";
 
@@ -280,5 +285,60 @@ describe("compare — ADR-027 channel-mask", () => {
       // be wildly anomalous, but check the sentinel string is recognisable.
       expect(STATE_AFTER_MASKED_SENTINEL).toBe("__ADR_027_MASKED__");
     });
+  });
+});
+
+describe("compareGolden — ADR-028 golden-file harness mode", () => {
+  test("byte-equal post-mask passes", () => {
+    const bash = makeRun({ stdout: "hello world\n" });
+    const divergences = compareGolden(bash, "hello world\n");
+    expect(divergences).toEqual([]);
+  });
+
+  test("mismatch surfaces 1 stdout divergence", () => {
+    const bash = makeRun({ stdout: "actual\n" });
+    const divergences = compareGolden(bash, "expected\n");
+    expect(divergences).toHaveLength(1);
+    expect(divergences[0]?.channel).toBe("stdout");
+    expect(divergences[0]?.detail).toContain("golden mismatch");
+  });
+
+  test("per-row stdout mask runs BEFORE comparison", () => {
+    const bash = makeRun({ stdout: "prefix t-deadbeef trailer 14:30 MYT\n" });
+    // Strip the random task id; timestamp mask handled by global path.
+    const mask: ChannelMask = { stdout: /t-[0-9a-f]{8}/ };
+    const divergences = compareGolden(bash, "prefix  trailer HH:MM MYT\n", mask);
+    expect(divergences).toEqual([]);
+  });
+
+  test("global timestamp mask runs after per-row mask", () => {
+    const bash = makeRun({ stdout: "header 09:00 MYT\nbody\n" });
+    // No per-row mask; global `\d{2}:\d{2} MYT` mask should normalise.
+    const divergences = compareGolden(bash, "header HH:MM MYT\nbody\n");
+    expect(divergences).toEqual([]);
+  });
+
+  test("stderr / fs / discord channels are NOT compared (bash-only contract)", () => {
+    // Even with stderr divergence on the bash run, golden mode only looks
+    // at stdout — that's the documented bash-only contract per ADR-028.
+    const bash = makeRun({ stdout: "ok\n", stderr: "bash-internal-warning\n" });
+    const divergences = compareGolden(bash, "ok\n");
+    expect(divergences).toEqual([]);
+  });
+});
+
+describe("maskChannel — exported helper for capture path", () => {
+  test("applies per-row + timestamp masks symmetrically with compare/compareGolden", () => {
+    expect(maskChannel("hello 14:30 MYT")).toBe("hello HH:MM MYT");
+  });
+
+  test("per-row mask runs first", () => {
+    expect(maskChannel("prefix t-deadbeef trailer\n", /t-[0-9a-f]{8}/)).toBe(
+      "prefix  trailer\n",
+    );
+  });
+
+  test("absent per-row mask is a no-op for the per-row layer", () => {
+    expect(maskChannel("no-changes-needed\n")).toBe("no-changes-needed\n");
   });
 });
