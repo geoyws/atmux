@@ -1191,4 +1191,149 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
         /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
     },
   },
+  // ADR-028 commit 5: 6 bash-only baseline rows for cron-fired verbs whose
+  // TS port is absent (decisions, groom — see ADR-028 §F2-corrected).
+  //
+  // Mechanism: ParityRow.bashOnly + ParityRow.bashBin (ADR-028 commit 3,
+  // landed @76bd071). Per-row bashBin points at parent atmux's
+  // /root/work/src/atmux/bin/atmux — the bash impl exists in the parent
+  // tree but was excluded from worktree-bun's lib/ per ADR-022/026 carve-
+  // out. Capture goldens via ATMUX_PARITY_UPDATE_GOLDENS=1 against the
+  // checked-in tests/parity/golden/<row-id>.txt path.
+  //
+  // Auto-promotion path: when src/verbs/{decisions,groom}.ts land in
+  // Phase 4b, parity-cron-impl removes `bashOnly: true` from each row and
+  // the test flips to full bash↔TS parity. Goldens become redundant (or
+  // historical baseline in tests/parity/golden/archive/ if useful).
+  //
+  // Stdout-only contract: bash-only rows compare against golden via
+  // compareGolden which reads stdout only (compare.test.ts §"stderr / fs
+  // / discord channels are NOT compared (bash-only contract)"). For
+  // groom and decisions-digest's 1-entry / over-threshold scenarios,
+  // stdout is empty (output via atmux::log to stderr or via discord).
+  // The empty-golden baseline still catches: exit-code regression,
+  // unexpected stdout emission, and verb-not-found regressions.
+  //
+  // Preset choice: ADR-028 §Decision specs cron-tasks-decisions for the
+  // 3 decisions rows and cron-tasks-groom for the 3 groom rows. The
+  // groom "clean" row deviates to `lifecycle` preset because preState
+  // is write-only (cannot delete the cron-tasks-groom preset's 7 .bak
+  // files); the "orphaned" row also uses lifecycle for the same reason.
+  // Only the "over-threshold archive" row uses cron-tasks-groom natively.
+  // Documented as iter-2 deferral handle: when a `preState.delete` field
+  // or `cron-tasks-groom-clean` preset lands, all 3 groom rows
+  // standardise on cron-tasks-groom.
+  //
+  // Decisions: all 3 rows on cron-tasks-decisions preset. Empty case
+  // uses preset defaults (empty decisions.md + cursor=0); 1-entry and
+  // over-threshold inject decisions via preState writing the markdown
+  // body verbatim (preState handles strings as raw content per
+  // pre-state.ts:46). Timestamps are fixed literals 1700000001+ so the
+  // golden is stable across captures.
+  {
+    verb: "decisions",
+    args: ["digest"],
+    fixturePreset: "cron-tasks-decisions",
+    label: "decisions digest [cron-tasks-decisions: empty pending — no new since cursor] (ADR-028 row 5a)",
+    expect: "exit-zero-stable-stdout",
+    bashOnly: true,
+    bashBin: "/root/work/src/atmux/bin/atmux",
+  },
+  {
+    verb: "decisions",
+    args: ["digest"],
+    fixturePreset: "cron-tasks-decisions",
+    label: "decisions digest [cron-tasks-decisions: 1-entry — digest sent via discord, empty stdout] (ADR-028 row 5b)",
+    expect: "exit-zero-stable-stdout",
+    bashOnly: true,
+    bashBin: "/root/work/src/atmux/bin/atmux",
+    preState: {
+      // reason: 1 valid decision entry with fixed timestamp > cursor (=0).
+      // Format mirrors lib/decisions.sh:_decisions_to_json_array awk
+      // grammar (### d-<id> + bulleted **timestamp** / **question** /
+      // **default** / **reversibility**). Stdout: empty (digest body
+      // posts via atmux::discord_embed_ping → ATMUX_DISCORD_WEBHOOK=""
+      // sandbox early-returns + atmux::log on stderr); stderr unchecked
+      // by compareGolden contract.
+      ".atmux/decisions.md":
+        "# atmux decisions — append-only log\n\n### d-aaaa0001\n- **timestamp**: 1700000001\n- **question**: test question 1\n- **default**: test answer 1\n- **reversibility**: low\n",
+    },
+  },
+  {
+    verb: "decisions",
+    args: ["digest"],
+    fixturePreset: "cron-tasks-decisions",
+    label: "decisions digest [cron-tasks-decisions: 6 entries over-threshold — multi-chunk digest, empty stdout] (ADR-028 row 5c)",
+    expect: "exit-zero-stable-stdout",
+    bashOnly: true,
+    bashBin: "/root/work/src/atmux/bin/atmux",
+    preState: {
+      // reason: 6 valid decisions exercises the over-threshold branch in
+      // lib/decisions.sh:_atmux_decisions_digest (atmux::ok "decisions:
+      // digest sent ($n decisions)" path with n=6 — but stderr; stdout
+      // remains empty per the discord-routed body). Fixed sequential
+      // timestamps 1700000001..1700000006 keep the golden stable.
+      ".atmux/decisions.md":
+        "# atmux decisions — append-only log\n\n" +
+        "### d-aaaa0001\n- **timestamp**: 1700000001\n- **question**: q1\n- **default**: a1\n- **reversibility**: low\n\n" +
+        "### d-aaaa0002\n- **timestamp**: 1700000002\n- **question**: q2\n- **default**: a2\n- **reversibility**: medium\n\n" +
+        "### d-aaaa0003\n- **timestamp**: 1700000003\n- **question**: q3\n- **default**: a3\n- **reversibility**: high\n\n" +
+        "### d-aaaa0004\n- **timestamp**: 1700000004\n- **question**: q4\n- **default**: a4\n- **reversibility**: low\n\n" +
+        "### d-aaaa0005\n- **timestamp**: 1700000005\n- **question**: q5\n- **default**: a5\n- **reversibility**: medium\n\n" +
+        "### d-aaaa0006\n- **timestamp**: 1700000006\n- **question**: q6\n- **default**: a6\n- **reversibility**: low\n",
+    },
+  },
+  // Groom: ADR-028 §Decision specs all 3 on cron-tasks-groom; clean +
+  // orphaned-task fall back to lifecycle preset because preState cannot
+  // delete the cron-tasks-groom preset's 7 .bak files. Over-threshold
+  // uses cron-tasks-groom natively (the dirty preset shape IS the
+  // scenario). All 3 expected stdout: empty (groom output is entirely
+  // via atmux::log to stderr per lib/groom.sh; stderr unchecked).
+  {
+    verb: "groom",
+    args: ["--dry-run"],
+    fixturePreset: "lifecycle",
+    label: "groom --dry-run [lifecycle: clean kanban — nothing to sweep, empty stdout] (ADR-028 row 6a)",
+    expect: "exit-zero-stable-stdout",
+    bashOnly: true,
+    bashBin: "/root/work/src/atmux/bin/atmux",
+  },
+  {
+    verb: "groom",
+    args: ["--dry-run"],
+    fixturePreset: "lifecycle",
+    label: "groom --dry-run [lifecycle: orphaned-task kanban — story refs nonexistent epic, empty stdout] (ADR-028 row 6b)",
+    expect: "exit-zero-stable-stdout",
+    bashOnly: true,
+    bashBin: "/root/work/src/atmux/bin/atmux",
+    preState: {
+      // reason: orphaned-task scenario for groom's zombie-sweep / kanban
+      // hygiene path. Story `s-orphan` references epic `e-missing` that
+      // doesn't exist in epics[]; lib/groom.sh's zombie-sweep walks
+      // story.epicID → epics[*].id and reports orphans. Fixed deterministic
+      // ids + epoch literal keep the golden stable.
+      ".atmux/kanban.json": {
+        tasks: [],
+        epics: [],
+        stories: [
+          {
+            id: "s-orphan01",
+            title: "orphaned story",
+            epicID: "e-missing01",
+            status: "ready",
+            createdAt: 1700000000,
+          },
+        ],
+      },
+    },
+  },
+  {
+    verb: "groom",
+    args: ["--dry-run"],
+    fixturePreset: "cron-tasks-groom",
+    label: "groom --dry-run [cron-tasks-groom: archived inbox tail + 7 .baks + old done — flush+summarize+cull paths, empty stdout] (ADR-028 row 6c)",
+    expect: "exit-zero-stable-stdout",
+    bashOnly: true,
+    bashBin: "/root/work/src/atmux/bin/atmux",
+  },
 ];
