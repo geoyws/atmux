@@ -27,7 +27,7 @@
 
 import { join } from "node:path";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
-import { statOrNull, writeText } from "../abstractions/fs.ts";
+import { removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
 import { createTmux } from "../abstractions/tmux.ts";
@@ -414,7 +414,11 @@ export async function checkStateDir(atmuxDir: string): Promise<DoctorRow[]> {
       },
     ];
   }
-  // Probe writability via a temp marker file write.
+  // Probe writability via a temp marker file write, then clean it up so the
+  // final fs state matches bash's `[[ -w ]]` check (lib/doctor.sh:208) which
+  // leaves no artefact. Without the cleanup the parity harness sees a
+  // `.doctor-write-probe` file present in TS but absent in bash and flags an
+  // fs-channel divergence (ADR-030 commit-B probe finding).
   const probe = join(atmuxDir, ".doctor-write-probe");
   try {
     await writeText(probe, "");
@@ -428,6 +432,8 @@ export async function checkStateDir(atmuxDir: string): Promise<DoctorRow[]> {
         hint: `chown -R $USER ${atmuxDir}`,
       },
     ];
+  } finally {
+    await removeFile(probe).catch(() => {});
   }
 }
 

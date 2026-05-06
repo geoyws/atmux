@@ -84,10 +84,18 @@ export async function loadKanban(atmuxDir: string): Promise<Kanban> {
   // lock cost in the wrapping write transaction, and the no-op write
   // round-trips the file through atomicWrite which is benign.
   //
-  // Future opt: replace with a pure read once we have `readJson` callers
-  // that don't need the lock guarantee.
+  // `noLock: true` mirrors bash's lib/status.sh:85-91 + lib/kanban.sh
+  // read-side which use direct `jq` reads against kanban.json without
+  // `with_lock` — the bash convention is "writes lock, reads don't"
+  // (ADR-005 §"single writer per file" + ADR-029 F2/F9 precedent for
+  // inbox helpers). atomicWrite at the writer side guarantees readers
+  // see either pre- or post-state, never partial. Without `noLock`,
+  // every status / dashboard / list-tasks / show-task call leaves a
+  // `kanban.json.lock` sidecar that bash never creates → fs-channel
+  // parity divergence (ADR-030 commit-B probe finding).
   return await updateJson(kanbanJsonPath(atmuxDir), KanbanSchema, (k) => k, {
     initial: emptyKanban(),
+    noLock: true,
   });
 }
 
