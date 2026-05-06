@@ -223,7 +223,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       // `.bash` / `.ts` before /.atmux/ (commit 3 cloning artefact) + hint
       // phrasing divergence (bash ` — run …` em-dash vs TS ` (hint: run …)`
       // parens form, ADR-027 error-rendering class)
-      stderr: /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
     },
   },
   {
@@ -239,7 +240,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       // (ADR-027 error-rendering class) + per-side fixture-clone path suffix
       // (commit 3 cloning artefact) + hint phrasing divergence (bash em-dash
       // vs TS parens form, ADR-027 error-rendering class)
-      stderr: /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
     },
   },
   {
@@ -255,7 +257,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
       // (ADR-027 error-rendering class) + per-side fixture-clone path suffix
       // (commit 3 cloning artefact) + hint phrasing divergence (bash em-dash
       // vs TS parens form, ADR-027 error-rendering class)
-      stderr: /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
+      stderr:
+        /(💥 atmux |atmux: \S+: )|(\.bash|\.ts)(?=\/\.atmux\/)|(?: — | \(hint: )run 'atmux init' first\)?/g,
     },
   },
 ];
