@@ -90,8 +90,8 @@ function buildFakeTmux(opts: { sessionUp: boolean; panes: Record<string, string>
       listClients: async () => [],
     },
     server: {
-      kill: async () => {},
-      info: async () => "",
+      hasServer: async () => true,
+      killServer: async () => {},
     },
   };
   return tmuxNs as TmuxNamespace;
