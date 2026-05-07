@@ -128,6 +128,19 @@ export const TeamWhip = z
     accountFallback: z.array(z.string()).default([]),
     /** Threshold (% of budget) at which account-swap fires. Default 75. */
     accountSwapTriggerThreshold: z.number().int().min(0).max(100).default(75),
+    /** Health threshold for fallback selection — a fallback account is
+     *  viable when BOTH h5 AND wk pct-used are ≤ this. Default 50
+     *  (ADR-056 §D2: "half-used is safe-enough; deeper would over-constrain"). */
+    accountSwapFallbackHealthThreshold: z.number().int().min(0).max(100).default(50),
+    /** Hard cap per single-member swap (seconds). Aborts the swap (not the
+     *  member) if exceeded. Default 300 (ADR-056 §"Push-back" 5-min cap). */
+    accountSwapPerMemberDeadlineSec: z.number().int().positive().default(300),
+    /** Roles excluded from swap pass — their conversation memory doesn't
+     *  survive `atmux handoff`. Default lead/planner/reviewer
+     *  (ADR-056 §"Lead/planner exclusion"). */
+    accountSwapExcludeRoles: z
+      .array(z.string())
+      .default(["lead", "planner", "reviewer"]),
   })
   .strict();
 export type TeamWhip = z.infer<typeof TeamWhip>;

@@ -84,6 +84,12 @@ import {
   type BudgetCheckTeamMember,
   runBudgetCheck,
 } from "../core/whip-budget-check.ts";
+import {
+  type AccountSwapCheckCtx,
+  type AccountSwapCheckDeps,
+  type AccountSwapVerdict,
+  runAccountSwapCheck,
+} from "../core/account-swap.ts";
 import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import { Inbox as InboxSchema } from "../schema/inbox.ts";
@@ -174,6 +180,19 @@ export interface WhipConfig {
   budgetWarningBands: ReadonlyArray<number>;
   /** ADR-053 §D3 4.2: refresh-soon lead-time minutes. Default 30. */
   budgetRefreshLeadMins: number;
+  /** ADR-056 §D8: ordered fallback chain. Empty disables account-swap. */
+  accountFallback: ReadonlyArray<string>;
+  /** ADR-056 §D8: pct-used threshold at which swap fires. Default 75. */
+  accountSwapTriggerThreshold: number;
+  /** ADR-056 §D8: fallback-health threshold. A fallback is viable when
+   *  BOTH h5 + wk pct-used ≤ this. Default 50. */
+  accountSwapFallbackHealthThreshold: number;
+  /** ADR-056 §"Lead/planner exclusion": roles excluded from swap.
+   *  Default lead/planner/reviewer. */
+  accountSwapExcludeRoles: ReadonlyArray<string>;
+  /** Per-team default account when a member's row has no
+   *  `claudeAccount`. Pulled from `team.whip.claudeAccount`. */
+  claudeAccount: string;
 }
 
 const DEFAULT_WHIP_CONFIG: WhipConfig = {
@@ -186,6 +205,11 @@ const DEFAULT_WHIP_CONFIG: WhipConfig = {
   budgetResumeThreshold: 80,
   budgetWarningBands: [0.5, 0.25, 0.15],
   budgetRefreshLeadMins: 30,
+  accountFallback: [],
+  accountSwapTriggerThreshold: 75,
+  accountSwapFallbackHealthThreshold: 50,
+  accountSwapExcludeRoles: ["lead", "planner", "reviewer"],
+  claudeAccount: "",
 };
 
 /** Pick a sub-field out of `team.whip` (typed as `unknown` — see
@@ -244,6 +268,34 @@ export function readWhipConfig(team: Team, env: NodeJS.ProcessEnv = process.env)
     ) {
       cfg.budgetRefreshLeadMins = Math.floor(o.budgetRefreshLeadMins);
     }
+    // ADR-056 account-swap knobs.
+    if (Array.isArray(o.accountFallback)) {
+      const chain = o.accountFallback.filter((s): s is string => typeof s === "string" && s.length > 0);
+      cfg.accountFallback = chain;
+    }
+    if (
+      typeof o.accountSwapTriggerThreshold === "number" &&
+      Number.isFinite(o.accountSwapTriggerThreshold) &&
+      o.accountSwapTriggerThreshold >= 0 &&
+      o.accountSwapTriggerThreshold <= 100
+    ) {
+      cfg.accountSwapTriggerThreshold = o.accountSwapTriggerThreshold;
+    }
+    if (
+      typeof o.accountSwapFallbackHealthThreshold === "number" &&
+      Number.isFinite(o.accountSwapFallbackHealthThreshold) &&
+      o.accountSwapFallbackHealthThreshold >= 0 &&
+      o.accountSwapFallbackHealthThreshold <= 100
+    ) {
+      cfg.accountSwapFallbackHealthThreshold = o.accountSwapFallbackHealthThreshold;
+    }
+    if (Array.isArray(o.accountSwapExcludeRoles)) {
+      const roles = o.accountSwapExcludeRoles.filter(
+        (s): s is string => typeof s === "string" && s.length > 0,
+      );
+      cfg.accountSwapExcludeRoles = roles;
+    }
+    if (typeof o.claudeAccount === "string") cfg.claudeAccount = o.claudeAccount;
   }
   // Env override ladder. ATMUX_STALE_MIN + ATMUX_LEAD_MAX_MIN are bash
   // parity (`lib/whip.sh:74-75`). Negative / non-finite values fall
@@ -682,6 +734,29 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
       bullet: `🛑 session ${session} is DOWN`,
     });
   } else {
+    // ADR-056 §D2: account-swap fires BEFORE budget-pause. At
+    // `accountSwapTriggerThreshold` (default 75% used) AND a viable
+    // fallback exists → enter swap pass to preempt the 90%-pause.
+    // T11 owns the per-member workflow (spawn shadow, handoff, pause
+    // original). T10 just arms the state-file + decisions[]; an
+    // active pass means we skip budget-pause-fire for THIS tick (the
+    // swap is preempting it). All other verdicts fall through to the
+    // budget check below.
+    const swapVerdict = await runAccountSwapTickCheck(ctx, config);
+    if (swapVerdict === "active-pass" || swapVerdict === "pass-entered") {
+      stdout(`whip: account-swap ${swapVerdict} — skipping budget-pause for this tick\n`);
+      // Per-member checks still run (lead uptime, idle, banners) — the
+      // swap is per-account, not per-team. Skip only the budget gate.
+      for (const member of team.members) {
+        await checkMember(ctx, member, config, findings);
+      }
+      const leadUptimeFinding = await checkLeadUptime(ctx, config, homeOpts);
+      if (leadUptimeFinding !== null) findings.push(leadUptimeFinding);
+      await emitFindings(parsed, ctx, config, findings);
+      await writeLastHash(atmuxDir, nowSec);
+      return 0;
+    }
+
     // ADR-053 §D2: per-tick budget orchestration runs BEFORE per-member
     // checks. Budget-pause supersedes ADR-052 Mode B + auto-stop at the
     // tick level — early-return on `paused-just-now` / `paused-still`
@@ -707,6 +782,50 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
   await emitFindings(parsed, ctx, config, findings);
   await writeLastHash(atmuxDir, nowSec);
   return 0;
+}
+
+/** Adapter: composes an `AccountSwapCheckCtx` from the verb's TickCtx +
+ *  the parsed WhipConfig + delegates to
+ *  `core/account-swap.ts::runAccountSwapCheck`. Mirrors the
+ *  `runBudgetTickCheck` shape — the verb owns the config-shape mapping
+ *  so the core module stays agnostic. */
+async function runAccountSwapTickCheck(
+  ctx: TickCtx,
+  config: WhipConfig,
+): Promise<AccountSwapVerdict> {
+  // Reuse the same `probeBudget` injection as the budget-check. When
+  // the caller passes a test fake, both checks share it; otherwise both
+  // hit the on-disk 240s probe cache so the double-call cost is one
+  // round-trip per account per tick.
+  const probeBudget =
+    ctx.budgetProbe ??
+    (async (account: string) => {
+      const { probeBudget: defaultProbe } = await import("../abstractions/budget-probe.ts");
+      return defaultProbe(account);
+    });
+  const swapCtx: AccountSwapCheckCtx = {
+    atmuxDir: ctx.atmuxDir,
+    nowSec: ctx.nowSec,
+    members: ctx.team.members.map((m) => {
+      const out: { name: string; role?: string; claudeAccount?: string } = { name: m.name };
+      if (typeof m.role === "string") out.role = m.role;
+      const acc = (m as { claudeAccount?: unknown }).claudeAccount;
+      if (typeof acc === "string" && acc.length > 0) out.claudeAccount = acc;
+      return out;
+    }),
+    config: {
+      accountFallback: config.accountFallback,
+      accountSwapTriggerThreshold: config.accountSwapTriggerThreshold,
+      accountSwapFallbackHealthThreshold: config.accountSwapFallbackHealthThreshold,
+      accountSwapExcludeRoles: config.accountSwapExcludeRoles,
+      defaultAccount: config.claudeAccount,
+    },
+  };
+  const deps: AccountSwapCheckDeps = {
+    probeBudget,
+    log: (msg) => ctx.stderr(`${msg}\n`),
+  };
+  return runAccountSwapCheck(swapCtx, deps);
 }
 
 /** Adapter: composes a `BudgetCheckCtx` from the verb's TickCtx + the
