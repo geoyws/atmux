@@ -38,9 +38,9 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { appendText, atomicWrite, readTextOrNull, statOrNull } from "./fs.ts";
+import { appendHistoryEntry } from "../core/budget-history.ts";
+import { atomicWrite, readTextOrNull, statOrNull } from "./fs.ts";
 import { request } from "./http.ts";
-import { withLock } from "./lock.ts";
 import { now } from "./time.ts";
 
 // ---------- Public types ----------
@@ -107,26 +107,12 @@ interface CacheJson {
   probedAt: number;
 }
 
-/** History log line shape per ADR-053 §D5. Append-only JSONL. */
-interface HistoryLine {
-  ts: number;
-  account: string;
-  h5_util: number;
-  wk_util: number;
-  h5_reset: number;
-  wk_reset: number;
-  status: BudgetProbeStatus;
-  source: "probe" | "cache-hit";
-  tokenRefreshed: boolean;
-}
-
 // ---------- Constants ----------
 
 const DEFAULT_TTL_SEC = 240;
 const REFRESH_MARGIN_SEC = 60;
 const DEFAULT_OAUTH_URL = "https://api.anthropic.com/v1/oauth/token";
 const DEFAULT_PROBE_URL = "https://api.anthropic.com/v1/messages";
-const HISTORY_LOG_REL = "logs/budget-history.jsonl";
 
 // ---------- Public API ----------
 
@@ -469,9 +455,7 @@ async function appendHistory(
   wkUtil: number,
   tokenRefreshed: boolean,
 ): Promise<void> {
-  const path = join(atmuxDir, HISTORY_LOG_REL);
-  const lockPath = `${path}.lock`;
-  const line: HistoryLine = {
+  await appendHistoryEntry(atmuxDir, {
     ts: result.probedAt,
     account: result.account,
     h5_util: h5Util,
@@ -481,14 +465,7 @@ async function appendHistory(
     status: result.status,
     source: result.source,
     tokenRefreshed,
-  };
-  try {
-    await withLock(lockPath, async () => {
-      await appendText(path, `${JSON.stringify(line)}\n`);
-    });
-  } catch {
-    // Best-effort: history-log failure shouldn't mask the probe outcome.
-  }
+  });
 }
 
 function parseFloatHeader(headers: Headers, name: string): number | null {
