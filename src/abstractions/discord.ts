@@ -61,10 +61,31 @@ export type DiscordTemplate =
   // fails. Renderer below (`renderWhipConfigDrift`); fired by
   // src/verbs/whip.ts after composing a DriftReport. Dedup via
   // <atmuxDir>/state/whip-config-drift-state.json with 24h re-fire window.
-  | "whip-config-drift";
+  | "whip-config-drift"
+  // ADR-053 §D3: budget observability lifecycle templates. R1-T5 wires
+  // emission from src/verbs/whip.ts after the per-account probe. Each
+  // has a renderer below; dedup state lives in core modules
+  // (budget-warning-state / budget-refresh-soon-state) per band/window.
+  | "whip-budget-pause"
+  | "whip-budget-resume"
+  | "whip-budget-warning"
+  | "whip-budget-refresh-soon";
 
 /** Header category emojis per CLAUDE.md global conventions. */
-export type CategoryEmoji = "🚨" | "🛑" | "⏰" | "📋" | "📊" | "💓" | "🚀" | "📍" | "🛠️" | "🌱";
+export type CategoryEmoji =
+  | "🚨"
+  | "🛑"
+  | "⏰"
+  | "📋"
+  | "📊"
+  | "💓"
+  | "🚀"
+  | "📍"
+  | "🛠️"
+  | "🌱"
+  // ADR-053 §D3 budget observability headers.
+  | "⚠️"
+  | "🌅";
 
 export interface DiscordSection {
   /** Bold-rendered section label, e.g. "🏗️ Shipped". */
@@ -118,6 +139,16 @@ const ALLOWED_BULLET_PREFIX = new Set<string>([
   "🔜",
   "⏱️",
   "🛑",
+  // ADR-053 §D3: budget observability bullet emojis.
+  // 🪫 (budget-pause team-paused row), 👥 (affected-members count),
+  // 🔁 (next-band hint + auto-resume note), ⚠️ (warning prefix when used
+  // in body), ▶️ (resume-restart note), 🌅 (refresh-soon window header).
+  "🪫",
+  "👥",
+  "🔁",
+  "⚠️",
+  "▶️",
+  "🌅",
 ]);
 
 const GRAPHEME_SEG = new Intl.Segmenter("en", { granularity: "grapheme" });
@@ -682,6 +713,167 @@ function formatCodeCounts(counts: Map<string, number>): string {
   const entries = [...counts.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
   for (const [code, n] of entries) parts.push(`${n} ${code}`);
   return parts.join(", ");
+}
+
+// ---------- ADR-053 §D3 budget observability renderers ----------
+
+/** At-risk member row used by [whip-budget-pause]. Mirrors
+ *  `core/budget-pause.ts::AtRiskMember` shape (h5/wk are pct used,
+ *  0–100 integer). */
+export interface BudgetPauseAtRiskRow {
+  member: string;
+  /** 5h utilization, 0–100 integer pct used. */
+  h5: number;
+  /** 7d utilization, 0–100 integer pct used. */
+  wk: number;
+}
+
+export interface BudgetPauseDiscordOpts {
+  team: string;
+  /** Team members tripped over the pause threshold. */
+  atRisk: ReadonlyArray<BudgetPauseAtRiskRow>;
+  /** Resume threshold (% remaining) for the resume-gate hint bullet. */
+  resumeThresholdPct: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-budget-pause]` Discord send opts per ADR-053 §D3
+ * `whip-budget-pause` template. Header is 🛑; body lists each at-risk
+ * member with their 5h/wk utilization, then the no-dispatch + resume-
+ * gate hint bullets.
+ */
+export function renderWhipBudgetPause(opts: BudgetPauseDiscordOpts): DiscordSendOpts {
+  const memberBullets = opts.atRisk.map(
+    (r) => `🪫 ${r.member} — 5h ${r.h5}% / wk ${r.wk}%`,
+  );
+  const bullets: string[] = [
+    `🪫 team paused — ${opts.atRisk.length} at-risk member(s)`,
+    ...memberBullets,
+    `🛑 no new dispatches until refresh`,
+    `🔁 resume gate: all members > ${opts.resumeThresholdPct}% remaining on 5h AND wk`,
+  ];
+  const out: DiscordSendOpts = {
+    template: "whip-budget-pause",
+    team: opts.team,
+    category: "🛑",
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface BudgetResumeDiscordOpts {
+  team: string;
+  /** Resume threshold (% remaining) the team cleared. */
+  resumeThresholdPct: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-budget-resume]` Discord send opts per ADR-053 §D3.
+ * Header 🚀, brief 2-bullet body announcing the team is back online.
+ */
+export function renderWhipBudgetResume(opts: BudgetResumeDiscordOpts): DiscordSendOpts {
+  const out: DiscordSendOpts = {
+    template: "whip-budget-resume",
+    team: opts.team,
+    category: "🚀",
+    bullets: [
+      `🟢 team resumed — all members > ${opts.resumeThresholdPct}% remaining on 5h AND wk`,
+      `▶️ dispatches re-enabled`,
+    ],
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface BudgetWarningDiscordOpts {
+  team: string;
+  /** Account whose remaining budget tripped the band. */
+  account: string;
+  /** Window the band fired on. */
+  window: "5h" | "wk";
+  /** Remaining percentage at firing time, 0–100 integer. */
+  remainingPct: number;
+  /** Band that just crossed (e.g. 0.5 → "50%"; ADR-053 §D3 default
+   *  bands are 0.5/0.25/0.15). */
+  band: number;
+  /** Pre-formatted "Hh Mm" string (compact human-readable per
+   *  CLAUDE.md duration-formatting rule). */
+  resetIn: string;
+  /** Number of team members on this account. */
+  affectedMembers: number;
+  /** Optional "next band: 25%"-shaped hint when one exists below. */
+  nextBandPct?: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-budget-warning]` Discord send opts per ADR-053 §D3
+ * 4.1 (band-crossing). Header ⚠️, account-scoped detail bullets.
+ *
+ * Caller composes one per (account, window, band) crossing — dedup
+ * via `core/budget-warning-state.ts` to ensure each band fires once
+ * per window-reset cycle.
+ */
+export function renderWhipBudgetWarning(opts: BudgetWarningDiscordOpts): DiscordSendOpts {
+  const bandPct = Math.round(opts.band * 100);
+  const bullets: string[] = [
+    `💰 account: \`${opts.account}\` — remaining ${opts.window}: ${opts.remainingPct}% (band: ${bandPct}%)`,
+    `⏱️ resets in: ${opts.resetIn}`,
+    `👥 affected members: ${opts.affectedMembers}`,
+  ];
+  if (opts.nextBandPct !== undefined) {
+    bullets.push(`🔁 next band: ${opts.nextBandPct}%`);
+  }
+  const out: DiscordSendOpts = {
+    template: "whip-budget-warning",
+    team: opts.team,
+    category: "⚠️",
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface BudgetRefreshSoonDiscordOpts {
+  team: string;
+  account: string;
+  window: "5h" | "wk";
+  /** Pre-formatted "Nmin" / "HhMm" compact-duration string. */
+  resetsIn: string;
+  /** Remaining percentage at firing time, 0–100 integer. */
+  remainingPct: number;
+  /** Whether the team is currently in budget-pause (drives the
+   *  `🔁 will auto-resume on refresh` hint). */
+  pausedNow: boolean;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-budget-refresh-soon]` Discord send opts per
+ * ADR-053 §D3 4.2. Header 🌅, fires once per (account, window,
+ * resetEpoch) — dedup via `core/budget-refresh-soon-state.ts`.
+ */
+export function renderWhipBudgetRefreshSoon(
+  opts: BudgetRefreshSoonDiscordOpts,
+): DiscordSendOpts {
+  const bullets: string[] = [
+    `⏱️ window resets in: ${opts.resetsIn} (${opts.window})`,
+    `💰 account: \`${opts.account}\` — remaining: ${opts.remainingPct}%`,
+  ];
+  if (opts.pausedNow) {
+    bullets.push(`🔁 will auto-resume on refresh`);
+  }
+  const out: DiscordSendOpts = {
+    template: "whip-budget-refresh-soon",
+    team: opts.team,
+    category: "🌅",
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
 }
 
 // ---------- Test hooks ----------

@@ -20,6 +20,10 @@ import {
   renderEternalImprovementDone,
   renderEternalImprovementProgress,
   renderEternalImprovementStart,
+  renderWhipBudgetPause,
+  renderWhipBudgetRefreshSoon,
+  renderWhipBudgetResume,
+  renderWhipBudgetWarning,
   renderWhipConfigDrift,
   resolveWebhookUrl,
   send,
@@ -1011,3 +1015,133 @@ describe("renderWhipConfigDrift", () => {
     expect(out.whenMs).toBe(1_700_000_000_000);
   });
 });
+
+// ---------- ADR-053 §D3 budget observability renderers ----------
+
+describe("renderWhipBudgetPause", () => {
+  test("builds template with at-risk roster + resume-gate hint", () => {
+    const out = renderWhipBudgetPause({
+      team: "atmux",
+      atRisk: [
+        { member: "alpha", h5: 95, wk: 80 },
+        { member: "beta", h5: 88, wk: 92 },
+      ],
+      resumeThresholdPct: 20,
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("whip-budget-pause");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🛑");
+    expect(out.bullets).toEqual([
+      "🪫 team paused — 2 at-risk member(s)",
+      "🪫 alpha — 5h 95% / wk 80%",
+      "🪫 beta — 5h 88% / wk 92%",
+      "🛑 no new dispatches until refresh",
+      "🔁 resume gate: all members > 20% remaining on 5h AND wk",
+    ]);
+    expect(out.whenMs).toBe(FIXED_TS);
+  });
+
+  test("end-to-end through send recorder fits one chunk", async () => {
+    const recorder = join(tmpRoot, "wb-pause.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(renderWhipBudgetPause({
+      team: "atmux",
+      atRisk: [{ member: "alpha", h5: 95, wk: 80 }],
+      resumeThresholdPct: 20,
+      whenMs: FIXED_TS,
+    }));
+    const calls = await readJsonl<{ payload: { content: string } }>(recorder);
+    expect(calls.length).toBe(1);
+    const c = calls[0]?.payload.content ?? "";
+    expect(c.startsWith("🛑 **[whip-budget-pause]** · `atmux` · 11:44 MYT")).toBe(true);
+  });
+});
+
+describe("renderWhipBudgetResume", () => {
+  test("builds the brief 2-bullet body with category 🚀", () => {
+    const out = renderWhipBudgetResume({
+      team: "atmux", resumeThresholdPct: 20, whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("whip-budget-resume");
+    expect(out.category).toBe("🚀");
+    expect(out.bullets).toEqual([
+      "🟢 team resumed — all members > 20% remaining on 5h AND wk",
+      "▶️ dispatches re-enabled",
+    ]);
+  });
+});
+
+describe("renderWhipBudgetWarning", () => {
+  test("builds 4-bullet body with band + reset + affected + nextBand", () => {
+    const out = renderWhipBudgetWarning({
+      team: "atmux",
+      account: "icloud",
+      window: "5h",
+      remainingPct: 22,
+      band: 0.25,
+      resetIn: "4h53m",
+      affectedMembers: 3,
+      nextBandPct: 15,
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("whip-budget-warning");
+    expect(out.category).toBe("⚠️");
+    expect(out.bullets).toEqual([
+      "💰 account: `icloud` — remaining 5h: 22% (band: 25%)",
+      "⏱️ resets in: 4h53m",
+      "👥 affected members: 3",
+      "🔁 next band: 15%",
+    ]);
+  });
+
+  test("nextBandPct omitted → no next-band hint bullet", () => {
+    const out = renderWhipBudgetWarning({
+      team: "atmux",
+      account: "icloud",
+      window: "wk",
+      remainingPct: 8,
+      band: 0.15,
+      resetIn: "2d",
+      affectedMembers: 1,
+    });
+    expect(out.bullets?.length).toBe(3);
+    expect(out.bullets?.[0]).toContain("(band: 15%)");
+  });
+
+  test("wk window renders verbatim in body", () => {
+    const out = renderWhipBudgetWarning({
+      team: "atmux", account: "icloud", window: "wk",
+      remainingPct: 12, band: 0.15, resetIn: "3d4h",
+      affectedMembers: 2,
+    });
+    expect(out.bullets?.[0]).toContain("remaining wk: 12%");
+  });
+});
+
+describe("renderWhipBudgetRefreshSoon", () => {
+  test("builds 3-bullet body with paused-now hint when active", () => {
+    const out = renderWhipBudgetRefreshSoon({
+      team: "atmux", account: "icloud", window: "5h",
+      resetsIn: "28min", remainingPct: 8, pausedNow: true,
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("whip-budget-refresh-soon");
+    expect(out.category).toBe("🌅");
+    expect(out.bullets).toEqual([
+      "⏱️ window resets in: 28min (5h)",
+      "💰 account: `icloud` — remaining: 8%",
+      "🔁 will auto-resume on refresh",
+    ]);
+  });
+
+  test("pausedNow=false omits the auto-resume hint bullet", () => {
+    const out = renderWhipBudgetRefreshSoon({
+      team: "atmux", account: "icloud", window: "wk",
+      resetsIn: "1h", remainingPct: 18, pausedNow: false,
+    });
+    expect(out.bullets?.length).toBe(2);
+    expect(out.bullets?.find((b) => b.includes("auto-resume"))).toBeUndefined();
+  });
+});
+
