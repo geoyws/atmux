@@ -64,7 +64,7 @@ async function defaultListWindows(
   // here). Failure modes (tmux missing, session absent, list error)
   // all map to null.
   const { spawn } = await import("../../abstractions/spawn.ts");
-  let r;
+  let r: Awaited<ReturnType<typeof spawn>>;
   try {
     r = await spawn({
       cmd: "tmux",

@@ -102,7 +102,19 @@ import type { CursorRecipe } from "../core/cursor-recipes/types.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import { Inbox as InboxSchema } from "../schema/inbox.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
-import { renderWhipConfigDrift } from "../abstractions/discord.ts";
+import {
+  renderWhipConfigDrift,
+  renderWhipDefunctCwd,
+  renderWhipPermModeDrift,
+} from "../abstractions/discord.ts";
+import { classifyText } from "../core/pane-state.ts";
+import {
+  loadPermModeDriftState,
+  parsePermissionMode,
+  recordDrift,
+  savePermModeDriftState,
+  shouldFireDrift,
+} from "../core/perm-mode-drift-state.ts";
 
 const USAGE = "atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]";
 
@@ -605,6 +617,15 @@ export interface Finding {
   category: "blocker" | "overdue" | "informational";
   /** Bullet text — must satisfy ADR-008 ≤80 graphemes + emoji prefix. */
   bullet: string;
+  /** ADR-057 §D4a: optional perm-mode-drift payload. When present, the
+   *  tick aggregates these per-member findings into a single
+   *  [whip-perm-mode-drift] Discord ping (24h per-member dedup). */
+  permModeDrift?: { member: string; mode: string };
+  /** ADR-057 §D4c: optional defunct-cwd payload. When present, the
+   *  tick aggregates these per-member findings into a single
+   *  [whip-defunct-cwd] Discord ping (no dedup — fires every tick
+   *  until the operator restores the path). */
+  defunctCwd?: { member: string; cwd: string };
 }
 
 // ---------- Public entrypoint ----------
@@ -1187,6 +1208,65 @@ async function checkMember(
       });
     }
   }
+
+  // ---------- ADR-057 §D4a: permission-mode drift ----------
+  // ` ⏵⏵ <mode> on` lives in the bottom status row. Capture covers
+  // it via the same `state` text we already classified above. We
+  // collect the (member, mode) pair and let the caller dedup + emit
+  // one drift Discord ping per tick (see runTick after the per-member
+  // loop). Per-member 24h dedup at the emit site.
+  const permMode = parsePermissionMode(state);
+  if (permMode !== null && permMode !== "auto") {
+    findings.push({
+      category: "informational",
+      bullet: bullet80(`📋 ${member.name}: pane in '${permMode}' mode (expected 'auto')`),
+      permModeDrift: { member: member.name, mode: permMode },
+    });
+  }
+
+  // ---------- ADR-057 §D4c: defunct cwd ----------
+  // pane_current_path is what the pane's shell session was launched
+  // with. If the worktree was rm'd out from under the member, the
+  // path is gone but tmux happily keeps the pane alive. Operator
+  // needs to re-spawn or restore the worktree. P1 — fires every tick
+  // until resolved.
+  let panePath = "";
+  try {
+    panePath = await tmux.pane.displayMessage({
+      target: windowTarget,
+      format: "#{pane_current_path}",
+    });
+  } catch {
+    // tmux probe failed for this attribute — treat as unknown, skip
+    // (we already logged a generic pane-probe-failed blocker above
+    // when displayMessage of pane_current_command threw; a second
+    // failure here is the same incident).
+    panePath = "";
+  }
+  if (panePath !== "" && !(await exists(panePath))) {
+    findings.push({
+      category: "blocker",
+      bullet: bullet80(`🛑 ${member.name}: cwd ${panePath} does not exist`),
+      defunctCwd: { member: member.name, cwd: panePath },
+    });
+  }
+
+  // ---------- ADR-057 §D4d: per-member rate-limit visibility ----------
+  // The `snap.rateLimit` branch above already fires a finding when ANY
+  // member shows a rate-limit banner — including silent (no-in-progress
+  // task) members. The visibility property is satisfied by the existing
+  // unconditional check. Re-classify via R57-T1's discrete classifier
+  // so a future state-driven dedup can key on it; today the side-effect
+  // is the finding above.
+  const discreteState = classifyText(state, () => nowSec * 1000);
+  if (discreteState.state === "RATE-LIMIT" && snap.rateLimit === "none") {
+    // Belt-and-braces: discrete classifier caught a banner the legacy
+    // flag-classifier missed (different regex catalog). Surface it.
+    findings.push({
+      category: "blocker",
+      bullet: bullet80(`🔴 ${member.name}: RATE-LIMIT pane state (R57-T1 classifier)`),
+    });
+  }
 }
 
 function expectedTuiCmd(tui: string): string | null {
@@ -1329,6 +1409,39 @@ async function emitFindings(
     whenMs: nowMs,
     ...(webhookOverride !== undefined ? { webhookOverride } : {}),
   });
+
+  // ADR-057 §D4a: aggregate perm-mode-drift findings into one ping per
+  // tick, applying per-member 24h dedup. State file:
+  // <atmuxDir>/state/perm-mode-drift-state.json.
+  const driftFindings = findings
+    .map((f) => f.permModeDrift)
+    .filter((p): p is { member: string; mode: string } => p !== undefined);
+  if (driftFindings.length > 0) {
+    const state = await loadPermModeDriftState(atmuxDir);
+    const fireable = driftFindings.filter((p) => shouldFireDrift(state, p.member, nowSec));
+    if (fireable.length > 0) {
+      await tryDiscord(send, stderr, {
+        ...renderWhipPermModeDrift({ team: team.name, drifted: fireable, whenMs: nowMs }),
+        ...(webhookOverride !== undefined ? { webhookOverride } : {}),
+      });
+      let next = state;
+      for (const p of fireable) next = recordDrift(next, p.member, nowSec);
+      await savePermModeDriftState(atmuxDir, next);
+    }
+  }
+
+  // ADR-057 §D4c: aggregate defunct-cwd findings into one ping per
+  // tick. NO dedup — defunct cwd is a P1 demand for operator action;
+  // every tick re-fires until the operator restores or re-spawns.
+  const defunctFindings = findings
+    .map((f) => f.defunctCwd)
+    .filter((p): p is { member: string; cwd: string } => p !== undefined);
+  if (defunctFindings.length > 0) {
+    await tryDiscord(send, stderr, {
+      ...renderWhipDefunctCwd({ team: team.name, defunct: defunctFindings, whenMs: nowMs }),
+      ...(webhookOverride !== undefined ? { webhookOverride } : {}),
+    });
+  }
 }
 
 async function tryDiscord(

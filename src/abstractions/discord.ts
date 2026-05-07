@@ -88,7 +88,14 @@ export type DiscordTemplate =
   // `renderWhipSelfHealResult`); dedup state at <atmuxDir>/state/
   // cursor-self-heal-state.json (24h per recipe).
   | "whip-self-heal-attempt"
-  | "whip-self-heal-result";
+  | "whip-self-heal-result"
+  // ADR-057 §D4 R57-T4: per-member health probes — drift findings.
+  // Renderers below (`renderWhipPermModeDrift` + `renderWhipDefunctCwd`).
+  // Dedup state for perm-mode at <atmuxDir>/state/perm-mode-drift-state.
+  // json (24h per-member); defunct-cwd fires every tick (no dedup — a
+  // defunct cwd is a P1 demand for operator action).
+  | "whip-perm-mode-drift"
+  | "whip-defunct-cwd";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1231,6 +1238,95 @@ export function renderWhipSelfHealResult(
     template: "whip-self-heal-result",
     team: opts.team,
     category: "🔧",
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-057 §D4 R57-T4 — per-member health-probe renderers ----------
+
+export interface WhipPermModeDriftMember {
+  member: string;
+  /** Observed mode token (e.g. `"dont-ask"`, `"accept-edits"`). The
+   *  parser in `core/perm-mode-drift-state.parsePermissionMode` maps
+   *  Claude Code's bottom-row indicator onto this string. */
+  mode: string;
+}
+
+export interface WhipPermModeDriftOpts {
+  team: string;
+  /** Members observed in a non-`auto` permission mode this tick. */
+  drifted: ReadonlyArray<WhipPermModeDriftMember>;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-perm-mode-drift]` Discord send opts per ADR-057 §D4a.
+ * Fired when ≥1 member's pane shows a `⏵⏵ <mode> on` indicator with
+ * `mode !== "auto"`. Per-member dedup'd 24h via
+ * `<atmuxDir>/state/perm-mode-drift-state.json`.
+ *
+ * Bullets:
+ *   - `📍 N member(s) drifted off auto mode`
+ *   - `🟡 <member>: pane in '<mode>' mode (expected 'auto')` per drifted member
+ *   - `🛠️ fix: BTab cycle to auto on each drifted pane`
+ */
+export function renderWhipPermModeDrift(opts: WhipPermModeDriftOpts): DiscordSendOpts {
+  const bullets: string[] = [
+    `📍 ${opts.drifted.length} member(s) drifted off auto mode`,
+  ];
+  for (const d of opts.drifted) {
+    bullets.push(`🟡 ${d.member}: pane in '${d.mode}' mode (expected 'auto')`);
+  }
+  bullets.push("🛠️ fix: BTab cycle to auto on each drifted pane");
+  const out: DiscordSendOpts = {
+    template: "whip-perm-mode-drift",
+    team: opts.team,
+    category: "📋",
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface WhipDefunctCwdMember {
+  member: string;
+  /** The cwd path that no longer exists on disk. */
+  cwd: string;
+}
+
+export interface WhipDefunctCwdOpts {
+  team: string;
+  /** Members whose pane_current_path doesn't exist on disk. */
+  defunct: ReadonlyArray<WhipDefunctCwdMember>;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-defunct-cwd]` Discord send opts per ADR-057 §D4c.
+ * Fired when ≥1 member's pane has a `pane_current_path` that doesn't
+ * exist on disk (worktree deleted, mount unmounted, etc). P1 — fires
+ * every tick (no dedup) until operator resolves; defunct cwd silently
+ * destroys all subsequent member work.
+ *
+ * Bullets:
+ *   - `🛑 N member(s) on defunct cwd — pane_current_path missing on disk`
+ *   - `📍 <member>: cwd <path> does not exist` per defunct member
+ *   - `🛠️ fix: re-spawn member or restore worktree path`
+ */
+export function renderWhipDefunctCwd(opts: WhipDefunctCwdOpts): DiscordSendOpts {
+  const bullets: string[] = [
+    `🛑 ${opts.defunct.length} member(s) on defunct cwd — pane_current_path missing on disk`,
+  ];
+  for (const d of opts.defunct) {
+    bullets.push(`📍 ${d.member}: cwd ${d.cwd} does not exist`);
+  }
+  bullets.push("🛠️ fix: re-spawn member or restore worktree path");
+  const out: DiscordSendOpts = {
+    template: "whip-defunct-cwd",
+    team: opts.team,
+    category: "🛑",
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;

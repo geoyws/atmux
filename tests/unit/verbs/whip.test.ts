@@ -416,6 +416,10 @@ interface FakePane {
   paneCmd: string;
   state: string;
   pid: number;
+  /** ADR-057 §D4c: optional cwd for the defunct-cwd probe. When unset
+   *  or empty, the probe skips (matches the "cwd unknown → skip" path
+   *  in src/verbs/whip.ts checkMember). */
+  cwd?: string;
 }
 
 interface FakeTmuxSetup {
@@ -457,7 +461,14 @@ function buildFakeTmux(setup: FakeTmuxSetup): TmuxNamespace {
         if (setup.failPaneProbe === true) throw new Error("display boom");
         const target = String(opts.target);
         const wn = target.split(":")[1] ?? "";
-        return setup.panes[wn]?.paneCmd ?? "";
+        const p = setup.panes[wn];
+        // ADR-057 §D4c: per-format dispatch — pane_current_path lookups
+        // return the per-pane `cwd` field (or "" when unset; "" skips
+        // the defunct-cwd check). Anything else returns paneCmd.
+        if (opts.format.includes("pane_current_path")) {
+          return p?.cwd ?? "";
+        }
+        return p?.paneCmd ?? "";
       },
       listPanes: async (target: unknown) => {
         if (setup.failPaneProbe === true) throw new Error("list-panes boom");
@@ -1809,5 +1820,147 @@ describe("whip() — public verb", () => {
     expect(bullets.some((b) => b.includes("driver-inbox cursor") && b.includes("behind tip"))).toBe(
       true,
     );
+  });
+
+  // ---------- ADR-057 §D4 R57-T4 — per-member health probes ----------
+
+  test("D4a perm-mode-drift: dont-ask member fires drift Discord ping", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+    });
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({
+        sessionUp: true,
+        panes: {
+          "🐝alice": { paneCmd: "claude", state: "⏵⏵ don't ask on", pid: 1 },
+        },
+      }),
+      discordSend: async (o) => {
+        sent.push(o);
+      },
+    });
+    const drift = sent.find((s) => s.template === "whip-perm-mode-drift");
+    expect(drift).toBeDefined();
+    const bullets = (drift?.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.includes("alice") && b.includes("dont-ask"))).toBe(true);
+  });
+
+  test("D4a perm-mode-drift: auto mode → no drift ping", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+    });
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({
+        sessionUp: true,
+        panes: {
+          "🐝alice": { paneCmd: "claude", state: "⏵⏵ auto mode on", pid: 1 },
+        },
+      }),
+      discordSend: async (o) => {
+        sent.push(o);
+      },
+    });
+    expect(sent.find((s) => s.template === "whip-perm-mode-drift")).toBeUndefined();
+  });
+
+  test("D4a perm-mode-drift: 24h dedup — second tick same day → no second ping", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+    });
+    const tickOpts = (sent: DiscordSendOpts[]) => ({
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({
+        sessionUp: true,
+        panes: {
+          "🐝alice": { paneCmd: "claude", state: "⏵⏵ accept edits on", pid: 1 },
+        },
+      }),
+      discordSend: async (o: DiscordSendOpts) => {
+        sent.push(o);
+      },
+    });
+    const sent1: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], tickOpts(sent1));
+    const sent2: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], tickOpts(sent2));
+    expect(sent1.filter((s) => s.template === "whip-perm-mode-drift")).toHaveLength(1);
+    expect(sent2.filter((s) => s.template === "whip-perm-mode-drift")).toHaveLength(0);
+  });
+
+  test("D4c defunct-cwd: pane_current_path missing → fires Discord ping", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+    });
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({
+        sessionUp: true,
+        panes: {
+          "🐝alice": {
+            paneCmd: "claude",
+            state: "",
+            pid: 1,
+            cwd: "/tmp/this-path-does-not-exist-atmux-d4c-test",
+          },
+        },
+      }),
+      discordSend: async (o) => {
+        sent.push(o);
+      },
+    });
+    const defunct = sent.find((s) => s.template === "whip-defunct-cwd");
+    expect(defunct).toBeDefined();
+    const bullets = (defunct?.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.includes("alice") && b.includes("does not exist"))).toBe(true);
+  });
+
+  test("D4c defunct-cwd: existing path → no defunct ping", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+    });
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({
+        sessionUp: true,
+        panes: {
+          "🐝alice": { paneCmd: "claude", state: "", pid: 1, cwd: atmuxDir },
+        },
+      }),
+      discordSend: async (o) => {
+        sent.push(o);
+      },
+    });
+    expect(sent.find((s) => s.template === "whip-defunct-cwd")).toBeUndefined();
   });
 });

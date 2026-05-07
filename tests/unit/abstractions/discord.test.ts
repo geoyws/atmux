@@ -1656,3 +1656,118 @@ describe("renderWhipSelfHealResult", () => {
     expect(written).toContain("verify failed");
   });
 });
+
+// ---------- ADR-057 §D4 — perm-mode-drift + defunct-cwd renderers ----------
+
+describe("renderWhipPermModeDrift", () => {
+  test("single drifted member produces 3 bullets in canonical order", async () => {
+    const { renderWhipPermModeDrift } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipPermModeDrift({
+      team: "atmux",
+      drifted: [{ member: "alpha", mode: "dont-ask" }],
+    });
+    expect(out.template).toBe("whip-perm-mode-drift");
+    expect(out.category).toBe("📋");
+    expect(out.team).toBe("atmux");
+    expect(out.bullets).toEqual([
+      "📍 1 member(s) drifted off auto mode",
+      "🟡 alpha: pane in 'dont-ask' mode (expected 'auto')",
+      "🛠️ fix: BTab cycle to auto on each drifted pane",
+    ]);
+  });
+
+  test("multiple drifted members all surfaced as separate bullets", async () => {
+    const { renderWhipPermModeDrift } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipPermModeDrift({
+      team: "atmux",
+      drifted: [
+        { member: "alpha", mode: "dont-ask" },
+        { member: "bravo", mode: "accept-edits" },
+      ],
+    });
+    expect(out.bullets).toHaveLength(4);
+    expect((out.bullets ?? [])[0]).toBe("📍 2 member(s) drifted off auto mode");
+    expect((out.bullets ?? [])[1]).toContain("alpha");
+    expect((out.bullets ?? [])[2]).toContain("bravo");
+  });
+
+  test("whenMs override is propagated", async () => {
+    const { renderWhipPermModeDrift } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipPermModeDrift({
+      team: "atmux",
+      drifted: [{ member: "alpha", mode: "plan" }],
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+
+  test("send-time validation passes", async () => {
+    const { renderWhipPermModeDrift, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "perm-mode-drift-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderWhipPermModeDrift({
+        team: "atmux",
+        drifted: [{ member: "alpha", mode: "dont-ask" }],
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[whip-perm-mode-drift]");
+    expect(written).toContain("dont-ask");
+  });
+});
+
+describe("renderWhipDefunctCwd", () => {
+  test("single defunct member produces 3 bullets in canonical order", async () => {
+    const { renderWhipDefunctCwd } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipDefunctCwd({
+      team: "atmux",
+      defunct: [{ member: "alpha", cwd: "/tmp/dead-worktree" }],
+    });
+    expect(out.template).toBe("whip-defunct-cwd");
+    expect(out.category).toBe("🛑");
+    expect(out.team).toBe("atmux");
+    expect(out.bullets).toEqual([
+      "🛑 1 member(s) on defunct cwd — pane_current_path missing on disk",
+      "📍 alpha: cwd /tmp/dead-worktree does not exist",
+      "🛠️ fix: re-spawn member or restore worktree path",
+    ]);
+  });
+
+  test("multiple defunct members surfaced as separate bullets", async () => {
+    const { renderWhipDefunctCwd } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipDefunctCwd({
+      team: "atmux",
+      defunct: [
+        { member: "alpha", cwd: "/tmp/a" },
+        { member: "bravo", cwd: "/tmp/b" },
+      ],
+    });
+    expect(out.bullets).toHaveLength(4);
+  });
+
+  test("whenMs override is propagated", async () => {
+    const { renderWhipDefunctCwd } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipDefunctCwd({
+      team: "atmux",
+      defunct: [{ member: "alpha", cwd: "/x" }],
+      whenMs: 9999,
+    });
+    expect(out.whenMs).toBe(9999);
+  });
+
+  test("send-time validation passes", async () => {
+    const { renderWhipDefunctCwd, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "defunct-cwd-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderWhipDefunctCwd({
+        team: "atmux",
+        defunct: [{ member: "alpha", cwd: "/tmp/x" }],
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[whip-defunct-cwd]");
+    expect(written).toContain("/tmp/x");
+  });
+});
