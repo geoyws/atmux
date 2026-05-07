@@ -44,11 +44,55 @@
 // both ship.
 
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
+import { closeDatabase, type Database, openDatabase, transact } from "../abstractions/sqlite.ts";
+import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { Kanban as KanbanSchema, type Kanban, type KanbanTask } from "../schema/kanban.ts";
+import { type Kanban, Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
 import { kanbanJsonPath } from "./common.ts";
+import { KanbanRepo } from "./repositories/kanban-repo.ts";
+
+// ---------- Storage routing (ADR-060) ----------
+//
+// Post-`atmux migrate-state` runs, `<atmuxDir>/state.db` exists; this
+// module routes writes/reads through `KanbanRepo` instead of the JSON
+// file. Pre-migration (or for teams that haven't migrated yet), the
+// existing JSON-based implementation stays the source of truth. Detection
+// is per-call via `_useSqlite()` — cheap (one `exists` syscall) and
+// safe across concurrent writers (the DB itself only appears after
+// the migration verb's atomic kanban.json → archive rename + state.db
+// fsync, so a race on the boundary lands cleanly on one side or the
+// other).
+//
+// Per-call DB open/close: ~ms overhead per call via WAL checkpoint on
+// close. Acceptable for verb-frequency operations. If hot-path tightens
+// later, swap to a module-level Map<atmuxDir, Database> with process-
+// exit close.
+
+function _stateDbPath(atmuxDir: string): string {
+  return join(atmuxDir, "state.db");
+}
+
+async function _useSqlite(atmuxDir: string): Promise<boolean> {
+  return await exists(_stateDbPath(atmuxDir));
+}
+
+/** Open DB, run `fn`, close. Migrations apply on open (idempotent). */
+async function _withDb<T>(
+  atmuxDir: string,
+  fn: (db: Database, repo: KanbanRepo) => T | Promise<T>,
+): Promise<T> {
+  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  try {
+    const repo = new KanbanRepo(db);
+    return await fn(db, repo);
+  } finally {
+    closeDatabase(db);
+  }
+}
 
 // ---------- Public API ----------
 
@@ -78,6 +122,13 @@ export interface ListTasksFilter {
  * the operator misconfiguration earlier).
  */
 export async function loadKanban(atmuxDir: string): Promise<Kanban> {
+  if (await _useSqlite(atmuxDir)) {
+    return await _withDb(atmuxDir, (_db, repo) => ({
+      tasks: repo.listTasks(),
+      epics: repo.listEpics(),
+      stories: repo.listStories(),
+    }));
+  }
   // updateJson under a no-op mutator gives us "load with schema validation"
   // without the side-effect of a write. Cleaner than splitting a separate
   // readKanban + writeKanban here — every read path already pays the
@@ -127,6 +178,12 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     claimedAt: null,
     completedAt: null,
   };
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (_db, repo) => {
+      repo.addTask(task);
+    });
+    return id;
+  }
   await updateJson(
     kanbanJsonPath(atmuxDir),
     KanbanSchema,
@@ -140,10 +197,17 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
  * Return the (filtered) task array. Caller-side responsibility: sort
  * + render. Bash's tabular output lives in the verb (lib/kanban.sh:91-98).
  */
-export async function listTasks(
-  atmuxDir: string,
-  filter?: ListTasksFilter,
-): Promise<KanbanTask[]> {
+export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Promise<KanbanTask[]> {
+  if (await _useSqlite(atmuxDir)) {
+    return await _withDb(atmuxDir, (_db, repo) => {
+      // KanbanRepo.listTasks accepts {owner, status, lane, epic, story};
+      // map verb-side {assignee} → repo {owner}.
+      const repoFilter: Parameters<KanbanRepo["listTasks"]>[0] = {};
+      if (filter?.status !== undefined) repoFilter.status = filter.status;
+      if (filter?.assignee !== undefined) repoFilter.owner = filter.assignee;
+      return repo.listTasks(repoFilter);
+    });
+  }
   const k = await loadKanban(atmuxDir);
   let out = k.tasks;
   if (filter?.status !== undefined) {
@@ -161,6 +225,9 @@ export async function listTasks(
  *  jq output on miss; we surface as null so callers can choose how to
  *  surface "not found"). */
 export async function showTask(atmuxDir: string, id: string): Promise<KanbanTask | null> {
+  if (await _useSqlite(atmuxDir)) {
+    return await _withDb(atmuxDir, (_db, repo) => repo.getTask(id));
+  }
   const k = await loadKanban(atmuxDir);
   return k.tasks.find((t) => t.id === id) ?? null;
 }
@@ -179,6 +246,18 @@ export async function showTask(atmuxDir: string, id: string): Promise<KanbanTask
  */
 export async function moveTask(atmuxDir: string, id: string, status: string): Promise<void> {
   const completedAt = status === "done" ? nowEpoch() : undefined;
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        const next: KanbanTask = { ...cur, status };
+        if (completedAt !== undefined) next.completedAt = completedAt;
+        repo.upsertTask(next);
+      });
+    });
+    return;
+  }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
     const next: KanbanTask = { ...t, status };
     if (completedAt !== undefined) next.completedAt = completedAt;
@@ -188,11 +267,28 @@ export async function moveTask(atmuxDir: string, id: string, status: string): Pr
 
 /** Update a task's owner. Throws `ConfigError` on miss. */
 export async function assignTask(atmuxDir: string, id: string, owner: string): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, owner });
+      });
+    });
+    return;
+  }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, owner }));
 }
 
 /** Remove a task by id. Throws `ConfigError` on miss. */
 export async function removeTask(atmuxDir: string, id: string): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (_db, repo) => {
+      const removed = repo.deleteTask(id);
+      if (!removed) throw new ConfigError({ what: `no such task: ${id}` });
+    });
+    return;
+  }
   await updateJson(
     kanbanJsonPath(atmuxDir),
     KanbanSchema,
@@ -231,6 +327,27 @@ export async function claimTask(
   who: string,
 ): Promise<{ pre: KanbanTask; post: KanbanTask }> {
   const claimedAt = nowEpoch();
+  if (await _useSqlite(atmuxDir)) {
+    return await _withDb(atmuxDir, (db, repo) =>
+      transact(db, () => {
+        const task = repo.getTask(id);
+        if (task === null) {
+          throw new ConfigError({ what: `no such task: ${id}` });
+        }
+        const allTasks = repo.listTasks();
+        const unresolved = unresolvedDeps(allTasks, task);
+        if (unresolved.length > 0) {
+          throw new ConfigError({
+            what: `claim: task ${id} blocked by unresolved deps: ${unresolved.join(",")}`,
+          });
+        }
+        const pre = task;
+        const post: KanbanTask = { ...task, owner: who, status: "in-progress", claimedAt };
+        repo.upsertTask(post);
+        return { pre, post };
+      }),
+    );
+  }
   let pre!: KanbanTask;
   let post!: KanbanTask;
   await updateJson(
@@ -276,6 +393,22 @@ export async function markTaskDone(
   note?: string,
 ): Promise<KanbanTask> {
   const completedAt = nowEpoch();
+  if (await _useSqlite(atmuxDir)) {
+    return await _withDb(atmuxDir, (db, repo) =>
+      transact(db, () => {
+        const task = repo.getTask(id);
+        if (task === null) {
+          throw new ConfigError({ what: `no such task: ${id}` });
+        }
+        const next: KanbanTask = { ...task, status: "done", completedAt };
+        if (note !== undefined) {
+          (next as KanbanTask & { note?: string }).note = note;
+        }
+        repo.upsertTask(next);
+        return next;
+      }),
+    );
+  }
   let done!: KanbanTask;
   await updateJson(
     kanbanJsonPath(atmuxDir),
@@ -310,10 +443,7 @@ export async function markTaskDone(
  * that are NOT in status "done". Empty array means deps are clear.
  * Exported for direct unit-testing without spinning the JSON pipeline.
  */
-export function unresolvedDeps(
-  tasks: ReadonlyArray<KanbanTask>,
-  target: KanbanTask,
-): string[] {
+export function unresolvedDeps(tasks: ReadonlyArray<KanbanTask>, target: KanbanTask): string[] {
   const deps = target.deps ?? [];
   if (deps.length === 0) return [];
   const doneIds = new Set(tasks.filter((t) => t.status === "done").map((t) => t.id));
