@@ -9,7 +9,7 @@
 // "tests/unit/schema/team.test.ts (extend)".
 
 import { describe, expect, test } from "bun:test";
-import { Team, TeamWhip } from "../../../src/schema/team.ts";
+import { Team, TeamFallback, TeamWhip } from "../../../src/schema/team.ts";
 
 // ---------- TeamWhip — valid + defaults ----------
 
@@ -144,6 +144,75 @@ describe("Team schema integrates TeamWhip cleanly", () => {
         name: "demo",
         members: [],
         whip: { unknownTypoKey: 1 },
+      }),
+    ).toThrow();
+  });
+});
+
+// ---------- TeamFallback — ADR-058 multi-tier fallback chain ----------
+
+describe("TeamFallback — valid shape + defaults", () => {
+  test("empty input applies enabled=false default", () => {
+    const f = TeamFallback.parse({});
+    expect(f.enabled).toBe(false);
+    expect(f.tierBudgetThresholds).toBeUndefined();
+  });
+
+  test("explicit enabled=true is honored", () => {
+    const f = TeamFallback.parse({ enabled: true });
+    expect(f.enabled).toBe(true);
+  });
+
+  test("tierBudgetThresholds optional sub-block accepts integer pcts", () => {
+    const f = TeamFallback.parse({
+      enabled: true,
+      tierBudgetThresholds: { tier2Pct: 70, tier3Pct: 50 },
+    });
+    expect(f.tierBudgetThresholds?.tier2Pct).toBe(70);
+    expect(f.tierBudgetThresholds?.tier3Pct).toBe(50);
+  });
+
+  test("tierBudgetThresholds rejects out-of-range pct", () => {
+    expect(() =>
+      TeamFallback.parse({ enabled: true, tierBudgetThresholds: { tier2Pct: 150 } }),
+    ).toThrow();
+  });
+
+  test("strict-mode rejects typos at top level", () => {
+    expect(() => TeamFallback.parse({ enabld: true })).toThrow();
+  });
+
+  test("strict-mode rejects typos inside tierBudgetThresholds", () => {
+    expect(() =>
+      TeamFallback.parse({
+        enabled: true,
+        tierBudgetThresholds: { tier99Pct: 50 },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("Team schema integrates TeamFallback cleanly", () => {
+  test("Team.parse with valid fallback block applies enabled=false default", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      fallback: {},
+    });
+    expect(team.fallback?.enabled).toBe(false);
+  });
+
+  test("Team.parse without fallback block keeps fallback undefined", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.fallback).toBeUndefined();
+  });
+
+  test("Team.parse rejects unknown key in fallback sub-shape", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        fallback: { enabled: true, junk: "x" },
       }),
     ).toThrow();
   });

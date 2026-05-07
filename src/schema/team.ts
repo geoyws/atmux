@@ -138,12 +138,44 @@ export const TeamWhip = z
     /** Roles excluded from swap pass — their conversation memory doesn't
      *  survive `atmux handoff`. Default lead/planner/reviewer
      *  (ADR-056 §"Lead/planner exclusion"). */
-    accountSwapExcludeRoles: z
-      .array(z.string())
-      .default(["lead", "planner", "reviewer"]),
+    accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
   })
   .strict();
 export type TeamWhip = z.infer<typeof TeamWhip>;
+
+/**
+ * `team.json::fallback` sub-config — ADR-058 multi-tier fallback chain
+ * (Cursor Tier 2 → Kimi Tier 3 → MiniMax Tier 4).
+ *
+ * Default-OFF: `enabled: false` is the v1 ship gate. Existing teams
+ * see no behavior change until they explicitly opt in. The strict
+ * shape catches typos (e.g. `enabld`) at boot via the same drift
+ * Discord-ping path as `whip` — applied here too because fallback
+ * tiers run as different Linux UIDs (Tier 3+) and a misconfigured
+ * `enabled` would silently dispatch into a non-existent provisioned
+ * cage.
+ *
+ * `tierBudgetThresholds` are future-proof knobs for picking-tier-by-
+ * remaining-budget — unused in T4 (the v1 selection picks highest
+ * tier with capacity per ADR-058 §D2). Surfaced now so the schema
+ * doesn't churn when the threshold logic lands.
+ */
+export const TeamFallback = z
+  .object({
+    /** Master switch. Default false (no fallback dispatch on pause). */
+    enabled: z.boolean().default(false),
+    /** Optional per-tier budget thresholds for tier selection. Unused
+     *  in T4; surfaced for forward-compat per ADR-058 §D2 OQ7. */
+    tierBudgetThresholds: z
+      .object({
+        tier2Pct: z.number().int().min(0).max(100).optional(),
+        tier3Pct: z.number().int().min(0).max(100).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type TeamFallback = z.infer<typeof TeamFallback>;
 
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
@@ -165,6 +197,8 @@ export const Team = z
     emojis: TeamEmojis.optional(),
     /** ADR-054: typed whip sub-config with strict drift detection. */
     whip: TeamWhip.optional(),
+    /** ADR-058: multi-tier fallback chain (Cursor/Kimi/MiniMax). */
+    fallback: TeamFallback.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     report: z.unknown().optional(),
     discord: z.unknown().optional(),
