@@ -192,6 +192,40 @@ _flags_resolve_member() {
   printf '%s\n' "$who"
 }
 
+# ---------- dedup gate (t-1c8b9e85) ----------
+
+# _flags_dedup_open_within <flags-file> <member> <message> <ttl-sec>
+# Returns 0 (true) iff at least one OPEN flag exists in the file with
+# the same (member, message) tuple AND a timestamp within the last
+# `ttl-sec` seconds. "Open" = no resolution entry references the
+# flag's id (same definition as `flags list --status open`).
+#
+# Used by `_atmux_flags_add` to suppress duplicate firings during
+# retry loops (e.g. budget-probe OAuth-401 chains that surface the
+# same flag once per tick). Returns 1 (no match) when the file is
+# absent or no qualifying flag exists.
+_flags_dedup_open_within() {
+  local f="$1" member="$2" message="$3" ttl="$4"
+  [[ -f "$f" ]] || return 1
+  local now; now="$(atmux::now_epoch)"
+  local cutoff=$(( now - ttl ))
+  local model; model="$(_flags_to_json "$f")"
+  local n
+  n="$(jq -r --arg m "$member" --arg msg "$message" --argjson cutoff "$cutoff" '
+    .flags as $flags
+    | .resolutions as $rs
+    | $flags
+    | map(. as $fl | select(
+        $fl.member == $m and
+        $fl.message == $msg and
+        $fl.timestamp >= $cutoff and
+        ($rs | any(.flag == $fl.id) | not)
+      ))
+    | length
+  ' <<<"$model")"
+  (( n > 0 ))
+}
+
 # ---------- add ----------
 
 _atmux_flags_add() {
@@ -235,11 +269,21 @@ _atmux_flags_add() {
   fi
 
   local member; member="$(_flags_resolve_member "$who")"
+
+  # t-1c8b9e85: 5-min TTL dedup gate — same (member, message) tuple
+  # within the last 300s, still open (no resolution recorded) → skip
+  # append + skip lead notify. Prevents probe-401 retry loops from
+  # flooding flags.md / lead-pane with identical entries.
+  local f; f="$(_flags_file)"
+  if _flags_dedup_open_within "$f" "$member" "$message" 300; then
+    atmux::log "flags: dedup'd — same (member=$member, message) fired within last 5min; skipped"
+    return 0
+  fi
+
   local id; id="$(_flags_gen_id)"
   local epoch; epoch="$(atmux::now_epoch)"
   local hhmm; hhmm="$(atmux::now_myt)"
 
-  local f; f="$(_flags_file)"
   atmux::with_lock "$f" _flags_append_entry \
     "$f" "$id" "$epoch" "$hhmm" "$member" "$severity" "$needs" "$task" "$message" "$note"
 
@@ -319,7 +363,9 @@ _flags_notify_lead() {
     pingline="${pingline:0:77}..."
   fi
 
-  tmux send-keys -t "$(atmux::tmux_target "$lead")" "$pingline" Enter 2>/dev/null \
+  # CAGE/Sa t-466b164b: cage-aware send via atmux::tmux_cage so the
+  # lead-pane ping reaches the right socket on cage'd teams.
+  atmux::tmux_cage send-keys -t "$(atmux::tmux_target "$lead")" "$pingline" Enter 2>/dev/null \
     || atmux::log "flags: tmux send-keys to lead failed for $id"
   return 0
 }
