@@ -1093,10 +1093,14 @@ _doctor_check_caged_windows_outside_cage() {
 _doctor_check_orphan_atmux_sessions() {
   [[ -n "${TMUX:-}" ]] || return 0
   local daily_sock="${TMUX%%,*}"
-  # Skip when current socket is itself a cage — `*/atmux*tmux*` covers both
-  # the legacy `atmux-tmux*` (hyphen) and ADDENDUM-11 `atmux_tmux_*` forms.
+  # Skip when current socket is itself a cage. Three cage shapes:
+  #   - legacy `atmux-tmux*` (hyphen, ADR-018 shared `/tmp/atmux-tmux_<team>`)
+  #   - ADDENDUM-11 `atmux_tmux_*` (underscore variant)
+  #   - project-local `<project>/.atmux/tmux*` (sopx / atmux / unum / ifca-docs)
+  # The third shape was missing pre-2026-05-07 (driver-inbox 10:16 MYT P1),
+  # mirroring the same single-arm gap fixed in lib/start.sh:58.
   case "$daily_sock" in
-    */atmux-tmux*/tmux-*/default|*/atmux_tmux_*/tmux-*/default) return 0 ;;
+    */atmux-tmux*/tmux-*/default|*/atmux_tmux_*/tmux-*/default|*/.atmux/tmux*/tmux-*/default) return 0 ;;
   esac
 
   command -v jq >/dev/null 2>&1 || return 0
@@ -1412,8 +1416,10 @@ _doctor_check_daily_driver_prefix_leak() {
   local daily_sock="${TMUX%%,*}"
 
   # If we ARE on a cage socket, C-\ is the expected value, not a leak.
+  # Three cage shapes covered (mirrors _doctor_check_orphan_atmux_sessions —
+  # 2026-05-07 P1 fix added the project-local arm).
   case "$daily_sock" in
-    */atmux-tmux*/tmux-*/default) return 0 ;;
+    */atmux-tmux*/tmux-*/default|*/atmux_tmux_*/tmux-*/default|*/.atmux/tmux*/tmux-*/default) return 0 ;;
   esac
 
   local current
@@ -1435,8 +1441,9 @@ _doctor_check_daily_driver_prefix_leak() {
 _doctor_try_fix_daily_driver_prefix_leak() {
   [[ -n "${TMUX:-}" ]] || return 0
   local daily_sock="${TMUX%%,*}"
+  # Three cage shapes — mirrors _doctor_check_daily_driver_prefix_leak.
   case "$daily_sock" in
-    */atmux-tmux*/tmux-*/default) return 0 ;;
+    */atmux-tmux*/tmux-*/default|*/atmux_tmux_*/tmux-*/default|*/.atmux/tmux*/tmux-*/default) return 0 ;;
   esac
 
   local current
