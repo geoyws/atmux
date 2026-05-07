@@ -232,7 +232,9 @@ export interface TmuxNamespace {
       detached?: boolean;
     }): Promise<WindowId>;
     killWindow(target: Target): Promise<void>;
-    listWindows(sessionName: string): Promise<{ index: number; name: string; active: boolean }[]>;
+    listWindows(
+      sessionName: string,
+    ): Promise<{ index: number; id: string; name: string; active: boolean }[]>;
     renameWindow(target: Target, name: string): Promise<void>;
     selectWindow(target: Target): Promise<void>;
   };
@@ -439,13 +441,17 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
         await tmuxRun(["kill-window", "-t", serializeTarget(target)]);
       },
 
-      /** `tmux list-windows -t <session> -F '#{window_index}\t#{window_name}\t#{window_active}'`. */
+      /** `tmux list-windows -t <session> -F '#{window_index}\t#{window_id}\t#{window_name}\t#{window_active}'`.
+       *  `window_id` is the immutable `@N` server-global handle that survives
+       *  renames + reorderings; ADR-057 §D5b uses it for all member-pane
+       *  addressing. */
       async listWindows(sessionName) {
-        const fmt = "#{window_index}\t#{window_name}\t#{window_active}";
+        const fmt = "#{window_index}\t#{window_id}\t#{window_name}\t#{window_active}";
         const r = await tmuxRunRaw(["list-windows", "-t", sessionName, "-F", fmt], [0, 1]);
         if (r.exitCode === 1 && r.stdout.length === 0) return [];
-        return parseTabular(r.stdout, ["index", "name", "active"]).map((row) => ({
+        return parseTabular(r.stdout, ["index", "id", "name", "active"]).map((row) => ({
           index: Number.parseInt(row.index ?? "0", 10) || 0,
+          id: row.id ?? "",
           name: row.name ?? "",
           active: row.active === "1",
         }));

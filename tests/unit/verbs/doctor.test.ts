@@ -19,19 +19,23 @@ import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
   checkDeps,
+  checkInboxMarks,
   checkOrphanSessions,
   checkPhantomInboxes,
   checkStateDir,
+  checkSubmoduleIntegrity,
   checkTeam,
   checkTuis,
   checkWebhook,
   checkWhipConfigDrift,
   type DoctorRow,
   doctor,
+  findInboxTaskMarks,
   findPhantomInboxes,
   firstBin,
   installHint,
   parseDoctorArgs,
+  parseSubmoduleStatus,
   renderHuman,
   renderJson,
   resolveMemberBin,
@@ -961,5 +965,334 @@ describe("checkWhipConfigDrift", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.detail).toContain("malformed");
     expect(rows[0]?.detail).toContain("full safe defaults");
+  });
+});
+
+// ---------- ADR-057 §D5a: parseSubmoduleStatus + checkSubmoduleIntegrity ----------
+
+describe("parseSubmoduleStatus", () => {
+  test("empty stdout → no entries", () => {
+    expect(parseSubmoduleStatus("")).toEqual([]);
+  });
+
+  test("clean entries (space-prefix) parsed", () => {
+    const out = parseSubmoduleStatus(
+      " 1234567890123456789012345678901234567890 vendor/clean (v1.0)\n",
+    );
+    expect(out).toEqual([
+      {
+        state: " ",
+        recordedSha: "1234567890123456789012345678901234567890",
+        path: "vendor/clean",
+      },
+    ]);
+  });
+
+  test("mixed prefixes (+/-/U) classified", () => {
+    const stdout = [
+      "+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa vendor/mismatch (v2.0)",
+      "-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb vendor/uninit",
+      "Ucccccccccccccccccccccccccccccccccccccccc vendor/conflict",
+      " dddddddddddddddddddddddddddddddddddddddd vendor/clean",
+    ].join("\n");
+    const out = parseSubmoduleStatus(stdout);
+    expect(out.map((s) => s.state)).toEqual(["+", "-", "U", " "]);
+    expect(out.map((s) => s.path)).toEqual([
+      "vendor/mismatch",
+      "vendor/uninit",
+      "vendor/conflict",
+      "vendor/clean",
+    ]);
+  });
+
+  test("malformed lines (no SHA / wrong prefix) skipped", () => {
+    const stdout = [
+      "?xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx not-a-real-prefix",
+      " short-sha vendor/x",
+      "+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa vendor/ok",
+    ].join("\n");
+    const out = parseSubmoduleStatus(stdout);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.path).toBe("vendor/ok");
+  });
+});
+
+describe("checkSubmoduleIntegrity", () => {
+  test("no submodules (empty stdout) → no rows", async () => {
+    const rows = await checkSubmoduleIntegrity({
+      git: async () => ({
+        cmd: "git",
+        argv: [],
+        exitCode: 0,
+        signalled: null,
+        stdout: "",
+        stderr: "",
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("non-zero exit (not a repo) → no rows", async () => {
+    const rows = await checkSubmoduleIntegrity({
+      git: async () => ({
+        cmd: "git",
+        argv: [],
+        exitCode: 128,
+        signalled: null,
+        stdout: "",
+        stderr: "fatal: not a git repository",
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("'+' prefix → yellow P2 with checkout hint", async () => {
+    const rows = await checkSubmoduleIntegrity({
+      git: async () => ({
+        cmd: "git",
+        argv: [],
+        exitCode: 0,
+        signalled: null,
+        stdout: "+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa vendor/x (v2.0)\n",
+        stderr: "",
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("submodule-integrity");
+    expect(rows[0]?.detail).toContain("vendor/x");
+    expect(rows[0]?.hint).toContain("git checkout");
+  });
+
+  test("'-' prefix → yellow with init hint", async () => {
+    const rows = await checkSubmoduleIntegrity({
+      git: async () => ({
+        cmd: "git",
+        argv: [],
+        exitCode: 0,
+        signalled: null,
+        stdout: "-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb vendor/y\n",
+        stderr: "",
+        durationMs: 0,
+      }),
+    });
+    expect(rows[0]?.detail).toContain("not initialized");
+    expect(rows[0]?.hint).toContain("git submodule update --init");
+  });
+
+  test("'U' prefix → yellow with conflict hint", async () => {
+    const rows = await checkSubmoduleIntegrity({
+      git: async () => ({
+        cmd: "git",
+        argv: [],
+        exitCode: 0,
+        signalled: null,
+        stdout: "Ucccccccccccccccccccccccccccccccccccccccc vendor/z\n",
+        stderr: "",
+        durationMs: 0,
+      }),
+    });
+    expect(rows[0]?.detail).toContain("merge conflict");
+    expect(rows[0]?.hint).toContain("resolve");
+  });
+
+  test("clean entries are filtered out", async () => {
+    const rows = await checkSubmoduleIntegrity({
+      git: async () => ({
+        cmd: "git",
+        argv: [],
+        exitCode: 0,
+        signalled: null,
+        stdout:
+          " dddddddddddddddddddddddddddddddddddddddd vendor/ok\n+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa vendor/dirty\n",
+        stderr: "",
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("vendor/dirty");
+  });
+});
+
+// ---------- ADR-057 §D5c: findInboxTaskMarks + checkInboxMarks ----------
+
+describe("findInboxTaskMarks", () => {
+  const NOW = 1_780_000_000;
+
+  test("empty body → no marks", () => {
+    expect(findInboxTaskMarks("", NOW)).toEqual([]);
+  });
+
+  test("simple Open marker", () => {
+    const body = `## Open\n\n- [10:00 MYT] 📤 task t-abc12345 — done\n`;
+    const marks = findInboxTaskMarks(body, NOW);
+    expect(marks).toHaveLength(1);
+    expect(marks[0]?.id).toBe("t-abc12345");
+  });
+
+  test("multiple markers in different entries", () => {
+    const body = [
+      "## Open",
+      "",
+      "- [10:00 MYT] 📤 task t-aaa11111",
+      "- [10:05 MYT] 📤 task t-bbb22222",
+      "- [10:10 MYT] no marker here",
+    ].join("\n");
+    const marks = findInboxTaskMarks(body, NOW);
+    expect(marks.map((m) => m.id)).toEqual(["t-aaa11111", "t-bbb22222"]);
+  });
+
+  test("Archive section marks are skipped", () => {
+    const body = [
+      "## Open",
+      "",
+      "- [10:00 MYT] 📤 task t-open111",
+      "",
+      "## Archive",
+      "",
+      "- [09:00 MYT] 📤 task t-arch222",
+    ].join("\n");
+    const marks = findInboxTaskMarks(body, NOW);
+    expect(marks).toHaveLength(1);
+    expect(marks[0]?.id).toBe("t-open111");
+  });
+
+  test("entry before Open marker is skipped", () => {
+    const body = [
+      "- [09:00 MYT] 📤 task t-pre000",
+      "",
+      "## Open",
+      "",
+      "- [10:00 MYT] 📤 task t-after",
+    ].join("\n");
+    const marks = findInboxTaskMarks(body, NOW);
+    expect(marks).toHaveLength(1);
+    expect(marks[0]?.id).toBe("t-after");
+  });
+
+  test("section-style entry with multi-line marker body", () => {
+    const body = [
+      "## Open",
+      "",
+      "## 11:00 MYT — request",
+      "Multi line.",
+      "📤 task t-multi321",
+      "more text",
+    ].join("\n");
+    const marks = findInboxTaskMarks(body, NOW);
+    expect(marks).toHaveLength(1);
+    expect(marks[0]?.id).toBe("t-multi321");
+  });
+});
+
+describe("checkInboxMarks", () => {
+  let dir: string;
+  let atmuxDir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "atmux-doctor-mark-"));
+    atmuxDir = join(dir, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("absent driver-inbox → no rows", async () => {
+    expect(await checkInboxMarks(atmuxDir)).toEqual([]);
+  });
+
+  test("absent kanban → no rows (precondition)", async () => {
+    await writeFile(join(atmuxDir, "driver-inbox.md"), "## Open\n- [10:00 MYT] 📤 task t-x12345\n");
+    expect(await checkInboxMarks(atmuxDir)).toEqual([]);
+  });
+
+  test("known id → no orphan rows", async () => {
+    await writeFile(join(atmuxDir, "driver-inbox.md"), "## Open\n- [10:00 MYT] 📤 task t-known1\n");
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({
+        version: 1,
+        epics: [],
+        stories: [],
+        tasks: [
+          {
+            id: "t-known1",
+            subject: "x",
+            body: "",
+            status: "done",
+            owner: null,
+            deps: [],
+            priority: 1,
+            epic: null,
+            story: null,
+            lane: null,
+            deliverable: null,
+            staleMin: null,
+            driverOnly: false,
+            createdAt: 0,
+            claimedAt: null,
+            completedAt: null,
+          },
+        ],
+      }),
+    );
+    expect(await checkInboxMarks(atmuxDir)).toEqual([]);
+  });
+
+  test("orphan id → yellow P3 row", async () => {
+    await writeFile(
+      join(atmuxDir, "driver-inbox.md"),
+      "## Open\n- [10:00 MYT] 📤 task t-bogus0 — purged\n",
+    );
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    const rows = await checkInboxMarks(atmuxDir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("inbox-mark-orphan");
+    expect(rows[0]?.detail).toContain("t-bogus0");
+  });
+
+  test("duplicate orphan id → single row (deduped)", async () => {
+    await writeFile(
+      join(atmuxDir, "driver-inbox.md"),
+      [
+        "## Open",
+        "",
+        "- [10:00 MYT] 📤 task t-dup999",
+        "- [11:00 MYT] 📤 task t-dup999 — mentioned twice",
+      ].join("\n"),
+    );
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    const rows = await checkInboxMarks(atmuxDir);
+    expect(rows).toHaveLength(1);
+  });
+
+  test("orphan in Archive is NOT flagged", async () => {
+    await writeFile(
+      join(atmuxDir, "driver-inbox.md"),
+      [
+        "## Open",
+        "",
+        "- [10:00 MYT] no marker here",
+        "",
+        "## Archive",
+        "",
+        "- [09:00 MYT] 📤 task t-archived",
+      ].join("\n"),
+    );
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    expect(await checkInboxMarks(atmuxDir)).toEqual([]);
   });
 });

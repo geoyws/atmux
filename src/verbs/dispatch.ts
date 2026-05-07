@@ -36,6 +36,7 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { resolveTarget } from "../core/window-id.ts";
 import type { Team } from "../schema/team.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { defaultSocketPath } from "./start.ts";
@@ -189,7 +190,19 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     const sessionName = await getSessionName({ ...dirOpts, team });
     const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
     const tmux = createTmux({ socketPath });
-    const target = `${sessionName}:${buildWindowName(memberEntry.name, memberEntry.emoji)}`;
+    // ADR-057 §D5b: address the member by immutable @N window ID when
+    // possible; falls back to `<session>:<windowName>` on cache miss
+    // OR when the window doesn't exist yet (first dispatch after spawn
+    // race). Window-name renames (e.g. emoji-prefix flips) become
+    // no-ops because the cached @N survives the rename.
+    const target = await resolveTarget({
+      atmuxDir,
+      team: team.name,
+      sessionName,
+      member: memberEntry.name,
+      windowName: buildWindowName(memberEntry.name, memberEntry.emoji),
+      tmux,
+    });
     const body = typeof post.body === "string" ? post.body : "";
     const subject = typeof post.subject === "string" ? post.subject : "";
     const ping = buildDispatchPing({ id: parsed.id, subject, body });

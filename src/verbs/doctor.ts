@@ -30,8 +30,14 @@ import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
+import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import {
+  parseEntries as parseDriverInboxEntries,
+  type DriverInboxEntry,
+} from "../core/driver-inbox.ts";
+import {
+  driverInboxPath,
   getAtmuxDir,
   getDefaultSocket,
   inboxPathFor,
@@ -637,6 +643,200 @@ export async function checkOrphanSessions(
   return rows;
 }
 
+// ---------- ADR-057 §D5a: submodule pointer integrity ----------
+
+/** Spawn a single git command from cwd. Test injection point. */
+export type GitSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
+
+const defaultGitSpawn: GitSpawn = (argv) =>
+  defaultSpawn({ cmd: "git", argv, expectExitCode: "any", timeoutMs: 15_000 });
+
+/** Per-submodule status entry parsed from `git submodule status`. */
+export interface SubmoduleStatus {
+  /** Path relative to repo root (e.g. `vendor/x`). */
+  path: string;
+  /** SHA recorded in the parent commit. */
+  recordedSha: string;
+  /** ` ` (clean), `+` (HEAD mismatch), `-` (uninitialized), `U` (conflict). */
+  state: " " | "+" | "-" | "U";
+}
+
+/**
+ * Parse `git submodule status` output. Each line is either:
+ *
+ *   ` <40-hex> <path> [(<describe>)]`     — clean
+ *   `+<40-hex> <path> [(<describe>)]`     — HEAD doesn't match recorded SHA
+ *   `-<40-hex> <path>`                    — uninitialized
+ *   `U<40-hex> <path>`                    — merge conflict
+ *
+ * Lines that don't fit the shape are skipped (defensive against future
+ * git output changes; we'd rather emit no finding than a false positive).
+ */
+export function parseSubmoduleStatus(stdout: string): SubmoduleStatus[] {
+  const out: SubmoduleStatus[] = [];
+  for (const raw of stdout.split("\n")) {
+    if (raw.length === 0) continue;
+    const prefix = raw[0];
+    if (prefix !== " " && prefix !== "+" && prefix !== "-" && prefix !== "U") continue;
+    const rest = raw.slice(1);
+    const m = rest.match(/^([0-9a-f]{40})\s+(\S+)/);
+    if (m === null) continue;
+    out.push({
+      state: prefix,
+      recordedSha: m[1] ?? "",
+      path: m[2] ?? "",
+    });
+  }
+  return out;
+}
+
+export interface CheckSubmoduleIntegrityOpts {
+  /** git spawn override (test injection). */
+  git?: GitSpawn;
+}
+
+/**
+ * D5a: submodule pointer integrity. Runs `git submodule status` from the
+ * cwd and emits one P2 (yellow) row per mismatched / uninitialized /
+ * conflicted submodule. No submodules → no rows. Non-git cwd → no rows
+ * (silent — `git submodule status` exits 0 with no stdout outside a repo
+ * with submodules; outside a repo entirely it exits non-zero with stderr
+ * which we treat as "skip").
+ *
+ * The check is on the OUTER repo (atmux's cwd). Submodules-of-submodules
+ * are NOT recursed by default — the operator's cron-groom invokes
+ * `atmux doctor --json` per tick, and recursion would amplify the noise.
+ */
+export async function checkSubmoduleIntegrity(
+  opts: CheckSubmoduleIntegrityOpts = {},
+): Promise<DoctorRow[]> {
+  const git = opts.git ?? defaultGitSpawn;
+  const r = await git(["submodule", "status"]);
+  if (r.exitCode !== 0) return [];
+  const statuses = parseSubmoduleStatus(r.stdout);
+  const rows: DoctorRow[] = [];
+  for (const s of statuses) {
+    if (s.state === " ") continue;
+    const detail =
+      s.state === "+"
+        ? `${s.path} HEAD doesn't match recorded ${s.recordedSha.slice(0, 7)}`
+        : s.state === "-"
+          ? `${s.path} not initialized (recorded ${s.recordedSha.slice(0, 7)})`
+          : `${s.path} merge conflict (recorded ${s.recordedSha.slice(0, 7)})`;
+    const hint =
+      s.state === "+"
+        ? `cd ${s.path} && git checkout ${s.recordedSha.slice(0, 7)}  (or commit the bump in the parent)`
+        : s.state === "-"
+          ? "git submodule update --init --recursive"
+          : "resolve the merge conflict in the submodule, then commit the parent";
+    rows.push({
+      status: "yellow",
+      label: "submodule-integrity",
+      detail,
+      hint,
+    });
+  }
+  return rows;
+}
+
+// ---------- ADR-057 §D5c: inbox-mark verification ----------
+
+/** Marker pattern emitted by lead in driver-inbox: `📤 task <id>`.
+ *  ID is whatever the kanban issued (current shape `t-<8 hex>`); we
+ *  match conservatively on `t-` + word-chars to tolerate id-shape
+ *  evolution without rewriting the regex. */
+const INBOX_TASK_MARKER_RE = /📤\s+task\s+(t-[A-Za-z0-9]+)/g;
+
+/** One orphan finding — a task id mentioned in driver-inbox that the
+ *  kanban no longer knows about. */
+export interface InboxMarkOrphan {
+  /** The mentioned task id. */
+  id: string;
+  /** Snippet of the entry head where the marker appeared. */
+  entryHead: string;
+}
+
+/**
+ * Scan a driver-inbox body for `📤 task <id>` markers and return the set
+ * of (id, entry-head) pairs. Used by checkInboxMarks; pure for testability.
+ */
+export function findInboxTaskMarks(body: string, nowEpochSec: number): InboxMarkOrphan[] {
+  const entries = parseDriverInboxEntries(body, nowEpochSec);
+  const found: InboxMarkOrphan[] = [];
+  for (const e of entries) {
+    if (!isInOpenSection(e, body)) continue;
+    for (const m of e.body.matchAll(INBOX_TASK_MARKER_RE)) {
+      const id = m[1];
+      if (id === undefined) continue;
+      found.push({ id, entryHead: e.head });
+    }
+  }
+  return found;
+}
+
+/** True when the entry head appears under `## Open` and BEFORE any
+ *  `## Archive` section. The driver-inbox convention is a top-level
+ *  Open / Archive split; archived entries are out of scope per the
+ *  brief ("scans driver-inbox `## Open`"). */
+function isInOpenSection(entry: DriverInboxEntry, body: string): boolean {
+  const headIdx = body.indexOf(entry.head);
+  if (headIdx === -1) return true; // defensive — surface rather than skip
+  const openIdx = body.search(/^##\s+Open\b/m);
+  const archiveIdx = body.search(/^##\s+Archive\b/m);
+  // No section markers at all → treat the whole file as Open.
+  if (openIdx === -1 && archiveIdx === -1) return true;
+  // Archive starts before Open OR no Open marker → only entries before
+  // archiveIdx count.
+  if (openIdx === -1) return archiveIdx === -1 ? true : headIdx < archiveIdx;
+  // Standard layout: Open then Archive. Entry must be after Open marker
+  // AND (no Archive yet OR before Archive).
+  if (headIdx < openIdx) return false;
+  if (archiveIdx === -1) return true;
+  return headIdx < archiveIdx;
+}
+
+export interface CheckInboxMarksOpts {
+  /** epoch-seconds for resolving undated entry heads. Default `Date.now()`. */
+  nowEpochSec?: number;
+}
+
+/**
+ * D5c: scan `## Open` for `📤 task <id>` markers; emit one P3 (yellow)
+ * row per id NOT present in kanban.tasks[] (orphan). Absent inbox /
+ * absent kanban → no rows (the precondition for orphan detection isn't
+ * met, not a finding).
+ */
+export async function checkInboxMarks(
+  atmuxDir: string,
+  opts: CheckInboxMarksOpts = {},
+): Promise<DoctorRow[]> {
+  const inboxBody = await readTextOrNull(driverInboxPath(atmuxDir));
+  if (inboxBody === null || inboxBody.length === 0) return [];
+  const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), Kanban);
+  if (kanban === null) return [];
+  const knownIds = new Set(kanban.tasks.map((t) => t.id));
+  const nowEpochSec = opts.nowEpochSec ?? Math.floor(Date.now() / 1000);
+  const marks = findInboxTaskMarks(inboxBody, nowEpochSec);
+  const rows: DoctorRow[] = [];
+  const seen = new Set<string>();
+  for (const m of marks) {
+    if (knownIds.has(m.id)) continue;
+    if (seen.has(m.id)) continue; // dedup multiple mentions of the same orphan id
+    seen.add(m.id);
+    rows.push({
+      status: "yellow",
+      label: "inbox-mark-orphan",
+      detail: `driver-inbox marks ${m.id} done but it's not in kanban (entry: ${truncate(m.entryHead, 60)})`,
+      hint: "remove the 📤 marker if the entry is no longer relevant, or restore the task",
+    });
+  }
+  return rows;
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
 // ---------- Render ----------
 
 const STATUS_GLYPH: Record<DoctorStatus, string> = {
@@ -708,6 +908,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // ADR-054 §D4: surface whip-config drift so the operator doesn't
   // need to wait for the next whip tick to learn about it.
   rows.push(...(await checkWhipConfigDrift(atmuxDir)));
+  // ADR-057 §D5a: submodule pointer integrity (P2 finding per mismatch).
+  rows.push(...(await checkSubmoduleIntegrity()));
+  // ADR-057 §D5c: inbox-mark verification (P3 finding per orphan id).
+  rows.push(...(await checkInboxMarks(atmuxDir)));
   return rows;
 }
 

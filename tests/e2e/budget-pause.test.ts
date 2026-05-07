@@ -58,7 +58,12 @@ function buildFakeTmux(opts: { sessionUp: boolean; panes: Record<string, string>
     },
     window: {
       listWindows: async () =>
-        Object.keys(opts.panes).map((name, i) => ({ index: i, name, active: false })),
+        Object.keys(opts.panes).map((name, i) => ({
+          index: i,
+          id: `@${i}`,
+          name,
+          active: false,
+        })),
       newWindow: async () => ({ sessionName: "x", windowIndex: 0 }),
       killWindow: async () => {},
       renameWindow: async () => {},

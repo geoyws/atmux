@@ -445,7 +445,7 @@ function buildFakeTmux(setup: FakeTmuxSetup): TmuxNamespace {
         if (setup.failListWindows === true) throw new Error("list-windows boom");
         return Object.entries(setup.panes)
           .filter(([, p]) => p !== undefined)
-          .map(([name], i) => ({ index: i, name, active: false }));
+          .map(([name], i) => ({ index: i, id: `@${i}`, name, active: false }));
       },
       newWindow: async () => ({ sessionName: "x", windowIndex: 0 }),
       killWindow: async () => {},

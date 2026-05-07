@@ -16,7 +16,8 @@
     "test:coverage": "bun test --coverage",
     "test:parity": "bun test tests/parity",
     "test:parity:version": "bun test tests/parity/version.test.ts",
-    "lint": "biome lint .",
+    "lint": "biome lint . && bun scripts/lint-tz.ts",
+    "lint:tz": "bun scripts/lint-tz.ts",
     "format": "biome format --write .",
     "build": "bun build ./bin/atmux-bun --target=bun --outdir=dist"
   },
