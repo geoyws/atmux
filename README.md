@@ -592,6 +592,13 @@ atmux resume <member>
 🤖 Automation
 atmux whip                                   # 5-min watchdog (cron)
 atmux report [--no-discord]                  # 30-min digest (cron)
+atmux improve [--budget <spec>] [--status]   # eternal-improvement loop (ADR-052)
+              [--dry-run] [--default-budget]
+              [--idle-fallback] [--force]
+atmux whip-resume-check [--no-discord]       # 1-min auto-resume cron precision (ADR-053)
+              [--team-dir <dir>]
+atmux watchdog [--no-discord]                # 2-min heartbeat staleness detector (ADR-057 §D6b)
+              [--team-dir <dir>]
 
 🔧 Maintenance
 atmux rotate <member>
@@ -601,6 +608,10 @@ atmux add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--comman
 atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
 ```
+
+## 🌱 Eternal-improvement (ADR-052)
+
+`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr-bun/052-eternal-improvement.md`](docs/adr-bun/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
 
 ## State layout
 

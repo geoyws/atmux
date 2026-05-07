@@ -1,0 +1,44 @@
+# bunfig.toml — Bun runtime + test config
+# See: https://bun.sh/docs/runtime/bunfig
+
+[test]
+# Coverage gate per ADR-009 + PLAN.md §8.1 (100% narrowed denominator).
+# Reviewer's 8-check protocol step 2 enforces this on every commit.
+coverage = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+# Per ADR-009 §2 — line/function/statement/branch all 100%.
+coverageThreshold = { line = 1.0, function = 1.0, statement = 1.0, branch = 1.0 }
+# NB: ADR-009 §6 (`600dc81`) — Bun 1.3.13 PARSES `coverageThreshold` but
+# silently NO-OPS. Empirically validated: a file at 66.67% line coverage
+# exits 0 with the threshold above. CI step 6 gates via a hand-rolled
+# `tests/lcov-gate.ts` (Phase 1 foundation deliverable) reading the
+# same `coveragePathIgnorePatterns` below as single source of truth.
+# Revisit when upstream Bun fixes the threshold-enforcement bug.
+
+# Test files don't count toward the denominator (they execute themselves
+# at 100% trivially — including them dilutes the signal).
+coverageSkipTestFiles = true
+
+# Narrowed denominator (ADR-009 §2). Code outside these patterns is
+# tracked at 100%; matching paths are excluded from the gate.
+# Glob shape: `tests/**` (recursive) NOT `tests/` — Bun 1.3.13 needs
+# the `**` for directory-recursive exclusion (ADR-009 §6 footnote).
+coveragePathIgnorePatterns = [
+  "src/types/generated/**",
+  "**/index.ts",
+  "tests/**",
+  "**/*.fixtures.ts",
+]
+# NB: src/cli.ts WAS in this list per the original ADR-009 §2 draft;
+# architect's review-verdict refinement (`64898c7`) accepted that
+# cli.ts dispatch logic is unit-testable (alias routing, unknown-verb
+# → UsageError → exit 64, --help/--version, top-level catch) and
+# should be tracked, not excluded. Phase 1+ porters write unit tests
+# alongside any cli.ts addition; reviewer enforces 100%.
+
+# [install] frozenLockfile is intentionally NOT set here — bunfig.toml
+# applies to ALL bun invocations including `bun add`, which would then
+# fail to resolve new deps locally. CI invokes `bun install --frozen-lockfile`
+# explicitly (see .github/workflows/ci.yml) for the same gate without
+# the local-dev breakage.

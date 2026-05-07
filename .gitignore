@@ -1,6 +1,12 @@
 .atmux/
+.claude/team.json
+.claude/scheduled_tasks.lock
 .DS_Store
 *.log
 node_modules/
 tmp/
-.claude/scheduled_tasks.lock
+
+# TS port (PLAN.md, atmux-bun)
+coverage/
+dist/
+.bun/

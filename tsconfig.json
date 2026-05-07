@@ -1,0 +1,51 @@
+{
+  "compilerOptions": {
+    // Strict mode — every flag a port-of-bash needs to catch silent
+    // null/undefined drift the bash version had no way to express.
+    // PLAN.md §10 + CLAUDE.md "TypeScript (strict mode)" rule.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+
+    // Target the current Node/Bun feature set. ADR-001 pins Bun >=1.3.13
+    // which supports ES2024 fully.
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2024"],
+
+    // Bun-specific globals (Bun.spawn, Bun.file, etc.) come from
+    // @types/bun → bun-types. ADR-007 + ADR-008 import these directly.
+    "types": ["bun-types"],
+
+    // Boundary + ergonomics.
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Path resolution. ADR-002 places TS source in src/, tests in tests/.
+    // No aliases for now (architect can add via follow-up ADR if needed).
+    // baseUrl was deprecated in TS 6 (TS5101); under moduleResolution
+    // "bundler" the `paths` map resolves relative to this tsconfig.json
+    // without needing baseUrl.
+    "rootDir": ".",
+    "paths": {}
+  },
+
+  // Scope the typechecker to the TS island (per ADR-002 §"Bash reference rule"):
+  //   - src/ — TS port
+  //   - tests/ — TS unit/e2e/parity (excludes legacy tests/{unit,e2e}/*.bats
+  //              and tests/helpers/*.bash via the include-only-.ts filter)
+  // Excludes lib/ entirely — bash reference is read-only input to the
+  // parity harness, never compiled.
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"],
+  "exclude": ["node_modules", "dist", "coverage", "lib", "bin"]
+}

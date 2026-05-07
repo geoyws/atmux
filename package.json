@@ -1,0 +1,32 @@
+{
+  "name": "atmux-bun",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "atmux-bun": "./bin/atmux-bun"
+  },
+  "engines": {
+    "bun": ">=1.3.13",
+    "tmux": ">=3.4"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "test:parity": "bun test tests/parity",
+    "test:parity:version": "bun test tests/parity/version.test.ts",
+    "lint": "biome lint . && bun scripts/lint-tz.ts",
+    "lint:tz": "bun scripts/lint-tz.ts",
+    "format": "biome format --write .",
+    "build": "bun build ./bin/atmux-bun --target=bun --outdir=dist"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.14",
+    "@types/bun": "^1.3.13",
+    "typescript": "^6.0.3"
+  }
+}
