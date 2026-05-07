@@ -54,6 +54,15 @@ describe("classifyText — 7 discrete states", () => {
     expect(r.state).toBe("MODAL");
   });
 
+  test("MODAL when feedback-survey 'How is Claude doing this session' shows", () => {
+    // t-3e58a605 Path B — survey modal blocks pane until dismissed.
+    const r = classifyText(
+      "● How is Claude doing this session? (optional)\n  1: Bad   2: Fine   3: Good   0: Dismiss",
+      nowFn,
+    );
+    expect(r.state).toBe("MODAL");
+  });
+
   test("RATE-LIMIT when 'hit your limit' banner", () => {
     const r = classifyText("Rate limit hit your limit until 12:00", nowFn);
     expect(r.state).toBe("RATE-LIMIT");
@@ -100,18 +109,12 @@ describe("classifyText — pattern priority", () => {
   });
 
   test("COMPACTING wins over MODAL when both signals present", () => {
-    const r = classifyText(
-      "Compacting conversation\nDo you want Claude to proceed",
-      nowFn,
-    );
+    const r = classifyText("Compacting conversation\nDo you want Claude to proceed", nowFn);
     expect(r.state).toBe("COMPACTING");
   });
 
   test("MODAL wins over TYPING when both present", () => {
-    const r = classifyText(
-      "Press up to edit queued messages\n[y/N]:",
-      nowFn,
-    );
+    const r = classifyText("Press up to edit queued messages\n[y/N]:", nowFn);
     // [y/N]: is MODAL; pattern order matters.
     expect(r.state).toBe("MODAL");
   });

@@ -10,8 +10,8 @@
 // retry/refusal policy live in src/core/pane-state.ts.
 
 import {
-  classifyPane,
   type CaptureFn,
+  classifyText,
   isRetryable,
   isSendable,
   type PaneClassification,
@@ -19,14 +19,32 @@ import {
   REFUSAL_SEVERITY,
   RETRY_POLICY,
 } from "./pane-state.ts";
+import { detectKnownModal, type KnownModalMatch } from "./known-modals.ts";
 
 // ---------- Public types ----------
 
-export type SendKeysFn = (target: string, text: string) => Promise<void>;
-export type RaiseFlagFn = (
-  severity: "p0" | "p1" | "p2" | "p3",
-  body: string,
+export interface SendKeysOpts {
+  /** Whether to press Enter after the keys. Defaults to wiring's choice
+   *  — used by the known-modal dismiss path to send single keystrokes
+   *  without submitting a prompt. */
+  enter?: boolean;
+}
+export type SendKeysFn = (
+  target: string,
+  text: string,
+  opts?: SendKeysOpts,
 ) => Promise<void>;
+export type RaiseFlagFn = (severity: "p0" | "p1" | "p2" | "p3", body: string) => Promise<void>;
+
+/** Max number of consecutive known-modal dismissals safeSendKeys will
+ *  perform inside a single call before falling through to refused-modal.
+ *  Bound to keep the gate from looping if a modal won't go away. */
+export const MAX_KNOWN_MODAL_DISMISSALS = 3;
+
+/** Settle delay between sending a known-modal dismissal keystroke and
+ *  re-capturing the pane to verify the modal is gone. Short; the modal
+ *  UI redraws within a frame. */
+export const KNOWN_MODAL_SETTLE_MS = 500;
 
 export interface SafeSendOpts {
   /** tmux capture-pane wrapper. Required (no default — tests inject;
@@ -59,6 +77,9 @@ export interface SafeSendResult {
   finalClassification: PaneClassification;
   /** Number of classify+retry attempts made. */
   attempts: number;
+  /** Number of known-modal dismissals performed during this call. 0
+   *  on the happy path; non-zero when MODAL was hit + auto-dismissed. */
+  dismissals: number;
 }
 
 // ---------- Public API ----------
@@ -83,33 +104,67 @@ export async function safeSendKeys(
   const sleep = opts.sleep ?? defaultSleep;
 
   let attempts = 0;
-  let classification = await classifyPane(target, opts.capture);
+  let dismissals = 0;
+  let paneText = await opts.capture(target);
+  let classification = classifyText(paneText);
   attempts += 1;
 
-  // Retry loop for transient states.
-  while (isRetryable(classification.state)) {
-    const policy = RETRY_POLICY[classification.state];
-    if (attempts >= policy.maxAttempts) {
-      const outcome: SafeSendOutcome =
-        classification.state === "TYPING" ? "exhausted-typing" : "exhausted-compacting";
-      await maybeFlag(
-        opts.raiseFlag,
-        REFUSAL_SEVERITY[classification.state],
-        `safeSendKeys ${target}: ${classification.state} after ${attempts} attempts (giving up)`,
-      );
-      log(`safeSendKeys: ${target} → ${outcome} after ${attempts} attempts`);
-      return { outcome, finalClassification: classification, attempts };
+  // Combined retry/dismiss loop. Three transitions can re-enter:
+  //   1. RETRYABLE state (TYPING/COMPACTING) — wait per RETRY_POLICY.
+  //   2. MODAL state with a known-modal match — dismiss + re-capture.
+  // Anything else exits the loop into the terminal-state decision.
+  while (true) {
+    if (isRetryable(classification.state)) {
+      const policy = RETRY_POLICY[classification.state];
+      if (attempts >= policy.maxAttempts) {
+        const outcome: SafeSendOutcome =
+          classification.state === "TYPING" ? "exhausted-typing" : "exhausted-compacting";
+        await maybeFlag(
+          opts.raiseFlag,
+          REFUSAL_SEVERITY[classification.state],
+          `safeSendKeys ${target}: ${classification.state} after ${attempts} attempts (giving up)`,
+        );
+        log(`safeSendKeys: ${target} → ${outcome} after ${attempts} attempts`);
+        return { outcome, finalClassification: classification, attempts, dismissals };
+      }
+      await sleep(policy.delayMs);
+      paneText = await opts.capture(target);
+      classification = classifyText(paneText);
+      attempts += 1;
+      continue;
     }
-    await sleep(policy.delayMs);
-    classification = await classifyPane(target, opts.capture);
-    attempts += 1;
+
+    if (
+      classification.state === "MODAL" &&
+      dismissals < MAX_KNOWN_MODAL_DISMISSALS
+    ) {
+      const known = detectKnownModal(paneText);
+      if (known !== null) {
+        await dismissKnownModal(target, known, opts);
+        log(
+          `safeSendKeys: ${target} dismissed known-modal=${known.modal.id} ` +
+            `(dismissals=${dismissals + 1})`,
+        );
+        await sleep(KNOWN_MODAL_SETTLE_MS);
+        paneText = await opts.capture(target);
+        classification = classifyText(paneText);
+        attempts += 1;
+        dismissals += 1;
+        continue;
+      }
+    }
+
+    break;
   }
 
   // Decision per terminal state.
   if (isSendable(classification.state)) {
     await opts.sendKeys(target, text);
-    log(`safeSendKeys: ${target} sent (state=${classification.state}, attempts=${attempts})`);
-    return { outcome: "sent", finalClassification: classification, attempts };
+    log(
+      `safeSendKeys: ${target} sent (state=${classification.state}, ` +
+        `attempts=${attempts}, dismissals=${dismissals})`,
+    );
+    return { outcome: "sent", finalClassification: classification, attempts, dismissals };
   }
 
   // Non-retryable refusal.
@@ -120,7 +175,7 @@ export async function safeSendKeys(
     `safeSendKeys ${target}: ${classification.state} state — refused (evidence: ${classification.evidence})`,
   );
   log(`safeSendKeys: ${target} → ${outcome} (state=${classification.state})`);
-  return { outcome, finalClassification: classification, attempts };
+  return { outcome, finalClassification: classification, attempts, dismissals };
 }
 
 // ---------- Internals ----------
@@ -158,4 +213,12 @@ async function maybeFlag(
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function dismissKnownModal(
+  target: string,
+  match: KnownModalMatch,
+  opts: SafeSendOpts,
+): Promise<void> {
+  await opts.sendKeys(target, match.modal.keys, { enter: match.modal.pressEnter });
 }

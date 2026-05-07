@@ -78,6 +78,9 @@ const PATTERNS: ReadonlyArray<Pattern> = [
   { state: "MODAL", regex: /Do you want (Claude )?to/i },
   { state: "MODAL", regex: /Allow this tool to proceed/i },
   { state: "MODAL", regex: /\[y\/N\]:?\s*$/m },
+  // Feedback survey modal (t-3e58a605 Path B). The survey blocks the
+  // pane; recovery via known-modals catalog (src/core/known-modals.ts).
+  { state: "MODAL", regex: /How is Claude doing this session/i },
   // TYPING — queued-message indicator (user text in compose box)
   { state: "TYPING", regex: /Press up to edit queued messages/i },
   // SHELL — pane fell back to a shell prompt (TUI crashed)
@@ -117,10 +120,7 @@ export async function classifyPane(
  * already have the pane-text in hand and don't want to redo the
  * capture (e.g., whip already runs capturePane for other checks).
  */
-export function classifyText(
-  text: string,
-  nowMs: () => number = now,
-): PaneClassification {
+export function classifyText(text: string, nowMs: () => number = now): PaneClassification {
   for (const p of PATTERNS) {
     const match = p.regex.exec(text);
     if (match !== null) {

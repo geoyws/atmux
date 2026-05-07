@@ -5,6 +5,8 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  KNOWN_MODAL_SETTLE_MS,
+  MAX_KNOWN_MODAL_DISMISSALS,
   safeSendKeys,
   type SafeSendOpts,
   type SafeSendOutcome,
@@ -18,6 +20,8 @@ interface FlagCall {
 interface SendCall {
   target: string;
   text: string;
+  /** undefined = caller passed no opts arg (user-payload sends). */
+  enter: boolean | undefined;
 }
 
 interface SafeSendFixture {
@@ -45,8 +49,8 @@ function buildFixture(captures: string[]): {
       captureIdx += 1;
       return fixture.captures[i] ?? "";
     },
-    sendKeys: async (target, text) => {
-      fixture.sends.push({ target, text });
+    sendKeys: async (target, text, sendOpts) => {
+      fixture.sends.push({ target, text, enter: sendOpts?.enter });
     },
     raiseFlag: async (severity, body) => {
       fixture.flags.push({ severity, body });
@@ -58,6 +62,9 @@ function buildFixture(captures: string[]): {
   return { fixture, opts };
 }
 
+const FEEDBACK_SURVEY_PANE = `● How is Claude doing this session? (optional)
+  1: Bad    2: Fine   3: Good   0: Dismiss`;
+
 // ---------- READY happy path ----------
 
 describe("safeSendKeys — READY happy path", () => {
@@ -66,7 +73,9 @@ describe("safeSendKeys — READY happy path", () => {
     const result = await safeSendKeys("atmux:1.0", "hello", opts);
     expect(result.outcome).toBe("sent");
     expect(result.attempts).toBe(1);
-    expect(fixture.sends).toEqual([{ target: "atmux:1.0", text: "hello" }]);
+    expect(fixture.sends).toEqual([
+      { target: "atmux:1.0", text: "hello", enter: undefined },
+    ]);
     expect(fixture.flags).toHaveLength(0);
     expect(fixture.sleeps).toHaveLength(0);
   });
@@ -131,15 +140,80 @@ describe("safeSendKeys — COMPACTING retries", () => {
 
 describe("safeSendKeys — MODAL refusal", () => {
   test("MODAL pane → refused-modal + flag p3 + no send", async () => {
-    const { fixture, opts } = buildFixture([
-      "Do you want Claude to run rm -rf? [y/N]",
-    ]);
+    const { fixture, opts } = buildFixture(["Do you want Claude to run rm -rf? [y/N]"]);
     const result = await safeSendKeys("x", "answer", opts);
     expect(result.outcome).toBe("refused-modal");
+    expect(result.dismissals).toBe(0);
     expect(fixture.sends).toHaveLength(0);
     expect(fixture.flags).toHaveLength(1);
     expect(fixture.flags[0]?.severity).toBe("p3");
     expect(fixture.flags[0]?.body).toContain("MODAL");
+  });
+});
+
+// ---------- MODAL with known-modal auto-dismissal (Path B) ----------
+
+describe("safeSendKeys — known-modal auto-dismiss", () => {
+  test("feedback-survey MODAL → dismissed with '0' (no Enter) → READY → sent", async () => {
+    const { fixture, opts } = buildFixture([
+      FEEDBACK_SURVEY_PANE,
+      "3.4k tokens · esc to interrupt",
+    ]);
+    const result = await safeSendKeys("atmux:1.0", "real payload", opts);
+    expect(result.outcome).toBe("sent");
+    expect(result.dismissals).toBe(1);
+    // Two sends: dismiss '0' first, then user payload.
+    expect(fixture.sends).toEqual([
+      { target: "atmux:1.0", text: "0", enter: false },
+      { target: "atmux:1.0", text: "real payload", enter: undefined },
+    ]);
+    expect(fixture.sleeps).toEqual([KNOWN_MODAL_SETTLE_MS]);
+    expect(fixture.flags).toHaveLength(0);
+  });
+
+  test("feedback-survey persists past MAX_KNOWN_MODAL_DISMISSALS → refused-modal + flag", async () => {
+    // 4 captures all show the feedback survey — dismissals exhaust the
+    // budget and we fall through to refused-modal. Catalog matches
+    // exactly MAX_KNOWN_MODAL_DISMISSALS (3) times before the loop exits.
+    const captures = [
+      FEEDBACK_SURVEY_PANE,
+      FEEDBACK_SURVEY_PANE,
+      FEEDBACK_SURVEY_PANE,
+      FEEDBACK_SURVEY_PANE,
+    ];
+    const { fixture, opts } = buildFixture(captures);
+    const result = await safeSendKeys("atmux:1.0", "payload", opts);
+    expect(result.outcome).toBe("refused-modal");
+    expect(result.dismissals).toBe(MAX_KNOWN_MODAL_DISMISSALS);
+    // 3 dismissal sends; 0 user-payload sends.
+    expect(fixture.sends).toHaveLength(MAX_KNOWN_MODAL_DISMISSALS);
+    for (const s of fixture.sends) {
+      expect(s.text).toBe("0");
+      expect(s.enter).toBe(false);
+    }
+    expect(fixture.flags).toHaveLength(1);
+    expect(fixture.flags[0]?.severity).toBe("p3");
+  });
+
+  test("unknown MODAL (no catalog match) → refused-modal, dismissals=0", async () => {
+    // Already covered by the basic MODAL refusal test above; this pins
+    // the dismissals counter on the unknown-modal path explicitly.
+    const { fixture, opts } = buildFixture(["Allow this tool to proceed?"]);
+    const result = await safeSendKeys("x", "y", opts);
+    expect(result.outcome).toBe("refused-modal");
+    expect(result.dismissals).toBe(0);
+    expect(fixture.sends).toHaveLength(0);
+  });
+
+  test("feedback-survey clears after 1 dismiss → no flag fired", async () => {
+    // Sanity: the happy-path dismissal must not raise a flag (the
+    // recovery is silent; the survey is expected friction).
+    const { fixture, opts } = buildFixture([
+      FEEDBACK_SURVEY_PANE,
+      "3.4k tokens · esc to interrupt",
+    ]);
+    await safeSendKeys("x", "y", opts);
+    expect(fixture.flags).toHaveLength(0);
   });
 });
 
