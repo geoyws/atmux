@@ -6,6 +6,9 @@
 # Pattern: capture-pane first (per CLAUDE.md rule: read pane state BEFORE send),
 # refuse if pane looks un-ready, else load-buffer + paste + Enter.
 
+# shellcheck source=socket-pubsub.sh
+. "$ATMUX_LIB_DIR/socket-pubsub.sh"
+
 main() {
   atmux::require tmux jq
   atmux::require_team
@@ -58,6 +61,22 @@ main() {
 atmux::send_to_member() {
   local member="$1" msg="$2" no_submit="${3:-0}" verify="${4:-1}"
 
+  # E13/Sc: publish the send event BEFORE the legacy tmux send-keys path.
+  # The supervisor on the target's side picks the event up + fires its own
+  # preflight-gated send. Legacy direct send-keys retained for compat —
+  # set ATMUX_LEGACY_SEND=1 to skip the publish entirely (diagnostics: tests
+  # without a bound listener, manual send when supervisor is offline).
+  if [[ "${ATMUX_LEGACY_SEND:-}" != "1" ]]; then
+    local _caller="${ATMUX_MEMBER:-driver}"
+    local _evt
+    _evt="$(jq -cn \
+      --arg from "$_caller" \
+      --arg snip "${msg:0:100}" \
+      --argjson ts "$(atmux::now_epoch)" \
+      '{type:"send", ts:$ts, from:$from, payload:{snippet:$snip}}')"
+    atmux::sock_publish "$member" "$_evt"
+  fi
+
   atmux::tmux_window_exists "$member" \
     || atmux::die "no tmux window for $member (is the team running?)"
 
@@ -74,7 +93,7 @@ atmux::send_to_member() {
   fi
 
   # ---- Write msg to tmp file, load-buffer + paste ----
-  local tmp; tmp="$(mktemp /tmp/atmux-msg-XXXXXX)"
+  local tmp; tmp="$(atmux::tmp_path msg)"
   # Single trailing newline after the body; we submit with Enter separately.
   printf '%s' "$msg" > "$tmp"
 

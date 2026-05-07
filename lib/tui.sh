@@ -49,7 +49,7 @@ atmux::tui_cmd() {
 
   # 3. Built-in defaults.
   case "$tui" in
-    claude)    atmux::tui_claude   "$model" "$cwd" "$name" "$role" ;;
+    claude)    atmux::tui_claude   "$model" "$cwd" "$name" "$role" "$member_json" ;;
     opencode)  atmux::tui_opencode "$model" "$cwd" "$name" "$role" ;;
     kimi)      atmux::tui_kimi     "$model" "$cwd" "$name" "$role" ;;
     cursor)    atmux::tui_cursor   "$model" "$cwd" "$name" "$role" ;;
@@ -81,13 +81,30 @@ _atmux_env_prefix() {
 }
 
 atmux::tui_claude() {
-  local model="$1" cwd="$2" name="$3" role="$4"
+  local model="$1" cwd="$2" name="$3" role="$4" member_json="${5:-}"
   local model_flag=""
   [[ -n "$model" && "$model" != "default" ]] && model_flag="--model $(printf '%q' "$model")"
   local bin="${ATMUX_CLAUDE_BIN:-claude}"
-  printf '%s cd %q && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=%s %s --permission-mode %s %s\n' \
+
+  # Per-member Claude account selection — first-class mix-account support.
+  # `.claudeAccount: "ifca"` resolves to `CLAUDE_CONFIG_DIR=$HOME/.claude-ifca`,
+  # so cost-balancing across multiple Claude Max accounts is declarative
+  # (mirrors per-member model selection per ADR-024). Absent / "default"
+  # ⇒ no env prefix, claude uses ~/.claude. Schema is opt-in; existing
+  # member.command overrides + tuiCommands prefix paths are unaffected.
+  local account_env=""
+  if [[ -n "$member_json" ]]; then
+    local account
+    account="$(jq -r '.claudeAccount // ""' <<<"$member_json" 2>/dev/null || true)"
+    if [[ -n "$account" && "$account" != "default" && "$account" != "null" ]]; then
+      account_env="CLAUDE_CONFIG_DIR=$(printf '%q' "$HOME/.claude-${account}")"
+    fi
+  fi
+
+  printf '%s cd %q && %sCLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=%s %s --permission-mode %s %s\n' \
     "$(_atmux_env_prefix "$name")" \
     "$cwd" \
+    "${account_env:+$account_env }" \
     "${ATMUX_CLAUDE_EFFORT:-xhigh}" \
     "$bin" \
     "${ATMUX_CLAUDE_PERMISSION:-dontAsk}" \

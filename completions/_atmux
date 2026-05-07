@@ -19,11 +19,14 @@ _atmux() {
     'tell-lead:Driver → lead: append to driver-inbox.md + ping'
     'reply:Member → driver: append to lead-outbox.md'
     'outbox:Driver: read lead-outbox.md (+ --ack, --json)'
-    'task:Manage the kanban (add/list/show/move/assign/rm)'
-    'dispatch:Push a task to a member'\''s inbox + ping'
+    'task:Manage Tasks on the kanban (add/list/show/move/assign/rm)'
+    'epic:Manage Epics (add/list/show/advance)'
+    'story:Manage Stories (add/list/show/advance)'
+    'decisions:Auto-mode resolution log (add/list/show + Discord ping)'
+    'dispatch:Push a task to a member'\''s inbox + ping (priority override)'
     'inbox:Show a member inbox (+ --json)'
-    'claim:Claim a task (as member)'
-    'done:Mark a claimed task complete'
+    'claim:Claim a Task (--next for pull-mode, or by id)'
+    'done:Mark a claimed Task complete (auto-fires commit-Task)'
     'report:30-min digest (Discord)'
     'whip:5-min watchdog (Discord)'
     'cost:Per-member USD + token usage (+ --json)'
@@ -39,6 +42,13 @@ _atmux() {
     'version:Print version'
     'help:Print help'
   )
+
+  local -a lanes epic_states story_states task_states reversibilities
+  lanes=(fe be db ops test review misc)
+  epic_states=(planning ready in-progress review done)
+  story_states=(planning ready in-progress testing review merging done)
+  task_states=(todo in-progress done blocked)
+  reversibilities=(low medium high)
 
   local context state line
   _arguments -C \
@@ -58,7 +68,110 @@ _atmux() {
         send|inbox|dispatch|rotate|pause|resume|handoff)
           _values 'members' $members ;;
         task)
-          _values 'task verbs' add list show move assign rm ;;
+          if (( CURRENT == 2 )); then
+            _values 'task verbs' add list show move assign rm
+          else
+            case "${line[2]}" in
+              add)
+                _arguments \
+                  '--body[Body text]:body:' \
+                  '--epic[Parent Epic id]:epic:' \
+                  '--story[Parent Story id]:story:' \
+                  "--lane[Lane]:lane:(${lanes[*]})" \
+                  '--deliverable[Deliverable artifact]:deliverable:' \
+                  '--assignee[Pre-assign owner]:member:($members)' \
+                  '--deps[Deps (comma-separated)]:deps:' \
+                  '--priority[Priority 1-5]:priority:' ;;
+              list)
+                _arguments \
+                  "--status[Filter status]:status:(${task_states[*]})" \
+                  '--assignee[Filter assignee]:member:($members)' \
+                  '--json[JSON output]' ;;
+              move)
+                _arguments \
+                  "2:status:(${task_states[*]})" ;;
+              assign)
+                _arguments \
+                  '2:member:($members)' ;;
+            esac
+          fi
+          ;;
+        epic)
+          if (( CURRENT == 2 )); then
+            _values 'epic verbs' add list show advance
+          else
+            case "${line[2]}" in
+              add)
+                _arguments \
+                  '--body[Body text]:body:' \
+                  '--driver-ref[Driver inbox ref]:ref:' ;;
+              list)
+                _arguments \
+                  "--status[Filter status]:status:(${epic_states[*]})" \
+                  '--json[JSON output]' ;;
+              show)
+                _arguments '--json[JSON output]' ;;
+              advance)
+                _arguments \
+                  "--to[Target state]:state:(${epic_states[*]})" ;;
+            esac
+          fi
+          ;;
+        story)
+          if (( CURRENT == 2 )); then
+            _values 'story verbs' add list show advance
+          else
+            case "${line[2]}" in
+              add)
+                _arguments \
+                  '--epic[Parent Epic id]:epic:' \
+                  '--ac[Acceptance criteria]:ac:' \
+                  '--body[Body text]:body:' ;;
+              list)
+                _arguments \
+                  '--epic[Parent Epic id]:epic:' \
+                  "--status[Filter status]:status:(${story_states[*]})" \
+                  '--json[JSON output]' ;;
+              show)
+                _arguments '--json[JSON output]' ;;
+              advance)
+                _arguments \
+                  "--to[Target state]:state:(${story_states[*]})" ;;
+            esac
+          fi
+          ;;
+        decisions)
+          if (( CURRENT == 2 )); then
+            _values 'decisions verbs' add list show
+          else
+            case "${line[2]}" in
+              add)
+                _arguments \
+                  '--default[Recommended answer]:answer:' \
+                  "--reversibility[Reversibility tier]:tier:(${reversibilities[*]})" \
+                  '--note[Context note]:note:' ;;
+              list)
+                _arguments \
+                  '--since[Since timestamp/duration]:since:' \
+                  "--reversibility[Filter tier]:tier:(${reversibilities[*]})" \
+                  '--json[JSON output]' ;;
+            esac
+          fi
+          ;;
+        claim)
+          _arguments \
+            '--next[Pull next claimable Task in caller lane]' \
+            "--lane[Override lane filter]:lane:(${lanes[*]})" \
+            '--as[Run as member]:member:($members)' ;;
+        done)
+          _arguments \
+            '--as[Run as member]:member:($members)' \
+            '--note[Evidence note (becomes commit subject)]:note:' ;;
+        init)
+          _arguments \
+            '--name[Team name]:name:' \
+            '--wizard[Interactive setup]' \
+            '--force[Overwrite existing team.json]' ;;
       esac
       ;;
   esac

@@ -1,0 +1,71 @@
+#!/bin/sh
+# atmux-tmux — context-aware tmux wrapper that routes to the per-team
+# isolated socket when one is configured (ADR-018).
+#
+# Usage: atmux-tmux <any-tmux-args>
+#   atmux-tmux attach          # attach to the team's cage socket
+#   atmux-tmux ls              # list sessions on the cage
+#   atmux-tmux send-keys ...   # drive a cage pane
+#
+# Resolution order (mirrors bin/atmux):
+#   1. $TMUX_TMPDIR set in env  → use that (operator override wins)
+#   2. $ATMUX_DIR/team.json     → read .tmuxTmpdir
+#   3. $ATMUX_TEAM_DIR/.atmux/team.json → read .tmuxTmpdir
+#   4. walk up from CWD for .atmux/team.json → read .tmuxTmpdir
+#   5. nothing found            → exec bare tmux (default socket)
+#
+# When .tmuxTmpdir is set we exec `tmux -S <tmpdir>/tmux-$UID/default
+# "$@"`. Per-tmux convention the socket dir is owned 0700 — created here
+# if missing so first-run `atmux-tmux attach` doesn't bail with ENOENT.
+#
+# Why a sibling binary instead of `atmux tmux <args>`: tmux verbs (attach,
+# new-session, list-windows, send-keys, capture-pane, ...) are tmux's own
+# CLI surface; wrapping each one as an atmux verb would balloon dispatch
+# without adding value. atmux-tmux is the smallest possible adapter — one
+# socket-resolution layer, then exec.
+
+set -u
+
+# -- 1. Operator override wins.
+if [ -n "${TMUX_TMPDIR:-}" ]; then
+  _tmpdir="$TMUX_TMPDIR"
+fi
+
+# -- 2/3/4. Resolve team.json the same way bin/atmux's _atmux_resolve_tmux_tmpdir does.
+if [ -z "${_tmpdir:-}" ]; then
+  _tj=""
+  if [ -n "${ATMUX_DIR:-}" ] && [ -f "${ATMUX_DIR%/}/team.json" ]; then
+    _tj="${ATMUX_DIR%/}/team.json"
+  elif [ -n "${ATMUX_TEAM_DIR:-}" ] && [ -f "${ATMUX_TEAM_DIR%/}/.atmux/team.json" ]; then
+    _tj="${ATMUX_TEAM_DIR%/}/.atmux/team.json"
+  else
+    _d="$PWD"
+    while [ -n "$_d" ] && [ "$_d" != "/" ]; do
+      if [ -f "$_d/.atmux/team.json" ]; then
+        _tj="$_d/.atmux/team.json"
+        break
+      fi
+      _d=$(dirname "$_d")
+    done
+  fi
+
+  if [ -n "$_tj" ] && command -v jq >/dev/null 2>&1; then
+    _tmpdir=$(jq -r '.tmuxTmpdir // empty' "$_tj" 2>/dev/null)
+    [ "$_tmpdir" = "null" ] && _tmpdir=""
+  fi
+fi
+
+# -- 5. No tmpdir resolved → bare tmux.
+if [ -z "${_tmpdir:-}" ]; then
+  exec tmux "$@"
+fi
+
+# Tmux puts its socket at <TMUX_TMPDIR>/tmux-<UID>/<label>; <label>
+# defaults to "default". Auto-mkdir keeps the first-run UX painless;
+# 0700 matches tmux's own behaviour when it creates the dir itself.
+_uid=$(id -u)
+_sockdir="$_tmpdir/tmux-$_uid"
+mkdir -p "$_sockdir" 2>/dev/null || true
+chmod 700 "$_sockdir" 2>/dev/null || true
+
+exec tmux -S "$_sockdir/default" "$@"

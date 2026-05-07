@@ -39,6 +39,10 @@ main() {
   local hook_new
   _atmux_prompt_local hook_new "Discord webhook URL (Enter to keep/skip)" "$hook_cur"
 
+  # Per t-2f13a2e4: snapshot before the rewrite so an interrupted/botched
+  # reconfigure leaves a recoverable .bak.<epoch>.
+  atmux::team_json_backup >/dev/null
+
   atmux::jq_update "$tj" '
     (.tuiCommands = (
       {}

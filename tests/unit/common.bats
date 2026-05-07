@@ -32,6 +32,33 @@ teardown() {
   [ "$output" = "$ATMUX_TEST_TMP/project/.atmux" ]
 }
 
+@test "common: atmux::dir honors ATMUX_TEAM_DIR (project-root override)" {
+  unset ATMUX_DIR
+  ATMUX_TEAM_DIR="$ATMUX_TEST_TMP/project" run atmux::dir
+  [ "$output" = "$ATMUX_TEST_TMP/project/.atmux" ]
+}
+
+@test "common: atmux::dir strips trailing slash from ATMUX_TEAM_DIR" {
+  unset ATMUX_DIR
+  ATMUX_TEAM_DIR="$ATMUX_TEST_TMP/project/" run atmux::dir
+  [ "$output" = "$ATMUX_TEST_TMP/project/.atmux" ]
+}
+
+@test "common: atmux::dir — ATMUX_DIR wins over ATMUX_TEAM_DIR" {
+  ATMUX_DIR="/tmp/explicit/.atmux" ATMUX_TEAM_DIR="/tmp/team-root" run atmux::dir
+  [ "$output" = "/tmp/explicit/.atmux" ]
+}
+
+@test "common: atmux::dir — ATMUX_TEAM_DIR resolves cron \$HOME breakage" {
+  # Repro of the cron-from-\$HOME bug: cwd has no .atmux/, walk-up finds nothing,
+  # so ATMUX_TEAM_DIR has to substitute for cd-into-project.
+  mkdir -p home
+  cd home
+  unset ATMUX_DIR
+  ATMUX_TEAM_DIR="$ATMUX_TEST_TMP/project" run atmux::dir
+  [ "$output" = "$ATMUX_TEST_TMP/project/.atmux" ]
+}
+
 @test "common: atmux::gen_id returns t-prefixed 10-char id" {
   run atmux::gen_id
   [ "$status" -eq 0 ]
@@ -137,6 +164,18 @@ JSON
   [ "$output" = "[1,2]" ]
 }
 
+@test "common: atmux::jq_update returns nonzero on bad filter + leaves file intact (A11)" {
+  # E6/S5 t-7ae355e9 — pre-A11 a malformed filter silently emitted an
+  # empty tmp + mv'd over the live JSON. Now jq's nonzero rc surfaces
+  # and the source file is preserved.
+  local f="$ATMUX_TEST_TMP/preserved.json"
+  echo '{"keep":"me"}' > "$f"
+  local before; before="$(cat "$f")"
+  run atmux::jq_update "$f" '.this is not valid jq @@@'
+  [ "$status" -ne 0 ]
+  [ "$(cat "$f")" = "$before" ]
+}
+
 @test "common: atmux::ensure_dirs creates subdirs" {
   mkdir -p .atmux
   echo '{"name":"t","members":[]}' > .atmux/team.json
@@ -145,4 +184,41 @@ JSON
   [ -d .atmux/logs ]
   [ -d .atmux/state ]
   [ -d .atmux/archive ]
+}
+
+# ---------- atmux::guard_push_target — ADR-028 refuse-gate ----------
+
+@test "common: guard_push_target — refuses push to main" {
+  run atmux::guard_push_target main
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "PR-only" ]]
+  [[ "$output" =~ "ADR-028" ]]
+}
+
+@test "common: guard_push_target — refuses push to master" {
+  run atmux::guard_push_target master
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "PR-only" ]]
+  [[ "$output" =~ "ADR-028" ]]
+}
+
+@test "common: guard_push_target — refuses 'main' regardless of how caller resolved it (misconfigured branch.X.merge)" {
+  # Repro shape: caller resolves push target via `git config branch.foo.merge`
+  # which (drift bug) returns refs/heads/main. Caller strips refs/heads/ and
+  # passes "main" to the guard. Guard must refuse on the resolved string;
+  # provenance is irrelevant.
+  local resolved="refs/heads/main"
+  resolved="${resolved#refs/heads/}"
+  run atmux::guard_push_target "$resolved"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "PR-only" ]]
+}
+
+@test "common: guard_push_target — allows WIP branches (feature-x, dev-y)" {
+  run atmux::guard_push_target dev-y
+  [ "$status" -eq 0 ]
+  run atmux::guard_push_target feature-x
+  [ "$status" -eq 0 ]
+  run atmux::guard_push_target main-staging
+  [ "$status" -eq 0 ]
 }

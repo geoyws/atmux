@@ -1,5 +1,6 @@
 .atmux/
 .claude/team.json
+.claude/scheduled_tasks.lock
 .DS_Store
 *.log
 node_modules/

@@ -6,6 +6,13 @@ load '../helpers/setup'
 setup() {
   atmux_setup_sandbox
   "$ATMUX_BIN" init --name s >/dev/null
+  # ADR-026 made singleSession=true the template default; that path
+  # `atmux::die`s in lib/common.sh:session_name when state/session.txt is
+  # missing — and these tests don't run `atmux start` (they exercise
+  # logic-only paths: status / report / tell-lead). Disable the flag so
+  # session_name falls back to the legacy `atmux-<team>` resolution.
+  jq '.singleSession = false' .atmux/team.json > .atmux/team.json.tmp \
+    && mv .atmux/team.json.tmp .atmux/team.json
 }
 
 teardown() {
