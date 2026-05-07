@@ -69,7 +69,15 @@ export type DiscordTemplate =
   | "whip-budget-pause"
   | "whip-budget-resume"
   | "whip-budget-warning"
-  | "whip-budget-refresh-soon";
+  | "whip-budget-refresh-soon"
+  // ADR-056 §D5: account-swap lifecycle templates. T11 (R1-T11) wires
+  // emission from src/core/account-swap.ts as the per-member workflow
+  // walks decisions[]. Renderers below; bullet shape mirrors ADR-056
+  // §D5 verbatim.
+  | "whip-account-swap-start"
+  | "whip-account-swap-success"
+  | "whip-account-swap-fail"
+  | "whip-account-swap-pass-complete";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -85,7 +93,9 @@ export type CategoryEmoji =
   | "🌱"
   // ADR-053 §D3 budget observability headers.
   | "⚠️"
-  | "🌅";
+  | "🌅"
+  // ADR-056 §D5 account-swap lifecycle headers.
+  | "🔄";
 
 export interface DiscordSection {
   /** Bold-rendered section label, e.g. "🏗️ Shipped". */
@@ -149,6 +159,14 @@ const ALLOWED_BULLET_PREFIX = new Set<string>([
   "⚠️",
   "▶️",
   "🌅",
+  // ADR-056 §D5: account-swap bullet emojis.
+  // 🚨 (trigger account banner), 🎯 (target fallback line), 🆔 (passId),
+  // 💼 (in-flight task line), ❌ (per-member abort), 🚩 (flag/reason).
+  "🚨",
+  "🆔",
+  "💼",
+  "❌",
+  "🚩",
 ]);
 
 const GRAPHEME_SEG = new Intl.Segmenter("en", { granularity: "grapheme" });
@@ -871,6 +889,169 @@ export function renderWhipBudgetRefreshSoon(
     team: opts.team,
     category: "🌅",
     bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-056 §D5: account-swap renderers ----------
+
+export interface AccountSwapStartOpts {
+  team: string;
+  /** Trigger account name. */
+  triggerAccount: string;
+  /** Trigger window pct-used (the higher of h5/wk that fired). */
+  triggerPct: number;
+  /** Window label — `5h` or `wk` — for the trigger bullet. */
+  triggerWindow: "5h" | "wk";
+  /** Total swap candidates (eligible workers). */
+  candidates: number;
+  /** Excluded count (lead/planner/reviewer on trigger account). */
+  excluded: number;
+  /** Comma-separated excluded role names (e.g. `"lead/planner/reviewer"`). */
+  excludedRoles: string;
+  /** Fallback target account name. */
+  fallbackAccount: string;
+  /** Fallback h5 / wk pct-used at probe time. */
+  fallbackH5: number;
+  fallbackWk: number;
+  /** Pass id — `swap-<8-hex>`. */
+  passId: string;
+  whenMs?: number;
+}
+
+/** Pass-level start ping (ADR-056 §D5). One per pass when the trigger
+ *  fires + a viable fallback is selected. */
+export function renderAccountSwapStart(opts: AccountSwapStartOpts): DiscordSendOpts {
+  const out: DiscordSendOpts = {
+    template: "whip-account-swap-start",
+    team: opts.team,
+    category: "🔄",
+    bullets: [
+      `🚨 trigger: account \`${opts.triggerAccount}\` at ${opts.triggerPct}% (${opts.triggerWindow})`,
+      `👥 candidates: ${opts.candidates} members (${opts.excluded} excluded: ${opts.excludedRoles})`,
+      `🎯 target fallback: \`${opts.fallbackAccount}\` (${opts.fallbackH5}%/${opts.fallbackWk}%)`,
+      `🆔 passId: ${opts.passId}`,
+    ],
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface AccountSwapSuccessOpts {
+  team: string;
+  /** Original member name. */
+  fromMember: string;
+  /** Shadow member name (`<original>-swap`). */
+  toMember: string;
+  /** Target account the shadow runs on. */
+  toAccount: string;
+  /** In-flight task id handed off, or null when no task in flight. */
+  taskId: string | null;
+  /** Per-member workflow duration in milliseconds. */
+  durationMs: number;
+  /** Decisions complete count (numerator). */
+  progressDone: number;
+  /** Total decisions (denominator). */
+  progressTotal: number;
+  whenMs?: number;
+}
+
+/** Per-member success ping (ADR-056 §D5). Fires after handoff +
+ *  pause-original + state-file decision flip → `done`. */
+export function renderAccountSwapSuccess(opts: AccountSwapSuccessOpts): DiscordSendOpts {
+  const taskBullet =
+    opts.taskId !== null
+      ? `💼 in-flight task: ${opts.taskId} (handed off cleanly)`
+      : `💼 in-flight task: (none — clean handoff)`;
+  const out: DiscordSendOpts = {
+    template: "whip-account-swap-success",
+    team: opts.team,
+    category: "🔄",
+    bullets: [
+      `✅ swapped: \`${opts.fromMember}\` → \`${opts.toMember}\` on \`${opts.toAccount}\``,
+      taskBullet,
+      `⏱️ duration: ${formatDuration(opts.durationMs)}`,
+      `📊 progress: ${opts.progressDone}/${opts.progressTotal}`,
+    ],
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface AccountSwapFailOpts {
+  team: string;
+  /** Member that couldn't be swapped. */
+  member: string;
+  /** Short failure category (e.g. `target probe 401`, `spawn timeout`,
+   *  `deadline exceeded`). Rendered next to the abort bullet. */
+  failureBrief: string;
+  /** Long-form reason for the operator. */
+  reason: string;
+  /** Account the member stays on (the original — pause path). */
+  fallbackAccount: string;
+  /** Optional flag id raised; null when no flag emitted. */
+  flagId: string | null;
+  /** Severity of the flag (typically p2). */
+  flagSeverity: "p0" | "p1" | "p2";
+  whenMs?: number;
+}
+
+/** Per-member failure ping (ADR-056 §D5). Fires when the per-member
+ *  workflow aborts (probe-401 / spawn-fail / deadline-exceeded). */
+export function renderAccountSwapFail(opts: AccountSwapFailOpts): DiscordSendOpts {
+  const flagBullet =
+    opts.flagId !== null
+      ? `🚩 flag: ${opts.flagSeverity} raised (${opts.flagId})`
+      : `🚩 flag: ${opts.flagSeverity} raised`;
+  const out: DiscordSendOpts = {
+    template: "whip-account-swap-fail",
+    team: opts.team,
+    category: "🔄",
+    bullets: [
+      `❌ swap aborted: \`${opts.member}\` (${opts.failureBrief})`,
+      `🚩 reason: ${opts.reason}`,
+      `📍 fallback: keeping \`${opts.member}\` on \`${opts.fallbackAccount}\` (will hit pause)`,
+      flagBullet,
+    ],
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface AccountSwapPassCompleteOpts {
+  team: string;
+  passId: string;
+  /** Members successfully swapped. */
+  swapped: number;
+  /** Members aborted (probe-fail / deadline / spawn-fail). */
+  aborted: number;
+  /** Members excluded (lead/planner/reviewer roles). */
+  excluded: number;
+  /** Trigger account name (for the post-pass utilization bullet). */
+  triggerAccount: string;
+  /** Trigger account pct-used at pass close — proves the pin lifted. */
+  triggerPctPostPass: number;
+  /** Pass duration in milliseconds. */
+  durationMs: number;
+  whenMs?: number;
+}
+
+/** Pass-complete ping (ADR-056 §D5). Final ping per pass; archives the
+ *  decisions[] tally + lifts the pin. */
+export function renderAccountSwapPassComplete(
+  opts: AccountSwapPassCompleteOpts,
+): DiscordSendOpts {
+  const out: DiscordSendOpts = {
+    template: "whip-account-swap-pass-complete",
+    team: opts.team,
+    category: "🔄",
+    bullets: [
+      `✅ pass \`${opts.passId}\` complete`,
+      `📊 swapped: ${opts.swapped} / aborted: ${opts.aborted} / excluded: ${opts.excluded}`,
+      `💰 budget on ${opts.triggerAccount} post-pass: ${opts.triggerPctPostPass}% used (no longer pinned)`,
+      `⏱️ pass duration: ${formatDuration(opts.durationMs)}`,
+    ],
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
   return out;

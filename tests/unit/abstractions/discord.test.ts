@@ -17,6 +17,10 @@ import {
   _resetFallbackWarnedForTest,
   type DiscordSection,
   type DiscordSendOpts,
+  renderAccountSwapFail,
+  renderAccountSwapPassComplete,
+  renderAccountSwapStart,
+  renderAccountSwapSuccess,
   renderEternalImprovementDone,
   renderEternalImprovementProgress,
   renderEternalImprovementStart,
@@ -1142,6 +1146,198 @@ describe("renderWhipBudgetRefreshSoon", () => {
     });
     expect(out.bullets?.length).toBe(2);
     expect(out.bullets?.find((b) => b.includes("auto-resume"))).toBeUndefined();
+  });
+});
+
+// ---------- ADR-056 account-swap template renderers ----------
+
+describe("renderAccountSwapStart", () => {
+  test("builds the 4-bullet [whip-account-swap-start] body per ADR-056 §D5", () => {
+    const out = renderAccountSwapStart({
+      team: "atmux",
+      triggerAccount: "icloud",
+      triggerPct: 76,
+      triggerWindow: "5h",
+      candidates: 6,
+      excluded: 3,
+      excludedRoles: "lead/planner/reviewer",
+      fallbackAccount: "ifca",
+      fallbackH5: 8,
+      fallbackWk: 12,
+      passId: "swap-a3f2c814",
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("whip-account-swap-start");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🔄");
+    expect(out.bullets).toEqual([
+      "🚨 trigger: account `icloud` at 76% (5h)",
+      "👥 candidates: 6 members (3 excluded: lead/planner/reviewer)",
+      "🎯 target fallback: `ifca` (8%/12%)",
+      "🆔 passId: swap-a3f2c814",
+    ]);
+    expect(out.whenMs).toBe(FIXED_TS);
+  });
+
+  test("wk-window trigger renders verbatim", () => {
+    const out = renderAccountSwapStart({
+      team: "atmux",
+      triggerAccount: "icloud",
+      triggerPct: 76,
+      triggerWindow: "wk",
+      candidates: 1,
+      excluded: 0,
+      excludedRoles: "",
+      fallbackAccount: "ifca",
+      fallbackH5: 8,
+      fallbackWk: 12,
+      passId: "swap-deadbeef",
+    });
+    expect(out.bullets?.[0]).toBe("🚨 trigger: account `icloud` at 76% (wk)");
+  });
+
+  test("end-to-end through send() recorder produces canonical chunk", async () => {
+    const recorder = join(tmpRoot, "swap-start-e2e.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderAccountSwapStart({
+        team: "atmux",
+        triggerAccount: "icloud",
+        triggerPct: 76,
+        triggerWindow: "5h",
+        candidates: 6,
+        excluded: 3,
+        excludedRoles: "lead/planner/reviewer",
+        fallbackAccount: "ifca",
+        fallbackH5: 8,
+        fallbackWk: 12,
+        passId: "swap-a3f2c814",
+        whenMs: FIXED_TS,
+      }),
+    );
+    const calls = await readJsonl<{ payload: { content: string } }>(recorder);
+    expect(calls.length).toBe(1);
+    const content = calls[0]?.payload.content ?? "";
+    expect(content).toContain("🔄 **[whip-account-swap-start]** · `atmux` · 11:44 MYT");
+    expect(content).toContain("🆔 passId: swap-a3f2c814");
+  });
+});
+
+describe("renderAccountSwapSuccess", () => {
+  test("with in-flight task → handed-off bullet present", () => {
+    const out = renderAccountSwapSuccess({
+      team: "atmux",
+      fromMember: "parity-state-impl",
+      toMember: "parity-state-impl-swap",
+      toAccount: "ifca",
+      taskId: "t-abc1234",
+      durationMs: 222_000, // 3min42s
+      progressDone: 3,
+      progressTotal: 6,
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("whip-account-swap-success");
+    expect(out.bullets?.[0]).toBe(
+      "✅ swapped: `parity-state-impl` → `parity-state-impl-swap` on `ifca`",
+    );
+    expect(out.bullets?.[1]).toBe("💼 in-flight task: t-abc1234 (handed off cleanly)");
+    expect(out.bullets?.[2]).toContain("⏱️ duration:");
+    expect(out.bullets?.[3]).toBe("📊 progress: 3/6");
+  });
+
+  test("no in-flight task → clean-handoff bullet", () => {
+    const out = renderAccountSwapSuccess({
+      team: "atmux",
+      fromMember: "alpha",
+      toMember: "alpha-swap",
+      toAccount: "ifca",
+      taskId: null,
+      durationMs: 60_000,
+      progressDone: 1,
+      progressTotal: 1,
+    });
+    expect(out.bullets?.[1]).toBe("💼 in-flight task: (none — clean handoff)");
+  });
+});
+
+describe("renderAccountSwapFail", () => {
+  test("with flagId → flag bullet includes id", () => {
+    const out = renderAccountSwapFail({
+      team: "atmux",
+      member: "up-impl",
+      failureBrief: "target probe 401",
+      reason: "refresh failed for `ifca` — re-login needed",
+      fallbackAccount: "icloud",
+      flagId: "flag-c0ffee00",
+      flagSeverity: "p2",
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("whip-account-swap-fail");
+    expect(out.bullets?.[0]).toBe("❌ swap aborted: `up-impl` (target probe 401)");
+    expect(out.bullets?.[1]).toBe("🚩 reason: refresh failed for `ifca` — re-login needed");
+    expect(out.bullets?.[2]).toBe(
+      "📍 fallback: keeping `up-impl` on `icloud` (will hit pause)",
+    );
+    expect(out.bullets?.[3]).toBe("🚩 flag: p2 raised (flag-c0ffee00)");
+  });
+
+  test("no flagId → severity-only flag bullet", () => {
+    const out = renderAccountSwapFail({
+      team: "atmux",
+      member: "alpha",
+      failureBrief: "spawn timeout",
+      reason: "shadow pane never reached prompt",
+      fallbackAccount: "icloud",
+      flagId: null,
+      flagSeverity: "p1",
+    });
+    expect(out.bullets?.[3]).toBe("🚩 flag: p1 raised");
+  });
+});
+
+describe("renderAccountSwapPassComplete", () => {
+  test("builds the 4-bullet [whip-account-swap-pass-complete] body", () => {
+    const out = renderAccountSwapPassComplete({
+      team: "atmux",
+      passId: "swap-a3f2c814",
+      swapped: 5,
+      aborted: 1,
+      excluded: 3,
+      triggerAccount: "icloud",
+      triggerPctPostPass: 76,
+      durationMs: 18 * 60 * 1000, // 18min
+      whenMs: FIXED_TS,
+    });
+    expect(out.template).toBe("whip-account-swap-pass-complete");
+    expect(out.bullets?.[0]).toBe("✅ pass `swap-a3f2c814` complete");
+    expect(out.bullets?.[1]).toBe("📊 swapped: 5 / aborted: 1 / excluded: 3");
+    expect(out.bullets?.[2]).toBe(
+      "💰 budget on icloud post-pass: 76% used (no longer pinned)",
+    );
+    expect(out.bullets?.[3]).toContain("⏱️ pass duration:");
+  });
+
+  test("end-to-end through send() recorder", async () => {
+    const recorder = join(tmpRoot, "swap-complete-e2e.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderAccountSwapPassComplete({
+        team: "atmux",
+        passId: "swap-c0ffee00",
+        swapped: 5,
+        aborted: 0,
+        excluded: 3,
+        triggerAccount: "icloud",
+        triggerPctPostPass: 76,
+        durationMs: 600_000,
+        whenMs: FIXED_TS,
+      }),
+    );
+    const calls = await readJsonl<{ payload: { content: string } }>(recorder);
+    expect(calls.length).toBe(1);
+    const content = calls[0]?.payload.content ?? "";
+    expect(content).toContain("🔄 **[whip-account-swap-pass-complete]**");
+    expect(content).toContain("swap-c0ffee00");
   });
 });
 
