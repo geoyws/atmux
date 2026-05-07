@@ -64,10 +64,7 @@ export function improveDirectivesPath(atmuxDir: string): string {
  *  fresh entry with `startedAt = nowSec`. Caller is responsible for
  *  passing a state that does NOT already have an active currentCycle
  *  (closeCycle should run first). */
-export function openCycle(
-  state: EternalImprovementState,
-  nowSec: number,
-): EternalImprovementState {
+export function openCycle(state: EternalImprovementState, nowSec: number): EternalImprovementState {
   return {
     ...state,
     cycleN: state.cycleN + 1,
@@ -104,8 +101,7 @@ export function closeCycle(
     tokensSpent: cur.tokensSpent,
   };
   const history = [...state.history, entry];
-  const capped =
-    history.length > HISTORY_RING_MAX ? history.slice(-HISTORY_RING_MAX) : history;
+  const capped = history.length > HISTORY_RING_MAX ? history.slice(-HISTORY_RING_MAX) : history;
   return {
     ...state,
     currentCycle: null,

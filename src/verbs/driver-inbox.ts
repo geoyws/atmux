@@ -16,18 +16,13 @@
 // is exposed via `--since` for backfill and re-used by D2c (handoff)
 // and D2d (stale-anchor whip finding).
 
-import {
-  type DriverInboxEntry,
-  readDriverInbox,
-  writeCursor,
-} from "../core/driver-inbox.ts";
+import { type DriverInboxEntry, readDriverInbox, writeCursor } from "../core/driver-inbox.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { now as nowMs } from "../abstractions/time.ts";
 import { UsageError } from "../errors.ts";
 
-const USAGE =
-  "atmux driver-inbox [--since <epoch>] [--all] [--ack] [--json] [--team-dir <dir>]";
+const USAGE = "atmux driver-inbox [--since <epoch>] [--all] [--ack] [--json] [--team-dir <dir>]";
 
 // ---------- Args ----------
 
@@ -135,8 +130,7 @@ export async function driverInbox(
 
   // Render.
   if (parsed.json) {
-    const cursorAfter =
-      parsed.ack && result.tipTs !== null ? result.tipTs : result.priorCursor;
+    const cursorAfter = parsed.ack && result.tipTs !== null ? result.tipTs : result.priorCursor;
     stdout(
       `${JSON.stringify({
         entries: entriesToShow.map(serializeEntry),
@@ -154,7 +148,9 @@ export async function driverInbox(
       stdout("(no new entries since last read)\n");
     }
   } else {
-    stdout(`📬 driver-inbox — ${entriesToShow.length} entr${entriesToShow.length === 1 ? "y" : "ies"}:\n\n`);
+    stdout(
+      `📬 driver-inbox — ${entriesToShow.length} entr${entriesToShow.length === 1 ? "y" : "ies"}:\n\n`,
+    );
     for (const e of entriesToShow) {
       stdout(`${e.body}\n\n`);
     }

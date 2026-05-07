@@ -64,40 +64,37 @@ describe("parity: init (lifecycle MVP skeleton — bash captured, ts-side todo u
     await fixture.cleanup();
   });
 
-  test.todo(
-    "init --name <team>: bash and ts both scaffold .atmux/ from templates/team.example.json",
-    async () => {
-      const args = ["--name", "parity-skeleton-team"] as const;
-      const [bash, ts] = await Promise.all([
-        runVerb("bash", "init", args, fixture.path),
-        runVerb("ts", "init", args, fixture.path),
-      ]);
+  test.todo("init --name <team>: bash and ts both scaffold .atmux/ from templates/team.example.json", async () => {
+    const args = ["--name", "parity-skeleton-team"] as const;
+    const [bash, ts] = await Promise.all([
+      runVerb("bash", "init", args, fixture.path),
+      runVerb("ts", "init", args, fixture.path),
+    ]);
 
-      // Sanity rails — verify bash side independently green BEFORE
-      // trusting the comparator. CLAUDE.md "verify green from the right
-      // path": a parity-green result against a wedged child is false-green.
-      expect(bash.exit).toBe(0);
-      expect(bash.stdout).toContain("initialized atmux team 'parity-skeleton-team'");
-      expect(bash.stderr).toBe("");
-      expect(bash.discordCalls).toEqual([]);
-      // Bash creates 9 inbox files + driver-inbox.md + kanban.json +
-      // team.json + dirs — fsState non-empty post-run.
-      expect(Object.keys(bash.fsState).length).toBeGreaterThan(0);
-      expect(bash.fsState[".atmux/team.json"]).toBeDefined();
-      expect(bash.fsState[".atmux/kanban.json"]).toBeDefined();
-      expect(bash.fsState[".atmux/driver-inbox.md"]).toBeDefined();
+    // Sanity rails — verify bash side independently green BEFORE
+    // trusting the comparator. CLAUDE.md "verify green from the right
+    // path": a parity-green result against a wedged child is false-green.
+    expect(bash.exit).toBe(0);
+    expect(bash.stdout).toContain("initialized atmux team 'parity-skeleton-team'");
+    expect(bash.stderr).toBe("");
+    expect(bash.discordCalls).toEqual([]);
+    // Bash creates 9 inbox files + driver-inbox.md + kanban.json +
+    // team.json + dirs — fsState non-empty post-run.
+    expect(Object.keys(bash.fsState).length).toBeGreaterThan(0);
+    expect(bash.fsState[".atmux/team.json"]).toBeDefined();
+    expect(bash.fsState[".atmux/kanban.json"]).toBeDefined();
+    expect(bash.fsState[".atmux/driver-inbox.md"]).toBeDefined();
 
-      // TS side rails — porter #13 must reproduce the same shape
-      // byte-equal to flip this test green.
-      expect(ts.exit).toBe(0);
-      expect(ts.discordCalls).toEqual([]);
+    // TS side rails — porter #13 must reproduce the same shape
+    // byte-equal to flip this test green.
+    expect(ts.exit).toBe(0);
+    expect(ts.discordCalls).toEqual([]);
 
-      // The actual parity contract — comparator returns `[]` IFF every
-      // observable channel matches post-mask across stdout / stderr /
-      // exit / fs / discord. Non-empty array surfaces structured
-      // Divergence rows the porter triages without re-running.
-      const divergences = compare(bash, ts);
-      expect(divergences).toEqual([]);
-    },
-  );
+    // The actual parity contract — comparator returns `[]` IFF every
+    // observable channel matches post-mask across stdout / stderr /
+    // exit / fs / discord. Non-empty array surfaces structured
+    // Divergence rows the porter triages without re-running.
+    const divergences = compare(bash, ts);
+    expect(divergences).toEqual([]);
+  });
 });

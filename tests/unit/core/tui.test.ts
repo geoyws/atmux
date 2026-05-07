@@ -91,12 +91,7 @@ describe("createLogger", () => {
     logger.ok("b");
     logger.warn("c");
     logger.err("d");
-    expect(out).toEqual([
-      "🔹 atmux a\n",
-      "✅ atmux b\n",
-      "⚠️  atmux c\n",
-      "💥 atmux d\n",
-    ]);
+    expect(out).toEqual(["🔹 atmux a\n", "✅ atmux b\n", "⚠️  atmux c\n", "💥 atmux d\n"]);
   });
 
   test("ANSI palette wraps body in color codes", () => {

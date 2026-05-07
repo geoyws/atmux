@@ -85,7 +85,13 @@ atmux::tui_claude() {
   local model_flag=""
   [[ -n "$model" && "$model" != "default" ]] && model_flag="--model $(printf '%q' "$model")"
   local bin="${ATMUX_CLAUDE_BIN:-claude}"
-  printf '%s cd %q && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=%s %s --permission-mode %s %s\n' \
+  # CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 (t-63a0ffcd, ADR-058 follow-up):
+  # surgically suppresses Claude Code's "How is Claude doing this session?"
+  # modal at the env-var layer. Source:
+  # https://code.claude.com/docs/en/env-vars.md +
+  # https://code.claude.com/docs/en/data-usage.md (Session quality surveys).
+  # No side effects on telemetry / autoupdate / /feedback command.
+  printf '%s cd %q && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=%s CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 %s --permission-mode %s %s\n' \
     "$(_atmux_env_prefix "$name")" \
     "$cwd" \
     "${ATMUX_CLAUDE_EFFORT:-xhigh}" \

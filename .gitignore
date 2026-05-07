@@ -9,3 +9,9 @@ tmp/
 coverage/
 dist/
 .bun/
+
+# VitePress docs build artifacts + build-time copies of root files
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/README.md
+docs/CHANGELOG.md

@@ -104,9 +104,7 @@ describe("pause verb", () => {
     await captureStdout(() => pause(["alpha", "--team-dir", teamDir]));
     expect((await listPaused(atmuxDir)).alpha?.reason).toBe("envreason");
     // Now flag wins:
-    await captureStdout(() =>
-      pause(["alpha", "--reason", "flag-wins", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => pause(["alpha", "--reason", "flag-wins", "--team-dir", teamDir]));
     expect((await listPaused(atmuxDir)).alpha?.reason).toBe("flag-wins");
   });
 

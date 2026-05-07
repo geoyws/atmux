@@ -236,10 +236,7 @@ async function materializeCronTasksLayer(dir: string): Promise<void> {
     epics: [],
     stories: [],
   };
-  await fs.writeFile(
-    path.join(atmuxDir, "kanban.json"),
-    `${JSON.stringify(kanban, null, 2)}\n`,
-  );
+  await fs.writeFile(path.join(atmuxDir, "kanban.json"), `${JSON.stringify(kanban, null, 2)}\n`);
   await fs.writeFile(
     path.join(atmuxDir, "driver-inbox.md"),
     "# driver-inbox\n\n## Open\n- [10:00 MYT] **w1**: need clarification on cron-tasks scope\n\n## Archive\n",
@@ -303,10 +300,7 @@ async function materializeCronTasksGroomLayer(dir: string): Promise<void> {
     epics: [],
     stories: [],
   };
-  await fs.writeFile(
-    path.join(atmuxDir, "kanban.json"),
-    `${JSON.stringify(oldKanban, null, 2)}\n`,
-  );
+  await fs.writeFile(path.join(atmuxDir, "kanban.json"), `${JSON.stringify(oldKanban, null, 2)}\n`);
   await fs.writeFile(
     path.join(atmuxDir, "driver-inbox.md"),
     "# driver-inbox\n\n## Open\n\n## Archive\n- [09:00 MYT] **w1**: ancient archived line 1\n- [09:01 MYT] **w1**: ancient archived line 2\n",

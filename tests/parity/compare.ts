@@ -494,11 +494,7 @@ function decode(bytes: Uint8Array): string {
  * capture path also writes post-mask bytes so a re-capture in the same
  * harness yields the same golden (no infinite mask drift).
  */
-export function compareGolden(
-  bash: ParityRun,
-  golden: string,
-  mask?: ChannelMask,
-): Divergence[] {
+export function compareGolden(bash: ParityRun, golden: string, mask?: ChannelMask): Divergence[] {
   const divergences: Divergence[] = [];
   const bashStdout = maskTimestamps(applyChannelMask(bash.stdout, mask?.stdout));
   if (bashStdout !== golden) {

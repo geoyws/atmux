@@ -602,9 +602,7 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     preState: {
       // reason: dispatch needs a pre-seeded todo task to UPDATE — ADR-029 row 1
       ".atmux/kanban.json": {
-        tasks: [
-          { id: "t-seed1", subject: "seeded", status: "todo", createdAt: 1700000000 },
-        ],
+        tasks: [{ id: "t-seed1", subject: "seeded", status: "todo", createdAt: 1700000000 }],
         epics: [],
         stories: [],
       },
@@ -633,9 +631,7 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     preState: {
       // reason: dispatch needs a pre-seeded todo task to UPDATE — ADR-029 row 2
       ".atmux/kanban.json": {
-        tasks: [
-          { id: "t-seed2", subject: "seeded-2", status: "todo", createdAt: 1700000000 },
-        ],
+        tasks: [{ id: "t-seed2", subject: "seeded-2", status: "todo", createdAt: 1700000000 }],
         epics: [],
         stories: [],
       },
@@ -888,7 +884,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "reply",
     args: ["--from", "lead", "test msg"],
     fixturePreset: "lifecycle",
-    label: "reply --from lead 'test msg' [lifecycle: auto-create + insert under ## Open] (ADR-029 row 7)",
+    label:
+      "reply --from lead 'test msg' [lifecycle: auto-create + insert under ## Open] (ADR-029 row 7)",
     expect: "exit-zero-stable-stdout",
     mask: {
       // reason: per-side fixture-clone path suffix `<root>.bash` / `<root>.ts`
@@ -901,7 +898,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "reply",
     args: ["--from", "w1", "test msg from member"],
     fixturePreset: "lifecycle",
-    label: "reply --from w1 'test msg from member' [lifecycle: member-role from-name, auto-create + insert] (ADR-029 row 8)",
+    label:
+      "reply --from w1 'test msg from member' [lifecycle: member-role from-name, auto-create + insert] (ADR-029 row 8)",
     expect: "exit-zero-stable-stdout",
     mask: {
       // reason: same as row 7 — per-side fixture-clone path suffix in the
@@ -959,7 +957,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "tell-lead",
     args: ["test long ask with 80+ chars to exercise heads-up truncation logic mirror"],
     fixturePreset: "lifecycle",
-    label: "tell-lead '<long-msg>' [lifecycle: append-then-die-no-window long msg] (ADR-029 row 10)",
+    label:
+      "tell-lead '<long-msg>' [lifecycle: append-then-die-no-window long msg] (ADR-029 row 10)",
     expect: "exit-nonzero-stable-stderr",
     mask: {
       // reason: bash exit 1 vs TS exit 78 EX_CONFIG (ADR-006 BSD sysexits)
@@ -1198,7 +1197,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "dispatch",
     args: ["no-such-member", "t-seed1", "--no-ping"],
     fixturePreset: "lifecycle",
-    label: "dispatch no-such-member t-seed1 --no-ping [lifecycle: member-not-in-team error] (ADR-032 row 12)",
+    label:
+      "dispatch no-such-member t-seed1 --no-ping [lifecycle: member-not-in-team error] (ADR-032 row 12)",
     expect: "exit-nonzero-stable-stderr",
     preState: {
       // reason: dispatch validates the <member> arg via member-exists
@@ -1458,7 +1458,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "report",
     args: ["--no-discord"],
     fixturePreset: "lifecycle",
-    label: "report --no-discord [lifecycle: empty kanban, Shipped:0 + In-progress (none)] (ADR-028 row 1)",
+    label:
+      "report --no-discord [lifecycle: empty kanban, Shipped:0 + In-progress (none)] (ADR-028 row 1)",
     expect: "exit-zero-stable-stdout",
     mask: {
       // reason: bash atmux::log "report: ..." trace lines on stderr (atmux::log
@@ -1479,7 +1480,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "report",
     args: ["--no-discord"],
     fixturePreset: "cron-tasks",
-    label: "report --no-discord [cron-tasks: mixed kanban (Shipped+In-progress+Blocked+open ask)] (ADR-028 row 2)",
+    label:
+      "report --no-discord [cron-tasks: mixed kanban (Shipped+In-progress+Blocked+open ask)] (ADR-028 row 2)",
     expect: "exit-zero-stable-stdout",
     mask: {
       // reason: same as report row 1 — bash atmux::log trace lines on stderr (ADR-027 error-rendering class)
@@ -1551,7 +1553,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "decisions",
     args: ["digest"],
     fixturePreset: "cron-tasks-decisions",
-    label: "decisions digest [cron-tasks-decisions: empty pending — no new since cursor] (ADR-028 row 5a)",
+    label:
+      "decisions digest [cron-tasks-decisions: empty pending — no new since cursor] (ADR-028 row 5a)",
     expect: "exit-zero-stable-stdout",
     bashOnly: true,
     bashBin: "/root/work/src/atmux/bin/atmux",
@@ -1560,7 +1563,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "decisions",
     args: ["digest"],
     fixturePreset: "cron-tasks-decisions",
-    label: "decisions digest [cron-tasks-decisions: 1-entry — digest sent via discord, empty stdout] (ADR-028 row 5b)",
+    label:
+      "decisions digest [cron-tasks-decisions: 1-entry — digest sent via discord, empty stdout] (ADR-028 row 5b)",
     expect: "exit-zero-stable-stdout",
     bashOnly: true,
     bashBin: "/root/work/src/atmux/bin/atmux",
@@ -1580,7 +1584,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "decisions",
     args: ["digest"],
     fixturePreset: "cron-tasks-decisions",
-    label: "decisions digest [cron-tasks-decisions: 6 entries over-threshold — multi-chunk digest, empty stdout] (ADR-028 row 5c)",
+    label:
+      "decisions digest [cron-tasks-decisions: 6 entries over-threshold — multi-chunk digest, empty stdout] (ADR-028 row 5c)",
     expect: "exit-zero-stable-stdout",
     bashOnly: true,
     bashBin: "/root/work/src/atmux/bin/atmux",
@@ -1610,7 +1615,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "groom",
     args: ["--dry-run"],
     fixturePreset: "lifecycle",
-    label: "groom --dry-run [lifecycle: clean kanban — nothing to sweep, empty stdout] (ADR-028 row 6a)",
+    label:
+      "groom --dry-run [lifecycle: clean kanban — nothing to sweep, empty stdout] (ADR-028 row 6a)",
     expect: "exit-zero-stable-stdout",
     bashOnly: true,
     bashBin: "/root/work/src/atmux/bin/atmux",
@@ -1619,7 +1625,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "groom",
     args: ["--dry-run"],
     fixturePreset: "lifecycle",
-    label: "groom --dry-run [lifecycle: orphaned-task kanban — story refs nonexistent epic, empty stdout] (ADR-028 row 6b)",
+    label:
+      "groom --dry-run [lifecycle: orphaned-task kanban — story refs nonexistent epic, empty stdout] (ADR-028 row 6b)",
     expect: "exit-zero-stable-stdout",
     bashOnly: true,
     bashBin: "/root/work/src/atmux/bin/atmux",
@@ -1648,7 +1655,8 @@ export const PARITY_MATRIX: ReadonlyArray<ParityRow> = [
     verb: "groom",
     args: ["--dry-run"],
     fixturePreset: "cron-tasks-groom",
-    label: "groom --dry-run [cron-tasks-groom: archived inbox tail + 7 .baks + old done — flush+summarize+cull paths, empty stdout] (ADR-028 row 6c)",
+    label:
+      "groom --dry-run [cron-tasks-groom: archived inbox tail + 7 .baks + old done — flush+summarize+cull paths, empty stdout] (ADR-028 row 6c)",
     expect: "exit-zero-stable-stdout",
     bashOnly: true,
     bashBin: "/root/work/src/atmux/bin/atmux",

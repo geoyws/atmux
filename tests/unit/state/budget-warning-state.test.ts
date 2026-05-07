@@ -37,9 +37,7 @@ afterEach(async () => {
 
 describe("budgetWarningStatePath", () => {
   test("appends state/budget-warning-state.json to atmuxDir", () => {
-    expect(budgetWarningStatePath("/tmp/foo")).toBe(
-      "/tmp/foo/state/budget-warning-state.json",
-    );
+    expect(budgetWarningStatePath("/tmp/foo")).toBe("/tmp/foo/state/budget-warning-state.json");
   });
 });
 
@@ -85,7 +83,7 @@ describe("loadWarningState + writeWarningState", () => {
   test("non-numeric values are stripped on load (defensive)", async () => {
     await writeFile(
       budgetWarningStatePath(atmuxDir),
-      JSON.stringify({ "ifca:5h:0.5": 1, "junk": "string-value", "nan": Number.NaN }),
+      JSON.stringify({ "ifca:5h:0.5": 1, junk: "string-value", nan: Number.NaN }),
     );
     const s = await loadWarningState(atmuxDir);
     expect(s).toEqual({ "ifca:5h:0.5": 1 });
@@ -206,9 +204,9 @@ describe("file IO + persistence", () => {
   });
 
   test("writeWarningState overwrites existing file", async () => {
-    await writeWarningState(atmuxDir, { "k1": 1 });
-    await writeWarningState(atmuxDir, { "k2": 2 });
+    await writeWarningState(atmuxDir, { k1: 1 });
+    await writeWarningState(atmuxDir, { k2: 2 });
     const after = await loadWarningState(atmuxDir);
-    expect(after).toEqual({ "k2": 2 });
+    expect(after).toEqual({ k2: 2 });
   });
 });

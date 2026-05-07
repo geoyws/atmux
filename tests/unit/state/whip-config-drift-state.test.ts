@@ -67,38 +67,26 @@ describe("shouldFireDriftPing — dedup gate", () => {
 
   test("hash present + last fire 1h ago → suppress", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
-    expect(
-      await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + 60 * 60),
-    ).toBe(false);
+    expect(await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + 60 * 60)).toBe(false);
   });
 
   test("hash present + last fire 23h59m59s ago → suppress (boundary − 1)", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
     expect(
-      await shouldFireDriftPing(
-        atmuxDir,
-        "abc",
-        1_800_000_000 + DRIFT_REFIRE_WINDOW_SEC - 1,
-      ),
+      await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + DRIFT_REFIRE_WINDOW_SEC - 1),
     ).toBe(false);
   });
 
   test("hash present + last fire 24h ago → re-fire (boundary inclusive)", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
     expect(
-      await shouldFireDriftPing(
-        atmuxDir,
-        "abc",
-        1_800_000_000 + DRIFT_REFIRE_WINDOW_SEC,
-      ),
+      await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + DRIFT_REFIRE_WINDOW_SEC),
     ).toBe(true);
   });
 
   test("hash present + last fire 30h ago → re-fire", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
-    expect(
-      await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + 30 * 60 * 60),
-    ).toBe(true);
+    expect(await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + 30 * 60 * 60)).toBe(true);
   });
 });
 
@@ -123,18 +111,14 @@ describe("recordDriftPing — file IO", () => {
   test("appended hash preserves prior entries", async () => {
     await recordDriftPing(atmuxDir, "h1", 1);
     await recordDriftPing(atmuxDir, "h2", 2);
-    const parsed = JSON.parse(
-      await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"),
-    );
+    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
     expect(parsed).toEqual({ h1: 1, h2: 2 });
   });
 
   test("re-fire on same hash overwrites the timestamp", async () => {
     await recordDriftPing(atmuxDir, "abc", 1);
     await recordDriftPing(atmuxDir, "abc", 999);
-    const parsed = JSON.parse(
-      await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"),
-    );
+    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
     expect(parsed).toEqual({ abc: 999 });
   });
 
@@ -160,18 +144,14 @@ describe("multi-drift sequencing", () => {
     // h2 within window: suppress.
     expect(await shouldFireDriftPing(atmuxDir, "h2", 110)).toBe(false);
     // h3 past window: re-fire.
-    expect(
-      await shouldFireDriftPing(atmuxDir, "h3", 200 + DRIFT_REFIRE_WINDOW_SEC),
-    ).toBe(true);
+    expect(await shouldFireDriftPing(atmuxDir, "h3", 200 + DRIFT_REFIRE_WINDOW_SEC)).toBe(true);
   });
 
   test("re-firing preserves OTHER hashes' timestamps", async () => {
     await recordDriftPing(atmuxDir, "h1", 100);
     await recordDriftPing(atmuxDir, "h2", 200);
     await recordDriftPing(atmuxDir, "h1", 999); // re-fire h1
-    const parsed = JSON.parse(
-      await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"),
-    );
+    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
     expect(parsed).toEqual({ h1: 999, h2: 200 });
   });
 

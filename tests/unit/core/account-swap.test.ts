@@ -151,9 +151,7 @@ describe("findTriggerAccount", () => {
   });
 
   test("wk window ≥ threshold also fires (h5 OR wk)", () => {
-    const probes = new Map<string, BudgetProbeResult>([
-      ["icloud", probeAllowed("icloud", 30, 80)],
-    ]);
+    const probes = new Map<string, BudgetProbeResult>([["icloud", probeAllowed("icloud", 30, 80)]]);
     const got = findTriggerAccount(["icloud"], { byAccount: probes }, 75);
     expect(got?.account).toBe("icloud");
     expect(got?.wk_pct_used).toBe(80);
@@ -184,12 +182,7 @@ describe("pickFallbackAccount", () => {
       ["ifca", probeAllowed("ifca", 8, 12)],
       ["unum", probeAllowed("unum", 30, 30)],
     ]);
-    const fb = pickFallbackAccount(
-      ["ifca", "unum"],
-      "icloud",
-      { byAccount: probes },
-      50,
-    );
+    const fb = pickFallbackAccount(["ifca", "unum"], "icloud", { byAccount: probes }, 50);
     expect(fb).toBe("ifca");
   });
 
@@ -209,9 +202,7 @@ describe("pickFallbackAccount", () => {
       ["ifca", probeAllowed("ifca", 60, 70)],
       ["unum", probeAllowed("unum", 80, 90)],
     ]);
-    expect(
-      pickFallbackAccount(["ifca", "unum"], "icloud", { byAccount: probes }, 50),
-    ).toBeNull();
+    expect(pickFallbackAccount(["ifca", "unum"], "icloud", { byAccount: probes }, 50)).toBeNull();
   });
 });
 

@@ -178,15 +178,7 @@ describe("tellLead — integration", () => {
     // stdout with no prefix.
     await stageTeam([{ name: "alpha", role: "team-lead" }], true);
     const { stderr } = await captureStdoutStderr(() =>
-      tellLead([
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "review",
-        "the",
-        "migration",
-      ]),
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "review", "the", "migration"]),
     );
     expect(stderr).toContain("✅ atmux tell-lead → alpha");
     const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
@@ -207,9 +199,9 @@ describe("tellLead — integration", () => {
 
   test("no lead defined → ConfigError", async () => {
     await stageTeam([{ name: "alpha" }, { name: "beta" }], false);
-    await expect(
-      tellLead(["--socket", socketPath, "--team-dir", teamDir, "msg"]),
-    ).rejects.toThrow(ConfigError);
+    await expect(tellLead(["--socket", socketPath, "--team-dir", teamDir, "msg"])).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("ping failure → ConfigError 'no tmux window' after durable inbox write (ADR-029 §F6 + F7)", async () => {
@@ -253,5 +245,23 @@ describe("tellLead — integration", () => {
     const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
     expect(di).toMatch(/- \[\d{2}:\d{2} MYT\] format check/);
     expect(di).not.toMatch(/- \[\d{4}-\d{2}-\d{2}/);
+  });
+
+  test("zero-byte driver-inbox.md does not get a leading \\n on first append (ADR-029 §F14)", async () => {
+    // Bash `printf >> file` appends to EOF; a zero-byte file produces
+    // just the entry, no leading separator. Earlier TS port falsely
+    // prepended `\n` because the empty-string `existing` failed the
+    // `endsWith("\n")` check, triggering the "needs separator" branch.
+    // Result: bash 23 bytes vs TS 24 bytes (extra leading newline).
+    await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    // Pre-create driver-inbox.md as zero bytes — matches lifecycle
+    // fixture preset (factory.ts:168), which is the parity-test stage.
+    await Bun.write(join(atmuxDir, "driver-inbox.md"), "");
+    await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "test ask"]),
+    );
+    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    expect(di).not.toMatch(/^\n/);
+    expect(di).toMatch(/^- \[\d{2}:\d{2} MYT\] test ask\n$/);
   });
 });

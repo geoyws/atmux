@@ -147,7 +147,14 @@ describe("loadAccountSwapState + writeAccountSwapState", () => {
         startedAt: 1,
         trigger: trigger(),
         decisions: {
-          alice: { from: "a", to: "b", status: "bogus", startedAt: null, finishedAt: null, shadowName: null },
+          alice: {
+            from: "a",
+            to: "b",
+            status: "bogus",
+            startedAt: null,
+            finishedAt: null,
+            shadowName: null,
+          },
         },
         history: [],
       }),

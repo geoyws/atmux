@@ -315,4 +315,3 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
 
   return 0;
 }
-

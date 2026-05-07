@@ -28,11 +28,7 @@ import {
 } from "../core/inbox.ts";
 import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
 import { claimTask, markTaskDone, nowEpoch, showTask } from "../core/kanban.ts";
-import {
-  getAtmuxDir,
-  type ResolveDirOpts,
-  requireTeam,
-} from "../core/common.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import type { TeamMember } from "../schema/team.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
@@ -195,7 +191,9 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
     // Final defensive guard — even if auto-push throws unexpectedly,
     // the done transition stays committed. Audit happens inside
     // runAutoPush; here we just don't crash.
-    process.stderr.write(`auto-push: unexpected error: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.stderr.write(
+      `auto-push: unexpected error: ${e instanceof Error ? e.message : String(e)}\n`,
+    );
   }
 
   return 0;
@@ -204,9 +202,7 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
 /** Re-load the team for auto-push reading (cheap; cached at the
  *  filesystem layer). Kept private so the verb's main flow stays
  *  resilient to team-load errors during the auto-push leg. */
-async function loadTeamForAutoPush(
-  parsed: ClaimDoneArgs,
-): Promise<{ whip?: unknown }> {
+async function loadTeamForAutoPush(parsed: ClaimDoneArgs): Promise<{ whip?: unknown }> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   return await requireTeam(dirOpts);
 }

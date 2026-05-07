@@ -55,10 +55,7 @@ export async function loadSelfHealState(atmuxDir: string): Promise<SelfHealState
 }
 
 /** Atomic-write the full state map. */
-export async function writeSelfHealState(
-  atmuxDir: string,
-  state: SelfHealState,
-): Promise<void> {
+export async function writeSelfHealState(atmuxDir: string, state: SelfHealState): Promise<void> {
   await atomicWrite(cursorSelfHealStatePath(atmuxDir), JSON.stringify(state));
 }
 

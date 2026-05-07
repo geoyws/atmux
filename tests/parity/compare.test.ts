@@ -14,12 +14,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  compare,
-  compareGolden,
-  maskChannel,
-  STATE_AFTER_MASKED_SENTINEL,
-} from "./compare.ts";
+import { compare, compareGolden, maskChannel, STATE_AFTER_MASKED_SENTINEL } from "./compare.ts";
 import type { ChannelMask } from "./matrix.ts";
 import type { FsSnapshot, ParityRun } from "./runner.ts";
 
@@ -421,9 +416,7 @@ describe("maskChannel — exported helper for capture path", () => {
   });
 
   test("per-row mask runs first", () => {
-    expect(maskChannel("prefix t-deadbeef trailer\n", /t-[0-9a-f]{8}/)).toBe(
-      "prefix  trailer\n",
-    );
+    expect(maskChannel("prefix t-deadbeef trailer\n", /t-[0-9a-f]{8}/)).toBe("prefix  trailer\n");
   });
 
   test("absent per-row mask is a no-op for the per-row layer", () => {

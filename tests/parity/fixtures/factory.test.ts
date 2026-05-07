@@ -115,10 +115,7 @@ describe("parity fixture factory — cron-tasks preset (ADR-028)", () => {
   });
 
   test("driver-inbox.md ships 1 open ask under ## Open", async () => {
-    const inbox = await fs.readFile(
-      path.join(fixture.path, ".atmux", "driver-inbox.md"),
-      "utf8",
-    );
+    const inbox = await fs.readFile(path.join(fixture.path, ".atmux", "driver-inbox.md"), "utf8");
     expect(inbox).toContain("## Open");
     expect(inbox).toContain("need clarification on cron-tasks scope");
     expect(inbox).toContain("## Archive");

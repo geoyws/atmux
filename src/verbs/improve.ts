@@ -410,7 +410,7 @@ async function firePingDone(
   // Total tokens consumed across the run = budgetTotal - budgetRemaining
   // (clamped to 0 if budgetRemaining accidentally exceeded total).
   const consumed = Math.max(0, state.budgetTotal - state.budgetRemaining);
-  const durationMs = (nowFn() - state.startedAt * 1000);
+  const durationMs = nowFn() - state.startedAt * 1000;
   await discord(
     renderEternalImprovementDone({
       team: teamName,
@@ -457,7 +457,17 @@ interface TickCycleOpts {
  *      d. Otherwise open cycleN+1, write, arm directive, fire start ping.
  */
 async function tickCycle(opts: TickCycleOpts): Promise<number> {
-  const { atmuxDir, teamName, nowSec, nowMs, commitChecker, tokensSpentForClose, discord, onTerminate, stderr } = opts;
+  const {
+    atmuxDir,
+    teamName,
+    nowSec,
+    nowMs,
+    commitChecker,
+    tokensSpentForClose,
+    discord,
+    onTerminate,
+    stderr,
+  } = opts;
   const state = await readState(atmuxDir);
   if (state === null || state.active !== true) return 0;
   if (state.currentCycle === null) return 0; // nothing to tick

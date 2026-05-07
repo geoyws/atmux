@@ -411,9 +411,9 @@ describe("isCycleClosable", () => {
         tokensSpent: 0,
       },
     });
-    expect(
-      isCycleClosable(state, [task({ id: "t-a", status: "done", completedAt: 1 })]),
-    ).toBe(false);
+    expect(isCycleClosable(state, [task({ id: "t-a", status: "done", completedAt: 1 })])).toBe(
+      false,
+    );
   });
 
   test("false when any task is not status:'done'", () => {

@@ -47,10 +47,7 @@ beforeEach(async () => {
   await mkdir(join(atmuxDir, "state"), { recursive: true });
   await mkdir(join(atmuxDir, "logs"), { recursive: true });
   // Seed empty kanban so addTask works.
-  await atomicWrite(
-    join(atmuxDir, "kanban.json"),
-    JSON.stringify(emptyKanban()),
-  );
+  await atomicWrite(join(atmuxDir, "kanban.json"), JSON.stringify(emptyKanban()));
 });
 
 afterEach(async () => {
@@ -75,9 +72,7 @@ function makeRecipe(overrides: Partial<CursorRecipe> & { id: string }): CursorRe
         tokenCap: 5_000,
         cwd: PROJECT_CWD,
       })),
-    verify:
-      overrides.verify ??
-      (async () => ({ ok: true, reasons: [], patchSummary: "ok" })),
+    verify: overrides.verify ?? (async () => ({ ok: true, reasons: [], patchSummary: "ok" })),
   };
 }
 
@@ -99,7 +94,9 @@ function makeSendCapture() {
   return { sends, send };
 }
 
-function fakeCursorOk(diff = "diff --git a/team.json b/team.json\n--- a/team.json\n+++ b/team.json\n"): CursorInvokeResult {
+function fakeCursorOk(
+  diff = "diff --git a/team.json b/team.json\n--- a/team.json\n+++ b/team.json\n",
+): CursorInvokeResult {
   return {
     exitCode: 0,
     stdout: "{}",
@@ -157,12 +154,13 @@ describe("path helpers", () => {
 
 describe("stagePatchForReviewer", () => {
   const PATCH: GitPatch = {
-    diff: "diff --git a/team.json b/team.json\n@@ -1 +1 @@\n-{}\n+{\"k\":1}\n",
+    diff: 'diff --git a/team.json b/team.json\n@@ -1 +1 @@\n-{}\n+{"k":1}\n',
     files: ["team.json"],
   };
 
   test("writes patch to disk + dispatches reviewer task with P2 priority", async () => {
-    const captured: Array<{ subject: string; body: string; assignee: string; priority: number }> = [];
+    const captured: Array<{ subject: string; body: string; assignee: string; priority: number }> =
+      [];
     const fakeAddTask = async (
       _dir: string,
       o: { subject: string; body?: string; assignee?: string; priority?: number },
@@ -238,9 +236,9 @@ describe("stagePatchForReviewer", () => {
     // Verify task lands in kanban + assigned to reviewer.
     const txt = await readFile(join(atmuxDir, "kanban.json"), "utf8");
     const k = JSON.parse(txt);
-    const t = (k.tasks as Array<{ id: string; owner: string | null; priority: number | null }>).find(
-      (x) => x.id === result.taskId,
-    );
+    const t = (
+      k.tasks as Array<{ id: string; owner: string | null; priority: number | null }>
+    ).find((x) => x.id === result.taskId);
     expect(t).toBeDefined();
     expect(t?.owner).toBe("reviewer");
     expect(t?.priority).toBe(2);

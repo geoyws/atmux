@@ -69,7 +69,11 @@ describe("fixTeamJsonSchemaDriftRecipe.detect", () => {
     );
     const r = await fixTeamJsonSchemaDriftRecipe.detect(ctx());
     expect(r).not.toBeNull();
-    const dctx = r as { issues: ReadonlyArray<unknown>; allowedPaths: ReadonlyArray<string>; teamJsonBefore: string };
+    const dctx = r as {
+      issues: ReadonlyArray<unknown>;
+      allowedPaths: ReadonlyArray<string>;
+      teamJsonBefore: string;
+    };
     expect(dctx.issues.length).toBeGreaterThan(0);
     expect(dctx.allowedPaths).toContain("whip");
     expect(dctx.teamJsonBefore).toContain("garbage");

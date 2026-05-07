@@ -180,7 +180,13 @@ async function appendDriverInbox(atmuxDir: string, msg: string): Promise<void> {
   // global timezone rule + diverged from bash.
   const ts = formatMyt();
   const entry = `- [${ts}] ${msg}\n`;
-  // Bash appends to EOF (not newest-first under `## Open`); mirror.
-  const next = existing.endsWith("\n") ? existing + entry : `${existing}\n${entry}`;
+  // Per ADR-029 §F14 — bash `printf >> file` appends entry directly to
+  // EOF; on a zero-byte file this produces just the entry, no leading
+  // separator. Earlier port unconditionally prepended `\n` when existing
+  // didn't end with `\n`, which falsely fired on empty existing (length
+  // 0 doesn't end-with anything), producing an extra leading newline.
+  // Treat empty existing as the no-separator-needed case.
+  const next =
+    existing.length === 0 || existing.endsWith("\n") ? existing + entry : `${existing}\n${entry}`;
   await writeText(path, next);
 }

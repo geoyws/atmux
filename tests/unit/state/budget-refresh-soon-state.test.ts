@@ -80,7 +80,7 @@ describe("loadRefreshSoonState + writeRefreshSoonState", () => {
   test("non-numeric values stripped on load", async () => {
     await writeFile(
       budgetRefreshSoonStatePath(atmuxDir),
-      JSON.stringify({ "ifca:5h:1": 100, "junk": "string" }),
+      JSON.stringify({ "ifca:5h:1": 100, junk: "string" }),
     );
     expect(await loadRefreshSoonState(atmuxDir)).toEqual({ "ifca:5h:1": 100 });
   });
@@ -144,8 +144,8 @@ describe("wipeStaleEntries", () => {
 
   test("drops entries whose resetEpoch ≤ nowSec", () => {
     let s: RefreshSoonState = {};
-    s = recordRefreshSoonFire(s, "ifca", "5h", 1, 0);     // stale
-    s = recordRefreshSoonFire(s, "ifca", "wk", 100, 99);  // stale
+    s = recordRefreshSoonFire(s, "ifca", "5h", 1, 0); // stale
+    s = recordRefreshSoonFire(s, "ifca", "wk", 100, 99); // stale
     s = recordRefreshSoonFire(s, "ifca", "5h", 1000, 990); // fresh
     const next = wipeStaleEntries(s, 500);
     expect(next).toEqual({ "ifca:5h:1000": 990 });
@@ -153,7 +153,7 @@ describe("wipeStaleEntries", () => {
 
   test("multi-account staleness handled independently", () => {
     let s: RefreshSoonState = {};
-    s = recordRefreshSoonFire(s, "ifca", "5h", 100, 50);    // stale
+    s = recordRefreshSoonFire(s, "ifca", "5h", 100, 50); // stale
     s = recordRefreshSoonFire(s, "icloud", "5h", 1000, 990); // fresh
     const next = wipeStaleEntries(s, 200);
     expect(hasRefreshSoonFired(next, "ifca", "5h", 100)).toBe(false);
@@ -199,8 +199,8 @@ describe("file IO", () => {
   });
 
   test("writeRefreshSoonState overwrites existing file", async () => {
-    await writeRefreshSoonState(atmuxDir, { "k1": 1 });
-    await writeRefreshSoonState(atmuxDir, { "k2": 2 });
-    expect(await loadRefreshSoonState(atmuxDir)).toEqual({ "k2": 2 });
+    await writeRefreshSoonState(atmuxDir, { k1: 1 });
+    await writeRefreshSoonState(atmuxDir, { k2: 2 });
+    expect(await loadRefreshSoonState(atmuxDir)).toEqual({ k2: 2 });
   });
 });

@@ -140,10 +140,7 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
  * Return the (filtered) task array. Caller-side responsibility: sort
  * + render. Bash's tabular output lives in the verb (lib/kanban.sh:91-98).
  */
-export async function listTasks(
-  atmuxDir: string,
-  filter?: ListTasksFilter,
-): Promise<KanbanTask[]> {
+export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Promise<KanbanTask[]> {
   const k = await loadKanban(atmuxDir);
   let out = k.tasks;
   if (filter?.status !== undefined) {
@@ -285,15 +282,18 @@ export async function markTaskDone(
       if (task === undefined) {
         throw new ConfigError({ what: `no such task: ${id}` });
       }
+      // Per ADR-029 §F10 — bash claim.sh:65 unconditionally sets .note in
+      // the jq filter (`(.tasks[] | select(.id == $id) | .note) = $note`),
+      // so a `done` without `--note` writes `.note = ""` rather than
+      // leaving the key absent. Earlier port skipped the write when
+      // note===undefined, producing a key-set divergence that
+      // canonicaliseJson cannot mask.
       const next: KanbanTask = {
         ...task,
         status: "done",
         completedAt,
+        note: note ?? "",
       };
-      // Bash sets `.note` even when empty (lib/claim.sh:65). Mirror.
-      if (note !== undefined) {
-        (next as KanbanTask & { note?: string }).note = note;
-      }
       done = next;
       return {
         ...k,
@@ -310,10 +310,7 @@ export async function markTaskDone(
  * that are NOT in status "done". Empty array means deps are clear.
  * Exported for direct unit-testing without spinning the JSON pipeline.
  */
-export function unresolvedDeps(
-  tasks: ReadonlyArray<KanbanTask>,
-  target: KanbanTask,
-): string[] {
+export function unresolvedDeps(tasks: ReadonlyArray<KanbanTask>, target: KanbanTask): string[] {
   const deps = target.deps ?? [];
   if (deps.length === 0) return [];
   const doneIds = new Set(tasks.filter((t) => t.status === "done").map((t) => t.id));

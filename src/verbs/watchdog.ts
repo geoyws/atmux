@@ -144,9 +144,7 @@ export async function watchdog(
   });
 
   if (toFire.length === 0) {
-    stderr(
-      `watchdog: ${stale.length} stale member(s); all in dedup window — no ping fired\n`,
-    );
+    stderr(`watchdog: ${stale.length} stale member(s); all in dedup window — no ping fired\n`);
     return 0;
   }
 

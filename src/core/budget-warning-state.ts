@@ -53,10 +53,7 @@ export async function loadWarningState(atmuxDir: string): Promise<WarningState> 
 }
 
 /** Atomic-write the full state map. */
-export async function writeWarningState(
-  atmuxDir: string,
-  state: WarningState,
-): Promise<void> {
+export async function writeWarningState(atmuxDir: string, state: WarningState): Promise<void> {
   await atomicWrite(budgetWarningStatePath(atmuxDir), JSON.stringify(state));
 }
 

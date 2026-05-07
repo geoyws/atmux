@@ -29,12 +29,7 @@
 import { writeText } from "../abstractions/fs.ts";
 import { withLock } from "../abstractions/lock.ts";
 import { formatMyt } from "../abstractions/time.ts";
-import {
-  getAtmuxDir,
-  leadOutboxPath,
-  type ResolveDirOpts,
-  requireTeam,
-} from "../core/common.ts";
+import { getAtmuxDir, leadOutboxPath, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
 const USAGE_REPLY = "atmux reply [--from <member>] <msg...>";
@@ -156,7 +151,10 @@ export function insertOpenEntry(body: string, entry: string): string {
  * Pure: move all `- [` entries under `## Open` into `## Archive`,
  * with `_(archived <ts>)_` suffix. Returns the modified body.
  */
-export function archiveOpenEntries(body: string, archiveTs: string): {
+export function archiveOpenEntries(
+  body: string,
+  archiveTs: string,
+): {
   body: string;
   archived: string[];
 } {

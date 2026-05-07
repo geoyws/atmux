@@ -138,9 +138,7 @@ export const TeamWhip = z
     /** Roles excluded from swap pass — their conversation memory doesn't
      *  survive `atmux handoff`. Default lead/planner/reviewer
      *  (ADR-056 §"Lead/planner exclusion"). */
-    accountSwapExcludeRoles: z
-      .array(z.string())
-      .default(["lead", "planner", "reviewer"]),
+    accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
   })
   .strict();
 export type TeamWhip = z.infer<typeof TeamWhip>;

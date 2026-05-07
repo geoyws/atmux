@@ -43,11 +43,9 @@ import { ConfigError, UsageError } from "../errors.ts";
 const STATUSES_THAT_DRAIN_INBOX = new Set(["blocked", "todo"]);
 
 const USAGE_HINT_ROOT =
-  "atmux task <add|list|show|move|assign|rm> [args] " +
-  "(see 'atmux task' for per-subverb help)";
+  "atmux task <add|list|show|move|assign|rm> [args] " + "(see 'atmux task' for per-subverb help)";
 
-const USAGE_ADD =
-  "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N]";
+const USAGE_ADD = "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N]";
 const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--json]";
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 
@@ -138,7 +136,9 @@ async function taskList(argv: ReadonlyArray<string>): Promise<number> {
     const id = (t.id ?? "").padEnd(10);
     const status = (t.status ?? "").padEnd(13);
     const owner = (t.owner ?? "-").padEnd(14);
-    const prio = (t.priority !== null && t.priority !== undefined ? String(t.priority) : "-").padEnd(4);
+    const prio = (
+      t.priority !== null && t.priority !== undefined ? String(t.priority) : "-"
+    ).padEnd(4);
     process.stdout.write(`${id} ${status} ${owner} ${prio} ${t.subject ?? ""}\n`);
   }
   return 0;
@@ -312,9 +312,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
     }
     if (a === "--") {
       // Bash: `--) shift; subject="$*"; break` — collect remaining as subject.
-      subject = argv
-        .slice(i + 1)
-        .join(" ");
+      subject = argv.slice(i + 1).join(" ");
       break;
     }
     if (a !== undefined && a.startsWith("-")) {

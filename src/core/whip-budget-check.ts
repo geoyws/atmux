@@ -65,11 +65,11 @@ import { pauseMember as defaultPauseMember, resumeMember as defaultResumeMember 
 // ---------- Types ----------
 
 export type BudgetCheckVerdict =
-  | "no-pause-not-active"   // no probe data / no accounts; fall through to normal tick
-  | "active"                 // probed, all clear → continue normal tick
-  | "paused-just-now"       // entered pause this tick → stop the tick
-  | "paused-still"          // already paused, resume gate not met → stop the tick
-  | "resumed";              // exited pause this tick → continue normal tick
+  | "no-pause-not-active" // no probe data / no accounts; fall through to normal tick
+  | "active" // probed, all clear → continue normal tick
+  | "paused-just-now" // entered pause this tick → stop the tick
+  | "paused-still" // already paused, resume gate not met → stop the tick
+  | "resumed"; // exited pause this tick → continue normal tick
 
 export interface BudgetCheckTeamMember {
   name: string;
@@ -306,7 +306,12 @@ async function exitPause(
   await clearBudgetPauseState(ctx.atmuxDir);
 
   const ts = formatMyt(ctx.nowMs);
-  const lines = ["", `## ${ts} — 🟢 budget-pause cleared`, "Team resumed. All members back above resume threshold.", ""];
+  const lines = [
+    "",
+    `## ${ts} — 🟢 budget-pause cleared`,
+    "Team resumed. All members back above resume threshold.",
+    "",
+  ];
   await appendDi(ctx.atmuxDir, lines.join("\n"));
 
   if (send !== undefined) {

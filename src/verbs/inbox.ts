@@ -9,12 +9,7 @@
 // the member exists in team.json before writing the stub.
 
 import { writeText } from "../abstractions/fs.ts";
-import {
-  getAtmuxDir,
-  inboxPathFor,
-  type ResolveDirOpts,
-  requireTeam,
-} from "../core/common.ts";
+import { getAtmuxDir, inboxPathFor, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { emptyInbox, loadInbox } from "../core/inbox.ts";
 import type { InboxEntry } from "../schema/inbox.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -97,7 +92,13 @@ export async function inbox(argv: ReadonlyArray<string>): Promise<number> {
   // view we just need the data structure.
 
   if (parsed.json) {
-    process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
+    // Per ADR-029 §F12 — bash lib/inbox.sh:28 emits `cat "$f"` which
+    // is the on-disk file verbatim. Bash's first-run init writes
+    // compact `{"pending":[],"inProgress":[],"done":[]}` (single-line)
+    // at lib/inbox.sh:24. Earlier port pretty-printed with 2-space
+    // indent, producing a multi-line shape that diverges byte-for-byte
+    // from bash's compact form. Match bash by emitting compact JSON.
+    process.stdout.write(`${JSON.stringify(data)}\n`);
     return 0;
   }
 

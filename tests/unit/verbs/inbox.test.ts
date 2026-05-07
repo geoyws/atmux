@@ -77,9 +77,7 @@ describe("parseInboxArgs", () => {
 
 describe("inbox verb — integration", () => {
   test("empty inbox: human view shows '(empty)' for each section", async () => {
-    const { out } = await captureStdout(() =>
-      inbox(["alpha", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => inbox(["alpha", "--team-dir", teamDir]));
     expect(out).toContain("inbox — alpha");
     expect(out).toContain("pending");
     expect(out).toContain("in-progress");
@@ -89,13 +87,20 @@ describe("inbox verb — integration", () => {
   });
 
   test("--json emits valid JSON with the {pending,inProgress,done} shape", async () => {
-    const { out } = await captureStdout(() =>
-      inbox(["alpha", "--json", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => inbox(["alpha", "--json", "--team-dir", teamDir]));
     const parsed = JSON.parse(out);
     expect(parsed.pending).toEqual([]);
     expect(parsed.inProgress).toEqual([]);
     expect(parsed.done).toEqual([]);
+  });
+
+  test('--json emits compact single-line JSON (ADR-029 §F12 — bash `cat "$f"` parity)', async () => {
+    // Bash lib/inbox.sh:24 writes `{"pending":[],"inProgress":[],"done":[]}`
+    // (compact, single-line) on first-run init, then `cat "$f"` for --json.
+    // The TS port emits the same compact shape so byte-equal-after-mask
+    // holds against bash's `cat` literal-file output.
+    const { out } = await captureStdout(() => inbox(["alpha", "--json", "--team-dir", teamDir]));
+    expect(out).toBe('{"pending":[],"inProgress":[],"done":[]}\n');
   });
 
   test("populated inProgress shows id + subject", async () => {
@@ -105,9 +110,7 @@ describe("inbox verb — integration", () => {
       { id: "t-aaaaaaaa", subject: "ship X", status: "in-progress", deps: [] },
       1,
     );
-    const { out } = await captureStdout(() =>
-      inbox(["alpha", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => inbox(["alpha", "--team-dir", teamDir]));
     expect(out).toContain("t-aaaaaaaa");
     expect(out).toContain("ship X");
   });

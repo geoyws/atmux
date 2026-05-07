@@ -69,39 +69,36 @@ describe("parity: start (lifecycle MVP skeleton — no-team error path; happy-pa
     await fixture.cleanup();
   });
 
-  test.todo(
-    "start --no-doctor: bash and ts both die with 'no team.json' on empty fixture",
-    async () => {
-      const args = ["--no-doctor"] as const;
-      const [bash, ts] = await Promise.all([
-        runVerb("bash", "start", args, fixture.path),
-        runVerb("ts", "start", args, fixture.path),
-      ]);
+  test.todo("start --no-doctor: bash and ts both die with 'no team.json' on empty fixture", async () => {
+    const args = ["--no-doctor"] as const;
+    const [bash, ts] = await Promise.all([
+      runVerb("bash", "start", args, fixture.path),
+      runVerb("ts", "start", args, fixture.path),
+    ]);
 
-      // Sanity rails — bash side independently green (the no-team die
-      // path) BEFORE the comparator is trusted. CLAUDE.md "verify green
-      // from the right path".
-      expect(bash.exit).toBe(1);
-      expect(bash.stdout).toBe("");
-      expect(bash.stderr).toContain("no team.json");
-      expect(bash.stderr).toContain("run 'atmux init' first");
-      expect(bash.discordCalls).toEqual([]);
-      // No fixture mutation — the verb dies before any mkdir / tmux call.
-      expect(bash.fsState).toEqual({});
+    // Sanity rails — bash side independently green (the no-team die
+    // path) BEFORE the comparator is trusted. CLAUDE.md "verify green
+    // from the right path".
+    expect(bash.exit).toBe(1);
+    expect(bash.stdout).toBe("");
+    expect(bash.stderr).toContain("no team.json");
+    expect(bash.stderr).toContain("run 'atmux init' first");
+    expect(bash.discordCalls).toEqual([]);
+    // No fixture mutation — the verb dies before any mkdir / tmux call.
+    expect(bash.fsState).toEqual({});
 
-      // TS side rails — porter #14 reconciles `ConfigError` rendering
-      // (currently `atmux: config: no team.json at <p>`) with the bash
-      // `💥 atmux no team.json at <p> — run 'atmux init' first` shape.
-      // Exit code reconciliation: bash dies exit 1, TS `ConfigError`
-      // exits 78 (EX_CONFIG) — porter chooses one and amends ADR-006 if
-      // diverging from BSD sysexits.
-      expect(ts.discordCalls).toEqual([]);
+    // TS side rails — porter #14 reconciles `ConfigError` rendering
+    // (currently `atmux: config: no team.json at <p>`) with the bash
+    // `💥 atmux no team.json at <p> — run 'atmux init' first` shape.
+    // Exit code reconciliation: bash dies exit 1, TS `ConfigError`
+    // exits 78 (EX_CONFIG) — porter chooses one and amends ADR-006 if
+    // diverging from BSD sysexits.
+    expect(ts.discordCalls).toEqual([]);
 
-      // The actual parity contract — comparator returns `[]` IFF every
-      // observable channel matches post-mask. Stderr byte-equal,
-      // exit-code byte-equal, no fs side-effects, no discord.
-      const divergences = compare(bash, ts);
-      expect(divergences).toEqual([]);
-    },
-  );
+    // The actual parity contract — comparator returns `[]` IFF every
+    // observable channel matches post-mask. Stderr byte-equal,
+    // exit-code byte-equal, no fs side-effects, no discord.
+    const divergences = compare(bash, ts);
+    expect(divergences).toEqual([]);
+  });
 });

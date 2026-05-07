@@ -67,9 +67,7 @@ const PROJECT_CWD = "/tmp/atmux-e2e-self-heal-cwd";
 function validTeamJson(): string {
   return JSON.stringify({
     name: TEAM,
-    members: [
-      { name: "alpha", role: "team-lead", tui: "claude", emoji: "🧭" },
-    ],
+    members: [{ name: "alpha", role: "team-lead", tui: "claude", emoji: "🧭" }],
     whip: { staleMin: 90, leadMaxMin: 60 },
   });
 }
@@ -78,9 +76,7 @@ function driftedTeamJson(): string {
   // Strict schema rejects unknown keys → drift fires.
   return JSON.stringify({
     name: TEAM,
-    members: [
-      { name: "alpha", role: "team-lead", tui: "claude", emoji: "🧭" },
-    ],
+    members: [{ name: "alpha", role: "team-lead", tui: "claude", emoji: "🧭" }],
     whip: { staleMin: 90, leadMaxMin: 60, mysteriousNewField: 42 },
   });
 }
@@ -114,8 +110,7 @@ function fakeCursorInvoke(
       // schema-valid AFTER this fake "invocation" — that's done by
       // the test driver via writeFile before the verify step. Here
       // we just shape the patch return value.
-      diff =
-        "diff --git a/team.json b/team.json\n@@ -1 +1 @@\n-{}\n+{...}\n";
+      diff = "diff --git a/team.json b/team.json\n@@ -1 +1 @@\n-{}\n+{...}\n";
       files = ["team.json"];
     } else if (variant.emptyPatch === true) {
       diff = "";
@@ -151,10 +146,7 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       bullets: opts.bullets ?? [],
     });
   };
-  const raiseFlag = async (
-    severity: "p2",
-    body: string,
-  ): Promise<{ flagId: string }> => {
+  const raiseFlag = async (severity: "p2", body: string): Promise<{ flagId: string }> => {
     const flagId = `flag-${flags.length + 1}`;
     flags.push({ severity, body, flagId });
     return { flagId };
@@ -276,9 +268,7 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       priority: number | null;
       body: string;
     }>;
-    const reviewerTask = tasks.find((t) =>
-      t.subject.includes("fix:team-json-schema-drift"),
-    );
+    const reviewerTask = tasks.find((t) => t.subject.includes("fix:team-json-schema-drift"));
     expect(reviewerTask).toBeDefined();
     expect(reviewerTask?.owner).toBe("reviewer");
     expect(reviewerTask?.priority).toBe(2);
@@ -461,9 +451,7 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       owner: string | null;
       priority: number | null;
     }>;
-    const reviewTasks = tasks.filter((t) =>
-      t.subject.startsWith("cursor self-heal review:"),
-    );
+    const reviewTasks = tasks.filter((t) => t.subject.startsWith("cursor self-heal review:"));
     expect(reviewTasks).toHaveLength(3);
     for (const t of reviewTasks) {
       expect(t.owner).toBe("reviewer");
@@ -512,14 +500,12 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
     // Failure-ping fired (no success ping).
     const successPings = sends.filter(
       (s) =>
-        s.template === "whip-self-heal-result" &&
-        s.bullets[0]?.includes("patch staged") === true,
+        s.template === "whip-self-heal-result" && s.bullets[0]?.includes("patch staged") === true,
     );
     expect(successPings).toHaveLength(0);
     const failPings = sends.filter(
       (s) =>
-        s.template === "whip-self-heal-result" &&
-        s.bullets[0]?.includes("verify failed") === true,
+        s.template === "whip-self-heal-result" && s.bullets[0]?.includes("verify failed") === true,
     );
     expect(failPings).toHaveLength(1);
 
@@ -536,9 +522,7 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
     const kanbanText = await readFile(join(atmuxDir, "kanban.json"), "utf8");
     const kanban = JSON.parse(kanbanText);
     const tasks = kanban.tasks as Array<{ subject: string }>;
-    const reviewTasks = tasks.filter((t) =>
-      t.subject.startsWith("cursor self-heal review:"),
-    );
+    const reviewTasks = tasks.filter((t) => t.subject.startsWith("cursor self-heal review:"));
     expect(reviewTasks).toHaveLength(0);
   });
 });

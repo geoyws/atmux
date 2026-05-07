@@ -38,9 +38,7 @@ afterEach(async () => {
 
 // ---------- Helpers ----------
 
-function gitSpawnReturning(
-  byArgv: Record<string, SpawnResult>,
-): GitSpawn {
+function gitSpawnReturning(byArgv: Record<string, SpawnResult>): GitSpawn {
   return async (argv): Promise<SpawnResult> => {
     const key = argv.join(" ");
     const r = byArgv[key];
@@ -200,9 +198,7 @@ describe("runAutoPush — branch-resolve failure", () => {
     const result = await runAutoPush(atmuxDir, { git });
     expect(result.outcome).toBe("fail-branch-resolve");
     expect(result.branch).toBeNull();
-    const entry = JSON.parse(
-      (await readFile(autoPushLogPath(atmuxDir), "utf8")).trim(),
-    );
+    const entry = JSON.parse((await readFile(autoPushLogPath(atmuxDir), "utf8")).trim());
     expect(entry.outcome).toBe("fail-branch-resolve");
   });
 });
@@ -265,9 +261,7 @@ describe("runAutoPush — rebase failures", () => {
     expect(result.outcome).toBe("fail-fetch");
     expect(flags).toHaveLength(1);
     expect(flags[0]?.severity).toBe("p3");
-    const entry = JSON.parse(
-      (await readFile(autoPushLogPath(atmuxDir), "utf8")).trim(),
-    );
+    const entry = JSON.parse((await readFile(autoPushLogPath(atmuxDir), "utf8")).trim());
     expect(entry.outcome).toBe("fail-fetch");
     expect(entry.flagId).toBe("f-fetch1");
   });
@@ -372,9 +366,7 @@ describe("runAutoPush — happy path", () => {
     const result = await runAutoPush(atmuxDir, { git });
     expect(result.outcome).toBe("success");
     expect(result.branch).toBe("worktree-atmux-bun");
-    const entry = JSON.parse(
-      (await readFile(autoPushLogPath(atmuxDir), "utf8")).trim(),
-    );
+    const entry = JSON.parse((await readFile(autoPushLogPath(atmuxDir), "utf8")).trim());
     expect(entry.outcome).toBe("success");
   });
 });

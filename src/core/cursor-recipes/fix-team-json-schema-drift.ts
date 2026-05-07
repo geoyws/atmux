@@ -165,7 +165,7 @@ export const fixTeamJsonSchemaDriftRecipe: CursorRecipe = {
     const summary =
       reasons.length === 0
         ? `team.json drift fix — schema parses clean (${patch.files.length} file touched)`
-        : reasons[0] ?? "verification failed";
+        : (reasons[0] ?? "verification failed");
 
     return {
       ok: reasons.length === 0,

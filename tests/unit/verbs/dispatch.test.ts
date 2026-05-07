@@ -10,11 +10,7 @@ import { loadInbox } from "../../../src/core/inbox.ts";
 import { addTask, loadKanban } from "../../../src/core/kanban.ts";
 import { pauseMember } from "../../../src/core/pause.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import {
-  buildDispatchPing,
-  dispatch,
-  parseDispatchArgs,
-} from "../../../src/verbs/dispatch.ts";
+import { buildDispatchPing, dispatch, parseDispatchArgs } from "../../../src/verbs/dispatch.ts";
 
 let socketDir: string;
 let socketPath: string;
@@ -116,9 +112,7 @@ describe("parseDispatchArgs", () => {
   });
 
   test("--socket consumed", () => {
-    expect(parseDispatchArgs(["alpha", "t-x", "--socket", "/tmp/s"]).socketPath).toBe(
-      "/tmp/s",
-    );
+    expect(parseDispatchArgs(["alpha", "t-x", "--socket", "/tmp/s"]).socketPath).toBe("/tmp/s");
   });
 
   test("--team-dir consumed", () => {
@@ -180,15 +174,7 @@ describe("dispatch verb — integration", () => {
     await stageTeamWithMembers(["alpha"]);
     const id = await addTask(atmuxDir, { subject: "x" });
     const { stdout } = await captureStdoutStderr(() =>
-      dispatch([
-        "alpha",
-        id,
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "--no-ping",
-      ]),
+      dispatch(["alpha", id, "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]),
     );
     expect(stdout).toContain(`dispatched ${id} → alpha`);
 
@@ -229,15 +215,7 @@ describe("dispatch verb — integration", () => {
     const id = await addTask(atmuxDir, { subject: "x" });
     await pauseMember(atmuxDir, "alpha", { reason: "manual" });
     try {
-      await dispatch([
-        "alpha",
-        id,
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "--no-ping",
-      ]);
+      await dispatch(["alpha", id, "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]);
       throw new Error("should have thrown");
     } catch (e) {
       expect(e).toBeInstanceOf(ConfigError);
@@ -250,15 +228,7 @@ describe("dispatch verb — integration", () => {
   test("missing task id → ConfigError (claimTask propagates)", async () => {
     await stageTeamWithMembers(["alpha"]);
     await expect(
-      dispatch([
-        "alpha",
-        "t-deadbeef",
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "--no-ping",
-      ]),
+      dispatch(["alpha", "t-deadbeef", "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]),
     ).rejects.toThrow(ConfigError);
   });
 
@@ -267,15 +237,7 @@ describe("dispatch verb — integration", () => {
     const dep = await addTask(atmuxDir, { subject: "dep" });
     const id = await addTask(atmuxDir, { subject: "x", deps: [dep] });
     await expect(
-      dispatch([
-        "alpha",
-        id,
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "--no-ping",
-      ]),
+      dispatch(["alpha", id, "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]),
     ).rejects.toThrow(ConfigError);
   });
 
@@ -284,15 +246,7 @@ describe("dispatch verb — integration", () => {
     const id = await addTask(atmuxDir, { subject: "x" });
     // First dispatch: alpha owns + has the task in inbox.inProgress.
     await captureStdoutStderr(() =>
-      dispatch([
-        "alpha",
-        id,
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "--no-ping",
-      ]),
+      dispatch(["alpha", id, "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]),
     );
     let alphaInbox = await loadInbox(atmuxDir, "alpha");
     expect(alphaInbox.inProgress.map((t) => t.id)).toEqual([id]);
@@ -300,15 +254,7 @@ describe("dispatch verb — integration", () => {
     // Re-dispatch: beta picks up. alpha's inbox should be drained + a
     // warning surfaces on stderr.
     const { stderr, stdout } = await captureStdoutStderr(() =>
-      dispatch([
-        "beta",
-        id,
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "--no-ping",
-      ]),
+      dispatch(["beta", id, "--socket", socketPath, "--team-dir", teamDir, "--no-ping"]),
     );
     expect(stdout).toContain(`dispatched ${id} → beta`);
     expect(stderr).toContain(`reassigning ${id} from alpha to beta`);

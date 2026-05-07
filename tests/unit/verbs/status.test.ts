@@ -9,11 +9,7 @@ import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.t
 import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
-import {
-  defaultRoleEmoji,
-  parseStatusArgs,
-  status,
-} from "../../../src/verbs/status.ts";
+import { defaultRoleEmoji, parseStatusArgs, status } from "../../../src/verbs/status.ts";
 
 let socketDir: string;
 let socketPath: string;
@@ -81,8 +77,7 @@ async function stageTeam(
       windowName: winName,
     });
     for (const m of members.slice(1)) {
-      const wn =
-        m.emoji !== undefined && m.emoji.length > 0 ? `${m.emoji}${m.name}` : m.name;
+      const wn = m.emoji !== undefined && m.emoji.length > 0 ? `${m.emoji}${m.name}` : m.name;
       await tmux.window.newWindow({ sessionName, name: wn, shellCommand: "cat" });
     }
     await new Promise((r) => setTimeout(r, 80));

@@ -72,37 +72,34 @@ describe("parity: send (lifecycle MVP skeleton — no-team error path; happy-pat
     await fixture.cleanup();
   });
 
-  test.todo(
-    "send w1 'hello': bash and ts both die with 'no team.json' on empty fixture",
-    async () => {
-      const args = ["w1", "hello"] as const;
-      const [bash, ts] = await Promise.all([
-        runVerb("bash", "send", args, fixture.path),
-        runVerb("ts", "send", args, fixture.path),
-      ]);
+  test.todo("send w1 'hello': bash and ts both die with 'no team.json' on empty fixture", async () => {
+    const args = ["w1", "hello"] as const;
+    const [bash, ts] = await Promise.all([
+      runVerb("bash", "send", args, fixture.path),
+      runVerb("ts", "send", args, fixture.path),
+    ]);
 
-      // Sanity rails — bash side independently green (the no-team die
-      // path) BEFORE the comparator is trusted. CLAUDE.md "verify green
-      // from the right path".
-      expect(bash.exit).toBe(1);
-      expect(bash.stdout).toBe("");
-      expect(bash.stderr).toContain("no team.json");
-      expect(bash.stderr).toContain("run 'atmux init' first");
-      expect(bash.discordCalls).toEqual([]);
-      // No fixture mutation — verb dies before any logs/send-<m>.log
-      // append or tmux call.
-      expect(bash.fsState).toEqual({});
+    // Sanity rails — bash side independently green (the no-team die
+    // path) BEFORE the comparator is trusted. CLAUDE.md "verify green
+    // from the right path".
+    expect(bash.exit).toBe(1);
+    expect(bash.stdout).toBe("");
+    expect(bash.stderr).toContain("no team.json");
+    expect(bash.stderr).toContain("run 'atmux init' first");
+    expect(bash.discordCalls).toEqual([]);
+    // No fixture mutation — verb dies before any logs/send-<m>.log
+    // append or tmux call.
+    expect(bash.fsState).toEqual({});
 
-      // TS side rails — porter #17 reconciles `ConfigError` rendering
-      // and exit code with bash's `atmux::die` shape (see start.test.ts
-      // header for the exit-1 vs exit-78 reconciliation note).
-      expect(ts.discordCalls).toEqual([]);
+    // TS side rails — porter #17 reconciles `ConfigError` rendering
+    // and exit code with bash's `atmux::die` shape (see start.test.ts
+    // header for the exit-1 vs exit-78 reconciliation note).
+    expect(ts.discordCalls).toEqual([]);
 
-      // The actual parity contract — comparator returns `[]` IFF every
-      // observable channel matches post-mask. Stderr byte-equal,
-      // exit-code byte-equal, no fs side-effects, no discord.
-      const divergences = compare(bash, ts);
-      expect(divergences).toEqual([]);
-    },
-  );
+    // The actual parity contract — comparator returns `[]` IFF every
+    // observable channel matches post-mask. Stderr byte-equal,
+    // exit-code byte-equal, no fs side-effects, no discord.
+    const divergences = compare(bash, ts);
+    expect(divergences).toEqual([]);
+  });
 });

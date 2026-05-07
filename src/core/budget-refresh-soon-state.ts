@@ -33,9 +33,7 @@ export function budgetRefreshSoonStatePath(atmuxDir: string): string {
 export type RefreshSoonState = Record<string, number>;
 
 /** Read state from disk; empty map on missing/malformed. */
-export async function loadRefreshSoonState(
-  atmuxDir: string,
-): Promise<RefreshSoonState> {
+export async function loadRefreshSoonState(atmuxDir: string): Promise<RefreshSoonState> {
   const path = budgetRefreshSoonStatePath(atmuxDir);
   const txt = await readTextOrNull(path);
   if (txt === null) return {};
@@ -61,11 +59,7 @@ export async function writeRefreshSoonState(
 }
 
 /** Compose the canonical key for a (account, window, resetEpoch) tuple. */
-export function refreshSoonKey(
-  account: string,
-  window: "5h" | "wk",
-  resetEpoch: number,
-): string {
+export function refreshSoonKey(account: string, window: "5h" | "wk", resetEpoch: number): string {
   return `${account}:${window}:${resetEpoch}`;
 }
 
@@ -76,10 +70,7 @@ export function hasRefreshSoonFired(
   window: "5h" | "wk",
   resetEpoch: number,
 ): boolean {
-  return Object.prototype.hasOwnProperty.call(
-    state,
-    refreshSoonKey(account, window, resetEpoch),
-  );
+  return Object.prototype.hasOwnProperty.call(state, refreshSoonKey(account, window, resetEpoch));
 }
 
 /** Stamp a refresh-soon fire. Returns the mutated state copy. */
@@ -100,10 +91,7 @@ export function recordRefreshSoonFire(
  * resetEpoch passes, the entry is moot; groom-side cleans entries
  * with `resetEpoch < now`"). Returns the mutated state.
  */
-export function wipeStaleEntries(
-  state: RefreshSoonState,
-  nowSec: number,
-): RefreshSoonState {
+export function wipeStaleEntries(state: RefreshSoonState, nowSec: number): RefreshSoonState {
   const out: RefreshSoonState = {};
   let changed = false;
   for (const [k, v] of Object.entries(state)) {

@@ -15,10 +15,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  BudgetProbeResult,
-  ProbeBudgetOpts,
-} from "../../../src/abstractions/budget-probe.ts";
+import type { BudgetProbeResult, ProbeBudgetOpts } from "../../../src/abstractions/budget-probe.ts";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
 import {
   type BudgetPauseState,
@@ -254,34 +251,37 @@ interface ProbeRecorder {
   fixedReturns: Map<string, BudgetProbeResult>;
 }
 
-const buildProbe = (rec: ProbeRecorder) =>
-  (async (account: string, opts?: ProbeBudgetOpts): Promise<BudgetProbeResult> => {
+const buildProbe =
+  (rec: ProbeRecorder) =>
+  async (account: string, opts?: ProbeBudgetOpts): Promise<BudgetProbeResult> => {
     const callRecord: { account: string; opts?: ProbeBudgetOpts } = { account };
     if (opts !== undefined) callRecord.opts = opts;
     rec.calls.push(callRecord);
     return rec.fixedReturns.get(account) ?? mkProbe(account, 0, 0);
-  });
+  };
 
 interface ResumeRecorder {
   members: string[];
 }
 
-const buildResume = (rec: ResumeRecorder) =>
-  (async (_atmuxDir: string, member: string): Promise<void> => {
+const buildResume =
+  (rec: ResumeRecorder) =>
+  async (_atmuxDir: string, member: string): Promise<void> => {
     rec.members.push(member);
-  });
+  };
 
 interface DiscordRecorder {
   pings: DiscordSendOpts[];
   throwOn?: "config" | "other";
 }
 
-const buildDiscord = (rec: DiscordRecorder) =>
-  (async (opts: DiscordSendOpts): Promise<void> => {
+const buildDiscord =
+  (rec: DiscordRecorder) =>
+  async (opts: DiscordSendOpts): Promise<void> => {
     if (rec.throwOn === "config") throw new ConfigError({ what: "no webhook" });
     if (rec.throwOn === "other") throw new Error("network broken");
     rec.pings.push(opts);
-  });
+  };
 
 const seedTeam = async (
   atmuxDir: string,

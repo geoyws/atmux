@@ -79,9 +79,7 @@ function fullState(overrides?: Partial<EternalImprovementStateType>): EternalImp
 
 describe("eternalImprovementStatePath", () => {
   test("appends state/eternal-improvement.json to atmuxDir", () => {
-    expect(eternalImprovementStatePath("/tmp/foo")).toBe(
-      "/tmp/foo/state/eternal-improvement.json",
-    );
+    expect(eternalImprovementStatePath("/tmp/foo")).toBe("/tmp/foo/state/eternal-improvement.json");
   });
 });
 
@@ -101,7 +99,9 @@ describe("schema — EternalImprovementState", () => {
   });
 
   test("rejects unknown mode value", () => {
-    expect(() => EternalImprovementState.parse(fullState({ mode: "fleet-sweep" as never }))).toThrow();
+    expect(() =>
+      EternalImprovementState.parse(fullState({ mode: "fleet-sweep" as never })),
+    ).toThrow();
   });
 
   test("accepts null currentCycle (between cycles)", () => {
@@ -225,7 +225,10 @@ describe("writeState round-trip", () => {
     // check enforces the contract for any unchecked source (e.g.
     // hand-written bash producing an invalid file that TS then writes
     // back without modification — defense in depth).
-    const malformed = { ...fullState(), mode: "fleet-sweep" } as unknown as EternalImprovementStateType;
+    const malformed = {
+      ...fullState(),
+      mode: "fleet-sweep",
+    } as unknown as EternalImprovementStateType;
     await expect(writeState(atmuxDir, malformed)).rejects.toBeInstanceOf(SchemaError);
   });
 });
@@ -285,7 +288,10 @@ describe("writeState lock contention", () => {
 
   test("skipOnContention re-throws non-LockTimeoutError schema failures", async () => {
     // Sanity: non-lock errors still propagate (don't accidentally swallow).
-    const malformed = { ...fullState(), mode: "fleet-sweep" } as unknown as EternalImprovementStateType;
+    const malformed = {
+      ...fullState(),
+      mode: "fleet-sweep",
+    } as unknown as EternalImprovementStateType;
     await expect(
       writeState(atmuxDir, malformed, { skipOnContention: true }),
     ).rejects.toBeInstanceOf(SchemaError);

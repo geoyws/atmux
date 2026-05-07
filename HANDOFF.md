@@ -109,7 +109,7 @@ case "${CLAUDE_CONFIG_DIR:-$(realpath ~/.claude 2>/dev/null)}" in
   */.claude-icloud*)  DRIVER_WRAPPER="c-ic" ;;
   *)                  DRIVER_WRAPPER="claude" ;;
 esac
-CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode auto --model claude-opus-4-7
+CLAUDE_GUARD_AGENT=1 CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 ${DRIVER_WRAPPER} --permission-mode auto --model claude-opus-4-7
 ```
 
 If a member was spawned with the wrong permission-mode, `tmux send-keys -t <window> BTab` cycles in-place. From `dontAsk` it's 3 BTabs to reach `auto`. Don't kill+respawn for mode switches.
@@ -157,7 +157,7 @@ case "${CLAUDE_CONFIG_DIR:-$(realpath ~/.claude 2>/dev/null)}" in
 esac
 
 # Spawn:
-CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode auto --model claude-opus-4-7
+CLAUDE_GUARD_AGENT=1 CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 ${DRIVER_WRAPPER} --permission-mode auto --model claude-opus-4-7
 ```
 
 Never copy a hardcoded `c-ic` or `c-u` from a stale handoff — cross-account spawn trips Anthropic ToS flags + breaks cost/session-state observability. See ADR-024 for the full rule + V-25 whip-side enforcement.

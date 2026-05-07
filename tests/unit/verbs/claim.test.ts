@@ -42,9 +42,7 @@ afterEach(async () => {
   else delete process.env.ATMUX_MEMBER;
 });
 
-async function captureStdout<T>(
-  fn: () => Promise<T>,
-): Promise<{ out: string; result: T }> {
+async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; result: T }> {
   let out = "";
   const orig = process.stdout.write.bind(process.stdout);
   process.stdout.write = ((s: string | Uint8Array) => {
@@ -109,10 +107,7 @@ describe("parseClaimDoneArgs", () => {
 // ---------- pickMemberName ----------
 
 describe("pickMemberName", () => {
-  const members: TeamMember[] = [
-    { name: "alpha", cwd: "/work/alpha" },
-    { name: "beta" },
-  ];
+  const members: TeamMember[] = [{ name: "alpha", cwd: "/work/alpha" }, { name: "beta" }];
 
   test("--as wins over env + cwd", () => {
     const out = pickMemberName(
@@ -125,12 +120,7 @@ describe("pickMemberName", () => {
   });
 
   test("env wins over cwd when no --as", () => {
-    const out = pickMemberName(
-      { id: "t" },
-      { ATMUX_MEMBER: "envalpha" },
-      "/work/alpha",
-      members,
-    );
+    const out = pickMemberName({ id: "t" }, { ATMUX_MEMBER: "envalpha" }, "/work/alpha", members);
     expect(out).toBe("envalpha");
   });
 
@@ -154,9 +144,7 @@ describe("pickMemberName", () => {
 describe("claim verb — integration", () => {
   test("claim: assigns owner + status + writes inbox mirror", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    const { out } = await captureStdout(() =>
-      claim([id, "--as", "alpha", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => claim([id, "--as", "alpha", "--team-dir", teamDir]));
     expect(out).toContain(`alpha claimed ${id}`);
     const k = await loadKanban(atmuxDir);
     expect(k.tasks[0]?.owner).toBe("alpha");
@@ -182,15 +170,13 @@ describe("claim verb — integration", () => {
   test("claim: deps not done → ConfigError (deps gate)", async () => {
     const dep = await addTask(atmuxDir, { subject: "dep" });
     const id = await addTask(atmuxDir, { subject: "x", deps: [dep] });
-    await expect(claim([id, "--as", "alpha", "--team-dir", teamDir])).rejects.toThrow(
-      ConfigError,
-    );
+    await expect(claim([id, "--as", "alpha", "--team-dir", teamDir])).rejects.toThrow(ConfigError);
   });
 
   test("claim: missing task id → ConfigError", async () => {
-    await expect(
-      claim(["t-deadbeef", "--as", "alpha", "--team-dir", teamDir]),
-    ).rejects.toThrow(ConfigError);
+    await expect(claim(["t-deadbeef", "--as", "alpha", "--team-dir", teamDir])).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("claim is idempotent on inbox.inProgress (bash claim.sh:92 parity)", async () => {
@@ -216,9 +202,7 @@ describe("done verb — integration", () => {
     if (task === undefined) throw new Error("setup fail");
     await appendDispatched(atmuxDir, "alpha", task, 1);
     await moveTask(atmuxDir, id, "in-progress");
-    const { out } = await captureStdout(() =>
-      done([id, "--as", "alpha", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => done([id, "--as", "alpha", "--team-dir", teamDir]));
     expect(out).toContain(`alpha completed ${id}`);
     const k = await loadKanban(atmuxDir);
     expect(k.tasks[0]?.status).toBe("done");
@@ -238,9 +222,9 @@ describe("done verb — integration", () => {
   });
 
   test("done: missing task id → ConfigError", async () => {
-    await expect(
-      done(["t-deadbeef", "--as", "alpha", "--team-dir", teamDir]),
-    ).rejects.toThrow(ConfigError);
+    await expect(done(["t-deadbeef", "--as", "alpha", "--team-dir", teamDir])).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("done with no member inferable → UsageError", async () => {

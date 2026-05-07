@@ -3,15 +3,7 @@
 // All external dependencies (probe, pause/resume, Discord, driver-
 // inbox) are injected. No real network / spawn / tmux calls.
 
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,8 +96,15 @@ function ctxOf(
   };
 }
 
-interface PauseRecord { atmuxDir: string; member: string; reason: string }
-interface ResumeRecord { atmuxDir: string; member: string }
+interface PauseRecord {
+  atmuxDir: string;
+  member: string;
+  reason: string;
+}
+interface ResumeRecord {
+  atmuxDir: string;
+  member: string;
+}
 
 interface FakeDeps {
   probedAccounts: string[];
@@ -299,15 +298,12 @@ describe("runBudgetCheck — pause threshold breach → enter pause", () => {
     const fake = makeFakeDeps();
     fake.probesByAccount.set("icloud", probe("icloud", 95, 50));
     const baseDeps = depsFor(fake);
-    const v = await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      {
-        ...baseDeps,
-        discordSend: async () => {
-          throw new Error("webhook 500");
-        },
+    const v = await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), {
+      ...baseDeps,
+      discordSend: async () => {
+        throw new Error("webhook 500");
       },
-    );
+    });
     expect(v).toBe("paused-just-now");
     expect(fake.logs.some((l) => l.includes("budget-pause: discord send failed"))).toBe(true);
   });
@@ -412,15 +408,12 @@ describe("runBudgetCheck — paused, resume gate met → resume", () => {
     const fake = makeFakeDeps();
     fake.probesByAccount.set("icloud", probe("icloud", 50, 50));
     const baseDeps = depsFor(fake);
-    const v = await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      {
-        ...baseDeps,
-        discordSend: async () => {
-          throw new Error("webhook 429");
-        },
+    const v = await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), {
+      ...baseDeps,
+      discordSend: async () => {
+        throw new Error("webhook 429");
       },
-    );
+    });
     expect(v).toBe("resumed");
     expect(fake.logs.some((l) => l.includes("budget-resume: discord send failed"))).toBe(true);
   });
@@ -444,10 +437,7 @@ describe("runBudgetCheck — band-warning (4.1)", () => {
     // Second tick — same probe → no re-fire.
     const fake2 = makeFakeDeps();
     fake2.probesByAccount.set("icloud", probe("icloud", 55, 30));
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake2),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake2));
     const warnings2 = fake2.discordSends.filter((s) => s.template === "whip-budget-warning");
     expect(warnings2.length).toBe(0);
   });
@@ -458,10 +448,7 @@ describe("runBudgetCheck — band-warning (4.1)", () => {
     const seeded = recordBandFire({}, "icloud", "5h", 0.5, FIXED_NOW_SEC - 1000);
     await writeWarningState(atmuxDir, seeded);
     fake.probesByAccount.set("icloud", probe("icloud", 80, 30)); // 20% remaining → crosses 25%
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     const warnings = fake.discordSends.filter((s) => s.template === "whip-budget-warning");
     expect(warnings.length).toBe(1);
     expect(warnings[0]?.bullets?.[0]).toContain("(band: 25%)");
@@ -470,10 +457,7 @@ describe("runBudgetCheck — band-warning (4.1)", () => {
   test("crossing both 50% AND 25% in one tick fires BOTH bands", async () => {
     const fake = makeFakeDeps();
     fake.probesByAccount.set("icloud", probe("icloud", 78, 50)); // 22% remaining → crosses 50% + 25%
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     const warnings = fake.discordSends.filter((s) => s.template === "whip-budget-warning");
     const bands = warnings.map((w) => w.bullets?.[0]).filter((b): b is string => b !== undefined);
     expect(bands.some((b) => b.includes("(band: 50%)"))).toBe(true);
@@ -496,10 +480,7 @@ describe("runBudgetCheck — band-warning (4.1)", () => {
       "icloud",
       probe("icloud", 55, 30, "allowed", { h5: FIXED_NOW_SEC + 3600 }),
     );
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     // 50% band re-armed → fires again.
     const warnings = fake.discordSends.filter((s) => s.template === "whip-budget-warning");
     expect(warnings.length).toBe(1);
@@ -508,20 +489,14 @@ describe("runBudgetCheck — band-warning (4.1)", () => {
   test("bands stay quiet when remaining > highest band", async () => {
     const fake = makeFakeDeps();
     fake.probesByAccount.set("icloud", probe("icloud", 30, 20)); // 70%/80% remaining
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     expect(fake.discordSends.filter((s) => s.template === "whip-budget-warning")).toEqual([]);
   });
 
   test("nextBandPct surfaced when band below has more headroom", async () => {
     const fake = makeFakeDeps();
     fake.probesByAccount.set("icloud", probe("icloud", 60, 30)); // 40% remaining → 50% band; next is 25%
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     const w = fake.discordSends.find((s) => s.template === "whip-budget-warning");
     expect(w?.bullets?.some((b) => b.includes("next band: 25%"))).toBe(true);
   });
@@ -537,10 +512,7 @@ describe("runBudgetCheck — band-warning (4.1)", () => {
       appendDriverInbox: baseDeps.appendDriverInbox,
       log: baseDeps.log,
     };
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      noSendDeps,
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), noSendDeps);
     const state = await loadWarningState(atmuxDir);
     expect(Object.keys(state)).toEqual([]);
   });
@@ -555,10 +527,7 @@ describe("runBudgetCheck — refresh-soon (4.2)", () => {
       "icloud",
       probe("icloud", 80, 30, "allowed", { h5: FIXED_NOW_SEC + 600 }), // 10min until reset, < 30min lead
     );
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     const refreshSoon = fake.discordSends.filter((s) => s.template === "whip-budget-refresh-soon");
     expect(refreshSoon.length).toBe(1);
     expect(refreshSoon[0]?.bullets?.[0]).toContain("(5h)");
@@ -570,10 +539,7 @@ describe("runBudgetCheck — refresh-soon (4.2)", () => {
       "icloud",
       probe("icloud", 80, 30, "allowed", { h5: FIXED_NOW_SEC + 7200 }), // 2h ahead, > 30min lead
     );
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     expect(fake.discordSends.filter((s) => s.template === "whip-budget-refresh-soon")).toEqual([]);
   });
 
@@ -581,23 +547,11 @@ describe("runBudgetCheck — refresh-soon (4.2)", () => {
     const fake = makeFakeDeps();
     const resetEpoch = FIXED_NOW_SEC + 600;
     // Pre-seed state.
-    const seeded = recordRefreshSoonFire(
-      {},
-      "icloud",
-      "5h",
-      resetEpoch,
-      FIXED_NOW_SEC - 100,
-    );
+    const seeded = recordRefreshSoonFire({}, "icloud", "5h", resetEpoch, FIXED_NOW_SEC - 100);
     await writeRefreshSoonState(atmuxDir, seeded);
 
-    fake.probesByAccount.set(
-      "icloud",
-      probe("icloud", 80, 30, "allowed", { h5: resetEpoch }),
-    );
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    fake.probesByAccount.set("icloud", probe("icloud", 80, 30, "allowed", { h5: resetEpoch }));
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     expect(fake.discordSends.filter((s) => s.template === "whip-budget-refresh-soon")).toEqual([]);
   });
 
@@ -608,10 +562,7 @@ describe("runBudgetCheck — refresh-soon (4.2)", () => {
       "icloud:5h:1700000000": FIXED_NOW_SEC - 86400,
     });
     fake.probesByAccount.set("icloud", probe("icloud", 30, 30));
-    await runBudgetCheck(
-      ctxOf([{ name: "alpha", claudeAccount: "icloud" }]),
-      depsFor(fake),
-    );
+    await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "icloud" }]), depsFor(fake));
     const state = await loadRefreshSoonState(atmuxDir);
     expect(state["icloud:5h:1700000000"]).toBeUndefined();
   });

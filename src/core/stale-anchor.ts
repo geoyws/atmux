@@ -16,12 +16,7 @@
 import { join } from "node:path";
 import { atomicWrite, readTextOrNull, statOrNull } from "../abstractions/fs.ts";
 import { stateDir } from "./common.ts";
-import {
-  type DriverInboxEntry,
-  entriesSince,
-  parseEntries,
-  readCursor,
-} from "./driver-inbox.ts";
+import { type DriverInboxEntry, entriesSince, parseEntries, readCursor } from "./driver-inbox.ts";
 import { driverInboxPath } from "./common.ts";
 
 /** Threshold for "lead is anchored on stale view": cursor more than

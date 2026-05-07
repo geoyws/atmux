@@ -249,7 +249,9 @@ function renderTextStatus(snap: StatusSnapshot): void {
     const role = m.role.padEnd(14);
     const tui = m.tui.padEnd(10);
     const pane = m.paneCommand.padEnd(14);
-    process.stdout.write(`  ${emoji} ${name} ${role} ${tui} ${pane} 📥 ${m.pendingCount} pending\n`);
+    process.stdout.write(
+      `  ${emoji} ${name} ${role} ${tui} ${pane} 📥 ${m.pendingCount} pending\n`,
+    );
   }
   const k = snap.kanban;
   process.stdout.write(

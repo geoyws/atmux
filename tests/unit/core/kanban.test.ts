@@ -390,6 +390,15 @@ describe("markTaskDone", () => {
     expect((done as { note?: string }).note).toBe("shipped clean");
   });
 
+  test('absent note writes `.note = ""` to mirror bash claim.sh:65 (ADR-029 §F10)', async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    const done = await markTaskDone(atmuxDir, id);
+    // Bash's jq filter unconditionally sets `.note = $note` — when the
+    // caller passed no `--note`, $note is the empty string. The TS port
+    // matches by writing `""` rather than leaving the key absent.
+    expect((done as { note?: string }).note).toBe("");
+  });
+
   test("missing id → ConfigError", async () => {
     await expect(markTaskDone(atmuxDir, "t-missing0")).rejects.toThrow(ConfigError);
   });
