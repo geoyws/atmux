@@ -27,6 +27,7 @@ import {
   markTaskDone,
   moveTask,
   removeTask,
+  setTaskLane,
   showTask,
 } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -212,6 +213,40 @@ describe("kanban (SQLite mode)", () => {
 
   test("markTaskDone: missing id throws ConfigError", async () => {
     await expect(markTaskDone(env.atmuxDir, "t-deadbeef")).rejects.toThrow(ConfigError);
+  });
+
+  test("addTask + lane field persists + listTasks --lane filter (ADR-062 prep)", async () => {
+    const a = await addTask(env.atmuxDir, { subject: "fe task", lane: "fe" });
+    await addTask(env.atmuxDir, { subject: "be task", lane: "be" });
+    const c = await addTask(env.atmuxDir, { subject: "no-lane task" });
+
+    const aTask = await showTask(env.atmuxDir, a);
+    expect(aTask?.lane).toBe("fe");
+
+    const cTask = await showTask(env.atmuxDir, c);
+    expect(cTask?.lane).toBeNull();
+
+    const feTasks = await listTasks(env.atmuxDir, { lane: "fe" });
+    expect(feTasks.length).toBe(1);
+    expect(feTasks[0]?.id).toBe(a);
+  });
+
+  test("setTaskLane: re-tag existing task; null clears", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "untagged task" });
+    let t = await showTask(env.atmuxDir, id);
+    expect(t?.lane).toBeNull();
+
+    await setTaskLane(env.atmuxDir, id, "ops");
+    t = await showTask(env.atmuxDir, id);
+    expect(t?.lane).toBe("ops");
+
+    await setTaskLane(env.atmuxDir, id, null);
+    t = await showTask(env.atmuxDir, id);
+    expect(t?.lane).toBeNull();
+  });
+
+  test("setTaskLane: missing id throws ConfigError", async () => {
+    await expect(setTaskLane(env.atmuxDir, "t-deadbeef", "fe")).rejects.toThrow(ConfigError);
   });
 
   test("loadKanban: returns full snapshot in SQLite mode", async () => {
