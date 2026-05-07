@@ -12,6 +12,8 @@
 // All bash jq + tmux observations port to typed reads via core/* +
 // abstractions/tmux. The verb is pure assembly + presentation.
 
+import { join } from "node:path";
+
 import { exists } from "../abstractions/fs.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
@@ -134,7 +136,12 @@ export async function gatherStatus(
   }
 
   const counts: KanbanCounts = { todo: 0, inProgress: 0, done: 0, blocked: 0 };
-  if (await exists(kanbanJsonPath(atmuxDir))) {
+  // ADR-060 dual-path: load if EITHER the SQLite store or the legacy
+  // JSON file exists. Pre-fix this gate only checked kanban.json, so
+  // post-migration teams (state.db only) reported counts=0.
+  const hasSqlite = await exists(join(atmuxDir, "state.db"));
+  const hasJson = await exists(kanbanJsonPath(atmuxDir));
+  if (hasSqlite || hasJson) {
     const k = await loadKanban(atmuxDir);
     for (const t of k.tasks) {
       if (t.status === "todo") counts.todo += 1;
