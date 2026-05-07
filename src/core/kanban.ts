@@ -107,11 +107,15 @@ export interface AddTaskOpts {
   deps?: ReadonlyArray<string>;
   /** Optional integer priority. Lower = higher-priority in bash list-sort. */
   priority?: number;
+  /** Optional lane (`fe`/`be`/`db`/`ops`/`test`/`review`/`misc`). When set,
+   *  enables future lane-claim cron pickup (ADR-062). */
+  lane?: string;
 }
 
 export interface ListTasksFilter {
   status?: string;
   assignee?: string;
+  lane?: string;
 }
 
 /**
@@ -174,6 +178,7 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     owner: opts.assignee !== undefined && opts.assignee.length > 0 ? opts.assignee : null,
     deps: opts.deps !== undefined ? [...opts.deps] : [],
     priority: opts.priority ?? null,
+    lane: opts.lane ?? null,
     createdAt,
     claimedAt: null,
     completedAt: null,
@@ -205,6 +210,7 @@ export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Pro
       const repoFilter: Parameters<KanbanRepo["listTasks"]>[0] = {};
       if (filter?.status !== undefined) repoFilter.status = filter.status;
       if (filter?.assignee !== undefined) repoFilter.owner = filter.assignee;
+      if (filter?.lane !== undefined) repoFilter.lane = filter.lane;
       return repo.listTasks(repoFilter);
     });
   }
@@ -217,6 +223,10 @@ export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Pro
   if (filter?.assignee !== undefined) {
     const who = filter.assignee;
     out = out.filter((t) => t.owner === who);
+  }
+  if (filter?.lane !== undefined) {
+    const lane = filter.lane;
+    out = out.filter((t) => t.lane === lane);
   }
   return [...out];
 }
@@ -263,6 +273,26 @@ export async function moveTask(atmuxDir: string, id: string, status: string): Pr
     if (completedAt !== undefined) next.completedAt = completedAt;
     return next;
   });
+}
+
+/** Update a task's lane (`fe`/`be`/`db`/`ops`/`test`/`review`/`misc`).
+ *  Throws `ConfigError` on miss. Empty-string / `null` clears the lane. */
+export async function setTaskLane(
+  atmuxDir: string,
+  id: string,
+  lane: string | null,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, lane });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, lane }));
 }
 
 /** Update a task's owner. Throws `ConfigError` on miss. */
