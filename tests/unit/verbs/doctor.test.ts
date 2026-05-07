@@ -25,6 +25,7 @@ import {
   checkTeam,
   checkTuis,
   checkWebhook,
+  checkWhipConfigDrift,
   type DoctorRow,
   doctor,
   findPhantomInboxes,
@@ -888,5 +889,77 @@ describe("doctor() — public verb", () => {
       process.stderr.write = origStderr;
     }
     expect(captured).toContain("atmux doctor");
+  });
+});
+
+// ---------- ADR-054 §D4 — checkWhipConfigDrift ----------
+
+describe("checkWhipConfigDrift", () => {
+  let workDir: string;
+  let atmuxDir: string;
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), "atmux-doctor-drift-"));
+    atmuxDir = join(workDir, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  test("absent team.json → no rows (checkTeam owns the absent-file finding)", async () => {
+    expect(await checkWhipConfigDrift(atmuxDir)).toEqual([]);
+  });
+
+  test("valid team.json → no rows", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "demo",
+        members: [],
+        whip: { staleMin: 60 },
+      }),
+    );
+    expect(await checkWhipConfigDrift(atmuxDir)).toEqual([]);
+  });
+
+  test("strict-mode rejection → yellow row referencing the issue path + code", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "demo",
+        members: [],
+        whip: { unknownTypoKey: 1 },
+      }),
+    );
+    const rows = await checkWhipConfigDrift(atmuxDir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("whip-config-drift");
+    expect(rows[0]?.detail).toContain("validation failed");
+    expect(rows[0]?.hint).toContain("edit team.json");
+  });
+
+  test("type mismatch → yellow row", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "demo",
+        members: [],
+        whip: { budgetPauseThreshold: "ninety" },
+      }),
+    );
+    const rows = await checkWhipConfigDrift(atmuxDir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("budgetPauseThreshold");
+  });
+
+  test("malformed JSON → yellow row with malformed/full-defaults wording", async () => {
+    await writeFile(join(atmuxDir, "team.json"), "{not valid json");
+    const rows = await checkWhipConfigDrift(atmuxDir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("malformed");
+    expect(rows[0]?.detail).toContain("full safe defaults");
   });
 });

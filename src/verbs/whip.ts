@@ -67,11 +67,21 @@ import {
   type ResolveDirOpts,
   requireTeam,
   stateDir,
+  teamJsonPath,
 } from "../core/common.ts";
+import {
+  composeCatastrophicDrift,
+  composeDriftReport,
+  type DriftReport,
+  makeDriftSafeDefaults,
+  recordDriftPing,
+  shouldFireDriftPing,
+} from "../core/whip-config-drift.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import { Inbox as InboxSchema } from "../schema/inbox.ts";
-import type { Team, TeamMember } from "../schema/team.ts";
+import { Team, type TeamMember } from "../schema/team.ts";
+import { renderWhipConfigDrift } from "../abstractions/discord.ts";
 
 const USAGE = "atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]";
 
@@ -485,7 +495,6 @@ export interface WhipOpts {
 export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Promise<number> {
   const parsed = parseWhipArgs(argv);
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-  const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
 
   const stdout = opts.stdout ?? defaultStdoutWrite;
@@ -498,6 +507,17 @@ export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Pr
 
   const nowMs = clock();
   const nowSec = Math.floor(nowMs / 1000);
+
+  // ADR-054 §D2 — per-tick team.json validation with safe-defaults
+  // fallback. On schema/JSON failure we fire a [whip-config-drift]
+  // Discord ping (dedup'd via hash + 24h re-fire window) and
+  // continue the tick with a parseable shape rather than crashing.
+  // requireTeam used to be the team load; it stays as the absent-file
+  // gate (the absent-file ConfigError is a hard refusal, not a drift).
+  const { team, driftReport } = await loadTeamWithDrift(atmuxDir, dirOpts);
+  if (driftReport !== null && parsed.pushDiscord) {
+    await maybeFireDriftPing(atmuxDir, team.name, driftReport, send, nowSec, nowMs);
+  }
 
   // I-1 init mode short-circuit. Cron / setup invokes
   // `atmux whip --init-lead-marker` once on lead-spawn or rotate-lead so
@@ -564,7 +584,7 @@ interface TickCtx {
 async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
   const { team, atmuxDir, env, stdout, nowSec } = ctx;
   const config = readWhipConfig(team, env);
-  const session = await getSessionName({ dir: atmuxDir });
+  const session = await getSessionName({ dir: atmuxDir, team });
   const homeOpts: SkillsTeamPathsOpts = ctx.home !== undefined ? { home: ctx.home } : {};
 
   // I-1 first-tick auto-init — keeps Check 5 reads from failing on a
@@ -623,7 +643,7 @@ async function checkMember(
   findings: Finding[],
 ): Promise<void> {
   const { team, atmuxDir, tmux, env, nowSec, readMemberEnv } = ctx;
-  const session = await getSessionName({ dir: atmuxDir });
+  const session = await getSessionName({ dir: atmuxDir, team });
 
   // Resolve the window name. Lead window uses the I-2 marker (with
   // bash-fallback); regular members use buildWindowName equivalent
@@ -949,4 +969,81 @@ export function bullet80(s: string): string {
 
 async function writeLogLine(path: string, line: string): Promise<void> {
   await appendText(path, line);
+}
+
+// ---------- ADR-054 §D2 — config-drift helpers ----------
+
+/**
+ * Read team.json, validate via the strict Team schema, and return either
+ * the parsed team OR the safe-defaults fallback + drift report. Never
+ * crashes on schema/JSON failure (the whole point of this entry — whip
+ * must keep ticking). Throws ConfigError only when team.json is absent
+ * (that's a hard refusal — the team itself doesn't exist yet).
+ */
+async function loadTeamWithDrift(
+  atmuxDir: string,
+  dirOpts: ResolveDirOpts,
+): Promise<{ team: Team; driftReport: DriftReport | null }> {
+  const path = teamJsonPath(atmuxDir);
+  const raw = await readTextOrNull(path);
+  if (raw === null) {
+    // Absent — defer to requireTeam's ConfigError (the canonical
+    // "no team here" path). Most upstream callers wrap in their own
+    // help/init-prompt logic; whip just propagates.
+    const team = await requireTeam(dirOpts);
+    return { team, driftReport: null };
+  }
+  // Try JSON-parse first.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    const driftReport = composeCatastrophicDrift(e, raw);
+    const safeShape = makeDriftSafeDefaults(undefined);
+    const team = Team.parse(safeShape);
+    return { team, driftReport };
+  }
+  // Try Zod validation.
+  const result = Team.safeParse(parsed);
+  if (result.success) {
+    return { team: result.data, driftReport: null };
+  }
+  // Schema failure — compose drift + apply safe defaults.
+  const driftReport = composeDriftReport(result.error, raw);
+  const safeShape = makeDriftSafeDefaults(parsed);
+  // Safe-defaults shape MUST parse — if it doesn't, something's gone
+  // very wrong (logic bug in makeDriftSafeDefaults). Re-throw as a
+  // catastrophic drift to keep the tick alive with a minimal team.
+  const safeResult = Team.safeParse(safeShape);
+  const team = safeResult.success
+    ? safeResult.data
+    : Team.parse({ name: "unknown-team", members: [] });
+  return { team, driftReport };
+}
+
+/**
+ * Maybe fire the [whip-config-drift] Discord ping. Skipped if the
+ * dedup state file shows the same hash within the 24h re-fire window.
+ * Records the fire epoch on success so the next tick can dedup.
+ */
+async function maybeFireDriftPing(
+  atmuxDir: string,
+  teamName: string,
+  driftReport: DriftReport,
+  send: (opts: DiscordSendOpts) => Promise<void>,
+  nowSec: number,
+  nowMs: number,
+): Promise<void> {
+  const should = await shouldFireDriftPing(atmuxDir, driftReport.driftHash, nowSec);
+  if (!should) return;
+  await send(
+    renderWhipConfigDrift({
+      team: teamName,
+      driftHash: driftReport.driftHash,
+      issues: driftReport.issues,
+      catastrophic: driftReport.catastrophic,
+      whenMs: nowMs,
+    }),
+  );
+  await recordDriftPing(atmuxDir, driftReport.driftHash, nowSec);
 }

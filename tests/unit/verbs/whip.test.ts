@@ -1562,6 +1562,152 @@ describe("whip() — public verb", () => {
     expect(bullets.some((b) => b.includes("exotic"))).toBe(false);
   });
 
+  // ---------- ADR-054 §D2 — config-drift detection in whip tick ----------
+
+  test("ADR-054: valid team.json passes validation; no drift fires", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [],
+      whip: { staleMin: 60, leadMaxMin: 45 }, // valid sub-shape
+    });
+    const sent: DiscordSendOpts[] = [];
+    const exit = await whip(["--team-dir", teamDir, "--heartbeat"], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({ sessionUp: true, panes: {} }),
+      discordSend: async (o: DiscordSendOpts) => {
+        sent.push(o);
+      },
+    });
+    expect(exit).toBe(0);
+    // No drift template in any send.
+    expect(sent.every((s) => s.template !== "whip-config-drift")).toBe(true);
+  });
+
+  test("ADR-054: team.json with extra unknown key → drift fires + safe defaults", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [],
+      whip: { unknownTypoKey: 1, staleMin: 60 },
+    });
+    const sent: DiscordSendOpts[] = [];
+    const exit = await whip(["--team-dir", teamDir, "--heartbeat"], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({ sessionUp: true, panes: {} }),
+      discordSend: async (o: DiscordSendOpts) => {
+        sent.push(o);
+      },
+    });
+    expect(exit).toBe(0);
+    const drift = sent.find((s) => s.template === "whip-config-drift");
+    expect(drift).toBeDefined();
+    expect(drift?.bullets?.some((b: string) => b.includes("safe defaults"))).toBe(true);
+  });
+
+  test("ADR-054: team.json with type mismatch → drift fires + safe default applied", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [],
+      whip: { budgetPauseThreshold: "ninety" },
+    });
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir, "--heartbeat"], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({ sessionUp: true, panes: {} }),
+      discordSend: async (o: DiscordSendOpts) => {
+        sent.push(o);
+      },
+    });
+    const drift = sent.find((s) => s.template === "whip-config-drift");
+    expect(drift).toBeDefined();
+    // The drift bullets should reference the type mismatch.
+    expect(
+      drift?.bullets?.some(
+        (b: string) => b.includes("budgetPauseThreshold") || b.includes("invalid_type"),
+      ),
+    ).toBe(true);
+  });
+
+  test("ADR-054: malformed JSON → catastrophic drift + full-defaults fallback", async () => {
+    await mkdir(atmuxDir, { recursive: true });
+    await writeFile(join(atmuxDir, "team.json"), "{not valid json");
+    const sent: DiscordSendOpts[] = [];
+    const exit = await whip(["--team-dir", teamDir, "--heartbeat"], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({ sessionUp: true, panes: {} }),
+      discordSend: async (o: DiscordSendOpts) => {
+        sent.push(o);
+      },
+    });
+    expect(exit).toBe(0);
+    const drift = sent.find((s) => s.template === "whip-config-drift");
+    expect(drift).toBeDefined();
+    expect(
+      drift?.bullets?.some((b: string) => b.includes("malformed") || b.includes("full safe defaults")),
+    ).toBe(true);
+  });
+
+  test("ADR-054: dedup — same drift on consecutive ticks → only 1 ping in 24h", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [],
+      whip: { unknownTypoKey: 1 },
+    });
+    const sent: DiscordSendOpts[] = [];
+    const sharedOpts = {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({ sessionUp: true, panes: {} }),
+      discordSend: async (o: DiscordSendOpts) => {
+        sent.push(o);
+      },
+    };
+    await whip(["--team-dir", teamDir, "--heartbeat"], sharedOpts);
+    await whip(["--team-dir", teamDir, "--heartbeat"], sharedOpts);
+    const driftPings = sent.filter((s) => s.template === "whip-config-drift");
+    // Only 1 drift ping despite 2 ticks with the same drift.
+    expect(driftPings).toHaveLength(1);
+  });
+
+  test("ADR-054: --no-discord suppresses drift pings entirely", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [],
+      whip: { unknownTypoKey: 1 },
+    });
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir, "--no-discord"], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({ sessionUp: true, panes: {} }),
+      discordSend: async (o: DiscordSendOpts) => {
+        sent.push(o);
+      },
+    });
+    expect(sent.find((s) => s.template === "whip-config-drift")).toBeUndefined();
+  });
+
   test("flock contention skips the tick (second concurrent invocation hits LockTimeoutError → 0)", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
     const slowSend =

@@ -20,6 +20,7 @@ import {
   renderEternalImprovementDone,
   renderEternalImprovementProgress,
   renderEternalImprovementStart,
+  renderWhipConfigDrift,
   resolveWebhookUrl,
   send,
 } from "../../../src/abstractions/discord.ts";
@@ -915,5 +916,98 @@ describe("renderEternalImprovementDone", () => {
       modeB: false,
     });
     expect(out.bullets?.[2]).toBe("⏱️ duration: 1min");
+  });
+});
+
+
+// ---------- ADR-054 §D3 — renderWhipConfigDrift ----------
+
+describe("renderWhipConfigDrift", () => {
+  test("renders schema-drift template with header + issues + fix + hash", () => {
+    const out = renderWhipConfigDrift({
+      team: "atmux",
+      driftHash: "a3f2c814deadbeefcafebabe1234567890abcdef1234567890",
+      issues: [
+        {
+          path: ["whip", "budgetPauseTreshold"], // typo
+          code: "unrecognized_keys",
+          message: "Unrecognized key: 'budgetPauseTreshold'",
+        },
+        {
+          path: ["whip", "leadMaxMin"],
+          code: "invalid_type",
+          message: "Expected number, received string",
+        },
+      ],
+      catastrophic: false,
+    });
+    expect(out.template).toBe("whip-config-drift");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🛠️");
+    const bullets = out.bullets ?? [];
+    // First bullet — headline.
+    expect(bullets[0]).toContain("validation failed");
+    expect(bullets[0]).toContain("safe defaults");
+    // Issues count + by-code summary.
+    expect(bullets[1]).toContain("issues: 2");
+    expect(bullets[1]).toContain("invalid_type");
+    expect(bullets[1]).toContain("unrecognized_keys");
+    // First-issue surfacing.
+    expect(bullets.some((b) => b.includes("whip.budgetPauseTreshold"))).toBe(true);
+    // Fix hint.
+    expect(bullets.some((b) => b.includes("edit team.json"))).toBe(true);
+    // Drift hash truncated to 8 chars in display.
+    expect(bullets.some((b) => b.includes("a3f2c814"))).toBe(true);
+  });
+
+  test("catastrophic flag flips the headline to malformed-JSON variant", () => {
+    const out = renderWhipConfigDrift({
+      team: "atmux",
+      driftHash: "deadbeef00000000",
+      issues: [
+        {
+          path: [],
+          code: "invalid_json",
+          message: "Unexpected token at position 5",
+        },
+      ],
+      catastrophic: true,
+    });
+    expect(out.bullets?.[0]).toContain("malformed");
+    expect(out.bullets?.[0]).toContain("full safe defaults");
+  });
+
+  test("zero-issues input still renders headline + fix bullet", () => {
+    const out = renderWhipConfigDrift({
+      team: "atmux",
+      driftHash: "00000000",
+      issues: [],
+      catastrophic: false,
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[1]).toContain("issues: 0");
+    // No "first:" bullet when issues empty.
+    expect(bullets.some((b) => b.startsWith("🔍 first:"))).toBe(false);
+  });
+
+  test("first issue with empty path renders <root> placeholder", () => {
+    const out = renderWhipConfigDrift({
+      team: "atmux",
+      driftHash: "11111111",
+      issues: [{ path: [], code: "invalid_json", message: "bad" }],
+      catastrophic: true,
+    });
+    expect(out.bullets?.some((b) => b.includes("<root>"))).toBe(true);
+  });
+
+  test("whenMs override propagates to DiscordSendOpts", () => {
+    const out = renderWhipConfigDrift({
+      team: "atmux",
+      driftHash: "222",
+      issues: [],
+      catastrophic: false,
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
   });
 });

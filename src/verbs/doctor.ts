@@ -27,7 +27,7 @@
 
 import { join } from "node:path";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
-import { removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
+import { readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
 import { createTmux } from "../abstractions/tmux.ts";
@@ -40,11 +40,16 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import {
+  composeCatastrophicDrift,
+  composeDriftReport,
+  type DriftReport,
+} from "../core/whip-config-drift.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 import { Inbox } from "../schema/inbox.ts";
 import { Kanban } from "../schema/kanban.ts";
-import type { Team, TeamMember } from "../schema/team.ts";
+import { Team as TeamSchema, type Team, type TeamMember } from "../schema/team.ts";
 
 const USAGE = "atmux doctor [--quiet|-q] [--fix] [--json]";
 
@@ -550,6 +555,51 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
   }));
 }
 
+// ---------- ADR-054 §D4: whip-config-drift ----------
+
+/**
+ * Re-runs the same Zod safe-parse the whip tick performs and surfaces
+ * any drift as a P3 (yellow) finding. Operator gets the drift signal
+ * via `atmux doctor` immediately rather than waiting up to 5min for the
+ * next whip tick.
+ *
+ * Returns no rows when team.json is absent — `checkTeam` already emits
+ * the absent-file finding and we'd otherwise double-report.
+ */
+export async function checkWhipConfigDrift(atmuxDir: string): Promise<DoctorRow[]> {
+  const path = teamJsonPath(atmuxDir);
+  const raw = await readTextOrNull(path);
+  if (raw === null) return [];
+
+  let driftReport: DriftReport | null = null;
+  try {
+    const parsed = JSON.parse(raw);
+    const result = TeamSchema.safeParse(parsed);
+    if (!result.success) {
+      driftReport = composeDriftReport(result.error, raw);
+    }
+  } catch (e) {
+    driftReport = composeCatastrophicDrift(e, raw);
+  }
+  if (driftReport === null) return [];
+
+  const issuesCount = driftReport.issues.length;
+  const first = driftReport.issues[0];
+  const firstSummary = first === undefined
+    ? ""
+    : ` first: ${first.path.length === 0 ? "<root>" : first.path.join(".")} (${first.code})`;
+  return [
+    {
+      status: "yellow",
+      label: "whip-config-drift",
+      detail: driftReport.catastrophic
+        ? `team.json malformed — whip will use full safe defaults${firstSummary}`
+        : `team.json::whip validation failed — ${issuesCount} issue(s)${firstSummary}`,
+      hint: "edit team.json + re-run atmux doctor (per ADR-054)",
+    },
+  ];
+}
+
 // ---------- Check 7: orphan-sessions ----------
 
 export interface CheckOrphanSessionsOpts {
@@ -655,6 +705,9 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
   rows.push(...(await checkOrphanSessions(team)));
+  // ADR-054 §D4: surface whip-config drift so the operator doesn't
+  // need to wait for the next whip tick to learn about it.
+  rows.push(...(await checkWhipConfigDrift(atmuxDir)));
   return rows;
 }
 

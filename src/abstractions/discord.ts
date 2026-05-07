@@ -56,7 +56,12 @@ export type DiscordTemplate =
   // invocation site is the lead's tell-discord-shaped flow, deferred to
   // V-27 `team` per ADR-021. Adding the literal here costs nothing and
   // unblocks the V-27 caller from a same-commit discord.ts edit.
-  | "autonomous-decision";
+  | "autonomous-decision"
+  // ADR-054 §D3: surfaced when whip's per-tick team.json validation
+  // fails. Renderer below (`renderWhipConfigDrift`); fired by
+  // src/verbs/whip.ts after composing a DriftReport. Dedup via
+  // <atmuxDir>/state/whip-config-drift-state.json with 24h re-fire window.
+  | "whip-config-drift";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji = "🚨" | "🛑" | "⏰" | "📋" | "📊" | "💓" | "🚀" | "📍" | "🛠️" | "🌱";
@@ -599,6 +604,84 @@ export function renderEternalImprovementDone(
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
   return out;
+}
+
+// ---------- ADR-054 §D3 [whip-config-drift] ----------
+
+export interface WhipConfigDriftIssue {
+  /** Path components, e.g. ["whip", "budgetPauseThreshold"]. */
+  path: string[];
+  /** Zod issue code, or "invalid_json" for malformed-JSON drift. */
+  code: string;
+  /** Human-readable Zod message. */
+  message: string;
+}
+
+export interface WhipConfigDriftOpts {
+  team: string;
+  /** sha256 hex; truncated to 8 chars in display. */
+  driftHash: string;
+  /** Up to 5 issues per ADR-054 §D2 cap. */
+  issues: ReadonlyArray<WhipConfigDriftIssue>;
+  /** True when the underlying failure was malformed JSON (catastrophic). */
+  catastrophic: boolean;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-config-drift]` Discord send opts per ADR-054 §D3.
+ *
+ * Bullets:
+ *   - `⚠️ team.json::whip validation failed — using safe defaults`
+ *     (or `team.json malformed — using full safe defaults` for catastrophic)
+ *   - `📍 issues: <N> (<count-by-code>)`
+ *   - `🔍 first: <path> (<code>, <message>)` — only when ≥1 issue
+ *   - `🛠️ fix: edit team.json + re-run atmux doctor`
+ *   - `📜 driftHash: <8-hex> (re-pings if changes)`
+ *
+ * `category: '🛠️'` per CLAUDE.md per-bullet emoji table.
+ */
+export function renderWhipConfigDrift(opts: WhipConfigDriftOpts): DiscordSendOpts {
+  const issuesCount = opts.issues.length;
+  const codeCounts = countByCode(opts.issues);
+  const codeSummary = formatCodeCounts(codeCounts);
+  const headline = opts.catastrophic
+    ? `⚠️ team.json malformed — using full safe defaults`
+    : `⚠️ team.json::whip validation failed — using safe defaults`;
+  const bullets: string[] = [
+    headline,
+    `📍 issues: ${issuesCount}${codeSummary === "" ? "" : ` (${codeSummary})`}`,
+  ];
+  const first = opts.issues[0];
+  if (first !== undefined) {
+    const pathStr = first.path.length === 0 ? "<root>" : first.path.join(".");
+    bullets.push(`🔍 first: ${pathStr} (${first.code}, ${first.message})`);
+  }
+  bullets.push(`🛠️ fix: edit team.json + re-run atmux doctor`);
+  bullets.push(`📜 driftHash: ${opts.driftHash.slice(0, 8)} (re-pings if changes)`);
+  const out: DiscordSendOpts = {
+    template: "whip-config-drift",
+    team: opts.team,
+    category: "🛠️",
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+function countByCode(issues: ReadonlyArray<WhipConfigDriftIssue>): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const i of issues) m.set(i.code, (m.get(i.code) ?? 0) + 1);
+  return m;
+}
+
+function formatCodeCounts(counts: Map<string, number>): string {
+  if (counts.size === 0) return "";
+  const parts: string[] = [];
+  // Sort by code name for stability.
+  const entries = [...counts.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  for (const [code, n] of entries) parts.push(`${n} ${code}`);
+  return parts.join(", ");
 }
 
 // ---------- Test hooks ----------
