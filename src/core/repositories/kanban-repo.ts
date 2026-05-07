@@ -71,6 +71,30 @@ interface StoryRow {
 
 // ---------- Row ↔ domain bridges ----------
 
+/** Encode a string-or-object value for SQLite TEXT storage. Strings store
+ *  verbatim (so `_maybeParseJsonValue` returns them as strings). Objects
+ *  serialize as JSON. Null/undefined → null. Used for `claimedFrom` /
+ *  `createdFrom` which bash atmux writes in either shape (per src/schema/
+ *  kanban.ts comment for those fields). */
+function _maybeStringifyValue(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") return v;
+  return JSON.stringify(v);
+}
+
+/** Inverse of `_maybeStringifyValue`. A stored string that PARSES to a JSON
+ *  object round-trips back to the object; anything else (plain tags like
+ *  `"commit"`, `"dispatch"`, member names) returns as-is. */
+function _maybeParseJsonValue(s: string | null): unknown {
+  if (s === null) return null;
+  if (s.length === 0 || s.charCodeAt(0) !== 0x7b /* '{' */) return s;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
+  }
+}
+
 const KNOWN_TASK_FIELDS = new Set([
   "id",
   "subject",
@@ -112,8 +136,8 @@ export function taskFromRow(row: TaskRow): KanbanTask {
     createdAt: row.created_at ?? undefined,
     claimedAt: row.claimed_at,
     completedAt: row.completed_at,
-    claimedFrom: row.claimed_from,
-    createdFrom: row.created_from,
+    claimedFrom: _maybeParseJsonValue(row.claimed_from),
+    createdFrom: _maybeParseJsonValue(row.created_from),
     note: row.note,
     ...extra,
   };
@@ -142,8 +166,8 @@ export function taskToRow(task: KanbanTask): TaskRow {
     created_at: task.createdAt ?? null,
     claimed_at: task.claimedAt ?? null,
     completed_at: task.completedAt ?? null,
-    claimed_from: task.claimedFrom ?? null,
-    created_from: task.createdFrom ?? null,
+    claimed_from: _maybeStringifyValue(task.claimedFrom),
+    created_from: _maybeStringifyValue(task.createdFrom),
     note: task.note ?? null,
     extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
   };

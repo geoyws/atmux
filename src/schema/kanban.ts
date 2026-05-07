@@ -89,10 +89,14 @@ export const KanbanTask = z
     completedAt: z.number().int().nullable().optional(),
     /** Bounce-back ownership preservation per `kanban.sh::_atmux_task_move`
      *  (Bug-2 fix t-04c8b243): when a task is moved back to `todo`, the
-     *  prior owner is recorded here for audit. */
-    claimedFrom: z.string().nullable().optional(),
-    /** Origin annotation (e.g. `commit`, `dispatch`). */
-    createdFrom: z.string().nullable().optional(),
+     *  prior owner is recorded here for audit. Bash writes either a bare
+     *  member-name string OR a structured `{prevOwner, ts}` object on some
+     *  paths — accept both shapes. */
+    claimedFrom: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
+    /** Origin annotation. Bash writes either a string tag (e.g. `commit`,
+     *  `dispatch`) OR a structured object like `{parentTaskId, depth}` for
+     *  eternal-improvement spawned children — accept both shapes. */
+    createdFrom: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
     /** Closing note from `done <id> --note <text>` per `claim.sh`. */
     note: z.string().nullable().optional(),
   })

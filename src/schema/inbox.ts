@@ -90,10 +90,12 @@ export const InboxEntry = z
      *    whip falls back through them in order, so a dispatched-but-
      *    not-yet-claimed task uses dispatchedAt as the staleness anchor. */
     dispatchedAt: z.number().int().nullable().optional(),
-    /** Bounce-back ownership preservation per `kanban.sh::_atmux_task_move`. */
-    claimedFrom: z.string().nullable().optional(),
-    /** Origin annotation (e.g. `commit`, `dispatch`). */
-    createdFrom: z.string().nullable().optional(),
+    /** Bounce-back ownership preservation per `kanban.sh::_atmux_task_move`.
+     *  Accepts string OR object (mirrors KanbanTask in src/schema/kanban.ts). */
+    claimedFrom: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
+    /** Origin annotation. Accepts string OR structured object (e.g. eternal-
+     *  improvement parent ref `{parentTaskId, depth}`). */
+    createdFrom: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
     /** Closing note from `done <id> --note <text>` per `claim.sh`. */
     note: z.string().nullable().optional(),
   })
