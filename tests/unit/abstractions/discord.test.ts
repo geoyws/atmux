@@ -1387,3 +1387,272 @@ describe("renderWhipWatchdog", () => {
     expect(out.whenMs).toBe(1_700_000_000_000);
   });
 });
+
+
+// ---------- ADR-055 §D5 — renderWhipSelfHealAttempt ----------
+
+describe("renderWhipSelfHealAttempt", () => {
+  test("renders attempt template per ADR-055 §D5 worked example", async () => {
+    const { renderWhipSelfHealAttempt } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealAttempt({
+      team: "atmux",
+      recipeId: "fix:team-json-schema-drift",
+      reason: "3 invalid keys detected",
+      tokenCap: 5000,
+    });
+    expect(out.template).toBe("whip-self-heal-attempt");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🔧");
+    const bullets = out.bullets ?? [];
+    expect(bullets).toEqual([
+      "🛠️ recipe: fix:team-json-schema-drift",
+      "📍 reason: 3 invalid keys detected",
+      "💰 token cap: 5k",
+    ]);
+  });
+
+  test("formats sub-1k token cap as integer", async () => {
+    const { renderWhipSelfHealAttempt } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealAttempt({
+      team: "atmux",
+      recipeId: "fix:supervisor-missing",
+      reason: "supervisor window absent",
+      tokenCap: 500,
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[2]).toBe("💰 token cap: 500");
+  });
+
+  test("whenMs override propagates", async () => {
+    const { renderWhipSelfHealAttempt } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealAttempt({
+      team: "atmux",
+      recipeId: "fix:cron-pollution",
+      reason: "stale block detected",
+      tokenCap: 5000,
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+
+  test("renderer output passes send-time validation (bullets non-empty + emoji prefix)",
+    async () => {
+    const { renderWhipSelfHealAttempt, send } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const recorder = join(tmpRoot, "self-heal-attempt-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    const out = renderWhipSelfHealAttempt({
+      team: "atmux",
+      recipeId: "fix:team-json-schema-drift",
+      reason: "3 invalid keys detected",
+      tokenCap: 5000,
+    });
+    await send(out); // would throw on validation failure
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[whip-self-heal-attempt]");
+    expect(written).toContain("fix:team-json-schema-drift");
+  });
+});
+
+// ---------- ADR-055 §D5 — renderWhipSelfHealResult ----------
+
+describe("renderWhipSelfHealResult", () => {
+  test("success variant — patch staged + tokens + summary + log",
+    async () => {
+    const { renderWhipSelfHealResult } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:team-json-schema-drift",
+      ok: true,
+      tokensUsed: 1200,
+      tokenCap: 5000,
+      patchSummary: "3 keys updated; pending reviewer",
+      logPath: ".atmux/logs/cursor-self-heal-fix-team-json-schema-drift-1778120000.log",
+    });
+    expect(out.template).toBe("whip-self-heal-result");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🔧");
+    const bullets = out.bullets ?? [];
+    expect(bullets).toEqual([
+      "✅ recipe: fix:team-json-schema-drift — patch staged",
+      "💰 tokens used: 1k of 5k cap",
+      "📜 patch: 3 keys updated; pending reviewer",
+      "📍 see: .atmux/logs/cursor-self-heal-fix-team-json-schema-drift-1778120000.log",
+    ]);
+  });
+
+  test("failure variant — first reason + tail count + log + flag",
+    async () => {
+    const { renderWhipSelfHealResult } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:supervisor-missing",
+      ok: false,
+      tokensUsed: 200,
+      tokenCap: 1000,
+      patchSummary: "supervisor still absent",
+      logPath: ".atmux/logs/cursor-self-heal-fix-supervisor-missing-1778120000.log",
+      reasons: ["tmux list-windows still shows supervisor absent"],
+      flagSeverity: "p2",
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets).toEqual([
+      "❌ recipe: fix:supervisor-missing — verify failed",
+      "🛑 reasons: tmux list-windows still shows supervisor absent",
+      "📍 see: .atmux/logs/cursor-self-heal-fix-supervisor-missing-1778120000.log",
+      "🚩 flag: p2 raised — operator triage needed",
+    ]);
+  });
+
+  test("failure variant with multiple reasons appends '(N more)' suffix",
+    async () => {
+    const { renderWhipSelfHealResult } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:cron-pollution",
+      ok: false,
+      tokensUsed: 0,
+      tokenCap: 5000,
+      patchSummary: "verify failed",
+      logPath: ".atmux/logs/x.log",
+      reasons: ["block markers mismatched", "duplicate entries", "external lines"],
+      flagSeverity: "p2",
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[1]).toBe("🛑 reasons: block markers mismatched (2 more)");
+  });
+
+  test("failure variant falls back to patchSummary when reasons empty",
+    async () => {
+    const { renderWhipSelfHealResult } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:team-json-schema-drift",
+      ok: false,
+      tokensUsed: 0,
+      tokenCap: 5000,
+      patchSummary: "team.json missing post-cursor",
+      logPath: ".atmux/logs/x.log",
+      reasons: [],
+      flagSeverity: "p2",
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[1]).toBe("🛑 reasons: team.json missing post-cursor");
+  });
+
+  test("failure variant defaults severity to p2 when flagSeverity omitted",
+    async () => {
+    const { renderWhipSelfHealResult } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:cron-pollution",
+      ok: false,
+      tokensUsed: 0,
+      tokenCap: 5000,
+      patchSummary: "fail",
+      logPath: ".atmux/logs/x.log",
+      reasons: ["x"],
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[3]).toBe("🚩 flag: p2 raised — operator triage needed");
+  });
+
+  test("tokensUsed -1 (parse failure) renders as '?'",
+    async () => {
+    const { renderWhipSelfHealResult } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:team-json-schema-drift",
+      ok: true,
+      tokensUsed: -1,
+      tokenCap: 5000,
+      patchSummary: "1 key updated",
+      logPath: ".atmux/logs/x.log",
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[1]).toBe("💰 tokens used: ? of 5k cap");
+  });
+
+  test("whenMs override propagates",
+    async () => {
+    const { renderWhipSelfHealResult } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:cron-pollution",
+      ok: true,
+      tokensUsed: 100,
+      tokenCap: 5000,
+      patchSummary: "ok",
+      logPath: ".atmux/logs/x.log",
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+
+  test("success-variant output passes send-time validation",
+    async () => {
+    const { renderWhipSelfHealResult, send } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const recorder = join(tmpRoot, "self-heal-result-success-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:team-json-schema-drift",
+      ok: true,
+      tokensUsed: 1200,
+      tokenCap: 5000,
+      patchSummary: "3 keys updated; pending reviewer",
+      logPath: ".atmux/logs/x.log",
+    });
+    await send(out);
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[whip-self-heal-result]");
+    expect(written).toContain("patch staged");
+  });
+
+  test("failure-variant output passes send-time validation",
+    async () => {
+    const { renderWhipSelfHealResult, send } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const recorder = join(tmpRoot, "self-heal-result-fail-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    const out = renderWhipSelfHealResult({
+      team: "atmux",
+      recipeId: "fix:supervisor-missing",
+      ok: false,
+      tokensUsed: 0,
+      tokenCap: 1000,
+      patchSummary: "supervisor still absent",
+      logPath: ".atmux/logs/x.log",
+      reasons: ["tmux list-windows still shows supervisor absent"],
+      flagSeverity: "p2",
+    });
+    await send(out);
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[whip-self-heal-result]");
+    expect(written).toContain("verify failed");
+  });
+});

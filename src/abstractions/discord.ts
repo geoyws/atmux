@@ -81,7 +81,14 @@ export type DiscordTemplate =
   // ADR-057 §D6 R57-T6: watchdog verb fires when a member's heartbeat
   // is stale. Renderer below (`renderWhipWatchdog`); dedup state at
   // <atmuxDir>/state/watchdog-state.json (one-shot per-member 24h).
-  | "whip-watchdog";
+  | "whip-watchdog"
+  // ADR-055 §D5 R1-T8: cursor self-heal lifecycle templates. Fired
+  // by the whip-tick self-heal pass (one attempt + one result per
+  // recipe-fire). Renderers below (`renderWhipSelfHealAttempt` +
+  // `renderWhipSelfHealResult`); dedup state at <atmuxDir>/state/
+  // cursor-self-heal-state.json (24h per recipe).
+  | "whip-self-heal-attempt"
+  | "whip-self-heal-result";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -99,7 +106,9 @@ export type CategoryEmoji =
   | "⚠️"
   | "🌅"
   // ADR-056 §D5 account-swap lifecycle headers.
-  | "🔄";
+  | "🔄"
+  // ADR-055 §D5 cursor self-heal lifecycle headers.
+  | "🔧";
 
 export interface DiscordSection {
   /** Bold-rendered section label, e.g. "🏗️ Shipped". */
@@ -171,6 +180,9 @@ const ALLOWED_BULLET_PREFIX = new Set<string>([
   "💼",
   "❌",
   "🚩",
+  // ADR-055 §D5: cursor self-heal bullet emojis.
+  // 📜 (patch summary line — "patch: N keys updated; pending reviewer").
+  "📜",
 ]);
 
 const GRAPHEME_SEG = new Intl.Segmenter("en", { granularity: "grapheme" });
@@ -1099,6 +1111,126 @@ export function renderWhipWatchdog(opts: WhipWatchdogOpts): DiscordSendOpts {
     template: "whip-watchdog",
     team: opts.team,
     category: "🛑",
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-055 §D5 R1-T8 — cursor self-heal renderers ----------
+
+export interface WhipSelfHealAttemptOpts {
+  team: string;
+  /** Recipe id, e.g. `"fix:team-json-schema-drift"`. */
+  recipeId: string;
+  /** Operator-readable reason the recipe fired (e.g.
+   *  `"3 invalid keys detected"`). Composed by the recipe's `detect`. */
+  reason: string;
+  /** Per-recipe token cap (the resolved cap used for this invocation,
+   *  not the default). */
+  tokenCap: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-self-heal-attempt]` Discord send opts per ADR-055 §D5.
+ * Fired BEFORE invoking cursor — proves the recipe's detect → propose
+ * sequenced cleanly even if cursor fails downstream.
+ *
+ * Bullets:
+ *   - `🛠️ recipe: <recipeId>`
+ *   - `📍 reason: <reason>`
+ *   - `💰 token cap: <tokenCap formatted>`
+ */
+export function renderWhipSelfHealAttempt(
+  opts: WhipSelfHealAttemptOpts,
+): DiscordSendOpts {
+  const out: DiscordSendOpts = {
+    template: "whip-self-heal-attempt",
+    team: opts.team,
+    category: "🔧",
+    bullets: [
+      `🛠️ recipe: ${opts.recipeId}`,
+      `📍 reason: ${opts.reason}`,
+      `💰 token cap: ${formatTokens(opts.tokenCap)}`,
+    ],
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface WhipSelfHealResultOpts {
+  team: string;
+  /** Recipe id, e.g. `"fix:supervisor-missing"`. */
+  recipeId: string;
+  /** True iff cursor invocation + recipe verify both succeeded AND the
+   *  patch was staged for reviewer. False routes the failure variant
+   *  (verify reasons + flag note) per ADR-055 §D5. */
+  ok: boolean;
+  /** Tokens actually consumed (parsed from cursor's --output-json
+   *  metadata). May be -1 when metadata unparseable; renderer treats
+   *  -1 as "unknown" and renders as `?`. */
+  tokensUsed: number;
+  /** Resolved token cap (matches the attempt-ping's value). */
+  tokenCap: number;
+  /** One-line patch summary from `verify().patchSummary` (success) or
+   *  the recipe's failure summary (failure variant). Always present —
+   *  the recipe is responsible for composing a reasonable string. */
+  patchSummary: string;
+  /** Path to the cursor session log on disk, e.g.
+   *  `.atmux/logs/cursor-self-heal-fix-team-json-schema-drift-<ts>.log`.
+   *  Surfaced as the `📍 see:` bullet. */
+  logPath: string;
+  /** Failure-variant only: verify-rejection reasons (one rendered as
+   *  the headline reasons bullet, others summarised in a count).
+   *  Required when `ok: false`; ignored when `ok: true`. */
+  reasons?: ReadonlyArray<string>;
+  /** Failure-variant only: flag severity raised for operator triage.
+   *  Required when `ok: false`; ignored when `ok: true`. */
+  flagSeverity?: "p0" | "p1" | "p2";
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-self-heal-result]` Discord send opts per ADR-055 §D5.
+ *
+ * Success bullets:
+ *   - `✅ recipe: <recipeId> — patch staged`
+ *   - `💰 tokens used: <X> of <cap> cap`
+ *   - `📜 patch: <patchSummary>`
+ *   - `📍 see: <logPath>`
+ *
+ * Failure bullets (when `ok: false`):
+ *   - `❌ recipe: <recipeId> — verify failed`
+ *   - `🛑 reasons: <first reason>` (+`(N more)` when reasons.length > 1)
+ *   - `📍 see: <logPath>`
+ *   - `🚩 flag: <severity> raised — operator triage needed`
+ */
+export function renderWhipSelfHealResult(
+  opts: WhipSelfHealResultOpts,
+): DiscordSendOpts {
+  const tokensUsedStr = opts.tokensUsed >= 0 ? formatTokens(opts.tokensUsed) : "?";
+  const tokenCapStr = formatTokens(opts.tokenCap);
+  const bullets: string[] = [];
+  if (opts.ok) {
+    bullets.push(`✅ recipe: ${opts.recipeId} — patch staged`);
+    bullets.push(`💰 tokens used: ${tokensUsedStr} of ${tokenCapStr} cap`);
+    bullets.push(`📜 patch: ${opts.patchSummary}`);
+    bullets.push(`📍 see: ${opts.logPath}`);
+  } else {
+    const reasons = opts.reasons ?? [];
+    const first = reasons[0] ?? opts.patchSummary;
+    const tail = reasons.length > 1 ? ` (${reasons.length - 1} more)` : "";
+    const severity = opts.flagSeverity ?? "p2";
+    bullets.push(`❌ recipe: ${opts.recipeId} — verify failed`);
+    bullets.push(`🛑 reasons: ${first}${tail}`);
+    bullets.push(`📍 see: ${opts.logPath}`);
+    bullets.push(`🚩 flag: ${severity} raised — operator triage needed`);
+  }
+  const out: DiscordSendOpts = {
+    template: "whip-self-heal-result",
+    team: opts.team,
+    category: "🔧",
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
