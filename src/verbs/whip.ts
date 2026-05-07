@@ -88,7 +88,9 @@ import {
   type AccountSwapCheckCtx,
   type AccountSwapCheckDeps,
   type AccountSwapVerdict,
+  type PerMemberSwapDeps,
   runAccountSwapCheck,
+  runSwapPass,
 } from "../core/account-swap.ts";
 import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
@@ -744,6 +746,16 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
     // budget check below.
     const swapVerdict = await runAccountSwapTickCheck(ctx, config);
     if (swapVerdict === "active-pass" || swapVerdict === "pass-entered") {
+      // T11 §D3: advance the active pass by ONE decision per tick
+      // (sequential, one-at-a-time per ADR-056). T10 entered the pass;
+      // T11's runSwapPass walks pending decisions, calling per-member
+      // workflow + persisting decision flips + firing pass-complete on
+      // the last decision.
+      try {
+        await runSwapPassTickCheck(ctx, config);
+      } catch (e) {
+        ctx.stderr(`whip: account-swap pass advancement failed: ${String(e)}\n`);
+      }
       stdout(`whip: account-swap ${swapVerdict} — skipping budget-pause for this tick\n`);
       // Per-member checks still run (lead uptime, idle, banners) — the
       // swap is per-account, not per-team. Skip only the budget gate.
@@ -827,6 +839,60 @@ async function runAccountSwapTickCheck(
   };
   return runAccountSwapCheck(swapCtx, deps);
 }
+
+/** Per-tick advancement of an active swap pass. Runs ONE decision per
+ *  tick (oneAtATime: true). The orchestrator returns:
+ *    - no-active-pass  → nothing to do (caller already gated on
+ *                        active-pass/pass-entered, but this guards
+ *                        against a race where the pass closed between
+ *                        the check + this call).
+ *    - advanced        → one decision flipped this tick.
+ *    - pass-complete   → final decision flipped + pass-complete ping
+ *                        + driver-inbox surface fired.
+ *
+ *  Concrete deps for spawn / handoff are stubbed here as "not-ready"
+ *  fallbacks — landing real spawn/handoff integration is a Part 3
+ *  follow-up (touches src/verbs/start.ts internals + atmux handoff
+ *  subprocess invocation, beyond T11's scope reservation). The stubs
+ *  ensure runSwapPass walks decisions[] without blocking, marking each
+ *  as aborted with a "spawn integration not yet wired" flag — which
+ *  the operator sees + can resolve manually until T11-Part-3 lands. */
+async function runSwapPassTickCheck(ctx: TickCtx, config: WhipConfig): Promise<void> {
+  const probeBudget =
+    ctx.budgetProbe ??
+    (async (account: string) => {
+      const { probeBudget: defaultProbe } = await import("../abstractions/budget-probe.ts");
+      return defaultProbe(account);
+    });
+  const deps: PerMemberSwapDeps = {
+    probeTarget: (account) => probeBudget(account),
+    spawnShadow: async (opts) => ({
+      shadowName: `${opts.originalName}-swap`,
+      ready: false,
+      error: "shadow spawn integration pending T11 follow-up",
+    }),
+    handoff: async () => ({
+      taskId: null,
+      acked: false,
+      error: "handoff integration pending T11 follow-up",
+    }),
+    pauseMember: async (atmuxDir, member, opts) => {
+      const { pauseMember } = await import("../core/pause.ts");
+      await pauseMember(atmuxDir, member, opts);
+    },
+    discordSend: ctx.send,
+    log: (msg) => ctx.stderr(`${msg}\n`),
+  };
+  await runSwapPass(ctx.atmuxDir, deps, { team: ctx.team.name });
+}
+
+/** Adapter: composes an `AccountSwapCheckCtx` from the verb's TickCtx +
+ *  the parsed WhipConfig + delegates to
+ *  `core/account-swap.ts::runAccountSwapCheck`. Mirrors the
+ *  `runBudgetTickCheck` shape — the verb owns the config-shape mapping
+ *  so the core module stays agnostic. */
+// (this comment is the original `runBudgetTickCheck` doc-block; left
+// in place for the next function below.)
 
 /** Adapter: composes a `BudgetCheckCtx` from the verb's TickCtx + the
  *  parsed WhipConfig (TeamWhip schema), then delegates to

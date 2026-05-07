@@ -18,9 +18,12 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BudgetProbeResult } from "../../../src/abstractions/budget-probe.ts";
+import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
 import {
   type AccountSwapConfig,
   type AccountSwapState,
+  type PerMemberSwapDeps,
+  type SwapDecision,
   abortInProgressDecisions,
   accountSwapStatePath,
   buildSwapPass,
@@ -32,8 +35,10 @@ import {
   isAccountSwapActive,
   isStaleActiveState,
   loadAccountSwapState,
+  perMemberSwap,
   pickFallbackAccount,
   runAccountSwapCheck,
+  runSwapPass,
   withAccountSwapLock,
   writeAccountSwapState,
 } from "../../../src/core/account-swap.ts";
@@ -730,3 +735,345 @@ test("post-pass-entered, on-disk JSON matches loaded state byte-for-byte", async
   expect(onDisk.passId).toBe("swap-feedface");
   expect(onDisk.active).toBe(true);
 });
+
+// ---------- perMemberSwap (ADR-056 §D3) ----------
+
+function makePerMemberDeps(overrides: Partial<PerMemberSwapDeps> = {}): {
+  deps: PerMemberSwapDeps;
+  calls: {
+    probeTarget: string[];
+    spawnShadow: Array<{ originalName: string; targetAccount: string }>;
+    handoff: Array<{ fromMember: string; toMember: string }>;
+    pauseMember: Array<{ member: string; reason: string }>;
+    discordTemplates: string[];
+    flagBodies: string[];
+    inboxAppends: string[];
+  };
+} {
+  const calls = {
+    probeTarget: [] as string[],
+    spawnShadow: [] as Array<{ originalName: string; targetAccount: string }>,
+    handoff: [] as Array<{ fromMember: string; toMember: string }>,
+    pauseMember: [] as Array<{ member: string; reason: string }>,
+    discordTemplates: [] as string[],
+    flagBodies: [] as string[],
+    inboxAppends: [] as string[],
+  };
+  const deps: PerMemberSwapDeps = {
+    probeTarget: async (account) => {
+      calls.probeTarget.push(account);
+      return probeAllowed(account, 8, 12);
+    },
+    spawnShadow: async (opts) => {
+      calls.spawnShadow.push({
+        originalName: opts.originalName,
+        targetAccount: opts.targetAccount,
+      });
+      return { shadowName: `${opts.originalName}-swap`, ready: true };
+    },
+    handoff: async (opts) => {
+      calls.handoff.push({ fromMember: opts.fromMember, toMember: opts.toMember });
+      return { taskId: "t-flight001", acked: true };
+    },
+    pauseMember: async (_atmuxDir, member, opts) => {
+      calls.pauseMember.push({ member, reason: opts.reason });
+    },
+    discordSend: async (sendOpts) => {
+      calls.discordTemplates.push(sendOpts.template);
+    },
+    raiseFlag: async (opts) => {
+      calls.flagBodies.push(opts.body);
+      return { severity: opts.severity, flagId: "flag-test01" };
+    },
+    appendDriverInbox: async (_atmuxDir, content) => {
+      calls.inboxAppends.push(content);
+    },
+    nowMs: () => 1_700_000_000_000,
+    ...overrides,
+  };
+  return { deps, calls };
+}
+
+const pendingDecision = (from: string, to: string): SwapDecision => ({
+  from,
+  to,
+  status: "pending",
+  startedAt: null,
+  finishedAt: null,
+  shadowName: null,
+});
+
+describe("perMemberSwap — happy path", () => {
+  test("runs all 7 steps + flips decision to done + fires success ping", async () => {
+    const { deps, calls } = makePerMemberDeps();
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("done");
+    expect(result.decision.shadowName).toBe("alpha-swap");
+    expect(result.decision.startedAt).not.toBeNull();
+    expect(result.decision.finishedAt).not.toBeNull();
+    expect(calls.probeTarget).toEqual(["ifca"]);
+    expect(calls.spawnShadow).toHaveLength(1);
+    expect(calls.handoff).toHaveLength(1);
+    expect(calls.pauseMember).toHaveLength(1);
+    expect(calls.pauseMember[0]?.member).toBe("alpha");
+    expect(calls.discordTemplates).toEqual(["whip-account-swap-success"]);
+  });
+});
+
+describe("perMemberSwap — failure modes (ADR-056 §D6)", () => {
+  test("target probe 401 → aborted + flag + fail ping", async () => {
+    const { deps, calls } = makePerMemberDeps({
+      probeTarget: async (account) => ({
+        ...probeAllowed(account, 0, 0),
+        status: "probe-401",
+      }),
+    });
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("aborted");
+    expect(result.decision.shadowName).toBeNull();
+    expect(calls.spawnShadow).toHaveLength(0); // never reached
+    expect(calls.discordTemplates).toEqual(["whip-account-swap-fail"]);
+    expect(calls.flagBodies[0]).toContain("alpha");
+  });
+
+  test("spawn-shadow not ready → aborted + flag + fail ping", async () => {
+    const { deps, calls } = makePerMemberDeps({
+      spawnShadow: async (opts) => ({
+        shadowName: `${opts.originalName}-swap`,
+        ready: false,
+        error: "pane never reached prompt",
+      }),
+    });
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("aborted");
+    expect(calls.handoff).toHaveLength(0);
+    expect(calls.pauseMember).toHaveLength(0);
+    expect(calls.discordTemplates).toEqual(["whip-account-swap-fail"]);
+  });
+
+  test("handoff ack timeout → aborted + flag + fail ping (shadow stays around)", async () => {
+    const { deps, calls } = makePerMemberDeps({
+      handoff: async () => ({
+        taskId: null,
+        acked: false,
+        error: "shadow did not ack within 10s",
+      }),
+    });
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("aborted");
+    expect(result.decision.shadowName).toBe("alpha-swap"); // spawn succeeded
+    expect(calls.pauseMember).toHaveLength(0); // pause never fires on handoff failure
+    expect(calls.discordTemplates).toEqual(["whip-account-swap-fail"]);
+  });
+
+  test("deadline exceeded mid-spawn → aborted", async () => {
+    let calls = 0;
+    const deps: PerMemberSwapDeps = {
+      probeTarget: async (a) => probeAllowed(a, 8, 12),
+      spawnShadow: async (opts) => ({ shadowName: `${opts.originalName}-swap`, ready: true }),
+      handoff: async () => ({ taskId: null, acked: true }),
+      pauseMember: async () => {},
+      discordSend: async () => {},
+      raiseFlag: async () => ({ severity: "p2", flagId: null }),
+      // Clock advances 350s between calls — exceeds 300s deadline pre-spawn.
+      nowMs: () => {
+        calls += 1;
+        return 1_700_000_000_000 + (calls > 1 ? 350_000 : 0);
+      },
+    };
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("aborted");
+  });
+});
+
+describe("perMemberSwap — idempotence", () => {
+  test("already-done decision → short-circuits without calling deps", async () => {
+    const { deps, calls } = makePerMemberDeps();
+    const decision: SwapDecision = {
+      from: "icloud",
+      to: "ifca",
+      status: "done",
+      startedAt: 1_700_000_000,
+      finishedAt: 1_700_000_100,
+      shadowName: "alpha-swap",
+    };
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      decision,
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 1, total: 1 } },
+      deps,
+    );
+    expect(result.decision).toEqual(decision); // unchanged
+    expect(calls.probeTarget).toHaveLength(0);
+    expect(calls.discordTemplates).toHaveLength(0);
+  });
+
+  test("already-excluded decision → short-circuits", async () => {
+    const { deps, calls } = makePerMemberDeps();
+    const decision: SwapDecision = {
+      from: "icloud",
+      to: "ifca",
+      status: "excluded",
+      startedAt: null,
+      finishedAt: null,
+      shadowName: null,
+    };
+    const result = await perMemberSwap(
+      atmuxDir,
+      "lead",
+      decision,
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 0 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("excluded");
+    expect(calls.probeTarget).toHaveLength(0);
+  });
+});
+
+// ---------- runSwapPass (orchestrator) ----------
+
+async function seedActivePass(): Promise<AccountSwapState> {
+  const state: AccountSwapState = {
+    active: true,
+    passId: "swap-deadbeef",
+    startedAt: 1_700_000_000,
+    trigger: { account: "icloud", h5_pct_used: 76, wk_pct_used: 23 },
+    decisions: {
+      alpha: pendingDecision("icloud", "ifca"),
+      beta: pendingDecision("icloud", "ifca"),
+      lead: { ...pendingDecision("icloud", "ifca"), status: "excluded" },
+    },
+    history: [],
+  };
+  await writeAccountSwapState(atmuxDir, state);
+  return state;
+}
+
+describe("runSwapPass — no-active-pass", () => {
+  test("no state-file → no-active-pass verdict, no touches", async () => {
+    const { deps } = makePerMemberDeps();
+    const result = await runSwapPass(atmuxDir, deps, { team: "atmux" });
+    expect(result.verdict).toBe("no-active-pass");
+    expect(result.touched).toEqual([]);
+  });
+
+  test("active=false state → no-active-pass", async () => {
+    await writeAccountSwapState(atmuxDir, {
+      active: false,
+      passId: "swap-aaaaaaaa",
+      startedAt: 1_700_000_000,
+      trigger: { account: "icloud", h5_pct_used: 76, wk_pct_used: 23 },
+      decisions: {},
+      history: [],
+    });
+    const { deps } = makePerMemberDeps();
+    const result = await runSwapPass(atmuxDir, deps, { team: "atmux" });
+    expect(result.verdict).toBe("no-active-pass");
+  });
+});
+
+describe("runSwapPass — oneAtATime advancement", () => {
+  test("first call advances ONE pending decision, returns advanced", async () => {
+    await seedActivePass();
+    const { deps, calls } = makePerMemberDeps();
+    const r1 = await runSwapPass(atmuxDir, deps, { team: "atmux" });
+    expect(r1.verdict).toBe("advanced");
+    expect(r1.touched).toEqual(["alpha"]);
+    expect(calls.spawnShadow).toHaveLength(1);
+    const persisted = await loadAccountSwapState(atmuxDir);
+    expect(persisted?.decisions.alpha?.status).toBe("done");
+    expect(persisted?.decisions.beta?.status).toBe("pending");
+  });
+
+  test("subsequent ticks advance remaining decisions until pass-complete", async () => {
+    await seedActivePass();
+    const { deps } = makePerMemberDeps();
+    const r1 = await runSwapPass(atmuxDir, deps, { team: "atmux" });
+    expect(r1.verdict).toBe("advanced");
+    const r2 = await runSwapPass(atmuxDir, deps, { team: "atmux" });
+    expect(r2.verdict).toBe("pass-complete");
+    expect(r2.state?.active).toBe(false);
+    expect(r2.state?.history).toHaveLength(1);
+    expect(r2.state?.history[0]?.swapped).toBe(2);
+    expect(r2.state?.history[0]?.aborted).toBe(0);
+    expect(r2.state?.history[0]?.excluded).toBe(1);
+  });
+});
+
+describe("runSwapPass — oneAtATime: false (manual verb path)", () => {
+  test("walks all pending decisions in one call", async () => {
+    await seedActivePass();
+    const { deps } = makePerMemberDeps();
+    const r = await runSwapPass(atmuxDir, deps, { team: "atmux", oneAtATime: false });
+    expect(r.verdict).toBe("pass-complete");
+    expect(r.touched).toEqual(["alpha", "beta"]);
+  });
+});
+
+describe("runSwapPass — pass-complete side effects", () => {
+  test("fires pass-complete Discord template + appends driver-inbox", async () => {
+    await seedActivePass();
+    const { deps, calls } = makePerMemberDeps();
+    await runSwapPass(atmuxDir, deps, { team: "atmux", oneAtATime: false });
+    expect(calls.discordTemplates).toContain("whip-account-swap-pass-complete");
+    expect(calls.inboxAppends).toHaveLength(1);
+    expect(calls.inboxAppends[0]).toContain("swap-deadbeef");
+    expect(calls.inboxAppends[0]).toContain("alpha");
+    expect(calls.inboxAppends[0]).toContain("beta");
+  });
+
+  test("pass-complete archives history with correct counts when one aborts", async () => {
+    await seedActivePass();
+    const { deps } = makePerMemberDeps({
+      handoff: async ({ fromMember }) =>
+        fromMember === "beta"
+          ? { taskId: null, acked: false, error: "timeout" }
+          : { taskId: "t-x", acked: true },
+    });
+    const r = await runSwapPass(atmuxDir, deps, { team: "atmux", oneAtATime: false });
+    expect(r.state?.history[0]?.swapped).toBe(1);
+    expect(r.state?.history[0]?.aborted).toBe(1);
+    expect(r.state?.history[0]?.excluded).toBe(1);
+  });
+});
+
+// Suppress unused-var warning for the imported type alias.
+void undefined as DiscordSendOpts | undefined;
