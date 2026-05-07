@@ -1,9 +1,17 @@
 # atmux architecture
 
+> **Storage in atmux-bun.** Per [ADR-060](adr-bun/060-sqlite-state-store.md), kanban
+> (tasks/epics/stories), inboxes, and per-feature state moved to **`.atmux/state.db`**
+> (SQLite, WAL). The text below referencing `.atmux/kanban.json` describes the legacy
+> JSON model — still accurate for bash atmux and for teams not yet migrated, but on the
+> bun port the DB is the source of truth. Markdown files (`team.json` excepted as JSON,
+> `decisions.md`, `flags.md`, `driver-inbox.md`, `lead-outbox.md`, `HANDOFF.md`) and
+> append-only JSONL logs stay as files.
+
 ## Principles
 
 1. **tmux is the IPC.** atmux doesn't speak any AI provider API. It writes shell commands into tmux panes via `tmux send-keys` and reads responses by capturing pane output. That means it works with *any* interactive coding-agent TUI — Claude Code, Cursor, OpenCode, Kimi, or any future one.
-2. **State lives on disk, in JSON/markdown.** `.atmux/` is greppable, diffable, and survives tmux restarts.
+2. **State lives on disk** — SQLite (`state.db`) for the kanban + inboxes + per-feature state per ADR-060; markdown for human-edited files (`HANDOFF.md`, `decisions.md`, `flags.md`, driver-inbox/lead-outbox); JSONL for append-only logs. `.atmux/` survives tmux restarts.
 3. **No daemon.** Every verb is idempotent. `whip` and `report` run on cron.
 4. **Driver is external.** atmux is launched from the driver's shell. The driver does NOT run inside the tmux session — it's a separate process that fires atmux commands.
 

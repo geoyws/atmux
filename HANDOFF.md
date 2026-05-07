@@ -1,5 +1,14 @@
 # Handoff snapshot — atmux-bun port
 
+> **⚠️ Storage moved to SQLite.** Per **ADR-060** (`docs/adr-bun/060-sqlite-state-store.md`),
+> the kanban now lives in **`.atmux/state.db`** (SQLite, WAL mode), not `.atmux/kanban.json`.
+> Tables: `tasks`, `epics`, `stories`, `inbox_messages`, `state_kv`. The JSON path is
+> archive-only post-migration. Don't `jq .atmux/kanban.json` to inspect state — it may
+> not exist. Use `bun:sqlite` against `.atmux/state.db`, or call `loadKanban()` /
+> `listTasks()` from `src/core/kanban.ts` (dual-path-aware). Migrator verb:
+> `atmux migrate-state json-to-sqlite`. Other teams (sopx/unum/aix/auditx/ifca-docs/
+> parent atmux dev tree) still on JSON until rolled out per-team.
+
 **Last driver-session update:** 2026-05-05 ~20:15 MYT
 **Status:** Phase 2 complete. **25 of 25 verbs ported** — V-01 `up` shipped this turn (composite wizard→doctor→start→attach), closing the verb-port milestone. 1543 tests pass / 0 fail. Phase 3 (parity harness) is next.
 

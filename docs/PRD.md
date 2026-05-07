@@ -7,6 +7,12 @@
 > **Canonical authority:** when this PRD and an ADR or `PLAN.md` diverge,
 > the ADR / PLAN.md wins. PRD reflects shipped + planned reality; ADRs
 > dictate decisions. Cross-references throughout.
+>
+> **State storage (atmux-bun, post-merge 2026-05-08).** Kanban + inboxes +
+> per-feature state moved to **`.atmux/state.db`** (SQLite, WAL) per
+> [ADR-060](adr-bun/060-sqlite-state-store.md). References to `kanban.json`
+> below describe the legacy JSON path; the bun port is dual-path with
+> `state.db` as source of truth when present.
 
 ---
 
