@@ -78,6 +78,13 @@ import {
   shouldFireDriftPing,
 } from "../core/whip-config-drift.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import {
+  type BudgetCheckCtx,
+  type BudgetCheckDeps,
+  type BudgetCheckTeamMember,
+  runBudgetCheck,
+} from "../core/whip-budget-check.ts";
+import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import { Inbox as InboxSchema } from "../schema/inbox.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
@@ -154,6 +161,19 @@ export interface WhipConfig {
    *  text can vary ("recommend `atmux rotate-lead`" vs "auto-rotate
    *  attempted but execute is V-26-deferred"). */
   autoRotate: boolean;
+  /** ADR-053 §D2: pause-entry threshold (% used). Default 90 — i.e.,
+   *  pause when ANY member is at ≤10% remaining on either window. */
+  budgetPauseThreshold: number;
+  /** ADR-053 §D2: resume threshold (% used). Default 80 — i.e., resume
+   *  when ALL members are at ≥20% remaining on BOTH windows. 10pp
+   *  hysteresis vs pause threshold prevents flap. */
+  budgetResumeThreshold: number;
+  /** ADR-053 §D3 4.1: band-crossing remainders (descending fractions).
+   *  Default [0.5, 0.25, 0.15] — fire warnings at 50% / 25% / 15%
+   *  remaining per (account, window) cycle. */
+  budgetWarningBands: ReadonlyArray<number>;
+  /** ADR-053 §D3 4.2: refresh-soon lead-time minutes. Default 30. */
+  budgetRefreshLeadMins: number;
 }
 
 const DEFAULT_WHIP_CONFIG: WhipConfig = {
@@ -162,6 +182,10 @@ const DEFAULT_WHIP_CONFIG: WhipConfig = {
   downConfirmTicks: 2,
   heartbeat: true,
   autoRotate: false,
+  budgetPauseThreshold: 90,
+  budgetResumeThreshold: 80,
+  budgetWarningBands: [0.5, 0.25, 0.15],
+  budgetRefreshLeadMins: 30,
 };
 
 /** Pick a sub-field out of `team.whip` (typed as `unknown` — see
@@ -188,6 +212,38 @@ export function readWhipConfig(team: Team, env: NodeJS.ProcessEnv = process.env)
     }
     if (typeof o.heartbeat === "boolean") cfg.heartbeat = o.heartbeat;
     if (typeof o.autoRotate === "boolean") cfg.autoRotate = o.autoRotate;
+    // ADR-053 §D2 + §D3 budget knobs (T3 TeamWhip schema is the canonical
+    // source; reads here are runtime-defensive for the unschemed `unknown`
+    // field shape).
+    if (
+      typeof o.budgetPauseThreshold === "number" &&
+      Number.isFinite(o.budgetPauseThreshold) &&
+      o.budgetPauseThreshold >= 0 &&
+      o.budgetPauseThreshold <= 100
+    ) {
+      cfg.budgetPauseThreshold = o.budgetPauseThreshold;
+    }
+    if (
+      typeof o.budgetResumeThreshold === "number" &&
+      Number.isFinite(o.budgetResumeThreshold) &&
+      o.budgetResumeThreshold >= 0 &&
+      o.budgetResumeThreshold <= 100
+    ) {
+      cfg.budgetResumeThreshold = o.budgetResumeThreshold;
+    }
+    if (Array.isArray(o.budgetWarningBands)) {
+      const bands = o.budgetWarningBands.filter(
+        (b): b is number => typeof b === "number" && Number.isFinite(b) && b >= 0 && b <= 1,
+      );
+      if (bands.length > 0) cfg.budgetWarningBands = bands;
+    }
+    if (
+      typeof o.budgetRefreshLeadMins === "number" &&
+      Number.isFinite(o.budgetRefreshLeadMins) &&
+      o.budgetRefreshLeadMins >= 0
+    ) {
+      cfg.budgetRefreshLeadMins = Math.floor(o.budgetRefreshLeadMins);
+    }
   }
   // Env override ladder. ATMUX_STALE_MIN + ATMUX_LEAD_MAX_MIN are bash
   // parity (`lib/whip.sh:74-75`). Negative / non-finite values fall
@@ -489,6 +545,11 @@ export interface WhipOpts {
    *  skip-tick path and the rethrow-other-errors branch without
    *  needing concurrent OS-level flock contention. */
   lockAcquire?: (path: string) => Promise<LockHandle>;
+  /** Per-tick budget orchestrator override (ADR-053 §D2). Default
+   *  delegates to `core/whip-budget-check.ts::runBudgetCheck` with
+   *  production probe + pause/resume + Discord wiring. Tests inject
+   *  to drive the pause/resume verdict surface deterministically. */
+  budgetProbe?: (account: string) => Promise<BudgetProbeResult>;
 }
 
 /** `atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]`. */
@@ -560,6 +621,7 @@ export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Pr
       readMemberEnv,
       ...(opts.webhookOverride !== undefined ? { webhookOverride: opts.webhookOverride } : {}),
       tmux: opts.tmux ?? createTmux({ socketPath: getDefaultSocket(team.name) }),
+      ...(opts.budgetProbe !== undefined ? { budgetProbe: opts.budgetProbe } : {}),
     });
   } finally {
     await handle.release();
@@ -579,6 +641,7 @@ interface TickCtx {
   send: (opts: DiscordSendOpts) => Promise<void>;
   webhookOverride?: string;
   readMemberEnv: ReadMemberEnv;
+  budgetProbe?: (account: string) => Promise<BudgetProbeResult>;
 }
 
 async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
@@ -619,6 +682,18 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
       bullet: `🛑 session ${session} is DOWN`,
     });
   } else {
+    // ADR-053 §D2: per-tick budget orchestration runs BEFORE per-member
+    // checks. Budget-pause supersedes ADR-052 Mode B + auto-stop at the
+    // tick level — early-return on `paused-just-now` / `paused-still`
+    // so neither the per-member loop nor any future kanban-empty check
+    // fires while the team is in a deliberate budget hold.
+    const budgetVerdict = await runBudgetTickCheck(ctx, config);
+    if (budgetVerdict === "paused-just-now" || budgetVerdict === "paused-still") {
+      stdout(`whip: budget ${budgetVerdict} — skipping per-member checks\n`);
+      await writeLastHash(atmuxDir, nowSec);
+      return 0;
+    }
+
     // session UP — run per-member checks.
     for (const member of team.members) {
       await checkMember(ctx, member, config, findings);
@@ -632,6 +707,46 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
   await emitFindings(parsed, ctx, config, findings);
   await writeLastHash(atmuxDir, nowSec);
   return 0;
+}
+
+/** Adapter: composes a `BudgetCheckCtx` from the verb's TickCtx + the
+ *  parsed WhipConfig (TeamWhip schema), then delegates to
+ *  `core/whip-budget-check.ts::runBudgetCheck`. The verb owns the
+ *  config-shape mapping; the core module stays agnostic of WhipConfig
+ *  vs TeamWhip vs any future config shape that surfaces these knobs. */
+async function runBudgetTickCheck(
+  ctx: TickCtx,
+  config: WhipConfig,
+): Promise<ReturnType<typeof runBudgetCheck>> {
+  const checkCtx: BudgetCheckCtx = {
+    atmuxDir: ctx.atmuxDir,
+    nowMs: ctx.nowMs,
+    nowSec: ctx.nowSec,
+    team: {
+      name: ctx.team.name,
+      members: ctx.team.members.map((m) => {
+        const out: BudgetCheckTeamMember = { name: m.name };
+        if (typeof m.claudeAccount === "string" && m.claudeAccount.length > 0) {
+          out.claudeAccount = m.claudeAccount;
+        }
+        return out;
+      }),
+    },
+    config: {
+      budgetPauseThreshold: config.budgetPauseThreshold,
+      budgetResumeThreshold: config.budgetResumeThreshold,
+      budgetWarningBands: config.budgetWarningBands,
+      budgetRefreshLeadMins: config.budgetRefreshLeadMins,
+    },
+  };
+  const deps: BudgetCheckDeps = {
+    discordSend: ctx.send,
+    log: (msg) => ctx.stderr(`${msg}\n`),
+  };
+  if (ctx.budgetProbe !== undefined) {
+    deps.probeBudget = ctx.budgetProbe;
+  }
+  return runBudgetCheck(checkCtx, deps);
 }
 
 // ---------- Per-member check ----------

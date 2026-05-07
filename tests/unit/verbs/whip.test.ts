@@ -91,6 +91,10 @@ describe("readWhipConfig", () => {
       downConfirmTicks: 2,
       heartbeat: true,
       autoRotate: false,
+      budgetPauseThreshold: 90,
+      budgetResumeThreshold: 80,
+      budgetWarningBands: [0.5, 0.25, 0.15],
+      budgetRefreshLeadMins: 30,
     });
   });
 
@@ -121,6 +125,10 @@ describe("readWhipConfig", () => {
       downConfirmTicks: 3,
       heartbeat: false,
       autoRotate: true,
+      budgetPauseThreshold: 90,
+      budgetResumeThreshold: 80,
+      budgetWarningBands: [0.5, 0.25, 0.15],
+      budgetRefreshLeadMins: 30,
     });
   });
 
