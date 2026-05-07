@@ -178,15 +178,7 @@ describe("tellLead — integration", () => {
     // stdout with no prefix.
     await stageTeam([{ name: "alpha", role: "team-lead" }], true);
     const { stderr } = await captureStdoutStderr(() =>
-      tellLead([
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "review",
-        "the",
-        "migration",
-      ]),
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "review", "the", "migration"]),
     );
     expect(stderr).toContain("✅ atmux tell-lead → alpha");
     const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
@@ -207,9 +199,9 @@ describe("tellLead — integration", () => {
 
   test("no lead defined → ConfigError", async () => {
     await stageTeam([{ name: "alpha" }, { name: "beta" }], false);
-    await expect(
-      tellLead(["--socket", socketPath, "--team-dir", teamDir, "msg"]),
-    ).rejects.toThrow(ConfigError);
+    await expect(tellLead(["--socket", socketPath, "--team-dir", teamDir, "msg"])).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("ping failure → ConfigError 'no tmux window' after durable inbox write (ADR-029 §F6 + F7)", async () => {
@@ -253,5 +245,86 @@ describe("tellLead — integration", () => {
     const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
     expect(di).toMatch(/- \[\d{2}:\d{2} MYT\] format check/);
     expect(di).not.toMatch(/- \[\d{4}-\d{2}-\d{2}/);
+  });
+
+  test("t-bf09aec0: cursor advances after a successful tell-lead emit", async () => {
+    // Wiring proof for the dedup primitive: tell-lead must record
+    // the cursor (post-emit) so a polling supervisor on the SAME
+    // file (lib/supervisor.sh, future TS supervisor) won't re-fire
+    // for the same revision and burn lead tokens with "Stale
+    // heads-up — already absorbed". The suppression itself is
+    // tested at the primitive level in heads-up-cursor.test.ts;
+    // here we verify tell-lead writes the cursor entry shape.
+    await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "first ask"]),
+    );
+    const cursorPath = join(atmuxDir, "state", "heads-up-cursor.json");
+    const cursorJson = JSON.parse(await Bun.file(cursorPath).text()) as Record<string, number>;
+    const inboxPath = join(atmuxDir, "driver-inbox.md");
+    const key = `${inboxPath}:alpha`;
+    expect(cursorJson[key]).toBeGreaterThan(0);
+    // The cursor mtime should match the inbox file's mtime exactly
+    // (we recorded what we observed on disk).
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(inboxPath);
+    expect(cursorJson[key]).toBe(stat.mtimeMs);
+  });
+
+  test("t-bf09aec0: heads-up SUPPRESSED when cursor already at-or-past inbox mtime", async () => {
+    // Replicate the polling-supervisor flood scenario: cursor has
+    // already been advanced (by a different emitter — supervisor or
+    // a racing tell-lead) past the current driver-inbox.md mtime.
+    // tell-lead's pre-emit gate should suppress the redundant send
+    // so the lead pane doesn't burn tokens on a stale ping.
+    await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    // Pre-seed the cursor with a huge mtime — any subsequent
+    // append's mtime will be <= this value (system clock can't
+    // realistically reach Number.MAX_SAFE_INTEGER ms).
+    const inboxPath = join(atmuxDir, "driver-inbox.md");
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(join(atmuxDir, "state"), { recursive: true });
+    await fs.writeFile(
+      join(atmuxDir, "state", "heads-up-cursor.json"),
+      JSON.stringify({ [`${inboxPath}:alpha`]: Number.MAX_SAFE_INTEGER }),
+      "utf8",
+    );
+    const sendLogPath = join(atmuxDir, "logs", "send-alpha.log");
+    const logExistsBefore = await Bun.file(sendLogPath)
+      .exists()
+      .catch(() => false);
+
+    const { stderr } = await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "duplicate ask"]),
+    );
+    // Suppression-branch stderr surface tells the operator dedup hit.
+    expect(stderr).toContain("heads-up suppressed: cursor already at mtime");
+    // sendToMember was NOT invoked → no log file written.
+    const logExistsAfter = await Bun.file(sendLogPath)
+      .exists()
+      .catch(() => false);
+    expect(logExistsAfter).toBe(logExistsBefore);
+    // BUT: appendDriverInbox still wrote — the durable record is
+    // intact even when the ping is suppressed.
+    const di = await Bun.file(inboxPath).text();
+    expect(di).toContain("duplicate ask");
+  });
+
+  test("zero-byte driver-inbox.md does not get a leading \\n on first append (ADR-029 §F14)", async () => {
+    // Bash `printf >> file` appends to EOF; a zero-byte file produces
+    // just the entry, no leading separator. Earlier TS port falsely
+    // prepended `\n` because the empty-string `existing` failed the
+    // `endsWith("\n")` check, triggering the "needs separator" branch.
+    // Result: bash 23 bytes vs TS 24 bytes (extra leading newline).
+    await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    // Pre-create driver-inbox.md as zero bytes — matches lifecycle
+    // fixture preset (factory.ts:168), which is the parity-test stage.
+    await Bun.write(join(atmuxDir, "driver-inbox.md"), "");
+    await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "test ask"]),
+    );
+    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    expect(di).not.toMatch(/^\n/);
+    expect(di).toMatch(/^- \[\d{2}:\d{2} MYT\] test ask\n$/);
   });
 });
