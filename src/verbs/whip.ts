@@ -94,6 +94,9 @@ import {
 } from "../core/account-swap.ts";
 import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
+import { runSelfHealPass } from "../core/cursor-self-heal.ts";
+import { fixTeamJsonSchemaDriftRecipe } from "../core/cursor-recipes/fix-team-json-schema-drift.ts";
+import type { CursorRecipe } from "../core/cursor-recipes/types.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import { Inbox as InboxSchema } from "../schema/inbox.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
@@ -196,6 +199,16 @@ export interface WhipConfig {
   /** Per-team default account when a member's row has no
    *  `claudeAccount`. Pulled from `team.whip.claudeAccount`. */
   claudeAccount: string;
+  /** ADR-055 §D6: gate for the cursor self-heal pass. Default false
+   *  — opt-in only, since it spawns a Cursor agent + writes patches. */
+  selfHealEnabled: boolean;
+  /** ADR-055 §D6: enabled-recipe whitelist. Empty = no recipes run
+   *  even when `selfHealEnabled = true` (defensive — explicit opt-in
+   *  per recipe id). */
+  selfHealRecipes: ReadonlyArray<string>;
+  /** ADR-055 §D6: per-recipe token-cap overrides. Optional map; missing
+   *  keys fall through to the recipe's own default. */
+  selfHealTokenCaps: Readonly<Record<string, number>>;
 }
 
 const DEFAULT_WHIP_CONFIG: WhipConfig = {
@@ -213,6 +226,9 @@ const DEFAULT_WHIP_CONFIG: WhipConfig = {
   accountSwapFallbackHealthThreshold: 50,
   accountSwapExcludeRoles: ["lead", "planner", "reviewer"],
   claudeAccount: "",
+  selfHealEnabled: false,
+  selfHealRecipes: [],
+  selfHealTokenCaps: {},
 };
 
 /** Pick a sub-field out of `team.whip` (typed as `unknown` — see
@@ -299,6 +315,24 @@ export function readWhipConfig(team: Team, env: NodeJS.ProcessEnv = process.env)
       cfg.accountSwapExcludeRoles = roles;
     }
     if (typeof o.claudeAccount === "string") cfg.claudeAccount = o.claudeAccount;
+    // ADR-055 self-heal knobs.
+    if (typeof o.selfHealEnabled === "boolean") cfg.selfHealEnabled = o.selfHealEnabled;
+    if (Array.isArray(o.selfHealRecipes)) {
+      cfg.selfHealRecipes = o.selfHealRecipes.filter(
+        (s): s is string => typeof s === "string" && s.length > 0,
+      );
+    }
+    if (
+      o.selfHealTokenCaps !== null &&
+      typeof o.selfHealTokenCaps === "object" &&
+      !Array.isArray(o.selfHealTokenCaps)
+    ) {
+      const caps: Record<string, number> = {};
+      for (const [k, v] of Object.entries(o.selfHealTokenCaps as Record<string, unknown>)) {
+        if (typeof v === "number" && Number.isFinite(v) && v > 0) caps[k] = v;
+      }
+      cfg.selfHealTokenCaps = caps;
+    }
   }
   // Env override ladder. ATMUX_STALE_MIN + ATMUX_LEAD_MAX_MIN are bash
   // parity (`lib/whip.sh:74-75`). Negative / non-finite values fall
@@ -804,11 +838,58 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
       // tick; downgrade to a stderr line.
       ctx.stderr(`whip: stale-anchor check failed: ${String(e)}\n`);
     }
+
+    // ---------- Check 7: cursor self-heal pass (ADR-055 §D2) ----------
+    // Runs AFTER per-member + lead-uptime + stale-anchor (per ADR-055
+    // §D2 "after the main per-member checks"). Already gated above
+    // against budget-pause (the early-return path skipped this entire
+    // arm). Opt-in via `team.json::whip.selfHealEnabled`; skipped
+    // silently when disabled OR when no recipes are whitelisted.
+    if (config.selfHealEnabled && config.selfHealRecipes.length > 0) {
+      try {
+        await runSelfHealPass({
+          atmuxDir,
+          projectCwd: process.cwd(),
+          nowSec,
+          teamName: team.name,
+          ...(session !== "" ? { sessionName: session } : {}),
+          reviewerName: resolveReviewerName(team),
+          recipes: SELF_HEAL_RECIPES,
+          enabledRecipeIds: config.selfHealRecipes,
+          tokenCapOverrides: config.selfHealTokenCaps,
+          send: ctx.send,
+          log: (msg) => ctx.stderr(`whip: ${msg}\n`),
+        });
+      } catch (e) {
+        // Defensive — runSelfHealPass's contract says it never throws,
+        // but a runtime bug shouldn't block emitFindings + the rest of
+        // the tick. Log + continue.
+        ctx.stderr(`whip: self-heal pass failed: ${String(e)}\n`);
+      }
+    }
   }
 
   await emitFindings(parsed, ctx, config, findings);
   await writeLastHash(atmuxDir, nowSec);
   return 0;
+}
+
+/** Recipe registry for the self-heal pass (ADR-055 §D4). v1 ships one
+ *  recipe; parts 5-6 add `fix:cron-pollution` + `fix:supervisor-missing`. */
+const SELF_HEAL_RECIPES: ReadonlyArray<CursorRecipe> = [
+  fixTeamJsonSchemaDriftRecipe,
+];
+
+/** Pick the team's reviewer member name. Falls back to the hardcoded
+ *  "reviewer" string if no member has the `reviewer` role — matches
+ *  ADR-055 §D2 "kanban Task addressed to `reviewer` member" pattern.
+ *  Operator-config: members declared in team.json with role: "reviewer". */
+function resolveReviewerName(team: Team): string {
+  for (const m of team.members) {
+    const role = (m as { role?: unknown }).role;
+    if (typeof role === "string" && role === "reviewer") return m.name;
+  }
+  return "reviewer";
 }
 
 /** Adapter: composes an `AccountSwapCheckCtx` from the verb's TickCtx +

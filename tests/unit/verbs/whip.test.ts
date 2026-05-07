@@ -100,6 +100,9 @@ describe("readWhipConfig", () => {
       accountSwapFallbackHealthThreshold: 50,
       accountSwapExcludeRoles: ["lead", "planner", "reviewer"],
       claudeAccount: "",
+      selfHealEnabled: false,
+      selfHealRecipes: [],
+      selfHealTokenCaps: {},
     });
   });
 
@@ -139,6 +142,9 @@ describe("readWhipConfig", () => {
       accountSwapFallbackHealthThreshold: 50,
       accountSwapExcludeRoles: ["lead", "planner", "reviewer"],
       claudeAccount: "",
+      selfHealEnabled: false,
+      selfHealRecipes: [],
+      selfHealTokenCaps: {},
     });
   });
 
