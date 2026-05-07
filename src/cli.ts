@@ -42,6 +42,7 @@ import { help } from "./verbs/help.ts";
 import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
+import { migrateState } from "./verbs/migrate-state.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
 import { outbox, reply } from "./verbs/reply.ts";
@@ -152,6 +153,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return watchdog(argv.slice(1));
     case "improve":
       return improve(argv.slice(1));
+    case "migrate-state":
+      return migrateState(argv.slice(1));
     case "up":
       return up(argv.slice(1));
     case "":
