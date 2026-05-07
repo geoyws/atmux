@@ -35,9 +35,10 @@ main() {
     "$atmux_c_dim" "$session [$sess_state]" "$atmux_c_rst"
 
   echo ""
-  printf '%smember%s %s %s %s %s\n' \
+  printf '%smember%s %s %s %s %s %s\n' \
     "$atmux_c_dim" "$atmux_c_rst" \
     "$(printf '%-8s' 'role')" \
+    "$(printf '%-6s' 'lane')" \
     "$(printf '%-10s' 'tui')" \
     "$(printf '%-10s' 'pane')" \
     "$(printf '%-8s' 'inbox')"
@@ -45,11 +46,14 @@ main() {
   local members_json; members_json="$(jq -c '.members[]' "$(atmux::team_json)")"
   while IFS= read -r m; do
     [[ -z "$m" ]] && continue
-    local name role tui pane_cmd pending emoji
+    local name role tui pane_cmd pending emoji lane lane_disp
     name=$(jq -r '.name' <<<"$m")
     role=$(jq -r '.role // "member"' <<<"$m")
     tui=$(jq -r '.tui // "claude"' <<<"$m")
     emoji=$(jq -r '.emoji // ""' <<<"$m")
+    lane=$(jq -r '.lane // ""' <<<"$m")
+    [[ -z "$lane" || "$lane" == "null" ]] && lane="$(atmux::lane_for_name "$name" "$role")"
+    lane_disp="$(atmux::lane_display "$lane")"
 
     if atmux::tmux_window_exists "$name"; then
       pane_cmd=$(tmux list-panes -t "$(atmux::tmux_target "$name")" -F '#{pane_current_command}' 2>/dev/null | head -1)
@@ -73,12 +77,13 @@ main() {
         gitter)        emoji="🌿" ;;
         devops)        emoji="⚙️ " ;;
         dba)           emoji="🗄️ " ;;
+        unblocker)     emoji="🔓" ;;
         *)             emoji="🐝" ;;
       esac
     fi
 
-    printf '  %s %-12s %-14s %-10s %-14s %s\n' \
-      "$emoji" "$name" "$role" "$tui" "$pane_cmd" "📥 $pending pending"
+    printf '  %s %-12s %-14s %-6s %-10s %-14s %s\n' \
+      "$emoji" "$name" "$role" "$lane_disp" "$tui" "$pane_cmd" "📥 $pending pending"
   done <<< "$members_json"
 
   # Kanban counts
@@ -108,12 +113,14 @@ _atmux_status_json() {
   # Compose members array with pane + inbox info.
   local members; members="$(jq -c '.members' "$(atmux::team_json)")"
   local enriched='[]'
-  local m name role tui pane_cmd pending ibfile
+  local m name role tui pane_cmd pending ibfile lane
   while IFS= read -r m; do
     [[ -z "$m" ]] && continue
     name=$(jq -r '.name' <<<"$m")
     role=$(jq -r '.role // "member"' <<<"$m")
     tui=$(jq -r '.tui // "claude"' <<<"$m")
+    lane=$(jq -r '.lane // ""' <<<"$m")
+    [[ -z "$lane" || "$lane" == "null" ]] && lane="$(atmux::lane_for_name "$name" "$role")"
 
     if atmux::tmux_window_exists "$name"; then
       pane_cmd=$(tmux list-panes -t "$(atmux::tmux_target "$name")" -F '#{pane_current_command}' 2>/dev/null | head -1)
@@ -130,9 +137,10 @@ _atmux_status_json() {
 
     enriched=$(jq --argjson base "$m" \
                   --arg pane "$pane_cmd" \
+                  --arg lane "$lane" \
                   --argjson pending "$pending" \
                   --argjson all "$enriched" \
-      '$all + [$base + {paneCommand: $pane, pendingCount: $pending}]' <<<"$enriched")
+      '$all + [$base + {lane: $lane, paneCommand: $pane, pendingCount: $pending}]' <<<"$enriched")
   done < <(jq -c '.members[]' "$(atmux::team_json)")
 
   local counts='{"todo":0,"inProgress":0,"done":0,"blocked":0}'

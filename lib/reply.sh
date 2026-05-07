@@ -5,6 +5,9 @@
 # Invoked via bin/atmux dispatcher. For `outbox`, the dispatcher passes
 # "--outbox" as first arg; for `reply`, the dispatcher passes "--reply".
 
+# shellcheck source=socket-pubsub.sh
+. "$ATMUX_LIB_DIR/socket-pubsub.sh"
+
 main() {
   atmux::require jq
   atmux::require_team
@@ -40,6 +43,22 @@ _atmux_reply() {
 
   local ob; ob="$(_atmux_outbox_path)"
   atmux::with_lock "$ob" _atmux_outbox_write "$ob" "$from" "$msg"
+
+  # E13/Sc: signal the lead's supervisor of the new reply so the lead picks
+  # it up in real time (vs the 5-min cron-whip baseline). lead-outbox.md is
+  # the durable source of truth — this publish is only a wake-up nudge.
+  # Solo Mode (no team-lead) skips silently; absent listener is non-fatal.
+  local _lead; _lead="$(atmux::find_lead_member 2>/dev/null || true)"
+  if [[ -n "$_lead" ]]; then
+    local _evt
+    _evt="$(jq -cn \
+      --arg from "$from" \
+      --arg snip "${msg:0:100}" \
+      --argjson ts "$(atmux::now_epoch)" \
+      '{type:"reply", ts:$ts, from:$from, payload:{snippet:$snip}}')"
+    atmux::sock_publish "$_lead" "$_evt"
+  fi
+
   atmux::ok "reply recorded ($from → driver) in $ob"
 }
 

@@ -19,15 +19,17 @@ export ATMUX_ROOT ATMUX_BIN_DIR
 export ATMUX_LIB_DIR="$ATMUX_ROOT/lib"
 export ATMUX_TEMPLATES_DIR="$ATMUX_ROOT/templates"
 
-# shellcheck source=../lib/common.sh
-. "$ATMUX_LIB_DIR/common.sh"
-
 usage() {
   cat <<'EOF'
 atmux — agent teams multiplexer.
 
-Usage: atmux <verb> [args]
+Usage: atmux [--team-dir <project-root>] <verb> [args]
        atmux                        One-stop: wizard (if new) → doctor → start → attach
+
+  --team-dir <dir>             Pin atmux at <dir> (looks for <dir>/.atmux/).
+                               Cron-friendly: `atmux --team-dir /path whip`.
+                               Same as $ATMUX_TEAM_DIR. Without this, atmux
+                               walks up from cwd to find `.atmux/`.
 
 Setup:
   up                          Same as bare `atmux`: bring a team all the way up
@@ -36,9 +38,15 @@ Setup:
   stop [--force]              Kill tmux session, archive state
   attach                      tmux attach to the team session
   status                      Powerline team overview
+  migrate-to-driver-session [<team>]
+                              Move team windows from dedicated atmux-<team>
+                              session into the driver's $TMUX session
+                              (single-session topology, ADR-016). Refuses on
+                              any in-flight pane state; idempotent.
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
+  tell <member> <msg...>      Alias for send (symmetry with tell-lead)
   broadcast <msg...>          Send to every member except the driver
   tell-lead <msg...>          Driver-only: send to lead + append to driver-inbox.md
   reply <msg...>              Member → driver: write to lead-outbox.md
@@ -50,11 +58,23 @@ Task board (kanban):
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
 
+Epic / Story (pull-kanban hierarchy — ADR-007):
+  epic add <title> [--body <text>] [--driver-ref <ref>]
+  epic list [--status <s>] [--json]
+  epic show <id> [--json]
+  epic advance <id> [--to planning|ready|in-progress|review|done]
+  story add <title> --epic <eid> [--ac <criteria>] [--body <text>]
+  story list --epic <eid> [--status <s>] [--json]
+  story show <id> [--json]
+  story advance <id> [--to planning|ready|in-progress|testing|review|merging|done]
+
 Dispatch + work:
   dispatch <member> <task-id> Push task to member's inbox + ping them
   inbox <member>              Show member's inbox
   claim <task-id>             Claim a task from kanban (as a member)
-  done <task-id>              Mark claimed task complete
+  done <task-id> [--no-dispatch]  Mark claimed task complete
+                              (--no-dispatch skips auto commit-Task → gitter;
+                               also opt-in via ATMUX_NO_AUTO_DISPATCH=1)
 
 Automation:
   report                      Post 30-min progress digest to Discord
@@ -62,15 +82,66 @@ Automation:
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   rotate <member>             /clear the member and re-brief
   rotate-lead                 /clear the lead and re-bootstrap
+  brief-driver                Single-screen driver state recovery (read-only;
+                              kanban + git + driver-inbox + lead-outbox)
+  driver note <msg> [--reversibility low|medium|high] [--note <txt>]
+                              Append driver self-note to driver-state.md
+                              (auto-rotating digest of last 5; no Discord)
+  reload brief-reload <m> [--force]
+                              Re-paste role brief into member's pane without
+                              /clear (context preserved); skips known blockers
+  reload config-reload        Re-read team.json + ping members whose
+                              role/lane/model/tui drifted from spawn snapshot
   handoff <from> <to>         Move in-flight work from one member to another
   pause <member>              Mark member paused (dispatch refuses to queue)
   resume <member>             Unpause
+  cleanup <logs|inboxes|all> [--max-size N] [--max-age-days N] [--dry-run]
+                              Rotate big logs (>1MB → .log.1), prune old
+                              done[] entries from inboxes (>7d default).
+                              Idempotent + cron-safe.
+  groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
+                              Sweep stale shared state into .atmux/archive/:
+                              flushes driver-inbox/lead-outbox `## Archive`
+                              tails into dated archives, summarizes done/
+                              cancelled kanban cards >N days into a
+                              kanban-log-YYYY-MM.md, archives old decisions
+                              entries, culls .bak.* families. Fires daily
+                              via cron + once on every `atmux start`.
+
+Decisions log:
+  decisions add <q> --default <a> [--reversibility low|medium|high] [--note <t>]
+  decisions list [--since <when>] [--reversibility <level>] [--json]
+  decisions show <id>
+  decisions digest            Post consolidated Discord digest since cursor
+
+Flags log (operator escalations):
+  flags add <message> --severity p0|p1|p2 --needs decision|review|context|unblock|rotate
+                     [--as <member>] [--task <id>] [--note <text>]
+  flags list [--severity <s>] [--needs <n>] [--status open|resolved] [--since <w>]
+             [--member <m>] [--json]
+  flags show <id>
+  flags resolve <id> [--as <member>] [--note <text>]
 
 Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+  team rename <old> <new> [--session <s>] [--migrate-session] [--force]
+                              Atomic rename across team.json / tmux / cron / registry
+                              with rollback on partial failure (ADR-027).
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
+  verify-libs [--quiet] [--json]
+                              Source-check every lib/*.sh + assert function presence
+
+Superdriver (cross-team / fleet — ADR-025):
+  super-attach                Attach (or spawn) the global atmux-superdriver
+                              tmux session — single Claude (Opus) pane for
+                              cross-team coordination. Not team-bound.
+  super-status [--json] [--prune]
+                              Per-team digest + fleet rollup across every
+                              registered team. Read-only by default; --prune
+                              flips liveness-failed entries to status='stale'
+                              in the registry (preserves entry per ADR-025).
 
 Misc:
   version
@@ -79,11 +150,86 @@ Misc:
 Environment:
   ATMUX_DISCORD_WEBHOOK   Discord webhook URL for whip/report escalations
   ATMUX_DIR               Override state dir (default: ./.atmux)
+  ATMUX_TEAM_DIR          Project root containing .atmux/ — alternative to
+                          --team-dir flag; ATMUX_DIR (more specific) wins
+                          when both are set
   ATMUX_TEAM              Override team name (otherwise read from team.json)
 
 Docs:  https://github.com/geoyws/atmux
 EOF
 }
+
+# Global --team-dir flag: pin atmux at a project root before verb dispatch.
+# Cron-friendly equivalent of `cd <dir> && atmux <verb>`; also accepts
+# `--team-dir=<dir>`. Can appear before OR immediately after the verb.
+# Sets $ATMUX_TEAM_DIR which lib/common.sh's atmux::dir() reads.
+_atmux_consume_team_dir() {
+  case "${1:-}" in
+    --team-dir)
+      [[ $# -ge 2 ]] || { echo "atmux: --team-dir requires <dir>" >&2; exit 64; }
+      [[ -d "$2" ]] || { echo "atmux: --team-dir: not a directory: $2" >&2; exit 64; }
+      export ATMUX_TEAM_DIR="$2"
+      _atmux_team_dir_consumed=2
+      ;;
+    --team-dir=*)
+      local d="${1#--team-dir=}"
+      [[ -n "$d" ]] || { echo "atmux: --team-dir= requires a value" >&2; exit 64; }
+      [[ -d "$d" ]] || { echo "atmux: --team-dir: not a directory: $d" >&2; exit 64; }
+      export ATMUX_TEAM_DIR="$d"
+      _atmux_team_dir_consumed=1
+      ;;
+    *) _atmux_team_dir_consumed=0 ;;
+  esac
+}
+
+_atmux_consume_team_dir "$@"
+case "$_atmux_team_dir_consumed" in
+  2) shift 2 ;;
+  1) shift 1 ;;
+esac
+
+# E8/Sc t-e179f289 (ADR-018) — early TMUX_TMPDIR export from team.json's
+# optional `tmuxTmpdir` field. Per-team socket isolation needs to land
+# BEFORE common.sh sources because every common.sh-defined helper that
+# shells out to `tmux` reads $TMUX_TMPDIR at invocation time; a late
+# export risks an early call landing on the wrong socket. Honors any
+# pre-existing $TMUX_TMPDIR (operator override wins). Silent no-op when
+# jq is absent or team.json is malformed/missing — atmux startup must
+# stay graceful for first-run (no .atmux/) cases.
+_atmux_resolve_tmux_tmpdir() {
+  [[ -n "${TMUX_TMPDIR:-}" ]] && return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  # Resolve team.json the same way atmux::dir() will once common.sh loads:
+  # explicit ATMUX_DIR > ATMUX_TEAM_DIR/.atmux > walk up from cwd.
+  local tj=""
+  if [[ -n "${ATMUX_DIR:-}" && -f "${ATMUX_DIR%/}/team.json" ]]; then
+    tj="${ATMUX_DIR%/}/team.json"
+  elif [[ -n "${ATMUX_TEAM_DIR:-}" && -f "${ATMUX_TEAM_DIR%/}/.atmux/team.json" ]]; then
+    tj="${ATMUX_TEAM_DIR%/}/.atmux/team.json"
+  else
+    local d="$PWD"
+    while [[ -n "$d" && "$d" != "/" ]]; do
+      if [[ -f "$d/.atmux/team.json" ]]; then
+        tj="$d/.atmux/team.json"
+        break
+      fi
+      d="$(dirname "$d")"
+    done
+  fi
+  [[ -n "$tj" ]] || return 0
+
+  local val
+  val="$(jq -r '.tmuxTmpdir // empty' "$tj" 2>/dev/null)"
+  [[ -n "$val" && "$val" != "null" ]] || return 0
+
+  mkdir -p "$val" 2>/dev/null || true
+  export TMUX_TMPDIR="$val"
+}
+_atmux_resolve_tmux_tmpdir
+
+# shellcheck source=../lib/common.sh
+. "$ATMUX_LIB_DIR/common.sh"
 
 case "${1:-}" in
   help|--help|-h) usage; exit 0 ;;
@@ -92,18 +238,63 @@ case "${1:-}" in
 esac
 
 verb="$1"; shift
+
+# Also accept --team-dir immediately after the verb (e.g. `atmux whip --team-dir /path`).
+_atmux_consume_team_dir "$@"
+case "$_atmux_team_dir_consumed" in
+  2) shift 2 ;;
+  1) shift 1 ;;
+esac
 verb_script="$ATMUX_LIB_DIR/${verb}.sh"
 
 # Route aliased verbs:
 case "$verb" in
   tell-lead) verb_script="$ATMUX_LIB_DIR/tell.sh" ;;
+  # `atmux tell <member> <msg>` was previously an undefined verb that
+  # silently fell through to lib/tell.sh (the file `${verb}.sh` resolves
+  # to `tell.sh` for verb `tell`), and tell.sh treated `$*` as the
+  # message → the member name became part of the message body and was
+  # routed to the lead. Symmetry fix: `tell <member>` is now an alias
+  # for `send <member>` (direct pane ping). `tell-lead` keeps its
+  # distinct durable inbox-write semantics.
+  tell) verb_script="$ATMUX_LIB_DIR/send.sh" ;;
   rotate-lead) verb_script="$ATMUX_LIB_DIR/rotate.sh"; set -- "--lead" "$@" ;;
+  brief-driver) verb_script="$ATMUX_LIB_DIR/driver.sh"; set -- "brief-driver" "$@" ;;
   task) verb_script="$ATMUX_LIB_DIR/kanban.sh" ;;
   broadcast) verb_script="$ATMUX_LIB_DIR/send.sh"; set -- "--broadcast" "$@" ;;
   claim|done) verb_script="$ATMUX_LIB_DIR/claim.sh"; set -- "--$verb" "$@" ;;
   reply) verb_script="$ATMUX_LIB_DIR/reply.sh"; set -- "--reply" "$@" ;;
   outbox) verb_script="$ATMUX_LIB_DIR/reply.sh"; set -- "--outbox" "$@" ;;
   pause|resume) verb_script="$ATMUX_LIB_DIR/pause.sh"; set -- "$verb" "$@" ;;
+  verify-libs) verb_script="$ATMUX_LIB_DIR/verify_libs.sh" ;;
+  migrate-to-driver-session) verb_script="$ATMUX_LIB_DIR/migrate.sh" ;;
+  # ADR-032 supervisor lifecycle: both subverbs route to lib/supervisor.sh
+  # and prepend the subverb token so its main() can dispatch.
+  supervisor-start) verb_script="$ATMUX_LIB_DIR/supervisor.sh"; set -- "start" "$@" ;;
+  supervisor-stop)  verb_script="$ATMUX_LIB_DIR/supervisor.sh"; set -- "stop"  "$@" ;;
+  # ADR-021 unblocker role: `atmux unblocker tick` cron'd at 2-min cadence.
+  # Single subverb today (`tick`); main() in lib/unblocker.sh defaults to
+  # tick when the subverb is omitted, so `atmux unblocker` works too.
+  unblocker) verb_script="$ATMUX_LIB_DIR/unblocker.sh" ;;
+  # ADR-022 discorder role: `atmux discorder progress` (every 30 min) +
+  # `atmux discorder heartbeat` (hourly) cron-fired by lib/cron.sh when
+  # team.json declares a discorder member. Pass the subverb through to
+  # lib/discorder.sh::main verbatim.
+  discorder) verb_script="$ATMUX_LIB_DIR/discorder.sh" ;;
+  # ADR-027 team-rename: `atmux team rename …` routes to lib/team-rename.sh.
+  # ADR-027 ADDENDUM 11 (t-2a25f7bd): `atmux team repair-rename` recovers
+  # teams whose declarative state (team.json:.name + registry) outran
+  # imperative live state (cage tmpdir + tmux session + window prefixes
+  # + cron). Verb is reused by the convention-wide sweep under the
+  # migrate-naming epic (t-36ec8c01) — same code path.
+  team)
+    case "${1:-}" in
+      rename)        verb_script="$ATMUX_LIB_DIR/team-rename.sh";        shift ;;
+      repair-rename) verb_script="$ATMUX_LIB_DIR/team-repair-rename.sh"; shift ;;
+      "") echo "atmux team: subverb required (try: rename | repair-rename)" >&2; exit 64 ;;
+      *)  echo "atmux team: unknown subverb '${1}' (try: rename | repair-rename)" >&2; exit 64 ;;
+    esac
+    ;;
 esac
 
 if [[ ! -f "$verb_script" ]]; then
@@ -116,6 +307,7 @@ fi
 # isn't a verb that sets up / explains atmux itself, offer to run the wizard.
 case "$verb" in
   init|wizard|doctor|up) ;;  # these handle the no-team case themselves
+  super-attach|super-status|super-tell) ;;  # global / fleet verbs — not team-bound
   *)
     if [[ -z "${ATMUX_TEAM:-}" ]]; then
       atmux::maybe_offer_wizard || true

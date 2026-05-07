@@ -89,6 +89,10 @@ teardown() {
   local id; id=$("$ATMUX_BIN" task add "x" | tail -1)
   # Force cwd mismatch.
   cd /tmp
+  # Strip ATMUX_MEMBER from caller env — when this test is invoked from
+  # inside a team pane, lib/tui.sh's _atmux_env_prefix has exported it as
+  # part of the pane bootstrap, defeating the guard under test.
+  unset ATMUX_MEMBER
   ATMUX_DIR="$ATMUX_TEST_TMP/project/.atmux" run "$ATMUX_BIN" claim "$id"
   [ "$status" -ne 0 ]
   [[ "$output" =~ "can't infer member" ]]

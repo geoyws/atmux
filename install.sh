@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# atmux one-shot installer. Clones to ~/.atmux and symlinks bin/atmux → /usr/local/bin/atmux.
+# atmux one-shot installer. Clones to ~/.atmux and symlinks bin/atmux +
+# bin/atmux-tmux → /usr/local/bin/.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/geoyws/atmux/main/install.sh | bash
@@ -30,13 +31,22 @@ else
   git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
 
-chmod +x "$INSTALL_DIR/bin/atmux" "$INSTALL_DIR"/lib/*.sh 2>/dev/null || true
+chmod +x "$INSTALL_DIR/bin/atmux" "$INSTALL_DIR/bin/atmux-tmux" "$INSTALL_DIR"/lib/*.sh 2>/dev/null || true
 
-if [[ -w "$(dirname "$BIN_TARGET")" ]]; then
-  ln -sf "$INSTALL_DIR/bin/atmux" "$BIN_TARGET"
+# Link bin/atmux + bin/atmux-tmux into the same parent dir as $BIN_TARGET.
+# atmux-tmux (ADR-018) is the cage-aware tmux wrapper — paired binary so
+# `attach` lands on the right socket without operators having to remember
+# `tmux -S /tmp/atmux-tmux-<team>/tmux-$UID/default attach`.
+_bin_target_dir="$(dirname "$BIN_TARGET")"
+_atmuxtmux_target="$_bin_target_dir/atmux-tmux"
+
+if [[ -w "$_bin_target_dir" ]]; then
+  ln -sf "$INSTALL_DIR/bin/atmux"      "$BIN_TARGET"
+  ln -sf "$INSTALL_DIR/bin/atmux-tmux" "$_atmuxtmux_target"
 else
-  echo "atmux: $BIN_TARGET is not writable; trying sudo ln"
-  sudo ln -sf "$INSTALL_DIR/bin/atmux" "$BIN_TARGET"
+  echo "atmux: $_bin_target_dir is not writable; trying sudo ln"
+  sudo ln -sf "$INSTALL_DIR/bin/atmux"      "$BIN_TARGET"
+  sudo ln -sf "$INSTALL_DIR/bin/atmux-tmux" "$_atmuxtmux_target"
 fi
 
 echo "atmux: installed. Run 'atmux --help' to get started."

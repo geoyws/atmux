@@ -18,6 +18,7 @@
 main() {
   atmux::require jq tmux
   atmux::require_team
+  atmux::kanban_normalize
 
   local from="" to="" reason="" native=1 pause_from=0
   while [[ $# -gt 0 ]]; do

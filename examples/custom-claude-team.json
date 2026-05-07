@@ -2,13 +2,13 @@
   "name": "custom-claude",
   "description": "Multiple Claude configs side-by-side. Each member uses a distinct launch command so they can carry different plugin dirs / skills / rules.",
   "tuiCommands": {
-    "claude-ifca":  "claude --plugin-dir=$HOME/work/journals/.sb/claude-skills",
+    "claude-plugins":  "claude --plugin-dir=$HOME/work/journals/.sb/claude-skills",
     "claude-fresh": "claude",
     "claude-heavy": "CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --model claude-opus-4-7"
   },
   "members": [
     { "name": "lead",     "role": "team-lead",     "tui": "claude-heavy", "model": "default", "cwd": "." },
-    { "name": "reviewer", "role": "reviewer",      "tui": "claude-ifca",  "model": "default", "cwd": "." },
+    { "name": "reviewer", "role": "reviewer",      "tui": "claude-plugins",  "model": "default", "cwd": "." },
     { "name": "gitter",   "role": "git-committer", "tui": "claude-fresh", "model": "default", "cwd": "." },
     { "name": "w1",       "role": "member",
       "tui": "claude",

@@ -1,6 +1,11 @@
 {
   "name": "my-team",
   "description": "atmux team — edit this to match your project",
+  "tmuxTmpdir": "/tmp/atmux-tmux_my-team",
+  "_comment_singleSession": "Default false (2026-04-30 reversal of ADR-026) — cage isolation per ADR-018 is the safe path; singleSession opts out of it on the daily-driver socket and reintroduces the side-channel pollution class (cage-prefix leak, cross-socket spawn, partial-rename mess). Launcher sessions (atmux_<team> created by atmux doctor --fix) preserve the at-a-glance benefit while keeping isolation. Set true ONLY for non-human-driven teams or detached observer setups (declared escape hatch).",
+  "singleSession": false,
+  "_comment_driverTui": "TUI to auto-spawn in the cage's driver window on `atmux start`. Defaults to claude. Set null to skip auto-spawn (operator runs whatever they want manually after attach).",
+  "driverTui": "claude",
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type. atmux appends --model <model> unless the prefix already has one. Example: \"claude\": \"claude --plugin-dir=$HOME/work/journals/.sb/claude-skills\""
   },
@@ -11,6 +16,7 @@
     {
       "name": "lead",
       "role": "team-lead",
+      "lane": "misc",
       "tui": "claude",
       "model": "default",
       "cwd": "."
@@ -18,6 +24,7 @@
     {
       "name": "planner",
       "role": "planner",
+      "lane": "misc",
       "tui": "claude",
       "model": "default",
       "cwd": "."
@@ -25,6 +32,7 @@
     {
       "name": "reviewer",
       "role": "reviewer",
+      "lane": "review",
       "tui": "claude",
       "model": "default",
       "cwd": "."
@@ -32,6 +40,7 @@
     {
       "name": "gitter",
       "role": "gitter",
+      "lane": "misc",
       "tui": "claude",
       "model": "default",
       "cwd": "."
@@ -39,6 +48,7 @@
     {
       "name": "devops",
       "role": "devops",
+      "lane": "ops",
       "tui": "claude",
       "model": "default",
       "cwd": "."
@@ -46,13 +56,31 @@
     {
       "name": "dba",
       "role": "dba",
+      "lane": "db",
       "tui": "claude",
       "model": "default",
       "cwd": "."
     },
     {
+      "name": "unblocker",
+      "role": "unblocker",
+      "lane": "misc",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
+      "name": "discorder",
+      "role": "discorder",
+      "lane": "misc",
+      "tui": "claude",
+      "model": "claude-sonnet-4-6",
+      "cwd": "."
+    },
+    {
       "name": "fe-auth",
       "role": "member",
+      "lane": "fe",
       "tui": "claude",
       "model": "default",
       "cwd": "."
@@ -60,6 +88,7 @@
     {
       "name": "be-auth",
       "role": "member",
+      "lane": "be",
       "tui": "cursor",
       "model": "default",
       "cwd": "."
@@ -67,6 +96,7 @@
     {
       "name": "db-auth",
       "role": "member",
+      "lane": "db",
       "tui": "opencode",
       "model": "default",
       "cwd": "."
@@ -74,10 +104,17 @@
   ],
   "whip": {
     "intervalMins": 5,
-    "staleMin": 30,
-    "leadMaxMin": 60
+    "staleMin": 90,
+    "leadMaxMin": 60,
+    "autoRotate": true
   },
   "report": {
     "intervalMins": 30
+  },
+  "_comment_discord": "Optional. webhook = pings target (env ATMUX_DISCORD_WEBHOOK overrides). color = hex override for embed (auto-derived from team-name hash if absent, see ADR-019 §16-color palette). emoji = leading title glyph (defaults to 🤖). Strip any field to fall back to defaults.",
+  "discord": {
+    "webhook": "https://discord.com/api/webhooks/REPLACE_ME",
+    "color": "#7287fd",
+    "emoji": "🌊"
   }
 }
