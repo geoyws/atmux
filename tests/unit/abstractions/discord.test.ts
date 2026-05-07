@@ -5,16 +5,14 @@
 //   - Rendering (header format, bullets-only, sections-only, mixed)
 //   - Chunking (single message, multi-message with N/M suffix, section-label
 //     glued to first bullet)
-//   - Send routing (recorder JSONL capture, ping-discord.sh spawn delegation,
-//     direct-fetch fallback, ConfigError on pinned-but-missing script,
-//     ConfigError on no-webhook-no-script, DiscordWebhookError on non-2xx)
+//   - Send routing (recorder JSONL capture, direct-fetch via bun-native
+//     `fetch`, ConfigError on no-webhook, DiscordWebhookError on non-2xx)
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  _resetFallbackWarnedForTest,
   type DiscordSection,
   type DiscordSendOpts,
   renderAccountSwapFail,
@@ -40,14 +38,12 @@ let tmpRoot: string;
 
 const SAVED_ENV = {
   ATMUX_DISCORD_RECORDER: process.env.ATMUX_DISCORD_RECORDER,
-  ATMUX_DISCORD_PING_SCRIPT: process.env.ATMUX_DISCORD_PING_SCRIPT,
   ATMUX_DISCORD_WEBHOOK: process.env.ATMUX_DISCORD_WEBHOOK,
   HOME: process.env.HOME,
 };
 
 function clearEnv(): void {
   delete process.env.ATMUX_DISCORD_RECORDER;
-  delete process.env.ATMUX_DISCORD_PING_SCRIPT;
   delete process.env.ATMUX_DISCORD_WEBHOOK;
 }
 
@@ -69,10 +65,8 @@ afterAll(async () => {
 
 beforeEach(() => {
   clearEnv();
-  _resetFallbackWarnedForTest();
-  // Pin HOME to a non-existent path so the default ping-discord.sh
-  // resolution lands on a missing file in tests that don't override
-  // ATMUX_DISCORD_PING_SCRIPT.
+  // HOME is irrelevant to the bun-native fetch path but we pin it for
+  // determinism (some environment-resolution helpers consult it).
   process.env.HOME = "/nonexistent-test-home-atmux-bun-discord-spec";
 });
 
@@ -371,7 +365,7 @@ describe("routing — recorder", () => {
     expect(calls[0]?.payload.content).toContain("✅ recorded");
   });
 
-  test("recorder bypasses both spawn and fetch (no network)", async () => {
+  test("recorder bypasses fetch (no network)", async () => {
     // Prove no fetch happened by setting a webhookOverride to a port that
     // would refuse — recorder path should never touch it.
     const recorder = join(tmpRoot, "nofetch.jsonl");
@@ -383,73 +377,23 @@ describe("routing — recorder", () => {
 
   test("empty-string ATMUX_DISCORD_RECORDER falls through (treated as unset)", async () => {
     process.env.ATMUX_DISCORD_RECORDER = ""; // explicit empty
-    process.env.ATMUX_DISCORD_PING_SCRIPT = "/definitely/not/a/real/script-x9q3";
+    delete process.env.ATMUX_DISCORD_WEBHOOK;
     let caught: ConfigError | null = null;
     try {
       await send(bullets());
     } catch (e) {
       if (e instanceof ConfigError) caught = e;
     }
-    expect(caught?.message).toContain("does not exist");
+    expect(caught?.message).toContain("no Discord webhook resolved");
   });
 });
 
-// ---------- Routing: spawn ping-discord.sh ----------
+// (Removed: spawn ping-discord.sh delegation tests. The spawn route was
+// dropped in favour of bun-native fetch — see ADR-008 §"Routing".)
 
-describe("routing — ping-discord.sh delegation", () => {
-  test("ATMUX_DISCORD_PING_SCRIPT pointing to a stub spawns it with stdin + env", async () => {
-    const stub = join(tmpRoot, "ping-stub.sh");
-    const sink = join(tmpRoot, "ping-stub.out");
-    await writeFile(
-      stub,
-      `#!/usr/bin/env bash\ncat > "${sink}"\necho "WEBHOOK=\${ATMUX_DISCORD_WEBHOOK:-unset}" >> "${sink}"\nexit 0\n`,
-      { mode: 0o755 },
-    );
-    process.env.ATMUX_DISCORD_PING_SCRIPT = stub;
-    await send(bullets({ webhookOverride: "https://example.test/webhook" }));
-    const captured = await readFile(sink, "utf8");
-    expect(captured).toContain("✅ shipped");
-    expect(captured).toContain("WEBHOOK=https://example.test/webhook");
-  });
+// ---------- Routing: direct-fetch ----------
 
-  test("script omits ATMUX_DISCORD_WEBHOOK env when no webhookOverride", async () => {
-    const stub = join(tmpRoot, "ping-stub-noenv.sh");
-    const sink = join(tmpRoot, "ping-stub-noenv.out");
-    await writeFile(stub, `#!/usr/bin/env bash\ncat > "${sink}"\nexit 0\n`, { mode: 0o755 });
-    process.env.ATMUX_DISCORD_PING_SCRIPT = stub;
-    await send(bullets()); // no webhookOverride
-    const captured = await readFile(sink, "utf8");
-    expect(captured).toContain("✅ shipped");
-  });
-
-  test("script nonzero exit → DiscordWebhookError", async () => {
-    const stub = join(tmpRoot, "ping-fail.sh");
-    await writeFile(stub, `#!/usr/bin/env bash\nexit 7\n`, { mode: 0o755 });
-    process.env.ATMUX_DISCORD_PING_SCRIPT = stub;
-    let caught: DiscordWebhookError | null = null;
-    try {
-      await send(bullets());
-    } catch (e) {
-      if (e instanceof DiscordWebhookError) caught = e;
-    }
-    expect(caught?.message).toContain("ping-discord.sh delegation failed");
-  });
-
-  test("ATMUX_DISCORD_PING_SCRIPT pointing to non-existent file → ConfigError (no silent fallback)", async () => {
-    process.env.ATMUX_DISCORD_PING_SCRIPT = join(tmpRoot, "definitely-not-here.sh");
-    let caught: ConfigError | null = null;
-    try {
-      await send(bullets());
-    } catch (e) {
-      if (e instanceof ConfigError) caught = e;
-    }
-    expect(caught?.message).toContain("does not exist");
-  });
-});
-
-// ---------- Routing: direct-fetch fallback ----------
-
-describe("routing — direct-fetch fallback", () => {
+describe("routing — direct-fetch", () => {
   let server: ReturnType<typeof Bun.serve>;
   let lastRequest: { method: string; body: string } | null = null;
   let nextStatus = 204;
@@ -521,7 +465,7 @@ describe("routing — direct-fetch fallback", () => {
     expect(caught?.cause).toBeDefined();
   });
 
-  test("no script + no webhook → ConfigError", async () => {
+  test("no webhook resolvable → ConfigError", async () => {
     delete process.env.ATMUX_DISCORD_WEBHOOK;
     let caught: ConfigError | null = null;
     try {
@@ -539,29 +483,12 @@ describe("routing — direct-fetch fallback", () => {
     expect(lastRequest).not.toBeNull();
   });
 
-  test("fallback warning fires once per process (stderr)", async () => {
-    // First fallback call emits warning; subsequent calls don't.
-    // We can't easily intercept process.stderr.write in bun:test, but we
-    // can at least exercise the warned-flag transition by calling send()
-    // twice with the fallback path and verifying both succeed.
+  test("repeat sends succeed (no per-process warning state)", async () => {
     nextStatus = 204;
-    process.env.ATMUX_DISCORD_WEBHOOK = `http://localhost:${server.port}/once`;
+    process.env.ATMUX_DISCORD_WEBHOOK = `http://localhost:${server.port}/repeat`;
     await send(bullets({ bullets: ["✅ first"] }));
     await send(bullets({ bullets: ["✅ second"] }));
-    // No assertion on stderr content; the path is just exercised. The
-    // `_resetFallbackWarnedForTest()` in beforeEach ensures other tests
-    // start with the flag clear.
     expect(lastRequest?.body).toContain("✅ second");
-  });
-
-  test("HOME unset → defaultScript path is rooted at /", async () => {
-    delete process.env.HOME;
-    nextStatus = 204;
-    process.env.ATMUX_DISCORD_WEBHOOK = `http://localhost:${server.port}/no-home`;
-    // Default script becomes "/.claude/skills/whip/scripts/ping-discord.sh"
-    // which doesn't exist → fallback fires → fetch succeeds.
-    await send(bullets({ bullets: ["✅ no-home"] }));
-    expect(lastRequest?.body).toContain("✅ no-home");
   });
 });
 

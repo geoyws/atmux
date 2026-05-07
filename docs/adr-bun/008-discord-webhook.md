@@ -28,7 +28,6 @@ The other concerns:
 
 ```ts
 // src/abstractions/discord.ts
-import { spawn } from "./spawn";
 import { DiscordWebhookError } from "../errors";
 import { formatMyt } from "./time";
 
@@ -126,34 +125,38 @@ Properties:
 - Bullets never split mid-line.
 - If a single bullet > maxBytes (rare but possible for code blocks), it's emitted as its own message; chunker logs a warning to stderr.
 
-### Routing — through `~/.claude/skills/whip/scripts/ping-discord.sh`
+### Routing — bun-native `fetch` against the resolved webhook URL
 
 ```ts
 // src/abstractions/discord.ts (continued)
-import { spawn } from "./spawn";
 
-const PING_SCRIPT = process.env.ATMUX_DISCORD_PING_SCRIPT
-  ?? `${process.env.HOME}/.claude/skills/whip/scripts/ping-discord.sh`;
-
-async function postChunk(chunk: string, webhook: string | undefined): Promise<void> {
-  // Per CLAUDE.md: "All whip + whip-watchdog + team skill sends route through
-  // ~/.claude/skills/whip/scripts/ping-discord.sh (thin webhook passthrough)."
-  await spawn({
-    cmd: PING_SCRIPT,
-    argv: [],
-    stdin: chunk,
-    env: webhook ? { ATMUX_DISCORD_WEBHOOK: webhook } : undefined,
-    timeoutMs: 10_000,
-    expectExitCode: 0,
+async function postChunk(chunk: string, webhookOverride: string | undefined): Promise<void> {
+  const url = webhookOverride && webhookOverride !== ""
+    ? webhookOverride
+    : process.env.ATMUX_DISCORD_WEBHOOK;
+  if (!url) throw new ConfigError({ what: "no Discord webhook resolved" });
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: chunk }),
   });
+  if (!resp.ok) throw new DiscordWebhookError({ statusCode: resp.status, ... });
 }
 ```
 
-The script receives the formatted chunk on stdin and the webhook URL via env. The abstraction does NOT know the webhook URL contents — it only knows the env var name. Secrets live in operator's environment, not in atmux's runtime.
+The webhook URL resolves from `webhookOverride` > `ATMUX_DISCORD_WEBHOOK` env > `team.discord.webhook` (via `resolveWebhookUrl`) > XDG file. The webhook value is held in process env / config and posted directly — no external script.
 
-### Direct-fetch fallback
+### Update — 2026-05-07: spawn route dropped
 
-If the script doesn't exist (`Bun.which(PING_SCRIPT) === null`), the abstraction falls back to direct `fetch` against `ATMUX_DISCORD_WEBHOOK`. This keeps the abstraction self-contained for test environments and operators who haven't installed the whip skill. The fallback path emits a one-line warning to stderr the first time per process: `discord: ping-discord.sh not found, using direct fetch (set ATMUX_DISCORD_PING_SCRIPT to silence)`.
+Earlier revisions of this ADR routed every chunk through `~/.claude/skills/whip/scripts/ping-discord.sh` via `spawn()`, with a direct-fetch fallback when the script was absent. CLAUDE.md still describes the bash-side convention ("All whip + whip-watchdog + team skill sends route through ping-discord.sh") for the bash atmux deployment, but the TS port has dropped the spawn route entirely:
+
+- The script was never installed at the expected path on the bun deploy. Every cron tick of `whip` and `report` logged `discord: ping-discord.sh not found, using direct fetch (set ATMUX_DISCORD_PING_SCRIPT to silence)`.
+- The "fallback" was always the canonical path. Discord posts have been landing via direct `fetch` since the abstraction shipped.
+- Maintaining a spawn-then-fallback router added two test surfaces, a once-per-process warning flag (`_fallbackWarned`), a `ATMUX_DISCORD_PING_SCRIPT` env knob, and a stderr noise source — all for a code path that wasn't doing useful work.
+
+The `ATMUX_DISCORD_PING_SCRIPT` env var is no longer honoured (setting it has no effect; ignored silently for backward compatibility). The `_resetFallbackWarnedForTest` test hook was removed. `directFetch` is now invoked directly from `send()`.
+
+The bash atmux side is unaffected — its `lib/discord.sh` continues to delegate to `ping-discord.sh` as before.
 
 ### Test interception
 
@@ -190,7 +193,7 @@ R10 is the central type guarantee. CLAUDE.md "Banned: unprefixed `[whip]` ad-hoc
 **Negatives:**
 
 - Adding a new named template requires editing `src/abstractions/discord.ts` (the union type). This is intentional friction — CLAUDE.md "every send is a named template" wants the discipline at the type level. Reviewer can grant a per-template ADR for substantial new categories.
-- Ping-script-vs-fetch-fallback creates two code paths to test. Foundation porter writes both unit tests.
+- ~~Ping-script-vs-fetch-fallback creates two code paths to test. Foundation porter writes both unit tests.~~ (Obsolete as of 2026-05-07: spawn route removed, single bun-native `fetch` path remains.)
 - Bullet-prefix emoji validation depends on Unicode grapheme cluster handling; foundation porter must use a TS-native grapheme regex (`\p{Emoji}\p{Emoji_Modifier}*` is approximate; `Intl.Segmenter` with `granularity: 'grapheme'` is precise).
 - 80-char bullet limit assumes characters not bytes — multi-byte Unicode bullets (e.g. emoji) consume multiple code units. Foundation porter clarifies in implementation: "80 grapheme clusters" not "80 chars" per CLAUDE.md spirit.
 - If the ping script signature changes upstream (whip skill bumps), atmux's spawn args may need to change. Loose coupling via stdin + env minimizes the surface.
@@ -218,7 +221,9 @@ Considered. Fluent and readable. Rejected because:
 
 ### C. Direct `fetch` only, no script routing
 
-Rejected. CLAUDE.md "All whip + whip-watchdog + team skill sends route through `~/.claude/skills/whip/scripts/ping-discord.sh`" is explicit. Direct fetch is the test-and-fallback path, not the primary path. Operator-installed whip skill is the source of truth for webhook handling.
+Originally rejected on the grounds that CLAUDE.md "All whip + whip-watchdog + team skill sends route through `~/.claude/skills/whip/scripts/ping-discord.sh`" was explicit and direct fetch should be a test-and-fallback path only.
+
+**Re-accepted 2026-05-07** (see "Update" note above): in practice, the script was never installed on this deploy and direct `fetch` was already serving every send. The spawn-route + fallback architecture was paying type/test/warning costs for a code path that never executed. CLAUDE.md's routing rule still governs the bash atmux deployment; the TS port treats `ATMUX_DISCORD_WEBHOOK` (env / team / XDG) as the canonical webhook source.
 
 ### D. Embed Discord SDK (`discord.js`)
 
