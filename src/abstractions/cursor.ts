@@ -55,8 +55,10 @@ export interface InvokeCursorOpts {
   /** Override the model passed via `--model`. Default `composer-2`
    *  per ADR-055 OQ-1. */
   cursorModel?: string;
-  /** Override the spawn function — primarily for tests. Defaults to
-   *  the production `spawn` from spawn.ts. */
+  /** Override the spawn function — primarily for tests. Returns the
+   *  three fields cursor.ts actually consumes (exitCode + stdout +
+   *  stderr); production-side `spawn` returns a wider SpawnResult
+   *  which is structurally compatible. */
   spawnFn?: (opts: {
     cmd: string;
     argv: ReadonlyArray<string>;
@@ -64,7 +66,7 @@ export interface InvokeCursorOpts {
     cwd?: string;
     timeoutMs?: number;
     expectExitCode?: number | ReadonlyArray<number> | "any";
-  }) => Promise<SpawnResult>;
+  }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
   /** Override how the post-invocation patch is computed. Defaults to
    *  shelling `git diff` + `git status -s` in the cwd. Tests inject
    *  a fake to avoid needing a git repo + writeable files. */
@@ -107,7 +109,7 @@ export async function invokeCursor(
     job.cwd,
   ];
 
-  let result: SpawnResult;
+  let result: { exitCode: number; stdout: string; stderr: string };
   try {
     result = await spawnFn({
       cmd: cursorBin,

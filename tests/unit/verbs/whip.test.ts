@@ -95,6 +95,11 @@ describe("readWhipConfig", () => {
       budgetResumeThreshold: 80,
       budgetWarningBands: [0.5, 0.25, 0.15],
       budgetRefreshLeadMins: 30,
+      accountFallback: [],
+      accountSwapTriggerThreshold: 75,
+      accountSwapFallbackHealthThreshold: 50,
+      accountSwapExcludeRoles: ["lead", "planner", "reviewer"],
+      claudeAccount: "",
     });
   });
 
@@ -129,6 +134,11 @@ describe("readWhipConfig", () => {
       budgetResumeThreshold: 80,
       budgetWarningBands: [0.5, 0.25, 0.15],
       budgetRefreshLeadMins: 30,
+      accountFallback: [],
+      accountSwapTriggerThreshold: 75,
+      accountSwapFallbackHealthThreshold: 50,
+      accountSwapExcludeRoles: ["lead", "planner", "reviewer"],
+      claudeAccount: "",
     });
   });
 

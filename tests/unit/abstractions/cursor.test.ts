@@ -32,16 +32,21 @@ const sampleJob = (overrides: Partial<CursorJob> = {}): CursorJob => ({
 
 describe("invokeCursor — happy path", () => {
   test("spawns with correct argv + stdin + cwd", async () => {
-    let observed: { argv: ReadonlyArray<string>; stdin: string | undefined; cwd: string | undefined } | null = null;
+    interface ObservedSpawn {
+      argv: ReadonlyArray<string>;
+      stdin: string | undefined;
+      cwd: string | undefined;
+    }
+    const observed: ObservedSpawn[] = [];
     await invokeCursor(sampleJob(), {
       spawnFn: async (opts) => {
-        observed = { argv: opts.argv, stdin: opts.stdin, cwd: opts.cwd };
+        observed.push({ argv: opts.argv, stdin: opts.stdin, cwd: opts.cwd });
         return { exitCode: 0, stdout: '{"tokensUsed":1234}', stderr: "" };
       },
       computePatch: async () => ({ diff: "diff body", files: ["team.json"] }),
     });
-    expect(observed).not.toBeNull();
-    expect(observed?.argv).toEqual([
+    expect(observed.length).toBe(1);
+    expect(observed[0]?.argv).toEqual([
       "--print",
       "--model",
       "composer-2",
@@ -52,8 +57,8 @@ describe("invokeCursor — happy path", () => {
       "--cwd",
       "/tmp/project",
     ]);
-    expect(observed?.stdin).toBe("edit team.json: ...");
-    expect(observed?.cwd).toBe("/tmp/project");
+    expect(observed[0]?.stdin).toBe("edit team.json: ...");
+    expect(observed[0]?.cwd).toBe("/tmp/project");
   });
 
   test("returns parsed tokens + computed patch on successful invocation", async () => {
@@ -92,20 +97,25 @@ describe("invokeCursor — happy path", () => {
   });
 
   test("uses custom cursorBinary + cursorModel + timeoutMs overrides", async () => {
-    let observed: { cmd: string; argv: ReadonlyArray<string>; timeoutMs: number | undefined } | null = null;
+    interface ObservedSpawn {
+      cmd: string;
+      argv: ReadonlyArray<string>;
+      timeoutMs: number | undefined;
+    }
+    const observed: ObservedSpawn[] = [];
     await invokeCursor(sampleJob(), {
       cursorBinary: "/path/to/stub",
       cursorModel: "composer-mini",
       timeoutMs: 60_000,
       spawnFn: async (opts) => {
-        observed = { cmd: opts.cmd, argv: opts.argv, timeoutMs: opts.timeoutMs };
+        observed.push({ cmd: opts.cmd, argv: opts.argv, timeoutMs: opts.timeoutMs });
         return { exitCode: 0, stdout: "{}", stderr: "" };
       },
       computePatch: async () => ({ diff: "", files: [] }),
     });
-    expect(observed?.cmd).toBe("/path/to/stub");
-    expect(observed?.argv).toContain("composer-mini");
-    expect(observed?.timeoutMs).toBe(60_000);
+    expect(observed[0]?.cmd).toBe("/path/to/stub");
+    expect(observed[0]?.argv).toContain("composer-mini");
+    expect(observed[0]?.timeoutMs).toBe(60_000);
   });
 });
 
