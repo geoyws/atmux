@@ -151,3 +151,128 @@ excerpt.
 - **Block installer (bash, live today):** `lib/cron.sh` in `atmux-geoyws` branch — NOT in `worktree-atmux-bun`.
 - **Phase-2 deferral note:** `src/verbs/start.ts:63-64`.
 - **Stall-prevention follow-up (v1.1.x):** ADR-057 (planner intent; not in this R1 wave).
+
+---
+
+## v1.1.x cron-block migration — `watchdog` line (ADR-057 §D6b)
+
+The R57-T6 wave (`3fc6651`) adds a sixth managed cron line — `*/2 atmux
+watchdog` — that runs the heartbeat-staleness detector independently of
+the regular `*/5 atmux whip` tick. Reasoning (ADR-057 §D6b): "Watchdog as
+separate cron — independent of whip's body-hash logic so a stuck whip
+doesn't blind the watchdog." Every team that wants member-stall detection
+needs this line.
+
+### What gets added
+
+```cron
+*/2 * * * * <prefix> atmux watchdog                >> .../watchdog.log 2>&1   ← NEW (R57-T6)
+```
+
+`<prefix>` matches the existing block — `TMUX_TMPDIR=… ATMUX_DIR=…
+/usr/local/bin/atmux`. The line lives inside the team's `# >>>
+atmux:team=<n>` marker fence alongside `whip` / `report` /
+`decisions digest` / `groom` / `whip-resume-check`.
+
+The full managed block after migration is up to **6 lines**:
+
+```cron
+# >>> atmux:team=<n> — managed by atmux start; do not edit by hand
+*/5  * * * * <prefix> atmux whip                  >> .../whip.log 2>&1
+*/30 * * * * <prefix> atmux report                >> .../report.log 2>&1
+0 */4 * * *  <prefix> atmux decisions digest      >> .../decisions-digest.log 2>&1
+0 4 * * *    <prefix> atmux groom --quiet         >> .../groom.log 2>&1
+*/1  * * * * <prefix> atmux whip-resume-check     >> .../whip-resume-check.log 2>&1
+*/2  * * * * <prefix> atmux watchdog              >> .../watchdog.log 2>&1   ← NEW
+# <<< atmux:team=<n>
+```
+
+The watchdog line is unconditional — every team gets it. Without
+heartbeat files (no D6a write-path enabled yet), the watchdog still
+runs but just reports "all heartbeats fresh" or "all heartbeats null"
+on each tick; cost is one process spawn per 2min.
+
+### Migration — recommended path
+
+```bash
+cd /path/to/team-project
+atmux team reconfigure --cron-only
+```
+
+Once the bun-port `cron-install` verb ships (per the Phase-2
+deferral note above), this single command re-renders the managed
+block from `src/core/cron.ts::renderCronBlock`, drops in the new
+`watchdog` line, and writes back via `crontab -`. Idempotent.
+
+For fleet teams (multiple projects), repeat the command in each
+team's project root. Order doesn't matter; each team's marker-fence
+is independent.
+
+### Migration — interim path (today)
+
+The bun-port install verb is still Phase-2 deferred (`src/verbs/start.ts:63-64`),
+so today operators use one of:
+
+**Option A — recycle (cleanest):**
+
+```bash
+cd /path/to/team-project
+atmux stop && atmux start
+```
+
+The bash-side `lib/cron.sh::_atmux_cron_install` (in `atmux-geoyws`
+branch) re-renders the block and includes the watchdog line if your
+bash-side `lib/cron.sh` is at the version that includes the v1.1.x
+`watchdog` rendering. Confirm with:
+
+```bash
+which atmux                                         # → /usr/local/bin/atmux
+ls -la /usr/local/bin/atmux                         # symlink target
+grep -c "atmux watchdog" "$(readlink -f /usr/local/bin/atmux | sed 's/bin/lib/;s/atmux$/cron.sh/')"
+```
+
+If the bash-side renderer doesn't yet emit the watchdog line, fall
+back to Option B until your bash branch catches up.
+
+**Option B — surgical `crontab -e` edit:**
+
+```bash
+crontab -e
+# Find the team's marker-fenced block:
+#     # >>> atmux:team=<n> ...
+#     ...
+#     # <<< atmux:team=<n>
+# Add BEFORE the closing `# <<<` marker:
+*/2 * * * * TMUX_TMPDIR=<your-tmpdir> ATMUX_DIR=<your-atmux-dir> /usr/local/bin/atmux watchdog >> <your-atmux-dir>/logs/watchdog.log 2>&1
+```
+
+Copy the `TMUX_TMPDIR=...` + `ATMUX_DIR=...` prefix verbatim from one
+of the existing lines in the same block — they MUST match for the
+verb to find your team's heartbeat files.
+
+After saving:
+
+```bash
+crontab -l | grep -A1 "atmux watchdog"
+ls -la /path/to/.atmux/logs/watchdog.log    # should appear within 2min
+```
+
+### Verification — watchdog line healthy
+
+After migrating, on the cron host:
+
+- [ ] `crontab -l | grep "atmux watchdog"` shows the new line in the team's block.
+- [ ] `ls -la /path/to/.atmux/logs/watchdog.log` exists and grows after ≤2min.
+- [ ] First few entries say `watchdog: all heartbeats fresh` (or `… N stale member(s) flagged this tick` if heartbeats are absent — both are healthy; the absence path indicates D6a heartbeat-writer hasn't started yet).
+- [ ] No errors in `tail -20 .atmux/logs/watchdog.log` (a misconfigured prefix surfaces as `team.json not found` or similar).
+- [ ] `atmux doctor` reports green; ADR-054 drift detection picks up any `team.json::whip.stallPrevention` typos.
+
+### Reference (R57-T6)
+
+- **Verb:** `src/verbs/watchdog.ts` (`3fc6651`).
+- **Heartbeat reader:** `src/core/heartbeat.ts::readHeartbeatAges`.
+- **Dedup state:** `.atmux/state/watchdog-state.json` (per-member 24h re-fire window).
+- **Audit log:** `.atmux/logs/watchdog.log` (one line per stale member per tick).
+- **Config knob:** `team.json::whip.stallPrevention.heartbeatStaleSec` (default 300s).
+- **Discord template:** `[whip-watchdog]` (per-member dedup; quiet on hourly cron).
+- **Operator playbook:** [`RUNBOOK-stall-recovery.md`](RUNBOOK-stall-recovery.md) — what to do when a watchdog ping fires.

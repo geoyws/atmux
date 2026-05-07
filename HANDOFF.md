@@ -472,6 +472,128 @@ After an account-swap pass, every swapped member has a duplicate row in `team.js
 **For now:** operators manually reconcile post-refresh per the pattern in §"Recovery flow". Discord `[whip-account-swap-pass-complete]` includes a roster summary so the post-refresh state is visible. Driver-inbox entry at swap-pass-close lists from→to map for audit. Track this as ADR-056 OQ-3 — surfacing here so operators know the rough edge exists and don't expect auto-cleanup.
 
 ---
+
+## 🛡️ v1.1.x stall-prevention (ADR-057)
+
+7-class failure-mode taxonomy (Class A-G) → 7 Decision sections (D1-D7) → 8 implementation Tasks (R57-T1 through R57-T8). Lands post-v1.0.0 in staged sub-releases (v1.1.0 = D1+D5+D6+D7 first wave; v1.1.1 = D2+D3+D4 second wave). Each Decision is additive — no breaking-change to v1.0.0 primitives — and operators on legacy `team.json` keep current semantics via Zod defaults (per ADR-054).
+
+See [`docs/adr-bun/057-stall-prevention.md`](docs/adr-bun/057-stall-prevention.md) for full rationale + cross-class deps + open questions. This section is operator-facing usage; the ADR is the source-of-truth design.
+
+### Class A → D1 — Pane-state classifier as pre-flight gate (R57-T1)
+
+**Problem this solves:** `tmux send-keys` silently swallows input when the target pane is in `Compacting conversation` / rate-limit / Anthropic feedback modal / queued-message / respawned-bash state. George's original "atmux whip sometimes doesn't wake team leads" complaint.
+
+**What changed:** every send-keys caller now goes through `safeSendKeys(target, text)` (`src/core/safe-send.ts`), which gates on `classifyPane(target) → READY | TYPING | MODAL | RATE-LIMIT | COMPACTING | SHELL | UNKNOWN` (`src/core/pane-state.ts`) and applies a per-state retry policy. Direct `tmux.sendKeys` calls are now an eslint violation.
+
+**Operator implications:**
+- Receive `[whip-perm-mode-drift]` Discord pings if a member's pane drifts to non-`auto` permission mode (D4a). Recovery: open the pane and BTab-cycle to auto.
+- Receive `[whip-defunct-cwd]` if a member's worktree was deleted (D4c).
+- A member that drops into `SHELL` state (TUI crashed → bash) shows up as P2 flag. Recovery: `atmux team rotate-member <name>` or manual `atmux send` after relaunching the TUI.
+- All retry delays + max-retries are tunable via `team.json::stallPrevention.paneStateRetryDelays` / `paneStateMaxRetries`.
+
+### Class B → D2 — Bounded driver-inbox + delta-only reads (R57-T2)
+
+**Problem this solves:** driver-inbox grows unbounded; lead anchored on stale view post-`/clear`; lead-rotation mid-plan loses context.
+
+**What changed:** four sub-decisions:
+- **D2a** auto-archive at 1MB OR >200 entries (24h hard min retention) → `.atmux/archive/driver-inbox-<YYYYMMDD>.md`.
+- **D2b** delta-only reads — `atmux outbox` slices by `mtime > .atmux/state/last-driver-inbox-read.txt`. `--since <ts>` overrides for backfill.
+- **D2c** pre-rotate handoff — outgoing lead writes `.atmux/state/lead-handoff-<epoch>.md` before rotation; incoming lead reads BEFORE re-loading driver-inbox.
+- **D2d** stale-view detection — `[whip-stale-anchor]` finding when lead's cursor is >2h behind driver-inbox tip with new content (single ping per stale window, hash-deduped).
+
+**Operator implications:** none unless customising — defaults work. Override knobs: `driverInboxArchiveSizeBytes` / `driverInboxArchiveMaxEntries` / `driverInboxMinRetentionHours` in `team.json::stallPrevention`.
+
+### Class C → D3 — Lock-TTL + atomic-write + size-cap (R57-T3)
+
+**Problem this solves:** orphan `*.lock` files block writers indefinitely; partial-write corruption (the `kanban.json.bak.*` files surfaced in driver-inbox); inbox-side unbounded growth mirroring D2.
+
+**What changed:**
+- **D3a** lock-TTL of 5min (configurable via `lockTtlSec`). `acquireWithTTL(path, ttlSec)` in `src/abstractions/lock.ts` force-releases stale-mtime + dead-PID locks; live PID = lock stays held. Audit log at `.atmux/logs/lock-recovery.log` (one line per recovery: epoch + path + previous PID + reason).
+- **D3b** lock files now carry PID. Atomic write before flock. Lock-recovery reads PID for `kill -0` liveness.
+- **D3c** state-file writers use `writeAtomic(path, content)` — write-tmp + fsync + rename. Race-safe + crash-safe. The 5+ `kanban.json.bak.*` files no longer appear.
+- **D3d** size-cap auto-archive at 1MB for `lead-outbox.md` + `inboxes/<member>.json` (24h hard min retention).
+
+**Operator implications:** check `.atmux/logs/lock-recovery.log` after any "writer stuck" report — if you see entries, that's auto-recovery working as designed; the audit trail is for postmortems.
+
+### Class D → D4 — Per-member health probes (R57-T4)
+
+**Problem this solves:** members stuck in non-`auto` permission mode (silent drop), false-positive idle auto-stop while genuinely working, defunct cwd from deleted worktrees, individual rate-limits invisible until digest.
+
+**What changed:**
+- **D4a** permission-mode probe — every whip-tick checks each member's status-line; `[whip-perm-mode-drift]` ping if not `auto` (per-member 24h dedup).
+- **D4b** idle false-positive guard — D6 heartbeat freshness < 5min AND `inbox.inProgress` non-empty ⇒ idle counter does NOT increment for that member. ADR-043 team-level idle stays unchanged.
+- **D4c** defunct cwd probe — cron-groom checks each pane's `pane_current_path` exists; missing → P1 flag + `[whip-defunct-cwd]`.
+- **D4d** per-member rate-limit detection (folded with D1) — RATE-LIMIT pane state surfaces in whip findings even when the member has no in-progress task.
+
+**Operator implications:** Discord pings get noisier but each is actionable. See `RUNBOOK-stall-recovery.md` for ping → action mapping.
+
+### Class E → D5 — Coordination semantics drift (R57-T5)
+
+**Problem this solves:** submodule pointer mismatch silently breaks builds; bare `HH:MM` timestamps drift between MYT and UTC; inbox `📤 task <id>` markers get orphaned when the underlying task disappears; window-name renames break supervisor send-keys (P1 from inbox).
+
+**What changed:**
+- **D5a** submodule pointer integrity check — `atmux doctor` adds a finding when `git diff --submodule=log` shows pointer mismatch + submodule HEAD ≠ parent's recorded SHA. Cron-groom raises P2 flag.
+- **D5b** supervisor uses tmux window IDs (`@N`) — `src/core/tmux.ts::resolveWindow(team, member) → windowId` stamps + caches at first lookup. **Supersedes** D1's emoji-prefix glob option (b) — window IDs are immutable across renames; the glob fix would have papered over a smaller version of the same problem.
+- **D5c** inbox-mark verification — doctor scans driver-inbox `## Open` for `📤 task <id>` markers and checks the task is in kanban. Orphan markers → P3 finding.
+- **D5d** TZ-explicit timestamp lint — eslint rule + bash linter blocks bare `HH:MM` writes to driver-inbox / lead-outbox / decisions.md / flags.md / history-log without explicit timezone suffix per CLAUDE.md "Timezone" rule. Reviewer-gate enforces.
+
+**Operator implications:** doctor output gets richer; expect occasional P2/P3 findings on long-running teams. Timestamps in user-facing files should now always read `HH:MM MYT` — bare times are a bug.
+
+### Class F → D6 — Heartbeat + watchdog + verified status (R57-T6) ⭐ FOUNDATIONAL
+
+**Problem this solves:** `atmux status` cache lies post-budget-pause (driver-inbox 13:02 + 17:16 MYT incidents); no process-tree liveness check; kanban shows in-progress while member is genuinely stalled; cron-groom invariant on supervisor window position not enforced.
+
+**What changed:**
+- **D6a** per-member heartbeat — supervisor reads each pane's `pane_active` + `pane_last_activity` and writes `.atmux/heartbeats/<member>.epoch` every 60s on behalf of members. (See OQ-1 — supervisor-write was preferred over per-claude-pane hooks because it works for non-Claude TUIs uniformly.)
+- **D6b** ⭐ **`atmux watchdog` as separate `*/2` cron** — independent of whip's body-hash logic so a stuck whip doesn't blind the watchdog. Reads heartbeats, checks freshness against `heartbeatStaleSec` (default 300s), fires `[whip-watchdog]` Discord on stale members, exits. **Cron migration required for existing teams** — see [`RUNBOOK-cron-migration.md` §v1.1.x cron-block migration](docs/RUNBOOK-cron-migration.md#v11x-cron-block-migration--watchdog-line-adr-057-d6b).
+- **D6c** `atmux status` reads heartbeats (not cache) for liveness; falls back to pane-current-command for TUI state. Eliminates false-down cascade.
+- **D6d** cron-groom window-order invariant — `tmux list-windows -t <session> | tail -1 | grep -q supervisor` style check (P2 finding on violation). Folded into parity-cron-impl golden-file work (~10 LOC).
+
+**Operator implications:** ⭐ **D6 is foundational for D3 and D4.** D3a's lock-TTL recovery uses D6's heartbeat freshness as the live-PID substrate; D4b's idle false-positive guard reads heartbeat ages. If you partially adopt v1.1.x, D6 lands first. The new `*/2 atmux watchdog` cron line is ON by default for every team — no opt-in required.
+
+### Class G → D7 — Push-discipline + remote-coordination (R57-T7)
+
+**Problem this solves:** local commits not pushed (driver-inbox flagged 7 commits unpushed in real time); partial-batch push when porter completes mid-batch; multi-porter push-race losing fast-forward.
+
+**What changed:**
+- **D7a** auto-push at task-end — `atmux done <task>` triggers `git fetch origin <branch> && git rebase origin/<branch> && git push` for non-staging branches. Push failure flags P3 + logs to `.atmux/logs/auto-push.jsonl`; does NOT block the kanban transition.
+- **D7b** pre-push rebase-on-fetch — multi-porter race mitigation. Conflicts → P1 flag + abort push (porter resolves manually).
+- **D7c** reviewer notification — PR webhook (configured at PR creation) pings Discord on each push. PRs without webhook get manual `[whip-pr-update]` ping fired by `atmux done` after push.
+
+**Operator implications:** non-staging branches now stay in sync with `origin/<branch>` automatically. **CLAUDE.md push policy still applies** — staging branches are George-manual ONLY; auto-push refuses them. Disable per-team via `team.json::stallPrevention.autoPushOnDone = false` if needed.
+
+### v1.1.x final — HANDOFF + READMEs + runbooks (R57-T8 — this work)
+
+This section + verb-list updates in [`README.md`](README.md) + [`src/verbs/README.md`](src/verbs/README.md) + cron migration in [`docs/RUNBOOK-cron-migration.md`](docs/RUNBOOK-cron-migration.md) + the new operator playbook [`docs/RUNBOOK-stall-recovery.md`](docs/RUNBOOK-stall-recovery.md). Bash-side documentation stays with the bash team per ADR-013 (no retroactive port-forward).
+
+### Cross-class deps (operators applying staged rollout)
+
+```
+D6 (heartbeat)  ← D4 (member-health uses heartbeat freshness)
+D6 (heartbeat)  ← D3 (lock-TTL uses live-PID + heartbeat-as-substrate)
+D5b (window-ID) ← D1 (pane-state classifier uses window IDs for addressability)
+D3d (size-cap)  ← D2a (auto-archive shares the archive path)
+```
+
+**Implementation ordering** that was followed: D6 first (foundational); D1 + D5b in parallel (Wave 1); D7 in parallel with Wave 1; D2 after archive infra (Wave 2); D3 + D4 parallel after D6 lands. Operators staging adoption should mirror this sequence.
+
+**D5b supersedes D1's window-name approach** — if an early proposal mentioned emoji-prefix-glob in the supervisor send-keys path, that's stale; D5b's window-ID resolver is strictly stronger and is the canonical fix.
+
+### When operators need to act
+
+| Ping / signal | What it means | Action |
+|---|---|---|
+| `[whip-watchdog] <member> heartbeat <Nh> stale` | D6 detected stalled pane | Open pane + capture-pane; if SHELL → `atmux team rotate-member`; see RUNBOOK-stall-recovery.md |
+| `[whip-stale-anchor] driver-inbox tip unread Nh` | D2d detected lead anchored on stale view | Lead's normal whip-tick will catch up — only act if persistent across rotations |
+| `[whip-perm-mode-drift] <member> mode=<X>` | D4a detected non-`auto` permission mode | Open pane, BTab-cycle to auto |
+| `[whip-defunct-cwd] <member> path=<P>` | D4c detected deleted worktree | Restore worktree OR `atmux pause <member>` until decided |
+| `[whip-pr-update] <SHA>` | D7c reviewer push notification (no webhook) | Reviewer-side; no operator action |
+| Lock-recovery audit entry | D3a auto-recovered orphan lock | None — informational; `.atmux/logs/lock-recovery.log` is the audit |
+| `team.json` drift ping | ADR-054 schema validator caught typo (incl. new `stallPrevention` block) | Fix per `[whip-config-drift]` body |
+
+For deeper recovery walkthroughs (manual unblock when auto-recovery fails, postmortem reading `.atmux/logs/lock-recovery.log` + `.atmux/logs/auto-push.jsonl`): see [`docs/RUNBOOK-stall-recovery.md`](docs/RUNBOOK-stall-recovery.md).
+
+---
 ## TL;DR for future driver
 
 You are the **driver** of the atmux-bun port. Team mode active (4 members in tmux session `atmux` windows 2-5). **25/25 verbs done, 1543 tests pass, V-01 up SHIPPED @ec96c7e (composite wizard→doctor→start→attach).** Phase 2 closed — verb ports + R-1..R-5 complete.

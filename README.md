@@ -215,6 +215,8 @@ atmux improve [--budget <spec>] [--status]   # eternal-improvement loop (ADR-052
               [--idle-fallback] [--force]
 atmux whip-resume-check [--no-discord]       # 1-min auto-resume cron precision (ADR-053)
               [--team-dir <dir>]
+atmux watchdog [--no-discord]                # 2-min heartbeat staleness detector (ADR-057 §D6b)
+              [--team-dir <dir>]
 
 🔧 Maintenance
 atmux rotate <member>
