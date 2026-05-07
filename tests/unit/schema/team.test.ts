@@ -1,0 +1,150 @@
+// Unit tests for src/schema/team.ts (ADR-054 R1-T4).
+//
+// TeamWhip Zod schema — strict-mode rejection of unknown keys + applied
+// defaults + ADR-053/055/056 field type validation.
+//
+// Sister tests covering the drift-fallback path and helpers live in
+// tests/unit/core/whip-config-drift.test.ts (R1-T3 / R1-T4 share the
+// suite). This file focuses on the schema in isolation per ADR-054 §D5
+// "tests/unit/schema/team.test.ts (extend)".
+
+import { describe, expect, test } from "bun:test";
+import { Team, TeamWhip } from "../../../src/schema/team.ts";
+
+// ---------- TeamWhip — valid + defaults ----------
+
+describe("TeamWhip — valid shape + defaults", () => {
+  test("empty object parses to all defaults", () => {
+    const w = TeamWhip.parse({});
+    expect(w.intervalMins).toBe(5);
+    expect(w.staleMin).toBe(90);
+    expect(w.leadMaxMin).toBe(60);
+    expect(w.autoRotate).toBe(false);
+    expect(w.budgetPauseThreshold).toBe(90);
+    expect(w.budgetResumeThreshold).toBe(80);
+    expect(w.budgetWarningBands).toEqual([0.5, 0.25, 0.15]);
+    expect(w.budgetRefreshLeadMins).toBe(30);
+    expect(w.autoStopAfterIdleTicks).toBe(0);
+    expect(w.selfHealEnabled).toBe(false);
+    expect(w.selfHealRecipes).toEqual([]);
+    expect(w.accountFallback).toEqual([]);
+    expect(w.accountSwapTriggerThreshold).toBe(75);
+    // Bash-parity preservation fields.
+    expect(w.downConfirmTicks).toBe(2);
+    expect(w.heartbeat).toBe(true);
+  });
+
+  test("partial shape applies defaults for missing fields", () => {
+    const w = TeamWhip.parse({ staleMin: 120, autoRotate: true });
+    expect(w.staleMin).toBe(120);
+    expect(w.autoRotate).toBe(true);
+    expect(w.intervalMins).toBe(5); // default
+    expect(w.budgetPauseThreshold).toBe(90); // default
+  });
+
+  test("claudeAccount accepts a string override", () => {
+    const w = TeamWhip.parse({ claudeAccount: "c-i" });
+    expect(w.claudeAccount).toBe("c-i");
+  });
+
+  test("selfHealRecipes accepts an arbitrary string array", () => {
+    const w = TeamWhip.parse({ selfHealRecipes: ["fix:typecheck", "fix:lint"] });
+    expect(w.selfHealRecipes).toEqual(["fix:typecheck", "fix:lint"]);
+  });
+
+  test("accountFallback accepts ordered fallback chain", () => {
+    const w = TeamWhip.parse({ accountFallback: ["c-i", "c-u"] });
+    expect(w.accountFallback).toEqual(["c-i", "c-u"]);
+  });
+
+  test("budgetWarningBands accepts custom bands", () => {
+    const w = TeamWhip.parse({ budgetWarningBands: [0.9, 0.5, 0.1] });
+    expect(w.budgetWarningBands).toEqual([0.9, 0.5, 0.1]);
+  });
+});
+
+// ---------- TeamWhip — strict-mode rejection ----------
+
+describe("TeamWhip — strict-mode rejects unknown keys", () => {
+  test("unknown key at top-level rejects", () => {
+    expect(() => TeamWhip.parse({ unknownKey: 1 })).toThrow();
+  });
+
+  test("typo on a known field rejects (.strict() rule rationale)", () => {
+    // ADR-054 §D1: "passthrough at this level would mask typos
+    // (e.g. whip.budgetPauseTreshold — note the typo — falls through
+    // silently with passthrough; strict catches it)".
+    expect(() => TeamWhip.parse({ budgetPauseTreshold: 90 })).toThrow();
+  });
+});
+
+// ---------- TeamWhip — type/range validation ----------
+
+describe("TeamWhip — type + range validation", () => {
+  test("type mismatch on a numeric field rejects", () => {
+    expect(() => TeamWhip.parse({ budgetPauseThreshold: "ninety" })).toThrow();
+    expect(() => TeamWhip.parse({ leadMaxMin: "sixty" })).toThrow();
+  });
+
+  test("budgetPauseThreshold > 100 rejects", () => {
+    expect(() => TeamWhip.parse({ budgetPauseThreshold: 101 })).toThrow();
+  });
+
+  test("budgetPauseThreshold < 0 rejects", () => {
+    expect(() => TeamWhip.parse({ budgetPauseThreshold: -1 })).toThrow();
+  });
+
+  test("budgetWarningBands rejects values > 1", () => {
+    expect(() => TeamWhip.parse({ budgetWarningBands: [1.5] })).toThrow();
+  });
+
+  test("budgetWarningBands rejects values < 0", () => {
+    expect(() => TeamWhip.parse({ budgetWarningBands: [-0.1] })).toThrow();
+  });
+
+  test("intervalMins must be positive integer", () => {
+    expect(() => TeamWhip.parse({ intervalMins: 0 })).toThrow();
+    expect(() => TeamWhip.parse({ intervalMins: -1 })).toThrow();
+    expect(() => TeamWhip.parse({ intervalMins: 1.5 })).toThrow();
+  });
+
+  test("autoStopAfterIdleTicks accepts 0 (default — disabled per R1)", () => {
+    const w = TeamWhip.parse({ autoStopAfterIdleTicks: 0 });
+    expect(w.autoStopAfterIdleTicks).toBe(0);
+  });
+
+  test("boolean fields reject non-booleans", () => {
+    expect(() => TeamWhip.parse({ autoRotate: "yes" })).toThrow();
+    expect(() => TeamWhip.parse({ selfHealEnabled: 1 })).toThrow();
+  });
+});
+
+// ---------- Parent Team schema integration ----------
+
+describe("Team schema integrates TeamWhip cleanly", () => {
+  test("Team.parse with valid whip block applies whip defaults", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      whip: { staleMin: 60 },
+    });
+    expect(team.whip?.staleMin).toBe(60);
+    expect(team.whip?.leadMaxMin).toBe(60); // default applied
+    expect(team.whip?.budgetPauseThreshold).toBe(90); // default applied
+  });
+
+  test("Team.parse without whip block keeps whip undefined (.optional())", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.whip).toBeUndefined();
+  });
+
+  test("Team.parse rejects unknown key in whip sub-shape", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        whip: { unknownTypoKey: 1 },
+      }),
+    ).toThrow();
+  });
+});
