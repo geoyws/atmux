@@ -177,6 +177,12 @@ function diffFs(
     const t = tsFs[relPath];
 
     if (!b) {
+      // ADR-057 §D7 R57-T7: TS-side `atmux done` writes
+      // `.atmux/logs/auto-push.jsonl` audit entries. Bash done has no
+      // auto-push step (bash port doesn't ship the feature). Treat the
+      // TS-only artifact as expected divergence — same posture as
+      // `.lock` files below.
+      if (relPath === ".atmux/logs/auto-push.jsonl") continue;
       divergences.push({
         verb,
         channel: "fs",
@@ -211,6 +217,20 @@ function diffFs(
           detail: `fs: JSON content differs at ${relPath}`,
         });
       }
+      continue;
+    }
+
+    // ADR-057 §D3b: TS-side lock files now carry the owner PID (`<pid>\n`);
+    // bash-side leaves them empty. The PID itself is per-process metadata
+    // — never load-bearing for the lock semantics (kernel flock is the
+    // mutex). Treat all `*.lock` files as content-irrelevant on both
+    // sides so the bash/TS divergence on PID content doesn't fail
+    // parity. Path presence still matters (sidecar leak detection
+    // continues via the missing-from-bash / missing-from-ts branches
+    // above); we only neutralize the BYTE content.
+    if (relPath.endsWith(".lock")) {
+      // Both sides present + path matches: lock-file existence is
+      // symmetric, content irrelevant. Skip byte-equal.
       continue;
     }
 
