@@ -169,6 +169,15 @@ async function sendCancelToMembers(
         ? { kind: "lead", team: team.name, target: tmuxTarget }
         : { kind: "member", member: m.name, team: team.name, target: tmuxTarget };
     try {
+      // ADR-057 §D1: deliberately raw — NOT routed through safeSendKeys.
+      // Reason: C-c is the interrupt itself, not a content keystroke.
+      // It's a control character at the tmux level (not a UI input
+      // typed into the compose box), so it works on modal-stuck panes
+      // too. Routing through the safe-send gate would add classify +
+      // retry latency (RETRY_POLICY.TYPING is 12 attempts × 250ms = 3s)
+      // in the kill path right before killWindow — net effect would be
+      // slower forced-kill with no safety win. The next step in `stop`
+      // is killWindow regardless, so a missed C-c is recoverable.
       await tmux.pane.sendKeys({ target: sendTarget, keys: "C-c", enter: false });
     } catch {
       // expected: window may not exist (member never spawned, or

@@ -201,17 +201,25 @@ interface StubTmuxCalls {
     deleteAfter: boolean | undefined;
   }>;
   listWindows: string[];
+  /** Pane captures observed by safePreflight. */
+  capturePane: Array<{ target: string; start: number | undefined }>;
 }
 
 function stubTmux(opts: {
   windows?: ReadonlyArray<{ index: number; name: string; active: boolean }>;
+  /** Pane content returned to safePreflight. Default is empty
+   *  (classifies as UNKNOWN → preflight ready=false → no dismissals
+   *  → existing test assertions about sendKeys remain authoritative). */
+  paneText?: string;
 }): { tmux: TmuxNamespace; calls: StubTmuxCalls } {
   const calls: StubTmuxCalls = {
     sendKeys: [],
     loadBuffer: [],
     pasteBuffer: [],
     listWindows: [],
+    capturePane: [],
   };
+  const paneText = opts.paneText ?? "";
   const tmux = {
     window: {
       async listWindows(session: string) {
@@ -232,6 +240,10 @@ function stubTmux(opts: {
           keys: o.keys,
           enter: o.enter,
         });
+      },
+      async capturePane(o: { target: string; start?: number }) {
+        calls.capturePane.push({ target: o.target, start: o.start });
+        return paneText;
       },
     },
     buffer: {
@@ -406,6 +418,41 @@ describe("rotate() — public verb", () => {
     });
     expect(stdoutBuf).toBe("rotated alice (role=reviewer, tui=claude)\n");
     expect(stderrBuf).toBe("");
+  });
+
+  test("safe-send: CC feedback survey is dismissed before /clear lands", async () => {
+    // Stuck-pane scenario from t-06e7209d brief: Claude Code's
+    // feedback modal eats keystrokes. safePreflight must auto-dismiss
+    // it (sending "0") before the rotation's /clear hits the wire.
+    process.env.ATMUX_SESSION = "atmux-t";
+    await seedTeam({
+      name: "t",
+      members: [{ name: "alice", role: "reviewer", tui: "claude" }],
+    });
+    await writeFile(join(briefsDir, "reviewer.md"), "ok");
+    const { tmux, calls } = stubTmux({
+      windows: [{ index: 0, name: "alice", active: true }],
+      paneText:
+        "● How is Claude doing this session? (optional)\n  1: Bad    2: Fine   3: Good   0: Dismiss",
+    });
+    const exit = await rotate(["--team-dir", scratch, "alice"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+    });
+    expect(exit).toBe(0);
+    // The first sendKeys call is the dismissal "0" from preflight,
+    // NOT /clear — proves the modal was caught + handled before
+    // rotation payload typed into the wrong prompt.
+    expect(calls.sendKeys[0]?.keys).toBe("0");
+    expect(calls.sendKeys[0]?.enter).toBe(false);
+    // /clear lands AFTER the dismissal (one or more dismissals may
+    // have fired; find the /clear call to assert it still happens).
+    const clearIdx = calls.sendKeys.findIndex((c) => c.keys === "/clear");
+    expect(clearIdx).toBeGreaterThan(0);
+    expect(calls.sendKeys[clearIdx]?.enter).toBe(true);
+    // capturePane was invoked at least once by preflight.
+    expect(calls.capturePane.length).toBeGreaterThanOrEqual(1);
   });
 
   test("happy path: --lead resolves the team-lead from roster", async () => {

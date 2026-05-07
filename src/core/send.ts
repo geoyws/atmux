@@ -48,6 +48,7 @@ import { appendText, ensureDir } from "../abstractions/fs.ts";
 import { nowIso } from "../abstractions/time.ts";
 import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
 import { classifyPaneState, logsDir, type PaneStateSnapshot } from "./common.ts";
+import { safePreflight, type SafePreflightResult } from "./safe-send.ts";
 
 // ---------- Public API ----------
 
@@ -123,6 +124,15 @@ export interface SendOutcome {
    * the same point bash does, without re-running the regex.
    */
   preWarn: boolean;
+  /**
+   * Preflight result from the safe-send gate. Records final pane
+   * classification + dismissal count for known-modal recoveries.
+   * Semantics mirror bash's warn-and-proceed (lib/send.sh:91): we
+   * always proceed with paste+Enter regardless of preflight outcome,
+   * but auto-dismiss known modals first (e.g. CC's feedback survey)
+   * so our paste doesn't land inside the modal's input.
+   */
+  preflight: SafePreflightResult;
 }
 
 /**
@@ -173,6 +183,25 @@ export async function sendToMember(
   const preSnapshot = classifyPaneState(preCapture);
   const preWarn = isPreSendWarn(preSnapshot);
 
+  // 1b. Safe-send preflight: dismiss known modals (e.g. CC feedback
+  //     survey) before our paste lands inside the modal's input box.
+  //     Without this, a stuck modal eats the message body — every
+  //     team has seen this on lead panes after long sessions.
+  //     Semantics: warn-and-proceed (matches bash lib/send.sh:91-92).
+  //     Refusal does NOT abort the send — we fall through and let
+  //     verify-mode catch genuinely-stuck panes via warn-not-consumed.
+  const preflight = await safePreflight(target.target, {
+    capture: (t) => tmux.pane.capturePane({ target: t, start: -preLines }),
+    sendKeys: async (t, text, sopts) => {
+      await tmux.pane.sendKeys({
+        target: { kind: "member", member: target.member, team: target.team, target: t },
+        keys: text,
+        enter: sopts?.enter ?? false,
+      });
+    },
+    sleep,
+  });
+
   // 2. Load the body into a buffer + paste it into the target pane.
   //    Bash uses a tmpfile; we pipe directly via spawn's stdin (the
   //    tmux abstraction's `loadBuffer({ data })` shape from ADR-004
@@ -187,7 +216,7 @@ export async function sendToMember(
   // 3. --no-submit short-circuit: leave the buffer pasted but don't
   //    press Enter. Mirrors bash lib/send.sh:111-113.
   if (noSubmit) {
-    return { kind: "queued", preSnapshot, preWarn };
+    return { kind: "queued", preSnapshot, preWarn, preflight };
   }
 
   // 4. Brief pause, then submit with a literal Enter keyname.
@@ -212,11 +241,11 @@ export async function sendToMember(
       start: -postLines,
     });
     if (looksLikeNotConsumed(post, msg)) {
-      return { kind: "warn-not-consumed", preSnapshot, preWarn };
+      return { kind: "warn-not-consumed", preSnapshot, preWarn, preflight };
     }
   }
 
-  return { kind: "ok", preSnapshot, preWarn };
+  return { kind: "ok", preSnapshot, preWarn, preflight };
 }
 
 // ---------- Internals ----------

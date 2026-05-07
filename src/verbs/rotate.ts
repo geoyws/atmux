@@ -23,6 +23,7 @@ import {
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { writeLeadHandoff } from "../core/lead-handoff.ts";
+import { safePreflight } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
@@ -249,9 +250,31 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
     }
   }
 
+  // safe-send adapter shared by the /clear preflight + brief preflight.
+  // Wraps `tmux.pane.sendKeys` with the SendTarget already constructed
+  // above (kind=lead/member per role); the adapter takes a string
+  // target purely because safe-send.ts is generic over the ADR-025
+  // discriminated union. Preflight only dispatches sendKeys for
+  // known-modal dismissal keystrokes (e.g. "0" for the feedback
+  // survey) — never for the rotation payload itself.
+  const safeOpts = {
+    capture: (t: string) => tmux.pane.capturePane({ target: t, start: -40 }),
+    sendKeys: async (t: string, text: string, sopts?: { enter?: boolean }) => {
+      await tmux.pane.sendKeys({ target: sendTarget, keys: text, enter: sopts?.enter ?? false });
+    },
+    sleep,
+  };
+
   // 1. /clear for claude — best-effort warn for other TUIs (parity
-  //    with bash rotate.sh:47-55).
+  //    with bash rotate.sh:47-55). Preflight first so a stuck modal
+  //    (e.g. CC feedback survey) gets dismissed before /clear lands;
+  //    then send /clear + Enter as a single tmux op (preserves
+  //    pre-gate calling convention so test fixtures don't churn).
+  //    Warn-and-proceed: a non-ready pane after preflight does NOT
+  //    abort — rotation must still half-cycle the pane or we leave
+  //    it stuck.
   if (tui === "claude") {
+    await safePreflight(tmuxTarget, safeOpts);
     await tmux.pane.sendKeys({ target: sendTarget, keys: "/clear", enter: true });
     await sleep(2_000);
   } else {
@@ -271,6 +294,11 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
       role,
       atmuxDir,
     });
+    // Preflight before paste so /clear's post-clear modal (or any
+    // residual feedback survey) doesn't eat the brief body.
+    // Warn-and-proceed: refusal does NOT abort the rotation (the
+    // brief MUST land or the rotation half-cycles).
+    await safePreflight(tmuxTarget, safeOpts);
     const bufferName = `atmux_brief_rot_${target.name}`;
     await tmux.buffer.loadBuffer({ name: bufferName, data: body });
     await tmux.buffer.pasteBuffer({

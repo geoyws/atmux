@@ -82,6 +82,26 @@ export interface SafeSendResult {
   dismissals: number;
 }
 
+/**
+ * Preflight result — same loop as safeSendKeys minus the final send.
+ * Used by callers that own a paste-buffer pattern (loadBuffer +
+ * pasteBuffer + Enter) and need the modal-dismissal preflight before
+ * the paste lands inside the compose box. Routing the trailing Enter
+ * through safeSendKeys would not work — by the time we send Enter,
+ * the pasted message is already in the compose box and the pane
+ * classifies as TYPING (which the gate would retry until exhausted).
+ */
+export interface SafePreflightResult {
+  /** Final classification observed at end of the loop. */
+  finalClassification: PaneClassification;
+  /** Number of classify+retry attempts made. */
+  attempts: number;
+  /** Number of known-modal dismissals performed. */
+  dismissals: number;
+  /** True iff finalClassification.state is sendable (READY). */
+  ready: boolean;
+}
+
 // ---------- Public API ----------
 
 /**
@@ -176,6 +196,86 @@ export async function safeSendKeys(
   );
   log(`safeSendKeys: ${target} → ${outcome} (state=${classification.state})`);
   return { outcome, finalClassification: classification, attempts, dismissals };
+}
+
+/**
+ * Run the classify + dismiss-known-modal loop on `target` WITHOUT
+ * sending any keystrokes at the end. Use this before a paste-buffer
+ * pattern (loadBuffer + pasteBuffer + Enter): once `ready === true`,
+ * the caller can paste safely; if `ready === false`, the caller
+ * decides whether to abort, warn-and-proceed, or escalate.
+ *
+ * Loop semantics mirror `safeSendKeys`:
+ *   - RETRYABLE states (TYPING / COMPACTING) → poll per RETRY_POLICY
+ *     until they clear or attempts exhaust.
+ *   - MODAL with a known-modal match → auto-dismiss + re-capture
+ *     (bounded by MAX_KNOWN_MODAL_DISMISSALS).
+ *   - Anything else (READY / SHELL / RATE-LIMIT / UNKNOWN / unbounded
+ *     MODAL) exits the loop into terminal state.
+ *
+ * Does NOT raise flags on refusal — paste-buffer callers already have
+ * their own warn/log paths (e.g. `sendToMember.preWarn`); flagging
+ * twice would noise up the team-lead inbox.
+ */
+export async function safePreflight(
+  target: string,
+  opts: SafeSendOpts,
+): Promise<SafePreflightResult> {
+  const log = opts.log ?? (() => {});
+  const sleep = opts.sleep ?? defaultSleep;
+
+  let attempts = 0;
+  let dismissals = 0;
+  let paneText = await opts.capture(target);
+  let classification = classifyText(paneText);
+  attempts += 1;
+
+  while (true) {
+    if (isRetryable(classification.state)) {
+      const policy = RETRY_POLICY[classification.state];
+      if (attempts >= policy.maxAttempts) {
+        log(
+          `safePreflight: ${target} → exhausted (state=${classification.state}, ` +
+            `attempts=${attempts})`,
+        );
+        break;
+      }
+      await sleep(policy.delayMs);
+      paneText = await opts.capture(target);
+      classification = classifyText(paneText);
+      attempts += 1;
+      continue;
+    }
+
+    if (
+      classification.state === "MODAL" &&
+      dismissals < MAX_KNOWN_MODAL_DISMISSALS
+    ) {
+      const known = detectKnownModal(paneText);
+      if (known !== null) {
+        await dismissKnownModal(target, known, opts);
+        log(
+          `safePreflight: ${target} dismissed known-modal=${known.modal.id} ` +
+            `(dismissals=${dismissals + 1})`,
+        );
+        await sleep(KNOWN_MODAL_SETTLE_MS);
+        paneText = await opts.capture(target);
+        classification = classifyText(paneText);
+        attempts += 1;
+        dismissals += 1;
+        continue;
+      }
+    }
+
+    break;
+  }
+
+  const ready = isSendable(classification.state);
+  log(
+    `safePreflight: ${target} → ready=${ready} (state=${classification.state}, ` +
+      `attempts=${attempts}, dismissals=${dismissals})`,
+  );
+  return { finalClassification: classification, attempts, dismissals, ready };
 }
 
 // ---------- Internals ----------
