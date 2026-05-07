@@ -1,10 +1,12 @@
 // Unit tests for src/abstractions/fallback-cage.ts (ADR-058 §D3+§D4).
 //
-// Sub-commit (a) coverage: types + errors + path helpers + brief
-// composers. Lifecycle tests (createFallbackCage / destroyFallbackCage)
-// land in sub-commit (b) alongside the impl.
+// Sub-commit (a) shipped: types + errors + path helpers + brief composers.
+// Sub-commit (b) adds: createFallbackCage + destroyFallbackCage lifecycle
+// + Tier 4 stub guard. Tests below at "Lifecycle —" describe blocks.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   cageArchivePath,
   cageArchiveRoot,
@@ -14,11 +16,14 @@ import {
   composeTier2Brief,
   composeTier3Brief,
   composeTier4Brief,
+  createFallbackCage,
+  destroyFallbackCage,
   FallbackUserMissingError,
   TIER3_RSYNC_EXCLUDES,
   TIER_AGENT,
   Tier4NotAvailableError,
   tier3WorkDir,
+  type CageHandle,
   type ComposeBriefOpts,
   type FallbackAgent,
   type FallbackTier,
@@ -323,5 +328,532 @@ describe("composeTier4Brief", () => {
   test("embeds task body verbatim", () => {
     const out = composeTier4Brief(opts);
     expect(out).toContain("Implement the FOO endpoint.");
+  });
+});
+
+// ---------- Lifecycle — createFallbackCage / destroyFallbackCage ----------
+
+interface SpawnCall {
+  cmd: string;
+  argv: ReadonlyArray<string>;
+  cwd?: string;
+  stdin?: string;
+}
+
+function makeSpawnRecorder(
+  responses: ReadonlyArray<{
+    matchCmd?: string;
+    matchArgvIncludes?: string;
+    exitCode?: number;
+    stdout?: string;
+    stderr?: string;
+  }> = [],
+): {
+  fn: (opts: SpawnOpts) => Promise<SpawnResult>;
+  calls: SpawnCall[];
+} {
+  const calls: SpawnCall[] = [];
+  const fn = async (opts: SpawnOpts): Promise<SpawnResult> => {
+    const stdin = typeof opts.stdin === "string" ? opts.stdin : undefined;
+    const call: SpawnCall = {
+      cmd: opts.cmd,
+      argv: opts.argv ?? [],
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      ...(stdin !== undefined ? { stdin } : {}),
+    };
+    calls.push(call);
+    const matched = responses.find((r) => {
+      if (r.matchCmd !== undefined && r.matchCmd !== opts.cmd) return false;
+      if (r.matchArgvIncludes !== undefined) {
+        const argv = opts.argv ?? [];
+        if (!argv.some((a) => a.includes(r.matchArgvIncludes ?? ""))) return false;
+      }
+      return true;
+    });
+    return {
+      cmd: opts.cmd,
+      argv: opts.argv ?? [],
+      exitCode: matched?.exitCode ?? 0,
+      signalled: null,
+      stdout: matched?.stdout ?? "",
+      stderr: matched?.stderr ?? "",
+      durationMs: 1,
+    };
+  };
+  return { fn, calls };
+}
+
+interface FakeTmuxState {
+  newSessionCalls: { name: string; cwd?: string; windowName?: string }[];
+  killSessionCalls: string[];
+  killSessionShouldThrow: boolean;
+}
+
+function makeFakeTmuxFactory(state: FakeTmuxState): () => TmuxNamespace {
+  return (): TmuxNamespace => {
+    return {
+      session: {
+        async newSession(opts: {
+          name: string;
+          detached?: boolean;
+          cwd?: string;
+          windowName?: string;
+          shellCommand?: string;
+        }) {
+          const entry: { name: string; cwd?: string; windowName?: string } = {
+            name: opts.name,
+            ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+            ...(opts.windowName !== undefined ? { windowName: opts.windowName } : {}),
+          };
+          state.newSessionCalls.push(entry);
+        },
+        async hasSession() {
+          return false;
+        },
+        async killSession(name: string) {
+          if (state.killSessionShouldThrow) throw new Error("session not found");
+          state.killSessionCalls.push(name);
+        },
+        async listSessions() {
+          return [];
+        },
+        async renameSession() {
+          // no-op
+        },
+      },
+      // Other namespaces unused by fallback-cage; cast through unknown
+      // for the test fake (we never call them).
+    } as unknown as TmuxNamespace;
+  };
+}
+
+describe("Lifecycle — createFallbackCage Tier 2 (Cursor)", () => {
+  test("happy path returns CageHandle with operator agent + project cwd as workDir", async () => {
+    const spawn = makeSpawnRecorder();
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    const handle = await createFallbackCage({
+      team: "alpha",
+      lane: "fe",
+      tier: 2,
+      taskId: "t-x",
+      atmuxDir: "/p/.atmux",
+      projectCwd: "/p",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+      nowSec: () => 1700_000_000,
+    });
+    expect(handle.tier).toBe(2);
+    expect(handle.agent).toBe("operator");
+    expect(handle.workDir).toBe("/p");
+    expect(handle.tmuxSocket).toBe("fallback_alpha_fe");
+    expect(handle.tmuxTmpdir).toBe("/tmp/atmux_fallback_alpha_fe/");
+    expect(handle.sessionName).toBe("fallback-alpha-fe");
+    expect(handle.windowName).toBe("tier2-fe");
+    expect(handle.createdAt).toBe(1700_000_000);
+  });
+
+  test("Tier 2 spawns session via tmux factory (NOT sudo)", async () => {
+    const spawn = makeSpawnRecorder();
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    await createFallbackCage({
+      team: "alpha",
+      lane: "fe",
+      tier: 2,
+      taskId: "t-x",
+      atmuxDir: "/p/.atmux",
+      projectCwd: "/p",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+    });
+    expect(tmuxState.newSessionCalls.length).toBe(1);
+    expect(tmuxState.newSessionCalls[0]?.cwd).toBe("/p");
+    // Tier 2 must NEVER invoke sudo.
+    expect(spawn.calls.some((c) => c.cmd === "sudo")).toBe(false);
+  });
+
+  test("Tier 2 mkdir's the cage TMUX_TMPDIR", async () => {
+    const spawn = makeSpawnRecorder();
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    await createFallbackCage({
+      team: "alpha",
+      lane: "fe",
+      tier: 2,
+      taskId: "t-x",
+      atmuxDir: "/p/.atmux",
+      projectCwd: "/p",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+    });
+    const mkdirCall = spawn.calls.find(
+      (c) => c.cmd === "mkdir" && c.argv.includes("/tmp/atmux_fallback_alpha_fe/"),
+    );
+    expect(mkdirCall).toBeDefined();
+  });
+});
+
+describe("Lifecycle — createFallbackCage Tier 3 (Kimi)", () => {
+  test("happy path: getent + mkdir + rsync + git context dump + chown + sudo tmux", async () => {
+    const spawn = makeSpawnRecorder([
+      { matchCmd: "getent", exitCode: 0 },
+      {
+        matchCmd: "git",
+        matchArgvIncludes: "log",
+        exitCode: 0,
+        stdout: "abc123 commit one\n",
+      },
+      {
+        matchCmd: "git",
+        matchArgvIncludes: "status",
+        exitCode: 0,
+        stdout: "On branch foo\n",
+      },
+      {
+        matchCmd: "git",
+        matchArgvIncludes: "branch",
+        exitCode: 0,
+        stdout: "foo\n",
+      },
+    ]);
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    const handle = await createFallbackCage({
+      team: "alpha",
+      lane: "fe",
+      tier: 3,
+      taskId: "t-x",
+      atmuxDir: "/p/.atmux",
+      projectCwd: "/p",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+      nowSec: () => 1700_000_000,
+    });
+    expect(handle.tier).toBe(3);
+    expect(handle.agent).toBe("kimi-agent");
+    expect(handle.workDir).toBe("/home/kimi-agent/cages/alpha-fe/work");
+    expect(handle.tmuxTmpdir).toBe("/tmp/atmux_fallback_alpha_fe_kimi-agent/");
+    // Did getent run for kimi-agent?
+    expect(
+      spawn.calls.some(
+        (c) => c.cmd === "getent" && c.argv.includes("passwd") && c.argv.includes("kimi-agent"),
+      ),
+    ).toBe(true);
+    // Did mkdir under /home/kimi-agent/...?
+    expect(
+      spawn.calls.some(
+        (c) =>
+          c.cmd === "sudo" &&
+          c.argv.includes("mkdir") &&
+          c.argv.some((a) => a.includes("/home/kimi-agent/cages/alpha-fe/work")),
+      ),
+    ).toBe(true);
+    // Did rsync run with the canonical excludes?
+    const rsyncCall = spawn.calls.find((c) => c.cmd === "rsync");
+    expect(rsyncCall).toBeDefined();
+    for (const exclude of TIER3_RSYNC_EXCLUDES) {
+      expect(rsyncCall?.argv.includes(`--exclude=${exclude}`)).toBe(true);
+    }
+    // Tier 2 path NOT taken — no operator-side newSession call.
+    expect(tmuxState.newSessionCalls.length).toBe(0);
+    // Sudo tmux new-session WAS called with kimi-agent.
+    expect(
+      spawn.calls.some(
+        (c) =>
+          c.cmd === "sudo" &&
+          c.argv.includes("kimi-agent") &&
+          c.argv.includes("tmux") &&
+          c.argv.includes("new-session"),
+      ),
+    ).toBe(true);
+  });
+
+  test("missing kimi-agent → throws FallbackUserMissingError", async () => {
+    const spawn = makeSpawnRecorder([{ matchCmd: "getent", exitCode: 2 }]);
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    let caught: unknown = null;
+    try {
+      await createFallbackCage({
+        team: "alpha",
+        lane: "fe",
+        tier: 3,
+        taskId: "t-x",
+        atmuxDir: "/p/.atmux",
+        projectCwd: "/p",
+        spawnFn: spawn.fn,
+        tmuxFactory: makeFakeTmuxFactory(tmuxState),
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught instanceof FallbackUserMissingError).toBe(true);
+    expect((caught as FallbackUserMissingError).agent).toBe("kimi-agent");
+    // Must abort BEFORE any rsync / tmux spawn.
+    expect(spawn.calls.some((c) => c.cmd === "rsync")).toBe(false);
+  });
+
+  test("git context dump writes _history.log / _status.log / _branch.log via sudo tee", async () => {
+    const spawn = makeSpawnRecorder([
+      { matchCmd: "getent", exitCode: 0 },
+      {
+        matchCmd: "git",
+        matchArgvIncludes: "log",
+        exitCode: 0,
+        stdout: "log-output",
+      },
+      {
+        matchCmd: "git",
+        matchArgvIncludes: "status",
+        exitCode: 0,
+        stdout: "status-output",
+      },
+      {
+        matchCmd: "git",
+        matchArgvIncludes: "branch",
+        exitCode: 0,
+        stdout: "branch-output",
+      },
+    ]);
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    await createFallbackCage({
+      team: "alpha",
+      lane: "fe",
+      tier: 3,
+      taskId: "t-x",
+      atmuxDir: "/p/.atmux",
+      projectCwd: "/p",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+    });
+    const teeCalls = spawn.calls.filter(
+      (c) => c.cmd === "sudo" && c.argv.includes("tee"),
+    );
+    expect(teeCalls.length).toBe(3);
+    const targets = teeCalls.map((c) => c.argv[c.argv.length - 1]);
+    expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_history.log");
+    expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_status.log");
+    expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_branch.log");
+    // History file's stdin must be the captured git log output.
+    const historyTee = teeCalls.find((c) =>
+      c.argv[c.argv.length - 1]?.endsWith("_history.log"),
+    );
+    expect(historyTee?.stdin).toBe("log-output");
+  });
+});
+
+describe("Lifecycle — createFallbackCage Tier 4 stub", () => {
+  const ORIG_ENV = process.env["MINIMAX_CLI_AVAILABLE"];
+
+  afterEach(() => {
+    if (ORIG_ENV === undefined) delete process.env["MINIMAX_CLI_AVAILABLE"];
+    else process.env["MINIMAX_CLI_AVAILABLE"] = ORIG_ENV;
+  });
+
+  test("Tier 4 without MINIMAX_CLI_AVAILABLE → throws Tier4NotAvailableError", async () => {
+    delete process.env["MINIMAX_CLI_AVAILABLE"];
+    const spawn = makeSpawnRecorder();
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    let caught: unknown = null;
+    try {
+      await createFallbackCage({
+        team: "alpha",
+        lane: "fe",
+        tier: 4,
+        taskId: "t-x",
+        atmuxDir: "/p/.atmux",
+        projectCwd: "/p",
+        spawnFn: spawn.fn,
+        tmuxFactory: makeFakeTmuxFactory(tmuxState),
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught instanceof Tier4NotAvailableError).toBe(true);
+    // Must abort BEFORE any side effect.
+    expect(spawn.calls.length).toBe(0);
+  });
+
+  test("Tier 4 with MINIMAX_CLI_AVAILABLE=1 → falls through to Tier 3-style path", async () => {
+    process.env["MINIMAX_CLI_AVAILABLE"] = "1";
+    const spawn = makeSpawnRecorder([
+      { matchCmd: "getent", exitCode: 0 },
+      { matchCmd: "git", matchArgvIncludes: "log", exitCode: 0, stdout: "" },
+      { matchCmd: "git", matchArgvIncludes: "status", exitCode: 0, stdout: "" },
+      { matchCmd: "git", matchArgvIncludes: "branch", exitCode: 0, stdout: "" },
+    ]);
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    const handle = await createFallbackCage({
+      team: "alpha",
+      lane: "fe",
+      tier: 4,
+      taskId: "t-x",
+      atmuxDir: "/p/.atmux",
+      projectCwd: "/p",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+    });
+    expect(handle.tier).toBe(4);
+    expect(handle.agent).toBe("minimax-agent");
+    expect(handle.workDir).toBe("/home/minimax-agent/cages/alpha-fe/work");
+  });
+});
+
+describe("Lifecycle — destroyFallbackCage Tier 2", () => {
+  test("captures pane content + writes session.log + kills session", async () => {
+    const spawn = makeSpawnRecorder([
+      {
+        matchCmd: "tmux",
+        matchArgvIncludes: "capture-pane",
+        exitCode: 0,
+        stdout: "captured pane content",
+      },
+    ]);
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    const handle: CageHandle = {
+      tier: 2,
+      team: "alpha",
+      lane: "fe",
+      taskId: "t-x",
+      agent: "operator",
+      tmuxTmpdir: "/tmp/atmux_fallback_alpha_fe/",
+      tmuxSocket: "fallback_alpha_fe",
+      workDir: "/p",
+      sessionName: "fallback-alpha-fe",
+      windowName: "tier2-fe",
+      createdAt: 1700_000_000,
+    };
+    await destroyFallbackCage(handle, {
+      atmuxDir: "/p/.atmux",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+      nowSec: () => 1700_000_100,
+    });
+    expect(spawn.calls.some((c) => c.cmd === "tmux" && c.argv.includes("capture-pane"))).toBe(true);
+    const teeCall = spawn.calls.find(
+      (c) => c.cmd === "tee" && c.argv.includes("/p/.atmux/tier2-handoff/archive/alpha-fe-1700000100/session.log"),
+    );
+    expect(teeCall).toBeDefined();
+    expect(teeCall?.stdin).toBe("captured pane content");
+    expect(tmuxState.killSessionCalls).toContain("fallback-alpha-fe");
+  });
+
+  test("idempotent: kill-session error swallowed", async () => {
+    const spawn = makeSpawnRecorder();
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: true,
+    };
+    const handle: CageHandle = {
+      tier: 2,
+      team: "alpha",
+      lane: "fe",
+      taskId: "t-x",
+      agent: "operator",
+      tmuxTmpdir: "/tmp/atmux_fallback_alpha_fe/",
+      tmuxSocket: "fallback_alpha_fe",
+      workDir: "/p",
+      sessionName: "fallback-alpha-fe",
+      windowName: "tier2-fe",
+      createdAt: 1700_000_000,
+    };
+    // Should NOT throw even though killSession throws.
+    await destroyFallbackCage(handle, {
+      atmuxDir: "/p/.atmux",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+    });
+  });
+});
+
+describe("Lifecycle — destroyFallbackCage Tier 3", () => {
+  test("rsyncs workspace into archive + sudo kill-session + sudo rm -rf cage tree", async () => {
+    const spawn = makeSpawnRecorder();
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+    };
+    const handle: CageHandle = {
+      tier: 3,
+      team: "alpha",
+      lane: "fe",
+      taskId: "t-x",
+      agent: "kimi-agent",
+      tmuxTmpdir: "/tmp/atmux_fallback_alpha_fe_kimi-agent/",
+      tmuxSocket: "fallback_alpha_fe",
+      workDir: "/home/kimi-agent/cages/alpha-fe/work",
+      sessionName: "fallback-alpha-fe",
+      windowName: "tier3-fe",
+      createdAt: 1700_000_000,
+    };
+    await destroyFallbackCage(handle, {
+      atmuxDir: "/p/.atmux",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+      nowSec: () => 1700_000_100,
+    });
+    // Archive rsync from cage dir into archive path.
+    const archiveRsync = spawn.calls.find(
+      (c) =>
+        c.cmd === "sudo" &&
+        c.argv.includes("rsync") &&
+        c.argv.some((a) => a.includes("/p/.atmux/tier3-handoff/archive/alpha-fe-1700000100/")),
+    );
+    expect(archiveRsync).toBeDefined();
+    // Sudo tmux kill-session.
+    expect(
+      spawn.calls.some(
+        (c) =>
+          c.cmd === "sudo" &&
+          c.argv.includes("tmux") &&
+          c.argv.includes("kill-session"),
+      ),
+    ).toBe(true);
+    // rm -rf the cage root.
+    expect(
+      spawn.calls.some(
+        (c) =>
+          c.cmd === "sudo" &&
+          c.argv.includes("rm") &&
+          c.argv.includes("-rf") &&
+          c.argv.some((a) => a.includes("/home/kimi-agent/cages/alpha-fe")),
+      ),
+    ).toBe(true);
+    // Tier 3 path must NOT use the operator-side tmuxFactory's killSession.
+    expect(tmuxState.killSessionCalls.length).toBe(0);
   });
 });
