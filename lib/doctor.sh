@@ -57,6 +57,7 @@ EOF
   _doctor_check_wedged_bats_exec
   _doctor_check_caged_windows_outside_cage
   _doctor_check_orphan_atmux_sessions
+  _doctor_check_caged_session_leak
   _doctor_check_daily_driver_prefix_leak
 
   if [[ "$json" -eq 1 ]]; then
@@ -1142,6 +1143,69 @@ _doctor_check_orphan_atmux_sessions() {
       "operator-socket session matches atmux launcher pattern but no registry entry${idle_hint}" \
       "investigate before killing — could be a stale launcher from a removed team or a rename mid-flight; no auto-fix"
   done < <(env -u TMUX tmux -S "$daily_sock" list-sessions -F '#{session_name}|#{session_created}' 2>/dev/null)
+}
+
+# Caged-session leak detector — driver-inbox 12:21 MYT 2026-05-07 Ask 2
+# follow-up. The canonical team session name is `atmux-<team>` (HYPHEN
+# per atmux::session_name). Cage isolation means these sessions MUST
+# only exist on the team's TMUX_TMPDIR socket, never on the operator's
+# default. A session named `atmux-<X>` on the daily-driver socket is
+# the post-leak fingerprint: a cron-fired or interactive `atmux start`
+# whose cage-socket safeguard (lib/start.sh:58) didn't fire (pre-fix:
+# project-local TMUX_TMPDIR slipped through; current: cage socket file
+# missing from the gate's view-of-the-world means tmux's `-S` would
+# create it but bare `tmux new-session` falls back to default socket).
+#
+# Sister to _doctor_check_orphan_atmux_sessions which catches the
+# UNDERSCORE form (`atmux_<X>`, ADR-018 launcher convention). This
+# function specifically catches the HYPHEN form which is ALWAYS a
+# leak — there's no legitimate reason for `atmux-<team>` to live on
+# the daily-driver socket.
+#
+# Skipped when $TMUX is unset (cron path) or when the operator IS
+# currently attached to a cage socket — cage list governance lives in
+# the orphan-detector + cage rename helpers, not here. Surface-only;
+# no `--fix` action since recovery is operator-judgment (kill the
+# leaked session AND audit which cron line spawned it).
+_doctor_check_caged_session_leak() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  local daily_sock="${TMUX%%,*}"
+  # Skip when current socket is itself a cage. Same three shapes as
+  # _doctor_check_orphan_atmux_sessions.
+  case "$daily_sock" in
+    */atmux-tmux*/tmux-*/default|*/atmux_tmux_*/tmux-*/default|*/.atmux/tmux*/tmux-*/default) return 0 ;;
+  esac
+
+  local sess windows fingerprint w
+  while IFS= read -r sess; do
+    [[ -z "$sess" ]] && continue
+    # Only the HYPHEN form. Underscore form is the launcher convention
+    # caught by the sibling check.
+    [[ "$sess" =~ ^atmux- ]] || continue
+
+    # Window-name fingerprint. The post-leak ghost session typically has
+    # `__<team>__<member>` windows that were spawned by a member-spawn
+    # path that landed on the wrong socket. Surface the first matching
+    # window in the row body so the operator knows where the leak came
+    # from at a glance.
+    fingerprint=""
+    windows="$(env -u TMUX -u TMUX_TMPDIR tmux -S "$daily_sock" list-windows -t "=$sess" -F '#{window_name}' 2>/dev/null)"
+    while IFS= read -r w; do
+      [[ -z "$w" ]] && continue
+      if [[ "$w" == __*__* ]]; then
+        fingerprint="$w"
+        break
+      fi
+    done <<<"$windows"
+
+    local row_detail="cage session \`$sess\` is on the daily-driver socket — should be on a cage socket only"
+    if [[ -n "$fingerprint" ]]; then
+      row_detail="$row_detail (window \`$fingerprint\`)"
+    fi
+    _doctor_row yellow "caged-session-leak:$sess" \
+      "$row_detail" \
+      "kill via 'tmux kill-session -t \"=$sess\"' and audit cron lines / interactive atmux start invocations for cage-socket-safeguard miss"
+  done < <(env -u TMUX -u TMUX_TMPDIR tmux -S "$daily_sock" list-sessions -F '#{session_name}' 2>/dev/null)
 }
 
 # ---------- helpers ----------
