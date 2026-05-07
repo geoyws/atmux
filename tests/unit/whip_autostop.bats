@@ -84,3 +84,97 @@ SH
   _atmux_whip_check_auto_stop 1
   [ ! -f .atmux/state/whip-idle-state.json ]
 }
+
+# ---------- ADR-052 eternal-improvement intercept (t-a3a0e5b1) ----------
+
+# Shared stub builder: shadows $ATMUX_BIN_DIR/atmux to make `improve`
+# and `stop` invocations observable without touching tmux. Each
+# subcommand drops a marker file in $ATMUX_TEST_TMP so the test can
+# assert which path fired.
+_setup_atmux_stub() {
+  local stub_dir="$ATMUX_TEST_TMP/stub-bin"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/atmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  stop)    : > "$ATMUX_TEST_TMP/stop-was-called" ;;
+  improve) : > "$ATMUX_TEST_TMP/improve-was-called"
+           # Optional: set ATMUX_TEST_IMPROVE_EXIT to 1 to simulate failure.
+           exit "${ATMUX_TEST_IMPROVE_EXIT:-0}" ;;
+  *)       exec "$ATMUX_REPO_ROOT/bin/atmux" "$@" ;;
+esac
+SH
+  chmod +x "$stub_dir/atmux"
+  ATMUX_BIN_DIR="$stub_dir"
+}
+
+@test "autoStop: ADR-052 — no eternal-improvement state file → invokes improve, skips stop" {
+  jq '.whip.autoStopAfterIdleTicks = 2' .atmux/team.json > .atmux/team.json.tmp
+  mv .atmux/team.json.tmp .atmux/team.json
+  _setup_atmux_stub
+
+  _atmux_whip_check_auto_stop 1   # idleTicks=1 < 2
+  _atmux_whip_check_auto_stop 1   # idleTicks=2 == threshold → intercept fires
+
+  [ -f "$ATMUX_TEST_TMP/improve-was-called" ]
+  [ ! -f "$ATMUX_TEST_TMP/stop-was-called" ]
+}
+
+@test "autoStop: ADR-052 — eternal-improvement.active=true falls through to atmux stop" {
+  jq '.whip.autoStopAfterIdleTicks = 2' .atmux/team.json > .atmux/team.json.tmp
+  mv .atmux/team.json.tmp .atmux/team.json
+  _setup_atmux_stub
+
+  mkdir -p .atmux/state
+  echo '{"active":true,"runId":"ei-deadbeef","cycleN":3}' > .atmux/state/eternal-improvement.json
+
+  _atmux_whip_check_auto_stop 1
+  _atmux_whip_check_auto_stop 1   # threshold met → improve already active → fall through
+
+  [ ! -f "$ATMUX_TEST_TMP/improve-was-called" ]
+  [ -f "$ATMUX_TEST_TMP/stop-was-called" ]
+}
+
+@test "autoStop: ADR-052 — eternal-improvement.active=false invokes improve, skips stop" {
+  jq '.whip.autoStopAfterIdleTicks = 2' .atmux/team.json > .atmux/team.json.tmp
+  mv .atmux/team.json.tmp .atmux/team.json
+  _setup_atmux_stub
+
+  mkdir -p .atmux/state
+  echo '{"active":false,"runId":"ei-prevrun"}' > .atmux/state/eternal-improvement.json
+
+  _atmux_whip_check_auto_stop 1
+  _atmux_whip_check_auto_stop 1   # threshold met → improve not active → invoke
+
+  [ -f "$ATMUX_TEST_TMP/improve-was-called" ]
+  [ ! -f "$ATMUX_TEST_TMP/stop-was-called" ]
+}
+
+@test "autoStop: ADR-052 — improve invocation failure falls through to atmux stop" {
+  jq '.whip.autoStopAfterIdleTicks = 2' .atmux/team.json > .atmux/team.json.tmp
+  mv .atmux/team.json.tmp .atmux/team.json
+  _setup_atmux_stub
+  export ATMUX_TEST_IMPROVE_EXIT=1
+
+  _atmux_whip_check_auto_stop 1
+  _atmux_whip_check_auto_stop 1   # improve invoked + fails → fall through
+
+  [ -f "$ATMUX_TEST_TMP/improve-was-called" ]
+  [ -f "$ATMUX_TEST_TMP/stop-was-called" ]
+  unset ATMUX_TEST_IMPROVE_EXIT
+}
+
+@test "autoStop: ADR-052 — malformed eternal-improvement.json treated as not-active (invokes improve)" {
+  jq '.whip.autoStopAfterIdleTicks = 2' .atmux/team.json > .atmux/team.json.tmp
+  mv .atmux/team.json.tmp .atmux/team.json
+  _setup_atmux_stub
+
+  mkdir -p .atmux/state
+  echo 'not-json{' > .atmux/state/eternal-improvement.json
+
+  _atmux_whip_check_auto_stop 1
+  _atmux_whip_check_auto_stop 1
+
+  [ -f "$ATMUX_TEST_TMP/improve-was-called" ]
+  [ ! -f "$ATMUX_TEST_TMP/stop-was-called" ]
+}

@@ -1105,6 +1105,32 @@ _atmux_whip_check_auto_stop() {
   atmux::jq_update "$sf" 'del(.idleTicks)'
   local team
   team="$(atmux::team_name)"
+
+  # ADR-052 §Whip-integration (t-a3a0e5b1): pre-stop intercept — kick
+  # off eternal-improvement if not already active. The helper
+  # _atmux_improve_is_active landed on atmux-bun's lib/improve.sh
+  # (acf37ba) but isn't sourced into atmux-geoyws's runtime; inline
+  # the minimal `.active` field check here (Option A per lead's
+  # 2026-05-07 08:55 MYT go-ahead). On improve invocation success:
+  # return 0 (verb owns termination). On failure OR when improve is
+  # already active (loop ran but kanban still empty → budget likely
+  # exhausted): fall through to original whip-autostop path below.
+  local ei_state="$(atmux::state_dir)/eternal-improvement.json"
+  local ei_active="false"
+  if [[ -s "$ei_state" ]]; then
+    ei_active="$(jq -r '.active // false' "$ei_state" 2>/dev/null || echo false)"
+  fi
+  if [[ "$ei_active" != "true" ]]; then
+    atmux::log "whip: idle threshold met — invoking atmux improve --idle-fallback --default-budget instead of stop"
+    local improve_msg="🌱 **[eternal-improvement-start]** · \`$team\` · idle threshold → atmux improve"
+    ATMUX_DISCORD_TRIGGER="eternal-improvement-start" \
+      atmux::discord_embed_ping "$improve_msg" 2>/dev/null || true
+    if "$ATMUX_BIN_DIR/atmux" improve --idle-fallback --default-budget >/dev/null 2>&1; then
+      return 0
+    fi
+    atmux::log "whip: improve invocation failed — falling through to atmux stop"
+  fi
+
   local msg="🛑 **[whip-autostop]** · \`$team\` · idle ${count} ticks → stopping team to save tokens"
   atmux::log "whip: team idle ${count} ticks ≥ threshold ${threshold} — invoking atmux stop"
   ATMUX_DISCORD_TRIGGER="whip-autostop" atmux::discord_embed_ping "$msg" 2>/dev/null || true
