@@ -164,6 +164,314 @@ Never copy a hardcoded `c-ic` or `c-u` from a stale handoff — cross-account sp
 
 ---
 
+## 🌱 eternal-improvement (ADR-052)
+
+**Verb:** `atmux improve` — kanban-empty fallback to autonomous self-improvement loop. ADR drafted in `docs/adr-bun/052-eternal-improvement.md` (status: proposed, gated on OQ-1 + OQ-2 + reviewer signoff). T1 verb skeleton landed (args + budget-resolve + state-file write); cycle mechanics are T7.
+
+### Verb usage
+
+```
+atmux improve [--budget <spec>] [--status] [--dry-run] [--default-budget]
+              [--idle-fallback] [--force]
+
+  --budget <spec>      Token budget. Forms: <int> | <int>% | <int>%-5h | <int>%-wk
+  --default-budget     Use standing default (30%-wk); resolves at invocation
+  --status             Print state-file contents + remaining tokens, exit 0
+  --dry-run            Resolve budget + formula, no state writes
+  --idle-fallback      Mode B — verb fires `atmux stop` on budget exhaustion
+  --force              Override 24h-active idempotence guard
+```
+
+### Budget formula
+
+**Default:** `0.3 × min(remaining_wk_tokens_per_active_member)`.
+
+`min(…)` over members prevents pinning the lowest-budget member over their cap. "Active members" = `team.json` members with `paused: false` AND a live pane. If no observability data is available (ADR-049 not probing), `--budget` MUST be passed explicitly — defaults fail closed with USAGE error.
+
+Resolution precedence (first wins): CLI `--budget` → env `ATMUX_IMPROVE_BUDGET` → `team.json::improve.defaultBudget` → built-in `"30%-wk"`.
+
+### State-file location
+
+`.atmux/state/eternal-improvement.json` (single greppable JSON, lock via `.lock` flock pattern matching `whip-idle-state.json.lock`). Schema per ADR-052 §State-file-schema: `active`, `runId`, `startedAt`, `mode`, `budgetSpec`, `budgetTotal`, `budgetRemaining`, `cycleN`, `currentCycle`, `lastCycleClosedAt`, `history` (append-only ring, max 50 entries). Persists across runs for `atmux improve --status` audit reads.
+
+### Mode A vs Mode B (text-form diagram)
+
+```
+Mode A — user-invoked
+─────────────────────
+  driver / operator invokes:
+      $ atmux improve [--budget <spec>]
+                ↓
+  any time, any kanban state — runs alongside whatever else is in flight
+                ↓
+  cycle loop: ask members → planner scores → dispatch → review → close
+                ↓
+  budget exhausts (post-cycle accounting) AND no in-flight tasks
+                ↓
+  set active:false in state file → Discord 🌱 [eternal-improvement-done]
+                ↓
+  exit 0
+
+
+Mode B — idle-fallback (whip-intercepted)
+─────────────────────────────────────────
+  whip's ADR-043 idle-stop threshold fires
+                ↓
+  whip checks: _atmux_improve_is_active ?
+                ↓ no
+  whip invokes:
+      $ atmux improve --idle-fallback --default-budget
+                ↓
+  verb writes state, dispatches first cycle to lead, EXITS IMMEDIATELY
+                ↓
+  subsequent whip ticks see active:true + non-idle → auto-stop counter resets
+                ↓
+  cycles run until: budgetRemaining ≤ 0 AND kanban still empty AND no
+  driver-dispatched non-improvement tasks landed during run
+                ↓
+  verb itself fires `atmux stop` (the path ADR-043 originally took)
+```
+
+**Driver preemption.** If the driver dispatches new (non-improvement) Tasks during a Mode-B run: in-flight cycle finishes (no mid-cycle abort per fully-built directive), loop pauses (`currentCycle.paused: true`), driver Tasks proceed normally. When driver Tasks land AND kanban returns to empty AND budget remains → loop resumes from cycle N+1.
+
+### Scope guardrails (improvement Tasks must satisfy)
+
+- Lands on team's working branch — no forks, no greenfield rewrites, no architectural pivots.
+- Does NOT touch `_refs/` (frozen reference material) or rewrite ADRs (additive ADRs OK).
+- Does NOT modify `staging` / `prod` deploy configs (CLAUDE.md push policy — Demo path off-limits).
+- Fully landable in ≤1 cycle (no multi-cycle epics inside an improvement run; planner escalates via `pending-decisions.md` if seen).
+
+Violations escalate via the regular `pending-decisions.md` / `lead-outbox.md` path — never silently ship.
+
+### Cross-references
+
+- ADR: `docs/adr-bun/052-eternal-improvement.md`
+- Verb: `src/verbs/improve.ts` (TS), `lib/improve.sh` (bash mirror)
+- Discord templates: `🌱 [eternal-improvement-start]` / `[-progress]` / `[-done]` (T3)
+- Whip integration: `_atmux_whip_check_auto_stop` modified per ADR-052 §Whip integration (T6)
+- Open questions: OQ-1 (first-landing branch), OQ-2 (supergroomer overlap), OQ-3 (budget observability source)
+
+---
+
+## 💰 Budget observability (ADR-053)
+
+R1 wave landed the bun-port of ADR-049's Claude Max budget probe + four extensions: per-band warnings, refresh-soon pings, auto-resume cron precision, durable history log. **Implementation:** `ffad610` (R1-T1 probe + Fix C OAuth refresh) → `65c16f3` (R1-T5 part 1 state primitives) → `65bdcda` (R1-T5 part 2 Discord templates) → `09b8091` (R1-T5 part 3 dedup state) → `df3a08c` (R1-T5 part 4 orchestrator) → `8160d71` (R1-T5 part 5 whip-tick wiring) → `f9ad15b` (R1-T6 e2e walk) → `9c50354` (R1-T7 whip-resume-check verb).
+
+### What it does
+
+- **Per-tick budget probe.** `src/abstractions/budget-probe.ts::probeBudget` (240s cache TTL by default) reads `~/.<account>/credentials.json`, refreshes OAuth on `expiresAt < now+60s`, calls the Anthropic rate-limit endpoint, writes `.atmux/state/budget-probe-<account>.json`. `force: true` skips cache.
+- **OAuth-401 silent-stale fix (Fix C).** Refreshes via `https://api.anthropic.com/v1/oauth/token` on expiry or 401-with-valid-token. Refresh failure → `atmux flags add --severity p2 --needs context "OAuth refresh failed for account=<n>; user re-login needed"`.
+- **Budget-pause + budget-resume** (`src/core/budget-pause.ts`). Pause when ANY member's `h5_pct_used` or `wk_pct_used` ≥ `team.whip.budgetPauseThreshold` (default 90); resume when ALL ≤ `team.whip.budgetResumeThreshold` (default 80). 10pp hysteresis.
+- **Coordination with eternal-improvement Mode B:** budget-pause supersedes Mode B per ADR-053 §D2. Tick order: budget-pause check → kanban-empty (improvement) → per-member regular checks. "Budget-pause is a deliberate hold, not idleness."
+- **Auto-resume cron precision** (`src/verbs/whip-resume-check.ts`, USAGE: `atmux whip-resume-check [--no-discord] [--team-dir <dir>]`). 1-min cron line, lock-skipped on contention, ~1 probe call per active account per tick (mostly cache reads). Cost: 1 extra cron line; negligible system load.
+- **Warning bands.** `[whip-budget-warning]` Discord ping at `team.whip.budgetWarningBands` (default `[0.50, 0.25, 0.15]` — i.e. when remaining-fraction crosses 50%/25%/15% downward). Dedup state `.atmux/state/budget-warning-state.json` keyed by `<account>:<window>:<band>`. Window-reset wipes entries; bands re-arm.
+- **Refresh-soon pings.** `[whip-budget-refresh-soon]` fires when window resets in ≤ `team.whip.budgetRefreshLeadMins` (default 30). Dedup keyed by `<account>:<window>:<resetEpoch>`.
+- **Durable probe history** at `.atmux/logs/budget-history.jsonl`. Append-on-every-probe; one JSONL line per probe with `ts / account / h5_util / wk_util / h5_reset / wk_reset / status / source / tokenRefreshed`. Rotated by `groom` when >1MB.
+
+### How to view history.jsonl
+
+```bash
+# tail recent entries
+tail -20 .atmux/logs/budget-history.jsonl | jq .
+
+# per-account utilization timeline
+jq -c 'select(.account=="icloud") | {ts, h5: .h5_util, wk: .wk_util}' \
+  .atmux/logs/budget-history.jsonl
+
+# probe-failure rate
+jq -c 'select(.status != "allowed" and .status != "cache-hit") | .status' \
+  .atmux/logs/budget-history.jsonl | sort | uniq -c
+
+# OAuth-refresh count this week
+jq -c 'select(.tokenRefreshed == true and .ts > (now - 604800)) | .ts' \
+  .atmux/logs/budget-history.jsonl | wc -l
+```
+
+No dedicated `atmux budget-history` verb in v1; ad-hoc jq is the operator path. If demand emerges, a read-side verb is a follow-up.
+
+### Configuration (team.json::whip)
+
+```jsonc
+{
+  "whip": {
+    "budgetPauseThreshold": 90,
+    "budgetResumeThreshold": 80,
+    "budgetWarningBands": [0.50, 0.25, 0.15],
+    "budgetRefreshLeadMins": 30,
+    "claudeAccount": "icloud"
+  }
+}
+```
+
+`claudeAccount` gates whether the cron block includes the `whip-resume-check` line — teams without budget observability skip it. See [Cron-migration runbook](RUNBOOK-cron-migration.md) for the migration path on already-running teams.
+
+---
+
+## 🔧 Whip config validation (ADR-054)
+
+Per-tick Zod validation of `team.json::whip` with safe-default fallback + drift Discord ping. **Implementation:** `4e93746` (R1-T3 TeamWhip Zod schema + per-tick drift detection + `[whip-config-drift]` ping) → `9751f7a` (R1-T4 file organization).
+
+### What it does
+
+- `src/schema/team.ts:78` — `TeamWhip` Zod object (strict mode, unknown-key rejection). All ADR-053 / ADR-055 / ADR-056 fields typed.
+- `src/core/whip-config-drift.ts:108` — `composeDriftReport(error, rawText)` extracts up to 5 issues, computes `driftHash` (sha256 over canonical-sorted issue list).
+- `src/verbs/whip.ts` per-tick guard: if `Team.safeParse` fails, fall back to `makeDriftSafeDefaults` (drops invalid keys, applies schema defaults), fire `[whip-config-drift]` Discord (24h dedup by `driftHash`), continue tick.
+- `src/verbs/doctor.ts` surfaces drift findings at P3 severity for operator triage without waiting for the next whip tick.
+
+### Drift Discord ping example
+
+```
+🔧 [whip-config-drift] · `atmux` · 09:42 MYT
+  • ⚠️ team.json::whip validation failed — using safe defaults
+  • 📍 issues: 3 (1 unknown_key, 2 invalid_type)
+  • 🔍 first: whip.budgetPauseTreshold (unknown_key, did you mean budgetPauseThreshold?)
+  • 🛠️ fix: edit team.json + re-run atmux doctor
+  • 📜 driftHash: a3f2c814 (re-pings if changes)
+```
+
+### How to fix common team.json typos
+
+| Drift symptom | Fix |
+|---|---|
+| `unknown_key: budgetPauseTreshold` (typo) | Rename to `budgetPauseThreshold`. |
+| `invalid_type: budgetWarningBands expected array<number 0..1>, got string` | Use `[0.50, 0.25, 0.15]` not `"50,25,15"`. |
+| `unknown_key: autoStop` | Field is `autoStopAfterIdleTicks`; preserved for back-compat (default 0) but eternal-improvement Mode B + budget-pause supersede the auto-stop path. Set to 0 or remove. |
+| `unknown_key: accountFallbacks` | Field is `accountFallback` (singular). Array of account names in priority order. |
+| Whole-block invalid JSON (trailing comma, etc.) | Falls back to full schema defaults; fix syntax + re-run `atmux doctor`. |
+
+`atmux doctor` surfaces drift immediately. After fixing team.json, re-run doctor to confirm clean. The next whip tick re-arms drift detection if a new issue appears (different `driftHash`).
+
+### ADR-054 §OQ-3 — pre-existing team.json migration
+
+Live `team.json` files in fleet teams (sopx, atmux, unum) may use `z.unknown()`-era shapes that don't pass strict validation. Migration is operator-driven: dispatch a fleet-wide `atmux doctor` after this ADR lands; the drift findings name the exact paths needing edits. NOT a code concern — see ADR-054 §OQ-3.
+
+---
+
+## 🩹 Cursor self-heal (ADR-055)
+
+Recipe-driven `cursor-agent` invocations for whitelisted problem classes. **Implementation:** `0fa4572` (state file + 2 Discord templates) → `80d628e` (self-heal pass orchestrator + `stagePatchForReviewer`) → `9554f70` (whip-tick wiring) → `f50e751` (`fix:cron-pollution` + `fix:supervisor-missing` recipes) → `1ce71c3` (e2e self-heal walk).
+
+### What it does
+
+- `src/abstractions/cursor.ts` — typed `invokeCursor(job)` wrapper around the `cursor-agent` CLI (`/root/.local/bin/cursor-agent`), parses `--json` output, returns `{exitCode, stdout, stderr, patch, tokensUsed, durationMs}`.
+- `src/core/cursor-recipes/types.ts` — `CursorRecipe` interface: `detect(ctx) → RecipeContext | null`, `propose(ctx) → CursorJob`, `verify(job, patch) → VerifyResult`. Per-recipe `tokenCap` (default 5_000) + `fileAllowlist` (e.g. `["team.json", ".atmux/state/*"]`).
+- **v1 default-enabled recipes:**
+  1. `fix:team-json-schema-drift` (`fix-team-json-schema-drift.ts`) — restores missing optional fields per ADR-054 drift report.
+  2. `fix:cron-pollution` (`fix-cron-pollution.ts`) — scrubs stale cron entries detected by ADR-051's `cron_install` invariants.
+  3. `fix:supervisor-missing` (`fix-supervisor-missing.ts`) — re-spawns supervisor window when `tmux list-windows` shows it absent.
+- **Whip-tick integration** runs AFTER per-member checks AND AFTER budget-pause (never invoke cursor during budget-pause). 24h dedup per recipe via `.atmux/state/cursor-self-heal-state.json`.
+- **Reviewer-gate, NOT auto-commit.** Patches stage at `.atmux/state/cursor-self-heal-pending/<recipe>-<ts>.patch` + a kanban Task is created addressed to the `reviewer` member with the patch path in body. Reviewer reads + applies + commits via the existing flow.
+- Cursor session log per attempt at `.atmux/logs/cursor-self-heal-<recipe>-<ts>.log`.
+- Discord pings at start (`[whip-self-heal-attempt]`) and result (`[whip-self-heal-result]`).
+
+### How to enable self-heal
+
+Self-heal is **opt-in** per team via `team.json`:
+
+```jsonc
+{
+  "whip": {
+    "selfHealEnabled": true,
+    "selfHealRecipes": [
+      "fix:team-json-schema-drift",
+      "fix:cron-pollution",
+      "fix:supervisor-missing"
+    ]
+  }
+}
+```
+
+`selfHealEnabled: false` (default) bypasses the entire self-heal pass at whip-tick. Operators dogfood-cautious teams should opt-in one recipe at a time + monitor reviewer-gate hit rate before broadening.
+
+### How to add a new recipe (smoke-test path)
+
+1. Author the recipe at `src/core/cursor-recipes/<recipe>.ts` mirroring `fix-team-json-schema-drift.ts` shape: `detect` predicate, `propose` (cursor prompt + file allowlist + `tokenCap`), `verify` (check patch is in-bounds).
+2. Land the recipe behind `team.json::whip.selfHealRecipes` opt-in (operators must explicitly enable).
+3. Synthetic e2e test at `tests/e2e/cursor-self-heal-<recipe>.test.ts` — seed broken state, run recipe, assert patch shape + reviewer-gate path.
+4. Dogfood on one team for ~1 week. If no incidents: a follow-up ADR flips it to default-enabled.
+
+**Hard guardrails (per ADR-055):**
+- Cursor invocations scoped to `.atmux/` and `team.json` only. NEVER `lib/` or `bin/`.
+- All patches go through `git diff` reviewer-gate before commit.
+- Per-recipe budget cap (default 5_000 tokens). Abort on overrun.
+- No open-ended "look for any issues" prompts — recipe-driven scope only.
+
+---
+
+## 🔀 Account-swap (ADR-056)
+
+Preemptive handoff at high utilization — instead of pausing the team at 90% used, swap members to a healthier account at 75% used. **Implementation:** `f99519f` (R1-T10 trigger detection + state machine + fallback selection) → `ffa2bd5` (R1-T11 part 1 Discord templates) → `22ac16b` (R1-T11 part 2 perMemberSwap workflow + `runSwapPass` orchestrator + whip-tick advancement) → `83115ec` (R1-T12 state-file lifecycle tests).
+
+### What it does
+
+- **Trigger.** When ANY active account's `h5_pct_used >= team.whip.accountSwapTriggerThreshold` (default 75) OR `wk_pct_used >= same`, AND any candidate member has a viable fallback (account in `team.whip.accountFallback` with BOTH `h5 ≤ 50%` AND `wk ≤ 50%`): enter swap pass.
+- **Eligibility.** Only `role: worker` (or absent role). Roles in `team.whip.accountSwapExcludeRoles` (default `["lead", "planner", "reviewer"]`) are excluded — lead + planner hold cross-conversation memory that handoff doesn't carry.
+- **Per-member swap workflow** (`src/core/account-swap.ts::perMemberSwap`):
+  1. Force-fresh probe of target account.
+  2. Spawn shadow member `<original>-swap` (collision: `-2`, `-3`) with same `role/lane/cwd/tui/model`, target `claudeAccount`. Programmatic spawn into the team's tmux server (not full `atmux start`).
+  3. Wait for shadow's prompt (poll ≤ 10s).
+  4. `atmux handoff <original> <shadow>` — moves inbox + claimed task + per-member kanban-cursor.
+  5. Confirm shadow ack (poll inbox ≤ 10s).
+  6. `atmux pause <original>` (NOT kill — preserves rollback).
+  7. Mark `done` in state file; Discord `[whip-account-swap-success]`.
+  8. Dispatch next member.
+- **Concurrency.** Sequential, one-at-a-time. Per-team flock at `.atmux/state/account-swap.lock` prevents thrash.
+- **Hard cap per-member: 5min.** Aborts a single swap if it overruns; doesn't kill original; logs + flags; moves on.
+- **Worst-case math validation:** 8 members × 5min = 40min. At 75% used on 5h window = 75min remaining → fits with healthy buffer. At 90%, 10% remaining = 30min → DOESN'T fit (mid-swap exhaustion). 75% is the recommended default (per ADR-056 §"Push-back").
+
+### Configuration (team.json::whip)
+
+```jsonc
+{
+  "whip": {
+    "accountFallback": ["ifca", "unum", "personal"],   // priority order
+    "accountSwapTriggerThreshold": 75,
+    "accountSwapExcludeRoles": ["lead", "planner", "reviewer"]
+  },
+  "members": [
+    { "name": "worker-1", "claudeAccount": "icloud", ... }
+  ]
+}
+```
+
+Empty `accountFallback` (default `[]`) disables account-swap entirely — falls through to ADR-053 budget-pause behavior.
+
+### Recovery flow
+
+After swap, the team has 2× rows for each swapped member: `<original>` (paused) + `<original>-swap` (active). On budget-window-refresh:
+
+- **Today (v1):** the original stays paused. Operator manually resumes via `atmux resume <original>` if/when desired. Then the team has 2× active workers — both can claim, doubling throughput temporarily, but you must remove one before next swap cycle (otherwise shadow-naming collisions cascade).
+- **Recommended manual cleanup pattern:**
+  ```bash
+  # After window-refresh, decide which to keep:
+  atmux pause <original>-swap    # keep original
+  # OR
+  atmux resume <original>-swap   # keep shadow (already active)
+  atmux pause <original>         # keep original paused; no-op if already
+  # Eventually rotate the unused one out:
+  atmux rotate <unused>          # /clear and re-brief if you want to keep around
+  ```
+- **Future (planned):** explicit `atmux team rotate-back` verb or post-resume reconciliation feature. See ADR-056 §OQ-3 below.
+
+### Lead/planner protection
+
+Even with `selfHealEnabled: true` and a stuck account, the lead + planner are NEVER swapped. Their cross-conversation context is in conversation memory, not state files; swap would wipe it. If the LEAD's account is the one exhausting and no other worker can be swapped to relieve pressure → the team falls through to ADR-053 budget-pause normally.
+
+---
+
+## 🔭 Open question — post-resume reconciliation (ADR-056 §OQ-3)
+
+After an account-swap pass, every swapped member has a duplicate row in `team.json::members[]`: the original (paused) and the shadow (active). On `atmux resume <original>` post-window-refresh, the team has 2× workers for that lane. Operators today must manually choose which to keep + pause the other (see "Recovery flow" above) — there is **no automated swap-back or roster reconciliation** in v1.
+
+**Why it's an open question:** the right shape depends on operational patterns we haven't observed yet. Three candidate solutions surfaced in ADR-056 §OQ-3:
+
+1. **`atmux team rotate-back` verb.** Operator runs explicitly post-refresh; takes a paused-via-swap roster and unwinds the shadows back to originals.
+2. **Auto-cleanup at swap-back.** When trigger detection sees the original's account healthy AND no in-flight tasks on the shadow → automatic resume + shadow-pause.
+3. **Roster cleanup ADR follow-up.** Larger rework that introduces "swap epochs" with explicit start/end markers.
+
+**For now:** operators manually reconcile post-refresh per the pattern in §"Recovery flow". Discord `[whip-account-swap-pass-complete]` includes a roster summary so the post-refresh state is visible. Driver-inbox entry at swap-pass-close lists from→to map for audit. Track this as ADR-056 OQ-3 — surfacing here so operators know the rough edge exists and don't expect auto-cleanup.
+
+---
 ## TL;DR for future driver
 
 You are the **driver** of the atmux-bun port. Team mode active (4 members in tmux session `atmux` windows 2-5). **25/25 verbs done, 1543 tests pass, V-01 up SHIPPED @ec96c7e (composite wizard→doctor→start→attach).** Phase 2 closed — verb ports + R-1..R-5 complete.
