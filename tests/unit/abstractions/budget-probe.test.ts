@@ -17,22 +17,11 @@
 //   - probe-error → non-2xx, missing utilization headers.
 //   - All failure paths still write cache + history (observability).
 
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  type BudgetProbeResult,
-  probeBudget,
-} from "../../../src/abstractions/budget-probe.ts";
+import { type BudgetProbeResult, probeBudget } from "../../../src/abstractions/budget-probe.ts";
 import { resetNow, setNow } from "../../../src/abstractions/time.ts";
 
 // ---------- Fixed test clock ----------
@@ -40,12 +29,27 @@ import { resetNow, setNow } from "../../../src/abstractions/time.ts";
 const FIXED_NOW_MS = Date.UTC(2026, 4, 7, 3, 44); // 2026-05-07 03:44 UTC = 11:44 MYT
 const FIXED_NOW_SEC = Math.floor(FIXED_NOW_MS / 1000);
 
+// File-scope PATH isolation — t-3460d587 root cause. Tests that don't
+// inject `opts.flagSurface` fall through to `defaultFlagSurface`, which
+// spawns the real `atmux flags add` against the worktree's actual
+// .atmux/flags.md. With PATH neutered, that spawn fails-to-find and the
+// catch block swallows the error per ADR-053 §D1 (flags surface failure
+// is best-effort; probe-401 status still in cache + history).
+let _origPath: string | undefined;
+
 beforeAll(() => {
   setNow(() => FIXED_NOW_MS);
+  _origPath = process.env.PATH;
+  process.env.PATH = "/nonexistent/atmux-test-isolation";
 });
 
 afterAll(() => {
   resetNow();
+  if (_origPath === undefined) {
+    delete process.env.PATH;
+  } else {
+    process.env.PATH = _origPath;
+  }
 });
 
 // ---------- Sandbox per test ----------
@@ -112,14 +116,24 @@ interface ProbeServerHandle {
   /** Most recent refresh-token sent (for assertion). */
   lastRefreshToken: () => string;
   /** Override refresh response body. */
-  setRefreshResponse: (body: { access_token?: string; refresh_token?: string; expires_in?: number; status?: number }) => void;
+  setRefreshResponse: (body: {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    status?: number;
+  }) => void;
 }
 
 function startProbeServer(opts: ProbeServerOpts = {}): ProbeServerHandle {
   let probeCallCount = 0;
   let refreshCallCount = 0;
   let lastRefreshToken = "";
-  let refreshResp: { access_token?: string; refresh_token?: string; expires_in?: number; status?: number } = {
+  let refreshResp: {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    status?: number;
+  } = {
     access_token: "fresh-access-token",
     refresh_token: "fresh-refresh-token",
     expires_in: 86_400,
@@ -260,7 +274,7 @@ describe("probeBudget — cache flow", () => {
   test("cache miss when stale → live probe", async () => {
     const server = startProbeServer({
       utilization5h: 0.05,
-      utilization7d: 0.10,
+      utilization7d: 0.1,
       reset5h: FIXED_NOW_SEC + 3600,
       reset7d: FIXED_NOW_SEC + 86400,
       statusHeader: "allowed",
@@ -270,10 +284,17 @@ describe("probeBudget — cache flow", () => {
       // Pre-populate stale cache (mtime older than ttl).
       const cachePath = join(atmuxDir, "state", "budget-probe-icloud.json");
       await mkdir(join(atmuxDir, "state"), { recursive: true });
-      await writeFile(cachePath, JSON.stringify({
-        h5_util: 0.99, wk_util: 0.99, h5_reset: 0, wk_reset: 0,
-        status: "allowed", probedAt: FIXED_NOW_SEC - 1000,
-      }));
+      await writeFile(
+        cachePath,
+        JSON.stringify({
+          h5_util: 0.99,
+          wk_util: 0.99,
+          h5_reset: 0,
+          wk_reset: 0,
+          status: "allowed",
+          probedAt: FIXED_NOW_SEC - 1000,
+        }),
+      );
       // Backdate the file mtime to 600s before mocked now (> ttlSec=60).
       const oldTime = new Date(FIXED_NOW_MS - 600_000);
       await utimes(cachePath, oldTime, oldTime);
@@ -295,22 +316,35 @@ describe("probeBudget — cache flow", () => {
 
   test("force=true skips cache even when fresh", async () => {
     const server = startProbeServer({
-      utilization5h: 0.10, utilization7d: 0.20,
-      reset5h: 0, reset7d: 0, statusHeader: "allowed",
+      utilization5h: 0.1,
+      utilization7d: 0.2,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
     });
     try {
       await writeCreds("icloud");
       const cachePath = join(atmuxDir, "state", "budget-probe-icloud.json");
       await mkdir(join(atmuxDir, "state"), { recursive: true });
-      await writeFile(cachePath, JSON.stringify({
-        h5_util: 0.99, wk_util: 0.99, h5_reset: 0, wk_reset: 0,
-        status: "allowed", probedAt: FIXED_NOW_SEC,
-      }));
+      await writeFile(
+        cachePath,
+        JSON.stringify({
+          h5_util: 0.99,
+          wk_util: 0.99,
+          h5_reset: 0,
+          wk_reset: 0,
+          status: "allowed",
+          probedAt: FIXED_NOW_SEC,
+        }),
+      );
       const fresh = new Date(FIXED_NOW_MS - 1_000); // fresh enough to hit
       await utimes(cachePath, fresh, fresh);
 
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
         force: true,
       });
       expect(r.source).toBe("probe");
@@ -323,8 +357,11 @@ describe("probeBudget — cache flow", () => {
 
   test("corrupt cache JSON → treat as miss + live probe", async () => {
     const server = startProbeServer({
-      utilization5h: 0.07, utilization7d: 0.13,
-      reset5h: 0, reset7d: 0, statusHeader: "allowed",
+      utilization5h: 0.07,
+      utilization7d: 0.13,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
     });
     try {
       await writeCreds("icloud");
@@ -337,7 +374,10 @@ describe("probeBudget — cache flow", () => {
       await utimes(cachePath, fresh, fresh);
 
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
       expect(r.source).toBe("probe");
       expect(r.h5_pct_used).toBe(7);
@@ -349,8 +389,11 @@ describe("probeBudget — cache flow", () => {
   test("cache JSON missing required fields → treat as miss + live probe", async () => {
     // Hits the !isCacheJson(cache) branch — JSON parses but shape is wrong.
     const server = startProbeServer({
-      utilization5h: 0.04, utilization7d: 0.06,
-      reset5h: 0, reset7d: 0, statusHeader: "allowed",
+      utilization5h: 0.04,
+      utilization7d: 0.06,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
     });
     try {
       await writeCreds("icloud");
@@ -361,7 +404,10 @@ describe("probeBudget — cache flow", () => {
       await utimes(cachePath, fresh, fresh);
 
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
       expect(r.source).toBe("probe");
     } finally {
@@ -375,15 +421,20 @@ describe("probeBudget — cache flow", () => {
     await writeFile(
       cachePath,
       JSON.stringify({
-        h5_util: 0, wk_util: 0, h5_reset: 0, wk_reset: 0,
-        status: "probe-401", probedAt: FIXED_NOW_SEC,
+        h5_util: 0,
+        wk_util: 0,
+        h5_reset: 0,
+        wk_reset: 0,
+        status: "probe-401",
+        probedAt: FIXED_NOW_SEC,
       }),
     );
     const fresh = new Date(FIXED_NOW_MS - 1_000);
     await utimes(cachePath, fresh, fresh);
 
     const r = await probeBudget("icloud", {
-      atmuxDir, homeDir,
+      atmuxDir,
+      homeDir,
       probeUrl: "http://127.0.0.1:1/never",
       oauthRefreshUrl: "http://127.0.0.1:1/never",
     });
@@ -397,15 +448,20 @@ describe("probeBudget — cache flow", () => {
     await writeFile(
       cachePath,
       JSON.stringify({
-        h5_util: 0.02, wk_util: 0.03, h5_reset: 0, wk_reset: 0,
-        status: "unknown", probedAt: FIXED_NOW_SEC,
+        h5_util: 0.02,
+        wk_util: 0.03,
+        h5_reset: 0,
+        wk_reset: 0,
+        status: "unknown",
+        probedAt: FIXED_NOW_SEC,
       }),
     );
     const fresh = new Date(FIXED_NOW_MS - 1_000);
     await utimes(cachePath, fresh, fresh);
 
     const r = await probeBudget("icloud", {
-      atmuxDir, homeDir,
+      atmuxDir,
+      homeDir,
       probeUrl: "http://127.0.0.1:1/never",
       oauthRefreshUrl: "http://127.0.0.1:1/never",
     });
@@ -419,15 +475,20 @@ describe("probeBudget — cache flow", () => {
       await writeFile(
         cachePath,
         JSON.stringify({
-          h5_util: 0, wk_util: 0, h5_reset: 0, wk_reset: 0,
-          status: cached, probedAt: FIXED_NOW_SEC,
+          h5_util: 0,
+          wk_util: 0,
+          h5_reset: 0,
+          wk_reset: 0,
+          status: cached,
+          probedAt: FIXED_NOW_SEC,
         }),
       );
       const fresh = new Date(FIXED_NOW_MS - 1_000);
       await utimes(cachePath, fresh, fresh);
 
       const r = await probeBudget(`acc-${cached}`, {
-        atmuxDir, homeDir,
+        atmuxDir,
+        homeDir,
         probeUrl: "http://127.0.0.1:1/never",
         oauthRefreshUrl: "http://127.0.0.1:1/never",
       });
@@ -450,7 +511,10 @@ describe("probeBudget — live probe", () => {
     try {
       await writeCreds("icloud");
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
 
       expect(r.account).toBe("icloud");
@@ -492,13 +556,19 @@ describe("probeBudget — live probe", () => {
 
   test("rejected status header propagates to result + cache", async () => {
     const server = startProbeServer({
-      utilization5h: 0.95, utilization7d: 0.99,
-      reset5h: 0, reset7d: 0, statusHeader: "rejected",
+      utilization5h: 0.95,
+      utilization7d: 0.99,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "rejected",
     });
     try {
       await writeCreds("icloud");
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
       expect(r.status).toBe("rejected");
       expect(r.h5_pct_used).toBe(95);
@@ -510,12 +580,17 @@ describe("probeBudget — live probe", () => {
   test("missing utilization headers → status=probe-error, still writes cache + history", async () => {
     const server = startProbeServer({
       // Omit util headers — server returns 200 but no rate-limit info.
-      reset5h: 0, reset7d: 0, statusHeader: "allowed",
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
     });
     try {
       await writeCreds("icloud");
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
       expect(r.status).toBe("probe-error");
       expect(r.error).toContain("missing utilization headers");
@@ -531,7 +606,10 @@ describe("probeBudget — live probe", () => {
     try {
       await writeCreds("icloud");
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
       expect(r.status).toBe("probe-error");
       expect(r.error).toContain("HTTP 503");
@@ -558,8 +636,11 @@ describe("probeBudget — live probe", () => {
 describe("probeBudget — OAuth refresh (Fix C)", () => {
   test("near-expiry expiresAt → refresh fires + probe uses new token + tokenRefreshed=true", async () => {
     const server = startProbeServer({
-      utilization5h: 0.05, utilization7d: 0.10,
-      reset5h: 0, reset7d: 0, statusHeader: "allowed",
+      utilization5h: 0.05,
+      utilization7d: 0.1,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
     });
     try {
       const credsPath = await writeCreds("icloud", {
@@ -569,7 +650,10 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
       });
 
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
       expect(r.status).toBe("allowed");
       expect(server.refreshCalls()).toBe(1);
@@ -592,15 +676,21 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
 
   test("future expiresAt → no refresh, direct probe", async () => {
     const server = startProbeServer({
-      utilization5h: 0.05, utilization7d: 0.10,
-      reset5h: 0, reset7d: 0, statusHeader: "allowed",
+      utilization5h: 0.05,
+      utilization7d: 0.1,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
     });
     try {
       await writeCreds("icloud", {
         expiresAt: FIXED_NOW_MS + 86_400_000, // 24h in future
       });
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
       expect(r.status).toBe("allowed");
       expect(server.refreshCalls()).toBe(0);
@@ -642,7 +732,10 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
         expiresAt: FIXED_NOW_MS + 30_000,
       });
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
         flagSurface: async (msg) => {
           flagsCalled.push(msg);
         },
@@ -664,8 +757,13 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
         expiresAt: FIXED_NOW_MS + 30_000,
       });
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
-        flagSurface: async (msg) => { flagsCalled.push(msg); },
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
+        flagSurface: async (msg) => {
+          flagsCalled.push(msg);
+        },
       });
       expect(r.status).toBe("probe-401");
       expect(flagsCalled.length).toBe(1);
@@ -680,17 +778,23 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
 describe("probeBudget — 401 retry", () => {
   test("probe 401 → force-refresh + retry probe → success", async () => {
     const server = startProbeServer({
-      utilization5h: 0.05, utilization7d: 0.10,
-      reset5h: 0, reset7d: 0, statusHeader: "allowed",
+      utilization5h: 0.05,
+      utilization7d: 0.1,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
       failFirstWith401: true,
     });
     try {
       await writeCreds("icloud"); // expiresAt far future, so no pre-refresh
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
       });
       expect(r.status).toBe("allowed");
-      expect(server.probeCalls()).toBe(2);   // first 401 + retry
+      expect(server.probeCalls()).toBe(2); // first 401 + retry
       expect(server.refreshCalls()).toBe(1); // forced once
       const lines = await readHistoryLines();
       expect(lines[0]).toMatchObject({ tokenRefreshed: true });
@@ -706,12 +810,17 @@ describe("probeBudget — 401 retry", () => {
     try {
       await writeCreds("icloud");
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
-        flagSurface: async (msg) => { flagsCalled.push(msg); },
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
+        flagSurface: async (msg) => {
+          flagsCalled.push(msg);
+        },
       });
       expect(r.status).toBe("probe-401");
       expect(flagsCalled.length).toBe(1);
-      expect(server.probeCalls()).toBe(1);   // bailed before retry
+      expect(server.probeCalls()).toBe(1); // bailed before retry
       expect(server.refreshCalls()).toBe(1); // tried once, gave up
     } finally {
       await server.stop();
@@ -745,12 +854,13 @@ describe("probeBudget — 401 retry", () => {
     try {
       await writeCreds("icloud");
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir,
+        atmuxDir,
+        homeDir,
         probeUrl: `http://localhost:${srv.port}/messages`,
         oauthRefreshUrl: `http://localhost:${srv.port}/oauth/token`,
       });
       expect(r.status).toBe("probe-401");
-      expect(probeCallCount).toBe(2);   // first + retry
+      expect(probeCallCount).toBe(2); // first + retry
       expect(refreshCallCount).toBe(1); // single refresh between
     } finally {
       await srv.stop(true);
@@ -773,10 +883,13 @@ describe("probeBudget — 401 retry", () => {
     try {
       await writeCreds("icloud", { expiresAt: FIXED_NOW_MS + 30_000 });
       const r = await probeBudget("icloud", {
-        atmuxDir, homeDir,
+        atmuxDir,
+        homeDir,
         probeUrl: `http://localhost:${srv.port}/messages`,
         oauthRefreshUrl: `http://localhost:${srv.port}/oauth/token`,
-        flagSurface: async (msg) => { flagsCalled.push(msg); },
+        flagSurface: async (msg) => {
+          flagsCalled.push(msg);
+        },
       });
       expect(r.status).toBe("probe-401");
       expect(flagsCalled.length).toBe(1);
@@ -791,7 +904,8 @@ describe("probeBudget — 401 retry", () => {
 describe("probeBudget — no-credentials", () => {
   test("missing credentials file → no-credentials", async () => {
     const r = await probeBudget("nonexistent", {
-      atmuxDir, homeDir,
+      atmuxDir,
+      homeDir,
       probeUrl: "http://127.0.0.1:1/never",
       oauthRefreshUrl: "http://127.0.0.1:1/never",
     });
@@ -805,7 +919,8 @@ describe("probeBudget — no-credentials", () => {
     await writeFile(join(dir, ".credentials.json"), "not json{");
 
     const r = await probeBudget("icloud", {
-      atmuxDir, homeDir,
+      atmuxDir,
+      homeDir,
       probeUrl: "http://127.0.0.1:1/never",
       oauthRefreshUrl: "http://127.0.0.1:1/never",
     });
@@ -816,7 +931,8 @@ describe("probeBudget — no-credentials", () => {
   test("credentials file missing accessToken → no-credentials", async () => {
     await writeCreds("icloud", { accessToken: "" });
     const r = await probeBudget("icloud", {
-      atmuxDir, homeDir,
+      atmuxDir,
+      homeDir,
       probeUrl: "http://127.0.0.1:1/never",
       oauthRefreshUrl: "http://127.0.0.1:1/never",
     });
@@ -830,22 +946,26 @@ describe("probeBudget — no-credentials", () => {
 describe("probeBudget — default flag-surface helper", () => {
   test("default flagSurface (no opts.flagSurface) does not throw + spawn-failure swallowed", async () => {
     // No flagSurface override → default helper attempts spawn of the
-    // bash atmux CLI. In the test sandbox there's no functional
-    // .atmux/team.json, so the spawn either fails or no-ops; either
-    // way the result must still surface probe-401 cleanly.
-    const credsResult = (async (): Promise<BudgetProbeResult> => {
+    // bash atmux CLI. File-scope `beforeAll` neuters PATH so the spawn
+    // fail-to-finds; the catch block must swallow the error and still
+    // surface probe-401 cleanly. Without the PATH override this test
+    // would pollute the worktree's real .atmux/flags.md (t-3460d587).
+    const credsResult = async (): Promise<BudgetProbeResult> => {
       const server = startProbeServer();
       server.setRefreshResponse({ status: 401 });
       await writeCreds("icloud", { expiresAt: FIXED_NOW_MS + 30_000 });
       try {
         const r = await probeBudget("icloud", {
-          atmuxDir, homeDir, probeUrl: server.url, oauthRefreshUrl: server.refreshUrl,
+          atmuxDir,
+          homeDir,
+          probeUrl: server.url,
+          oauthRefreshUrl: server.refreshUrl,
         });
         return r;
       } finally {
         await server.stop();
       }
-    });
+    };
     const r = await credsResult();
     expect(r.status).toBe("probe-401");
   });
