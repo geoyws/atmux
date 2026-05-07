@@ -55,7 +55,16 @@ main() {
   #   - $TMUX unset (cron / fresh shell): bare tmux honors TMUX_TMPDIR ✅
   #   - $TMUX set, current socket == cage socket (already attached) ✅
   #   - $TMUX set, current socket == DIFFERENT socket: REFUSE
-  if [[ -n "${TMUX_TMPDIR:-}" && "$TMUX_TMPDIR" == */atmux-tmux* && -n "${TMUX:-}" ]]; then
+  #
+  # Pattern: matches BOTH cage shapes (mirror of line 226's pre-set arm) —
+  # `*/atmux-tmux*` (ADR-018 shared `/tmp/atmux-tmux_<team>`) AND
+  # `*/.atmux/tmux*` (project-local `<project>/.atmux/tmux`, used by sopx
+  # / atmux / unum / ifca-docs). Single-arm `*/atmux-tmux*` was a 2026-05-07
+  # P1 leak: project-local shape bypassed the safeguard, $TMUX won over
+  # TMUX_TMPDIR, and the team's session landed on the operator's daily-
+  # driver socket — silently clobbering prefix bindings (driver-inbox
+  # 10:16 MYT 2026-05-07).
+  if [[ -n "${TMUX_TMPDIR:-}" && ( "$TMUX_TMPDIR" == */atmux-tmux* || "$TMUX_TMPDIR" == */.atmux/tmux* ) && -n "${TMUX:-}" ]]; then
     local _cage_sock="$TMUX_TMPDIR/tmux-$(id -u)/default"
     local _current_sock="${TMUX%%,*}"
     if [[ "$_current_sock" != "$_cage_sock" ]]; then
