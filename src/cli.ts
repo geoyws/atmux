@@ -36,6 +36,7 @@ import { cost } from "./verbs/cost.ts";
 import { dashboard } from "./verbs/dashboard.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
+import { driverInbox } from "./verbs/driver-inbox.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { help } from "./verbs/help.ts";
 import { improve } from "./verbs/improve.ts";
@@ -56,6 +57,7 @@ import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
 import { watchdog } from "./verbs/watchdog.ts";
 import { whip } from "./verbs/whip.ts";
+import { whipResumeCheck } from "./verbs/whip-resume-check.ts";
 
 /**
  * Entry point — process argv (sliced past binary + script name) and
@@ -140,10 +142,14 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cost(argv.slice(1));
     case "doctor":
       return doctor(argv.slice(1));
-    case "watchdog":
-      return watchdog(argv.slice(1));
+    case "driver-inbox":
+      return driverInbox(argv.slice(1));
     case "whip":
       return whip(argv.slice(1));
+    case "whip-resume-check":
+      return whipResumeCheck(argv.slice(1));
+    case "watchdog":
+      return watchdog(argv.slice(1));
     case "improve":
       return improve(argv.slice(1));
     case "up":

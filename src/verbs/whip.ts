@@ -93,6 +93,7 @@ import {
   runSwapPass,
 } from "../core/account-swap.ts";
 import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
+import { checkStaleAnchor } from "../core/stale-anchor.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import { Inbox as InboxSchema } from "../schema/inbox.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
@@ -789,6 +790,20 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
     // ---------- Check 5: lead uptime ----------
     const leadUptimeFinding = await checkLeadUptime(ctx, config, homeOpts);
     if (leadUptimeFinding !== null) findings.push(leadUptimeFinding);
+
+    // ---------- Check 6: stale-anchor (ADR-057 §D2d) ----------
+    // Lead's driver-inbox cursor >2h behind file mtime AND new entries
+    // exist → fire single ping per stale window (dedup by tip-line hash).
+    try {
+      const staleVerdict = await checkStaleAnchor({ atmuxDir, nowEpochSec: nowSec });
+      if (staleVerdict.fire && staleVerdict.bullet !== null) {
+        findings.push({ category: "overdue", bullet: staleVerdict.bullet });
+      }
+    } catch (e) {
+      // Best-effort — a stale-anchor read failure must never block the
+      // tick; downgrade to a stderr line.
+      ctx.stderr(`whip: stale-anchor check failed: ${String(e)}\n`);
+    }
   }
 
   await emitFindings(parsed, ctx, config, findings);

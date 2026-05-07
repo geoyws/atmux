@@ -11,7 +11,7 @@
 // spinning a real tmux server.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serializeSendTarget, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
@@ -434,6 +434,96 @@ describe("rotate() — public verb", () => {
     // No brief file in briefsDir → no loadBuffer / pasteBuffer.
     expect(calls.loadBuffer).toEqual([]);
     expect(calls.pasteBuffer).toEqual([]);
+  });
+
+  test("ADR-057 §D2c: --lead writes pre-rotate handoff file", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    const atmuxDir = join(scratch, ".atmux");
+    await seedTeam({
+      name: "t",
+      members: [{ name: "lead-x", role: "team-lead", tui: "claude" }],
+    });
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    // Seed a minimal kanban so listTasks succeeds.
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    const { tmux } = stubTmux({
+      windows: [{ index: 0, name: "lead-x", active: true }],
+    });
+    let stdoutBuf = "";
+    const fixedNowMs = 1778126400 * 1000;
+    const exit = await rotate(["--team-dir", scratch, "--lead"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: (s) => {
+        stdoutBuf += s;
+      },
+      now: () => fixedNowMs,
+    });
+    expect(exit).toBe(0);
+    expect(stdoutBuf).toContain("lead handoff written to");
+    const handoffPath = join(atmuxDir, "state", "lead-handoff-1778126400.md");
+    const md = await readFile(handoffPath, "utf8");
+    expect(md).toContain("# Lead handoff — `t`");
+    expect(md).toContain("**outgoing lead:** `lead-x`");
+  });
+
+  test("ADR-057 §D2c: regular member rotation does NOT write handoff", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    const atmuxDir = join(scratch, ".atmux");
+    await seedTeam({
+      name: "t",
+      members: [{ name: "alice", role: "member", tui: "claude" }],
+    });
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    const { tmux } = stubTmux({
+      windows: [{ index: 0, name: "alice", active: true }],
+    });
+    let stdoutBuf = "";
+    await rotate(["--team-dir", scratch, "alice"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: (s) => {
+        stdoutBuf += s;
+      },
+    });
+    expect(stdoutBuf).not.toContain("lead handoff");
+    // No file in state/ matching the handoff prefix.
+    const stateFiles = await readdir(join(atmuxDir, "state"));
+    expect(stateFiles.some((f) => f.startsWith("lead-handoff-"))).toBe(false);
+  });
+
+  test("ADR-057 §D2c: handoff write failure logs to stderr but does NOT abort", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    const atmuxDir = join(scratch, ".atmux");
+    await seedTeam({
+      name: "t",
+      members: [{ name: "lead-x", role: "team-lead", tui: "claude" }],
+    });
+    // Don't create state/ dir AND seed a corrupt kanban.json — the kanban
+    // load will fail, propagating up. writeLeadHandoff catches via its
+    // try/catch in rotate.ts.
+    await writeFile(join(atmuxDir, "kanban.json"), "{ corrupt json");
+    const { tmux } = stubTmux({
+      windows: [{ index: 0, name: "lead-x", active: true }],
+    });
+    let stderrBuf = "";
+    const exit = await rotate(["--team-dir", scratch, "--lead"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: (s) => {
+        stderrBuf += s;
+      },
+    });
+    // Rotation continues despite handoff failure.
+    expect(exit).toBe(0);
+    expect(stderrBuf).toContain("lead handoff write failed");
   });
 
   test("non-claude TUI (opencode) → warn on stderr, no /clear, brief still pasted", async () => {

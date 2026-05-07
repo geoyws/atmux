@@ -11,6 +11,7 @@
 
 import { resolve } from "node:path";
 import { exists } from "../abstractions/fs.ts";
+import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux, type SendTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
@@ -21,6 +22,7 @@ import {
   requireTeam,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { writeLeadHandoff } from "../core/lead-handoff.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
@@ -154,6 +156,9 @@ export interface RotateOpts {
   /** Tmux factory override (test injection). Defaults to `createTmux({
    *  socketPath })` per the verb's resolved socket path. */
   buildTmux?: (socketPath: string) => TmuxNamespace;
+  /** Clock override (epoch ms). Defaults to `time.now()`. Used for the
+   *  pre-rotate handoff file path + header timestamp (D2c). */
+  now?: () => number;
 }
 
 /** Default `setTimeout`-backed sleep. Exported so the same code path
@@ -220,6 +225,29 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
     role === "team-lead"
       ? { kind: "lead", team: team.name, target: tmuxTarget }
       : { kind: "member", member: target.name, team: team.name, target: tmuxTarget };
+
+  // 0. Pre-rotate lead handoff (ADR-057 §D2c). Only fires for the
+  //    team-lead role — regular member rotations have no equivalent
+  //    coordination state to snapshot. Best-effort: a handoff write
+  //    failure logs to stderr but doesn't abort the rotation (the
+  //    /clear + brief-paste must still happen so the team isn't left
+  //    with a half-cycled lead pane).
+  if (role === "team-lead") {
+    const clock = opts.now ?? nowMs;
+    const epochSec = Math.floor(clock() / 1000);
+    try {
+      const path = await writeLeadHandoff({
+        atmuxDir,
+        team: team.name,
+        outgoingLead: target.name,
+        nowEpochSec: epochSec,
+      });
+      stdout(`rotate: lead handoff written to ${path}\n`);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      stderr(`rotate: warn: lead handoff write failed (${reason}); continuing rotation\n`);
+    }
+  }
 
   // 1. /clear for claude — best-effort warn for other TUIs (parity
   //    with bash rotate.sh:47-55).

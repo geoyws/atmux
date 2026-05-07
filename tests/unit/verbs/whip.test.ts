@@ -1761,4 +1761,47 @@ describe("whip() — public verb", () => {
     expect(r2).toBe(0);
     expect(stderrBuf).toContain("another instance is running");
   });
+
+  test("ADR-057 §D2d: stale-anchor finding fires when lead's cursor >2h behind tip", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [],
+      whip: { heartbeat: false },
+    });
+    // Pin "now" at 12:00 MYT today (epoch 1778126400 → ms 1778126400000).
+    const nowMs = 1778126400 * 1000;
+    const nowSec = 1778126400;
+    // Seed driver-inbox.md with a tip 4h behind cursor.
+    const inboxPath = join(atmuxDir, "driver-inbox.md");
+    await writeFile(
+      inboxPath,
+      "## 09:00 MYT — old\n## 11:00 MYT — newer tip",
+    );
+    // Bump file mtime to "now" so cursor lag = 4h.
+    const { utimes } = await import("node:fs/promises");
+    await utimes(inboxPath, nowSec, nowSec);
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    await writeFile(
+      join(atmuxDir, "state", "last-driver-inbox-read.txt"),
+      String(nowSec - 4 * 3600),
+    );
+
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], {
+      stdout,
+      stderr,
+      now: () => nowMs,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({ sessionUp: true, panes: {} }),
+      discordSend: async (o: DiscordSendOpts) => {
+        sent.push(o);
+      },
+    });
+    const overdue = sent.find((s) => s.template === "whip-overdue");
+    const bullets = (overdue?.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.includes("driver-inbox cursor") && b.includes("behind tip"))).toBe(
+      true,
+    );
+  });
 });
