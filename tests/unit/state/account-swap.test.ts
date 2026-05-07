@@ -52,15 +52,12 @@ function trigger(overrides?: Partial<SwapTrigger>): SwapTrigger {
     account: "ifca",
     h5_pct_used: 95,
     wk_pct_used: 60,
-    triggeredAt: 1700000000,
     ...overrides,
   };
 }
 
 function decision(overrides: Partial<SwapDecision> & { from: string; to: string }): SwapDecision {
   return {
-    from: overrides.from,
-    to: overrides.to,
     status: "pending",
     startedAt: null,
     finishedAt: null,

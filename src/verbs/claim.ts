@@ -26,6 +26,7 @@ import {
   moveInProgressToDone,
   movePendingToInProgress,
 } from "../core/inbox.ts";
+import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
 import { claimTask, markTaskDone, nowEpoch, showTask } from "../core/kanban.ts";
 import {
   getAtmuxDir,
@@ -177,7 +178,37 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
   await moveInProgressToDone(atmuxDir, who, pre, completedAt);
 
   process.stdout.write(`${who} completed ${parsed.id}\n`);
+
+  // ADR-057 §D7 R57-T7 — auto-push on done. Best-effort: failures are
+  // logged + flagged but DO NOT block the done transition (which has
+  // already succeeded above). Reads opts from team.json::whip.
+  // stallPrevention; defaults to enabled per ADR.
+  try {
+    const team = await loadTeamForAutoPush(parsed);
+    const apOpts = readAutoPushOptsFromTeam(team);
+    await runAutoPush(atmuxDir, {
+      enabled: apOpts.enabled,
+      rebase: apOpts.rebase,
+      allowedPushBranches: apOpts.allowedPushBranches,
+    });
+  } catch (e) {
+    // Final defensive guard — even if auto-push throws unexpectedly,
+    // the done transition stays committed. Audit happens inside
+    // runAutoPush; here we just don't crash.
+    process.stderr.write(`auto-push: unexpected error: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+
   return 0;
+}
+
+/** Re-load the team for auto-push reading (cheap; cached at the
+ *  filesystem layer). Kept private so the verb's main flow stays
+ *  resilient to team-load errors during the auto-push leg. */
+async function loadTeamForAutoPush(
+  parsed: ClaimDoneArgs,
+): Promise<{ whip?: unknown }> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  return await requireTeam(dirOpts);
 }
 
 // ---------- Internals ----------
