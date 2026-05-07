@@ -96,6 +96,8 @@ import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
 import { runSelfHealPass } from "../core/cursor-self-heal.ts";
 import { fixTeamJsonSchemaDriftRecipe } from "../core/cursor-recipes/fix-team-json-schema-drift.ts";
+import { fixCronPollutionRecipe } from "../core/cursor-recipes/fix-cron-pollution.ts";
+import { fixSupervisorMissingRecipe } from "../core/cursor-recipes/fix-supervisor-missing.ts";
 import type { CursorRecipe } from "../core/cursor-recipes/types.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import { Inbox as InboxSchema } from "../schema/inbox.ts";
@@ -874,10 +876,17 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
   return 0;
 }
 
-/** Recipe registry for the self-heal pass (ADR-055 §D4). v1 ships one
- *  recipe; parts 5-6 add `fix:cron-pollution` + `fix:supervisor-missing`. */
+/** Recipe registry for the self-heal pass (ADR-055 §D4). v1 ships
+ *  three recipes: schema drift, cron pollution, supervisor missing.
+ *  Future candidates (lock-stale, archive-bloat, phantom-inbox) live
+ *  in ADR-055's "Future candidates" subsection — require own ADR to
+ *  enable. Operator opts-in per recipe via `team.json::whip.
+ *  selfHealRecipes`; absence here is a no-op (handled by the
+ *  orchestrator's "skipped-unknown-recipe" outcome path). */
 const SELF_HEAL_RECIPES: ReadonlyArray<CursorRecipe> = [
   fixTeamJsonSchemaDriftRecipe,
+  fixCronPollutionRecipe,
+  fixSupervisorMissingRecipe,
 ];
 
 /** Pick the team's reviewer member name. Falls back to the hardcoded
