@@ -54,6 +54,7 @@ import { task } from "./verbs/task.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
+import { watchdog } from "./verbs/watchdog.ts";
 import { whip } from "./verbs/whip.ts";
 
 /**
@@ -139,6 +140,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cost(argv.slice(1));
     case "doctor":
       return doctor(argv.slice(1));
+    case "watchdog":
+      return watchdog(argv.slice(1));
     case "whip":
       return whip(argv.slice(1));
     case "improve":

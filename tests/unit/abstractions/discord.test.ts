@@ -1341,3 +1341,49 @@ describe("renderAccountSwapPassComplete", () => {
   });
 });
 
+
+// ---------- ADR-057 §D6 — renderWhipWatchdog ----------
+
+describe("renderWhipWatchdog", () => {
+  test("renders watchdog template with stalled-member bullets", async () => {
+    const { renderWhipWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipWatchdog({
+      team: "atmux",
+      stale: [
+        { member: "alice", ageSec: 600 },
+        { member: "bob", ageSec: null },
+      ],
+      staleSec: 300,
+    });
+    expect(out.template).toBe("whip-watchdog");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🛑");
+    const bullets = out.bullets ?? [];
+    expect(bullets[0]).toContain("2 member(s) stalled");
+    expect(bullets[0]).toContain("5min"); // formatDuration(300_000)
+    expect(bullets.some((b) => b.includes("alice:") && b.includes("10min"))).toBe(true);
+    expect(bullets.some((b) => b.includes("bob: never stale"))).toBe(true);
+    expect(bullets.some((b) => b.includes("fix:"))).toBe(true);
+  });
+
+  test("zero stale → headline says 0 member(s) (degenerate but rendered)", async () => {
+    const { renderWhipWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipWatchdog({
+      team: "atmux",
+      stale: [],
+      staleSec: 300,
+    });
+    expect(out.bullets?.[0]).toContain("0 member(s) stalled");
+  });
+
+  test("whenMs override propagates", async () => {
+    const { renderWhipWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const out = renderWhipWatchdog({
+      team: "atmux",
+      stale: [{ member: "x", ageSec: 1000 }],
+      staleSec: 300,
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+});

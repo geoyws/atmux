@@ -77,7 +77,11 @@ export type DiscordTemplate =
   | "whip-account-swap-start"
   | "whip-account-swap-success"
   | "whip-account-swap-fail"
-  | "whip-account-swap-pass-complete";
+  | "whip-account-swap-pass-complete"
+  // ADR-057 §D6 R57-T6: watchdog verb fires when a member's heartbeat
+  // is stale. Renderer below (`renderWhipWatchdog`); dedup state at
+  // <atmuxDir>/state/watchdog-state.json (one-shot per-member 24h).
+  | "whip-watchdog";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1052,6 +1056,50 @@ export function renderAccountSwapPassComplete(
       `💰 budget on ${opts.triggerAccount} post-pass: ${opts.triggerPctPostPass}% used (no longer pinned)`,
       `⏱️ pass duration: ${formatDuration(opts.durationMs)}`,
     ],
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-057 §D6 R57-T6 — renderWhipWatchdog ----------
+
+export interface WhipWatchdogStaleMember {
+  member: string;
+  /** Heartbeat age in seconds, or null when no heartbeat exists. */
+  ageSec: number | null;
+}
+
+export interface WhipWatchdogOpts {
+  team: string;
+  /** Stalled members + their heartbeat ages. */
+  stale: ReadonlyArray<WhipWatchdogStaleMember>;
+  /** Configured staleness threshold in seconds (used in the bullet). */
+  staleSec: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-watchdog]` Discord send opts per ADR-057 §D6.
+ *
+ * Bullets:
+ *   - `🛑 N member(s) stalled — heartbeat older than <threshold>`
+ *   - `📍 <member>: <age> stale` per stalled member
+ *   - `🛠️ fix: check pane state + restart member if needed`
+ */
+export function renderWhipWatchdog(opts: WhipWatchdogOpts): DiscordSendOpts {
+  const bullets: string[] = [
+    `🛑 ${opts.stale.length} member(s) stalled — heartbeat older than ${formatDuration(opts.staleSec * 1000)}`,
+  ];
+  for (const s of opts.stale) {
+    const ageStr = s.ageSec === null ? "never" : formatDuration(s.ageSec * 1000);
+    bullets.push(`📍 ${s.member}: ${ageStr} stale`);
+  }
+  bullets.push("🛠️ fix: check pane state + restart member if needed");
+  const out: DiscordSendOpts = {
+    template: "whip-watchdog",
+    team: opts.team,
+    category: "🛑",
+    bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
   return out;
