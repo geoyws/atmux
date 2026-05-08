@@ -10,13 +10,17 @@ import { UsageError } from "../../../src/errors.ts";
 import {
   applyCagePrefix,
   autolaunchTeam,
+  buildTeamWindowCommand,
   cageAlive,
   cockpitRebuild,
   normaliseTeamJson,
   parseCockpitArgs,
   reconcileCockpitSession,
+  resolveTeamWindowMode,
+  type ResolveTeamWindowDeps,
 } from "../../../src/verbs/cockpit.ts";
 import type { CockpitTeam } from "../../../src/schema/cockpit.ts";
+import type { Team } from "../../../src/schema/team.ts";
 
 // ---------- parseCockpitArgs ----------
 
@@ -381,6 +385,247 @@ describe("reconcileCockpitSession", () => {
       expect(names).toContain("superdriver");
       expect(names).toContain("a");
       expect(names).not.toContain("b");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- ADR-064 §3: resolveTeamWindowMode + buildTeamWindowCommand ----------
+
+function fakeTeam(driverSession: { tui?: string | null } | null | undefined): Team {
+  const t: Record<string, unknown> = {
+    name: "demo",
+    members: [{ name: "alpha" }],
+  };
+  if (driverSession !== undefined) t.driverSession = driverSession;
+  return t as unknown as Team;
+}
+
+function fakeCageTmux(opts: {
+  hasSession?: boolean;
+  windows?: ReadonlyArray<{ index: number; name: string }>;
+  throwOnHasSession?: boolean;
+  throwOnListWindows?: boolean;
+}): TmuxNamespace {
+  return {
+    session: {
+      async hasSession(_name: string) {
+        if (opts.throwOnHasSession === true) throw new Error("simulated");
+        return opts.hasSession ?? false;
+      },
+    },
+    window: {
+      async listWindows(_name: string) {
+        if (opts.throwOnListWindows === true) throw new Error("simulated");
+        return [...(opts.windows ?? [])];
+      },
+    },
+  } as unknown as TmuxNamespace;
+}
+
+describe("resolveTeamWindowMode", () => {
+  const team = { name: "demo", root: "/d", enabled: true } as CockpitTeam;
+
+  test("driverSession=null → 'no-driver-config'", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam(null),
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("no-driver-config");
+  });
+
+  test("driverSession key absent → 'no-driver-config'", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam(undefined),
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("no-driver-config");
+  });
+
+  test("loadTeam throws (missing team.json) → 'no-driver-config'", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => {
+        throw new Error("ENOENT team.json");
+      },
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("no-driver-config");
+  });
+
+  test("driverSession={tui:'claude'} + live cage with driver window → 'attach'", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      createCageTmux: () =>
+        fakeCageTmux({
+          hasSession: true,
+          windows: [
+            { index: 1, name: "driver" },
+            { index: 2, name: "🐝alpha" },
+          ],
+        }),
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("attach");
+  });
+
+  test("driverSession set + cage missing session → 'session-down'", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      createCageTmux: () => fakeCageTmux({ hasSession: false }),
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("session-down");
+  });
+
+  test("driverSession set + cage live but no 'driver' window → 'session-down'", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      createCageTmux: () =>
+        fakeCageTmux({
+          hasSession: true,
+          windows: [{ index: 1, name: "__home" }],
+        }),
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("session-down");
+  });
+
+  test("cage tmux throws → 'session-down'", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      createCageTmux: () => fakeCageTmux({ throwOnHasSession: true }),
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("session-down");
+  });
+
+  test("createCageTmux factory throws → 'session-down'", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      createCageTmux: () => {
+        throw new Error("simulated factory failure");
+      },
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("session-down");
+  });
+});
+
+describe("buildTeamWindowCommand", () => {
+  const team = { name: "demo", root: "/d", enabled: true } as CockpitTeam;
+
+  test("attach mode targets <session>:driver via the retry loop", () => {
+    const cmd = buildTeamWindowCommand(team, "attach");
+    expect(cmd).toContain("attach -t");
+    expect(cmd).toContain(":driver");
+    expect(cmd).toContain("while true");
+    expect(cmd).toContain("sleep 1");
+  });
+
+  test("no-driver-config emits the 'set team.json::driverSession' guidance", () => {
+    const cmd = buildTeamWindowCommand(team, "no-driver-config");
+    expect(cmd).toContain("no driver configured for demo");
+    expect(cmd).toContain("team.json::driverSession");
+    expect(cmd).toContain("sleep infinity");
+  });
+
+  test("session-down emits the 'atmux start' guidance", () => {
+    const cmd = buildTeamWindowCommand(team, "session-down");
+    expect(cmd).toContain("session not running");
+    expect(cmd).toContain("atmux start demo");
+    expect(cmd).toContain("sleep infinity");
+  });
+
+  test("placeholder shell-quoting survives team names with apostrophes", () => {
+    const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
+    const cmd = buildTeamWindowCommand(apostropheTeam, "no-driver-config");
+    // Resulting shell string is single-quoted; the apostrophe in the
+    // team name must be escaped via the POSIX `'\''` idiom so the
+    // surrounding `printf` quoting doesn't break.
+    expect(cmd).toContain("'\\''");
+  });
+});
+
+// ---------- reconcile integration with the resolver ----------
+
+describe("reconcileCockpitSession — driverSession-aware per-team windows", () => {
+  test("creates placeholder window when team has driverSession=null", async () => {
+    const fx = await spinTmux("cockpit-driverless");
+    try {
+      const { logger, logs } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "off", root: "/off", enabled: true } as CockpitTeam];
+      const deps: ResolveTeamWindowDeps = {
+        loadTeam: async () => fakeTeam(null),
+      };
+      await reconcileCockpitSession(fx.tmux, "atmux_test", teams, logger, deps);
+      const wins = await fx.tmux.window.listWindows("atmux_test");
+      expect(wins.map((w) => w.name)).toContain("off");
+      expect(logs.some((l) => l.includes("no-driver-config"))).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("creates attach window when driverSession set + cage alive with driver window", async () => {
+    const fx = await spinTmux("cockpit-attach");
+    try {
+      const { logger, logs } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "live", root: "/live", enabled: true } as CockpitTeam];
+      const deps: ResolveTeamWindowDeps = {
+        loadTeam: async () => fakeTeam({ tui: "claude" }),
+        createCageTmux: () =>
+          fakeCageTmux({
+            hasSession: true,
+            windows: [{ index: 1, name: "driver" }],
+          }),
+      };
+      await reconcileCockpitSession(fx.tmux, "atmux_test", teams, logger, deps);
+      const wins = await fx.tmux.window.listWindows("atmux_test");
+      expect(wins.map((w) => w.name)).toContain("live");
+      expect(logs.some((l) => l.includes("(attach)"))).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("creates 'session-down' placeholder when driverSession set but cage dead", async () => {
+    const fx = await spinTmux("cockpit-down");
+    try {
+      const { logger, logs } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "asleep", root: "/asleep", enabled: true } as CockpitTeam,
+      ];
+      const deps: ResolveTeamWindowDeps = {
+        loadTeam: async () => fakeTeam({ tui: "claude" }),
+        createCageTmux: () => fakeCageTmux({ hasSession: false }),
+      };
+      await reconcileCockpitSession(fx.tmux, "atmux_test", teams, logger, deps);
+      const wins = await fx.tmux.window.listWindows("atmux_test");
+      expect(wins.map((w) => w.name)).toContain("asleep");
+      expect(logs.some((l) => l.includes("(session-down)"))).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("idempotent — re-run with same teams leaves window count unchanged", async () => {
+    const fx = await spinTmux("cockpit-idem-driverless");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "off", root: "/off", enabled: true } as CockpitTeam];
+      const deps: ResolveTeamWindowDeps = {
+        loadTeam: async () => fakeTeam(null),
+      };
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, deps);
+      const before = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, deps);
+      const after = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(after).toEqual(before);
     } finally {
       try {
         await fx.tmux.server.killServer();

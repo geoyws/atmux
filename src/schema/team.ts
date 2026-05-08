@@ -251,11 +251,16 @@ export const Team = z
      *  windows 2..N+1 in declarative order. `null` is accepted as
      *  "explicitly disabled" (matches existing wizard output). Resolution
      *  order for the TUI command: `driverSession.tui` → `driverTui` →
-     *  `"claude"`. */
+     *  `"claude"`.
+     *
+     *  ADR-064 §5 + §OQ5: `command` field dropped 2026-05-08 — verified
+     *  zero call sites pre-edit; no consumer ever read it (only `.tui`
+     *  is wired through `src/verbs/start.ts:344`). Strict-mode rejects
+     *  any `team.json` that still sets it; clean-cut, no deprecation
+     *  cycle per OQ5 (planner verified no live config sets the key). */
     driverSession: z
       .object({
         tui: z.string().nullable().optional(),
-        command: z.string().optional(),
       })
       .strict()
       .nullable()

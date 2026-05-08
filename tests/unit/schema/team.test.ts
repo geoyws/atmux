@@ -217,3 +217,49 @@ describe("Team schema integrates TeamFallback cleanly", () => {
     ).toThrow();
   });
 });
+
+// ---------- driverSession — ADR-064 §5/§OQ5 dead-field drop ----------
+
+describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
+  test("Team.parse with driverSession.tui parses cleanly (the only wired field)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: { tui: "shell" },
+    });
+    expect(team.driverSession).toEqual({ tui: "shell" });
+  });
+
+  test("Team.parse with driverSession=null is accepted (explicitly disabled)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: null,
+    });
+    expect(team.driverSession).toBeNull();
+  });
+
+  test("Team.parse REJECTS dead `command` key (ADR-064 §5/§OQ5 — strict-mode drop)", () => {
+    // `command` was on the schema in e624592 but never read by any
+    // consumer. Per ADR-064 §OQ5 it's a clean cut, no deprecation
+    // cycle — the strict() shape now rejects it. Any team.json still
+    // setting it surfaces via [whip-config-drift] (ADR-054).
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        driverSession: { tui: "shell", command: "claude" },
+      }),
+    ).toThrow();
+  });
+
+  test("Team.parse rejects unknown key in driverSession sub-shape (general strict guard)", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        driverSession: { tui: "shell", typoField: "x" },
+      }),
+    ).toThrow();
+  });
+});

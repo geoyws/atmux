@@ -47,6 +47,130 @@ import type { CockpitTeam } from "../schema/cockpit.ts";
 import { UsageError } from "../errors.ts";
 import { start } from "./start.ts";
 
+// ---------- ADR-064 §3: per-team driverSession resolution ----------
+
+/** What the cockpit's per-team viewer window should display. */
+export type TeamWindowMode =
+  /** team.driverSession is null/missing — config-level placeholder. */
+  | "no-driver-config"
+  /** team.driverSession is set but cage isn't running / has no `driver`
+   *  window — point the operator at `atmux start <team>`. */
+  | "session-down"
+  /** team.driverSession is set + cage live + has a `driver` window —
+   *  attach the cockpit viewer to `<session>:driver` (OQ4 default). */
+  | "attach";
+
+export interface ResolveTeamWindowDeps {
+  /** Override `loadTeam` for tests. Default reads `<root>/.atmux/team.json`. */
+  loadTeam?: (opts: { teamDir: string }) => Promise<Team>;
+  /** Build the team's cage TmuxNamespace. Default `createTmux({socketPath})`. */
+  createCageTmux?: (teamName: string) => TmuxNamespace;
+}
+
+interface DriverSessionShape {
+  tui?: string | null;
+  command?: string;
+}
+
+/**
+ * Inspect the team.json + the cage socket to decide which mode the
+ * per-team cockpit window should run in. Pure modulo IO — every IO
+ * call is gated through `deps` for tests.
+ *
+ * Returns `"no-driver-config"` when `driverSession` is null/missing
+ * (regardless of cage state — the operator must opt into the driver
+ * pane via team.json before the cockpit can attach). Otherwise probes
+ * the cage: if the team session exists AND has a `driver` window,
+ * returns `"attach"`; otherwise `"session-down"`.
+ *
+ * Failures (missing team.json, cage tmux unreachable) collapse to a
+ * placeholder mode rather than throwing — the cockpit rebuild must
+ * stay green even when a member team is misconfigured.
+ */
+export async function resolveTeamWindowMode(
+  team: CockpitTeam,
+  deps: ResolveTeamWindowDeps = {},
+): Promise<TeamWindowMode> {
+  const loader = deps.loadTeam ?? loadTeam;
+  let teamShape: Team;
+  try {
+    teamShape = await loader({ teamDir: team.root });
+  } catch {
+    // Missing/unreadable team.json → treat as "not configured" so the
+    // operator sees an explanatory placeholder, not an opaque error.
+    return "no-driver-config";
+  }
+  const ds = (teamShape as { driverSession?: DriverSessionShape | null }).driverSession;
+  if (ds === undefined || ds === null) return "no-driver-config";
+
+  // driverSession is configured — probe the cage. We use a fresh
+  // TmuxNamespace per team since each cage runs on its own socket
+  // (ADR-018). Probe failures (cage tmux not reachable, no session)
+  // → "session-down" placeholder rather than tearing down the rebuild.
+  const cageFactory = deps.createCageTmux ?? makeDefaultCageTmux;
+  let cageTmux: TmuxNamespace;
+  try {
+    cageTmux = cageFactory(team.name);
+  } catch {
+    return "session-down";
+  }
+  const session = cageSessionName(team.name);
+  try {
+    if (!(await cageTmux.session.hasSession(session))) return "session-down";
+    const wins = await cageTmux.window.listWindows(session);
+    if (!wins.some((w) => w.name === "driver")) return "session-down";
+    return "attach";
+  } catch {
+    return "session-down";
+  }
+}
+
+function makeDefaultCageTmux(teamName: string): TmuxNamespace {
+  return createTmux({ socketPath: cageSocketPath(teamName) });
+}
+
+/**
+ * Build the shell command the cockpit per-team window runs. Switches
+ * on `mode`:
+ *
+ *   - `"attach"` — same retry-loop pattern as the pre-ADR-064 cockpit
+ *     viewer, but targets `<session>:driver` so the cockpit operator
+ *     lands on the team's driver pane on focus (OQ4 default).
+ *   - `"no-driver-config"` / `"session-down"` — print an explanatory
+ *     line + `sleep infinity` so the window stays alive (operator can
+ *     re-read at any time; rebuild restores attach on next run after
+ *     remediation).
+ */
+export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode): string {
+  const sock = cageSocketPath(team.name);
+  const session = cageSessionName(team.name);
+  switch (mode) {
+    case "attach":
+      // Retry-loop covers cage restart + first-attach race; sleeps 1s
+      // between retries so the cage can come up after its own start.
+      // Targeting `<session>:driver` (vs bare `<session>`) lands the
+      // operator on the driver pane per OQ4.
+      return `while true; do tmux -S ${sock} attach -t ${session}:driver 2>/dev/null; sleep 1; done`;
+    case "no-driver-config":
+      return shellPlaceholder(
+        `no driver configured for ${team.name} — set team.json::driverSession to enable`,
+      );
+    case "session-down":
+      return shellPlaceholder(
+        `team ${team.name} session not running — atmux start ${team.name}`,
+      );
+  }
+}
+
+/** Shell-quote-safe single-message placeholder. The single-quote
+ *  embedding follows POSIX convention (`'foo'\''bar'` for an embedded
+ *  apostrophe); team / driverSession identifiers don't normally contain
+ *  apostrophes but the escape keeps the verb robust. */
+function shellPlaceholder(msg: string): string {
+  const safe = msg.replace(/'/g, "'\\''");
+  return `printf '%s\\n' '${safe}'; sleep infinity`;
+}
+
 // ---------- Arg parsing ----------
 
 export interface ParsedCockpitArgs {
@@ -384,12 +508,27 @@ export async function autolaunchTeam(
  * Reconcile the cockpit session: ensure it exists with window 1 =
  * `superdriver`, and one viewer window per enabled team. Removes
  * windows for disabled teams. Idempotent.
+ *
+ * ADR-064 §3 + §OQ4 — each per-team window runs in one of three
+ * modes resolved by `resolveTeamWindowMode`:
+ *   - `attach` — `tmux -S <sock> attach -t <session>:driver` (lands on
+ *      the team's driver pane).
+ *   - `no-driver-config` — placeholder explaining `driverSession` is
+ *      unset.
+ *   - `session-down` — placeholder explaining the cage isn't running.
+ *
+ * Idempotence: when a window already exists for `t.name`, this function
+ * preserves it as-is — matching the pre-ADR-064 behaviour. State
+ * transitions (e.g., team gained driverSession after first rebuild)
+ * land on the next rebuild that actually creates the window (operator
+ * removes the placeholder, re-runs).
  */
 export async function reconcileCockpitSession(
   cockpitTmux: TmuxNamespace,
   sessionName: string,
   teams: CockpitTeam[],
   logger: Logger,
+  deps: ResolveTeamWindowDeps = {},
 ): Promise<void> {
   const has = await cockpitTmux.session.hasSession(sessionName);
   if (!has) {
@@ -410,18 +549,15 @@ export async function reconcileCockpitSession(
       logger.log(`  · window '${t.name}' already present`);
       continue;
     }
-    const sock = cageSocketPath(t.name);
-    const session = cageSessionName(t.name);
-    // Retry-loop: covers cage restart + first-attach race. Sleeps 1s
-    // between retries so the cage can come up after its own start.
-    const cmd = `while true; do tmux -S ${sock} attach -t ${session} 2>/dev/null; sleep 1; done`;
+    const mode = await resolveTeamWindowMode(t, deps);
+    const cmd = buildTeamWindowCommand(t, mode);
     await cockpitTmux.window.newWindow({
       sessionName,
       name: t.name,
       detached: true,
       shellCommand: cmd,
     });
-    logger.log(`  ✓ added window '${t.name}'`);
+    logger.log(`  ✓ added window '${t.name}' (${mode})`);
   }
 
   // Remove orphan viewer windows (e.g. team that was removed/disabled).
