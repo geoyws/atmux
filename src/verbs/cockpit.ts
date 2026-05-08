@@ -43,7 +43,7 @@ import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { Team } from "../schema/team.ts";
-import type { CockpitTeam } from "../schema/cockpit.ts";
+import type { CockpitSuperdoctor, CockpitTeam } from "../schema/cockpit.ts";
 import { UsageError } from "../errors.ts";
 import { start } from "./start.ts";
 
@@ -358,7 +358,14 @@ export async function cockpitRebuild(
 
   // Phase 5: cockpit session on default socket.
   const cockpitTmux = factory({ socket: "default" });
-  await reconcileCockpitSession(cockpitTmux, cockpit.cockpitSession, teams, logger);
+  await reconcileCockpitSession(
+    cockpitTmux,
+    cockpit.cockpitSession,
+    teams,
+    logger,
+    {},
+    cockpit.superdoctor,
+  );
 
   logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
   return 0;
@@ -506,8 +513,9 @@ export async function autolaunchTeam(
 
 /**
  * Reconcile the cockpit session: ensure it exists with window 1 =
- * `superdriver`, and one viewer window per enabled team. Removes
- * windows for disabled teams. Idempotent.
+ * `superdriver`, an optional window 2 = `superdoctor` (ADR-077), and
+ * one viewer window per enabled team. Removes windows for disabled
+ * teams. Idempotent.
  *
  * ADR-064 §3 + §OQ4 — each per-team window runs in one of three
  * modes resolved by `resolveTeamWindowMode`:
@@ -516,6 +524,14 @@ export async function autolaunchTeam(
  *   - `no-driver-config` — placeholder explaining `driverSession` is
  *      unset.
  *   - `session-down` — placeholder explaining the cage isn't running.
+ *
+ * ADR-077 — the superdoctor window is optional and singleton:
+ *   - When `superdoctor?.enabled === true`, it occupies cockpit window
+ *     index 2 (between superdriver and the team viewers). On first
+ *     upgrade from a pre-ADR-077 cockpit, an existing team viewer at
+ *     index 2 is killed-and-recreated to preserve the slot invariant.
+ *   - When unset / disabled, cockpit shape is unchanged from ADR-063
+ *     (team viewers occupy 2..N).
  *
  * Idempotence: when a window already exists for `t.name`, this function
  * preserves it as-is — matching the pre-ADR-064 behaviour. State
@@ -529,6 +545,7 @@ export async function reconcileCockpitSession(
   teams: CockpitTeam[],
   logger: Logger,
   deps: ResolveTeamWindowDeps = {},
+  superdoctor?: CockpitSuperdoctor,
 ): Promise<void> {
   const has = await cockpitTmux.session.hasSession(sessionName);
   if (!has) {
@@ -539,9 +556,54 @@ export async function reconcileCockpitSession(
     });
     logger.log(`  ✓ created session ${sessionName} (window 1: superdriver)`);
   }
+
+  const wantSuperdoctor = superdoctor?.enabled === true;
+
+  // ADR-077: ensure superdoctor exists + sits IMMEDIATELY after the
+  // superdriver window BEFORE adding team viewers, so on a fresh cockpit
+  // the team viewers naturally land at the slots after superdoctor.
+  // The target index is `superdriver.index + 1` rather than a literal
+  // `2` because tmux's `base-index` option (operator-config dependent)
+  // determines whether window 1 sits at index 0 or 1.
+  if (wantSuperdoctor) {
+    let windowsBefore = await cockpitTmux.window.listWindows(sessionName);
+    const sdrv = windowsBefore.find((w) => w.name === "superdriver");
+    const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
+    let sd = windowsBefore.find((w) => w.name === "superdoctor");
+    if (sd === undefined) {
+      const cmd = buildSuperdoctorWindowCommand(superdoctor);
+      const newId = await cockpitTmux.window.newWindow({
+        sessionName,
+        name: "superdoctor",
+        detached: true,
+        shellCommand: cmd,
+      });
+      logger.log(`  ✓ added window 'superdoctor' (idx ${newId.windowIndex})`);
+      windowsBefore = await cockpitTmux.window.listWindows(sessionName);
+      sd = windowsBefore.find((w) => w.name === "superdoctor");
+    }
+    if (sd !== undefined && sd.index !== targetIdx) {
+      // Forced relocation; kill whatever sits at the target slot (likely a
+      // team viewer from a pre-ADR-077 cockpit). It's recreated below in
+      // the missing-viewer phase.
+      await cockpitTmux.window.moveWindow({
+        source: { sessionName, windowIndex: sd.index },
+        target: { sessionName, windowIndex: targetIdx },
+        kill: true,
+      });
+      logger.log(
+        `  ✓ moved 'superdoctor' to idx ${targetIdx} (was idx ${sd.index})`,
+      );
+    }
+  }
+
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const present = new Set(windows.map((w) => w.name));
-  const wanted = new Set(["superdriver", ...teams.map((t) => t.name)]);
+  const wanted = new Set([
+    "superdriver",
+    ...(wantSuperdoctor ? ["superdoctor"] : []),
+    ...teams.map((t) => t.name),
+  ]);
 
   // Add missing viewer windows.
   for (const t of teams) {
@@ -561,9 +623,11 @@ export async function reconcileCockpitSession(
   }
 
   // Remove orphan viewer windows (e.g. team that was removed/disabled).
+  // superdriver + superdoctor (when enabled) are always preserved.
   for (const w of windows) {
     if (wanted.has(w.name)) continue;
     if (w.name === "superdriver") continue;
+    if (w.name === "superdoctor") continue;
     try {
       await cockpitTmux.window.killWindow(`${sessionName}:${w.name}`);
       logger.log(`  ✓ removed orphan window '${w.name}'`);
@@ -571,5 +635,34 @@ export async function reconcileCockpitSession(
       // window may already be gone
     }
   }
+}
+
+/**
+ * ADR-077: build the shell command the cockpit superdoctor window runs.
+ * Mirrors the team-window claude-bootstrap shape (CLAUDE_CONFIG_DIR +
+ * effortLevel + permissionMode + plugin-dir) when `claudeAccount` is
+ * set; otherwise emits a bare `claude` invocation that inherits the
+ * operator's default shell env (matches superdriver's default).
+ *
+ * Defaults match `normaliseTeamJson`'s tuiCommands.claude builder
+ * (effortLevel=xhigh, permissionMode=auto) so a superdoctor session
+ * runs with the same Opus + auto-mode posture as a team window.
+ */
+export function buildSuperdoctorWindowCommand(sd: CockpitSuperdoctor): string {
+  const ov = sd.tuiOverrides;
+  const effort = ov?.effortLevel ?? "xhigh";
+  const permission = ov?.permissionMode ?? "auto";
+  const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${ov.pluginDir}` : "";
+  if (sd.claudeAccount !== undefined) {
+    return (
+      `CLAUDE_CONFIG_DIR=${sd.claudeAccount.configDir} ` +
+      `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
+      `claude${pluginFlag} --permission-mode ${permission}`
+    );
+  }
+  return (
+    `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
+    `claude${pluginFlag} --permission-mode ${permission}`
+  );
 }
 

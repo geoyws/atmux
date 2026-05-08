@@ -392,6 +392,161 @@ describe("reconcileCockpitSession", () => {
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
+
+  // ---------- ADR-077: superdoctor cockpit window ----------
+
+  test("ADR-077: superdoctor opt-in places window 2 between superdriver and team viewers", async () => {
+    const fx = await spinTmux("cockpit-sd-fresh");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: true });
+      const wins = await fx.tmux.window.listWindows("s");
+      const byIndex = wins.slice().sort((a, b) => a.index - b.index);
+      // Window 1 = superdriver (created by newSession); window 2 = superdoctor;
+      // teams 3..N. Indices may not literally be 1,2,3 if tmux is configured
+      // with base-index != 1, but RELATIVE order is what we assert.
+      expect(byIndex[0]?.name).toBe("superdriver");
+      expect(byIndex[1]?.name).toBe("superdoctor");
+      expect(byIndex.slice(2).map((w) => w.name).sort()).toEqual(["alpha", "beta"]);
+    } finally {
+      try { await fx.tmux.server.killServer(); } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-077: superdoctor disabled or unset → cockpit shape unchanged", async () => {
+    const fx = await spinTmux("cockpit-sd-off");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+      // Both forms (omit + explicit disabled) are no-ops.
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: false });
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
+      expect(names).toEqual(["alpha", "superdriver"]);
+    } finally {
+      try { await fx.tmux.server.killServer(); } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-077: superdoctor reconcile is idempotent on re-run", async () => {
+    const fx = await spinTmux("cockpit-sd-idem");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+      const sd = { enabled: true };
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, sd);
+      const before = (await fx.tmux.window.listWindows("s"))
+        .slice().sort((a, b) => a.index - b.index)
+        .map((w) => `${w.index}:${w.name}`);
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, sd);
+      const after = (await fx.tmux.window.listWindows("s"))
+        .slice().sort((a, b) => a.index - b.index)
+        .map((w) => `${w.index}:${w.name}`);
+      expect(after).toEqual(before);
+    } finally {
+      try { await fx.tmux.server.killServer(); } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-077: enabling superdoctor on an existing cockpit displaces team at index 2", async () => {
+    // Simulates upgrading from a pre-ADR-077 cockpit. The team viewer that
+    // happened to occupy index 2 is killed when superdoctor moves in, then
+    // re-created in the same reconcile pass at the next free index.
+    const fx = await spinTmux("cockpit-sd-upgrade");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      // Pre-ADR-077 cockpit shape (no superdoctor).
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      const pre = (await fx.tmux.window.listWindows("s"))
+        .slice().sort((a, b) => a.index - b.index)
+        .map((w) => w.name);
+      expect(pre[0]).toBe("superdriver");
+      expect(pre.slice(1).sort()).toEqual(["alpha", "beta"]);
+      // Upgrade — superdoctor enabled.
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: true });
+      const post = (await fx.tmux.window.listWindows("s"))
+        .slice().sort((a, b) => a.index - b.index);
+      expect(post[0]?.name).toBe("superdriver");
+      expect(post[1]?.name).toBe("superdoctor");
+      // Both teams must still be present (one was displaced + recreated).
+      expect(post.slice(2).map((w) => w.name).sort()).toEqual(["alpha", "beta"]);
+    } finally {
+      try { await fx.tmux.server.killServer(); } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-077: orphan-prune preserves superdoctor", async () => {
+    const fx = await spinTmux("cockpit-sd-orphan-skip");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+      // First pass with superdoctor + alpha.
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: true });
+      // Second pass with superdoctor still enabled but alpha removed —
+      // alpha must be pruned, superdoctor must survive.
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, {}, { enabled: true });
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
+      expect(names).toContain("superdriver");
+      expect(names).toContain("superdoctor");
+      expect(names).not.toContain("alpha");
+    } finally {
+      try { await fx.tmux.server.killServer(); } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- ADR-077: buildSuperdoctorWindowCommand ----------
+
+describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
+  test("emits bare claude invocation when claudeAccount is unset", async () => {
+    const { buildSuperdoctorWindowCommand } = await import(
+      "../../../src/verbs/cockpit.ts"
+    );
+    const cmd = buildSuperdoctorWindowCommand({ enabled: true });
+    expect(cmd).toContain("claude");
+    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
+    expect(cmd).toContain("--permission-mode auto");
+    expect(cmd).not.toContain("CLAUDE_CONFIG_DIR=");
+  });
+
+  test("emits CLAUDE_CONFIG_DIR prefix when claudeAccount is set", async () => {
+    const { buildSuperdoctorWindowCommand } = await import(
+      "../../../src/verbs/cockpit.ts"
+    );
+    const cmd = buildSuperdoctorWindowCommand({
+      enabled: true,
+      claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
+    });
+    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-personal");
+    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
+    expect(cmd).toContain("--permission-mode auto");
+  });
+
+  test("honours tuiOverrides", async () => {
+    const { buildSuperdoctorWindowCommand } = await import(
+      "../../../src/verbs/cockpit.ts"
+    );
+    const cmd = buildSuperdoctorWindowCommand({
+      enabled: true,
+      tuiOverrides: { effortLevel: "high", permissionMode: "dontAsk", pluginDir: "/p/dir" },
+    });
+    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
+    expect(cmd).toContain("--permission-mode dontAsk");
+    expect(cmd).toContain("--plugin-dir=/p/dir");
+  });
 });
 
 // ---------- ADR-064 §3: resolveTeamWindowMode + buildTeamWindowCommand ----------

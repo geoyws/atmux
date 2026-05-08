@@ -68,6 +68,7 @@ function buildFakeTmux(opts: { sessionUp: boolean; panes: Record<string, string>
       killWindow: async () => {},
       renameWindow: async () => {},
       selectWindow: async () => {},
+      moveWindow: async () => {},
     },
     pane: {
       displayMessage: async (o: { target: unknown; format: string }) => {

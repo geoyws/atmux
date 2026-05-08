@@ -327,6 +327,28 @@ describe("window lifecycle", () => {
     const wins = await tmux.window.listWindows(name);
     expect(wins.find((w) => w.name === "withopts")).toBeDefined();
   });
+
+  test("moveWindow with kill swaps occupied target slot", async () => {
+    // ADR-077: cockpit needs to relocate superdoctor to a fixed index even
+    // when the slot is occupied by a team viewer on first upgrade.
+    const name = `${sessionPrefix}_mv`;
+    await tmux.session.newSession({ name, windowName: "alpha" });
+    await tmux.window.newWindow({ sessionName: name, name: "beta" });
+    await tmux.window.newWindow({ sessionName: name, name: "gamma" });
+    const before = await tmux.window.listWindows(name);
+    const gamma = before.find((w) => w.name === "gamma");
+    if (!gamma) throw new Error("setup failure");
+    const betaIdx = before.find((w) => w.name === "beta")?.index ?? -1;
+    // Move gamma onto beta's slot, killing beta.
+    await tmux.window.moveWindow({
+      source: { sessionName: name, windowIndex: gamma.index },
+      target: { sessionName: name, windowIndex: betaIdx },
+      kill: true,
+    });
+    const after = await tmux.window.listWindows(name);
+    expect(after.find((w) => w.name === "beta")).toBeUndefined();
+    expect(after.find((w) => w.name === "gamma")?.index).toBe(betaIdx);
+  });
 });
 
 describe("pane operations", () => {

@@ -65,6 +65,32 @@ export const CockpitTeam = z
   .strict();
 export type CockpitTeam = z.infer<typeof CockpitTeam>;
 
+/** ADR-077: cockpit-level superdoctor role. Singleton, opt-in. When
+ *  `enabled` is true, `atmux cockpit rebuild` ensures cockpit window 2
+ *  is named `superdoctor` and runs the resolved TUI command (defaults
+ *  identical to the team-window builder; override per-account via
+ *  `claudeAccount` / `tuiOverrides`).
+ *
+ *  Reuses `CockpitClaudeAccount` + `CockpitTuiOverrides` verbatim so
+ *  the spawn shape stays consistent with team windows — same drift
+ *  detection (.strict() at the leaf, ADR-054 §D3 pattern). */
+export const CockpitSuperdoctor = z
+  .object({
+    /** When false, rebuild skips superdoctor but preserves the config
+     *  so it can be re-enabled with no re-typing. Default false (opt-in
+     *  — see ADR-077 §D1: cost-conscious by default). */
+    enabled: z.boolean().default(false),
+    /** Optional Claude account isolation. Same semantics as
+     *  CockpitTeam.claudeAccount; when unset, superdoctor inherits the
+     *  operator's default Claude env (matches superdriver's default). */
+    claudeAccount: CockpitClaudeAccount.optional(),
+    /** Optional TUI launch overrides. Same defaults as a team window
+     *  (`effortLevel=xhigh`, `permissionMode=auto`). */
+    tuiOverrides: CockpitTuiOverrides.optional(),
+  })
+  .strict();
+export type CockpitSuperdoctor = z.infer<typeof CockpitSuperdoctor>;
+
 /** `~/.atmux/cockpit.json` top-level shape. Passthrough so future
  *  fields (e.g. `cockpits[]` for multi-cockpit) don't reject. */
 export const Cockpit = z
@@ -74,6 +100,11 @@ export const Cockpit = z
     cockpitSession: z.string().min(1).default("atmux_teams"),
     /** Ordered roster — defines cockpit window order. */
     teams: z.array(CockpitTeam),
+    /** Optional cockpit-level superdoctor (ADR-077). When set + enabled,
+     *  occupies cockpit window 2 between superdriver (1) and team
+     *  viewers (3..N). Omit or set `enabled: false` for the legacy
+     *  ADR-063 cockpit shape. */
+    superdoctor: CockpitSuperdoctor.optional(),
   })
   .passthrough();
 export type Cockpit = z.infer<typeof Cockpit>;
