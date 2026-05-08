@@ -1,6 +1,1 @@
-#!/usr/bin/env bun
-// bin/atmux-bun — TS dispatcher shim (ADR-002, ADR-010).
-// Real dispatch lives in src/cli.ts; this file only forwards.
-import { main } from "../src/cli.ts";
-
-main(Bun.argv.slice(2)).then((code) => process.exit(code));
+atmux

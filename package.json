@@ -1,9 +1,10 @@
 {
-  "name": "atmux-bun",
-  "version": "0.0.0",
+  "name": "atmux",
+  "version": "0.4.0",
   "type": "module",
   "private": true,
   "bin": {
+    "atmux": "./bin/atmux",
     "atmux-bun": "./bin/atmux-bun"
   },
   "engines": {
@@ -14,12 +15,12 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
-    "test:parity": "bun test tests/parity",
-    "test:parity:version": "bun test tests/parity/version.test.ts",
     "lint": "biome lint . && bun scripts/lint-tz.ts",
     "lint:tz": "bun scripts/lint-tz.ts",
     "format": "biome format --write .",
-    "build": "bun build ./bin/atmux-bun --target=bun --outdir=dist"
+    "build": "bun build ./bin/atmux-entry.ts --target=bun --outdir=dist",
+    "build:compile": "bun build ./bin/atmux-entry.ts --compile --target=bun-linux-x64 --outfile dist/atmux",
+    "build:install": "bun run build:compile && sudo install -d -m 755 /opt/atmux/$npm_package_version/bin && sudo install -m 755 dist/atmux /opt/atmux/$npm_package_version/bin/atmux && sudo ln -sfn /opt/atmux/$npm_package_version /opt/atmux/current && sudo ln -sfn /opt/atmux/current/bin/atmux /usr/local/bin/atmux"
   },
   "dependencies": {
     "zod": "^4.4.3"
