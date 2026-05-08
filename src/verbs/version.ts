@@ -1,18 +1,15 @@
 // ADR-010: CLI dispatcher — `version` verb.
-// ADR-009: First operational parity-harness verb (smallest state).
 //
-// Mirrors bash `lib/common.sh::atmux::version` — prints `atmux <version>`
-// and exits 0. The version constant is hardcoded here to match bash@HEAD;
-// a future ADR will ratify a single source-of-truth for cross-language
-// version sync (likely a generated `src/version.ts` from a root VERSION
-// file, or read of `package.json` once package.json is bumped to match
-// the bash release line).
+// Prints `atmux <version>` and exits 0. Bash decommissioned per ADR-064;
+// version is now sourced from this constant directly. A future ADR will
+// ratify a single source-of-truth (generated `src/version.ts` from
+// package.json or a root VERSION file) — until then, bump in lockstep
+// with package.json::version.
 
 /**
- * The atmux version string. Must equal bash's `atmux::version` output —
- * the parity harness fails the `version` verb if these drift.
+ * The atmux version string. Bump in lockstep with `package.json::version`.
  */
-export const ATMUX_VERSION = "0.3.0";
+export const ATMUX_VERSION = "0.4.0";
 
 /**
  * `atmux version` — print the version string, exit 0. No state touched,
