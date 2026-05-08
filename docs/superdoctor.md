@@ -87,16 +87,65 @@ These are illustrative (the actual action set is decided by the model at runtime
 | Recurring lead rotation timing out | Rotate lead via `/team rotate-lead`; capture context | "60min auto-rotate threshold is too short for this team's task complexity" |
 | Two teams competing for the same staging URL | File complaint with both team leads; pause the offending push | "branch-staging URL collision detector at deploy time" |
 
+## P0 send-keys escalation runbook
+
+**When**: superdoctor is allowed to bypass the SQL inbox and write directly to a teammate's pane via `tmux send-keys` only when (a) demo in <30min and a member is wedged on a recoverable error, OR (b) active stack regression and the team-lead's whip is stuck, OR (c) disk-full / process-table-full anomalies the team can't recover from autonomously. Anything else is a level-5b action (file complaint + `atmux send <team>:<lead>`), not P0.
+
+**Hard rules** (verbatim from the skill brief, repeated here so the operator can audit):
+
+1. **Read pane state FIRST** — global "always read pane state BEFORE tmux send-keys" applies. `tmux capture-pane -p -t <window> -S -30 | tail -20` and interpret. Don't send into a `Compacting conversation` banner. Don't send into a queued-message state. Don't send if a permission prompt is open (the keystroke answers the wrong question).
+2. **Audit-log to complaint box BEFORE executing** — the complaint row carries `kind = 'p0'` and `incident_summary` literally containing the phrase `P0 send-keys bypass`. If superdoctor crashed mid-bypass, the audit row survives.
+3. **Never against `superdriver` pane** — that's the operator's territory. Superdoctor does not write into it under any circumstances.
+4. **Never `--no-verify` / `--no-gpg-sign` / hook-bypass** — global CLAUDE.md rule, no exceptions, even under P0.
+5. **One-shot** — if the bypass doesn't unstick the target on the next pane state read (1 sweep later), escalate to the operator via `pending-decisions.md` + Discord ping. Do not retry; retrying compounds the misdiagnosis.
+
+**Sequence**:
+
+```text
+# 1. Identify target window (capture state first)
+TARGET_WIN="<team-cage-socket>:<member-window-name>"
+tmux capture-pane -p -t "$TARGET_WIN" -S -30 | tail -20
+
+# 2. Author the complaint row BEFORE acting (file-only at first; status='open')
+#    Once F2 ships:
+#    atmux complaints file <team> --kind p0 \
+#        --summary "P0 send-keys bypass: <one-line>" \
+#        --root-cause "<one sentence>" \
+#        --ask "<preventive ask>"
+#    Until F2 ships: write to ~/.claude/skills/superdoctor/lead-queue.md
+#    inline.
+
+# 3. Execute the bypass
+tmux send-keys -t "$TARGET_WIN" "<recovery keystroke>"
+# (e.g. BTab to flip permission mode, or a one-line message)
+
+# 4. Update the complaint row with outcome
+#    atmux complaints resolve <id> --note "<observed result on next sweep>"
+```
+
+**Recovery patterns observed in the wild** (not exhaustive):
+
+| Wedge | P0 keystroke | Notes |
+|---|---|---|
+| Member stuck on permission-prompt modal | `BTab` until status line shows `auto mode on` | Modes cycle: don't-ask → accept-edits → default → auto. Verify via capture-pane. |
+| Member queued message but not submitted | `Enter` | Only if the queued text is the right text — otherwise risks sending the wrong message. |
+| Lead pane on `Compacting conversation` | DO NOTHING. Compaction completes on its own. | False-positive wedge — bypass would corrupt the compaction. |
+| Cage tmux server alive but no driver session | `tmux -S <socket> kill-server` then `atmux cockpit rebuild` | Not actually a send-keys path — cage cycle. P0 because the team is fully offline. |
+
+**What this is NOT**: superdoctor doesn't use `tmux send-keys` for routine messages. Routine = `atmux send <team>:<lead> "..."`. P0 send-keys is reserved for moments when the SQL inbox routing latency itself is the blocker.
+
 ## What it must NOT do
 
 Inherited from CLAUDE.md global policies:
 
 - **No force-push to `origin/main`** — universal.
-- **No push to `origin/${product}-staging`** — George-manual only (push policy, ADR-024).
-- **No actions against IFCA prod** — superdoctor scope is hax + cockpit + dev/staging only.
-- **No skipping pre-commit hooks** — `--no-verify` and friends are off-limits unless George explicitly authorises (and superdoctor doesn't have a chat path to George; only the operator does, so the answer is always no).
+- **No push to `origin/${product}-staging`** — operator-manual only (push policy, ADR-024).
+- **No actions against any product's prod environment** — superdoctor scope is the operator's dev box + cockpit + dev/staging only.
+- **No skipping pre-commit hooks** — `--no-verify` and friends are off-limits, period. (Superdoctor has no chat path to the operator for explicit one-off authorisation.)
+- **No `atmux send` writes to driver/superdriver panes.** Operator-only territory.
+- **No `git reset --hard`, `git push --force`, or kill -9 of any non-cage process.** Destructive ops require operator clearance via `pending-decisions.md` + Discord ask.
 
-A misdiagnosis here lives in the complaint box as a self-filed complaint. Future-superdoctor reads it and learns.
+A misdiagnosis here lives in the complaint box as a self-filed complaint. Future-superdoctor reads it on the next session and learns.
 
 ## Reading the complaint box
 

@@ -15,7 +15,8 @@
 import { join } from "node:path";
 
 import { exists } from "../abstractions/fs.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { loadCockpit, type LoadCockpitOpts } from "../core/cockpit.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
@@ -107,6 +108,24 @@ export interface KanbanCounts {
   blocked: number;
 }
 
+/** ADR-077 §F5: cockpit superdoctor presence/health snapshot. Surfaced
+ *  in `atmux status` so the operator can verify a `cockpit rebuild`
+ *  actually took effect. */
+export interface SuperdoctorState {
+  /** True iff `~/.atmux/cockpit.json` exists AND has a `superdoctor`
+   *  block. False when no cockpit is configured at all (silent — most
+   *  per-team status calls won't have one). */
+  configured: boolean;
+  /** True iff `superdoctor.enabled === true` in cockpit.json. */
+  enabled: boolean;
+  /** True iff the cockpit tmux session exists on the operator's
+   *  default socket. Probed only when `enabled === true`. */
+  sessionAlive: boolean;
+  /** True iff a window named `superdoctor` exists in the cockpit
+   *  session. Probed only when `sessionAlive === true`. */
+  windowAlive: boolean;
+}
+
 export interface StatusSnapshot {
   team: string;
   session: string;
@@ -117,6 +136,57 @@ export interface StatusSnapshot {
   /** ADR-064 §4: driver-pane health snapshot. Always populated;
    *  renderer skips display when `configured=false`. */
   driverPane: DriverPaneHealth;
+  /** ADR-077 §F5: cockpit superdoctor snapshot. Always populated;
+   *  renderer skips display when `configured=false`. */
+  superdoctor: SuperdoctorState;
+}
+
+/** Test-injection seam for `gatherStatus` cockpit probe. */
+export interface GatherStatusDeps {
+  /** Override cockpit.json loader env. Default `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /** Build the cockpit-side TmuxNamespace (operator's default socket).
+   *  Default `createTmux({ socket: 'default' })`. */
+  cockpitTmuxFactory?: (cfg: TmuxConfig) => TmuxNamespace;
+}
+
+/**
+ * ADR-077 §F5: probe the cockpit for superdoctor presence/health.
+ * Silently returns the all-false default when no cockpit is configured
+ * (most per-team status calls have no cockpit). Probe failures collapse
+ * to `false` rather than throwing — the team's own status must stay
+ * green even when the cockpit is misconfigured.
+ */
+export async function probeSuperdoctor(deps: GatherStatusDeps = {}): Promise<SuperdoctorState> {
+  const env = deps.env ?? process.env;
+  const loadOpts: LoadCockpitOpts = { env };
+  let cockpit;
+  try {
+    cockpit = await loadCockpit(loadOpts);
+  } catch {
+    return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
+  }
+  const sd = cockpit.superdoctor;
+  if (sd === undefined) {
+    return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
+  }
+  if (!sd.enabled) {
+    return { configured: true, enabled: false, sessionAlive: false, windowAlive: false };
+  }
+  const factory = deps.cockpitTmuxFactory ?? createTmux;
+  let sessionAlive = false;
+  let windowAlive = false;
+  try {
+    const cockpitTmux = factory({ socket: "default" });
+    sessionAlive = await cockpitTmux.session.hasSession(cockpit.cockpitSession);
+    if (sessionAlive) {
+      const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
+      windowAlive = wins.some((w) => w.name === "superdoctor");
+    }
+  } catch {
+    // tmux not running, socket unreachable, etc. — collapse to down.
+  }
+  return { configured: true, enabled: true, sessionAlive, windowAlive };
 }
 
 /**
@@ -128,6 +198,7 @@ export async function gatherStatus(
   team: Team,
   sessionName: string,
   atmuxDir: string,
+  deps: GatherStatusDeps = {},
 ): Promise<StatusSnapshot> {
   const sessionState: "up" | "down" = (await tmux.session.hasSession(`=${sessionName}`))
     ? "up"
@@ -180,6 +251,11 @@ export async function gatherStatus(
   // setup; the helper itself stays I/O-bounded to one capture call.
   const driverPane = await probeDriverPane(team, atmuxDir, { tmux });
 
+  // ADR-077 §F5: cockpit superdoctor probe. Independent of the team's
+  // own cage tmux — uses the operator's default socket via a separate
+  // factory. Silent when no cockpit is configured.
+  const superdoctor = await probeSuperdoctor(deps);
+
   return {
     team: team.name,
     session: sessionName,
@@ -188,6 +264,7 @@ export async function gatherStatus(
     kanban: counts,
     driverInboxOpen,
     driverPane,
+    superdoctor,
   };
 }
 
@@ -221,6 +298,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
       driverPane: snap.driverPane,
+      superdoctor: snap.superdoctor,
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     return 0;
@@ -308,6 +386,20 @@ function renderTextStatus(snap: StatusSnapshot): void {
   );
   if (snap.driverInboxOpen > 0) {
     process.stdout.write(`📬 driver-inbox  open=${snap.driverInboxOpen}\n`);
+  }
+  // ADR-077 §F5: superdoctor row — skip when no cockpit at all.
+  if (snap.superdoctor.configured) {
+    const sd = snap.superdoctor;
+    const stateLabel = !sd.enabled
+      ? "disabled"
+      : !sd.sessionAlive
+        ? "cockpit-down"
+        : !sd.windowAlive
+          ? "window-missing"
+          : "alive";
+    const stateEmoji =
+      stateLabel === "alive" ? "🟢" : stateLabel === "disabled" ? "⚪" : "🔴";
+    process.stdout.write(`📋 superdoctor  ${stateEmoji} ${stateLabel}\n`);
   }
 }
 

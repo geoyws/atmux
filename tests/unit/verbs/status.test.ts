@@ -20,8 +20,10 @@ let socketPath: string;
 let teamDir: string;
 let atmuxDir: string;
 let priorTmux: string | undefined;
+let priorCockpitConfig: string | undefined;
 let tmux: TmuxNamespace;
 let sessionPrefix: string;
+let cockpitConfigPath: string;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-status-sock-"));
@@ -32,6 +34,13 @@ beforeEach(async () => {
   sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
+  // ADR-077 §F5: pin ATMUX_COCKPIT_CONFIG at a per-test path so the
+  // superdoctor probe doesn't accidentally read the operator's live
+  // ~/.atmux/cockpit.json. Tests opt-in by writing a fixture at this
+  // path; tests that don't see all-false (configured=false).
+  priorCockpitConfig = process.env.ATMUX_COCKPIT_CONFIG;
+  cockpitConfigPath = join(teamDir, "cockpit-fixture.json");
+  process.env.ATMUX_COCKPIT_CONFIG = cockpitConfigPath;
   tmux = createTmux({ socketPath, configFile: "/dev/null" });
 });
 
@@ -42,6 +51,11 @@ afterEach(async () => {
     // expected: idempotent teardown
   }
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  if (priorCockpitConfig !== undefined) {
+    process.env.ATMUX_COCKPIT_CONFIG = priorCockpitConfig;
+  } else {
+    delete process.env.ATMUX_COCKPIT_CONFIG;
+  }
   await rm(socketDir, { recursive: true, force: true });
   await rm(teamDir, { recursive: true, force: true });
 });
@@ -265,5 +279,91 @@ describe("status verb — integration", () => {
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
     expect(out).toContain("🌟");
+  });
+
+  // ---------- ADR-077 §F5: superdoctor cockpit-state surface ----------
+
+  test("no cockpit.json → snapshot.superdoctor.configured=false; text omits the row", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    // beforeEach pinned ATMUX_COCKPIT_CONFIG at a path that doesn't exist.
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).not.toContain("📋 superdoctor");
+
+    const { out: jsonOut } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(jsonOut);
+    expect(parsed.superdoctor).toEqual({
+      configured: false,
+      enabled: false,
+      sessionAlive: false,
+      windowAlive: false,
+    });
+  });
+
+  test("cockpit.json without superdoctor block → configured=false (silent)", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    await writeFile(
+      cockpitConfigPath,
+      JSON.stringify({
+        cockpitSession: "atmux_teams",
+        teams: [{ name: "alpha", root: "/a", enabled: true }],
+      }),
+    );
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.superdoctor.configured).toBe(false);
+  });
+
+  test("superdoctor block disabled → configured=true, enabled=false; text shows ⚪ disabled", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    await writeFile(
+      cockpitConfigPath,
+      JSON.stringify({
+        cockpitSession: "atmux_teams",
+        superdoctor: { enabled: false },
+        teams: [{ name: "alpha", root: "/a", enabled: true }],
+      }),
+    );
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("📋 superdoctor");
+    expect(out).toContain("⚪ disabled");
+
+    const { out: jsonOut } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(jsonOut);
+    expect(parsed.superdoctor).toEqual({
+      configured: true,
+      enabled: false,
+      sessionAlive: false,
+      windowAlive: false,
+    });
+  });
+
+  test("superdoctor enabled but cockpit session down → text shows 🔴 cockpit-down", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    await writeFile(
+      cockpitConfigPath,
+      JSON.stringify({
+        cockpitSession: "non-existent-session-for-test",
+        superdoctor: { enabled: true },
+        teams: [{ name: "alpha", root: "/a", enabled: true }],
+      }),
+    );
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("📋 superdoctor");
+    // Probe runs against operator's default tmux socket — the named
+    // session above won't exist, so we expect cockpit-down (or a
+    // graceful collapse if the default socket is unreachable).
+    expect(out).toMatch(/(🔴 cockpit-down|🔴 window-missing)/);
   });
 });
