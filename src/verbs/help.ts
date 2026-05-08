@@ -62,6 +62,9 @@ Maintenance:
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
+  groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
+                              Daily 04:00 cron sweep — flush archive sections, age
+                              out done/cancelled cards, cull stale .bak files.
 
 Misc:
   version

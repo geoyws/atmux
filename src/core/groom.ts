@@ -1,0 +1,605 @@
+// ADR-068 cutover (Tier 1, P0) — `atmux groom` core helpers.
+//
+// Bash port target: lib/groom.sh @ HEAD (frozen ref under
+// .archive-bash-atmux-20260507/lib/groom.sh).
+//
+// Five idempotent sub-ops, all wired by `src/verbs/groom.ts`:
+//   1. flushInboxOutboxArchive — extract `## Archive` body from
+//      driver-inbox.md + lead-outbox.md into archive/<file>-YYYY-MM.md;
+//      rebuild active file with header through `## Archive` line + blank.
+//   2. archiveDecisions — partition decisions.md `### d-<id>` blocks by
+//      timestamp epoch; stale blocks (older than threshold) flush to
+//      archive/decisions-<entry-month>.md.
+//   3. summarizeKanban — done/cancelled tasks older than threshold get
+//      one-line summaries appended to archive/kanban-log-<month>.md
+//      (grouped by completedAt month) and are removed from kanban.json.
+//   4. cullBakFiles — keep newest N of each kanban.json.bak.* /
+//      team.json.bak.*; delete the rest.
+//   5. archiveSizeCheck — warn (non-fatal) when archive/ exceeds 50MB
+//      total or kanban-log archives exceed 5MB.
+//
+// All helpers take an explicit `nowMs` (default `time.now()`) so tests
+// can pin the clock; archive month-stamps default to UTC formatting to
+// match bash's cron-on-hax (TZ=UTC) behaviour byte-for-byte.
+
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  appendText,
+  atomicWrite,
+  ensureDir,
+  exists,
+  readText,
+  removeFile,
+  statOrNull,
+  writeText,
+} from "../abstractions/fs.ts";
+import { updateJson } from "../abstractions/json.ts";
+import { now as nowMs } from "../abstractions/time.ts";
+import { Kanban } from "../schema/kanban.ts";
+import { archiveDir as resolveArchiveDir, kanbanJsonPath } from "./common.ts";
+
+// ---------- Shared time helpers ----------
+
+/** YYYY-MM stamp from epoch ms in UTC. Matches bash `date +%Y-%m`
+ *  semantics on hax (cron runs with TZ=UTC). Exported so tests can
+ *  exercise specific months. */
+export function ymStampUtc(epochMs: number): string {
+  const d = new Date(epochMs);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+/** YYYY-MM-DD stamp from epoch ms in UTC. For kanban-log row dates. */
+export function ymdStampUtc(epochMs: number): string {
+  const d = new Date(epochMs);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** YYYY-MM-DD HH:MM:SS UTC stamp for the per-archive `_groom run_` header
+ *  line. Matches bash `date +'%Y-%m-%d %H:%M:%S %Z'`. */
+export function groomRunStampUtc(epochMs: number): string {
+  const d = new Date(epochMs);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${y}-${m}-${day} ${hh}:${mm}:${ss} UTC`;
+}
+
+// ---------- Sub-op 1: inbox/outbox archive flush ----------
+
+export interface InboxOutboxFlushResult {
+  /** Filename — `driver-inbox.md` or `lead-outbox.md`. */
+  file: string;
+  /** Absolute path of the archive file the body was appended to. */
+  destPath: string;
+  /** Lines in the body that was flushed (excludes the `## Archive` header). */
+  bodyLineCount: number;
+}
+
+export interface FlushInboxOutboxOpts {
+  /** When true, parse + report counts but skip writes. */
+  dryRun?: boolean;
+  /** Clock override (test injection). Defaults to `time.now()`. */
+  nowMs?: number;
+  /** Files to consider, relative to atmuxDir. Test injection point;
+   *  defaults to the canonical pair. */
+  files?: ReadonlyArray<string>;
+}
+
+/**
+ * For `driver-inbox.md` + `lead-outbox.md`, find the `^## Archive` line
+ * and move every line BELOW it into `archive/<file-base>-YYYY-MM.md`.
+ * Re-emit the active file with the original header through the
+ * `## Archive` line + a single trailing blank line.
+ *
+ * Returns one entry per file actually flushed. Files with no `## Archive`
+ * section, or with only blank lines below it, are skipped (no entry).
+ */
+export async function flushInboxOutboxArchive(
+  atmuxDir: string,
+  opts: FlushInboxOutboxOpts = {},
+): Promise<InboxOutboxFlushResult[]> {
+  const dryRun = opts.dryRun === true;
+  const stampMs = opts.nowMs ?? nowMs();
+  const adir = resolveArchiveDir(atmuxDir);
+  const candidateFiles = opts.files ?? ["driver-inbox.md", "lead-outbox.md"];
+  const out: InboxOutboxFlushResult[] = [];
+
+  await ensureDir(adir);
+
+  for (const file of candidateFiles) {
+    const src = join(atmuxDir, file);
+    if (!(await exists(src))) continue;
+
+    const text = await readText(src);
+    const lines = text.split("\n");
+    // Bash's grep `^## Archive` matches lines starting with that string.
+    // First match wins. 1-indexed in bash; 0-indexed here.
+    let archiveIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      if (line.startsWith("## Archive")) {
+        archiveIdx = i;
+        break;
+      }
+    }
+    if (archiveIdx < 0) continue;
+
+    // `tail -n +<archive_line+1>` body. We may have a final empty
+    // segment from `split("\n")` if the file ended with `\n`; that
+    // blank carries through the count-as-blank check below.
+    const bodyLines = lines.slice(archiveIdx + 1);
+    if (bodyLines.length === 0) continue;
+    const bodyJoined = bodyLines.join("\n");
+    if (bodyJoined.replace(/\s+/g, "").length === 0) continue;
+
+    const baseNoExt = file.endsWith(".md") ? file.slice(0, -3) : file;
+    const stamp = ymStampUtc(stampMs);
+    const destPath = join(adir, `${baseNoExt}-${stamp}.md`);
+    const bodyLineCount = bodyLines.length;
+
+    if (!dryRun) {
+      const destExists = await exists(destPath);
+      const blocks: string[] = [];
+      if (!destExists) {
+        blocks.push(`# ${baseNoExt} archive — ${stamp}\n\n`);
+      } else {
+        blocks.push(`\n---\n\n`);
+      }
+      blocks.push(`_groom run: ${groomRunStampUtc(stampMs)}_\n\n`);
+      blocks.push(`${bodyJoined}\n`);
+      await appendText(destPath, blocks.join(""));
+
+      // Rebuild active file: lines [0..archiveIdx] (inclusive), plus a
+      // trailing blank line — bash does `head -n archive_line` then
+      // `printf '\n'`.
+      const kept = lines.slice(0, archiveIdx + 1).join("\n");
+      await atomicWrite(src, `${kept}\n\n`);
+    }
+
+    out.push({ file, destPath, bodyLineCount });
+  }
+  return out;
+}
+
+// ---------- Sub-op 2: decisions archival ----------
+
+export interface DecisionsArchiveResult {
+  /** Number of stale blocks routed to archive across all month buckets. */
+  staleBlocks: number;
+  /** Per-month destination files written. */
+  destPaths: string[];
+}
+
+export interface ArchiveDecisionsOpts {
+  /** Threshold in days. Blocks with `- **timestamp**: <epoch>` older
+   *  than `now - days*86400` get archived. Default 30. */
+  days?: number;
+  dryRun?: boolean;
+  nowMs?: number;
+}
+
+interface ParsedDecisionsBlock {
+  /** Block text including trailing newline(s). */
+  text: string;
+  /** Epoch seconds parsed from the `- **timestamp**: <epoch>` line, or
+   *  `null` when the line is absent / unparseable. */
+  epochSec: number | null;
+}
+
+/**
+ * Parse decisions.md into a `preamble` (everything before the first
+ * `### d-<id>` line) plus an ordered list of blocks. Each block runs
+ * from a `### d-<id>` line up to (exclusive of) the next `### d-` or
+ * end-of-file. Blocks without a parseable timestamp keep `epochSec:
+ * null` and are NEVER archived (defensive — bash `block_epoch_set`
+ * gate). Exported for unit tests.
+ */
+export function parseDecisionsMd(text: string): {
+  preamble: string;
+  blocks: ParsedDecisionsBlock[];
+} {
+  const lines = text.split("\n");
+  const blocks: ParsedDecisionsBlock[] = [];
+  let preambleEnd = -1;
+
+  // Walk lines, splitting at each `### d-` boundary.
+  type Cursor = { startIdx: number; epochSec: number | null };
+  let cursor: Cursor | null = null;
+
+  const flush = (endIdxExclusive: number): void => {
+    if (cursor === null) return;
+    const slice = lines.slice(cursor.startIdx, endIdxExclusive).join("\n");
+    // Re-attach the trailing newline (split dropped it).
+    const text = endIdxExclusive < lines.length ? `${slice}\n` : slice;
+    blocks.push({ text, epochSec: cursor.epochSec });
+    cursor = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (line.startsWith("### d-")) {
+      if (cursor === null && preambleEnd < 0) preambleEnd = i;
+      flush(i);
+      cursor = { startIdx: i, epochSec: null };
+      continue;
+    }
+    if (cursor !== null && cursor.epochSec === null) {
+      const ts = matchTimestampLine(line);
+      if (ts !== null) cursor.epochSec = ts;
+    }
+  }
+  flush(lines.length);
+
+  const preambleLines = preambleEnd < 0 ? lines : lines.slice(0, preambleEnd);
+  const preamble = preambleLines.join("\n");
+  return { preamble, blocks };
+}
+
+/** Match `- **timestamp**: <epoch>` line and return the epoch seconds.
+ *  Returns null when the line shape doesn't match. Tolerates trailing
+ *  whitespace + non-digit suffix per bash's `sub(/[^0-9].*$/, "", ts)`. */
+function matchTimestampLine(line: string): number | null {
+  const m = /^- \*\*timestamp\*\*: ([0-9]+)/.exec(line);
+  if (m === null) return null;
+  const n = Number.parseInt(m[1] ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export async function archiveDecisions(
+  atmuxDir: string,
+  opts: ArchiveDecisionsOpts = {},
+): Promise<DecisionsArchiveResult> {
+  const days = opts.days ?? 30;
+  const dryRun = opts.dryRun === true;
+  const stampMs = opts.nowMs ?? nowMs();
+  const cutoffEpoch = Math.floor(stampMs / 1000) - days * 86400;
+  const adir = resolveArchiveDir(atmuxDir);
+  const src = join(atmuxDir, "decisions.md");
+
+  if (!(await exists(src))) {
+    return { staleBlocks: 0, destPaths: [] };
+  }
+  await ensureDir(adir);
+
+  const text = await readText(src);
+  const { preamble, blocks } = parseDecisionsMd(text);
+
+  const stale: ParsedDecisionsBlock[] = [];
+  const kept: ParsedDecisionsBlock[] = [];
+  for (const b of blocks) {
+    if (b.epochSec !== null && b.epochSec < cutoffEpoch) {
+      stale.push(b);
+    } else {
+      kept.push(b);
+    }
+  }
+  if (stale.length === 0) {
+    return { staleBlocks: 0, destPaths: [] };
+  }
+  if (dryRun) {
+    // Bucket by month-of-entry to surface destPaths even on dry-run.
+    const months = new Set<string>();
+    for (const b of stale) {
+      if (b.epochSec === null) continue;
+      months.add(ymStampUtc(b.epochSec * 1000));
+    }
+    return {
+      staleBlocks: stale.length,
+      destPaths: [...months].sort().map((ym) => join(adir, `decisions-${ym}.md`)),
+    };
+  }
+
+  // Group stale blocks by their own entry-month.
+  const buckets = new Map<string, string[]>();
+  for (const b of stale) {
+    if (b.epochSec === null) continue;
+    const ym = ymStampUtc(b.epochSec * 1000);
+    const arr = buckets.get(ym) ?? [];
+    arr.push(b.text);
+    buckets.set(ym, arr);
+  }
+
+  const destPaths: string[] = [];
+  const runStamp = groomRunStampUtc(stampMs);
+  // Sort keys for deterministic ordering across platforms (test-friendly).
+  for (const ym of [...buckets.keys()].sort()) {
+    const dest = join(adir, `decisions-${ym}.md`);
+    const blocksText = (buckets.get(ym) ?? []).join("");
+    const destExists = await exists(dest);
+    const head = destExists
+      ? `\n---\n\n_groom run: ${runStamp}_\n\n${blocksText}`
+      : `# decisions archive — ${ym}\n\n_groom run: ${runStamp}_\n\n${blocksText}`;
+    await appendText(dest, head);
+    destPaths.push(dest);
+  }
+
+  // Rewrite decisions.md: preamble + kept-blocks. If everything is
+  // stale, write just an empty header line per bash's fallback.
+  const keptText = kept.map((b) => b.text).join("");
+  if (keptText.length === 0 && preamble.replace(/\s+/g, "").length === 0) {
+    await atomicWrite(src, `# atmux decisions — append-only log\n\n`);
+  } else {
+    await atomicWrite(src, `${preamble}${keptText}`);
+  }
+
+  return { staleBlocks: stale.length, destPaths };
+}
+
+// ---------- Sub-op 3: kanban summarize + remove ----------
+
+export interface KanbanSummarizeResult {
+  /** How many done/cancelled tasks were summarized + removed. */
+  removed: number;
+  /** Per-month archive files appended to. */
+  destPaths: string[];
+}
+
+export interface SummarizeKanbanOpts {
+  /** Threshold in days. Default 30. */
+  days?: number;
+  dryRun?: boolean;
+  nowMs?: number;
+}
+
+/** Coerce a `completedAt` field (number | string | null) to epoch
+ *  seconds, mirroring bash's `to_epoch` jq filter (numbers passthrough,
+ *  strings try fromdateiso8601 then tonumber, fall back to 0). */
+function toEpochSeconds(raw: unknown): number {
+  if (typeof raw === "number" && Number.isFinite(raw)) return Math.floor(raw);
+  if (typeof raw === "string") {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n)) return n;
+    const ms = Date.parse(raw);
+    if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+  }
+  return 0;
+}
+
+export async function summarizeKanban(
+  atmuxDir: string,
+  opts: SummarizeKanbanOpts = {},
+): Promise<KanbanSummarizeResult> {
+  const days = opts.days ?? 30;
+  const dryRun = opts.dryRun === true;
+  const stampMs = opts.nowMs ?? nowMs();
+  const cutoffEpoch = Math.floor(stampMs / 1000) - days * 86400;
+
+  const path = kanbanJsonPath(atmuxDir);
+  if (!(await exists(path))) return { removed: 0, destPaths: [] };
+
+  const adir = resolveArchiveDir(atmuxDir);
+  await ensureDir(adir);
+
+  // Read kanban via Zod; the schema is permissive (`.passthrough()`).
+  const text = await readText(path);
+  const parsed = Kanban.parse(JSON.parse(text));
+
+  const stale: typeof parsed.tasks = [];
+  for (const t of parsed.tasks) {
+    if (t.status !== "done" && t.status !== "cancelled") continue;
+    const epoch = toEpochSeconds(t.completedAt);
+    if (epoch === 0) continue;
+    if (epoch < cutoffEpoch) stale.push(t);
+  }
+  if (stale.length === 0) return { removed: 0, destPaths: [] };
+  if (dryRun) {
+    const months = new Set<string>();
+    for (const t of stale) {
+      months.add(ymStampUtc(toEpochSeconds(t.completedAt) * 1000));
+    }
+    return {
+      removed: stale.length,
+      destPaths: [...months].sort().map((ym) => join(adir, `kanban-log-${ym}.md`)),
+    };
+  }
+
+  // Bucket by completedAt-month + append summary lines.
+  const buckets = new Map<string, string[]>();
+  for (const t of stale) {
+    const completedSec = toEpochSeconds(t.completedAt);
+    const ym = ymStampUtc(completedSec * 1000);
+    const id = t.id;
+    const status = t.status ?? "";
+    const owner = (t.owner ?? "-") || "-";
+    const subject = (t.subject ?? "").replace(/[\n\r\t]/g, " ");
+    const cdate = ymdStampUtc(completedSec * 1000);
+    const line = `- \`${id}\` [${status}] ${subject} — owner=${owner}, completed=${cdate}\n`;
+    const arr = buckets.get(ym) ?? [];
+    arr.push(line);
+    buckets.set(ym, arr);
+  }
+
+  const destPaths: string[] = [];
+  const runStamp = groomRunStampUtc(stampMs);
+  for (const ym of [...buckets.keys()].sort()) {
+    const dest = join(adir, `kanban-log-${ym}.md`);
+    const lines = (buckets.get(ym) ?? []).join("");
+    const destExists = await exists(dest);
+    const head = destExists
+      ? `\n---\n\n_groom run: ${runStamp}_\n\n${lines}`
+      : `# kanban summary — ${ym}\n\n_groom run: ${runStamp}_\n\n${lines}`;
+    await appendText(dest, head);
+    destPaths.push(dest);
+  }
+
+  // Backup kanban.json before destructive rewrite (groom-side bak,
+  // matches bash `atmux::kanban_json_backup`). Naming: `<path>.bak.<epoch>`
+  // — bak-cull walks `kanban.json.bak.*` glob.
+  const backupPath = `${path}.bak.${Math.floor(stampMs / 1000)}`;
+  if (!(await exists(backupPath))) {
+    await writeText(backupPath, text);
+  }
+
+  // Rewrite kanban.json without the stale tasks (passthrough preserves
+  // unknown fields; we only filter on .tasks).
+  const staleIds = new Set(stale.map((t) => t.id));
+  await updateJson(
+    path,
+    Kanban,
+    (current) => ({
+      ...current,
+      tasks: current.tasks.filter((t) => !staleIds.has(t.id)),
+    }),
+  );
+
+  return { removed: stale.length, destPaths };
+}
+
+// ---------- Sub-op 4: bak cull ----------
+
+export interface BakCullResult {
+  family: string;
+  /** Files that were (or would be) deleted; newest-first per bash `ls -t`. */
+  removed: string[];
+}
+
+export interface CullBakOpts {
+  keep?: number;
+  dryRun?: boolean;
+  /** Test injection — override the family list. Defaults to the bash
+   *  pair `["kanban.json", "team.json"]`. */
+  families?: ReadonlyArray<string>;
+}
+
+export async function cullBakFiles(
+  atmuxDir: string,
+  opts: CullBakOpts = {},
+): Promise<BakCullResult[]> {
+  const keep = opts.keep ?? 5;
+  const dryRun = opts.dryRun === true;
+  const families = opts.families ?? ["kanban.json", "team.json"];
+  const out: BakCullResult[] = [];
+
+  if (keep < 0) return out;
+
+  const all = await readdir(atmuxDir).catch(() => [] as string[]);
+  for (const family of families) {
+    const prefix = `${family}.bak.`;
+    const matches: { name: string; mtimeMs: number }[] = [];
+    for (const name of all) {
+      if (!name.startsWith(prefix)) continue;
+      const full = join(atmuxDir, name);
+      const st = await statOrNull(full);
+      if (st === null || !st.isFile) continue;
+      matches.push({ name, mtimeMs: st.mtimeMs });
+    }
+    if (matches.length <= keep) continue;
+    // Newest-first ordering, like bash `ls -t`.
+    matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const toRemove = matches.slice(keep);
+    const removed: string[] = [];
+    for (const m of toRemove) {
+      const full = join(atmuxDir, m.name);
+      if (!dryRun) await removeFile(full);
+      removed.push(full);
+    }
+    if (removed.length > 0) out.push({ family, removed });
+  }
+  return out;
+}
+
+// ---------- Sub-op 5: archive size guard ----------
+
+export interface ArchiveSizeWarning {
+  /** Human-readable subject — `archive` or `kanban-log`. */
+  scope: "archive" | "kanban-log";
+  /** Total bytes observed. */
+  bytes: number;
+  /** Number of files contributing (kanban-log: month buckets). */
+  fileCount: number;
+  /** Threshold (bytes) the scope crossed. */
+  thresholdBytes: number;
+}
+
+export interface ArchiveSizeOpts {
+  /** Bytes — total archive/ warns at this floor. Default 50MB. */
+  archiveCapBytes?: number;
+  /** Bytes — sum of kanban-log-*.md warns at this floor. Default 5MB. */
+  kanbanLogCapBytes?: number;
+}
+
+/**
+ * Walk archive/ and return zero or more warnings. Non-fatal — caller
+ * surfaces via `logger.warn`. Returns empty array when archive/ is
+ * absent (cold-start state).
+ */
+export async function archiveSizeCheck(
+  atmuxDir: string,
+  opts: ArchiveSizeOpts = {},
+): Promise<ArchiveSizeWarning[]> {
+  const archiveCap = opts.archiveCapBytes ?? 50 * 1024 * 1024;
+  const kanbanLogCap = opts.kanbanLogCapBytes ?? 5 * 1024 * 1024;
+  const adir = resolveArchiveDir(atmuxDir);
+  if (!(await exists(adir))) return [];
+
+  const out: ArchiveSizeWarning[] = [];
+
+  // Recurse archive/ to total bytes; archive/ is shallow (per bash
+  // ouput shape — month-stamped flat files), but we walk recursively
+  // to be defensive.
+  const total = await sumDirBytes(adir);
+  if (total.bytes >= archiveCap) {
+    out.push({
+      scope: "archive",
+      bytes: total.bytes,
+      fileCount: total.files,
+      thresholdBytes: archiveCap,
+    });
+  }
+
+  const klogs: { path: string; size: number }[] = [];
+  for (const name of await readdir(adir).catch(() => [])) {
+    if (!name.startsWith("kanban-log-") || !name.endsWith(".md")) continue;
+    const full = join(adir, name);
+    const st = await statOrNull(full);
+    if (st === null || !st.isFile) continue;
+    klogs.push({ path: full, size: st.size });
+  }
+  if (klogs.length > 0) {
+    const klogTotal = klogs.reduce((acc, k) => acc + k.size, 0);
+    if (klogTotal >= kanbanLogCap) {
+      out.push({
+        scope: "kanban-log",
+        bytes: klogTotal,
+        fileCount: klogs.length,
+        thresholdBytes: kanbanLogCap,
+      });
+    }
+  }
+
+  return out;
+}
+
+async function sumDirBytes(dir: string): Promise<{ bytes: number; files: number }> {
+  let bytes = 0;
+  let files = 0;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (cur === undefined) continue;
+    const entries = await readdir(cur, { withFileTypes: true }).catch(() => null);
+    if (entries === null) continue;
+    for (const ent of entries) {
+      const full = join(cur, ent.name);
+      if (ent.isDirectory()) {
+        stack.push(full);
+      } else if (ent.isFile()) {
+        const st = await statOrNull(full);
+        if (st !== null) {
+          bytes += st.size;
+          files += 1;
+        }
+      }
+    }
+  }
+  return { bytes, files };
+}
