@@ -41,7 +41,7 @@
 //   78  ConfigError (target not implemented; missing source file)
 //   1   IOError / SQLite error (propagated)
 
-import { mkdir, rename } from "node:fs/promises";
+import { mkdir, readdir, rename } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
@@ -52,7 +52,8 @@ import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { Kanban } from "../schema/kanban.ts";
+import { Inbox } from "../schema/inbox.ts";
+import { Kanban, type KanbanTask } from "../schema/kanban.ts";
 
 // ---------- Arg parsing ----------
 
@@ -163,7 +164,7 @@ export interface MigrationResult {
   migratedAtEpoch: number;
   counts: {
     kanban?: KanbanMigrationCounts;
-    inboxes?: number; // not implemented in this commit
+    inboxes?: InboxMigrationCounts;
     state?: number; // not implemented in this commit
   };
   warnings: string[];
@@ -225,6 +226,151 @@ async function migrateKanban(
   })();
 
   return { tasks, epics, stories };
+}
+
+// ---------- Inbox migration (ADR-076) ----------
+
+/**
+ * Counts returned by the inboxes-target migration step.
+ */
+export interface InboxMigrationCounts {
+  /** Number of inbox JSON files scanned (one per member). */
+  files: number;
+  /** Total inbox entries seen across all members + buckets. */
+  entriesSeen: number;
+  /** Entries that were ABSENT from the tasks table and got upserted in. */
+  entriesBackfilled: number;
+  /** Entries already present in the tasks table; upsert is a no-op
+   *  per the ON-CONFLICT-DO-UPDATE shape (we do upsert anyway to keep
+   *  any KanbanTask-compatible field changes from JSON in sync). */
+  entriesPresent: number;
+  /** Inbox JSON files that failed Zod parse — counted but skipped. */
+  filesSkippedInvalid: number;
+}
+
+/** Strip the inbox-only `dispatchedAt` from an InboxEntry (it lives in
+ *  `extra` post-migration since KanbanTask doesn't have a column for
+ *  it; whip's stale-min anchor falls back `claimedAt // dispatchedAt`,
+ *  but that bash dependency is gone post-decommission). All other
+ *  fields are KanbanTask-compatible. Returns a KanbanTask shape ready
+ *  for `KanbanRepo.upsertTask`. */
+function inboxEntryToKanbanTask(entry: unknown): KanbanTask {
+  // InboxEntry is `.passthrough()` — just rest-spread + drop dispatchedAt.
+  // Extra inbox-only fields (cancelledAt, cancelledReason) flow through
+  // KanbanTask's `extra` passthrough since KanbanTask is also lenient.
+  // KanbanRepo.upsertTask serialises unknowns via `taskToRow`'s `extra`
+  // JSON column.
+  const e = entry as Record<string, unknown>;
+  const { dispatchedAt: _dispatchedAt, ...rest } = e;
+  return rest as KanbanTask;
+}
+
+/**
+ * Read each `.atmux/inboxes/<member>.json`, walk the
+ * `pending`/`inProgress`/`done` buckets, and upsert each entry into
+ * the `tasks` table. Idempotent via ON-CONFLICT-DO-UPDATE.
+ *
+ * The vast majority of inbox entries should already be in `tasks`
+ * (kanban-repo writes happen alongside inbox-mirror writes in dispatch
+ * / claim / done). The migrator's purpose is to catch JSON-only entries
+ * that were lost to kanban somehow — pure parity safety net for the
+ * ADR-076 (inbox elimination) cutover.
+ *
+ * Per-file Zod parse failures count to `filesSkippedInvalid` and are
+ * surfaced as warnings; one bad inbox file does NOT abort the whole
+ * migration.
+ */
+async function migrateInboxes(
+  atmuxDir: string,
+  db: Database,
+  dryRun: boolean,
+): Promise<InboxMigrationCounts> {
+  const dir = inboxDir(atmuxDir);
+
+  if (!(await exists(dir))) {
+    return {
+      files: 0,
+      entriesSeen: 0,
+      entriesBackfilled: 0,
+      entriesPresent: 0,
+      filesSkippedInvalid: 0,
+    };
+  }
+
+  const allEntries: ReadonlyArray<string> = await readdir(dir);
+  const jsonFiles = allEntries.filter((f) => f.endsWith(".json") && !f.endsWith(".lock"));
+
+  let files = 0;
+  let entriesSeen = 0;
+  let entriesBackfilled = 0;
+  let entriesPresent = 0;
+  let filesSkippedInvalid = 0;
+
+  const repo = new KanbanRepo(db);
+
+  // Single transaction — atomic per ADR-060 §D10 + matches kanban target
+  // shape. Errors inside the transaction roll back; the per-file Zod
+  // failures are caught + counted before they enter the transaction.
+  const validParsed: Array<{ member: string; entries: ReadonlyArray<unknown> }> = [];
+
+  for (const fname of jsonFiles) {
+    const member = fname.replace(/\.json$/, "");
+    const path = join(dir, fname);
+    let raw: string;
+    try {
+      raw = await readText(path);
+    } catch {
+      filesSkippedInvalid += 1;
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = Inbox.parse(JSON.parse(raw));
+    } catch {
+      filesSkippedInvalid += 1;
+      continue;
+    }
+    files += 1;
+    const entries = [...parsed.pending, ...parsed.inProgress, ...parsed.done];
+    entriesSeen += entries.length;
+    validParsed.push({ member, entries });
+  }
+
+  if (dryRun) {
+    // Probe presence/absence without writing.
+    for (const { entries } of validParsed) {
+      for (const entry of entries) {
+        const id = (entry as { id?: string }).id;
+        if (typeof id !== "string") continue;
+        const present = repo.getTask(id);
+        if (present === null) {
+          entriesBackfilled += 1;
+        } else {
+          entriesPresent += 1;
+        }
+      }
+    }
+    return { files, entriesSeen, entriesBackfilled, entriesPresent, filesSkippedInvalid };
+  }
+
+  db.transaction(() => {
+    for (const { entries } of validParsed) {
+      for (const entry of entries) {
+        const id = (entry as { id?: string }).id;
+        if (typeof id !== "string") continue;
+        const present = repo.getTask(id);
+        const task = inboxEntryToKanbanTask(entry);
+        repo.upsertTask(task);
+        if (present === null) {
+          entriesBackfilled += 1;
+        } else {
+          entriesPresent += 1;
+        }
+      }
+    }
+  })();
+
+  return { files, entriesSeen, entriesBackfilled, entriesPresent, filesSkippedInvalid };
 }
 
 // ---------- Archive helper ----------
@@ -325,17 +471,14 @@ export async function migrateState(
       counts.kanban = await migrateKanban(atmuxDir, db, parsed.dryRun);
     }
 
-    // ----- inboxes target (NOT IMPLEMENTED; team's bundle-2 follow-up) -----
-    if (parsed.target === "inboxes") {
-      throw new ConfigError({
-        what: "migrate-state: --target=inboxes not yet implemented",
-        hint: "InboxRepo + matching migration helper is on the team's bundle-2 follow-up list (driver-inbox 2026-05-07 18:30 MYT)",
-      });
-    }
-    if (parsed.target === "all") {
-      warnings.push(
-        "inboxes target skipped — InboxRepo not yet implemented (team bundle-2 follow-up)",
-      );
+    // ----- inboxes target (ADR-076 — eliminate JSON inbox, backfill tasks-table) -----
+    if (parsed.target === "all" || parsed.target === "inboxes") {
+      counts.inboxes = await migrateInboxes(atmuxDir, db, parsed.dryRun);
+      if (counts.inboxes.filesSkippedInvalid > 0) {
+        warnings.push(
+          `inboxes: ${counts.inboxes.filesSkippedInvalid} file(s) failed Zod parse and were skipped`,
+        );
+      }
     }
 
     // ----- state target (NOT IMPLEMENTED; team's bundle-2 follow-up) -----

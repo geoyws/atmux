@@ -303,13 +303,25 @@ describe("migrateState", () => {
     ).rejects.toThrow(ConfigError);
   });
 
-  test("--target=inboxes throws ConfigError (not implemented)", async () => {
-    await expect(
-      migrateState(["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=inboxes"], {
+  test("--target=inboxes succeeds with empty inboxes dir (ADR-076)", async () => {
+    // No inboxes dir seeded — migrateInboxes returns zero-counts cleanly.
+    const exit = await migrateState(
+      ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=inboxes"],
+      {
         logger: env.logger,
         stdout: (s) => env.stdoutBuf.push(s),
-      }),
-    ).rejects.toThrow(ConfigError);
+      },
+    );
+    expect(exit).toBe(0);
+    const auditPath = join(env.atmuxDir, "migration-state-sqlite.json");
+    const audit = JSON.parse(await readText(auditPath));
+    expect(audit.counts.inboxes).toEqual({
+      files: 0,
+      entriesSeen: 0,
+      entriesBackfilled: 0,
+      entriesPresent: 0,
+      filesSkippedInvalid: 0,
+    });
   });
 
   test("--target=state throws ConfigError (not implemented)", async () => {
@@ -321,7 +333,7 @@ describe("migrateState", () => {
     ).rejects.toThrow(ConfigError);
   });
 
-  test("--target=all warns about skipped inboxes/state but completes kanban", async () => {
+  test("--target=all runs kanban + inboxes; warns about state-target only (ADR-076)", async () => {
     await seedKanban(env);
 
     const exit = await migrateState(
@@ -333,10 +345,18 @@ describe("migrateState", () => {
 
     const auditPath = join(env.atmuxDir, "migration-state-sqlite.json");
     const audit = JSON.parse(await readText(auditPath));
-    expect(audit.warnings.length).toBe(2);
-    expect(audit.warnings[0]).toContain("inboxes target skipped");
-    expect(audit.warnings[1]).toContain("state target skipped");
+    // After ADR-076 inboxes target landed, only state target stays unimplemented;
+    // the inboxes-skipped warning is gone.
+    expect(audit.warnings.length).toBe(1);
+    expect(audit.warnings[0]).toContain("state target skipped");
     expect(audit.counts.kanban).toEqual({ tasks: 2, epics: 1, stories: 1 });
+    expect(audit.counts.inboxes).toEqual({
+      files: 0,
+      entriesSeen: 0,
+      entriesBackfilled: 0,
+      entriesPresent: 0,
+      filesSkippedInvalid: 0,
+    });
   });
 
   test("--db-path overrides default dbPath", async () => {
