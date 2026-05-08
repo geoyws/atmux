@@ -32,6 +32,7 @@ import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./erro
 import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
 import { claim, done } from "./verbs/claim.ts";
+import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
 import { cost } from "./verbs/cost.ts";
 import { dashboard } from "./verbs/dashboard.ts";
@@ -165,6 +166,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return improve(argv.slice(1));
     case "groom":
       return groom(argv.slice(1));
+    case "cleanup":
+      return cleanup(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
     case "up":

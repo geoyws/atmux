@@ -65,6 +65,9 @@ Maintenance:
   groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
                               Daily 04:00 cron sweep — flush archive sections, age
                               out done/cancelled cards, cull stale .bak files.
+  cleanup <logs|inboxes|all> [--max-size <bytes>] [--max-age-days <N>] [--dry-run]
+                              Rotate big *.log files; prune old .done[] in
+                              member inboxes. Idempotent + cron-safe.
 
 Misc:
   version
