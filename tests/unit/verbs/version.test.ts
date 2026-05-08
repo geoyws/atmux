@@ -11,11 +11,10 @@ import { describe, expect, test } from "bun:test";
 import { ATMUX_VERSION, version } from "../../../src/verbs/version.ts";
 
 describe("verbs/version", () => {
-  test("ATMUX_VERSION constant matches bash@2aadc3f (atmux::version → 0.5.0)", () => {
-    // Pinning the value here means a bump that desyncs from bash (which
-    // emits `atmux 0.5.0` from `lib/common.sh::atmux::version`) breaks
-    // this test BEFORE parity-harness CI catches it. Faster signal.
-    expect(ATMUX_VERSION).toBe("0.5.0");
+  test("ATMUX_VERSION constant matches package.json (0.6.0 — ADR-077 wave)", () => {
+    // Pin the value so a bump that desyncs from package.json fails this
+    // test BEFORE the build:install step ships a wrong-versioned binary.
+    expect(ATMUX_VERSION).toBe("0.6.0");
   });
 
   test("version() returns exit code 0", async () => {
