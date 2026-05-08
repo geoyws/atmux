@@ -9,7 +9,7 @@
 /**
  * The atmux version string. Bump in lockstep with `package.json::version`.
  */
-export const ATMUX_VERSION = "0.4.0";
+export const ATMUX_VERSION = "0.4.1";
 
 /**
  * `atmux version` — print the version string, exit 0. No state touched,

@@ -11,11 +11,11 @@ import { describe, expect, test } from "bun:test";
 import { ATMUX_VERSION, version } from "../../../src/verbs/version.ts";
 
 describe("verbs/version", () => {
-  test("ATMUX_VERSION constant matches bash@2aadc3f (atmux::version → 0.4.0)", () => {
+  test("ATMUX_VERSION constant matches bash@2aadc3f (atmux::version → 0.4.1)", () => {
     // Pinning the value here means a bump that desyncs from bash (which
-    // emits `atmux 0.4.0` from `lib/common.sh::atmux::version`) breaks
+    // emits `atmux 0.4.1` from `lib/common.sh::atmux::version`) breaks
     // this test BEFORE parity-harness CI catches it. Faster signal.
-    expect(ATMUX_VERSION).toBe("0.4.0");
+    expect(ATMUX_VERSION).toBe("0.4.1");
   });
 
   test("version() returns exit code 0", async () => {
@@ -39,7 +39,7 @@ describe("verbs/version", () => {
 
   test("version() ignores extra args (parity with bash)", async () => {
     // Bash side: `bin/atmux version foo bar baz` still prints `atmux
-    // 0.4.0` and exits 0. The TS verb signature accepts a ReadonlyArray
+    // 0.4.1` and exits 0. The TS verb signature accepts a ReadonlyArray
     // and discards it; this test pins that contract.
     const captured: string[] = [];
     const orig = console.log;

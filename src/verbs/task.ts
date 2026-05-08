@@ -51,12 +51,13 @@ const USAGE_ADD =
   "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N] [--lane L]";
 const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--json]";
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
-const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|->";
+const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
 /** Lane enum (mirrors `KanbanLane` in src/schema/kanban.ts). `-` clears
- *  the lane (sets to null). */
-const VALID_LANES = new Set(["fe", "be", "db", "ops", "test", "review", "misc", "-"]);
+ *  the lane (sets to null). `git` + `docs` added 2026-05-08 for role-
+ *  specific lanes (gitter pulls commits/merges; docs pulls writing tasks). */
+const VALID_LANES = new Set(["fe", "be", "db", "ops", "test", "review", "misc", "git", "docs", "-"]);
 
 /**
  * `atmux task <subverb> [args]`. Returns 0 on success; throws
@@ -130,7 +131,7 @@ async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
   const [id, laneArg] = positional as [string, string];
   if (!VALID_LANES.has(laneArg)) {
     throw new UsageError({
-      what: `task lane: lane must be one of fe|be|db|ops|test|review|misc|- (got: ${laneArg})`,
+      what: `task lane: lane must be one of fe|be|db|ops|test|review|misc|git|docs|- (got: ${laneArg})`,
       hint: USAGE_LANE,
     });
   }
@@ -349,7 +350,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
       }
       if (!VALID_LANES.has(v) || v === "-") {
         throw new UsageError({
-          what: `task add: --lane must be one of fe|be|db|ops|test|review|misc (got: ${v})`,
+          what: `task add: --lane must be one of fe|be|db|ops|test|review|misc|git|docs (got: ${v})`,
           hint: USAGE_ADD,
         });
       }

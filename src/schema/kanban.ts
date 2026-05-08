@@ -35,7 +35,7 @@ import { z } from "zod";
  * entries; this enum is exported for use by core helpers / verbs that
  * validate at the WRITE boundary.
  */
-export const KanbanLane = z.enum(["fe", "be", "db", "ops", "test", "review", "misc"]);
+export const KanbanLane = z.enum(["fe", "be", "db", "ops", "test", "review", "misc", "git", "docs"]);
 export type KanbanLane = z.infer<typeof KanbanLane>;
 
 // ---------- Per-task entry ----------
