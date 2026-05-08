@@ -25,12 +25,13 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
-import type { Team } from "../schema/team.ts";
 import { UsageError } from "../errors.ts";
-import { defaultSocketPath } from "./start.ts";
+import type { Team } from "../schema/team.ts";
 import { collectOpenEntries } from "./reply.ts";
+import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux status [--json]";
 
@@ -104,6 +105,9 @@ export interface StatusSnapshot {
   members: MemberStatus[];
   kanban: KanbanCounts;
   driverInboxOpen: number;
+  /** ADR-064 §4: driver-pane health snapshot. Always populated;
+   *  renderer skips display when `configured=false`. */
+  driverPane: DriverPaneHealth;
 }
 
 /**
@@ -158,6 +162,11 @@ export async function gatherStatus(
     driverInboxOpen = collectOpenEntries(body).length;
   }
 
+  // ADR-064 §4: driver-pane health probe. Reuses the same tmux
+  // namespace already in scope so we don't pay a second connection
+  // setup; the helper itself stays I/O-bounded to one capture call.
+  const driverPane = await probeDriverPane(team, atmuxDir, { tmux });
+
   return {
     team: team.name,
     session: sessionName,
@@ -165,6 +174,7 @@ export async function gatherStatus(
     members,
     kanban: counts,
     driverInboxOpen,
+    driverPane,
   };
 }
 
@@ -196,6 +206,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       })),
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
+      driverPane: snap.driverPane,
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     return 0;
@@ -249,6 +260,15 @@ function renderTextStatus(snap: StatusSnapshot): void {
   process.stdout.write(
     `${sessEmoji} 🧭 TEAM ${snap.team}  session=${snap.session} [${snap.sessionState}]\n\n`,
   );
+  // ADR-064 §4: driver-pane row above the per-member table — only when
+  // the team opted into the ADR-044 driver-window topology. Mirrors the
+  // existing `driver-inbox open=N` skip-when-empty pattern below.
+  if (snap.driverPane.configured) {
+    const dp = snap.driverPane;
+    const stateLabel = dp.windowExists ? (dp.state ?? "UNKNOWN") : "no-window";
+    const evidence = dp.evidence.length > 60 ? `${dp.evidence.slice(0, 60)}…` : dp.evidence;
+    process.stdout.write(`🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`);
+  }
   process.stdout.write(`member       role          tui        pane          inbox\n`);
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
@@ -256,7 +276,9 @@ function renderTextStatus(snap: StatusSnapshot): void {
     const role = m.role.padEnd(14);
     const tui = m.tui.padEnd(10);
     const pane = m.paneCommand.padEnd(14);
-    process.stdout.write(`  ${emoji} ${name} ${role} ${tui} ${pane} 📥 ${m.pendingCount} pending\n`);
+    process.stdout.write(
+      `  ${emoji} ${name} ${role} ${tui} ${pane} 📥 ${m.pendingCount} pending\n`,
+    );
   }
   const k = snap.kanban;
   process.stdout.write(
