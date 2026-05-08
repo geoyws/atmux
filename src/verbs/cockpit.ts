@@ -368,6 +368,17 @@ export async function cockpitRebuild(
   );
 
   logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
+  // ADR-077: nudge the operator to start the superdoctor loop manually.
+  // Rebuild stays purely topological — auto-firing `/loop /superdoctor`
+  // on every rebuild would either re-fire on idempotent re-runs or need
+  // fragile send-keys timing against a freshly-spawned claude. Manual
+  // start is one slash command and matches how the operator drives
+  // superdriver in window 1.
+  if (cockpit.superdoctor?.enabled === true) {
+    logger.log(
+      `  ▸ superdoctor: select window 2 ('superdoctor') and type \`/loop /superdoctor\` to start the hourly diagnosis loop`,
+    );
+  }
   return 0;
 }
 

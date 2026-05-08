@@ -949,4 +949,72 @@ describe("cockpitRebuild", () => {
     expect(code).toBe(0);
     expect(logs.some((l) => l.startsWith("warn:") && l.includes("no enabled teams"))).toBe(true);
   });
+
+  // ADR-077: rebuild emits a manual-start nudge when superdoctor is
+  // enabled. Auto-firing /loop /superdoctor would re-fire on every
+  // idempotent rebuild — keep rebuild topological, nudge the operator.
+  test("ADR-077: superdoctor enabled → success message includes /loop /superdoctor nudge", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "test_cockpit_sd_nudge",
+        superdoctor: { enabled: true },
+        teams: [{ name: "demo", root: projRoot, enabled: true }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-sd-nudge");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        { subverb: "rebuild", noCycle: true, forceCycle: false, noLaunch: true },
+        {
+          env: { HOME: homeDir },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      expect(joined).toContain("/loop /superdoctor");
+      expect(joined).toContain("superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-077: superdoctor unset → no /loop nudge in success message", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "test_cockpit_sd_off",
+        teams: [{ name: "demo", root: projRoot, enabled: true }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-sd-off");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        { subverb: "rebuild", noCycle: true, forceCycle: false, noLaunch: true },
+        {
+          env: { HOME: homeDir },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      expect(logs.join("\n")).not.toContain("/loop /superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
 });
