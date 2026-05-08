@@ -84,6 +84,9 @@ import {
   type BudgetCheckTeamMember,
   runBudgetCheck,
 } from "../core/whip-budget-check.ts";
+import { listTasks } from "../core/kanban.ts";
+import type { CageHandle } from "../abstractions/fallback-cage.ts";
+import { spawn } from "../abstractions/spawn.ts";
 import {
   type AccountSwapCheckCtx,
   type AccountSwapCheckDeps,
@@ -594,19 +597,29 @@ export async function readLeadSessionStart(
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-/** I-2 read side. Falls back to bash convention `__<team>__team-lead`
- *  when the marker file is absent (writer side V-26-deferred per
- *  ADR-021; the verb that knows the lead-window's actual name is
- *  `team rotate-lead` / `team start`). */
+/** I-2 read side. The marker file (when present) carries the
+ *  authoritative current lead-window name — written by `team rotate-lead`
+ *  / `team start` when the lead pane is renamed mid-cycle (auto-rotate).
+ *
+ *  Fallback when the marker is absent or empty:
+ *  - Caller-supplied `fallback` wins. The whip per-member loop passes the
+ *    ADR-017-style `<emoji><name>` derived from the team-lead member's
+ *    schema entry — that matches what `start.ts::buildWindowName` actually
+ *    spawns, so whip stops emitting false `🛑 lead: window missing`
+ *    findings on freshly-started teams that haven't rotated yet.
+ *  - When no fallback is supplied, default to the legacy bash convention
+ *    `__<team>__team-lead`. Pre-bun callers + the unit tests rely on this
+ *    behaviour; tightening would be a wider migration. */
 export async function readLeadWindowName(
   team: string,
-  opts: SkillsTeamPathsOpts = {},
+  opts: SkillsTeamPathsOpts & { fallback?: string } = {},
 ): Promise<string> {
   const text = await readTextOrNull(leadWindowNamePath(team, opts));
   if (text !== null) {
     const trimmed = text.trim();
     if (trimmed.length > 0) return trimmed;
   }
+  if (opts.fallback !== undefined && opts.fallback.length > 0) return opts.fallback;
   return `__${team}__team-lead`;
 }
 
@@ -1029,19 +1042,28 @@ async function runBudgetTickCheck(
   ctx: TickCtx,
   config: WhipConfig,
 ): Promise<ReturnType<typeof runBudgetCheck>> {
+  const team = ctx.team;
+  const fallbackEnabled = team.fallback?.enabled === true;
+
+  const teamFallback: BudgetCheckCtx["team"]["fallback"] = fallbackEnabled
+    ? { enabled: true }
+    : undefined;
+
   const checkCtx: BudgetCheckCtx = {
     atmuxDir: ctx.atmuxDir,
     nowMs: ctx.nowMs,
     nowSec: ctx.nowSec,
+    projectCwd: process.cwd(),
     team: {
-      name: ctx.team.name,
-      members: ctx.team.members.map((m) => {
+      name: team.name,
+      members: team.members.map((m) => {
         const out: BudgetCheckTeamMember = { name: m.name };
         if (typeof m.claudeAccount === "string" && m.claudeAccount.length > 0) {
           out.claudeAccount = m.claudeAccount;
         }
         return out;
       }),
+      ...(teamFallback !== undefined ? { fallback: teamFallback } : {}),
     },
     config: {
       budgetPauseThreshold: config.budgetPauseThreshold,
@@ -1057,7 +1079,103 @@ async function runBudgetTickCheck(
   if (ctx.budgetProbe !== undefined) {
     deps.probeBudget = ctx.budgetProbe;
   }
+  if (fallbackEnabled) {
+    deps.listInFlightTasks = () => listTasks(ctx.atmuxDir, { status: "in-progress" });
+    deps.sendCageBrief = (handle, body) => sendCageBrief(handle, body);
+    deps.sendContinuityBrief = (member, body) => sendContinuityBrief(ctx, member, body);
+  }
   return runBudgetCheck(checkCtx, deps);
+}
+
+/**
+ * v1 cage-brief sender. Pastes the brief into the cage's tmux pane via
+ * raw `tmux -L <socket> send-keys` (Tier 2: operator UID; Tier 3+: sudo
+ * -u <agent>). Multi-line briefs use load-buffer + paste-buffer so the
+ * brief lands as a single chunk rather than per-line keystrokes (which
+ * would race against the agent's startup banner).
+ *
+ * The cage tmux server is FRESH (just spawned by createFallbackCage),
+ * so no pane-state classifier is needed — there's nothing in the pane
+ * to preempt the paste.
+ */
+async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
+  const bufferName = `atmux-fallback-${handle.team}-${handle.lane}-${handle.createdAt}`;
+  const target = `${handle.sessionName}:${handle.windowName}`;
+  const isOperator = handle.agent === "operator";
+
+  // tmux load-buffer reads from stdin via `-`. Wrap with sudo -u <agent>
+  // for Tier 3+ since the cage tmux runs under the dedicated user.
+  const tmuxArgv = (rest: string[]): { cmd: string; argv: string[] } =>
+    isOperator
+      ? { cmd: "tmux", argv: ["-L", handle.tmuxSocket, ...rest] }
+      : {
+          cmd: "sudo",
+          argv: [
+            "-u",
+            handle.agent,
+            "env",
+            `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
+            "tmux",
+            "-L",
+            handle.tmuxSocket,
+            ...rest,
+          ],
+        };
+
+  const load = tmuxArgv(["load-buffer", "-b", bufferName, "-"]);
+  await spawn({
+    cmd: load.cmd,
+    argv: load.argv,
+    stdin: body,
+    timeoutMs: 10_000,
+  });
+  const paste = tmuxArgv(["paste-buffer", "-b", bufferName, "-d", "-t", target]);
+  await spawn({
+    cmd: paste.cmd,
+    argv: paste.argv,
+    timeoutMs: 5_000,
+  });
+  // Submit via Enter — the agent CLI eats the brief as a prompt.
+  const enter = tmuxArgv(["send-keys", "-t", target, "Enter"]);
+  await spawn({
+    cmd: enter.cmd,
+    argv: enter.argv,
+    timeoutMs: 5_000,
+  });
+}
+
+/**
+ * v1 continuity-brief sender. The original Claude member's pane lives
+ * on the TEAM's tmux server (ctx.tmux); we paste the brief via
+ * load-buffer + paste-buffer, same shape as `sendCageBrief` but using
+ * the team-tmux abstraction directly. A pane-state-aware safe send
+ * (ADR-057 §D1) belongs here once the lead reviews this — for v1 we
+ * do the simple direct paste.
+ */
+async function sendContinuityBrief(
+  ctx: TickCtx,
+  member: string,
+  body: string,
+): Promise<void> {
+  const session = await getSessionName({ dir: ctx.atmuxDir, team: ctx.team });
+  // Members' window names are `<emoji><member>` — but the cage handle
+  // stored the lane string (which may already be an emoji-prefixed name
+  // OR the bare member name). For v1 we accept both shapes: try the
+  // bare member as the window name; if it doesn't exist, the paste
+  // surfaces a tmux error which the caller logs (best-effort).
+  const target = `${session}:${member}`;
+  const bufferName = `atmux-fallback-resume-${ctx.team.name}-${member}-${ctx.nowSec}`;
+  await ctx.tmux.buffer.loadBuffer({ name: bufferName, data: body });
+  await ctx.tmux.buffer.pasteBuffer({
+    name: bufferName,
+    target: { kind: "member", member, team: ctx.team.name, target },
+    deleteAfter: true,
+  });
+  await ctx.tmux.pane.sendKeys({
+    target: { kind: "member", member, team: ctx.team.name, target },
+    keys: "Enter",
+    enter: false,
+  });
 }
 
 // ---------- Per-member check ----------
@@ -1071,15 +1189,18 @@ async function checkMember(
   const { team, atmuxDir, tmux, env, nowSec, readMemberEnv } = ctx;
   const session = await getSessionName({ dir: atmuxDir, team });
 
-  // Resolve the window name. Lead window uses the I-2 marker (with
-  // bash-fallback); regular members use buildWindowName equivalent
-  // (`<emoji><member>` per ADR-017 / memory feedback_window_naming_no_prefix).
+  // Resolve the window name. Lead window uses the I-2 marker first
+  // (auto-rotate may have renamed the lead pane); falls back to the
+  // ADR-017 `<emoji><member>` form derived from the schema entry — same
+  // shape `start.ts::buildWindowName` spawns. Regular members go straight
+  // to that form (memory feedback_window_naming_no_prefix).
   const role = (member.role ?? "member").toString();
-  const homeOpts: SkillsTeamPathsOpts = ctx.home !== undefined ? { home: ctx.home } : {};
+  const memberWindowName = `${member.emoji ?? ""}${member.name}`;
+  const homeOpts: SkillsTeamPathsOpts & { fallback?: string } =
+    ctx.home !== undefined ? { home: ctx.home } : {};
+  if (role === "team-lead") homeOpts.fallback = memberWindowName;
   const windowName =
-    role === "team-lead"
-      ? await readLeadWindowName(team.name, homeOpts)
-      : `${member.emoji ?? ""}${member.name}`;
+    role === "team-lead" ? await readLeadWindowName(team.name, homeOpts) : memberWindowName;
   const windowTarget = `${session}:${windowName}`;
 
   // Window existence — `displayMessage` returns "" + non-zero if absent.

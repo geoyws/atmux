@@ -400,6 +400,37 @@ describe("lead-marker helpers", () => {
     expect(await readLeadWindowName("demo", { home: homeDir })).toBe("__demo__team-lead");
   });
 
+  test("readLeadWindowName: opts.fallback wins when marker absent", async () => {
+    // Caller-supplied fallback (the ADR-017-style `<emoji><name>` derived
+    // from the team-lead member's schema entry) must take precedence over
+    // the legacy `__<team>__team-lead` default. This is what stops whip
+    // from emitting false `🛑 lead: window missing` findings on freshly-
+    // started teams that haven't rotated the lead yet.
+    expect(
+      await readLeadWindowName("demo", { home: homeDir, fallback: "🧭lead" }),
+    ).toBe("🧭lead");
+  });
+
+  test("readLeadWindowName: marker text wins over fallback when present", async () => {
+    // Auto-rotate scenario: the lead pane was renamed mid-cycle, marker
+    // file holds the new name. Even if a fallback is supplied, the
+    // marker is authoritative — a stale fallback derived from the
+    // pre-rotate schema must NOT mask the rename.
+    await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead-v2\n");
+    expect(
+      await readLeadWindowName("demo", { home: homeDir, fallback: "🧭lead" }),
+    ).toBe("🧭lead-v2");
+  });
+
+  test("readLeadWindowName: empty fallback string falls through to legacy default", async () => {
+    // Edge: caller passes fallback="". Should NOT short-circuit on the
+    // empty string — drops to the legacy `__<team>__team-lead` form.
+    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "" })).toBe(
+      "__demo__team-lead",
+    );
+  });
+
   test("path helpers default to os.homedir() when no opts.home given", () => {
     // Real homedir() returns a string — assert prefix without binding to
     // a specific value so the test is portable across CI / dev hosts.

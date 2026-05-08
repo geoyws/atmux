@@ -177,6 +177,35 @@ export const TeamFallback = z
   .strict();
 export type TeamFallback = z.infer<typeof TeamFallback>;
 
+/**
+ * `team.json::cron` sub-config — per-team cron-line PATH override.
+ *
+ * Cron's bare env on Ubuntu is
+ * `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, which
+ * does NOT include `/root/.bun/bin` (bun lives there under mise).
+ * atmux-bun's shebang is `#!/usr/bin/env bun`, so cron-fired verbs
+ * (whip, report, decisions digest, groom, whip-resume-check, etc.)
+ * silently die with `/usr/bin/env: 'bun': No such file or directory`.
+ *
+ * Fix: bake an inline `PATH=<value> ` prefix into every emitted cron
+ * line so each line picks up bun regardless of cron's narrow env.
+ * Default targets hax (where atmux primarily runs); operators on other
+ * hosts override via `team.cron.path` in `team.json`.
+ *
+ * Source: Bug t-2db59eee (cron whip fails with bun-not-found).
+ */
+export const TeamCron = z
+  .object({
+    /** Inline PATH baked into every cron line. Default targets hax
+     *  (mise-managed bun at `/root/.bun/bin/bun`); override per-host
+     *  when bun lives elsewhere. */
+    path: z
+      .string()
+      .default("/root/.bun/bin:/usr/local/bin:/usr/bin:/bin"),
+  })
+  .strict();
+export type TeamCron = z.infer<typeof TeamCron>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -192,6 +221,20 @@ export const Team = z
     singleSession: z.boolean().optional(),
     /** TUI to auto-spawn in the cage's driver window on `atmux start`. */
     driverTui: z.string().nullable().optional(),
+    /** ADR-044: when set, the team session is created with `driver` as
+     *  window 1 (in place of the `__home` placeholder). Members spawn as
+     *  windows 2..N+1 in declarative order. `null` is accepted as
+     *  "explicitly disabled" (matches existing wizard output). Resolution
+     *  order for the TUI command: `driverSession.tui` → `driverTui` →
+     *  `"claude"`. */
+    driverSession: z
+      .object({
+        tui: z.string().nullable().optional(),
+        command: z.string().optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
     /** Member roster. Order is preserved (window layout depends on it). */
     members: z.array(TeamMember),
     emojis: TeamEmojis.optional(),
@@ -199,6 +242,8 @@ export const Team = z
     whip: TeamWhip.optional(),
     /** ADR-058: multi-tier fallback chain (Cursor/Kimi/MiniMax). */
     fallback: TeamFallback.optional(),
+    /** Per-team cron PATH override (bug t-2db59eee). */
+    cron: TeamCron.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     report: z.unknown().optional(),
     discord: z.unknown().optional(),
