@@ -32,6 +32,7 @@ import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./erro
 import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
 import { claim, done } from "./verbs/claim.ts";
+import { cockpit } from "./verbs/cockpit.ts";
 import { cost } from "./verbs/cost.ts";
 import { dashboard } from "./verbs/dashboard.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
@@ -141,6 +142,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return report(argv.slice(1));
     case "cost":
       return cost(argv.slice(1));
+    case "cockpit":
+      return cockpit(argv.slice(1));
     case "doctor":
       return doctor(argv.slice(1));
     case "driver-inbox":

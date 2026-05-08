@@ -1,0 +1,552 @@
+// Unit tests for src/verbs/cockpit.ts — ADR-063 cockpit verb.
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { Logger } from "../../../src/core/tui.ts";
+import { UsageError } from "../../../src/errors.ts";
+import {
+  applyCagePrefix,
+  autolaunchTeam,
+  cageAlive,
+  cockpitRebuild,
+  normaliseTeamJson,
+  parseCockpitArgs,
+  reconcileCockpitSession,
+} from "../../../src/verbs/cockpit.ts";
+import type { CockpitTeam } from "../../../src/schema/cockpit.ts";
+
+// ---------- parseCockpitArgs ----------
+
+describe("parseCockpitArgs", () => {
+  test("rejects empty argv with hint", () => {
+    expect(() => parseCockpitArgs([])).toThrow(UsageError);
+  });
+  test("rejects unknown sub-verb", () => {
+    expect(() => parseCockpitArgs(["frobnicate"])).toThrow(UsageError);
+  });
+  test("bare rebuild parses with all-false flags", () => {
+    const p = parseCockpitArgs(["rebuild"]);
+    expect(p).toEqual({
+      subverb: "rebuild",
+      noCycle: false,
+      forceCycle: false,
+      noLaunch: false,
+    });
+  });
+  test("each flag parses individually", () => {
+    expect(parseCockpitArgs(["rebuild", "--no-cycle"]).noCycle).toBe(true);
+    expect(parseCockpitArgs(["rebuild", "--force-cycle"]).forceCycle).toBe(true);
+    expect(parseCockpitArgs(["rebuild", "--no-launch"]).noLaunch).toBe(true);
+  });
+  test("--config requires a value", () => {
+    expect(() => parseCockpitArgs(["rebuild", "--config"])).toThrow(UsageError);
+    expect(parseCockpitArgs(["rebuild", "--config", "/p"]).configPath).toBe("/p");
+  });
+  test("--no-cycle and --force-cycle are mutually exclusive", () => {
+    expect(() => parseCockpitArgs(["rebuild", "--no-cycle", "--force-cycle"])).toThrow(UsageError);
+  });
+  test("rejects unknown flag", () => {
+    expect(() => parseCockpitArgs(["rebuild", "--bogus"])).toThrow(UsageError);
+  });
+});
+
+// ---------- Logger fixture ----------
+
+function makeLogger(): { logger: Logger; logs: string[] } {
+  const logs: string[] = [];
+  return {
+    logger: {
+      log: (m) => logs.push(`log: ${m}`),
+      ok: (m) => logs.push(`ok: ${m}`),
+      warn: (m) => logs.push(`warn: ${m}`),
+      err: (m) => logs.push(`err: ${m}`),
+    },
+    logs,
+  };
+}
+
+// ---------- normaliseTeamJson ----------
+
+describe("normaliseTeamJson", () => {
+  let projRoot: string;
+  beforeEach(async () => {
+    projRoot = await mkdtemp(join(tmpdir(), "atmux-cockpit-norm-"));
+    await mkdir(join(projRoot, ".atmux"), { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(projRoot, { recursive: true, force: true });
+  });
+
+  async function writeTeamJson(body: unknown): Promise<void> {
+    await writeFile(join(projRoot, ".atmux", "team.json"), JSON.stringify(body, null, 2), "utf8");
+  }
+
+  test("sets bareWindowNames=true on a vanilla team.json", async () => {
+    await writeTeamJson({ name: "x", members: [{ name: "lead", role: "team-lead" }] });
+    const { logger } = makeLogger();
+    await normaliseTeamJson(
+      { name: "x", root: projRoot, enabled: true } as CockpitTeam,
+      logger,
+    );
+    const after = JSON.parse(await readFile(join(projRoot, ".atmux", "team.json"), "utf8"));
+    expect(after.bareWindowNames).toBe(true);
+    // No claudeAccount in cockpit entry → tuiCommands left untouched.
+    expect(after.tuiCommands).toBeUndefined();
+  });
+
+  test("writes tuiCommands.claude when claudeAccount present", async () => {
+    await writeTeamJson({ name: "x", members: [{ name: "lead", role: "team-lead" }] });
+    const { logger } = makeLogger();
+    await normaliseTeamJson(
+      {
+        name: "x",
+        root: projRoot,
+        enabled: true,
+        claudeAccount: { configDir: "/root/.claude-ifca", label: "ifca" },
+      } as CockpitTeam,
+      logger,
+    );
+    const after = JSON.parse(await readFile(join(projRoot, ".atmux", "team.json"), "utf8"));
+    expect(after.tuiCommands.claude).toContain("CLAUDE_CONFIG_DIR=/root/.claude-ifca");
+    expect(after.tuiCommands.claude).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
+    expect(after.tuiCommands.claude).toContain("--permission-mode auto");
+  });
+
+  test("honors tuiOverrides", async () => {
+    await writeTeamJson({ name: "x", members: [{ name: "lead", role: "team-lead" }] });
+    const { logger } = makeLogger();
+    await normaliseTeamJson(
+      {
+        name: "x",
+        root: projRoot,
+        enabled: true,
+        claudeAccount: { configDir: "/root/.claude-x" },
+        tuiOverrides: {
+          effortLevel: "high",
+          permissionMode: "dontAsk",
+          pluginDir: "/p/plugins",
+        },
+      } as CockpitTeam,
+      logger,
+    );
+    const after = JSON.parse(await readFile(join(projRoot, ".atmux", "team.json"), "utf8"));
+    expect(after.tuiCommands.claude).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
+    expect(after.tuiCommands.claude).toContain("--permission-mode dontAsk");
+    expect(after.tuiCommands.claude).toContain("--plugin-dir=/p/plugins");
+  });
+
+  test("preserves other tuiCommands entries when overwriting claude", async () => {
+    await writeTeamJson({
+      name: "x",
+      members: [{ name: "lead", role: "team-lead" }],
+      tuiCommands: { opencode: "opencode --model y", _comment: "preserved" },
+    });
+    const { logger } = makeLogger();
+    await normaliseTeamJson(
+      {
+        name: "x",
+        root: projRoot,
+        enabled: true,
+        claudeAccount: { configDir: "/root/.claude-x" },
+      } as CockpitTeam,
+      logger,
+    );
+    const after = JSON.parse(await readFile(join(projRoot, ".atmux", "team.json"), "utf8"));
+    expect(after.tuiCommands.claude).toContain("CLAUDE_CONFIG_DIR=/root/.claude-x");
+    expect(after.tuiCommands.opencode).toBe("opencode --model y");
+    expect(after.tuiCommands._comment).toBe("preserved");
+  });
+
+  test("idempotent — re-running produces same content", async () => {
+    await writeTeamJson({ name: "x", members: [{ name: "lead", role: "team-lead" }] });
+    const { logger } = makeLogger();
+    const team = {
+      name: "x",
+      root: projRoot,
+      enabled: true,
+      claudeAccount: { configDir: "/root/.claude-x" },
+    } as CockpitTeam;
+    await normaliseTeamJson(team, logger);
+    const first = await readFile(join(projRoot, ".atmux", "team.json"), "utf8");
+    await normaliseTeamJson(team, logger);
+    const second = await readFile(join(projRoot, ".atmux", "team.json"), "utf8");
+    expect(second).toBe(first);
+  });
+});
+
+// ---------- Tmux integration tests ----------
+
+interface TmuxFixture {
+  tmux: TmuxNamespace;
+  socketPath: string;
+  socketDir: string;
+}
+
+async function spinTmux(prefix: string): Promise<TmuxFixture> {
+  const socketDir = await mkdtemp(join(tmpdir(), `atmux-cockpit-${prefix}-`));
+  const socketPath = join(socketDir, "sock");
+  const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  return { tmux, socketPath, socketDir };
+}
+
+let priorTmux: string | undefined;
+beforeEach(() => {
+  priorTmux = process.env.TMUX;
+  delete process.env.TMUX;
+});
+afterEach(() => {
+  if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+});
+
+describe("autolaunchTeam", () => {
+  test("returns zero counts when cage session doesn't exist", async () => {
+    const fx = await spinTmux("autolaunch-no-session");
+    let projRoot: string | undefined;
+    try {
+      projRoot = await mkdtemp(join(tmpdir(), "atmux-cockpit-au-noses-"));
+      await mkdir(join(projRoot, ".atmux"), { recursive: true });
+      await writeFile(
+        join(projRoot, ".atmux", "team.json"),
+        JSON.stringify({ name: "x", members: [{ name: "lead" }] }),
+        "utf8",
+      );
+      const { logger } = makeLogger();
+      const summary = await autolaunchTeam(
+        { name: "x", root: projRoot, enabled: true } as CockpitTeam,
+        fx.tmux,
+        {},
+        logger,
+      );
+      expect(summary).toEqual({ launched: 0, skipped: 0 });
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+      if (projRoot) await rm(projRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("sends launch command into bare-shell pane matching a member name", async () => {
+    const fx = await spinTmux("autolaunch-real");
+    let projRoot: string | undefined;
+    try {
+      projRoot = await mkdtemp(join(tmpdir(), "atmux-cockpit-au-real-"));
+      await mkdir(join(projRoot, ".atmux"), { recursive: true });
+      await writeFile(
+        join(projRoot, ".atmux", "team.json"),
+        JSON.stringify({
+          name: "demo",
+          members: [{ name: "lead", role: "team-lead", tui: "shell" }],
+        }),
+        "utf8",
+      );
+      // Create the cage session with a window named after the member.
+      // Cage session name for "demo" is "atmux_demo" per cageSessionName().
+      await fx.tmux.session.newSession({
+        name: "atmux_demo",
+        detached: true,
+        windowName: "lead",
+      });
+      const { logger } = makeLogger();
+      const summary = await autolaunchTeam(
+        { name: "demo", root: projRoot, enabled: true } as CockpitTeam,
+        fx.tmux,
+        {},
+        logger,
+      );
+      expect(summary.launched).toBe(1);
+      expect(summary.skipped).toBe(0);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+      if (projRoot) await rm(projRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("cageAlive", () => {
+  test("returns false for a server that has never started", async () => {
+    const fx = await spinTmux("cage-dead");
+    try {
+      expect(await cageAlive(fx.tmux)).toBe(false);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns false for a live server with no claude panes", async () => {
+    const fx = await spinTmux("cage-shell");
+    try {
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "w" });
+      // pane runs default shell — not claude
+      expect(await cageAlive(fx.tmux)).toBe(false);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("applyCagePrefix", () => {
+  test("sets prefix to C-\\ on the cage", async () => {
+    const fx = await spinTmux("prefix");
+    try {
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "w" });
+      await applyCagePrefix(fx.tmux);
+      const opts = await fx.tmux.option.showOptions({ global: true });
+      expect(opts["prefix"]).toBe("C-\\");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reconcileCockpitSession", () => {
+  test("creates session + viewer windows for enabled teams", async () => {
+    const fx = await spinTmux("cockpit-recon");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      await reconcileCockpitSession(fx.tmux, "atmux_test", teams, logger);
+      const wins = await fx.tmux.window.listWindows("atmux_test");
+      const names = wins.map((w) => w.name);
+      expect(names).toContain("superdriver");
+      expect(names).toContain("alpha");
+      expect(names).toContain("beta");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("idempotent — re-run leaves windows unchanged", async () => {
+    const fx = await spinTmux("cockpit-idem");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "a", root: "/a", enabled: true } as CockpitTeam];
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      const before = (await fx.tmux.window.listWindows("s")).map((w) => `${w.index}:${w.name}`);
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      const after = (await fx.tmux.window.listWindows("s")).map((w) => `${w.index}:${w.name}`);
+      expect(after).toEqual(before);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("removes orphan viewer windows when team disappears", async () => {
+    const fx = await spinTmux("cockpit-orphan");
+    try {
+      const { logger } = makeLogger();
+      // First pass — both teams enabled.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [
+          { name: "a", root: "/a", enabled: true } as CockpitTeam,
+          { name: "b", root: "/b", enabled: true } as CockpitTeam,
+        ],
+        logger,
+      );
+      // Second pass — drop "b".
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "a", root: "/a", enabled: true } as CockpitTeam],
+        logger,
+      );
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("superdriver");
+      expect(names).toContain("a");
+      expect(names).not.toContain("b");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("cockpitRebuild", () => {
+  let homeDir: string;
+  let projRoot: string;
+
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-reb-home-"));
+    await mkdir(join(homeDir, ".atmux"), { recursive: true });
+    projRoot = await mkdtemp(join(tmpdir(), "atmux-cockpit-reb-proj-"));
+    await mkdir(join(projRoot, ".atmux"), { recursive: true });
+    await writeFile(
+      join(projRoot, ".atmux", "team.json"),
+      JSON.stringify({
+        name: "demo",
+        members: [{ name: "lead", role: "team-lead", tui: "claude" }],
+      }),
+      "utf8",
+    );
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(projRoot, { recursive: true, force: true });
+  });
+
+  test("--no-cycle + --no-launch only normalises team.json + reconciles cockpit", async () => {
+    // Seed cockpit.json
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "test_cockpit",
+        teams: [
+          {
+            name: "demo",
+            root: projRoot,
+            enabled: true,
+            claudeAccount: { configDir: "/root/.claude-ifca" },
+          },
+        ],
+      }),
+      "utf8",
+    );
+    // Use a per-test cockpit tmux server (default socket would clobber operator's).
+    const fx = await spinTmux("cockpit-reb-default");
+    let startCalls = 0;
+    try {
+      const { logger } = makeLogger();
+      const code = await cockpitRebuild(
+        { subverb: "rebuild", noCycle: true, forceCycle: false, noLaunch: true },
+        {
+          env: { HOME: homeDir },
+          tmuxFactory: (cfg) => {
+            // Route both cage and cockpit calls to the per-test socket so we
+            // never touch the operator's default server.
+            void cfg;
+            return fx.tmux;
+          },
+          logger,
+          startFn: async () => {
+            startCalls += 1;
+            return 0;
+          },
+        },
+      );
+      expect(code).toBe(0);
+      expect(startCalls).toBe(0); // --no-cycle skipped start
+      // team.json normalised
+      const tj = JSON.parse(await readFile(join(projRoot, ".atmux", "team.json"), "utf8"));
+      expect(tj.bareWindowNames).toBe(true);
+      expect(tj.tuiCommands.claude).toContain("CLAUDE_CONFIG_DIR=/root/.claude-ifca");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("cycle path calls startFn per enabled team with --no-doctor", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "ts",
+        teams: [{ name: "demo", root: projRoot, enabled: true }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-cycle");
+    let startArgs: ReadonlyArray<string> | undefined;
+    let startCwd: string | undefined;
+    try {
+      const { logger } = makeLogger();
+      const code = await cockpitRebuild(
+        { subverb: "rebuild", noCycle: false, forceCycle: false, noLaunch: true },
+        {
+          env: { HOME: homeDir },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async (args, opts) => {
+            startArgs = args;
+            startCwd = opts?.cwd;
+            return 0;
+          },
+        },
+      );
+      expect(code).toBe(0);
+      expect(startArgs).toEqual(["--no-doctor"]);
+      expect(startCwd).toBe(projRoot);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("--force-cycle adds --force to start args", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({ teams: [{ name: "demo", root: projRoot, enabled: true }] }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-force");
+    let startArgs: ReadonlyArray<string> | undefined;
+    try {
+      const { logger } = makeLogger();
+      await cockpitRebuild(
+        { subverb: "rebuild", noCycle: false, forceCycle: true, noLaunch: true },
+        {
+          env: { HOME: homeDir },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async (args) => {
+            startArgs = args;
+            return 0;
+          },
+        },
+      );
+      expect(startArgs).toEqual(["--force", "--no-doctor"]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns 0 + warns when cockpit has no enabled teams", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({ teams: [{ name: "x", root: "/x", enabled: false }] }),
+      "utf8",
+    );
+    const { logger, logs } = makeLogger();
+    const code = await cockpitRebuild(
+      { subverb: "rebuild", noCycle: true, forceCycle: false, noLaunch: true },
+      { env: { HOME: homeDir }, logger },
+    );
+    expect(code).toBe(0);
+    expect(logs.some((l) => l.startsWith("warn:") && l.includes("no enabled teams"))).toBe(true);
+  });
+});

@@ -21,6 +21,11 @@ Setup:
   stop [--force]              Kill tmux session, archive state
   attach                      tmux attach to the team session
   status                      Powerline team overview
+  cockpit rebuild [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
+                              ADR-063: ensure-up the operator cockpit (cages +
+                              TUI auto-launch + cockpit session). Reads roster
+                              from ~/.atmux/cockpit.json (override via
+                              ATMUX_COCKPIT_CONFIG or --config <p>).
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
