@@ -10,3 +10,9 @@ tmp/
 coverage/
 dist/
 .bun/
+
+# Bash decommission archives (kept only in working tree, not git history)
+.archive-bash-atmux-*/
+
+# Local worktree caches
+.claude/worktrees/
