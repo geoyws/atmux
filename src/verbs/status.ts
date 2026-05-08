@@ -24,6 +24,7 @@ import {
   kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { loadInbox } from "../core/inbox.ts";
@@ -31,7 +32,6 @@ import { loadKanban } from "../core/kanban.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { collectOpenEntries } from "./reply.ts";
-import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux status [--json]";
 
@@ -198,7 +198,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
   const team = await requireTeam(dirOpts);
   const sessionName = await getSessionName({ ...dirOpts, team });
   const atmuxDir = await getAtmuxDir(dirOpts);
-  const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
   const snap = await gatherStatus(tmux, team, sessionName, atmuxDir);
 

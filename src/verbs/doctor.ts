@@ -35,10 +35,10 @@ import { createTmux } from "../abstractions/tmux.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
-  getDefaultSocket,
   inboxPathFor,
   kanbanJsonPath,
   type ResolveDirOpts,
+  resolveTeamSocket,
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
@@ -634,7 +634,7 @@ export async function checkOrphanSessions(
   const hasSession =
     opts.hasSession ??
     (async (name: string) => {
-      const tmux = createTmux({ socketPath: getDefaultSocket(team.name) });
+      const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
       return await tmux.session.hasSession(name);
     });
   const teamSession = `atmux-${team.name}`;

@@ -512,3 +512,39 @@ export function classifyPaneState(state: string): PaneStateSnapshot {
 export function getDefaultSocket(teamName: string): string {
   return `/tmp/atmux-${teamName}/sock`;
 }
+
+/** Options for `resolveTeamSocket` — uid injection for tests. */
+export interface ResolveTeamSocketOpts {
+  /** Override `process.getuid()`. */
+  uid?: number;
+}
+
+/**
+ * Resolve the live tmux socket for a team. Honors `team.tmuxTmpdir`
+ * authoritatively when set; otherwise falls back to the canonical bun
+ * cage path `/tmp/atmux-<team>/sock`.
+ *
+ * When `team.tmuxTmpdir` is set, the socket lives at the standard tmux
+ * short-name `default` shape: `<tmuxTmpdir>/tmux-<uid>/default`. This
+ * matches the bash convention of exporting `TMUX_TMPDIR=<tmuxTmpdir>`
+ * early and letting tmux build its own path. Covers all three cage
+ * variants (suffixes `atmux-tmux*`, `atmux_tmux_*`, `.atmux/tmux*`) —
+ * pick was 2026-05-08 t-add5976a P1 (`atmux status` reported [down]
+ * for live cage when team.json declared a project-local `.atmux/tmux`
+ * tmpdir; canonical fallback is wrong when the team was started under
+ * bash or a tmpdir-honoring start path).
+ *
+ * Read-only sites (status, doctor orphan-session probe) MUST use this
+ * resolver to reach the actual live socket.
+ */
+export function resolveTeamSocket(
+  team: Pick<TeamShape, "name" | "tmuxTmpdir">,
+  opts: ResolveTeamSocketOpts = {},
+): string {
+  const tmpdir = team.tmuxTmpdir;
+  if (typeof tmpdir === "string" && tmpdir.length > 0) {
+    const uid = opts.uid ?? process.getuid?.() ?? 0;
+    return join(tmpdir, `tmux-${uid}`, "default");
+  }
+  return getDefaultSocket(team.name);
+}
