@@ -8,13 +8,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendDispatched,
+  appendInboxMessage,
   appendPending,
   emptyInbox,
   loadInbox,
+  loadInboxMessages,
   moveInProgressToDone,
   movePendingToInProgress,
   removeFromInProgress,
 } from "../../../src/core/inbox.ts";
+import { SUPERDOCTOR_INBOX_KEY } from "../../../src/core/common.ts";
 import type { InboxEntry } from "../../../src/schema/inbox.ts";
 
 let atmuxDir: string;
@@ -211,5 +214,105 @@ describe("on-disk shape", () => {
     expect(parsed.pending).toHaveLength(1);
     expect(parsed.inProgress).toEqual([]);
     expect(parsed.done).toEqual([]);
+  });
+});
+
+// ---------- ADR-077 §F3: inbox_messages writer/reader ----------
+
+describe("appendInboxMessage / loadInboxMessages — superdoctor inbox", () => {
+  test("appendInboxMessage writes a row + loadInboxMessages reads it back", async () => {
+    const id = await appendInboxMessage(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sender: "atmux:lead",
+      body: "the cage cycled itself again",
+      kind: "heads-up",
+    });
+    expect(id).toBeGreaterThan(0);
+    const rows = await loadInboxMessages(atmuxDir, { member: SUPERDOCTOR_INBOX_KEY });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.sender).toBe("atmux:lead");
+    expect(rows[0]?.body).toBe("the cage cycled itself again");
+    expect(rows[0]?.kind).toBe("heads-up");
+    expect(rows[0]?.member).toBe(SUPERDOCTOR_INBOX_KEY);
+  });
+
+  test("kind defaults to 'heads-up' when not supplied", async () => {
+    await appendInboxMessage(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sender: "atmux:cli",
+      body: "no kind set",
+    });
+    const rows = await loadInboxMessages(atmuxDir, { member: SUPERDOCTOR_INBOX_KEY });
+    expect(rows[0]?.kind).toBe("heads-up");
+  });
+
+  test("ts override survives round-trip — ordering by ts ASC", async () => {
+    await appendInboxMessage(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sender: "atmux:cli",
+      body: "third",
+      ts: 3000,
+    });
+    await appendInboxMessage(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sender: "atmux:cli",
+      body: "first",
+      ts: 1000,
+    });
+    await appendInboxMessage(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sender: "atmux:cli",
+      body: "second",
+      ts: 2000,
+    });
+    const rows = await loadInboxMessages(atmuxDir, { member: SUPERDOCTOR_INBOX_KEY });
+    expect(rows.map((r) => r.body)).toEqual(["first", "second", "third"]);
+  });
+
+  test("sinceTs watermark filters older rows", async () => {
+    await appendInboxMessage(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sender: "x",
+      body: "old",
+      ts: 100,
+    });
+    await appendInboxMessage(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sender: "x",
+      body: "new",
+      ts: 200,
+    });
+    const rows = await loadInboxMessages(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sinceTs: 100,
+    });
+    expect(rows.map((r) => r.body)).toEqual(["new"]);
+  });
+
+  test("loadInboxMessages on missing state.db returns empty array (no throw)", async () => {
+    const fresh = await mkdtemp(join(tmpdir(), "atmux-inbox-fresh-"));
+    try {
+      const rows = await loadInboxMessages(fresh, { member: SUPERDOCTOR_INBOX_KEY });
+      expect(rows).toEqual([]);
+    } finally {
+      await rm(fresh, { recursive: true, force: true });
+    }
+  });
+
+  test("messages for different members are isolated", async () => {
+    await appendInboxMessage(atmuxDir, {
+      member: SUPERDOCTOR_INBOX_KEY,
+      sender: "x",
+      body: "for superdoctor",
+    });
+    await appendInboxMessage(atmuxDir, {
+      member: "alpha",
+      sender: "x",
+      body: "for alpha",
+    });
+    const sd = await loadInboxMessages(atmuxDir, { member: SUPERDOCTOR_INBOX_KEY });
+    const alpha = await loadInboxMessages(atmuxDir, { member: "alpha" });
+    expect(sd.map((r) => r.body)).toEqual(["for superdoctor"]);
+    expect(alpha.map((r) => r.body)).toEqual(["for alpha"]);
   });
 });

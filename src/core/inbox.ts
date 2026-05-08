@@ -25,7 +25,7 @@
 // - `moveInProgressToDone` ↔ `lib/claim.sh:96-101` (done with completedAt).
 
 import { join } from "node:path";
-import { exists } from "../abstractions/fs.ts";
+import { ensureDir, exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
@@ -225,6 +225,142 @@ export async function removeFromInProgress(
     (i) => ({ ...i, inProgress: i.inProgress.filter((t) => t.id !== id) }),
     { initial: emptyInbox(), noLock: true },
   );
+}
+
+// ---------- ADR-077 §F3: inbox_messages writer/reader ----------
+//
+// Distinct from the tasks-table inbox view above: the `inbox_messages`
+// table is a row-per-message log used for cockpit-tier heads-up
+// signals (e.g. members → superdoctor). It was provisioned in v1 of
+// the SQLite schema but went unused after ADR-076 collapsed per-member
+// inbox semantics into the `tasks` table. Superdoctor revives it for
+// its own inbox key (`__superdoctor__`).
+
+/** Options for `appendInboxMessage`. */
+export interface AppendInboxMessageOpts {
+  /** Recipient inbox key — typically `SUPERDOCTOR_INBOX_KEY` for the
+   *  cockpit-tier superdoctor role, but the writer is generic. */
+  member: string;
+  /** Free-form sender identifier. Convention is `<team>:<member>` or
+   *  `<team>:cli` when no specific member is attributed. */
+  sender: string;
+  /** Message body (free-form text). */
+  body: string;
+  /** Stable client-supplied ID for de-duplication on retries. Optional. */
+  msgId?: string;
+  /** Message kind. Convention: `heads-up` (default), `p0`, `info`. */
+  kind?: string;
+  /** Override timestamp (epoch seconds). Defaults to `Date.now()/1000`. */
+  ts?: number;
+  /** Free-form JSON string for forward-compat fields. */
+  extra?: string;
+}
+
+/**
+ * Append a row to the `inbox_messages` table. Creates the team's
+ * `state.db` (and runs migrations) if it doesn't exist yet — the same
+ * idempotent open path the kanban repo uses. Returns the row's
+ * autoincrement ID.
+ */
+export async function appendInboxMessage(
+  atmuxDir: string,
+  opts: AppendInboxMessageOpts,
+): Promise<number> {
+  await ensureDir(atmuxDir);
+  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  try {
+    const ts = opts.ts ?? Math.floor(Date.now() / 1000);
+    const stmt = db.prepare(
+      `INSERT INTO inbox_messages (member, msg_id, sender, body, ts, kind, extra)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const result = stmt.run(
+      opts.member,
+      opts.msgId ?? null,
+      opts.sender,
+      opts.body,
+      ts,
+      opts.kind ?? "heads-up",
+      opts.extra ?? null,
+    );
+    return Number(result.lastInsertRowid);
+  } finally {
+    closeDatabase(db);
+  }
+}
+
+/** A single `inbox_messages` row (read-side shape). */
+export interface InboxMessage {
+  id: number;
+  member: string;
+  msgId: string | null;
+  sender: string | null;
+  body: string | null;
+  ts: number;
+  kind: string | null;
+  extra: string | null;
+}
+
+/** Options for `loadInboxMessages`. */
+export interface LoadInboxMessagesOpts {
+  /** Inbox key to query (e.g. `SUPERDOCTOR_INBOX_KEY`). */
+  member: string;
+  /** Only return rows with `ts > sinceTs`. Used for watermark-based
+   *  pull (superdoctor's per-team inbox sweep). Default `0` (all). */
+  sinceTs?: number;
+  /** Maximum rows to return. Default `1000` (sane cap to keep
+   *  superdoctor's read cheap on long-lived teams). */
+  limit?: number;
+}
+
+/**
+ * Read messages from the `inbox_messages` table for one inbox key,
+ * ordered by `ts ASC` so the caller can process oldest-first and
+ * advance its watermark.
+ *
+ * Returns `[]` when the team's `state.db` doesn't exist (fresh team
+ * pre-first-write — no error, just nothing to read).
+ */
+export async function loadInboxMessages(
+  atmuxDir: string,
+  opts: LoadInboxMessagesOpts,
+): Promise<InboxMessage[]> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) return [];
+  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  try {
+    const limit = opts.limit ?? 1000;
+    const sinceTs = opts.sinceTs ?? 0;
+    const rows = db
+      .query(
+        `SELECT id, member, msg_id, sender, body, ts, kind, extra
+         FROM inbox_messages
+         WHERE member = ? AND ts > ?
+         ORDER BY ts ASC
+         LIMIT ?`,
+      )
+      .all(opts.member, sinceTs, limit) as Array<{
+      id: number;
+      member: string;
+      msg_id: string | null;
+      sender: string | null;
+      body: string | null;
+      ts: number;
+      kind: string | null;
+      extra: string | null;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      member: r.member,
+      msgId: r.msg_id,
+      sender: r.sender,
+      body: r.body,
+      ts: r.ts,
+      kind: r.kind,
+      extra: r.extra,
+    }));
+  } finally {
+    closeDatabase(db);
+  }
 }
 
 /**

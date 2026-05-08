@@ -132,6 +132,38 @@ describe("parseSendArgs — flag parsing", () => {
     const a = parseSendArgs(["alpha", "one", "two", "three"]);
     expect(a.msg).toBe("one two three");
   });
+
+  // ---------- ADR-077 §F3: --from / --kind for cockpit-tier inbox ----------
+
+  test("--from <sender> consumed; survives into SendArgs.from", () => {
+    const a = parseSendArgs(["--from", "atmux:lead", "__superdoctor__", "hi"]);
+    expect(a.from).toBe("atmux:lead");
+    expect(a.member).toBe("__superdoctor__");
+    expect(a.msg).toBe("hi");
+  });
+
+  test("--from without value throws UsageError", () => {
+    expect(() => parseSendArgs(["--from"])).toThrow(UsageError);
+  });
+
+  test("--kind <kind> consumed; survives into SendArgs.kind", () => {
+    const a = parseSendArgs(["--kind", "p0", "__superdoctor__", "alarm"]);
+    expect(a.kind).toBe("p0");
+    expect(a.msg).toBe("alarm");
+  });
+
+  test("--kind without value throws UsageError", () => {
+    expect(() => parseSendArgs(["--kind"])).toThrow(UsageError);
+  });
+
+  test("--from/--kind are inert on regular member sends (passthrough)", () => {
+    // The verb logic ignores them when member !== __superdoctor__; the
+    // parser still accepts them for forward-compat.
+    const a = parseSendArgs(["--from", "x", "--kind", "info", "alpha", "msg"]);
+    expect(a.from).toBe("x");
+    expect(a.kind).toBe("info");
+    expect(a.member).toBe("alpha");
+  });
 });
 
 // ---------- pure: buildMemberTarget ----------
@@ -311,6 +343,71 @@ describe("send() — integration", () => {
     expect(exit).toBe(0);
     expect(await Bun.file(join(atmuxDir, "logs", "send-driver.log")).exists()).toBe(true);
     expect(await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).exists()).toBe(true);
+  });
+
+  // ---------- ADR-077 §F3: __superdoctor__ inbox routing ----------
+
+  test("send __superdoctor__ writes to inbox_messages, no tmux pane delivery", async () => {
+    await stageTeam([{ name: "alpha" }]);
+    const exit = await send([
+      "--socket",
+      socketPath,
+      "--team-dir",
+      teamDir,
+      "__superdoctor__",
+      "the cage cycled itself",
+    ]);
+    expect(exit).toBe(0);
+    // No send-log written (no tmux pane delivery happened).
+    expect(
+      await Bun.file(join(atmuxDir, "logs", "send-__superdoctor__.log")).exists(),
+    ).toBe(false);
+    // The row landed in inbox_messages (verify via the read helper).
+    const { loadInboxMessages } = await import("../../../src/core/inbox.ts");
+    const rows = await loadInboxMessages(atmuxDir, { member: "__superdoctor__" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.body).toBe("the cage cycled itself");
+    expect(rows[0]?.kind).toBe("heads-up");
+    // Default sender = `<team-name>:cli`
+    expect(rows[0]?.sender).toMatch(/:cli$/);
+  });
+
+  test("send __superdoctor__ --from honored, --kind honored", async () => {
+    await stageTeam([{ name: "alpha" }]);
+    const exit = await send([
+      "--socket",
+      socketPath,
+      "--team-dir",
+      teamDir,
+      "--from",
+      "atmux:lead",
+      "--kind",
+      "p0",
+      "__superdoctor__",
+      "demo in 20min, member wedged",
+    ]);
+    expect(exit).toBe(0);
+    const { loadInboxMessages } = await import("../../../src/core/inbox.ts");
+    const rows = await loadInboxMessages(atmuxDir, { member: "__superdoctor__" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.sender).toBe("atmux:lead");
+    expect(rows[0]?.kind).toBe("p0");
+  });
+
+  test("send __superdoctor__ does NOT require a member entry in team.json", async () => {
+    // Stage a team that DOES NOT have a __superdoctor__ member; the
+    // inbox-route should still succeed (cockpit-tier, not a team
+    // member).
+    await stageTeam([{ name: "alpha" }]);
+    const exit = await send([
+      "--socket",
+      socketPath,
+      "--team-dir",
+      teamDir,
+      "__superdoctor__",
+      "ok",
+    ]);
+    expect(exit).toBe(0);
   });
 
   test("broadcast partial-failure → returns 1 + writes warn to stderr", async () => {

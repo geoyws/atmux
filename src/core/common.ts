@@ -91,6 +91,13 @@ export function inboxPathFor(atmuxDir: string, member: string): string {
   return join(atmuxDir, "inboxes", `${member}.json`);
 }
 
+/** ADR-077 §D4 / §F3: reserved inbox key for the cockpit-tier
+ *  superdoctor role. Not a member of any team.json — `atmux send`
+ *  recognises it as a special target and writes to the team's
+ *  `inbox_messages` table instead of attempting tmux pane delivery.
+ *  Superdoctor reads matching rows on its hourly whip turn. */
+export const SUPERDOCTOR_INBOX_KEY = "__superdoctor__";
+
 export function logsDir(atmuxDir: string): string {
   return join(atmuxDir, "logs");
 }
