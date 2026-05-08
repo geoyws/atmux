@@ -177,6 +177,7 @@ describe("status verb — integration", () => {
       tui: "claude",
       paneCommand: "(down)",
       pendingCount: 0,
+      inProgressCount: 0,
     });
     expect(parsed.kanban).toEqual({ todo: 0, inProgress: 0, done: 0, blocked: 0 });
     expect(parsed.driverInboxOpen).toBe(0);

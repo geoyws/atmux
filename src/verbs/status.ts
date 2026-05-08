@@ -88,7 +88,16 @@ export interface MemberStatus {
   tui: string;
   emoji?: string;
   paneCommand: string;
+  /** Tasks owned by this member with status='todo'. Pre-ADR-076 this
+   *  came from the JSON inbox `pending` bucket; post-cutover it's a
+   *  direct query against the tasks table via `loadInbox`. Surfaced in
+   *  text + JSON output. */
   pendingCount: number;
+  /** Tasks owned by this member with status='in-progress'. Added 2026-
+   *  05-08 alongside the pendingCount-from-SQL fix — the more
+   *  operationally useful number ("what's this member currently
+   *  working on?"). */
+  inProgressCount: number;
 }
 
 export interface KanbanCounts {
@@ -127,13 +136,17 @@ export async function gatherStatus(
   const members: MemberStatus[] = [];
   for (const m of team.members) {
     const paneCommand = await readPaneCommand(tmux, sessionName, m, sessionState === "up");
-    const pendingCount = await readPendingCount(atmuxDir, m.name);
+    const { pending: pendingCount, inProgress: inProgressCount } = await readMemberCounts(
+      atmuxDir,
+      m.name,
+    );
     const row: MemberStatus = {
       name: m.name,
       role: m.role ?? "member",
       tui: m.tui ?? "claude",
       paneCommand,
       pendingCount,
+      inProgressCount,
     };
     if (m.emoji !== undefined && m.emoji.length > 0) row.emoji = m.emoji;
     members.push(row);
@@ -203,6 +216,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
         tui: m.tui,
         paneCommand: m.paneCommand,
         pendingCount: m.pendingCount,
+        inProgressCount: m.inProgressCount,
       })),
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
@@ -249,10 +263,18 @@ async function readPaneCommand(
   }
 }
 
-async function readPendingCount(atmuxDir: string, member: string): Promise<number> {
-  if (!(await exists(inboxPathFor(atmuxDir, member)))) return 0;
+/** ADR-076 cutover: counts come from `loadInbox` which is SQL-canonical
+ *  when state.db exists (falls back to JSON for pre-migration teams).
+ *  Drops the pre-cutover JSON-existence guard which incorrectly returned
+ *  0 for SQL-canonical teams whose inbox JSON files were absent or
+ *  frozen post-writer-no-op. Returns both pending (todo) and in-progress
+ *  counts for the per-member status row. */
+async function readMemberCounts(
+  atmuxDir: string,
+  member: string,
+): Promise<{ pending: number; inProgress: number }> {
   const ib = await loadInbox(atmuxDir, member);
-  return ib.pending.length;
+  return { pending: ib.pending.length, inProgress: ib.inProgress.length };
 }
 
 function renderTextStatus(snap: StatusSnapshot): void {
@@ -269,7 +291,7 @@ function renderTextStatus(snap: StatusSnapshot): void {
     const evidence = dp.evidence.length > 60 ? `${dp.evidence.slice(0, 60)}…` : dp.evidence;
     process.stdout.write(`🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`);
   }
-  process.stdout.write(`member       role          tui        pane          inbox\n`);
+  process.stdout.write(`member       role          tui        pane          tasks\n`);
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
     const name = m.name.padEnd(12);
@@ -277,7 +299,7 @@ function renderTextStatus(snap: StatusSnapshot): void {
     const tui = m.tui.padEnd(10);
     const pane = m.paneCommand.padEnd(14);
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${pane} 📥 ${m.pendingCount} pending\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${pane} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
     );
   }
   const k = snap.kanban;
