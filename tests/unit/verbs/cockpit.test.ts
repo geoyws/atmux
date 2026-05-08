@@ -52,6 +52,35 @@ describe("parseCockpitArgs", () => {
   test("--no-cycle and --force-cycle are mutually exclusive", () => {
     expect(() => parseCockpitArgs(["rebuild", "--no-cycle", "--force-cycle"])).toThrow(UsageError);
   });
+  // ADR-077 §D6 follow-on: reload alias.
+  test("reload alias parses with noCycle + noLaunch implicit", () => {
+    const p = parseCockpitArgs(["reload"]);
+    expect(p).toEqual({
+      subverb: "reload",
+      noCycle: true,
+      forceCycle: false,
+      noLaunch: true,
+    });
+  });
+
+  test("reload + --no-cycle redundant flag rejected", () => {
+    expect(() => parseCockpitArgs(["reload", "--no-cycle"])).toThrow(UsageError);
+  });
+
+  test("reload + --no-launch redundant flag rejected", () => {
+    expect(() => parseCockpitArgs(["reload", "--no-launch"])).toThrow(UsageError);
+  });
+
+  test("reload + --force-cycle incompatible — rejected", () => {
+    expect(() => parseCockpitArgs(["reload", "--force-cycle"])).toThrow(UsageError);
+  });
+
+  test("reload + --config <path> still accepted", () => {
+    const p = parseCockpitArgs(["reload", "--config", "/p"]);
+    expect(p.subverb).toBe("reload");
+    expect(p.configPath).toBe("/p");
+  });
+
   test("rejects unknown flag", () => {
     expect(() => parseCockpitArgs(["rebuild", "--bogus"])).toThrow(UsageError);
   });

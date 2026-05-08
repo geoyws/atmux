@@ -174,8 +174,11 @@ function shellPlaceholder(msg: string): string {
 // ---------- Arg parsing ----------
 
 export interface ParsedCockpitArgs {
-  /** sub-verb (only `rebuild` for now). */
-  subverb: "rebuild";
+  /** sub-verb. `reload` is a hot-reload alias for `rebuild --no-cycle
+   *  --no-launch` — applies cockpit.json topology changes (window
+   *  add/remove/move) without touching live cages or relaunching
+   *  TUIs. ADR-077 §D6 follow-on. */
+  subverb: "rebuild" | "reload";
   /** Skip the cage cycle phase (only normalise team.json + reconcile cockpit). */
   noCycle: boolean;
   /** Cycle every cage even if claude procs are running (DESTRUCTIVE — kills in-flight work). */
@@ -197,20 +200,26 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   if (args.length === 0) {
     throw new UsageError({
       what: "cockpit: missing sub-verb",
-      hint: "usage: atmux cockpit rebuild [--no-cycle | --force-cycle] [--no-launch] [--config <path>]",
+      hint:
+        "usage: atmux cockpit {rebuild | reload} " +
+        "[--no-cycle | --force-cycle] [--no-launch] [--config <path>]",
     });
   }
   const sub = args[0];
-  if (sub !== "rebuild") {
+  if (sub !== "rebuild" && sub !== "reload") {
     throw new UsageError({
       what: `cockpit: unknown sub-verb: ${sub}`,
-      hint: "only 'rebuild' is implemented in this commit",
+      hint: "supported: 'rebuild' (full) or 'reload' (hot-reload alias)",
     });
   }
 
-  let noCycle = false;
+  // reload = rebuild + auto-set --no-cycle --no-launch. Operator can
+  // still pass --config <path>, but cycle/launch flags are forbidden
+  // (the whole point of the alias is "don't touch live cages or
+  // relaunch claude — just apply the topology diff").
+  let noCycle = sub === "reload";
   let forceCycle = false;
-  let noLaunch = false;
+  let noLaunch = sub === "reload";
   let configPath: string | undefined;
 
   let i = 1;
@@ -218,14 +227,32 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     const a = args[i] ?? "";
     switch (a) {
       case "--no-cycle":
+        if (sub === "reload") {
+          throw new UsageError({
+            what: "cockpit reload: --no-cycle is implicit; flag is redundant",
+            hint: "reload = rebuild --no-cycle --no-launch",
+          });
+        }
         noCycle = true;
         i += 1;
         break;
       case "--force-cycle":
+        if (sub === "reload") {
+          throw new UsageError({
+            what: "cockpit reload: --force-cycle is incompatible with hot-reload",
+            hint: "use 'cockpit rebuild --force-cycle' for full cage cycle",
+          });
+        }
         forceCycle = true;
         i += 1;
         break;
       case "--no-launch":
+        if (sub === "reload") {
+          throw new UsageError({
+            what: "cockpit reload: --no-launch is implicit; flag is redundant",
+            hint: "reload = rebuild --no-cycle --no-launch",
+          });
+        }
         noLaunch = true;
         i += 1;
         break;
@@ -255,7 +282,12 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     });
   }
 
-  const out: ParsedCockpitArgs = { subverb: "rebuild", noCycle, forceCycle, noLaunch };
+  const out: ParsedCockpitArgs = {
+    subverb: sub as "rebuild" | "reload",
+    noCycle,
+    forceCycle,
+    noLaunch,
+  };
   if (configPath !== undefined) out.configPath = configPath;
   return out;
 }
@@ -282,6 +314,13 @@ export async function cockpit(args: ReadonlyArray<string>, opts: CockpitOpts = {
   const parsed = parseCockpitArgs(args);
   switch (parsed.subverb) {
     case "rebuild":
+      return await cockpitRebuild(parsed, opts);
+    case "reload":
+      // Hot-reload: same flow as rebuild with --no-cycle --no-launch
+      // pre-applied (parseCockpitArgs already set those flags). Live
+      // cages and member panes are never touched; only Phase 1
+      // (team.json normalise — idempotent), Phase 3 (cage prefix —
+      // idempotent), and Phase 5 (cockpit window reconcile) run.
       return await cockpitRebuild(parsed, opts);
   }
 }
