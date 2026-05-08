@@ -85,6 +85,15 @@ import {
   runBudgetCheck,
 } from "../core/whip-budget-check.ts";
 import { listTasks } from "../core/kanban.ts";
+import {
+  ensureLeadSessionStart,
+  leadSessionStartPath,
+  leadWindowNamePath,
+  readLeadSessionStart,
+  readLeadWindowName,
+  type SkillsTeamPathsOpts,
+  writeLeadSessionStart,
+} from "../core/lead-marker.ts";
 import type { CageHandle } from "../abstractions/fallback-cage.ts";
 import { spawn } from "../abstractions/spawn.ts";
 import {
@@ -547,81 +556,22 @@ const defaultReadMemberEnv: ReadMemberEnv = async (pid) => {
 };
 
 // ---------- I-1 + I-2 markers ----------
+//
+// Definitions live in `src/core/lead-marker.ts` so non-`whip` verbs
+// (e.g. `pane-state`, ADR-062 §Decision (2)) can read the lead window
+// name without crossing the verbs/* import boundary. Re-exported here so
+// existing callers (whip.test.ts + downstream verbs that historically
+// imported from whip.ts) keep working unchanged.
 
-export interface SkillsTeamPathsOpts {
-  /** Override `~` for tests. Defaults to `os.homedir()`. */
-  home?: string;
-}
-
-export function leadSessionStartPath(team: string, opts: SkillsTeamPathsOpts = {}): string {
-  const home = opts.home ?? homedir();
-  return join(home, ".claude", "teams", team, "lead-session-start.txt");
-}
-
-export function leadWindowNamePath(team: string, opts: SkillsTeamPathsOpts = {}): string {
-  const home = opts.home ?? homedir();
-  return join(home, ".claude", "teams", team, "lead-window-name.txt");
-}
-
-/** Force-write the I-1 marker (used by `--init-lead-marker`). */
-export async function writeLeadSessionStart(
-  team: string,
-  epochSec: number,
-  opts: SkillsTeamPathsOpts = {},
-): Promise<void> {
-  const path = leadSessionStartPath(team, opts);
-  await ensureDir(dirname(path));
-  await writeText(path, `${epochSec}\n`);
-}
-
-/** Auto-init the I-1 marker iff missing — keeps Check 5 reads from
- *  failing on first-tick of a fresh team. Returns true on a write. */
-export async function ensureLeadSessionStart(
-  team: string,
-  epochSec: number,
-  opts: SkillsTeamPathsOpts = {},
-): Promise<boolean> {
-  const path = leadSessionStartPath(team, opts);
-  if (await exists(path)) return false;
-  await writeLeadSessionStart(team, epochSec, opts);
-  return true;
-}
-
-export async function readLeadSessionStart(
-  team: string,
-  opts: SkillsTeamPathsOpts = {},
-): Promise<number | null> {
-  const text = await readTextOrNull(leadSessionStartPath(team, opts));
-  if (text === null) return null;
-  const n = Number.parseInt(text.trim(), 10);
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
-/** I-2 read side. The marker file (when present) carries the
- *  authoritative current lead-window name — written by `team rotate-lead`
- *  / `team start` when the lead pane is renamed mid-cycle (auto-rotate).
- *
- *  Fallback when the marker is absent or empty:
- *  - Caller-supplied `fallback` wins. The whip per-member loop passes the
- *    ADR-017-style `<emoji><name>` derived from the team-lead member's
- *    schema entry — that matches what `start.ts::buildWindowName` actually
- *    spawns, so whip stops emitting false `🛑 lead: window missing`
- *    findings on freshly-started teams that haven't rotated yet.
- *  - When no fallback is supplied, default to the legacy bash convention
- *    `__<team>__team-lead`. Pre-bun callers + the unit tests rely on this
- *    behaviour; tightening would be a wider migration. */
-export async function readLeadWindowName(
-  team: string,
-  opts: SkillsTeamPathsOpts & { fallback?: string } = {},
-): Promise<string> {
-  const text = await readTextOrNull(leadWindowNamePath(team, opts));
-  if (text !== null) {
-    const trimmed = text.trim();
-    if (trimmed.length > 0) return trimmed;
-  }
-  if (opts.fallback !== undefined && opts.fallback.length > 0) return opts.fallback;
-  return `__${team}__team-lead`;
-}
+export {
+  ensureLeadSessionStart,
+  leadSessionStartPath,
+  leadWindowNamePath,
+  readLeadSessionStart,
+  readLeadWindowName,
+  type SkillsTeamPathsOpts,
+  writeLeadSessionStart,
+} from "../core/lead-marker.ts";
 
 // ---------- Findings ----------
 
