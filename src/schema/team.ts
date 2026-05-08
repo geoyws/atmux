@@ -206,6 +206,31 @@ export const TeamCron = z
   .strict();
 export type TeamCron = z.infer<typeof TeamCron>;
 
+/**
+ * `team.json::kanban` sub-config — kanban-orchestration knobs. ADR-062
+ * §1 introduced `claim --next` lane-aware pull; the cross-lane fallback
+ * gate lives here.
+ *
+ * Naming: bash `lib/claim.sh:200` + `templates/briefs/member.md` use
+ * `kanban.crossLaneClaim` (boolean, default true). ADR-062 §OQ4 also
+ * mentioned `lanePickup.strict=true` as inverse — the field landed
+ * under `kanban.crossLaneClaim` to match the existing brief + bash
+ * precedent (workers read the brief; one canonical name beats two
+ * equivalent ones). `crossLaneClaim=true` ≡ `lanePickup.strict=false`.
+ */
+export const TeamKanban = z
+  .object({
+    /** Cross-lane fallback gate for `claim --next`. When `true` (default),
+     *  a worker whose own-lane queue is dry falls back to `lane=null`
+     *  Tasks (legacy + small misc work). When `false`, the second-pass
+     *  fallback is suppressed and `claim --next` exits with a clear
+     *  "no work in <LANE> lane" message — strict-lane mode. Per ADR-062
+     *  §OQ4 default. */
+    crossLaneClaim: z.boolean().default(true),
+  })
+  .strict();
+export type TeamKanban = z.infer<typeof TeamKanban>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -244,6 +269,8 @@ export const Team = z
     fallback: TeamFallback.optional(),
     /** Per-team cron PATH override (bug t-2db59eee). */
     cron: TeamCron.optional(),
+    /** ADR-062 §OQ4: kanban-orchestration knobs (cross-lane fallback). */
+    kanban: TeamKanban.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     report: z.unknown().optional(),
     discord: z.unknown().optional(),

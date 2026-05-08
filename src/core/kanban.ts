@@ -468,6 +468,65 @@ export async function markTaskDone(
   return done;
 }
 
+/** Options for `selectNextClaimable` — ADR-062 §1 lane-aware pull. */
+export interface SelectNextOpts {
+  /** Caller's lane from `team.members[].lane`. `null` → no lane preference;
+   *  selection runs the second-pass `lane=null` fallback directly. */
+  callerLane: string | null;
+  /** `team.kanban.crossLaneClaim` (default true). When `false` AND the
+   *  caller has a lane, suppress the `lane=null` fallback. */
+  crossLaneClaim: boolean;
+  /** Caller's name, used for the owner gate — pre-assigned-to-self Tasks
+   *  remain claimable; pre-assigned-to-other are skipped (bash
+   *  d-515de5ce relax). */
+  caller: string;
+}
+
+/**
+ * Pure: pick the next claimable task for a worker per ADR-062 §1.
+ *
+ * Selection pipeline:
+ *   1. Filter to `status='todo'` AND deps[] all done AND owner ∈ {null, caller}.
+ *   2. First pass — when `callerLane` is set, prefer Tasks with `.lane==callerLane`.
+ *   3. Second pass — when first-pass empty AND (`crossLaneClaim` OR no callerLane),
+ *      fall back to `.lane==null` Tasks (ADR-062 §OQ4: "fall back to lane-less
+ *      Tasks; do NOT cross into another worker's lane").
+ *   4. Tie-break: priority asc (null treated as 999), createdAt asc.
+ *
+ * Returns the chosen task or null. No mutation; the caller threads the id
+ * through `claimTask` for the actual ownership flip.
+ */
+export function selectNextClaimable(
+  tasks: ReadonlyArray<KanbanTask>,
+  opts: SelectNextOpts,
+): KanbanTask | null {
+  const ownerOk = (t: KanbanTask): boolean =>
+    t.owner === null || t.owner === undefined || t.owner === opts.caller;
+  const baseEligible = tasks.filter(
+    (t) => t.status === "todo" && ownerOk(t) && unresolvedDeps(tasks, t).length === 0,
+  );
+  const tiebreak = (a: KanbanTask, b: KanbanTask): number => {
+    const pa = a.priority ?? 999;
+    const pb = b.priority ?? 999;
+    if (pa !== pb) return pa - pb;
+    return (a.createdAt ?? 0) - (b.createdAt ?? 0);
+  };
+  // First pass — own-lane only when caller has a lane.
+  if (opts.callerLane !== null && opts.callerLane.length > 0) {
+    const ownLane = baseEligible.filter((t) => t.lane === opts.callerLane);
+    if (ownLane.length > 0) {
+      return [...ownLane].sort(tiebreak)[0] ?? null;
+    }
+    // First pass dry — gate the fallback on crossLaneClaim.
+    if (!opts.crossLaneClaim) return null;
+  }
+  // Second pass — lane=null only (no other lane). When caller has no lane,
+  // there's nothing to "cross" from, so the gate is bypassed.
+  const noLane = baseEligible.filter((t) => t.lane === null || t.lane === undefined);
+  if (noLane.length === 0) return null;
+  return [...noLane].sort(tiebreak)[0] ?? null;
+}
+
 /**
  * Pure: given a tasks[] roster + a target task, return the dep ids
  * that are NOT in status "done". Empty array means deps are clear.
