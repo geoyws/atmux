@@ -84,6 +84,7 @@ import {
   type BudgetCheckTeamMember,
   runBudgetCheck,
 } from "../core/whip-budget-check.ts";
+import { loadInbox } from "../core/inbox.ts";
 import { listTasks } from "../core/kanban.ts";
 import {
   ensureLeadSessionStart,
@@ -1265,9 +1266,12 @@ async function checkMember(
   }
 
   // ---------- Check 3: stale-task scan ----------
-  const inboxPath = inboxPathFor(atmuxDir, member.name);
-  const inbox = await tryReadJson(inboxPath, InboxSchema);
-  if (inbox !== null && inbox.inProgress.length > 0) {
+  // ADR-076: read via loadInbox (SQL-canonical when state.db exists; JSON
+  // fallback for pre-migration teams). Replaces the direct tryReadJson read
+  // that bypassed the cutover — direct JSON read returned stale data on
+  // SQL teams whose JSON files froze post-Phase-3 writer-no-op.
+  const inbox = await loadInbox(atmuxDir, member.name);
+  if (inbox.inProgress.length > 0) {
     const rotatedSec = await readRotatedEpoch(atmuxDir, member.name);
     const stale = selectStaleTasks(inbox.inProgress, nowSec, config.staleMin, rotatedSec);
     if (stale.length > 0) {
