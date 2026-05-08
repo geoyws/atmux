@@ -43,6 +43,7 @@ import { help } from "./verbs/help.ts";
 import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
+import { laneTick } from "./verbs/lane-tick.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
@@ -124,6 +125,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return dispatchVerb(argv.slice(1));
     case "inbox":
       return inbox(argv.slice(1));
+    case "lane-tick":
+      return laneTick(argv.slice(1));
     case "pause":
       return pause(argv.slice(1));
     case "resume":
