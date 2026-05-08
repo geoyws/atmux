@@ -34,6 +34,7 @@ import { attach } from "./verbs/attach.ts";
 import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
+import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
 import { dashboard } from "./verbs/dashboard.ts";
 import { discorder } from "./verbs/discorder.ts";
@@ -153,6 +154,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cost(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
+    case "complaints":
+      return complaints(argv.slice(1));
     case "doctor":
       return doctor(argv.slice(1));
     case "driver-inbox":

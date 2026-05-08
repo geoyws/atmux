@@ -17,6 +17,7 @@
 import type { Migration } from "./sqlite.ts";
 
 export const migrations: readonly Migration[] = [
+  // ---------- v0 → v1 ----------
   {
     from: 0,
     to: 1,
@@ -109,6 +110,34 @@ export const migrations: readonly Migration[] = [
 					PRIMARY KEY (feature, key)
 				) STRICT;
 			`);
+    },
+  },
+  // ---------- v1 → v2 ----------
+  // ADR-077 §D5 / §F2: per-team complaint box. The durable artifact of
+  // superdoctor's diagnosis loop — one row per anomaly with root cause
+  // + preventive ask. Stored per-team (each `<team>/.atmux/state.db`
+  // holds its own complaints) per ADR-077 §Open.
+  {
+    from: 1,
+    to: 2,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE complaints (
+					id TEXT PRIMARY KEY NOT NULL,
+					opened_at INTEGER NOT NULL,
+					opened_by TEXT,
+					incident_summary TEXT NOT NULL,
+					root_cause TEXT,
+					preventive_ask TEXT,
+					status TEXT NOT NULL DEFAULT 'open',
+					resolved_at INTEGER,
+					resolved_by TEXT,
+					related_task_id TEXT,
+					extra TEXT
+				) STRICT;
+			`);
+      db.exec("CREATE INDEX idx_complaints_status ON complaints(status)");
+      db.exec("CREATE INDEX idx_complaints_opened_at ON complaints(opened_at DESC)");
     },
   },
 ];

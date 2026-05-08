@@ -149,20 +149,35 @@ A misdiagnosis here lives in the complaint box as a self-filed complaint. Future
 
 ## Reading the complaint box
 
-The complaint box is the durable artifact of the diagnosis loop. **Note: the complaint box is deferred** — its SQLite schema + verb family land as a follow-up under kanban epic `t-274ec70c` (Super-\* hierarchy port). Until then, superdoctor logs complaints inline to its lead-queue and Discord.
+The complaint box is the durable artifact of the diagnosis loop. It ships as the `complaints` table in each team's `<root>/.atmux/state.db` (sqlite-migrations.ts v2) plus the `atmux complaints` verb family.
 
-When the complaint box ships, the access pattern will be:
+Access patterns:
 
 ```bash
-# All open complaints across all teams
-atmux complaints list --status open
+# Open complaints in the current team's state.db
+cd /root/work/src/atmux
+atmux complaints list
 
-# One team's complaints
-atmux complaints list atmux
+# Filter by status
+atmux complaints list --status resolved
+atmux complaints list --all   # every status
+
+# Machine-readable
+atmux complaints list --json
+
+# File a new complaint
+atmux complaints file \
+    --summary "cage cycled itself" \
+    --root-cause "tests ran inside the team's own cage" \
+    --ask "lead must dispatch e2e with --cage isolated" \
+    --by superdoctor
 
 # Resolve one (after the preventive_ask has shipped)
 atmux complaints resolve <id> --note "ADR-079 implements the preventive ask"
+atmux complaints resolve <id> --wontfix --note "rejected — not actually a bug"
 ```
+
+Cross-team listing (one query across every cockpit-roster team's state.db) is not yet a single command — operator can iterate via shell or wait for a follow-up that adds `atmux complaints list --all-teams`.
 
 The shape (per ADR-077 §D5):
 
@@ -193,4 +208,9 @@ The message lands in `inbox_messages` table with member `__superdoctor__`. Super
 
 ## Status
 
-Cockpit topology + schema landed in this commit (per ADR-077 §D1, §D2). Skill bootstrap brief, complaint box, and full inbox integration are deferred follow-ups in the kanban under epic `t-274ec70c`. Until those land, enabling superdoctor in `cockpit.json` spawns a window 2 with a Claude session that can read its inbox via raw SQL but doesn't have the role brief — it'll behave like a generic Opus session unless you hand-roll a prompt at start. Treat this commit as the topology cutover, not the production-ready superdoctor.
+ADR-077 §D1 + §D2 (cockpit topology + schema), §F1 (skill brief in `~/.claude/skills/superdoctor/`), §F2 (complaint box SQLite + `atmux complaints` verb), §F3 (`atmux send __superdoctor__` validator), §F4 (P0 send-keys runbook), and §F5 (status verb superdoctor surface) all ship. Setting `superdoctor.enabled: true` in `~/.atmux/cockpit.json` and running `atmux cockpit rebuild` spawns window 2 with a Claude Opus session that — when invoked as `/loop /superdoctor` — runs the hourly diagnosis loop end-to-end.
+
+Open follow-ups (not blocking):
+
+- `atmux complaints list --all-teams` — one query across every cockpit-roster team's state.db. Operator can iterate via shell until this lands.
+- Cross-cockpit federation (Phase 6+) — multiple superdoctor instances coordinating across geographic regions.
