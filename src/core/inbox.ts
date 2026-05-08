@@ -1,42 +1,81 @@
-// ADR-003 + ADR-005: src/core/inbox.ts — per-member inbox primitives
-// over `.atmux/inbox/<member>.json`.
+// ADR-003 + ADR-005 + ADR-076: src/core/inbox.ts — per-member inbox primitives.
 //
-// Ports the inbox-mirror writes from `lib/claim.sh::_atmux_inbox_move`
-// and `lib/dispatch.sh` (inbox-push leg). Per-member files have shape
-// `{pending: [], inProgress: [], done: []}` (matches `Inbox` schema in
-// `src/schema/inbox.ts`).
+// **ADR-076 cutover (2026-05-08): reads now SQL-canonical.**
+// `loadInbox` queries the `tasks` table (filtered by `owner`) and buckets
+// by status: `todo` → pending, `in-progress` → inProgress, `done` →
+// done. Returns the same `Inbox` shape so all existing callers
+// (status verb's pendingCount, atmux inbox <member>, doctor phantom-
+// inbox check, claim/dispatch/done verbs) keep working unchanged.
 //
-// Layer rule (ADR-003): core libs take `atmuxDir` and the member name;
-// they resolve the path via `core/common.ts::inboxPathFor` so callers
-// don't repeat the join.
+// Falls back to the JSON file at `<atmuxDir>/inboxes/<member>.json`
+// only when `state.db` doesn't exist (fresh teams pre-migration).
+// Most teams ran `atmux migrate-state json-to-sqlite --target=inboxes`
+// already; the fallback exists for deployment-edge teams.
 //
-// Concurrency. Every write path goes through `json.updateJson` per
-// ADR-005; bash relied on kernel atomic-rename for serialization on a
-// single-writer-per-file convention. The TS port adds explicit flock
-// per the ADR.
+// **Writers below are dual-path during the rollout window** — they
+// continue to write JSON to keep the .atmux/inboxes/<member>.json
+// files current as a safety net. Phase 3 of ADR-076 drops the JSON
+// writes entirely; until then the JSON is a write-only mirror.
 //
-// Parity with bash @ worktree-frozen:
+// Bash parity history (now historical — bash decommissioned per ADR-064):
 //
-// - `appendDispatched` ↔ `lib/dispatch.sh:62-65`. Pushes the task into
-//   `.inProgress` with `dispatchedAt` stamped (NOT `.pending` — bash
-//   dispatch is a lead-side forced-claim, the member just receives the
-//   task already in-progress).
-// - `appendPending`    ↔ alternative dispatch flow when a verb wants
-//   "lead pushes to inbox.pending, member claims later". Bash @
-//   worktree-frozen does not have this path on dispatch.sh, but
-//   leaving it as a primitive preserves the inbox schema's `pending`
-//   bucket for future verbs.
-// - `movePendingToInProgress` ↔ `lib/claim.sh:88-95`. Member-side claim:
-//   removes from `.pending`, appends to `.inProgress` (with stamped
-//   `claimedAt`), with bash's IDEMPOTENCE guard ("if any inProgress
-//   has this id, skip the append" — `if any(.inProgress[]; .id == $id)`).
-// - `moveInProgressToDone` ↔ `lib/claim.sh:96-101`. Member-side done:
-//   removes from `.inProgress`, appends to `.done` with stamped
-//   `completedAt`. No idempotence guard in bash; mirror.
+// - `appendDispatched` ↔ `lib/dispatch.sh:62-65` (inProgress with dispatchedAt).
+// - `appendPending`    ↔ alternative pending-bucket dispatch flow.
+// - `movePendingToInProgress` ↔ `lib/claim.sh:88-95` (claim with claimedAt).
+// - `moveInProgressToDone` ↔ `lib/claim.sh:96-101` (done with completedAt).
 
+import { join } from "node:path";
+import { exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
+import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { KanbanRepo } from "./repositories/kanban-repo.ts";
 import { Inbox as InboxSchema, type Inbox, type InboxEntry } from "../schema/inbox.ts";
 import { inboxPathFor } from "./common.ts";
+
+// ---------- SQL helper (ADR-076) ----------
+
+function _stateDbPath(atmuxDir: string): string {
+  return join(atmuxDir, "state.db");
+}
+
+/** SQL-backed loadInbox. Queries `tasks` table for member-owned rows
+ *  and buckets by status. KanbanTask → InboxEntry is essentially identity
+ *  (the schemas mirror each other per src/schema/inbox.ts header). */
+function _loadInboxFromTasks(atmuxDir: string, member: string): Inbox {
+  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  try {
+    const repo = new KanbanRepo(db);
+    const tasks = repo.listTasks({ owner: member });
+    const pending: InboxEntry[] = [];
+    const inProgress: InboxEntry[] = [];
+    const done: InboxEntry[] = [];
+    for (const t of tasks) {
+      // KanbanTask is shape-compatible with InboxEntry (passthrough).
+      // Cast through unknown to satisfy the structural check.
+      const entry = t as unknown as InboxEntry;
+      switch (t.status) {
+        case "todo":
+          pending.push(entry);
+          break;
+        case "in-progress":
+          inProgress.push(entry);
+          break;
+        case "done":
+          done.push(entry);
+          break;
+        // "blocked", "cancelled", and other statuses are intentionally
+        // omitted — pre-ADR-076 JSON inbox didn't track them either
+        // (claim.sh moved blocked tasks to pending, cancelled tasks to
+        // done; both behaviors fold into the SQL view via the kanban
+        // status column without bucket promotion).
+      }
+    }
+    return { pending, inProgress, done };
+  } finally {
+    closeDatabase(db);
+  }
+}
 
 // ---------- Public API ----------
 
@@ -48,24 +87,32 @@ export function emptyInbox(): Inbox {
 }
 
 /**
- * Read-only inbox load. Returns the validated shape; if the file does
- * not exist, returns the empty shape (parity with bash's first-run
- * stub-write — both bash and TS treat absence as "empty inbox").
+ * Read-only inbox load.
  *
- * Reads are NOT locked — single-writer-per-file is the inbox
- * convention; concurrent reads against a transient mid-write state
- * are tolerated (the value is either pre-write or post-write thanks
- * to `atomicWrite`'s rename atomicity).
+ * **ADR-076 (2026-05-08): SQL-canonical with JSON fallback.**
+ * If `<atmuxDir>/state.db` exists → query the `tasks` table for owner-
+ * matching rows and bucket by status. Otherwise (fresh teams pre-
+ * migration) fall back to the legacy JSON file at
+ * `<atmuxDir>/inboxes/<member>.json`. Both paths return the same `Inbox`
+ * shape so callers don't need to change.
+ *
+ * Reads are NOT locked. SQLite WAL mode handles concurrent reads
+ * natively; the JSON fallback preserves the legacy single-writer-per-
+ * file convention (transient mid-write reads tolerated thanks to
+ * atomicWrite's rename atomicity).
+ *
+ * If the file/DB doesn't exist, returns the empty shape (parity with
+ * bash's first-run stub-write — both bash and TS treat absence as
+ * "empty inbox").
  */
 export async function loadInbox(atmuxDir: string, member: string): Promise<Inbox> {
+  if (await exists(_stateDbPath(atmuxDir))) {
+    return _loadInboxFromTasks(atmuxDir, member);
+  }
   return await updateJson(inboxPathFor(atmuxDir, member), InboxSchema, (i) => i, {
     initial: emptyInbox(),
-    // Per ADR-029 §F2 + F9 (parity-state-impl 12:33 + 12:35 outbox):
-    // bash inbox writes don't use atmux::with_lock (lib/dispatch.sh:60-65,
-    // lib/claim.sh:81-101, lib/inbox.sh:23-24 — direct jq writes). The TS
-    // port matches to keep `<path>.lock` sidecar absence symmetric on the
-    // parity fs-snapshot byte-equal gate. Single-writer-per-inbox-file
-    // convention covers the operational concurrency story.
+    // Legacy JSON fallback for pre-migration teams. Lock semantics
+    // preserved per the original bash parity comment (ADR-029 §F2 + F9).
     noLock: true,
   });
 }
