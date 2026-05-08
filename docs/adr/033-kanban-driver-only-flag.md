@@ -1,6 +1,6 @@
 # ADR-033: `driverOnly: bool` flag on kanban Tasks — load-bearing gate for driver-fires Tasks
 
-**Status**: proposed
+**Status**: accepted (George 14:13 MYT 2026-05-08 — paperwork catch-up; implemented in `src/schema/kanban.ts:83` + `src/core/repositories/kanban-repo.ts:111,135,165`)
 **Date**: 2026-04-27
 **Driver-ref**: t-efaf4096 (lead-relayed) at 14:14 MYT after reviewer-2 caught t-3b8a2f55 (E9 migrate-to-driver-session bookkeeping marker) auto-claimed via `claim --next` despite body AC saying "Driver-only fire (NOT auto-claimable)".
 

@@ -1,6 +1,6 @@
 # ADR-036: Supervisor-driven `/clear` on stuck panes — direct, with rotation log
 
-**Status**: proposed
+**Status**: accepted (George 14:13 MYT 2026-05-08 — partially implemented in `src/core/send.ts` verify-mode + `src/verbs/stop.ts` modal-stuck handling; remaining work folds into HC#4 live-status of ADR-068)
 **Date**: 2026-04-30
 **Driver-ref**: 16:30 MYT — driver pivot from "split signal from action" sketch (lead-recommended) to "supervisor /clears directly + logs". Driver explicitly chose the simpler/coupled shape; no whip-handshake.
 
