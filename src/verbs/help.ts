@@ -68,6 +68,10 @@ Maintenance:
   cleanup <logs|inboxes|all> [--max-size <bytes>] [--max-age-days <N>] [--dry-run]
                               Rotate big *.log files; prune old .done[] in
                               member inboxes. Idempotent + cron-safe.
+  discorder <progress|heartbeat>
+                              ADR-022 Discord cron pings. progress = 30-min
+                              digest; heartbeat = hourly state-of-team.
+                              Read-only on kanban/git/decisions.
 
 Misc:
   version

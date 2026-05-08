@@ -36,6 +36,7 @@ import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
 import { cost } from "./verbs/cost.ts";
 import { dashboard } from "./verbs/dashboard.ts";
+import { discorder } from "./verbs/discorder.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
@@ -168,6 +169,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return groom(argv.slice(1));
     case "cleanup":
       return cleanup(argv.slice(1));
+    case "discorder":
+      return discorder(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
     case "up":
