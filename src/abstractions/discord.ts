@@ -144,8 +144,15 @@ export interface DiscordSendOpts {
 
 // ---------- Validation ----------
 
-/** Per-bullet emoji prefix allowlist per CLAUDE.md global conventions. */
-const ALLOWED_BULLET_PREFIX = new Set<string>([
+/** Per-bullet emoji prefix allowlist per CLAUDE.md global conventions.
+ *  Exported so the structural lint (tests/unit/abstractions/
+ *  discord-bullet-prefix-audit.test.ts) can import + cross-check
+ *  every `bullet80(\`<emoji>` literal across the src tree against
+ *  the allowlist. Bug 1 driver fast-path guards: any new emoji a
+ *  caller introduces in code MUST also land here, or the validator
+ *  silently rejects the bullet at Discord-emit time → digest stays
+ *  blank. The audit test catches that coupling at lint-time. */
+export const ALLOWED_BULLET_PREFIX = new Set<string>([
   "✅",
   "🧪",
   "🛠️",
@@ -191,6 +198,21 @@ const ALLOWED_BULLET_PREFIX = new Set<string>([
   // ADR-055 §D5: cursor self-heal bullet emojis.
   // 📜 (patch summary line — "patch: N keys updated; pending reviewer").
   "📜",
+  // Bug 1 (driver-auth 19:00 MYT 2026-05-08): emojis silently rejected
+  // by the validator that the runtime code already emits OR the driver
+  // greenlit for forward-compat. Six-emoji minimum per the dispatch:
+  // ⏰ (whip overdue / stale-task bullet — whip.ts:1281),
+  // 📋 (perm-mode drift bullet — whip.ts:1297),
+  // 🩹 (fix bullet — Bug 2/3 templates ahead),
+  // 💓 (heartbeat header / bullet),
+  // 🚀 (lifecycle / bootstrap header bullet),
+  // ⏳ (waiting / pending state bullet).
+  "⏰",
+  "📋",
+  "🩹",
+  "💓",
+  "🚀",
+  "⏳",
 ]);
 
 const GRAPHEME_SEG = new Intl.Segmenter("en", { granularity: "grapheme" });
@@ -520,9 +542,7 @@ export interface EternalImprovementStartOpts {
  * Build the `[eternal-improvement-start]` Discord send opts per ADR-052.
  * Caller passes the result to `send()`.
  */
-export function renderEternalImprovementStart(
-  opts: EternalImprovementStartOpts,
-): DiscordSendOpts {
+export function renderEternalImprovementStart(opts: EternalImprovementStartOpts): DiscordSendOpts {
   const out: DiscordSendOpts = {
     template: "eternal-improvement-start",
     team: opts.team,
@@ -600,9 +620,7 @@ export interface EternalImprovementDoneOpts {
  * driver's "feature must be fully built even though a bit more tokens are
  * used" directive (§"Loop mechanics") makes mid-cycle overage expected.
  */
-export function renderEternalImprovementDone(
-  opts: EternalImprovementDoneOpts,
-): DiscordSendOpts {
+export function renderEternalImprovementDone(opts: EternalImprovementDoneOpts): DiscordSendOpts {
   const overageBytes =
     opts.tokensConsumed > opts.budgetTotal && opts.budgetTotal > 0
       ? ` (${(((opts.tokensConsumed - opts.budgetTotal) / opts.budgetTotal) * 100).toFixed(1)}% overage, mid-task)`
@@ -733,9 +751,7 @@ export interface BudgetPauseDiscordOpts {
  * gate hint bullets.
  */
 export function renderWhipBudgetPause(opts: BudgetPauseDiscordOpts): DiscordSendOpts {
-  const memberBullets = opts.atRisk.map(
-    (r) => `🪫 ${r.member} — 5h ${r.h5}% / wk ${r.wk}%`,
-  );
+  const memberBullets = opts.atRisk.map((r) => `🪫 ${r.member} — 5h ${r.h5}% / wk ${r.wk}%`);
   const bullets: string[] = [
     `🪫 team paused — ${opts.atRisk.length} at-risk member(s)`,
     ...memberBullets,
@@ -845,9 +861,7 @@ export interface BudgetRefreshSoonDiscordOpts {
  * ADR-053 §D3 4.2. Header 🌅, fires once per (account, window,
  * resetEpoch) — dedup via `core/budget-refresh-soon-state.ts`.
  */
-export function renderWhipBudgetRefreshSoon(
-  opts: BudgetRefreshSoonDiscordOpts,
-): DiscordSendOpts {
+export function renderWhipBudgetRefreshSoon(opts: BudgetRefreshSoonDiscordOpts): DiscordSendOpts {
   const bullets: string[] = [
     `⏱️ window resets in: ${opts.resetsIn} (${opts.window})`,
     `💰 account: \`${opts.account}\` — remaining: ${opts.remainingPct}%`,
@@ -1010,9 +1024,7 @@ export interface AccountSwapPassCompleteOpts {
 
 /** Pass-complete ping (ADR-056 §D5). Final ping per pass; archives the
  *  decisions[] tally + lifts the pin. */
-export function renderAccountSwapPassComplete(
-  opts: AccountSwapPassCompleteOpts,
-): DiscordSendOpts {
+export function renderAccountSwapPassComplete(opts: AccountSwapPassCompleteOpts): DiscordSendOpts {
   const out: DiscordSendOpts = {
     template: "whip-account-swap-pass-complete",
     team: opts.team,
@@ -1097,9 +1109,7 @@ export interface WhipSelfHealAttemptOpts {
  *   - `📍 reason: <reason>`
  *   - `💰 token cap: <tokenCap formatted>`
  */
-export function renderWhipSelfHealAttempt(
-  opts: WhipSelfHealAttemptOpts,
-): DiscordSendOpts {
+export function renderWhipSelfHealAttempt(opts: WhipSelfHealAttemptOpts): DiscordSendOpts {
   const out: DiscordSendOpts = {
     template: "whip-self-heal-attempt",
     team: opts.team,
@@ -1161,9 +1171,7 @@ export interface WhipSelfHealResultOpts {
  *   - `📍 see: <logPath>`
  *   - `🚩 flag: <severity> raised — operator triage needed`
  */
-export function renderWhipSelfHealResult(
-  opts: WhipSelfHealResultOpts,
-): DiscordSendOpts {
+export function renderWhipSelfHealResult(opts: WhipSelfHealResultOpts): DiscordSendOpts {
   const tokensUsedStr = opts.tokensUsed >= 0 ? formatTokens(opts.tokensUsed) : "?";
   const tokenCapStr = formatTokens(opts.tokenCap);
   const bullets: string[] = [];
@@ -1221,9 +1229,7 @@ export interface WhipPermModeDriftOpts {
  *   - `🛠️ fix: BTab cycle to auto on each drifted pane`
  */
 export function renderWhipPermModeDrift(opts: WhipPermModeDriftOpts): DiscordSendOpts {
-  const bullets: string[] = [
-    `📍 ${opts.drifted.length} member(s) drifted off auto mode`,
-  ];
+  const bullets: string[] = [`📍 ${opts.drifted.length} member(s) drifted off auto mode`];
   for (const d of opts.drifted) {
     bullets.push(`🟡 ${d.member}: pane in '${d.mode}' mode (expected 'auto')`);
   }
@@ -1280,4 +1286,3 @@ export function renderWhipDefunctCwd(opts: WhipDefunctCwdOpts): DiscordSendOpts 
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
   return out;
 }
-
