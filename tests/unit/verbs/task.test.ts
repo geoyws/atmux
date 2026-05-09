@@ -283,6 +283,40 @@ describe("task verb — dispatch", () => {
     expect(parsed[0].subject).toBe("first");
   });
 
+  test("ADR-080§E: 'list --json' round-trips adversarial body (backticks/newlines/quotes/$)", async () => {
+    // Forward trip-wire per ADR-080 §E investigation: sopx-driver
+    // observed `atmux task list --json | jq` parse-errors on bodies
+    // containing backticks/newlines/quotes. Bun-side `task.ts` emits via
+    // `JSON.stringify(tasks, null, 2)` (standard library, properly
+    // escapes); the suspected bug is bash-sopx-side. This fixture
+    // documents the bun-side guarantee so a future regression — e.g.
+    // someone replacing `JSON.stringify` with a hand-rolled formatter,
+    // or `core/kanban.ts::listTasks` returning a string field that's
+    // already JSON-encoded-once — gets caught at PR time. See
+    // `docs/INVESTIGATION-bash-task-list-json.md`.
+    // Fixture purposely embeds a literal `${world}` substring (the
+    // adversarial body) — backticks + dollar-brace are escaped within
+    // the template literal so neither template-substitution nor a
+    // future biome auto-fix can accidentally interpolate `world`.
+    const ADVERSARIAL_BODY = `\`\`\`ts\nconst x = \`hello \${world}\`;\nconst y = 'a' + "b";\nconst z = $1 + $foo;\n\`\`\``;
+    await addTask(atmuxDir, { subject: "adversarial", body: ADVERSARIAL_BODY });
+    const { out } = await captureStdout(() => task(["list", "--json", "--team-dir", teamDir]));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(out);
+    } catch (e) {
+      throw new Error(
+        `bun task.ts --json emit produced un-parseable output (ADR-080§E regression):\n` +
+          `  parse error: ${(e as Error).message}\n` +
+          `  raw stdout (first 200): ${out.slice(0, 200)}\n`,
+      );
+    }
+    expect(Array.isArray(parsed)).toBe(true);
+    expect((parsed as Array<{ subject: string; body?: string }>).length).toBe(1);
+    expect((parsed as Array<{ subject: string }>)[0]?.subject).toBe("adversarial");
+    expect((parsed as Array<{ body?: string }>)[0]?.body).toBe(ADVERSARIAL_BODY);
+  });
+
   test("'list --status todo' filters", async () => {
     const id = await addTask(atmuxDir, { subject: "todo-task" });
     await addTask(atmuxDir, { subject: "in-progress-task" });
