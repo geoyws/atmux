@@ -65,6 +65,11 @@ export interface ResolveTeamWindowDeps {
   loadTeam?: (opts: { teamDir: string }) => Promise<Team>;
   /** Build the team's cage TmuxNamespace. Default `createTmux({socketPath})`. */
   createCageTmux?: (teamName: string) => TmuxNamespace;
+  /** Override the superdoctor window's shell command (test injection).
+   *  Default uses `buildSuperdoctorWindowCommand`. CI runners don't have
+   *  `claude` installed; tests inject `() => "sleep infinity"` so the
+   *  window persists for topology assertions. */
+  buildSuperdoctorCommand?: (sd: CockpitSuperdoctor) => string;
 }
 
 interface DriverSessionShape {
@@ -622,7 +627,7 @@ export async function reconcileCockpitSession(
     const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
     let sd = windowsBefore.find((w) => w.name === "superdoctor");
     if (sd === undefined) {
-      const cmd = buildSuperdoctorWindowCommand(superdoctor);
+      const cmd = (deps.buildSuperdoctorCommand ?? buildSuperdoctorWindowCommand)(superdoctor);
       const newId = await cockpitTmux.window.newWindow({
         sessionName,
         name: "superdoctor",

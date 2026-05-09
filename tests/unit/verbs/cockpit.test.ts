@@ -421,6 +421,11 @@ describe("reconcileCockpitSession", () => {
 
   // ---------- ADR-077: superdoctor cockpit window ----------
 
+  // Test-only deps that keep the superdoctor window alive on CI runners
+  // where `claude` isn't installed (otherwise newWindow's spawned process
+  // exits immediately + tmux destroys the window).
+  const sdDeps: ResolveTeamWindowDeps = { buildSuperdoctorCommand: () => "sleep infinity" };
+
   test("ADR-077: superdoctor opt-in places window 2 between superdriver and team viewers", async () => {
     const fx = await spinTmux("cockpit-sd-fresh");
     try {
@@ -429,7 +434,7 @@ describe("reconcileCockpitSession", () => {
         { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
         { name: "beta", root: "/b", enabled: true } as CockpitTeam,
       ];
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, { enabled: true });
       const wins = await fx.tmux.window.listWindows("s");
       const byIndex = wins.slice().sort((a, b) => a.index - b.index);
       // Window 1 = superdriver (created by newSession); window 2 = superdoctor;
@@ -475,12 +480,12 @@ describe("reconcileCockpitSession", () => {
       const { logger } = makeLogger();
       const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
       const sd = { enabled: true };
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, sd);
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sd);
       const before = (await fx.tmux.window.listWindows("s"))
         .slice()
         .sort((a, b) => a.index - b.index)
         .map((w) => `${w.index}:${w.name}`);
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, sd);
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sd);
       const after = (await fx.tmux.window.listWindows("s"))
         .slice()
         .sort((a, b) => a.index - b.index)
@@ -514,7 +519,7 @@ describe("reconcileCockpitSession", () => {
       expect(pre[0]).toBe("superdriver");
       expect(pre.slice(1).sort()).toEqual(["alpha", "beta"]);
       // Upgrade — superdoctor enabled.
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, { enabled: true });
       const post = (await fx.tmux.window.listWindows("s"))
         .slice()
         .sort((a, b) => a.index - b.index);
@@ -541,10 +546,10 @@ describe("reconcileCockpitSession", () => {
       const { logger } = makeLogger();
       const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
       // First pass with superdoctor + alpha.
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, { enabled: true });
       // Second pass with superdoctor still enabled but alpha removed —
       // alpha must be pruned, superdoctor must survive.
-      await reconcileCockpitSession(fx.tmux, "s", [], logger, {}, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, sdDeps, { enabled: true });
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
       expect(names).toContain("superdriver");
       expect(names).toContain("superdoctor");
