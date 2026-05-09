@@ -109,6 +109,14 @@ import {
 } from "../core/perm-mode-drift-state.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
 import {
+  hashFindingBullets,
+  loadWhipFindingState,
+  recordFindingFire,
+  saveWhipFindingState,
+  shouldFireFinding,
+  type WhipFindingState,
+} from "../core/whip-finding-state.ts";
+import {
   type BudgetCheckCtx,
   type BudgetCheckDeps,
   type BudgetCheckTeamMember,
@@ -1532,42 +1540,82 @@ async function emitFindings(
     return;
   }
 
+  // ADR-079 §D: per-template hash dedup. Without this, an unchanged
+  // finding set re-fires the same Discord ping every 5min — sopx
+  // measured ~275 pings/24h, 90% boilerplate. Gate each template
+  // emit on hash transition + hourly heartbeat re-fire.
+  const findingState = await loadWhipFindingState(atmuxDir);
+  let nextState: WhipFindingState = findingState;
+  const tickHeartbeatSec = config.heartbeat ? 3600 : Number.POSITIVE_INFINITY;
+
   if (blockers.length > 0) {
-    await tryDiscord(send, stderr, {
-      template: "whip-blocker",
-      team: team.name,
-      category: "🛑",
-      bullets: blockers.map((f) => f.bullet),
-      whenMs: nowMs,
-      ...(webhookOverride !== undefined ? { webhookOverride } : {}),
-    });
+    const bullets = blockers.map((f) => f.bullet);
+    const hash = hashFindingBullets(bullets);
+    const verdict = shouldFireFinding(nextState, "whip-blocker", hash, nowSec, tickHeartbeatSec);
+    if (verdict === "suppress") {
+      stderr(`whip: whip-blocker: state unchanged, suppressed\n`);
+    } else {
+      await tryDiscord(send, stderr, {
+        template: "whip-blocker",
+        team: team.name,
+        category: "🛑",
+        bullets,
+        whenMs: nowMs,
+        ...(webhookOverride !== undefined ? { webhookOverride } : {}),
+      });
+      nextState = recordFindingFire(nextState, "whip-blocker", hash, nowSec);
+    }
   }
   if (overdue.length > 0) {
-    await tryDiscord(send, stderr, {
-      template: "whip-overdue",
-      team: team.name,
-      category: "⏰",
-      bullets: overdue.map((f) => f.bullet),
-      whenMs: nowMs,
-      ...(webhookOverride !== undefined ? { webhookOverride } : {}),
-    });
+    const bullets = overdue.map((f) => f.bullet);
+    const hash = hashFindingBullets(bullets);
+    const verdict = shouldFireFinding(nextState, "whip-overdue", hash, nowSec, tickHeartbeatSec);
+    if (verdict === "suppress") {
+      stderr(`whip: whip-overdue: state unchanged, suppressed\n`);
+    } else {
+      await tryDiscord(send, stderr, {
+        template: "whip-overdue",
+        team: team.name,
+        category: "⏰",
+        bullets,
+        whenMs: nowMs,
+        ...(webhookOverride !== undefined ? { webhookOverride } : {}),
+      });
+      nextState = recordFindingFire(nextState, "whip-overdue", hash, nowSec);
+    }
   }
-  // Always also emit a [whip-progress] digest summarising counts so the
+  // Always compute a [whip-progress] digest summarising counts so the
   // operator's standing channel has a single bullet to grep on for
-  // "tick happened". Soft / informational signals ride here.
-  await tryDiscord(send, stderr, {
-    template: "whip-progress",
-    team: team.name,
-    category: "📊",
-    bullets: [
+  // "tick happened". Soft / informational signals ride here. Same
+  // dedup gate — counts are the body, so identical counts + identical
+  // info bullets across ticks → suppress (e.g., 12 consecutive
+  // auto-preclear-failed ticks → 1 emit + 1 hourly heartbeat).
+  {
+    const bullets = [
       bullet80(
         `📊 ${blockers.length} blocker(s) · ${overdue.length} overdue · ${informational.length} info`,
       ),
       ...informational.map((f) => f.bullet),
-    ],
-    whenMs: nowMs,
-    ...(webhookOverride !== undefined ? { webhookOverride } : {}),
-  });
+    ];
+    const hash = hashFindingBullets(bullets);
+    const verdict = shouldFireFinding(nextState, "whip-progress", hash, nowSec, tickHeartbeatSec);
+    if (verdict === "suppress") {
+      stderr(`whip: whip-progress: state unchanged, suppressed\n`);
+    } else {
+      await tryDiscord(send, stderr, {
+        template: "whip-progress",
+        team: team.name,
+        category: "📊",
+        bullets,
+        whenMs: nowMs,
+        ...(webhookOverride !== undefined ? { webhookOverride } : {}),
+      });
+      nextState = recordFindingFire(nextState, "whip-progress", hash, nowSec);
+    }
+  }
+  if (nextState !== findingState) {
+    await saveWhipFindingState(atmuxDir, nextState);
+  }
 
   // ADR-057 §D4a: aggregate perm-mode-drift findings into one ping per
   // tick, applying per-member 24h dedup. State file:
