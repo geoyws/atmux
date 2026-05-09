@@ -18,6 +18,7 @@ import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
+  checkCronIntervalDivisors,
   checkDeps,
   checkInboxMarks,
   checkOrphanSessions,
@@ -651,6 +652,146 @@ describe("checkOrphanSessions", () => {
     // Either 1 row (no orphan) or 2 (a real `atmux-doctor-fixture-…`
     // session exists, which is impossibly unlikely).
     expect(rows.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------- ADR-079 §A: checkCronIntervalDivisors ----------
+
+describe("checkCronIntervalDivisors", () => {
+  const team = (overrides: Partial<Team> = {}): Team =>
+    ({ name: "demo", members: [], ...overrides }) as Team;
+
+  test("null team → no rows", () => {
+    expect(checkCronIntervalDivisors(null)).toEqual([]);
+  });
+
+  test("all defaults (no fields set) → no rows", () => {
+    expect(checkCronIntervalDivisors(team())).toEqual([]);
+  });
+
+  test("valid divisors of 60/24 → no rows", () => {
+    const t = team({
+      whip: { intervalMins: 5 } as never,
+      report: { intervalMins: 30, heartbeatHours: 2 } as never,
+      decisions: { intervalHours: 4 } as never,
+      groom: { atHour: 4 } as never,
+      unblocker: { intervalMins: 2 } as never,
+    });
+    expect(checkCronIntervalDivisors(t)).toEqual([]);
+  });
+
+  test("intervalMins=60 (boundary) → no rows", () => {
+    const t = team({ whip: { intervalMins: 60 } as never });
+    expect(checkCronIntervalDivisors(t)).toEqual([]);
+  });
+
+  test("intervalHours=24 (boundary) → no rows", () => {
+    const t = team({ decisions: { intervalHours: 24 } as never });
+    expect(checkCronIntervalDivisors(t)).toEqual([]);
+  });
+
+  test("non-divisor whip.intervalMins=7 → 1 yellow row with hint", () => {
+    const t = team({ whip: { intervalMins: 7 } as never });
+    const rows = checkCronIntervalDivisors(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("cron-interval-divisor");
+    expect(rows[0]?.detail).toContain("whip.intervalMins=7");
+    expect(rows[0]?.detail).toContain("not a divisor of 60");
+    expect(rows[0]?.hint).toContain("1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
+  });
+
+  test("out-of-range whip.intervalMins=120 → yellow row with 'out of range'", () => {
+    const t = team({ whip: { intervalMins: 120 } as never });
+    const rows = checkCronIntervalDivisors(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.detail).toContain("out of range");
+  });
+
+  test("zero / negative whip.intervalMins → yellow row out of range", () => {
+    const t1 = team({ whip: { intervalMins: 0 } as never });
+    const t2 = team({ whip: { intervalMins: -5 } as never });
+    expect(checkCronIntervalDivisors(t1)[0]?.detail).toContain("out of range");
+    expect(checkCronIntervalDivisors(t2)[0]?.detail).toContain("out of range");
+  });
+
+  test("non-divisor report.heartbeatHours=5 → yellow row with divisor-of-24 hint", () => {
+    const t = team({ report: { heartbeatHours: 5 } as never });
+    const rows = checkCronIntervalDivisors(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.detail).toContain("report.heartbeatHours=5");
+    expect(rows[0]?.detail).toContain("not a divisor of 24");
+    expect(rows[0]?.hint).toContain("1, 2, 3, 4, 6, 8, 12, 24");
+  });
+
+  test("out-of-range decisions.intervalHours=25 → yellow row out of range", () => {
+    const t = team({ decisions: { intervalHours: 25 } as never });
+    const rows = checkCronIntervalDivisors(t);
+    expect(rows[0]?.detail).toContain("out of range");
+  });
+
+  test("groom.atHour=24 (out of 0–23) → yellow row out of range", () => {
+    const t = team({ groom: { atHour: 24 } as never });
+    const rows = checkCronIntervalDivisors(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.detail).toContain("groom.atHour=24");
+    expect(rows[0]?.detail).toContain("out of range");
+  });
+
+  test("groom.atHour=-1 → yellow row out of range", () => {
+    const t = team({ groom: { atHour: -1 } as never });
+    expect(checkCronIntervalDivisors(t)[0]?.detail).toContain("out of range");
+  });
+
+  test("non-divisor unblocker.intervalMins=11 → yellow row", () => {
+    const t = team({ unblocker: { intervalMins: 11 } as never });
+    const rows = checkCronIntervalDivisors(t);
+    expect(rows[0]?.detail).toContain("unblocker.intervalMins=11");
+    expect(rows[0]?.detail).toContain("not a divisor of 60");
+  });
+
+  test("multiple offenders → one row per field", () => {
+    const t = team({
+      whip: { intervalMins: 7 } as never,
+      report: { intervalMins: 11, heartbeatHours: 5 } as never,
+      decisions: { intervalHours: 7 } as never,
+      groom: { atHour: 30 } as never,
+      unblocker: { intervalMins: 13 } as never,
+    });
+    const rows = checkCronIntervalDivisors(t);
+    expect(rows.length).toBe(6);
+    for (const r of rows) {
+      expect(r.status).toBe("yellow");
+      expect(r.label).toBe("cron-interval-divisor");
+    }
+    const labels = rows.map((r) => r.detail ?? "").join("|");
+    expect(labels).toContain("whip.intervalMins=7");
+    expect(labels).toContain("report.intervalMins=11");
+    expect(labels).toContain("report.heartbeatHours=5");
+    expect(labels).toContain("decisions.intervalHours=7");
+    expect(labels).toContain("groom.atHour=30");
+    expect(labels).toContain("unblocker.intervalMins=13");
+  });
+
+  test("non-integer values flagged as out of range", () => {
+    const t = team({ whip: { intervalMins: 3.5 } as never });
+    expect(checkCronIntervalDivisors(t)[0]?.detail).toContain("out of range");
+  });
+
+  test("intervalHours=1 (boundary, schema-default) → no rows", () => {
+    const t = team({ report: { heartbeatHours: 1 } as never });
+    expect(checkCronIntervalDivisors(t)).toEqual([]);
+  });
+
+  test("groom.atHour=0 (midnight, boundary) → no rows", () => {
+    const t = team({ groom: { atHour: 0 } as never });
+    expect(checkCronIntervalDivisors(t)).toEqual([]);
+  });
+
+  test("groom.atHour=23 (boundary) → no rows", () => {
+    const t = team({ groom: { atHour: 23 } as never });
+    expect(checkCronIntervalDivisors(t)).toEqual([]);
   });
 });
 

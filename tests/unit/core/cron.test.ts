@@ -3,7 +3,14 @@
 // straight assertion suite over `renderCronLines` + `renderCronBlock`.
 
 import { describe, expect, test } from "bun:test";
-import { renderCronBlock, renderCronLines } from "../../../src/core/cron.ts";
+import {
+  cronAtHour,
+  cronEvery,
+  cronEveryHour,
+  renderCronBlock,
+  renderCronLines,
+} from "../../../src/core/cron.ts";
+import { ConfigError } from "../../../src/errors.ts";
 import type { Team } from "../../../src/schema/team.ts";
 
 const baseTeam = (overrides: Partial<Team> = {}): Team =>
@@ -168,6 +175,215 @@ describe("renderCronLines", () => {
     expect(lines.some((l) => l.includes("whip-resume-check"))).toBe(true);
     expect(lines.some((l) => l.includes("unblocker tick"))).toBe(true);
     expect(lines.some((l) => l.includes("discorder progress"))).toBe(true);
+  });
+});
+
+// ADR-079 §A: cron-expression helpers.
+describe("cronEvery", () => {
+  test("divisors of 60 render `*/N * * * *`", () => {
+    expect(cronEvery(1)).toBe("*/1 * * * *");
+    expect(cronEvery(2)).toBe("*/2 * * * *");
+    expect(cronEvery(5)).toBe("*/5 * * * *");
+    expect(cronEvery(10)).toBe("*/10 * * * *");
+    expect(cronEvery(15)).toBe("*/15 * * * *");
+    expect(cronEvery(30)).toBe("*/30 * * * *");
+  });
+
+  test("60 renders the on-the-hour form `0 * * * *`", () => {
+    expect(cronEvery(60)).toBe("0 * * * *");
+  });
+
+  test("non-divisor of 60 throws ConfigError (e.g. 7, 11, 25)", () => {
+    expect(() => cronEvery(7)).toThrow(ConfigError);
+    expect(() => cronEvery(11)).toThrow(ConfigError);
+    expect(() => cronEvery(25)).toThrow(ConfigError);
+    expect(() => cronEvery(7)).toThrow(/divisor of 60/);
+  });
+
+  test("out-of-range values throw ConfigError (0, -1, 61, 120)", () => {
+    expect(() => cronEvery(0)).toThrow(ConfigError);
+    expect(() => cronEvery(-1)).toThrow(ConfigError);
+    expect(() => cronEvery(61)).toThrow(ConfigError);
+    expect(() => cronEvery(120)).toThrow(ConfigError);
+    expect(() => cronEvery(0)).toThrow(/1.{1,3}60/);
+  });
+
+  test("non-integer values throw ConfigError (3.5, NaN)", () => {
+    expect(() => cronEvery(3.5)).toThrow(ConfigError);
+    expect(() => cronEvery(Number.NaN)).toThrow(ConfigError);
+  });
+});
+
+describe("cronEveryHour", () => {
+  test("1 renders the on-the-hour form `0 * * * *`", () => {
+    expect(cronEveryHour(1)).toBe("0 * * * *");
+  });
+
+  test("divisors of 24 render `0 */N * * *`", () => {
+    expect(cronEveryHour(2)).toBe("0 */2 * * *");
+    expect(cronEveryHour(3)).toBe("0 */3 * * *");
+    expect(cronEveryHour(4)).toBe("0 */4 * * *");
+    expect(cronEveryHour(6)).toBe("0 */6 * * *");
+    expect(cronEveryHour(8)).toBe("0 */8 * * *");
+    expect(cronEveryHour(12)).toBe("0 */12 * * *");
+  });
+
+  test("24 renders `0 0 * * *` (daily at midnight)", () => {
+    expect(cronEveryHour(24)).toBe("0 0 * * *");
+  });
+
+  test("non-divisor of 24 throws ConfigError (5, 7, 11)", () => {
+    expect(() => cronEveryHour(5)).toThrow(ConfigError);
+    expect(() => cronEveryHour(7)).toThrow(ConfigError);
+    expect(() => cronEveryHour(11)).toThrow(ConfigError);
+    expect(() => cronEveryHour(5)).toThrow(/divisor of 24/);
+  });
+
+  test("out-of-range values throw ConfigError (0, -1, 25)", () => {
+    expect(() => cronEveryHour(0)).toThrow(ConfigError);
+    expect(() => cronEveryHour(-1)).toThrow(ConfigError);
+    expect(() => cronEveryHour(25)).toThrow(ConfigError);
+  });
+
+  test("non-integer values throw ConfigError", () => {
+    expect(() => cronEveryHour(2.5)).toThrow(ConfigError);
+    expect(() => cronEveryHour(Number.NaN)).toThrow(ConfigError);
+  });
+});
+
+describe("cronAtHour", () => {
+  test("each hour 0..23 renders `0 H * * *`", () => {
+    expect(cronAtHour(0)).toBe("0 0 * * *");
+    expect(cronAtHour(4)).toBe("0 4 * * *");
+    expect(cronAtHour(12)).toBe("0 12 * * *");
+    expect(cronAtHour(23)).toBe("0 23 * * *");
+  });
+
+  test("out-of-range hour throws ConfigError (-1, 24, 25)", () => {
+    expect(() => cronAtHour(-1)).toThrow(ConfigError);
+    expect(() => cronAtHour(24)).toThrow(ConfigError);
+    expect(() => cronAtHour(25)).toThrow(ConfigError);
+  });
+
+  test("non-integer hour throws ConfigError", () => {
+    expect(() => cronAtHour(4.5)).toThrow(ConfigError);
+    expect(() => cronAtHour(Number.NaN)).toThrow(ConfigError);
+  });
+});
+
+// ADR-079 §A: integration — cron schedules read from team config.
+describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
+  test("team.whip.intervalMins=10 → whip line uses */10", () => {
+    const team = baseTeam({ whip: { intervalMins: 10 } as never });
+    const lines = renderCronLines(baseOpts(team));
+    const whip = lines.find((l) => / whip /.test(l) && !l.includes("whip-resume"));
+    expect(whip).toBeDefined();
+    expect(whip).toMatch(/^\*\/10 \* \* \* \* /);
+  });
+
+  test("team.report.intervalMins=60 → report line uses `0 * * * *`", () => {
+    const team = baseTeam({ report: { intervalMins: 60 } as never });
+    const lines = renderCronLines(baseOpts(team));
+    const report = lines.find((l) => l.includes(" report "));
+    expect(report).toBeDefined();
+    expect(report).toMatch(/^0 \* \* \* \* /);
+  });
+
+  test("discorder + report.intervalMins=15 + heartbeatHours=2 → progress=*/15, heartbeat=0 */2", () => {
+    const team = baseTeam({
+      members: [{ name: "d", role: "discorder", cwd: "/x" } as never],
+      report: { intervalMins: 15, heartbeatHours: 2 } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const progress = lines.find((l) => l.includes("discorder progress"));
+    const heartbeat = lines.find((l) => l.includes("discorder heartbeat"));
+    expect(progress).toBeDefined();
+    expect(heartbeat).toBeDefined();
+    expect(progress).toMatch(/^\*\/15 \* \* \* \* /);
+    expect(heartbeat).toMatch(/^0 \*\/2 \* \* \* /);
+  });
+
+  test("team.decisions.intervalHours=6 → decisions digest uses `0 */6 * * *`", () => {
+    const team = baseTeam({ decisions: { intervalHours: 6 } as never });
+    const lines = renderCronLines(baseOpts(team));
+    const digest = lines.find((l) => l.includes("decisions digest"));
+    expect(digest).toBeDefined();
+    expect(digest).toMatch(/^0 \*\/6 \* \* \* /);
+  });
+
+  test("team.decisions.intervalHours=1 → decisions digest uses `0 * * * *` (hourly)", () => {
+    const team = baseTeam({ decisions: { intervalHours: 1 } as never });
+    const lines = renderCronLines(baseOpts(team));
+    const digest = lines.find((l) => l.includes("decisions digest"));
+    expect(digest).toMatch(/^0 \* \* \* \* /);
+  });
+
+  test("team.groom.atHour=2 → groom line uses `0 2 * * *`", () => {
+    const team = baseTeam({ groom: { atHour: 2 } as never });
+    const lines = renderCronLines(baseOpts(team));
+    const groom = lines.find((l) => l.includes("groom --quiet"));
+    expect(groom).toBeDefined();
+    expect(groom).toMatch(/^0 2 \* \* \* /);
+  });
+
+  test("team.groom.atHour=0 → groom line uses `0 0 * * *` (midnight)", () => {
+    const team = baseTeam({ groom: { atHour: 0 } as never });
+    const lines = renderCronLines(baseOpts(team));
+    const groom = lines.find((l) => l.includes("groom --quiet"));
+    expect(groom).toMatch(/^0 0 \* \* \* /);
+  });
+
+  test("unblocker member + team.unblocker.intervalMins=5 → unblocker line uses */5", () => {
+    const team = baseTeam({
+      members: [{ name: "u", role: "unblocker", cwd: "/x" } as never],
+      unblocker: { intervalMins: 5 } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const u = lines.find((l) => l.includes("unblocker tick"));
+    expect(u).toBeDefined();
+    expect(u).toMatch(/^\*\/5 \* \* \* \* /);
+  });
+
+  test("whip-resume-check stays hardcoded at */1 even when other intervals change", () => {
+    // Per ADR-079 §A: sub-1-min cadence isn't a tunable, it's the
+    // ADR-053 §D4 post-pause latency floor.
+    const team = baseTeam({
+      whip: { intervalMins: 30, claudeAccount: "icloud" } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const resume = lines.find((l) => l.includes("whip-resume-check"));
+    expect(resume).toBeDefined();
+    expect(resume).toMatch(/^\*\/1 \* \* \* \* /);
+  });
+
+  test("invalid intervalMins (e.g. 7) throws ConfigError at render time", () => {
+    const team = baseTeam({ whip: { intervalMins: 7 } as never });
+    expect(() => renderCronLines(baseOpts(team))).toThrow(ConfigError);
+    expect(() => renderCronLines(baseOpts(team))).toThrow(/divisor of 60/);
+  });
+
+  test("invalid heartbeatHours (e.g. 5) throws ConfigError when discorder present", () => {
+    const team = baseTeam({
+      members: [{ name: "d", role: "discorder", cwd: "/x" } as never],
+      report: { heartbeatHours: 5 } as never,
+    });
+    expect(() => renderCronLines(baseOpts(team))).toThrow(ConfigError);
+    expect(() => renderCronLines(baseOpts(team))).toThrow(/divisor of 24/);
+  });
+
+  test("invalid groom.atHour throws ConfigError", () => {
+    const team = baseTeam({ groom: { atHour: 24 } as never });
+    expect(() => renderCronLines(baseOpts(team))).toThrow(ConfigError);
+  });
+
+  test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical)", () => {
+    const lines = renderCronLines(baseOpts(baseTeam()));
+    expect(lines).toEqual([
+      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
+      `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
+      `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
+    ]);
   });
 });
 

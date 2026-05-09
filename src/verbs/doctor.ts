@@ -612,6 +612,93 @@ export async function checkWhipConfigDrift(atmuxDir: string): Promise<DoctorRow[
   ];
 }
 
+// ---------- ADR-079 §A: cron-interval-divisor ----------
+
+/**
+ * ADR-079 §A — surface non-divisor / out-of-range cron interval config
+ * at config-load time as yellow rows, BEFORE `atmux start` trips
+ * `cronEvery`'s render-time throw. Operator-friendly preview of what
+ * would otherwise be a hard fail.
+ *
+ * Checked fields:
+ *   - team.whip.intervalMins (divisor of 60, 1–60)
+ *   - team.report.intervalMins (divisor of 60, 1–60)
+ *   - team.report.heartbeatHours (divisor of 24, 1–24)
+ *   - team.decisions.intervalHours (divisor of 24, 1–24)
+ *   - team.groom.atHour (0–23)
+ *   - team.unblocker.intervalMins (divisor of 60, 1–60)
+ *
+ * One row per offender. No rows when team is null or every value is
+ * within range + a divisor.
+ */
+export function checkCronIntervalDivisors(team: Team | null): DoctorRow[] {
+  if (team === null) return [];
+  const rows: DoctorRow[] = [];
+
+  const checkMinutes = (label: string, minutes: number | undefined): void => {
+    if (minutes === undefined) return;
+    if (!Number.isInteger(minutes) || minutes <= 0 || minutes > 60) {
+      rows.push({
+        status: "yellow",
+        label: "cron-interval-divisor",
+        detail: `${label}=${minutes} out of range (1–60)`,
+        hint: "edit team.json — atmux start will fail at cron render time",
+      });
+      return;
+    }
+    if (minutes !== 60 && 60 % minutes !== 0) {
+      rows.push({
+        status: "yellow",
+        label: "cron-interval-divisor",
+        detail: `${label}=${minutes} not a divisor of 60 — cron skew expected`,
+        hint: "use one of: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60",
+      });
+    }
+  };
+
+  const checkHours = (label: string, hours: number | undefined): void => {
+    if (hours === undefined) return;
+    if (!Number.isInteger(hours) || hours <= 0 || hours > 24) {
+      rows.push({
+        status: "yellow",
+        label: "cron-interval-divisor",
+        detail: `${label}=${hours} out of range (1–24)`,
+        hint: "edit team.json — atmux start will fail at cron render time",
+      });
+      return;
+    }
+    if (hours !== 24 && hours !== 1 && 24 % hours !== 0) {
+      rows.push({
+        status: "yellow",
+        label: "cron-interval-divisor",
+        detail: `${label}=${hours} not a divisor of 24 — cron skew expected`,
+        hint: "use one of: 1, 2, 3, 4, 6, 8, 12, 24",
+      });
+    }
+  };
+
+  const checkHourOfDay = (label: string, hour: number | undefined): void => {
+    if (hour === undefined) return;
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+      rows.push({
+        status: "yellow",
+        label: "cron-interval-divisor",
+        detail: `${label}=${hour} out of range (0–23)`,
+        hint: "edit team.json — atmux start will fail at cron render time",
+      });
+    }
+  };
+
+  checkMinutes("whip.intervalMins", team.whip?.intervalMins);
+  checkMinutes("report.intervalMins", team.report?.intervalMins);
+  checkHours("report.heartbeatHours", team.report?.heartbeatHours);
+  checkHours("decisions.intervalHours", team.decisions?.intervalHours);
+  checkHourOfDay("groom.atHour", team.groom?.atHour);
+  checkMinutes("unblocker.intervalMins", team.unblocker?.intervalMins);
+
+  return rows;
+}
+
 // ---------- Check 7: orphan-sessions ----------
 
 export interface CheckOrphanSessionsOpts {
@@ -790,7 +877,10 @@ export async function checkDriverPaneState(
     ];
   }
 
-  if (health.state === "READY" || health.state === "TYPING") {
+  if (health.state === "READY" || health.state === "TYPING" || health.state === "BUSY") {
+    // BUSY is a healthy transient — the agent is mid-think; turn will
+    // complete and pane returns to READY. Treated as green alongside
+    // READY/TYPING per ADR-080 §C.
     return [
       {
         status: "green",
@@ -1020,6 +1110,9 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkInboxMarks(atmuxDir)));
   // ADR-064 §4: driver-pane health (no row when team unconfigured).
   rows.push(...(await checkDriverPaneState(team, atmuxDir)));
+  // ADR-079 §A: cron interval values must be divisors of 60 (minutes)
+  // or 24 (hours). Yellow per offender; surfaces before atmux start.
+  rows.push(...checkCronIntervalDivisors(team));
   return rows;
 }
 

@@ -213,6 +213,74 @@ export const TeamCron = z
 export type TeamCron = z.infer<typeof TeamCron>;
 
 /**
+ * `team.json::report` sub-config — cron cadence for the report /
+ * discorder progress + heartbeat lines (ADR-079 §A).
+ *
+ * Replaces the prior `z.unknown().optional()` placeholder. `.strict()`
+ * per `whip` precedent — typo'd keys (`intervalMin` vs `intervalMins`)
+ * surface as drift findings rather than silently using the default.
+ *
+ * Validation note: schema only enforces basic shape (positive int). The
+ * cron renderer (`src/core/cron.ts::cronEvery`) throws `ConfigError`
+ * when the value is outside 1–60 OR not a divisor of 60 (per ADR-079
+ * OQ-A1: throw at render time + warn at config-load time via doctor's
+ * `cron-interval-divisor` check).
+ */
+export const TeamReport = z
+  .object({
+    /** Cron interval in minutes for `report` (or `discorder progress`).
+     *  Default 30. Must be a divisor of 60: 1, 2, 3, 4, 5, 6, 10, 12,
+     *  15, 20, 30, 60. */
+    intervalMins: z.number().int().positive().default(30),
+    /** Cron interval in hours for `discorder heartbeat`. Default 1.
+     *  Must be a divisor of 24: 1, 2, 3, 4, 6, 8, 12, 24. */
+    heartbeatHours: z.number().int().positive().default(1),
+  })
+  .strict();
+export type TeamReport = z.infer<typeof TeamReport>;
+
+/**
+ * `team.json::decisions` sub-config — cron cadence for `decisions
+ * digest` (ADR-079 §A). Hourly granularity per ADR — minute-level
+ * cadence makes no sense for the 4-hour digest verb.
+ */
+export const TeamDecisions = z
+  .object({
+    /** Cron interval in hours for `decisions digest`. Default 4.
+     *  Must be a divisor of 24: 1, 2, 3, 4, 6, 8, 12, 24. */
+    intervalHours: z.number().int().positive().default(4),
+  })
+  .strict();
+export type TeamDecisions = z.infer<typeof TeamDecisions>;
+
+/**
+ * `team.json::groom` sub-config — daily groom hour-of-day (ADR-079 §A).
+ * Groom runs once per day at the operator-chosen hour (default 04:00,
+ * the quietest window).
+ */
+export const TeamGroom = z
+  .object({
+    /** Hour-of-day (0–23) at which `groom --quiet` fires. Default 4. */
+    atHour: z.number().int().min(0).max(23).default(4),
+  })
+  .strict();
+export type TeamGroom = z.infer<typeof TeamGroom>;
+
+/**
+ * `team.json::unblocker` sub-config — cron cadence for the unblocker
+ * tick line (ADR-079 §A). Only emitted when the team has a member with
+ * `role: "unblocker"`; the field is otherwise inert.
+ */
+export const TeamUnblocker = z
+  .object({
+    /** Cron interval in minutes for `unblocker tick`. Default 2. Must
+     *  be a divisor of 60: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60. */
+    intervalMins: z.number().int().positive().default(2),
+  })
+  .strict();
+export type TeamUnblocker = z.infer<typeof TeamUnblocker>;
+
+/**
  * `team.json::kanban` sub-config — kanban-orchestration knobs. ADR-062
  * §1 introduced `claim --next` lane-aware pull; the cross-lane fallback
  * gate lives here.
@@ -282,8 +350,15 @@ export const Team = z
     cron: TeamCron.optional(),
     /** ADR-062 §OQ4: kanban-orchestration knobs (cross-lane fallback). */
     kanban: TeamKanban.optional(),
+    /** ADR-079 §A: cron cadence for report / discorder progress + heartbeat. */
+    report: TeamReport.optional(),
+    /** ADR-079 §A: cron cadence for `decisions digest`. */
+    decisions: TeamDecisions.optional(),
+    /** ADR-079 §A: daily groom hour-of-day. */
+    groom: TeamGroom.optional(),
+    /** ADR-079 §A: cron cadence for `unblocker tick`. */
+    unblocker: TeamUnblocker.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
-    report: z.unknown().optional(),
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),
   })
