@@ -1,9 +1,9 @@
 // Unit tests for src/core/tui-cmd.ts — ADR-063 TUI launch resolver.
 
 import { describe, expect, test } from "bun:test";
-import type { Team as TeamShape, TeamMember } from "../../../src/schema/team.ts";
 import { envPrefix, posixQuote, resolveTuiCommand } from "../../../src/core/tui-cmd.ts";
 import { UsageError } from "../../../src/errors.ts";
+import type { TeamMember, Team as TeamShape } from "../../../src/schema/team.ts";
 
 const baseTeam: TeamShape = {
   name: "t",

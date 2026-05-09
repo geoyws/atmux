@@ -11,10 +11,10 @@
 // for moveTask + raiseFlag, so no real kanban DB / tmux / git is needed.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { PaneClassification } from "../../../src/core/pane-state.ts";
 import { UsageError } from "../../../src/errors.ts";
@@ -127,7 +127,10 @@ describe("runLaneDriftCheck — verb-side dry-run / reset / report-only", () => 
     await mkdir(join(atmuxDir, "state"), { recursive: true });
     // Seed session anchor so getSessionName doesn't fail.
     await writeFile(join(atmuxDir, "state", "session.txt"), "test-sess\n");
-    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: TEAM.name, members: TEAM.members }));
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({ name: TEAM.name, members: TEAM.members }),
+    );
   });
 
   afterEach(async () => {
@@ -529,25 +532,22 @@ describe("laneDriftCheck (entrypoint)", () => {
   });
 
   test("argv parse + flow: returns 0 with --team-dir override + injected deps", async () => {
-    const exit = await laneDriftCheck(
-      ["--team-dir", teamDir, "--reset"],
-      {
-        listInProgressTasks: async () => [],
-        classifyMember: async () => null,
-        git: async () => ({
-          cmd: "git",
-          argv: [],
-          exitCode: 0,
-          signalled: null,
-          stdout: "",
-          stderr: "",
-          durationMs: 0,
-        }),
-        moveTask: async () => {},
-        raiseFlag: async () => {},
-        log: () => {},
-      },
-    );
+    const exit = await laneDriftCheck(["--team-dir", teamDir, "--reset"], {
+      listInProgressTasks: async () => [],
+      classifyMember: async () => null,
+      git: async () => ({
+        cmd: "git",
+        argv: [],
+        exitCode: 0,
+        signalled: null,
+        stdout: "",
+        stderr: "",
+        durationMs: 0,
+      }),
+      moveTask: async () => {},
+      raiseFlag: async () => {},
+      log: () => {},
+    });
     expect(exit).toBe(0);
   });
 

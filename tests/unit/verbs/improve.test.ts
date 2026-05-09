@@ -112,18 +112,8 @@ describe("parseImproveArgs", () => {
   });
 
   test("flag bundles in any order produce equivalent parsed output", () => {
-    const a = parseImproveArgs([
-      "--budget",
-      "1000000",
-      "--idle-fallback",
-      "--force",
-    ]);
-    const b = parseImproveArgs([
-      "--force",
-      "--idle-fallback",
-      "--budget",
-      "1000000",
-    ]);
+    const a = parseImproveArgs(["--budget", "1000000", "--idle-fallback", "--force"]);
+    const b = parseImproveArgs(["--force", "--idle-fallback", "--budget", "1000000"]);
     expect(a).toEqual(b);
   });
 });
@@ -132,9 +122,7 @@ describe("parseImproveArgs", () => {
 
 describe("improve --status", () => {
   test("missing state file → emits {} JSON, exit 0", async () => {
-    const { out, result } = await captureStdout(() =>
-      improve(["--status", "--team-dir", teamDir]),
-    );
+    const { out, result } = await captureStdout(() => improve(["--status", "--team-dir", teamDir]));
     expect(result).toBe(0);
     expect(out.trim()).toBe("{}");
   });
@@ -155,9 +143,7 @@ describe("improve --status", () => {
       history: [],
     };
     await writeFile(path, `${JSON.stringify(sample)}\n`);
-    const { out, result } = await captureStdout(() =>
-      improve(["--status", "--team-dir", teamDir]),
-    );
+    const { out, result } = await captureStdout(() => improve(["--status", "--team-dir", teamDir]));
     expect(result).toBe(0);
     expect(JSON.parse(out)).toEqual(sample);
   });
@@ -412,10 +398,7 @@ describe("improve --tick", () => {
   /** Build a kanban.json that the verb can read. */
   async function seedKanban(tasks: Array<Record<string, unknown>>) {
     const kanbanPath = join(atmuxDir, "kanban.json");
-    await writeFile(
-      kanbanPath,
-      JSON.stringify({ tasks, epics: [], stories: [] }),
-    );
+    await writeFile(kanbanPath, JSON.stringify({ tasks, epics: [], stories: [] }));
   }
 
   /** Seed a fresh-armed state file (cycle 1 open, no dispatched tasks). */
@@ -483,9 +466,7 @@ describe("improve --tick", () => {
 
   test("driver Task in-progress → cycle pauses", async () => {
     await seedActiveCycle();
-    await seedKanban([
-      { id: "t-driver", status: "in-progress", epic: null },
-    ]);
+    await seedKanban([{ id: "t-driver", status: "in-progress", epic: null }]);
     let stderrCaptured = "";
     const exit = await improve(["--tick", "--team-dir", teamDir], {
       stderr: (s) => {
@@ -506,16 +487,10 @@ describe("improve --tick", () => {
     await seedKanban([
       { id: "t-aaaaaaaa", status: "in-progress", epic: "e-a25968cc", completedAt: null },
     ]);
-    const before = await readFile(
-      join(atmuxDir, "state", "eternal-improvement.json"),
-      "utf8",
-    );
+    const before = await readFile(join(atmuxDir, "state", "eternal-improvement.json"), "utf8");
     const exit = await improve(["--tick", "--team-dir", teamDir]);
     expect(exit).toBe(0);
-    const after = await readFile(
-      join(atmuxDir, "state", "eternal-improvement.json"),
-      "utf8",
-    );
+    const after = await readFile(join(atmuxDir, "state", "eternal-improvement.json"), "utf8");
     expect(after).toBe(before);
   });
 
@@ -631,9 +606,7 @@ describe("improve --tick", () => {
         paused: true,
       },
     });
-    await seedKanban([
-      { id: "t-driver", status: "in-progress", epic: null },
-    ]);
+    await seedKanban([{ id: "t-driver", status: "in-progress", epic: null }]);
     let stderrCaptured = "";
     const exit = await improve(["--tick", "--team-dir", teamDir], {
       stderr: (s) => {

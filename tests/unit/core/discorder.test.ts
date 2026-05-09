@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   aggregateHeartbeat,
   aggregateProgress,
@@ -11,7 +12,6 @@ import {
   readProgressCursor,
   writeProgressCursor,
 } from "../../../src/core/discorder.ts";
-import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { Team } from "../../../src/schema/team.ts";
 
 const RUN_MS = Date.UTC(2026, 4, 8, 14, 55, 0);
@@ -76,8 +76,7 @@ describe("aggregateProgress", () => {
 
   test("parses git log output (TSV: sha\\tsubject\\tauthor)", async () => {
     const got = await aggregateProgress(env.atmuxDir, "/dummy", 0, {
-      spawnGit: async () =>
-        ["aaa1111\tfix bug\tAlice", "bbb2222\tadd feature\tBob"].join("\n"),
+      spawnGit: async () => ["aaa1111\tfix bug\tAlice", "bbb2222\tadd feature\tBob"].join("\n"),
     });
     expect(got.commits).toEqual([
       { sha: "aaa1111", subject: "fix bug", author: "Alice" },
@@ -127,9 +126,7 @@ describe("aggregateProgress", () => {
     const got = await aggregateProgress(env.atmuxDir, "/d", cursor, {
       spawnGit: async () => "",
     });
-    expect(got.doneTasks).toEqual([
-      { id: "t-recent", subject: "shipped", owner: "alice" },
-    ]);
+    expect(got.doneTasks).toEqual([{ id: "t-recent", subject: "shipped", owner: "alice" }]);
   });
 
   test("advanced stories past cursor", async () => {
@@ -236,12 +233,8 @@ describe("aggregateHeartbeat", () => {
     const snap = await aggregateHeartbeat(team, env.atmuxDir, "atmux-x", tmux);
     expect(snap.aliveCount).toBe(1); // bob only
     expect(snap.drifted).toHaveLength(2);
-    expect(snap.drifted.find((d) => d.name === "lead")?.reason).toBe(
-      "window-missing",
-    );
-    expect(snap.drifted.find((d) => d.name === "alice")?.reason).toBe(
-      "tui-not-running:bash",
-    );
+    expect(snap.drifted.find((d) => d.name === "lead")?.reason).toBe("window-missing");
+    expect(snap.drifted.find((d) => d.name === "alice")?.reason).toBe("tui-not-running:bash");
   });
 
   test("kanban counts in-progress + blocked", async () => {
@@ -268,10 +261,7 @@ describe("aggregateHeartbeat", () => {
   test("lead uptime computed from rotated.epoch / session-start.txt", async () => {
     const tmux = fakeTmux({ sessionUp: false });
     const anchorSec = Math.floor(RUN_MS / 1000) - 90 * 60; // 90min ago
-    await writeFile(
-      join(env.atmuxDir, "state", "lead-rotated.epoch"),
-      `${anchorSec}\n`,
-    );
+    await writeFile(join(env.atmuxDir, "state", "lead-rotated.epoch"), `${anchorSec}\n`);
     const snap = await aggregateHeartbeat(team, env.atmuxDir, "atmux-x", tmux, {
       nowMs: RUN_MS,
     });

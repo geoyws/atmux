@@ -52,8 +52,8 @@ describe("loadHeadsUpCursor", () => {
   });
 
   test("malformed JSON → empty map (corruption is non-fatal)", async () => {
-    await writeFile(headsUpCursorPath(atmuxDir), "{not valid json", "utf8").catch(
-      () => writeFile(join(atmuxDir, "state"), ""),
+    await writeFile(headsUpCursorPath(atmuxDir), "{not valid json", "utf8").catch(() =>
+      writeFile(join(atmuxDir, "state"), ""),
     );
     // statOrNull: ensure dir exists before write
     const dir = join(atmuxDir, "state");

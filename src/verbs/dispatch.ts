@@ -25,10 +25,6 @@
 // directly.
 
 import { createTmux } from "../abstractions/tmux.ts";
-import { appendDispatched, removeFromInProgress } from "../core/inbox.ts";
-import { claimTask, showTask } from "../core/kanban.ts";
-import { isPaused } from "../core/pause.ts";
-import { sendToMember } from "../core/send.ts";
 import {
   buildWindowName,
   getAtmuxDir,
@@ -36,9 +32,13 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { appendDispatched, removeFromInProgress } from "../core/inbox.ts";
+import { claimTask, showTask } from "../core/kanban.ts";
+import { isPaused } from "../core/pause.ts";
+import { sendToMember } from "../core/send.ts";
 import { resolveTarget } from "../core/window-id.ts";
-import type { Team } from "../schema/team.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
 import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux dispatch <member> <task-id> [--no-ping]";
@@ -85,7 +85,7 @@ export function parseDispatchArgs(argv: ReadonlyArray<string>): DispatchArgs {
       i += 2;
       continue;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `dispatch: unknown flag: ${a}`, hint: USAGE });
     }
     if (member.length === 0) {

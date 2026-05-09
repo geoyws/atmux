@@ -61,9 +61,7 @@ describe("constants", () => {
 
 describe("budgetProbePath", () => {
   test("appends state/budget-probe-<team>.json to atmuxDir", () => {
-    expect(budgetProbePath("/tmp/foo", "atmux")).toBe(
-      "/tmp/foo/state/budget-probe-atmux.json",
-    );
+    expect(budgetProbePath("/tmp/foo", "atmux")).toBe("/tmp/foo/state/budget-probe-atmux.json");
   });
 
   test("preserves the exact team name in the filename (no transformation)", () => {
@@ -214,10 +212,7 @@ describe("readBudgetProbe", () => {
   });
 
   test("throws SchemaError on shape-mismatch (negative util)", async () => {
-    await writeFile(
-      budgetProbePath(atmuxDir, "atmux"),
-      JSON.stringify({ h5_util: -1 }),
-    );
+    await writeFile(budgetProbePath(atmuxDir, "atmux"), JSON.stringify({ h5_util: -1 }));
     await expect(readBudgetProbe(atmuxDir, "atmux")).rejects.toBeInstanceOf(SchemaError);
   });
 });
@@ -261,20 +256,14 @@ describe("resolveBudget — pct kinds without probe → null", () => {
 
 describe("resolveBudget — pct-wk with probe", () => {
   test("30% × (1 − 0) × 100M = 30M tokens", () => {
-    const got = resolveBudget(
-      { kind: "pct-wk", pct: 30 },
-      { probe: { wk_util: 0 } },
-    );
+    const got = resolveBudget({ kind: "pct-wk", pct: 30 }, { probe: { wk_util: 0 } });
     expect(got?.total).toBe(30_000_000);
     expect(got?.formula).toContain("30%");
     expect(got?.formula).toContain("wk_util=0.00");
   });
 
   test("30% × (1 − 0.5) × 100M = 15M tokens", () => {
-    const got = resolveBudget(
-      { kind: "pct-wk", pct: 30 },
-      { probe: { wk_util: 0.5 } },
-    );
+    const got = resolveBudget({ kind: "pct-wk", pct: 30 }, { probe: { wk_util: 0.5 } });
     expect(got?.total).toBe(15_000_000);
   });
 
@@ -284,18 +273,12 @@ describe("resolveBudget — pct-wk with probe", () => {
   });
 
   test("util > 1 clamps remaining to 0", () => {
-    const got = resolveBudget(
-      { kind: "pct-wk", pct: 30 },
-      { probe: { wk_util: 1.5 } },
-    );
+    const got = resolveBudget({ kind: "pct-wk", pct: 30 }, { probe: { wk_util: 1.5 } });
     expect(got?.total).toBe(0);
   });
 
   test("capWk override is honored", () => {
-    const got = resolveBudget(
-      { kind: "pct-wk", pct: 50 },
-      { probe: { wk_util: 0 }, capWk: 1_000 },
-    );
+    const got = resolveBudget({ kind: "pct-wk", pct: 50 }, { probe: { wk_util: 0 }, capWk: 1_000 });
     expect(got?.total).toBe(500);
     expect(got?.formula).toContain("capWk=1000");
   });
@@ -303,20 +286,14 @@ describe("resolveBudget — pct-wk with probe", () => {
 
 describe("resolveBudget — pct-5h with probe", () => {
   test("50% × (1 − 0) × 5M = 2.5M tokens", () => {
-    const got = resolveBudget(
-      { kind: "pct-5h", pct: 50 },
-      { probe: { h5_util: 0 } },
-    );
+    const got = resolveBudget({ kind: "pct-5h", pct: 50 }, { probe: { h5_util: 0 } });
     expect(got?.total).toBe(2_500_000);
     expect(got?.formula).toContain("h5_util=0.00");
     expect(got?.formula).toContain("cap5h=5000000");
   });
 
   test("50% × (1 − 0.4) × 5M = 1.5M tokens", () => {
-    const got = resolveBudget(
-      { kind: "pct-5h", pct: 50 },
-      { probe: { h5_util: 0.4 } },
-    );
+    const got = resolveBudget({ kind: "pct-5h", pct: 50 }, { probe: { h5_util: 0.4 } });
     expect(got?.total).toBe(1_500_000);
   });
 
@@ -326,10 +303,7 @@ describe("resolveBudget — pct-5h with probe", () => {
   });
 
   test("cap5h override is honored", () => {
-    const got = resolveBudget(
-      { kind: "pct-5h", pct: 25 },
-      { probe: { h5_util: 0 }, cap5h: 4_000 },
-    );
+    const got = resolveBudget({ kind: "pct-5h", pct: 25 }, { probe: { h5_util: 0 }, cap5h: 4_000 });
     expect(got?.total).toBe(1_000);
     expect(got?.formula).toContain("cap5h=4000");
   });
@@ -337,18 +311,12 @@ describe("resolveBudget — pct-5h with probe", () => {
 
 describe("resolveBudget — formula formatting", () => {
   test("formula includes 2-decimal util display (matches dry-run output spec)", () => {
-    const got = resolveBudget(
-      { kind: "pct-wk", pct: 30 },
-      { probe: { wk_util: 0.123456 } },
-    );
+    const got = resolveBudget({ kind: "pct-wk", pct: 30 }, { probe: { wk_util: 0.123456 } });
     expect(got?.formula).toContain("wk_util=0.12");
   });
 
   test("0% returns 0 tokens regardless of probe", () => {
-    const got = resolveBudget(
-      { kind: "pct-wk", pct: 0 },
-      { probe: { wk_util: 0 } },
-    );
+    const got = resolveBudget({ kind: "pct-wk", pct: 0 }, { probe: { wk_util: 0 } });
     expect(got?.total).toBe(0);
   });
 });
@@ -403,11 +371,7 @@ describe("resolveBudgetSpec — precedence cascade", () => {
   });
 
   test("team.json wins over default when no CLI + no env", () => {
-    const got = resolveBudgetSpec(
-      {},
-      {},
-      { improve: { defaultBudget: "10%-wk" } },
-    );
+    const got = resolveBudgetSpec({}, {}, { improve: { defaultBudget: "10%-wk" } });
     expect(got).toBe("10%-wk");
   });
 
@@ -416,20 +380,20 @@ describe("resolveBudgetSpec — precedence cascade", () => {
   });
 
   test("empty CLI string falls through to env", () => {
-    expect(
-      resolveBudgetSpec(
-        { cliBudget: "" },
-        { ATMUX_IMPROVE_BUDGET: "20%-wk" },
-        {},
-      ),
-    ).toBe("20%-wk");
+    expect(resolveBudgetSpec({ cliBudget: "" }, { ATMUX_IMPROVE_BUDGET: "20%-wk" }, {})).toBe(
+      "20%-wk",
+    );
   });
 
   test("empty env string falls through to team.json", () => {
     expect(
-      resolveBudgetSpec({}, { ATMUX_IMPROVE_BUDGET: "" }, {
-        improve: { defaultBudget: "5%-wk" },
-      }),
+      resolveBudgetSpec(
+        {},
+        { ATMUX_IMPROVE_BUDGET: "" },
+        {
+          improve: { defaultBudget: "5%-wk" },
+        },
+      ),
     ).toBe("5%-wk");
   });
 
@@ -438,14 +402,12 @@ describe("resolveBudgetSpec — precedence cascade", () => {
   });
 
   test("non-string team.improve.defaultBudget ignored (falls through)", () => {
-    expect(
-      resolveBudgetSpec({}, {}, { improve: { defaultBudget: 12345 } }),
-    ).toBe(DEFAULT_BUDGET_SPEC);
+    expect(resolveBudgetSpec({}, {}, { improve: { defaultBudget: 12345 } })).toBe(
+      DEFAULT_BUDGET_SPEC,
+    );
   });
 
   test("empty team.improve.defaultBudget falls through", () => {
-    expect(
-      resolveBudgetSpec({}, {}, { improve: { defaultBudget: "" } }),
-    ).toBe(DEFAULT_BUDGET_SPEC);
+    expect(resolveBudgetSpec({}, {}, { improve: { defaultBudget: "" } })).toBe(DEFAULT_BUDGET_SPEC);
   });
 });

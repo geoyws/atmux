@@ -406,9 +406,7 @@ describe("lead-marker helpers", () => {
     // the legacy `__<team>__team-lead` default. This is what stops whip
     // from emitting false `🛑 lead: window missing` findings on freshly-
     // started teams that haven't rotated the lead yet.
-    expect(
-      await readLeadWindowName("demo", { home: homeDir, fallback: "🧭lead" }),
-    ).toBe("🧭lead");
+    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "🧭lead" })).toBe("🧭lead");
   });
 
   test("readLeadWindowName: marker text wins over fallback when present", async () => {
@@ -418,9 +416,9 @@ describe("lead-marker helpers", () => {
     // pre-rotate schema must NOT mask the rename.
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
     await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead-v2\n");
-    expect(
-      await readLeadWindowName("demo", { home: homeDir, fallback: "🧭lead" }),
-    ).toBe("🧭lead-v2");
+    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "🧭lead" })).toBe(
+      "🧭lead-v2",
+    );
   });
 
   test("readLeadWindowName: empty fallback string falls through to legacy default", async () => {
@@ -1725,7 +1723,9 @@ describe("whip() — public verb", () => {
     const drift = sent.find((s) => s.template === "whip-config-drift");
     expect(drift).toBeDefined();
     expect(
-      drift?.bullets?.some((b: string) => b.includes("malformed") || b.includes("full safe defaults")),
+      drift?.bullets?.some(
+        (b: string) => b.includes("malformed") || b.includes("full safe defaults"),
+      ),
     ).toBe(true);
   });
 
@@ -1822,10 +1822,7 @@ describe("whip() — public verb", () => {
     const nowSec = 1778126400;
     // Seed driver-inbox.md with a tip 4h behind cursor.
     const inboxPath = join(atmuxDir, "driver-inbox.md");
-    await writeFile(
-      inboxPath,
-      "## 09:00 MYT — old\n## 11:00 MYT — newer tip",
-    );
+    await writeFile(inboxPath, "## 09:00 MYT — old\n## 11:00 MYT — newer tip");
     // Bump file mtime to "now" so cursor lag = 4h.
     const { utimes } = await import("node:fs/promises");
     await utimes(inboxPath, nowSec, nowSec);

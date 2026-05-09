@@ -74,7 +74,7 @@ export function parseRotateArgs(argv: ReadonlyArray<string>): RotateArgs {
       i += 2;
       continue;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `rotate: unknown flag: ${a}`, hint: USAGE });
     }
     if (member.length === 0) {
@@ -259,7 +259,7 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
   // survey) — never for the rotation payload itself.
   const safeOpts = {
     capture: (t: string) => tmux.pane.capturePane({ target: t, start: -40 }),
-    sendKeys: async (t: string, text: string, sopts?: { enter?: boolean }) => {
+    sendKeys: async (_t: string, text: string, sopts?: { enter?: boolean }) => {
       await tmux.pane.sendKeys({ target: sendTarget, keys: text, enter: sopts?.enter ?? false });
     },
     sleep,

@@ -474,7 +474,13 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
 
       /** `tmux move-window -s <source> -t <target> [-k]`. */
       async moveWindow(opts) {
-        const argv = ["move-window", "-s", serializeTarget(opts.source), "-t", serializeTarget(opts.target)];
+        const argv = [
+          "move-window",
+          "-s",
+          serializeTarget(opts.source),
+          "-t",
+          serializeTarget(opts.target),
+        ];
         if (opts.kill) argv.push("-k");
         await tmuxRun(argv);
       },

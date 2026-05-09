@@ -33,10 +33,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  BudgetProbeResult,
-  BudgetProbeStatus,
-} from "../../src/abstractions/budget-probe.ts";
+import type { BudgetProbeResult, BudgetProbeStatus } from "../../src/abstractions/budget-probe.ts";
 import type { DiscordSendOpts, DiscordTemplate } from "../../src/abstractions/discord.ts";
 import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import { whip } from "../../src/verbs/whip.ts";
@@ -103,7 +100,9 @@ function buildFakeTmux(opts: { sessionUp: boolean; panes: Record<string, string>
   return tmuxNs as TmuxNamespace;
 }
 
-function probeResult(overrides: Partial<BudgetProbeResult> & { account: string }): BudgetProbeResult {
+function probeResult(
+  overrides: Partial<BudgetProbeResult> & { account: string },
+): BudgetProbeResult {
   return {
     account: overrides.account,
     h5_pct_used: overrides.h5_pct_used ?? 0,
@@ -149,13 +148,13 @@ describe("e2e budget-pause walk (ADR-053 §D2)", () => {
   let atmuxDir: string;
   let homeDir: string;
   // Capture sinks across the walk.
-  let stdoutBuf: string;
-  let stderrBuf: string;
+  let _stdoutBuf: string;
+  let _stderrBuf: string;
   const stdout = (s: string): void => {
-    stdoutBuf += s;
+    _stdoutBuf += s;
   };
   const stderr = (s: string): void => {
-    stderrBuf += s;
+    _stderrBuf += s;
   };
   // Per-beat probe controller — each beat assigns the next probe outcome.
   let probeOutcome: BudgetProbeResult;
@@ -173,8 +172,8 @@ describe("e2e budget-pause walk (ADR-053 §D2)", () => {
   async function tick(nowMsAt: number, outcome: BudgetProbeResult): Promise<number> {
     probeOutcome = outcome;
     discordSent = [];
-    stdoutBuf = "";
-    stderrBuf = "";
+    _stdoutBuf = "";
+    _stderrBuf = "";
     return await whip(["--team-dir", teamDir], {
       stdout,
       stderr,
@@ -196,8 +195,8 @@ describe("e2e budget-pause walk (ADR-053 §D2)", () => {
     homeDir = await mkdtemp(join(tmpdir(), "atmux-e2e-home-"));
     await mkdir(atmuxDir, { recursive: true });
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(TEAM_FIXTURE));
-    stdoutBuf = "";
-    stderrBuf = "";
+    _stdoutBuf = "";
+    _stderrBuf = "";
     probeOutcome = probeResult({ account: "ifca" });
     discordSent = [];
   });

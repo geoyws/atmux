@@ -65,10 +65,7 @@ export async function loadHeadsUpCursor(atmuxDir: string): Promise<HeadsUpCursor
 }
 
 /** Atomic-write the full cursor map. Creates `state/` dir if missing. */
-export async function writeHeadsUpCursor(
-  atmuxDir: string,
-  cursor: HeadsUpCursor,
-): Promise<void> {
+export async function writeHeadsUpCursor(atmuxDir: string, cursor: HeadsUpCursor): Promise<void> {
   await ensureDir(join(atmuxDir, "state"));
   await atomicWrite(headsUpCursorPath(atmuxDir), JSON.stringify(cursor));
 }

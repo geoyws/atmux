@@ -36,13 +36,13 @@ import { type DiscordSendOpts, send as discordSend } from "../abstractions/disco
 import { appendText, ensureDir, exists, writeText } from "../abstractions/fs.ts";
 import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts";
 import { formatMyt, now as nowMs } from "../abstractions/time.ts";
+import { appendHistoryEntry, type BudgetHistoryEntry } from "../core/budget-history.ts";
 import {
   type AtRiskMember,
   type BudgetPauseState,
   clearBudgetPauseState,
   loadBudgetPauseState,
 } from "../core/budget-pause.ts";
-import { appendHistoryEntry, type BudgetHistoryEntry } from "../core/budget-history.ts";
 import {
   driverInboxPath,
   getAtmuxDir,

@@ -28,9 +28,7 @@ const PROJECT_CWD = "/tmp/atmux-test-project";
 const ATMUX_DIR = `${PROJECT_CWD}/.atmux`;
 const SESSION = "atmux";
 
-function whipCtx(
-  overrides: Partial<WhipTickContextForRecipe> = {},
-): WhipTickContextForRecipe {
+function whipCtx(overrides: Partial<WhipTickContextForRecipe> = {}): WhipTickContextForRecipe {
   return {
     atmuxDir: ATMUX_DIR,
     projectCwd: PROJECT_CWD,
@@ -41,9 +39,7 @@ function whipCtx(
   };
 }
 
-function makeRecipe(
-  windowsByCall: ReadonlyArray<ReadonlyArray<string> | null>,
-) {
+function makeRecipe(windowsByCall: ReadonlyArray<ReadonlyArray<string> | null>) {
   let i = 0;
   const deps: SupervisorMissingDeps = {
     listWindows: async () => {
@@ -59,17 +55,13 @@ function makeRecipe(
 
 describe("fix:supervisor-missing detect", () => {
   test("supervisor present → null context (no drift)", async () => {
-    const recipe = makeRecipe([
-      ["lead", "supervisor", "whip-impl"],
-    ]);
+    const recipe = makeRecipe([["lead", "supervisor", "whip-impl"]]);
     const ctx = await recipe.detect(whipCtx());
     expect(ctx).toBeNull();
   });
 
   test("supervisor absent → context with sessionName + present windows", async () => {
-    const recipe = makeRecipe([
-      ["lead", "whip-impl", "reviewer"],
-    ]);
+    const recipe = makeRecipe([["lead", "whip-impl", "reviewer"]]);
     const ctx = (await recipe.detect(whipCtx())) as SupervisorMissingContext | null;
     expect(ctx).not.toBeNull();
     expect(ctx?.sessionName).toBe(SESSION);
@@ -79,11 +71,11 @@ describe("fix:supervisor-missing detect", () => {
   test("undefined sessionName → null (recipe doesn't apply)", async () => {
     const recipe = makeRecipe([["any"]]);
     const ctx = await recipe.detect({
-        atmuxDir: ATMUX_DIR,
-        projectCwd: PROJECT_CWD,
-        nowSec: 1_700_000_000,
-        teamName: TEAM,
-      });
+      atmuxDir: ATMUX_DIR,
+      projectCwd: PROJECT_CWD,
+      nowSec: 1_700_000_000,
+      teamName: TEAM,
+    });
     expect(ctx).toBeNull();
   });
 
@@ -135,7 +127,9 @@ describe("fix:supervisor-missing propose", () => {
 
   test("teamName interpolated into prompt", async () => {
     const recipe = makeRecipe([["lead"]]);
-    const ctx = (await recipe.detect(whipCtx({ teamName: "demo-team" }))) as SupervisorMissingContext;
+    const ctx = (await recipe.detect(
+      whipCtx({ teamName: "demo-team" }),
+    )) as SupervisorMissingContext;
     const job = await recipe.propose(ctx, whipCtx({ teamName: "demo-team" }));
     expect(job.prompt).toContain("`demo-team`");
   });

@@ -17,34 +17,34 @@
 // so the template name is preserved for byte-parity with downstream
 // dashboards / Discord-archive search.
 
-import { acquireWithTTL } from "../abstractions/lock.ts";
-import { ensureDir } from "../abstractions/fs.ts";
-import {
-  send as discordSend,
-  type DiscordSendOpts,
-  type DiscordSection,
-} from "../abstractions/discord.ts";
-import { now as nowMs } from "../abstractions/time.ts";
 import { join } from "node:path";
+import {
+  type DiscordSection,
+  type DiscordSendOpts,
+  send as discordSend,
+} from "../abstractions/discord.ts";
+import { ensureDir } from "../abstractions/fs.ts";
+import { acquireWithTTL } from "../abstractions/lock.ts";
+import { now as nowMs } from "../abstractions/time.ts";
+import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  getAtmuxDir,
+  getDefaultSocket,
+  getSessionName,
+  type ResolveDirOpts,
+  requireTeam,
+} from "../core/common.ts";
 import {
   aggregateHeartbeat,
   aggregateProgress,
-  readProgressCursor,
-  writeProgressCursor,
   type HeartbeatSnapshot,
   type ProgressDelta,
+  readProgressCursor,
+  writeProgressCursor,
 } from "../core/discorder.ts";
-import {
-  getAtmuxDir,
-  getSessionName,
-  requireTeam,
-  type ResolveDirOpts,
-} from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, LockError, LockTimeoutError, UsageError } from "../errors.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
-import { getDefaultSocket } from "../core/common.ts";
 import type { Team } from "../schema/team.ts";
 
 // ---------- Args ----------
@@ -70,9 +70,7 @@ atmux discorder <subverb>
   registered by atmux on teams that declare a discorder member.
 `;
 
-export function parseDiscorderArgs(
-  args: ReadonlyArray<string>,
-): ParsedDiscorderArgs {
+export function parseDiscorderArgs(args: ReadonlyArray<string>): ParsedDiscorderArgs {
   if (args.length === 0) {
     return { sub: "progress", showHelp: true }; // shape filler for the type
   }
@@ -242,8 +240,7 @@ export async function discorder(
     env,
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
   };
-  const atmuxDir =
-    opts.atmuxDir ?? (await getAtmuxDir(dirOpts));
+  const atmuxDir = opts.atmuxDir ?? (await getAtmuxDir(dirOpts));
 
   // Per-subverb single-instance lock. Bash uses
   // `<atmuxDir>/state/discorder-progress.lock` — same path here.
@@ -258,9 +255,7 @@ export async function discorder(
     });
   } catch (e) {
     if (e instanceof LockTimeoutError || e instanceof LockError) {
-      logger.log(
-        `discorder ${parsed.sub}: another instance is running — skipping tick`,
-      );
+      logger.log(`discorder ${parsed.sub}: another instance is running — skipping tick`);
       return 0;
     }
     throw e;
@@ -289,8 +284,7 @@ async function runProgress(
   const stampMs = opts.nowMs ?? nowMs();
   const stampSec = Math.floor(stampMs / 1000);
   const cursor = await readProgressCursor(atmuxDir);
-  const sinceEpoch =
-    cursor !== null && cursor > 0 ? cursor : stampSec - 1800; // first run = now-30min
+  const sinceEpoch = cursor !== null && cursor > 0 ? cursor : stampSec - 1800; // first run = now-30min
 
   const aggregate = opts.aggregateProgressFn ?? aggregateProgress;
   const delta = await aggregate(atmuxDir, opts.cwd ?? process.cwd(), sinceEpoch);
@@ -337,17 +331,12 @@ async function runHeartbeat(
   if (team === null) return 0;
 
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const tmux =
-    opts.tmux ?? createTmux({ socketPath: getDefaultSocket(team.name) });
+  const tmux = opts.tmux ?? createTmux({ socketPath: getDefaultSocket(team.name) });
 
   const snap = await aggregateHeartbeat(team, atmuxDir, sessionName, tmux, {
     ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
   });
-  const send = buildHeartbeatDiscordOpts(
-    team.name,
-    snap,
-    opts.nowMs,
-  );
+  const send = buildHeartbeatDiscordOpts(team.name, snap, opts.nowMs);
 
   if (opts.skipDiscord !== true) {
     try {
@@ -361,10 +350,7 @@ async function runHeartbeat(
   return 0;
 }
 
-async function loadTeamSafe(
-  dirOpts: ResolveDirOpts,
-  logger: Logger,
-): Promise<Team | null> {
+async function loadTeamSafe(dirOpts: ResolveDirOpts, logger: Logger): Promise<Team | null> {
   try {
     return await requireTeam(dirOpts);
   } catch (e) {

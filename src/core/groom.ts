@@ -37,7 +37,7 @@ import {
 import { updateJson } from "../abstractions/json.ts";
 import { now as nowMs } from "../abstractions/time.ts";
 import { Kanban } from "../schema/kanban.ts";
-import { archiveDir as resolveArchiveDir, kanbanJsonPath } from "./common.ts";
+import { kanbanJsonPath, archiveDir as resolveArchiveDir } from "./common.ts";
 
 // ---------- Shared time helpers ----------
 
@@ -442,14 +442,10 @@ export async function summarizeKanban(
   // Rewrite kanban.json without the stale tasks (passthrough preserves
   // unknown fields; we only filter on .tasks).
   const staleIds = new Set(stale.map((t) => t.id));
-  await updateJson(
-    path,
-    Kanban,
-    (current) => ({
-      ...current,
-      tasks: current.tasks.filter((t) => !staleIds.has(t.id)),
-    }),
-  );
+  await updateJson(path, Kanban, (current) => ({
+    ...current,
+    tasks: current.tasks.filter((t) => !staleIds.has(t.id)),
+  }));
 
   return { removed: stale.length, destPaths };
 }

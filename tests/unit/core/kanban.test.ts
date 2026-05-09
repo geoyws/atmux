@@ -10,7 +10,7 @@
 // (memory: time abstraction is mockable per ADR-003).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetNow, setNow } from "../../../src/abstractions/time.ts";

@@ -22,12 +22,10 @@
 // Test surface: every external dependency is injectable via
 // `BudgetCheckDeps`. Defaults wire up the production functions.
 
-import { appendText } from "../abstractions/fs.ts";
 import {
   type BudgetProbeResult,
   probeBudget as defaultProbeBudget,
 } from "../abstractions/budget-probe.ts";
-import type { CageHandle } from "../abstractions/fallback-cage.ts";
 import {
   type DiscordSendOpts,
   renderWhipBudgetPause,
@@ -35,16 +33,19 @@ import {
   renderWhipBudgetResume,
   renderWhipBudgetWarning,
 } from "../abstractions/discord.ts";
+import type { CageHandle } from "../abstractions/fallback-cage.ts";
+import { appendText } from "../abstractions/fs.ts";
 import { formatDuration, formatMyt, now } from "../abstractions/time.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 import {
-  type DispatchFallbackOpts,
-  dispatchFallbackOnPause as defaultDispatchFallbackOnPause,
-  type WalkFallbackOpts,
-  walkFallbackOnResume as defaultWalkFallbackOnResume,
-} from "./whip-budget-fallback.ts";
+  type AtRiskMember,
+  type BudgetPauseState,
+  clearBudgetPauseState,
+  isBudgetPauseActive,
+  loadBudgetPauseState,
+  writeBudgetPauseState,
+} from "./budget-pause.ts";
 import {
-  budgetRefreshSoonStatePath,
   hasRefreshSoonFired,
   loadRefreshSoonState,
   recordRefreshSoonFire,
@@ -59,25 +60,23 @@ import {
   wipeForResetWindow,
   writeWarningState,
 } from "./budget-warning-state.ts";
-import {
-  type AtRiskMember,
-  type BudgetPauseState,
-  clearBudgetPauseState,
-  isBudgetPauseActive,
-  loadBudgetPauseState,
-  writeBudgetPauseState,
-} from "./budget-pause.ts";
 import { driverInboxPath } from "./common.ts";
 import { pauseMember as defaultPauseMember, resumeMember as defaultResumeMember } from "./pause.ts";
+import {
+  type DispatchFallbackOpts,
+  dispatchFallbackOnPause as defaultDispatchFallbackOnPause,
+  walkFallbackOnResume as defaultWalkFallbackOnResume,
+  type WalkFallbackOpts,
+} from "./whip-budget-fallback.ts";
 
 // ---------- Types ----------
 
 export type BudgetCheckVerdict =
-  | "no-pause-not-active"   // no probe data / no accounts; fall through to normal tick
-  | "active"                 // probed, all clear → continue normal tick
-  | "paused-just-now"       // entered pause this tick → stop the tick
-  | "paused-still"          // already paused, resume gate not met → stop the tick
-  | "resumed";              // exited pause this tick → continue normal tick
+  | "no-pause-not-active" // no probe data / no accounts; fall through to normal tick
+  | "active" // probed, all clear → continue normal tick
+  | "paused-just-now" // entered pause this tick → stop the tick
+  | "paused-still" // already paused, resume gate not met → stop the tick
+  | "resumed"; // exited pause this tick → continue normal tick
 
 export interface BudgetCheckTeamMember {
   name: string;
@@ -371,7 +370,12 @@ async function exitPause(
   await clearBudgetPauseState(ctx.atmuxDir);
 
   const ts = formatMyt(ctx.nowMs);
-  const lines = ["", `## ${ts} — 🟢 budget-pause cleared`, "Team resumed. All members back above resume threshold.", ""];
+  const lines = [
+    "",
+    `## ${ts} — 🟢 budget-pause cleared`,
+    "Team resumed. All members back above resume threshold.",
+    "",
+  ];
   await appendDi(ctx.atmuxDir, lines.join("\n"));
 
   if (send !== undefined) {

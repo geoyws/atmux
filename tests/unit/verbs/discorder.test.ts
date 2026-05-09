@@ -8,13 +8,13 @@ import { acquire } from "../../../src/abstractions/lock.ts";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { UsageError } from "../../../src/errors.ts";
+import type { Team } from "../../../src/schema/team.ts";
 import {
   buildHeartbeatDiscordOpts,
   buildProgressDiscordOpts,
   discorder,
   parseDiscorderArgs,
 } from "../../../src/verbs/discorder.ts";
-import type { Team } from "../../../src/schema/team.ts";
 
 const RUN_MS = Date.UTC(2026, 4, 8, 14, 55, 0);
 
@@ -57,7 +57,11 @@ const TEAM: Team = {
 
 function fakeTmux(): TmuxNamespace {
   return {
-    session: { async hasSession() { return false; } },
+    session: {
+      async hasSession() {
+        return false;
+      },
+    },
   } as unknown as TmuxNamespace;
 }
 
@@ -112,9 +116,7 @@ describe("buildProgressDiscordOpts", () => {
         commitsTruncated: true,
         doneTasks: [{ id: "t-1", subject: "shipped", owner: "B" }],
         doneTasksTruncated: false,
-        advancedStories: [
-          { id: "s-1", epic: "E", title: "story", status: "done" },
-        ],
+        advancedStories: [{ id: "s-1", epic: "E", title: "story", status: "done" }],
         advancedStoriesTruncated: false,
       },
       "30min ago",
@@ -218,10 +220,7 @@ describe("buildHeartbeatDiscordOpts", () => {
 
 describe("discorder verb", () => {
   function seedTeamJson(): Promise<void> {
-    return writeFile(
-      join(env.atmuxDir, "team.json"),
-      JSON.stringify(TEAM),
-    );
+    return writeFile(join(env.atmuxDir, "team.json"), JSON.stringify(TEAM));
   }
 
   test("--help prints usage + exits 0", async () => {
@@ -238,9 +237,7 @@ describe("discorder verb", () => {
 
   test("lock contention → return 0 with skip log", async () => {
     await seedTeamJson();
-    const lockHandle = await acquire(
-      join(env.atmuxDir, "state", "discorder-progress"),
-    );
+    const lockHandle = await acquire(join(env.atmuxDir, "state", "discorder-progress"));
     try {
       const rc = await discorder(["progress"], {
         atmuxDir: env.atmuxDir,
@@ -251,9 +248,7 @@ describe("discorder verb", () => {
         skipDiscord: true,
       });
       expect(rc).toBe(0);
-      const skip = env.logs.find((l) =>
-        l.msg.includes("another instance is running"),
-      );
+      const skip = env.logs.find((l) => l.msg.includes("another instance is running"));
       expect(skip).toBeDefined();
     } finally {
       await lockHandle.release();
@@ -280,9 +275,7 @@ describe("discorder verb", () => {
       }),
     });
     expect(rc).toBe(0);
-    const silent = env.logs.find((l) =>
-      l.msg.includes("no deltas since cursor"),
-    );
+    const silent = env.logs.find((l) => l.msg.includes("no deltas since cursor"));
     expect(silent).toBeDefined();
   });
 

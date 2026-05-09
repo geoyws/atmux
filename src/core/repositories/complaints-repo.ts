@@ -105,9 +105,9 @@ export class ComplaintsRepo {
   }
 
   getById(id: string): Complaint | null {
-    const row = this.db.query("SELECT * FROM complaints WHERE id = ?").get(id) as
-      | ComplaintRow
-      | null;
+    const row = this.db
+      .query("SELECT * FROM complaints WHERE id = ?")
+      .get(id) as ComplaintRow | null;
     if (row === null) return null;
     return complaintFromRow(row);
   }
@@ -117,9 +117,7 @@ export class ComplaintsRepo {
     let rows: ComplaintRow[];
     if (opts.status !== undefined) {
       rows = this.db
-        .query(
-          "SELECT * FROM complaints WHERE status = ? ORDER BY opened_at DESC LIMIT ?",
-        )
+        .query("SELECT * FROM complaints WHERE status = ? ORDER BY opened_at DESC LIMIT ?")
         .all(opts.status, limit) as ComplaintRow[];
     } else {
       rows = this.db
@@ -145,8 +143,7 @@ export class ComplaintsRepo {
     if (opts.note !== undefined && opts.note !== null && opts.note.length > 0) {
       newExtra.resolution_note = opts.note;
     }
-    const extraStr =
-      Object.keys(newExtra).length > 0 ? JSON.stringify(newExtra) : null;
+    const extraStr = Object.keys(newExtra).length > 0 ? JSON.stringify(newExtra) : null;
     this.db
       .prepare(
         `UPDATE complaints

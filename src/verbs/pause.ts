@@ -63,7 +63,7 @@ export function parsePauseResumeArgs(
       i += 2;
       continue;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `${verb}: unknown flag: ${a}`, hint: usage });
     }
     if (member.length > 0) {

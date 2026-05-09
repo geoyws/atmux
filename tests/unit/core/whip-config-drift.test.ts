@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z, ZodError } from "zod";
+import { type ZodError, z } from "zod";
 import {
   composeCatastrophicDrift,
   composeDriftReport,
@@ -283,8 +283,8 @@ describe("TeamWhip schema", () => {
 
   test("strict mode rejects unknown keys", () => {
     expect(() => TeamWhip.parse({ unknownKey: 1 })).toThrow();
-    expect(() =>
-      TeamWhip.parse({ budgetPauseTreshold: 90 }), // typo
+    expect(
+      () => TeamWhip.parse({ budgetPauseTreshold: 90 }), // typo
     ).toThrow();
   });
 
@@ -344,30 +344,20 @@ describe("shouldFireDriftPing", () => {
 
   test("false when hash present AND last fire within 24h", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
-    expect(
-      await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + 60 * 60),
-    ).toBe(false);
+    expect(await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + 60 * 60)).toBe(false);
   });
 
   test("true when hash present AND last fire ≥24h ago (re-fire window)", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
     expect(
-      await shouldFireDriftPing(
-        atmuxDir,
-        "abc",
-        1_800_000_000 + DRIFT_REFIRE_WINDOW_SEC,
-      ),
+      await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + DRIFT_REFIRE_WINDOW_SEC),
     ).toBe(true);
   });
 
   test("false at boundary just before 24h", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
     expect(
-      await shouldFireDriftPing(
-        atmuxDir,
-        "abc",
-        1_800_000_000 + DRIFT_REFIRE_WINDOW_SEC - 1,
-      ),
+      await shouldFireDriftPing(atmuxDir, "abc", 1_800_000_000 + DRIFT_REFIRE_WINDOW_SEC - 1),
     ).toBe(false);
   });
 });
@@ -385,18 +375,14 @@ describe("recordDriftPing", () => {
   test("appends new hash without losing previous entries", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
     await recordDriftPing(atmuxDir, "def", 1_800_001_000);
-    const parsed = JSON.parse(
-      await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"),
-    );
+    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
     expect(parsed).toEqual({ abc: 1_800_000_000, def: 1_800_001_000 });
   });
 
   test("re-fire updates the timestamp for an existing hash", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
     await recordDriftPing(atmuxDir, "abc", 1_800_999_999);
-    const parsed = JSON.parse(
-      await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"),
-    );
+    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
     expect(parsed).toEqual({ abc: 1_800_999_999 });
   });
 
@@ -404,9 +390,7 @@ describe("recordDriftPing", () => {
     await recordDriftPing(atmuxDir, "h1", 1);
     await recordDriftPing(atmuxDir, "h2", 2);
     await recordDriftPing(atmuxDir, "h3", 3);
-    const parsed = JSON.parse(
-      await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"),
-    );
+    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
     expect(Object.keys(parsed).sort()).toEqual(["h1", "h2", "h3"]);
   });
 });

@@ -29,9 +29,9 @@ import { ensureDir, exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
-import { KanbanRepo } from "./repositories/kanban-repo.ts";
-import { Inbox as InboxSchema, type Inbox, type InboxEntry } from "../schema/inbox.ts";
+import { type Inbox, type InboxEntry, Inbox as InboxSchema } from "../schema/inbox.ts";
 import { inboxPathFor } from "./common.ts";
+import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 // ---------- SQL helper (ADR-076) ----------
 

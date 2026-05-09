@@ -15,13 +15,13 @@
 // Operator-driven (not yet cron-fired); paves the way for an automatic
 // schedule without behaviour change.
 
-import { getAtmuxDir } from "../core/common.ts";
 import {
-  pruneInboxes,
-  rotateLogs,
   type InboxPruneResult,
   type LogRotationResult,
+  pruneInboxes,
+  rotateLogs,
 } from "../core/cleanup.ts";
+import { getAtmuxDir } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
@@ -161,9 +161,7 @@ export async function cleanup(
       );
     } else {
       for (const r of out.logs.rotated) {
-        logger.log(
-          `cleanup logs: rotated ${r.path} → ${r.path}.1 (${r.size} bytes)`,
-        );
+        logger.log(`cleanup logs: rotated ${r.path} → ${r.path}.1 (${r.size} bytes)`);
       }
       logger.ok(
         `cleanup logs: ${out.logs.rotated.length} rotated, ${out.logs.skipped} under cap (cap=${out.logs.capBytes}B)`,
@@ -190,18 +188,14 @@ export async function cleanup(
     }
     if (parsed.dryRun) {
       for (const f of out.inboxes.files) {
-        logger.log(
-          `  [dry-run] ${f.name}: would prune ${f.pruned} done[], keep ${f.kept}`,
-        );
+        logger.log(`  [dry-run] ${f.name}: would prune ${f.pruned} done[], keep ${f.kept}`);
       }
       logger.ok(
         `cleanup inboxes (dry-run): would prune ${out.inboxes.totalPruned} entries (>${out.inboxes.cutoffDays}d), ${out.inboxes.totalKept} recent kept`,
       );
     } else {
       for (const f of out.inboxes.files) {
-        logger.log(
-          `cleanup inboxes: ${f.name} pruned=${f.pruned} kept=${f.kept}`,
-        );
+        logger.log(`cleanup inboxes: ${f.name} pruned=${f.pruned} kept=${f.kept}`);
       }
       logger.ok(
         `cleanup inboxes: pruned ${out.inboxes.totalPruned} entries (>${out.inboxes.cutoffDays}d), ${out.inboxes.totalKept} kept`,

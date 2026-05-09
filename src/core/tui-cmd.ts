@@ -19,8 +19,8 @@
 // Behaviour parity verified by tests/unit/core/tui-cmd.test.ts —
 // every priority branch + every built-in TUI exercised.
 
-import type { TeamMember, Team as TeamShape } from "../schema/team.ts";
 import { UsageError } from "../errors.ts";
+import type { TeamMember, Team as TeamShape } from "../schema/team.ts";
 
 export interface ResolveTuiOpts {
   /** Process env. Defaults to `process.env`. Test injection point —
@@ -132,14 +132,18 @@ function tuiOpencode(name: string, cwd: string, model: string, env: NodeJS.Proce
 function tuiKimi(name: string, cwd: string, model: string, env: NodeJS.ProcessEnv): string {
   const bin = env.ATMUX_KIMI_BIN ?? "kimi";
   const m =
-    model === "default" || model.length === 0 ? (env.ATMUX_KIMI_DEFAULT_MODEL ?? "kimi-latest") : model;
+    model === "default" || model.length === 0
+      ? (env.ATMUX_KIMI_DEFAULT_MODEL ?? "kimi-latest")
+      : model;
   return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${bin} --model ${posixQuote(m)}`;
 }
 
 function tuiCursor(name: string, cwd: string, model: string, env: NodeJS.ProcessEnv): string {
   const bin = env.ATMUX_CURSOR_BIN ?? "cursor-agent";
   const m =
-    model === "default" || model.length === 0 ? (env.ATMUX_CURSOR_DEFAULT_MODEL ?? "composer-2") : model;
+    model === "default" || model.length === 0
+      ? (env.ATMUX_CURSOR_DEFAULT_MODEL ?? "composer-2")
+      : model;
   return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${bin} --model ${posixQuote(m)}`;
 }
 

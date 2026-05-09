@@ -136,9 +136,7 @@ describe("parseComplaintsArgs", () => {
   });
 
   test("resolve --status with invalid value rejected", () => {
-    expect(() => parseComplaintsArgs(["resolve", "c-x", "--status", "bogus"])).toThrow(
-      UsageError,
-    );
+    expect(() => parseComplaintsArgs(["resolve", "c-x", "--status", "bogus"])).toThrow(UsageError);
   });
 
   test("resolve --note + --by + --related-task captured", () => {
@@ -167,9 +165,9 @@ describe("complaints migration v2 — schema present", () => {
     try {
       const v = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
       expect(v).toBe(2);
-      const tables = db
-        .query("SELECT name FROM sqlite_master WHERE type='table'")
-        .all() as Array<{ name: string }>;
+      const tables = db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
+        name: string;
+      }>;
       const names = tables.map((t) => t.name);
       expect(names).toContain("complaints");
     } finally {
@@ -337,9 +335,7 @@ describe("complaints verb — integration", () => {
     const newId = fileOut.trim();
     expect(newId).toMatch(/^c-[a-f0-9]{8}$/);
 
-    const { out: listOut } = await captureStdout(() =>
-      complaints(["list", "--team-dir", teamDir]),
-    );
+    const { out: listOut } = await captureStdout(() => complaints(["list", "--team-dir", teamDir]));
     expect(listOut).toContain(newId);
     expect(listOut).toContain("cage cycled itself");
     expect(listOut).toContain("🔴"); // open status emoji
@@ -375,15 +371,7 @@ describe("complaints verb — integration", () => {
   });
 
   test("list --json emits parseable array", async () => {
-    await captureStdout(() =>
-      complaints([
-        "file",
-        "--summary",
-        "x",
-        "--team-dir",
-        teamDir,
-      ]),
-    );
+    await captureStdout(() => complaints(["file", "--summary", "x", "--team-dir", teamDir]));
     const { out } = await captureStdout(() =>
       complaints(["list", "--json", "--team-dir", teamDir]),
     );
@@ -402,12 +390,7 @@ describe("complaints verb — integration", () => {
       return true;
     }) as typeof process.stderr.write;
     try {
-      const exit = await complaints([
-        "resolve",
-        "c-deadbeef",
-        "--team-dir",
-        teamDir,
-      ]);
+      const exit = await complaints(["resolve", "c-deadbeef", "--team-dir", teamDir]);
       expect(exit).toBe(1);
       expect(stderrBuf).toContain("no such id: c-deadbeef");
     } finally {
@@ -438,9 +421,7 @@ describe("complaints verb — integration", () => {
   });
 
   test("list with no matching rows prints (no complaints …) sentinel", async () => {
-    const { out } = await captureStdout(() =>
-      complaints(["list", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => complaints(["list", "--team-dir", teamDir]));
     expect(out).toContain("(no complaints");
   });
 });

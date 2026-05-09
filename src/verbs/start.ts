@@ -330,8 +330,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const homeWin = `__${team.name}__home`;
   const stillExists = sessionExisted && !parsed.force;
   const projectRoot = dirname(dir);
-  const driverSession = (team as { driverSession?: { tui?: string | null } | null })
-    .driverSession;
+  const driverSession = (team as { driverSession?: { tui?: string | null } | null }).driverSession;
   const driverSessionConfigured = driverSession !== undefined && driverSession !== null;
   let driverInitial = false;
   if (!stillExists) {

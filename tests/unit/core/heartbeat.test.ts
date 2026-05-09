@@ -8,9 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_HEARTBEAT_STALE_SEC,
+  HEARTBEATS_DIRNAME,
   heartbeatPath,
   heartbeatsDir,
-  HEARTBEATS_DIRNAME,
   isHeartbeatStale,
   readHeartbeat,
   readHeartbeatAges,

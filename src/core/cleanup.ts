@@ -19,15 +19,10 @@
 
 import { readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  exists,
-  removeFile,
-  statOrNull,
-  writeText,
-} from "../abstractions/fs.ts";
+import { z } from "zod";
+import { exists, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { tryReadJson, updateJson } from "../abstractions/json.ts";
 import { now as nowMs } from "../abstractions/time.ts";
-import { z } from "zod";
 import { inboxDir as resolveInboxDir, logsDir as resolveLogsDir } from "./common.ts";
 
 // ---------- Sub-op 1: log rotation ----------
@@ -225,7 +220,7 @@ function keep(entry: DoneLike, cutoffSec: number): boolean {
 async function readDoneEntries(path: string): Promise<DoneLike[]> {
   // tryReadJson throws SchemaError on malformed; swallow + return []
   // so the caller (dry-run path) can keep walking other inboxes.
-  let parsed;
+  let parsed: z.infer<typeof InboxFile> | null = null;
   try {
     parsed = await tryReadJson(path, InboxFile);
   } catch {

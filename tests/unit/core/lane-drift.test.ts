@@ -28,11 +28,7 @@ const THRESHOLD_MIN = 30;
 
 /** A claim aged "claimedAgoMin" minutes ago. Use values like 10
  *  (criterion-a false) and 60 (criterion-a true). */
-function task(opts: {
-  id: string;
-  owner: string;
-  claimedAgoMin: number;
-}): KanbanTask {
+function task(opts: { id: string; owner: string; claimedAgoMin: number }): KanbanTask {
   return {
     id: opts.id,
     owner: opts.owner,
@@ -201,7 +197,9 @@ describe("checkLaneDrift — owner + pane edge cases", () => {
   test("Task without owner → skip:no-owner; classifyMember NOT called", async () => {
     let calls = 0;
     const decisions = await checkLaneDrift({
-      inProgressTasks: [{ id: "t-noowner", status: "in-progress", claimedAt: NOW_SEC - 60 * 60 } as KanbanTask],
+      inProgressTasks: [
+        { id: "t-noowner", status: "in-progress", claimedAt: NOW_SEC - 60 * 60 } as KanbanTask,
+      ],
       classifyMember: async (_m: string) => {
         calls++;
         return null;
@@ -297,7 +295,8 @@ describe("checkLaneDrift — owner + pane edge cases", () => {
     const decisions = await checkLaneDrift({
       inProgressTasks: [t],
       classifyMember: fixedClassify({ alice: paneCompacting() }),
-      recentCommitsText: "feat(scope): unrelated subject\n\nBody mentions t-deadbeef in passing.\n--END--",
+      recentCommitsText:
+        "feat(scope): unrelated subject\n\nBody mentions t-deadbeef in passing.\n--END--",
       commitsScanned: 1,
       nowSec: NOW_SEC,
       claimedAtThresholdMin: THRESHOLD_MIN,

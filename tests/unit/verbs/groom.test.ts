@@ -11,11 +11,7 @@ import { join } from "node:path";
 import { acquire } from "../../../src/abstractions/lock.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { UsageError } from "../../../src/errors.ts";
-import {
-  groom,
-  groomDisabledByEnv,
-  parseGroomArgs,
-} from "../../../src/verbs/groom.ts";
+import { groom, groomDisabledByEnv, parseGroomArgs } from "../../../src/verbs/groom.ts";
 
 const RUN_MS = Date.UTC(2026, 4, 8, 14, 55, 0);
 
@@ -203,10 +199,7 @@ describe("groom verb", () => {
   });
 
   test("--quiet suppresses ok/log lines", async () => {
-    await writeFile(
-      join(env.atmuxDir, "driver-inbox.md"),
-      "# d\n\n## Archive\n\nold\n",
-    );
+    await writeFile(join(env.atmuxDir, "driver-inbox.md"), "# d\n\n## Archive\n\nold\n");
     await groom(["--quiet"], {
       atmuxDir: env.atmuxDir,
       env: {},
@@ -273,17 +266,11 @@ describe("groom verb", () => {
       epics: [],
       stories: [],
     };
-    await writeFile(
-      join(env.atmuxDir, "kanban.json"),
-      JSON.stringify(kanban),
-    );
+    await writeFile(join(env.atmuxDir, "kanban.json"), JSON.stringify(kanban));
 
     // Seed 7 bak files, then cull to keep 3.
     for (let i = 0; i < 7; i++) {
-      await writeFile(
-        join(env.atmuxDir, `kanban.json.bak.${i}`),
-        `bak ${i}`,
-      );
+      await writeFile(join(env.atmuxDir, `kanban.json.bak.${i}`), `bak ${i}`);
     }
 
     const rc = await groom(["--keep-bak", "3"], {
@@ -350,10 +337,7 @@ describe("groom verb", () => {
       join(archiveDir, "kanban-log-2026-04.md"),
       "y".repeat(6 * 1024 * 1024), // 6MB > 5MB cap
     );
-    await writeFile(
-      join(archiveDir, "kanban-log-2026-05.md"),
-      "y".repeat(6 * 1024 * 1024),
-    );
+    await writeFile(join(archiveDir, "kanban-log-2026-05.md"), "y".repeat(6 * 1024 * 1024));
     // Drop something else so flushInboxOutbox is a no-op.
     await writeFile(driverInbox, "# d\n\n## Open\n\nfresh\n");
 

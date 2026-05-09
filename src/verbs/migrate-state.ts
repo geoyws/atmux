@@ -41,7 +41,7 @@
 //   78  ConfigError (target not implemented; missing source file)
 //   1   IOError / SQLite error (propagated)
 
-import { mkdir, readdir, rename } from "node:fs/promises";
+import { readdir, rename } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
@@ -323,7 +323,7 @@ async function migrateInboxes(
       filesSkippedInvalid += 1;
       continue;
     }
-    let parsed;
+    let parsed: ReturnType<typeof Inbox.parse>;
     try {
       parsed = Inbox.parse(JSON.parse(raw));
     } catch {

@@ -1,10 +1,9 @@
 // Unit tests for src/abstractions/lock.ts (ADR-005).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   acquire,
   acquireWithTTL,

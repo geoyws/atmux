@@ -32,7 +32,6 @@
 // - --to <list> multi-member targeting (not in bash @ worktree-frozen).
 
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
-import type { Team } from "../schema/team.ts";
 import {
   buildWindowName,
   getAtmuxDir,
@@ -44,6 +43,7 @@ import {
 import { appendInboxMessage } from "../core/inbox.ts";
 import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
 import { defaultSocketPath } from "./start.ts";
 
 /** Parsed `send` CLI args (post-flag-parsing). */
@@ -174,7 +174,7 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
       i += 1;
       break;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({
         what: `send: unknown flag: ${a}`,
         hint: broadcast ? USAGE_HINT_BROADCAST : USAGE_HINT_SINGLE,

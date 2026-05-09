@@ -93,10 +93,7 @@ describe("parseCleanupArgs", () => {
 describe("cleanup verb", () => {
   test("logs subcommand rotates >cap files + emits ok line", async () => {
     await mkdir(env.logsDir, { recursive: true });
-    await writeFile(
-      join(env.logsDir, "report.log"),
-      "x".repeat(2 * 1024 * 1024),
-    );
+    await writeFile(join(env.logsDir, "report.log"), "x".repeat(2 * 1024 * 1024));
     const rc = await cleanup(["logs"], {
       atmuxDir: env.atmuxDir,
       env: {},
@@ -109,10 +106,7 @@ describe("cleanup verb", () => {
 
   test("logs --dry-run does not rotate", async () => {
     await mkdir(env.logsDir, { recursive: true });
-    await writeFile(
-      join(env.logsDir, "x.log"),
-      "x".repeat(2 * 1024 * 1024),
-    );
+    await writeFile(join(env.logsDir, "x.log"), "x".repeat(2 * 1024 * 1024));
     await cleanup(["logs", "--dry-run"], {
       atmuxDir: env.atmuxDir,
       env: {},
@@ -159,10 +153,7 @@ describe("cleanup verb", () => {
 
   test("`all` routes through both sub-ops", async () => {
     await mkdir(env.logsDir, { recursive: true });
-    await writeFile(
-      join(env.logsDir, "x.log"),
-      "x".repeat(2 * 1024 * 1024),
-    );
+    await writeFile(join(env.logsDir, "x.log"), "x".repeat(2 * 1024 * 1024));
     await mkdir(env.inboxDir, { recursive: true });
     const oldEpoch = Math.floor(RUN_MS / 1000) - 30 * 86400;
     await writeFile(

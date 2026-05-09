@@ -57,7 +57,18 @@ const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
 /** Lane enum (mirrors `KanbanLane` in src/schema/kanban.ts). `-` clears
  *  the lane (sets to null). `git` + `docs` added 2026-05-08 for role-
  *  specific lanes (gitter pulls commits/merges; docs pulls writing tasks). */
-const VALID_LANES = new Set(["fe", "be", "db", "ops", "test", "review", "misc", "git", "docs", "-"]);
+const VALID_LANES = new Set([
+  "fe",
+  "be",
+  "db",
+  "ops",
+  "test",
+  "review",
+  "misc",
+  "git",
+  "docs",
+  "-",
+]);
 
 /**
  * `atmux task <subverb> [args]`. Returns 0 on success; throws
@@ -68,7 +79,7 @@ export async function task(argv: ReadonlyArray<string>): Promise<number> {
   // We also default to `list` when argv[0] is a flag — `atmux task
   // --team-dir /x` is unambiguously "list with --team-dir".
   const first = argv[0];
-  const isFlag = first !== undefined && first.startsWith("-");
+  const isFlag = first?.startsWith("-");
   const verb = first === undefined || isFlag ? "list" : first;
   const rest = first === undefined || isFlag ? argv : argv.slice(1);
   switch (verb) {
@@ -375,7 +386,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
       subject = argv.slice(i + 1).join(" ");
       break;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `task add: unknown flag: ${a}`, hint: USAGE_ADD });
     }
     // Non-flag positional → accumulate into subject (bash join with space).

@@ -57,9 +57,7 @@ export function budgetPauseStatePath(atmuxDir: string): string {
 /** Read state if present; returns null when absent OR malformed. The
  *  loose decode mirrors bash's `[[ -f ]] && jq` short-circuit — neither
  *  side throws on absence. */
-export async function loadBudgetPauseState(
-  atmuxDir: string,
-): Promise<BudgetPauseState | null> {
+export async function loadBudgetPauseState(atmuxDir: string): Promise<BudgetPauseState | null> {
   const path = budgetPauseStatePath(atmuxDir);
   const txt = await readTextOrNull(path);
   if (txt === null) return null;

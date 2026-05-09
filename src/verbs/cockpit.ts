@@ -31,20 +31,20 @@
 import { dirname } from "node:path";
 import { ensureDir } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
+import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   cageSessionName,
   cageSocketPath,
   enabledTeams,
-  loadCockpit,
   type LoadCockpitOpts,
+  loadCockpit,
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
-import { Team } from "../schema/team.ts";
-import type { CockpitSuperdoctor, CockpitTeam } from "../schema/cockpit.ts";
 import { UsageError } from "../errors.ts";
+import type { CockpitSuperdoctor, CockpitTeam } from "../schema/cockpit.ts";
+import { Team } from "../schema/team.ts";
 import { start } from "./start.ts";
 
 // ---------- ADR-064 §3: per-team driverSession resolution ----------
@@ -156,9 +156,7 @@ export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode):
         `no driver configured for ${team.name} — set team.json::driverSession to enable`,
       );
     case "session-down":
-      return shellPlaceholder(
-        `team ${team.name} session not running — atmux start ${team.name}`,
-      );
+      return shellPlaceholder(`team ${team.name} session not running — atmux start ${team.name}`);
   }
 }
 
@@ -310,7 +308,10 @@ export interface CockpitOpts {
 }
 
 /** Top-level dispatch for `atmux cockpit <subverb>`. */
-export async function cockpit(args: ReadonlyArray<string>, opts: CockpitOpts = {}): Promise<number> {
+export async function cockpit(
+  args: ReadonlyArray<string>,
+  opts: CockpitOpts = {},
+): Promise<number> {
   const parsed = parseCockpitArgs(args);
   switch (parsed.subverb) {
     case "rebuild":
@@ -641,9 +642,7 @@ export async function reconcileCockpitSession(
         target: { sessionName, windowIndex: targetIdx },
         kill: true,
       });
-      logger.log(
-        `  ✓ moved 'superdoctor' to idx ${targetIdx} (was idx ${sd.index})`,
-      );
+      logger.log(`  ✓ moved 'superdoctor' to idx ${targetIdx} (was idx ${sd.index})`);
     }
   }
 
@@ -715,4 +714,3 @@ export function buildSuperdoctorWindowCommand(sd: CockpitSuperdoctor): string {
     `claude${pluginFlag} --permission-mode ${permission}`
   );
 }
-

@@ -7,10 +7,10 @@ import { describe, expect, test } from "bun:test";
 import {
   KNOWN_MODAL_SETTLE_MS,
   MAX_KNOWN_MODAL_DISMISSALS,
-  safePreflight,
-  safeSendKeys,
   type SafeSendOpts,
   type SafeSendOutcome,
+  safePreflight,
+  safeSendKeys,
 } from "../../../src/core/safe-send.ts";
 
 interface FlagCall {
@@ -74,9 +74,7 @@ describe("safeSendKeys — READY happy path", () => {
     const result = await safeSendKeys("atmux:1.0", "hello", opts);
     expect(result.outcome).toBe("sent");
     expect(result.attempts).toBe(1);
-    expect(fixture.sends).toEqual([
-      { target: "atmux:1.0", text: "hello", enter: undefined },
-    ]);
+    expect(fixture.sends).toEqual([{ target: "atmux:1.0", text: "hello", enter: undefined }]);
     expect(fixture.flags).toHaveLength(0);
     expect(fixture.sleeps).toHaveLength(0);
   });

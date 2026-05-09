@@ -9,9 +9,9 @@ import {
   readCache,
   resolveTarget,
   resolveWindowId,
+  type WindowIdCache,
   windowIdCachePath,
   writeCache,
-  type WindowIdCache,
 } from "../../../src/core/window-id.ts";
 
 // ---------- Test helpers ----------

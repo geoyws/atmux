@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SUPERDOCTOR_INBOX_KEY } from "../../../src/core/common.ts";
 import {
   appendDispatched,
   appendInboxMessage,
@@ -17,7 +18,6 @@ import {
   movePendingToInProgress,
   removeFromInProgress,
 } from "../../../src/core/inbox.ts";
-import { SUPERDOCTOR_INBOX_KEY } from "../../../src/core/common.ts";
 import type { InboxEntry } from "../../../src/schema/inbox.ts";
 
 let atmuxDir: string;

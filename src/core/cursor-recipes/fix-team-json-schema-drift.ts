@@ -14,9 +14,9 @@
 // text — accommodates whitespace shuffling cursor may introduce).
 
 import { readTextOrNull } from "../../abstractions/fs.ts";
-import { composeDriftReport, type DriftIssue } from "../whip-config-drift.ts";
-import { teamJsonPath } from "../common.ts";
 import { Team } from "../../schema/team.ts";
+import { teamJsonPath } from "../common.ts";
+import { composeDriftReport, type DriftIssue } from "../whip-config-drift.ts";
 import type {
   CursorJob,
   CursorRecipe,
@@ -165,7 +165,7 @@ export const fixTeamJsonSchemaDriftRecipe: CursorRecipe = {
     const summary =
       reasons.length === 0
         ? `team.json drift fix — schema parses clean (${patch.files.length} file touched)`
-        : reasons[0] ?? "verification failed";
+        : (reasons[0] ?? "verification failed");
 
     return {
       ok: reasons.length === 0,

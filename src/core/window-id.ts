@@ -21,11 +21,11 @@
 // via the TmuxNamespace passed in by the caller (per ADR-003 layer
 // rule). Tests inject both.
 
+import { join } from "node:path";
 import { z } from "zod";
 import { readTextOrNull, writeText } from "../abstractions/fs.ts";
 import type { TmuxNamespace } from "../abstractions/tmux.ts";
 import { stateDir } from "./common.ts";
-import { join } from "node:path";
 
 // ---------- Cache schema ----------
 

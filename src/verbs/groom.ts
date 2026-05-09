@@ -22,25 +22,25 @@
 //               [--decisions-days N]  # default 30
 //               [--keep-bak N]        # default 5
 
-import { stateDir, getAtmuxDir } from "../core/common.ts";
+import { join } from "node:path";
+import { ensureDir } from "../abstractions/fs.ts";
+import { acquireWithTTL } from "../abstractions/lock.ts";
+import { getAtmuxDir, stateDir } from "../core/common.ts";
 import {
+  type ArchiveSizeWarning,
   archiveDecisions,
   archiveSizeCheck,
-  cullBakFiles,
-  flushInboxOutboxArchive,
-  summarizeKanban,
-  type ArchiveSizeWarning,
   type BakCullResult,
+  cullBakFiles,
   type DecisionsArchiveResult,
+  flushInboxOutboxArchive,
   type InboxOutboxFlushResult,
   type KanbanSummarizeResult,
+  summarizeKanban,
 } from "../core/groom.ts";
-import { acquireWithTTL } from "../abstractions/lock.ts";
-import { ensureDir } from "../abstractions/fs.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { LockError, LockTimeoutError, UsageError } from "../errors.ts";
-import { join } from "node:path";
 
 // ---------- Args ----------
 
@@ -205,10 +205,7 @@ export interface GroomResult {
   skippedReason?: "no-groom-env" | "lock-held";
 }
 
-export async function groom(
-  argv: ReadonlyArray<string>,
-  opts: GroomOptions = {},
-): Promise<number> {
+export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}): Promise<number> {
   const stdout = opts.stdout ?? defaultStdoutWrite;
   const logger = opts.logger ?? createLogger();
   const env = opts.env ?? process.env;
@@ -282,9 +279,7 @@ export async function groom(
               `groom[dry-run]: would flush ${r.file} archive → ${baseName(r.destPath)} (${r.bodyLineCount} lines)`,
             );
           } else {
-            logger.ok(
-              `groom: flushed ${r.file} archive → ${baseName(r.destPath)}`,
-            );
+            logger.ok(`groom: flushed ${r.file} archive → ${baseName(r.destPath)}`);
           }
         }
       }
@@ -327,9 +322,7 @@ export async function groom(
             `groom[dry-run]: would summarize+remove ${result.kanban.removed} done/cancelled cards older than ${parsed.kanbanDays}d`,
           );
         } else {
-          logger.ok(
-            `groom: summarized + removed ${result.kanban.removed} stale kanban card(s)`,
-          );
+          logger.ok(`groom: summarized + removed ${result.kanban.removed} stale kanban card(s)`);
         }
       }
     } catch (e) {
@@ -349,9 +342,7 @@ export async function groom(
               `groom[dry-run]: would delete ${r.removed.length} stale ${r.family}.bak.* (keeping newest ${parsed.keepBak})`,
             );
           } else {
-            logger.ok(
-              `groom: culled ${r.removed.length} stale ${r.family}.bak.*`,
-            );
+            logger.ok(`groom: culled ${r.removed.length} stale ${r.family}.bak.*`);
           }
         }
       }

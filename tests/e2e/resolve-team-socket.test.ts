@@ -92,9 +92,7 @@ describe("e2e t-add5976a resolveTeamSocket — real tmux honours team.tmuxTmpdir
         { name: TEAM, tmuxTmpdir },
         { uid: process.getuid?.() ?? 0 },
       );
-      expect(socketPath).toBe(
-        `${tmuxTmpdir}/tmux-${process.getuid?.() ?? 0}/default`,
-      );
+      expect(socketPath).toBe(`${tmuxTmpdir}/tmux-${process.getuid?.() ?? 0}/default`);
 
       // The abstraction's tmux namespace at that path can see the session.
       const tmux = createTmux({ socketPath });

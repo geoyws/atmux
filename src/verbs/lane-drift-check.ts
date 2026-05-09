@@ -21,8 +21,9 @@
 // + flag bodies to stdout without mutating. Cron-fired invocation
 // passes `--reset`.
 
-import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
+import { join } from "node:path";
 import { appendText } from "../abstractions/fs.ts";
+import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
@@ -41,7 +42,6 @@ import {
 } from "../core/lane-drift.ts";
 import { classifyText, type PaneClassification } from "../core/pane-state.ts";
 import { UsageError } from "../errors.ts";
-import { join } from "node:path";
 import type { KanbanTask } from "../schema/kanban.ts";
 import type { Team } from "../schema/team.ts";
 
@@ -112,11 +112,17 @@ export function parseLaneDriftCheckArgs(argv: ReadonlyArray<string>): ParsedArgs
     if (a === "--threshold-min") {
       const v = argv[i + 1];
       if (v === undefined) {
-        throw new UsageError({ what: "lane-drift-check: --threshold-min requires a value", hint: USAGE });
+        throw new UsageError({
+          what: "lane-drift-check: --threshold-min requires a value",
+          hint: USAGE,
+        });
       }
       const n = Number(v);
       if (!Number.isFinite(n) || n <= 0) {
-        throw new UsageError({ what: `lane-drift-check: --threshold-min: bad value: ${v}`, hint: USAGE });
+        throw new UsageError({
+          what: `lane-drift-check: --threshold-min: bad value: ${v}`,
+          hint: USAGE,
+        });
       }
       thresholdMin = Math.floor(n);
       i += 2;
@@ -148,7 +154,10 @@ export function parseLaneDriftCheckArgs(argv: ReadonlyArray<string>): ParsedArgs
     if (a === "--team-dir") {
       const v = argv[i + 1];
       if (v === undefined) {
-        throw new UsageError({ what: "lane-drift-check: --team-dir requires a value", hint: USAGE });
+        throw new UsageError({
+          what: "lane-drift-check: --team-dir requires a value",
+          hint: USAGE,
+        });
       }
       teamDir = v;
       i += 2;
@@ -206,7 +215,9 @@ export async function laneDriftCheck(
       log(`lane-drift-check: REVERT ${d.taskId} ← ${d.member} :: ${d.flagBody ?? ""}`);
     } else {
       const dur =
-        d.evidence.claimedAgoMin === null ? "?min" : formatDurationCompact(d.evidence.claimedAgoMin);
+        d.evidence.claimedAgoMin === null
+          ? "?min"
+          : formatDurationCompact(d.evidence.claimedAgoMin);
       log(`lane-drift-check: skip ${d.taskId} (${d.reason ?? "?"}) member=${d.member} age=${dur}`);
     }
   }

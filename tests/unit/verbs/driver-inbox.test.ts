@@ -6,10 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCursor } from "../../../src/core/driver-inbox.ts";
 import { UsageError } from "../../../src/errors.ts";
-import {
-  driverInbox,
-  parseDriverInboxArgs,
-} from "../../../src/verbs/driver-inbox.ts";
+import { driverInbox, parseDriverInboxArgs } from "../../../src/verbs/driver-inbox.ts";
 
 const NOW_MS = 1778126400 * 1000; // 2026-05-07 12:00 MYT
 
@@ -106,10 +103,7 @@ describe("driverInbox()", () => {
   });
 
   test("--all surfaces every entry", async () => {
-    await seedInbox(
-      atmuxDir,
-      "## 09:00 MYT — first\nbody A\n## 11:00 MYT — second\nbody B",
-    );
+    await seedInbox(atmuxDir, "## 09:00 MYT — first\nbody A\n## 11:00 MYT — second\nbody B");
     await driverInbox(["--team-dir", teamDir, "--all"], { stdout, now: () => NOW_MS });
     expect(stdoutBuf).toContain("2 entries");
     expect(stdoutBuf).toContain("first");
@@ -124,10 +118,7 @@ describe("driverInbox()", () => {
   });
 
   test("--ack updates cursor to tip", async () => {
-    await seedInbox(
-      atmuxDir,
-      "## 09:00 MYT — old\nA\n## 11:00 MYT — newer\nB",
-    );
+    await seedInbox(atmuxDir, "## 09:00 MYT — old\nA\n## 11:00 MYT — newer\nB");
     await driverInbox(["--team-dir", teamDir, "--ack"], { stdout, now: () => NOW_MS });
     const cur = await readCursor(atmuxDir);
     // 11:00 MYT today = 1778122800
@@ -135,10 +126,7 @@ describe("driverInbox()", () => {
   });
 
   test("subsequent run after --ack → 'no new entries'", async () => {
-    await seedInbox(
-      atmuxDir,
-      "## 09:00 MYT — old\nA\n## 11:00 MYT — newer\nB",
-    );
+    await seedInbox(atmuxDir, "## 09:00 MYT — old\nA\n## 11:00 MYT — newer\nB");
     await driverInbox(["--team-dir", teamDir, "--ack"], { stdout, now: () => NOW_MS });
     stdoutBuf = "";
     await driverInbox(["--team-dir", teamDir], { stdout, now: () => NOW_MS });
@@ -146,10 +134,7 @@ describe("driverInbox()", () => {
   });
 
   test("--since overrides on-disk cursor", async () => {
-    await seedInbox(
-      atmuxDir,
-      "## 09:00 MYT — old\nA\n## 11:00 MYT — newer\nB",
-    );
+    await seedInbox(atmuxDir, "## 09:00 MYT — old\nA\n## 11:00 MYT — newer\nB");
     // Pre-set a future cursor that would hide all entries.
     await driverInbox(["--team-dir", teamDir, "--ack"], { stdout, now: () => NOW_MS });
     stdoutBuf = "";

@@ -50,53 +50,22 @@
 // is a plain `readTextOrNull` (FS abstraction, R6-compliant) so MacOS
 // (no /proc) gracefully degrades to "no cross-account check possible".
 
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { type DiscordSendOpts, send as discordSend } from "../abstractions/discord.ts";
-import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
-import { tryParseJsonString, tryReadJson } from "../abstractions/json.ts";
-import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
 import {
-  classifyPaneState,
-  getAtmuxDir,
-  getDefaultSocket,
-  getSessionName,
-  inboxPathFor,
-  type ResolveDirOpts,
-  requireTeam,
-  stateDir,
-  teamJsonPath,
-} from "../core/common.ts";
-import {
-  composeCatastrophicDrift,
-  composeDriftReport,
-  type DriftReport,
-  makeDriftSafeDefaults,
-  recordDriftPing,
-  shouldFireDriftPing,
-} from "../core/whip-config-drift.ts";
-import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import {
-  type BudgetCheckCtx,
-  type BudgetCheckDeps,
-  type BudgetCheckTeamMember,
-  runBudgetCheck,
-} from "../core/whip-budget-check.ts";
-import { loadInbox } from "../core/inbox.ts";
-import { listTasks } from "../core/kanban.ts";
-import {
-  ensureLeadSessionStart,
-  leadSessionStartPath,
-  leadWindowNamePath,
-  readLeadSessionStart,
-  readLeadWindowName,
-  type SkillsTeamPathsOpts,
-  writeLeadSessionStart,
-} from "../core/lead-marker.ts";
+  type DiscordSendOpts,
+  send as discordSend,
+  renderWhipConfigDrift,
+  renderWhipDefunctCwd,
+  renderWhipPermModeDrift,
+} from "../abstractions/discord.ts";
 import type { CageHandle } from "../abstractions/fallback-cage.ts";
+import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
+import { tryParseJsonString } from "../abstractions/json.ts";
+import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts";
 import { spawn } from "../abstractions/spawn.ts";
+import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   type AccountSwapCheckCtx,
   type AccountSwapCheckDeps,
@@ -105,21 +74,31 @@ import {
   runAccountSwapCheck,
   runSwapPass,
 } from "../core/account-swap.ts";
-import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
-import { checkStaleAnchor } from "../core/stale-anchor.ts";
-import { runSelfHealPass } from "../core/cursor-self-heal.ts";
-import { fixTeamJsonSchemaDriftRecipe } from "../core/cursor-recipes/fix-team-json-schema-drift.ts";
+import {
+  classifyPaneState,
+  getAtmuxDir,
+  getDefaultSocket,
+  getSessionName,
+  type ResolveDirOpts,
+  requireTeam,
+  stateDir,
+  teamJsonPath,
+} from "../core/common.ts";
 import { fixCronPollutionRecipe } from "../core/cursor-recipes/fix-cron-pollution.ts";
 import { fixSupervisorMissingRecipe } from "../core/cursor-recipes/fix-supervisor-missing.ts";
+import { fixTeamJsonSchemaDriftRecipe } from "../core/cursor-recipes/fix-team-json-schema-drift.ts";
 import type { CursorRecipe } from "../core/cursor-recipes/types.ts";
-import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
-import { Inbox as InboxSchema } from "../schema/inbox.ts";
-import { Team, type TeamMember } from "../schema/team.ts";
+import { runSelfHealPass } from "../core/cursor-self-heal.ts";
+import { loadInbox } from "../core/inbox.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { listTasks } from "../core/kanban.ts";
 import {
-  renderWhipConfigDrift,
-  renderWhipDefunctCwd,
-  renderWhipPermModeDrift,
-} from "../abstractions/discord.ts";
+  ensureLeadSessionStart,
+  readLeadSessionStart,
+  readLeadWindowName,
+  type SkillsTeamPathsOpts,
+  writeLeadSessionStart,
+} from "../core/lead-marker.ts";
 import { classifyText } from "../core/pane-state.ts";
 import {
   loadPermModeDriftState,
@@ -128,6 +107,23 @@ import {
   savePermModeDriftState,
   shouldFireDrift,
 } from "../core/perm-mode-drift-state.ts";
+import { checkStaleAnchor } from "../core/stale-anchor.ts";
+import {
+  type BudgetCheckCtx,
+  type BudgetCheckDeps,
+  type BudgetCheckTeamMember,
+  runBudgetCheck,
+} from "../core/whip-budget-check.ts";
+import {
+  composeCatastrophicDrift,
+  composeDriftReport,
+  type DriftReport,
+  makeDriftSafeDefaults,
+  recordDriftPing,
+  shouldFireDriftPing,
+} from "../core/whip-config-drift.ts";
+import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
+import { Team, type TeamMember } from "../schema/team.ts";
 
 const USAGE = "atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]";
 
@@ -316,7 +312,9 @@ export function readWhipConfig(team: Team, env: NodeJS.ProcessEnv = process.env)
     }
     // ADR-056 account-swap knobs.
     if (Array.isArray(o.accountFallback)) {
-      const chain = o.accountFallback.filter((s): s is string => typeof s === "string" && s.length > 0);
+      const chain = o.accountFallback.filter(
+        (s): s is string => typeof s === "string" && s.length > 0,
+      );
       cfg.accountFallback = chain;
     }
     if (
@@ -947,7 +945,7 @@ async function runAccountSwapTickCheck(
  *  ensure runSwapPass walks decisions[] without blocking, marking each
  *  as aborted with a "spawn integration not yet wired" flag — which
  *  the operator sees + can resolve manually until T11-Part-3 lands. */
-async function runSwapPassTickCheck(ctx: TickCtx, config: WhipConfig): Promise<void> {
+async function runSwapPassTickCheck(ctx: TickCtx, _config: WhipConfig): Promise<void> {
   const probeBudget =
     ctx.budgetProbe ??
     (async (account: string) => {
@@ -1103,11 +1101,7 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
  * (ADR-057 §D1) belongs here once the lead reviews this — for v1 we
  * do the simple direct paste.
  */
-async function sendContinuityBrief(
-  ctx: TickCtx,
-  member: string,
-  body: string,
-): Promise<void> {
+async function sendContinuityBrief(ctx: TickCtx, member: string, body: string): Promise<void> {
   const session = await getSessionName({ dir: ctx.atmuxDir, team: ctx.team });
   // Members' window names are `<emoji><member>` — but the cage handle
   // stored the lane string (which may already be an emoji-prefixed name

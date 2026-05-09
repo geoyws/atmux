@@ -44,6 +44,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BudgetProbeResult } from "../../src/abstractions/budget-probe.ts";
 import {
+  type CageHandle,
   cageArchivePath,
   cageSessionName,
   cageTmuxSocket,
@@ -52,21 +53,17 @@ import {
   composeTier3Brief,
   createFallbackCage,
   destroyFallbackCage,
-  type CageHandle,
 } from "../../src/abstractions/fallback-cage.ts";
+import { type BudgetPauseState, budgetPauseStatePath } from "../../src/core/budget-pause.ts";
 import {
-  budgetPauseStatePath,
-  type BudgetPauseState,
-} from "../../src/core/budget-pause.ts";
-import {
-  runBudgetCheck,
   type BudgetCheckCtx,
   type BudgetCheckDeps,
+  runBudgetCheck,
 } from "../../src/core/whip-budget-check.ts";
 import {
+  type FallbackCagesFile,
   fallbackCagesPath,
   walkFallbackOnResume,
-  type FallbackCagesFile,
 } from "../../src/core/whip-budget-fallback.ts";
 import type { KanbanTask } from "../../src/schema/kanban.ts";
 
@@ -83,8 +80,7 @@ function probeBin(cmd: string[]): boolean {
 
 const HAS_TMUX = probeBin(["tmux", "-V"]);
 const HAS_SUDO_NONINTERACTIVE = probeBin(["sudo", "-n", "true"]);
-const HAS_KIMI_AGENT =
-  HAS_SUDO_NONINTERACTIVE && probeBin(["getent", "passwd", "kimi-agent"]);
+const HAS_KIMI_AGENT = HAS_SUDO_NONINTERACTIVE && probeBin(["getent", "passwd", "kimi-agent"]);
 const HAS_RECONCILE_SCRIPT = existsSync(
   new URL("../../scripts/fallback-reconcile.sh", import.meta.url).pathname,
 );
@@ -113,7 +109,9 @@ function tmuxAgainstCage(
   };
 }
 
-function probeResult(overrides: Partial<BudgetProbeResult> & { account: string }): BudgetProbeResult {
+function probeResult(
+  overrides: Partial<BudgetProbeResult> & { account: string },
+): BudgetProbeResult {
   return {
     account: overrides.account,
     h5_pct_used: overrides.h5_pct_used ?? 0,
@@ -143,8 +141,8 @@ describe("e2e ADR-058 fallback-cage Beat 1 — Tier 2 spawn + tear-down (real tm
     // file. Without this they diverge (mkdir at /tmp/atmux_fallback_*/ vs
     // tmux at /tmp/tmux-<UID>/) — the abstraction ships assuming the
     // operator's session was launched with TMUX_TMPDIR set.
-    originalTmuxTmpdir = process.env["TMUX_TMPDIR"];
-    process.env["TMUX_TMPDIR"] = cageTmpdir;
+    originalTmuxTmpdir = process.env.TMUX_TMPDIR;
+    process.env.TMUX_TMPDIR = cageTmpdir;
   });
 
   afterEach(async () => {
@@ -152,9 +150,9 @@ describe("e2e ADR-058 fallback-cage Beat 1 — Tier 2 spawn + tear-down (real tm
     // success exit and non-zero "no server" both fine).
     tmuxAgainstCage(["-L", cageTmuxSocket(E2E_TEAM, E2E_LANE), "kill-server"], cageTmpdir);
     if (originalTmuxTmpdir === undefined) {
-      delete process.env["TMUX_TMPDIR"];
+      delete process.env.TMUX_TMPDIR;
     } else {
-      process.env["TMUX_TMPDIR"] = originalTmuxTmpdir;
+      process.env.TMUX_TMPDIR = originalTmuxTmpdir;
     }
     await rm(teamDir, { recursive: true, force: true });
   });
@@ -403,28 +401,14 @@ describe("e2e ADR-058 fallback-cage Beat 3 — reconciliation diff (sudo + kimi-
 
       // Mutate the cage workspace: 1 added file + 1 modified file.
       const writeAdded = Bun.spawnSync({
-        cmd: [
-          "sudo",
-          "-n",
-          "-u",
-          "kimi-agent",
-          "tee",
-          join(handle.workDir, "added.ts"),
-        ],
+        cmd: ["sudo", "-n", "-u", "kimi-agent", "tee", join(handle.workDir, "added.ts")],
         stdin: Buffer.from("from kimi cage\n"),
         stdout: "ignore",
         stderr: "ignore",
       });
       expect(writeAdded.exitCode).toBe(0);
       const writeMod = Bun.spawnSync({
-        cmd: [
-          "sudo",
-          "-n",
-          "-u",
-          "kimi-agent",
-          "tee",
-          join(handle.workDir, "existing.ts"),
-        ],
+        cmd: ["sudo", "-n", "-u", "kimi-agent", "tee", join(handle.workDir, "existing.ts")],
         stdin: Buffer.from("modified by kimi\n"),
         stdout: "ignore",
         stderr: "ignore",
@@ -448,16 +432,7 @@ describe("e2e ADR-058 fallback-cage Beat 3 — reconciliation diff (sudo + kimi-
       // diff -rq cage workspace vs project worktree shows no remaining
       // deltas — pulled-in files match.
       const diffR = Bun.spawnSync({
-        cmd: [
-          "sudo",
-          "-n",
-          "-u",
-          "kimi-agent",
-          "diff",
-          "-rq",
-          handle.workDir,
-          teamDir,
-        ],
+        cmd: ["sudo", "-n", "-u", "kimi-agent", "diff", "-rq", handle.workDir, teamDir],
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -830,7 +805,10 @@ describe("e2e ADR-058 fallback-cage Beat 5 — resume continuity brief", () => {
         const txt = await readFile(fallbackCagesPath(opts.atmuxDir, opts.pausedAtSec), "utf8");
         const parsed = JSON.parse(txt) as FallbackCagesFile;
         for (const handle of parsed.cages) {
-          await opts.sendContinuity(handle.lane, `Tier ${handle.tier} — continuity for ${handle.taskId}`);
+          await opts.sendContinuity(
+            handle.lane,
+            `Tier ${handle.tier} — continuity for ${handle.taskId}`,
+          );
         }
         await rm(fallbackCagesPath(opts.atmuxDir, opts.pausedAtSec), { force: true });
       },

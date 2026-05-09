@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { UsageError } from "../../../src/errors.ts";
+import type { CockpitTeam } from "../../../src/schema/cockpit.ts";
+import type { Team } from "../../../src/schema/team.ts";
 import {
   applyCagePrefix,
   autolaunchTeam,
@@ -15,12 +17,10 @@ import {
   cockpitRebuild,
   normaliseTeamJson,
   parseCockpitArgs,
+  type ResolveTeamWindowDeps,
   reconcileCockpitSession,
   resolveTeamWindowMode,
-  type ResolveTeamWindowDeps,
 } from "../../../src/verbs/cockpit.ts";
-import type { CockpitTeam } from "../../../src/schema/cockpit.ts";
-import type { Team } from "../../../src/schema/team.ts";
 
 // ---------- parseCockpitArgs ----------
 
@@ -120,10 +120,7 @@ describe("normaliseTeamJson", () => {
   test("sets bareWindowNames=true on a vanilla team.json", async () => {
     await writeTeamJson({ name: "x", members: [{ name: "lead", role: "team-lead" }] });
     const { logger } = makeLogger();
-    await normaliseTeamJson(
-      { name: "x", root: projRoot, enabled: true } as CockpitTeam,
-      logger,
-    );
+    await normaliseTeamJson({ name: "x", root: projRoot, enabled: true } as CockpitTeam, logger);
     const after = JSON.parse(await readFile(join(projRoot, ".atmux", "team.json"), "utf8"));
     expect(after.bareWindowNames).toBe(true);
     // No claudeAccount in cockpit entry → tuiCommands left untouched.
@@ -338,7 +335,7 @@ describe("applyCagePrefix", () => {
       await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "w" });
       await applyCagePrefix(fx.tmux);
       const opts = await fx.tmux.option.showOptions({ global: true });
-      expect(opts["prefix"]).toBe("C-\\");
+      expect(opts.prefix).toBe("C-\\");
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -440,9 +437,16 @@ describe("reconcileCockpitSession", () => {
       // with base-index != 1, but RELATIVE order is what we assert.
       expect(byIndex[0]?.name).toBe("superdriver");
       expect(byIndex[1]?.name).toBe("superdoctor");
-      expect(byIndex.slice(2).map((w) => w.name).sort()).toEqual(["alpha", "beta"]);
+      expect(
+        byIndex
+          .slice(2)
+          .map((w) => w.name)
+          .sort(),
+      ).toEqual(["alpha", "beta"]);
     } finally {
-      try { await fx.tmux.server.killServer(); } catch {}
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
@@ -458,7 +462,9 @@ describe("reconcileCockpitSession", () => {
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
       expect(names).toEqual(["alpha", "superdriver"]);
     } finally {
-      try { await fx.tmux.server.killServer(); } catch {}
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
@@ -471,15 +477,19 @@ describe("reconcileCockpitSession", () => {
       const sd = { enabled: true };
       await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, sd);
       const before = (await fx.tmux.window.listWindows("s"))
-        .slice().sort((a, b) => a.index - b.index)
+        .slice()
+        .sort((a, b) => a.index - b.index)
         .map((w) => `${w.index}:${w.name}`);
       await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, sd);
       const after = (await fx.tmux.window.listWindows("s"))
-        .slice().sort((a, b) => a.index - b.index)
+        .slice()
+        .sort((a, b) => a.index - b.index)
         .map((w) => `${w.index}:${w.name}`);
       expect(after).toEqual(before);
     } finally {
-      try { await fx.tmux.server.killServer(); } catch {}
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
@@ -498,20 +508,29 @@ describe("reconcileCockpitSession", () => {
       // Pre-ADR-077 cockpit shape (no superdoctor).
       await reconcileCockpitSession(fx.tmux, "s", teams, logger);
       const pre = (await fx.tmux.window.listWindows("s"))
-        .slice().sort((a, b) => a.index - b.index)
+        .slice()
+        .sort((a, b) => a.index - b.index)
         .map((w) => w.name);
       expect(pre[0]).toBe("superdriver");
       expect(pre.slice(1).sort()).toEqual(["alpha", "beta"]);
       // Upgrade — superdoctor enabled.
       await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: true });
       const post = (await fx.tmux.window.listWindows("s"))
-        .slice().sort((a, b) => a.index - b.index);
+        .slice()
+        .sort((a, b) => a.index - b.index);
       expect(post[0]?.name).toBe("superdriver");
       expect(post[1]?.name).toBe("superdoctor");
       // Both teams must still be present (one was displaced + recreated).
-      expect(post.slice(2).map((w) => w.name).sort()).toEqual(["alpha", "beta"]);
+      expect(
+        post
+          .slice(2)
+          .map((w) => w.name)
+          .sort(),
+      ).toEqual(["alpha", "beta"]);
     } finally {
-      try { await fx.tmux.server.killServer(); } catch {}
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
@@ -531,7 +550,9 @@ describe("reconcileCockpitSession", () => {
       expect(names).toContain("superdoctor");
       expect(names).not.toContain("alpha");
     } finally {
-      try { await fx.tmux.server.killServer(); } catch {}
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
@@ -541,9 +562,7 @@ describe("reconcileCockpitSession", () => {
 
 describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
   test("emits bare claude invocation when claudeAccount is unset", async () => {
-    const { buildSuperdoctorWindowCommand } = await import(
-      "../../../src/verbs/cockpit.ts"
-    );
+    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
     const cmd = buildSuperdoctorWindowCommand({ enabled: true });
     expect(cmd).toContain("claude");
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
@@ -552,9 +571,7 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
   });
 
   test("emits CLAUDE_CONFIG_DIR prefix when claudeAccount is set", async () => {
-    const { buildSuperdoctorWindowCommand } = await import(
-      "../../../src/verbs/cockpit.ts"
-    );
+    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
     const cmd = buildSuperdoctorWindowCommand({
       enabled: true,
       claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
@@ -565,9 +582,7 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
   });
 
   test("honours tuiOverrides", async () => {
-    const { buildSuperdoctorWindowCommand } = await import(
-      "../../../src/verbs/cockpit.ts"
-    );
+    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
     const cmd = buildSuperdoctorWindowCommand({
       enabled: true,
       tuiOverrides: { effortLevel: "high", permissionMode: "dontAsk", pluginDir: "/p/dir" },

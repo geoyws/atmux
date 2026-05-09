@@ -190,9 +190,7 @@ describe("task verb — dispatch", () => {
 
   test("'list --json' emits valid JSON of tasks[]", async () => {
     await addTask(atmuxDir, { subject: "first" });
-    const { out } = await captureStdout(() =>
-      task(["list", "--json", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => task(["list", "--json", "--team-dir", teamDir]));
     const parsed = JSON.parse(out);
     expect(parsed).toHaveLength(1);
     expect(parsed[0].subject).toBe("first");
@@ -230,9 +228,7 @@ describe("task verb — dispatch", () => {
   });
 
   test("'show' nonexistent task → ConfigError", async () => {
-    await expect(task(["show", "t-deadbeef", "--team-dir", teamDir])).rejects.toThrow(
-      ConfigError,
-    );
+    await expect(task(["show", "t-deadbeef", "--team-dir", teamDir])).rejects.toThrow(ConfigError);
   });
 
   test("'get' alias works", async () => {
@@ -265,9 +261,7 @@ describe("task verb — dispatch", () => {
 
   test("'move' bad status → UsageError", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    await expect(task(["move", id, "bogus", "--team-dir", teamDir])).rejects.toThrow(
-      UsageError,
-    );
+    await expect(task(["move", id, "bogus", "--team-dir", teamDir])).rejects.toThrow(UsageError);
   });
 
   test("'assign' updates owner", async () => {
@@ -287,9 +281,7 @@ describe("task verb — dispatch", () => {
 
   test("'rm' removes task", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    const { exit, out } = await captureStdout(() =>
-      task(["rm", id, "--team-dir", teamDir]),
-    );
+    const { exit, out } = await captureStdout(() => task(["rm", id, "--team-dir", teamDir]));
     expect(exit).toBe(0);
     expect(out).toContain("removed");
     const k = await loadKanban(atmuxDir);

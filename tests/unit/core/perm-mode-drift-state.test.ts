@@ -7,19 +7,17 @@ import { join } from "node:path";
 import {
   DEFAULT_DEDUP_TTL_SEC,
   loadPermModeDriftState,
+  type PermModeDriftState,
   parsePermissionMode,
   permModeDriftStatePath,
   recordDrift,
   savePermModeDriftState,
   shouldFireDrift,
-  type PermModeDriftState,
 } from "../../../src/core/perm-mode-drift-state.ts";
 
 describe("permModeDriftStatePath", () => {
   test("places file under <atmuxDir>/state/perm-mode-drift-state.json", () => {
-    expect(permModeDriftStatePath("/x/.atmux")).toBe(
-      "/x/.atmux/state/perm-mode-drift-state.json",
-    );
+    expect(permModeDriftStatePath("/x/.atmux")).toBe("/x/.atmux/state/perm-mode-drift-state.json");
   });
 });
 

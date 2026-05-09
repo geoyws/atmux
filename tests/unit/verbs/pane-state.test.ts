@@ -235,18 +235,17 @@ describe("paneStateWithTmux — every PaneState round-trips via fixture captures
 // ---------- paneState verb — full integration ----------
 
 describe("paneState verb", () => {
-  async function stageTeam(members: ReadonlyArray<Partial<TeamMember> & { name: string }>): Promise<void> {
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members }),
-    );
+  async function stageTeam(
+    members: ReadonlyArray<Partial<TeamMember> & { name: string }>,
+  ): Promise<void> {
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members }));
   }
 
   test("member-not-found → ConfigError listing valid member names", async () => {
     await stageTeam([{ name: "alpha" }, { name: "beta" }]);
-    await expect(
-      paneState(["--member", "ghost", "--team-dir", teamDir]),
-    ).rejects.toThrow(ConfigError);
+    await expect(paneState(["--member", "ghost", "--team-dir", teamDir])).rejects.toThrow(
+      ConfigError,
+    );
     try {
       await paneState(["--member", "ghost", "--team-dir", teamDir]);
     } catch (e) {

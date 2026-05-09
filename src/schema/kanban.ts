@@ -35,7 +35,17 @@ import { z } from "zod";
  * entries; this enum is exported for use by core helpers / verbs that
  * validate at the WRITE boundary.
  */
-export const KanbanLane = z.enum(["fe", "be", "db", "ops", "test", "review", "misc", "git", "docs"]);
+export const KanbanLane = z.enum([
+  "fe",
+  "be",
+  "db",
+  "ops",
+  "test",
+  "review",
+  "misc",
+  "git",
+  "docs",
+]);
 export type KanbanLane = z.infer<typeof KanbanLane>;
 
 // ---------- Per-task entry ----------
@@ -92,11 +102,17 @@ export const KanbanTask = z
      *  prior owner is recorded here for audit. Bash writes either a bare
      *  member-name string OR a structured `{prevOwner, ts}` object on some
      *  paths — accept both shapes. */
-    claimedFrom: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
+    claimedFrom: z
+      .union([z.string(), z.record(z.string(), z.unknown())])
+      .nullable()
+      .optional(),
     /** Origin annotation. Bash writes either a string tag (e.g. `commit`,
      *  `dispatch`) OR a structured object like `{parentTaskId, depth}` for
      *  eternal-improvement spawned children — accept both shapes. */
-    createdFrom: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
+    createdFrom: z
+      .union([z.string(), z.record(z.string(), z.unknown())])
+      .nullable()
+      .optional(),
     /** Closing note from `done <id> --note <text>` per `claim.sh`. */
     note: z.string().nullable().optional(),
   })

@@ -92,10 +92,16 @@ export const InboxEntry = z
     dispatchedAt: z.number().int().nullable().optional(),
     /** Bounce-back ownership preservation per `kanban.sh::_atmux_task_move`.
      *  Accepts string OR object (mirrors KanbanTask in src/schema/kanban.ts). */
-    claimedFrom: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
+    claimedFrom: z
+      .union([z.string(), z.record(z.string(), z.unknown())])
+      .nullable()
+      .optional(),
     /** Origin annotation. Accepts string OR structured object (e.g. eternal-
      *  improvement parent ref `{parentTaskId, depth}`). */
-    createdFrom: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
+    createdFrom: z
+      .union([z.string(), z.record(z.string(), z.unknown())])
+      .nullable()
+      .optional(),
     /** Closing note from `done <id> --note <text>` per `claim.sh`. */
     note: z.string().nullable().optional(),
   })

@@ -175,9 +175,9 @@ describe("renderCronBlock", () => {
   test("wraps lines in marker fence with team name + trailing newline", () => {
     const team = baseTeam({ name: "myteam" });
     const block = renderCronBlock(baseOpts(team));
-    expect(block.startsWith("# >>> atmux:team=myteam — managed by atmux start; do not edit by hand\n")).toBe(
-      true,
-    );
+    expect(
+      block.startsWith("# >>> atmux:team=myteam — managed by atmux start; do not edit by hand\n"),
+    ).toBe(true);
     expect(block.endsWith("# <<< atmux:team=myteam\n")).toBe(true);
   });
 

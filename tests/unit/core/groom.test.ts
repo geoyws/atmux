@@ -6,7 +6,7 @@
 // active source files. 100% narrowed coverage of every branch.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -59,9 +59,7 @@ describe("UTC stamp helpers", () => {
   });
 
   test("groomRunStampUtc renders YYYY-MM-DD HH:MM:SS UTC", () => {
-    expect(groomRunStampUtc(Date.UTC(2026, 4, 8, 7, 4, 9))).toBe(
-      "2026-05-08 07:04:09 UTC",
-    );
+    expect(groomRunStampUtc(Date.UTC(2026, 4, 8, 7, 4, 9))).toBe("2026-05-08 07:04:09 UTC");
   });
 });
 
@@ -74,10 +72,7 @@ describe("flushInboxOutboxArchive", () => {
   });
 
   test("skips file with no `## Archive` section", async () => {
-    await writeFile(
-      join(env.atmuxDir, "driver-inbox.md"),
-      "# driver-inbox\n\n## Open\n\nstuff\n",
-    );
+    await writeFile(join(env.atmuxDir, "driver-inbox.md"), "# driver-inbox\n\n## Open\n\nstuff\n");
     const got = await flushInboxOutboxArchive(env.atmuxDir, { nowMs: RUN_MS });
     expect(got).toEqual([]);
   });
@@ -139,17 +134,11 @@ describe("flushInboxOutboxArchive", () => {
 
   test("appends with --- separator on second flush of same month", async () => {
     const src = join(env.atmuxDir, "driver-inbox.md");
-    await writeFile(
-      src,
-      "# driver-inbox\n\n## Open\n\n## Archive\n\nfirst-batch\n",
-    );
+    await writeFile(src, "# driver-inbox\n\n## Open\n\n## Archive\n\nfirst-batch\n");
     await flushInboxOutboxArchive(env.atmuxDir, { nowMs: RUN_MS });
 
     // Re-seed archive with new content.
-    await writeFile(
-      src,
-      "# driver-inbox\n\n## Open\n\n## Archive\n\nsecond-batch\n",
-    );
+    await writeFile(src, "# driver-inbox\n\n## Open\n\n## Archive\n\nsecond-batch\n");
     await flushInboxOutboxArchive(env.atmuxDir, { nowMs: RUN_MS });
 
     const archivePath = join(env.archiveDir, "driver-inbox-2026-05.md");
@@ -176,19 +165,10 @@ describe("flushInboxOutboxArchive", () => {
   });
 
   test("processes both driver-inbox + lead-outbox", async () => {
-    await writeFile(
-      join(env.atmuxDir, "driver-inbox.md"),
-      "# driver\n\n## Archive\n\nA\n",
-    );
-    await writeFile(
-      join(env.atmuxDir, "lead-outbox.md"),
-      "# lead\n\n## Archive\n\nB\n",
-    );
+    await writeFile(join(env.atmuxDir, "driver-inbox.md"), "# driver\n\n## Archive\n\nA\n");
+    await writeFile(join(env.atmuxDir, "lead-outbox.md"), "# lead\n\n## Archive\n\nB\n");
     const got = await flushInboxOutboxArchive(env.atmuxDir, { nowMs: RUN_MS });
-    expect(got.map((r) => r.file).sort()).toEqual([
-      "driver-inbox.md",
-      "lead-outbox.md",
-    ]);
+    expect(got.map((r) => r.file).sort()).toEqual(["driver-inbox.md", "lead-outbox.md"]);
   });
 });
 
@@ -362,23 +342,16 @@ describe("summarizeKanban", () => {
       epics: [],
       stories: [],
     };
-    await writeFile(
-      join(env.atmuxDir, "kanban.json"),
-      JSON.stringify(kanban, null, 2),
-    );
+    await writeFile(join(env.atmuxDir, "kanban.json"), JSON.stringify(kanban, null, 2));
 
     const got = await summarizeKanban(env.atmuxDir, {
       nowMs: RUN_MS,
       days: 30,
     });
     expect(got.removed).toBe(2);
-    expect(got.destPaths.map((p) => p.endsWith(`kanban-log-${oldYm}.md`))).toEqual([
-      true,
-    ]);
+    expect(got.destPaths.map((p) => p.endsWith(`kanban-log-${oldYm}.md`))).toEqual([true]);
 
-    const after = JSON.parse(
-      await readFile(join(env.atmuxDir, "kanban.json"), "utf8"),
-    );
+    const after = JSON.parse(await readFile(join(env.atmuxDir, "kanban.json"), "utf8"));
     const ids = (after.tasks as { id: string }[]).map((t) => t.id);
     expect(ids).toContain("t-recent-done");
     expect(ids).toContain("t-todo");
@@ -392,9 +365,7 @@ describe("summarizeKanban", () => {
     expect(log).toContain("# kanban summary — ");
 
     // Backup file landed (exists before rewrite).
-    const backups = (await readdir(env.atmuxDir)).filter((n) =>
-      n.startsWith("kanban.json.bak."),
-    );
+    const backups = (await readdir(env.atmuxDir)).filter((n) => n.startsWith("kanban.json.bak."));
     expect(backups.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -411,10 +382,7 @@ describe("summarizeKanban", () => {
       epics: [],
       stories: [],
     };
-    await writeFile(
-      join(env.atmuxDir, "kanban.json"),
-      JSON.stringify(kanban),
-    );
+    await writeFile(join(env.atmuxDir, "kanban.json"), JSON.stringify(kanban));
     const got = await summarizeKanban(env.atmuxDir, { nowMs: RUN_MS });
     expect(got.removed).toBe(0);
   });
@@ -432,10 +400,7 @@ describe("summarizeKanban", () => {
       epics: [],
       stories: [],
     };
-    await writeFile(
-      join(env.atmuxDir, "kanban.json"),
-      JSON.stringify(kanban),
-    );
+    await writeFile(join(env.atmuxDir, "kanban.json"), JSON.stringify(kanban));
     const before = await readFile(join(env.atmuxDir, "kanban.json"), "utf8");
     const got = await summarizeKanban(env.atmuxDir, {
       nowMs: RUN_MS,
@@ -471,9 +436,7 @@ describe("cullBakFiles", () => {
     const got = await cullBakFiles(env.atmuxDir, { keep: 3 });
     expect(got).toHaveLength(1);
     expect(got[0]?.removed).toHaveLength(4);
-    const remaining = (await readdir(env.atmuxDir)).filter((n) =>
-      n.startsWith("kanban.json.bak."),
-    );
+    const remaining = (await readdir(env.atmuxDir)).filter((n) => n.startsWith("kanban.json.bak."));
     expect(remaining).toHaveLength(3);
     // Newest 3 (lowest i) survive.
     expect(remaining.sort()).toEqual([
@@ -494,9 +457,7 @@ describe("cullBakFiles", () => {
       families: ["team.json"],
     });
     expect(got[0]?.removed).toHaveLength(5);
-    const remaining = (await readdir(env.atmuxDir)).filter((n) =>
-      n.startsWith("team.json.bak."),
-    );
+    const remaining = (await readdir(env.atmuxDir)).filter((n) => n.startsWith("team.json.bak."));
     expect(remaining).toHaveLength(7);
   });
 
@@ -546,14 +507,8 @@ describe("archiveSizeCheck", () => {
 
   test("warns when kanban-log total exceeds kanbanLogCap", async () => {
     await mkdir(env.archiveDir, { recursive: true });
-    await writeFile(
-      join(env.archiveDir, "kanban-log-2026-04.md"),
-      "y".repeat(2 * 1024),
-    );
-    await writeFile(
-      join(env.archiveDir, "kanban-log-2026-05.md"),
-      "y".repeat(2 * 1024),
-    );
+    await writeFile(join(env.archiveDir, "kanban-log-2026-04.md"), "y".repeat(2 * 1024));
+    await writeFile(join(env.archiveDir, "kanban-log-2026-05.md"), "y".repeat(2 * 1024));
     const got = await archiveSizeCheck(env.atmuxDir, {
       archiveCapBytes: 999_999_999,
       kanbanLogCapBytes: 3 * 1024,

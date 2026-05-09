@@ -25,10 +25,10 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ZodError } from "zod";
-import { tryReadJson, writeJson } from "../abstractions/json.ts";
-import { stateDir } from "./common.ts";
 import { z } from "zod";
+import { tryReadJson, writeJson } from "../abstractions/json.ts";
 import { TeamWhip } from "../schema/team.ts";
+import { stateDir } from "./common.ts";
 
 // ---------- Types ----------
 
@@ -144,9 +144,7 @@ export function composeCatastrophicDrift(parseError: unknown, rawText: string): 
 }
 
 function sha256OfIssues(issues: ReadonlyArray<DriftIssue>): string {
-  const canonical = issues
-    .map((i) => `${i.path.join(".")}|${i.code}|${i.message}`)
-    .join("\n");
+  const canonical = issues.map((i) => `${i.path.join(".")}|${i.code}|${i.message}`).join("\n");
   return createHash("sha256").update(canonical).digest("hex");
 }
 

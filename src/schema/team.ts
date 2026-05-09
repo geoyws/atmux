@@ -199,9 +199,7 @@ export const TeamCron = z
     /** Inline PATH baked into every cron line. Default targets hax
      *  (mise-managed bun at `/root/.bun/bin/bun`); override per-host
      *  when bun lives elsewhere. */
-    path: z
-      .string()
-      .default("/root/.bun/bin:/usr/local/bin:/usr/bin:/bin"),
+    path: z.string().default("/root/.bun/bin:/usr/local/bin:/usr/bin:/bin"),
   })
   .strict();
 export type TeamCron = z.infer<typeof TeamCron>;

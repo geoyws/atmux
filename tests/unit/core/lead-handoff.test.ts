@@ -97,9 +97,7 @@ describe("composeHandoff", () => {
       generatedAtMyt: "12:00 MYT",
       outgoingLead: "alice",
       inFlightTasks: [],
-      recentDecisions: [
-        { id: "d-aaa", question: "first decision", tsLine: "11:00 MYT" },
-      ],
+      recentDecisions: [{ id: "d-aaa", question: "first decision", tsLine: "11:00 MYT" }],
       recentDriverInbox: [],
     });
     expect(md).toContain("`d-aaa`");
@@ -214,10 +212,7 @@ describe("readRecentDecisions", () => {
   });
 
   test("n <= 0 → []", async () => {
-    await writeFile(
-      join(atmuxDir, "decisions.md"),
-      "### d-aaa — q? (10:00 MYT)\nbody",
-    );
+    await writeFile(join(atmuxDir, "decisions.md"), "### d-aaa — q? (10:00 MYT)\nbody");
     expect(await readRecentDecisions(atmuxDir, 0)).toEqual([]);
     expect(await readRecentDecisions(atmuxDir, -1)).toEqual([]);
   });

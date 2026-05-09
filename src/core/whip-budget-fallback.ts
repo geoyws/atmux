@@ -23,7 +23,6 @@
 // existing budget-pause path is unchanged for them.
 
 import { join } from "node:path";
-import { atomicWrite, readTextOrNull, removeFile } from "../abstractions/fs.ts";
 import {
   type CageHandle,
   composeTier2Brief,
@@ -35,6 +34,7 @@ import {
   FallbackUserMissingError,
   Tier4NotAvailableError,
 } from "../abstractions/fallback-cage.ts";
+import { atomicWrite, readTextOrNull, removeFile } from "../abstractions/fs.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 
 // ---------- Public types ----------
@@ -106,9 +106,7 @@ export function fallbackCagesPath(atmuxDir: string, epochSec: number): string {
  *
  * Empty inFlightTasks → no-op (no handles file written).
  */
-export async function dispatchFallbackOnPause(
-  opts: DispatchFallbackOpts,
-): Promise<CageHandle[]> {
+export async function dispatchFallbackOnPause(opts: DispatchFallbackOpts): Promise<CageHandle[]> {
   const create = opts.createCage ?? defaultCreateFallbackCage;
   const log = opts.log ?? ((): void => {});
   const tiers = opts.tierPreference ?? DEFAULT_TIER_PREFERENCE;
@@ -160,10 +158,7 @@ export async function dispatchFallbackOnPause(
       team: opts.team,
       cages,
     };
-    await atomicWrite(
-      fallbackCagesPath(opts.atmuxDir, opts.pausedAtSec),
-      JSON.stringify(file),
-    );
+    await atomicWrite(fallbackCagesPath(opts.atmuxDir, opts.pausedAtSec), JSON.stringify(file));
   }
 
   return cages;
@@ -210,16 +205,12 @@ export async function walkFallbackOnResume(opts: WalkFallbackOpts): Promise<void
       // name) at dispatch time — both are valid `atmux send` targets).
       await opts.sendContinuity(handle.lane, brief);
     } catch (e) {
-      log(
-        `whip: fallback-resume: continuity send for ${handle.taskId} failed: ${stringifyErr(e)}`,
-      );
+      log(`whip: fallback-resume: continuity send for ${handle.taskId} failed: ${stringifyErr(e)}`);
     }
     try {
       await destroy(handle, { atmuxDir: opts.atmuxDir });
     } catch (e) {
-      log(
-        `whip: fallback-resume: destroy cage for ${handle.taskId} failed: ${stringifyErr(e)}`,
-      );
+      log(`whip: fallback-resume: destroy cage for ${handle.taskId} failed: ${stringifyErr(e)}`);
     }
   }
 
@@ -255,9 +246,7 @@ async function tryCreateCascade(opts: CascadeOpts): Promise<CageHandle | null> {
       });
       return handle;
     } catch (e) {
-      opts.log(
-        `whip: fallback: tier ${tier} unavailable for ${opts.taskId}: ${stringifyErr(e)}`,
-      );
+      opts.log(`whip: fallback: tier ${tier} unavailable for ${opts.taskId}: ${stringifyErr(e)}`);
       if (e instanceof Tier4NotAvailableError) continue;
       if (e instanceof FallbackUserMissingError) continue;
       // Unknown errors halt the cascade — surfaces operator misconfig

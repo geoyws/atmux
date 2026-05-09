@@ -9,17 +9,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type CageHandle,
-  FallbackUserMissingError,
   type FallbackTier,
+  FallbackUserMissingError,
   Tier4NotAvailableError,
 } from "../../../src/abstractions/fallback-cage.ts";
-import type { KanbanTask } from "../../../src/schema/kanban.ts";
 import {
   dispatchFallbackOnPause,
-  fallbackCagesPath,
   type FallbackCagesFile,
+  fallbackCagesPath,
   walkFallbackOnResume,
 } from "../../../src/core/whip-budget-fallback.ts";
+import type { KanbanTask } from "../../../src/schema/kanban.ts";
 
 // ---------- Sandbox per test ----------
 
@@ -58,8 +58,7 @@ function fakeHandle(opts: {
   lane: string;
   createdAt?: number;
 }): CageHandle {
-  const agent =
-    opts.tier === 2 ? "operator" : opts.tier === 3 ? "kimi-agent" : "minimax-agent";
+  const agent = opts.tier === 2 ? "operator" : opts.tier === 3 ? "kimi-agent" : "minimax-agent";
   return {
     tier: opts.tier,
     team: opts.team,
@@ -291,10 +290,7 @@ describe("dispatchFallbackOnPause — handles file persistence", () => {
       atmuxDir,
       projectCwd,
       pausedAtSec: epoch,
-      inFlightTasks: [
-        makeTask({ id: "t-FAIL", lane: "be" }),
-        makeTask({ id: "t-OK", lane: "fe" }),
-      ],
+      inFlightTasks: [makeTask({ id: "t-FAIL", lane: "be" }), makeTask({ id: "t-OK", lane: "fe" })],
       sendBrief: async () => {},
       createCage: async (opts) => {
         if (opts.taskId === "t-FAIL") throw new Error("simulated cage failure");

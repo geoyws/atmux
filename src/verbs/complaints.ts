@@ -228,9 +228,7 @@ async function complaintsList(parsed: ParsedComplaintsArgs): Promise<number> {
     const repo = new ComplaintsRepo(db);
     const status = parsed.all === true ? undefined : (parsed.status ?? "open");
     const rows = repo.list(
-      status === undefined
-        ? {}
-        : { status: status as Complaint["status"] as never },
+      status === undefined ? {} : { status: status as Complaint["status"] as never },
     );
     if (parsed.json === true) {
       process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
@@ -314,8 +312,7 @@ function renderTextList(rows: Complaint[], statusFilter: string | undefined): vo
   const headerScope = statusFilter !== undefined ? ` [status=${statusFilter}]` : " [all statuses]";
   process.stdout.write(`📋 complaints${headerScope}  count=${rows.length}\n\n`);
   for (const c of rows) {
-    const statusEmoji =
-      c.status === "open" ? "🔴" : c.status === "resolved" ? "✅" : "⚪";
+    const statusEmoji = c.status === "open" ? "🔴" : c.status === "resolved" ? "✅" : "⚪";
     process.stdout.write(`${statusEmoji} ${c.id}  ${c.incidentSummary}\n`);
     if (c.rootCause !== null && c.rootCause.length > 0) {
       process.stdout.write(`    🔍 root cause: ${c.rootCause}\n`);

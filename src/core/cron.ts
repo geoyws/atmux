@@ -67,9 +67,10 @@ export function renderCronBlock(opts: RenderCronBlockOpts): string {
  */
 export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   const { team, atmuxDir, atmuxBin } = opts;
-  const tmuxPrefix = opts.tmuxTmpdir !== undefined && opts.tmuxTmpdir !== ""
-    ? `TMUX_TMPDIR=${opts.tmuxTmpdir} `
-    : "";
+  const tmuxPrefix =
+    opts.tmuxTmpdir !== undefined && opts.tmuxTmpdir !== ""
+      ? `TMUX_TMPDIR=${opts.tmuxTmpdir} `
+      : "";
 
   // Bug t-2db59eee: cron's bare env on Ubuntu lacks /root/.bun/bin, so
   // atmux-bun's `#!/usr/bin/env bun` shebang dies with bun-not-found.
@@ -88,13 +89,9 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   out.push(`*/5 * * * * ${baseEnv} whip ${logTail("whip")}`);
 
   // 2. report or discorder pair (mutually exclusive per ADR-022 OQ-D4).
-  const hasDiscorder = team.members.some(
-    (m) => (m as { role?: string }).role === "discorder",
-  );
+  const hasDiscorder = team.members.some((m) => (m as { role?: string }).role === "discorder");
   if (hasDiscorder) {
-    out.push(
-      `*/30 * * * * ${baseEnv} discorder progress ${logTail("discorder-progress")}`,
-    );
+    out.push(`*/30 * * * * ${baseEnv} discorder progress ${logTail("discorder-progress")}`);
     out.push(`0 * * * * ${baseEnv} discorder heartbeat ${logTail("discorder-heartbeat")}`);
   } else {
     out.push(`*/30 * * * * ${baseEnv} report ${logTail("report")}`);
@@ -111,15 +108,11 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   // resume latency drops from up-to-5min to up-to-1min without bumping
   // full whip's */5 cadence (which would amplify any whip-side bug 5×).
   if (team.whip?.claudeAccount !== undefined && team.whip.claudeAccount !== "") {
-    out.push(
-      `*/1 * * * * ${baseEnv} whip-resume-check ${logTail("whip-resume-check")}`,
-    );
+    out.push(`*/1 * * * * ${baseEnv} whip-resume-check ${logTail("whip-resume-check")}`);
   }
 
   // 6. unblocker tick — every 2 minutes, gated on unblocker role.
-  const hasUnblocker = team.members.some(
-    (m) => (m as { role?: string }).role === "unblocker",
-  );
+  const hasUnblocker = team.members.some((m) => (m as { role?: string }).role === "unblocker");
   if (hasUnblocker) {
     out.push(`*/2 * * * * ${baseEnv} unblocker tick ${logTail("unblocker")}`);
   }

@@ -198,7 +198,8 @@ export async function checkLaneDrift(opts: CheckLaneDriftOpts): Promise<DriftDec
  * state defaults to `UNKNOWN` when the probe returned null.
  */
 export function formatFlagBody(evidence: DriftEvidence): string {
-  const dur = evidence.claimedAgoMin === null ? "?min" : formatDurationCompact(evidence.claimedAgoMin);
+  const dur =
+    evidence.claimedAgoMin === null ? "?min" : formatDurationCompact(evidence.claimedAgoMin);
   const paneLabel = evidence.pane?.state ?? "UNKNOWN";
   return (
     `lane-drift-revert: ${evidence.taskId} claimed by ${evidence.member} for ${dur}, ` +

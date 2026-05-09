@@ -20,13 +20,14 @@
 // Bash uses `atmux::ok` to print "$who claimed $id" / "$who completed
 // $id"; TS prints to stdout for byte-parity at the verb layer.
 
+import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import {
   appendDispatched,
   loadInbox,
   moveInProgressToDone,
   movePendingToInProgress,
 } from "../core/inbox.ts";
-import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
 import {
   claimTask,
   listTasks,
@@ -35,13 +36,8 @@ import {
   selectNextClaimable,
   showTask,
 } from "../core/kanban.ts";
-import {
-  getAtmuxDir,
-  type ResolveDirOpts,
-  requireTeam,
-} from "../core/common.ts";
-import type { Team, TeamMember } from "../schema/team.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team, TeamMember } from "../schema/team.ts";
 
 // ---------- Shared parser ----------
 
@@ -57,7 +53,8 @@ export interface ClaimDoneArgs {
   next?: boolean;
 }
 
-const USAGE_CLAIM = "atmux claim <task-id> [--as <member>]\n       atmux claim --next [--as <member>]";
+const USAGE_CLAIM =
+  "atmux claim <task-id> [--as <member>]\n       atmux claim --next [--as <member>]";
 const USAGE_DONE = "atmux done <task-id> [--as <member>] [--note <text>]";
 
 /**
@@ -114,7 +111,7 @@ export function parseClaimDoneArgs(
       i += 1;
       continue;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `${verb}: unknown flag: ${a}`, hint: usage });
     }
     if (id.length > 0) {
@@ -290,7 +287,9 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
     // Final defensive guard — even if auto-push throws unexpectedly,
     // the done transition stays committed. Audit happens inside
     // runAutoPush; here we just don't crash.
-    process.stderr.write(`auto-push: unexpected error: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.stderr.write(
+      `auto-push: unexpected error: ${e instanceof Error ? e.message : String(e)}\n`,
+    );
   }
 
   return 0;
@@ -299,9 +298,7 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
 /** Re-load the team for auto-push reading (cheap; cached at the
  *  filesystem layer). Kept private so the verb's main flow stays
  *  resilient to team-load errors during the auto-push leg. */
-async function loadTeamForAutoPush(
-  parsed: ClaimDoneArgs,
-): Promise<{ whip?: unknown }> {
+async function loadTeamForAutoPush(parsed: ClaimDoneArgs): Promise<{ whip?: unknown }> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   return await requireTeam(dirOpts);
 }

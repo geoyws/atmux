@@ -159,8 +159,7 @@ describe("collectOpenEntries", () => {
 
 describe("archiveOpenEntries", () => {
   test("moves entries to existing `## Archive`", () => {
-    const body =
-      "## Open\n- [t1] **a**: m1\n- [t2] **b**: m2\n\n## Archive\n- [t0] **x**: old\n";
+    const body = "## Open\n- [t1] **a**: m1\n- [t2] **b**: m2\n\n## Archive\n- [t0] **x**: old\n";
     const { body: out, archived } = archiveOpenEntries(body, "now");
     expect(archived).toHaveLength(2);
     // Entries removed from Open
@@ -238,9 +237,9 @@ describe("reply verb — integration", () => {
   });
 
   test("--from with unknown member (not 'lead') → ConfigError", async () => {
-    await expect(
-      reply(["--from", "bogus", "--team-dir", teamDir, "msg"]),
-    ).rejects.toThrow(ConfigError);
+    await expect(reply(["--from", "bogus", "--team-dir", teamDir, "msg"])).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("--from 'lead' is allowed even when not in members[] (synthetic)", async () => {
@@ -282,9 +281,7 @@ describe("outbox verb — integration", () => {
   });
 
   test("missing outbox file → '{\"open\":[]}' (json mode)", async () => {
-    const { out } = await captureStdout(() =>
-      outbox(["--json", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => outbox(["--json", "--team-dir", teamDir]));
     const parsed = JSON.parse(out);
     expect(parsed).toEqual({ open: [] });
   });
@@ -298,9 +295,7 @@ describe("outbox verb — integration", () => {
 
   test("--json emits the entries array", async () => {
     await captureStdout(() => reply(["--from", "alpha", "--team-dir", teamDir, "msg"]));
-    const { out } = await captureStdout(() =>
-      outbox(["--json", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => outbox(["--json", "--team-dir", teamDir]));
     const parsed = JSON.parse(out);
     expect(parsed.open).toHaveLength(1);
     expect(parsed.open[0]).toContain("**alpha**: msg");
@@ -315,9 +310,7 @@ describe("outbox verb — integration", () => {
   test("--ack archives all open entries", async () => {
     await captureStdout(() => reply(["--from", "alpha", "--team-dir", teamDir, "m1"]));
     await captureStdout(() => reply(["--from", "beta", "--team-dir", teamDir, "m2"]));
-    const { out } = await captureStdout(() =>
-      outbox(["--ack", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => outbox(["--ack", "--team-dir", teamDir]));
     expect(out).toContain("archived 2 entries");
     const ob = await Bun.file(join(atmuxDir, "lead-outbox.md")).text();
     expect(collectOpenEntries(ob)).toEqual([]);
@@ -327,9 +320,7 @@ describe("outbox verb — integration", () => {
   });
 
   test("--ack on empty outbox is a no-op (no '#archived' line)", async () => {
-    const { out } = await captureStdout(() =>
-      outbox(["--ack", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => outbox(["--ack", "--team-dir", teamDir]));
     expect(out).not.toContain("archived");
   });
 });

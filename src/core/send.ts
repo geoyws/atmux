@@ -48,7 +48,7 @@ import { appendText, ensureDir } from "../abstractions/fs.ts";
 import { nowIso } from "../abstractions/time.ts";
 import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
 import { classifyPaneState, logsDir, type PaneStateSnapshot } from "./common.ts";
-import { safePreflight, type SafePreflightResult } from "./safe-send.ts";
+import { type SafePreflightResult, safePreflight } from "./safe-send.ts";
 
 // ---------- Public API ----------
 

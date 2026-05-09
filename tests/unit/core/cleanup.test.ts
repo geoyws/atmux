@@ -5,7 +5,7 @@
 // side-effects. 100% narrowed coverage of every branch.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pruneInboxes, rotateLogs } from "../../../src/core/cleanup.ts";
@@ -131,10 +131,7 @@ describe("pruneInboxes", () => {
         { task: "t-zero", completedAt: 0 },
       ],
     };
-    await writeFile(
-      join(env.inboxDir, "alice.json"),
-      JSON.stringify(inbox),
-    );
+    await writeFile(join(env.inboxDir, "alice.json"), JSON.stringify(inbox));
 
     const got = await pruneInboxes(env.atmuxDir, {
       maxAgeDays: 7,
@@ -142,13 +139,9 @@ describe("pruneInboxes", () => {
     });
     expect(got.totalPruned).toBe(1);
     expect(got.totalKept).toBe(3);
-    expect(got.files).toEqual([
-      { name: "alice.json", pruned: 1, kept: 3 },
-    ]);
+    expect(got.files).toEqual([{ name: "alice.json", pruned: 1, kept: 3 }]);
 
-    const after = JSON.parse(
-      await readFile(join(env.inboxDir, "alice.json"), "utf8"),
-    );
+    const after = JSON.parse(await readFile(join(env.inboxDir, "alice.json"), "utf8"));
     expect(after.pending).toEqual([{ task: "t-pp" }]);
     expect(after.inProgress).toEqual([{ task: "t-ii" }]);
     const ids = (after.done as { task: string }[]).map((d) => d.task).sort();
@@ -202,9 +195,7 @@ describe("pruneInboxes", () => {
     await writeFile(
       join(env.inboxDir, "good.json"),
       JSON.stringify({
-        done: [
-          { completedAt: Math.floor(RUN_MS / 1000) - 30 * 86400 },
-        ],
+        done: [{ completedAt: Math.floor(RUN_MS / 1000) - 30 * 86400 }],
       }),
     );
     const got = await pruneInboxes(env.atmuxDir, {
@@ -216,14 +207,8 @@ describe("pruneInboxes", () => {
   });
 
   test("invalid maxAgeDays throws RangeError", async () => {
-    expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 0 })).rejects.toThrow(
-      RangeError,
-    );
-    expect(pruneInboxes(env.atmuxDir, { maxAgeDays: -1 })).rejects.toThrow(
-      RangeError,
-    );
-    expect(
-      pruneInboxes(env.atmuxDir, { maxAgeDays: 1.5 }),
-    ).rejects.toThrow(RangeError);
+    expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 0 })).rejects.toThrow(RangeError);
+    expect(pruneInboxes(env.atmuxDir, { maxAgeDays: -1 })).rejects.toThrow(RangeError);
+    expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 1.5 })).rejects.toThrow(RangeError);
   });
 });

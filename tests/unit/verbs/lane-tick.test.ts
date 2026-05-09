@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { loadTeam } from "../../../src/core/common.ts";
 import { addTask, loadKanban } from "../../../src/core/kanban.ts";
 import type { CaptureFn } from "../../../src/core/pane-state.ts";
-import type { SafeSendOpts, SafeSendResult, SendKeysFn } from "../../../src/core/safe-send.ts";
+import type { SafeSendOpts, SafeSendResult } from "../../../src/core/safe-send.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { claim } from "../../../src/verbs/claim.ts";
 import { laneTick, parseLaneTickArgs, runLaneTick } from "../../../src/verbs/lane-tick.ts";

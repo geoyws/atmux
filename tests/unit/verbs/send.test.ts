@@ -230,18 +230,17 @@ describe("send() — integration", () => {
     // windows for each remaining member, named per buildWindowName.
     const first = members[0];
     if (first === undefined) throw new Error("test setup: stageTeam needs ≥1 member");
-    const firstWin = first.emoji !== undefined && first.emoji.length > 0
-      ? `${first.emoji}${first.name}`
-      : first.name;
+    const firstWin =
+      first.emoji !== undefined && first.emoji.length > 0
+        ? `${first.emoji}${first.name}`
+        : first.name;
     await tmux.session.newSession({
       name: sessionName,
       shellCommand: "cat",
       windowName: firstWin,
     });
     for (const m of members.slice(1)) {
-      const winName = m.emoji !== undefined && m.emoji.length > 0
-        ? `${m.emoji}${m.name}`
-        : m.name;
+      const winName = m.emoji !== undefined && m.emoji.length > 0 ? `${m.emoji}${m.name}` : m.name;
       await tmux.window.newWindow({
         sessionName,
         name: winName,
@@ -279,39 +278,19 @@ describe("send() — integration", () => {
   test("single-member with non-existent name → ConfigError", async () => {
     await stageTeam([{ name: "alpha" }]);
     await expect(
-      send([
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "--no-verify",
-        "missing-name",
-        "msg",
-      ]),
+      send(["--socket", socketPath, "--team-dir", teamDir, "--no-verify", "missing-name", "msg"]),
     ).rejects.toThrow(ConfigError);
   });
 
   test("missing team.json (no .atmux/team.json) → ConfigError", async () => {
     // Don't call stageTeam — leave atmuxDir empty.
     await expect(
-      send([
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-        "--no-verify",
-        "alpha",
-        "msg",
-      ]),
+      send(["--socket", socketPath, "--team-dir", teamDir, "--no-verify", "alpha", "msg"]),
     ).rejects.toThrow(ConfigError);
   });
 
   test("broadcast skips 'driver' member by default", async () => {
-    await stageTeam([
-      { name: "driver" },
-      { name: "alpha" },
-      { name: "beta" },
-    ]);
+    await stageTeam([{ name: "driver" }, { name: "alpha" }, { name: "beta" }]);
     const exit = await send([
       "--broadcast",
       "--socket",
@@ -359,9 +338,7 @@ describe("send() — integration", () => {
     ]);
     expect(exit).toBe(0);
     // No send-log written (no tmux pane delivery happened).
-    expect(
-      await Bun.file(join(atmuxDir, "logs", "send-__superdoctor__.log")).exists(),
-    ).toBe(false);
+    expect(await Bun.file(join(atmuxDir, "logs", "send-__superdoctor__.log")).exists()).toBe(false);
     // The row landed in inbox_messages (verify via the read helper).
     const { loadInboxMessages } = await import("../../../src/core/inbox.ts");
     const rows = await loadInboxMessages(atmuxDir, { member: "__superdoctor__" });

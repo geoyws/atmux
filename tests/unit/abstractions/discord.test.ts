@@ -854,7 +854,6 @@ describe("renderEternalImprovementDone", () => {
   });
 });
 
-
 // ---------- ADR-054 §D3 — renderWhipConfigDrift ----------
 
 describe("renderWhipConfigDrift", () => {
@@ -976,12 +975,14 @@ describe("renderWhipBudgetPause", () => {
   test("end-to-end through send recorder fits one chunk", async () => {
     const recorder = join(tmpRoot, "wb-pause.jsonl");
     process.env.ATMUX_DISCORD_RECORDER = recorder;
-    await send(renderWhipBudgetPause({
-      team: "atmux",
-      atRisk: [{ member: "alpha", h5: 95, wk: 80 }],
-      resumeThresholdPct: 20,
-      whenMs: FIXED_TS,
-    }));
+    await send(
+      renderWhipBudgetPause({
+        team: "atmux",
+        atRisk: [{ member: "alpha", h5: 95, wk: 80 }],
+        resumeThresholdPct: 20,
+        whenMs: FIXED_TS,
+      }),
+    );
     const calls = await readJsonl<{ payload: { content: string } }>(recorder);
     expect(calls.length).toBe(1);
     const c = calls[0]?.payload.content ?? "";
@@ -992,7 +993,9 @@ describe("renderWhipBudgetPause", () => {
 describe("renderWhipBudgetResume", () => {
   test("builds the brief 2-bullet body with category 🚀", () => {
     const out = renderWhipBudgetResume({
-      team: "atmux", resumeThresholdPct: 20, whenMs: FIXED_TS,
+      team: "atmux",
+      resumeThresholdPct: 20,
+      whenMs: FIXED_TS,
     });
     expect(out.template).toBe("whip-budget-resume");
     expect(out.category).toBe("🚀");
@@ -1042,8 +1045,12 @@ describe("renderWhipBudgetWarning", () => {
 
   test("wk window renders verbatim in body", () => {
     const out = renderWhipBudgetWarning({
-      team: "atmux", account: "icloud", window: "wk",
-      remainingPct: 12, band: 0.15, resetIn: "3d4h",
+      team: "atmux",
+      account: "icloud",
+      window: "wk",
+      remainingPct: 12,
+      band: 0.15,
+      resetIn: "3d4h",
       affectedMembers: 2,
     });
     expect(out.bullets?.[0]).toContain("remaining wk: 12%");
@@ -1053,8 +1060,12 @@ describe("renderWhipBudgetWarning", () => {
 describe("renderWhipBudgetRefreshSoon", () => {
   test("builds 3-bullet body with paused-now hint when active", () => {
     const out = renderWhipBudgetRefreshSoon({
-      team: "atmux", account: "icloud", window: "5h",
-      resetsIn: "28min", remainingPct: 8, pausedNow: true,
+      team: "atmux",
+      account: "icloud",
+      window: "5h",
+      resetsIn: "28min",
+      remainingPct: 8,
+      pausedNow: true,
       whenMs: FIXED_TS,
     });
     expect(out.template).toBe("whip-budget-refresh-soon");
@@ -1068,8 +1079,12 @@ describe("renderWhipBudgetRefreshSoon", () => {
 
   test("pausedNow=false omits the auto-resume hint bullet", () => {
     const out = renderWhipBudgetRefreshSoon({
-      team: "atmux", account: "icloud", window: "wk",
-      resetsIn: "1h", remainingPct: 18, pausedNow: false,
+      team: "atmux",
+      account: "icloud",
+      window: "wk",
+      resetsIn: "1h",
+      remainingPct: 18,
+      pausedNow: false,
     });
     expect(out.bullets?.length).toBe(2);
     expect(out.bullets?.find((b) => b.includes("auto-resume"))).toBeUndefined();
@@ -1202,9 +1217,7 @@ describe("renderAccountSwapFail", () => {
     expect(out.template).toBe("whip-account-swap-fail");
     expect(out.bullets?.[0]).toBe("❌ swap aborted: `up-impl` (target probe 401)");
     expect(out.bullets?.[1]).toBe("🚩 reason: refresh failed for `ifca` — re-login needed");
-    expect(out.bullets?.[2]).toBe(
-      "📍 fallback: keeping `up-impl` on `icloud` (will hit pause)",
-    );
+    expect(out.bullets?.[2]).toBe("📍 fallback: keeping `up-impl` on `icloud` (will hit pause)");
     expect(out.bullets?.[3]).toBe("🚩 flag: p2 raised (flag-c0ffee00)");
   });
 
@@ -1238,9 +1251,7 @@ describe("renderAccountSwapPassComplete", () => {
     expect(out.template).toBe("whip-account-swap-pass-complete");
     expect(out.bullets?.[0]).toBe("✅ pass `swap-a3f2c814` complete");
     expect(out.bullets?.[1]).toBe("📊 swapped: 5 / aborted: 1 / excluded: 3");
-    expect(out.bullets?.[2]).toBe(
-      "💰 budget on icloud post-pass: 76% used (no longer pinned)",
-    );
+    expect(out.bullets?.[2]).toBe("💰 budget on icloud post-pass: 76% used (no longer pinned)");
     expect(out.bullets?.[3]).toContain("⏱️ pass duration:");
   });
 
@@ -1267,7 +1278,6 @@ describe("renderAccountSwapPassComplete", () => {
     expect(content).toContain("swap-c0ffee00");
   });
 });
-
 
 // ---------- ADR-057 §D6 — renderWhipWatchdog ----------
 
@@ -1315,14 +1325,11 @@ describe("renderWhipWatchdog", () => {
   });
 });
 
-
 // ---------- ADR-055 §D5 — renderWhipSelfHealAttempt ----------
 
 describe("renderWhipSelfHealAttempt", () => {
   test("renders attempt template per ADR-055 §D5 worked example", async () => {
-    const { renderWhipSelfHealAttempt } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderWhipSelfHealAttempt } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealAttempt({
       team: "atmux",
       recipeId: "fix:team-json-schema-drift",
@@ -1341,9 +1348,7 @@ describe("renderWhipSelfHealAttempt", () => {
   });
 
   test("formats sub-1k token cap as integer", async () => {
-    const { renderWhipSelfHealAttempt } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderWhipSelfHealAttempt } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealAttempt({
       team: "atmux",
       recipeId: "fix:supervisor-missing",
@@ -1355,9 +1360,7 @@ describe("renderWhipSelfHealAttempt", () => {
   });
 
   test("whenMs override propagates", async () => {
-    const { renderWhipSelfHealAttempt } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderWhipSelfHealAttempt } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealAttempt({
       team: "atmux",
       recipeId: "fix:cron-pollution",
@@ -1368,8 +1371,7 @@ describe("renderWhipSelfHealAttempt", () => {
     expect(out.whenMs).toBe(1_700_000_000_000);
   });
 
-  test("renderer output passes send-time validation (bullets non-empty + emoji prefix)",
-    async () => {
+  test("renderer output passes send-time validation (bullets non-empty + emoji prefix)", async () => {
     const { renderWhipSelfHealAttempt, send } = await import(
       "../../../src/abstractions/discord.ts"
     );
@@ -1391,11 +1393,8 @@ describe("renderWhipSelfHealAttempt", () => {
 // ---------- ADR-055 §D5 — renderWhipSelfHealResult ----------
 
 describe("renderWhipSelfHealResult", () => {
-  test("success variant — patch staged + tokens + summary + log",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("success variant — patch staged + tokens + summary + log", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:team-json-schema-drift",
@@ -1417,11 +1416,8 @@ describe("renderWhipSelfHealResult", () => {
     ]);
   });
 
-  test("failure variant — first reason + tail count + log + flag",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure variant — first reason + tail count + log + flag", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:supervisor-missing",
@@ -1442,11 +1438,8 @@ describe("renderWhipSelfHealResult", () => {
     ]);
   });
 
-  test("failure variant with multiple reasons appends '(N more)' suffix",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure variant with multiple reasons appends '(N more)' suffix", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:cron-pollution",
@@ -1462,11 +1455,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(bullets[1]).toBe("🛑 reasons: block markers mismatched (2 more)");
   });
 
-  test("failure variant falls back to patchSummary when reasons empty",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure variant falls back to patchSummary when reasons empty", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:team-json-schema-drift",
@@ -1482,11 +1472,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(bullets[1]).toBe("🛑 reasons: team.json missing post-cursor");
   });
 
-  test("failure variant defaults severity to p2 when flagSeverity omitted",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure variant defaults severity to p2 when flagSeverity omitted", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:cron-pollution",
@@ -1501,11 +1488,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(bullets[3]).toBe("🚩 flag: p2 raised — operator triage needed");
   });
 
-  test("tokensUsed -1 (parse failure) renders as '?'",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("tokensUsed -1 (parse failure) renders as '?'", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:team-json-schema-drift",
@@ -1519,11 +1503,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(bullets[1]).toBe("💰 tokens used: ? of 5k cap");
   });
 
-  test("whenMs override propagates",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("whenMs override propagates", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:cron-pollution",
@@ -1537,11 +1518,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(out.whenMs).toBe(1_700_000_000_000);
   });
 
-  test("success-variant output passes send-time validation",
-    async () => {
-    const { renderWhipSelfHealResult, send } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("success-variant output passes send-time validation", async () => {
+    const { renderWhipSelfHealResult, send } = await import("../../../src/abstractions/discord.ts");
     const recorder = join(tmpRoot, "self-heal-result-success-record.jsonl");
     process.env.ATMUX_DISCORD_RECORDER = recorder;
     const out = renderWhipSelfHealResult({
@@ -1559,11 +1537,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(written).toContain("patch staged");
   });
 
-  test("failure-variant output passes send-time validation",
-    async () => {
-    const { renderWhipSelfHealResult, send } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure-variant output passes send-time validation", async () => {
+    const { renderWhipSelfHealResult, send } = await import("../../../src/abstractions/discord.ts");
     const recorder = join(tmpRoot, "self-heal-result-fail-record.jsonl");
     process.env.ATMUX_DISCORD_RECORDER = recorder;
     const out = renderWhipSelfHealResult({

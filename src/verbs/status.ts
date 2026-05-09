@@ -16,12 +16,11 @@ import { join } from "node:path";
 
 import { exists } from "../abstractions/fs.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
-import { loadCockpit, type LoadCockpitOpts } from "../core/cockpit.ts";
+import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
-  inboxPathFor,
   kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
@@ -160,7 +159,7 @@ export interface GatherStatusDeps {
 export async function probeSuperdoctor(deps: GatherStatusDeps = {}): Promise<SuperdoctorState> {
   const env = deps.env ?? process.env;
   const loadOpts: LoadCockpitOpts = { env };
-  let cockpit;
+  let cockpit: Awaited<ReturnType<typeof loadCockpit>>;
   try {
     cockpit = await loadCockpit(loadOpts);
   } catch {
@@ -397,8 +396,7 @@ function renderTextStatus(snap: StatusSnapshot): void {
         : !sd.windowAlive
           ? "window-missing"
           : "alive";
-    const stateEmoji =
-      stateLabel === "alive" ? "🟢" : stateLabel === "disabled" ? "⚪" : "🔴";
+    const stateEmoji = stateLabel === "alive" ? "🟢" : stateLabel === "disabled" ? "⚪" : "🔴";
     process.stdout.write(`📋 superdoctor  ${stateEmoji} ${stateLabel}\n`);
   }
 }

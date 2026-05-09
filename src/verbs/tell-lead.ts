@@ -26,8 +26,8 @@ import {
 } from "../core/common.ts";
 import { recordHeadsUp, shouldEmitHeadsUp } from "../core/heads-up-cursor.ts";
 import { sendToMember } from "../core/send.ts";
-import type { Team, TeamMember } from "../schema/team.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team, TeamMember } from "../schema/team.ts";
 import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux tell-lead <msg...>";
@@ -77,7 +77,7 @@ export function parseTellLeadArgs(argv: ReadonlyArray<string>): TellLeadArgs {
       i += 1;
       break;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `tell-lead: unknown flag: ${a}`, hint: USAGE });
     }
     break;
@@ -191,9 +191,7 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   // the success line goes to stderr with `✅ atmux ` prefix per
   // lib/common.sh:21. F3 channel-asymmetry fix mirrors here too —
   // earlier TS port wrote to stdout without the prefix.
-  process.stderr.write(
-    `✅ atmux tell-lead → ${lead.name} (appended to ${inboxPath})\n`,
-  );
+  process.stderr.write(`✅ atmux tell-lead → ${lead.name} (appended to ${inboxPath})\n`);
   return 0;
 }
 

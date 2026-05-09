@@ -9,6 +9,7 @@
 // Brief lives at ADR-057 §D1 (R57-T1). Pattern catalog +
 // retry/refusal policy live in src/core/pane-state.ts.
 
+import { detectKnownModal, type KnownModalMatch } from "./known-modals.ts";
 import {
   type CaptureFn,
   classifyText,
@@ -19,7 +20,6 @@ import {
   REFUSAL_SEVERITY,
   RETRY_POLICY,
 } from "./pane-state.ts";
-import { detectKnownModal, type KnownModalMatch } from "./known-modals.ts";
 
 // ---------- Public types ----------
 
@@ -29,11 +29,7 @@ export interface SendKeysOpts {
    *  without submitting a prompt. */
   enter?: boolean;
 }
-export type SendKeysFn = (
-  target: string,
-  text: string,
-  opts?: SendKeysOpts,
-) => Promise<void>;
+export type SendKeysFn = (target: string, text: string, opts?: SendKeysOpts) => Promise<void>;
 export type RaiseFlagFn = (severity: "p0" | "p1" | "p2" | "p3", body: string) => Promise<void>;
 
 /** Max number of consecutive known-modal dismissals safeSendKeys will
@@ -154,10 +150,7 @@ export async function safeSendKeys(
       continue;
     }
 
-    if (
-      classification.state === "MODAL" &&
-      dismissals < MAX_KNOWN_MODAL_DISMISSALS
-    ) {
+    if (classification.state === "MODAL" && dismissals < MAX_KNOWN_MODAL_DISMISSALS) {
       const known = detectKnownModal(paneText);
       if (known !== null) {
         await dismissKnownModal(target, known, opts);
@@ -247,10 +240,7 @@ export async function safePreflight(
       continue;
     }
 
-    if (
-      classification.state === "MODAL" &&
-      dismissals < MAX_KNOWN_MODAL_DISMISSALS
-    ) {
+    if (classification.state === "MODAL" && dismissals < MAX_KNOWN_MODAL_DISMISSALS) {
       const known = detectKnownModal(paneText);
       if (known !== null) {
         await dismissKnownModal(target, known, opts);

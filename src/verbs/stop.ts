@@ -38,8 +38,8 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
-import type { Team } from "../schema/team.ts";
 import { UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
 import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux stop [--force|-f] [--no-archive]";

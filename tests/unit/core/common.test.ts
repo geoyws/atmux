@@ -680,9 +680,7 @@ describe("resolveTeamSocket (t-add5976a — read-side tmuxTmpdir honour)", () =>
   });
 
   test("tmuxTmpdir unset → canonical /tmp/atmux-<team>/sock fallback", () => {
-    expect(resolveTeamSocket({ name: "atmux" }, { uid: 0 })).toBe(
-      "/tmp/atmux-atmux/sock",
-    );
+    expect(resolveTeamSocket({ name: "atmux" }, { uid: 0 })).toBe("/tmp/atmux-atmux/sock");
   });
 
   test("tmuxTmpdir empty string → canonical fallback (treats '' as unset)", () => {
@@ -702,11 +700,11 @@ describe("resolveTeamSocket (t-add5976a — read-side tmuxTmpdir honour)", () =>
     // `atmux-tmux*` (hyphen), `atmux_tmux_*` (underscore), `.atmux/tmux*`
     // (project-local). All three are passed through join() unchanged so
     // the resolver doesn't sanitise or rewrite operator-chosen tmpdirs.
-    expect(
-      resolveTeamSocket({ name: "t", tmuxTmpdir: "/tmp/atmux-tmux_a" }, { uid: 1000 }),
-    ).toBe("/tmp/atmux-tmux_a/tmux-1000/default");
-    expect(
-      resolveTeamSocket({ name: "t", tmuxTmpdir: "/tmp/atmux_tmux_a" }, { uid: 1000 }),
-    ).toBe("/tmp/atmux_tmux_a/tmux-1000/default");
+    expect(resolveTeamSocket({ name: "t", tmuxTmpdir: "/tmp/atmux-tmux_a" }, { uid: 1000 })).toBe(
+      "/tmp/atmux-tmux_a/tmux-1000/default",
+    );
+    expect(resolveTeamSocket({ name: "t", tmuxTmpdir: "/tmp/atmux_tmux_a" }, { uid: 1000 })).toBe(
+      "/tmp/atmux_tmux_a/tmux-1000/default",
+    );
   });
 });
