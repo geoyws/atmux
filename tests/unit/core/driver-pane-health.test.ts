@@ -30,8 +30,9 @@ afterEach(async () => {
 // ---------- Fixture text per pane state ----------
 
 const STATE_FIXTURES: Record<PaneState, string> = {
-  READY: "│ > \n123 tokens · esc to interrupt\n",
+  READY: "│ > \ntok 67k/100  ⏵⏵ auto mode on\n",
   TYPING: "Press up to edit queued messages\n",
+  BUSY: "✻ Cooked for 12s\n",
   COMPACTING: "Compacting conversation (15%)…\n",
   "RATE-LIMIT": "You've hit your limit on Claude Pro.\n",
   MODAL: "Do you want Claude to proceed?\n[y/N]: ",

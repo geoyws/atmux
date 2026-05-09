@@ -9,10 +9,16 @@
 // module returns a discrete enum + evidence string, intended for
 // the safeSendKeys gate where a single decision is needed.
 //
-// 7 states per ADR-057 §D1:
+// 8 states (BUSY added per ADR-080 §C):
 //   - READY        — prompt visible; safe to send keystrokes immediately.
 //   - TYPING       — user has text in the compose box (queued message
 //                    pending submit). Send would merge into the queue.
+//   - BUSY         — agent mid-think (Claude Code spinner verb visible:
+//                    `✻ Cooked for Ns`, `✽ Honking…`, etc.). Resolves
+//                    when the turn completes; send merges into queue
+//                    same as TYPING. Distinct from TYPING semantically:
+//                    TYPING resolves on user submit, BUSY resolves on
+//                    turn complete — different recovery paths.
 //   - MODAL        — Claude Code is showing a permission / yes-no
 //                    modal; sending text answers the wrong question.
 //   - RATE-LIMIT   — "hit your limit" banner. Sending is futile until
@@ -34,6 +40,7 @@ import { now } from "../abstractions/time.ts";
 export type PaneState =
   | "READY"
   | "TYPING"
+  | "BUSY"
   | "MODAL"
   | "RATE-LIMIT"
   | "COMPACTING"
@@ -72,6 +79,22 @@ const PATTERNS: ReadonlyArray<Pattern> = [
   { state: "RATE-LIMIT", regex: /You've hit your limit/i },
   // COMPACTING — context compaction in progress
   { state: "COMPACTING", regex: /Compacting conversation/i },
+  // BUSY — agent mid-think; Claude Code spinner verbs / interrupt banner.
+  // Priority: between COMPACTING and MODAL — a busy pane showing a modal
+  // hint is mid-think and the modal will resolve when the turn completes
+  // (per ADR-080 §C OQ-C1).
+  { state: "BUSY", regex: /✻\s+\w+(\.\.\.|…)/ }, // "✻ Cooked for Ns"
+  { state: "BUSY", regex: /✽\s+\w+/ }, // "✽ Honking…"
+  {
+    state: "BUSY",
+    regex: /(Hullaball|Honking|Cogitat|Sauté|Ruminat|Computing|Thinking|Working|Cooked)(ing|ed|s)?\s*(\.\.\.|…)/i,
+  },
+  // Generic "esc to interrupt" banner — only appears during an active
+  // turn (Claude Code does not render this when idle). 2026-05-09 ADR-080
+  // §C audit: the prior `tokens.*esc to interrupt` READY pattern was
+  // misclassifying busy panes as READY because the interrupt phrase only
+  // ever shows up mid-turn. Removed from READY catalog below.
+  { state: "BUSY", regex: /esc to interrupt/i },
   // MODAL — permission / decision modals
   // Common Claude Code modals: permission prompts, plan-mode approval,
   // auto-mode confirmation. These pause the agent until answered.
@@ -93,10 +116,10 @@ const PATTERNS: ReadonlyArray<Pattern> = [
   // but current TUI ships "❯". The status-bar footer shows
   // "auto mode on" / "tok <N>k/<remaining>" / mode indicators when
   // the pane is awaiting input. Match either the prompt or the
-  // status-line shape.
+  // status-line shape. (Pre-ADR-080 the catalog also had a
+  // `tokens.*esc to interrupt` pattern — moved to BUSY above.)
   { state: "READY", regex: /^❯\s*$/m },
   { state: "READY", regex: /^>\s*$/m },
-  { state: "READY", regex: /tokens.*esc to interrupt/i },
   { state: "READY", regex: /⏵⏵\s+(auto mode|accept edits|don't ask|plan mode)/i },
   { state: "READY", regex: /^\s*tok\s+\d+(\.\d+)?k\/\d/m },
 ];
@@ -149,7 +172,7 @@ export function isSendable(state: PaneState): boolean {
 
 /** True when the pane state is transient + retryable. */
 export function isRetryable(state: PaneState): boolean {
-  return state === "TYPING" || state === "COMPACTING";
+  return state === "TYPING" || state === "COMPACTING" || state === "BUSY";
 }
 
 /** Per-state retry policy (ms between attempts, max attempts). */
@@ -161,6 +184,7 @@ export interface RetryPolicy {
 export const RETRY_POLICY: Readonly<Record<PaneState, RetryPolicy>> = {
   READY: { delayMs: 0, maxAttempts: 1 },
   TYPING: { delayMs: 2_000, maxAttempts: 3 },
+  BUSY: { delayMs: 5_000, maxAttempts: 6 }, // 30s total — agent turns finish in seconds
   COMPACTING: { delayMs: 5_000, maxAttempts: 6 }, // 30s total
   MODAL: { delayMs: 0, maxAttempts: 0 }, // no retry
   "RATE-LIMIT": { delayMs: 0, maxAttempts: 0 },
@@ -172,6 +196,7 @@ export const RETRY_POLICY: Readonly<Record<PaneState, RetryPolicy>> = {
 export const REFUSAL_SEVERITY: Readonly<Record<PaneState, "p0" | "p1" | "p2" | "p3" | null>> = {
   READY: null,
   TYPING: "p3", // soft retryable; flag only if exhausted
+  BUSY: "p3", // soft retryable; flag only if exhausted
   COMPACTING: "p3", // soft retryable; flag only if exhausted
   MODAL: "p3",
   "RATE-LIMIT": null, // ADR-053 budget-pause path takes over

@@ -65,6 +65,7 @@ export type SafeSendOutcome =
   | "refused-rate-limit"
   | "refused-unknown"
   | "exhausted-typing"
+  | "exhausted-busy"
   | "exhausted-compacting";
 
 export interface SafeSendResult {
@@ -134,7 +135,11 @@ export async function safeSendKeys(
       const policy = RETRY_POLICY[classification.state];
       if (attempts >= policy.maxAttempts) {
         const outcome: SafeSendOutcome =
-          classification.state === "TYPING" ? "exhausted-typing" : "exhausted-compacting";
+          classification.state === "TYPING"
+            ? "exhausted-typing"
+            : classification.state === "BUSY"
+              ? "exhausted-busy"
+              : "exhausted-compacting";
         await maybeFlag(
           opts.raiseFlag,
           REFUSAL_SEVERITY[classification.state],

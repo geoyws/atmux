@@ -70,7 +70,7 @@ const FEEDBACK_SURVEY_PANE = `● How is Claude doing this session? (optional)
 
 describe("safeSendKeys — READY happy path", () => {
   test("READY pane → sent immediately, no flag", async () => {
-    const { fixture, opts } = buildFixture(["3.4k tokens · esc to interrupt"]);
+    const { fixture, opts } = buildFixture(["\ntok 67k/100  ⏵⏵ auto mode\n"]);
     const result = await safeSendKeys("atmux:1.0", "hello", opts);
     expect(result.outcome).toBe("sent");
     expect(result.attempts).toBe(1);
@@ -86,7 +86,7 @@ describe("safeSendKeys — TYPING retries", () => {
   test("TYPING → READY on second attempt", async () => {
     const { fixture, opts } = buildFixture([
       "Press up to edit queued messages",
-      "3.4k tokens · esc to interrupt",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
     ]);
     const result = await safeSendKeys("atmux:1.0", "hi", opts);
     expect(result.outcome).toBe("sent");
@@ -116,7 +116,7 @@ describe("safeSendKeys — COMPACTING retries", () => {
   test("COMPACTING → READY on second attempt", async () => {
     const { fixture, opts } = buildFixture([
       "Compacting conversation",
-      "3.4k tokens · esc to interrupt",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
     ]);
     const result = await safeSendKeys("x", "y", opts);
     expect(result.outcome).toBe("sent");
@@ -128,6 +128,31 @@ describe("safeSendKeys — COMPACTING retries", () => {
     const { fixture, opts } = buildFixture(captures);
     const result = await safeSendKeys("x", "y", opts);
     expect(result.outcome).toBe("exhausted-compacting");
+    expect(result.attempts).toBe(6);
+    expect(fixture.sleeps).toHaveLength(5);
+    expect(fixture.sleeps.every((s) => s === 5_000)).toBe(true);
+    expect(fixture.flags[0]?.severity).toBe("p3");
+  });
+});
+
+// ---------- BUSY retry path (ADR-080 §C) ----------
+
+describe("safeSendKeys — BUSY retries", () => {
+  test("BUSY → READY on second attempt (turn completed)", async () => {
+    const { fixture, opts } = buildFixture([
+      "✻ Cooked for 12s",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+    ]);
+    const result = await safeSendKeys("x", "y", opts);
+    expect(result.outcome).toBe("sent");
+    expect(fixture.sleeps).toEqual([5_000]);
+  });
+
+  test("BUSY for 6 attempts (30s budget) → exhausted-busy + flag p3", async () => {
+    const captures = Array(6).fill("✻ Cooked for 30s");
+    const { fixture, opts } = buildFixture(captures);
+    const result = await safeSendKeys("x", "y", opts);
+    expect(result.outcome).toBe("exhausted-busy");
     expect(result.attempts).toBe(6);
     expect(fixture.sleeps).toHaveLength(5);
     expect(fixture.sleeps.every((s) => s === 5_000)).toBe(true);
@@ -156,7 +181,7 @@ describe("safeSendKeys — known-modal auto-dismiss", () => {
   test("feedback-survey MODAL → dismissed with '0' (no Enter) → READY → sent", async () => {
     const { fixture, opts } = buildFixture([
       FEEDBACK_SURVEY_PANE,
-      "3.4k tokens · esc to interrupt",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
     ]);
     const result = await safeSendKeys("atmux:1.0", "real payload", opts);
     expect(result.outcome).toBe("sent");
@@ -209,7 +234,7 @@ describe("safeSendKeys — known-modal auto-dismiss", () => {
     // recovery is silent; the survey is expected friction).
     const { fixture, opts } = buildFixture([
       FEEDBACK_SURVEY_PANE,
-      "3.4k tokens · esc to interrupt",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
     ]);
     await safeSendKeys("x", "y", opts);
     expect(fixture.flags).toHaveLength(0);
@@ -290,7 +315,7 @@ describe("safeSendKeys — flag handling", () => {
 describe("safeSendKeys — log invocations", () => {
   test("log fires on send + on refusal", async () => {
     const logs: string[] = [];
-    const captures = ["3.4k tokens · esc to interrupt"];
+    const captures = ["\ntok 67k/100  ⏵⏵ auto mode\n"];
     let captureIdx = 0;
     await safeSendKeys("alice-target", "msg", {
       capture: async () => captures[captureIdx++] ?? "",
@@ -330,7 +355,7 @@ describe("safeSendKeys — log invocations", () => {
 
 describe("safePreflight — happy path", () => {
   test("READY pane → ready=true, no sends, no dismissals", async () => {
-    const { fixture, opts } = buildFixture(["3.4k tokens · esc to interrupt"]);
+    const { fixture, opts } = buildFixture(["\ntok 67k/100  ⏵⏵ auto mode\n"]);
     const result = await safePreflight("atmux:1.0", opts);
     expect(result.ready).toBe(true);
     expect(result.finalClassification.state).toBe("READY");
@@ -344,7 +369,7 @@ describe("safePreflight — known-modal dismissal", () => {
   test("CC feedback survey → dismisses '0' and re-classifies", async () => {
     const { fixture, opts } = buildFixture([
       FEEDBACK_SURVEY_PANE, // pre-dismiss
-      "3.4k tokens · esc to interrupt", // post-dismiss
+      "\ntok 67k/100  ⏵⏵ auto mode\n", // post-dismiss
     ]);
     const result = await safePreflight("atmux:1.0", opts);
     expect(result.ready).toBe(true);
@@ -392,7 +417,7 @@ describe("safePreflight — retryable states", () => {
   test("TYPING then READY → polls + exits ready=true", async () => {
     const { fixture, opts } = buildFixture([
       "Press up to edit queued messages", // TYPING (1st capture)
-      "3.4k tokens · esc to interrupt", // READY (after retry)
+      "\ntok 67k/100  ⏵⏵ auto mode\n", // READY (after retry)
     ]);
     const result = await safePreflight("atmux:1.0", opts);
     expect(result.ready).toBe(true);
@@ -443,8 +468,9 @@ describe("SafeSendOutcome — value discriminator", () => {
       "refused-rate-limit",
       "refused-unknown",
       "exhausted-typing",
+      "exhausted-busy",
       "exhausted-compacting",
     ];
-    expect(outcomes).toHaveLength(7);
+    expect(outcomes).toHaveLength(8);
   });
 });

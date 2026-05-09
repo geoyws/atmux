@@ -1,6 +1,7 @@
-// Unit tests for src/core/pane-state.ts (ADR-057 §D1 R57-T1).
+// Unit tests for src/core/pane-state.ts (ADR-057 §D1 R57-T1; ADR-080 §C
+// added BUSY for spinner-verb / mid-think detection).
 //
-// 7-state classifier: READY | TYPING | MODAL | RATE-LIMIT |
+// 8-state classifier: READY | TYPING | BUSY | MODAL | RATE-LIMIT |
 // COMPACTING | SHELL | UNKNOWN. Plus retry policy + refusal severity
 // constants.
 
@@ -21,22 +22,53 @@ const nowFn = (): number => FIXED_NOW;
 
 // ---------- classifyText — discrete state coverage ----------
 
-describe("classifyText — 7 discrete states", () => {
+describe("classifyText — 8 discrete states", () => {
   test("READY when capture shows the empty prompt", () => {
     const r = classifyText("\n>\n", nowFn);
     expect(r.state).toBe("READY");
     expect(r.capturedAt).toBe(FIXED_NOW);
   });
 
-  test("READY when capture shows the tokens-with-esc footer", () => {
-    const r = classifyText("3.4k tokens · esc to interrupt", nowFn);
+  test("READY when capture shows the token-counter footer (no interrupt phrase)", () => {
+    // Per ADR-080 §C: the canonical READY status-bar shape is the
+    // token-counter `tok 67k/100`, NOT "esc to interrupt" — that phrase
+    // only appears during an active turn (now classified BUSY).
+    const r = classifyText("\ntok 67k/100  ⏵⏵ auto mode on\n", nowFn);
     expect(r.state).toBe("READY");
-    expect(r.evidence).toContain("tokens");
   });
 
   test("TYPING when 'Press up to edit queued messages' present", () => {
     const r = classifyText("draft text\nPress up to edit queued messages", nowFn);
     expect(r.state).toBe("TYPING");
+  });
+
+  test("BUSY when '✻ Cooked for Ns' spinner glyph present", () => {
+    const r = classifyText("✻ Cooked for 12s\n", nowFn);
+    expect(r.state).toBe("BUSY");
+    expect(r.evidence).toContain("✻");
+  });
+
+  test("BUSY when '✽ Honking…' spinner glyph present", () => {
+    const r = classifyText("✽ Honking\n", nowFn);
+    expect(r.state).toBe("BUSY");
+    expect(r.evidence).toContain("✽");
+  });
+
+  test("BUSY when spinner verb (Computing/Thinking/Working/Cooked/etc.) with ellipsis", () => {
+    expect(classifyText("Computing…", nowFn).state).toBe("BUSY");
+    expect(classifyText("Hullaballing...", nowFn).state).toBe("BUSY");
+    expect(classifyText("Cogitating...", nowFn).state).toBe("BUSY");
+    expect(classifyText("Sautéing…", nowFn).state).toBe("BUSY");
+    expect(classifyText("Working…", nowFn).state).toBe("BUSY");
+    expect(classifyText("Cooked…", nowFn).state).toBe("BUSY");
+  });
+
+  test("BUSY when generic 'esc to interrupt' banner present (mid-turn marker)", () => {
+    // 2026-05-09 ADR-080 §C — pre-fix this string was the READY
+    // status-bar marker. The interrupt banner only renders during an
+    // active turn, so reclassified to BUSY.
+    const r = classifyText("3.4k tokens · esc to interrupt", nowFn);
+    expect(r.state).toBe("BUSY");
   });
 
   test("MODAL when 'Do you want Claude to' modal", () => {
@@ -108,9 +140,19 @@ describe("classifyText — pattern priority", () => {
     expect(r.state).toBe("RATE-LIMIT");
   });
 
-  test("COMPACTING wins over MODAL when both signals present", () => {
-    const r = classifyText("Compacting conversation\nDo you want Claude to proceed", nowFn);
+  test("COMPACTING wins over BUSY when both signals present", () => {
+    // BUSY is checked AFTER COMPACTING (compaction is more blocking;
+    // the pane can't accept input until compaction finishes regardless
+    // of any spinner showing simultaneously).
+    const r = classifyText("Compacting conversation\n✻ Cooked for 5s", nowFn);
     expect(r.state).toBe("COMPACTING");
+  });
+
+  test("BUSY wins over MODAL when both signals present (OQ-C1)", () => {
+    // ADR-080 §C OQ-C1: a busy pane that ALSO shows a modal hint is
+    // mid-think — the modal will resolve when the turn completes.
+    const r = classifyText("✻ Cooked for 5s\nDo you want Claude to proceed?", nowFn);
+    expect(r.state).toBe("BUSY");
   });
 
   test("MODAL wins over TYPING when both present", () => {
@@ -119,8 +161,8 @@ describe("classifyText — pattern priority", () => {
     expect(r.state).toBe("MODAL");
   });
 
-  test("READY wins when only the prompt pattern matches (no error/modal)", () => {
-    const r = classifyText("3.4k tokens · esc to interrupt", nowFn);
+  test("READY wins when only the prompt pattern matches (no error/modal/busy)", () => {
+    const r = classifyText("\n>\n", nowFn);
     expect(r.state).toBe("READY");
   });
 });
@@ -163,6 +205,7 @@ describe("isSendable", () => {
   test("only READY is immediately sendable", () => {
     expect(isSendable("READY")).toBe(true);
     expect(isSendable("TYPING")).toBe(false);
+    expect(isSendable("BUSY")).toBe(false);
     expect(isSendable("MODAL")).toBe(false);
     expect(isSendable("RATE-LIMIT")).toBe(false);
     expect(isSendable("COMPACTING")).toBe(false);
@@ -172,8 +215,9 @@ describe("isSendable", () => {
 });
 
 describe("isRetryable", () => {
-  test("TYPING + COMPACTING are retryable; nothing else", () => {
+  test("TYPING + BUSY + COMPACTING are retryable; nothing else", () => {
     expect(isRetryable("TYPING")).toBe(true);
+    expect(isRetryable("BUSY")).toBe(true);
     expect(isRetryable("COMPACTING")).toBe(true);
     expect(isRetryable("READY")).toBe(false);
     expect(isRetryable("MODAL")).toBe(false);
@@ -192,6 +236,10 @@ describe("RETRY_POLICY", () => {
 
   test("TYPING: 2s × 3 attempts", () => {
     expect(RETRY_POLICY.TYPING).toEqual({ delayMs: 2_000, maxAttempts: 3 });
+  });
+
+  test("BUSY: 5s × 6 attempts (= 30s budget)", () => {
+    expect(RETRY_POLICY.BUSY).toEqual({ delayMs: 5_000, maxAttempts: 6 });
   });
 
   test("COMPACTING: 5s × 6 attempts (= 30s budget)", () => {
@@ -213,8 +261,9 @@ describe("REFUSAL_SEVERITY", () => {
     expect(REFUSAL_SEVERITY.READY).toBeNull();
   });
 
-  test("TYPING/COMPACTING/MODAL: P3", () => {
+  test("TYPING/BUSY/COMPACTING/MODAL: P3", () => {
     expect(REFUSAL_SEVERITY.TYPING).toBe("p3");
+    expect(REFUSAL_SEVERITY.BUSY).toBe("p3");
     expect(REFUSAL_SEVERITY.COMPACTING).toBe("p3");
     expect(REFUSAL_SEVERITY.MODAL).toBe("p3");
   });
@@ -232,10 +281,11 @@ describe("REFUSAL_SEVERITY", () => {
 // ---------- Type sanity ----------
 
 describe("PaneState exhaustiveness", () => {
-  test("all 7 states represented in RETRY_POLICY", () => {
+  test("all 8 states represented in RETRY_POLICY + REFUSAL_SEVERITY", () => {
     const states: PaneState[] = [
       "READY",
       "TYPING",
+      "BUSY",
       "MODAL",
       "RATE-LIMIT",
       "COMPACTING",

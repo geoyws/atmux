@@ -35,9 +35,15 @@ afterEach(async () => {
 
 // ---------- Fixture helpers ----------
 
-const FIXTURE_READY = "│ > \n123 tokens · esc to interrupt\n";
+// READY fixture: token-counter shape on a dedicated line so it matches
+// the canonical READY pattern (`/^\s*tok\s+\d+(\.\d+)?k\/\d/m`).
+// "esc to interrupt" was deliberately removed in ADR-080 §C — that
+// phrase only renders during an active turn, so it now classifies as
+// BUSY. Pre-§C fixture leaked it into READY ground truth.
+const FIXTURE_READY = "│ > \ntok 67k/100  ⏵⏵ auto mode on\n";
 const FIXTURE_COMPACTING = "Compacting conversation (15%)…\n";
 const FIXTURE_TYPING = "Press up to edit queued messages\n";
+const FIXTURE_BUSY = "✻ Cooked for 12s\n";
 const FIXTURE_MODAL = "Do you want Claude to proceed?\n[y/N]: ";
 
 interface SeedThreeMembersOpts {
@@ -329,6 +335,34 @@ describe("runLaneTick — edge cases", () => {
     const result = await runLaneTick(atmuxDir, team, { capture, sendFn, log: () => {} });
     expect(result.visited).toBe(1);
     expect(capCalls.map((c) => c.target)).toEqual([`${session}:m3`]);
+  });
+
+  test("BUSY pane skips with state=BUSY in log line (ADR-080 §C)", async () => {
+    // Spinner-verb pane is mid-think — lane-tick must NOT inject claim
+    // text. Pre-§C such panes classified as UNKNOWN (catalog miss) and
+    // produced `state=UNKNOWN` log lines that operators couldn't
+    // distinguish from real classification gaps. With the BUSY state,
+    // operators see the actual cause + the spinner glyph as evidence.
+    await seedThreeMemberTeam({ withLanes: { m1: "fe", m2: null, m3: null } });
+    const team = await loadTeam({ teamDir });
+    const session = "test-sess";
+    const { capture } = buildFixtureCapture({
+      [`${session}:m1`]: FIXTURE_BUSY,
+    });
+    const { sendFn, calls: sendCalls } = buildMockSendFn();
+    const logs: string[] = [];
+    const result = await runLaneTick(atmuxDir, team, {
+      capture,
+      sendFn,
+      log: (m) => logs.push(m),
+    });
+    expect(result.outcomes).toEqual({ m1: "skip-not-ready" });
+    expect(sendCalls).toHaveLength(0);
+    const busyLog = logs.find((l) => l.includes("state=BUSY"));
+    expect(busyLog).toBeDefined();
+    expect(busyLog).toContain("m1");
+    expect(busyLog).toContain("evidence=");
+    expect(busyLog).toContain("skip");
   });
 
   test("emoji-prefixed window names resolve correctly", async () => {
