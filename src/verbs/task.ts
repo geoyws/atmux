@@ -54,6 +54,56 @@ const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
+
+/** Levenshtein edit distance between two strings. Iterative DP, O(|a|·|b|)
+ *  time and space. Cap-bounded — caller passes `maxDist`; we early-exit
+ *  the row once the running min exceeds the cap. Used by `closestStatus`
+ *  to surface a "did you mean ..." hint without firing for inputs that
+ *  share zero structure with any valid status. */
+function levenshtein(a: string, b: string, maxDist: number): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > maxDist) return maxDist + 1;
+  const m = a.length;
+  const n = b.length;
+  let prev = new Array<number>(n + 1);
+  let curr = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j += 1) prev[j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    curr[0] = i;
+    let rowMin = curr[0];
+    for (let j = 1; j <= n; j += 1) {
+      const cost = a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1;
+      const cellPrev = prev[j - 1] ?? 0;
+      const cellUp = prev[j] ?? 0;
+      const cellLeft = curr[j - 1] ?? 0;
+      const v = Math.min(cellPrev + cost, cellUp + 1, cellLeft + 1);
+      curr[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > maxDist) return maxDist + 1;
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n] ?? maxDist + 1;
+}
+
+/** Closest VALID_STATUSES entry to `s` within edit-distance 2. Returns
+ *  null when no candidate is close enough (e.g. `s = "nonsense"`); the
+ *  caller omits the did-you-mean hint cleanly per ADR-080 §D test
+ *  contract. Tie-break: first-defined order in VALID_STATUSES (Set
+ *  insertion order). */
+export function closestStatus(s: string): string | null {
+  const MAX = 2;
+  let best: string | null = null;
+  let bestDist = MAX + 1;
+  for (const cand of VALID_STATUSES) {
+    const d = levenshtein(s, cand, MAX);
+    if (d < bestDist) {
+      bestDist = d;
+      best = cand;
+    }
+  }
+  return bestDist <= MAX ? best : null;
+}
 /** Lane enum (mirrors `KanbanLane` in src/schema/kanban.ts). `-` clears
  *  the lane (sets to null). `git` + `docs` added 2026-05-08 for role-
  *  specific lanes (gitter pulls commits/merges; docs pulls writing tasks). */
@@ -428,7 +478,22 @@ export function parseListArgs(argv: ReadonlyArray<string>): ParsedListArgs {
       if (v === undefined) {
         throw new UsageError({ what: "task list: --status requires a value", hint: USAGE_LIST });
       }
-      status = v;
+      // ADR-080 §D / OQ-1 (PATCH-mode soft normalize): underscore →
+      // hyphen silently. Operators muscle-memory `--status in_progress`
+      // (snake_case) when the canonical form is `in-progress`; we
+      // accept both rather than failing on the typo. Unknown statuses
+      // post-normalize throw with a did-you-mean hint.
+      const normalized = v.replace(/_/g, "-");
+      if (!VALID_STATUSES.has(normalized)) {
+        const suggest = closestStatus(normalized);
+        throw new UsageError({
+          what: `task list: unknown status "${v}"${
+            suggest !== null ? ` — did you mean "${suggest}"?` : ""
+          } (valid: todo|in-progress|done|blocked)`,
+          hint: USAGE_LIST,
+        });
+      }
+      status = normalized;
       i += 2;
       continue;
     }

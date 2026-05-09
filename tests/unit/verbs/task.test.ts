@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { appendDispatched, loadInbox } from "../../../src/core/inbox.ts";
 import { addTask, assignTask, loadKanban, moveTask } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import { parseAddArgs, parseListArgs, task } from "../../../src/verbs/task.ts";
+import { closestStatus, parseAddArgs, parseListArgs, task } from "../../../src/verbs/task.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -151,6 +151,93 @@ describe("parseListArgs", () => {
 
   test("unknown arg → UsageError", () => {
     expect(() => parseListArgs(["bogus"])).toThrow(UsageError);
+  });
+
+  // ---------- ADR-080 §D — --status normalize + did-you-mean ----------
+
+  test("ADR-080§D: --status in_progress (snake_case) → normalized to in-progress", () => {
+    const a = parseListArgs(["--status", "in_progress"]);
+    expect(a.status).toBe("in-progress");
+  });
+
+  test("ADR-080§D: --status in-progress (canonical) → unchanged", () => {
+    const a = parseListArgs(["--status", "in-progress"]);
+    expect(a.status).toBe("in-progress");
+  });
+
+  test("ADR-080§D: --status to_do → normalized to to-do BUT to-do isn't valid → UsageError + did-you-mean 'todo'", () => {
+    let err: unknown;
+    try {
+      parseListArgs(["--status", "to_do"]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    expect(((err as UsageError).context as { what: string }).what).toContain('"to_do"');
+    expect(((err as UsageError).context as { what: string }).what).toContain('"todo"');
+  });
+
+  test("ADR-080§D: --status nonsense (no near match) → UsageError, no did-you-mean", () => {
+    let err: unknown;
+    try {
+      parseListArgs(["--status", "nonsense"]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    const what = ((err as UsageError).context as { what: string }).what;
+    expect(what).toContain('"nonsense"');
+    expect(what).not.toContain("did you mean");
+  });
+
+  test("ADR-080§D: --status (no value) → UsageError 'requires a value' (regression-pin)", () => {
+    let err: unknown;
+    try {
+      parseListArgs(["--status"]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    expect(((err as UsageError).context as { what: string }).what).toContain("requires a value");
+  });
+
+  test("ADR-080§D: --status blokced (typo) → did-you-mean 'blocked'", () => {
+    let err: unknown;
+    try {
+      parseListArgs(["--status", "blokced"]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    expect(((err as UsageError).context as { what: string }).what).toContain('"blocked"');
+  });
+});
+
+// ---------- closestStatus helper ----------
+
+describe("closestStatus", () => {
+  test("exact match → returns input", () => {
+    expect(closestStatus("todo")).toBe("todo");
+  });
+
+  test("distance-1 typo → suggests valid status", () => {
+    expect(closestStatus("dond")).toBe("done");
+  });
+
+  test("distance-2 typo → suggests valid status", () => {
+    expect(closestStatus("dnoe")).toBe("done");
+  });
+
+  test("distance > 2 → null (no suggestion)", () => {
+    expect(closestStatus("nonsense")).toBeNull();
+  });
+
+  test("empty string → null (no near valid status)", () => {
+    expect(closestStatus("")).toBeNull();
+  });
+
+  test("post-normalize 'to-do' → suggests 'todo'", () => {
+    expect(closestStatus("to-do")).toBe("todo");
   });
 });
 
