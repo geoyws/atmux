@@ -386,6 +386,132 @@ describe("runLaneTick — edge cases", () => {
   });
 });
 
+// ---------- ADR-080 §A2: lead ctx-threshold refusal ----------
+//
+// Helper: lead pane fixture at a given ctx-pct via the canonical
+// `tok N/M` shape `parseLeadCtxPct` reads. Pre-fix lead-tick injected
+// `claim --next` regardless of ctx; the operator-observed failure
+// (sopx 67%/100 with queued claim defeating /session preclear) drove
+// this gate. § A2 reuses § A1's parser (whip.ts::parseLeadCtxPct).
+//
+// `tok 80k/100` → ctx-pct 80; `tok 50k/100` → 50; etc. Wrapped in the
+// canonical READY shape so classifyText returns READY (without that,
+// the gate short-circuits before reaching the §A2 check).
+
+function leadFixture(usedK: number, capK = 100): string {
+  return `│ > \ntok ${usedK}k/${capK}  ⏵⏵ auto mode on\n`;
+}
+
+describe("runLaneTick — ADR-080 §A2 lead ctx-threshold refusal", () => {
+  async function seedTeamWithLead(opts: {
+    leadName?: string;
+    leadCtxRotateThreshold?: number;
+  }): Promise<void> {
+    const leadName = opts.leadName ?? "lead";
+    // Lead must have a lane to be visited by lane-tick; misc is the
+    // canonical lead lane in atmux team.json.
+    const team: Record<string, unknown> = {
+      name: "team",
+      members: [
+        { name: leadName, role: "team-lead", lane: "misc" },
+        { name: "alice", role: "member", lane: "fe" },
+      ],
+    };
+    if (opts.leadCtxRotateThreshold !== undefined) {
+      team.whip = { leadCtxRotateThreshold: opts.leadCtxRotateThreshold };
+    }
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
+  }
+
+  test("lead ctx=80, threshold=70 → /team rotate-lead nudge instead of claim", async () => {
+    await seedTeamWithLead({ leadCtxRotateThreshold: 70 });
+    const team = await loadTeam({ teamDir });
+    const session = "test-sess";
+    const { capture } = buildFixtureCapture({
+      [`${session}:lead`]: leadFixture(80), // 80% ctx → over threshold
+      [`${session}:alice`]: FIXTURE_READY,
+    });
+    const { sendFn, calls: sendCalls } = buildMockSendFn();
+    const logs: string[] = [];
+    const result = await runLaneTick(atmuxDir, team, {
+      capture,
+      sendFn,
+      log: (m) => logs.push(m),
+    });
+    expect(result.outcomes.lead).toBe("injected-rotate-nudge");
+    expect(result.outcomes.alice).toBe("injected");
+    const leadSend = sendCalls.find((c) => c.target === `${session}:lead`);
+    expect(leadSend?.text).toBe("/team rotate-lead");
+    const aliceSend = sendCalls.find((c) => c.target === `${session}:alice`);
+    expect(aliceSend?.text).toBe("atmux claim --next --as alice");
+    expect(logs.some((l) => l.includes("ctx=80%") && l.includes("≥ 70%"))).toBe(true);
+  });
+
+  test("lead ctx=50, threshold=70 → claim --next as before (regression-pin)", async () => {
+    await seedTeamWithLead({ leadCtxRotateThreshold: 70 });
+    const team = await loadTeam({ teamDir });
+    const session = "test-sess";
+    const { capture } = buildFixtureCapture({
+      [`${session}:lead`]: leadFixture(50), // 50% ctx → under threshold
+      [`${session}:alice`]: FIXTURE_READY,
+    });
+    const { sendFn, calls: sendCalls } = buildMockSendFn();
+    const result = await runLaneTick(atmuxDir, team, { capture, sendFn, log: () => {} });
+    expect(result.outcomes.lead).toBe("injected");
+    const leadSend = sendCalls.find((c) => c.target === `${session}:lead`);
+    expect(leadSend?.text).toBe("atmux claim --next --as lead");
+  });
+
+  test("non-lead member at ctx=80, threshold=70 → claim --next (threshold ignored)", async () => {
+    await seedTeamWithLead({ leadCtxRotateThreshold: 70 });
+    const team = await loadTeam({ teamDir });
+    const session = "test-sess";
+    const { capture } = buildFixtureCapture({
+      [`${session}:lead`]: leadFixture(50), // lead under threshold
+      [`${session}:alice`]: leadFixture(80), // member at 80% — ignored for non-leads
+    });
+    const { sendFn, calls: sendCalls } = buildMockSendFn();
+    const result = await runLaneTick(atmuxDir, team, { capture, sendFn, log: () => {} });
+    expect(result.outcomes.alice).toBe("injected");
+    const aliceSend = sendCalls.find((c) => c.target === `${session}:alice`);
+    expect(aliceSend?.text).toBe("atmux claim --next --as alice");
+  });
+
+  test("threshold defaults to 70 when team.whip is omitted", async () => {
+    await seedTeamWithLead({}); // no whip block
+    const team = await loadTeam({ teamDir });
+    const session = "test-sess";
+    const { capture } = buildFixtureCapture({
+      [`${session}:lead`]: leadFixture(75), // 75% ctx → over default 70
+      [`${session}:alice`]: FIXTURE_READY,
+    });
+    const { sendFn, calls: sendCalls } = buildMockSendFn();
+    const result = await runLaneTick(atmuxDir, team, { capture, sendFn, log: () => {} });
+    expect(result.outcomes.lead).toBe("injected-rotate-nudge");
+    const leadSend = sendCalls.find((c) => c.target === `${session}:lead`);
+    expect(leadSend?.text).toBe("/team rotate-lead");
+  });
+
+  test("lead pane with no tok indicator → ctx unknown, falls through to claim", async () => {
+    // parseLeadCtxPct returns null when the pane has no `tok N/M`
+    // indicator (transient bootstrap state). The gate must NOT refuse
+    // on null — fall through to the normal claim injection.
+    await seedTeamWithLead({ leadCtxRotateThreshold: 70 });
+    const team = await loadTeam({ teamDir });
+    const session = "test-sess";
+    const { capture } = buildFixtureCapture({
+      [`${session}:lead`]: "│ > \n", // bare prompt, no tok
+      [`${session}:alice`]: FIXTURE_READY,
+    });
+    // Bare prompt classifies as READY via `^>\s*$/m`.
+    const { sendFn, calls: sendCalls } = buildMockSendFn();
+    const result = await runLaneTick(atmuxDir, team, { capture, sendFn, log: () => {} });
+    expect(result.outcomes.lead).toBe("injected");
+    const leadSend = sendCalls.find((c) => c.target === `${session}:lead`);
+    expect(leadSend?.text).toBe("atmux claim --next --as lead");
+  });
+});
+
 // ---------- laneTick verb (full argv path) ----------
 
 describe("laneTick verb — top-level", () => {

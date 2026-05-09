@@ -38,6 +38,7 @@ import {
 } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
+import { parseLeadCtxPct } from "./whip.ts";
 
 // ---------- Public types (test-injectable deps) ----------
 
@@ -77,6 +78,12 @@ export interface LaneTickResult {
 
 export type LaneTickMemberOutcome =
   | "injected"
+  /** ADR-080 §A2: lead pane at ctx-pct ≥ leadCtxRotateThreshold — instead
+   *  of injecting `claim --next` (which would deepen ctx pressure), the
+   *  rotation nudge `/team rotate-lead` is sent so the lead can hand off
+   *  before mid-think drift sets in. Operator-visible outcome distinct
+   *  from `injected` so the post-tick summary distinguishes the cause. */
+  | "injected-rotate-nudge"
   | "skip-not-ready"
   | "skip-capture-error"
   | "skip-send-refused";
@@ -104,6 +111,7 @@ export async function laneTick(
   log(
     `lane-tick: visited=${result.visited} ` +
       `injected=${count(result.outcomes, "injected")} ` +
+      `injected-rotate-nudge=${count(result.outcomes, "injected-rotate-nudge")} ` +
       `skip-not-ready=${count(result.outcomes, "skip-not-ready")} ` +
       `skip-capture-error=${count(result.outcomes, "skip-capture-error")} ` +
       `skip-send-refused=${count(result.outcomes, "skip-send-refused")}`,
@@ -144,15 +152,24 @@ export async function runLaneTick(
 
   const lanedMembers = team.members.filter((m) => m.lane !== undefined && m.lane.length > 0);
 
+  // ADR-080 §A2: lookup the lead member name + the team's ctx-rotate
+  // threshold once per tick; the lead-only refusal gate inside the loop
+  // consumes both. Threshold default `70` mirrors `whip.leadCtxRotateThreshold`'s
+  // schema default — when team.whip is omitted, the lead refusal still
+  // fires at the same threshold whip uses for its rotate-recommendation.
+  const leadName = team.members.find((m) => m.role === "team-lead")?.name;
+  const leadCtxRotateThreshold = team.whip?.leadCtxRotateThreshold ?? 70;
+
   const outcomes: Record<string, LaneTickMemberOutcome> = {};
 
   for (const member of lanedMembers) {
     const windowTarget = resolveWindowTarget(session, member);
 
     let classification: PaneClassification;
+    let paneText = "";
     try {
-      const text = await capture(windowTarget);
-      classification = classifyText(text);
+      paneText = await capture(windowTarget);
+      classification = classifyText(paneText);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log(`lane-tick: ${member.name}: capture error (${msg}) — skip`);
@@ -174,11 +191,38 @@ export async function runLaneTick(
       sendKeys: sendKeysFn,
       log,
     };
-    const claimText = `atmux claim --next --as ${member.name}`;
+
+    // ADR-080 §A2: when this member is the team lead AND the pane
+    // ctx-pct is at-or-above `leadCtxRotateThreshold`, swap the
+    // injected text from `claim --next` to a `/team rotate-lead`
+    // nudge. Rationale: a high-ctx lead that picks up another claim
+    // is the exact "67% ctx + queued claim defeats rotation" scenario
+    // the operator flagged on 2026-05-09 07:25 MYT (sopx-driver bundle).
+    // Re-using §A1's `parseLeadCtxPct` keeps the parser surface unified.
+    let claimText = `atmux claim --next --as ${member.name}`;
+    let isRotateNudge = false;
+    if (leadName !== undefined && member.name === leadName) {
+      const ctxPct = parseLeadCtxPct(paneText);
+      if (ctxPct !== null && ctxPct >= leadCtxRotateThreshold) {
+        log(
+          `lane-tick: ${member.name}: lead ctx=${ctxPct}% ≥ ` +
+            `${leadCtxRotateThreshold}% — sending /team rotate-lead nudge ` +
+            `instead of claim --next`,
+        );
+        claimText = "/team rotate-lead";
+        isRotateNudge = true;
+      }
+    }
+
     const result = await sendFn(windowTarget, claimText, sendOpts);
     if (result.outcome === "sent") {
-      log(`lane-tick: ${member.name}: injected claim --next (state=READY)`);
-      outcomes[member.name] = "injected";
+      if (isRotateNudge) {
+        log(`lane-tick: ${member.name}: injected /team rotate-lead (state=READY)`);
+        outcomes[member.name] = "injected-rotate-nudge";
+      } else {
+        log(`lane-tick: ${member.name}: injected claim --next (state=READY)`);
+        outcomes[member.name] = "injected";
+      }
     } else {
       log(
         `lane-tick: ${member.name}: send refused (outcome=${result.outcome}, ` +
