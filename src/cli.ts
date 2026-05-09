@@ -31,6 +31,7 @@
 import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./errors.ts";
 import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
+import { audit } from "./verbs/audit.ts";
 import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
@@ -108,6 +109,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return status(argv.slice(1));
     case "attach":
       return attach(argv.slice(1));
+    case "audit":
+      return audit(argv.slice(1));
     case "add-member":
       return addMember(argv.slice(1));
     case "reply":
