@@ -32,6 +32,13 @@
 // - Close `__<team>__home` placeholder when other windows exist
 //   (lib/start.sh:288-294)
 // - Record start timestamp at `state/session-start.txt` (lib/start.sh:354)
+// - Cage tmux prefix override (lib/start.sh:206-236) — `C-\` global
+//   prefix on the cage server so the operator's outer-tmux prefix
+//   (typically C-b/C-a) doesn't conflict with the nested cage tmux
+//   inside `atmux attach`. Reuses `applyCagePrefix` from cockpit.ts.
+//   Origin: 2026-05-09 bisection — `atmux start unum` produced a cage
+//   on default `C-b` because only `atmux cockpit rebuild` Phase 3 was
+//   applying the prefix; standalone `atmux start <team>` skipped it.
 //
 // DEFERRED — explicit rationale per source line:
 // - `singleSession` (lib/start.sh:36-78) — needs cross-socket
@@ -50,8 +57,6 @@
 //   ported yet. The verb logs a one-line "doctor mode skipped (Phase 2
 //   port pending)" notice when doctor mode is `verbose` or `preflight`,
 //   and proceeds. ADR-013 §"Phase 5 deferral" governs.
-// - Cage tmux prefix override (lib/start.sh:206-236) — aesthetic config
-//   for nested tmux topology; Phase 5 with the cage stack.
 // - Registry touch (lib/start.sh:238-270) — depends on `lib/registry.sh`
 //   which is Phase 5 WIP per ADR-013.
 // - Driver auto-spawn paths (lib/start.sh:177-204, 296-327) — depends
@@ -100,6 +105,7 @@ import {
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import { applyCagePrefix } from "./cockpit.ts";
 
 // ---------- Arg parsing ----------
 
@@ -408,6 +414,16 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       logger.ok(`created tmux session: ${session}`);
     }
   }
+
+  // 7a. Apply the C-\ cage prefix on the cage tmux server (lib/start.sh:
+  //     206-236). Server-level option — once-per-start is sufficient and
+  //     idempotent on the incremental-restart path. Best-effort: failures
+  //     swallow inside `applyCagePrefix` (the prefix is cosmetic, not a
+  //     precondition for cage operation). Lifted from cockpit.ts so
+  //     standalone `atmux start <team>` matches `atmux cockpit rebuild`
+  //     Phase 3 — the bisection that motivated this port (2026-05-09)
+  //     showed unum cages started outside cockpit landing on default C-b.
+  await applyCagePrefix(tmux);
 
   // 8. Spawn each member as a window (lib/start.sh:272-283 +
   //    _atmux_spawn_member lib/start.sh:400-440 — minus deferred

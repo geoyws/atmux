@@ -326,6 +326,32 @@ describe("start — happy path", () => {
     const wins = await env.tmux.window.listWindows(session);
     expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
   });
+
+  test("applies the C-\\ cage prefix globally on the tmux server", async () => {
+    // 2026-05-09 bisection — standalone `atmux start <team>` was NOT
+    // applying the cage prefix that nested-tmux topology requires;
+    // only `atmux cockpit rebuild` Phase 3 was. unum cages started
+    // outside cockpit landed on default C-b. Fix: lift the helper from
+    // cockpit.ts and call it after session creation in start.ts.
+    await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
+    await runStart([]);
+    const opts = await env.tmux.option.showOptions({ global: true });
+    expect(opts.prefix).toBe("C-\\");
+  });
+
+  test("cage prefix is applied on incremental-restart path too (idempotent)", async () => {
+    // The prefix-set is server-level; re-running start against an
+    // existing session must not regress the prefix. Belt-and-braces
+    // assertion that the helper runs in the warn-keep branch (no
+    // --force, session already exists).
+    await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
+    await runStart([]);
+    // Manually clobber the prefix to verify the second start re-applies.
+    await env.tmux.option.setOption({ name: "prefix", value: "C-b", global: true });
+    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("C-b");
+    await runStart([]);
+    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("C-\\");
+  });
 });
 
 // ---------- start verb — live-lead guard ----------
