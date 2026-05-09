@@ -264,9 +264,15 @@ async function runCheck(parsed: WhipResumeCheckArgs, ctx: TickCtx): Promise<numb
   }
 
   // 1. Probe each configured account (force=false — cache wins when fresh).
+  //    ADR-078 — daemon caller owns the credentials lifecycle, opts in to
+  //    the Fix-C OAuth refresh path.
   const probes: BudgetProbeResult[] = [];
   for (const account of accounts) {
-    const r = await ctx.probe(account, { force: false, atmuxDir });
+    const r = await ctx.probe(account, {
+      force: false,
+      atmuxDir,
+      refreshOnNearExpiry: true,
+    });
     probes.push(r);
   }
 

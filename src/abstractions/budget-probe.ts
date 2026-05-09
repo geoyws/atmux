@@ -1,10 +1,17 @@
 // ADR-053 §D1: per-account budget probe + Fix C OAuth refresh.
+// ADR-078: Fix C is now opt-in via `refreshOnNearExpiry`. Default is
+// read-only — only daemon callers that own the credentials lifecycle
+// (whip-budget-check, whip-resume-check) opt in. Spawn-time / one-shot
+// probes (cockpit, account-swap) leave the flag unset; a near-expiry
+// token surfaces as `probe-401` instead of triggering a credentials
+// rewrite that would 401 just-spawned `claude` TUIs holding the prior
+// refreshToken in memory.
 //
 // Bun-side port of bash `lib/whip.sh::_atmux_whip_probe_account_budget`,
 // extended with OAuth-401 self-heal (Fix C). The bash baseline assumes a
 // fresh access token and silently returns empty when the probe 401's; the
 // bun port refreshes via `claudeAiOauth.refreshToken` ahead of expiry
-// (60s margin) AND on a single 401 retry.
+// (60s margin) AND on a single 401 retry — gated on `refreshOnNearExpiry`.
 //
 // Layout per ADR-053 §D1:
 //   1. Read `~/.claude-<account>/.credentials.json` (bash convention; the
@@ -13,15 +20,18 @@
 //   2. Cache check on `<atmuxDir>/state/budget-probe-<account>.json`. TTL
 //      default 240s (matches bash `ATMUX_BUDGET_PROBE_TTL`); `force: true`
 //      skips cache.
-//   3. OAuth refresh BEFORE probe if `expiresAt < now+60s`. Atomic
-//      tmp+rename write of new tokens back into credentials.json. On
-//      refresh failure (401/403) → status `probe-401`, surface
-//      `atmux flags add` entry, write cache + history, return.
+//   3. OAuth refresh BEFORE probe if `expiresAt < now+60s` AND
+//      `refreshOnNearExpiry === true` (ADR-078). Atomic tmp+rename write
+//      of new tokens back into credentials.json. On refresh failure
+//      (401/403) → status `probe-401`, surface `atmux flags add` entry,
+//      write cache + history, return. When the flag is unset, fall
+//      through to the probe with the existing accessToken.
 //   4. Probe call mirrors bash byte-identically: POST
 //      https://api.anthropic.com/v1/messages with claude-haiku-4-5 +
 //      max_tokens=1. Read rate-limit response headers.
-//   5. Single 401 retry: if probe 401's, force-refresh once + retry probe.
-//      Second 401 → `probe-401`.
+//   5. Single 401 retry: if probe 401's AND `refreshOnNearExpiry === true`,
+//      force-refresh once + retry probe. Second 401 → `probe-401`. When
+//      the flag is unset, the first 401 is final → `probe-401` directly.
 //   6. Cache JSON shape mirrors bash byte-for-byte
 //      (`{h5_util, wk_util, h5_reset, wk_reset, status, probedAt}`) so
 //      bash whip can read it directly during the bash→bun transition.
@@ -90,6 +100,25 @@ export interface ProbeBudgetOpts {
   /** Surface a Fix C flag entry. Default: spawn `atmux flags add`
    *  best-effort (cross-runtime to bash); tests inject a recorder. */
   flagSurface?: (msg: string, account: string) => Promise<void>;
+  /**
+   * Refresh OAuth tokens when `expiresAt < now+60s` AND on a single
+   * probe-401 retry. **Default: false.**
+   *
+   * Setting this to `true` causes `probeBudget` to atomic-rewrite
+   * `.credentials.json`, which rotates the server-side refreshToken.
+   * Any other process holding the previous refreshToken in memory
+   * (e.g. a just-spawned `claude` TUI) will 401 on its next refresh.
+   *
+   * Only set `true` in long-running daemon contexts that **own** the
+   * credentials lifecycle (whip-budget-check, whip-resume-check). For
+   * one-shot probes (cockpit, account-swap, doctor checks), leave it
+   * false — a stale-token probe will return `probe-401` and the
+   * operator gets a normal flag-surfaced error instead of an invisible
+   * race against TUI spawns.
+   *
+   * Origin: ADR-078 (P0 cockpit-rebuild OAuth race, 2026-05-09).
+   */
+  refreshOnNearExpiry?: boolean;
 }
 
 // ---------- On-disk shape (bash-compatible) ----------
@@ -139,6 +168,7 @@ export async function probeBudget(
   const oauthUrl = opts.oauthRefreshUrl ?? DEFAULT_OAUTH_URL;
   const probeUrl = opts.probeUrl ?? DEFAULT_PROBE_URL;
   const flagSurface = opts.flagSurface ?? defaultFlagSurface;
+  const refreshOnNearExpiry = opts.refreshOnNearExpiry === true;
 
   // Bash short-circuit: empty / default / null account → silent no-op.
   if (account === "" || account === "default" || account === "null") {
@@ -180,8 +210,17 @@ export async function probeBudget(
 
   let tokenRefreshed = false;
 
-  // 3. OAuth refresh on near-expiry (Fix C).
-  if (expiresAt > 0 && expiresAt < now() + REFRESH_MARGIN_SEC * 1000) {
+  // 3. OAuth refresh on near-expiry (Fix C). Gated on `refreshOnNearExpiry`
+  //    per ADR-078 — only daemon callers that own the credentials
+  //    lifecycle opt in. When the flag is unset, fall through to the
+  //    probe with the existing accessToken; if it 401's, the gated
+  //    Branch 2 below converts that to a `probe-401` result instead of
+  //    rotating the refreshToken behind another process's back.
+  if (
+    refreshOnNearExpiry &&
+    expiresAt > 0 &&
+    expiresAt < now() + REFRESH_MARGIN_SEC * 1000
+  ) {
     if (refreshToken.length === 0) {
       const r = await finalize(
         atmuxDir,
@@ -212,7 +251,14 @@ export async function probeBudget(
   let probeResp = await tryProbe(probeUrl, accessToken);
 
   // 5. Single 401 retry: assume token expired between step 3 and 4.
-  if (probeResp.status === 401 && refreshToken.length > 0 && !tokenRefreshed) {
+  //    Also gated on `refreshOnNearExpiry` (ADR-078) — the retry rewrites
+  //    credentials.json, with the same TUI-spawn race risk as Branch 1.
+  if (
+    refreshOnNearExpiry &&
+    probeResp.status === 401 &&
+    refreshToken.length > 0 &&
+    !tokenRefreshed
+  ) {
     const refreshed = await tryRefreshOauth(oauthUrl, refreshToken);
     if (refreshed === null) {
       const r = await finalize(

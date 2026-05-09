@@ -463,8 +463,18 @@ export interface AccountSwapCheckDeps {
   /** Probe one account's budget. Caller may share the same dep with
    *  ADR-053's budget-check so the probe cache (240s TTL) absorbs the
    *  double-call. Probes the trigger account for state + each fallback
-   *  candidate to gate health. */
-  probeBudget: (account: string, opts?: { force?: boolean }) => Promise<BudgetProbeResult>;
+   *  candidate to gate health.
+   *
+   *  ADR-078 — `refreshOnNearExpiry` is read-only by default here. The
+   *  account-swap pass is a one-shot probe that does NOT own the
+   *  credentials lifecycle; rotating refreshTokens behind a TUI's back
+   *  during a swap would 401 the very member we're trying to migrate.
+   *  Daemon callers (whip-budget-check, whip-resume-check) opt in
+   *  separately. */
+  probeBudget: (
+    account: string,
+    opts?: { force?: boolean; refreshOnNearExpiry?: boolean },
+  ) => Promise<BudgetProbeResult>;
   /** Optional logger — caller injects ctx.stderr-equivalent. Default
    *  no-op (state-file is the audit trail). */
   log?: (msg: string) => void;

@@ -654,6 +654,10 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
         homeDir,
         probeUrl: server.url,
         oauthRefreshUrl: server.refreshUrl,
+        // ADR-078 — opt-in to Fix-C OAuth refresh path. This test pins
+        // the daemon-on-flag contract; the default-off contract is
+        // pinned by the "refreshOnNearExpiry default-off" test below.
+        refreshOnNearExpiry: true,
       });
       expect(r.status).toBe("allowed");
       expect(server.refreshCalls()).toBe(1);
@@ -711,6 +715,8 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
       homeDir,
       probeUrl: "http://127.0.0.1:1/never",
       oauthRefreshUrl: "http://127.0.0.1:1/never",
+      // ADR-078 — opt-in so Branch 1 fires on near-expiry.
+      refreshOnNearExpiry: true,
       flagSurface: async (msg, account) => {
         flagsCalled.push({ msg, account });
       },
@@ -736,6 +742,8 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
         homeDir,
         probeUrl: server.url,
         oauthRefreshUrl: server.refreshUrl,
+        // ADR-078 — opt-in so refresh actually fires.
+        refreshOnNearExpiry: true,
         flagSurface: async (msg) => {
           flagsCalled.push(msg);
         },
@@ -761,6 +769,8 @@ describe("probeBudget — OAuth refresh (Fix C)", () => {
         homeDir,
         probeUrl: server.url,
         oauthRefreshUrl: server.refreshUrl,
+        // ADR-078 — opt-in so refresh fires.
+        refreshOnNearExpiry: true,
         flagSurface: async (msg) => {
           flagsCalled.push(msg);
         },
@@ -792,6 +802,8 @@ describe("probeBudget — 401 retry", () => {
         homeDir,
         probeUrl: server.url,
         oauthRefreshUrl: server.refreshUrl,
+        // ADR-078 — opt-in so the 401-retry refresh fires (Branch 2).
+        refreshOnNearExpiry: true,
       });
       expect(r.status).toBe("allowed");
       expect(server.probeCalls()).toBe(2); // first 401 + retry
@@ -814,6 +826,8 @@ describe("probeBudget — 401 retry", () => {
         homeDir,
         probeUrl: server.url,
         oauthRefreshUrl: server.refreshUrl,
+        // ADR-078 — opt-in so the 401-retry refresh fires (Branch 2).
+        refreshOnNearExpiry: true,
         flagSurface: async (msg) => {
           flagsCalled.push(msg);
         },
@@ -858,6 +872,8 @@ describe("probeBudget — 401 retry", () => {
         homeDir,
         probeUrl: `http://localhost:${srv.port}/messages`,
         oauthRefreshUrl: `http://localhost:${srv.port}/oauth/token`,
+        // ADR-078 — opt-in so the 401-retry refresh fires (Branch 2).
+        refreshOnNearExpiry: true,
       });
       expect(r.status).toBe("probe-401");
       expect(probeCallCount).toBe(2); // first + retry
@@ -887,6 +903,8 @@ describe("probeBudget — 401 retry", () => {
         homeDir,
         probeUrl: `http://localhost:${srv.port}/messages`,
         oauthRefreshUrl: `http://localhost:${srv.port}/oauth/token`,
+        // ADR-078 — opt-in so Branch 1 (near-expiry refresh) fires.
+        refreshOnNearExpiry: true,
         flagSurface: async (msg) => {
           flagsCalled.push(msg);
         },
@@ -960,6 +978,9 @@ describe("probeBudget — default flag-surface helper", () => {
           homeDir,
           probeUrl: server.url,
           oauthRefreshUrl: server.refreshUrl,
+          // ADR-078 — opt-in so Branch 1 fires + the refresh-401 path
+          // exercises defaultFlagSurface.
+          refreshOnNearExpiry: true,
         });
         return r;
       } finally {
@@ -968,5 +989,160 @@ describe("probeBudget — default flag-surface helper", () => {
     };
     const r = await credsResult();
     expect(r.status).toBe("probe-401");
+  });
+});
+
+// ---------- ADR-078: refreshOnNearExpiry opt-in ----------
+//
+// Pins the default-off contract so spawn-time / one-shot probes
+// (cockpit, account-swap) cannot rotate refreshTokens behind a TUI's
+// back. The opt-in path is regression-pinned in the `Fix C` describe
+// block above (every refresh-firing test now passes the explicit
+// `refreshOnNearExpiry: true`).
+
+describe("probeBudget — ADR-078 refreshOnNearExpiry gate", () => {
+  test("default-off: near-expiry token does NOT trigger refresh", async () => {
+    const server = startProbeServer({
+      utilization5h: 0.05,
+      utilization7d: 0.1,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
+    });
+    try {
+      const credsPath = await writeCreds("icloud", {
+        accessToken: "old-token",
+        refreshToken: "old-refresh",
+        expiresAt: FIXED_NOW_MS + 30_000, // < now + 60s margin (near-expiry)
+      });
+
+      // No refreshOnNearExpiry flag → Branch 1 must NOT fire.
+      const r = await probeBudget("icloud", {
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
+      });
+
+      // Probe runs with the OLD accessToken; server returns 200/allowed.
+      expect(r.status).toBe("allowed");
+      // Refresh endpoint NEVER touched — this is the structural fix.
+      expect(server.refreshCalls()).toBe(0);
+      expect(server.probeCalls()).toBe(1);
+
+      // Credentials file untouched — no rotation, no race against TUIs.
+      const stored = JSON.parse(await readFile(credsPath, "utf8"));
+      expect(stored.claudeAiOauth.accessToken).toBe("old-token");
+      expect(stored.claudeAiOauth.refreshToken).toBe("old-refresh");
+
+      // History records tokenRefreshed=false.
+      const lines = await readHistoryLines();
+      expect(lines[0]).toMatchObject({ tokenRefreshed: false });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("opt-in: near-expiry token triggers refresh + persists tokens", async () => {
+    // Regression-pin of the existing Fix-C behaviour with the explicit
+    // ADR-078 flag. Mirror of the legacy "near-expiry → refresh fires"
+    // test, hoisted here so the gate semantics live next to each other.
+    const server = startProbeServer({
+      utilization5h: 0.05,
+      utilization7d: 0.1,
+      reset5h: 0,
+      reset7d: 0,
+      statusHeader: "allowed",
+    });
+    try {
+      const credsPath = await writeCreds("icloud", {
+        accessToken: "old-token",
+        refreshToken: "old-refresh",
+        expiresAt: FIXED_NOW_MS + 30_000,
+      });
+
+      const r = await probeBudget("icloud", {
+        atmuxDir,
+        homeDir,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
+        refreshOnNearExpiry: true,
+      });
+
+      expect(r.status).toBe("allowed");
+      expect(server.refreshCalls()).toBe(1);
+      expect(server.lastRefreshToken()).toBe("old-refresh");
+
+      const updated = JSON.parse(await readFile(credsPath, "utf8"));
+      expect(updated.claudeAiOauth.accessToken).toBe("fresh-access-token");
+      expect(updated.claudeAiOauth.refreshToken).toBe("fresh-refresh-token");
+
+      const lines = await readHistoryLines();
+      expect(lines[0]).toMatchObject({ tokenRefreshed: true });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("401 retry path also gated by the flag (Branch 2)", async () => {
+    // Setup: token is NOT near-expiry (24h future), so Branch 1 is
+    // dormant for both calls. Probe upstream always returns 401 →
+    // Branch 2 is the only refresh path under test.
+
+    // Call A — default off → no refresh, single 401, status=probe-401.
+    {
+      const server = startProbeServer({ failFirstWith401: true });
+      try {
+        await writeCreds("icloud"); // far-future expiresAt
+        const r = await probeBudget("icloud", {
+          atmuxDir,
+          homeDir,
+          probeUrl: server.url,
+          oauthRefreshUrl: server.refreshUrl,
+          // No flag → Branch 2 must NOT fire.
+        });
+        expect(r.status).toBe("probe-401");
+        expect(server.refreshCalls()).toBe(0); // gate held
+        expect(server.probeCalls()).toBe(1); // no retry
+      } finally {
+        await server.stop();
+      }
+    }
+
+    // Fresh sandbox needed since Call A wrote a (probe-401) cache that
+    // would otherwise short-circuit Call B. Re-create.
+    await rm(tmpRoot, { recursive: true, force: true });
+    tmpRoot = await mkdtemp(join(tmpdir(), "atmux-budget-probe-"));
+    homeDir = join(tmpRoot, "home");
+    atmuxDir = join(tmpRoot, "project", ".atmux");
+    await mkdir(homeDir, { recursive: true });
+    await mkdir(atmuxDir, { recursive: true });
+
+    // Call B — opt-in true → 401 + refresh + retry succeeds.
+    {
+      const server = startProbeServer({
+        utilization5h: 0.05,
+        utilization7d: 0.1,
+        reset5h: 0,
+        reset7d: 0,
+        statusHeader: "allowed",
+        failFirstWith401: true,
+      });
+      try {
+        await writeCreds("icloud");
+        const r = await probeBudget("icloud", {
+          atmuxDir,
+          homeDir,
+          probeUrl: server.url,
+          oauthRefreshUrl: server.refreshUrl,
+          refreshOnNearExpiry: true,
+        });
+        expect(r.status).toBe("allowed");
+        expect(server.refreshCalls()).toBe(1); // single retry refresh
+        expect(server.probeCalls()).toBe(2); // first 401 + retry
+      } finally {
+        await server.stop();
+      }
+    }
   });
 });

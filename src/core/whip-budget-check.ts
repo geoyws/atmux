@@ -117,8 +117,14 @@ export interface BudgetCheckCtx {
 }
 
 export interface BudgetCheckDeps {
-  /** Probe one account's budget. Default: production `probeBudget`. */
-  probeBudget?: (account: string) => Promise<BudgetProbeResult>;
+  /** Probe one account's budget. Default: production `probeBudget` with
+   *  `refreshOnNearExpiry: true` (ADR-078 — daemon-owned credentials
+   *  lifecycle, Fix-C-on). Tests inject a fake to capture the opts and
+   *  pin the daemon-on-fix-C contract. */
+  probeBudget?: (
+    account: string,
+    opts?: { refreshOnNearExpiry?: boolean },
+  ) => Promise<BudgetProbeResult>;
   /** Pause a member. Default: `core/pause.ts::pauseMember`. */
   pauseMember?: (atmuxDir: string, member: string, opts: { reason: string }) => Promise<void>;
   /** Resume a member. Default: `core/pause.ts::resumeMember`. */
@@ -173,7 +179,10 @@ export async function runBudgetCheck(
   ctx: BudgetCheckCtx,
   deps: BudgetCheckDeps = {},
 ): Promise<BudgetCheckVerdict> {
-  const probe = deps.probeBudget ?? ((account: string) => defaultProbeBudget(account));
+  const probe =
+    deps.probeBudget ??
+    ((account: string, opts?: { refreshOnNearExpiry?: boolean }) =>
+      defaultProbeBudget(account, opts ?? {}));
   const pauseMem = deps.pauseMember ?? defaultPauseMember;
   const resumeMem = deps.resumeMember ?? defaultResumeMember;
   const send = deps.discordSend;
@@ -183,7 +192,11 @@ export async function runBudgetCheck(
   const accounts = uniqueAccounts(ctx.team.members);
   if (accounts.length === 0) return "no-pause-not-active";
 
-  const probes = await Promise.all(accounts.map((a) => probe(a)));
+  // ADR-078 — daemon caller owns the credentials lifecycle, opts in to
+  // the Fix-C OAuth refresh path.
+  const probes = await Promise.all(
+    accounts.map((a) => probe(a, { refreshOnNearExpiry: true })),
+  );
   // Stitch into [{account, result}] for downstream filtering.
   const results = accounts.map((a, i) => ({ account: a, result: probes[i] as BudgetProbeResult }));
 

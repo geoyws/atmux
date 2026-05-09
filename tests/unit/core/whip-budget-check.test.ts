@@ -590,3 +590,43 @@ describe("runBudgetCheck — refresh-soon (4.2)", () => {
     expect(v).toBe("resumed");
   });
 });
+
+// ---------- ADR-078: refreshOnNearExpiry contract ----------
+//
+// whip-budget-check is the canonical daemon caller — it owns the
+// credentials lifecycle for the whip cron loop. Pin that the call site
+// sets `refreshOnNearExpiry: true` so the Fix-C OAuth refresh path
+// stays armed for the daemon (regression-pin against accidental opt-out).
+
+describe("runBudgetCheck — ADR-078 refreshOnNearExpiry contract", () => {
+  test("daemon path passes refreshOnNearExpiry: true to every probe", async () => {
+    const probeOptsCalls: Array<{
+      account: string;
+      opts: { refreshOnNearExpiry?: boolean } | undefined;
+    }> = [];
+    const probeBudget = async (
+      account: string,
+      opts?: { refreshOnNearExpiry?: boolean },
+    ): Promise<BudgetProbeResult> => {
+      probeOptsCalls.push({ account, opts });
+      return probe(account, 5, 5); // healthy → "active" verdict
+    };
+
+    const fake = makeFakeDeps();
+    const baseDeps = depsFor(fake);
+    const v = await runBudgetCheck(
+      ctxOf([
+        { name: "alpha", claudeAccount: "icloud" },
+        { name: "beta", claudeAccount: "ifca" },
+      ]),
+      { ...baseDeps, probeBudget },
+    );
+    expect(v).toBe("active");
+
+    // Both accounts probed; each call must carry the daemon flag.
+    expect(probeOptsCalls.length).toBe(2);
+    for (const c of probeOptsCalls) {
+      expect(c.opts?.refreshOnNearExpiry).toBe(true);
+    }
+  });
+});

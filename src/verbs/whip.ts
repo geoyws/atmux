@@ -623,7 +623,10 @@ export interface WhipOpts {
    *  delegates to `core/whip-budget-check.ts::runBudgetCheck` with
    *  production probe + pause/resume + Discord wiring. Tests inject
    *  to drive the pause/resume verdict surface deterministically. */
-  budgetProbe?: (account: string) => Promise<BudgetProbeResult>;
+  budgetProbe?: (
+    account: string,
+    opts?: { force?: boolean; refreshOnNearExpiry?: boolean },
+  ) => Promise<BudgetProbeResult>;
 }
 
 /** `atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]`. */
@@ -715,7 +718,10 @@ interface TickCtx {
   send: (opts: DiscordSendOpts) => Promise<void>;
   webhookOverride?: string;
   readMemberEnv: ReadMemberEnv;
-  budgetProbe?: (account: string) => Promise<BudgetProbeResult>;
+  budgetProbe?: (
+    account: string,
+    opts?: { force?: boolean; refreshOnNearExpiry?: boolean },
+  ) => Promise<BudgetProbeResult>;
 }
 
 async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
@@ -897,11 +903,17 @@ async function runAccountSwapTickCheck(
   // the caller passes a test fake, both checks share it; otherwise both
   // hit the on-disk 240s probe cache so the double-call cost is one
   // round-trip per account per tick.
+  //
+  // ADR-078 — opts forwarded through. account-swap leaves
+  // `refreshOnNearExpiry` unset (read-only); the upstream
+  // `runAccountSwapCheck` only passes `{ force: true }` for the
+  // fallback re-probe, so the wrapper relays it without rotating
+  // refreshTokens behind any TUI's back.
   const probeBudget =
     ctx.budgetProbe ??
-    (async (account: string) => {
+    (async (account: string, opts?: { force?: boolean; refreshOnNearExpiry?: boolean }) => {
       const { probeBudget: defaultProbe } = await import("../abstractions/budget-probe.ts");
-      return defaultProbe(account);
+      return defaultProbe(account, opts ?? {});
     });
   const swapCtx: AccountSwapCheckCtx = {
     atmuxDir: ctx.atmuxDir,
@@ -946,11 +958,15 @@ async function runAccountSwapTickCheck(
  *  as aborted with a "spawn integration not yet wired" flag — which
  *  the operator sees + can resolve manually until T11-Part-3 lands. */
 async function runSwapPassTickCheck(ctx: TickCtx, _config: WhipConfig): Promise<void> {
+  // ADR-078 — `probeTarget` is a one-shot probe at swap-pass time. The
+  // wrapper forwards opts but does NOT inject `refreshOnNearExpiry`;
+  // rotating refreshTokens during a swap would 401 the very member we're
+  // migrating.
   const probeBudget =
     ctx.budgetProbe ??
-    (async (account: string) => {
+    (async (account: string, opts?: { force?: boolean; refreshOnNearExpiry?: boolean }) => {
       const { probeBudget: defaultProbe } = await import("../abstractions/budget-probe.ts");
-      return defaultProbe(account);
+      return defaultProbe(account, opts ?? {});
     });
   const deps: PerMemberSwapDeps = {
     probeTarget: (account) => probeBudget(account),
