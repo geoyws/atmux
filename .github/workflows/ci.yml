@@ -1,17 +1,15 @@
-# ci-bun — TS port gate (PLAN.md §4.1, ADR-009 §6, reviewer 8-check protocol)
+# ci-bun — TS port gate (ADR-009 §6, reviewer 8-check protocol)
 #
-# Runs alongside the legacy bash workflow (.github/workflows/test.yml). Both
-# stay green until cutover (PLAN.md Phase 4); after cutover, test.yml is
-# renamed to test-legacy.yml for the rollback window then deleted.
+# Replaces the deprecated bash test workflow (deleted with the bash
+# decommission per ADR-064 + PLAN.md Phase 4 cutover).
 #
-# Maps onto reviewer 8-check protocol (PLAN.md §9):
+# Maps onto reviewer 8-check protocol:
 #   step 1 typecheck         → "Typecheck" job step
 #   step 2 coverage 100%     → "Bun test + coverage" + "Coverage gate" steps
 #                              (emit lcov, then enforce via tests/lcov-gate.ts
 #                              per ADR-009 §6 — Bun's coverageThreshold is
 #                              parsed-but-no-op, validated in commit 600dc81)
 #   step 3 biome lint+format → "Biome check" job step
-#   step 4 parity green      → "Parity matrix" job step
 #   steps 5-8 (silent-swallow / schema / ADR / conv-commit) — manual review
 #                              + scripts/lint-discipline.ts (Phase 1 — ADR-006
 #                              R1/R2/R6/R7/R11; foundation-porter deliverable).
@@ -28,7 +26,7 @@ concurrency:
 
 jobs:
   ci:
-    name: typecheck + lint + test + parity
+    name: typecheck + lint + test
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -52,10 +50,12 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
 
-      - name: Install runtime deps for parity (tmux >=3.4, jq)
+      - name: Install runtime deps for e2e (tmux >=3.4, jq)
         # ubuntu-24.04 ships tmux 3.4 + jq 1.7 in apt — no PPA needed.
-        # Required from Phase 1 onwards once parity harness shells out
-        # to bash atmux. Installed here in Phase 0 as forward-readiness.
+        # tmux is required by the fallback-cage e2e and any other tests
+        # that spawn a real tmux server; jq is used by a handful of
+        # subprocess-shape integration tests. Both kept post-bash-
+        # decommission for the e2e surface.
         run: |
           sudo apt-get update
           sudo apt-get install -y tmux jq
@@ -87,16 +87,6 @@ jobs:
         # Phase 0 empty-skeleton case: "tracked: 0 files — vacuously passes"
         # is honest and explicit (no silent vacuous-green).
         run: bun tests/lcov-gate.ts
-
-      - name: Parity harness (version verb — first operational stub)
-        # ADR-009 §3 — parity harness lives at tests/parity/. The
-        # `version` verb is the first operational parity-verb stub per
-        # PLAN.md §14 Phase 1 → Phase 2 exit gate ("parity harness
-        # operational with at least one stub TS verb"). Subsequent verbs
-        # add rows to tests/parity/matrix.ts as they land in Phase 2;
-        # this step runs the full parity dir so any new *.test.ts file
-        # gets exercised without further CI edits.
-        run: bun run test:parity
 
       - name: Upload coverage artifact
         if: always()

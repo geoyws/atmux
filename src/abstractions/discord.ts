@@ -8,10 +8,12 @@
 //   - Chunks at 2000 bytes (Discord webhook hard limit) — section labels
 //     stay glued to their first bullet (no orphaned `**Label**` at chunk
 //     tails), bullets never split mid-line.
-//   - Routes through `~/.claude/skills/whip/scripts/ping-discord.sh` via
-//     spawn() (per CLAUDE.md "all whip + whip-watchdog + team skill sends
-//     route through ping-discord.sh"), with a direct-fetch fallback for
-//     environments without the whip skill installed.
+//   - Posts each chunk via bun-native `fetch` against the resolved webhook
+//     URL. (Earlier revisions delegated to `~/.claude/skills/whip/scripts/
+//     ping-discord.sh` via spawn(); the script was never installed on this
+//     deploy, every cron tick logged a "not found, using direct fetch"
+//     warning, and the fallback IS the canonical path. The spawn route was
+//     dropped — see ADR-008 §"Routing".)
 //   - Honours `ATMUX_DISCORD_RECORDER` for parity-harness JSONL capture
 //     (per ADR-009 §3 + tests/parity/intercept-discord.ts).
 //
@@ -22,7 +24,6 @@
 import { appendFile } from "node:fs/promises";
 import { ConfigError, DiscordWebhookError } from "../errors.ts";
 import { readTextOrNull } from "./fs.ts";
-import { spawn } from "./spawn.ts";
 import { formatDuration, formatMyt, now, nowIso } from "./time.ts";
 
 // ---------- Public types ----------
@@ -143,8 +144,15 @@ export interface DiscordSendOpts {
 
 // ---------- Validation ----------
 
-/** Per-bullet emoji prefix allowlist per CLAUDE.md global conventions. */
-const ALLOWED_BULLET_PREFIX = new Set<string>([
+/** Per-bullet emoji prefix allowlist per CLAUDE.md global conventions.
+ *  Exported so the structural lint (tests/unit/abstractions/
+ *  discord-bullet-prefix-audit.test.ts) can import + cross-check
+ *  every `bullet80(\`<emoji>` literal across the src tree against
+ *  the allowlist. Bug 1 driver fast-path guards: any new emoji a
+ *  caller introduces in code MUST also land here, or the validator
+ *  silently rejects the bullet at Discord-emit time → digest stays
+ *  blank. The audit test catches that coupling at lint-time. */
+export const ALLOWED_BULLET_PREFIX = new Set<string>([
   "✅",
   "🧪",
   "🛠️",
@@ -190,6 +198,21 @@ const ALLOWED_BULLET_PREFIX = new Set<string>([
   // ADR-055 §D5: cursor self-heal bullet emojis.
   // 📜 (patch summary line — "patch: N keys updated; pending reviewer").
   "📜",
+  // Bug 1 (driver-auth 19:00 MYT 2026-05-08): emojis silently rejected
+  // by the validator that the runtime code already emits OR the driver
+  // greenlit for forward-compat. Six-emoji minimum per the dispatch:
+  // ⏰ (whip overdue / stale-task bullet — whip.ts:1281),
+  // 📋 (perm-mode drift bullet — whip.ts:1297),
+  // 🩹 (fix bullet — Bug 2/3 templates ahead),
+  // 💓 (heartbeat header / bullet),
+  // 🚀 (lifecycle / bootstrap header bullet),
+  // ⏳ (waiting / pending state bullet).
+  "⏰",
+  "📋",
+  "🩹",
+  "💓",
+  "🚀",
+  "⏳",
 ]);
 
 const GRAPHEME_SEG = new Intl.Segmenter("en", { granularity: "grapheme" });
@@ -344,17 +367,18 @@ function chunkBody(header: string, body: ReadonlyArray<string>): string[] {
 
 // ---------- Send ----------
 
-/** Once-per-process flag for the "ping-discord.sh not found" stderr warning.
- *  Reset via `_resetFallbackWarnedForTest()` in unit tests. */
-let _fallbackWarned = false;
-
 /**
  * Send a Discord message per ADR-008.
  *
- * @throws DiscordWebhookError on validation failure, spawn failure, fallback
- *         network failure, or fallback non-2xx response.
- * @throws ConfigError if `ATMUX_DISCORD_PING_SCRIPT` is set but the script
- *         doesn't exist, or if no webhook is resolvable for the fallback path.
+ * Posts each chunk via bun-native `fetch` against the resolved webhook URL
+ * (`webhookOverride` > `ATMUX_DISCORD_WEBHOOK`). The earlier
+ * `ping-discord.sh` spawn route was dropped — the script was never present
+ * on disk in this deploy and the direct-fetch path was already serving every
+ * tick (see ADR-008 §"Routing").
+ *
+ * @throws DiscordWebhookError on validation failure, network failure, or
+ *         non-2xx response.
+ * @throws ConfigError when no webhook is resolvable.
  */
 export async function send(opts: DiscordSendOpts): Promise<void> {
   validateOpts(opts);
@@ -374,62 +398,8 @@ export async function send(opts: DiscordSendOpts): Promise<void> {
   }
 
   for (const c of chunks) {
-    await postChunk(c, opts.template, opts.webhookOverride);
+    await directFetch(c, opts.template, opts.webhookOverride);
   }
-}
-
-async function postChunk(
-  chunk: string,
-  template: DiscordTemplate,
-  webhookOverride: string | undefined,
-): Promise<void> {
-  const explicitScript = process.env.ATMUX_DISCORD_PING_SCRIPT;
-  const home = process.env.HOME ?? "";
-  const defaultScript = `${home}/.claude/skills/whip/scripts/ping-discord.sh`;
-  const script = explicitScript && explicitScript !== "" ? explicitScript : defaultScript;
-  const exists = await Bun.file(script).exists();
-
-  if (exists) {
-    try {
-      const spawnOpts: Parameters<typeof spawn>[0] = {
-        cmd: script,
-        argv: [],
-        stdin: chunk,
-        timeoutMs: 10_000,
-        expectExitCode: 0,
-      };
-      if (webhookOverride !== undefined && webhookOverride !== "") {
-        spawnOpts.env = { ATMUX_DISCORD_WEBHOOK: webhookOverride };
-      }
-      await spawn(spawnOpts);
-      return;
-    } catch (e) {
-      throw new DiscordWebhookError({
-        template,
-        detail: "ping-discord.sh delegation failed",
-        cause: e,
-      });
-    }
-  }
-
-  if (explicitScript !== undefined && explicitScript !== "") {
-    // Operator pinned a script that doesn't exist — fail loudly, don't
-    // silently fall back (would mask their config bug).
-    throw new ConfigError({
-      what: `ATMUX_DISCORD_PING_SCRIPT='${explicitScript}' does not exist`,
-      hint: "unset ATMUX_DISCORD_PING_SCRIPT to use the direct-fetch fallback",
-    });
-  }
-
-  // Default-path script absent — fall back to direct fetch (test
-  // environments, fresh checkouts without whip skill).
-  if (!_fallbackWarned) {
-    _fallbackWarned = true;
-    process.stderr.write(
-      "discord: ping-discord.sh not found, using direct fetch (set ATMUX_DISCORD_PING_SCRIPT to silence)\n",
-    );
-  }
-  await directFetch(chunk, template, webhookOverride);
 }
 
 async function directFetch(
@@ -444,7 +414,7 @@ async function directFetch(
   if (url === undefined || url === "") {
     throw new ConfigError({
       what: "no Discord webhook resolved",
-      hint: "set ATMUX_DISCORD_WEBHOOK or install ~/.claude/skills/whip/scripts/ping-discord.sh",
+      hint: "set ATMUX_DISCORD_WEBHOOK",
     });
   }
   // R8 carve-out: discord.ts is the ONE module allowed to call `fetch`
@@ -496,8 +466,8 @@ export interface ResolveWebhookOpts {
  * Returns `null` when no source resolves a non-empty value. Mirrors the
  * V-24 doctor + V-25 whip + future report cross-link consumers (see
  * ADR-019 + ADR-008 §"Routing"); `discord.send`'s `directFetch` reads
- * env directly today, but that's the lower-level fallback path —
- * `resolveWebhookUrl` is the canonical resolution helper.
+ * env directly today — `resolveWebhookUrl` is the canonical resolution
+ * helper for verbs that need to surface webhook state to the user.
  */
 export async function resolveWebhookUrl(opts: ResolveWebhookOpts = {}): Promise<string | null> {
   const env = opts.env ?? process.env;
@@ -572,9 +542,7 @@ export interface EternalImprovementStartOpts {
  * Build the `[eternal-improvement-start]` Discord send opts per ADR-052.
  * Caller passes the result to `send()`.
  */
-export function renderEternalImprovementStart(
-  opts: EternalImprovementStartOpts,
-): DiscordSendOpts {
+export function renderEternalImprovementStart(opts: EternalImprovementStartOpts): DiscordSendOpts {
   const out: DiscordSendOpts = {
     template: "eternal-improvement-start",
     team: opts.team,
@@ -652,9 +620,7 @@ export interface EternalImprovementDoneOpts {
  * driver's "feature must be fully built even though a bit more tokens are
  * used" directive (§"Loop mechanics") makes mid-cycle overage expected.
  */
-export function renderEternalImprovementDone(
-  opts: EternalImprovementDoneOpts,
-): DiscordSendOpts {
+export function renderEternalImprovementDone(opts: EternalImprovementDoneOpts): DiscordSendOpts {
   const overageBytes =
     opts.tokensConsumed > opts.budgetTotal && opts.budgetTotal > 0
       ? ` (${(((opts.tokensConsumed - opts.budgetTotal) / opts.budgetTotal) * 100).toFixed(1)}% overage, mid-task)`
@@ -785,9 +751,7 @@ export interface BudgetPauseDiscordOpts {
  * gate hint bullets.
  */
 export function renderWhipBudgetPause(opts: BudgetPauseDiscordOpts): DiscordSendOpts {
-  const memberBullets = opts.atRisk.map(
-    (r) => `🪫 ${r.member} — 5h ${r.h5}% / wk ${r.wk}%`,
-  );
+  const memberBullets = opts.atRisk.map((r) => `🪫 ${r.member} — 5h ${r.h5}% / wk ${r.wk}%`);
   const bullets: string[] = [
     `🪫 team paused — ${opts.atRisk.length} at-risk member(s)`,
     ...memberBullets,
@@ -897,9 +861,7 @@ export interface BudgetRefreshSoonDiscordOpts {
  * ADR-053 §D3 4.2. Header 🌅, fires once per (account, window,
  * resetEpoch) — dedup via `core/budget-refresh-soon-state.ts`.
  */
-export function renderWhipBudgetRefreshSoon(
-  opts: BudgetRefreshSoonDiscordOpts,
-): DiscordSendOpts {
+export function renderWhipBudgetRefreshSoon(opts: BudgetRefreshSoonDiscordOpts): DiscordSendOpts {
   const bullets: string[] = [
     `⏱️ window resets in: ${opts.resetsIn} (${opts.window})`,
     `💰 account: \`${opts.account}\` — remaining: ${opts.remainingPct}%`,
@@ -1062,9 +1024,7 @@ export interface AccountSwapPassCompleteOpts {
 
 /** Pass-complete ping (ADR-056 §D5). Final ping per pass; archives the
  *  decisions[] tally + lifts the pin. */
-export function renderAccountSwapPassComplete(
-  opts: AccountSwapPassCompleteOpts,
-): DiscordSendOpts {
+export function renderAccountSwapPassComplete(opts: AccountSwapPassCompleteOpts): DiscordSendOpts {
   const out: DiscordSendOpts = {
     template: "whip-account-swap-pass-complete",
     team: opts.team,
@@ -1149,9 +1109,7 @@ export interface WhipSelfHealAttemptOpts {
  *   - `📍 reason: <reason>`
  *   - `💰 token cap: <tokenCap formatted>`
  */
-export function renderWhipSelfHealAttempt(
-  opts: WhipSelfHealAttemptOpts,
-): DiscordSendOpts {
+export function renderWhipSelfHealAttempt(opts: WhipSelfHealAttemptOpts): DiscordSendOpts {
   const out: DiscordSendOpts = {
     template: "whip-self-heal-attempt",
     team: opts.team,
@@ -1213,9 +1171,7 @@ export interface WhipSelfHealResultOpts {
  *   - `📍 see: <logPath>`
  *   - `🚩 flag: <severity> raised — operator triage needed`
  */
-export function renderWhipSelfHealResult(
-  opts: WhipSelfHealResultOpts,
-): DiscordSendOpts {
+export function renderWhipSelfHealResult(opts: WhipSelfHealResultOpts): DiscordSendOpts {
   const tokensUsedStr = opts.tokensUsed >= 0 ? formatTokens(opts.tokensUsed) : "?";
   const tokenCapStr = formatTokens(opts.tokenCap);
   const bullets: string[] = [];
@@ -1273,9 +1229,7 @@ export interface WhipPermModeDriftOpts {
  *   - `🛠️ fix: BTab cycle to auto on each drifted pane`
  */
 export function renderWhipPermModeDrift(opts: WhipPermModeDriftOpts): DiscordSendOpts {
-  const bullets: string[] = [
-    `📍 ${opts.drifted.length} member(s) drifted off auto mode`,
-  ];
+  const bullets: string[] = [`📍 ${opts.drifted.length} member(s) drifted off auto mode`];
   for (const d of opts.drifted) {
     bullets.push(`🟡 ${d.member}: pane in '${d.mode}' mode (expected 'auto')`);
   }
@@ -1331,11 +1285,4 @@ export function renderWhipDefunctCwd(opts: WhipDefunctCwdOpts): DiscordSendOpts 
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
   return out;
-}
-
-// ---------- Test hooks ----------
-
-/** Reset the once-per-process fallback warning flag. Test-only. */
-export function _resetFallbackWarnedForTest(): void {
-  _fallbackWarned = false;
 }

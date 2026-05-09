@@ -30,6 +30,7 @@
 
 import { exists } from "../abstractions/fs.ts";
 import { driverInboxPath, getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { UsageError } from "../errors.ts";
 
 const USAGE = "atmux dashboard [--interval <s>]";
@@ -114,6 +115,10 @@ export interface FrameSnapshot {
   driverInbox: string;
   /** First ≤10 lines of `atmux outbox`. */
   outbox: string;
+  /** ADR-064 §4: driver-pane health snapshot. Optional for back-compat
+   *  with existing test fixtures; absence is rendered same as
+   *  `configured=false` (block skipped). */
+  driverPane?: DriverPaneHealth;
 }
 
 /** Compose one frame body (no leading clear; the loop emits that). */
@@ -123,9 +128,28 @@ export function composeFrame(snap: FrameSnapshot): string {
   // via the `echo ""` on line 28; preserve.
   const statusBlock = `${snap.status}${ensureTrailingNewline(snap.status)}\n`;
   const kanbanBlock = `─── recent kanban ───\n${snap.recentKanban}${ensureTrailingNewline(snap.recentKanban)}\n`;
+  // ADR-064 §4: driver-pane block above driver-inbox. Skipped when the
+  // team didn't opt into the ADR-044 driver-window topology OR when the
+  // snapshot lacks the field (back-compat).
+  const driverPaneBlock =
+    snap.driverPane === undefined ? "" : renderDriverPaneBlock(snap.driverPane);
   const inboxBlock = `─── driver-inbox open ───\n${snap.driverInbox}${ensureTrailingNewline(snap.driverInbox)}\n`;
   const outboxBlock = `─── lead-outbox open ───\n${snap.outbox}${ensureTrailingNewline(snap.outbox)}`;
-  return `${header}${statusBlock}${kanbanBlock}${inboxBlock}${outboxBlock}`;
+  return `${header}${statusBlock}${kanbanBlock}${driverPaneBlock}${inboxBlock}${outboxBlock}`;
+}
+
+/** ADR-064 §4 dashboard block. Empty string when unconfigured (skip
+ *  block); else 3-line block with trailing newline. */
+function renderDriverPaneBlock(dp: DriverPaneHealth): string {
+  if (!dp.configured) return "";
+  const window = dp.windowExists ? "exists" : "missing";
+  const state = dp.windowExists ? (dp.state ?? "UNKNOWN") : "n/a";
+  const evidence = dp.evidence.length > 80 ? `${dp.evidence.slice(0, 80)}…` : dp.evidence;
+  return (
+    `─── driver pane ───\n` +
+    `configured=y  window=${window}  state=${state}\n` +
+    `evidence: ${evidence}\n`
+  );
 }
 
 /** Empty string → "" (no newline). Otherwise return "\n" if missing,
@@ -240,6 +264,7 @@ export function makeRealCollect(
   collectTaskList: () => Promise<string>,
   collectOutbox: () => Promise<string>,
   readDriverInbox: () => Promise<string | null>,
+  collectDriverPane?: () => Promise<DriverPaneHealth>,
 ): () => Promise<Omit<FrameSnapshot, "intervalSec">> {
   return async () => {
     // SEQUENTIAL — `captureVerbStdout` mutates `process.stdout.write`
@@ -252,17 +277,20 @@ export function makeRealCollect(
     const kanban = await collectTaskList();
     const outbox = await collectOutbox();
     const di = await readDriverInbox();
+    const driverPane = collectDriverPane === undefined ? undefined : await collectDriverPane();
     let driverInbox = "";
     if (di !== null) {
       const lines = collectDashboardOpenLines(di).slice(0, 5);
       driverInbox = lines.length > 0 ? `${lines.join("\n")}\n` : "";
     }
-    return {
+    const out: Omit<FrameSnapshot, "intervalSec"> = {
       status,
       recentKanban: takeFirstLines(kanban, 10),
       outbox: takeFirstLines(outbox, 10),
       driverInbox,
     };
+    if (driverPane !== undefined) out.driverPane = driverPane;
+    return out;
   };
 }
 
@@ -334,6 +362,7 @@ export function buildLoopDeps(
   taskVerb: VerbFn,
   outboxVerb: VerbFn,
   signal: AbortSignal,
+  collectDriverPane?: () => Promise<DriverPaneHealth>,
 ): DashboardLoopDeps {
   return {
     collect: makeRealCollect(
@@ -341,6 +370,7 @@ export function buildLoopDeps(
       () => captureVerbStdout(taskVerb, ["list"], "task list"),
       () => captureVerbStdout(outboxVerb, [], "outbox"),
       buildDriverInboxReader(atmuxDir),
+      collectDriverPane,
     ),
     sleep: realSleep,
     write: (s: string) => {
@@ -367,7 +397,7 @@ export async function dashboard(argv: ReadonlyArray<string>): Promise<number> {
   // `atmux::require_team`. Failing here yields a ConfigError → exit 78
   // before the screen-clear, so the operator sees the message rather
   // than a blank dashboard frame.
-  await requireTeam(dirOpts);
+  const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
 
   // Lazy import the in-process verbs we delegate to. Static imports at
@@ -390,7 +420,9 @@ export async function dashboard(argv: ReadonlyArray<string>): Promise<number> {
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {
-    const deps = buildLoopDeps(atmuxDir, statusVerb, taskVerb, outboxVerb, abort.signal);
+    const deps = buildLoopDeps(atmuxDir, statusVerb, taskVerb, outboxVerb, abort.signal, () =>
+      probeDriverPane(team, atmuxDir),
+    );
     return await dashboardLoop(deps, parsed.intervalSec);
   } finally {
     process.off("SIGINT", onSignal);

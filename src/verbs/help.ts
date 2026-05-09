@@ -21,6 +21,11 @@ Setup:
   stop [--force]              Kill tmux session, archive state
   attach                      tmux attach to the team session
   status                      Powerline team overview
+  cockpit rebuild [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
+                              ADR-063: ensure-up the operator cockpit (cages +
+                              TUI auto-launch + cockpit session). Reads roster
+                              from ~/.atmux/cockpit.json (override via
+                              ATMUX_COCKPIT_CONFIG or --config <p>).
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
@@ -57,6 +62,16 @@ Maintenance:
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
+  groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
+                              Daily 04:00 cron sweep — flush archive sections, age
+                              out done/cancelled cards, cull stale .bak files.
+  cleanup <logs|inboxes|all> [--max-size <bytes>] [--max-age-days <N>] [--dry-run]
+                              Rotate big *.log files; prune old .done[] in
+                              member inboxes. Idempotent + cron-safe.
+  discorder <progress|heartbeat>
+                              ADR-022 Discord cron pings. progress = 30-min
+                              digest; heartbeat = hourly state-of-team.
+                              Read-only on kanban/git/decisions.
 
 Misc:
   version

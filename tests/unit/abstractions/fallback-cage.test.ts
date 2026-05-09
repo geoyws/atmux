@@ -5,9 +5,9 @@
 // + Tier 4 stub guard. Tests below at "Lifecycle —" describe blocks.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
-import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
+  type CageHandle,
+  type ComposeBriefOpts,
   cageArchivePath,
   cageArchiveRoot,
   cageSessionName,
@@ -18,16 +18,16 @@ import {
   composeTier4Brief,
   createFallbackCage,
   destroyFallbackCage,
-  FallbackUserMissingError,
-  TIER3_RSYNC_EXCLUDES,
-  TIER_AGENT,
-  Tier4NotAvailableError,
-  tier3WorkDir,
-  type CageHandle,
-  type ComposeBriefOpts,
   type FallbackAgent,
   type FallbackTier,
+  FallbackUserMissingError,
+  TIER_AGENT,
+  TIER3_RSYNC_EXCLUDES,
+  Tier4NotAvailableError,
+  tier3WorkDir,
 } from "../../../src/abstractions/fallback-cage.ts";
+import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 
 describe("TIER_AGENT mapping", () => {
   test("Tier 2 → operator", () => {
@@ -114,9 +114,7 @@ describe("cageSessionName", () => {
 
 describe("tier3WorkDir", () => {
   test("kimi-agent path", () => {
-    expect(tier3WorkDir("kimi-agent", "alpha", "fe")).toBe(
-      "/home/kimi-agent/cages/alpha-fe/work",
-    );
+    expect(tier3WorkDir("kimi-agent", "alpha", "fe")).toBe("/home/kimi-agent/cages/alpha-fe/work");
   });
 
   test("minimax-agent path", () => {
@@ -646,32 +644,28 @@ describe("Lifecycle — createFallbackCage Tier 3 (Kimi)", () => {
       spawnFn: spawn.fn,
       tmuxFactory: makeFakeTmuxFactory(tmuxState),
     });
-    const teeCalls = spawn.calls.filter(
-      (c) => c.cmd === "sudo" && c.argv.includes("tee"),
-    );
+    const teeCalls = spawn.calls.filter((c) => c.cmd === "sudo" && c.argv.includes("tee"));
     expect(teeCalls.length).toBe(3);
     const targets = teeCalls.map((c) => c.argv[c.argv.length - 1]);
     expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_history.log");
     expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_status.log");
     expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_branch.log");
     // History file's stdin must be the captured git log output.
-    const historyTee = teeCalls.find((c) =>
-      c.argv[c.argv.length - 1]?.endsWith("_history.log"),
-    );
+    const historyTee = teeCalls.find((c) => c.argv[c.argv.length - 1]?.endsWith("_history.log"));
     expect(historyTee?.stdin).toBe("log-output");
   });
 });
 
 describe("Lifecycle — createFallbackCage Tier 4 stub", () => {
-  const ORIG_ENV = process.env["MINIMAX_CLI_AVAILABLE"];
+  const ORIG_ENV = process.env.MINIMAX_CLI_AVAILABLE;
 
   afterEach(() => {
-    if (ORIG_ENV === undefined) delete process.env["MINIMAX_CLI_AVAILABLE"];
-    else process.env["MINIMAX_CLI_AVAILABLE"] = ORIG_ENV;
+    if (ORIG_ENV === undefined) delete process.env.MINIMAX_CLI_AVAILABLE;
+    else process.env.MINIMAX_CLI_AVAILABLE = ORIG_ENV;
   });
 
   test("Tier 4 without MINIMAX_CLI_AVAILABLE → throws Tier4NotAvailableError", async () => {
-    delete process.env["MINIMAX_CLI_AVAILABLE"];
+    delete process.env.MINIMAX_CLI_AVAILABLE;
     const spawn = makeSpawnRecorder();
     const tmuxState: FakeTmuxState = {
       newSessionCalls: [],
@@ -699,7 +693,7 @@ describe("Lifecycle — createFallbackCage Tier 4 stub", () => {
   });
 
   test("Tier 4 with MINIMAX_CLI_AVAILABLE=1 → falls through to Tier 3-style path", async () => {
-    process.env["MINIMAX_CLI_AVAILABLE"] = "1";
+    process.env.MINIMAX_CLI_AVAILABLE = "1";
     const spawn = makeSpawnRecorder([
       { matchCmd: "getent", exitCode: 0 },
       { matchCmd: "git", matchArgvIncludes: "log", exitCode: 0, stdout: "" },
@@ -763,7 +757,9 @@ describe("Lifecycle — destroyFallbackCage Tier 2", () => {
     });
     expect(spawn.calls.some((c) => c.cmd === "tmux" && c.argv.includes("capture-pane"))).toBe(true);
     const teeCall = spawn.calls.find(
-      (c) => c.cmd === "tee" && c.argv.includes("/p/.atmux/tier2-handoff/archive/alpha-fe-1700000100/session.log"),
+      (c) =>
+        c.cmd === "tee" &&
+        c.argv.includes("/p/.atmux/tier2-handoff/archive/alpha-fe-1700000100/session.log"),
     );
     expect(teeCall).toBeDefined();
     expect(teeCall?.stdin).toBe("captured pane content");
@@ -837,10 +833,7 @@ describe("Lifecycle — destroyFallbackCage Tier 3", () => {
     // Sudo tmux kill-session.
     expect(
       spawn.calls.some(
-        (c) =>
-          c.cmd === "sudo" &&
-          c.argv.includes("tmux") &&
-          c.argv.includes("kill-session"),
+        (c) => c.cmd === "sudo" && c.argv.includes("tmux") && c.argv.includes("kill-session"),
       ),
     ).toBe(true);
     // rm -rf the cage root.

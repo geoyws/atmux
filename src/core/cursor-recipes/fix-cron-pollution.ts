@@ -22,6 +22,8 @@
 // `crontab -l` returning non-zero / no crontab) → detect returns
 // null (no drift to attempt; not an error).
 
+import { spawn as defaultSpawn, type SpawnResult } from "../../abstractions/spawn.ts";
+import { type RenderCronBlockOpts, renderCronBlock } from "../cron.ts";
 import type {
   CursorJob,
   CursorRecipe,
@@ -29,8 +31,6 @@ import type {
   VerifyResult,
   WhipTickContextForRecipe,
 } from "./types.ts";
-import { spawn as defaultSpawn, type SpawnResult } from "../../abstractions/spawn.ts";
-import { renderCronBlock, type RenderCronBlockOpts } from "../cron.ts";
 
 // ---------- Public types ----------
 
@@ -263,7 +263,7 @@ export function makeFixCronPollutionRecipe(deps: CronPollutionDeps = {}): Cursor
     },
 
     async verify(
-      job: CursorJob,
+      _job: CursorJob,
       patch: GitPatch,
       whipCtx: WhipTickContextForRecipe,
     ): Promise<VerifyResult> {
@@ -272,9 +272,7 @@ export function makeFixCronPollutionRecipe(deps: CronPollutionDeps = {}): Cursor
       // (1) Allowlist enforcement — empty allowlist means patch.files
       // must be empty. Any non-empty patch is a violation.
       if (patch.files.length > 0) {
-        reasons.push(
-          `patch touched ${patch.files.length} file(s) but recipe allowlist is empty`,
-        );
+        reasons.push(`patch touched ${patch.files.length} file(s) but recipe allowlist is empty`);
       }
 
       // (2) Re-detect to confirm operator intent — when the cron block
@@ -290,7 +288,7 @@ export function makeFixCronPollutionRecipe(deps: CronPollutionDeps = {}): Cursor
           patchSummary:
             reasons.length === 0
               ? "no crontab found — pollution self-resolved or operator removed it"
-              : reasons[0] ?? "verification failed",
+              : (reasons[0] ?? "verification failed"),
         };
       }
       const projectCwd = deps.projectCwd ?? whipCtx.projectCwd;
@@ -303,7 +301,7 @@ export function makeFixCronPollutionRecipe(deps: CronPollutionDeps = {}): Cursor
           ? "cron block well-formed — pollution cleared"
           : reasons.length === 0
             ? `cron still malformed (${remainingReasons.length} reason(s)) — staged for reviewer`
-            : reasons[0] ?? "verification failed";
+            : (reasons[0] ?? "verification failed");
 
       // The recipe's "ok" is true when allowlist is honored, regardless
       // of whether the cron itself is now clean. Reason: cursor cannot

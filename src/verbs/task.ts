@@ -22,6 +22,7 @@
 // CLI plumbing (flag parsing + subverb routing + tabular printing
 // for the `list` output).
 
+import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
 import { removeFromInProgress } from "../core/inbox.ts";
 import {
   addTask,
@@ -30,9 +31,9 @@ import {
   listTasks,
   moveTask,
   removeTask,
+  setTaskLane,
   showTask,
 } from "../core/kanban.ts";
-import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
 /** Statuses where the task is no longer the assignee's responsibility,
@@ -43,15 +44,31 @@ import { ConfigError, UsageError } from "../errors.ts";
 const STATUSES_THAT_DRAIN_INBOX = new Set(["blocked", "todo"]);
 
 const USAGE_HINT_ROOT =
-  "atmux task <add|list|show|move|assign|rm> [args] " +
+  "atmux task <add|list|show|move|assign|lane|rm> [args] " +
   "(see 'atmux task' for per-subverb help)";
 
 const USAGE_ADD =
-  "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N]";
-const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--json]";
+  "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N] [--lane L]";
+const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--json]";
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
+const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
+/** Lane enum (mirrors `KanbanLane` in src/schema/kanban.ts). `-` clears
+ *  the lane (sets to null). `git` + `docs` added 2026-05-08 for role-
+ *  specific lanes (gitter pulls commits/merges; docs pulls writing tasks). */
+const VALID_LANES = new Set([
+  "fe",
+  "be",
+  "db",
+  "ops",
+  "test",
+  "review",
+  "misc",
+  "git",
+  "docs",
+  "-",
+]);
 
 /**
  * `atmux task <subverb> [args]`. Returns 0 on success; throws
@@ -62,7 +79,7 @@ export async function task(argv: ReadonlyArray<string>): Promise<number> {
   // We also default to `list` when argv[0] is a flag — `atmux task
   // --team-dir /x` is unambiguously "list with --team-dir".
   const first = argv[0];
-  const isFlag = first !== undefined && first.startsWith("-");
+  const isFlag = first?.startsWith("-");
   const verb = first === undefined || isFlag ? "list" : first;
   const rest = first === undefined || isFlag ? argv : argv.slice(1);
   switch (verb) {
@@ -79,6 +96,8 @@ export async function task(argv: ReadonlyArray<string>): Promise<number> {
       return await taskMove(rest);
     case "assign":
       return await taskAssign(rest);
+    case "lane":
+      return await taskLane(rest);
     case "rm":
     case "remove":
       return await taskRemove(rest);
@@ -101,8 +120,37 @@ async function taskAdd(argv: ReadonlyArray<string>): Promise<number> {
   if (parsed.assignee !== undefined) opts.assignee = parsed.assignee;
   if (parsed.deps !== undefined) opts.deps = parsed.deps;
   if (parsed.priority !== undefined) opts.priority = parsed.priority;
+  if (parsed.lane !== undefined) opts.lane = parsed.lane;
   const id = await addTask(atmuxDir, opts);
   process.stdout.write(`${id}\n`);
+  return 0;
+}
+
+// `atmux task lane <id> <fe|be|db|ops|test|review|misc|->`
+async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  const teamDir = (() => {
+    const idx = argv.indexOf("--team-dir");
+    return idx >= 0 ? argv[idx + 1] : undefined;
+  })();
+  if (positional.length !== 2) {
+    throw new UsageError({
+      what: "task lane: requires <id> and <lane>",
+      hint: USAGE_LANE,
+    });
+  }
+  const [id, laneArg] = positional as [string, string];
+  if (!VALID_LANES.has(laneArg)) {
+    throw new UsageError({
+      what: `task lane: lane must be one of fe|be|db|ops|test|review|misc|git|docs|- (got: ${laneArg})`,
+      hint: USAGE_LANE,
+    });
+  }
+  const dirOpts = teamDir !== undefined ? { teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  // `-` clears the lane (sets to null).
+  const lane = laneArg === "-" ? null : laneArg;
+  await setTaskLane(atmuxDir, id, lane);
   return 0;
 }
 
@@ -113,6 +161,7 @@ async function taskList(argv: ReadonlyArray<string>): Promise<number> {
   const filter: ListTasksFilter = {};
   if (parsed.status !== undefined) filter.status = parsed.status;
   if (parsed.assignee !== undefined) filter.assignee = parsed.assignee;
+  if (parsed.lane !== undefined) filter.lane = parsed.lane;
   const tasks = await listTasks(atmuxDir, filter);
   if (parsed.json) {
     process.stdout.write(`${JSON.stringify(tasks, null, 2)}\n`);
@@ -138,7 +187,9 @@ async function taskList(argv: ReadonlyArray<string>): Promise<number> {
     const id = (t.id ?? "").padEnd(10);
     const status = (t.status ?? "").padEnd(13);
     const owner = (t.owner ?? "-").padEnd(14);
-    const prio = (t.priority !== null && t.priority !== undefined ? String(t.priority) : "-").padEnd(4);
+    const prio = (
+      t.priority !== null && t.priority !== undefined ? String(t.priority) : "-"
+    ).padEnd(4);
     process.stdout.write(`${id} ${status} ${owner} ${prio} ${t.subject ?? ""}\n`);
   }
   return 0;
@@ -233,6 +284,7 @@ interface ParsedAddArgs {
   assignee?: string;
   deps?: ReadonlyArray<string>;
   priority?: number;
+  lane?: string;
   teamDir?: string;
 }
 
@@ -247,6 +299,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   let assignee: string | undefined;
   let deps: string[] | undefined;
   let priority: number | undefined;
+  let lane: string | undefined;
   let teamDir: string | undefined;
 
   let i = 0;
@@ -298,6 +351,24 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
       i += 2;
       continue;
     }
+    if (a === "--lane") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "task add: --lane requires a value",
+          hint: USAGE_ADD,
+        });
+      }
+      if (!VALID_LANES.has(v) || v === "-") {
+        throw new UsageError({
+          what: `task add: --lane must be one of fe|be|db|ops|test|review|misc|git|docs (got: ${v})`,
+          hint: USAGE_ADD,
+        });
+      }
+      lane = v;
+      i += 2;
+      continue;
+    }
     if (a === "--team-dir") {
       const v = argv[i + 1];
       if (v === undefined) {
@@ -312,12 +383,10 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
     }
     if (a === "--") {
       // Bash: `--) shift; subject="$*"; break` — collect remaining as subject.
-      subject = argv
-        .slice(i + 1)
-        .join(" ");
+      subject = argv.slice(i + 1).join(" ");
       break;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `task add: unknown flag: ${a}`, hint: USAGE_ADD });
     }
     // Non-flag positional → accumulate into subject (bash join with space).
@@ -332,6 +401,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   if (assignee !== undefined) out.assignee = assignee;
   if (deps !== undefined) out.deps = deps;
   if (priority !== undefined) out.priority = priority;
+  if (lane !== undefined) out.lane = lane;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }
@@ -339,6 +409,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
 interface ParsedListArgs {
   status?: string;
   assignee?: string;
+  lane?: string;
   json: boolean;
   teamDir?: string;
 }
@@ -346,6 +417,7 @@ interface ParsedListArgs {
 export function parseListArgs(argv: ReadonlyArray<string>): ParsedListArgs {
   let status: string | undefined;
   let assignee: string | undefined;
+  let lane: string | undefined;
   let json = false;
   let teamDir: string | undefined;
   let i = 0;
@@ -372,6 +444,18 @@ export function parseListArgs(argv: ReadonlyArray<string>): ParsedListArgs {
       i += 2;
       continue;
     }
+    if (a === "--lane") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "task list: --lane requires a value",
+          hint: USAGE_LIST,
+        });
+      }
+      lane = v;
+      i += 2;
+      continue;
+    }
     if (a === "--json") {
       json = true;
       i += 1;
@@ -394,6 +478,7 @@ export function parseListArgs(argv: ReadonlyArray<string>): ParsedListArgs {
   const out: ParsedListArgs = { json };
   if (status !== undefined) out.status = status;
   if (assignee !== undefined) out.assignee = assignee;
+  if (lane !== undefined) out.lane = lane;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }

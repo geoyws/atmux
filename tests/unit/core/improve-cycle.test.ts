@@ -16,13 +16,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HISTORY_RING_MAX } from "../../../src/core/improve.ts";
 import {
   armCycle,
   buildArmMessage,
   closeCycle,
   defaultCommitChecker,
-  improveDirectivesPath,
   IMPROVEMENT_EPIC_ID,
+  improveDirectivesPath,
   isCycleClosable,
   isDriverPreempt,
   openCycle,
@@ -34,7 +35,6 @@ import {
   shouldTerminate,
   tickTokens,
 } from "../../../src/core/improve-cycle.ts";
-import { HISTORY_RING_MAX } from "../../../src/core/improve.ts";
 import type { EternalImprovementState } from "../../../src/schema/eternal-improvement.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
 
@@ -411,9 +411,9 @@ describe("isCycleClosable", () => {
         tokensSpent: 0,
       },
     });
-    expect(
-      isCycleClosable(state, [task({ id: "t-a", status: "done", completedAt: 1 })]),
-    ).toBe(false);
+    expect(isCycleClosable(state, [task({ id: "t-a", status: "done", completedAt: 1 })])).toBe(
+      false,
+    );
   });
 
   test("false when any task is not status:'done'", () => {

@@ -107,7 +107,7 @@ export function parseHandoffArgs(argv: ReadonlyArray<string>): HandoffArgs {
       i += 2;
       continue;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `handoff: unknown flag: ${a}`, hint: USAGE });
     }
     if (from.length === 0) {

@@ -28,28 +28,28 @@
 
 import { join } from "node:path";
 import {
-  invokeCursor as defaultInvokeCursor,
   type CursorInvokeResult,
+  invokeCursor as defaultInvokeCursor,
 } from "../abstractions/cursor.ts";
 import {
+  type DiscordSendOpts,
   renderWhipSelfHealAttempt,
   renderWhipSelfHealResult,
-  type DiscordSendOpts,
 } from "../abstractions/discord.ts";
 import { atomicWrite, ensureDir } from "../abstractions/fs.ts";
-import { addTask } from "./kanban.ts";
-import {
-  isRecentSelfHeal,
-  loadSelfHealState,
-  recordSelfHealFire,
-  writeSelfHealState,
-} from "./cursor-self-heal-state.ts";
 import type {
   CursorJob,
   CursorRecipe,
   GitPatch,
   WhipTickContextForRecipe,
 } from "./cursor-recipes/types.ts";
+import {
+  isRecentSelfHeal,
+  loadSelfHealState,
+  recordSelfHealFire,
+  writeSelfHealState,
+} from "./cursor-self-heal-state.ts";
+import { addTask } from "./kanban.ts";
 
 // ---------- Path helpers ----------
 
@@ -62,11 +62,7 @@ export function pendingPatchDir(atmuxDir: string): string {
  *  pending/<recipeId-sanitized>-<epochSec>.patch`. The recipe id is
  *  sanitized (`fix:team-json-schema-drift` → `fix-team-json-schema-
  *  drift`) so the path is filesystem-safe across all platforms. */
-export function pendingPatchPath(
-  atmuxDir: string,
-  recipeId: string,
-  nowSec: number,
-): string {
+export function pendingPatchPath(atmuxDir: string, recipeId: string, nowSec: number): string {
   return join(pendingPatchDir(atmuxDir), `${sanitizeRecipeId(recipeId)}-${nowSec}.patch`);
 }
 
@@ -74,16 +70,8 @@ export function pendingPatchPath(
  *  <recipeId-sanitized>-<epochSec>.log`. Mirrors `pendingPatchPath`
  *  shape; lives under `/logs/` so groom can age-out per ADR-055
  *  OQ-5 follow-up. */
-export function selfHealLogPath(
-  atmuxDir: string,
-  recipeId: string,
-  nowSec: number,
-): string {
-  return join(
-    atmuxDir,
-    "logs",
-    `cursor-self-heal-${sanitizeRecipeId(recipeId)}-${nowSec}.log`,
-  );
+export function selfHealLogPath(atmuxDir: string, recipeId: string, nowSec: number): string {
+  return join(atmuxDir, "logs", `cursor-self-heal-${sanitizeRecipeId(recipeId)}-${nowSec}.log`);
 }
 
 function sanitizeRecipeId(id: string): string {
@@ -138,9 +126,7 @@ export interface StagePatchResult {
  * not blocking demo). `subject` mentions the recipe id; `body`
  * embeds the patch path + reason + a 1-line operator hint.
  */
-export async function stagePatchForReviewer(
-  opts: StagePatchOpts,
-): Promise<StagePatchResult> {
+export async function stagePatchForReviewer(opts: StagePatchOpts): Promise<StagePatchResult> {
   const addFn = opts.addTaskFn ?? addTask;
 
   // 1. Persist patch to disk.
@@ -246,9 +232,7 @@ export interface SelfHealRunSummary {
  * Returns a structured summary; never throws. Per-recipe failures are
  * isolated — one recipe blowing up doesn't skip the rest.
  */
-export async function runSelfHealPass(
-  opts: SelfHealRunOpts,
-): Promise<SelfHealRunSummary> {
+export async function runSelfHealPass(opts: SelfHealRunOpts): Promise<SelfHealRunSummary> {
   const log = opts.log ?? (() => {});
   const invokeCursor = opts.invokeCursorFn ?? defaultInvokeCursor;
   const tokenCapOverrides = opts.tokenCapOverrides ?? {};
@@ -325,9 +309,8 @@ export async function runSelfHealPass(
 
     // Apply per-recipe token-cap override.
     const overrideCap = tokenCapOverrides[recipeId];
-    const resolvedCap = typeof overrideCap === "number" && overrideCap > 0
-      ? overrideCap
-      : job.tokenCap;
+    const resolvedCap =
+      typeof overrideCap === "number" && overrideCap > 0 ? overrideCap : job.tokenCap;
     if (resolvedCap !== job.tokenCap) {
       job = { ...job, tokenCap: resolvedCap };
     }

@@ -32,16 +32,24 @@ import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./erro
 import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
 import { claim, done } from "./verbs/claim.ts";
+import { cleanup } from "./verbs/cleanup.ts";
+import { cockpit } from "./verbs/cockpit.ts";
+import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
 import { dashboard } from "./verbs/dashboard.ts";
+import { discorder } from "./verbs/discorder.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
+import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { help } from "./verbs/help.ts";
 import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
+import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
+import { laneTick } from "./verbs/lane-tick.ts";
+import { migrateState } from "./verbs/migrate-state.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
 import { outbox, reply } from "./verbs/reply.ts";
@@ -122,6 +130,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return dispatchVerb(argv.slice(1));
     case "inbox":
       return inbox(argv.slice(1));
+    case "lane-tick":
+      return laneTick(argv.slice(1));
+    case "lane-drift-check":
+      return laneDriftCheck(argv.slice(1));
     case "pause":
       return pause(argv.slice(1));
     case "resume":
@@ -140,6 +152,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return report(argv.slice(1));
     case "cost":
       return cost(argv.slice(1));
+    case "cockpit":
+      return cockpit(argv.slice(1));
+    case "complaints":
+      return complaints(argv.slice(1));
     case "doctor":
       return doctor(argv.slice(1));
     case "driver-inbox":
@@ -152,6 +168,14 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return watchdog(argv.slice(1));
     case "improve":
       return improve(argv.slice(1));
+    case "groom":
+      return groom(argv.slice(1));
+    case "cleanup":
+      return cleanup(argv.slice(1));
+    case "discorder":
+      return discorder(argv.slice(1));
+    case "migrate-state":
+      return migrateState(argv.slice(1));
     case "up":
       return up(argv.slice(1));
     case "":

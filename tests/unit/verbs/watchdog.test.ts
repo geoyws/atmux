@@ -48,10 +48,7 @@ afterEach(async () => {
 });
 
 async function seedTeam(members: Array<{ name: string }>): Promise<void> {
-  await writeFile(
-    join(atmuxDir, "team.json"),
-    JSON.stringify({ name: "demo", members }),
-  );
+  await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members }));
 }
 
 // ---------- parseWatchdogArgs ----------

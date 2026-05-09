@@ -87,10 +87,18 @@ const PATTERNS: ReadonlyArray<Pattern> = [
   // Patterns: bash/zsh prompt at end-of-buffer.
   { state: "SHELL", regex: /\$\s*$/m },
   { state: "SHELL", regex: /#\s*$/m },
-  // READY — Claude Code's "ready for input" indicators. The empty-line
-  // "tokens" footer + the "│ > " prompt are the canonical signals.
+  // READY — Claude Code's "ready for input" indicators.
+  // The compose-box prompt is "❯" (U+276F HEAVY RIGHT-POINTING ANGLE
+  // QUOTATION MARK ORNAMENT), NOT ASCII ">" — older versions used ">"
+  // but current TUI ships "❯". The status-bar footer shows
+  // "auto mode on" / "tok <N>k/<remaining>" / mode indicators when
+  // the pane is awaiting input. Match either the prompt or the
+  // status-line shape.
+  { state: "READY", regex: /^❯\s*$/m },
   { state: "READY", regex: /^>\s*$/m },
   { state: "READY", regex: /tokens.*esc to interrupt/i },
+  { state: "READY", regex: /⏵⏵\s+(auto mode|accept edits|don't ask|plan mode)/i },
+  { state: "READY", regex: /^\s*tok\s+\d+(\.\d+)?k\/\d/m },
 ];
 
 // ---------- Public API ----------

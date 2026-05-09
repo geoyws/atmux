@@ -16,14 +16,10 @@
 // keeps the lead from getting hourly dupes when a member is wedged.
 
 import { join } from "node:path";
-import {
-  type DiscordSendOpts,
-  renderWhipWatchdog,
-  send as defaultDiscordSend,
-} from "../abstractions/discord.ts";
+import { z } from "zod";
+import { send as defaultDiscordSend, renderWhipWatchdog } from "../abstractions/discord.ts";
 import { appendText, ensureDir } from "../abstractions/fs.ts";
 import { tryReadJson, writeJson } from "../abstractions/json.ts";
-import { z } from "zod";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDir } from "../core/common.ts";
 import {
   DEFAULT_HEARTBEAT_STALE_SEC,
@@ -144,9 +140,7 @@ export async function watchdog(
   });
 
   if (toFire.length === 0) {
-    stderr(
-      `watchdog: ${stale.length} stale member(s); all in dedup window — no ping fired\n`,
-    );
+    stderr(`watchdog: ${stale.length} stale member(s); all in dedup window — no ping fired\n`);
     return 0;
   }
 

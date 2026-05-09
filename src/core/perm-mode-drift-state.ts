@@ -102,13 +102,7 @@ export function recordDrift(
  * "indicator absent" — caller decides whether absence is fine, e.g.
  * for non-claude TUIs).
  */
-export type PermissionMode =
-  | "auto"
-  | "accept-edits"
-  | "dont-ask"
-  | "plan"
-  | "default"
-  | "unknown";
+export type PermissionMode = "auto" | "accept-edits" | "dont-ask" | "plan" | "default" | "unknown";
 
 export function parsePermissionMode(paneText: string): PermissionMode | null {
   const m = paneText.match(/⏵⏵\s+([a-zA-Z][a-zA-Z' -]+?)\s+on\b/);

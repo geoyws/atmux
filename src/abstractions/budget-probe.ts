@@ -159,7 +159,9 @@ export async function probeBudget(
   if (credsText === null) {
     return noCredsResult(account, `credentials missing at ${credsPath}`);
   }
-  let creds: { claudeAiOauth?: { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown } };
+  let creds: {
+    claudeAiOauth?: { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown };
+  };
   try {
     creds = JSON.parse(credsText);
   } catch (e) {
@@ -198,7 +200,7 @@ export async function probeBudget(
         probe401Result(account, "OAuth refresh endpoint failed pre-probe"),
         tokenRefreshed,
       );
-      await flagSurface("OAuth refresh failed for account=" + account, account);
+      await flagSurface(`OAuth refresh failed for account=${account}`, account);
       return r;
     }
     accessToken = refreshed.accessToken;
@@ -219,7 +221,7 @@ export async function probeBudget(
         probe401Result(account, "OAuth refresh failed on 401 retry"),
         tokenRefreshed,
       );
-      await flagSurface("OAuth refresh failed for account=" + account, account);
+      await flagSurface(`OAuth refresh failed for account=${account}`, account);
       return r;
     }
     accessToken = refreshed.accessToken;
@@ -371,10 +373,7 @@ interface RefreshResult {
   expiresAt?: number;
 }
 
-async function tryRefreshOauth(
-  url: string,
-  refreshToken: string,
-): Promise<RefreshResult | null> {
+async function tryRefreshOauth(url: string, refreshToken: string): Promise<RefreshResult | null> {
   try {
     const resp = await request({
       url,
@@ -544,15 +543,7 @@ async function defaultFlagSurface(message: string, account: string): Promise<voi
     const { spawn } = await import("./spawn.ts");
     await spawn({
       cmd: "atmux",
-      argv: [
-        "flags",
-        "add",
-        message,
-        "--severity",
-        "p2",
-        "--needs",
-        "context",
-      ],
+      argv: ["flags", "add", message, "--severity", "p2", "--needs", "context"],
       timeoutMs: 5_000,
       expectExitCode: "any",
     });

@@ -4,6 +4,12 @@
 
 > 🎮 **Driver** (you) → 🧭 **Team Lead** → 🐝 **Team Members** — coordinated through tmux, not an API.
 
+> **State storage (atmux-bun).** Per [ADR-060](docs/adr-bun/060-sqlite-state-store.md),
+> kanban + inboxes + per-feature state moved to **`.atmux/state.db`** (SQLite, WAL).
+> Diagrams + prose below referencing `kanban.json` describe the legacy JSON model still
+> used on bash atmux and on teams not yet migrated. Code paths are dual-path: source of
+> truth is `state.db` when present, else `kanban.json`.
+
 A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
 
 **Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, gitter, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; gitter commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.

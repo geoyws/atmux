@@ -5,16 +5,14 @@
 //   - Rendering (header format, bullets-only, sections-only, mixed)
 //   - Chunking (single message, multi-message with N/M suffix, section-label
 //     glued to first bullet)
-//   - Send routing (recorder JSONL capture, ping-discord.sh spawn delegation,
-//     direct-fetch fallback, ConfigError on pinned-but-missing script,
-//     ConfigError on no-webhook-no-script, DiscordWebhookError on non-2xx)
+//   - Send routing (recorder JSONL capture, direct-fetch via bun-native
+//     `fetch`, ConfigError on no-webhook, DiscordWebhookError on non-2xx)
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  _resetFallbackWarnedForTest,
   type DiscordSection,
   type DiscordSendOpts,
   renderAccountSwapFail,
@@ -40,14 +38,12 @@ let tmpRoot: string;
 
 const SAVED_ENV = {
   ATMUX_DISCORD_RECORDER: process.env.ATMUX_DISCORD_RECORDER,
-  ATMUX_DISCORD_PING_SCRIPT: process.env.ATMUX_DISCORD_PING_SCRIPT,
   ATMUX_DISCORD_WEBHOOK: process.env.ATMUX_DISCORD_WEBHOOK,
   HOME: process.env.HOME,
 };
 
 function clearEnv(): void {
   delete process.env.ATMUX_DISCORD_RECORDER;
-  delete process.env.ATMUX_DISCORD_PING_SCRIPT;
   delete process.env.ATMUX_DISCORD_WEBHOOK;
 }
 
@@ -69,10 +65,8 @@ afterAll(async () => {
 
 beforeEach(() => {
   clearEnv();
-  _resetFallbackWarnedForTest();
-  // Pin HOME to a non-existent path so the default ping-discord.sh
-  // resolution lands on a missing file in tests that don't override
-  // ATMUX_DISCORD_PING_SCRIPT.
+  // HOME is irrelevant to the bun-native fetch path but we pin it for
+  // determinism (some environment-resolution helpers consult it).
   process.env.HOME = "/nonexistent-test-home-atmux-bun-discord-spec";
 });
 
@@ -371,7 +365,7 @@ describe("routing — recorder", () => {
     expect(calls[0]?.payload.content).toContain("✅ recorded");
   });
 
-  test("recorder bypasses both spawn and fetch (no network)", async () => {
+  test("recorder bypasses fetch (no network)", async () => {
     // Prove no fetch happened by setting a webhookOverride to a port that
     // would refuse — recorder path should never touch it.
     const recorder = join(tmpRoot, "nofetch.jsonl");
@@ -383,73 +377,23 @@ describe("routing — recorder", () => {
 
   test("empty-string ATMUX_DISCORD_RECORDER falls through (treated as unset)", async () => {
     process.env.ATMUX_DISCORD_RECORDER = ""; // explicit empty
-    process.env.ATMUX_DISCORD_PING_SCRIPT = "/definitely/not/a/real/script-x9q3";
+    delete process.env.ATMUX_DISCORD_WEBHOOK;
     let caught: ConfigError | null = null;
     try {
       await send(bullets());
     } catch (e) {
       if (e instanceof ConfigError) caught = e;
     }
-    expect(caught?.message).toContain("does not exist");
+    expect(caught?.message).toContain("no Discord webhook resolved");
   });
 });
 
-// ---------- Routing: spawn ping-discord.sh ----------
+// (Removed: spawn ping-discord.sh delegation tests. The spawn route was
+// dropped in favour of bun-native fetch — see ADR-008 §"Routing".)
 
-describe("routing — ping-discord.sh delegation", () => {
-  test("ATMUX_DISCORD_PING_SCRIPT pointing to a stub spawns it with stdin + env", async () => {
-    const stub = join(tmpRoot, "ping-stub.sh");
-    const sink = join(tmpRoot, "ping-stub.out");
-    await writeFile(
-      stub,
-      `#!/usr/bin/env bash\ncat > "${sink}"\necho "WEBHOOK=\${ATMUX_DISCORD_WEBHOOK:-unset}" >> "${sink}"\nexit 0\n`,
-      { mode: 0o755 },
-    );
-    process.env.ATMUX_DISCORD_PING_SCRIPT = stub;
-    await send(bullets({ webhookOverride: "https://example.test/webhook" }));
-    const captured = await readFile(sink, "utf8");
-    expect(captured).toContain("✅ shipped");
-    expect(captured).toContain("WEBHOOK=https://example.test/webhook");
-  });
+// ---------- Routing: direct-fetch ----------
 
-  test("script omits ATMUX_DISCORD_WEBHOOK env when no webhookOverride", async () => {
-    const stub = join(tmpRoot, "ping-stub-noenv.sh");
-    const sink = join(tmpRoot, "ping-stub-noenv.out");
-    await writeFile(stub, `#!/usr/bin/env bash\ncat > "${sink}"\nexit 0\n`, { mode: 0o755 });
-    process.env.ATMUX_DISCORD_PING_SCRIPT = stub;
-    await send(bullets()); // no webhookOverride
-    const captured = await readFile(sink, "utf8");
-    expect(captured).toContain("✅ shipped");
-  });
-
-  test("script nonzero exit → DiscordWebhookError", async () => {
-    const stub = join(tmpRoot, "ping-fail.sh");
-    await writeFile(stub, `#!/usr/bin/env bash\nexit 7\n`, { mode: 0o755 });
-    process.env.ATMUX_DISCORD_PING_SCRIPT = stub;
-    let caught: DiscordWebhookError | null = null;
-    try {
-      await send(bullets());
-    } catch (e) {
-      if (e instanceof DiscordWebhookError) caught = e;
-    }
-    expect(caught?.message).toContain("ping-discord.sh delegation failed");
-  });
-
-  test("ATMUX_DISCORD_PING_SCRIPT pointing to non-existent file → ConfigError (no silent fallback)", async () => {
-    process.env.ATMUX_DISCORD_PING_SCRIPT = join(tmpRoot, "definitely-not-here.sh");
-    let caught: ConfigError | null = null;
-    try {
-      await send(bullets());
-    } catch (e) {
-      if (e instanceof ConfigError) caught = e;
-    }
-    expect(caught?.message).toContain("does not exist");
-  });
-});
-
-// ---------- Routing: direct-fetch fallback ----------
-
-describe("routing — direct-fetch fallback", () => {
+describe("routing — direct-fetch", () => {
   let server: ReturnType<typeof Bun.serve>;
   let lastRequest: { method: string; body: string } | null = null;
   let nextStatus = 204;
@@ -521,7 +465,7 @@ describe("routing — direct-fetch fallback", () => {
     expect(caught?.cause).toBeDefined();
   });
 
-  test("no script + no webhook → ConfigError", async () => {
+  test("no webhook resolvable → ConfigError", async () => {
     delete process.env.ATMUX_DISCORD_WEBHOOK;
     let caught: ConfigError | null = null;
     try {
@@ -539,29 +483,12 @@ describe("routing — direct-fetch fallback", () => {
     expect(lastRequest).not.toBeNull();
   });
 
-  test("fallback warning fires once per process (stderr)", async () => {
-    // First fallback call emits warning; subsequent calls don't.
-    // We can't easily intercept process.stderr.write in bun:test, but we
-    // can at least exercise the warned-flag transition by calling send()
-    // twice with the fallback path and verifying both succeed.
+  test("repeat sends succeed (no per-process warning state)", async () => {
     nextStatus = 204;
-    process.env.ATMUX_DISCORD_WEBHOOK = `http://localhost:${server.port}/once`;
+    process.env.ATMUX_DISCORD_WEBHOOK = `http://localhost:${server.port}/repeat`;
     await send(bullets({ bullets: ["✅ first"] }));
     await send(bullets({ bullets: ["✅ second"] }));
-    // No assertion on stderr content; the path is just exercised. The
-    // `_resetFallbackWarnedForTest()` in beforeEach ensures other tests
-    // start with the flag clear.
     expect(lastRequest?.body).toContain("✅ second");
-  });
-
-  test("HOME unset → defaultScript path is rooted at /", async () => {
-    delete process.env.HOME;
-    nextStatus = 204;
-    process.env.ATMUX_DISCORD_WEBHOOK = `http://localhost:${server.port}/no-home`;
-    // Default script becomes "/.claude/skills/whip/scripts/ping-discord.sh"
-    // which doesn't exist → fallback fires → fetch succeeds.
-    await send(bullets({ bullets: ["✅ no-home"] }));
-    expect(lastRequest?.body).toContain("✅ no-home");
   });
 });
 
@@ -927,7 +854,6 @@ describe("renderEternalImprovementDone", () => {
   });
 });
 
-
 // ---------- ADR-054 §D3 — renderWhipConfigDrift ----------
 
 describe("renderWhipConfigDrift", () => {
@@ -1049,12 +975,14 @@ describe("renderWhipBudgetPause", () => {
   test("end-to-end through send recorder fits one chunk", async () => {
     const recorder = join(tmpRoot, "wb-pause.jsonl");
     process.env.ATMUX_DISCORD_RECORDER = recorder;
-    await send(renderWhipBudgetPause({
-      team: "atmux",
-      atRisk: [{ member: "alpha", h5: 95, wk: 80 }],
-      resumeThresholdPct: 20,
-      whenMs: FIXED_TS,
-    }));
+    await send(
+      renderWhipBudgetPause({
+        team: "atmux",
+        atRisk: [{ member: "alpha", h5: 95, wk: 80 }],
+        resumeThresholdPct: 20,
+        whenMs: FIXED_TS,
+      }),
+    );
     const calls = await readJsonl<{ payload: { content: string } }>(recorder);
     expect(calls.length).toBe(1);
     const c = calls[0]?.payload.content ?? "";
@@ -1065,7 +993,9 @@ describe("renderWhipBudgetPause", () => {
 describe("renderWhipBudgetResume", () => {
   test("builds the brief 2-bullet body with category 🚀", () => {
     const out = renderWhipBudgetResume({
-      team: "atmux", resumeThresholdPct: 20, whenMs: FIXED_TS,
+      team: "atmux",
+      resumeThresholdPct: 20,
+      whenMs: FIXED_TS,
     });
     expect(out.template).toBe("whip-budget-resume");
     expect(out.category).toBe("🚀");
@@ -1115,8 +1045,12 @@ describe("renderWhipBudgetWarning", () => {
 
   test("wk window renders verbatim in body", () => {
     const out = renderWhipBudgetWarning({
-      team: "atmux", account: "icloud", window: "wk",
-      remainingPct: 12, band: 0.15, resetIn: "3d4h",
+      team: "atmux",
+      account: "icloud",
+      window: "wk",
+      remainingPct: 12,
+      band: 0.15,
+      resetIn: "3d4h",
       affectedMembers: 2,
     });
     expect(out.bullets?.[0]).toContain("remaining wk: 12%");
@@ -1126,8 +1060,12 @@ describe("renderWhipBudgetWarning", () => {
 describe("renderWhipBudgetRefreshSoon", () => {
   test("builds 3-bullet body with paused-now hint when active", () => {
     const out = renderWhipBudgetRefreshSoon({
-      team: "atmux", account: "icloud", window: "5h",
-      resetsIn: "28min", remainingPct: 8, pausedNow: true,
+      team: "atmux",
+      account: "icloud",
+      window: "5h",
+      resetsIn: "28min",
+      remainingPct: 8,
+      pausedNow: true,
       whenMs: FIXED_TS,
     });
     expect(out.template).toBe("whip-budget-refresh-soon");
@@ -1141,8 +1079,12 @@ describe("renderWhipBudgetRefreshSoon", () => {
 
   test("pausedNow=false omits the auto-resume hint bullet", () => {
     const out = renderWhipBudgetRefreshSoon({
-      team: "atmux", account: "icloud", window: "wk",
-      resetsIn: "1h", remainingPct: 18, pausedNow: false,
+      team: "atmux",
+      account: "icloud",
+      window: "wk",
+      resetsIn: "1h",
+      remainingPct: 18,
+      pausedNow: false,
     });
     expect(out.bullets?.length).toBe(2);
     expect(out.bullets?.find((b) => b.includes("auto-resume"))).toBeUndefined();
@@ -1275,9 +1217,7 @@ describe("renderAccountSwapFail", () => {
     expect(out.template).toBe("whip-account-swap-fail");
     expect(out.bullets?.[0]).toBe("❌ swap aborted: `up-impl` (target probe 401)");
     expect(out.bullets?.[1]).toBe("🚩 reason: refresh failed for `ifca` — re-login needed");
-    expect(out.bullets?.[2]).toBe(
-      "📍 fallback: keeping `up-impl` on `icloud` (will hit pause)",
-    );
+    expect(out.bullets?.[2]).toBe("📍 fallback: keeping `up-impl` on `icloud` (will hit pause)");
     expect(out.bullets?.[3]).toBe("🚩 flag: p2 raised (flag-c0ffee00)");
   });
 
@@ -1311,9 +1251,7 @@ describe("renderAccountSwapPassComplete", () => {
     expect(out.template).toBe("whip-account-swap-pass-complete");
     expect(out.bullets?.[0]).toBe("✅ pass `swap-a3f2c814` complete");
     expect(out.bullets?.[1]).toBe("📊 swapped: 5 / aborted: 1 / excluded: 3");
-    expect(out.bullets?.[2]).toBe(
-      "💰 budget on icloud post-pass: 76% used (no longer pinned)",
-    );
+    expect(out.bullets?.[2]).toBe("💰 budget on icloud post-pass: 76% used (no longer pinned)");
     expect(out.bullets?.[3]).toContain("⏱️ pass duration:");
   });
 
@@ -1340,7 +1278,6 @@ describe("renderAccountSwapPassComplete", () => {
     expect(content).toContain("swap-c0ffee00");
   });
 });
-
 
 // ---------- ADR-057 §D6 — renderWhipWatchdog ----------
 
@@ -1388,14 +1325,11 @@ describe("renderWhipWatchdog", () => {
   });
 });
 
-
 // ---------- ADR-055 §D5 — renderWhipSelfHealAttempt ----------
 
 describe("renderWhipSelfHealAttempt", () => {
   test("renders attempt template per ADR-055 §D5 worked example", async () => {
-    const { renderWhipSelfHealAttempt } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderWhipSelfHealAttempt } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealAttempt({
       team: "atmux",
       recipeId: "fix:team-json-schema-drift",
@@ -1414,9 +1348,7 @@ describe("renderWhipSelfHealAttempt", () => {
   });
 
   test("formats sub-1k token cap as integer", async () => {
-    const { renderWhipSelfHealAttempt } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderWhipSelfHealAttempt } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealAttempt({
       team: "atmux",
       recipeId: "fix:supervisor-missing",
@@ -1428,9 +1360,7 @@ describe("renderWhipSelfHealAttempt", () => {
   });
 
   test("whenMs override propagates", async () => {
-    const { renderWhipSelfHealAttempt } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderWhipSelfHealAttempt } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealAttempt({
       team: "atmux",
       recipeId: "fix:cron-pollution",
@@ -1441,8 +1371,7 @@ describe("renderWhipSelfHealAttempt", () => {
     expect(out.whenMs).toBe(1_700_000_000_000);
   });
 
-  test("renderer output passes send-time validation (bullets non-empty + emoji prefix)",
-    async () => {
+  test("renderer output passes send-time validation (bullets non-empty + emoji prefix)", async () => {
     const { renderWhipSelfHealAttempt, send } = await import(
       "../../../src/abstractions/discord.ts"
     );
@@ -1464,11 +1393,8 @@ describe("renderWhipSelfHealAttempt", () => {
 // ---------- ADR-055 §D5 — renderWhipSelfHealResult ----------
 
 describe("renderWhipSelfHealResult", () => {
-  test("success variant — patch staged + tokens + summary + log",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("success variant — patch staged + tokens + summary + log", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:team-json-schema-drift",
@@ -1490,11 +1416,8 @@ describe("renderWhipSelfHealResult", () => {
     ]);
   });
 
-  test("failure variant — first reason + tail count + log + flag",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure variant — first reason + tail count + log + flag", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:supervisor-missing",
@@ -1515,11 +1438,8 @@ describe("renderWhipSelfHealResult", () => {
     ]);
   });
 
-  test("failure variant with multiple reasons appends '(N more)' suffix",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure variant with multiple reasons appends '(N more)' suffix", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:cron-pollution",
@@ -1535,11 +1455,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(bullets[1]).toBe("🛑 reasons: block markers mismatched (2 more)");
   });
 
-  test("failure variant falls back to patchSummary when reasons empty",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure variant falls back to patchSummary when reasons empty", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:team-json-schema-drift",
@@ -1555,11 +1472,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(bullets[1]).toBe("🛑 reasons: team.json missing post-cursor");
   });
 
-  test("failure variant defaults severity to p2 when flagSeverity omitted",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure variant defaults severity to p2 when flagSeverity omitted", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:cron-pollution",
@@ -1574,11 +1488,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(bullets[3]).toBe("🚩 flag: p2 raised — operator triage needed");
   });
 
-  test("tokensUsed -1 (parse failure) renders as '?'",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("tokensUsed -1 (parse failure) renders as '?'", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:team-json-schema-drift",
@@ -1592,11 +1503,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(bullets[1]).toBe("💰 tokens used: ? of 5k cap");
   });
 
-  test("whenMs override propagates",
-    async () => {
-    const { renderWhipSelfHealResult } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("whenMs override propagates", async () => {
+    const { renderWhipSelfHealResult } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipSelfHealResult({
       team: "atmux",
       recipeId: "fix:cron-pollution",
@@ -1610,11 +1518,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(out.whenMs).toBe(1_700_000_000_000);
   });
 
-  test("success-variant output passes send-time validation",
-    async () => {
-    const { renderWhipSelfHealResult, send } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("success-variant output passes send-time validation", async () => {
+    const { renderWhipSelfHealResult, send } = await import("../../../src/abstractions/discord.ts");
     const recorder = join(tmpRoot, "self-heal-result-success-record.jsonl");
     process.env.ATMUX_DISCORD_RECORDER = recorder;
     const out = renderWhipSelfHealResult({
@@ -1632,11 +1537,8 @@ describe("renderWhipSelfHealResult", () => {
     expect(written).toContain("patch staged");
   });
 
-  test("failure-variant output passes send-time validation",
-    async () => {
-    const { renderWhipSelfHealResult, send } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+  test("failure-variant output passes send-time validation", async () => {
+    const { renderWhipSelfHealResult, send } = await import("../../../src/abstractions/discord.ts");
     const recorder = join(tmpRoot, "self-heal-result-fail-record.jsonl");
     process.env.ATMUX_DISCORD_RECORDER = recorder;
     const out = renderWhipSelfHealResult({

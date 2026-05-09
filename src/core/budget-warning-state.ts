@@ -53,10 +53,7 @@ export async function loadWarningState(atmuxDir: string): Promise<WarningState> 
 }
 
 /** Atomic-write the full state map. */
-export async function writeWarningState(
-  atmuxDir: string,
-  state: WarningState,
-): Promise<void> {
+export async function writeWarningState(atmuxDir: string, state: WarningState): Promise<void> {
   await atomicWrite(budgetWarningStatePath(atmuxDir), JSON.stringify(state));
 }
 
@@ -74,7 +71,7 @@ export function hasBandFired(
   window: "5h" | "wk",
   band: number,
 ): boolean {
-  return Object.prototype.hasOwnProperty.call(state, warningKey(account, window, band));
+  return Object.hasOwn(state, warningKey(account, window, band));
 }
 
 /** Record a band as having fired now. Returns the mutated copy of state. */

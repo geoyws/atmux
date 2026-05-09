@@ -19,14 +19,19 @@ const baseOpts = (team: Team) => ({
   atmuxBin: "/usr/local/bin/atmux",
 });
 
+// Bug t-2db59eee: every cron line carries an inline `PATH=...` prefix
+// so cron-fired verbs resolve bun even under cron's narrow default env.
+const DEFAULT_PATH = "/root/.bun/bin:/usr/local/bin:/usr/bin:/bin";
+const P = `PATH=${DEFAULT_PATH} `;
+
 describe("renderCronLines", () => {
   test("vanilla team renders 4-line block: whip / report / decisions / groom", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
     expect(lines).toEqual([
-      "*/5 * * * * ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1",
-      "*/30 * * * * ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1",
-      "0 */4 * * * ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1",
-      "0 4 * * * ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1",
+      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
+      `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
+      `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
     ]);
   });
 
@@ -34,7 +39,7 @@ describe("renderCronLines", () => {
     const team = baseTeam({ whip: { claudeAccount: "icloud" } as never });
     const lines = renderCronLines(baseOpts(team));
     expect(lines).toContain(
-      "*/1 * * * * ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip-resume-check >> /srv/demo/.atmux/logs/whip-resume-check.log 2>&1",
+      `*/1 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip-resume-check >> /srv/demo/.atmux/logs/whip-resume-check.log 2>&1`,
     );
     // Total now 5 lines.
     expect(lines.length).toBe(5);
@@ -77,13 +82,62 @@ describe("renderCronLines", () => {
     );
   });
 
-  test("tmuxTmpdir prefix prepends TMUX_TMPDIR= on every line", () => {
+  test("tmuxTmpdir prefix prepends TMUX_TMPDIR= on every line (after PATH=)", () => {
     const lines = renderCronLines({
       ...baseOpts(baseTeam()),
       tmuxTmpdir: "/tmp/atmux-demo",
     });
     for (const l of lines) {
       expect(l).toContain("TMUX_TMPDIR=/tmp/atmux-demo ");
+      // PATH= must come before TMUX_TMPDIR= so the inline assignment
+      // sets bun-resolution before any tmux-side lookup.
+      expect(l.indexOf("PATH=")).toBeLessThan(l.indexOf("TMUX_TMPDIR="));
+    }
+  });
+
+  // Bug t-2db59eee — cron PATH bake-in (defends against cron's narrow
+  // default env breaking the `#!/usr/bin/env bun` shebang).
+  test("every line carries inline PATH= prefix with bun bin path (default)", () => {
+    const lines = renderCronLines(baseOpts(baseTeam()));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) {
+      expect(l).toContain(`PATH=${DEFAULT_PATH} `);
+      // PATH= must precede ATMUX_DIR= so bash sees the inline assignment
+      // first and the atmux invocation inherits the patched PATH.
+      expect(l.indexOf("PATH=")).toBeLessThan(l.indexOf("ATMUX_DIR="));
+    }
+  });
+
+  test("team.cron.path overrides the default PATH baked into every line", () => {
+    const customPath = "/opt/bun/bin:/usr/bin:/bin";
+    const team = baseTeam({ cron: { path: customPath } as never });
+    const lines = renderCronLines(baseOpts(team));
+    for (const l of lines) {
+      expect(l).toContain(`PATH=${customPath} `);
+      expect(l).not.toContain(DEFAULT_PATH);
+    }
+  });
+
+  test("conditional whip-resume-check line also gets PATH= prefix", () => {
+    const team = baseTeam({ whip: { claudeAccount: "icloud" } as never });
+    const lines = renderCronLines(baseOpts(team));
+    const resumeLines = lines.filter((l) => l.includes("whip-resume-check"));
+    expect(resumeLines.length).toBe(1);
+    for (const l of resumeLines) {
+      expect(l).toContain(`PATH=${DEFAULT_PATH} `);
+    }
+  });
+
+  test("discorder + unblocker conditional lines also get PATH= prefix", () => {
+    const team = baseTeam({
+      members: [
+        { name: "d", role: "discorder", cwd: "/x" } as never,
+        { name: "u", role: "unblocker", cwd: "/x" } as never,
+      ],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    for (const l of lines) {
+      expect(l).toContain(`PATH=${DEFAULT_PATH} `);
     }
   });
 
@@ -121,9 +175,9 @@ describe("renderCronBlock", () => {
   test("wraps lines in marker fence with team name + trailing newline", () => {
     const team = baseTeam({ name: "myteam" });
     const block = renderCronBlock(baseOpts(team));
-    expect(block.startsWith("# >>> atmux:team=myteam — managed by atmux start; do not edit by hand\n")).toBe(
-      true,
-    );
+    expect(
+      block.startsWith("# >>> atmux:team=myteam — managed by atmux start; do not edit by hand\n"),
+    ).toBe(true);
     expect(block.endsWith("# <<< atmux:team=myteam\n")).toBe(true);
   });
 

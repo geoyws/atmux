@@ -2,7 +2,7 @@
 // (ADR-055 §D4 first recipe).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixTeamJsonSchemaDriftRecipe } from "../../../../src/core/cursor-recipes/fix-team-json-schema-drift.ts";
@@ -69,7 +69,11 @@ describe("fixTeamJsonSchemaDriftRecipe.detect", () => {
     );
     const r = await fixTeamJsonSchemaDriftRecipe.detect(ctx());
     expect(r).not.toBeNull();
-    const dctx = r as { issues: ReadonlyArray<unknown>; allowedPaths: ReadonlyArray<string>; teamJsonBefore: string };
+    const dctx = r as {
+      issues: ReadonlyArray<unknown>;
+      allowedPaths: ReadonlyArray<string>;
+      teamJsonBefore: string;
+    };
     expect(dctx.issues.length).toBeGreaterThan(0);
     expect(dctx.allowedPaths).toContain("whip");
     expect(dctx.teamJsonBefore).toContain("garbage");

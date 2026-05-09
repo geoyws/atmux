@@ -7,9 +7,10 @@ import { describe, expect, test } from "bun:test";
 import {
   KNOWN_MODAL_SETTLE_MS,
   MAX_KNOWN_MODAL_DISMISSALS,
-  safeSendKeys,
   type SafeSendOpts,
   type SafeSendOutcome,
+  safePreflight,
+  safeSendKeys,
 } from "../../../src/core/safe-send.ts";
 
 interface FlagCall {
@@ -73,9 +74,7 @@ describe("safeSendKeys — READY happy path", () => {
     const result = await safeSendKeys("atmux:1.0", "hello", opts);
     expect(result.outcome).toBe("sent");
     expect(result.attempts).toBe(1);
-    expect(fixture.sends).toEqual([
-      { target: "atmux:1.0", text: "hello", enter: undefined },
-    ]);
+    expect(fixture.sends).toEqual([{ target: "atmux:1.0", text: "hello", enter: undefined }]);
     expect(fixture.flags).toHaveLength(0);
     expect(fixture.sleeps).toHaveLength(0);
   });
@@ -318,6 +317,116 @@ describe("safeSendKeys — log invocations", () => {
       },
     });
     expect(logs.some((m) => m.includes("exhausted-typing"))).toBe(true);
+  });
+});
+
+// ---------- safePreflight ----------
+//
+// Same classify+dismiss loop as safeSendKeys but no terminal send.
+// Used by callers that own a paste-buffer pattern (loadBuffer +
+// pasteBuffer + Enter) where the trailing Enter can't be routed
+// through safeSendKeys (after paste, the pane classifies as TYPING
+// and the gate would retry to exhaustion).
+
+describe("safePreflight — happy path", () => {
+  test("READY pane → ready=true, no sends, no dismissals", async () => {
+    const { fixture, opts } = buildFixture(["3.4k tokens · esc to interrupt"]);
+    const result = await safePreflight("atmux:1.0", opts);
+    expect(result.ready).toBe(true);
+    expect(result.finalClassification.state).toBe("READY");
+    expect(result.dismissals).toBe(0);
+    expect(result.attempts).toBe(1);
+    expect(fixture.sends).toHaveLength(0);
+  });
+});
+
+describe("safePreflight — known-modal dismissal", () => {
+  test("CC feedback survey → dismisses '0' and re-classifies", async () => {
+    const { fixture, opts } = buildFixture([
+      FEEDBACK_SURVEY_PANE, // pre-dismiss
+      "3.4k tokens · esc to interrupt", // post-dismiss
+    ]);
+    const result = await safePreflight("atmux:1.0", opts);
+    expect(result.ready).toBe(true);
+    expect(result.dismissals).toBe(1);
+    expect(result.finalClassification.state).toBe("READY");
+    // The dismissal sent the modal's keystroke ("0" for feedback-survey).
+    expect(fixture.sends).toHaveLength(1);
+    expect(fixture.sends[0]?.text).toBe("0");
+    expect(fixture.sends[0]?.enter).toBe(false);
+    // KNOWN_MODAL_SETTLE_MS slept after dismissal.
+    expect(fixture.sleeps).toContain(KNOWN_MODAL_SETTLE_MS);
+  });
+});
+
+describe("safePreflight — non-sendable terminal states", () => {
+  test("UNKNOWN pane → ready=false, no flags raised", async () => {
+    // Empty capture → UNKNOWN (no patterns match).
+    const { fixture, opts } = buildFixture([""]);
+    const result = await safePreflight("atmux:1.0", opts);
+    expect(result.ready).toBe(false);
+    expect(result.finalClassification.state).toBe("UNKNOWN");
+    expect(result.dismissals).toBe(0);
+    // Preflight never raises flags (caller decides per warn-and-proceed).
+    expect(fixture.flags).toHaveLength(0);
+  });
+
+  test("RATE-LIMIT pane → ready=false, no dismiss attempted", async () => {
+    const { fixture, opts } = buildFixture(["You've hit your limit"]);
+    const result = await safePreflight("atmux:1.0", opts);
+    expect(result.ready).toBe(false);
+    expect(result.finalClassification.state).toBe("RATE-LIMIT");
+    expect(fixture.flags).toHaveLength(0);
+  });
+
+  test("SHELL pane → ready=false", async () => {
+    const { fixture, opts } = buildFixture(["user@host:~$ "]);
+    const result = await safePreflight("atmux:1.0", opts);
+    expect(result.ready).toBe(false);
+    expect(result.finalClassification.state).toBe("SHELL");
+    expect(fixture.flags).toHaveLength(0);
+  });
+});
+
+describe("safePreflight — retryable states", () => {
+  test("TYPING then READY → polls + exits ready=true", async () => {
+    const { fixture, opts } = buildFixture([
+      "Press up to edit queued messages", // TYPING (1st capture)
+      "3.4k tokens · esc to interrupt", // READY (after retry)
+    ]);
+    const result = await safePreflight("atmux:1.0", opts);
+    expect(result.ready).toBe(true);
+    expect(result.finalClassification.state).toBe("READY");
+    expect(result.attempts).toBe(2);
+    expect(fixture.sends).toHaveLength(0);
+    expect(fixture.sleeps.length).toBeGreaterThan(0);
+  });
+
+  test("COMPACTING that never clears → exhausts retries, ready=false", async () => {
+    // All captures show COMPACTING — preflight retries until policy
+    // bound, then exits with ready=false. No flags raised (caller
+    // decides per warn-and-proceed).
+    const captures = Array(20).fill("Compacting conversation");
+    const { fixture, opts } = buildFixture(captures);
+    const result = await safePreflight("atmux:1.0", opts);
+    expect(result.ready).toBe(false);
+    expect(result.finalClassification.state).toBe("COMPACTING");
+    expect(fixture.flags).toHaveLength(0);
+  });
+});
+
+describe("safePreflight — bounded modal dismissal", () => {
+  test("modal that won't dismiss → exits after MAX dismissals, ready=false", async () => {
+    // All captures show the same modal (dismiss attempts don't change it).
+    const captures: string[] = [];
+    for (let i = 0; i < MAX_KNOWN_MODAL_DISMISSALS + 2; i += 1) {
+      captures.push(FEEDBACK_SURVEY_PANE);
+    }
+    const { fixture, opts } = buildFixture(captures);
+    const result = await safePreflight("atmux:1.0", opts);
+    expect(result.ready).toBe(false);
+    expect(result.dismissals).toBe(MAX_KNOWN_MODAL_DISMISSALS);
+    expect(fixture.sends).toHaveLength(MAX_KNOWN_MODAL_DISMISSALS);
   });
 });
 

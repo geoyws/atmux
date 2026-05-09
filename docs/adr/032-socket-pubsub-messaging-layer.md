@@ -1,6 +1,6 @@
 # ADR-032: Socket pubsub as the messaging layer — supersedes file-write+keystroke-poll
 
-**Status**: proposed
+**Status**: accepted (George 14:13 MYT 2026-05-08 — promoted to substrate-level pre-req per ADR-068 cross-references + pubsub-first directive 13:27 MYT)
 **Date**: 2026-04-27
 **Driver-ref**: 14:10 MYT pivot from `/btw` 14:00 MYT — supersedes the 14:05 MYT supervisor-MVP routing (E10/Sh and the E12 inotify variant). Driver explicitly drops the inotify Phase 1 MVP in favor of a single coherent end-state.
 

@@ -23,9 +23,9 @@
 //     cleared and a fresh run started.
 
 import { join } from "node:path";
-import { LockTimeoutError } from "../errors.ts";
 import { tryReadJson, updateJson, writeJson } from "../abstractions/json.ts";
 import { now as nowMs } from "../abstractions/time.ts";
+import { LockTimeoutError } from "../errors.ts";
 import {
   type EternalImprovementState,
   EternalImprovementState as EternalImprovementStateSchema,

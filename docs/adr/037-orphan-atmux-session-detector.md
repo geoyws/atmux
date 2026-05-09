@@ -1,6 +1,6 @@
 # ADR-037: Doctor — orphan `atmux_*` session detector (namespace-scoped, no `--fix`)
 
-**Status**: proposed
+**Status**: accepted (George 14:13 MYT 2026-05-08 — paperwork catch-up; implemented as Check 7 in `src/verbs/doctor.ts:615`)
 **Date**: 2026-04-30
 **Driver-ref**: 17:00 MYT — driver request after `icontest` / `iconverify` / `settled` cleanup; constraint: "don't clobber anything in default tmux-land where other non-atmux sessions live."
 

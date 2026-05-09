@@ -79,10 +79,7 @@ export function autoPushLogPath(atmuxDir: string): string {
   return join(atmuxDir, "logs", "auto-push.jsonl");
 }
 
-export async function appendAuditEntry(
-  atmuxDir: string,
-  entry: AutoPushAuditEntry,
-): Promise<void> {
+export async function appendAuditEntry(atmuxDir: string, entry: AutoPushAuditEntry): Promise<void> {
   const path = autoPushLogPath(atmuxDir);
   await ensureDir(join(atmuxDir, "logs"));
   await appendText(path, `${JSON.stringify(entry)}\n`);

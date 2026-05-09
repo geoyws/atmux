@@ -33,29 +33,34 @@ import { tryReadJson } from "../abstractions/json.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import {
-  parseEntries as parseDriverInboxEntries,
-  type DriverInboxEntry,
-} from "../core/driver-inbox.ts";
-import {
   driverInboxPath,
   getAtmuxDir,
-  getDefaultSocket,
   inboxPathFor,
   kanbanJsonPath,
   type ResolveDirOpts,
+  resolveTeamSocket,
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import {
+  type DriverInboxEntry,
+  parseEntries as parseDriverInboxEntries,
+} from "../core/driver-inbox.ts";
+import {
+  type DriverPaneHealth,
+  type ProbeDriverPaneDeps,
+  probeDriverPane,
+} from "../core/driver-pane-health.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import {
   composeCatastrophicDrift,
   composeDriftReport,
   type DriftReport,
 } from "../core/whip-config-drift.ts";
-import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 import { Inbox } from "../schema/inbox.ts";
 import { Kanban } from "../schema/kanban.ts";
-import { Team as TeamSchema, type Team, type TeamMember } from "../schema/team.ts";
+import { type Team, type TeamMember, Team as TeamSchema } from "../schema/team.ts";
 
 const USAGE = "atmux doctor [--quiet|-q] [--fix] [--json]";
 
@@ -591,9 +596,10 @@ export async function checkWhipConfigDrift(atmuxDir: string): Promise<DoctorRow[
 
   const issuesCount = driftReport.issues.length;
   const first = driftReport.issues[0];
-  const firstSummary = first === undefined
-    ? ""
-    : ` first: ${first.path.length === 0 ? "<root>" : first.path.join(".")} (${first.code})`;
+  const firstSummary =
+    first === undefined
+      ? ""
+      : ` first: ${first.path.length === 0 ? "<root>" : first.path.join(".")} (${first.code})`;
   return [
     {
       status: "yellow",
@@ -628,7 +634,7 @@ export async function checkOrphanSessions(
   const hasSession =
     opts.hasSession ??
     (async (name: string) => {
-      const tmux = createTmux({ socketPath: getDefaultSocket(team.name) });
+      const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
       return await tmux.session.hasSession(name);
     });
   const teamSession = `atmux-${team.name}`;
@@ -737,6 +743,106 @@ export async function checkSubmoduleIntegrity(
     });
   }
   return rows;
+}
+
+// ---------- ADR-064 §4: driver-pane-state ----------
+
+/** Test injection points for `checkDriverPaneState`. The probe layer
+ *  itself is already injectable; this just lets the doctor caller
+ *  forward those overrides cleanly. */
+export interface CheckDriverPaneStateOpts {
+  probeDeps?: ProbeDriverPaneDeps;
+  /** Override the probe entirely (single-shot fixture for the check). */
+  probe?: (team: Team, atmuxDir: string) => Promise<DriverPaneHealth>;
+}
+
+/**
+ * ADR-064 §4 + §OQ3 — surface the driver pane's live state as a
+ * doctor row. Severity mapping:
+ *
+ *   - configured=false                                  → no row
+ *   - configured=true, windowExists=false               → yellow ("config drift")
+ *   - configured=true, state ∈ {READY, TYPING}          → green
+ *   - configured=true, state ∈ {RATE-LIMIT, MODAL, COMPACTING} → yellow ("driver pane stuck")
+ *   - configured=true, state ∈ {SHELL, UNKNOWN, null}   → yellow ("unexpected state")
+ *
+ * Single label across all rows: `driver-pane-state`.
+ */
+export async function checkDriverPaneState(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckDriverPaneStateOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  const probe = opts.probe ?? ((t, dir) => probeDriverPane(t, dir, opts.probeDeps));
+  const health = await probe(team, atmuxDir);
+
+  if (!health.configured) return [];
+
+  if (!health.windowExists) {
+    return [
+      {
+        status: "yellow",
+        label: "driver-pane-state",
+        detail: "team has driverSession set but no live driver window",
+        hint: "run atmux start",
+      },
+    ];
+  }
+
+  if (health.state === "READY" || health.state === "TYPING") {
+    return [
+      {
+        status: "green",
+        label: "driver-pane-state",
+        detail: `state=${health.state}`,
+      },
+    ];
+  }
+
+  if (health.state === null) {
+    return [
+      {
+        status: "yellow",
+        label: "driver-pane-state",
+        detail: "driver pane capture returned no signal",
+        hint: "check tmux server health",
+      },
+    ];
+  }
+
+  if (health.state === "RATE-LIMIT" || health.state === "MODAL" || health.state === "COMPACTING") {
+    const evidence = truncateEvidence(health.evidence, 60);
+    return [
+      {
+        status: "yellow",
+        label: "driver-pane-state",
+        detail: `driver pane stuck in ${health.state}${evidence === "" ? "" : ` (${evidence})`}`,
+        hint:
+          health.state === "RATE-LIMIT"
+            ? "wait for budget refresh"
+            : health.state === "MODAL"
+              ? "answer the modal in the driver pane"
+              : "wait for compaction to finish",
+      },
+    ];
+  }
+
+  // SHELL / UNKNOWN — pane fell back to a shell or pattern catalog
+  // didn't match anything. Yellow so the operator investigates.
+  const evidence = truncateEvidence(health.evidence, 60);
+  return [
+    {
+      status: "yellow",
+      label: "driver-pane-state",
+      detail: `driver pane in unexpected state=${health.state}${evidence === "" ? "" : ` (${evidence})`}`,
+      hint: "check the driver pane manually",
+    },
+  ];
+}
+
+function truncateEvidence(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
 // ---------- ADR-057 §D5c: inbox-mark verification ----------
@@ -912,6 +1018,8 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkSubmoduleIntegrity()));
   // ADR-057 §D5c: inbox-mark verification (P3 finding per orphan id).
   rows.push(...(await checkInboxMarks(atmuxDir)));
+  // ADR-064 §4: driver-pane health (no row when team unconfigured).
+  rows.push(...(await checkDriverPaneState(team, atmuxDir)));
   return rows;
 }
 

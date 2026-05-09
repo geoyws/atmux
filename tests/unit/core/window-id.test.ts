@@ -9,9 +9,9 @@ import {
   readCache,
   resolveTarget,
   resolveWindowId,
+  type WindowIdCache,
   windowIdCachePath,
   writeCache,
-  type WindowIdCache,
 } from "../../../src/core/window-id.ts";
 
 // ---------- Test helpers ----------
@@ -39,6 +39,7 @@ function fakeTmux(o: FakeTmuxOpts = {}): TmuxNamespace {
       killWindow: async () => {},
       renameWindow: async () => {},
       selectWindow: async () => {},
+      moveWindow: async () => {},
     },
     pane: {
       displayMessage: async () => {

@@ -19,9 +19,9 @@
 // observability layers.
 
 import { join } from "node:path";
-import { appendText, ensureDir } from "./fs.ts";
-import { spawn, type SpawnResult } from "./spawn.ts";
 import type { CursorJob, GitPatch } from "../core/cursor-recipes/types.ts";
+import { appendText, ensureDir } from "./fs.ts";
+import { type SpawnResult, spawn } from "./spawn.ts";
 
 // ---------- Public types ----------
 

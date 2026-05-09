@@ -12,13 +12,16 @@
 //   - verify allowlist enforcement (empty allowlist rejects any patch)
 //   - verify re-detect path (post-cursor crontab still malformed → reasons)
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
-  makeFixCronPollutionRecipe,
   type CronPollutionContext,
   type CronPollutionDeps,
+  makeFixCronPollutionRecipe,
 } from "../../../../src/core/cursor-recipes/fix-cron-pollution.ts";
-import type { WhipTickContextForRecipe, GitPatch } from "../../../../src/core/cursor-recipes/types.ts";
+import type {
+  GitPatch,
+  WhipTickContextForRecipe,
+} from "../../../../src/core/cursor-recipes/types.ts";
 
 // ---------- Fixtures ----------
 
@@ -37,10 +40,7 @@ function whipCtx(overrides: Partial<WhipTickContextForRecipe> = {}): WhipTickCon
   };
 }
 
-function makeRecipe(
-  cronText: string | null,
-  extraDeps: Partial<CronPollutionDeps> = {},
-) {
+function makeRecipe(cronText: string | null, extraDeps: Partial<CronPollutionDeps> = {}) {
   const deps: CronPollutionDeps = {
     readCrontab: async () => cronText,
     atmuxBin: ATMUX_BIN,
@@ -191,7 +191,8 @@ ${CLEAN_BLOCK(TEAM, PROJECT_CWD)}`;
 
 describe("fix:cron-pollution propose", () => {
   test("returns CursorJob with empty allowlist + 5k token cap", async () => {
-    const recipe = makeRecipe(`# >>> atmux:team=${TEAM} — managed by atmux start; do not edit by hand
+    const recipe =
+      makeRecipe(`# >>> atmux:team=${TEAM} — managed by atmux start; do not edit by hand
 # <<< atmux:team=${TEAM}
 # <<< atmux:team=${TEAM}`);
     const ctx = (await recipe.detect(whipCtx())) as CronPollutionContext;

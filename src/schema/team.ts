@@ -138,12 +138,96 @@ export const TeamWhip = z
     /** Roles excluded from swap pass — their conversation memory doesn't
      *  survive `atmux handoff`. Default lead/planner/reviewer
      *  (ADR-056 §"Lead/planner exclusion"). */
-    accountSwapExcludeRoles: z
-      .array(z.string())
-      .default(["lead", "planner", "reviewer"]),
+    accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
   })
   .strict();
 export type TeamWhip = z.infer<typeof TeamWhip>;
+
+/**
+ * `team.json::fallback` sub-config — ADR-058 multi-tier fallback chain
+ * (Cursor Tier 2 → Kimi Tier 3 → MiniMax Tier 4).
+ *
+ * Default-OFF: `enabled: false` is the v1 ship gate. Existing teams
+ * see no behavior change until they explicitly opt in. The strict
+ * shape catches typos (e.g. `enabld`) at boot via the same drift
+ * Discord-ping path as `whip` — applied here too because fallback
+ * tiers run as different Linux UIDs (Tier 3+) and a misconfigured
+ * `enabled` would silently dispatch into a non-existent provisioned
+ * cage.
+ *
+ * `tierBudgetThresholds` are future-proof knobs for picking-tier-by-
+ * remaining-budget — unused in T4 (the v1 selection picks highest
+ * tier with capacity per ADR-058 §D2). Surfaced now so the schema
+ * doesn't churn when the threshold logic lands.
+ */
+export const TeamFallback = z
+  .object({
+    /** Master switch. Default false (no fallback dispatch on pause). */
+    enabled: z.boolean().default(false),
+    /** Optional per-tier budget thresholds for tier selection. Unused
+     *  in T4; surfaced for forward-compat per ADR-058 §D2 OQ7. */
+    tierBudgetThresholds: z
+      .object({
+        tier2Pct: z.number().int().min(0).max(100).optional(),
+        tier3Pct: z.number().int().min(0).max(100).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type TeamFallback = z.infer<typeof TeamFallback>;
+
+/**
+ * `team.json::cron` sub-config — per-team cron-line PATH override.
+ *
+ * Cron's bare env on Ubuntu is
+ * `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, which
+ * does NOT include `/root/.bun/bin` (bun lives there under mise).
+ * atmux-bun's shebang is `#!/usr/bin/env bun`, so cron-fired verbs
+ * (whip, report, decisions digest, groom, whip-resume-check, etc.)
+ * silently die with `/usr/bin/env: 'bun': No such file or directory`.
+ *
+ * Fix: bake an inline `PATH=<value> ` prefix into every emitted cron
+ * line so each line picks up bun regardless of cron's narrow env.
+ * Default targets hax (where atmux primarily runs); operators on other
+ * hosts override via `team.cron.path` in `team.json`.
+ *
+ * Source: Bug t-2db59eee (cron whip fails with bun-not-found).
+ */
+export const TeamCron = z
+  .object({
+    /** Inline PATH baked into every cron line. Default targets hax
+     *  (mise-managed bun at `/root/.bun/bin/bun`); override per-host
+     *  when bun lives elsewhere. */
+    path: z.string().default("/root/.bun/bin:/usr/local/bin:/usr/bin:/bin"),
+  })
+  .strict();
+export type TeamCron = z.infer<typeof TeamCron>;
+
+/**
+ * `team.json::kanban` sub-config — kanban-orchestration knobs. ADR-062
+ * §1 introduced `claim --next` lane-aware pull; the cross-lane fallback
+ * gate lives here.
+ *
+ * Naming: bash `lib/claim.sh:200` + `templates/briefs/member.md` use
+ * `kanban.crossLaneClaim` (boolean, default true). ADR-062 §OQ4 also
+ * mentioned `lanePickup.strict=true` as inverse — the field landed
+ * under `kanban.crossLaneClaim` to match the existing brief + bash
+ * precedent (workers read the brief; one canonical name beats two
+ * equivalent ones). `crossLaneClaim=true` ≡ `lanePickup.strict=false`.
+ */
+export const TeamKanban = z
+  .object({
+    /** Cross-lane fallback gate for `claim --next`. When `true` (default),
+     *  a worker whose own-lane queue is dry falls back to `lane=null`
+     *  Tasks (legacy + small misc work). When `false`, the second-pass
+     *  fallback is suppressed and `claim --next` exits with a clear
+     *  "no work in <LANE> lane" message — strict-lane mode. Per ADR-062
+     *  §OQ4 default. */
+    crossLaneClaim: z.boolean().default(true),
+  })
+  .strict();
+export type TeamKanban = z.infer<typeof TeamKanban>;
 
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
@@ -160,11 +244,36 @@ export const Team = z
     singleSession: z.boolean().optional(),
     /** TUI to auto-spawn in the cage's driver window on `atmux start`. */
     driverTui: z.string().nullable().optional(),
+    /** ADR-044: when set, the team session is created with `driver` as
+     *  window 1 (in place of the `__home` placeholder). Members spawn as
+     *  windows 2..N+1 in declarative order. `null` is accepted as
+     *  "explicitly disabled" (matches existing wizard output). Resolution
+     *  order for the TUI command: `driverSession.tui` → `driverTui` →
+     *  `"claude"`.
+     *
+     *  ADR-064 §5 + §OQ5: `command` field dropped 2026-05-08 — verified
+     *  zero call sites pre-edit; no consumer ever read it (only `.tui`
+     *  is wired through `src/verbs/start.ts:344`). Strict-mode rejects
+     *  any `team.json` that still sets it; clean-cut, no deprecation
+     *  cycle per OQ5 (planner verified no live config sets the key). */
+    driverSession: z
+      .object({
+        tui: z.string().nullable().optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
     /** Member roster. Order is preserved (window layout depends on it). */
     members: z.array(TeamMember),
     emojis: TeamEmojis.optional(),
     /** ADR-054: typed whip sub-config with strict drift detection. */
     whip: TeamWhip.optional(),
+    /** ADR-058: multi-tier fallback chain (Cursor/Kimi/MiniMax). */
+    fallback: TeamFallback.optional(),
+    /** Per-team cron PATH override (bug t-2db59eee). */
+    cron: TeamCron.optional(),
+    /** ADR-062 §OQ4: kanban-orchestration knobs (cross-lane fallback). */
+    kanban: TeamKanban.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     report: z.unknown().optional(),
     discord: z.unknown().optional(),

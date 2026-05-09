@@ -13,7 +13,7 @@
 //   2. Else: first member named "lead"
 //   3. Else: ConfigError ("no lead defined in team.json")
 
-import { writeText } from "../abstractions/fs.ts";
+import { statOrNull, writeText } from "../abstractions/fs.ts";
 import { formatMyt } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import {
@@ -24,9 +24,10 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { recordHeadsUp, shouldEmitHeadsUp } from "../core/heads-up-cursor.ts";
 import { sendToMember } from "../core/send.ts";
-import type { Team, TeamMember } from "../schema/team.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team, TeamMember } from "../schema/team.ts";
 import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux tell-lead <msg...>";
@@ -76,7 +77,7 @@ export function parseTellLeadArgs(argv: ReadonlyArray<string>): TellLeadArgs {
       i += 1;
       break;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `tell-lead: unknown flag: ${a}`, hint: USAGE });
     }
     break;
@@ -119,12 +120,41 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   const atmuxDir = await getAtmuxDir(dirOpts);
   await appendDriverInbox(atmuxDir, parsed.msg);
 
+  // t-bf09aec0: heads-up sender-side dedup. Stat driver-inbox.md
+  // post-append to get the mtime of the revision we just produced;
+  // shouldEmitHeadsUp consults the cursor file to decide whether to
+  // ping. For tell-lead's single-shot path the gate almost always
+  // green-lights (every call advances driver-inbox.md mtime), but
+  // recording the cursor here claims the mtime so a polling emitter
+  // (bash lib/supervisor.sh, future TS supervisor) won't re-fire on
+  // the same revision and burn lead context with "Stale heads-up".
+  const inboxPath = driverInboxPath(atmuxDir);
+  const inboxStat = await statOrNull(inboxPath);
+  const sourceMtimeMs = inboxStat?.mtimeMs ?? 0;
+  const cursorOpts = {
+    atmuxDir,
+    source: inboxPath,
+    target: lead.name,
+    sourceMtimeMs,
+  };
+  const shouldEmit = await shouldEmitHeadsUp(cursorOpts);
+
   const sessionName = await getSessionName({ ...dirOpts, team });
   const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
   const tmux = createTmux({ socketPath });
   const target = `${sessionName}:${buildWindowName(lead.name, lead.emoji)}`;
   // Bash heads-up (lib/tell.sh:43): "📬 driver-inbox has a new ask: <msg≤80>…"
   const headsUp = buildHeadsUp(parsed.msg);
+  if (!shouldEmit) {
+    // Cursor already at-or-past this mtime: another emitter (or a
+    // prior tell-lead racing on the same fs-mtime granularity) has
+    // already pinged the lead for this revision. Skip the send +
+    // print a status line so the operator sees the dedup happened.
+    process.stderr.write(
+      `✅ atmux tell-lead → ${lead.name} (appended to ${inboxPath}; heads-up suppressed: cursor already at mtime)\n`,
+    );
+    return 0;
+  }
   try {
     await sendToMember(tmux, atmuxDir, { target, member: lead.name, team: team.name }, headsUp, {
       verify: false,
@@ -147,13 +177,21 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
     });
   }
 
+  // Send succeeded — advance the dedup cursor so polling emitters
+  // (supervisor) won't re-fire the same revision. Best-effort:
+  // failure to write the cursor file is non-fatal (worst case = one
+  // redundant ping next supervisor tick).
+  try {
+    await recordHeadsUp(cursorOpts);
+  } catch {
+    // tolerate cursor-write failures; dedup is best-effort.
+  }
+
   // Bash atmux::ok runs only AFTER successful send (lib/tell.sh:46);
   // the success line goes to stderr with `✅ atmux ` prefix per
   // lib/common.sh:21. F3 channel-asymmetry fix mirrors here too —
   // earlier TS port wrote to stdout without the prefix.
-  process.stderr.write(
-    `✅ atmux tell-lead → ${lead.name} (appended to ${driverInboxPath(atmuxDir)})\n`,
-  );
+  process.stderr.write(`✅ atmux tell-lead → ${lead.name} (appended to ${inboxPath})\n`);
   return 0;
 }
 
@@ -180,7 +218,13 @@ async function appendDriverInbox(atmuxDir: string, msg: string): Promise<void> {
   // global timezone rule + diverged from bash.
   const ts = formatMyt();
   const entry = `- [${ts}] ${msg}\n`;
-  // Bash appends to EOF (not newest-first under `## Open`); mirror.
-  const next = existing.endsWith("\n") ? existing + entry : `${existing}\n${entry}`;
+  // Per ADR-029 §F14 — bash `printf >> file` appends entry directly to
+  // EOF; on a zero-byte file this produces just the entry, no leading
+  // separator. Earlier port unconditionally prepended `\n` when existing
+  // didn't end with `\n`, which falsely fired on empty existing (length
+  // 0 doesn't end-with anything), producing an extra leading newline.
+  // Treat empty existing as the no-separator-needed case.
+  const next =
+    existing.length === 0 || existing.endsWith("\n") ? existing + entry : `${existing}\n${entry}`;
   await writeText(path, next);
 }

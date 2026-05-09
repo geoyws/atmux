@@ -95,14 +95,31 @@ afterEach(async () => {
 
 /** Write a minimal `team.json` with the given members + flags. */
 async function writeTeamJson(opts: {
-  members: ReadonlyArray<{ name: string; role?: string; emoji?: string; cwd?: string }>;
+  members: ReadonlyArray<{
+    name: string;
+    role?: string;
+    emoji?: string;
+    cwd?: string;
+    tui?: string;
+  }>;
   singleSession?: boolean;
+  driverSession?: { tui?: string | null } | null;
+  driverTui?: string | null;
 }): Promise<void> {
-  const body = {
+  const body: Record<string, unknown> = {
     name: env.team,
     members: opts.members,
     ...(opts.singleSession !== undefined ? { singleSession: opts.singleSession } : {}),
   };
+  // driverSession is included even when null — the tests for the
+  // "explicitly disabled" path rely on the field being present-but-null
+  // rather than absent.
+  if ("driverSession" in opts) {
+    body.driverSession = opts.driverSession;
+  }
+  if (opts.driverTui !== undefined) {
+    body.driverTui = opts.driverTui;
+  }
   await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
@@ -431,5 +448,218 @@ describe("start — incremental restart skips existing windows", () => {
     expect(names).toContain("🔍bob");
     // Skip-existing log line for alice fired
     expect(env.logs.some((l) => l.msg.includes("alice: window exists"))).toBe(true);
+  });
+});
+
+// ---------- start verb — ADR-044 driverSession topology ----------
+//
+// Bash parity: tests/unit/start_driver_session.bats covers the same
+// matrix in the bash port. The bun port consumes `team.driverSession`
+// to spawn `driver` as window 1 in place of the `__home` placeholder;
+// members append as windows 2..N+1 via the existing loop.
+
+describe("start — ADR-044 driverSession topology", () => {
+  test("configured: driver is window 1 in declarative order, no __home placeholder", async () => {
+    await writeTeamJson({
+      members: [
+        { name: "alpha", role: "team-lead", tui: "shell" },
+        { name: "bee", role: "member", tui: "shell" },
+      ],
+      driverSession: { tui: "shell" },
+    });
+
+    const exit = await runStart([]);
+    expect(exit).toBe(0);
+
+    const session = `atmux-${env.team}`;
+    const wins = await env.tmux.window.listWindows(session);
+    // Sort by index to assert positional order — listWindows returns
+    // the natural tmux order but tests are clearer with explicit sort.
+    const ordered = [...wins].sort((a, b) => a.index - b.index);
+    expect(ordered[0]?.name).toBe("driver");
+    // Members emoji-prefixed by role: team-lead → 🧭, member → 🐝.
+    expect(ordered[1]?.name).toBe("🧭alpha");
+    expect(ordered[2]?.name).toBe("🐝bee");
+    // No __home placeholder ever created.
+    expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
+
+    // Logger surfaces the driver-at-window-1 marker for parity with bash
+    // `lib/start.sh:203` ("driver at window 1, <tui>").
+    expect(
+      env.logs.some(
+        (l) => l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("shell"),
+      ),
+    ).toBe(true);
+  });
+
+  test("configured: tui falls back to driverTui when driverSession.tui is null", async () => {
+    await writeTeamJson({
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+      // driverSession is configured (truthy) but its tui is null —
+      // resolution drops to driverTui (legacy field).
+      driverSession: { tui: null },
+      driverTui: "shell",
+    });
+
+    const exit = await runStart([]);
+    expect(exit).toBe(0);
+
+    expect(
+      env.logs.some(
+        (l) => l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("shell"),
+      ),
+    ).toBe(true);
+  });
+
+  test("explicitly disabled: driverSession=null falls through to legacy __home", async () => {
+    await writeTeamJson({
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+      // Matches the wizard's "explicitly disabled" output. The field is
+      // present but null — must NOT trigger the driver-initial path.
+      driverSession: null,
+    });
+
+    const exit = await runStart([]);
+    expect(exit).toBe(0);
+
+    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    expect(wins.some((w) => w.name === "driver")).toBe(false);
+    // __home was created then cleaned up by step 9 (member spawned).
+    expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
+    // No driver-at-window-1 log line when the path was skipped.
+    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
+  });
+
+  test("absent: legacy __home placeholder path is unchanged", async () => {
+    // Regression guard: zero-member team.json without driverSession must
+    // still leave the __home placeholder, matching the pre-ADR-044
+    // "happy path: zero-member team" assertion.
+    await writeTeamJson({ members: [] });
+    const exit = await runStart([]);
+    expect(exit).toBe(0);
+    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
+  });
+
+  test("unknown tui: falls back to __home with a warn log", async () => {
+    // resolveTuiCommand throws UsageError on an unknown tui kind not
+    // registered in tuiCommands. Parity with bash's `falling back to
+    // __home placeholder` warn at lib/start.sh:206.
+    await writeTeamJson({
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+      driverSession: { tui: "this-tui-does-not-exist-anywhere" },
+    });
+
+    const exit = await runStart([]);
+    expect(exit).toBe(0);
+
+    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    expect(wins.some((w) => w.name === "driver")).toBe(false);
+    // Warn line surfaces the fall-through reason for operator
+    // observability — they need to know why their driverSession opt-in
+    // didn't take effect.
+    expect(
+      env.logs.some(
+        (l) =>
+          l.kind === "warn" &&
+          l.msg.includes("driver-initial") &&
+          l.msg.includes("__home placeholder"),
+      ),
+    ).toBe(true);
+  });
+
+  test("incremental: existing session without driver is left alone (ADR-044 D3)", async () => {
+    // ADR-044 D3 explicitly forbids retroactively inserting a driver into
+    // an existing session — that would shift member window indices and
+    // disrupt operator state on attached sessions.
+    await writeTeamJson({
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+    });
+    expect(await runStart([])).toBe(0);
+
+    // Now add driverSession AFTER the session is up. Re-run start
+    // (incremental, no --force) — must NOT add a driver window.
+    await writeTeamJson({
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+      driverSession: { tui: "shell" },
+    });
+    env.logs.length = 0;
+    expect(await runStart([])).toBe(0);
+
+    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    expect(wins.some((w) => w.name === "driver")).toBe(false);
+    // No driver-at-window-1 log line either (path didn't run).
+    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
+  });
+
+  test("member with non-shell tui: send-keys fires after newWindow", async () => {
+    // Closes the pre-ADR-044 coverage gap on the member spawn loop's
+    // send-keys branch (start.ts:466,471-480). Uses team.tuiCommands to
+    // register a benign no-op so resolveTuiCommand returns a valid
+    // command for a non-built-in tui kind.
+    const body = {
+      name: env.team,
+      members: [{ name: "alpha", role: "team-lead", tui: "fake-member-tui" }],
+      tuiCommands: { "fake-member-tui": "true" },
+    };
+    await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
+
+    const exit = await runStart([]);
+    expect(exit).toBe(0);
+
+    // Member window present — the send-keys path didn't throw.
+    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    expect(wins.map((w) => w.name)).toContain("🧭alpha");
+  });
+
+  test("non-shell tui: send-keys fires after newSession (no shell-only skip)", async () => {
+    // Use team.tuiCommands to register a fake tui that resolves to a
+    // benign no-op — exercises the driver send-keys branch (the
+    // non-shell-only path) without actually launching a real TUI binary.
+    const body = {
+      name: env.team,
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+      driverSession: { tui: "fake-driver" },
+      tuiCommands: { "fake-driver": "true" },
+    };
+    await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
+
+    const exit = await runStart([]);
+    expect(exit).toBe(0);
+
+    const session = `atmux-${env.team}`;
+    const wins = await env.tmux.window.listWindows(session);
+    const ordered = [...wins].sort((a, b) => a.index - b.index);
+    expect(ordered[0]?.name).toBe("driver");
+    // The driver-at-window-1 marker still surfaces with the fake tui.
+    expect(
+      env.logs.some(
+        (l) =>
+          l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("fake-driver"),
+      ),
+    ).toBe(true);
+  });
+
+  test("--force with driverSession: driver-initial path runs after kill", async () => {
+    await writeTeamJson({
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+    });
+    // First start without driverSession — legacy __home path.
+    expect(await runStart([])).toBe(0);
+
+    // Add driverSession then --force restart — kill + recreate hits the
+    // driver-initial branch.
+    await writeTeamJson({
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+      driverSession: { tui: "shell" },
+    });
+    env.logs.length = 0;
+    expect(await runStart(["--force"])).toBe(0);
+
+    const session = `atmux-${env.team}`;
+    const wins = await env.tmux.window.listWindows(session);
+    const ordered = [...wins].sort((a, b) => a.index - b.index);
+    expect(ordered[0]?.name).toBe("driver");
+    expect(ordered[1]?.name).toBe("🧭alpha");
   });
 });

@@ -48,10 +48,7 @@ export async function writeHeartbeat(
  * absence is a real signal: "supervisor never wrote one for this
  * member"; corrupt content is treated the same).
  */
-export async function readHeartbeat(
-  atmuxDir: string,
-  member: string,
-): Promise<number | null> {
+export async function readHeartbeat(atmuxDir: string, member: string): Promise<number | null> {
   const path = heartbeatPath(atmuxDir, member);
   if (!(await exists(path))) return null;
   const text = await readTextOrNull(path);

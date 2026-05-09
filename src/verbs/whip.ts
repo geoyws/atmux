@@ -50,40 +50,22 @@
 // is a plain `readTextOrNull` (FS abstraction, R6-compliant) so MacOS
 // (no /proc) gracefully degrades to "no cross-account check possible".
 
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { type DiscordSendOpts, send as discordSend } from "../abstractions/discord.ts";
+import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
+import {
+  type DiscordSendOpts,
+  send as discordSend,
+  renderWhipConfigDrift,
+  renderWhipDefunctCwd,
+  renderWhipPermModeDrift,
+} from "../abstractions/discord.ts";
+import type { CageHandle } from "../abstractions/fallback-cage.ts";
 import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
-import { tryParseJsonString, tryReadJson } from "../abstractions/json.ts";
+import { tryParseJsonString } from "../abstractions/json.ts";
 import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts";
+import { spawn } from "../abstractions/spawn.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
-import {
-  classifyPaneState,
-  getAtmuxDir,
-  getDefaultSocket,
-  getSessionName,
-  inboxPathFor,
-  type ResolveDirOpts,
-  requireTeam,
-  stateDir,
-  teamJsonPath,
-} from "../core/common.ts";
-import {
-  composeCatastrophicDrift,
-  composeDriftReport,
-  type DriftReport,
-  makeDriftSafeDefaults,
-  recordDriftPing,
-  shouldFireDriftPing,
-} from "../core/whip-config-drift.ts";
-import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import {
-  type BudgetCheckCtx,
-  type BudgetCheckDeps,
-  type BudgetCheckTeamMember,
-  runBudgetCheck,
-} from "../core/whip-budget-check.ts";
 import {
   type AccountSwapCheckCtx,
   type AccountSwapCheckDeps,
@@ -92,21 +74,31 @@ import {
   runAccountSwapCheck,
   runSwapPass,
 } from "../core/account-swap.ts";
-import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
-import { checkStaleAnchor } from "../core/stale-anchor.ts";
-import { runSelfHealPass } from "../core/cursor-self-heal.ts";
-import { fixTeamJsonSchemaDriftRecipe } from "../core/cursor-recipes/fix-team-json-schema-drift.ts";
+import {
+  classifyPaneState,
+  getAtmuxDir,
+  getDefaultSocket,
+  getSessionName,
+  type ResolveDirOpts,
+  requireTeam,
+  stateDir,
+  teamJsonPath,
+} from "../core/common.ts";
 import { fixCronPollutionRecipe } from "../core/cursor-recipes/fix-cron-pollution.ts";
 import { fixSupervisorMissingRecipe } from "../core/cursor-recipes/fix-supervisor-missing.ts";
+import { fixTeamJsonSchemaDriftRecipe } from "../core/cursor-recipes/fix-team-json-schema-drift.ts";
 import type { CursorRecipe } from "../core/cursor-recipes/types.ts";
-import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
-import { Inbox as InboxSchema } from "../schema/inbox.ts";
-import { Team, type TeamMember } from "../schema/team.ts";
+import { runSelfHealPass } from "../core/cursor-self-heal.ts";
+import { loadInbox } from "../core/inbox.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { listTasks } from "../core/kanban.ts";
 import {
-  renderWhipConfigDrift,
-  renderWhipDefunctCwd,
-  renderWhipPermModeDrift,
-} from "../abstractions/discord.ts";
+  ensureLeadSessionStart,
+  readLeadSessionStart,
+  readLeadWindowName,
+  type SkillsTeamPathsOpts,
+  writeLeadSessionStart,
+} from "../core/lead-marker.ts";
 import { classifyText } from "../core/pane-state.ts";
 import {
   loadPermModeDriftState,
@@ -115,6 +107,23 @@ import {
   savePermModeDriftState,
   shouldFireDrift,
 } from "../core/perm-mode-drift-state.ts";
+import { checkStaleAnchor } from "../core/stale-anchor.ts";
+import {
+  type BudgetCheckCtx,
+  type BudgetCheckDeps,
+  type BudgetCheckTeamMember,
+  runBudgetCheck,
+} from "../core/whip-budget-check.ts";
+import {
+  composeCatastrophicDrift,
+  composeDriftReport,
+  type DriftReport,
+  makeDriftSafeDefaults,
+  recordDriftPing,
+  shouldFireDriftPing,
+} from "../core/whip-config-drift.ts";
+import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
+import { Team, type TeamMember } from "../schema/team.ts";
 
 const USAGE = "atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]";
 
@@ -303,7 +312,9 @@ export function readWhipConfig(team: Team, env: NodeJS.ProcessEnv = process.env)
     }
     // ADR-056 account-swap knobs.
     if (Array.isArray(o.accountFallback)) {
-      const chain = o.accountFallback.filter((s): s is string => typeof s === "string" && s.length > 0);
+      const chain = o.accountFallback.filter(
+        (s): s is string => typeof s === "string" && s.length > 0,
+      );
       cfg.accountFallback = chain;
     }
     if (
@@ -544,71 +555,22 @@ const defaultReadMemberEnv: ReadMemberEnv = async (pid) => {
 };
 
 // ---------- I-1 + I-2 markers ----------
+//
+// Definitions live in `src/core/lead-marker.ts` so non-`whip` verbs
+// (e.g. `pane-state`, ADR-062 §Decision (2)) can read the lead window
+// name without crossing the verbs/* import boundary. Re-exported here so
+// existing callers (whip.test.ts + downstream verbs that historically
+// imported from whip.ts) keep working unchanged.
 
-export interface SkillsTeamPathsOpts {
-  /** Override `~` for tests. Defaults to `os.homedir()`. */
-  home?: string;
-}
-
-export function leadSessionStartPath(team: string, opts: SkillsTeamPathsOpts = {}): string {
-  const home = opts.home ?? homedir();
-  return join(home, ".claude", "teams", team, "lead-session-start.txt");
-}
-
-export function leadWindowNamePath(team: string, opts: SkillsTeamPathsOpts = {}): string {
-  const home = opts.home ?? homedir();
-  return join(home, ".claude", "teams", team, "lead-window-name.txt");
-}
-
-/** Force-write the I-1 marker (used by `--init-lead-marker`). */
-export async function writeLeadSessionStart(
-  team: string,
-  epochSec: number,
-  opts: SkillsTeamPathsOpts = {},
-): Promise<void> {
-  const path = leadSessionStartPath(team, opts);
-  await ensureDir(dirname(path));
-  await writeText(path, `${epochSec}\n`);
-}
-
-/** Auto-init the I-1 marker iff missing — keeps Check 5 reads from
- *  failing on first-tick of a fresh team. Returns true on a write. */
-export async function ensureLeadSessionStart(
-  team: string,
-  epochSec: number,
-  opts: SkillsTeamPathsOpts = {},
-): Promise<boolean> {
-  const path = leadSessionStartPath(team, opts);
-  if (await exists(path)) return false;
-  await writeLeadSessionStart(team, epochSec, opts);
-  return true;
-}
-
-export async function readLeadSessionStart(
-  team: string,
-  opts: SkillsTeamPathsOpts = {},
-): Promise<number | null> {
-  const text = await readTextOrNull(leadSessionStartPath(team, opts));
-  if (text === null) return null;
-  const n = Number.parseInt(text.trim(), 10);
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
-/** I-2 read side. Falls back to bash convention `__<team>__team-lead`
- *  when the marker file is absent (writer side V-26-deferred per
- *  ADR-021; the verb that knows the lead-window's actual name is
- *  `team rotate-lead` / `team start`). */
-export async function readLeadWindowName(
-  team: string,
-  opts: SkillsTeamPathsOpts = {},
-): Promise<string> {
-  const text = await readTextOrNull(leadWindowNamePath(team, opts));
-  if (text !== null) {
-    const trimmed = text.trim();
-    if (trimmed.length > 0) return trimmed;
-  }
-  return `__${team}__team-lead`;
-}
+export {
+  ensureLeadSessionStart,
+  leadSessionStartPath,
+  leadWindowNamePath,
+  readLeadSessionStart,
+  readLeadWindowName,
+  type SkillsTeamPathsOpts,
+  writeLeadSessionStart,
+} from "../core/lead-marker.ts";
 
 // ---------- Findings ----------
 
@@ -983,7 +945,7 @@ async function runAccountSwapTickCheck(
  *  ensure runSwapPass walks decisions[] without blocking, marking each
  *  as aborted with a "spawn integration not yet wired" flag — which
  *  the operator sees + can resolve manually until T11-Part-3 lands. */
-async function runSwapPassTickCheck(ctx: TickCtx, config: WhipConfig): Promise<void> {
+async function runSwapPassTickCheck(ctx: TickCtx, _config: WhipConfig): Promise<void> {
   const probeBudget =
     ctx.budgetProbe ??
     (async (account: string) => {
@@ -1029,19 +991,28 @@ async function runBudgetTickCheck(
   ctx: TickCtx,
   config: WhipConfig,
 ): Promise<ReturnType<typeof runBudgetCheck>> {
+  const team = ctx.team;
+  const fallbackEnabled = team.fallback?.enabled === true;
+
+  const teamFallback: BudgetCheckCtx["team"]["fallback"] = fallbackEnabled
+    ? { enabled: true }
+    : undefined;
+
   const checkCtx: BudgetCheckCtx = {
     atmuxDir: ctx.atmuxDir,
     nowMs: ctx.nowMs,
     nowSec: ctx.nowSec,
+    projectCwd: process.cwd(),
     team: {
-      name: ctx.team.name,
-      members: ctx.team.members.map((m) => {
+      name: team.name,
+      members: team.members.map((m) => {
         const out: BudgetCheckTeamMember = { name: m.name };
         if (typeof m.claudeAccount === "string" && m.claudeAccount.length > 0) {
           out.claudeAccount = m.claudeAccount;
         }
         return out;
       }),
+      ...(teamFallback !== undefined ? { fallback: teamFallback } : {}),
     },
     config: {
       budgetPauseThreshold: config.budgetPauseThreshold,
@@ -1057,7 +1028,99 @@ async function runBudgetTickCheck(
   if (ctx.budgetProbe !== undefined) {
     deps.probeBudget = ctx.budgetProbe;
   }
+  if (fallbackEnabled) {
+    deps.listInFlightTasks = () => listTasks(ctx.atmuxDir, { status: "in-progress" });
+    deps.sendCageBrief = (handle, body) => sendCageBrief(handle, body);
+    deps.sendContinuityBrief = (member, body) => sendContinuityBrief(ctx, member, body);
+  }
   return runBudgetCheck(checkCtx, deps);
+}
+
+/**
+ * v1 cage-brief sender. Pastes the brief into the cage's tmux pane via
+ * raw `tmux -L <socket> send-keys` (Tier 2: operator UID; Tier 3+: sudo
+ * -u <agent>). Multi-line briefs use load-buffer + paste-buffer so the
+ * brief lands as a single chunk rather than per-line keystrokes (which
+ * would race against the agent's startup banner).
+ *
+ * The cage tmux server is FRESH (just spawned by createFallbackCage),
+ * so no pane-state classifier is needed — there's nothing in the pane
+ * to preempt the paste.
+ */
+async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
+  const bufferName = `atmux-fallback-${handle.team}-${handle.lane}-${handle.createdAt}`;
+  const target = `${handle.sessionName}:${handle.windowName}`;
+  const isOperator = handle.agent === "operator";
+
+  // tmux load-buffer reads from stdin via `-`. Wrap with sudo -u <agent>
+  // for Tier 3+ since the cage tmux runs under the dedicated user.
+  const tmuxArgv = (rest: string[]): { cmd: string; argv: string[] } =>
+    isOperator
+      ? { cmd: "tmux", argv: ["-L", handle.tmuxSocket, ...rest] }
+      : {
+          cmd: "sudo",
+          argv: [
+            "-u",
+            handle.agent,
+            "env",
+            `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
+            "tmux",
+            "-L",
+            handle.tmuxSocket,
+            ...rest,
+          ],
+        };
+
+  const load = tmuxArgv(["load-buffer", "-b", bufferName, "-"]);
+  await spawn({
+    cmd: load.cmd,
+    argv: load.argv,
+    stdin: body,
+    timeoutMs: 10_000,
+  });
+  const paste = tmuxArgv(["paste-buffer", "-b", bufferName, "-d", "-t", target]);
+  await spawn({
+    cmd: paste.cmd,
+    argv: paste.argv,
+    timeoutMs: 5_000,
+  });
+  // Submit via Enter — the agent CLI eats the brief as a prompt.
+  const enter = tmuxArgv(["send-keys", "-t", target, "Enter"]);
+  await spawn({
+    cmd: enter.cmd,
+    argv: enter.argv,
+    timeoutMs: 5_000,
+  });
+}
+
+/**
+ * v1 continuity-brief sender. The original Claude member's pane lives
+ * on the TEAM's tmux server (ctx.tmux); we paste the brief via
+ * load-buffer + paste-buffer, same shape as `sendCageBrief` but using
+ * the team-tmux abstraction directly. A pane-state-aware safe send
+ * (ADR-057 §D1) belongs here once the lead reviews this — for v1 we
+ * do the simple direct paste.
+ */
+async function sendContinuityBrief(ctx: TickCtx, member: string, body: string): Promise<void> {
+  const session = await getSessionName({ dir: ctx.atmuxDir, team: ctx.team });
+  // Members' window names are `<emoji><member>` — but the cage handle
+  // stored the lane string (which may already be an emoji-prefixed name
+  // OR the bare member name). For v1 we accept both shapes: try the
+  // bare member as the window name; if it doesn't exist, the paste
+  // surfaces a tmux error which the caller logs (best-effort).
+  const target = `${session}:${member}`;
+  const bufferName = `atmux-fallback-resume-${ctx.team.name}-${member}-${ctx.nowSec}`;
+  await ctx.tmux.buffer.loadBuffer({ name: bufferName, data: body });
+  await ctx.tmux.buffer.pasteBuffer({
+    name: bufferName,
+    target: { kind: "member", member, team: ctx.team.name, target },
+    deleteAfter: true,
+  });
+  await ctx.tmux.pane.sendKeys({
+    target: { kind: "member", member, team: ctx.team.name, target },
+    keys: "Enter",
+    enter: false,
+  });
 }
 
 // ---------- Per-member check ----------
@@ -1071,15 +1134,18 @@ async function checkMember(
   const { team, atmuxDir, tmux, env, nowSec, readMemberEnv } = ctx;
   const session = await getSessionName({ dir: atmuxDir, team });
 
-  // Resolve the window name. Lead window uses the I-2 marker (with
-  // bash-fallback); regular members use buildWindowName equivalent
-  // (`<emoji><member>` per ADR-017 / memory feedback_window_naming_no_prefix).
+  // Resolve the window name. Lead window uses the I-2 marker first
+  // (auto-rotate may have renamed the lead pane); falls back to the
+  // ADR-017 `<emoji><member>` form derived from the schema entry — same
+  // shape `start.ts::buildWindowName` spawns. Regular members go straight
+  // to that form (memory feedback_window_naming_no_prefix).
   const role = (member.role ?? "member").toString();
-  const homeOpts: SkillsTeamPathsOpts = ctx.home !== undefined ? { home: ctx.home } : {};
+  const memberWindowName = `${member.emoji ?? ""}${member.name}`;
+  const homeOpts: SkillsTeamPathsOpts & { fallback?: string } =
+    ctx.home !== undefined ? { home: ctx.home } : {};
+  if (role === "team-lead") homeOpts.fallback = memberWindowName;
   const windowName =
-    role === "team-lead"
-      ? await readLeadWindowName(team.name, homeOpts)
-      : `${member.emoji ?? ""}${member.name}`;
+    role === "team-lead" ? await readLeadWindowName(team.name, homeOpts) : memberWindowName;
   const windowTarget = `${session}:${windowName}`;
 
   // Window existence — `displayMessage` returns "" + non-zero if absent.
@@ -1194,9 +1260,12 @@ async function checkMember(
   }
 
   // ---------- Check 3: stale-task scan ----------
-  const inboxPath = inboxPathFor(atmuxDir, member.name);
-  const inbox = await tryReadJson(inboxPath, InboxSchema);
-  if (inbox !== null && inbox.inProgress.length > 0) {
+  // ADR-076: read via loadInbox (SQL-canonical when state.db exists; JSON
+  // fallback for pre-migration teams). Replaces the direct tryReadJson read
+  // that bypassed the cutover — direct JSON read returned stale data on
+  // SQL teams whose JSON files froze post-Phase-3 writer-no-op.
+  const inbox = await loadInbox(atmuxDir, member.name);
+  if (inbox.inProgress.length > 0) {
     const rotatedSec = await readRotatedEpoch(atmuxDir, member.name);
     const stale = selectStaleTasks(inbox.inProgress, nowSec, config.staleMin, rotatedSec);
     if (stale.length > 0) {

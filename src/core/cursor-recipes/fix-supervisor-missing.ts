@@ -54,9 +54,7 @@ const SUPERVISOR_WINDOW_NAME = "supervisor";
 
 // ---------- Internals ----------
 
-async function defaultListWindows(
-  sessionName: string,
-): Promise<ReadonlyArray<string> | null> {
+async function defaultListWindows(sessionName: string): Promise<ReadonlyArray<string> | null> {
   // Direct `tmux list-windows` shell-out — avoids createTmux's socket
   // config requirement. The recipe doesn't need a pinned socket since
   // it operates against whatever socket the operator's tmux is using
@@ -85,18 +83,14 @@ async function defaultListWindows(
 
 // ---------- Recipe export ----------
 
-export function makeFixSupervisorMissingRecipe(
-  deps: SupervisorMissingDeps = {},
-): CursorRecipe {
+export function makeFixSupervisorMissingRecipe(deps: SupervisorMissingDeps = {}): CursorRecipe {
   const listWindows = deps.listWindows ?? defaultListWindows;
   return {
     id: RECIPE_ID,
     tokenCap: TOKEN_CAP_DEFAULT,
     fileAllowlist: FILE_ALLOWLIST,
 
-    async detect(
-      whipCtx: WhipTickContextForRecipe,
-    ): Promise<SupervisorMissingContext | null> {
+    async detect(whipCtx: WhipTickContextForRecipe): Promise<SupervisorMissingContext | null> {
       const sessionName = whipCtx.sessionName;
       if (sessionName === undefined || sessionName.length === 0) return null;
       const windows = await listWindows(sessionName);
@@ -140,7 +134,7 @@ export function makeFixSupervisorMissingRecipe(
     },
 
     async verify(
-      job: CursorJob,
+      _job: CursorJob,
       patch: GitPatch,
       whipCtx: WhipTickContextForRecipe,
     ): Promise<VerifyResult> {
@@ -148,9 +142,7 @@ export function makeFixSupervisorMissingRecipe(
 
       // (1) Allowlist enforcement — empty means patch must be empty.
       if (patch.files.length > 0) {
-        reasons.push(
-          `patch touched ${patch.files.length} file(s) but recipe allowlist is empty`,
-        );
+        reasons.push(`patch touched ${patch.files.length} file(s) but recipe allowlist is empty`);
       }
 
       // (2) Re-list windows. If supervisor is now present → operator
@@ -160,7 +152,7 @@ export function makeFixSupervisorMissingRecipe(
       let supervisorPresent = false;
       if (sessionName !== undefined && sessionName.length > 0) {
         const windows = await listWindows(sessionName);
-        if (windows !== null && windows.includes(SUPERVISOR_WINDOW_NAME)) {
+        if (windows?.includes(SUPERVISOR_WINDOW_NAME)) {
           supervisorPresent = true;
         }
       }
@@ -169,7 +161,7 @@ export function makeFixSupervisorMissingRecipe(
         ? `supervisor window now present in session \`${sessionName ?? ""}\``
         : reasons.length === 0
           ? `supervisor still absent in session \`${sessionName ?? ""}\` — staged for reviewer`
-          : reasons[0] ?? "verification failed";
+          : (reasons[0] ?? "verification failed");
 
       return { ok: reasons.length === 0, reasons, patchSummary: summary };
     },

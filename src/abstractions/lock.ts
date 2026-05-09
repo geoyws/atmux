@@ -10,7 +10,12 @@
 // — different lock semantics from bash, breaks cross-language behaviour.
 
 import { dlopen, FFIType, suffix } from "bun:ffi";
-import { open as _open, stat as _stat, writeFile as _writeFile, appendFile as _appendFile } from "node:fs/promises";
+import {
+  appendFile as _appendFile,
+  open as _open,
+  stat as _stat,
+  writeFile as _writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { LockError, LockTimeoutError } from "../errors.ts";
 import { ensureDir } from "./fs.ts";
@@ -136,10 +141,7 @@ export async function acquire(path: string, opts?: AcquireOpts): Promise<LockHan
  * when the process is gone (we treat that as "dead"); permission errors
  * (EPERM) on a foreign PID are treated as "alive" defensively.
  */
-export async function acquireWithTTL(
-  path: string,
-  opts?: AcquireWithTtlOpts,
-): Promise<LockHandle> {
+export async function acquireWithTTL(path: string, opts?: AcquireWithTtlOpts): Promise<LockHandle> {
   const ttlSec = opts?.ttlSec ?? DEFAULT_TTL_SEC;
   const isAlive = opts?.isAlive ?? defaultIsAlive;
   const nowFn = opts?.now ?? Date.now;

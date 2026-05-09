@@ -9,7 +9,7 @@
 // "tests/unit/schema/team.test.ts (extend)".
 
 import { describe, expect, test } from "bun:test";
-import { Team, TeamWhip } from "../../../src/schema/team.ts";
+import { Team, TeamFallback, TeamWhip } from "../../../src/schema/team.ts";
 
 // ---------- TeamWhip — valid + defaults ----------
 
@@ -144,6 +144,121 @@ describe("Team schema integrates TeamWhip cleanly", () => {
         name: "demo",
         members: [],
         whip: { unknownTypoKey: 1 },
+      }),
+    ).toThrow();
+  });
+});
+
+// ---------- TeamFallback — ADR-058 multi-tier fallback chain ----------
+
+describe("TeamFallback — valid shape + defaults", () => {
+  test("empty input applies enabled=false default", () => {
+    const f = TeamFallback.parse({});
+    expect(f.enabled).toBe(false);
+    expect(f.tierBudgetThresholds).toBeUndefined();
+  });
+
+  test("explicit enabled=true is honored", () => {
+    const f = TeamFallback.parse({ enabled: true });
+    expect(f.enabled).toBe(true);
+  });
+
+  test("tierBudgetThresholds optional sub-block accepts integer pcts", () => {
+    const f = TeamFallback.parse({
+      enabled: true,
+      tierBudgetThresholds: { tier2Pct: 70, tier3Pct: 50 },
+    });
+    expect(f.tierBudgetThresholds?.tier2Pct).toBe(70);
+    expect(f.tierBudgetThresholds?.tier3Pct).toBe(50);
+  });
+
+  test("tierBudgetThresholds rejects out-of-range pct", () => {
+    expect(() =>
+      TeamFallback.parse({ enabled: true, tierBudgetThresholds: { tier2Pct: 150 } }),
+    ).toThrow();
+  });
+
+  test("strict-mode rejects typos at top level", () => {
+    expect(() => TeamFallback.parse({ enabld: true })).toThrow();
+  });
+
+  test("strict-mode rejects typos inside tierBudgetThresholds", () => {
+    expect(() =>
+      TeamFallback.parse({
+        enabled: true,
+        tierBudgetThresholds: { tier99Pct: 50 },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("Team schema integrates TeamFallback cleanly", () => {
+  test("Team.parse with valid fallback block applies enabled=false default", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      fallback: {},
+    });
+    expect(team.fallback?.enabled).toBe(false);
+  });
+
+  test("Team.parse without fallback block keeps fallback undefined", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.fallback).toBeUndefined();
+  });
+
+  test("Team.parse rejects unknown key in fallback sub-shape", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        fallback: { enabled: true, junk: "x" },
+      }),
+    ).toThrow();
+  });
+});
+
+// ---------- driverSession — ADR-064 §5/§OQ5 dead-field drop ----------
+
+describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
+  test("Team.parse with driverSession.tui parses cleanly (the only wired field)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: { tui: "shell" },
+    });
+    expect(team.driverSession).toEqual({ tui: "shell" });
+  });
+
+  test("Team.parse with driverSession=null is accepted (explicitly disabled)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: null,
+    });
+    expect(team.driverSession).toBeNull();
+  });
+
+  test("Team.parse REJECTS dead `command` key (ADR-064 §5/§OQ5 — strict-mode drop)", () => {
+    // `command` was on the schema in e624592 but never read by any
+    // consumer. Per ADR-064 §OQ5 it's a clean cut, no deprecation
+    // cycle — the strict() shape now rejects it. Any team.json still
+    // setting it surfaces via [whip-config-drift] (ADR-054).
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        driverSession: { tui: "shell", command: "claude" },
+      }),
+    ).toThrow();
+  });
+
+  test("Team.parse rejects unknown key in driverSession sub-shape (general strict guard)", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        driverSession: { tui: "shell", typoField: "x" },
       }),
     ).toThrow();
   });

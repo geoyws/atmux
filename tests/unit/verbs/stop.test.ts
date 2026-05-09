@@ -172,14 +172,7 @@ describe("stop verb — integration", () => {
     await stageTeamWithSession(["alpha"]);
     await writeFile(join(atmuxDir, "kanban.json"), '{"tasks":[],"epics":[],"stories":[]}');
     await captureStdoutStderr(() =>
-      stop([
-        "--force",
-        "--no-archive",
-        "--socket",
-        socketPath,
-        "--team-dir",
-        teamDir,
-      ]),
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir]),
     );
     // archive dir does NOT exist (or is empty if pre-existing).
     let archives: string[] = [];
@@ -223,13 +216,9 @@ describe("stop verb — integration", () => {
     if (ts === undefined) throw new Error("test fail: no archive");
     const destInboxes = await readdir(join(atmuxDir, "archive", ts, "inboxes"));
     expect(destInboxes).toContain("alpha.json");
-    const destKanban = await Bun.file(
-      join(atmuxDir, "archive", ts, "kanban.json"),
-    ).text();
+    const destKanban = await Bun.file(join(atmuxDir, "archive", ts, "kanban.json")).text();
     expect(destKanban).toContain("tasks");
-    const destDriver = await Bun.file(
-      join(atmuxDir, "archive", ts, "driver-inbox.md"),
-    ).text();
+    const destDriver = await Bun.file(join(atmuxDir, "archive", ts, "driver-inbox.md")).text();
     expect(destDriver).toContain("inbox");
   });
 });

@@ -32,16 +32,18 @@
 // - --to <list> multi-member targeting (not in bash @ worktree-frozen).
 
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
-import type { Team } from "../schema/team.ts";
 import {
   buildWindowName,
   getAtmuxDir,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  SUPERDOCTOR_INBOX_KEY,
 } from "../core/common.ts";
+import { appendInboxMessage } from "../core/inbox.ts";
 import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
 import { defaultSocketPath } from "./start.ts";
 
 /** Parsed `send` CLI args (post-flag-parsing). */
@@ -62,6 +64,13 @@ export interface SendArgs {
   socketPath?: string;
   /** `--team-dir <dir>` override; otherwise getAtmuxDir() walks cwd. */
   teamDir?: string;
+  /** ADR-077 §F3: `--from <sender>` override for cockpit-tier inbox
+   *  writes (only meaningful when `member === SUPERDOCTOR_INBOX_KEY`).
+   *  Default sender is `<team-name>:cli`. */
+  from?: string;
+  /** ADR-077 §F3: `--kind <kind>` override for cockpit-tier inbox
+   *  writes — `heads-up` (default) | `p0` | `info`. */
+  kind?: string;
 }
 
 const USAGE_HINT_SINGLE = "atmux send [--no-submit] [--no-verify] <member> <msg...>";
@@ -91,6 +100,8 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
   let noVerify = false;
   let socketPath: string | undefined;
   let teamDir: string | undefined;
+  let from: string | undefined;
+  let kind: string | undefined;
 
   // Flag loop — mirrors lib/send.sh:24-33 with our two extra flags
   // (--socket / --team-dir) for parity with attach + start.
@@ -135,11 +146,35 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
       i += 2;
       continue;
     }
+    if (a === "--from") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "send: --from requires a sender argument",
+          hint: USAGE_HINT_SINGLE,
+        });
+      }
+      from = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--kind") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "send: --kind requires a value (heads-up | p0 | info)",
+          hint: USAGE_HINT_SINGLE,
+        });
+      }
+      kind = v;
+      i += 2;
+      continue;
+    }
     if (a === "--") {
       i += 1;
       break;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({
         what: `send: unknown flag: ${a}`,
         hint: broadcast ? USAGE_HINT_BROADCAST : USAGE_HINT_SINGLE,
@@ -180,6 +215,8 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
   if (member !== undefined) out.member = member;
   if (socketPath !== undefined) out.socketPath = socketPath;
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (from !== undefined) out.from = from;
+  if (kind !== undefined) out.kind = kind;
   return out;
 }
 
@@ -209,6 +246,18 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   if (parsed.teamDir !== undefined) dirOpts.teamDir = parsed.teamDir;
 
   const team = await requireTeam(dirOpts);
+
+  // ADR-077 §F3: cockpit-tier inbox key short-circuit. When the target
+  // is `__superdoctor__`, write to the team's `inbox_messages` table
+  // and skip the entire tmux pane delivery path. Superdoctor is not a
+  // member of any team.json — it lives at the cockpit tier and reads
+  // inbox_messages on its hourly whip turn. Broadcast + this key
+  // combination is rejected (broadcast iterates team.members; the
+  // cockpit-tier key isn't one).
+  if (!parsed.broadcast && parsed.member === SUPERDOCTOR_INBOX_KEY) {
+    return await sendToSuperdoctorInbox(team, parsed, dirOpts);
+  }
+
   const sessionName = await getSessionName({ ...dirOpts, team });
   const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
   const tmux = createTmux({ socketPath });
@@ -233,7 +282,7 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   if (memberEntry === undefined) {
     throw new ConfigError({
       what: `send: no such member in team.json: ${memberName}`,
-      hint: "run 'atmux status' to list members",
+      hint: `run 'atmux status' to list members (or use '${SUPERDOCTOR_INBOX_KEY}' for the cockpit-tier inbox)`,
     });
   }
   const target = buildMemberTarget(sessionName, memberEntry.name, memberEntry.emoji);
@@ -285,4 +334,37 @@ async function broadcastSend(
     }
   }
   return anyFailed ? 1 : 0;
+}
+
+/**
+ * ADR-077 §F3: cockpit-tier inbox writer. `atmux send __superdoctor__
+ * "<msg>"` from a team's cwd writes a row to that team's
+ * `inbox_messages` SQLite table instead of attempting tmux pane
+ * delivery. Superdoctor (cockpit window 2) reads matching rows on its
+ * hourly whip turn.
+ *
+ * Sender defaults to `<team-name>:cli`; override via `--from <sender>`
+ * (convention: `<team>:<member>` when a specific lead/member is
+ * attributing). Kind defaults to `heads-up`; override via `--kind`.
+ *
+ * Honors `--no-submit` as a structural no-op (the row is still
+ * written; there's no tmux Enter to suppress). `--no-verify` and the
+ * tmux-pane-delivery flags do not apply here.
+ */
+async function sendToSuperdoctorInbox(
+  team: Team,
+  parsed: SendArgs,
+  dirOpts: ResolveDirOpts,
+): Promise<number> {
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const sender = parsed.from ?? `${team.name}:cli`;
+  const kind = parsed.kind ?? "heads-up";
+  const opts: Parameters<typeof appendInboxMessage>[1] = {
+    member: SUPERDOCTOR_INBOX_KEY,
+    sender,
+    body: parsed.msg,
+    kind,
+  };
+  await appendInboxMessage(atmuxDir, opts);
+  return 0;
 }

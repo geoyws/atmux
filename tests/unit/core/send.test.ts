@@ -244,6 +244,62 @@ describe("sendToMember — pre-send classifier", () => {
   });
 });
 
+describe("sendToMember — safe-send preflight (t-06e7209d)", () => {
+  test("preflight result surfaces on SendOutcome (READY pane)", async () => {
+    const { target } = await spinCatSession(`${sessionPrefix}_pf_ok`);
+    // Get the cat pane to a Claude-like ready state by feeding the
+    // ready-banner. Capture-pane sees the line + classifies READY.
+    await tmux.pane.sendKeys({
+      target: { kind: "member", member: "x", team: "t", target },
+      keys: "3.4k tokens · esc to interrupt",
+      enter: true,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "ok", team: "test-team" },
+      "msg",
+      { sleep: NO_SLEEP, verify: false },
+    );
+    expect(out.preflight).toBeDefined();
+    expect(out.preflight.ready).toBe(true);
+    expect(out.preflight.dismissals).toBe(0);
+    expect(out.preflight.finalClassification.state).toBe("READY");
+    // Send still landed (warn-and-proceed semantic preserved).
+    expect(out.kind).toBe("ok");
+  });
+
+  test("preflight dismisses CC feedback survey before paste (t-06e7209d core scenario)", async () => {
+    // Pane is showing the feedback survey — typical stuck-pane class.
+    // Without preflight, our paste body lands inside the survey's
+    // input slot. With preflight, "0" is sent first to dismiss.
+    const session = `${sessionPrefix}_modal_${Math.random().toString(36).slice(2, 6)}`;
+    await tmux.session.newSession({
+      name: session,
+      shellCommand:
+        "sh -c \"printf '● How is Claude doing this session? (optional)\\n  1: Bad    2: Fine   3: Good   0: Dismiss\\n' && cat\"",
+    });
+    const target = `${session}:0.0`;
+    await new Promise((r) => setTimeout(r, 200));
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "modal", team: "test-team" },
+      "msg",
+      { sleep: NO_SLEEP, verify: false },
+    );
+    // Preflight detected the feedback survey + dismissed at least once.
+    // (May dismiss multiple times if the cat pane keeps showing survey
+    // text in capture window after echoing "0".)
+    expect(out.preflight).toBeDefined();
+    expect(out.preflight.dismissals).toBeGreaterThanOrEqual(1);
+    // Send still proceeded (warn-and-proceed semantics — refusal does
+    // not abort paste; that would leave queued asks undelivered).
+    expect(out.kind).toBe("ok");
+  });
+});
+
 describe("sendToMember — sleep injection", () => {
   test("default sleep is no-op when ms <= 0", async () => {
     // Cover the `if (ms <= 0) return Promise.resolve()` branch in

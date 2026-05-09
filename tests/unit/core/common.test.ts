@@ -38,6 +38,7 @@ import {
   normalizeMemberName,
   paneIsBusy,
   requireTeam,
+  resolveTeamSocket,
   sessionAnchorPath,
   stateDir,
   teamJsonPath,
@@ -653,5 +654,57 @@ describe("getDefaultSocket (R-2 lift from verbs/start.ts)", () => {
     expect(getDefaultSocket("atmux")).toBe("/tmp/atmux-atmux/sock");
     expect(getDefaultSocket("unum")).toBe("/tmp/atmux-unum/sock");
     expect(getDefaultSocket("ifca_aux")).toBe("/tmp/atmux-ifca_aux/sock");
+  });
+});
+
+describe("resolveTeamSocket (t-add5976a — read-side tmuxTmpdir honour)", () => {
+  test("tmuxTmpdir set → <tmuxTmpdir>/tmux-<uid>/default", () => {
+    const got = resolveTeamSocket(
+      { name: "atmux", tmuxTmpdir: "/tmp/atmux-tmux_atmux" },
+      { uid: 1000 },
+    );
+    expect(got).toBe("/tmp/atmux-tmux_atmux/tmux-1000/default");
+  });
+
+  test("project-local .atmux/tmux variant — the bug-trigger path", () => {
+    // Repro of the live [down] false-positive: a team started under a
+    // tmpdir-honouring path with `team.tmuxTmpdir = <project>/.atmux/tmux`.
+    // Pre-fix the resolver returned /tmp/atmux-<team>/sock and status
+    // probed a non-existent socket → [down]. Post-fix it follows the
+    // configured tmpdir.
+    const got = resolveTeamSocket(
+      { name: "atmux", tmuxTmpdir: "/root/work/src/atmux/.atmux/tmux" },
+      { uid: 0 },
+    );
+    expect(got).toBe("/root/work/src/atmux/.atmux/tmux/tmux-0/default");
+  });
+
+  test("tmuxTmpdir unset → canonical /tmp/atmux-<team>/sock fallback", () => {
+    expect(resolveTeamSocket({ name: "atmux" }, { uid: 0 })).toBe("/tmp/atmux-atmux/sock");
+  });
+
+  test("tmuxTmpdir empty string → canonical fallback (treats '' as unset)", () => {
+    expect(resolveTeamSocket({ name: "atmux", tmuxTmpdir: "" }, { uid: 0 })).toBe(
+      "/tmp/atmux-atmux/sock",
+    );
+  });
+
+  test("opts.uid omitted → reads process.getuid()", () => {
+    const liveUid = process.getuid?.() ?? 0;
+    const got = resolveTeamSocket({ name: "team-x", tmuxTmpdir: "/tmp/foo" });
+    expect(got).toBe(`/tmp/foo/tmux-${liveUid}/default`);
+  });
+
+  test("hyphen-style and underscore-style cage tmpdirs both round-trip via join()", () => {
+    // The three cage variants documented in the resolver comment —
+    // `atmux-tmux*` (hyphen), `atmux_tmux_*` (underscore), `.atmux/tmux*`
+    // (project-local). All three are passed through join() unchanged so
+    // the resolver doesn't sanitise or rewrite operator-chosen tmpdirs.
+    expect(resolveTeamSocket({ name: "t", tmuxTmpdir: "/tmp/atmux-tmux_a" }, { uid: 1000 })).toBe(
+      "/tmp/atmux-tmux_a/tmux-1000/default",
+    );
+    expect(resolveTeamSocket({ name: "t", tmuxTmpdir: "/tmp/atmux_tmux_a" }, { uid: 1000 })).toBe(
+      "/tmp/atmux_tmux_a/tmux-1000/default",
+    );
   });
 });

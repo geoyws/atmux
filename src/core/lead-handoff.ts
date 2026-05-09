@@ -30,11 +30,7 @@ import { formatMyt } from "../abstractions/time.ts";
 import { loadAccountSwapState } from "./account-swap.ts";
 import { loadBudgetPauseState } from "./budget-pause.ts";
 import { driverInboxPath, stateDir } from "./common.ts";
-import {
-  type DriverInboxEntry,
-  lastNEntries,
-  parseEntries,
-} from "./driver-inbox.ts";
+import { type DriverInboxEntry, lastNEntries, parseEntries } from "./driver-inbox.ts";
 import { readState as readEternalImprovementState } from "./eternal-improvement.ts";
 import { listTasks } from "./kanban.ts";
 
@@ -74,9 +70,7 @@ export interface ComposeHandoffArgs {
     | { active: boolean; budget?: string | undefined; mode?: string | undefined }
     | undefined;
   /** Budget-pause snapshot — empty when not active. */
-  budgetPause?:
-    | { paused: boolean; pausedAtTs: string; atRiskCount: number }
-    | undefined;
+  budgetPause?: { paused: boolean; pausedAtTs: string; atRiskCount: number } | undefined;
   /** Account-swap snapshot — empty when no active swap. */
   accountSwap?: { triggerAccount: string; passId: string; active: boolean } | undefined;
 }
@@ -199,8 +193,7 @@ export async function writeLeadHandoff(args: {
       ? {
           active: true,
           mode: typeof ei.mode === "string" ? ei.mode : undefined,
-          budget:
-            typeof ei.budgetSpec === "string" ? ei.budgetSpec : undefined,
+          budget: typeof ei.budgetSpec === "string" ? ei.budgetSpec : undefined,
         }
       : undefined;
 

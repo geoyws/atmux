@@ -9,15 +9,10 @@
 // the member exists in team.json before writing the stub.
 
 import { writeText } from "../abstractions/fs.ts";
-import {
-  getAtmuxDir,
-  inboxPathFor,
-  type ResolveDirOpts,
-  requireTeam,
-} from "../core/common.ts";
+import { getAtmuxDir, inboxPathFor, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { emptyInbox, loadInbox } from "../core/inbox.ts";
-import type { InboxEntry } from "../schema/inbox.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { InboxEntry } from "../schema/inbox.ts";
 
 const USAGE = "atmux inbox <member> [--json]";
 
@@ -50,7 +45,7 @@ export function parseInboxArgs(argv: ReadonlyArray<string>): InboxArgs {
       i += 2;
       continue;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `inbox: unknown flag: ${a}`, hint: USAGE });
     }
     if (member.length > 0) {

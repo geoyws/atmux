@@ -20,21 +20,24 @@
 // Bash uses `atmux::ok` to print "$who claimed $id" / "$who completed
 // $id"; TS prints to stdout for byte-parity at the verb layer.
 
+import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import {
   appendDispatched,
   loadInbox,
   moveInProgressToDone,
   movePendingToInProgress,
 } from "../core/inbox.ts";
-import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
-import { claimTask, markTaskDone, nowEpoch, showTask } from "../core/kanban.ts";
 import {
-  getAtmuxDir,
-  type ResolveDirOpts,
-  requireTeam,
-} from "../core/common.ts";
-import type { TeamMember } from "../schema/team.ts";
+  claimTask,
+  listTasks,
+  markTaskDone,
+  nowEpoch,
+  selectNextClaimable,
+  showTask,
+} from "../core/kanban.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team, TeamMember } from "../schema/team.ts";
 
 // ---------- Shared parser ----------
 
@@ -44,9 +47,14 @@ export interface ClaimDoneArgs {
   who?: string;
   note?: string;
   teamDir?: string;
+  /** ADR-062 §1: `claim --next` mode — auto-select the next claimable
+   *  Task in the caller's lane (no positional id required). Only valid
+   *  for `claim`; rejected on `done`. */
+  next?: boolean;
 }
 
-const USAGE_CLAIM = "atmux claim <task-id> [--as <member>]";
+const USAGE_CLAIM =
+  "atmux claim <task-id> [--as <member>]\n       atmux claim --next [--as <member>]";
 const USAGE_DONE = "atmux done <task-id> [--as <member>] [--note <text>]";
 
 /**
@@ -63,6 +71,7 @@ export function parseClaimDoneArgs(
   let who: string | undefined;
   let note: string | undefined;
   let teamDir: string | undefined;
+  let next = false;
   const usage = verb === "claim" ? USAGE_CLAIM : USAGE_DONE;
   let i = 0;
   while (i < argv.length) {
@@ -94,7 +103,15 @@ export function parseClaimDoneArgs(
       i += 2;
       continue;
     }
-    if (a !== undefined && a.startsWith("-")) {
+    if (a === "--next") {
+      if (verb !== "claim") {
+        throw new UsageError({ what: `${verb}: --next is only valid with claim`, hint: usage });
+      }
+      next = true;
+      i += 1;
+      continue;
+    }
+    if (a?.startsWith("-")) {
       throw new UsageError({ what: `${verb}: unknown flag: ${a}`, hint: usage });
     }
     if (id.length > 0) {
@@ -103,13 +120,21 @@ export function parseClaimDoneArgs(
     id = a ?? "";
     i += 1;
   }
-  if (id.length === 0) {
+  if (next) {
+    if (id.length > 0) {
+      throw new UsageError({
+        what: `${verb} --next: don't pass <task-id> (selection is automatic)`,
+        hint: usage,
+      });
+    }
+  } else if (id.length === 0) {
     throw new UsageError({ what: `usage: atmux ${verb} <task-id> [--as <member>]`, hint: usage });
   }
   const out: ClaimDoneArgs = { id };
   if (who !== undefined) out.who = who;
   if (note !== undefined) out.note = note;
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (next) out.next = true;
   return out;
 }
 
@@ -136,6 +161,9 @@ export function pickMemberName(
 /** `atmux claim <task-id> [--as <member>]`. Returns 0 on success. */
 export async function claim(argv: ReadonlyArray<string>): Promise<number> {
   const parsed = parseClaimDoneArgs(argv, "claim");
+  if (parsed.next === true) {
+    return await claimNext(parsed);
+  }
   const { who, dirOpts, atmuxDir } = await resolveContext(parsed, "claim");
 
   const claimedAt = nowEpoch();
@@ -154,6 +182,70 @@ export async function claim(argv: ReadonlyArray<string>): Promise<number> {
   // need it again.
   void dirOpts;
   return 0;
+}
+
+/**
+ * `atmux claim --next [--as <member>]` — ADR-062 §1 lane-aware pull.
+ *
+ * Resolution sequence:
+ *   1. Resolve caller name via the existing `pickMemberName` (--as / env / cwd).
+ *   2. Look up caller's `lane` from `team.members[]`.
+ *   3. Read `team.kanban.crossLaneClaim` (default `true`).
+ *   4. `selectNextClaimable` returns the candidate; null → no-op (exit 0,
+ *      empty stdout — orchestrator-friendly so cron ticks don't error).
+ *   5. Strict-lane refusal (`crossLaneClaim=false` AND no own-lane work) is
+ *      surfaced as `ConfigError` with a clear "no work in <LANE> lane" body
+ *      so workers see why the tick refused.
+ *   6. On match, delegate to `claimTask` (deps re-checked atomically) +
+ *      mirror to inbox.
+ */
+async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const team = await requireTeam(dirOpts);
+  const who = pickMemberName(parsed, process.env, process.cwd(), team.members);
+  if (who === undefined) {
+    throw new UsageError({
+      what: "claim --next: can't infer member — set ATMUX_MEMBER or pass --as <member>",
+    });
+  }
+  const atmuxDir = await getAtmuxDir(dirOpts);
+
+  const callerMember = team.members.find((m) => m.name === who);
+  const callerLane =
+    callerMember?.lane !== undefined && callerMember.lane.length > 0 ? callerMember.lane : null;
+  const crossLaneClaim = readCrossLaneClaim(team);
+
+  const tasks = await listTasks(atmuxDir);
+  const candidate = selectNextClaimable(tasks, { callerLane, crossLaneClaim, caller: who });
+
+  if (candidate === null) {
+    if (callerLane !== null && !crossLaneClaim) {
+      throw new ConfigError({
+        what: `claim --next: no work in ${callerLane.toUpperCase()} lane (crossLaneClaim=false)`,
+      });
+    }
+    // No-match no-op: exit 0, empty stdout. Orchestrators (cron lane-tick)
+    // tick again on the next interval; nothing to surface.
+    return 0;
+  }
+
+  const claimedAt = nowEpoch();
+  const { pre } = await claimTask(atmuxDir, candidate.id, who);
+  await movePendingToInProgress(atmuxDir, who, pre, claimedAt);
+
+  process.stdout.write(`${who} claimed ${candidate.id}\n`);
+  return 0;
+}
+
+/**
+ * Read `team.kanban.crossLaneClaim` with bash-parity defaulting. Bash
+ * `lib/claim.sh:200` distinguishes missing-key from explicit-false via
+ * `if (.kanban // {} | has("crossLaneClaim")) then .kanban.crossLaneClaim
+ * else true end`; we mirror via direct field access on the optional
+ * `kanban` block.
+ */
+function readCrossLaneClaim(team: Team): boolean {
+  return team.kanban?.crossLaneClaim ?? true;
 }
 
 /** `atmux done <task-id> [--as <member>] [--note <text>]`. Returns 0. */
@@ -195,7 +287,9 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
     // Final defensive guard — even if auto-push throws unexpectedly,
     // the done transition stays committed. Audit happens inside
     // runAutoPush; here we just don't crash.
-    process.stderr.write(`auto-push: unexpected error: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.stderr.write(
+      `auto-push: unexpected error: ${e instanceof Error ? e.message : String(e)}\n`,
+    );
   }
 
   return 0;
@@ -204,9 +298,7 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
 /** Re-load the team for auto-push reading (cheap; cached at the
  *  filesystem layer). Kept private so the verb's main flow stays
  *  resilient to team-load errors during the auto-push leg. */
-async function loadTeamForAutoPush(
-  parsed: ClaimDoneArgs,
-): Promise<{ whip?: unknown }> {
+async function loadTeamForAutoPush(parsed: ClaimDoneArgs): Promise<{ whip?: unknown }> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   return await requireTeam(dirOpts);
 }

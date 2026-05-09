@@ -37,9 +37,7 @@ afterEach(async () => {
 
 describe("cursorSelfHealStatePath", () => {
   test("appends state/cursor-self-heal-state.json to atmuxDir", () => {
-    expect(cursorSelfHealStatePath("/tmp/foo")).toBe(
-      "/tmp/foo/state/cursor-self-heal-state.json",
-    );
+    expect(cursorSelfHealStatePath("/tmp/foo")).toBe("/tmp/foo/state/cursor-self-heal-state.json");
   });
 });
 
@@ -98,9 +96,9 @@ describe("loadSelfHealState + writeSelfHealState", () => {
       cursorSelfHealStatePath(atmuxDir),
       JSON.stringify({
         "fix:cron-pollution": 1,
-        "junk": "string-value",
-        "nan": Number.NaN,
-        "obj": { foo: 1 },
+        junk: "string-value",
+        nan: Number.NaN,
+        obj: { foo: 1 },
       }),
     );
     const s = await loadSelfHealState(atmuxDir);

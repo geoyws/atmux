@@ -82,8 +82,8 @@
 // question listed in `src/core/common.ts` §"Socket resolver" + ADR-004
 // amend Consequences §Phase 2.
 
-import { join } from "node:path";
-import { writeText } from "../abstractions/fs.ts";
+import { dirname, join } from "node:path";
+import { ensureDir, writeText } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
@@ -95,8 +95,10 @@ import {
   getSessionName,
   loadTeam,
   stateDir,
+  teamJsonPath,
 } from "../core/common.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
+import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
 // ---------- Arg parsing ----------
@@ -271,6 +273,17 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const tmuxConfig: TmuxConfig = resolveTmuxConfig(team.name, parsed);
   const tmux = factory(tmuxConfig);
 
+  // 4a. tmux's `-S <abspath>/sock new-session` does NOT auto-create the
+  //     parent directory — it prints `error creating <path>` to stderr
+  //     but exits 0, leaving us with a false-positive newSession + a
+  //     socket-less session that every subsequent verb will fail to reach.
+  //     Bash bin/atmux's `_atmux_resolve_tmux_tmpdir` did `mkdir -p`
+  //     before any tmux call (.archive-bash-atmux-20260507/bin-atmux:227);
+  //     port that pre-create here so atmux start actually starts.
+  if ("socketPath" in tmuxConfig && typeof tmuxConfig.socketPath === "string") {
+    await ensureDir(dirname(tmuxConfig.socketPath));
+  }
+
   // 5. Resolve session name (defaults to `atmux-<team>` per
   //    common.getSessionName — also handles ATMUX_SESSION env override
   //    + state/session.txt anchor if present).
@@ -297,18 +310,103 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     }
   }
 
-  // 7. Create session if missing with the `__<team>__home` placeholder
-  //    (lib/start.sh:156, 200-204). Always recheck — `--force` may have
-  //    just killed an existing session.
+  // 7. Create session if missing.
+  //
+  //    Default path (lib/start.sh:156, 200-204): seed with the
+  //    `__<team>__home` placeholder window and let the member loop
+  //    populate, then kill `__home` once any real window exists.
+  //
+  //    ADR-044 path (lib/start.sh:177-214): when `team.driverSession`
+  //    is configured, seed the session with a `driver` window at index 1
+  //    running the resolved TUI command instead of the placeholder.
+  //    Members append after as windows 2..N+1, matching the bash
+  //    `driver → lead → members` declarative topology. The legacy
+  //    `__home` cleanup in step 9 is skipped when this path fires
+  //    (no placeholder was ever created).
+  //
+  //    `team.driverSession === null` is treated the same as missing —
+  //    matches the existing wizard's "explicitly disabled" output and
+  //    keeps `null` round-trip-safe for teams that opted out.
   const homeWin = `__${team.name}__home`;
   const stillExists = sessionExisted && !parsed.force;
+  const projectRoot = dirname(dir);
+  const driverSession = (team as { driverSession?: { tui?: string | null } | null }).driverSession;
+  const driverSessionConfigured = driverSession !== undefined && driverSession !== null;
+  let driverInitial = false;
   if (!stillExists) {
-    await tmux.session.newSession({
-      name: session,
-      windowName: homeWin,
-      cwd: opts.cwd ?? process.cwd(),
-    });
-    logger.ok(`created tmux session: ${session}`);
+    if (driverSessionConfigured) {
+      // Resolve the driver TUI: driverSession.tui → driverTui → "claude".
+      // Match bash precedence (lib/start.sh:193): the first non-null,
+      // non-empty string wins.
+      const legacyDriverTui = (team as { driverTui?: string | null }).driverTui;
+      const drvTuiRaw =
+        (driverSession?.tui !== undefined && driverSession.tui !== null
+          ? driverSession.tui
+          : undefined) ??
+        (legacyDriverTui !== undefined && legacyDriverTui !== null ? legacyDriverTui : undefined) ??
+        "claude";
+      const drvTui = drvTuiRaw.length > 0 ? drvTuiRaw : "claude";
+      const drvCwd = projectRoot;
+      // Synthetic member shape for the resolver — driver isn't in
+      // team.members[], so build the minimal entry tui-cmd needs.
+      // `model: "default"` mirrors lib/start.sh:197's positional arg.
+      const synthDriver = {
+        name: "driver",
+        role: "driver",
+        tui: drvTui,
+        model: "default",
+        cwd: drvCwd,
+      } as const;
+      let drvCmd: string | undefined;
+      try {
+        drvCmd = resolveTuiCommand(synthDriver, team, { env, cwd: drvCwd });
+      } catch (err) {
+        // Match bash fallthrough (lib/start.sh:206): warn and degrade to
+        // the __home placeholder rather than blocking session creation.
+        logger.warn(
+          `driver-initial: could not resolve command for tui='${drvTui}' — falling back to __home placeholder (${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
+      if (drvCmd !== undefined) {
+        await tmux.session.newSession({
+          name: session,
+          windowName: "driver",
+          cwd: drvCwd,
+        });
+        // Shell-only TUIs (`shell|bash|zsh`) skip send-keys for the same
+        // reason member spawn does (step 8 below): the pane already starts
+        // in `$SHELL`, and `exec $SHELL` re-execs for no observable
+        // benefit. Real TUIs (claude/opencode/etc.) get the launch via
+        // send-keys so the pane stays a shell when the TUI exits.
+        const driverIsShellOnly = drvTui === "shell" || drvTui === "bash" || drvTui === "zsh";
+        if (!driverIsShellOnly) {
+          // newSession returns void — target the freshly-created driver
+          // window by its `<session>:driver` string (Target's string form,
+          // serializeTarget pass-through). The window-name is unique
+          // because it's the only window in the session at this point.
+          await tmux.pane.sendKeys({
+            target: {
+              kind: "member",
+              member: "driver",
+              team: team.name,
+              target: `${session}:driver`,
+            },
+            keys: drvCmd,
+            enter: true,
+          });
+        }
+        logger.ok(`created tmux session: ${session} (driver at window 1, ${drvTui})`);
+        driverInitial = true;
+      }
+    }
+    if (!driverInitial) {
+      await tmux.session.newSession({
+        name: session,
+        windowName: homeWin,
+        cwd: opts.cwd ?? process.cwd(),
+      });
+      logger.ok(`created tmux session: ${session}`);
+    }
   }
 
   // 8. Spawn each member as a window (lib/start.sh:272-283 +
@@ -317,16 +415,30 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const existing = await tmux.window.listWindows(session);
   const existingNames = new Set(existing.map((w) => w.name));
   let spawned = 0;
+  // Track whether any auto-emoji fallback fired so we can persist
+  // `member.emoji` back into team.json once at the end (single rewrite,
+  // not per-member). The `tests/e2e/lifecycle.test.ts:100-103` comment
+  // ("Pin the emoji here so spawn + send + capture all agree. Without
+  // persistence, start spawns 🐝w1 while send looks for w1") names the
+  // exact bug this persistence closes for default-scaffold teams.
+  let stampedEmoji = false;
   for (const member of team.members) {
     const role = member.role ?? "member";
     const emoji = member.emoji ?? defaultEmojiForRole(role);
+    if (member.emoji === undefined || member.emoji.length === 0) {
+      // Mutate in-memory so this start invocation's later branches
+      // (TUI launch send-keys target, placeholder cleanup) see the
+      // resolved emoji too. Persisted to disk in step 9b below.
+      (member as { emoji?: string }).emoji = emoji;
+      stampedEmoji = true;
+    }
     const win = buildWindowName(member.name, emoji);
     if (existingNames.has(win)) {
       logger.log(`  · ${member.name}: window exists, skipping (use --force to reset)`);
       continue;
     }
     const memberCwd = member.cwd ?? opts.cwd ?? process.cwd();
-    await tmux.window.newWindow({
+    const winId = await tmux.window.newWindow({
       sessionName: session,
       name: win,
       cwd: memberCwd,
@@ -334,6 +446,38 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     });
     logger.log(`  · ${member.name} (role=${role}): spawned window ${win}`);
     spawned += 1;
+
+    // Launch the configured TUI in the new pane via send-keys. Mirrors
+    // bash `_atmux_spawn_member` (lib/start.sh:447-448) which built the
+    // command via `atmux::tui_cmd` and `tmux send-keys`-ed it. The TS
+    // resolver lives in `core/tui-cmd.ts` (ADR-063 port).
+    //
+    // Gate: launch ONLY when `member.tui` is explicitly set. Test fixtures
+    // omit `tui` and rely on the historical "empty shell pane" behaviour;
+    // every real team scaffolded by `atmux init` has `tui` set per
+    // member, so production gets the launch and tests get the bare pane.
+    // Real-shell members (`tui: shell|bash|zsh`) skip the send entirely
+    // — the pane already starts in `$SHELL` and `exec $SHELL` re-execs
+    // for no observable benefit.
+    const tuiKind = member.tui;
+    const isShellOnly = tuiKind === "shell" || tuiKind === "bash" || tuiKind === "zsh";
+    if (typeof tuiKind === "string" && tuiKind.length > 0 && !isShellOnly) {
+      const cmd = resolveTuiCommand(member, team, { env, cwd: memberCwd });
+      // Target the window without a pane index — tmux routes to the
+      // active pane, which avoids `pane-base-index 1` configs (the user's
+      // ~/.tmux.conf often sets it) erroring with "can't find pane: 0".
+      // Bash mirror also uses `<session>:<window>` form (lib/start.sh:447).
+      await tmux.pane.sendKeys({
+        target: {
+          kind: "member",
+          member: member.name,
+          team: team.name,
+          target: { sessionName: session, windowIndex: winId.windowIndex },
+        },
+        keys: cmd,
+        enter: true,
+      });
+    }
   }
 
   // 9. Close the `__<team>__home` placeholder if any members spawned
@@ -350,6 +494,15 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         // also swallows here (lib/start.sh:292: `2>/dev/null || true`)
       }
     }
+  }
+
+  // 9b. Persist the resolved per-member emoji back to team.json so
+  //     downstream verbs (send/dispatch/tell-lead/handoff/rotate/stop/
+  //     whip) build the SAME `<emoji><name>` window targets we just
+  //     spawned. Skipped when nothing fell back to a default — file
+  //     stays byte-identical for teams that already pin emoji explicitly.
+  if (stampedEmoji) {
+    await writeText(teamJsonPath(dir), `${JSON.stringify(team, null, 2)}\n`);
   }
 
   // 10. Record start timestamp (lib/start.sh:354). Bash writes

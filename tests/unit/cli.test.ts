@@ -43,24 +43,24 @@ function captureReport(err: unknown): { exit: number; stderr: string } {
 // ---------- Dispatch — happy paths (bash-parity aliases) ----------
 
 describe("cli.main — version verb (3-form parity with bash)", () => {
-  test("'version' → exit 0, prints 'atmux 0.3.0'", async () => {
+  test("'version' → exit 0, prints 'atmux 0.6.0'", async () => {
     const { exit, stdout, stderr } = await captureMain(["version"]);
     expect(exit).toBe(0);
-    expect(stdout).toBe("atmux 0.3.0\n");
+    expect(stdout).toBe("atmux 0.6.0\n");
     expect(stderr).toBe("");
   });
 
-  test("'--version' alias → exit 0, prints 'atmux 0.3.0' (bash parity)", async () => {
+  test("'--version' alias → exit 0, prints 'atmux 0.6.0' (bash parity)", async () => {
     const { exit, stdout, stderr } = await captureMain(["--version"]);
     expect(exit).toBe(0);
-    expect(stdout).toBe("atmux 0.3.0\n");
+    expect(stdout).toBe("atmux 0.6.0\n");
     expect(stderr).toBe("");
   });
 
-  test("'-V' alias → exit 0, prints 'atmux 0.3.0' (bash parity)", async () => {
+  test("'-V' alias → exit 0, prints 'atmux 0.6.0' (bash parity)", async () => {
     const { exit, stdout, stderr } = await captureMain(["-V"]);
     expect(exit).toBe(0);
-    expect(stdout).toBe("atmux 0.3.0\n");
+    expect(stdout).toBe("atmux 0.6.0\n");
     expect(stderr).toBe("");
   });
 });
@@ -574,7 +574,7 @@ describe("cli — bin/atmux-bun entrypoint integration", () => {
   // regressions (wrong argv slicing, exit-code dropping at process.exit).
   const REPO_ROOT = import.meta.dir.replace(/\/tests\/unit$/, "");
 
-  test("`bin/atmux-bun version` exits 0 + prints 'atmux 0.3.0'", async () => {
+  test("`bin/atmux-bun version` exits 0 + prints 'atmux 0.6.0'", async () => {
     const proc = Bun.spawn({
       cmd: ["bun", "run", "bin/atmux-bun", "version"],
       cwd: REPO_ROOT,
@@ -587,7 +587,7 @@ describe("cli — bin/atmux-bun entrypoint integration", () => {
       proc.exited,
     ]);
     expect(exit).toBe(0);
-    expect(stdout).toBe("atmux 0.3.0\n");
+    expect(stdout).toBe("atmux 0.6.0\n");
     expect(stderr).toBe("");
   });
 

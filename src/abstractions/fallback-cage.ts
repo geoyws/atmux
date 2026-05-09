@@ -17,9 +17,9 @@
 // path would defeat the design (operator-side reconciliation is the
 // only mutative-git surface for T3+).
 
+import { spawn as defaultSpawn, type SpawnOpts, type SpawnResult } from "./spawn.ts";
 import type { TmuxConfig, TmuxNamespace } from "./tmux.ts";
 import { createTmux as defaultCreateTmux } from "./tmux.ts";
-import { spawn as defaultSpawn, type SpawnOpts, type SpawnResult } from "./spawn.ts";
 
 // ---------- Public types ----------
 
@@ -435,11 +435,9 @@ async function buildTier3PlusWorkspace(
  * Throws FallbackUserMissingError for tier=3 when kimi-agent isn't
  * provisioned (operator must run scripts/provision-fallback-user.sh).
  */
-export async function createFallbackCage(
-  opts: CreateFallbackCageOpts,
-): Promise<CageHandle> {
+export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<CageHandle> {
   const tier = opts.tier;
-  if (tier === 4 && process.env["MINIMAX_CLI_AVAILABLE"] !== "1") {
+  if (tier === 4 && process.env.MINIMAX_CLI_AVAILABLE !== "1") {
     throw new Tier4NotAvailableError();
   }
 

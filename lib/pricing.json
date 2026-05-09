@@ -1,9 +1,0 @@
-{
-  "_comment": "USD per MILLION tokens. Override with $ATMUX_PRICING_FILE pointing to a JSON file matching this schema.",
-  "claude-opus-4-7":    { "input":  15, "output":  75, "cacheWrite": 18.75, "cacheRead": 1.5 },
-  "claude-opus-4-6":    { "input":  15, "output":  75, "cacheWrite": 18.75, "cacheRead": 1.5 },
-  "claude-sonnet-4-6":  { "input":   3, "output":  15, "cacheWrite":  3.75, "cacheRead": 0.3 },
-  "claude-sonnet-4-5":  { "input":   3, "output":  15, "cacheWrite":  3.75, "cacheRead": 0.3 },
-  "claude-haiku-4-5":   { "input": 1.0, "output":   5, "cacheWrite":  1.25, "cacheRead": 0.1 },
-  "default":            { "input":   3, "output":  15, "cacheWrite":  3.75, "cacheRead": 0.3 }
-}

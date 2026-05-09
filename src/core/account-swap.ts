@@ -33,8 +33,6 @@
 //   }
 
 import { join } from "node:path";
-import { appendText, atomicWrite, readTextOrNull, removeFile } from "../abstractions/fs.ts";
-import { withLock } from "../abstractions/lock.ts";
 import type { BudgetProbeResult } from "../abstractions/budget-probe.ts";
 import type { DiscordSendOpts } from "../abstractions/discord.ts";
 import {
@@ -42,6 +40,8 @@ import {
   renderAccountSwapPassComplete,
   renderAccountSwapSuccess,
 } from "../abstractions/discord.ts";
+import { appendText, atomicWrite, readTextOrNull, removeFile } from "../abstractions/fs.ts";
+import { withLock } from "../abstractions/lock.ts";
 import { driverInboxPath } from "./common.ts";
 import { pauseMember as defaultPauseMember } from "./pause.ts";
 
@@ -61,12 +61,7 @@ export const STALE_PROGRESS_SEC = 5 * 60;
 // ---------- State-file shape ----------
 
 /** Per-member-name decision row. ADR-056 §D1. */
-export type SwapDecisionStatus =
-  | "pending"
-  | "in-progress"
-  | "done"
-  | "aborted"
-  | "excluded";
+export type SwapDecisionStatus = "pending" | "in-progress" | "done" | "aborted" | "excluded";
 
 export interface SwapDecision {
   from: string;
@@ -134,9 +129,7 @@ export async function withAccountSwapLock<T>(
 /** Read state if present + valid; null on absence or malformed JSON.
  *  Mirrors `loadBudgetPauseState`'s "loose decode" — neither absence nor
  *  corruption throws (next tick rewrites if needed). */
-export async function loadAccountSwapState(
-  atmuxDir: string,
-): Promise<AccountSwapState | null> {
+export async function loadAccountSwapState(atmuxDir: string): Promise<AccountSwapState | null> {
   const path = accountSwapStatePath(atmuxDir);
   const txt = await readTextOrNull(path);
   if (txt === null) return null;
@@ -184,10 +177,7 @@ export async function clearAccountSwapState(atmuxDir: string): Promise<void> {
  * "Progress" = the most recent `startedAt` OR `finishedAt` across all
  * decisions. Falls back to `state.startedAt` if no decision has fired.
  */
-export function isStaleActiveState(
-  state: AccountSwapState,
-  nowSec: number,
-): boolean {
+export function isStaleActiveState(state: AccountSwapState, nowSec: number): boolean {
   if (!state.active) return false;
   let lastProgress = state.startedAt;
   for (const d of Object.values(state.decisions)) {
@@ -572,9 +562,7 @@ export async function runAccountSwapCheck(
     if (candidates.length === 0) {
       // All members on the trigger account were excluded — no work to
       // do, treat as "no-trigger" so caller proceeds to budget-pause.
-      log(
-        `whip: account-swap trigger fired for ${trigger.account} but all members excluded`,
-      );
+      log(`whip: account-swap trigger fired for ${trigger.account} but all members excluded`);
       return "no-trigger";
     }
     const passOpts: BuildPassOpts = {
@@ -599,10 +587,7 @@ export async function runAccountSwapCheck(
  *  `uniqueAccounts` in whip-budget-check but with the per-team default
  *  threaded through (so a member without an explicit `claudeAccount`
  *  contributes the team default, not silently skipped). */
-function uniqueAccounts(
-  members: ReadonlyArray<MemberLike>,
-  defaultAccount: string,
-): string[] {
+function uniqueAccounts(members: ReadonlyArray<MemberLike>, defaultAccount: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const m of members) {
@@ -729,7 +714,11 @@ export async function perMemberSwap(
   const nowMs = deps.nowMs ?? (() => Date.now());
   const t0 = nowMs();
 
-  if (decision.status === "done" || decision.status === "aborted" || decision.status === "excluded") {
+  if (
+    decision.status === "done" ||
+    decision.status === "aborted" ||
+    decision.status === "excluded"
+  ) {
     log(`account-swap: ${memberName} already ${decision.status} — skipping`);
     return { decision, durationMs: 0 };
   }
@@ -960,11 +949,7 @@ export interface RunPassOpts {
 
 export interface RunPassResult {
   /** Verdict per tick. */
-  verdict:
-    | "no-active-pass"
-    | "advanced"
-    | "pass-complete"
-    | "no-pending-decisions";
+  verdict: "no-active-pass" | "advanced" | "pass-complete" | "no-pending-decisions";
   /** Names of decisions touched this tick (status flipped). */
   touched: ReadonlyArray<string>;
   /** Updated state-file content (post-write). */
@@ -989,8 +974,7 @@ export async function runSwapPass(
   opts: RunPassOpts,
 ): Promise<RunPassResult> {
   const oneAtATime = opts.oneAtATime ?? true;
-  const perMemberDeadlineSec =
-    opts.perMemberDeadlineSec ?? DEFAULT_PER_MEMBER_DEADLINE_SEC;
+  const perMemberDeadlineSec = opts.perMemberDeadlineSec ?? DEFAULT_PER_MEMBER_DEADLINE_SEC;
   const log = opts.log ?? deps.log ?? (() => {});
   const nowMs = opts.nowMs ?? deps.nowMs ?? (() => Date.now());
   const send = opts.discordSend ?? deps.discordSend;
@@ -1025,9 +1009,7 @@ export async function runSwapPass(
       const decision = mutating.decisions[name];
       if (decision === undefined) continue;
       const doneCount = countByStatus(mutating, "done");
-      const total = Object.values(mutating.decisions).filter(
-        (d) => d.status !== "excluded",
-      ).length;
+      const total = Object.values(mutating.decisions).filter((d) => d.status !== "excluded").length;
       const result = await perMemberSwap(
         atmuxDir,
         name,
@@ -1133,9 +1115,7 @@ async function finalizePass(
 
   // Driver-inbox surface (ADR-056 §D4 "from→to map at swap-pass-close").
   const lines: string[] = [`### 🔄 account-swap pass \`${state.passId}\` complete`, ""];
-  lines.push(
-    `- swapped: **${swapped}** / aborted: **${aborted}** / excluded: **${excluded}**`,
-  );
+  lines.push(`- swapped: **${swapped}** / aborted: **${aborted}** / excluded: **${excluded}**`);
   for (const [name, d] of Object.entries(state.decisions)) {
     if (d.status === "done" && d.shadowName !== null) {
       lines.push(`- ✅ \`${name}\` → \`${d.shadowName}\` on \`${d.to}\``);

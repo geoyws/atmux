@@ -12,22 +12,25 @@
 // All bash jq + tmux observations port to typed reads via core/* +
 // abstractions/tmux. The verb is pure assembly + presentation.
 
+import { join } from "node:path";
+
 import { exists } from "../abstractions/fs.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
-  inboxPathFor,
   kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
+import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
-import type { Team } from "../schema/team.ts";
 import { UsageError } from "../errors.ts";
-import { defaultSocketPath } from "./start.ts";
+import type { Team } from "../schema/team.ts";
 import { collectOpenEntries } from "./reply.ts";
 
 const USAGE = "atmux status [--json]";
@@ -85,7 +88,16 @@ export interface MemberStatus {
   tui: string;
   emoji?: string;
   paneCommand: string;
+  /** Tasks owned by this member with status='todo'. Pre-ADR-076 this
+   *  came from the JSON inbox `pending` bucket; post-cutover it's a
+   *  direct query against the tasks table via `loadInbox`. Surfaced in
+   *  text + JSON output. */
   pendingCount: number;
+  /** Tasks owned by this member with status='in-progress'. Added 2026-
+   *  05-08 alongside the pendingCount-from-SQL fix — the more
+   *  operationally useful number ("what's this member currently
+   *  working on?"). */
+  inProgressCount: number;
 }
 
 export interface KanbanCounts {
@@ -95,6 +107,24 @@ export interface KanbanCounts {
   blocked: number;
 }
 
+/** ADR-077 §F5: cockpit superdoctor presence/health snapshot. Surfaced
+ *  in `atmux status` so the operator can verify a `cockpit rebuild`
+ *  actually took effect. */
+export interface SuperdoctorState {
+  /** True iff `~/.atmux/cockpit.json` exists AND has a `superdoctor`
+   *  block. False when no cockpit is configured at all (silent — most
+   *  per-team status calls won't have one). */
+  configured: boolean;
+  /** True iff `superdoctor.enabled === true` in cockpit.json. */
+  enabled: boolean;
+  /** True iff the cockpit tmux session exists on the operator's
+   *  default socket. Probed only when `enabled === true`. */
+  sessionAlive: boolean;
+  /** True iff a window named `superdoctor` exists in the cockpit
+   *  session. Probed only when `sessionAlive === true`. */
+  windowAlive: boolean;
+}
+
 export interface StatusSnapshot {
   team: string;
   session: string;
@@ -102,6 +132,60 @@ export interface StatusSnapshot {
   members: MemberStatus[];
   kanban: KanbanCounts;
   driverInboxOpen: number;
+  /** ADR-064 §4: driver-pane health snapshot. Always populated;
+   *  renderer skips display when `configured=false`. */
+  driverPane: DriverPaneHealth;
+  /** ADR-077 §F5: cockpit superdoctor snapshot. Always populated;
+   *  renderer skips display when `configured=false`. */
+  superdoctor: SuperdoctorState;
+}
+
+/** Test-injection seam for `gatherStatus` cockpit probe. */
+export interface GatherStatusDeps {
+  /** Override cockpit.json loader env. Default `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /** Build the cockpit-side TmuxNamespace (operator's default socket).
+   *  Default `createTmux({ socket: 'default' })`. */
+  cockpitTmuxFactory?: (cfg: TmuxConfig) => TmuxNamespace;
+}
+
+/**
+ * ADR-077 §F5: probe the cockpit for superdoctor presence/health.
+ * Silently returns the all-false default when no cockpit is configured
+ * (most per-team status calls have no cockpit). Probe failures collapse
+ * to `false` rather than throwing — the team's own status must stay
+ * green even when the cockpit is misconfigured.
+ */
+export async function probeSuperdoctor(deps: GatherStatusDeps = {}): Promise<SuperdoctorState> {
+  const env = deps.env ?? process.env;
+  const loadOpts: LoadCockpitOpts = { env };
+  let cockpit: Awaited<ReturnType<typeof loadCockpit>>;
+  try {
+    cockpit = await loadCockpit(loadOpts);
+  } catch {
+    return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
+  }
+  const sd = cockpit.superdoctor;
+  if (sd === undefined) {
+    return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
+  }
+  if (!sd.enabled) {
+    return { configured: true, enabled: false, sessionAlive: false, windowAlive: false };
+  }
+  const factory = deps.cockpitTmuxFactory ?? createTmux;
+  let sessionAlive = false;
+  let windowAlive = false;
+  try {
+    const cockpitTmux = factory({ socket: "default" });
+    sessionAlive = await cockpitTmux.session.hasSession(cockpit.cockpitSession);
+    if (sessionAlive) {
+      const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
+      windowAlive = wins.some((w) => w.name === "superdoctor");
+    }
+  } catch {
+    // tmux not running, socket unreachable, etc. — collapse to down.
+  }
+  return { configured: true, enabled: true, sessionAlive, windowAlive };
 }
 
 /**
@@ -113,6 +197,7 @@ export async function gatherStatus(
   team: Team,
   sessionName: string,
   atmuxDir: string,
+  deps: GatherStatusDeps = {},
 ): Promise<StatusSnapshot> {
   const sessionState: "up" | "down" = (await tmux.session.hasSession(`=${sessionName}`))
     ? "up"
@@ -121,20 +206,29 @@ export async function gatherStatus(
   const members: MemberStatus[] = [];
   for (const m of team.members) {
     const paneCommand = await readPaneCommand(tmux, sessionName, m, sessionState === "up");
-    const pendingCount = await readPendingCount(atmuxDir, m.name);
+    const { pending: pendingCount, inProgress: inProgressCount } = await readMemberCounts(
+      atmuxDir,
+      m.name,
+    );
     const row: MemberStatus = {
       name: m.name,
       role: m.role ?? "member",
       tui: m.tui ?? "claude",
       paneCommand,
       pendingCount,
+      inProgressCount,
     };
     if (m.emoji !== undefined && m.emoji.length > 0) row.emoji = m.emoji;
     members.push(row);
   }
 
   const counts: KanbanCounts = { todo: 0, inProgress: 0, done: 0, blocked: 0 };
-  if (await exists(kanbanJsonPath(atmuxDir))) {
+  // ADR-060 dual-path: load if EITHER the SQLite store or the legacy
+  // JSON file exists. Pre-fix this gate only checked kanban.json, so
+  // post-migration teams (state.db only) reported counts=0.
+  const hasSqlite = await exists(join(atmuxDir, "state.db"));
+  const hasJson = await exists(kanbanJsonPath(atmuxDir));
+  if (hasSqlite || hasJson) {
     const k = await loadKanban(atmuxDir);
     for (const t of k.tasks) {
       if (t.status === "todo") counts.todo += 1;
@@ -151,6 +245,16 @@ export async function gatherStatus(
     driverInboxOpen = collectOpenEntries(body).length;
   }
 
+  // ADR-064 §4: driver-pane health probe. Reuses the same tmux
+  // namespace already in scope so we don't pay a second connection
+  // setup; the helper itself stays I/O-bounded to one capture call.
+  const driverPane = await probeDriverPane(team, atmuxDir, { tmux });
+
+  // ADR-077 §F5: cockpit superdoctor probe. Independent of the team's
+  // own cage tmux — uses the operator's default socket via a separate
+  // factory. Silent when no cockpit is configured.
+  const superdoctor = await probeSuperdoctor(deps);
+
   return {
     team: team.name,
     session: sessionName,
@@ -158,6 +262,8 @@ export async function gatherStatus(
     members,
     kanban: counts,
     driverInboxOpen,
+    driverPane,
+    superdoctor,
   };
 }
 
@@ -168,7 +274,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
   const team = await requireTeam(dirOpts);
   const sessionName = await getSessionName({ ...dirOpts, team });
   const atmuxDir = await getAtmuxDir(dirOpts);
-  const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
   const snap = await gatherStatus(tmux, team, sessionName, atmuxDir);
 
@@ -186,9 +292,12 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
         tui: m.tui,
         paneCommand: m.paneCommand,
         pendingCount: m.pendingCount,
+        inProgressCount: m.inProgressCount,
       })),
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
+      driverPane: snap.driverPane,
+      superdoctor: snap.superdoctor,
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     return 0;
@@ -231,10 +340,18 @@ async function readPaneCommand(
   }
 }
 
-async function readPendingCount(atmuxDir: string, member: string): Promise<number> {
-  if (!(await exists(inboxPathFor(atmuxDir, member)))) return 0;
+/** ADR-076 cutover: counts come from `loadInbox` which is SQL-canonical
+ *  when state.db exists (falls back to JSON for pre-migration teams).
+ *  Drops the pre-cutover JSON-existence guard which incorrectly returned
+ *  0 for SQL-canonical teams whose inbox JSON files were absent or
+ *  frozen post-writer-no-op. Returns both pending (todo) and in-progress
+ *  counts for the per-member status row. */
+async function readMemberCounts(
+  atmuxDir: string,
+  member: string,
+): Promise<{ pending: number; inProgress: number }> {
   const ib = await loadInbox(atmuxDir, member);
-  return ib.pending.length;
+  return { pending: ib.pending.length, inProgress: ib.inProgress.length };
 }
 
 function renderTextStatus(snap: StatusSnapshot): void {
@@ -242,14 +359,25 @@ function renderTextStatus(snap: StatusSnapshot): void {
   process.stdout.write(
     `${sessEmoji} 🧭 TEAM ${snap.team}  session=${snap.session} [${snap.sessionState}]\n\n`,
   );
-  process.stdout.write(`member       role          tui        pane          inbox\n`);
+  // ADR-064 §4: driver-pane row above the per-member table — only when
+  // the team opted into the ADR-044 driver-window topology. Mirrors the
+  // existing `driver-inbox open=N` skip-when-empty pattern below.
+  if (snap.driverPane.configured) {
+    const dp = snap.driverPane;
+    const stateLabel = dp.windowExists ? (dp.state ?? "UNKNOWN") : "no-window";
+    const evidence = dp.evidence.length > 60 ? `${dp.evidence.slice(0, 60)}…` : dp.evidence;
+    process.stdout.write(`🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`);
+  }
+  process.stdout.write(`member       role          tui        pane          tasks\n`);
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
     const name = m.name.padEnd(12);
     const role = m.role.padEnd(14);
     const tui = m.tui.padEnd(10);
     const pane = m.paneCommand.padEnd(14);
-    process.stdout.write(`  ${emoji} ${name} ${role} ${tui} ${pane} 📥 ${m.pendingCount} pending\n`);
+    process.stdout.write(
+      `  ${emoji} ${name} ${role} ${tui} ${pane} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
+    );
   }
   const k = snap.kanban;
   process.stdout.write(
@@ -257,6 +385,19 @@ function renderTextStatus(snap: StatusSnapshot): void {
   );
   if (snap.driverInboxOpen > 0) {
     process.stdout.write(`📬 driver-inbox  open=${snap.driverInboxOpen}\n`);
+  }
+  // ADR-077 §F5: superdoctor row — skip when no cockpit at all.
+  if (snap.superdoctor.configured) {
+    const sd = snap.superdoctor;
+    const stateLabel = !sd.enabled
+      ? "disabled"
+      : !sd.sessionAlive
+        ? "cockpit-down"
+        : !sd.windowAlive
+          ? "window-missing"
+          : "alive";
+    const stateEmoji = stateLabel === "alive" ? "🟢" : stateLabel === "disabled" ? "⚪" : "🔴";
+    process.stdout.write(`📋 superdoctor  ${stateEmoji} ${stateLabel}\n`);
   }
 }
 

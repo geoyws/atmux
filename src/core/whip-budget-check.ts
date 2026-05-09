@@ -22,7 +22,6 @@
 // Test surface: every external dependency is injectable via
 // `BudgetCheckDeps`. Defaults wire up the production functions.
 
-import { appendText } from "../abstractions/fs.ts";
 import {
   type BudgetProbeResult,
   probeBudget as defaultProbeBudget,
@@ -34,9 +33,19 @@ import {
   renderWhipBudgetResume,
   renderWhipBudgetWarning,
 } from "../abstractions/discord.ts";
+import type { CageHandle } from "../abstractions/fallback-cage.ts";
+import { appendText } from "../abstractions/fs.ts";
 import { formatDuration, formatMyt, now } from "../abstractions/time.ts";
+import type { KanbanTask } from "../schema/kanban.ts";
 import {
-  budgetRefreshSoonStatePath,
+  type AtRiskMember,
+  type BudgetPauseState,
+  clearBudgetPauseState,
+  isBudgetPauseActive,
+  loadBudgetPauseState,
+  writeBudgetPauseState,
+} from "./budget-pause.ts";
+import {
   hasRefreshSoonFired,
   loadRefreshSoonState,
   recordRefreshSoonFire,
@@ -51,25 +60,23 @@ import {
   wipeForResetWindow,
   writeWarningState,
 } from "./budget-warning-state.ts";
-import {
-  type AtRiskMember,
-  type BudgetPauseState,
-  clearBudgetPauseState,
-  isBudgetPauseActive,
-  loadBudgetPauseState,
-  writeBudgetPauseState,
-} from "./budget-pause.ts";
 import { driverInboxPath } from "./common.ts";
 import { pauseMember as defaultPauseMember, resumeMember as defaultResumeMember } from "./pause.ts";
+import {
+  type DispatchFallbackOpts,
+  dispatchFallbackOnPause as defaultDispatchFallbackOnPause,
+  walkFallbackOnResume as defaultWalkFallbackOnResume,
+  type WalkFallbackOpts,
+} from "./whip-budget-fallback.ts";
 
 // ---------- Types ----------
 
 export type BudgetCheckVerdict =
-  | "no-pause-not-active"   // no probe data / no accounts; fall through to normal tick
-  | "active"                 // probed, all clear → continue normal tick
-  | "paused-just-now"       // entered pause this tick → stop the tick
-  | "paused-still"          // already paused, resume gate not met → stop the tick
-  | "resumed";              // exited pause this tick → continue normal tick
+  | "no-pause-not-active" // no probe data / no accounts; fall through to normal tick
+  | "active" // probed, all clear → continue normal tick
+  | "paused-just-now" // entered pause this tick → stop the tick
+  | "paused-still" // already paused, resume gate not met → stop the tick
+  | "resumed"; // exited pause this tick → continue normal tick
 
 export interface BudgetCheckTeamMember {
   name: string;
@@ -84,9 +91,18 @@ export interface BudgetCheckCtx {
   nowMs: number;
   /** Used for state-file dedup epochs (epoch seconds). */
   nowSec: number;
+  /** Project working directory — passed through to the ADR-058 fallback
+   *  dispatch when `team.fallback.enabled === true`. Optional for
+   *  pre-ADR-058 callers; required when the fallback gate is active. */
+  projectCwd?: string;
   team: {
     name: string;
     members: ReadonlyArray<BudgetCheckTeamMember>;
+    /** ADR-058 §D2 default-OFF fallback gate. Undefined OR
+     *  `enabled === false` keeps the legacy budget-pause behavior; only
+     *  `enabled === true` activates the cage-fallback dispatch on
+     *  pause-entry / continuity walk on resume. */
+    fallback?: { enabled: boolean };
   };
   config: {
     /** Pause when ANY member's pct-used ≥ this threshold (default 90 — i.e., 10% remaining). */
@@ -114,6 +130,27 @@ export interface BudgetCheckDeps {
   /** Logger for per-tick activity. Default: stderr-shaped no-op (caller
    *  may inject ctx.stderr-equivalent). */
   log?: (msg: string) => void;
+
+  // ---------- ADR-058 fallback chain (default-OFF; only active when
+  //            ctx.team.fallback?.enabled === true) ----------
+
+  /** Snapshot in-flight tasks at pause-entry. The verb wires this to
+   *  `core/kanban.ts::listTasks(atmuxDir, { status: "in-progress" })`.
+   *  Required when fallback is enabled; ignored otherwise. */
+  listInFlightTasks?: () => Promise<ReadonlyArray<KanbanTask>>;
+  /** Paste the entry brief into a freshly-spawned cage's tmux pane.
+   *  Required when fallback is enabled; ignored otherwise. */
+  sendCageBrief?: (handle: CageHandle, body: string) => Promise<void>;
+  /** Paste the resume continuity brief into the original Claude member's
+   *  pane. Required when fallback is enabled; ignored otherwise. */
+  sendContinuityBrief?: (member: string, body: string) => Promise<void>;
+  /** Override the default `dispatchFallbackOnPause` orchestration. Tests
+   *  inject this to count invocations / fake the cage-spawn loop without
+   *  touching tmux. */
+  dispatchFallback?: (opts: DispatchFallbackOpts) => Promise<CageHandle[]>;
+  /** Override the default `walkFallbackOnResume` orchestration. Tests
+   *  inject this to capture walk calls without invoking `destroyCage`. */
+  walkFallback?: (opts: WalkFallbackOpts) => Promise<void>;
 }
 
 // ---------- Public API ----------
@@ -153,7 +190,7 @@ export async function runBudgetCheck(
   // Branch 1 — already paused: gate on resume threshold.
   if (await isBudgetPauseActive(ctx.atmuxDir)) {
     if (allClearForResume(results, ctx.config.budgetResumeThreshold)) {
-      await exitPause(ctx, results, send, resumeMem, appendDi, log);
+      await exitPause(ctx, results, send, resumeMem, appendDi, log, deps);
       return "resumed";
     }
     log("whip: budget-pause still active — resume gate not met");
@@ -163,7 +200,7 @@ export async function runBudgetCheck(
   // Branch 2 — not paused: check pause threshold.
   const tripped = atRiskMembers(ctx.team.members, results, ctx.config.budgetPauseThreshold);
   if (tripped.length > 0) {
-    await enterPause(ctx, tripped, send, pauseMem, appendDi, log);
+    await enterPause(ctx, tripped, send, pauseMem, appendDi, log, deps);
     return "paused-just-now";
   }
 
@@ -235,6 +272,7 @@ async function enterPause(
   pauseMem: NonNullable<BudgetCheckDeps["pauseMember"]>,
   appendDi: NonNullable<BudgetCheckDeps["appendDriverInbox"]>,
   log: (msg: string) => void,
+  deps: BudgetCheckDeps,
 ): Promise<void> {
   const ts = formatMyt(ctx.nowMs);
   const state: BudgetPauseState = {
@@ -252,6 +290,16 @@ async function enterPause(
       await pauseMem(ctx.atmuxDir, m.name, { reason: "budget-low" });
     } catch (e) {
       log(`whip: budget-pause: pause(${m.name}) failed: ${stringifyErr(e)}`);
+    }
+  }
+
+  // ADR-058 §D2: only fire the cage-fallback chain when the team has
+  // explicitly opted in. Default-OFF for pre-ADR-058 teams.
+  if (ctx.team.fallback?.enabled === true) {
+    try {
+      await runFallbackDispatch(ctx, deps, log);
+    } catch (e) {
+      log(`whip: fallback-dispatch failed: ${stringifyErr(e)}`);
     }
   }
 
@@ -293,7 +341,12 @@ async function exitPause(
   resumeMem: NonNullable<BudgetCheckDeps["resumeMember"]>,
   appendDi: NonNullable<BudgetCheckDeps["appendDriverInbox"]>,
   log: (msg: string) => void,
+  deps: BudgetCheckDeps,
 ): Promise<void> {
+  // Capture pausedAt BEFORE clearing the state file — the fallback walk
+  // uses it to identify the matching `fallback-cages-<epoch>.json`.
+  const priorState = await loadBudgetPauseState(ctx.atmuxDir);
+
   // Resume every member.
   for (const m of ctx.team.members) {
     try {
@@ -303,10 +356,26 @@ async function exitPause(
     }
   }
 
+  // ADR-058 §D2: walk the fallback cages BEFORE clearing pause state, so
+  // a mid-walk crash leaves the system in the still-paused-handles-
+  // present state (idempotent on retry). Default-OFF gate matches enter.
+  if (ctx.team.fallback?.enabled === true && priorState !== null) {
+    try {
+      await runFallbackWalk(ctx, deps, priorState.pausedAt, log);
+    } catch (e) {
+      log(`whip: fallback-walk failed: ${stringifyErr(e)}`);
+    }
+  }
+
   await clearBudgetPauseState(ctx.atmuxDir);
 
   const ts = formatMyt(ctx.nowMs);
-  const lines = ["", `## ${ts} — 🟢 budget-pause cleared`, "Team resumed. All members back above resume threshold.", ""];
+  const lines = [
+    "",
+    `## ${ts} — 🟢 budget-pause cleared`,
+    "Team resumed. All members back above resume threshold.",
+    "",
+  ];
   await appendDi(ctx.atmuxDir, lines.join("\n"));
 
   if (send !== undefined) {
@@ -437,6 +506,60 @@ function stringifyErr(e: unknown): string {
 
 async function defaultAppendDriverInbox(atmuxDir: string, content: string): Promise<void> {
   await appendText(driverInboxPath(atmuxDir), content);
+}
+
+// ---------- ADR-058 fallback chain helpers ----------
+
+/** Pause-entry leg: snapshot in-flight kanban → dispatchFallback. Caller
+ *  has already gated on `ctx.team.fallback?.enabled === true`. */
+async function runFallbackDispatch(
+  ctx: BudgetCheckCtx,
+  deps: BudgetCheckDeps,
+  log: (msg: string) => void,
+): Promise<void> {
+  if (deps.listInFlightTasks === undefined || deps.sendCageBrief === undefined) {
+    log("whip: fallback-dispatch: missing listInFlightTasks/sendCageBrief — skipped");
+    return;
+  }
+  const inFlight = await deps.listInFlightTasks();
+  if (inFlight.length === 0) {
+    log("whip: fallback-dispatch: no in-flight tasks — nothing to delegate");
+    return;
+  }
+  const dispatch = deps.dispatchFallback ?? defaultDispatchFallbackOnPause;
+  const dispatchOpts: DispatchFallbackOpts = {
+    team: ctx.team.name,
+    atmuxDir: ctx.atmuxDir,
+    projectCwd: ctx.projectCwd ?? process.cwd(),
+    pausedAtSec: ctx.nowSec,
+    inFlightTasks: inFlight,
+    sendBrief: deps.sendCageBrief,
+    log,
+  };
+  await dispatch(dispatchOpts);
+}
+
+/** Resume leg: walk persisted cage handles → continuity briefs + cage
+ *  teardown. Caller has already gated on `ctx.team.fallback?.enabled`. */
+async function runFallbackWalk(
+  ctx: BudgetCheckCtx,
+  deps: BudgetCheckDeps,
+  pausedAtSec: number,
+  log: (msg: string) => void,
+): Promise<void> {
+  if (deps.sendContinuityBrief === undefined) {
+    log("whip: fallback-walk: missing sendContinuityBrief — skipped");
+    return;
+  }
+  const walk = deps.walkFallback ?? defaultWalkFallbackOnResume;
+  const walkOpts: WalkFallbackOpts = {
+    team: ctx.team.name,
+    atmuxDir: ctx.atmuxDir,
+    pausedAtSec,
+    sendContinuity: deps.sendContinuityBrief,
+    log,
+  };
+  await walk(walkOpts);
 }
 
 // ---------- Re-exports for whip.ts ----------

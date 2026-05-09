@@ -178,8 +178,10 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     for (const m of tj.members) {
       expect(m.cwd).toBe(env.cwd);
     }
-    // Template-shape sanity (bash bats spec init.bats:46-62).
-    expect(tj.members.length).toBe(9);
+    // Template-shape sanity. Tracks `templates/team.example.json` —
+    // bump together when the shipped roster changes (last bumped to 11
+    // after fe-auth/be-auth/db-auth split landed).
+    expect(tj.members.length).toBe(11);
     expect(tj.members.filter((m) => m.role === "team-lead").length).toBe(1);
     expect(tj.members.filter((m) => m.role === "planner").length).toBe(1);
     expect(tj.members.filter((m) => m.role === "reviewer").length).toBe(1);
@@ -409,9 +411,9 @@ describe("init — templates dir resolution", () => {
       members: unknown[];
     };
     expect(tj.name).toBe("default-tmpls");
-    // The shipped template has 9 members — sanity-pin against the
-    // bats spec init.bats:47.
-    expect(tj.members.length).toBe(9);
+    // The shipped template has 11 members — sanity-pin tracks
+    // `templates/team.example.json`.
+    expect(tj.members.length).toBe(11);
   });
 });
 

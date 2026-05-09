@@ -275,10 +275,7 @@ export function renderRow(
 }
 
 /** Render the dim header row from the column list. */
-export function renderHeader(
-  columns: ReadonlyArray<TableColumn>,
-  palette?: AnsiPalette,
-): string {
+export function renderHeader(columns: ReadonlyArray<TableColumn>, palette?: AnsiPalette): string {
   const p = palette ?? defaultPalette();
   const headers = columns.map((c) => padCell(c.header, c.width, { align: c.align ?? "left" }));
   return `${p.dim}${headers.join(" ")}${p.rst}`;
