@@ -36,9 +36,9 @@ export function openDatabase(path: string, migrations: readonly Migration[]): Da
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA foreign_keys = ON");
 
-  const current = readUserVersion(db);
+  let current = readUserVersion(db);
   for (const m of migrations) {
-    if (m.from !== current && m.from < current) continue;
+    if (m.from < current) continue;
     if (m.from !== current) {
       throw new Error(
         `migration gap: db at user_version=${current}, next migration starts at from=${m.from}`,
@@ -48,6 +48,7 @@ export function openDatabase(path: string, migrations: readonly Migration[]): Da
       m.up(db);
       db.exec(`PRAGMA user_version = ${m.to}`);
     })();
+    current = m.to;
   }
 
   return db;
