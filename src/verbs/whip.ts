@@ -186,6 +186,11 @@ export interface WhipConfig {
   staleMin: number;
   /** Lead uptime cutoff in minutes. ≥this → recommend rotate. */
   leadMaxMin: number;
+  /** ADR-080 §A1: lead ctx-pct rotation threshold (0–100). When the
+   *  lead pane's `tok N/M` indicator parses to a pct ≥ this, the
+   *  rotate-recommendation fires even when uptime is below
+   *  `leadMaxMin`. Default 70. */
+  leadCtxRotateThreshold: number;
   /** Number of consecutive DOWN ticks before reporting (false-alert
    *  dampener). Default 2 per bash E6/S1. */
   downConfirmTicks: number;
@@ -237,6 +242,7 @@ export interface WhipConfig {
 const DEFAULT_WHIP_CONFIG: WhipConfig = {
   staleMin: 90,
   leadMaxMin: 60,
+  leadCtxRotateThreshold: 70,
   downConfirmTicks: 2,
   heartbeat: true,
   autoRotate: false,
@@ -268,6 +274,14 @@ export function readWhipConfig(team: Team, env: NodeJS.ProcessEnv = process.env)
     }
     if (typeof o.leadMaxMin === "number" && Number.isFinite(o.leadMaxMin) && o.leadMaxMin > 0) {
       cfg.leadMaxMin = o.leadMaxMin;
+    }
+    if (
+      typeof o.leadCtxRotateThreshold === "number" &&
+      Number.isFinite(o.leadCtxRotateThreshold) &&
+      o.leadCtxRotateThreshold >= 0 &&
+      o.leadCtxRotateThreshold <= 100
+    ) {
+      cfg.leadCtxRotateThreshold = o.leadCtxRotateThreshold;
     }
     if (
       typeof o.downConfirmTicks === "number" &&
@@ -1376,32 +1390,92 @@ async function readRotatedEpoch(atmuxDir: string, member: string): Promise<numbe
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
-// ---------- Check 5: lead uptime ----------
+// ---------- Check 5: lead uptime + ctx-pct (ADR-080 §A1) ----------
+
+/**
+ * Parse the lead pane's ctx-pct from a captured pane snapshot.
+ *
+ * Claude Code TUIs render a `tok N(.M)?k/<cap>` indicator near the
+ * bottom status line where N is the running token count (in thousands,
+ * possibly fractional) and `<cap>` is the per-conversation cap. ADR-080
+ * §A1 needs `(N / cap) * 100` rounded — pct of cap consumed — so the
+ * whip rotation gate can fire on ctx-pressure even when uptime hasn't
+ * tripped `leadMaxMin`.
+ *
+ * Returns `null` when the indicator is absent (transient: fresh
+ * bootstrap, modal-state pane, post-/clear before first prompt). Caller
+ * treats null as "no signal — fall through to uptime gate".
+ *
+ * Pattern examples:
+ *   `tok 67k/100`   → 67
+ *   `tok 67.3k/100` → 67   (rounded)
+ *   `tok 175k/200`  → 88   (rounded)
+ *   no `tok …`      → null
+ *
+ * Exported for §A2 reuse (`src/verbs/lane-tick.ts` consumes the same
+ * helper to refuse `claim --next` injection on a high-ctx lead).
+ */
+const TOK_CTX_RE = /\btok\s+(\d+(?:\.\d+)?)k\/(\d+)k?\b/i;
+export function parseLeadCtxPct(captureText: string): number | null {
+  const m = captureText.match(TOK_CTX_RE);
+  if (m === null) return null;
+  const used = Number.parseFloat(m[1] ?? "");
+  const cap = Number.parseInt(m[2] ?? "", 10);
+  if (!Number.isFinite(used) || !Number.isFinite(cap) || cap <= 0) return null;
+  return Math.round((used / cap) * 100);
+}
 
 async function checkLeadUptime(
   ctx: TickCtx,
   config: WhipConfig,
   homeOpts: SkillsTeamPathsOpts,
 ): Promise<Finding | null> {
-  const { team, nowSec } = ctx;
+  const { team, nowSec, atmuxDir, tmux } = ctx;
   const startEpoch = await readLeadSessionStart(team.name, homeOpts);
   if (startEpoch === null || startEpoch <= 0) return null;
   const uptimeSec = nowSec - startEpoch;
   if (uptimeSec < 0) return null;
   const uptimeMin = Math.floor(uptimeSec / 60);
-  if (uptimeMin >= config.leadMaxMin) {
-    // V-26 will execute auto-rotate; V-25 only recommends. The bullet
-    // text varies by `autoRotate` so the operator sees the team's
-    // posture without having to grep team.json.
-    const tail = config.autoRotate
-      ? "auto-rotate execute is V-26-deferred per ADR-021"
-      : "consider `atmux rotate-lead`";
-    return {
-      category: "overdue",
-      bullet: bullet80(`♻️ lead uptime ${uptimeMin}min ≥ ${config.leadMaxMin}min — ${tail}`),
-    };
+
+  // ADR-080 §A1: also probe ctx-pct via a lead-pane capture. A high-ctx
+  // lead is at risk of mid-think rotation drift even when uptime hasn't
+  // tripped `leadMaxMin`. Best-effort: capture failure / missing window
+  // / no-tok-indicator all collapse to null → fall through to uptime.
+  let ctxPct: number | null = null;
+  try {
+    const leadWindowName = await readLeadWindowName(team.name, homeOpts);
+    if (leadWindowName !== null && leadWindowName.length > 0) {
+      const session = await getSessionName({ dir: atmuxDir, team });
+      const captured = await tmux.pane.capturePane({
+        target: `${session}:${leadWindowName}`,
+        start: -10,
+      });
+      ctxPct = parseLeadCtxPct(captured);
+    }
+  } catch {
+    ctxPct = null;
   }
-  return null;
+
+  const overUptime = uptimeMin >= config.leadMaxMin;
+  const overCtx = ctxPct !== null && ctxPct >= config.leadCtxRotateThreshold;
+  if (!overUptime && !overCtx) return null;
+
+  // V-26 will execute auto-rotate; V-25 only recommends. The bullet
+  // text varies by `autoRotate` so the operator sees the team's
+  // posture without having to grep team.json.
+  const tail = config.autoRotate
+    ? "auto-rotate execute is V-26-deferred per ADR-021"
+    : "consider `atmux rotate-lead`";
+  // Prefer the ctx reason when both fire — ctx-pressure is the more
+  // actionable signal (uptime can be a side-effect of a quiet
+  // long-running session).
+  const reason = overCtx
+    ? `ctx ${ctxPct}% ≥ ${config.leadCtxRotateThreshold}%`
+    : `uptime ${uptimeMin}min ≥ ${config.leadMaxMin}min`;
+  return {
+    category: "overdue",
+    bullet: bullet80(`♻️ lead ${reason} — ${tail}`),
+  };
 }
 
 // ---------- Findings → Discord push ----------

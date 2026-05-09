@@ -38,6 +38,7 @@ import {
   leadSessionStartPath,
   leadWindowNamePath,
   parseEnviron,
+  parseLeadCtxPct,
   parseWhipArgs,
   readLeadSessionStart,
   readLeadWindowName,
@@ -88,6 +89,7 @@ describe("readWhipConfig", () => {
     expect(cfg).toEqual({
       staleMin: 90,
       leadMaxMin: 60,
+      leadCtxRotateThreshold: 70,
       downConfirmTicks: 2,
       heartbeat: true,
       autoRotate: false,
@@ -130,6 +132,7 @@ describe("readWhipConfig", () => {
     expect(cfg).toEqual({
       staleMin: 120,
       leadMaxMin: 30,
+      leadCtxRotateThreshold: 70,
       downConfirmTicks: 3,
       heartbeat: false,
       autoRotate: true,
@@ -198,6 +201,27 @@ describe("readWhipConfig", () => {
     expect(readWhipConfig(baseTeam as never, { ATMUX_STALE_MIN: "0" }).staleMin).toBe(90);
     expect(readWhipConfig(baseTeam as never, { ATMUX_STALE_MIN: "abc" }).staleMin).toBe(90);
     expect(readWhipConfig(baseTeam as never, { ATMUX_STALE_MIN: "" }).staleMin).toBe(90);
+  });
+});
+
+// ---------- parseLeadCtxPct (ADR-080 §A1) ----------
+
+describe("parseLeadCtxPct", () => {
+  test("matches `tok 67k/100` → 67", () => {
+    expect(parseLeadCtxPct("...status footer... tok 67k/100 ...rest...")).toBe(67);
+  });
+
+  test("rounds fractional `tok 67.3k/100` → 67", () => {
+    expect(parseLeadCtxPct("tok 67.3k/100")).toBe(67);
+  });
+
+  test("returns null when no tok indicator present", () => {
+    expect(parseLeadCtxPct("nothing here")).toBe(null);
+    expect(parseLeadCtxPct("")).toBe(null);
+  });
+
+  test("malformed (zero or negative cap) → null", () => {
+    expect(parseLeadCtxPct("tok 5k/0")).toBe(null);
   });
 });
 
@@ -1264,6 +1288,75 @@ describe("whip() — public verb", () => {
       },
     });
     expect(sent.find((s) => s.template === "whip-overdue")).toBeUndefined();
+  });
+
+  // ---------- ADR-080 §A1: ctx-pct rotation gate ----------
+
+  test("Check 5 (ADR-080 §A1): ctx-pct ≥ threshold → recommend rotate with ctx reason", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
+      // leadMaxMin high so uptime path can NOT fire (ctx is the sole trigger).
+      // leadCtxRotateThreshold low so the pane's `tok 67k/100` (= 67%) trips.
+      whip: { leadMaxMin: 9999, leadCtxRotateThreshold: 30, heartbeat: false },
+    });
+    await writeLeadSessionStart("demo", 1_700_000_000 - 60, { home: homeDir });
+    await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({
+        sessionUp: true,
+        panes: { "🧭lead": { paneCmd: "claude", state: "tok 67k/100", pid: 0 } },
+      }),
+      discordSend: async (o) => {
+        sent.push(o);
+      },
+    });
+    const overdue = sent.find((s) => s.template === "whip-overdue");
+    const bullets = (overdue?.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.includes("ctx 67%") && b.includes("≥ 30%"))).toBe(true);
+    // Must NOT mention uptime — ctx is the chosen reason when both could fire.
+    expect(bullets.some((b) => b.includes("uptime") && b.includes("rotate"))).toBe(false);
+  });
+
+  test("Check 5 (ADR-080 §A1): no tok indicator + uptime over → uptime reason (regression-pin)", async () => {
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
+      // Uptime trips (5min ago vs leadMaxMin=1); ctx parser returns null
+      // because the captured pane has no `tok N/M` indicator. Regression-pin
+      // against a future "ctx-only collapse" — uptime path must still fire.
+      whip: { leadMaxMin: 1, leadCtxRotateThreshold: 30, heartbeat: false },
+    });
+    await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
+    await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+    const sent: DiscordSendOpts[] = [];
+    await whip(["--team-dir", teamDir], {
+      stdout,
+      stderr,
+      now: () => 1_700_000_000_000,
+      home: homeDir,
+      env: {},
+      tmux: buildFakeTmux({
+        sessionUp: true,
+        panes: { "🧭lead": { paneCmd: "claude", state: "no tok marker here", pid: 0 } },
+      }),
+      discordSend: async (o) => {
+        sent.push(o);
+      },
+    });
+    const overdue = sent.find((s) => s.template === "whip-overdue");
+    const bullets = (overdue?.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.includes("uptime") && b.includes("≥ 1min"))).toBe(true);
+    // Must NOT mention ctx — parser returned null so the ctx leg can't fire.
+    expect(bullets.some((b) => b.includes("ctx ") && b.includes("%"))).toBe(false);
   });
 
   test("listWindows throwing degrades gracefully (treated as no windows → missing-window finding)", async () => {

@@ -97,6 +97,14 @@ export const TeamWhip = z
      *  Pre-existed ADR-054 — added here to keep `.strict()` from
      *  rejecting valid live team.json (every whip test sets it). */
     heartbeat: z.boolean().default(true),
+    /** ADR-080 §A1: lead ctx-pct rotation threshold (0–100). When the
+     *  lead pane's `tok N/M` indicator parses to a pct ≥ this, the
+     *  rotate-recommendation fires even if uptime hasn't tripped
+     *  `leadMaxMin`. Default 70 — per George's >30% ctx remaining
+     *  directive (23:02 MYT 2026-05-08). Per-team field; only the lead
+     *  is gated this way (non-lead members rotate on uptime only per
+     *  OQ-A1 default). */
+    leadCtxRotateThreshold: z.number().int().min(0).max(100).default(70),
 
     // ---------- ADR-049 / ADR-053 budget knobs ----------
     /** Pause threshold (% of budget consumed). Default 90. */
