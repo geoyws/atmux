@@ -305,6 +305,28 @@ export const TeamKanban = z
   .strict();
 export type TeamKanban = z.infer<typeof TeamKanban>;
 
+/**
+ * `team.json::gitter` sub-config — gitter-member knobs.
+ *
+ * ADR-080 §B2: lane-tick's auto-done scan calls `findCommitForTask` to
+ * back-fill `atmux done` for in-progress `commit t-X` tasks whose commit
+ * already landed on disk but whose kanban entry never closed (operator-
+ * observed sopx pain: 29 stale `commit t-X` tasks at 07:14 MYT
+ * 2026-05-09). The scan needs a repo path; `repoPath` is optional with
+ * a default resolved at the call site (atmux-dir's parent — the most
+ * common shape per OQ-B1).
+ */
+export const TeamGitter = z
+  .object({
+    /** Absolute path to the git repository the gitter commits in. When
+     *  unset, lane-tick's auto-done scan defaults to `dirname(atmuxDir)`
+     *  (the project root that contains `.atmux/`). Multi-repo teams
+     *  override per-team. */
+    repoPath: z.string().optional(),
+  })
+  .strict();
+export type TeamGitter = z.infer<typeof TeamGitter>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -358,6 +380,8 @@ export const Team = z
     groom: TeamGroom.optional(),
     /** ADR-079 §A: cron cadence for `unblocker tick`. */
     unblocker: TeamUnblocker.optional(),
+    /** ADR-080 §B2: gitter-member knobs (auto-done scan repo path). */
+    gitter: TeamGitter.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

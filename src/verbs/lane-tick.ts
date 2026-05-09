@@ -21,7 +21,9 @@
 // (T4); this verb writes structured single-line records to stderr per
 // member, suitable for grep-able log archeology.
 
+import { dirname } from "node:path";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { findCommitForTask, type GitSpawn } from "../core/auto-done.ts";
 import {
   getAtmuxDir,
   getDefaultSocket,
@@ -29,6 +31,7 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { listTasks, moveTask } from "../core/kanban.ts";
 import { type CaptureFn, classifyText, type PaneClassification } from "../core/pane-state.ts";
 import {
   type SafeSendOpts,
@@ -67,6 +70,9 @@ export interface LaneTickDeps {
   /** Logger; defaults to stderr. Single-line records keyed on member
    *  name + outcome. */
   log?: (msg: string) => void;
+  /** ADR-080 §B2: git spawn override for the auto-done scan. Tests
+   *  inject a fixture so the scan exercises without a real git repo. */
+  git?: GitSpawn;
 }
 
 export interface LaneTickResult {
@@ -74,6 +80,10 @@ export interface LaneTickResult {
   visited: number;
   /** Per-member outcome — keyed on member name. */
   outcomes: Record<string, LaneTickMemberOutcome>;
+  /** ADR-080 §B2: count of in-progress `commit t-X` tasks the auto-done
+   *  scan resolved (commit found in repo log → kanban moved to done).
+   *  0 on idempotent re-runs and on teams without a gitter pattern. */
+  autoDoneResolved: number;
 }
 
 export type LaneTickMemberOutcome =
@@ -104,14 +114,27 @@ export async function laneTick(
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
+  const log = deps.log ?? defaultLog;
+
+  // ADR-080 §B2: --backfill-done is the operator's one-shot recovery
+  // path. Skip the per-tick claim-injection loop entirely (the operator
+  // is cleaning up legacy stale state, not driving live work) and run
+  // ONLY the auto-done scan over all of git history (`backfill=true`).
+  if (parsed.backfillDone === true) {
+    const scanOpts: AutoDoneScanOpts = { backfill: true, log };
+    if (deps.git !== undefined) scanOpts.git = deps.git;
+    const resolved = await runAutoDoneScan(atmuxDir, team, scanOpts);
+    log(`lane-tick: --backfill-done resolved=${resolved}`);
+    return 0;
+  }
 
   const result = await runLaneTick(atmuxDir, team, deps);
   // Surface a one-line summary on stderr for cron-log grep.
-  const log = deps.log ?? defaultLog;
   log(
     `lane-tick: visited=${result.visited} ` +
       `injected=${count(result.outcomes, "injected")} ` +
       `injected-rotate-nudge=${count(result.outcomes, "injected-rotate-nudge")} ` +
+      `auto-done-resolved=${result.autoDoneResolved} ` +
       `skip-not-ready=${count(result.outcomes, "skip-not-ready")} ` +
       `skip-capture-error=${count(result.outcomes, "skip-capture-error")} ` +
       `skip-send-refused=${count(result.outcomes, "skip-send-refused")}`,
@@ -232,19 +255,127 @@ export async function runLaneTick(
     }
   }
 
-  return { visited: lanedMembers.length, outcomes };
+  // ADR-080 §B2: auto-done scan — back-fill `atmux done` for in-progress
+  // `commit t-X` tasks whose commit landed in the gitter repo but whose
+  // kanban entry was never closed. Runs after the claim-injection loop
+  // (the loop is the hot path; the scan is best-effort per-tick polish).
+  // Best-effort: any failure logs and continues — the per-member loop
+  // already returned its outcomes; we don't want a kanban / git fault
+  // to mask successful injections.
+  let autoDoneResolved = 0;
+  try {
+    const scanOpts: AutoDoneScanOpts = { backfill: false, log };
+    if (deps.git !== undefined) scanOpts.git = deps.git;
+    autoDoneResolved = await runAutoDoneScan(atmuxDir, team, scanOpts);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log(`lane-tick: auto-done scan error (${msg}) — skip`);
+  }
+
+  return { visited: lanedMembers.length, outcomes, autoDoneResolved };
+}
+
+// ---------- ADR-080 §B2: auto-done scan ----------
+
+/** Options for `runAutoDoneScan`. Exported for direct unit-testing. */
+export interface AutoDoneScanOpts {
+  /** When true, scan ignores `task.createdAt` and looks at all of git
+   *  history (`sinceMs = 0`). Used by `atmux lane-tick --backfill-done`
+   *  for the operator's one-shot recovery of legacy stale tasks (the
+   *  29-task sopx case). Default false (per-tick polling uses the
+   *  task's own `createdAt` as the lower bound). */
+  backfill?: boolean;
+  /** Git spawn override for tests. */
+  git?: GitSpawn;
+  /** Logger; defaults to stderr via the caller's chain. */
+  log?: (msg: string) => void;
+}
+
+/** Subject pattern for a gitter "commit task" — `commit t-XXXXXXXX` or
+ *  `commit <something containing t-XXXXXXXX>`. The check is "subject
+ *  starts with `commit `" — captures both the operator-observed sopx
+ *  shape (`commit t-X`) and longer variants (`commit t-X — fix foo`).
+ *  Per ADR-080 §B2: "in-progress `commit t-X` tasks owned by gitter
+ *  (or any member with a `commit` task pattern in their subject)". */
+const COMMIT_TASK_SUBJECT_RE = /^commit\b/i;
+
+/**
+ * Scan kanban for in-progress `commit ...` tasks and back-fill `atmux
+ * done` when a matching commit is found in the gitter repo. Returns the
+ * count of tasks resolved this scan (i.e. moved to done). Idempotent:
+ * tasks already done are absent from the in-progress filter, so a
+ * re-run with no new commits is a no-op.
+ *
+ * Repo path resolution:
+ *   1. `team.gitter.repoPath` if set.
+ *   2. `dirname(atmuxDir)` (atmux-dir's parent — the project root that
+ *      contains `.atmux/`). Per OQ-B1 default.
+ *
+ * Best-effort per-task: a single git failure logs evidence and skips
+ * THAT task without breaking the scan loop. The scan is always-safe to
+ * re-run — kanban writes happen only on confirmed-match per task.
+ */
+export async function runAutoDoneScan(
+  atmuxDir: string,
+  team: Team,
+  opts: AutoDoneScanOpts = {},
+): Promise<number> {
+  const log = opts.log ?? defaultLog;
+  const backfill = opts.backfill ?? false;
+  const repoPath = team.gitter?.repoPath ?? dirname(atmuxDir);
+
+  const tasks = await listTasks(atmuxDir, { status: "in-progress" });
+  const commitTasks = tasks.filter((t) =>
+    typeof t.subject === "string" ? COMMIT_TASK_SUBJECT_RE.test(t.subject) : false,
+  );
+  if (commitTasks.length === 0) return 0;
+
+  let resolved = 0;
+  for (const t of commitTasks) {
+    const sinceMs = backfill
+      ? 0
+      : typeof t.createdAt === "number" && t.createdAt > 0
+        ? t.createdAt * 1000 // kanban createdAt is epoch seconds
+        : 0;
+    let sha: string | null = null;
+    try {
+      const findOpts = opts.git !== undefined ? { git: opts.git } : {};
+      sha = await findCommitForTask(repoPath, t.id, sinceMs, findOpts);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`lane-tick: auto-done ${t.id}: findCommit error (${msg}) — skip`);
+      continue;
+    }
+    if (sha === null) continue;
+    try {
+      await moveTask(atmuxDir, t.id, "done");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`lane-tick: auto-done ${t.id}: moveTask error (${msg}) — skip`);
+      continue;
+    }
+    log(`lane-tick: auto-done ${t.id} via ${sha.slice(0, 8)}`);
+    resolved += 1;
+  }
+  return resolved;
 }
 
 // ---------- Parser ----------
 
 interface ParsedArgs {
   teamDir?: string;
+  /** ADR-080 §B2: one-shot back-fill mode — auto-done scan ignores
+   *  `task.createdAt` and looks at all of git history. Skips the
+   *  per-member claim-injection loop (operator runs this once after
+   *  §B2 lands to recover the 29-stale legacy state). */
+  backfillDone?: boolean;
 }
 
-const USAGE = "atmux lane-tick [--team-dir <dir>]";
+const USAGE = "atmux lane-tick [--team-dir <dir>] [--backfill-done]";
 
 export function parseLaneTickArgs(argv: ReadonlyArray<string>): ParsedArgs {
   let teamDir: string | undefined;
+  let backfillDone = false;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -257,10 +388,16 @@ export function parseLaneTickArgs(argv: ReadonlyArray<string>): ParsedArgs {
       i += 2;
       continue;
     }
+    if (a === "--backfill-done") {
+      backfillDone = true;
+      i += 1;
+      continue;
+    }
     throw new UsageError({ what: `lane-tick: unknown flag: ${a}`, hint: USAGE });
   }
   const out: ParsedArgs = {};
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (backfillDone) out.backfillDone = true;
   return out;
 }
 
