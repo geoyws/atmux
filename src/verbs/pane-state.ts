@@ -25,7 +25,7 @@ import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
-  getDefaultSocket,
+  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
@@ -175,7 +175,7 @@ export async function paneState(argv: ReadonlyArray<string>): Promise<number> {
     });
   }
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const socketPath = parsed.socketPath ?? getDefaultSocket(team.name);
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
   const cls = await paneStateWithTmux(tmux, team, sessionName, memberEntry);
   if (parsed.json) {

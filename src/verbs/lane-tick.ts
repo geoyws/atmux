@@ -26,7 +26,7 @@ import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { findCommitForTask, type GitSpawn } from "../core/auto-done.ts";
 import {
   getAtmuxDir,
-  getDefaultSocket,
+  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
@@ -151,7 +151,7 @@ export async function runLaneTick(
   deps: LaneTickDeps = {},
 ): Promise<LaneTickResult> {
   const log = deps.log ?? defaultLog;
-  const tmux = deps.tmux ?? createTmux({ socketPath: getDefaultSocket(team.name) });
+  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
   const sendFn = deps.sendFn ?? safeSendKeys;
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));

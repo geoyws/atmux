@@ -28,7 +28,7 @@ import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
   getAtmuxDir,
-  getDefaultSocket,
+  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
@@ -253,7 +253,7 @@ export async function runLaneDriftCheck(
   const tmux =
     deps.tmux ??
     (deps.classifyMember === undefined
-      ? createTmux({ socketPath: getDefaultSocket(team.name) })
+      ? createTmux({ socketPath: resolveTeamSocket(team) })
       : undefined);
 
   const inFlightLister =

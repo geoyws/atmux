@@ -55,12 +55,12 @@ import {
   inboxDir,
   inboxPathFor,
   loadTeam,
+  resolveTeamSocket,
   teamJsonPath,
 } from "../core/common.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type TeamMember, type Team as TeamShape } from "../schema/team.ts";
-import { defaultSocketPath } from "./start.ts";
 
 // ---------- Arg parsing ----------
 
@@ -374,20 +374,30 @@ export async function addMember(
   //    + `--socket`/`--socket-path` overrides). When the session is up,
   //    create the new window — TUI launch deferred to the Phase 2 tui_cmd
   //    port (file header §"Spawn-path scoping" + start.ts header §DEFERRED).
-  await maybeSpawn(parsed, team.name, emoji, factory, env, cwd, logger, team);
+  await maybeSpawn(parsed, emoji, factory, env, cwd, logger, team);
 
   return 0;
 }
 
 /**
  * Resolve the tmux config from parsed args. Symmetric with
- * `start.ts::resolveTmuxConfig`. Exported for direct unit-testing of
- * the precedence ladder.
+ * `start.ts::resolveTmuxConfig` — same precedence ladder:
+ * `--socket-path` > `--socket` > `team.tmuxTmpdir`-derived
+ * `<tmpdir>/tmux-<uid>/default` > canonical `/tmp/atmux-<team>/sock`.
+ *
+ * Exported for direct unit-testing of the precedence ladder. The
+ * `team.tmuxTmpdir` honour is the write-side companion to
+ * t-add5976a's read-side resolveTeamSocket fix; without it,
+ * add-member's spawn probe targets the wrong socket on a tmuxTmpdir
+ * team and false-negatives the live-session check (t-d0229be5).
  */
-export function resolveAddMemberTmuxConfig(team: string, parsed: ParsedAddMemberArgs): TmuxConfig {
+export function resolveAddMemberTmuxConfig(
+  team: Pick<TeamShape, "name" | "tmuxTmpdir">,
+  parsed: ParsedAddMemberArgs,
+): TmuxConfig {
   if (parsed.socketPath !== undefined) return { socketPath: parsed.socketPath };
   if (parsed.socket !== undefined) return { socket: parsed.socket };
-  return { socketPath: defaultSocketPath(team) };
+  return { socketPath: resolveTeamSocket(team) };
 }
 
 /**
@@ -402,7 +412,6 @@ export function resolveAddMemberTmuxConfig(team: string, parsed: ParsedAddMember
  */
 async function maybeSpawn(
   parsed: ParsedAddMemberArgs,
-  teamName: string,
   emoji: string,
   factory: (cfg: TmuxConfig) => TmuxNamespace,
   env: NodeJS.ProcessEnv,
@@ -410,10 +419,11 @@ async function maybeSpawn(
   logger: Logger,
   // The team object — passed through so `getSessionName` skips the
   // already-done team.json reread (perf nit + matches the bash flow
-  // where session_name is computed once at top of main).
+  // where session_name is computed once at top of main) AND so
+  // resolveAddMemberTmuxConfig can honour team.tmuxTmpdir.
   team: TeamShape,
 ): Promise<void> {
-  const cfg = resolveAddMemberTmuxConfig(teamName, parsed);
+  const cfg = resolveAddMemberTmuxConfig(team, parsed);
   const tmux = factory(cfg);
   let session: string | null;
   try {

@@ -286,42 +286,85 @@ describe("pickEmoji", () => {
 // ---------- resolveAddMemberTmuxConfig ----------
 
 describe("resolveAddMemberTmuxConfig", () => {
-  test("explicit socketPath wins", () => {
-    const cfg = resolveAddMemberTmuxConfig("t", {
-      name: "a",
-      role: "member",
-      tui: "claude",
-      model: "default",
-      cwd: "/x",
-      command: "",
-      socketPath: "/explicit",
-    });
+  test("explicit socketPath wins (overrides tmuxTmpdir)", () => {
+    const cfg = resolveAddMemberTmuxConfig(
+      { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
+      {
+        name: "a",
+        role: "member",
+        tui: "claude",
+        model: "default",
+        cwd: "/x",
+        command: "",
+        socketPath: "/explicit",
+      },
+    );
     expect(cfg).toEqual({ socketPath: "/explicit" });
   });
 
-  test("explicit socket wins (when no socketPath)", () => {
-    const cfg = resolveAddMemberTmuxConfig("t", {
-      name: "a",
-      role: "member",
-      tui: "claude",
-      model: "default",
-      cwd: "/x",
-      command: "",
-      socket: "named",
-    });
+  test("explicit socket wins (overrides tmuxTmpdir, when no socketPath)", () => {
+    const cfg = resolveAddMemberTmuxConfig(
+      { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
+      {
+        name: "a",
+        role: "member",
+        tui: "claude",
+        model: "default",
+        cwd: "/x",
+        command: "",
+        socket: "named",
+      },
+    );
     expect(cfg).toEqual({ socket: "named" });
   });
 
-  test("falls back to default socket path", () => {
-    const cfg = resolveAddMemberTmuxConfig("alpha", {
-      name: "a",
-      role: "member",
-      tui: "claude",
-      model: "default",
-      cwd: "/x",
-      command: "",
-    });
+  test("falls back to default socket path when tmuxTmpdir unset", () => {
+    const cfg = resolveAddMemberTmuxConfig(
+      { name: "alpha" },
+      {
+        name: "a",
+        role: "member",
+        tui: "claude",
+        model: "default",
+        cwd: "/x",
+        command: "",
+      },
+    );
     expect(cfg).toEqual({ socketPath: "/tmp/atmux-alpha/sock" });
+  });
+
+  test("t-d0229be5: honours team.tmuxTmpdir on the write side", () => {
+    const cfg = resolveAddMemberTmuxConfig(
+      { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
+      {
+        name: "a",
+        role: "member",
+        tui: "claude",
+        model: "default",
+        cwd: "/x",
+        command: "",
+      },
+    );
+    expect("socketPath" in cfg).toBe(true);
+    if ("socketPath" in cfg) {
+      const uid = process.getuid?.() ?? 0;
+      expect(cfg.socketPath).toBe(`/proj/.atmux/tmux/tmux-${uid}/default`);
+    }
+  });
+
+  test("t-d0229be5: empty-string tmuxTmpdir falls back to canonical socket", () => {
+    const cfg = resolveAddMemberTmuxConfig(
+      { name: "t", tmuxTmpdir: "" },
+      {
+        name: "a",
+        role: "member",
+        tui: "claude",
+        model: "default",
+        cwd: "/x",
+        command: "",
+      },
+    );
+    expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
   });
 });
 

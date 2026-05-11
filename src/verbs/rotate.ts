@@ -16,7 +16,7 @@ import { createTmux, type SendTarget, type TmuxNamespace } from "../abstractions
 import {
   buildWindowName,
   getAtmuxDir,
-  getDefaultSocket,
+  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
@@ -214,7 +214,7 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
 
   const atmuxDir = await getAtmuxDir(dirOpts);
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const socketPath = parsed.socketPath ?? getDefaultSocket(team.name);
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = (opts.buildTmux ?? defaultBuildTmux)(socketPath);
 
   const windowName = buildWindowName(target.name, target.emoji);

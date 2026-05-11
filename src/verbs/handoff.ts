@@ -28,7 +28,7 @@ import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
   getAtmuxDir,
-  getDefaultSocket,
+  resolveTeamSocket,
   getSessionName,
   inboxPathFor,
   kanbanJsonPath,
@@ -404,7 +404,7 @@ export async function handoff(
 
   const atmuxDir = await getAtmuxDir(dirOpts);
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const socketPath = parsed.socketPath ?? getDefaultSocket(team.name);
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = (opts.buildTmux ?? defaultBuildTmux)(socketPath);
   const stdout = opts.stdout ?? defaultStdoutWrite;
   const stderr = opts.stderr ?? defaultStderrWrite;
