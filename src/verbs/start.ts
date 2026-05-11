@@ -99,9 +99,11 @@ import {
   getDefaultSocket,
   getSessionName,
   loadTeam,
+  resolveTeamSocket,
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
+import type { Team } from "../schema/team.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -274,9 +276,11 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     );
   }
 
-  // 4. Resolve tmux socket. Phase 2 spec pending; defaults to
-  //    `/tmp/atmux-<team>/sock` per task brief.
-  const tmuxConfig: TmuxConfig = resolveTmuxConfig(team.name, parsed);
+  // 4. Resolve tmux socket. Honours `team.tmuxTmpdir` via resolveTeamSocket
+  //    (t-b37c8f4f — write-side parity with the read-side fix in t-add5976a:
+  //    a team declaring tmuxTmpdir must get its socket created under that
+  //    path so subsequent status/doctor reads find the same socket).
+  const tmuxConfig: TmuxConfig = resolveTmuxConfig(team, parsed);
   const tmux = factory(tmuxConfig);
 
   // 4a. tmux's `-S <abspath>/sock new-session` does NOT auto-create the
@@ -533,11 +537,22 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
 
 /**
  * Resolve the tmux config from parsed args. Pure helper so the verb's
- * happy path stays readable; exported for test directness (asserting
- * the default-socket path is the canonical `/tmp/atmux-<team>/sock`).
+ * happy path stays readable; exported for test directness.
+ *
+ * Precedence: `--socket-path` > `--socket` > `team.tmuxTmpdir`-derived
+ * socket (via {@link resolveTeamSocket}) > canonical fallback
+ * `/tmp/atmux-<team>/sock`. The `team.tmuxTmpdir` honour is the
+ * write-side companion to t-add5976a's read-side resolveTeamSocket
+ * fix — without it, a team.json declaring a project-local cage path
+ * gets a socket at the canonical fallback anyway, and subsequent
+ * status/doctor (which DO honour tmuxTmpdir) report [down] for a live
+ * session (t-b37c8f4f).
  */
-export function resolveTmuxConfig(team: string, parsed: ParsedStartArgs): TmuxConfig {
+export function resolveTmuxConfig(
+  team: Pick<Team, "name" | "tmuxTmpdir">,
+  parsed: ParsedStartArgs,
+): TmuxConfig {
   if (parsed.socketPath !== undefined) return { socketPath: parsed.socketPath };
   if (parsed.socket !== undefined) return { socket: parsed.socket };
-  return { socketPath: defaultSocketPath(team) };
+  return { socketPath: resolveTeamSocket(team) };
 }

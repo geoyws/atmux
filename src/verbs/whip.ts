@@ -77,8 +77,8 @@ import {
 import {
   classifyPaneState,
   getAtmuxDir,
-  getDefaultSocket,
   getSessionName,
+  resolveTeamSocket,
   type ResolveDirOpts,
   requireTeam,
   stateDir,
@@ -719,7 +719,7 @@ export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Pr
       send,
       readMemberEnv,
       ...(opts.webhookOverride !== undefined ? { webhookOverride: opts.webhookOverride } : {}),
-      tmux: opts.tmux ?? createTmux({ socketPath: getDefaultSocket(team.name) }),
+      tmux: opts.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) }),
       ...(opts.budgetProbe !== undefined ? { budgetProbe: opts.budgetProbe } : {}),
     });
   } finally {

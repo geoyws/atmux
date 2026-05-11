@@ -205,26 +205,55 @@ describe("defaultSocketPath", () => {
 });
 
 describe("resolveTmuxConfig", () => {
-  test("explicit socketPath wins", () => {
-    const cfg = resolveTmuxConfig("t", {
-      force: false,
-      doctorMode: "preflight",
-      socketPath: "/explicit",
-    });
+  test("explicit socketPath wins (overrides tmuxTmpdir)", () => {
+    const cfg = resolveTmuxConfig(
+      { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
+      {
+        force: false,
+        doctorMode: "preflight",
+        socketPath: "/explicit",
+      },
+    );
     expect(cfg).toEqual({ socketPath: "/explicit" });
   });
 
-  test("explicit socket wins (when no socketPath)", () => {
-    const cfg = resolveTmuxConfig("t", {
-      force: false,
-      doctorMode: "preflight",
-      socket: "named",
-    });
+  test("explicit socket wins (overrides tmuxTmpdir, when no socketPath)", () => {
+    const cfg = resolveTmuxConfig(
+      { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
+      {
+        force: false,
+        doctorMode: "preflight",
+        socket: "named",
+      },
+    );
     expect(cfg).toEqual({ socket: "named" });
   });
 
-  test("falls back to default socket path", () => {
-    const cfg = resolveTmuxConfig("t", { force: false, doctorMode: "preflight" });
+  test("falls back to default socket path when tmuxTmpdir unset", () => {
+    const cfg = resolveTmuxConfig({ name: "t" }, { force: false, doctorMode: "preflight" });
+    expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
+  });
+
+  test("t-b37c8f4f: honours team.tmuxTmpdir on the write side", () => {
+    // Mirrors resolveTeamSocket shape: <tmuxTmpdir>/tmux-<uid>/default
+    // (process.getuid() seeded from the real process — match-by-prefix
+    // so the test is uid-portable).
+    const cfg = resolveTmuxConfig(
+      { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
+      { force: false, doctorMode: "preflight" },
+    );
+    expect("socketPath" in cfg).toBe(true);
+    if ("socketPath" in cfg) {
+      const uid = process.getuid?.() ?? 0;
+      expect(cfg.socketPath).toBe(`/proj/.atmux/tmux/tmux-${uid}/default`);
+    }
+  });
+
+  test("t-b37c8f4f: empty-string tmuxTmpdir falls back to canonical socket", () => {
+    const cfg = resolveTmuxConfig(
+      { name: "t", tmuxTmpdir: "" },
+      { force: false, doctorMode: "preflight" },
+    );
     expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
   });
 });
