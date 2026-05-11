@@ -249,8 +249,9 @@ describe("autolaunchTeam", () => {
         fx.tmux,
         {},
         logger,
+        { skipReadinessProbe: true },
       );
-      expect(summary).toEqual({ launched: 0, skipped: 0 });
+      expect(summary).toEqual({ launched: 0, skipped: 0, unbootstrapped: [] });
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -287,9 +288,188 @@ describe("autolaunchTeam", () => {
         fx.tmux,
         {},
         logger,
+        { skipReadinessProbe: true },
       );
       expect(summary.launched).toBe(1);
       expect(summary.skipped).toBe(0);
+      expect(summary.unbootstrapped).toEqual([]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+      if (projRoot) await rm(projRoot, { recursive: true, force: true });
+    }
+  });
+
+  // ---------- Readiness probe integration (t-47f4425f Stage A) ----------
+
+  test("readiness probe fires once per launched member; ready results leave unbootstrapped empty", async () => {
+    const fx = await spinTmux("autolaunch-probe-ready");
+    let projRoot: string | undefined;
+    try {
+      projRoot = await mkdtemp(join(tmpdir(), "atmux-cockpit-au-probe-ok-"));
+      await mkdir(join(projRoot, ".atmux"), { recursive: true });
+      await writeFile(
+        join(projRoot, ".atmux", "team.json"),
+        JSON.stringify({
+          name: "px",
+          members: [{ name: "lead", role: "team-lead", tui: "shell" }],
+        }),
+        "utf8",
+      );
+      await fx.tmux.session.newSession({
+        name: "atmux_px",
+        detached: true,
+        windowName: "lead",
+      });
+      const probeCalls: string[] = [];
+      const { logger, logs } = makeLogger();
+      const summary = await autolaunchTeam(
+        { name: "px", root: projRoot, enabled: true } as CockpitTeam,
+        fx.tmux,
+        {},
+        logger,
+        {
+          readinessProbe: async (target, member) => {
+            probeCalls.push(`${member}@${target}`);
+            return {
+              state: "ready",
+              paneClassification: { state: "READY", evidence: "❯", capturedAt: 0 },
+              evidence: "❯",
+              elapsedMs: 12,
+              attempts: 1,
+            };
+          },
+        },
+      );
+      expect(summary.launched).toBe(1);
+      expect(summary.unbootstrapped).toEqual([]);
+      expect(probeCalls).toEqual(["lead@atmux_px:0"]);
+      // No warning lines emitted on the happy path.
+      expect(logs.filter((l) => l.startsWith("warn:"))).toEqual([]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+      if (projRoot) await rm(projRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("non-ready probe populates unbootstrapped + emits structured warning", async () => {
+    const fx = await spinTmux("autolaunch-probe-starving");
+    let projRoot: string | undefined;
+    try {
+      projRoot = await mkdtemp(join(tmpdir(), "atmux-cockpit-au-probe-starve-"));
+      await mkdir(join(projRoot, ".atmux"), { recursive: true });
+      await writeFile(
+        join(projRoot, ".atmux", "team.json"),
+        JSON.stringify({
+          name: "py",
+          members: [{ name: "alpha", role: "member", tui: "shell" }],
+        }),
+        "utf8",
+      );
+      await fx.tmux.session.newSession({
+        name: "atmux_py",
+        detached: true,
+        windowName: "alpha",
+      });
+      const { logger, logs } = makeLogger();
+      const summary = await autolaunchTeam(
+        { name: "py", root: projRoot, enabled: true } as CockpitTeam,
+        fx.tmux,
+        {},
+        logger,
+        {
+          readinessProbe: async () => ({
+            state: "starving",
+            paneClassification: { state: "READY", evidence: "❯", capturedAt: 0 },
+            evidence: "Welcome to Claude Code\n❯",
+            elapsedMs: 1_500,
+            attempts: 3,
+          }),
+        },
+      );
+      expect(summary.launched).toBe(1);
+      expect(summary.unbootstrapped).toHaveLength(1);
+      expect(summary.unbootstrapped[0]?.member).toBe("alpha");
+      expect(summary.unbootstrapped[0]?.result.state).toBe("starving");
+      const warnings = logs.filter((l) => l.startsWith("warn:"));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("alpha");
+      expect(warnings[0]).toContain("starving");
+      expect(warnings[0]).toContain("Welcome to Claude Code");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+      if (projRoot) await rm(projRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("probe-throw is caught + logged as a warning, loop continues", async () => {
+    const fx = await spinTmux("autolaunch-probe-throw");
+    let projRoot: string | undefined;
+    try {
+      projRoot = await mkdtemp(join(tmpdir(), "atmux-cockpit-au-probe-throw-"));
+      await mkdir(join(projRoot, ".atmux"), { recursive: true });
+      await writeFile(
+        join(projRoot, ".atmux", "team.json"),
+        JSON.stringify({
+          name: "pz",
+          members: [
+            { name: "alpha", role: "member", tui: "shell" },
+            { name: "beta", role: "member", tui: "shell" },
+          ],
+        }),
+        "utf8",
+      );
+      await fx.tmux.session.newSession({
+        name: "atmux_pz",
+        detached: true,
+        windowName: "alpha",
+      });
+      await fx.tmux.window.newWindow({
+        sessionName: "atmux_pz",
+        name: "beta",
+      });
+      let calls = 0;
+      const { logger, logs } = makeLogger();
+      const summary = await autolaunchTeam(
+        { name: "pz", root: projRoot, enabled: true } as CockpitTeam,
+        fx.tmux,
+        {},
+        logger,
+        {
+          readinessProbe: async (_target, member) => {
+            calls += 1;
+            if (member === "alpha") {
+              throw new Error("simulated capture failure");
+            }
+            return {
+              state: "ready",
+              paneClassification: { state: "READY", evidence: "❯", capturedAt: 0 },
+              evidence: "❯",
+              elapsedMs: 12,
+              attempts: 1,
+            };
+          },
+        },
+      );
+      // Both members launched + probed; alpha threw, beta succeeded.
+      expect(summary.launched).toBe(2);
+      expect(calls).toBe(2);
+      // The throw was swallowed; alpha is NOT in unbootstrapped (probe
+      // never produced a result) — the structured warning is the surface.
+      expect(summary.unbootstrapped).toEqual([]);
+      const warnings = logs.filter((l) => l.startsWith("warn:"));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("alpha");
+      expect(warnings[0]).toContain("probe error");
+      expect(warnings[0]).toContain("simulated capture failure");
     } finally {
       try {
         await fx.tmux.server.killServer();

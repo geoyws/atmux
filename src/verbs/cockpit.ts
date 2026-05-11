@@ -40,6 +40,11 @@ import {
   loadCockpit,
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
+import {
+  awaitClaudePaneReady,
+  formatReadinessWarning,
+  type PaneReadinessResult,
+} from "../core/pane-readiness.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
@@ -395,8 +400,16 @@ export async function cockpitRebuild(
       const sock = cageSocketPath(t.name);
       const cageTmux = factory({ socketPath: sock });
       const teamSummary = await autolaunchTeam(t, cageTmux, env, logger);
+      const unbootMsg =
+        teamSummary.unbootstrapped.length > 0
+          ? ` ⚠ unbootstrapped=${teamSummary.unbootstrapped.length} ` +
+            `(${teamSummary.unbootstrapped
+              .map((u) => `${u.member}:${u.result.state}`)
+              .join(", ")})`
+          : "";
       logger.log(
-        `  ✓ ${t.name}: launched=${teamSummary.launched} skipped=${teamSummary.skipped} (already-claude)`,
+        `  ✓ ${t.name}: launched=${teamSummary.launched} ` +
+          `skipped=${teamSummary.skipped} (already-claude)${unbootMsg}`,
       );
     }
   }
@@ -506,18 +519,62 @@ export async function applyCagePrefix(cageTmux: TmuxNamespace): Promise<void> {
 export interface AutolaunchSummary {
   launched: number;
   skipped: number;
+  /** Per-pane readiness verification result for each launched member —
+   *  t-47f4425f (Stage A, complaint c-fbecbf65). Entries are populated
+   *  ONLY for members whose post-spawn probe returned a non-`ready`
+   *  state (`starving` / `absent` / `timeout`); a happy spawn leaves
+   *  this array empty. Callers fold these into operator-visible warnings.
+   *  Empty array when the probe is skipped via `opts.skipReadinessProbe`. */
+  unbootstrapped: ReadonlyArray<{ member: string; result: PaneReadinessResult }>;
+}
+
+/** Per-pane readiness probe signature. The default (constructed via
+ *  {@link buildDefaultReadinessProbe}) wires {@link awaitClaudePaneReady}
+ *  to `cageTmux.pane.capturePane`; tests inject a synchronous fake. */
+export type ReadinessProbe = (
+  target: string,
+  member: string,
+) => Promise<PaneReadinessResult>;
+
+export interface AutolaunchOpts {
+  /** Skip the post-spawn readiness probe. Default `false` — production
+   *  path always verifies. Tests that use non-claude TUIs (e.g.
+   *  `tui: "shell"`) MUST set this to avoid 30s polling against a pane
+   *  that will never reach the claude welcome screen. */
+  skipReadinessProbe?: boolean;
+  /** Override the readiness probe entirely (test injection — full
+   *  control over result + timing). When set, all `readiness*` options
+   *  below are ignored. */
+  readinessProbe?: ReadinessProbe;
+  /** Override the default probe's deadline. Default 30_000 ms — matches
+   *  the cap in t-47f4425f's task brief §A.1. */
+  readinessDeadlineMs?: number;
+  /** Override the default probe's poll interval. Default 500 ms. */
+  readinessPollIntervalMs?: number;
 }
 
 /**
  * For each pane in the cage that's NOT already running claude, send the
  * resolved TUI command via tmux send-keys. Skips panes already on
  * claude/node so re-runs are idempotent.
+ *
+ * After spawn, runs a per-pane Stage A readiness probe (t-47f4425f) so
+ * the cockpit rebuild output can flag panes where claude failed to
+ * launch — `tmux send-keys` succeeds even when the TUI subsequently
+ * crashes / never reaches a prompt, so a probe-side signal is the only
+ * way to differentiate "spawn green" from "spawn fired and silently
+ * starved" (the c-fbecbf65 incident shape). Default mode here is the
+ * relaxed `requireBriefConsumed: false` because `autolaunchTeam` itself
+ * does not yet paste the bootstrap brief (ADR-081 §C); once §C lands,
+ * the caller can flip the probe strict by injecting a custom
+ * `readinessProbe`.
  */
 export async function autolaunchTeam(
   team: CockpitTeam,
   cageTmux: TmuxNamespace,
   env: NodeJS.ProcessEnv,
-  _logger: Logger,
+  logger: Logger,
+  opts: AutolaunchOpts = {},
 ): Promise<AutolaunchSummary> {
   const session = cageSessionName(team.name);
   // Read the team.json to drive resolveTuiCommand per member. We re-read
@@ -526,12 +583,14 @@ export async function autolaunchTeam(
   const teamShape = await loadTeam({ teamDir: team.root });
   let launched = 0;
   let skipped = 0;
+  const launchedTargets: Array<{ member: string; target: string }> = [];
+  const unbootstrapped: Array<{ member: string; result: PaneReadinessResult }> = [];
   let windows: { index: number; name: string }[];
   try {
     windows = await cageTmux.window.listWindows(session);
   } catch {
     // No session yet — happens under --no-cycle on a never-started cage.
-    return { launched, skipped };
+    return { launched, skipped, unbootstrapped };
   }
   for (const w of windows) {
     const target = `${session}:${w.index}`;
@@ -563,8 +622,60 @@ export async function autolaunchTeam(
       enter: true,
     });
     launched += 1;
+    launchedTargets.push({ member: member.name, target });
   }
-  return { launched, skipped };
+
+  // Stage A readiness verification (t-47f4425f / c-fbecbf65). Per-pane,
+  // post-spawn — flags members whose TUI never reached a stable state.
+  // Probe failures bubble through as `timeout` or `absent`; we log a
+  // structured warning + record in the summary, but DO NOT throw — a
+  // partial-fail-during-spawn must not wedge the rest of the rebuild.
+  if (!opts.skipReadinessProbe && launchedTargets.length > 0) {
+    const probe = opts.readinessProbe ?? buildDefaultReadinessProbe(cageTmux, opts);
+    for (const { member, target } of launchedTargets) {
+      let result: PaneReadinessResult;
+      try {
+        result = await probe(target, member);
+      } catch (err) {
+        // Probe-itself failure (e.g., capture-pane errored mid-poll).
+        // Treat as a timeout-shaped warning so the operator sees the
+        // member name + the cause.
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(`autolaunchTeam: ${member}: probe error — ${msg}`);
+        continue;
+      }
+      if (result.state !== "ready") {
+        unbootstrapped.push({ member, result });
+        const warning = formatReadinessWarning(member, result);
+        if (warning !== null) logger.warn(`autolaunchTeam:${warning}`);
+      }
+    }
+  }
+
+  return { launched, skipped, unbootstrapped };
+}
+
+function buildDefaultReadinessProbe(
+  cageTmux: TmuxNamespace,
+  opts: AutolaunchOpts,
+): ReadinessProbe {
+  return async (target, _member) => {
+    return await awaitClaudePaneReady(
+      target,
+      {
+        deadlineMs: opts.readinessDeadlineMs ?? 30_000,
+        pollIntervalMs: opts.readinessPollIntervalMs ?? 500,
+        // Relaxed mode: autolaunchTeam does not (yet — ADR-081 §C)
+        // paste the bootstrap brief, so welcome-screen panes are
+        // legitimate "TUI booted" state. Callers that own brief-paste
+        // should inject a custom probe with `requireBriefConsumed: true`.
+        requireBriefConsumed: false,
+      },
+      {
+        capture: async (t) => await cageTmux.pane.capturePane({ target: t }),
+      },
+    );
+  };
 }
 
 /**
