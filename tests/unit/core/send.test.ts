@@ -249,9 +249,13 @@ describe("sendToMember — safe-send preflight (t-06e7209d)", () => {
     const { target } = await spinCatSession(`${sessionPrefix}_pf_ok`);
     // Get the cat pane to a Claude-like ready state by feeding the
     // ready-banner. Capture-pane sees the line + classifies READY.
+    // Pre-ADR-080 §C this fixture was "3.4k tokens · esc to interrupt"
+    // — that phrase now classifies BUSY (only renders during an active
+    // turn). The canonical post-§C READY footer is the tok-counter +
+    // auto-mode indicator.
     await tmux.pane.sendKeys({
       target: { kind: "member", member: "x", team: "t", target },
-      keys: "3.4k tokens · esc to interrupt",
+      keys: "tok 67k/100  ⏵⏵ auto mode on",
       enter: true,
     });
     await new Promise((r) => setTimeout(r, 200));

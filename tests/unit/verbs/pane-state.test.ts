@@ -166,10 +166,13 @@ describe("paneStateWithTmux — every PaneState round-trips via fixture captures
     expect(r.state).toBe("READY");
   });
 
-  test("READY — tokens-with-esc footer", async () => {
+  test("BUSY — tokens-with-esc footer (post-ADR-080 §C)", async () => {
+    // Pre-§C this phrase marked READY; the audit found it only ever
+    // renders during an active turn, so it now classifies BUSY via
+    // pane-state.ts:97 `/esc to interrupt/i`.
     const tmux = stubTmuxWithCapture("3.4k tokens · esc to interrupt");
     const r = await paneStateWithTmux(tmux, TEAM_ONE, "atmux-demo", ALPHA, { home: homeDir });
-    expect(r.state).toBe("READY");
+    expect(r.state).toBe("BUSY");
   });
 
   test("TYPING — queued message indicator", async () => {
