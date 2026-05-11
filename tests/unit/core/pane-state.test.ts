@@ -29,6 +29,16 @@ describe("classifyText — 8 discrete states", () => {
     expect(r.capturedAt).toBe(FIXED_NOW);
   });
 
+  test("READY when capture shows the border-prefixed bare prompt (no tok footer)", () => {
+    // The compose box renders as `│ > ` (ASCII) or `│ ❯ ` (Unicode) when
+    // the user has typed nothing. A transient bootstrap or post-/clear
+    // pane that hasn't redrawn the `tok N/M` footer yet still classifies
+    // as READY — lane-tick.ts ADR-080 §A2 ctx-pct gate then sees null
+    // ctx-pct and falls through to the normal claim injection.
+    expect(classifyText("│ > \n", nowFn).state).toBe("READY");
+    expect(classifyText("│ ❯ \n", nowFn).state).toBe("READY");
+  });
+
   test("READY when capture shows the token-counter footer (no interrupt phrase)", () => {
     // Per ADR-080 §C: the canonical READY status-bar shape is the
     // token-counter `tok 67k/100`, NOT "esc to interrupt" — that phrase

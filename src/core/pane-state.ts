@@ -120,6 +120,12 @@ const PATTERNS: ReadonlyArray<Pattern> = [
   // `tokens.*esc to interrupt` pattern — moved to BUSY above.)
   { state: "READY", regex: /^❯\s*$/m },
   { state: "READY", regex: /^>\s*$/m },
+  // Border-prefixed bare prompt: the compose box renders as a single
+  // line `│ > ` or `│ ❯ ` when the user has typed nothing. A pane in
+  // this state with no `tok` footer (transient bootstrap, fresh /clear)
+  // still classifies as READY — lane-tick's lead ctx-pct gate then sees
+  // null and falls through to the normal claim injection per ADR-080 §A2.
+  { state: "READY", regex: /^│\s+[>❯]\s*$/m },
   { state: "READY", regex: /⏵⏵\s+(auto mode|accept edits|don't ask|plan mode)/i },
   { state: "READY", regex: /^\s*tok\s+\d+(\.\d+)?k\/\d/m },
 ];
