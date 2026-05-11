@@ -23,6 +23,7 @@ import {
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { writeLeadHandoff } from "../core/lead-handoff.ts";
+import { submitAfterPaste } from "../core/paste-submit.ts";
 import { safePreflight } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
@@ -317,8 +318,12 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
       target: sendTarget,
       deleteAfter: true,
     });
-    await sleep(1_000);
-    await tmux.pane.sendKeys({ target: sendTarget, keys: "Enter", enter: false });
+    // ADR-081 §A: settle + C-m (not Enter) — bracketed-paste mode under
+    // claude TUIs eats the trailing Enter as a multi-line continuation,
+    // leaving the brief queued in the compose box. 1000ms here is the
+    // pre-existing rotate-specific settle (rotation runs once per
+    // teammate; the extra 500ms over the §A floor isn't latency-sensitive).
+    await submitAfterPaste(tmux, sendTarget, { settleMs: 1_000, sleep });
   }
 
   stdout(`rotated ${target.name} (role=${role}, tui=${tui})\n`);

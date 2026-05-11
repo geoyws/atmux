@@ -65,7 +65,7 @@ import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abs
 import { tryParseJsonString } from "../abstractions/json.ts";
 import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts";
 import { spawn } from "../abstractions/spawn.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, type SendTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   type AccountSwapCheckCtx,
   type AccountSwapCheckDeps,
@@ -100,6 +100,7 @@ import {
   writeLeadSessionStart,
 } from "../core/lead-marker.ts";
 import { classifyText } from "../core/pane-state.ts";
+import { PASTE_SUBMIT_SETTLE_FLOOR_MS, submitAfterPaste } from "../core/paste-submit.ts";
 import {
   loadPermModeDriftState,
   parsePermissionMode,
@@ -1122,11 +1123,20 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
     argv: paste.argv,
     timeoutMs: 5_000,
   });
-  // Submit via Enter — the agent CLI eats the brief as a prompt.
-  const enter = tmuxArgv(["send-keys", "-t", target, "Enter"]);
+  // ADR-081 §A: settle ≥500ms, then submit via C-m (NOT Enter). This
+  // sendCageBrief path uses raw `tmux send-keys` via spawn() rather
+  // than the TmuxNamespace abstraction (cage tmux runs under a
+  // dedicated fallback user via sudo, see `tmuxArgv` above), so we
+  // can't route through `submitAfterPaste`. Same pattern inline —
+  // PASTE_SUBMIT_SETTLE_FLOOR_MS is the single source of truth for
+  // the settle floor across both code paths.
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, PASTE_SUBMIT_SETTLE_FLOOR_MS);
+  });
+  const submit = tmuxArgv(["send-keys", "-t", target, "C-m"]);
   await spawn({
-    cmd: enter.cmd,
-    argv: enter.argv,
+    cmd: submit.cmd,
+    argv: submit.argv,
     timeoutMs: 5_000,
   });
 }
@@ -1149,16 +1159,21 @@ async function sendContinuityBrief(ctx: TickCtx, member: string, body: string): 
   const target = `${session}:${member}`;
   const bufferName = `atmux-fallback-resume-${ctx.team.name}-${member}-${ctx.nowSec}`;
   await ctx.tmux.buffer.loadBuffer({ name: bufferName, data: body });
+  const sendTarget: SendTarget = {
+    kind: "member",
+    member,
+    team: ctx.team.name,
+    target,
+  };
   await ctx.tmux.buffer.pasteBuffer({
     name: bufferName,
-    target: { kind: "member", member, team: ctx.team.name, target },
+    target: sendTarget,
     deleteAfter: true,
   });
-  await ctx.tmux.pane.sendKeys({
-    target: { kind: "member", member, team: ctx.team.name, target },
-    keys: "Enter",
-    enter: false,
-  });
+  // ADR-081 §A: settle + C-m (not Enter) — bracketed-paste mode under
+  // claude TUIs eats a trailing Enter as a newline inside the pasted
+  // continuity brief. submitAfterPaste enforces the ≥500ms settle floor.
+  await submitAfterPaste(ctx.tmux, sendTarget);
 }
 
 // ---------- Per-member check ----------

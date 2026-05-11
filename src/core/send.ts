@@ -48,6 +48,7 @@ import { appendText, ensureDir } from "../abstractions/fs.ts";
 import { nowIso } from "../abstractions/time.ts";
 import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
 import { classifyPaneState, logsDir, type PaneStateSnapshot } from "./common.ts";
+import { submitAfterPaste } from "./paste-submit.ts";
 import { type SafePreflightResult, safePreflight } from "./safe-send.ts";
 
 // ---------- Public API ----------
@@ -59,8 +60,11 @@ export interface SendOpts {
   /** Post-send capture+grep to soft-verify the message was consumed.
    *  Mirrors bash `--verify` (default-on). Default `true`. */
   verify?: boolean;
-  /** Delay between paste-buffer and Enter, in ms. Mirrors bash
-   *  `sleep 0.3` at lib/send.sh:117. Default `300`. */
+  /** Delay between paste-buffer and the C-m submit, in ms. Bash
+   *  precedent at lib/send.sh:117 was `sleep 0.3` but bash used the
+   *  literal Enter token which doesn't have the bracketed-paste-mode
+   *  swallow bug (ADR-081 §A). For C-m submits the floor is 500ms;
+   *  shorter values are clamped up inside `submitAfterPaste`. */
   preSubmitDelayMs?: number;
   /** Delay between Enter and the post-send verify capture, in ms.
    *  Mirrors bash `sleep 2` at lib/send.sh:123. Default `2000`. */
@@ -219,15 +223,14 @@ export async function sendToMember(
     return { kind: "queued", preSnapshot, preWarn, preflight };
   }
 
-  // 4. Brief pause, then submit with a literal Enter keyname.
-  //    `enter: false` here is intentional — `keys: "Enter"` IS the
-  //    keyname; without `enter: false` the wrapper would append a
-  //    second Enter (`send-keys -t <target> Enter Enter`).
-  await sleep(preSubmitDelayMs);
-  await tmux.pane.sendKeys({
-    target: sendTarget,
-    keys: "Enter",
-    enter: false,
+  // 4. Settle + C-m submit. ADR-081 §A: the bracketed-paste envelope
+  //    that wraps `paste-buffer -d` eats a trailing Enter as a newline
+  //    inside the pasted message; `C-m` (literal carriage return)
+  //    bypasses that interpretation. `submitAfterPaste` clamps below-
+  //    floor settle values up to PASTE_SUBMIT_SETTLE_FLOOR_MS (500ms).
+  await submitAfterPaste(tmux, sendTarget, {
+    settleMs: preSubmitDelayMs,
+    sleep,
   });
 
   // 5. Append to the per-member log (lib/send.sh:136-145).

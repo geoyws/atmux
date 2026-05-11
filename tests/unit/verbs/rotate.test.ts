@@ -444,14 +444,83 @@ describe("rotate() — public verb", () => {
     );
     expect(calls.pasteBuffer.length).toBe(1);
     expect(calls.pasteBuffer[0]?.deleteAfter).toBe(true);
-    // Trailing Enter to submit the pasted body.
+    // ADR-081 §A: trailing C-m (NOT Enter) to submit the pasted body —
+    // bracketed-paste mode under claude TUIs eats a literal Enter as a
+    // newline inside the pasted message.
     expect(calls.sendKeys[calls.sendKeys.length - 1]).toEqual({
       target: "atmux-t:alice",
-      keys: "Enter",
+      keys: "C-m",
       enter: false,
     });
     expect(stdoutBuf).toBe("rotated alice (role=reviewer, tui=claude)\n");
     expect(stderrBuf).toBe("");
+  });
+
+  test("ADR-081 §A: brief paste followed by sleep → C-m submit (sequence pinned)", async () => {
+    // Acceptance pin from t-e7de08c7: "Unit test in
+    // tests/unit/verbs/rotate.test.ts that mocks tmux.pane.sendKeys and
+    // asserts the sequence: paste-buffer call -> sleep -> sendKeys({keys:
+    // 'C-m'})." A timeline array captures the ordering of paste / sleep /
+    // submit so a future regression that re-introduces bare `Enter` (or
+    // drops the settle) shows up here, not in production where it
+    // resurrects c-fbecbf65's silent half-success pathology.
+    process.env.ATMUX_SESSION = "atmux-t";
+    await seedTeam({
+      name: "t",
+      members: [{ name: "alice", role: "reviewer", tui: "claude" }],
+    });
+    await writeFile(join(briefsDir, "reviewer.md"), "BRIEF BODY");
+    const { tmux, calls } = stubTmux({
+      windows: [{ index: 0, name: "alice", active: true }],
+    });
+    type Event = { kind: "paste"; target: string } | { kind: "sleep"; ms: number } | { kind: "sendKeys"; keys: string };
+    const timeline: Event[] = [];
+    const wrappedTmux = {
+      ...tmux,
+      buffer: {
+        ...tmux.buffer,
+        async pasteBuffer(o: Parameters<typeof tmux.buffer.pasteBuffer>[0]) {
+          timeline.push({ kind: "paste", target: serializeSendTarget(o.target) });
+          return tmux.buffer.pasteBuffer(o);
+        },
+      },
+      pane: {
+        ...tmux.pane,
+        async sendKeys(o: Parameters<typeof tmux.pane.sendKeys>[0]) {
+          timeline.push({ kind: "sendKeys", keys: o.keys });
+          return tmux.pane.sendKeys(o);
+        },
+      },
+    };
+    const exit = await rotate(["--team-dir", scratch, "alice"], {
+      buildTmux: () => wrappedTmux,
+      briefsDir,
+      sleep: async (ms: number) => {
+        timeline.push({ kind: "sleep", ms });
+      },
+      stdout: () => {},
+      stderr: () => {},
+    });
+    expect(exit).toBe(0);
+    // Find the paste-buffer event for the brief body.
+    const pasteIdx = timeline.findIndex((e) => e.kind === "paste");
+    expect(pasteIdx).toBeGreaterThanOrEqual(0);
+    // The events immediately following paste MUST be: sleep then sendKeys
+    // with C-m. The settle is ≥500ms per §A — rotate.ts passes 1000ms.
+    const afterPaste = timeline.slice(pasteIdx + 1);
+    const nextSleep = afterPaste.find((e) => e.kind === "sleep");
+    expect(nextSleep).toBeDefined();
+    if (nextSleep?.kind === "sleep") expect(nextSleep.ms).toBeGreaterThanOrEqual(500);
+    const submitIdx = afterPaste.findIndex(
+      (e) => e.kind === "sendKeys" && e.keys === "C-m",
+    );
+    expect(submitIdx).toBeGreaterThanOrEqual(0);
+    // No literal "Enter" sendKeys after the paste (the bug that §A fixes).
+    expect(
+      afterPaste.some((e) => e.kind === "sendKeys" && e.keys === "Enter"),
+    ).toBe(false);
+    // Calls accumulator (the existing fixture) sees the C-m hit too.
+    expect(calls.sendKeys.at(-1)?.keys).toBe("C-m");
   });
 
   test("safe-send: CC feedback survey is dismissed before /clear lands", async () => {
@@ -628,9 +697,10 @@ describe("rotate() — public verb", () => {
       },
     });
     expect(exit).toBe(0);
-    // Only one send-keys — the trailing Enter for the brief paste.
+    // Only one send-keys — the trailing C-m for the brief paste
+    // (ADR-081 §A: C-m bypasses bracketed-paste mode's Enter swallow).
     expect(calls.sendKeys.length).toBe(1);
-    expect(calls.sendKeys[0]?.keys).toBe("Enter");
+    expect(calls.sendKeys[0]?.keys).toBe("C-m");
     expect(stderrBuf).toContain("rotate: tui=opencode has no /clear equivalent");
     expect(calls.loadBuffer.length).toBe(1);
     expect(calls.loadBuffer[0]?.data).toBe("bob");
