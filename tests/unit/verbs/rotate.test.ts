@@ -131,6 +131,40 @@ describe("getBriefPath", () => {
   test("returns member.md path even if it doesn't exist (caller checks)", async () => {
     expect(await getBriefPath("foo", dir)).toBe(join(dir, "member.md"));
   });
+
+  // Role-alias semantic — `team-lead` must read from `lead.md` even when
+  // a stale `team-lead.md` tombstone is present. The alias short-circuits
+  // before the existence check so a leftover deprecated file (e.g. from
+  // an older checkout / npm cache / operator override) cannot shadow the
+  // canonical brief.
+  test("role 'team-lead' aliases to lead.md and ignores tombstone team-lead.md", async () => {
+    await writeFile(join(dir, "lead.md"), "canonical");
+    await writeFile(join(dir, "team-lead.md"), "DEPRECATED tombstone");
+    await writeFile(join(dir, "member.md"), "m");
+    expect(await getBriefPath("team-lead", dir)).toBe(join(dir, "lead.md"));
+  });
+
+  test("role 'team-lead' falls back to member.md when lead.md absent (alias still applied)", async () => {
+    await writeFile(join(dir, "team-lead.md"), "DEPRECATED tombstone");
+    await writeFile(join(dir, "member.md"), "m");
+    expect(await getBriefPath("team-lead", dir)).toBe(join(dir, "member.md"));
+  });
+
+  // Regression: production briefs/ must resolve every role used in
+  // shipped team.json templates to a real, readable file. `team-lead`
+  // is alias-mapped to `lead.md` inside getBriefPath (canonical brief
+  // per ADR-007 pull-model rename); `member` is the direct fallback
+  // file; `docs` has no own brief and must fall through to member.md.
+  // Without these the team rotation half-cycles panes — observed
+  // 2026-05-12 after a 20h+ dormancy rebuild.
+  test.each(["team-lead", "lead", "member", "docs", "planner", "reviewer", "gitter"])(
+    "production briefs resolve role %s to an existing file",
+    async (role) => {
+      const path = await getBriefPath(role, defaultBriefsDir());
+      const content = await readFile(path, "utf8");
+      expect(content.length).toBeGreaterThan(0);
+    },
+  );
 });
 
 // ---------- renderBrief ----------
@@ -472,7 +506,7 @@ describe("rotate() — public verb", () => {
     });
     const exit = await rotate(["--team-dir", scratch, "--lead"], {
       buildTmux: () => tmux,
-      briefsDir, // no team-lead.md staged → falls through to member.md (also absent → silent skip)
+      briefsDir, // BRIEF_ALIASES: team-lead → lead.md; neither staged → fall through to member.md (also absent → silent skip)
       sleep: async () => {},
       stdout: () => {},
     });

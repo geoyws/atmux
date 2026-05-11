@@ -101,10 +101,21 @@ export function findLeadMember(team: Team): TeamMember | null {
   return null;
 }
 
+/** Role → brief-filename aliases. The schema-canonical role name and the
+ *  brief filename diverge in one place: role `team-lead` reads from
+ *  `lead.md` (renamed per ADR-007 pull-model). Aliases resolve first so
+ *  a stale `<role>.md` tombstone in the briefs dir can't shadow the
+ *  canonical file. */
+const BRIEF_ALIASES: Readonly<Record<string, string>> = {
+  "team-lead": "lead",
+};
+
 /** Bash `atmux::brief_path <role>` — returns `<briefsDir>/<role>.md`
- *  if it exists, else the `member.md` fallback. */
+ *  if it exists, else the `member.md` fallback. Role aliases (see
+ *  `BRIEF_ALIASES`) are resolved before the existence check. */
 export async function getBriefPath(role: string, briefsDir: string): Promise<string> {
-  const candidate = resolve(briefsDir, `${role}.md`);
+  const fileBase = BRIEF_ALIASES[role] ?? role;
+  const candidate = resolve(briefsDir, `${fileBase}.md`);
   if (await exists(candidate)) return candidate;
   return resolve(briefsDir, "member.md");
 }
