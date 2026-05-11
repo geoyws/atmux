@@ -62,6 +62,10 @@ Maintenance:
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
+  health [--json|--text] [--budget] [--stale-sec <N>]
+                              SPEC-066: composed read-only diagnostic snapshot —
+                              status + inbox + task + heartbeat (+ optional budget).
+                              JSON-first, foundational for fleet dashboards.
   groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
                               Daily 04:00 cron sweep — flush archive sections, age
                               out done/cancelled cards, cull stale .bak files.

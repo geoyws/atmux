@@ -44,6 +44,7 @@ import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
+import { health } from "./verbs/health.ts";
 import { help } from "./verbs/help.ts";
 import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
@@ -161,6 +162,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return complaints(argv.slice(1));
     case "doctor":
       return doctor(argv.slice(1));
+    case "health":
+      return health(argv.slice(1));
     case "driver-inbox":
       return driverInbox(argv.slice(1));
     case "whip":
