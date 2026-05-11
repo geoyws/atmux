@@ -19,6 +19,7 @@ import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
   checkCronIntervalDivisors,
+  checkCursorPluginCache,
   checkDeps,
   checkInboxMarks,
   checkOrphanSessions,
@@ -595,6 +596,168 @@ describe("findPhantomInboxes", () => {
     expect(rows[0]?.status).toBe("yellow");
     expect(rows[0]?.label).toBe("phantom-inbox");
     expect(rows[0]?.detail).toContain("t-ghost");
+  });
+});
+
+// ---------- checkCursorPluginCache ----------
+
+describe("checkCursorPluginCache", () => {
+  let home: string;
+  const cursorPresent = (cmd: string) => (cmd === "cursor-agent" ? "/usr/bin/cursor-agent" : null);
+  const cursorAbsent = (_cmd: string) => null;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "atmux-doctor-cursor-"));
+    await mkdir(join(home, ".claude", "plugins"), { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const writeInstalled = async (data: object): Promise<void> => {
+    await writeFile(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      JSON.stringify(data),
+    );
+  };
+  const writeMarketplaces = async (data: object): Promise<void> => {
+    await writeFile(
+      join(home, ".claude", "plugins", "known_marketplaces.json"),
+      JSON.stringify(data),
+    );
+  };
+
+  test("cursor-agent not on PATH → silent (no rows)", async () => {
+    expect(await checkCursorPluginCache({ which: cursorAbsent, home })).toEqual([]);
+  });
+
+  test("no installed_plugins.json → silent", async () => {
+    expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
+  });
+
+  test("all directory-source plugins materialised → no rows", async () => {
+    // marketplace install location with a plugin source dir
+    const mktLoc = await mkdtemp(join(tmpdir(), "atmux-mkt-"));
+    await mkdir(join(mktLoc, "plugins", "alpha"), { recursive: true });
+    await writeMarketplaces({
+      "my-mkt": {
+        source: { source: "directory" },
+        installLocation: mktLoc,
+      },
+    });
+    await writeInstalled({
+      plugins: {
+        "alpha@my-mkt": [{ installPath: "doesnt-matter", version: "0.1.0" }],
+      },
+    });
+    // materialise the cache target
+    await mkdir(join(home, ".claude", "plugins", "cache", "my-mkt", "alpha", "0.1.0"), {
+      recursive: true,
+    });
+    expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
+    await rm(mktLoc, { recursive: true, force: true });
+  });
+
+  test("missing cache entry → 1 yellow row with mkdir+ln hint", async () => {
+    const mktLoc = await mkdtemp(join(tmpdir(), "atmux-mkt-"));
+    await mkdir(join(mktLoc, "plugins", "alpha"), { recursive: true });
+    await writeMarketplaces({
+      "my-mkt": {
+        source: { source: "directory" },
+        installLocation: mktLoc,
+      },
+    });
+    await writeInstalled({
+      plugins: {
+        "alpha@my-mkt": [{ installPath: "doesnt-matter", version: "0.1.0" }],
+      },
+    });
+    // cache target NOT created
+    const rows = await checkCursorPluginCache({ which: cursorPresent, home });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("cursor-plugin-cache");
+    expect(rows[0]?.detail).toContain("alpha@my-mkt");
+    expect(rows[0]?.hint).toContain("mkdir -p");
+    expect(rows[0]?.hint).toContain("ln -sfn");
+    expect(rows[0]?.hint).toContain(join(mktLoc, "plugins", "alpha"));
+    expect(rows[0]?.hint).toContain(
+      join(home, ".claude", "plugins", "cache", "my-mkt", "alpha", "0.1.0"),
+    );
+    await rm(mktLoc, { recursive: true, force: true });
+  });
+
+  test("non-directory marketplace (e.g. github) → not flagged", async () => {
+    await writeMarketplaces({
+      "official-mkt": {
+        source: { source: "github" },
+        installLocation: "/tmp/wherever",
+      },
+    });
+    await writeInstalled({
+      plugins: {
+        "alpha@official-mkt": [{ installPath: "doesnt-matter", version: "1.0.0" }],
+      },
+    });
+    expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
+  });
+
+  test("source dir missing → skip (can't symlink to nothing)", async () => {
+    const mktLoc = await mkdtemp(join(tmpdir(), "atmux-mkt-"));
+    // NOTE: do NOT create plugins/alpha — source absent
+    await writeMarketplaces({
+      "my-mkt": {
+        source: { source: "directory" },
+        installLocation: mktLoc,
+      },
+    });
+    await writeInstalled({
+      plugins: {
+        "alpha@my-mkt": [{ installPath: "doesnt-matter", version: "0.1.0" }],
+      },
+    });
+    expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
+    await rm(mktLoc, { recursive: true, force: true });
+  });
+
+  test("missing known_marketplaces.json → no rows (can't classify)", async () => {
+    await writeInstalled({
+      plugins: { "alpha@some-mkt": [{ installPath: "x", version: "0.1.0" }] },
+    });
+    // no marketplaces file at all
+    expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
+  });
+
+  test("malformed JSON → no throw, no rows", async () => {
+    await writeFile(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      "{ not json",
+    );
+    expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
+  });
+
+  test("multiple versions of same plugin → row per missing version", async () => {
+    const mktLoc = await mkdtemp(join(tmpdir(), "atmux-mkt-"));
+    await mkdir(join(mktLoc, "plugins", "alpha"), { recursive: true });
+    await writeMarketplaces({
+      "my-mkt": { source: { source: "directory" }, installLocation: mktLoc },
+    });
+    await writeInstalled({
+      plugins: {
+        "alpha@my-mkt": [
+          { installPath: "x", version: "0.1.0" },
+          { installPath: "x", version: "0.2.0" },
+        ],
+      },
+    });
+    // materialise only 0.1.0 — 0.2.0 missing
+    await mkdir(join(home, ".claude", "plugins", "cache", "my-mkt", "alpha", "0.1.0"), {
+      recursive: true,
+    });
+    const rows = await checkCursorPluginCache({ which: cursorPresent, home });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("0.2.0");
+    await rm(mktLoc, { recursive: true, force: true });
   });
 });
 

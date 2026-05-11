@@ -699,6 +699,129 @@ export function checkCronIntervalDivisors(team: Team | null): DoctorRow[] {
   return rows;
 }
 
+// ---------- Check 7a: cursor-plugin-cache ----------
+//
+// Cursor-agent ignores Claude's runtime `--plugin-dir` flag and only
+// discovers plugins it finds in `~/.claude/plugins/cache/<marketplace>/
+// <plugin>/<version>/`. For marketplace entries whose source.type is
+// `directory` (e.g. a user's own plugin tree at /root/work/.../plugins),
+// `claude plugin install` registers the install in
+// `installed_plugins.json` WITHOUT materialising the cache path — the
+// source dir stays canonical. claude-side this is fine (claude resolves
+// from the marketplace install location). cursor-side it means every
+// claude plugin is invisible.
+//
+// This check emits a yellow row per missing cache entry, with a hint
+// that produces the symlink directly. Only runs when `cursor-agent` is
+// on PATH — otherwise the check is irrelevant and we stay silent.
+
+export interface CheckCursorPluginCacheOpts {
+  /** PATH lookup for `cursor-agent`. Test injection. */
+  which?: (cmd: string) => string | null;
+  /** Override $HOME for tests. */
+  home?: string;
+}
+
+interface MissingCacheEntry {
+  marketplace: string;
+  plugin: string;
+  version: string;
+  /** Absolute path of the cache-dir symlink we'd create. */
+  cachePath: string;
+  /** Absolute path of the canonical plugin source — symlink target. */
+  sourcePath: string;
+}
+
+export async function checkCursorPluginCache(
+  opts: CheckCursorPluginCacheOpts = {},
+): Promise<DoctorRow[]> {
+  const whichFn = opts.which ?? ((cmd: string) => Bun.which(cmd));
+  if (whichFn("cursor-agent") === null) return [];
+
+  const home = opts.home ?? process.env.HOME;
+  if (home === undefined || home.length === 0) return [];
+
+  // Read both JSONs without zod — they're claude-side files we don't own
+  // the schema for. Manual parse with permissive shape; fail-soft to [].
+  const installedRaw = await readTextOrNull(
+    join(home, ".claude", "plugins", "installed_plugins.json"),
+  );
+  if (installedRaw === null) return [];
+  let installedJson: {
+    plugins?: Record<string, ReadonlyArray<{ installPath: string; version: string }>>;
+  };
+  try {
+    installedJson = JSON.parse(installedRaw);
+  } catch {
+    return [];
+  }
+  if (installedJson.plugins === undefined) return [];
+
+  const marketplacesRaw = await readTextOrNull(
+    join(home, ".claude", "plugins", "known_marketplaces.json"),
+  );
+  let marketplacesJson: Record<
+    string,
+    { source?: { source?: string }; installLocation?: string }
+  > | null = null;
+  if (marketplacesRaw !== null) {
+    try {
+      marketplacesJson = JSON.parse(marketplacesRaw);
+    } catch {
+      marketplacesJson = null;
+    }
+  }
+
+  const missing: MissingCacheEntry[] = [];
+  for (const [key, entries] of Object.entries(installedJson.plugins)) {
+    // key format: `<plugin>@<marketplace>`
+    const at = key.lastIndexOf("@");
+    if (at === -1) continue;
+    const plugin = key.slice(0, at);
+    const marketplace = key.slice(at + 1);
+
+    // Only auto-suggest for directory-source marketplaces — git/github
+    // sources do materialise the cache themselves.
+    const mInfo = marketplacesJson?.[marketplace];
+    if (mInfo?.source?.source !== "directory") continue;
+    const installLocation = mInfo.installLocation;
+    if (installLocation === undefined || installLocation.length === 0) continue;
+    // Marketplace convention: plugins live at <installLocation>/plugins/<plugin>.
+    // Confirmed in marketplace.json `source: ./plugins/<plugin>`.
+    const sourcePath = join(installLocation, "plugins", plugin);
+    const srcStat = await statOrNull(sourcePath);
+    if (srcStat === null) continue; // can't symlink to something missing
+
+    for (const e of entries) {
+      const expected = join(
+        home,
+        ".claude",
+        "plugins",
+        "cache",
+        marketplace,
+        plugin,
+        e.version,
+      );
+      const st = await statOrNull(expected);
+      if (st !== null) continue;
+      missing.push({
+        marketplace,
+        plugin,
+        version: e.version,
+        cachePath: expected,
+        sourcePath,
+      });
+    }
+  }
+
+  return missing.map((m) => ({
+    status: "yellow" as const,
+    label: "cursor-plugin-cache",
+    detail: `${m.plugin}@${m.marketplace} not materialised at ${m.cachePath} — cursor-agent can't discover it`,
+    hint: `mkdir -p ${join(m.cachePath, "..")} && ln -sfn ${m.sourcePath} ${m.cachePath}`,
+  }));
+}
+
 // ---------- Check 7: orphan-sessions ----------
 
 export interface CheckOrphanSessionsOpts {
@@ -1100,6 +1223,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
+  // Cursor-plugin-cache parity — only fires when cursor-agent is
+  // installed AND there's at least one directory-source marketplace
+  // plugin missing its `~/.claude/plugins/cache/<m>/<p>/<v>` entry.
+  rows.push(...(await checkCursorPluginCache()));
   rows.push(...(await checkOrphanSessions(team)));
   // ADR-054 §D4: surface whip-config drift so the operator doesn't
   // need to wait for the next whip tick to learn about it.
