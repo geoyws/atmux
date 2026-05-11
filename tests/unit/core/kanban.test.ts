@@ -20,6 +20,7 @@ import {
   claimTask,
   emptyKanban,
   genTaskId,
+  isDriverOnlyBlocked,
   listTasks,
   loadKanban,
   markTaskDone,
@@ -112,6 +113,31 @@ describe("unresolvedDeps — pure dep-check", () => {
   test("unknown dep id → NOT counted (bash IN-only-known parity)", () => {
     const target = t("b", "todo", ["nonexistent"]);
     expect(unresolvedDeps([target], target)).toEqual([]);
+  });
+});
+
+// ADR-033 centralizing predicate — 2x2 over (driverOnly × scope) +
+// legacy-default cell. Used by selectNextClaimable, claimTask, and
+// (post t-a90c80b0) markTaskDone / task move.
+describe("isDriverOnlyBlocked (ADR-033 predicate)", () => {
+  test("driverOnly=true + scope='member' → blocked", () => {
+    expect(isDriverOnlyBlocked({ driverOnly: true }, "member")).toBe(true);
+  });
+
+  test("driverOnly=true + scope='driver' → not blocked", () => {
+    expect(isDriverOnlyBlocked({ driverOnly: true }, "driver")).toBe(false);
+  });
+
+  test("driverOnly=false + scope='member' → not blocked", () => {
+    expect(isDriverOnlyBlocked({ driverOnly: false }, "member")).toBe(false);
+  });
+
+  test("driverOnly undefined (legacy Task) + scope='member' → not blocked", () => {
+    expect(isDriverOnlyBlocked({}, "member")).toBe(false);
+  });
+
+  test("driverOnly=true + scope undefined (caller forgot to pass) → blocked (fail-secure)", () => {
+    expect(isDriverOnlyBlocked({ driverOnly: true }, undefined)).toBe(true);
   });
 });
 

@@ -363,14 +363,21 @@ export async function claimTask(
   atmuxDir: string,
   id: string,
   who: string,
+  opts: { callerScope?: CallerScope } = {},
 ): Promise<{ pre: KanbanTask; post: KanbanTask }> {
   const claimedAt = nowEpoch();
+  // ADR-033 driver-only refuse message — quoted verbatim so the bash
+  // and TS surfaces print the same string (audit + grep parity).
+  const driverOnlyRefuse = `claim: ${id} is a driver-only Task — only the driver scope can claim it. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (db, repo) =>
       transact(db, () => {
         const task = repo.getTask(id);
         if (task === null) {
           throw new ConfigError({ what: `no such task: ${id}` });
+        }
+        if (isDriverOnlyBlocked(task, opts.callerScope)) {
+          throw new ConfigError({ what: driverOnlyRefuse });
         }
         const allTasks = repo.listTasks();
         const unresolved = unresolvedDeps(allTasks, task);
@@ -395,6 +402,9 @@ export async function claimTask(
       const task = k.tasks.find((t) => t.id === id);
       if (task === undefined) {
         throw new ConfigError({ what: `no such task: ${id}` });
+      }
+      if (isDriverOnlyBlocked(task, opts.callerScope)) {
+        throw new ConfigError({ what: driverOnlyRefuse });
       }
       const unresolved = unresolvedDeps(k.tasks, task);
       if (unresolved.length > 0) {
@@ -476,6 +486,25 @@ export async function markTaskDone(
   return done;
 }
 
+/**
+ * ADR-033 driver-only refuse-gate predicate. Returns `true` when the
+ * given Task carries `driverOnly === true` AND the caller's resolved
+ * scope is not `driver` — i.e., the action (claim / move) must be
+ * refused. Returns `false` for legacy Tasks (driverOnly undefined) and
+ * for driver-scope callers.
+ *
+ * Centralizes the predicate so the three refuse-gate sites
+ * (selectNextClaimable, claimTask, markTaskDone) share the same shape;
+ * a future change to scope semantics (e.g. team-roster sniff once the
+ * defense-in-depth check returns post-ADR-017) lands in one place.
+ */
+export function isDriverOnlyBlocked(
+  task: Pick<KanbanTask, "driverOnly">,
+  scope: CallerScope | undefined,
+): boolean {
+  return task.driverOnly === true && scope !== "driver";
+}
+
 /** Options for `selectNextClaimable` — ADR-062 §1 lane-aware pull. */
 export interface SelectNextOpts {
   /** Caller's lane from `team.members[].lane`. `null` → no lane preference;
@@ -519,8 +548,7 @@ export function selectNextClaimable(
   // unless the caller's resolved scope is `driver`. Auto-pickup
   // (`claim --next` / lane-tick cron) MUST set `callerScope` for this
   // to fire; default `undefined`/`"member"` is fail-secure.
-  const driverOnlyOk = (t: KanbanTask): boolean =>
-    t.driverOnly !== true || opts.callerScope === "driver";
+  const driverOnlyOk = (t: KanbanTask): boolean => !isDriverOnlyBlocked(t, opts.callerScope);
   const baseEligible = tasks.filter(
     (t) =>
       t.status === "todo" &&

@@ -172,13 +172,15 @@ export async function claim(argv: ReadonlyArray<string>): Promise<number> {
   const { who, dirOpts, atmuxDir } = await resolveContext(parsed, "claim");
 
   const claimedAt = nowEpoch();
-  // claimTask enforces deps + writes the kanban side. Returns BOTH
-  // pre-mutation + post-mutation snapshots per ADR-029 §F1 — bash
-  // lib/claim.sh:35 captures `task` BEFORE the jq_update at line 53,
-  // so the inbox-move at line 58 carries the ORIGINAL task shape +
-  // only `claimedAt`, not the post-mutation owner/status/claimedAt
-  // triple. Use `pre` for the inbox-mirror write.
-  const { pre } = await claimTask(atmuxDir, parsed.id, who);
+  // claimTask enforces deps + ADR-033 driver-only refuse-gate + writes
+  // the kanban side. Returns BOTH pre-mutation + post-mutation
+  // snapshots per ADR-029 §F1 — bash lib/claim.sh:35 captures `task`
+  // BEFORE the jq_update at line 53, so the inbox-move at line 58
+  // carries the ORIGINAL task shape + only `claimedAt`, not the post-
+  // mutation owner/status/claimedAt triple. Use `pre` for the inbox-
+  // mirror write.
+  const callerScope = resolveCallerScope();
+  const { pre } = await claimTask(atmuxDir, parsed.id, who, { callerScope });
   await movePendingToInProgress(atmuxDir, who, pre, claimedAt);
 
   process.stdout.write(`${who} claimed ${parsed.id}\n`);

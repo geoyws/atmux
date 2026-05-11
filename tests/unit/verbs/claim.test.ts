@@ -191,6 +191,73 @@ describe("claim verb — integration", () => {
     const inbox = await loadInbox(atmuxDir, "alpha");
     expect(inbox.inProgress).toHaveLength(1);
   });
+
+  // ADR-033 explicit-id claim refuse-gate (t-9fb3858f, sibling to
+  // t-25edd0f7's auto-pickup gate). 2x2 coverage on (driverOnly × scope).
+  describe("ADR-033 driver-only refuse-gate", () => {
+    const priorScope = (): string | undefined => process.env.ATMUX_CALLER_SCOPE;
+    const restoreScope = (v: string | undefined): void => {
+      if (v === undefined) delete process.env.ATMUX_CALLER_SCOPE;
+      else process.env.ATMUX_CALLER_SCOPE = v;
+    };
+
+    test("driverOnly=true + member scope → ConfigError refuse (driver-only message)", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await expect(
+          claim([id, "--as", "alpha", "--team-dir", teamDir]),
+        ).rejects.toThrow(/driver-only Task/);
+      } finally {
+        restoreScope(saved);
+      }
+      // Kanban unchanged — refuse happens before the upsert.
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("todo");
+      expect(k.tasks[0]?.owner).toBeNull();
+    });
+
+    test("driverOnly=true + driver scope → claim succeeds", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      process.env.ATMUX_CALLER_SCOPE = "driver";
+      try {
+        await captureStdout(() => claim([id, "--as", "alpha", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.owner).toBe("alpha");
+      expect(k.tasks[0]?.status).toBe("in-progress");
+    });
+
+    test("driverOnly=false (or absent) + member scope → claim succeeds (legacy parity)", async () => {
+      const id = await addTask(atmuxDir, { subject: "regular" });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await captureStdout(() => claim([id, "--as", "alpha", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.owner).toBe("alpha");
+    });
+
+    test("driverOnly=false + driver scope → claim succeeds (no spurious gate)", async () => {
+      const id = await addTask(atmuxDir, { subject: "regular" });
+      const saved = priorScope();
+      process.env.ATMUX_CALLER_SCOPE = "driver";
+      try {
+        await captureStdout(() => claim([id, "--as", "alpha", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.owner).toBe("alpha");
+    });
+  });
 });
 
 // ---------- done verb integration ----------
