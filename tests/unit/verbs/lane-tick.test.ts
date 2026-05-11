@@ -535,9 +535,9 @@ describe("runAutoDoneScan — ADR-080 §B2", () => {
       const id = grepArg?.slice("--grep=".length) ?? "";
       const sha = shasById[id];
       if (sha === undefined) {
-        return { stdout: "", stderr: "", exitCode: 0 };
+        return { cmd: "git", argv, stdout: "", stderr: "", exitCode: 0, signalled: null, durationMs: 0 };
       }
-      return { stdout: `${sha}\n`, stderr: "", exitCode: 0 };
+      return { cmd: "git", argv, stdout: `${sha}\n`, stderr: "", exitCode: 0, signalled: null, durationMs: 0 };
     };
     return { git, calls };
   }
@@ -707,13 +707,13 @@ describe("runAutoDoneScan — ADR-080 §B2", () => {
     const git: GitSpawn = async (argv) => {
       callIdx += 1;
       if (callIdx === 1) {
-        return { stdout: "", stderr: "fatal: bad revision", exitCode: 128 };
+        return { cmd: "git", argv, stdout: "", stderr: "fatal: bad revision", exitCode: 128, signalled: null, durationMs: 0 };
       }
       const grepArg = argv.find((a) => a.startsWith("--grep="));
       if (grepArg === "--grep=t-bbbbbbbb") {
-        return { stdout: "abc1234500000000\n", stderr: "", exitCode: 0 };
+        return { cmd: "git", argv, stdout: "abc1234500000000\n", stderr: "", exitCode: 0, signalled: null, durationMs: 0 };
       }
-      return { stdout: "", stderr: "", exitCode: 0 };
+      return { cmd: "git", argv, stdout: "", stderr: "", exitCode: 0, signalled: null, durationMs: 0 };
     };
     const logs: string[] = [];
     const resolved = await runAutoDoneScan(atmuxDir, team, { git, log: (m) => logs.push(m) });
