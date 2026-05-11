@@ -9,7 +9,12 @@
 // "tests/unit/schema/team.test.ts (extend)".
 
 import { describe, expect, test } from "bun:test";
-import { Team, TeamFallback, TeamWhip } from "../../../src/schema/team.ts";
+import {
+  DEFAULT_WORKTREE_ROOT,
+  Team,
+  TeamFallback,
+  TeamWhip,
+} from "../../../src/schema/team.ts";
 
 // ---------- TeamWhip — valid + defaults ----------
 
@@ -261,5 +266,79 @@ describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
         driverSession: { tui: "shell", typoField: "x" },
       }),
     ).toThrow();
+  });
+});
+
+// ---------- worktreeIsolation / worktreeRoot — ADR-082 §2 ----------
+
+describe("Team schema — worktreeIsolation + worktreeRoot (ADR-082 §2)", () => {
+  test("legacy team.json (neither field present) parses with both fields undefined", () => {
+    // Existing teams pick up the new fields on the next atmux start
+    // schema-load with NO team.json migration. Both fields are
+    // `.optional()` — read-sites apply the effective defaults
+    // (`isolation === true` truthy check; root || DEFAULT_WORKTREE_ROOT)
+    // so the schema output stays backwards-compatible with every
+    // existing Team-literal in the codebase (`singleSession` pattern).
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.worktreeIsolation).toBeUndefined();
+    expect(team.worktreeRoot).toBeUndefined();
+  });
+
+  test("explicit worktreeIsolation=true parses; root stays undefined → consumer uses DEFAULT_WORKTREE_ROOT", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      worktreeIsolation: true,
+    });
+    expect(team.worktreeIsolation).toBe(true);
+    expect(team.worktreeRoot).toBeUndefined();
+    expect(team.worktreeRoot ?? DEFAULT_WORKTREE_ROOT).toBe(".atmux/worktrees");
+  });
+
+  test("explicit worktreeRoot overrides the effective default", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      worktreeIsolation: true,
+      worktreeRoot: ".worktrees-custom",
+    });
+    expect(team.worktreeIsolation).toBe(true);
+    expect(team.worktreeRoot).toBe(".worktrees-custom");
+  });
+
+  test("explicit worktreeIsolation=false parses cleanly (matches default behaviour)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      worktreeIsolation: false,
+    });
+    expect(team.worktreeIsolation).toBe(false);
+  });
+
+  test("non-boolean worktreeIsolation rejected (input-time type validation)", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        worktreeIsolation: "true" as unknown as boolean,
+      }),
+    ).toThrow();
+  });
+
+  test("non-string worktreeRoot rejected (input-time type validation)", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        worktreeRoot: 42 as unknown as string,
+      }),
+    ).toThrow();
+  });
+
+  test("DEFAULT_WORKTREE_ROOT exports the canonical relative path", () => {
+    // Read-sites (W3 start / W4 stop / W5 doctor) import this constant
+    // so the effective default has a single source of truth. Pin the
+    // value so a rename in the schema file surfaces here.
+    expect(DEFAULT_WORKTREE_ROOT).toBe(".atmux/worktrees");
   });
 });

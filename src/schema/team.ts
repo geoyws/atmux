@@ -337,6 +337,25 @@ export const Team = z
     /** Cage tmpdir per ADR-018 (`/tmp/atmux-tmux_<team>`); empty/null
      *  means the team uses the operator default socket. */
     tmuxTmpdir: z.string().optional(),
+    /** ADR-082 §2: per-member git worktree isolation. When `true`,
+     *  `atmux start` provisions a worktree under
+     *  `worktreeRoot/<member>/` for each member and rewires
+     *  `member.cwd` to that path; stop / doctor / cockpit honor the
+     *  same root. Optional + effectively `false` — existing teams keep
+     *  the shared-tree behavior with no `team.json` migration. Opt in
+     *  per-team by setting `worktreeIsolation: true`. Read-sites should
+     *  default via `team.worktreeIsolation === true` (truthy check)
+     *  rather than relying on schema-fill, mirroring the
+     *  `singleSession` pattern. */
+    worktreeIsolation: z.boolean().optional(),
+    /** ADR-082 §2: directory (relative to the team's project root)
+     *  where per-member worktrees live when
+     *  `worktreeIsolation === true`. Effective default
+     *  `.atmux/worktrees`; co-locates with the team's existing
+     *  `.atmux/` state directory so the cleanup path mirrors the rest
+     *  of the team's filesystem footprint. No-op when isolation is
+     *  off. Use {@link DEFAULT_WORKTREE_ROOT} when reading. */
+    worktreeRoot: z.string().optional(),
     /** Single-session opt-in (default `false` per 2026-04-30 reversal,
      *  see templates/team.example.json comment). */
     singleSession: z.boolean().optional(),
@@ -388,3 +407,8 @@ export const Team = z
   })
   .passthrough();
 export type Team = z.infer<typeof Team>;
+
+/** ADR-082 §2: effective default for `team.worktreeRoot` when the field
+ *  is unset. Co-located with the schema so read-sites in W3 (start),
+ *  W4 (stop), and W5 (doctor) share the same constant. */
+export const DEFAULT_WORKTREE_ROOT = ".atmux/worktrees";
