@@ -83,7 +83,7 @@ const PATTERNS: ReadonlyArray<Pattern> = [
   // Priority: between COMPACTING and MODAL — a busy pane showing a modal
   // hint is mid-think and the modal will resolve when the turn completes
   // (per ADR-080 §C OQ-C1).
-  { state: "BUSY", regex: /✻\s+\w+(\.\.\.|…)/ }, // "✻ Cooked for Ns"
+  { state: "BUSY", regex: /✻\s+\w+/ }, // "✻ Cooked for Ns" / "✻ Cooked for 12s"
   { state: "BUSY", regex: /✽\s+\w+/ }, // "✽ Honking…"
   {
     state: "BUSY",
