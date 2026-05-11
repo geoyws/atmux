@@ -62,6 +62,7 @@ import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { task } from "./verbs/task.ts";
+import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
@@ -124,6 +125,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return send(["--broadcast", ...argv.slice(1)]);
     case "task":
       return task(argv.slice(1));
+    case "team":
+      return dispatchTeamSubverb(argv.slice(1));
     case "tell-lead":
       return tellLead(argv.slice(1));
     case "claim":
@@ -190,6 +193,31 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,
+        hint: "run 'atmux help' for the list of verbs",
+      });
+  }
+}
+
+/**
+ * `atmux team <sub> [args]` — bash spec routes `rename` + `repair-rename`
+ * here. V1 ports `repair-rename` only; `rename` still pending (lib/
+ * team-rename.sh @ 398 LOC). Unknown sub-verbs throw UsageError so the
+ * exit code matches bash bin-atmux:295 (echo + exit 64).
+ */
+export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<number> {
+  const sub = argv[0];
+  if (sub === undefined || sub === "") {
+    throw new UsageError({
+      what: "team: subverb required (try: repair-rename)",
+      hint: "run 'atmux help' for the list of verbs",
+    });
+  }
+  switch (sub) {
+    case "repair-rename":
+      return teamRepairRename(argv.slice(1));
+    default:
+      throw new UsageError({
+        what: `team: unknown subverb '${sub}' (try: repair-rename)`,
         hint: "run 'atmux help' for the list of verbs",
       });
   }

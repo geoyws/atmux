@@ -292,6 +292,31 @@ describe("cli.main — attach verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — team sub-verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/team-repair-rename.test.ts) ----------
+
+describe("cli.main — team sub-verb dispatch", () => {
+  test("'team' with no sub-verb → UsageError exit 64", async () => {
+    const { exit, stderr } = await captureMain(["team"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+    expect(stderr).toContain("subverb required");
+  });
+
+  test("'team unknown-sub' → UsageError exit 64 with hint", async () => {
+    const { exit, stderr } = await captureMain(["team", "nope"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+    expect(stderr).toContain("unknown subverb");
+  });
+
+  test("'team repair-rename' (no team arg) → UsageError from sub-verb parser", async () => {
+    const { exit, stderr } = await captureMain(["team", "repair-rename"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 // ---------- Dispatch — dashboard verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/dashboard.test.ts) ----------
 
