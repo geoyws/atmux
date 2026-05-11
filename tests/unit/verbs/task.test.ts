@@ -422,6 +422,109 @@ describe("task verb — dispatch", () => {
     await expect(task(["move", id, "bogus", "--team-dir", teamDir])).rejects.toThrow(UsageError);
   });
 
+  // ADR-033 task move refuse-gate (t-a90c80b0). `in-progress` and
+  // `done` transitions on driverOnly Tasks refuse for non-driver scope;
+  // `todo` and `blocked` bookkeeping moves remain allowed per ADR-033
+  // §Refuse-gate site #2 carve-out.
+  describe("ADR-033 driver-only refuse-gate", () => {
+    const priorScope = (): string | undefined => process.env.ATMUX_CALLER_SCOPE;
+    const restoreScope = (v: string | undefined): void => {
+      if (v === undefined) delete process.env.ATMUX_CALLER_SCOPE;
+      else process.env.ATMUX_CALLER_SCOPE = v;
+    };
+
+    test("driverOnly + member scope: move → in-progress refused", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await expect(
+          task(["move", id, "in-progress", "--team-dir", teamDir]),
+        ).rejects.toThrow(/task move:.*driver-only Task/);
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("todo");
+    });
+
+    test("driverOnly + member scope: move → done refused", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await expect(
+          task(["move", id, "done", "--team-dir", teamDir]),
+        ).rejects.toThrow(/task move:.*driver-only Task/);
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("todo");
+    });
+
+    test("driverOnly + driver scope: move → in-progress succeeds", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      process.env.ATMUX_CALLER_SCOPE = "driver";
+      try {
+        await captureStdout(() => task(["move", id, "in-progress", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("in-progress");
+    });
+
+    test("driverOnly + member scope: move → todo ALLOWED (bookkeeping carve-out)", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      // Get it to in-progress first via driver path so we have somewhere
+      // to move from.
+      const saved = priorScope();
+      process.env.ATMUX_CALLER_SCOPE = "driver";
+      try {
+        await captureStdout(() => task(["move", id, "in-progress", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      // Now back to todo as member — must be allowed.
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await captureStdout(() => task(["move", id, "todo", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("todo");
+    });
+
+    test("driverOnly + member scope: move → blocked ALLOWED (bookkeeping carve-out)", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await captureStdout(() => task(["move", id, "blocked", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("blocked");
+    });
+
+    test("driverOnly absent (legacy): move → done allowed for any scope", async () => {
+      const id = await addTask(atmuxDir, { subject: "regular" });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await captureStdout(() => task(["move", id, "done", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("done");
+    });
+  });
+
   test("'assign' updates owner", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
     const { exit, out } = await captureStdout(() =>

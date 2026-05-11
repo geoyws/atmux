@@ -260,6 +260,64 @@ describe("claim verb — integration", () => {
   });
 });
 
+// ---------- done verb refuse-gate (t-a90c80b0) ----------
+
+describe("done verb — ADR-033 driver-only refuse-gate", () => {
+  const priorScope = (): string | undefined => process.env.ATMUX_CALLER_SCOPE;
+  const restoreScope = (v: string | undefined): void => {
+    if (v === undefined) delete process.env.ATMUX_CALLER_SCOPE;
+    else process.env.ATMUX_CALLER_SCOPE = v;
+  };
+
+  test("driverOnly=true + member scope → refuse with done-flavoured message", async () => {
+    const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+    // Stage as in-progress via the driver-scope path so moveTask itself
+    // doesn't refuse (it now enforces ADR-033 too). The test target is
+    // the `done` refuse-gate, not the move setup.
+    await moveTask(atmuxDir, id, "in-progress", { callerScope: "driver" });
+    const saved = priorScope();
+    delete process.env.ATMUX_CALLER_SCOPE;
+    try {
+      await expect(done([id, "--as", "alpha", "--team-dir", teamDir])).rejects.toThrow(
+        /done: t-[0-9a-f]+ is a driver-only Task/,
+      );
+    } finally {
+      restoreScope(saved);
+    }
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.status).toBe("in-progress");
+    expect(k.tasks[0]?.completedAt).toBeNull();
+  });
+
+  test("driverOnly=true + driver scope → done succeeds", async () => {
+    const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+    await moveTask(atmuxDir, id, "in-progress", { callerScope: "driver" });
+    const saved = priorScope();
+    process.env.ATMUX_CALLER_SCOPE = "driver";
+    try {
+      await captureStdout(() => done([id, "--as", "alpha", "--team-dir", teamDir]));
+    } finally {
+      restoreScope(saved);
+    }
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.status).toBe("done");
+  });
+
+  test("driverOnly absent + member scope → done succeeds (legacy parity)", async () => {
+    const id = await addTask(atmuxDir, { subject: "regular" });
+    await moveTask(atmuxDir, id, "in-progress");
+    const saved = priorScope();
+    delete process.env.ATMUX_CALLER_SCOPE;
+    try {
+      await captureStdout(() => done([id, "--as", "alpha", "--team-dir", teamDir]));
+    } finally {
+      restoreScope(saved);
+    }
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.status).toBe("done");
+  });
+});
+
 // ---------- done verb integration ----------
 
 describe("done verb — integration", () => {

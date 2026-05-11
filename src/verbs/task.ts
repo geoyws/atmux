@@ -22,7 +22,7 @@
 // CLI plumbing (flag parsing + subverb routing + tabular printing
 // for the `list` output).
 
-import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
+import { getAtmuxDir, resolveCallerScope, type ResolveDirOpts } from "../core/common.ts";
 import { removeFromInProgress } from "../core/inbox.ts";
 import {
   addTask,
@@ -285,7 +285,11 @@ async function taskMove(argv: ReadonlyArray<string>): Promise<number> {
   // mutates schema fields. moveTask itself throws ConfigError on miss,
   // so a present pre-snapshot guarantees the post-move task exists.
   const pre = await showTask(atmuxDir, id);
-  await moveTask(atmuxDir, id, status);
+  // ADR-033: moveTask enforces the driver-only refuse-gate inside its
+  // transaction for `in-progress` / `done` targets (`todo` / `blocked`
+  // remain unrestricted per ADR-033 §Refuse-gate site #2 carve-out).
+  const callerScope = resolveCallerScope();
+  await moveTask(atmuxDir, id, status, { callerScope });
   // t-e452296b: bash mirror left `.inProgress` entries behind on
   // status transitions that don't go through `atmux done`. Whip then
   // fired false `in-progress > 90min` alerts on shelved tasks. Drain

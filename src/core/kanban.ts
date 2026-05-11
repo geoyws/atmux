@@ -262,13 +262,31 @@ export async function showTask(atmuxDir: string, id: string): Promise<KanbanTask
  *
  * Throws `ConfigError` if no such id is found.
  */
-export async function moveTask(atmuxDir: string, id: string, status: string): Promise<void> {
+/** Statuses to which a driverOnly Task may NOT be moved unless the
+ *  caller scope is `driver`. ADR-033 §Refuse-gate site #2 explicit
+ *  carve-out: transitions to `todo` and `blocked` remain allowed for
+ *  bookkeeping (e.g. a member parking a stalled task). */
+const DRIVER_ONLY_MOVE_BLOCKED_STATUSES: ReadonlyArray<string> = ["in-progress", "done"];
+
+export async function moveTask(
+  atmuxDir: string,
+  id: string,
+  status: string,
+  opts: { callerScope?: CallerScope } = {},
+): Promise<void> {
   const completedAt = status === "done" ? nowEpoch() : undefined;
+  // ADR-033: only `in-progress` and `done` are gated; `todo` / `blocked`
+  // bookkeeping moves stay allowed regardless of scope.
+  const statusGated = DRIVER_ONLY_MOVE_BLOCKED_STATUSES.includes(status);
+  const refuseMsg = `task move: ${id} is a driver-only Task — only the driver scope can move it to '${status}'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
       transact(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        if (statusGated && isDriverOnlyBlocked(cur, opts.callerScope)) {
+          throw new ConfigError({ what: refuseMsg });
+        }
         const next: KanbanTask = { ...cur, status };
         if (completedAt !== undefined) next.completedAt = completedAt;
         repo.upsertTask(next);
@@ -277,6 +295,9 @@ export async function moveTask(atmuxDir: string, id: string, status: string): Pr
     return;
   }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
+    if (statusGated && isDriverOnlyBlocked(t, opts.callerScope)) {
+      throw new ConfigError({ what: refuseMsg });
+    }
     const next: KanbanTask = { ...t, status };
     if (completedAt !== undefined) next.completedAt = completedAt;
     return next;
@@ -439,14 +460,22 @@ export async function markTaskDone(
   atmuxDir: string,
   id: string,
   note?: string,
+  opts: { callerScope?: CallerScope } = {},
 ): Promise<KanbanTask> {
   const completedAt = nowEpoch();
+  // ADR-033 driver-only refuse-gate. `done` is just `task move ... done`
+  // with implicit assignee, so the message matches taskMove's `done`
+  // path verbatim.
+  const refuseMsg = `done: ${id} is a driver-only Task — only the driver scope can move it to 'done'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (db, repo) =>
       transact(db, () => {
         const task = repo.getTask(id);
         if (task === null) {
           throw new ConfigError({ what: `no such task: ${id}` });
+        }
+        if (isDriverOnlyBlocked(task, opts.callerScope)) {
+          throw new ConfigError({ what: refuseMsg });
         }
         const next: KanbanTask = { ...task, status: "done", completedAt };
         if (note !== undefined) {
@@ -465,6 +494,9 @@ export async function markTaskDone(
       const task = k.tasks.find((t) => t.id === id);
       if (task === undefined) {
         throw new ConfigError({ what: `no such task: ${id}` });
+      }
+      if (isDriverOnlyBlocked(task, opts.callerScope)) {
+        throw new ConfigError({ what: refuseMsg });
       }
       const next: KanbanTask = {
         ...task,

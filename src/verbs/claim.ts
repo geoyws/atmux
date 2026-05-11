@@ -275,7 +275,10 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
   }
 
   const completedAt = nowEpoch();
-  await markTaskDone(atmuxDir, parsed.id, parsed.note);
+  // ADR-033 driver-only refuse-gate. markTaskDone enforces the same
+  // predicate as taskMove `done` transitions inside its transaction.
+  const callerScope = resolveCallerScope();
+  await markTaskDone(atmuxDir, parsed.id, parsed.note, { callerScope });
 
   // Inbox mirror: bash does this only if the task is already in the
   // member's inbox.inProgress; if missing, it's a no-op-on-pending +
