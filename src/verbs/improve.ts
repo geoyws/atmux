@@ -311,8 +311,8 @@ export async function improve(
   await armCycle(atmuxDir, written);
 
   // Fire 🌱 [eternal-improvement-start] Discord ping (best-effort —
-  // missing webhook is a no-op inside `send`).
-  await firePingStart(written, team.name, discord, nowFn);
+  // any send failure soft-degrades via `safeFireDiscord` with stderr WARN).
+  await firePingStart(written, team.name, discord, nowFn, stderr);
 
   return 0;
 }
@@ -351,25 +351,59 @@ function buildInitialState(opts: BuildInitialOpts): EternalImprovementState {
 
 // ---------- Discord pings (T3 templates wired by T7) ----------
 
+/** Run a Discord-send under soft-degrade: any send failure (missing
+ *  webhook, HTTP non-2xx like 429 rate-limit, network blip) emits a
+ *  single stderr WARN and resolves — the verb continues. Discord pings
+ *  are observability, not load-bearing state; an unwrap-and-throw on
+ *  the caller side would make `atmux improve` exit non-zero whenever
+ *  the webhook flapped, which broke the test suite under rate-limit
+ *  pressure (HTTP 429 from concurrent test runs) and any production
+ *  outage with the webhook upstream. Matches the documented intent of
+ *  the per-fire JSDocs ("best-effort: missing webhook URL is a no-op
+ *  inside `send`") — extended now to cover ALL send failures, not just
+ *  the unconfigured-webhook branch.
+ *
+ *  `stderr` defaults to a process-level write so legacy callers that
+ *  don't thread the sink down still surface the warning. */
+async function safeFireDiscord(
+  label: string,
+  send: () => Promise<void>,
+  stderr: Writer = (s) => process.stderr.write(s),
+): Promise<void> {
+  try {
+    await send();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    stderr(`atmux improve: discord ping ${label} skipped (best-effort): ${msg}\n`);
+  }
+}
+
 /** 🌱 [eternal-improvement-start] — fired once per `atmux improve`
  *  invocation that successfully writes initial state. Uses T3's
  *  `renderEternalImprovementStart` builder + the `send()` boundary.
- *  Best-effort: missing webhook URL is a no-op inside `send`. */
+ *  Best-effort: any send failure (missing webhook, HTTP 4xx/5xx,
+ *  network) is swallowed by `safeFireDiscord` + warned on stderr. */
 async function firePingStart(
   state: EternalImprovementState,
   teamName: string,
   discord: typeof sendDiscord,
   nowFn: () => number,
+  stderr?: Writer,
 ): Promise<void> {
-  await discord(
-    renderEternalImprovementStart({
-      team: teamName,
-      budgetSpec: state.budgetSpec,
-      budgetTotal: state.budgetTotal,
-      mode: state.mode,
-      runId: state.runId,
-      whenMs: nowFn(),
-    }),
+  await safeFireDiscord(
+    "eternal-improvement-start",
+    () =>
+      discord(
+        renderEternalImprovementStart({
+          team: teamName,
+          budgetSpec: state.budgetSpec,
+          budgetTotal: state.budgetTotal,
+          mode: state.mode,
+          runId: state.runId,
+          whenMs: nowFn(),
+        }),
+      ),
+    stderr,
   );
 }
 
@@ -384,17 +418,23 @@ async function firePingProgress(
   tokensSpent: number,
   discord: typeof sendDiscord,
   nowFn: () => number,
+  stderr?: Writer,
 ): Promise<void> {
-  await discord(
-    renderEternalImprovementProgress({
-      team: teamName,
-      cycleN: closedCycleN,
-      tasksShipped,
-      tokensSpent,
-      budgetTotal: state.budgetTotal,
-      budgetRemaining: state.budgetRemaining,
-      whenMs: nowFn(),
-    }),
+  await safeFireDiscord(
+    "eternal-improvement-progress",
+    () =>
+      discord(
+        renderEternalImprovementProgress({
+          team: teamName,
+          cycleN: closedCycleN,
+          tasksShipped,
+          tokensSpent,
+          budgetTotal: state.budgetTotal,
+          budgetRemaining: state.budgetRemaining,
+          whenMs: nowFn(),
+        }),
+      ),
+    stderr,
   );
 }
 
@@ -404,6 +444,7 @@ async function firePingDone(
   teamName: string,
   discord: typeof sendDiscord,
   nowFn: () => number,
+  stderr?: Writer,
 ): Promise<void> {
   // Total tasks shipped across history.
   const totalTasksShipped = state.history.reduce((a, h) => a + h.tasksDone, 0);
@@ -411,17 +452,22 @@ async function firePingDone(
   // (clamped to 0 if budgetRemaining accidentally exceeded total).
   const consumed = Math.max(0, state.budgetTotal - state.budgetRemaining);
   const durationMs = nowFn() - state.startedAt * 1000;
-  await discord(
-    renderEternalImprovementDone({
-      team: teamName,
-      cycleCount: state.cycleN,
-      totalTasksShipped,
-      tokensConsumed: consumed,
-      budgetTotal: state.budgetTotal,
-      durationMs: Math.max(0, durationMs),
-      modeB: state.mode === "idle-fallback",
-      whenMs: nowFn(),
-    }),
+  await safeFireDiscord(
+    "eternal-improvement-done",
+    () =>
+      discord(
+        renderEternalImprovementDone({
+          team: teamName,
+          cycleCount: state.cycleN,
+          totalTasksShipped,
+          tokensConsumed: consumed,
+          budgetTotal: state.budgetTotal,
+          durationMs: Math.max(0, durationMs),
+          modeB: state.mode === "idle-fallback",
+          whenMs: nowFn(),
+        }),
+      ),
+    stderr,
   );
 }
 
@@ -507,12 +553,13 @@ async function tickCycle(opts: TickCycleOpts): Promise<number> {
     totalSpent,
     discord,
     nowMs,
+    stderr,
   );
 
   if (shouldTerminate(closed)) {
     const terminated: EternalImprovementState = { ...closed, active: false };
     await writeState(atmuxDir, terminated);
-    await firePingDone(terminated, teamName, discord, nowMs);
+    await firePingDone(terminated, teamName, discord, nowMs, stderr);
     await onTerminate(terminated);
     return 0;
   }
@@ -521,6 +568,6 @@ async function tickCycle(opts: TickCycleOpts): Promise<number> {
   const next = openCycle(closed, nowSec);
   await writeState(atmuxDir, next);
   await armCycle(atmuxDir, next);
-  await firePingStart(next, teamName, discord, nowMs);
+  await firePingStart(next, teamName, discord, nowMs, stderr);
   return 0;
 }
