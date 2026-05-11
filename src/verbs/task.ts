@@ -48,7 +48,7 @@ const USAGE_HINT_ROOT =
   "(see 'atmux task' for per-subverb help)";
 
 const USAGE_ADD =
-  "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N] [--lane L]";
+  "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N] [--lane L] [--driver-only]";
 const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--json]";
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
@@ -171,6 +171,7 @@ async function taskAdd(argv: ReadonlyArray<string>): Promise<number> {
   if (parsed.deps !== undefined) opts.deps = parsed.deps;
   if (parsed.priority !== undefined) opts.priority = parsed.priority;
   if (parsed.lane !== undefined) opts.lane = parsed.lane;
+  if (parsed.driverOnly === true) opts.driverOnly = true;
   const id = await addTask(atmuxDir, opts);
   process.stdout.write(`${id}\n`);
   return 0;
@@ -229,9 +230,12 @@ async function taskList(argv: ReadonlyArray<string>): Promise<number> {
     const pb = b.priority ?? 99;
     return pa - pb;
   });
-  // Bash header + columns: ID(10) STATUS(13) OWNER(14) PRIO(4) SUBJECT
+  // Header + columns: ID(10) STATUS(13) OWNER(14) PRIO(4) F(2) SUBJECT
+  // F column carries ADR-033 driverOnly marker `D` (otherwise blank).
+  // Defense-in-depth visual cue alongside the load-bearing refuse-gate
+  // in `selectNextClaimable` — at-a-glance "this Task is driver-fires".
   process.stdout.write(
-    `${"ID".padEnd(10)} ${"STATUS".padEnd(13)} ${"OWNER".padEnd(14)} ${"PRIO".padEnd(4)} SUBJECT\n`,
+    `${"ID".padEnd(10)} ${"STATUS".padEnd(13)} ${"OWNER".padEnd(14)} ${"PRIO".padEnd(4)} ${"F".padEnd(2)} SUBJECT\n`,
   );
   for (const t of sorted) {
     const id = (t.id ?? "").padEnd(10);
@@ -240,7 +244,8 @@ async function taskList(argv: ReadonlyArray<string>): Promise<number> {
     const prio = (
       t.priority !== null && t.priority !== undefined ? String(t.priority) : "-"
     ).padEnd(4);
-    process.stdout.write(`${id} ${status} ${owner} ${prio} ${t.subject ?? ""}\n`);
+    const flag = (t.driverOnly === true ? "D" : "").padEnd(2);
+    process.stdout.write(`${id} ${status} ${owner} ${prio} ${flag} ${t.subject ?? ""}\n`);
   }
   return 0;
 }
@@ -335,6 +340,10 @@ interface ParsedAddArgs {
   deps?: ReadonlyArray<string>;
   priority?: number;
   lane?: string;
+  /** ADR-033: when true, mark the Task driverOnly — auto-pickup
+   *  (`claim --next` / lane-tick cron) skips it unless caller scope
+   *  is `driver`. */
+  driverOnly?: boolean;
   teamDir?: string;
 }
 
@@ -350,6 +359,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   let deps: string[] | undefined;
   let priority: number | undefined;
   let lane: string | undefined;
+  let driverOnly: boolean | undefined;
   let teamDir: string | undefined;
 
   let i = 0;
@@ -431,6 +441,12 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
       i += 2;
       continue;
     }
+    if (a === "--driver-only") {
+      // ADR-033: load-bearing refuse-gate flag. Boolean, no value.
+      driverOnly = true;
+      i += 1;
+      continue;
+    }
     if (a === "--") {
       // Bash: `--) shift; subject="$*"; break` — collect remaining as subject.
       subject = argv.slice(i + 1).join(" ");
@@ -452,6 +468,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   if (deps !== undefined) out.deps = deps;
   if (priority !== undefined) out.priority = priority;
   if (lane !== undefined) out.lane = lane;
+  if (driverOnly !== undefined) out.driverOnly = driverOnly;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }

@@ -117,6 +117,15 @@ describe("parseAddArgs", () => {
   test("unknown -* flag → UsageError", () => {
     expect(() => parseAddArgs(["--bogus"])).toThrow(UsageError);
   });
+
+  test("ADR-033: --driver-only sets driverOnly=true (boolean, no value)", () => {
+    const a = parseAddArgs(["subj", "--driver-only"]);
+    expect(a.driverOnly).toBe(true);
+  });
+
+  test("ADR-033: --driver-only absent → driverOnly undefined (preserves legacy default)", () => {
+    expect(parseAddArgs(["subj"]).driverOnly).toBeUndefined();
+  });
 });
 
 // ---------- Pure: parseListArgs ----------
@@ -259,6 +268,34 @@ describe("task verb — dispatch", () => {
     const k = await loadKanban(atmuxDir);
     expect(k.tasks).toHaveLength(1);
     expect(k.tasks[0]?.subject).toBe("first task");
+  });
+
+  test("ADR-033: 'add --driver-only' stamps driverOnly=true on the new Task", async () => {
+    await captureStdout(() =>
+      task(["add", "--team-dir", teamDir, "--driver-only", "fires-only-by-driver"]),
+    );
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks).toHaveLength(1);
+    expect(k.tasks[0]?.driverOnly).toBe(true);
+  });
+
+  test("ADR-033: 'add' without --driver-only leaves driverOnly absent (legacy default)", async () => {
+    await captureStdout(() => task(["add", "--team-dir", teamDir, "regular-task"]));
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.driverOnly).toBeUndefined();
+  });
+
+  test("ADR-033: 'list' surfaces D marker on driverOnly Tasks (blank otherwise)", async () => {
+    await addTask(atmuxDir, { subject: "regular", priority: 1 });
+    await addTask(atmuxDir, { subject: "fires-by-driver", priority: 1, driverOnly: true });
+    const { out } = await captureStdout(() => task(["list", "--team-dir", teamDir]));
+    expect(out).toContain(" F  SUBJECT");
+    const lines = out.split("\n");
+    const regularLine = lines.find((l) => l.includes("regular")) ?? "";
+    const driverLine = lines.find((l) => l.includes("fires-by-driver")) ?? "";
+    // The flag column comes right before SUBJECT, padded to width 2.
+    expect(driverLine).toMatch(/\sD\s+fires-by-driver$/);
+    expect(regularLine).toMatch(/\s\s\s+regular$/);
   });
 
   test("'list' prints header + sorted rows by priority", async () => {

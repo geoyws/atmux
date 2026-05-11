@@ -35,7 +35,7 @@ Messaging:
   outbox [--ack] [--json]     Driver: read lead-outbox.md (--ack archives)
 
 Task board (kanban):
-  task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>]
+  task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>] [--driver-only]
   task list [--status todo|in-progress|done|blocked] [--assignee <member>]
   task show <id>
   task move <id> <todo|in-progress|done|blocked>

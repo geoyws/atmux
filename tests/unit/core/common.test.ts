@@ -38,6 +38,7 @@ import {
   normalizeMemberName,
   paneIsBusy,
   requireTeam,
+  resolveCallerScope,
   resolveTeamSocket,
   sessionAnchorPath,
   stateDir,
@@ -706,5 +707,41 @@ describe("resolveTeamSocket (t-add5976a — read-side tmuxTmpdir honour)", () =>
     expect(resolveTeamSocket({ name: "t", tmuxTmpdir: "/tmp/atmux_tmux_a" }, { uid: 1000 })).toBe(
       "/tmp/atmux_tmux_a/tmux-1000/default",
     );
+  });
+});
+
+describe("resolveCallerScope (ADR-033 driver-only refuse-gate)", () => {
+  test("ATMUX_CALLER_SCOPE=driver → driver", () => {
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "driver" } })).toBe("driver");
+  });
+
+  test("ATMUX_CALLER_SCOPE unset → member (fail-secure default)", () => {
+    expect(resolveCallerScope({ env: {} })).toBe("member");
+  });
+
+  test("ATMUX_CALLER_SCOPE=member → member", () => {
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "member" } })).toBe("member");
+  });
+
+  test("ATMUX_CALLER_SCOPE=garbage → member (anything not 'driver' is rejected)", () => {
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "DRIVER" } })).toBe("member");
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "driver " } })).toBe("member");
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "" } })).toBe("member");
+  });
+
+  test("no opts → reads live process.env", () => {
+    const prior = process.env.ATMUX_CALLER_SCOPE;
+    try {
+      delete process.env.ATMUX_CALLER_SCOPE;
+      expect(resolveCallerScope()).toBe("member");
+      process.env.ATMUX_CALLER_SCOPE = "driver";
+      expect(resolveCallerScope()).toBe("driver");
+    } finally {
+      if (prior === undefined) {
+        delete process.env.ATMUX_CALLER_SCOPE;
+      } else {
+        process.env.ATMUX_CALLER_SCOPE = prior;
+      }
+    }
   });
 });

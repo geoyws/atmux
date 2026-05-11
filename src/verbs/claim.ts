@@ -21,7 +21,12 @@
 // $id"; TS prints to stdout for byte-parity at the verb layer.
 
 import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
-import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import {
+  getAtmuxDir,
+  resolveCallerScope,
+  type ResolveDirOpts,
+  requireTeam,
+} from "../core/common.ts";
 import {
   appendDispatched,
   loadInbox,
@@ -216,7 +221,13 @@ async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
   const crossLaneClaim = readCrossLaneClaim(team);
 
   const tasks = await listTasks(atmuxDir);
-  const candidate = selectNextClaimable(tasks, { callerLane, crossLaneClaim, caller: who });
+  const callerScope = resolveCallerScope();
+  const candidate = selectNextClaimable(tasks, {
+    callerLane,
+    crossLaneClaim,
+    caller: who,
+    callerScope,
+  });
 
   if (candidate === null) {
     if (callerLane !== null && !crossLaneClaim) {

@@ -230,6 +230,60 @@ describe("selectNextClaimable", () => {
     });
     expect(pick?.id).toBe("t-noLane");
   });
+
+  // ADR-033 driver-only refuse-gate — auto-pickup filter.
+  // Failure surfaced by t-25edd0f7 dogfooding: schema field existed
+  // but selection ignored it, so members could auto-claim driverOnly
+  // Tasks (the precise bug ADR-033 was written to prevent).
+  test("ADR-033: driverOnly=true Task invisible to default (member) scope", () => {
+    const tasks = [
+      baseTask({ id: "t-driverOnly", lane: null, priority: 1, driverOnly: true }),
+      baseTask({ id: "t-regular", lane: null, priority: 5 }),
+    ];
+    const pick = selectNextClaimable(tasks, {
+      callerLane: null,
+      crossLaneClaim: true,
+      caller: "worker",
+    });
+    // No callerScope passed → default member treatment, driverOnly invisible.
+    expect(pick?.id).toBe("t-regular");
+  });
+
+  test("ADR-033: callerScope='member' explicitly hides driverOnly Tasks", () => {
+    const tasks = [baseTask({ id: "t-driverOnly", lane: null, driverOnly: true })];
+    const pick = selectNextClaimable(tasks, {
+      callerLane: null,
+      crossLaneClaim: true,
+      caller: "worker",
+      callerScope: "member",
+    });
+    expect(pick).toBeNull();
+  });
+
+  test("ADR-033: callerScope='driver' restores visibility", () => {
+    const tasks = [baseTask({ id: "t-driverOnly", lane: null, driverOnly: true })];
+    const pick = selectNextClaimable(tasks, {
+      callerLane: null,
+      crossLaneClaim: true,
+      caller: "driver",
+      callerScope: "driver",
+    });
+    expect(pick?.id).toBe("t-driverOnly");
+  });
+
+  test("ADR-033: driverOnly hides Task in own-lane first pass too", () => {
+    const tasks = [
+      baseTask({ id: "t-fe-driverOnly", lane: "fe", priority: 1, driverOnly: true }),
+      baseTask({ id: "t-fe-regular", lane: "fe", priority: 5 }),
+    ];
+    const pick = selectNextClaimable(tasks, {
+      callerLane: "fe",
+      crossLaneClaim: true,
+      caller: "fe-worker",
+      callerScope: "member",
+    });
+    expect(pick?.id).toBe("t-fe-regular");
+  });
 });
 
 // ---------- claim --next verb integration ----------

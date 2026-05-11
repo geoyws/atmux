@@ -52,7 +52,7 @@ import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { type Kanban, Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
-import { kanbanJsonPath } from "./common.ts";
+import { type CallerScope, kanbanJsonPath } from "./common.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 // ---------- Storage routing (ADR-060) ----------
@@ -110,6 +110,10 @@ export interface AddTaskOpts {
   /** Optional lane (`fe`/`be`/`db`/`ops`/`test`/`review`/`misc`). When set,
    *  enables future lane-claim cron pickup (ADR-062). */
   lane?: string;
+  /** ADR-033 driver-only refuse-gate flag. When `true`, auto-pickup
+   *  (`claim --next` / lane-tick cron) skips this Task unless the
+   *  caller's scope is `driver` (env `ATMUX_CALLER_SCOPE=driver`). */
+  driverOnly?: boolean;
 }
 
 export interface ListTasksFilter {
@@ -183,6 +187,10 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     claimedAt: null,
     completedAt: null,
   };
+  // ADR-033: stamp driverOnly when explicitly set. Default omitted (the
+  // schema treats `undefined` as not-driver-only via the optional field
+  // shape) so legacy Tasks parse unchanged.
+  if (opts.driverOnly === true) task.driverOnly = true;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (_db, repo) => {
       repo.addTask(task);
@@ -480,6 +488,11 @@ export interface SelectNextOpts {
    *  remain claimable; pre-assigned-to-other are skipped (bash
    *  d-515de5ce relax). */
   caller: string;
+  /** ADR-033 caller-scope verdict. Tasks with `driverOnly: true` are
+   *  invisible to the selection when this is `"member"` (the auto-
+   *  pickup default). Tests / explicit driver callers pass `"driver"`
+   *  to bypass the filter. Default at call sites: `"member"`. */
+  callerScope?: CallerScope;
 }
 
 /**
@@ -502,8 +515,18 @@ export function selectNextClaimable(
 ): KanbanTask | null {
   const ownerOk = (t: KanbanTask): boolean =>
     t.owner === null || t.owner === undefined || t.owner === opts.caller;
+  // ADR-033 driver-only refuse-gate: skip Tasks where `driverOnly:true`
+  // unless the caller's resolved scope is `driver`. Auto-pickup
+  // (`claim --next` / lane-tick cron) MUST set `callerScope` for this
+  // to fire; default `undefined`/`"member"` is fail-secure.
+  const driverOnlyOk = (t: KanbanTask): boolean =>
+    t.driverOnly !== true || opts.callerScope === "driver";
   const baseEligible = tasks.filter(
-    (t) => t.status === "todo" && ownerOk(t) && unresolvedDeps(tasks, t).length === 0,
+    (t) =>
+      t.status === "todo" &&
+      ownerOk(t) &&
+      driverOnlyOk(t) &&
+      unresolvedDeps(tasks, t).length === 0,
   );
   const tiebreak = (a: KanbanTask, b: KanbanTask): number => {
     const pa = a.priority ?? 999;

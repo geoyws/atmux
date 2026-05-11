@@ -555,3 +555,38 @@ export function resolveTeamSocket(
   }
   return getDefaultSocket(team.name);
 }
+
+/** Caller-scope verdict — `driver` or `member`. Default is `member`
+ *  (fail-secure per ADR-033 §"Caller scope detection"): only an
+ *  explicit `ATMUX_CALLER_SCOPE=driver` env var lets a caller pass the
+ *  driver-only refuse-gate. Member panes outnumber driver panes; a
+ *  default of `member` ensures auto-claim cron ticks can never bypass
+ *  the gate by accident. */
+export type CallerScope = "driver" | "member";
+
+/** Test-injection seam for `resolveCallerScope`. */
+export interface ResolveCallerScopeOpts {
+  /** Override `process.env`. Default: live process env. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Resolve the current caller's scope per ADR-033 §"Caller scope
+ * detection". Interim env-only gate — `ATMUX_CALLER_SCOPE=driver`
+ * returns `"driver"`; anything else (unset, empty, "member", garbage)
+ * returns `"member"`.
+ *
+ * The bash port (`lib/common.sh::atmux::resolve_caller_scope`) layered
+ * a window-name defense-in-depth check on top of the env read so
+ * members couldn't bypass by `export`ing the var themselves. That
+ * check keyed on the deprecated `__<team>__*` window prefix (per ADR-
+ * 017 atmux teams now use bare `<emoji><member>` names) and is moot
+ * post-rename; the TS port re-establishes the prefix-free defense via
+ * the team-roster check in a future Task, not this minimal port. The
+ * env-only gate still covers the common case: drivers `export
+ * ATMUX_CALLER_SCOPE=driver` in their session, members don't.
+ */
+export function resolveCallerScope(opts: ResolveCallerScopeOpts = {}): CallerScope {
+  const env = opts.env ?? process.env;
+  return env.ATMUX_CALLER_SCOPE === "driver" ? "driver" : "member";
+}
