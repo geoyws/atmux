@@ -28,6 +28,9 @@
 // `bin/` path); running `bun run src/cli.ts <verb>` directly is NOT
 // supported. This keeps `src/cli.ts` 100% unit-testable per ADR-009 §2.
 
+import { exists } from "./abstractions/fs.ts";
+import { getAtmuxDir, teamJsonPath, tryLoadTeam } from "./core/common.ts";
+import { safeAppendVerbEvent, type VerbEvent } from "./core/events-log.ts";
 import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./errors.ts";
 import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
@@ -78,13 +81,82 @@ import { whipResumeCheck } from "./verbs/whip-resume-check.ts";
  * maps ADR-006-tagged errors to BSD sysexits (`UsageError` → 64,
  * `*-timeout` → 75, `ConfigError` → 78, etc.). Anything not an
  * `AtmuxError` is treated as a programmer bug → exit 99 + stack.
+ *
+ * Wraps the dispatch call in an events-log envelope (t-91cd050f): every
+ * verb invocation appends one JSONL line to
+ * `<atmuxDir>/logs/<YYYY>/<MM>/events.jsonl` with timing + outcome +
+ * exit code. The append is best-effort — any failure (no team yet,
+ * disk full, race on parent dir) is swallowed by `safeAppendVerbEvent`
+ * with a stderr WARN. Events are observability, not load-bearing state.
  */
 export async function main(argv: ReadonlyArray<string>): Promise<number> {
+  const startMs = Date.now();
+  const verb = argv[0] ?? "";
+  let exit = 0;
+  let outcome: VerbEvent["outcome"] = "ok";
   try {
-    return await dispatch(argv);
+    exit = await dispatch(argv);
+    outcome = exit === 0 ? "ok" : "warn";
   } catch (err) {
-    return reportError(err);
+    exit = reportError(err);
+    outcome = "error";
   }
+  await logVerbEvent({ verb, args: argv.slice(1), startMs, exit, outcome });
+  return exit;
+}
+
+interface LogVerbEventOpts {
+  verb: string;
+  args: ReadonlyArray<string>;
+  startMs: number;
+  exit: number;
+  outcome: VerbEvent["outcome"];
+}
+
+/**
+ * Best-effort events-log append for `main()`'s envelope. Skipped when
+ * `<atmuxDir>` doesn't exist on disk (first run / `init` against an
+ * empty cwd) — no point creating `logs/` next to a not-yet-initialised
+ * team. Team name is read from team.json when present, empty string
+ * otherwise (schema-tolerant for pre-init partial states).
+ *
+ * Internal — exported only via the test re-import in
+ * `tests/unit/cli.test.ts` for direct coverage. Production calls come
+ * exclusively from `main()` above.
+ */
+export async function logVerbEvent(opts: LogVerbEventOpts): Promise<void> {
+  // Skip `--version` / `-V` / `--help` / `-h` aliases entirely — those
+  // never touch the team state + would create a noise event for every
+  // shell tab-complete probe.
+  if (opts.verb === "--version" || opts.verb === "-V") return;
+  if (opts.verb === "--help" || opts.verb === "-h") return;
+  let atmuxDir: string;
+  try {
+    atmuxDir = await getAtmuxDir({});
+  } catch {
+    return; // path resolution itself failed — skip event log
+  }
+  if (!(await exists(atmuxDir))) return; // no team yet, skip
+  let team = "";
+  try {
+    const t = await tryLoadTeam({ dir: atmuxDir });
+    if (t !== null) team = t.name;
+  } catch {
+    // team.json malformed or absent — fall through with empty team
+    if (await exists(teamJsonPath(atmuxDir))) {
+      // team.json exists but unreadable — still log with empty team
+    }
+  }
+  const event: VerbEvent = {
+    ts: Math.floor(Date.now() / 1000),
+    verb: opts.verb,
+    args: opts.args,
+    outcome: opts.outcome,
+    durationMs: Date.now() - opts.startMs,
+    exit: opts.exit,
+    team,
+  };
+  await safeAppendVerbEvent(atmuxDir, event);
 }
 
 /**
