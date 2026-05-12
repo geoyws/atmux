@@ -30,6 +30,7 @@ import {
   checkTuis,
   checkWebhook,
   checkWhipConfigDrift,
+  checkWorktreeIsolation,
   type DoctorRow,
   doctor,
   findInboxTaskMarks,
@@ -1599,4 +1600,231 @@ describe("checkInboxMarks", () => {
     );
     expect(await checkInboxMarks(atmuxDir)).toEqual([]);
   });
+});
+
+// ---------- ADR-082 W5: checkWorktreeIsolation ----------
+
+describe("checkWorktreeIsolation", () => {
+  let atmuxDir: string;
+  beforeEach(async () => {
+    atmuxDir = await mkdtemp(join(tmpdir(), "atmux-doctor-wt-"));
+  });
+  afterEach(async () => {
+    await rm(atmuxDir, { recursive: true, force: true });
+  });
+
+  type GitSpawn = import("../../../src/abstractions/worktree.ts").GitSpawn;
+  type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
+  type ReadDir = NonNullable<
+    NonNullable<Parameters<typeof checkWorktreeIsolation>[2]>["readWorktreeDir"]
+  >;
+
+  function gitOk(stdout = ""): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  function gitFail(stderr: string, code = 128): SpawnResult {
+    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+  }
+  /** Build a `git worktree list --porcelain` block. */
+  function porcelainBlock(path: string, branch: string | null): string {
+    const head = "HEAD 0000000000000000000000000000000000000000";
+    return branch === null
+      ? `worktree ${path}\n${head}\ndetached\n`
+      : `worktree ${path}\n${head}\nbranch refs/heads/${branch}\n`;
+  }
+  /** Build a fake `readWorktreeDir` that returns the given subdir names
+   *  (all marked isDirectory: true). Pass `null` to simulate ENOENT. */
+  function fakeReadDir(names: ReadonlyArray<string> | null): ReadDir {
+    return async () => (names === null ? null : names.map((name) => ({ name, isDirectory: true })));
+  }
+  function team(
+    members: ReadonlyArray<{ name: string }>,
+    overrides: Partial<Team> = {},
+  ): Team {
+    return { name: "demo", members, ...overrides } as Team;
+  }
+
+  test("team === null → empty rows (checkTeam already surfaced the failure)", async () => {
+    expect(await checkWorktreeIsolation(null, atmuxDir)).toEqual([]);
+  });
+
+  // ---------- Class 4: disabled-but-present ----------
+
+  test("isolation OFF + no leftover dirs → empty rows (no-op for legacy teams)", async () => {
+    const rows = await checkWorktreeIsolation(team([{ name: "alice" }]), atmuxDir, {
+      readWorktreeDir: fakeReadDir(null),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("isolation OFF + leftover dirs → ONE yellow 'disabled-but-present' (batch)", async () => {
+    const rows = await checkWorktreeIsolation(team([{ name: "alice" }]), atmuxDir, {
+      readWorktreeDir: fakeReadDir(["alice", "stale-bob"]),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("worktree:disabled-but-present");
+    expect(rows[0]?.detail).toContain("2 dir(s)");
+    expect(rows[0]?.hint).toContain("worktreeIsolation: true");
+  });
+
+  // ---------- Class 1: missing per member ----------
+
+  test("isolation ON + member's worktree dir missing → RED 'worktree-missing:<name>'", async () => {
+    const gitSpawn: GitSpawn = async () => gitOk(""); // no worktrees managed
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }, { name: "bob" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    // 2 missing rows; no wrong-branch probe ran (no present worktrees).
+    const missing = rows.filter((r) => r.label.startsWith("worktree:missing:"));
+    expect(missing).toHaveLength(2);
+    expect(missing.every((r) => r.status === "red")).toBe(true);
+    expect(missing.map((r) => r.label).sort()).toEqual([
+      "worktree:missing:alice",
+      "worktree:missing:bob",
+    ]);
+    expect(missing[0]?.hint).toContain("atmux start");
+  });
+
+  // ---------- Class 2: orphan ----------
+
+  test("isolation ON + dir present that isn't in roster → YELLOW 'worktree-orphan:<dir>'", async () => {
+    const gitSpawn: GitSpawn = async () =>
+      // The wrong-branch probe runs because alice IS present (matched).
+      // We want the orphan to also surface — set up a clean branch state
+      // so wrong-branch returns no rows.
+      gitOk("");
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      {
+        readWorktreeDir: fakeReadDir(["alice", "ghost"]),
+        // Override the git probe so wrong-branch detection cleanly skips.
+        gitSpawn: async (argv) => {
+          if (argv.includes("branch")) return gitOk(""); // detached HEAD → probe skip
+          if (argv.includes("list")) return gitOk("");
+          return gitOk("");
+        },
+      },
+    );
+    const orphans = rows.filter((r) => r.label.startsWith("worktree:orphan:"));
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]?.label).toBe("worktree:orphan:ghost");
+    expect(orphans[0]?.status).toBe("yellow");
+    expect(orphans[0]?.detail).toContain("ghost");
+    expect(orphans[0]?.hint).toContain("git worktree remove");
+  });
+
+  // ---------- Class 3: wrong-branch ----------
+
+  test("isolation ON + worktree on wrong branch → YELLOW 'worktree-wrong-branch:<name>'", async () => {
+    const wtAlice = resolveWtPath("alice");
+    const wtBob = resolveWtPath("bob");
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("branch")) return gitOk("geoyws\n");
+      if (argv.includes("list")) {
+        return gitOk([porcelainBlock(wtAlice, "feature-x"), porcelainBlock(wtBob, "geoyws")].join("\n"));
+      }
+      return gitOk("");
+    };
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }, { name: "bob" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir(["alice", "bob"]), gitSpawn },
+    );
+    const wrong = rows.filter((r) => r.label.startsWith("worktree:wrong-branch:"));
+    expect(wrong).toHaveLength(1);
+    expect(wrong[0]?.label).toBe("worktree:wrong-branch:alice");
+    expect(wrong[0]?.detail).toContain("feature-x");
+    expect(wrong[0]?.detail).toContain("geoyws");
+    expect(wrong[0]?.hint).toContain("auto-checkout disabled");
+  });
+
+  test("isolation ON + git probe fails → single yellow 'branch-probe-skipped' (degrades, not aborts)", async () => {
+    const gitSpawn: GitSpawn = async () => gitFail("fatal: not a git repository");
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir(["alice"]), gitSpawn },
+    );
+    const skipRow = rows.find((r) => r.label === "worktree:branch-probe-skipped");
+    expect(skipRow).toBeDefined();
+    expect(skipRow?.status).toBe("yellow");
+    expect(skipRow?.detail).toContain("git probe failed");
+  });
+
+  test("isolation ON + detached HEAD (empty branch) → 'branch-probe-skipped' with detached-HEAD detail", async () => {
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("branch")) return gitOk("\n");
+      if (argv.includes("list")) return gitOk(porcelainBlock(resolveWtPath("alice"), "main"));
+      return gitOk("");
+    };
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir(["alice"]), gitSpawn },
+    );
+    const skip = rows.find((r) => r.label === "worktree:branch-probe-skipped");
+    expect(skip).toBeDefined();
+    expect(skip?.detail).toContain("detached HEAD");
+  });
+
+  test("isolation ON + dir present but git worktree list doesn't know it → 'not-managed:<name>'", async () => {
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("branch")) return gitOk("geoyws\n");
+      if (argv.includes("list")) return gitOk(""); // empty list — no managed worktrees
+      return gitOk("");
+    };
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir(["alice"]), gitSpawn },
+    );
+    const stray = rows.find((r) => r.label === "worktree:not-managed:alice");
+    expect(stray).toBeDefined();
+    expect(stray?.status).toBe("yellow");
+    expect(stray?.detail).toContain("isn't registered");
+  });
+
+  // ---------- Composite: missing + orphan + wrong-branch in one pass ----------
+
+  test("composite — RED missing + YELLOW orphan + YELLOW wrong-branch all surface in one pass", async () => {
+    const wtBob = resolveWtPath("bob");
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("branch")) return gitOk("geoyws\n");
+      if (argv.includes("list")) return gitOk(porcelainBlock(wtBob, "feature-x"));
+      return gitOk("");
+    };
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }, { name: "bob" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir(["bob", "stale"]), gitSpawn },
+    );
+    // alice missing (RED), stale orphan (YELLOW), bob wrong-branch (YELLOW).
+    const labels = rows.map((r) => r.label).sort();
+    expect(labels).toContain("worktree:missing:alice");
+    expect(labels).toContain("worktree:orphan:stale");
+    expect(labels).toContain("worktree:wrong-branch:bob");
+    // Status mix surfaces correctly.
+    expect(rows.find((r) => r.label === "worktree:missing:alice")?.status).toBe("red");
+    expect(rows.find((r) => r.label === "worktree:orphan:stale")?.status).toBe("yellow");
+    expect(rows.find((r) => r.label === "worktree:wrong-branch:bob")?.status).toBe("yellow");
+  });
+
+  // Helper: resolve a worktree path against the test's atmuxDir, matching
+  // what the production `resolveWorktreePath` derives.
+  function resolveWtPath(member: string): string {
+    const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
+    return join(projectRoot, ".atmux", "worktrees", member);
+  }
 });

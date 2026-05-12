@@ -32,6 +32,7 @@ import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux } from "../abstractions/tmux.ts";
+import { resolveWorktreePath } from "../abstractions/worktree.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
@@ -1203,6 +1204,208 @@ export function renderJson(report: DoctorReport): string {
   )}\n`;
 }
 
+// ---------- ADR-082 W5: worktree-isolation check (4 anomaly classes) ----------
+
+export interface CheckWorktreeOpts {
+  /** Git spawn override (test injection). Default uses `defaultGitSpawn`
+   *  from `abstractions/worktree.ts`. */
+  gitSpawn?: GitSpawn;
+  /** Readdir override (test injection). Default `node:fs/promises::readdir`
+   *  with `withFileTypes: true`. Returning `null` simulates ENOENT — the
+   *  worktrees directory not existing yet. */
+  readWorktreeDir?: (
+    path: string,
+  ) => Promise<ReadonlyArray<{ name: string; isDirectory: boolean }> | null>;
+}
+
+interface PorcelainWorktree {
+  /** Absolute path of the worktree, as reported by `git worktree list --porcelain`. */
+  path: string;
+  /** Checked-out branch (without `refs/heads/` prefix). Empty when detached HEAD. */
+  branch: string;
+}
+
+/**
+ * ADR-082 §5 — surface 4 anomaly classes for `worktreeIsolation: true`
+ * teams + 1 cleanup-suggestion for legacy teams with leftover state.
+ *
+ * Classes:
+ *   1. `worktree-missing`         — isolation on; member has no worktree dir.
+ *                                    RED. Auto-fix hint: re-run `atmux start` (the
+ *                                    W3 provisioning step is idempotent — reruns
+ *                                    create the missing worktree only).
+ *   2. `worktree-orphan`           — isolation on; dir under `<atmuxDir>/worktrees/`
+ *                                    isn't matched by any `team.members[].name`.
+ *                                    YELLOW. Hint: `git worktree remove` (or
+ *                                    `atmux doctor --fix` once V-24 wires the
+ *                                    auto-fix branch).
+ *   3. `worktree-wrong-branch`     — worktree on a different branch than the
+ *                                    operator's current checkout. YELLOW. Surface
+ *                                    only — no auto-checkout (operator-edited
+ *                                    state may carry unstashed work; same rule
+ *                                    as W1's `provisionWorktree` wrong-branch
+ *                                    throw).
+ *   4. `worktree-disabled-but-present` — isolation OFF (or unset) but
+ *                                    `<atmuxDir>/worktrees/` has entries. Single
+ *                                    YELLOW (not per-orphan — the cleanup is
+ *                                    a batch operation). Hint: flip
+ *                                    `worktreeIsolation: true` to resume
+ *                                    management, OR `rm -rf` to discard.
+ *
+ * Pure modulo IO — every IO call gated through `opts` for tests. When
+ * `team === null` (team.json failed to load), returns empty: the
+ * `checkTeam` row already surfaced the broken state.
+ */
+export async function checkWorktreeIsolation(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckWorktreeOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  const readDir = opts.readWorktreeDir ?? defaultReadWorktreeDir;
+  const worktreesDir = join(atmuxDir, "worktrees");
+  const entries = await readDir(worktreesDir);
+
+  const isolation = team.worktreeIsolation === true;
+  const memberNames = new Set(team.members.map((m) => m.name));
+  const subdirs = entries === null ? [] : entries.filter((e) => e.isDirectory).map((e) => e.name);
+
+  // Class 4 — isolation off but entries present. Single row.
+  if (!isolation) {
+    if (subdirs.length === 0) return [];
+    return [
+      {
+        status: "yellow",
+        label: "worktree:disabled-but-present",
+        detail: `${subdirs.length} dir(s) under ${worktreesDir} despite worktreeIsolation !== true`,
+        hint: "flip team.json `worktreeIsolation: true` to resume management, or `rm -rf` to discard",
+      },
+    ];
+  }
+
+  // Classes 1 + 2 — present-set delta against the team roster.
+  const presentSet = new Set(subdirs);
+  const rows: DoctorRow[] = [];
+
+  // Class 1 — missing per member.
+  for (const member of team.members) {
+    if (!presentSet.has(member.name)) {
+      const expected = resolveWorktreePath(team, member.name, atmuxDir);
+      rows.push({
+        status: "red",
+        label: `worktree:missing:${member.name}`,
+        detail: `expected ${expected}`,
+        hint: "re-run `atmux start` (W3 provisioning is idempotent — creates only the missing worktrees)",
+      });
+    }
+  }
+
+  // Class 2 — orphan per directory not in the roster.
+  for (const name of subdirs) {
+    if (!memberNames.has(name)) {
+      rows.push({
+        status: "yellow",
+        label: `worktree:orphan:${name}`,
+        detail: `${join(worktreesDir, name)} not in team.members[].name`,
+        hint: "remove via `git worktree remove` (or wait on `atmux doctor --fix` per V-24)",
+      });
+    }
+  }
+
+  // Class 3 — wrong-branch per managed worktree. ONE shared `git worktree
+  // list --porcelain` + `git branch --show-current` invocation pair
+  // services every member; if either git call fails the entire wrong-
+  // branch detection degrades to a yellow advisory rather than blocking
+  // the rest of the doctor pass. Members whose worktrees we couldn't
+  // resolve (missing — class 1) are skipped naturally.
+  const present = team.members.filter((m) => presentSet.has(m.name));
+  if (present.length > 0) {
+    const git = opts.gitSpawn ?? defaultGitSpawn;
+    // Match start.ts / stop.ts projectRoot resolution: regex-strip
+    // a trailing `/.atmux/?`.
+    const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
+    const branchR = await git(["-C", projectRoot, "branch", "--show-current"]);
+    const expectedBranch = branchR.exitCode === 0 ? branchR.stdout.trim() : "";
+    const listR = await git(["-C", projectRoot, "worktree", "list", "--porcelain"]);
+    if (branchR.exitCode !== 0 || listR.exitCode !== 0 || expectedBranch.length === 0) {
+      rows.push({
+        status: "yellow",
+        label: "worktree:branch-probe-skipped",
+        detail:
+          branchR.exitCode !== 0 || listR.exitCode !== 0
+            ? `git probe failed (rc=${branchR.exitCode}/${listR.exitCode})`
+            : "operator on detached HEAD — no current branch to compare against",
+        hint: "wrong-branch detection skipped; manually verify worktree branches if isolation is critical",
+      });
+    } else {
+      const parsed = parsePorcelainWorktrees(listR.stdout);
+      for (const member of present) {
+        const wt = resolveWorktreePath(team, member.name, atmuxDir);
+        const found = parsed.find((p) => p.path === wt);
+        if (found === undefined) {
+          // Directory exists on disk but isn't a managed git worktree.
+          // Could be a stale dir from a prior abort. Surface as yellow.
+          rows.push({
+            status: "yellow",
+            label: `worktree:not-managed:${member.name}`,
+            detail: `${wt} exists on disk but isn't registered with git worktree list`,
+            hint: "remove the directory or re-provision via `atmux start`",
+          });
+          continue;
+        }
+        if (found.branch !== expectedBranch) {
+          rows.push({
+            status: "yellow",
+            label: `worktree:wrong-branch:${member.name}`,
+            detail: `on '${found.branch || "(detached)"}', operator on '${expectedBranch}'`,
+            hint: "reconcile manually — auto-checkout disabled per ADR-082 §3 (unstashed work at risk)",
+          });
+        }
+      }
+    }
+  }
+
+  return rows;
+}
+
+async function defaultReadWorktreeDir(
+  path: string,
+): Promise<ReadonlyArray<{ name: string; isDirectory: boolean }> | null> {
+  const { readdir } = await import("node:fs/promises");
+  try {
+    const entries = await readdir(path, { withFileTypes: true });
+    return entries.map((e) => ({ name: String(e.name), isDirectory: e.isDirectory() }));
+  } catch (err) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      (err as { code?: string }).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
+  // `git worktree list --porcelain` emits blocks separated by blank lines:
+  //   worktree <path>
+  //   HEAD <sha>
+  //   branch refs/heads/<name>    (or `detached`)
+  const out: PorcelainWorktree[] = [];
+  for (const block of stdout.split("\n\n")) {
+    const lines = block.split("\n");
+    const wtLine = lines.find((l) => l.startsWith("worktree "));
+    if (wtLine === undefined) continue;
+    const path = wtLine.slice("worktree ".length);
+    const branchLine = lines.find((l) => l.startsWith("branch "));
+    const branch =
+      branchLine === undefined ? "" : branchLine.slice("branch refs/heads/".length);
+    out.push({ path, branch });
+  }
+  return out;
+}
+
 // ---------- Public verb entry ----------
 
 export interface DoctorOpts {
@@ -1240,6 +1443,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // ADR-079 §A: cron interval values must be divisors of 60 (minutes)
   // or 24 (hours). Yellow per offender; surfaces before atmux start.
   rows.push(...checkCronIntervalDivisors(team));
+  // ADR-082 §5 W5: per-member worktree-isolation anomalies. Returns
+  // empty when team is null (checkTeam already surfaced the broken
+  // state) or when isolation is off AND no leftover dirs exist.
+  rows.push(...(await checkWorktreeIsolation(team, atmuxDir)));
   return rows;
 }
 
