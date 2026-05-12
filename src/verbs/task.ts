@@ -31,6 +31,8 @@ import {
   listTasks,
   moveTask,
   removeTask,
+  setTaskBody,
+  setTaskDeps,
   setTaskLane,
   showTask,
 } from "../core/kanban.ts";
@@ -44,7 +46,7 @@ import { ConfigError, UsageError } from "../errors.ts";
 const STATUSES_THAT_DRAIN_INBOX = new Set(["blocked", "todo"]);
 
 const USAGE_HINT_ROOT =
-  "atmux task <add|list|show|move|assign|lane|rm> [args] " +
+  "atmux task <add|list|show|move|assign|lane|update|rm> [args] " +
   "(see 'atmux task' for per-subverb help)";
 
 const USAGE_ADD =
@@ -52,6 +54,7 @@ const USAGE_ADD =
 const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--json]";
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
+const USAGE_UPDATE = "atmux task update <id> [--body <text>] [--deps <a,b>]";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
 
@@ -148,12 +151,14 @@ export async function task(argv: ReadonlyArray<string>): Promise<number> {
       return await taskAssign(rest);
     case "lane":
       return await taskLane(rest);
+    case "update":
+      return await taskUpdate(rest);
     case "rm":
     case "remove":
       return await taskRemove(rest);
     default:
       throw new UsageError({
-        what: `task: unknown verb: ${verb} (use add|list|show|move|assign|rm)`,
+        what: `task: unknown verb: ${verb} (use add|list|show|move|assign|lane|update|rm)`,
         hint: USAGE_HINT_ROOT,
       });
   }
@@ -202,6 +207,86 @@ async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
   // `-` clears the lane (sets to null).
   const lane = laneArg === "-" ? null : laneArg;
   await setTaskLane(atmuxDir, id, lane);
+  return 0;
+}
+
+// `atmux task update <id> [--body <text>] [--deps <a,b>]`
+//
+// Mutate an existing Task's body and/or deps without touching status,
+// owner, or other fields. Empty `--body ""` clears the body; empty
+// `--deps ""` clears all upstream blockers. At least one of --body or
+// --deps must be supplied (otherwise the call is a no-op and we surface
+// it as a usage error so the operator notices the typo).
+async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
+  const { positional, rest } = splitFlagsAndPositionals(argv);
+  const id = positional[0];
+  if (id === undefined || id.length === 0) {
+    throw new UsageError({ what: "task update: <id> required", hint: USAGE_UPDATE });
+  }
+  let body: string | undefined;
+  let deps: string[] | undefined;
+  let teamDir: string | undefined;
+  let i = 0;
+  while (i < rest.length) {
+    const a = rest[i];
+    if (a === "--body") {
+      const v = rest[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "task update: --body requires a value",
+          hint: USAGE_UPDATE,
+        });
+      }
+      body = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--deps") {
+      const v = rest[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "task update: --deps requires a value",
+          hint: USAGE_UPDATE,
+        });
+      }
+      // Mirror `task add` parsing: comma-split + drop empties. Bare `""`
+      // value clears deps entirely.
+      deps = v.split(",").filter((s) => s.length > 0);
+      i += 2;
+      continue;
+    }
+    if (a === "--team-dir") {
+      const v = rest[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "task update: --team-dir requires a value",
+          hint: USAGE_UPDATE,
+        });
+      }
+      teamDir = v;
+      i += 2;
+      continue;
+    }
+    throw new UsageError({
+      what: `task update: unknown flag: ${a ?? ""}`,
+      hint: USAGE_UPDATE,
+    });
+  }
+  if (body === undefined && deps === undefined) {
+    throw new UsageError({
+      what: "task update: at least one of --body or --deps required",
+      hint: USAGE_UPDATE,
+    });
+  }
+  const dirOpts = teamDir !== undefined ? { teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  if (body !== undefined) {
+    await setTaskBody(atmuxDir, id, body.length === 0 ? null : body);
+  }
+  if (deps !== undefined) {
+    await setTaskDeps(atmuxDir, id, deps);
+  }
+  process.stdout.write(`task ${id} updated\n`);
   return 0;
 }
 

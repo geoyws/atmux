@@ -324,6 +324,47 @@ export async function setTaskLane(
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, lane }));
 }
 
+/** Update a task's body (multi-line prose stored in `tasks.body`). Throws
+ *  `ConfigError` on miss. `null` / empty-string both clear the body. */
+export async function setTaskBody(
+  atmuxDir: string,
+  id: string,
+  body: string | null,
+): Promise<void> {
+  const normalized = body === "" ? null : body;
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, body: normalized });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, body: normalized }));
+}
+
+/** Update a task's deps list. Throws `ConfigError` on miss. Empty array
+ *  clears the deps (no upstream blocker). */
+export async function setTaskDeps(
+  atmuxDir: string,
+  id: string,
+  deps: ReadonlyArray<string>,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, deps: [...deps] });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, deps: [...deps] }));
+}
+
 /** Update a task's owner. Throws `ConfigError` on miss. */
 export async function assignTask(atmuxDir: string, id: string, owner: string): Promise<void> {
   if (await _useSqlite(atmuxDir)) {

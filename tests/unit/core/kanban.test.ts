@@ -27,6 +27,8 @@ import {
   moveTask,
   nowEpoch,
   removeTask,
+  setTaskBody,
+  setTaskDeps,
   showTask,
   unresolvedDeps,
 } from "../../../src/core/kanban.ts";
@@ -315,6 +317,46 @@ describe("assignTask", () => {
 
   test("missing id → ConfigError", async () => {
     await expect(assignTask(atmuxDir, "t-missing0", "alpha")).rejects.toThrow(ConfigError);
+  });
+});
+
+describe("setTaskBody", () => {
+  test("updates body in place", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", body: "old body" });
+    await setTaskBody(atmuxDir, id, "rewritten body — gates 2+3 reworded");
+    const task = await showTask(atmuxDir, id);
+    expect(task?.body).toBe("rewritten body — gates 2+3 reworded");
+  });
+
+  test("empty string clears body to null", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", body: "to be cleared" });
+    await setTaskBody(atmuxDir, id, "");
+    const task = await showTask(atmuxDir, id);
+    expect(task?.body).toBeNull();
+  });
+
+  test("missing id → ConfigError", async () => {
+    await expect(setTaskBody(atmuxDir, "t-missing0", "body")).rejects.toThrow(ConfigError);
+  });
+});
+
+describe("setTaskDeps", () => {
+  test("replaces deps list", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", deps: ["t-a", "t-b"] });
+    await setTaskDeps(atmuxDir, id, ["t-c", "t-d", "t-e"]);
+    const task = await showTask(atmuxDir, id);
+    expect(task?.deps).toEqual(["t-c", "t-d", "t-e"]);
+  });
+
+  test("empty array clears all deps", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", deps: ["t-a"] });
+    await setTaskDeps(atmuxDir, id, []);
+    const task = await showTask(atmuxDir, id);
+    expect(task?.deps).toEqual([]);
+  });
+
+  test("missing id → ConfigError", async () => {
+    await expect(setTaskDeps(atmuxDir, "t-missing0", ["t-a"])).rejects.toThrow(ConfigError);
   });
 });
 

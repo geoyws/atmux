@@ -6,7 +6,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendDispatched, loadInbox } from "../../../src/core/inbox.ts";
-import { addTask, assignTask, loadKanban, moveTask } from "../../../src/core/kanban.ts";
+import {
+  addTask,
+  assignTask,
+  loadKanban,
+  moveTask,
+  showTask,
+} from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { closestStatus, parseAddArgs, parseListArgs, task } from "../../../src/verbs/task.ts";
 
@@ -558,6 +564,69 @@ describe("task verb — dispatch", () => {
 
   test("'rm' missing id → UsageError", async () => {
     await expect(task(["rm", "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("'update' rewrites body in place", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", body: "old" });
+    const { exit, out } = await captureStdout(() =>
+      task(["update", id, "--body", "rewritten gates 2+3", "--team-dir", teamDir]),
+    );
+    expect(exit).toBe(0);
+    expect(out).toContain(`task ${id} updated`);
+    const after = await showTask(atmuxDir, id);
+    expect(after?.body).toBe("rewritten gates 2+3");
+  });
+
+  test("'update' rewrites deps list", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", deps: ["t-old01010"] });
+    await captureStdout(() =>
+      task(["update", id, "--deps", "t-new01010,t-new20202", "--team-dir", teamDir]),
+    );
+    const after = await showTask(atmuxDir, id);
+    expect(after?.deps).toEqual(["t-new01010", "t-new20202"]);
+  });
+
+  test("'update' --body and --deps together", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", body: "old", deps: ["t-old01010"] });
+    await captureStdout(() =>
+      task([
+        "update",
+        id,
+        "--body",
+        "new",
+        "--deps",
+        "t-fresh0001",
+        "--team-dir",
+        teamDir,
+      ]),
+    );
+    const after = await showTask(atmuxDir, id);
+    expect(after?.body).toBe("new");
+    expect(after?.deps).toEqual(["t-fresh0001"]);
+  });
+
+  test("'update' --deps '' clears the deps list", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", deps: ["t-a0000001", "t-b0000001"] });
+    await captureStdout(() => task(["update", id, "--deps", "", "--team-dir", teamDir]));
+    const after = await showTask(atmuxDir, id);
+    expect(after?.deps).toEqual([]);
+  });
+
+  test("'update' with no flags → UsageError", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    await expect(task(["update", id, "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("'update' missing id → UsageError", async () => {
+    await expect(task(["update", "--body", "x", "--team-dir", teamDir])).rejects.toThrow(
+      UsageError,
+    );
+  });
+
+  test("'update' on missing id → ConfigError", async () => {
+    await expect(
+      task(["update", "t-missing0", "--body", "x", "--team-dir", teamDir]),
+    ).rejects.toThrow(/no such task/);
   });
 
   test("unknown subverb → UsageError", async () => {

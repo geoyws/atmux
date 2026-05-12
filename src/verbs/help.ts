@@ -39,6 +39,7 @@ Task board (kanban):
   task list [--status todo|in-progress|done|blocked] [--assignee <member>]
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
+  task update <id> [--body <text>] [--deps <id,id>]
 
 Dispatch + work:
   dispatch <member> <task-id> Push task to member's inbox + ping them
