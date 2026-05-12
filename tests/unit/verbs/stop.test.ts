@@ -271,4 +271,198 @@ describe("stop verb — integration", () => {
     expect(stderr).toContain("simulated cron-remove blow-up");
   });
 
+  // ---------- ADR-082 W4 worktree-prune integration ----------
+
+  type GitSpawn = import("../../../src/abstractions/worktree.ts").GitSpawn;
+  type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
+
+  function gitOk(stdout = ""): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  function gitFail(stderr: string, code = 128): SpawnResult {
+    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+  }
+
+  /** Stage a worktreeIsolation:true team WITH session + materialise each
+   *  member's worktree dir on disk (so `pruneWorktree`'s `exists()`
+   *  check resolves to true and proceeds to the dirty check). */
+  async function stageWorktreeTeam(members: ReadonlyArray<string>): Promise<{
+    teamName: string;
+    sessionName: string;
+    worktreePaths: Record<string, string>;
+  }> {
+    const teamName = `${sessionPrefix}-team`;
+    const sessionName = `atmux-${teamName}`;
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: teamName,
+        members: members.map((name) => ({ name })),
+        worktreeIsolation: true,
+      }),
+    );
+    const first = members[0];
+    if (first === undefined) throw new Error("test fail");
+    await tmux.session.newSession({ name: sessionName, shellCommand: "cat", windowName: first });
+    for (const m of members.slice(1)) {
+      await tmux.window.newWindow({ sessionName, name: m, shellCommand: "cat" });
+    }
+    // Materialise each member's worktree directory. The test fixture's
+    // atmuxDir is `<teamDir>/.atmux` (regex DOES strip the suffix →
+    // projectRoot = teamDir), so resolveWorktreePath joins
+    // `<projectRoot>/.atmux/worktrees/<member>` which equals
+    // `<atmuxDir>/worktrees/<member>` — co-located with the rest of
+    // .atmux/ state.
+    const worktreePaths: Record<string, string> = {};
+    for (const m of members) {
+      const wt = join(atmuxDir, "worktrees", m);
+      await mkdir(wt, { recursive: true });
+      worktreePaths[m] = wt;
+    }
+    await new Promise((r) => setTimeout(r, 80));
+    return { teamName, sessionName, worktreePaths };
+  }
+
+  test("--force + worktreeIsolation=true + clean worktree → prunes via `git worktree remove`", async () => {
+    await stageWorktreeTeam(["alpha"]);
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      // rev-parse returns a fake repo path; status returns clean; remove
+      // succeeds. The actual filesystem `git worktree remove` would also
+      // delete the directory, but the mock is content-only — we don't
+      // assert the wt dir is gone in this test (the abstraction's own
+      // tests pin that).
+      if (argv.includes("rev-parse")) return gitOk("/srv/fake-repo\n");
+      if (argv.includes("status")) return gitOk("");
+      return gitOk("");
+    };
+    const { result, stdout } = await captureStdoutStderr(() =>
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir], {
+        gitSpawn,
+      }),
+    );
+    expect(result).toBe(0);
+    // git was invoked: 1× rev-parse + 1× status + 1× worktree remove.
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.some((c) => c.includes("rev-parse"))).toBe(true);
+    expect(calls.some((c) => c.includes("status"))).toBe(true);
+    expect(calls.some((c) => c.includes("remove"))).toBe(true);
+    expect(stdout).toContain("worktree: pruned 1/1");
+  });
+
+  test("--force + dirty worktree → SKIPS prune, warns, leaves worktree for operator", async () => {
+    await stageWorktreeTeam(["alpha"]);
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return gitOk("/srv/fake-repo\n");
+      // status returns a dirty entry → pruneWorktree returns
+      // {pruned: false, reason: 'dirty'}.
+      if (argv.includes("status")) return gitOk(" M src/foo.ts\n");
+      return gitOk("");
+    };
+    const { result, stdout, stderr } = await captureStdoutStderr(() =>
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir], {
+        gitSpawn,
+      }),
+    );
+    expect(result).toBe(0);
+    // No `worktree remove` invocation — the dirty-skip preempts it.
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+    // Summary surfaces 0 pruned + 1 dirty.
+    expect(stdout).toContain("worktree: pruned 0/1");
+    expect(stdout).toContain("1 dirty");
+    // Per-member warning names the dirty member specifically.
+    expect(stderr).toContain("worktree alpha dirty");
+  });
+
+  test("--force + worktreeIsolation=false (legacy) → ZERO git invocations", async () => {
+    // Legacy stop path — gate at team.worktreeIsolation !== true MUST
+    // short-circuit before any git work.
+    await stageTeamWithSession(["alpha"]);
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return gitOk("");
+    };
+    const { result } = await captureStdoutStderr(() =>
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir], {
+        gitSpawn,
+      }),
+    );
+    expect(result).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  test("`atmux stop` (no --force) + worktreeIsolation=true → ZERO git invocations (worktrees survive)", async () => {
+    // Per task body: "atmux stop (no --force) does NOT prune.
+    // Worktrees survive normal stop+start cycles." Pin the gate so a
+    // future regression that drops the `parsed.force` check shows up.
+    await stageWorktreeTeam(["alpha"]);
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return gitOk("");
+    };
+    const { result } = await captureStdoutStderr(() =>
+      stop(["--no-archive", "--socket", socketPath, "--team-dir", teamDir], { gitSpawn }),
+    );
+    expect(result).toBe(0);
+    expect(calls).toEqual([]);
+  }, 10_000);
+
+  test("idempotence: already-removed worktree directory → {pruned:false, reason:'missing'} (no-op, no error)", async () => {
+    // Stage the team metadata + tmux session but DELETE the worktree
+    // dirs before stop runs. pruneWorktree's missing-path short-circuit
+    // means git is never invoked for missing members.
+    const { worktreePaths } = await stageWorktreeTeam(["alpha"]);
+    await rm(worktreePaths.alpha as string, { recursive: true, force: true });
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return gitOk("/srv/fake-repo\n");
+      return gitOk("");
+    };
+    const { result, stdout } = await captureStdoutStderr(() =>
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir], {
+        gitSpawn,
+      }),
+    );
+    expect(result).toBe(0);
+    // rev-parse fires (the gate ran). status + remove do NOT —
+    // pruneWorktree skipped both due to missing path.
+    expect(calls.some((c) => c.includes("rev-parse"))).toBe(true);
+    expect(calls.some((c) => c.includes("status"))).toBe(false);
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+    // Summary counts the missing member.
+    expect(stdout).toContain("1 already gone");
+  });
+
+  test("git rev-parse failure → warn + skip prune, killSession still fires", async () => {
+    const { sessionName } = await stageWorktreeTeam(["alpha"]);
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("rev-parse")) return gitFail("fatal: not a git repository");
+      return gitOk("");
+    };
+    const { result, stderr } = await captureStdoutStderr(() =>
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir], {
+        gitSpawn,
+      }),
+    );
+    expect(result).toBe(0);
+    expect(stderr).toContain("worktree-prune skipped");
+    expect(stderr).toContain("cannot detect repo root");
+    // The session still got killed — the warning didn't wedge stop.
+    expect(await tmux.session.hasSession(`=${sessionName}`)).toBe(false);
+  });
+
 });

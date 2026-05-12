@@ -28,6 +28,12 @@ import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
 import { createTmux, type SendTarget } from "../abstractions/tmux.ts";
 import {
+  defaultGitSpawn,
+  type GitSpawn,
+  pruneWorktree,
+  resolveWorktreePath,
+} from "../abstractions/worktree.ts";
+import {
   archiveDir,
   buildWindowName,
   driverInboxPath,
@@ -120,6 +126,11 @@ export interface StopOpts {
    *  pass a no-op or recorder. Production callers (CLI dispatch) omit
    *  the opts and get the real impl. */
   cronRemoveFn?: (argv: ReadonlyArray<string>) => Promise<number>;
+  /** ADR-082 W4: inject the git spawner for the per-member worktree
+   *  prune step. Default = the real `git` via `defaultGitSpawn` from
+   *  `abstractions/worktree.ts`. Tests pass a mock so the prune path
+   *  doesn't shell out to git against a live repo. */
+  gitSpawn?: GitSpawn;
 }
 
 export async function stop(
@@ -146,6 +157,16 @@ export async function stop(
 
   if (parsed.archive) {
     await archiveState(atmuxDir);
+  }
+
+  // ADR-082 W4: --force-only worktree teardown. Runs BEFORE killSession
+  // so members are still alive to commit anything pending (the spec
+  // hedges — --force isn't really for clean exits — but the
+  // dirty-skip default protects them either way). Normal `atmux stop`
+  // (no --force) intentionally does NOT prune: worktrees should
+  // survive every stop+start cycle except the explicit teardown one.
+  if (parsed.force && team.worktreeIsolation === true) {
+    await pruneWorktrees(team, atmuxDir, opts.gitSpawn);
   }
 
   // Bash uses `kill-session ... 2>/dev/null || true` — best-effort.
@@ -180,6 +201,73 @@ export async function stop(
 }
 
 // ---------- Internals ----------
+
+/**
+ * ADR-082 W4: per-member worktree prune. Resolves repo root via
+ * `git rev-parse --show-toplevel` once, then calls W1's
+ * `pruneWorktree` for each member. The helper handles three terminal
+ * states:
+ *
+ *   - missing  — worktree path absent (idempotent — already pruned).
+ *   - dirty    — `git status --porcelain` non-empty; default `skip`
+ *                mode leaves the worktree intact + counts toward the
+ *                operator-visible summary so the user sees what was
+ *                preserved.
+ *   - pruned   — clean worktree removed via `git worktree remove`.
+ *
+ * Failures (missing repo root, individual prune throws) degrade to
+ * warnings rather than aborting — `atmux stop --force` must not wedge
+ * because one worktree's git invocation tripped.
+ */
+async function pruneWorktrees(
+  team: Team,
+  atmuxDir: string,
+  gitOverride?: GitSpawn,
+): Promise<void> {
+  const git = gitOverride ?? defaultGitSpawn;
+  // Match start.ts's projectRoot resolution: regex-strip the trailing
+  // `/.atmux/?` from atmuxDir rather than bare `dirname()`, so test
+  // fixtures (atmuxDir without `.atmux` suffix) and production paths
+  // both yield the directory containing `.atmux/`.
+  const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
+  const rootR = await git(["-C", projectRoot, "rev-parse", "--show-toplevel"]);
+  if (rootR.exitCode !== 0) {
+    process.stderr.write(
+      `atmux: warn: worktree-prune skipped — cannot detect repo root at ${projectRoot}\n`,
+    );
+    return;
+  }
+  const repoPath = rootR.stdout.trim();
+
+  let pruned = 0;
+  let dirty = 0;
+  let missing = 0;
+  for (const member of team.members) {
+    const wtPath = resolveWorktreePath(team, member.name, atmuxDir);
+    try {
+      const r = await pruneWorktree(repoPath, wtPath, { git });
+      if (r.pruned) {
+        pruned += 1;
+      } else if (r.reason === "dirty") {
+        dirty += 1;
+        process.stderr.write(
+          `atmux: warn: worktree ${member.name} dirty — left for operator (${wtPath})\n`,
+        );
+      } else if (r.reason === "missing") {
+        missing += 1;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `atmux: warn: worktree ${member.name} prune failed — ${msg}\n`,
+      );
+    }
+  }
+  const total = team.members.length;
+  process.stdout.write(
+    `worktree: pruned ${pruned}/${total}; ${dirty} dirty (left for operator), ${missing} already gone\n`,
+  );
+}
 
 async function sendCancelToMembers(
   tmux: ReturnType<typeof createTmux>,
