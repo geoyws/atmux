@@ -774,7 +774,7 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     expect(calls).toEqual([]);
   });
 
-  test("worktreeIsolation=true happy path: each member gets a worktree provisioned + cwd overridden", async () => {
+  test("worktreeIsolation=true happy path: each member gets a per-member-branch worktree provisioned + cwd overridden", async () => {
     await writeTeamJson({
       members: [{ name: "alice", role: "team-lead" }, { name: "bob", role: "reviewer" }],
       worktreeIsolation: true,
@@ -782,32 +782,62 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     const calls: ReadonlyArray<string>[] = [];
     const gitSpawn: GitSpawn = async (argv) => {
       calls.push(argv);
-      // rev-parse --show-toplevel returns a fake repo path; branch
-      // --show-current returns a branch name; worktree list returns
-      // empty (no managed worktrees yet); worktree add succeeds.
-      if (argv.includes("rev-parse")) return ok("/srv/fake-repo\n");
+      // rev-parse --show-toplevel → fake repo path.
+      // branch --show-current  → operator branch name.
+      // worktree list          → empty (no managed worktrees yet).
+      // rev-parse --verify     → exit 1 (wtBranch absent → use `-b`).
+      // worktree add           → success.
+      //
+      // Both `rev-parse` invocations must be discriminated by argv
+      // shape — `--show-toplevel` vs `--verify` — because plain
+      // `argv.includes("rev-parse")` matches both.
+      if (argv.includes("--show-toplevel")) return ok("/srv/fake-repo\n");
+      if (argv.includes("--verify")) return fail("", 1); // wtBranch absent
       if (argv.includes("branch")) return ok("geoyws\n");
       if (argv.includes("list")) return ok("");
-      // worktree add or anything else → success.
-      return ok("");
+      return ok(""); // worktree add
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
-    // Expected git calls: 1× rev-parse, 1× branch, then per member
-    // (list + add) = 2*2 = 4. Total 6.
-    expect(calls).toHaveLength(6);
-    // First two are the shared root/branch resolution.
-    expect(calls[0]).toEqual(["-C", env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/", "rev-parse", "--show-toplevel"]);
-    expect(calls[1]).toEqual(["-C", env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/", "branch", "--show-current"]);
-    // Both members got a `worktree add ... geoyws`.
+    // Per ADR-084: 1× rev-parse --show-toplevel, 1× branch
+    // --show-current, then per member 3 calls (list, rev-parse
+    // --verify refs/heads/<wtBranch>, worktree add -b <wtBranch>).
+    // Total: 2 + 2*3 = 8.
+    expect(calls).toHaveLength(8);
+    expect(calls[0]).toEqual([
+      "-C",
+      env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/",
+      "rev-parse",
+      "--show-toplevel",
+    ]);
+    expect(calls[1]).toEqual([
+      "-C",
+      env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/",
+      "branch",
+      "--show-current",
+    ]);
+    // Per-member-branch path: `worktree add -b <baseBranch>-<member>
+    // <wtPath> <baseBranch>`. Verify both members get a `-b` add with
+    // the right derived branch name.
     const addCalls = calls.filter((c) => c.includes("add"));
     expect(addCalls).toHaveLength(2);
     for (const c of addCalls) {
-      expect(c).toContain("geoyws");
+      expect(c).toContain("-b");
+      // baseBranch checkout target is the last positional arg.
+      expect(c[c.length - 1]).toBe("geoyws");
     }
-    // Operator-visible log lines surface each provision.
+    expect(addCalls.some((c) => c.includes("geoyws-alice"))).toBe(true);
+    expect(addCalls.some((c) => c.includes("geoyws-bob"))).toBe(true);
+    // rev-parse --verify call targets the derived branch ref.
+    const verifyCalls = calls.filter((c) => c.includes("--verify"));
+    expect(verifyCalls).toHaveLength(2);
+    expect(verifyCalls.some((c) => c.includes("refs/heads/geoyws-alice"))).toBe(true);
+    expect(verifyCalls.some((c) => c.includes("refs/heads/geoyws-bob"))).toBe(true);
+    // Operator-visible log lines surface each provision with branch.
     expect(env.logs.some((l) => l.msg.includes("worktree created: alice"))).toBe(true);
     expect(env.logs.some((l) => l.msg.includes("worktree created: bob"))).toBe(true);
+    expect(env.logs.some((l) => l.msg.includes("[geoyws-alice]"))).toBe(true);
+    expect(env.logs.some((l) => l.msg.includes("[geoyws-bob]"))).toBe(true);
   });
 
   test("partial-fail: one member's provisionWorktree throws → others still spawn, failed one falls back", async () => {

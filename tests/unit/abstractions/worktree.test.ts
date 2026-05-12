@@ -26,6 +26,7 @@ import {
   provisionWorktree,
   pruneWorktree,
   resolveWorktreePath,
+  sanitizeBranchSegment,
 } from "../../../src/abstractions/worktree.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import { ConfigError } from "../../../src/errors.ts";
@@ -119,67 +120,160 @@ describe("resolveWorktreePath", () => {
 // ---------- provisionWorktree ----------
 
 describe("provisionWorktree", () => {
-  test("worktree absent → fires `git worktree add` and returns {created:true}", async () => {
+  // ADR-084: per-member branch model. provisionWorktree is now
+  // 5-arg `(repoPath, baseBranch, wtBranch, worktreePath, opts)`:
+  // each member's worktree lives on its own branch
+  // `${baseBranch}-${sanitizeBranchSegment(member.name)}` forked off
+  // the operator's base branch. Decision sequence is:
+  //   (a) `worktree list --porcelain` → check for existing worktree at path.
+  //   (b) if absent: `rev-parse --verify --quiet refs/heads/<wtBranch>` →
+  //       branch exists?
+  //   (c) `worktree add -b <wtBranch> <path> <baseBranch>` when fresh,
+  //       OR `worktree add <path> <wtBranch>` when wtBranch already exists
+  //       from a prior run (idempotence across `atmux stop` + `start`).
+  //
+  // The mock matrix below mirrors that three-call shape for the absent
+  // path and short-circuits at (a) for the present-on-wtBranch reuse.
+
+  test("worktree absent + wtBranch absent → `worktree add -b` creates branch + worktree atomically", async () => {
     const calls: ReadonlyArray<string>[] = [];
     const git: GitSpawn = async (argv) => {
       calls.push(argv);
-      // First call: `worktree list` → empty (nothing managed yet).
-      // Second call: `worktree add` → success.
+      if (argv.includes("rev-parse")) {
+        // Branch doesn't exist yet — exit non-zero (matches git's
+        // `rev-parse --verify --quiet` contract on missing ref).
+        return fail("", 1);
+      }
+      // list → empty; add → success.
       return ok("");
     };
-    const result = await provisionWorktree("/repo", "geoyws", "/repo/.atmux/worktrees/alice", {
-      git,
-    });
+    const result = await provisionWorktree(
+      "/repo",
+      "geoyws",
+      "geoyws-alice",
+      "/repo/.atmux/worktrees/alice",
+      { git },
+    );
     expect(result).toEqual({ created: true, path: "/repo/.atmux/worktrees/alice" });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(calls[0]).toEqual(["-C", "/repo", "worktree", "list", "--porcelain"]);
     expect(calls[1]).toEqual([
       "-C",
       "/repo",
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      "refs/heads/geoyws-alice",
+    ]);
+    // Fresh-branch path: `-b <wtBranch> <wtPath> <baseBranch>` so git
+    // forks `geoyws-alice` off `geoyws` and checks it out at the wt
+    // path in one atomic call.
+    expect(calls[2]).toEqual([
+      "-C",
+      "/repo",
       "worktree",
       "add",
+      "-b",
+      "geoyws-alice",
       "/repo/.atmux/worktrees/alice",
       "geoyws",
     ]);
   });
 
-  test("worktree present on correct branch → idempotent no-op {created:false}", async () => {
+  test("worktree absent + wtBranch exists → `worktree add` reuses the existing branch (no -b)", async () => {
+    // Idempotence across runs: if a prior `atmux start` created
+    // `geoyws-alice` and then `atmux stop --force` pruned the worktree
+    // but left the branch (default per ADR-084 OQ-2), the next start
+    // re-attaches the existing branch — no `-b` flag (git would error
+    // `fatal: A branch named '<wtBranch>' already exists`).
     const calls: ReadonlyArray<string>[] = [];
     const git: GitSpawn = async (argv) => {
       calls.push(argv);
-      return ok(porcelainBlock("/repo/.atmux/worktrees/alice", "geoyws"));
+      if (argv.includes("rev-parse")) return ok(""); // branch exists
+      return ok("");
     };
-    const result = await provisionWorktree("/repo", "geoyws", "/repo/.atmux/worktrees/alice", {
-      git,
-    });
+    const result = await provisionWorktree(
+      "/repo",
+      "geoyws",
+      "geoyws-alice",
+      "/repo/.atmux/worktrees/alice",
+      { git },
+    );
+    expect(result).toEqual({ created: true, path: "/repo/.atmux/worktrees/alice" });
+    expect(calls).toHaveLength(3);
+    // Reuse path: bare `worktree add <wtPath> <wtBranch>` — no -b.
+    expect(calls[2]).toEqual([
+      "-C",
+      "/repo",
+      "worktree",
+      "add",
+      "/repo/.atmux/worktrees/alice",
+      "geoyws-alice",
+    ]);
+  });
+
+  test("worktree present on correct wtBranch → idempotent no-op {created:false}", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const git: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return ok(porcelainBlock("/repo/.atmux/worktrees/alice", "geoyws-alice"));
+    };
+    const result = await provisionWorktree(
+      "/repo",
+      "geoyws",
+      "geoyws-alice",
+      "/repo/.atmux/worktrees/alice",
+      { git },
+    );
     expect(result).toEqual({ created: false, path: "/repo/.atmux/worktrees/alice" });
-    // Only the list call — no `worktree add` followup.
+    // Only the list call — no rev-parse, no add.
     expect(calls).toHaveLength(1);
   });
 
-  test("worktree present on WRONG branch → throws ConfigError (no auto-checkout per ADR-082 §3)", async () => {
+  test("worktree present on baseBranch (operator hand-attached) → throws ConfigError naming the wtBranch", async () => {
+    // Worktree exists but checked out on the operator's root branch
+    // (e.g. operator ran `git checkout geoyws` inside the worktree).
+    // Treat as drift — won't auto-reconcile per ADR-082 §3.
+    const git: GitSpawn = async () =>
+      ok(porcelainBlock("/repo/.atmux/worktrees/alice", "geoyws"));
+    await expect(
+      provisionWorktree("/repo", "geoyws", "geoyws-alice", "/repo/.atmux/worktrees/alice", {
+        git,
+      }),
+    ).rejects.toThrow(ConfigError);
+    await expect(
+      provisionWorktree("/repo", "geoyws", "geoyws-alice", "/repo/.atmux/worktrees/alice", {
+        git,
+      }),
+    ).rejects.toThrow(/expected branch 'geoyws-alice'/);
+  });
+
+  test("worktree present on a DIFFERENT branch → ConfigError surfaces the detected branch", async () => {
     const git: GitSpawn = async () =>
       ok(porcelainBlock("/repo/.atmux/worktrees/alice", "main"));
     await expect(
-      provisionWorktree("/repo", "geoyws", "/repo/.atmux/worktrees/alice", { git }),
-    ).rejects.toThrow(ConfigError);
-    await expect(
-      provisionWorktree("/repo", "geoyws", "/repo/.atmux/worktrees/alice", { git }),
+      provisionWorktree("/repo", "geoyws", "geoyws-alice", "/repo/.atmux/worktrees/alice", {
+        git,
+      }),
     ).rejects.toThrow(/branch 'main'/);
   });
 
-  test("worktree present on detached HEAD treated as wrong-branch (mismatch from requested branch)", async () => {
+  test("worktree present on detached HEAD → ConfigError surfaces 'detached HEAD'", async () => {
     const git: GitSpawn = async () =>
       ok(porcelainBlock("/repo/.atmux/worktrees/alice", null));
     await expect(
-      provisionWorktree("/repo", "geoyws", "/repo/.atmux/worktrees/alice", { git }),
-    ).rejects.toThrow(ConfigError);
+      provisionWorktree("/repo", "geoyws", "geoyws-alice", "/repo/.atmux/worktrees/alice", {
+        git,
+      }),
+    ).rejects.toThrow(/detached HEAD/);
   });
 
   test("`git worktree list` failure → throws ConfigError with stderr hint", async () => {
     const git: GitSpawn = async () => fail("fatal: not a git repository");
     await expect(
-      provisionWorktree("/not-a-repo", "geoyws", "/not-a-repo/wt/alice", { git }),
+      provisionWorktree("/not-a-repo", "geoyws", "geoyws-alice", "/not-a-repo/wt/alice", {
+        git,
+      }),
     ).rejects.toThrow(/`git worktree list` failed/);
   });
 
@@ -187,28 +281,60 @@ describe("provisionWorktree", () => {
     let call = 0;
     const git: GitSpawn = async () => {
       call += 1;
-      // First call (list) succeeds with empty output; second (add) fails.
-      return call === 1 ? ok("") : fail("fatal: invalid reference: geoyws");
+      // 1: list (empty), 2: rev-parse (branch absent), 3: add (fails).
+      if (call === 1) return ok("");
+      if (call === 2) return fail("", 1);
+      return fail("fatal: invalid reference: geoyws");
     };
     await expect(
-      provisionWorktree("/repo", "geoyws", "/repo/wt/alice", { git }),
+      provisionWorktree("/repo", "geoyws", "geoyws-alice", "/repo/wt/alice", { git }),
     ).rejects.toThrow(/`git worktree add` failed/);
   });
 
   test("porcelain list with multiple worktrees finds the matching one by path", async () => {
+    // alice + bob are atmux-provisioned per-member worktrees on their
+    // own branches; `/repo` is the operator's root checkout on `geoyws`.
     const stdout = [
-      porcelainBlock("/repo", "main"),
-      porcelainBlock("/repo/.atmux/worktrees/alice", "geoyws"),
-      porcelainBlock("/repo/.atmux/worktrees/bob", "feature-x"),
+      porcelainBlock("/repo", "geoyws"),
+      porcelainBlock("/repo/.atmux/worktrees/alice", "geoyws-alice"),
+      porcelainBlock("/repo/.atmux/worktrees/bob", "geoyws-bob"),
     ].join("\n");
     const git: GitSpawn = async () => ok(stdout);
     const result = await provisionWorktree(
       "/repo",
-      "feature-x",
+      "geoyws",
+      "geoyws-bob",
       "/repo/.atmux/worktrees/bob",
       { git },
     );
     expect(result).toEqual({ created: false, path: "/repo/.atmux/worktrees/bob" });
+  });
+});
+
+// ---------- sanitizeBranchSegment ----------
+
+describe("sanitizeBranchSegment", () => {
+  test("kebab-case ASCII passes through unchanged", () => {
+    expect(sanitizeBranchSegment("up-impl")).toBe("up-impl");
+    expect(sanitizeBranchSegment("parity-state-impl")).toBe("parity-state-impl");
+    expect(sanitizeBranchSegment("reviewer")).toBe("reviewer");
+  });
+
+  test("alphanumeric + underscore + hyphen passes through unchanged", () => {
+    expect(sanitizeBranchSegment("worker_1")).toBe("worker_1");
+    expect(sanitizeBranchSegment("w1-impl")).toBe("w1-impl");
+    expect(sanitizeBranchSegment("ABC-xyz_42")).toBe("ABC-xyz_42");
+  });
+
+  test("emoji + unicode → replaced with `-` (git refuses invalid refnames)", () => {
+    expect(sanitizeBranchSegment("🐝w1")).toBe("--w1"); // emoji is 2 UTF-16 units
+    expect(sanitizeBranchSegment("café-runner")).toBe("caf--runner");
+  });
+
+  test("spaces + dots + slashes → replaced with `-`", () => {
+    expect(sanitizeBranchSegment("name with spaces")).toBe("name-with-spaces");
+    expect(sanitizeBranchSegment("a.b.c")).toBe("a-b-c");
+    expect(sanitizeBranchSegment("nested/path")).toBe("nested-path");
   });
 });
 

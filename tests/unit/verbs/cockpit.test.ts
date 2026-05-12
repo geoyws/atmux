@@ -37,12 +37,19 @@ describe("parseCockpitArgs", () => {
       subverb: "rebuild",
       noCycle: false,
       forceCycle: false,
+      ackDangerous: false,
       noLaunch: false,
     });
   });
   test("each flag parses individually", () => {
     expect(parseCockpitArgs(["rebuild", "--no-cycle"]).noCycle).toBe(true);
-    expect(parseCockpitArgs(["rebuild", "--force-cycle"]).forceCycle).toBe(true);
+    expect(
+      parseCockpitArgs([
+        "rebuild",
+        "--force-cycle",
+        "--acknowledge-dangerous-bau-interruption",
+      ]).forceCycle,
+    ).toBe(true);
     expect(parseCockpitArgs(["rebuild", "--no-launch"]).noLaunch).toBe(true);
   });
   test("--config requires a value", () => {
@@ -50,7 +57,34 @@ describe("parseCockpitArgs", () => {
     expect(parseCockpitArgs(["rebuild", "--config", "/p"]).configPath).toBe("/p");
   });
   test("--no-cycle and --force-cycle are mutually exclusive", () => {
-    expect(() => parseCockpitArgs(["rebuild", "--no-cycle", "--force-cycle"])).toThrow(UsageError);
+    expect(() =>
+      parseCockpitArgs([
+        "rebuild",
+        "--no-cycle",
+        "--force-cycle",
+        "--acknowledge-dangerous-bau-interruption",
+      ]),
+    ).toThrow(UsageError);
+  });
+  // 2026-05-12 incident: --force-cycle was used to refresh viewer attach
+  // paths and inadvertently nuked ~30 members' claude TUI contexts across
+  // atmux + sopx. The ack-flag is the safety gate.
+  test("--force-cycle without ack flag throws (operator must acknowledge)", () => {
+    expect(() => parseCockpitArgs(["rebuild", "--force-cycle"])).toThrow(UsageError);
+  });
+  test("--force-cycle with ack flag parses + both fields set", () => {
+    const p = parseCockpitArgs([
+      "rebuild",
+      "--force-cycle",
+      "--acknowledge-dangerous-bau-interruption",
+    ]);
+    expect(p.forceCycle).toBe(true);
+    expect(p.ackDangerous).toBe(true);
+  });
+  test("--acknowledge-dangerous-bau-interruption alone (without --force-cycle) is harmless", () => {
+    const p = parseCockpitArgs(["rebuild", "--acknowledge-dangerous-bau-interruption"]);
+    expect(p.forceCycle).toBe(false);
+    expect(p.ackDangerous).toBe(true);
   });
   // ADR-077 §D6 follow-on: reload alias.
   test("reload alias parses with noCycle + noLaunch implicit", () => {
@@ -59,6 +93,7 @@ describe("parseCockpitArgs", () => {
       subverb: "reload",
       noCycle: true,
       forceCycle: false,
+      ackDangerous: false,
       noLaunch: true,
     });
   });

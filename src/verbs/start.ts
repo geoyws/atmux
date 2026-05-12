@@ -96,6 +96,7 @@ import {
   type GitSpawn,
   provisionWorktree,
   resolveWorktreePath,
+  sanitizeBranchSegment,
 } from "../abstractions/worktree.ts";
 import {
   buildWindowName,
@@ -481,13 +482,21 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       );
     } else {
       const repoPath = rootR.stdout.trim();
-      logger.log(`worktree: provisioning under ${repoPath} on branch ${branch}`);
+      logger.log(`worktree: provisioning under ${repoPath} off base branch ${branch}`);
       for (const member of team.members) {
         const wtPath = resolveWorktreePath(team, member.name, dir);
+        // ADR-084: per-member branch `${branch}-${sanitize(memberName)}`.
+        // Git refuses concurrent worktrees on the same branch, so each
+        // member gets its own fork off the team's current branch.
+        const wtBranch = `${branch}-${sanitizeBranchSegment(member.name)}`;
         try {
-          const r = await provisionWorktree(repoPath, branch, wtPath, { git: gitSpawn });
+          const r = await provisionWorktree(repoPath, branch, wtBranch, wtPath, {
+            git: gitSpawn,
+          });
           worktreeCwd.set(member.name, wtPath);
-          logger.log(`  · worktree ${r.created ? "created" : "reused"}: ${member.name} → ${wtPath}`);
+          logger.log(
+            `  · worktree ${r.created ? "created" : "reused"}: ${member.name} → ${wtPath} [${wtBranch}]`,
+          );
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           logger.warn(

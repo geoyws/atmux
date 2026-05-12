@@ -191,6 +191,15 @@ export interface ParsedCockpitArgs {
   noCycle: boolean;
   /** Cycle every cage even if claude procs are running (DESTRUCTIVE — kills in-flight work). */
   forceCycle: boolean;
+  /** Operator-supplied acknowledgement that `--force-cycle` will tear down
+   *  live claude TUI contexts across EVERY enabled team and that this is
+   *  intentional. Required whenever `forceCycle` is true; the parser
+   *  refuses `--force-cycle` without this flag. Added 2026-05-12 after a
+   *  driver-side incident where `--force-cycle` was used to refresh
+   *  cockpit viewer attach paths and inadvertently nuked both atmux + sopx
+   *  team contexts (~30 members lost their claude TUI state). The flag is
+   *  intentionally long + ugly to make muscle-memory invocation impossible. */
+  ackDangerous: boolean;
   /** Skip the TUI auto-launch step (cages stay as bare shells). */
   noLaunch: boolean;
   /** Override cockpit.json path. */
@@ -201,8 +210,9 @@ export interface ParsedCockpitArgs {
  * Parse `cockpit` argv. Throws UsageError on unknown subverb / flag.
  *
  * Usage:
- *   atmux cockpit rebuild [--no-cycle] [--force-cycle] [--no-launch]
- *                         [--config <path>]
+ *   atmux cockpit rebuild [--no-cycle] [--force-cycle
+ *                         --acknowledge-dangerous-bau-interruption]
+ *                         [--no-launch] [--config <path>]
  */
 export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs {
   if (args.length === 0) {
@@ -210,7 +220,8 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
       what: "cockpit: missing sub-verb",
       hint:
         "usage: atmux cockpit {rebuild | reload} " +
-        "[--no-cycle | --force-cycle] [--no-launch] [--config <path>]",
+        "[--no-cycle | --force-cycle --acknowledge-dangerous-bau-interruption] " +
+        "[--no-launch] [--config <path>]",
     });
   }
   const sub = args[0];
@@ -227,6 +238,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   // relaunch claude — just apply the topology diff").
   let noCycle = sub === "reload";
   let forceCycle = false;
+  let ackDangerous = false;
   let noLaunch = sub === "reload";
   let configPath: string | undefined;
 
@@ -252,6 +264,10 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
           });
         }
         forceCycle = true;
+        i += 1;
+        break;
+      case "--acknowledge-dangerous-bau-interruption":
+        ackDangerous = true;
         i += 1;
         break;
       case "--no-launch":
@@ -290,10 +306,32 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     });
   }
 
+  // ADR-084-companion safety gate: `--force-cycle` is destructive (tears
+  // down live claude TUI contexts across EVERY enabled team), so refuse
+  // it without the operator-supplied ack flag. Added 2026-05-12 after
+  // ~30 members' claude contexts were nuked when --force-cycle was used
+  // to refresh viewer attach paths. The flag is intentionally long +
+  // ugly to make muscle-memory invocation impossible — see
+  // `ackDangerous` JSDoc on ParsedCockpitArgs.
+  if (forceCycle && !ackDangerous) {
+    throw new UsageError({
+      what:
+        "cockpit rebuild: --force-cycle requires " +
+        "--acknowledge-dangerous-bau-interruption",
+      hint:
+        "--force-cycle tears down live claude TUI contexts across EVERY enabled team " +
+        "(every member's in-flight reasoning + tool state is lost). " +
+        "If you really mean to do this, pass " +
+        "--acknowledge-dangerous-bau-interruption. " +
+        "Otherwise use bare `cockpit rebuild` (live cages are preserved).",
+    });
+  }
+
   const out: ParsedCockpitArgs = {
     subverb: sub as "rebuild" | "reload",
     noCycle,
     forceCycle,
+    ackDangerous,
     noLaunch,
   };
   if (configPath !== undefined) out.configPath = configPath;

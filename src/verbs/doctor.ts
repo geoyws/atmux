@@ -32,7 +32,7 @@ import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux } from "../abstractions/tmux.ts";
-import { resolveWorktreePath } from "../abstractions/worktree.ts";
+import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
@@ -1239,12 +1239,12 @@ interface PorcelainWorktree {
  *                                    YELLOW. Hint: `git worktree remove` (or
  *                                    `atmux doctor --fix` once V-24 wires the
  *                                    auto-fix branch).
- *   3. `worktree-wrong-branch`     — worktree on a different branch than the
- *                                    operator's current checkout. YELLOW. Surface
- *                                    only — no auto-checkout (operator-edited
- *                                    state may carry unstashed work; same rule
- *                                    as W1's `provisionWorktree` wrong-branch
- *                                    throw).
+ *   3. `worktree-wrong-branch`     — worktree on a different branch than its
+ *                                    per-member fork `${base}-${member}` (ADR-084).
+ *                                    YELLOW. Surface only — no auto-checkout
+ *                                    (operator-edited state may carry unstashed
+ *                                    work; same rule as W1's `provisionWorktree`
+ *                                    wrong-branch throw).
  *   4. `worktree-disabled-but-present` — isolation OFF (or unset) but
  *                                    `<atmuxDir>/worktrees/` has entries. Single
  *                                    YELLOW (not per-orphan — the cleanup is
@@ -1353,12 +1353,18 @@ export async function checkWorktreeIsolation(
           });
           continue;
         }
-        if (found.branch !== expectedBranch) {
+        // ADR-084: each member's worktree is provisioned on its own
+        // per-member branch `${baseBranch}-${sanitize(memberName)}`.
+        // Anything else (a different branch, detached HEAD, or operator-
+        // attached state) is drift.
+        const expectedWtBranch = `${expectedBranch}-${sanitizeBranchSegment(member.name)}`;
+        if (found.branch !== expectedWtBranch) {
+          const stateLabel = found.branch === "" ? "detached HEAD" : `branch '${found.branch}'`;
           rows.push({
             status: "yellow",
             label: `worktree:wrong-branch:${member.name}`,
-            detail: `on '${found.branch || "(detached)"}', operator on '${expectedBranch}'`,
-            hint: "reconcile manually — auto-checkout disabled per ADR-082 §3 (unstashed work at risk)",
+            detail: `on ${stateLabel}, expected branch '${expectedWtBranch}' (per-member fork off '${expectedBranch}')`,
+            hint: `reconcile via \`git -C <wt> checkout ${expectedWtBranch}\` — auto-checkout disabled per ADR-082 §3 (unstashed work at risk)`,
           });
         }
       }

@@ -101,39 +101,73 @@ export interface ProvisionOpts {
 }
 
 /**
- * Provision a git worktree at `worktreePath` checked out at `branch`,
- * rooted at `repoPath`. Idempotent:
+ * Provision a git worktree at `worktreePath` checked out on `wtBranch`
+ * (per-member branch), forked off `baseBranch` if `wtBranch` does not
+ * yet exist. Rooted at `repoPath`. Idempotent:
  *
- *   - Worktree absent → `git worktree add <path> <branch>` → returns
- *     `{ created: true, path }`.
- *   - Worktree present AND on `branch` → returns `{ created: false }`.
- *   - Worktree present AND on a DIFFERENT branch → throws `ConfigError`.
+ *   - Worktree absent AND `wtBranch` absent → `git worktree add -b
+ *     <wtBranch> <path> <baseBranch>` creates the branch + worktree
+ *     atomically. Returns `{ created: true, path }`.
+ *   - Worktree absent AND `wtBranch` exists from a previous run →
+ *     fall through to `git worktree add <path> <wtBranch>` (re-use
+ *     the existing branch). Returns `{ created: true, path }`.
+ *   - Worktree present AND on `wtBranch` → idempotent no-op,
+ *     `{ created: false }`.
+ *   - Worktree present AND on a DIFFERENT branch (or detached) →
+ *     throws `ConfigError`.
  *
- * Auto-checkout on branch mismatch is deliberately disabled per
+ * Per-member branch is the controlling fix for the 2026-05-12 ADR-082
+ * regression (`fatal: '<baseBranch>' is already used by worktree at
+ * <root>`). Git's worktree model is one-branch-per-worktree; running
+ * `worktree add` against a branch already checked out elsewhere
+ * refuses. ADR-084 resolves this by giving each member its own branch
+ * `<baseBranch>-<memberName>`, so the parent worktree keeps `<baseBranch>`
+ * while the per-member worktrees each own their own ref. Caller derives
+ * the wtBranch name via {@link sanitizeBranchSegment}.
+ *
+ * Auto-recovery on branch mismatch is deliberately disabled per
  * ADR-082 §3 — operators who hand-edit a worktree to a different branch
  * may have unstashed work tied to that branch; silent re-checkout would
  * destroy state. Caller must reconcile manually.
  */
 export async function provisionWorktree(
   repoPath: string,
-  branch: string,
+  baseBranch: string,
+  wtBranch: string,
   worktreePath: string,
   opts: ProvisionOpts = {},
 ): Promise<ProvisionWorktreeResult> {
   const git = opts.git ?? defaultGitSpawn;
   const existing = await findWorktreeBranch(repoPath, worktreePath, git);
   if (existing !== null) {
-    if (existing === branch) {
+    if (existing === wtBranch) {
       return { created: false, path: worktreePath };
     }
+    const stateLabel = existing === "" ? "detached HEAD" : `branch '${existing}'`;
     throw new ConfigError({
       what:
-        `provisionWorktree: ${worktreePath} exists on branch '${existing}', ` +
-        `expected '${branch}'`,
-      hint: "operator-managed mismatch — reconcile via `git -C <wt> checkout <branch>` or remove the worktree manually",
+        `provisionWorktree: ${worktreePath} exists on ${stateLabel}, ` +
+        `expected branch '${wtBranch}'`,
+      hint: `operator-managed mismatch — reconcile via \`git -C <wt> checkout ${wtBranch}\` or remove the worktree manually`,
     });
   }
-  const result = await git(["-C", repoPath, "worktree", "add", worktreePath, branch]);
+  // Detect whether wtBranch already exists as a ref. `git
+  // rev-parse --verify --quiet refs/heads/<wtBranch>` exits 0 if it
+  // does, non-zero otherwise. Cheaper + more reliable than parsing
+  // `git branch --list`.
+  const verify = await git([
+    "-C",
+    repoPath,
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/heads/${wtBranch}`,
+  ]);
+  const wtBranchExists = verify.exitCode === 0;
+  const argv = wtBranchExists
+    ? ["-C", repoPath, "worktree", "add", worktreePath, wtBranch]
+    : ["-C", repoPath, "worktree", "add", "-b", wtBranch, worktreePath, baseBranch];
+  const result = await git(argv);
   if (result.exitCode !== 0) {
     throw new ConfigError({
       what: `provisionWorktree: \`git worktree add\` failed (rc=${result.exitCode})`,
@@ -141,6 +175,23 @@ export async function provisionWorktree(
     });
   }
   return { created: true, path: worktreePath };
+}
+
+/**
+ * Sanitize a member name into a git-branch-safe segment.
+ *
+ * Replaces any character outside `[A-Za-z0-9_-]` with `-`. Used by
+ * callers (start.ts, doctor.ts) to derive the per-member worktree
+ * branch name as `${baseBranch}-${sanitizeBranchSegment(member.name)}`
+ * per ADR-084 §"Per-member branch naming convention".
+ *
+ * Today's atmux + sopx-guild members are all kebab-case ASCII, so this
+ * is a no-op for the current names. Defensive for future emoji-suffixed
+ * or unicode-named members (`🐝w1`, etc.) — those would otherwise produce
+ * branch names git refuses (`fatal: invalid reference name`).
+ */
+export function sanitizeBranchSegment(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
 /** Parse `git worktree list --porcelain` and return the checked-out

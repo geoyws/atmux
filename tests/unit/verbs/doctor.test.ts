@@ -1728,6 +1728,11 @@ describe("checkWorktreeIsolation", () => {
   // ---------- Class 3: wrong-branch ----------
 
   test("isolation ON + worktree on wrong branch → YELLOW 'worktree-wrong-branch:<name>'", async () => {
+    // ADR-084: per-member-branch model. The expected state for
+    // member `alice` under base `geoyws` is `geoyws-alice`. Anything
+    // else (feature-x, the base branch itself, or detached HEAD) is
+    // drift. alice on feature-x AND bob on geoyws — BOTH surface
+    // because neither matches their derived per-member branch.
     const wtAlice = resolveWtPath("alice");
     const wtBob = resolveWtPath("bob");
     const gitSpawn: GitSpawn = async (argv) => {
@@ -1743,11 +1748,57 @@ describe("checkWorktreeIsolation", () => {
       { readWorktreeDir: fakeReadDir(["alice", "bob"]), gitSpawn },
     );
     const wrong = rows.filter((r) => r.label.startsWith("worktree:wrong-branch:"));
+    expect(wrong).toHaveLength(2);
+    const labels = wrong.map((r) => r.label).sort();
+    expect(labels).toEqual(["worktree:wrong-branch:alice", "worktree:wrong-branch:bob"]);
+    const aliceRow = wrong.find((r) => r.label.endsWith(":alice"));
+    expect(aliceRow?.detail).toContain("feature-x");
+    expect(aliceRow?.detail).toContain("geoyws-alice"); // expected per-member branch
+    expect(aliceRow?.hint).toContain("checkout geoyws-alice");
+    const bobRow = wrong.find((r) => r.label.endsWith(":bob"));
+    // bob on base branch surfaces too — base ≠ geoyws-bob.
+    expect(bobRow?.detail).toContain("geoyws");
+    expect(bobRow?.detail).toContain("geoyws-bob");
+  });
+
+  test("isolation ON + worktree on its per-member branch (expected state) → NO wrong-branch row", async () => {
+    // ADR-084 happy path: alice is checked out on `geoyws-alice`, the
+    // per-member fork off `geoyws`. checkWorktreeIsolation must NOT
+    // flag this — it's the canonical expected state.
+    const wtAlice = resolveWtPath("alice");
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("branch")) return gitOk("geoyws\n");
+      if (argv.includes("list")) return gitOk(porcelainBlock(wtAlice, "geoyws-alice"));
+      return gitOk("");
+    };
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir(["alice"]), gitSpawn },
+    );
+    expect(rows.filter((r) => r.label.startsWith("worktree:wrong-branch:"))).toEqual([]);
+  });
+
+  test("isolation ON + worktree on detached HEAD → YELLOW wrong-branch (detached ≠ per-member branch)", async () => {
+    // Under ADR-084, the canonical state is `${base}-${member}`, NOT
+    // detached HEAD. A detached worktree surfaces as drift with a
+    // 'detached HEAD' state label in the detail string.
+    const wtAlice = resolveWtPath("alice");
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("branch")) return gitOk("geoyws\n");
+      if (argv.includes("list")) return gitOk(porcelainBlock(wtAlice, null));
+      return gitOk("");
+    };
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir(["alice"]), gitSpawn },
+    );
+    const wrong = rows.filter((r) => r.label.startsWith("worktree:wrong-branch:"));
     expect(wrong).toHaveLength(1);
     expect(wrong[0]?.label).toBe("worktree:wrong-branch:alice");
-    expect(wrong[0]?.detail).toContain("feature-x");
-    expect(wrong[0]?.detail).toContain("geoyws");
-    expect(wrong[0]?.hint).toContain("auto-checkout disabled");
+    expect(wrong[0]?.detail).toContain("detached HEAD");
+    expect(wrong[0]?.detail).toContain("geoyws-alice");
   });
 
   test("isolation ON + git probe fails → single yellow 'branch-probe-skipped' (degrades, not aborts)", async () => {
@@ -1799,6 +1850,8 @@ describe("checkWorktreeIsolation", () => {
   // ---------- Composite: missing + orphan + wrong-branch in one pass ----------
 
   test("composite — RED missing + YELLOW orphan + YELLOW wrong-branch all surface in one pass", async () => {
+    // bob is on feature-x → drift under ADR-084 per-member-branch
+    // model (expected `geoyws-bob`, anything else surfaces).
     const wtBob = resolveWtPath("bob");
     const gitSpawn: GitSpawn = async (argv) => {
       if (argv.includes("branch")) return gitOk("geoyws\n");
