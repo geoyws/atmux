@@ -118,6 +118,13 @@ export function leadOutboxPath(atmuxDir: string): string {
   return join(atmuxDir, "lead-outbox.md");
 }
 
+/** ADR-008 §S8 D13 — team-scoped decisions log. Append-only markdown
+ *  written by `atmux decisions add` (bash today; bun port pending).
+ *  Whip-tick watcher reads this to surface new entries to Discord. */
+export function decisionsLogPath(atmuxDir: string): string {
+  return join(atmuxDir, "decisions.md");
+}
+
 export function sessionAnchorPath(atmuxDir: string): string {
   return join(atmuxDir, "state", "session.txt");
 }

@@ -109,6 +109,7 @@ import {
   shouldFireDrift,
 } from "../core/perm-mode-drift-state.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
+import { advanceDecisionsCursor, checkDecisions } from "../core/whip-decisions-check.ts";
 import {
   hashFindingBullets,
   loadWhipFindingState,
@@ -759,6 +760,39 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
 
   const findings: Finding[] = [];
 
+  // ---------- Check 0: decisions watcher (SPEC-063, ADR-008 §S8 D13) ----------
+  // Runs FIRST so the finding rides every emit path (session-up,
+  // account-swap, session-down report) — bash semantics: decisions.md
+  // is independent of session liveness (lib/whip.sh:86,91). The
+  // cursor advance is deferred to `advancePendingDecisionsCursor`
+  // which fires after each emit (fire-and-warn ordering matches bash
+  // lib/whip.sh:437-448). Early-returns that skip emit (suppress,
+  // budget-pause) also skip the cursor advance, so the finding
+  // re-fires next tick — correct, since no ping went out.
+  //
+  // Inline-preview path (bash lib/whip.sh:404-427) requires the bun
+  // `atmux decisions list --since --json` verb which isn't ported
+  // yet; the watcher falls back to the flag-only pointer per the
+  // module docstring.
+  let decisionsNewCursor: number | null = null;
+  try {
+    const decisionsVerdict = await checkDecisions({ atmuxDir });
+    if (decisionsVerdict.fire && decisionsVerdict.bullet !== null) {
+      findings.push({ category: "informational", bullet: decisionsVerdict.bullet });
+      decisionsNewCursor = decisionsVerdict.newCursor;
+    }
+  } catch (e) {
+    ctx.stderr(`whip: decisions check failed: ${String(e)}\n`);
+  }
+  const advancePendingDecisionsCursor = async (): Promise<void> => {
+    if (decisionsNewCursor === null) return;
+    try {
+      await advanceDecisionsCursor(atmuxDir, decisionsNewCursor);
+    } catch (e) {
+      ctx.stderr(`whip: decisions cursor advance failed: ${String(e)}\n`);
+    }
+  };
+
   // ---------- Check 1: session liveness with 2-tick gate ----------
   const prevState = await readSessionState(atmuxDir);
   const sessionUp = await ctx.tmux.session.hasSession(session);
@@ -814,6 +848,7 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
       const leadUptimeFinding = await checkLeadUptime(ctx, config, homeOpts);
       if (leadUptimeFinding !== null) findings.push(leadUptimeFinding);
       await emitFindings(parsed, ctx, config, findings);
+      await advancePendingDecisionsCursor();
       await writeLastHash(atmuxDir, nowSec);
       return 0;
     }
@@ -853,6 +888,7 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
       ctx.stderr(`whip: stale-anchor check failed: ${String(e)}\n`);
     }
 
+
     // ---------- Check 7: cursor self-heal pass (ADR-055 §D2) ----------
     // Runs AFTER per-member + lead-uptime + stale-anchor (per ADR-055
     // §D2 "after the main per-member checks"). Already gated above
@@ -884,6 +920,7 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
   }
 
   await emitFindings(parsed, ctx, config, findings);
+  await advancePendingDecisionsCursor();
   await writeLastHash(atmuxDir, nowSec);
   return 0;
 }
