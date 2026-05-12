@@ -384,6 +384,24 @@ describe("claimTask — dep enforcement (bash claim.sh:42-50 parity)", () => {
     await expect(claimTask(atmuxDir, "t-missing0", "alpha")).rejects.toThrow(ConfigError);
   });
 
+  // 2026-05-12 incident regression — JSON-path mirror. Gate lives on
+  // `claimTaskForMember`, not bare `claimTask`.
+  test("claimTaskForMember (JSON path): refuses if already in-progress under different owner", async () => {
+    const { claimTaskForMember } = await import("../../../src/core/kanban.ts");
+    const id = await addTask(atmuxDir, { subject: "race candidate" });
+    await claimTaskForMember(atmuxDir, id, "alpha");
+    await expect(claimTaskForMember(atmuxDir, id, "beta")).rejects.toThrow(
+      /already in-progress under 'alpha'/,
+    );
+  });
+
+  test("re-claim by SAME owner succeeds (idempotent / re-entrancy)", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    await claimTask(atmuxDir, id, "alpha");
+    const { post } = await claimTask(atmuxDir, id, "alpha");
+    expect(post.owner).toBe("alpha");
+  });
+
   test("error message lists unresolved deps comma-separated", async () => {
     const dep1 = await addTask(atmuxDir, { subject: "d1" });
     const dep2 = await addTask(atmuxDir, { subject: "d2" });

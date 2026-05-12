@@ -189,6 +189,47 @@ describe("kanban (SQLite mode)", () => {
     await expect(claimTask(env.atmuxDir, "t-deadbeef", "fe0")).rejects.toThrow(ConfigError);
   });
 
+  // 2026-05-12 incident regression — gate lives on `claimTaskForMember`,
+  // not bare `claimTask` (so lead-initiated `dispatch` still reassigns).
+  // Two members both running `atmux claim <task-id>` raced to set their
+  // own owner on an already-claimed in-progress task; the gate refuses
+  // the second claimant with a clear message naming the existing owner.
+  test("claimTaskForMember: refuses claim when task already in-progress under different owner", async () => {
+    const { claimTaskForMember } = await import("../../../src/core/kanban.ts");
+    const id = await addTask(env.atmuxDir, { subject: "race candidate" });
+    await claimTaskForMember(env.atmuxDir, id, "fe0");
+    await expect(claimTaskForMember(env.atmuxDir, id, "be0")).rejects.toThrow(
+      /already in-progress under 'fe0'/,
+    );
+    // Original owner can re-claim (idempotent for re-entrancy).
+    const { post } = await claimTaskForMember(env.atmuxDir, id, "fe0");
+    expect(post.owner).toBe("fe0");
+    expect(post.status).toBe("in-progress");
+  });
+
+  test("claimTaskForMember: refuse message mentions un-claim path", async () => {
+    const { claimTaskForMember } = await import("../../../src/core/kanban.ts");
+    const id = await addTask(env.atmuxDir, { subject: "stalled candidate" });
+    await claimTaskForMember(env.atmuxDir, id, "fe0");
+    try {
+      await claimTaskForMember(env.atmuxDir, id, "be0");
+      throw new Error("expected throw");
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain("task move");
+      expect(msg).toContain("un-claim");
+    }
+  });
+
+  // Bare claimTask MUST still allow reassignment — that's the dispatch path.
+  test("claimTask (NOT claimTaskForMember): bare claimTask still allows owner override", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "dispatch target" });
+    await claimTask(env.atmuxDir, id, "fe0");
+    // Lead-initiated dispatch routes through bare claimTask — must succeed.
+    const { post } = await claimTask(env.atmuxDir, id, "be0");
+    expect(post.owner).toBe("be0");
+  });
+
   test("markTaskDone: stamps completedAt + optional note", async () => {
     const id = await addTask(env.atmuxDir, { subject: "x" });
     const done = await markTaskDone(env.atmuxDir, id, "shipped via PR #42");

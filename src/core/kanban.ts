@@ -451,6 +451,50 @@ export async function claimTask(
 }
 
 /**
+ * 2026-05-12 race-condition gate — refuse a member-initiated claim when
+ * the task is already in-progress under a DIFFERENT owner.
+ *
+ * This is the THIN wrapper used by the `claim` verb (member-initiated
+ * pull), NOT by `dispatch` (lead-initiated reassignment). Dispatch needs
+ * to override the assignee freely; claim should refuse because two members
+ * silently claiming the same in-progress task is the documented
+ * duplication failure mode (see ADR-085, t-eee0a7f6-followup).
+ *
+ * The gate fires only for `in-progress` tasks under a different owner;
+ * re-claiming a `done` / `blocked` / `cancelled` task or re-claiming
+ * your own in-progress task is allowed (idempotent + recovery paths).
+ *
+ * Implementation routes through `claimTask` after the precheck, so the
+ * deps + driver-only gates still fire in their normal order.
+ */
+export async function claimTaskForMember(
+  atmuxDir: string,
+  id: string,
+  who: string,
+  opts: { callerScope?: CallerScope } = {},
+): Promise<{ pre: KanbanTask; post: KanbanTask }> {
+  const existing = await showTask(atmuxDir, id);
+  if (
+    existing !== null &&
+    existing.status === "in-progress" &&
+    existing.owner !== null &&
+    existing.owner !== undefined &&
+    existing.owner !== who
+  ) {
+    throw new ConfigError({
+      what:
+        `claim: ${id} already in-progress under '${existing.owner}'; refuse — ` +
+        `pick a different task or coordinate with lead to reassign. ` +
+        `If '${existing.owner}' has stalled, lead can ` +
+        `\`atmux task move ${id} todo\` (un-claim) and you can re-claim cleanly. ` +
+        `Force-override is intentionally unavailable; the silent duplication ` +
+        `this gate prevents costs more than a one-line lead nudge.`,
+    });
+  }
+  return claimTask(atmuxDir, id, who, opts);
+}
+
+/**
  * Mark a task done: status="done", completedAt stamped, optional note.
  * No deps check (parity with bash claim.sh:61-69).
  *
