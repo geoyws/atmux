@@ -7,8 +7,13 @@ import {
   cronAtHour,
   cronEvery,
   cronEveryHour,
+  ensureEnvPreamble,
+  installCronBlock,
   renderCronBlock,
   renderCronLines,
+  stripBlockByTeam,
+  stripByAtmuxDir,
+  stripOrphanLines,
 } from "../../../src/core/cron.ts";
 import { ConfigError } from "../../../src/errors.ts";
 import type { Team } from "../../../src/schema/team.ts";
@@ -413,3 +418,213 @@ describe("renderCronBlock", () => {
     expect(renderCronBlock(baseOpts(team))).toBe(renderCronBlock(baseOpts(team)));
   });
 });
+
+// ---------- ADR-083 IN §1: installCronBlock + helpers ----------
+
+const ENV_PREAMBLE_FIRST =
+  "# ─── env for atmux cron (avoids tmux segfaults from bare cron env) ───";
+const ENV_TERM = "TERM=xterm-256color";
+
+const header = (team: string): string =>
+  `# >>> atmux:team=${team} — managed by atmux start; do not edit by hand`;
+const footer = (team: string): string => `# <<< atmux:team=${team}`;
+
+describe("stripBlockByTeam", () => {
+  test("empty input → empty output", () => {
+    expect(stripBlockByTeam("", "demo")).toBe("");
+  });
+
+  test("removes a single team-named block, leaves surrounding lines", () => {
+    const body = [
+      "# unrelated comment",
+      "OTHER=1",
+      header("demo"),
+      "*/5 * * * * /bin/atmux whip",
+      footer("demo"),
+      "# trailing",
+    ].join("\n");
+    expect(stripBlockByTeam(body, "demo")).toBe(
+      ["# unrelated comment", "OTHER=1", "# trailing"].join("\n"),
+    );
+  });
+
+  test("leaves blocks for OTHER teams untouched", () => {
+    const body = [
+      header("demo"),
+      "*/5 * * * * /bin/atmux whip",
+      footer("demo"),
+      header("other"),
+      "*/5 * * * * /bin/atmux whip",
+      footer("other"),
+    ].join("\n");
+    expect(stripBlockByTeam(body, "demo")).toBe(
+      [header("other"), "*/5 * * * * /bin/atmux whip", footer("other")].join("\n"),
+    );
+  });
+
+  test("no matching block → byte-identical pass-through", () => {
+    const body = "OTHER=1\n# nothing here\n";
+    expect(stripBlockByTeam(body, "demo")).toBe(body);
+  });
+});
+
+describe("stripByAtmuxDir", () => {
+  test("removes a rename-orphan block (same dir, different team name)", () => {
+    const body = [
+      header("old"),
+      "*/5 * * * * ATMUX_DIR=/srv/demo/.atmux /bin/atmux whip",
+      footer("old"),
+      "# unrelated",
+    ].join("\n");
+    expect(stripByAtmuxDir(body, "/srv/demo/.atmux")).toBe("# unrelated");
+  });
+
+  test("leaves a block pointing at a different dir untouched", () => {
+    const body = [
+      header("other"),
+      "*/5 * * * * ATMUX_DIR=/srv/other/.atmux /bin/atmux whip",
+      footer("other"),
+    ].join("\n");
+    expect(stripByAtmuxDir(body, "/srv/demo/.atmux")).toBe(body);
+  });
+
+  test("does not prefix-match a longer atmux_dir (defensive needle)", () => {
+    // ATMUX_DIR=/srv/demo/.atmux-extra would prefix-match /srv/demo/.atmux
+    // without the trailing space/tab anchor. Confirm the block survives.
+    const body = [
+      header("extra"),
+      "*/5 * * * * ATMUX_DIR=/srv/demo/.atmux-extra /bin/atmux whip",
+      footer("extra"),
+    ].join("\n");
+    expect(stripByAtmuxDir(body, "/srv/demo/.atmux")).toBe(body);
+  });
+
+  test("unterminated block at EOF is preserved (corrupt-input safety)", () => {
+    const body = [header("oops"), "ATMUX_DIR=/srv/x/.atmux /bin/atmux whip"].join("\n");
+    expect(stripByAtmuxDir(body, "/srv/demo/.atmux")).toBe(body);
+  });
+});
+
+describe("stripOrphanLines", () => {
+  test("removes bare atmux verb lines OUTSIDE any marker block", () => {
+    const body = [
+      "*/5 * * * * /bin/atmux whip",
+      "# unrelated comment",
+      "0 4 * * * /bin/atmux groom --quiet",
+    ].join("\n");
+    expect(stripOrphanLines(body)).toBe("# unrelated comment");
+  });
+
+  test("leaves atmux lines INSIDE a marker block alone", () => {
+    const body = [
+      header("demo"),
+      "*/5 * * * * /bin/atmux whip",
+      footer("demo"),
+    ].join("\n");
+    expect(stripOrphanLines(body)).toBe(body);
+  });
+
+  test("only matches atmux verbs from the orphan-set (whip/report/decisions/groom/discorder/unblocker)", () => {
+    const body = [
+      "* * * * * /bin/atmux unknown-verb",
+      "* * * * * /bin/atmux whip",
+    ].join("\n");
+    expect(stripOrphanLines(body)).toBe("* * * * * /bin/atmux unknown-verb");
+  });
+});
+
+describe("ensureEnvPreamble", () => {
+  test("no atmux block → no preamble injected", () => {
+    expect(ensureEnvPreamble("OTHER=1\n")).toBe("OTHER=1\n");
+  });
+
+  test("first install (has block, no preamble) → preamble prepended", () => {
+    const body = `${header("demo")}\n*/5 * * * * /bin/atmux whip\n${footer("demo")}\n`;
+    const out = ensureEnvPreamble(body);
+    expect(out.startsWith(ENV_PREAMBLE_FIRST)).toBe(true);
+    expect(out.includes(ENV_TERM)).toBe(true);
+    expect(out.endsWith(body)).toBe(true);
+  });
+
+  test("idempotent: preamble already present → no second copy", () => {
+    const preamble = `${ENV_PREAMBLE_FIRST}\nSHELL=/bin/bash\nPATH=/x\n${ENV_TERM}\n\n`;
+    const body = `${preamble}${header("demo")}\n*/5 * * * * /bin/atmux whip\n${footer("demo")}\n`;
+    expect(ensureEnvPreamble(body)).toBe(body);
+  });
+});
+
+describe("installCronBlock", () => {
+  const opts = (over: { team?: Partial<Team>; current?: string | null } = {}) => ({
+    team: baseTeam(over.team ?? {}),
+    atmuxDir: "/srv/demo/.atmux",
+    atmuxBin: "/usr/local/bin/atmux",
+    current: over.current ?? null,
+  });
+
+  test("fresh install on empty crontab → preamble + canonical block", () => {
+    const out = installCronBlock(opts({ current: null }));
+    expect(out.startsWith(ENV_PREAMBLE_FIRST)).toBe(true);
+    expect(out.includes(header("demo"))).toBe(true);
+    expect(out.includes(footer("demo"))).toBe(true);
+    expect(out.includes(`${ENV_TERM}\n\n${header("demo")}`)).toBe(true);
+  });
+
+  test("idempotent re-install: same input → byte-identical output", () => {
+    const out1 = installCronBlock(opts({ current: null }));
+    const out2 = installCronBlock(opts({ current: out1 }));
+    expect(out2).toBe(out1);
+  });
+
+  test("strips rename-orphan with same atmux_dir + leaves exactly ONE block", () => {
+    const orphan = `${header("old-name")}\n*/5 * * * * ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip\n${footer("old-name")}\n`;
+    const out = installCronBlock(opts({ current: orphan }));
+    // After install: no old block, exactly one new block.
+    expect(out.includes("old-name")).toBe(false);
+    expect(out.includes(header("demo"))).toBe(true);
+    const headerCount = out.split(header("demo")).length - 1;
+    expect(headerCount).toBe(1);
+  });
+
+  test("preserves other teams' blocks", () => {
+    const other = `${header("other")}\n*/5 * * * * ATMUX_DIR=/srv/other/.atmux /usr/local/bin/atmux whip\n${footer("other")}\n`;
+    const out = installCronBlock(opts({ current: other }));
+    expect(out.includes(header("other"))).toBe(true);
+    expect(out.includes(footer("other"))).toBe(true);
+    expect(out.includes(header("demo"))).toBe(true);
+  });
+
+  test("scrubs pre-marker bare atmux lines before install", () => {
+    const polluted = "*/5 * * * * /bin/atmux whip\n0 4 * * * /bin/atmux groom --quiet\n";
+    const out = installCronBlock(opts({ current: polluted }));
+    // Pre-marker bare lines should be gone.
+    expect(out.includes("*/5 * * * * /bin/atmux whip\n0 4")).toBe(false);
+    // New canonical block should be present.
+    expect(out.includes(header("demo"))).toBe(true);
+    // The polluted lines should not appear outside the new block — confirm
+    // by counting `atmux whip` mentions on cron lines (start with `*/N`
+    // or `N`): exactly one, inside the new block.
+    const cronWhipLines = out
+      .split("\n")
+      .filter((l) => /^\s*[\d*/, -]+\s+/.test(l) && /atmux whip(\s|$)/.test(l));
+    expect(cronWhipLines.length).toBe(1);
+  });
+
+  test("install on crontab with unrelated user content → preserves user content + injects preamble", () => {
+    const userCron = "MAILTO=ops@example.com\n0 0 * * * /usr/bin/backup.sh\n";
+    const out = installCronBlock(opts({ current: userCron }));
+    expect(out.includes("MAILTO=ops@example.com")).toBe(true);
+    expect(out.includes("/usr/bin/backup.sh")).toBe(true);
+    expect(out.includes(header("demo"))).toBe(true);
+    expect(out.startsWith(ENV_PREAMBLE_FIRST)).toBe(true);
+  });
+
+  test("re-install with preamble already in place → preamble not duplicated", () => {
+    const first = installCronBlock(opts({ current: null }));
+    const again = installCronBlock(opts({ current: first }));
+    // Count preamble marker occurrences — must be exactly 1.
+    expect(again.split(ENV_PREAMBLE_FIRST).length - 1).toBe(1);
+    expect(again.split(ENV_TERM).length - 1).toBe(1);
+  });
+});
+
+

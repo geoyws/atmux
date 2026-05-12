@@ -301,6 +301,16 @@ export const TeamKanban = z
      *  "no work in <LANE> lane" message — strict-lane mode. Per ADR-062
      *  §OQ4 default. */
     crossLaneClaim: z.boolean().default(true),
+    /** ADR-083 §IN §4: auto-install the team's marker-fenced crontab
+     *  block on `atmux start` (whip / report-or-discorder / decisions /
+     *  groom / optional whip-resume-check / optional unblocker). When
+     *  `false`, `atmux start` skips cron entirely and the operator must
+     *  run `atmux cron-install` manually. Bash precedent at
+     *  `lib/start.sh:378-387`: default `true` because most teams want
+     *  scheduled supervision; the opt-out exists for hosts that manage
+     *  cron out-of-band. `ATMUX_NO_CRON=1` short-circuits the same path
+     *  for test sandboxes — the env wins over this flag. */
+    cronAutoInstall: z.boolean().default(true),
   })
   .strict();
 export type TeamKanban = z.infer<typeof TeamKanban>;

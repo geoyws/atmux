@@ -217,3 +217,178 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
 
   return out;
 }
+
+// ---------- ADR-083: install transform ----------
+
+const BLOCK_HEADER_PREFIX = "# >>> atmux:team=";
+const BLOCK_HEADER_SUFFIX = " — managed by atmux start; do not edit by hand";
+const BLOCK_FOOTER_PREFIX = "# <<< atmux:team=";
+const ENV_PREAMBLE_MARKER = "TERM=xterm-256color";
+const ENV_PREAMBLE = [
+  "# ─── env for atmux cron (avoids tmux segfaults from bare cron env) ───",
+  "SHELL=/bin/bash",
+  "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  "TERM=xterm-256color",
+  "",
+].join("\n");
+
+/** Atmux verb names that appeared as bare cron lines in pre-marker
+ *  installs. Used to scrub pre-marker orphans during install. */
+const ORPHAN_VERB_RE =
+  /\batmux\s+(whip|report|decisions|groom|discorder|unblocker)([\s]|$)/;
+
+export interface InstallCronBlockOpts extends RenderCronBlockOpts {
+  /** Current crontab contents (from `CrontabIO.read()`) — `null` /
+   *  empty means "no crontab yet". */
+  current: string | null;
+}
+
+/**
+ * ADR-083 IN §1: pure transform that returns the new crontab contents.
+ *
+ * Pipeline (order matters — see bash `lib/cron.sh::atmux::cron_install`
+ * lines 232-265):
+ *   1. Strip the marker-bounded block matching this team's CURRENT name
+ *      (idempotent re-install case).
+ *   2. Strip ANY marker block whose body references the same
+ *      `ATMUX_DIR=<atmuxDir>` — catches rename-orphans (block written
+ *      under team's PRIOR name, pointing at the same dir, observed to
+ *      fire concurrent `atmux whip` against one cage and crash tmux
+ *      under load 2026-05-06).
+ *   3. Strip bare atmux verb lines OUTSIDE any marker block —
+ *      pre-marker eras left orphans that remain forever unless
+ *      explicitly scrubbed.
+ *   4. Append the freshly rendered block (re-uses `renderCronBlock`).
+ *   5. Prepend env preamble (SHELL/PATH/TERM) when at least one
+ *      `# >>> atmux:team=` is present AND the preamble is not already
+ *      there — addresses cron-bare-env tmux segfaults (ADR-051).
+ *
+ * No I/O. Trivially testable; caller threads the result through
+ * `CrontabIO.write()`.
+ */
+export function installCronBlock(opts: InstallCronBlockOpts): string {
+  const { team, atmuxDir, current } = opts;
+  const body = current ?? "";
+  const stripped = stripOrphanLines(
+    stripByAtmuxDir(stripBlockByTeam(body, team.name), atmuxDir),
+  );
+  const block = renderCronBlock(opts);
+  // Bash trims exactly ONE trailing newline (`${stripped%$'\n'}`) — match
+  // that so a crontab with a deliberate trailing blank line stays
+  // byte-identical when no atmux content needs to move.
+  const trimmed = stripped.endsWith("\n") ? stripped.slice(0, -1) : stripped;
+  const joined = trimmed === "" ? block : `${trimmed}\n${block}`;
+  return ensureEnvPreamble(joined);
+}
+
+/** Bash `_atmux_cron_strip_block`: drop the marker-bounded block for
+ *  `<team>` from `body`. Stream filter; no I/O. Used by install (to
+ *  dedupe before append) and by the deferred `cron-remove` verb. */
+export function stripBlockByTeam(body: string, team: string): string {
+  if (body === "") return "";
+  const header = `${BLOCK_HEADER_PREFIX}${team}${BLOCK_HEADER_SUFFIX}`;
+  const footer = `${BLOCK_FOOTER_PREFIX}${team}`;
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let inBlock = false;
+  for (const ln of lines) {
+    if (ln === header) {
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && ln === footer) {
+      inBlock = false;
+      continue;
+    }
+    if (!inBlock) out.push(ln);
+  }
+  return out.join("\n");
+}
+
+/** Bash `_atmux_cron_strip_by_atmux_dir`: drop ANY marker-bounded block
+ *  whose body contains `ATMUX_DIR=<atmuxDir>` (followed by space or
+ *  tab, so a longer path isn't a false prefix match). Catches
+ *  rename-orphans the team-name strip can't see. */
+export function stripByAtmuxDir(body: string, atmuxDir: string): string {
+  if (body === "") return "";
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let buf: string[] = [];
+  let inBlock = false;
+  let matchDir = false;
+  const needleSpace = `ATMUX_DIR=${atmuxDir} `;
+  const needleTab = `ATMUX_DIR=${atmuxDir}\t`;
+  for (const ln of lines) {
+    if (ln.startsWith(BLOCK_HEADER_PREFIX)) {
+      inBlock = true;
+      buf = [ln];
+      matchDir = false;
+      continue;
+    }
+    if (inBlock && ln.startsWith(BLOCK_FOOTER_PREFIX)) {
+      buf.push(ln);
+      if (!matchDir) {
+        for (const b of buf) out.push(b);
+      }
+      inBlock = false;
+      buf = [];
+      matchDir = false;
+      continue;
+    }
+    if (inBlock) {
+      buf.push(ln);
+      if (ln.includes(needleSpace) || ln.includes(needleTab)) {
+        matchDir = true;
+      }
+      continue;
+    }
+    out.push(ln);
+  }
+  // Unterminated block (corrupt crontab): flush buf as-is so we don't
+  // lose lines. Bash awk silently drops them at EOF; we keep them so
+  // operators can recover.
+  if (inBlock) {
+    for (const b of buf) out.push(b);
+  }
+  return out.join("\n");
+}
+
+/** Bash `_atmux_cron_strip_orphan_lines`: drop atmux verb lines that
+ *  appear OUTSIDE any marker block. Pre-marker eras of atmux wrote
+ *  bare cron lines that survive forever unless scrubbed. */
+export function stripOrphanLines(body: string): string {
+  if (body === "") return "";
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let inBlock = false;
+  for (const ln of lines) {
+    if (ln.startsWith(BLOCK_HEADER_PREFIX)) {
+      inBlock = true;
+      out.push(ln);
+      continue;
+    }
+    if (ln.startsWith(BLOCK_FOOTER_PREFIX)) {
+      inBlock = false;
+      out.push(ln);
+      continue;
+    }
+    if (inBlock) {
+      out.push(ln);
+      continue;
+    }
+    if (ORPHAN_VERB_RE.test(ln)) continue;
+    out.push(ln);
+  }
+  return out.join("\n");
+}
+
+/** Bash `_atmux_cron_ensure_env_preamble`: prepend SHELL/PATH/TERM
+ *  preamble iff the crontab contains at least one `# >>> atmux:team=`
+ *  block AND the preamble isn't already present. Cron's bare env (no
+ *  TERM, narrow PATH) caused tmux 3.5a segfaults when invoked from
+ *  atmux verbs (ADR-051). Idempotent. */
+export function ensureEnvPreamble(body: string): string {
+  if (!body.includes(BLOCK_HEADER_PREFIX)) return body;
+  if (body.includes(ENV_PREAMBLE_MARKER)) return body;
+  return `${ENV_PREAMBLE}\n${body}`;
+}

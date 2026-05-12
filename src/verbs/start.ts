@@ -108,6 +108,7 @@ import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { applyCagePrefix } from "./cockpit.ts";
+import { cronInstall } from "./cron-install.ts";
 
 // ---------- Arg parsing ----------
 
@@ -229,6 +230,12 @@ export interface StartOpts {
   /** Logger sink override (default: `createLogger()`, stderr). Tests pass
    *  an in-memory sink so output assertions don't go through stderr. */
   logger?: Logger;
+  /** ADR-083 §IN §4: inject the cron-install verb for tests so `start`
+   *  never touches the host crontab. Default = the real verb; pass a
+   *  no-op or a recorder in unit tests. */
+  cronInstallFn?: (
+    argv: ReadonlyArray<string>,
+  ) => Promise<number>;
 }
 
 /**
@@ -532,7 +539,44 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   await writeText(join(stateDir(dir), "session-start.txt"), `${startSeconds}\n`);
 
   logger.ok(`team '${team.name}' is up. attach with: atmux attach`);
+
+  // 11. ADR-083 §IN §4: auto-install the team's marker-fenced crontab
+  //     block (whip / report / decisions / groom / optional whip-resume-
+  //     check / optional unblocker). Gated by `kanban.cronAutoInstall`
+  //     (default true) — explicit `false` skips entirely and the
+  //     operator must run `atmux cron-install` manually. `ATMUX_NO_CRON`
+  //     env wins over the flag (test sandboxes + out-of-band cron
+  //     management). Non-fatal: the verb itself swallows all install
+  //     failures (warn + exit 0) so `start` never aborts because cron
+  //     hiccuped.
+  if (shouldAutoInstallCron(team, env)) {
+    const cronFn = opts.cronInstallFn ?? cronInstall;
+    try {
+      await cronFn(["--quiet"]);
+    } catch (e) {
+      // Defense in depth: cronInstall is already non-fatal internally,
+      // but if a future bug raised an unhandled error we'd rather warn
+      // than fail `start`. Mirrors bash's `if atmux::cron_install ...`
+      // guard at lib/start.sh:383.
+      const cause = e instanceof Error ? e.message : String(e);
+      logger.warn(`cron-install fell through: ${cause}`);
+    }
+  }
+
   return 0;
+}
+
+/** ADR-083 §IN §4: `kanban.cronAutoInstall` (default true) gates the
+ *  auto-install path. `ATMUX_NO_CRON=<truthy>` env overrides to skip,
+ *  matching bash `lib/cron.sh:197-204`. */
+function shouldAutoInstallCron(team: Team, env: NodeJS.ProcessEnv): boolean {
+  const noCron = env.ATMUX_NO_CRON;
+  if (noCron !== undefined && noCron !== "" && noCron !== "0" && noCron.toLowerCase() !== "false") {
+    return false;
+  }
+  const kanban = (team as { kanban?: { cronAutoInstall?: boolean } }).kanban;
+  if (kanban?.cronAutoInstall === false) return false;
+  return true;
 }
 
 /**
