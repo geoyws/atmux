@@ -38,6 +38,7 @@ import { cockpit } from "./verbs/cockpit.ts";
 import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
 import { cronInstall } from "./verbs/cron-install.ts";
+import { cronRemove } from "./verbs/cron-remove.ts";
 import { dashboard } from "./verbs/dashboard.ts";
 import { discorder } from "./verbs/discorder.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
@@ -162,6 +163,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cost(argv.slice(1));
     case "cron-install":
       return cronInstall(argv.slice(1));
+    case "cron-remove":
+      return cronRemove(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
     case "complaints":

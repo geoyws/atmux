@@ -14,6 +14,7 @@ let socketPath: string;
 let teamDir: string;
 let atmuxDir: string;
 let priorTmux: string | undefined;
+let priorNoCron: string | undefined;
 let tmux: TmuxNamespace;
 let sessionPrefix: string;
 
@@ -26,6 +27,13 @@ beforeEach(async () => {
   sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
+  // ADR-083 follow-up: stop() now invokes cron-remove. Pin the test env
+  // so the verb's internal ATMUX_NO_CRON gate short-circuits before it
+  // can reach `crontab -l` / `crontab <file>` — keeps the host
+  // crontab untouched across the suite. Tests that deliberately
+  // exercise the cron-remove path use the StopOpts.cronRemoveFn DI.
+  priorNoCron = process.env.ATMUX_NO_CRON;
+  process.env.ATMUX_NO_CRON = "1";
   tmux = createTmux({ socketPath, configFile: "/dev/null" });
 });
 
@@ -36,6 +44,8 @@ afterEach(async () => {
     // expected: idempotent teardown
   }
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  if (priorNoCron !== undefined) process.env.ATMUX_NO_CRON = priorNoCron;
+  else delete process.env.ATMUX_NO_CRON;
   await rm(socketDir, { recursive: true, force: true });
   await rm(teamDir, { recursive: true, force: true });
 });
@@ -221,4 +231,44 @@ describe("stop verb — integration", () => {
     const destDriver = await Bun.file(join(atmuxDir, "archive", ts, "driver-inbox.md")).text();
     expect(destDriver).toContain("inbox");
   });
+
+  // ADR-083 follow-up: stop() fires cron-remove inline (bash lib/stop.sh:115
+  // parity). Confirm via the StopOpts.cronRemoveFn DI seam — the suite's
+  // beforeEach pins ATMUX_NO_CRON=1 to keep the host crontab off-limits,
+  // but the DI lets us observe that the call actually happened.
+  test("ADR-083: stop() invokes cron-remove via DI with --quiet (+--team-dir when set)", async () => {
+    await stageTeamWithSession(["alpha"]);
+    let invocations: ReadonlyArray<string>[] = [];
+    const cronRemoveFn = async (argv: ReadonlyArray<string>) => {
+      invocations = [...invocations, argv];
+      return 0;
+    };
+    await captureStdoutStderr(() =>
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir], {
+        cronRemoveFn,
+      }),
+    );
+    expect(invocations.length).toBe(1);
+    expect(invocations[0]).toContain("--quiet");
+    // teamDir was passed → propagated downstream so the verb resolves
+    // the same team root that stop just shut down.
+    expect(invocations[0]).toContain("--team-dir");
+    expect(invocations[0]).toContain(teamDir);
+  });
+
+  test("ADR-083: cron-remove failure does NOT abort stop (non-fatal)", async () => {
+    await stageTeamWithSession(["alpha"]);
+    const cronRemoveFn = async (_argv: ReadonlyArray<string>) => {
+      throw new Error("simulated cron-remove blow-up");
+    };
+    const { result, stderr } = await captureStdoutStderr(() =>
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir], {
+        cronRemoveFn,
+      }),
+    );
+    expect(result).toBe(0);
+    expect(stderr).toContain("cron-remove fell through");
+    expect(stderr).toContain("simulated cron-remove blow-up");
+  });
+
 });

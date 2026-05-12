@@ -40,6 +40,7 @@ import {
 } from "../core/common.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
+import { cronRemove } from "./cron-remove.ts";
 import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux stop [--force|-f] [--no-archive]";
@@ -113,7 +114,18 @@ export function archiveTimestamp(epochMs: number): string {
 }
 
 /** `atmux stop [--force] [--no-archive]`. Returns 0. */
-export async function stop(argv: ReadonlyArray<string>): Promise<number> {
+export interface StopOpts {
+  /** ADR-083 follow-up: inject the cron-remove verb for tests so `stop`
+   *  never touches the host crontab. Default = the real verb; tests
+   *  pass a no-op or recorder. Production callers (CLI dispatch) omit
+   *  the opts and get the real impl. */
+  cronRemoveFn?: (argv: ReadonlyArray<string>) => Promise<number>;
+}
+
+export async function stop(
+  argv: ReadonlyArray<string>,
+  opts: StopOpts = {},
+): Promise<number> {
   const parsed = parseStopArgs(argv);
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team: Team = await requireTeam(dirOpts);
@@ -144,6 +156,26 @@ export async function stop(argv: ReadonlyArray<string>): Promise<number> {
     // (race on a parallel `atmux stop`). Safe to swallow.
   }
   process.stdout.write(`session ${sessionName} stopped\n`);
+
+  // ADR-083 follow-up: drop the team's marker-fenced crontab block. The
+  // verb is unconditionally fired; its own internal strip is a free
+  // no-op when no block exists (matches bash lib/stop.sh:115 — operators
+  // who opted out of auto-install have no block to strip). Non-fatal:
+  // the verb itself swallows every install failure path.
+  const cronFn = opts.cronRemoveFn ?? cronRemove;
+  const cronArgs: string[] = ["--quiet"];
+  if (parsed.teamDir !== undefined) cronArgs.push("--team-dir", parsed.teamDir);
+  try {
+    await cronFn(cronArgs);
+  } catch (e) {
+    // Defense in depth: cronRemove is non-fatal internally, but if a
+    // future bug raised an unhandled error we'd rather warn than fail
+    // `stop`. Mirrors bash's `if atmux::cron_remove ...` guard at
+    // lib/stop.sh:115.
+    const cause = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`atmux: warn: cron-remove fell through: ${cause}\n`);
+  }
+
   return 0;
 }
 
