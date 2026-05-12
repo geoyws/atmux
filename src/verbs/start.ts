@@ -92,6 +92,12 @@ import { ensureDir, writeText } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
+  defaultGitSpawn,
+  type GitSpawn,
+  provisionWorktree,
+  resolveWorktreePath,
+} from "../abstractions/worktree.ts";
+import {
   buildWindowName,
   defaultEmojiForRole,
   ensureAtmuxDirs,
@@ -236,6 +242,11 @@ export interface StartOpts {
   cronInstallFn?: (
     argv: ReadonlyArray<string>,
   ) => Promise<number>;
+  /** ADR-082 W3: inject the git spawner for the worktree provisioning
+   *  step. Default = the real `git` via `defaultGitSpawn` from
+   *  `abstractions/worktree.ts`. Tests pass a mock so the start path
+   *  doesn't shell out to git against the live repo. */
+  gitSpawn?: GitSpawn;
 }
 
 /**
@@ -436,6 +447,60 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //     showed unum cages started outside cockpit landing on default C-b.
   await applyCagePrefix(tmux);
 
+  // 7b. ADR-082 W3 — per-member git worktree provisioning. Only fires
+  //     when team.json sets `worktreeIsolation: true`; legacy teams take
+  //     no git invocations and no behavioral change. Per-member spawn
+  //     loop below threads `worktreeCwd` so a successfully-provisioned
+  //     member's pane lands in the worktree path; failures are warned +
+  //     fall back to the shared-tree cwd for THAT member (the rest of
+  //     the team still spawns).
+  const worktreeCwd: Map<string, string> = new Map();
+  if (team.worktreeIsolation === true) {
+    const gitSpawn = opts.gitSpawn ?? defaultGitSpawn;
+    // The project root is the directory containing `.atmux/`. Match
+    // the strip logic in `resolveWorktreePath` (regex over a trailing
+    // `/.atmux/?`) rather than bare `dirname()`, which would lop off
+    // the atmux-dir name on test fixtures whose atmuxDir doesn't end
+    // in `/.atmux`. Both `git rev-parse --show-toplevel` and
+    // `git branch --show-current` run there ONCE — the result holds
+    // for every member.
+    const projectRoot = dir.replace(/\/?\.atmux\/?$/, "") || "/";
+    const rootR = await gitSpawn(["-C", projectRoot, "rev-parse", "--show-toplevel"]);
+    const branchR = await gitSpawn(["-C", projectRoot, "branch", "--show-current"]);
+    const branch = branchR.stdout.trim();
+    if (rootR.exitCode !== 0) {
+      logger.warn(
+        `worktree: cannot detect repo root at ${projectRoot} — falling back to shared cwd for all members`,
+      );
+    } else if (branchR.exitCode !== 0 || branch.length === 0) {
+      // Empty branch == detached HEAD. We refuse to provision worktrees
+      // off a detached state — `git worktree add <path> ""` would error
+      // and there's no sensible default branch name to substitute.
+      logger.warn(
+        "worktree: detached HEAD (no current branch) — falling back to shared cwd for all members",
+      );
+    } else {
+      const repoPath = rootR.stdout.trim();
+      logger.log(`worktree: provisioning under ${repoPath} on branch ${branch}`);
+      for (const member of team.members) {
+        const wtPath = resolveWorktreePath(team, member.name, dir);
+        try {
+          const r = await provisionWorktree(repoPath, branch, wtPath, { git: gitSpawn });
+          worktreeCwd.set(member.name, wtPath);
+          logger.log(`  · worktree ${r.created ? "created" : "reused"}: ${member.name} → ${wtPath}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn(
+            `worktree: ${member.name} provision failed — falling back to shared cwd (${msg})`,
+          );
+          // Intentional: do NOT set worktreeCwd[member]. The spawn loop's
+          // `worktreeCwd.get(member.name) ?? member.cwd ?? opts.cwd ?? cwd()`
+          // chain falls through to the existing shared-tree resolution.
+        }
+      }
+    }
+  }
+
   // 8. Spawn each member as a window (lib/start.sh:272-283 +
   //    _atmux_spawn_member lib/start.sh:400-440 — minus deferred
   //    TUI launch + brief paste).
@@ -464,7 +529,11 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       logger.log(`  · ${member.name}: window exists, skipping (use --force to reset)`);
       continue;
     }
-    const memberCwd = member.cwd ?? opts.cwd ?? process.cwd();
+    // ADR-082 W3: worktree-isolation cwd wins when provisioning
+    // succeeded for this member. Empty `worktreeCwd` (legacy team or
+    // provision-fail) falls through to the existing chain.
+    const memberCwd =
+      worktreeCwd.get(member.name) ?? member.cwd ?? opts.cwd ?? process.cwd();
     const winId = await tmux.window.newWindow({
       sessionName: session,
       name: win,

@@ -105,11 +105,21 @@ async function writeTeamJson(opts: {
   singleSession?: boolean;
   driverSession?: { tui?: string | null } | null;
   driverTui?: string | null;
+  /** ADR-082 W3: opt-in to per-member worktree isolation. Default
+   *  omitted → legacy shared-tree behaviour (matches existing tests). */
+  worktreeIsolation?: boolean;
+  /** ADR-082 W3: relative root for the worktree tree (default
+   *  `.atmux/worktrees` via the W2 schema default). */
+  worktreeRoot?: string;
 }): Promise<void> {
   const body: Record<string, unknown> = {
     name: env.team,
     members: opts.members,
     ...(opts.singleSession !== undefined ? { singleSession: opts.singleSession } : {}),
+    ...(opts.worktreeIsolation !== undefined
+      ? { worktreeIsolation: opts.worktreeIsolation }
+      : {}),
+    ...(opts.worktreeRoot !== undefined ? { worktreeRoot: opts.worktreeRoot } : {}),
   };
   // driverSession is included even when null — the tests for the
   // "explicitly disabled" path rely on the field being present-but-null
@@ -124,13 +134,20 @@ async function writeTeamJson(opts: {
 }
 
 /** Inject the per-test factory + env+cwd into a `start` call.
- *  Tests pass args + the team-specific socket-path flag automatically. */
-async function runStart(args: ReadonlyArray<string>): Promise<number> {
-  return await start([...args, "--socket-path", env.socketPath], {
+ *  Tests pass args + the team-specific socket-path flag automatically.
+ *  Optional `opts` lets ADR-082 W3 tests inject a `gitSpawn` mock so
+ *  the worktree-provisioning path never shells out to the live repo. */
+async function runStart(
+  args: ReadonlyArray<string>,
+  opts: { gitSpawn?: import("../../../src/abstractions/worktree.ts").GitSpawn } = {},
+): Promise<number> {
+  const startOpts: Parameters<typeof start>[1] = {
     env: { ...process.env, ATMUX_DIR: env.atmuxDir },
     cwd: env.atmuxDir,
     logger: env.logger,
-  });
+  };
+  if (opts.gitSpawn !== undefined) startOpts.gitSpawn = opts.gitSpawn;
+  return await start([...args, "--socket-path", env.socketPath], startOpts);
 }
 
 // ---------- parseStartArgs ----------
@@ -716,5 +733,165 @@ describe("start — ADR-044 driverSession topology", () => {
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
     expect(ordered[1]?.name).toBe("🧭alpha");
+  });
+});
+
+// ---------- start — ADR-082 W3 per-member worktree provisioning ----------
+
+describe("start — ADR-082 W3 worktree-isolation", () => {
+  type GitSpawn = import("../../../src/abstractions/worktree.ts").GitSpawn;
+  type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
+
+  function ok(stdout = ""): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  function fail(stderr: string, code = 128): SpawnResult {
+    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+  }
+
+  test("legacy team (no worktreeIsolation field) makes ZERO git invocations", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }, { name: "bob", role: "reviewer" }],
+    });
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return ok("");
+    };
+    const exit = await runStart([], { gitSpawn });
+    expect(exit).toBe(0);
+    // The legacy short-circuit MUST gate at `team.worktreeIsolation === true`
+    // — any git invocation here is a regression that resurrects the
+    // shared-tree-only path's behaviour for opt-in teams.
+    expect(calls).toEqual([]);
+  });
+
+  test("worktreeIsolation=true happy path: each member gets a worktree provisioned + cwd overridden", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }, { name: "bob", role: "reviewer" }],
+      worktreeIsolation: true,
+    });
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      // rev-parse --show-toplevel returns a fake repo path; branch
+      // --show-current returns a branch name; worktree list returns
+      // empty (no managed worktrees yet); worktree add succeeds.
+      if (argv.includes("rev-parse")) return ok("/srv/fake-repo\n");
+      if (argv.includes("branch")) return ok("geoyws\n");
+      if (argv.includes("list")) return ok("");
+      // worktree add or anything else → success.
+      return ok("");
+    };
+    const exit = await runStart([], { gitSpawn });
+    expect(exit).toBe(0);
+    // Expected git calls: 1× rev-parse, 1× branch, then per member
+    // (list + add) = 2*2 = 4. Total 6.
+    expect(calls).toHaveLength(6);
+    // First two are the shared root/branch resolution.
+    expect(calls[0]).toEqual(["-C", env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/", "rev-parse", "--show-toplevel"]);
+    expect(calls[1]).toEqual(["-C", env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/", "branch", "--show-current"]);
+    // Both members got a `worktree add ... geoyws`.
+    const addCalls = calls.filter((c) => c.includes("add"));
+    expect(addCalls).toHaveLength(2);
+    for (const c of addCalls) {
+      expect(c).toContain("geoyws");
+    }
+    // Operator-visible log lines surface each provision.
+    expect(env.logs.some((l) => l.msg.includes("worktree created: alice"))).toBe(true);
+    expect(env.logs.some((l) => l.msg.includes("worktree created: bob"))).toBe(true);
+  });
+
+  test("partial-fail: one member's provisionWorktree throws → others still spawn, failed one falls back", async () => {
+    await writeTeamJson({
+      members: [
+        { name: "alice", role: "team-lead" },
+        { name: "bob", role: "reviewer" },
+        { name: "carol", role: "member" },
+      ],
+      worktreeIsolation: true,
+    });
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("rev-parse")) return ok("/srv/fake-repo\n");
+      if (argv.includes("branch")) return ok("geoyws\n");
+      if (argv.includes("list")) return ok(""); // no managed worktrees yet
+      if (argv.includes("add")) {
+        // Fail ONLY bob's add; alice + carol succeed.
+        if (argv.some((a) => a.endsWith("/bob"))) {
+          return fail("fatal: invalid reference: geoyws");
+        }
+        return ok("");
+      }
+      return ok("");
+    };
+    const exit = await runStart([], { gitSpawn });
+    expect(exit).toBe(0);
+    // Team still spawned all 3 members despite bob's provision failure.
+    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const names = wins.map((w) => w.name).sort();
+    expect(names).toContain("🧭alice");
+    expect(names).toContain("🔍bob");
+    expect(names).toContain("🐝carol");
+    // Operator-visible warning names the failing member specifically.
+    const warns = env.logs.filter((l) => l.kind === "warn");
+    expect(warns.some((l) => l.msg.includes("bob") && l.msg.includes("provision failed"))).toBe(
+      true,
+    );
+    // alice + carol got worktree-created log lines.
+    expect(env.logs.some((l) => l.msg.includes("worktree created: alice"))).toBe(true);
+    expect(env.logs.some((l) => l.msg.includes("worktree created: carol"))).toBe(true);
+  });
+
+  test("git rev-parse failure → all members fall back to shared cwd with a single warning", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }, { name: "bob", role: "reviewer" }],
+      worktreeIsolation: true,
+    });
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return fail("fatal: not a git repository");
+      return ok("");
+    };
+    const exit = await runStart([], { gitSpawn });
+    expect(exit).toBe(0);
+    // rev-parse + branch are the only calls — branch is exec'd before
+    // the rev-parse-failure gate kicks in (the impl reads both up-front).
+    // No `worktree add` invocations.
+    expect(calls.filter((c) => c.includes("add"))).toHaveLength(0);
+    // Warning surfaces the repo-root detection failure.
+    const warns = env.logs.filter((l) => l.kind === "warn");
+    expect(warns.some((l) => l.msg.includes("cannot detect repo root"))).toBe(true);
+    // Members still spawn — pane creation is unaffected.
+    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    expect(wins.map((w) => w.name).sort()).toEqual(["🔍bob", "🧭alice"]);
+  });
+
+  test("detached HEAD (empty branch) → all fall back with 'detached HEAD' warning, no provisioning", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      worktreeIsolation: true,
+    });
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return ok("/srv/fake-repo\n");
+      // branch --show-current emits empty string when HEAD is detached.
+      if (argv.includes("branch")) return ok("\n");
+      return ok("");
+    };
+    const exit = await runStart([], { gitSpawn });
+    expect(exit).toBe(0);
+    expect(calls.filter((c) => c.includes("add"))).toHaveLength(0);
+    const warns = env.logs.filter((l) => l.kind === "warn");
+    expect(warns.some((l) => l.msg.includes("detached HEAD"))).toBe(true);
   });
 });

@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { exists } from "./fs.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "./spawn.ts";
 import { ConfigError } from "../errors.ts";
-import { DEFAULT_WORKTREE_ROOT } from "../schema/team.ts";
+import { DEFAULT_WORKTREE_ROOT, type Team } from "../schema/team.ts";
 
 // ---------- Spawn-injected git wrapper ----------
 
@@ -50,13 +50,12 @@ export const defaultGitSpawn: GitSpawn = async (argv) =>
 
 // ---------- (1) resolveWorktreePath ----------
 
-/** Subset of the `Team` shape needed for path resolution. Accepting a
- *  structural subset avoids a `team.json` round-trip in callers that
- *  already hold the (Zod-parsed) team object. */
-export interface WorktreePathTeam {
-  /** {@link team.worktreeRoot} from `src/schema/team.ts`. */
-  worktreeRoot?: string;
-}
+/** Subset of the `Team` shape needed for path resolution. Pick'd from
+ *  `Team` so the optional-property semantics line up exactly with the
+ *  Zod-inferred shape under `exactOptionalPropertyTypes: true` —
+ *  callers can pass the full `Team` object directly, and bare literal
+ *  callers can omit the field. */
+export type WorktreePathTeam = Pick<Team, "worktreeRoot">;
 
 /**
  * Compute the worktree path for `<member>` under `team.worktreeRoot`
