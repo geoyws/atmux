@@ -2,6 +2,11 @@
 # See: https://bun.sh/docs/runtime/bunfig
 
 [test]
+# 2026-05-12 cage-safety preload — refuses `bun test` when $TMUX names an
+# atmux cage socket (3 cage-death incidents on demo-prep cycle). Override
+# with `unset TMUX` (recommended) or `ATMUX_CAGE_TEST_OK=1`.
+preload = ["./tests/helpers/sandbox-guard.ts"]
+
 # Coverage gate per ADR-009 + PLAN.md §8.1 (100% narrowed denominator).
 # Reviewer's 8-check protocol step 2 enforces this on every commit.
 coverage = true
