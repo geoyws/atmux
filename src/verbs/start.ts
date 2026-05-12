@@ -70,11 +70,12 @@
 // - On-activate groom (lib/start.sh:391-397) — Phase 2 follow-up;
 //   `groom` verb not yet ported.
 // - Per-member `_atmux_spawn_member` body: emoji write-through to
-//   registry (lib/start.sh:418-421), TUI command resolution + send-keys
-//   launch (lib/start.sh:447-448), TUI boot wait + brief paste
-//   (lib/start.sh:451-461). All deferred until tui_cmd / registry land.
-//   The MVP spawns an empty pane (default shell); operator attaches
-//   and launches the TUI manually.
+//   registry (lib/start.sh:418-421) is deferred until lib/registry.sh
+//   lands. TUI launch (lib/start.sh:447-448) + brief paste
+//   (lib/start.sh:451-481 / _atmux_paste_brief) are PORTED — see
+//   ADR-081 §C. Brief paste fires after ATMUX_SPAWN_WAIT (default 6s)
+//   per non-shell-only member; failures are best-effort warned and the
+//   rest of the team still spawns.
 // - Inbox file initialization (lib/start.sh:443-444) — depends on
 //   `inbox.json` schema which Phase 2 task #18 (task add) will land.
 //
@@ -88,9 +89,14 @@
 // amend Consequences §Phase 2.
 
 import { dirname, join } from "node:path";
-import { ensureDir, writeText } from "../abstractions/fs.ts";
+import { ensureDir, exists, writeText } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  type SendTarget,
+  type TmuxConfig,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import {
   defaultGitSpawn,
   type GitSpawn,
@@ -110,12 +116,14 @@ import {
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
-import type { Team } from "../schema/team.ts";
+import { submitAfterPaste } from "../core/paste-submit.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
 import { applyCagePrefix } from "./cockpit.ts";
 import { cronInstall } from "./cron-install.ts";
+import { defaultBriefsDir, getBriefPath, renderBrief } from "./rotate.ts";
 
 // ---------- Arg parsing ----------
 
@@ -240,14 +248,24 @@ export interface StartOpts {
   /** ADR-083 §IN §4: inject the cron-install verb for tests so `start`
    *  never touches the host crontab. Default = the real verb; pass a
    *  no-op or a recorder in unit tests. */
-  cronInstallFn?: (
-    argv: ReadonlyArray<string>,
-  ) => Promise<number>;
+  cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
   /** ADR-082 W3: inject the git spawner for the worktree provisioning
    *  step. Default = the real `git` via `defaultGitSpawn` from
    *  `abstractions/worktree.ts`. Tests pass a mock so the start path
    *  doesn't shell out to git against the live repo. */
   gitSpawn?: GitSpawn;
+  /** ADR-081 §C: override the briefs directory. Default =
+   *  `defaultBriefsDir()` which resolves to `<repo>/templates/briefs/`.
+   *  Tests inject a temp dir seeded with role-specific brief files. */
+  briefsDir?: string;
+  /** ADR-081 §C: override the spawn-wait between TUI launch and brief
+   *  paste, in ms. Default = `ATMUX_SPAWN_WAIT` env (seconds) or 6000ms.
+   *  Tests pass `0` to skip waiting on a real claude welcome screen. */
+  spawnWaitMs?: number;
+  /** ADR-081 §C: sleep override (test injection). Used for both the
+   *  spawn-wait and the post-paste settle inside `submitAfterPaste`.
+   *  Default = `setTimeout`-backed. Tests pass a no-op. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -264,6 +282,17 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const parsed = parseStartArgs(args, env);
   const logger = opts.logger ?? createLogger();
   const factory = opts.tmuxFactory ?? createTmux;
+  // ADR-081 §C: resolve brief-paste knobs once. `sleep` defaults to a
+  // setTimeout-backed promise; tests pass a no-op. `spawnWaitMs` defaults
+  // to `ATMUX_SPAWN_WAIT` env (seconds, bash parity) or 6000ms when unset.
+  const briefSleep =
+    opts.sleep ??
+    ((ms: number) =>
+      new Promise<void>((res) => {
+        setTimeout(res, ms);
+      }));
+  const spawnWaitMs = resolveSpawnWaitMs(opts.spawnWaitMs, env);
+  const briefsDir = opts.briefsDir ?? defaultBriefsDir();
 
   // 1. Load team + ensure standard dirs (lib/start.sh:12-14).
   // exactOptionalPropertyTypes: build the resolve-opts conditionally so
@@ -541,8 +570,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     // ADR-082 W3: worktree-isolation cwd wins when provisioning
     // succeeded for this member. Empty `worktreeCwd` (legacy team or
     // provision-fail) falls through to the existing chain.
-    const memberCwd =
-      worktreeCwd.get(member.name) ?? member.cwd ?? opts.cwd ?? process.cwd();
+    const memberCwd = worktreeCwd.get(member.name) ?? member.cwd ?? opts.cwd ?? process.cwd();
     const winId = await tmux.window.newWindow({
       sessionName: session,
       name: win,
@@ -572,15 +600,33 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       // active pane, which avoids `pane-base-index 1` configs (the user's
       // ~/.tmux.conf often sets it) erroring with "can't find pane: 0".
       // Bash mirror also uses `<session>:<window>` form (lib/start.sh:447).
+      const memberTarget: SendTarget = {
+        kind: "member",
+        member: member.name,
+        team: team.name,
+        target: { sessionName: session, windowIndex: winId.windowIndex },
+      };
       await tmux.pane.sendKeys({
-        target: {
-          kind: "member",
-          member: member.name,
-          team: team.name,
-          target: { sessionName: session, windowIndex: winId.windowIndex },
-        },
+        target: memberTarget,
         keys: cmd,
         enter: true,
+      });
+      // ADR-081 §C: paste the role brief after the TUI has time to come
+      // up. Per-member best-effort: a paste failure on one member must
+      // not wedge the rest of the team spawn. Iteration order is
+      // declarative (team.members[]) — lead conventionally first per
+      // ADR-044, so the lead's brief lands first by construction.
+      await pasteBriefForMember({
+        tmux,
+        target: memberTarget,
+        member: member.name,
+        role,
+        team: team.name,
+        atmuxDir: dir,
+        briefsDir,
+        spawnWaitMs,
+        sleep: briefSleep,
+        logger,
       });
     }
   }
@@ -677,4 +723,101 @@ export function resolveTmuxConfig(
   if (parsed.socketPath !== undefined) return { socketPath: parsed.socketPath };
   if (parsed.socket !== undefined) return { socket: parsed.socket };
   return { socketPath: resolveTeamSocket(team) };
+}
+
+/** ADR-081 §C: resolve the spawn-wait window between TUI launch and
+ *  brief paste, in milliseconds. Precedence: explicit `opts.spawnWaitMs`
+ *  > `ATMUX_SPAWN_WAIT` env (seconds, bash parity) > 6000ms default.
+ *  Non-numeric / negative env values fall through to the default. */
+export function resolveSpawnWaitMs(override: number | undefined, env: NodeJS.ProcessEnv): number {
+  if (override !== undefined && Number.isFinite(override) && override >= 0) {
+    return override;
+  }
+  const raw = env.ATMUX_SPAWN_WAIT;
+  if (raw !== undefined && raw.length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed * 1000);
+  }
+  return 6000;
+}
+
+interface PasteBriefArgs {
+  tmux: TmuxNamespace;
+  target: SendTarget;
+  member: string;
+  role: string;
+  team: string;
+  atmuxDir: string;
+  briefsDir: string;
+  spawnWaitMs: number;
+  sleep: (ms: number) => Promise<void>;
+  logger: Logger;
+}
+
+/** ADR-081 §C: settle for the TUI welcome screen, render the role brief,
+ *  load it into a per-member tmux buffer, paste it, and fire the C-m
+ *  submit cascade (per §A's `submitAfterPaste`). Failures are caught and
+ *  warned — the next member's spawn must still proceed.
+ *
+ *  Bash mirror: `_atmux_paste_brief` at
+ *  `.archive-bash-atmux-20260507/lib/start.sh:468-481`. Differences:
+ *  - We route the submit through `submitAfterPaste` (§A C-m, not Enter)
+ *    so bracketed-paste-mode under claude doesn't swallow the trailing
+ *    newline. Bash sent `Enter` and silently starved 11/12 panes on
+ *    2026-05-12 — see ADR-081 §Audit trail.
+ *  - Missing brief file is a silent skip (parity with bash:
+ *    `[[ -f "$brief" ]] && _atmux_paste_brief ...`). Other failures
+ *    (read, render, tmux load/paste) surface as a warn line.
+ */
+async function pasteBriefForMember(args: PasteBriefArgs): Promise<void> {
+  const { tmux, target, member, role, team, atmuxDir, briefsDir, spawnWaitMs, sleep, logger } =
+    args;
+  // 1. Resolve brief BEFORE the spawn-wait — if there's nothing to paste,
+  //    there's no reason to block 6s for a TUI we'll never speak to.
+  //    `getBriefPath` is alias-aware via the §B BRIEF_ALIASES map
+  //    (rotate.ts) and falls back to `member.md` when no role-specific
+  //    brief exists. Both resolutions land here in O(1) fs.stat.
+  let briefPath: string;
+  try {
+    briefPath = await getBriefPath(role, briefsDir);
+    if (!(await exists(briefPath))) {
+      // Silent skip — bash also no-ops here. Operator observability is
+      // by deliberate absence: a brief-less role surfaces as "ctx==0"
+      // on the next `atmux doctor` tick (§D), which is the correct
+      // place to surface the absence.
+      return;
+    }
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`  · ${member}: brief paste failed (${cause})`);
+    return;
+  }
+  // 2. Settle: let the TUI welcome screen render before the paste lands,
+  //    otherwise the brief content arrives BEFORE the compose box is
+  //    ready and the bytes scroll past into the TUI's startup output.
+  if (spawnWaitMs > 0) await sleep(spawnWaitMs);
+  try {
+    const tpl = await Bun.file(briefPath).text();
+    const body = renderBrief(tpl, {
+      team,
+      member,
+      role,
+      atmuxDir,
+    });
+    const bufferName = `atmux_brief_${member}`;
+    await tmux.buffer.loadBuffer({ name: bufferName, data: body });
+    await tmux.buffer.pasteBuffer({
+      name: bufferName,
+      target,
+      deleteAfter: true,
+    });
+    // 3. Settle + C-m submit per §A. The default 500ms floor lives in
+    //    `submitAfterPaste`; injecting our test-sleep keeps unit tests
+    //    fast while production gets the real timer.
+    await submitAfterPaste(tmux, target, { sleep });
+    logger.log(`  · ${member}: brief pasted from ${briefPath}`);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`  · ${member}: brief paste failed (${cause})`);
+  }
 }

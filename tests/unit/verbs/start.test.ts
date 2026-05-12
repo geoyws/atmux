@@ -30,6 +30,7 @@ import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   defaultSocketPath,
   parseStartArgs,
+  resolveSpawnWaitMs,
   resolveTmuxConfig,
   start,
 } from "../../../src/verbs/start.ts";
@@ -116,9 +117,7 @@ async function writeTeamJson(opts: {
     name: env.team,
     members: opts.members,
     ...(opts.singleSession !== undefined ? { singleSession: opts.singleSession } : {}),
-    ...(opts.worktreeIsolation !== undefined
-      ? { worktreeIsolation: opts.worktreeIsolation }
-      : {}),
+    ...(opts.worktreeIsolation !== undefined ? { worktreeIsolation: opts.worktreeIsolation } : {}),
     ...(opts.worktreeRoot !== undefined ? { worktreeRoot: opts.worktreeRoot } : {}),
   };
   // driverSession is included even when null — the tests for the
@@ -139,7 +138,13 @@ async function writeTeamJson(opts: {
  *  the worktree-provisioning path never shells out to the live repo. */
 async function runStart(
   args: ReadonlyArray<string>,
-  opts: { gitSpawn?: import("../../../src/abstractions/worktree.ts").GitSpawn } = {},
+  opts: {
+    gitSpawn?: import("../../../src/abstractions/worktree.ts").GitSpawn;
+    /** ADR-081 §C: brief-paste knobs — defaulted to fast/no-op for unit tests. */
+    briefsDir?: string;
+    spawnWaitMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<number> {
   const startOpts: Parameters<typeof start>[1] = {
     env: { ...process.env, ATMUX_DIR: env.atmuxDir },
@@ -147,6 +152,9 @@ async function runStart(
     logger: env.logger,
   };
   if (opts.gitSpawn !== undefined) startOpts.gitSpawn = opts.gitSpawn;
+  if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
+  if (opts.spawnWaitMs !== undefined) startOpts.spawnWaitMs = opts.spawnWaitMs;
+  if (opts.sleep !== undefined) startOpts.sleep = opts.sleep;
   return await start([...args, "--socket-path", env.socketPath], startOpts);
 }
 
@@ -676,7 +684,15 @@ describe("start — ADR-044 driverSession topology", () => {
     };
     await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 
-    const exit = await runStart([]);
+    // ADR-081 §C: default briefsDir resolves to the repo's
+    // templates/briefs/lead.md which exists — without the no-op sleep
+    // override, every existing non-shell-tui test would now block 6s
+    // on the brief paste settle. The send-keys assertion below doesn't
+    // care about brief paste; opt out via spawnWaitMs:0 + no-op sleep.
+    const exit = await runStart([], {
+      spawnWaitMs: 0,
+      sleep: async () => {},
+    });
     expect(exit).toBe(0);
 
     // Member window present — the send-keys path didn't throw.
@@ -754,12 +770,23 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
   }
   function fail(stderr: string, code = 128): SpawnResult {
-    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+    return {
+      exitCode: code,
+      stdout: "",
+      stderr,
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
   }
 
   test("legacy team (no worktreeIsolation field) makes ZERO git invocations", async () => {
     await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }, { name: "bob", role: "reviewer" }],
+      members: [
+        { name: "alice", role: "team-lead" },
+        { name: "bob", role: "reviewer" },
+      ],
     });
     const calls: ReadonlyArray<string>[] = [];
     const gitSpawn: GitSpawn = async (argv) => {
@@ -776,7 +803,10 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
 
   test("worktreeIsolation=true happy path: each member gets a per-member-branch worktree provisioned + cwd overridden", async () => {
     await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }, { name: "bob", role: "reviewer" }],
+      members: [
+        { name: "alice", role: "team-lead" },
+        { name: "bob", role: "reviewer" },
+      ],
       worktreeIsolation: true,
     });
     const calls: ReadonlyArray<string>[] = [];
@@ -882,7 +912,10 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
 
   test("git rev-parse failure → all members fall back to shared cwd with a single warning", async () => {
     await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }, { name: "bob", role: "reviewer" }],
+      members: [
+        { name: "alice", role: "team-lead" },
+        { name: "bob", role: "reviewer" },
+      ],
       worktreeIsolation: true,
     });
     const calls: ReadonlyArray<string>[] = [];
@@ -923,5 +956,375 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     expect(calls.filter((c) => c.includes("add"))).toHaveLength(0);
     const warns = env.logs.filter((l) => l.kind === "warn");
     expect(warns.some((l) => l.msg.includes("detached HEAD"))).toBe(true);
+  });
+});
+
+// ---------- resolveSpawnWaitMs ----------
+
+describe("resolveSpawnWaitMs", () => {
+  test("explicit override wins over env", () => {
+    expect(resolveSpawnWaitMs(0, { ATMUX_SPAWN_WAIT: "10" })).toBe(0);
+    expect(resolveSpawnWaitMs(250, {})).toBe(250);
+  });
+
+  test("ATMUX_SPAWN_WAIT seconds → milliseconds", () => {
+    expect(resolveSpawnWaitMs(undefined, { ATMUX_SPAWN_WAIT: "3" })).toBe(3000);
+    expect(resolveSpawnWaitMs(undefined, { ATMUX_SPAWN_WAIT: "0" })).toBe(0);
+  });
+
+  test("default 6000ms when neither set", () => {
+    expect(resolveSpawnWaitMs(undefined, {})).toBe(6000);
+  });
+
+  test("non-numeric / negative env falls through to default", () => {
+    expect(resolveSpawnWaitMs(undefined, { ATMUX_SPAWN_WAIT: "abc" })).toBe(6000);
+    expect(resolveSpawnWaitMs(undefined, { ATMUX_SPAWN_WAIT: "-1" })).toBe(6000);
+    expect(resolveSpawnWaitMs(undefined, { ATMUX_SPAWN_WAIT: "" })).toBe(6000);
+  });
+
+  test("negative override falls through to env / default", () => {
+    expect(resolveSpawnWaitMs(-5, { ATMUX_SPAWN_WAIT: "2" })).toBe(2000);
+    expect(resolveSpawnWaitMs(-5, {})).toBe(6000);
+  });
+});
+
+// ---------- start — ADR-081 §C brief-paste ----------
+
+describe("start — ADR-081 §C brief-paste", () => {
+  /** Seed a temp briefs directory with the canonical files. Returns the path. */
+  async function seedBriefsDir(files: Record<string, string>): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "atmux-briefs-"));
+    for (const [name, content] of Object.entries(files)) {
+      await writeFile(join(dir, name), content, "utf8");
+    }
+    return dir;
+  }
+
+  /** Capture-pane helper — concatenates the visible buffer of a window. */
+  async function capture(session: string, win: string): Promise<string> {
+    return await env.tmux.pane.capturePane({
+      target: `${session}:${win}`,
+      start: -200,
+    });
+  }
+
+  test("happy path: brief renders + paste-buffer + C-m submit lands in pane", async () => {
+    // Use `cat` as the TUI so the brief gets echoed back into the pane —
+    // that's the cheapest way to assert the paste-buffer + C-m chain
+    // actually delivered bytes through tmux. Real TUIs (claude, opencode)
+    // would render their own UI which is unobservable; `cat` is a
+    // transparent passthrough.
+    const briefsDir = await seedBriefsDir({
+      "member.md": "Hello {{MEMBER}} on team {{TEAM}} (role={{ROLE}}, dir={{ATMUX_DIR}})\n",
+    });
+    try {
+      const body = {
+        name: env.team,
+        members: [{ name: "alpha", role: "member", tui: "fake-tui" }],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      const exit = await runStart([], {
+        briefsDir,
+        spawnWaitMs: 50, // brief settle for cat to be reading stdin
+        sleep: async (ms) =>
+          new Promise<void>((res) => {
+            setTimeout(res, ms);
+          }),
+      });
+      expect(exit).toBe(0);
+
+      // Allow C-m + cat's echo to make it to the pane buffer.
+      await new Promise<void>((res) => setTimeout(res, 200));
+      const pane = await capture(`atmux-${env.team}`, "🐝alpha");
+      expect(pane).toContain("Hello alpha on team");
+      expect(pane).toContain(env.team);
+      expect(pane).toContain("role=member");
+      expect(pane).toContain(env.atmuxDir);
+
+      // Logger surfaces a per-member paste line for observability.
+      expect(
+        env.logs.some(
+          (l) => l.kind === "log" && l.msg.includes("alpha:") && l.msg.includes("brief pasted"),
+        ),
+      ).toBe(true);
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+  });
+
+  test("alias map: role=team-lead resolves to lead.md (not team-lead.md)", async () => {
+    // §B BRIEF_ALIASES — role-canonical → file-canonical. Lead reads from
+    // lead.md even if `team-lead.md` is missing. Reuse §B's existing
+    // alias coverage so the §C port doesn't regress the alias chain.
+    const briefsDir = await seedBriefsDir({
+      "lead.md": "LEAD-BRIEF-FOR-{{MEMBER}}\n",
+      "member.md": "MEMBER-BRIEF-FOR-{{MEMBER}}\n",
+    });
+    try {
+      const body = {
+        name: env.team,
+        members: [{ name: "lead1", role: "team-lead", tui: "fake-tui" }],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      await runStart([], {
+        briefsDir,
+        spawnWaitMs: 50,
+        sleep: async (ms) =>
+          new Promise<void>((res) => {
+            setTimeout(res, ms);
+          }),
+      });
+      await new Promise<void>((res) => setTimeout(res, 200));
+      const pane = await capture(`atmux-${env.team}`, "🧭lead1");
+      expect(pane).toContain("LEAD-BRIEF-FOR-lead1");
+      expect(pane).not.toContain("MEMBER-BRIEF-FOR-lead1");
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+  });
+
+  test("missing role brief falls back to member.md", async () => {
+    // No `unblocker.md` in the briefs dir → role=unblocker reads member.md
+    // (parity with rotate.getBriefPath fallback).
+    const briefsDir = await seedBriefsDir({
+      "member.md": "FALLBACK-FOR-{{ROLE}}\n",
+    });
+    try {
+      const body = {
+        name: env.team,
+        members: [{ name: "u1", role: "unblocker", tui: "fake-tui" }],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      await runStart([], {
+        briefsDir,
+        spawnWaitMs: 50,
+        sleep: async (ms) =>
+          new Promise<void>((res) => {
+            setTimeout(res, ms);
+          }),
+      });
+      await new Promise<void>((res) => setTimeout(res, 200));
+      // unblocker pool starts with 🔓 (common.ts:ROLE_EMOJI_POOLS).
+      const pane = await capture(`atmux-${env.team}`, "🔓u1");
+      expect(pane).toContain("FALLBACK-FOR-unblocker");
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+  });
+
+  test("brief-paste skipped silently when both role + member.md are missing", async () => {
+    // Empty briefs dir → getBriefPath returns <briefsDir>/member.md which
+    // doesn't exist. Per parity with bash (`[[ -f "$brief" ]]` guard) we
+    // skip silently — no warn, no throw. The pane should still be alive.
+    const briefsDir = await seedBriefsDir({});
+    try {
+      const body = {
+        name: env.team,
+        members: [{ name: "alpha", role: "member", tui: "fake-tui" }],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      const exit = await runStart([], {
+        briefsDir,
+        spawnWaitMs: 0,
+        sleep: async () => {},
+      });
+      expect(exit).toBe(0);
+      // No "brief pasted" log, no warn line about paste failing.
+      expect(env.logs.some((l) => l.msg.includes("brief pasted"))).toBe(false);
+      expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("brief paste failed"))).toBe(
+        false,
+      );
+      // Pane still exists — team didn't wedge from the no-op brief path.
+      const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+      expect(wins.map((w) => w.name)).toContain("🐝alpha");
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+  });
+
+  test("shell-only TUI: brief is NOT pasted (bash parity for tui=shell)", async () => {
+    // Bash `_atmux_spawn_member` gates the brief paste on `tui != shell`.
+    // Same gate in TS — driver-shell teams never see a brief in the pane.
+    const briefsDir = await seedBriefsDir({
+      "member.md": "SHELL-BRIEF-FOR-{{MEMBER}}\n",
+    });
+    try {
+      await writeTeamJson({
+        members: [{ name: "alpha", role: "member", tui: "shell" }],
+      });
+
+      const exit = await runStart([], {
+        briefsDir,
+        spawnWaitMs: 0,
+        sleep: async () => {},
+      });
+      expect(exit).toBe(0);
+      expect(env.logs.some((l) => l.msg.includes("brief pasted"))).toBe(false);
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+  });
+
+  test("per-member best-effort: one member's brief failure does NOT wedge the others", async () => {
+    // Failure surface: read-error inside pasteBriefForMember — simulate
+    // by giving one member a tui that resolves but pointing briefsDir at
+    // a path containing a brief file with restricted perms. Cheapest
+    // simulation: stage a member.md that's a directory, not a file →
+    // `Bun.file().text()` throws. The OTHER member should still get
+    // paste + log.
+    const briefsDir = await mkdtemp(join(tmpdir(), "atmux-briefs-"));
+    try {
+      // For alpha (role=team-lead) we want a working lead.md.
+      await writeFile(join(briefsDir, "lead.md"), "LEAD-BRIEF-FOR-{{MEMBER}}\n", "utf8");
+      // For bob (role=member) we point member.md at a DIRECTORY so the
+      // read throws. The §C catch-and-warn must absorb it.
+      await mkdir(join(briefsDir, "member.md"), { recursive: true });
+
+      const body = {
+        name: env.team,
+        members: [
+          { name: "alpha", role: "team-lead", tui: "fake-tui" },
+          { name: "bob", role: "member", tui: "fake-tui" },
+        ],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      const exit = await runStart([], {
+        briefsDir,
+        spawnWaitMs: 50,
+        sleep: async (ms) =>
+          new Promise<void>((res) => {
+            setTimeout(res, ms);
+          }),
+      });
+      expect(exit).toBe(0);
+
+      // Lead's brief landed.
+      await new Promise<void>((res) => setTimeout(res, 200));
+      const leadPane = await capture(`atmux-${env.team}`, "🧭alpha");
+      expect(leadPane).toContain("LEAD-BRIEF-FOR-alpha");
+
+      // Bob's brief failed → warn line.
+      const warns = env.logs.filter((l) => l.kind === "warn");
+      expect(warns.some((l) => l.msg.includes("bob") && l.msg.includes("brief paste failed"))).toBe(
+        true,
+      );
+
+      // Both panes exist — team didn't half-spawn.
+      const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+      const names = wins.map((w) => w.name);
+      expect(names).toContain("🧭alpha");
+      expect(names).toContain("🐝bob");
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+  });
+
+  test("incremental restart: existing windows are NOT re-pasted (skip-existing)", async () => {
+    // Brief paste is gated inside the `existingNames.has(win)` continue
+    // branch — re-running start against a live session must not double-
+    // paste briefs into already-spawned panes.
+    const briefsDir = await seedBriefsDir({
+      "member.md": "BRIEF-FOR-{{MEMBER}}\n",
+    });
+    try {
+      const body = {
+        name: env.team,
+        members: [{ name: "alpha", role: "member", tui: "fake-tui" }],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      // First run — brief paste happens.
+      const firstExit = await runStart([], {
+        briefsDir,
+        spawnWaitMs: 0,
+        sleep: async () => {},
+      });
+      expect(firstExit).toBe(0);
+      const firstPasted = env.logs.filter((l) => l.msg.includes("brief pasted")).length;
+      expect(firstPasted).toBe(1);
+
+      // Second run — incremental, no --force. Window exists, brief NOT
+      // re-pasted.
+      env.logs.length = 0;
+      const secondExit = await runStart([], {
+        briefsDir,
+        spawnWaitMs: 0,
+        sleep: async () => {},
+      });
+      expect(secondExit).toBe(0);
+      const secondPasted = env.logs.filter((l) => l.msg.includes("brief pasted")).length;
+      expect(secondPasted).toBe(0);
+      expect(env.logs.some((l) => l.msg.includes("window exists, skipping"))).toBe(true);
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+  });
+
+  test("zero spawnWaitMs: brief paste fires immediately (test-fast path)", async () => {
+    // Verifies the test injection actually skips the 6s default — important
+    // because every other test in the §C suite uses 0 or 50ms. Regression
+    // guard against accidentally reverting the override to "always sleep".
+    const briefsDir = await seedBriefsDir({
+      "member.md": "FAST-{{MEMBER}}\n",
+    });
+    try {
+      const body = {
+        name: env.team,
+        members: [{ name: "alpha", role: "member", tui: "fake-tui" }],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+      const t0 = Date.now();
+      await runStart([], {
+        briefsDir,
+        spawnWaitMs: 0,
+        sleep: async () => {},
+      });
+      const elapsed = Date.now() - t0;
+      // Generous bound — real tmux ops + bun startup eat ~hundreds of
+      // ms, but nothing close to 6s should happen here.
+      expect(elapsed).toBeLessThan(3000);
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
   });
 });
