@@ -153,3 +153,14 @@ OQ1, OQ2, OQ6, OQ7, OQ8 resolved here. OQ3 + OQ4 + OQ5 deferred (see Out of scop
 - ADR-063 — cockpit verb port. Worktree-aware cockpit deferred per OQ5.
 - ADR-081 — bootstrap-brief-paste bug. The "Stash-collision side-incident" section is the live demo of why this ADR matters.
 - CLAUDE.md global "Hooks, Commits, Tooling" §"lint-staged + submodule-`m`-state silently absorbs content" — the operator-side rule this ADR makes structurally unnecessary.
+
+## Bundle history
+
+For future `git bisect` / `git blame` walkers landing on the W1 commit:
+
+- **`99e4879` feat(worktree): src/abstractions/worktree.ts — ADR-082 W1 helpers** (2026-05-12) bundled two **independent** task scopes via a concurrent `git add` race on the shared worktree (the exact bug class this ADR exists to eliminate).
+  - **`t-0b25c26b` (ADR-082 W1, this ADR's first impl Task)** — `src/abstractions/worktree.ts` + `tests/unit/abstractions/worktree.test.ts`. ~665 LOC.
+  - **`t-75e20e29` (SPEC-063 Pending-decision Discord watcher, unrelated)** — `src/core/whip-decisions-check.ts` + `tests/unit/core/whip-decisions-check.test.ts` + `src/core/common.ts::decisionsLogPath` helper + `src/verbs/whip.ts` Check 0 wiring. ~395 LOC. Authored by up-impl-2 in parallel; their `git add <files>` raced with the W1 author's `git add -A` and got absorbed pre-`git commit`.
+- The bundle was already pushed when the absorb surfaced, so `git reset --soft HEAD~1` + re-split was not safe per the "no force-push without explicit auth" rule (`feedback_destructive_ops_need_explicit_auth.md`). Attribution is recorded here instead.
+- The structural fix for this exact race is **this ADR's MVP itself** — per-member worktrees give each teammate an isolated `.git/index` so a sibling's `git add -A` cannot reach into another teammate's staged files. The bundle is a self-referential demo: W1 shipped the abstraction that, once W3+ wire it into `atmux start`, would have prevented its own bundle.
+- Filed via `t-bce89843`. Third parallel-`git add` bundle observed this session — pattern documented under memory `feedback_parallel_git_race_bundles.md`.
