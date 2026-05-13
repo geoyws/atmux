@@ -77,9 +77,12 @@ export type TeamEmojis = z.infer<typeof TeamEmojis>;
  */
 export const TeamWhip = z
   .object({
-    /** Cron interval in minutes. Default 5. ADR-054 OQ-1 surfaces
-     *  cron-vs-schema mismatch as future doctor work. */
-    intervalMins: z.number().int().positive().default(5),
+    /** Cron interval in minutes. Default 15 (raised from 5 on
+     *  2026-05-13 per t-dcbff97c §4 — auto-drain teams only need the
+     *  lead awake ~4× / hour; the prior 5min cadence amplified the
+     *  whip rate-limit footprint without commensurate benefit). ADR-054
+     *  OQ-1 surfaces cron-vs-schema mismatch as future doctor work. */
+    intervalMins: z.number().int().positive().default(15),
     /** Stale-task threshold (min). Default 90 (raised from bash 30 in
      *  bash E2/S7 — demo-walk tasks legitimately run 60-90min). */
     staleMin: z.number().int().nonnegative().default(90),

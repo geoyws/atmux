@@ -747,6 +747,64 @@ async function defaultDirExistsForCron(p: string): Promise<boolean> {
   return s !== null && s.isDirectory;
 }
 
+// ---------- t-dcbff97c: cron-block:missing — team has no managed block in host crontab ----------
+
+export interface CheckCronBlockOpts {
+  /** Defaults to `defaultCrontabIO()`. Tests inject a fake. */
+  crontab?: CrontabIO;
+}
+
+/**
+ * t-dcbff97c §2 — RED finding when a team that opts into cron auto-install
+ * has no marker-fenced block in the host crontab. The atmux team died
+ * three consecutive overnights because `atmux start` reported success
+ * but the cron block was absent; doctor missed it, so the only signal
+ * was the silently-stalled lead the morning after.
+ *
+ * Returns:
+ * - `[]` when team is null (the team-shape row already surfaced).
+ * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out;
+ *    the operator manages cron some other way and the absence is intent.
+ * - `[]` when `crontab` is not on the host (no PATH match); ADR-083
+ *    posture is "skip gracefully on cron-less hosts."
+ * - `[]` when the team's marker header (`# >>> atmux:team=<name> …`) is
+ *    present anywhere in the current crontab.
+ * - one RED row otherwise, hinting `atmux cron-install`.
+ *
+ * RED (not YELLOW) because the failure mode is overnight team death — a
+ * GREEN doctor that hides a missing cron block is a worse outcome than
+ * a noisy one. Operators who legitimately don't want a block set
+ * `kanban.cronAutoInstall: false` and the row stays silent.
+ */
+export async function checkCronBlock(
+  team: Team | null,
+  opts: CheckCronBlockOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  // Honor explicit opt-out — mirror `start.ts::shouldAutoInstallCron`
+  // semantics so doctor + start stay in lockstep on the gating decision.
+  const kanban = (team as { kanban?: { cronAutoInstall?: boolean } }).kanban;
+  if (kanban?.cronAutoInstall === false) return [];
+
+  const crontab = opts.crontab ?? defaultCrontabIO();
+  if (!(await crontab.available())) return [];
+
+  const current = (await crontab.read()) ?? "";
+  // Match the exact marker header rendered by `renderCronBlock` so a
+  // similarly-named team can't false-pass on a substring brush-by.
+  const header = `# >>> atmux:team=${team.name} — managed by atmux start; do not edit by hand`;
+  if (current.includes(header)) return [];
+
+  return [
+    {
+      status: "red",
+      label: "cron-block:missing",
+      detail: `no managed atmux:team=${team.name} block in host crontab — whip / report / decisions / groom won't fire`,
+      hint: "run `atmux cron-install` (or re-run `atmux start`) — block uses ATMUX_DIR + optional TMUX_TMPDIR so worktree-isolation is safe",
+    },
+  ];
+}
+
 // ---------- Check 7a: cursor-plugin-cache ----------
 //
 // Cursor-agent ignores Claude's runtime `--plugin-dir` flag and only
@@ -1574,6 +1632,11 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // marker block whose `ATMUX_DIR=` path no longer exists on disk
   // (moved / deleted projects). Silent on hosts without crontab.
   rows.push(...(await checkCronOrphans()));
+  // t-dcbff97c §2: RED when team opts into cron-auto-install but no
+  // managed block is present. Catches the failure mode that killed the
+  // atmux team three consecutive overnights (cron block silently absent
+  // → no whip pulse → lead stalls). Silent on opt-out + cron-less hosts.
+  rows.push(...(await checkCronBlock(team)));
   // ADR-082 §5 W5: per-member worktree-isolation anomalies. Returns
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
