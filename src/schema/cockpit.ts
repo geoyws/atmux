@@ -91,6 +91,23 @@ export const CockpitSuperdoctor = z
   .strict();
 export type CockpitSuperdoctor = z.infer<typeof CockpitSuperdoctor>;
 
+/** ADR-086: cockpit-wide `atmux pulse` probe tunables. All fields opt-in;
+ *  defaults are 30 / 5 / 30 (window / interval / dedup minutes). */
+export const CockpitPulse = z
+  .object({
+    /** Commit-cadence observation window in minutes. Verdict logic
+     *  consults `git log --since=<windowMin>min`. Default 30. */
+    windowMins: z.number().int().positive().optional(),
+    /** Cron tick interval in minutes (documented in
+     *  `docs/RUNBOOK-pulse.md`; auto-install is Phase 2). Default 5. */
+    intervalMins: z.number().int().positive().optional(),
+    /** Re-fire dedup window for sustained-urgency verdicts (🔴 / 🚨)
+     *  in minutes. Default 30. */
+    dedupMins: z.number().int().positive().optional(),
+  })
+  .strict();
+export type CockpitPulse = z.infer<typeof CockpitPulse>;
+
 /** `~/.atmux/cockpit.json` top-level shape. Passthrough so future
  *  fields (e.g. `cockpits[]` for multi-cockpit) don't reject. */
 export const Cockpit = z
@@ -105,6 +122,8 @@ export const Cockpit = z
      *  viewers (3..N). Omit or set `enabled: false` for the legacy
      *  ADR-063 cockpit shape. */
     superdoctor: CockpitSuperdoctor.optional(),
+    /** Optional ADR-086 pulse probe tunables. Omit for defaults. */
+    pulse: CockpitPulse.optional(),
   })
   .passthrough();
 export type Cockpit = z.infer<typeof Cockpit>;

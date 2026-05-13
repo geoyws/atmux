@@ -41,6 +41,7 @@ import { cockpit } from "./verbs/cockpit.ts";
 import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
 import { cronInstall } from "./verbs/cron-install.ts";
+import { cronOrphans } from "./verbs/cron-orphans.ts";
 import { cronRemove } from "./verbs/cron-remove.ts";
 import { dashboard } from "./verbs/dashboard.ts";
 import { discorder } from "./verbs/discorder.ts";
@@ -59,6 +60,7 @@ import { laneTick } from "./verbs/lane-tick.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
+import { pulse } from "./verbs/pulse.ts";
 import { outbox, reply } from "./verbs/reply.ts";
 import { report } from "./verbs/report.ts";
 import { rotate, rotateLead } from "./verbs/rotate.ts";
@@ -237,6 +239,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cronInstall(argv.slice(1));
     case "cron-remove":
       return cronRemove(argv.slice(1));
+    case "cron-orphans":
+      return cronOrphans(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
     case "complaints":
@@ -253,6 +257,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return whipResumeCheck(argv.slice(1));
     case "watchdog":
       return watchdog(argv.slice(1));
+    case "pulse":
+      return pulse(argv.slice(1));
     case "improve":
       return improve(argv.slice(1));
     case "groom":

@@ -1,6 +1,6 @@
 # ADR-080: Operator-observed atmux improvements (sopx-driver bundle)
 
-**Status**: proposed
+**Status**: accepted (impl wave shipped + reviewer signoff 2026-05-09 13:53 MYT; status-flip 2026-05-12 per t-bb05b9ba — driver-inbox 16:46 MYT 2026-05-10 ask. Shipped commits: §A1 `22d7daa` · §A2 `baafb16` · §B1 `0ecaa64` · §B2 `bbd9cef` · §C `17f0abf` · §D `bfb0193` · §E `1877af5`. Reviewer signoff doc at `docs/reviews/ADR-079+080-revise-pass-1-signoff-2026-05-09.md`.)
 **Date**: 2026-05-09
 **Driver-ref**: 2026-05-09 07:25 MYT sopx-driver bundle (`/root/work/src/atmux/.atmux/driver-inbox.md` §07:25 entry). Five improvements observed in sopx-guild during demo-week prep — two structural (lead at 67% ctx not rotating; 29 stale `commit t-X` tasks accumulating), one design-coupled (lane-tick mid-think injection defeating rotation), two papercuts (CLI flag normalize, JSON escape).
 

@@ -96,7 +96,13 @@ export type DiscordTemplate =
   // json (24h per-member); defunct-cwd fires every tick (no dedup — a
   // defunct cwd is a P1 demand for operator action).
   | "whip-perm-mode-drift"
-  | "whip-defunct-cwd";
+  | "whip-defunct-cwd"
+  // ADR-086: cockpit-wide pulse verdict probe (Phase 1 deterministic).
+  // Renderer below (`renderPulseVerdict`); fired by `src/verbs/pulse.ts`
+  // on verdict change OR sustained-urgency dedup expiry. Header emoji is
+  // chosen per-verdict (💓 / 📊 / 🛑 / 🚨) — verify the four are in
+  // the per-bullet allowlist + the CategoryEmoji union above.
+  | "pulse-verdict";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -132,10 +138,43 @@ export interface DiscordSendOpts {
   team: string;
   /** Header emoji. Literal union. */
   category: CategoryEmoji;
+  /**
+   * Verdict line — single load-bearing field per the CLAUDE.md §Discord
+   * spec (2026-05-13 rewrite). Lands as the FIRST body line, before any
+   * bullets/sections. Single-source vocabulary:
+   *   🟢 **Shipping** — N commits in window, healthy
+   *   🟡 **Cool** — quiet on purpose (between phases, waiting on user)
+   *   🟡 **Idle** — quiet by accident (fresh team, dispatch in flight)
+   *   🔴 **Stalled** — 0 commits + a symptom (watchdog territory)
+   *   🚨 **Need you** — only for blocker / high-priority decisions
+   *
+   * Optional for back-compat — older renderers can stay verdict-less while
+   * being migrated. New renderers MUST set it per the spec.
+   */
+  verdict?: string;
   /** Optional flat bullet list (non-sectioned body). */
   bullets?: ReadonlyArray<string>;
   /** Optional sectioned body. */
   sections?: ReadonlyArray<DiscordSection>;
+  /**
+   * Milestone-grade "What's new" bullets — emitted under the verdict line,
+   * prose-grade ≤80 chars per bullet, NO emoji-prefix requirement. Used for
+   * progress-shaped messages that list 1-3 milestones, e.g.:
+   *   "ADR-081 brief-paste lives in TS spawn loop now"
+   *   "`task update` subverb shipped (ADR-084 W3)"
+   *
+   * Differs from `bullets`: those carry the legacy emoji-prefixed-bullet
+   * shape; `whatsNew` carries milestone narrative. See CLAUDE.md §Discord
+   * "What's new" semantics. Renders under a bold "✨ **What's new**" label.
+   */
+  whatsNew?: ReadonlyArray<string>;
+  /**
+   * Single-line footer — emitted as the LAST body line. Carries ambient
+   * liveness ("last commit Xmin ago · lead Ymin uptime · K complaints")
+   * so body sections stay focused on signal. Optional; skip on bootstrap /
+   * lifecycle pings where liveness isn't relevant. Rendered with a 📍 prefix.
+   */
+  footer?: string;
   /** Override the resolved webhook URL (test injection). */
   webhookOverride?: string;
   /** Override the timestamp (test injection); defaults to time.now(). */
@@ -233,11 +272,14 @@ function graphemes(s: string): string[] {
 function validateOpts(opts: DiscordSendOpts): void {
   const flat = opts.bullets ?? [];
   const sections = opts.sections ?? [];
-  const total = flat.length + sections.reduce((a, s) => a + s.bullets.length, 0);
+  const whatsNew = opts.whatsNew ?? [];
+  const verdict = opts.verdict ?? "";
+  const sectionBulletCount = sections.reduce((a, s) => a + s.bullets.length, 0);
+  const total = flat.length + sectionBulletCount + whatsNew.length + (verdict.length > 0 ? 1 : 0);
   if (total === 0) {
     throw new DiscordWebhookError({
       template: opts.template,
-      detail: "empty body — at least one bullet or section bullet required",
+      detail: "empty body — at least one of {verdict, bullets, sections, whatsNew} required",
     });
   }
   for (let i = 0; i < flat.length; i++) {
@@ -248,6 +290,23 @@ function validateOpts(opts: DiscordSendOpts): void {
     if (!sec) continue;
     for (let i = 0; i < sec.bullets.length; i++) {
       validateBullet(opts.template, sec.bullets[i] ?? "", `sections[${s}].bullets[${i}]`);
+    }
+  }
+  // whatsNew bullets have a length check but no emoji-prefix requirement —
+  // they're prose-grade, not emoji-prefixed. See DiscordSendOpts.whatsNew docs.
+  for (let i = 0; i < whatsNew.length; i++) {
+    const gs = graphemes(whatsNew[i] ?? "");
+    if (gs.length === 0) {
+      throw new DiscordWebhookError({
+        template: opts.template,
+        detail: `whatsNew[${i}] is empty`,
+      });
+    }
+    if (gs.length > MAX_BULLET_GRAPHEMES) {
+      throw new DiscordWebhookError({
+        template: opts.template,
+        detail: `whatsNew[${i}] too long: ${gs.length} graphemes (max ${MAX_BULLET_GRAPHEMES})`,
+      });
     }
   }
 }
@@ -285,14 +344,41 @@ function renderBody(opts: DiscordSendOpts): string[] {
   const lines: string[] = [];
   const flat = opts.bullets ?? [];
   const sections = opts.sections ?? [];
-  if (flat.length > 0) lines.push(...flat);
+  const whatsNew = opts.whatsNew ?? [];
+
+  // 1. Verdict line first — single load-bearing field per CLAUDE.md spec.
+  if (opts.verdict !== undefined && opts.verdict.length > 0) {
+    lines.push(opts.verdict);
+  }
+
+  // 2. Flat bullets (legacy shape) — pushed under verdict if both present.
+  if (flat.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(...flat);
+  }
+
+  // 3. Sectioned body (legacy shape) — each section gets its bold label + bullets.
   for (let i = 0; i < sections.length; i++) {
     const sec = sections[i];
     if (!sec) continue;
-    if (lines.length > 0) lines.push(""); // blank between body blocks
+    if (lines.length > 0) lines.push("");
     lines.push(`**${sec.label}**`);
     lines.push(...sec.bullets);
   }
+
+  // 4. "✨ What's new" — milestone-grade bullets, prose-grade (no emoji prefix).
+  if (whatsNew.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("**✨ What's new**");
+    for (const b of whatsNew) lines.push(`- ${b}`);
+  }
+
+  // 5. Footer — single line, 📍-prefixed, ambient liveness pointer.
+  if (opts.footer !== undefined && opts.footer.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`📍 ${opts.footer}`);
+  }
+
   return lines;
 }
 
@@ -547,6 +633,7 @@ export function renderEternalImprovementStart(opts: EternalImprovementStartOpts)
     template: "eternal-improvement-start",
     team: opts.team,
     category: "🌱",
+    verdict: `🟢 **Shipping** — eternal-improvement run starting on ${formatTokens(opts.budgetTotal)} tokens (${opts.mode})`,
     bullets: [
       `🌱 budget: ${opts.budgetSpec} = ${formatTokens(opts.budgetTotal)} tokens`,
       `🎯 mode: ${opts.mode}`,
@@ -583,6 +670,7 @@ export function renderEternalImprovementProgress(
     template: "eternal-improvement-progress",
     team: opts.team,
     category: "🌱",
+    verdict: `🟢 **Shipping** — cycle ${opts.cycleN} closed, ${opts.tasksShipped} task${opts.tasksShipped === 1 ? "" : "s"} shipped`,
     bullets: [
       `✅ cycle ${opts.cycleN} closed — ${opts.tasksShipped} tasks shipped`,
       `💰 tokens spent: ${formatTokens(opts.tokensSpent)} of ${formatTokens(opts.budgetTotal)}`,
@@ -634,10 +722,14 @@ export function renderEternalImprovementDone(opts: EternalImprovementDoneOpts): 
   if (opts.modeB) {
     bullets.push("🛑 (Mode B) team will now `atmux stop`");
   }
+  const verdict = opts.modeB
+    ? `🟡 **Cool** — eternal-improvement Mode B halted after ${opts.cycleCount} cycle${opts.cycleCount === 1 ? "" : "s"}`
+    : `🟢 **Shipping** — eternal-improvement complete: ${opts.cycleCount} cycle${opts.cycleCount === 1 ? "" : "s"}, ${opts.totalTasksShipped} task${opts.totalTasksShipped === 1 ? "" : "s"}`;
   const out: DiscordSendOpts = {
     template: "eternal-improvement-done",
     team: opts.team,
     category: "🌱",
+    verdict,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
@@ -683,11 +775,10 @@ export function renderWhipConfigDrift(opts: WhipConfigDriftOpts): DiscordSendOpt
   const issuesCount = opts.issues.length;
   const codeCounts = countByCode(opts.issues);
   const codeSummary = formatCodeCounts(codeCounts);
-  const headline = opts.catastrophic
-    ? `⚠️ team.json malformed — using full safe defaults`
-    : `⚠️ team.json::whip validation failed — using safe defaults`;
+  const verdict = opts.catastrophic
+    ? `🟡 **Cool** — team.json malformed, using full safe defaults`
+    : `🟡 **Cool** — team.json::whip validation failed, using safe defaults`;
   const bullets: string[] = [
-    headline,
     `📍 issues: ${issuesCount}${codeSummary === "" ? "" : ` (${codeSummary})`}`,
   ];
   const first = opts.issues[0];
@@ -701,6 +792,7 @@ export function renderWhipConfigDrift(opts: WhipConfigDriftOpts): DiscordSendOpt
     template: "whip-config-drift",
     team: opts.team,
     category: "🛠️",
+    verdict,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
@@ -751,9 +843,10 @@ export interface BudgetPauseDiscordOpts {
  * gate hint bullets.
  */
 export function renderWhipBudgetPause(opts: BudgetPauseDiscordOpts): DiscordSendOpts {
+  const n = opts.atRisk.length;
+  const verdict = `🔴 **Stalled** — team paused on rate-limit, ${n} at-risk member${n === 1 ? "" : "s"}`;
   const memberBullets = opts.atRisk.map((r) => `🪫 ${r.member} — 5h ${r.h5}% / wk ${r.wk}%`);
   const bullets: string[] = [
-    `🪫 team paused — ${opts.atRisk.length} at-risk member(s)`,
     ...memberBullets,
     `🛑 no new dispatches until refresh`,
     `🔁 resume gate: all members > ${opts.resumeThresholdPct}% remaining on 5h AND wk`,
@@ -762,6 +855,7 @@ export function renderWhipBudgetPause(opts: BudgetPauseDiscordOpts): DiscordSend
     template: "whip-budget-pause",
     team: opts.team,
     category: "🛑",
+    verdict,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
@@ -784,6 +878,7 @@ export function renderWhipBudgetResume(opts: BudgetResumeDiscordOpts): DiscordSe
     template: "whip-budget-resume",
     team: opts.team,
     category: "🚀",
+    verdict: `🟢 **Shipping** — budget resumed, team OK to dispatch`,
     bullets: [
       `🟢 team resumed — all members > ${opts.resumeThresholdPct}% remaining on 5h AND wk`,
       `▶️ dispatches re-enabled`,
@@ -836,6 +931,7 @@ export function renderWhipBudgetWarning(opts: BudgetWarningDiscordOpts): Discord
     template: "whip-budget-warning",
     team: opts.team,
     category: "⚠️",
+    verdict: `🟡 **Idle** — budget warning on \`${opts.account}\` ${opts.window} (${bandPct}% band crossed)`,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
@@ -869,10 +965,14 @@ export function renderWhipBudgetRefreshSoon(opts: BudgetRefreshSoonDiscordOpts):
   if (opts.pausedNow) {
     bullets.push(`🔁 will auto-resume on refresh`);
   }
+  const verdict = opts.pausedNow
+    ? `🟡 **Cool** — paused on \`${opts.account}\`, ${opts.window} refreshes in ${opts.resetsIn}`
+    : `🟡 **Cool** — \`${opts.account}\` ${opts.window} refreshes in ${opts.resetsIn}`;
   const out: DiscordSendOpts = {
     template: "whip-budget-refresh-soon",
     team: opts.team,
     category: "🌅",
+    verdict,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
@@ -912,6 +1012,7 @@ export function renderAccountSwapStart(opts: AccountSwapStartOpts): DiscordSendO
     template: "whip-account-swap-start",
     team: opts.team,
     category: "🔄",
+    verdict: `🟡 **Cool** — swapping ${opts.candidates} member${opts.candidates === 1 ? "" : "s"} off \`${opts.triggerAccount}\` (at ${opts.triggerPct}% ${opts.triggerWindow})`,
     bullets: [
       `🚨 trigger: account \`${opts.triggerAccount}\` at ${opts.triggerPct}% (${opts.triggerWindow})`,
       `👥 candidates: ${opts.candidates} members (${opts.excluded} excluded: ${opts.excludedRoles})`,
@@ -953,6 +1054,7 @@ export function renderAccountSwapSuccess(opts: AccountSwapSuccessOpts): DiscordS
     template: "whip-account-swap-success",
     team: opts.team,
     category: "🔄",
+    verdict: `🟢 **Shipping** — \`${opts.fromMember}\` swapped to \`${opts.toAccount}\` (${opts.progressDone}/${opts.progressTotal})`,
     bullets: [
       `✅ swapped: \`${opts.fromMember}\` → \`${opts.toMember}\` on \`${opts.toAccount}\``,
       taskBullet,
@@ -993,6 +1095,7 @@ export function renderAccountSwapFail(opts: AccountSwapFailOpts): DiscordSendOpt
     template: "whip-account-swap-fail",
     team: opts.team,
     category: "🔄",
+    verdict: `🔴 **Stalled** — \`${opts.member}\` swap aborted (${opts.failureBrief})`,
     bullets: [
       `❌ swap aborted: \`${opts.member}\` (${opts.failureBrief})`,
       `🚩 reason: ${opts.reason}`,
@@ -1029,6 +1132,7 @@ export function renderAccountSwapPassComplete(opts: AccountSwapPassCompleteOpts)
     template: "whip-account-swap-pass-complete",
     team: opts.team,
     category: "🔄",
+    verdict: `🟢 **Shipping** — swap pass complete, ${opts.swapped} swapped / ${opts.aborted} aborted`,
     bullets: [
       `✅ pass \`${opts.passId}\` complete`,
       `📊 swapped: ${opts.swapped} / aborted: ${opts.aborted} / excluded: ${opts.excluded}`,
@@ -1066,9 +1170,9 @@ export interface WhipWatchdogOpts {
  *   - `🛠️ fix: check pane state + restart member if needed`
  */
 export function renderWhipWatchdog(opts: WhipWatchdogOpts): DiscordSendOpts {
-  const bullets: string[] = [
-    `🛑 ${opts.stale.length} member(s) stalled — heartbeat older than ${formatDuration(opts.staleSec * 1000)}`,
-  ];
+  const n = opts.stale.length;
+  const verdict = `🔴 **Stalled** — ${n} member${n === 1 ? "" : "s"} silent for >${formatDuration(opts.staleSec * 1000)}`;
+  const bullets: string[] = [];
   for (const s of opts.stale) {
     const ageStr = s.ageSec === null ? "never" : formatDuration(s.ageSec * 1000);
     bullets.push(`📍 ${s.member}: ${ageStr} stale`);
@@ -1078,6 +1182,7 @@ export function renderWhipWatchdog(opts: WhipWatchdogOpts): DiscordSendOpts {
     template: "whip-watchdog",
     team: opts.team,
     category: "🛑",
+    verdict,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
@@ -1114,6 +1219,7 @@ export function renderWhipSelfHealAttempt(opts: WhipSelfHealAttemptOpts): Discor
     template: "whip-self-heal-attempt",
     team: opts.team,
     category: "🔧",
+    verdict: `🟡 **Cool** — self-heal attempt for \`${opts.recipeId}\``,
     bullets: [
       `🛠️ recipe: ${opts.recipeId}`,
       `📍 reason: ${opts.reason}`,
@@ -1190,10 +1296,14 @@ export function renderWhipSelfHealResult(opts: WhipSelfHealResultOpts): DiscordS
     bullets.push(`📍 see: ${opts.logPath}`);
     bullets.push(`🚩 flag: ${severity} raised — operator triage needed`);
   }
+  const verdict = opts.ok
+    ? `🟢 **Shipping** — self-heal \`${opts.recipeId}\` patched, pending reviewer`
+    : `🔴 **Stalled** — self-heal \`${opts.recipeId}\` failed, operator triage needed`;
   const out: DiscordSendOpts = {
     template: "whip-self-heal-result",
     team: opts.team,
     category: "🔧",
+    verdict,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
@@ -1229,7 +1339,8 @@ export interface WhipPermModeDriftOpts {
  *   - `🛠️ fix: BTab cycle to auto on each drifted pane`
  */
 export function renderWhipPermModeDrift(opts: WhipPermModeDriftOpts): DiscordSendOpts {
-  const bullets: string[] = [`📍 ${opts.drifted.length} member(s) drifted off auto mode`];
+  const n = opts.drifted.length;
+  const bullets: string[] = [];
   for (const d of opts.drifted) {
     bullets.push(`🟡 ${d.member}: pane in '${d.mode}' mode (expected 'auto')`);
   }
@@ -1238,6 +1349,7 @@ export function renderWhipPermModeDrift(opts: WhipPermModeDriftOpts): DiscordSen
     template: "whip-perm-mode-drift",
     team: opts.team,
     category: "📋",
+    verdict: `🟡 **Cool** — ${n} member${n === 1 ? "" : "s"} drifted off auto-mode, fixable via BTab`,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
@@ -1270,9 +1382,9 @@ export interface WhipDefunctCwdOpts {
  *   - `🛠️ fix: re-spawn member or restore worktree path`
  */
 export function renderWhipDefunctCwd(opts: WhipDefunctCwdOpts): DiscordSendOpts {
-  const bullets: string[] = [
-    `🛑 ${opts.defunct.length} member(s) on defunct cwd — pane_current_path missing on disk`,
-  ];
+  const n = opts.defunct.length;
+  const verdict = `🚨 **Need you** — ${n} member${n === 1 ? "" : "s"} on defunct cwd, dispatch broken`;
+  const bullets: string[] = [];
   for (const d of opts.defunct) {
     bullets.push(`📍 ${d.member}: cwd ${d.cwd} does not exist`);
   }
@@ -1281,8 +1393,93 @@ export function renderWhipDefunctCwd(opts: WhipDefunctCwdOpts): DiscordSendOpts 
     template: "whip-defunct-cwd",
     team: opts.team,
     category: "🛑",
+    verdict,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
   return out;
+}
+
+// ---------- ADR-086 — renderPulseVerdict ----------
+
+/** Closed verdict-literal set the renderer accepts. Mirrors the
+ *  PulseVerdict union in `core/pulse-verdict.ts` — kept duplicated here
+ *  so this module stays domain-agnostic (no import from core/*). */
+export type PulseVerdictLiteral =
+  | "🟢 Shipping"
+  | "🟡 Cool"
+  | "🟡 Idle"
+  | "🔴 Stalled"
+  | "🚨 Need you";
+
+export interface PulseVerdictOpts {
+  team: string;
+  /** Pre-computed verdict (e.g. `"🟢 Shipping"`). */
+  verdict: PulseVerdictLiteral;
+  /** One-line operator-readable body sentence — composed by core's
+   *  `describeVerdict` so the branch-to-string mapping stays
+   *  co-located with the branch logic. ≤80 chars (verdict-line
+   *  budget per CLAUDE.md §Discord). */
+  body: string;
+  /** Commits observed in the window. Surfaced as a footer pointer. */
+  commitCount: number;
+  /** Kanban inProgress count. Surfaced as a footer pointer. */
+  inProgressCount: number;
+  /** Open driver-inbox entry count (any age). Surfaced as a footer
+   *  pointer when > 0. */
+  driverInboxOpen: number;
+  /** Reason string from `shouldFire` — surfaced as a small footer
+   *  hint ("transition" / "sustained-urgency" / "first-observation").
+   *  When `"deduped"`, the renderer should never be invoked; we treat
+   *  it as a programmer error and surface the label anyway. */
+  fireReason: "first-observation" | "transition" | "sustained-urgency" | "deduped";
+  /** Window minutes used for the cadence number in the footer. */
+  windowMin: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[pulse-verdict]` Discord send opts per ADR-086 Phase 1.
+ *
+ * Header emoji is chosen per-verdict — 💓 for 🟢 Shipping (heartbeat),
+ * 📊 for 🟡 Cool / 🟡 Idle (status-ish), 🛑 for 🔴 Stalled, 🚨 for
+ * 🚨 Need you. All four are present in `CategoryEmoji`.
+ *
+ * Body is verdict-only (single load-bearing line) with a 📍 footer
+ * carrying ambient liveness. No bullets / sections — keep the message
+ * scannable on mobile per the verdict-first spec.
+ */
+export function renderPulseVerdict(opts: PulseVerdictOpts): DiscordSendOpts {
+  const category = pulseCategoryFor(opts.verdict);
+  const footerParts: string[] = [
+    `${opts.commitCount} commit${opts.commitCount === 1 ? "" : "s"} in ${opts.windowMin}min`,
+    `${opts.inProgressCount} inProgress`,
+  ];
+  if (opts.driverInboxOpen > 0) {
+    footerParts.push(`${opts.driverInboxOpen} inbox`);
+  }
+  footerParts.push(`fire: ${opts.fireReason}`);
+  const out: DiscordSendOpts = {
+    template: "pulse-verdict",
+    team: opts.team,
+    category,
+    verdict: opts.body,
+    footer: footerParts.join(" · "),
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+function pulseCategoryFor(verdict: PulseVerdictLiteral): CategoryEmoji {
+  switch (verdict) {
+    case "🟢 Shipping":
+      return "💓";
+    case "🟡 Cool":
+    case "🟡 Idle":
+      return "📊";
+    case "🔴 Stalled":
+      return "🛑";
+    case "🚨 Need you":
+      return "🚨";
+  }
 }

@@ -1,15 +1,18 @@
 // ADR-010: CLI dispatcher — `version` verb.
 //
-// Prints `atmux <version>` and exits 0. Bash decommissioned per ADR-064;
-// version is now sourced from this constant directly. A future ADR will
-// ratify a single source-of-truth (generated `src/version.ts` from
-// package.json or a root VERSION file) — until then, bump in lockstep
-// with package.json::version.
+// The version string is read from `package.json::version` at runtime
+// via Bun's JSON import. This kills the drift class that prior manual
+// lockstep failed to prevent (caught 2026-05-12: hardcoded "0.6.0"
+// while package.json had moved to 0.7.2). The TS-side single source
+// of truth is package.json — no separate constant to bump.
+
+import pkg from "../../package.json" with { type: "json" };
 
 /**
- * The atmux version string. Bump in lockstep with `package.json::version`.
+ * The atmux version string — sourced from `package.json::version` at
+ * runtime so bumps land in one place.
  */
-export const ATMUX_VERSION = "0.6.0";
+export const ATMUX_VERSION: string = pkg.version;
 
 /**
  * `atmux version` — print the version string, exit 0. No state touched,

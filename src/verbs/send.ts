@@ -38,13 +38,13 @@ import {
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
   SUPERDOCTOR_INBOX_KEY,
 } from "../core/common.ts";
 import { appendInboxMessage } from "../core/inbox.ts";
 import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
-import { defaultSocketPath } from "./start.ts";
 
 /** Parsed `send` CLI args (post-flag-parsing). */
 export interface SendArgs {
@@ -259,7 +259,14 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   }
 
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
+  // t-f786031f: honour team.tmuxTmpdir for the cage socket. Pre-fix
+  // pinned `/tmp/atmux-<team>/sock` unconditionally, breaking lead→
+  // member dispatch (and the auto-pickup nudges that flow through it)
+  // whenever team.json declared a project-local `.atmux/tmux` tmpdir.
+  // Same fix as tell-lead.ts / dispatch.ts / stop.ts in this commit;
+  // sister-pattern of the resolveTeamSocket migration already applied
+  // to whip / up / lane-tick / audit / status / doctor.
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
 
   const sendOpts = {

@@ -3,12 +3,15 @@
 // straight assertion suite over `renderCronLines` + `renderCronBlock`.
 
 import { describe, expect, test } from "bun:test";
+import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import {
   cronAtHour,
   cronEvery,
   cronEveryHour,
   ensureEnvPreamble,
+  findCronOrphans,
   installCronBlock,
+  parseCronBlockTargets,
   renderCronBlock,
   renderCronLines,
   stripBlockByTeam,
@@ -624,6 +627,167 @@ describe("installCronBlock", () => {
     // Count preamble marker occurrences — must be exactly 1.
     expect(again.split(ENV_PREAMBLE_FIRST).length - 1).toBe(1);
     expect(again.split(ENV_TERM).length - 1).toBe(1);
+  });
+});
+
+// ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------
+
+describe("parseCronBlockTargets", () => {
+  test("empty body → []", () => {
+    expect(parseCronBlockTargets("")).toEqual([]);
+  });
+
+  test("crontab without any atmux block → []", () => {
+    const body = "MAILTO=ops@example.com\n0 0 * * * /usr/bin/backup.sh\n";
+    expect(parseCronBlockTargets(body)).toEqual([]);
+  });
+
+  test("single block with ATMUX_DIR → returns one target", () => {
+    const body = [
+      "# >>> atmux:team=demo — managed by atmux start; do not edit by hand",
+      "*/5 * * * * PATH=/root/.bun/bin:/usr/bin ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1",
+      "# <<< atmux:team=demo",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "demo", atmuxDir: "/srv/demo/.atmux" },
+    ]);
+  });
+
+  test("two blocks → two targets", () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:team=beta — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/beta/.atmux /bin/atmux whip",
+      "# <<< atmux:team=beta",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "alpha", atmuxDir: "/srv/alpha/.atmux" },
+      { team: "beta", atmuxDir: "/srv/beta/.atmux" },
+    ]);
+  });
+
+  test("block without ATMUX_DIR in body → skipped (bash parity)", () => {
+    // Bash awk guards: `team != "" && atmux_dir != ""` before emitting.
+    const body = [
+      "# >>> atmux:team=stub — managed by atmux start; do not edit by hand",
+      "# placeholder, no ATMUX_DIR= yet",
+      "# <<< atmux:team=stub",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([]);
+  });
+
+  test("first ATMUX_DIR wins when multiple present in a block", () => {
+    const body = [
+      "# >>> atmux:team=demo — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/first /bin/atmux whip",
+      "*/5 * * * * ATMUX_DIR=/second /bin/atmux report",
+      "# <<< atmux:team=demo",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "demo", atmuxDir: "/first" },
+    ]);
+  });
+
+  test("header without canonical suffix → still captures team verbatim", () => {
+    // Bash: sub(/<suffix>$/, "") is a no-op when suffix is missing; the
+    // remaining header is the team string.
+    const body = [
+      "# >>> atmux:team=hand-edited-marker",
+      "*/5 * * * * ATMUX_DIR=/srv/hand/.atmux /bin/atmux whip",
+      "# <<< atmux:team=hand-edited-marker",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "hand-edited-marker", atmuxDir: "/srv/hand/.atmux" },
+    ]);
+  });
+
+  test("ATMUX_DIR value terminates at first whitespace, not newline", () => {
+    const body = [
+      "# >>> atmux:team=demo — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/demo/.atmux\tTMUX_TMPDIR=/tmp /bin/atmux whip",
+      "# <<< atmux:team=demo",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "demo", atmuxDir: "/srv/demo/.atmux" },
+    ]);
+  });
+});
+
+describe("findCronOrphans", () => {
+  const fakeIO = (body: string | null): CrontabIO => ({
+    read: async () => body,
+    write: async () => {
+      /* not invoked */
+    },
+    available: async () => true,
+  });
+
+  test("null crontab → []", async () => {
+    const out = await findCronOrphans({
+      io: fakeIO(null),
+      dirExists: async () => false,
+    });
+    expect(out).toEqual([]);
+  });
+
+  test("empty crontab → []", async () => {
+    const out = await findCronOrphans({
+      io: fakeIO(""),
+      dirExists: async () => false,
+    });
+    expect(out).toEqual([]);
+  });
+
+  test("all blocks live → []", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const out = await findCronOrphans({
+      io: fakeIO(body),
+      dirExists: async () => true,
+    });
+    expect(out).toEqual([]);
+  });
+
+  test("one orphan + one live → returns only the orphan", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:team=ghost — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/ghost/.atmux /bin/atmux whip",
+      "# <<< atmux:team=ghost",
+    ].join("\n");
+    const live = new Set(["/srv/alpha/.atmux"]);
+    const out = await findCronOrphans({
+      io: fakeIO(body),
+      dirExists: async (p: string) => live.has(p),
+    });
+    expect(out).toEqual([{ team: "ghost", atmuxDir: "/srv/ghost/.atmux" }]);
+  });
+
+  test("dirExists checked per-orphan (no batching surprises)", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:team=beta — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/beta/.atmux /bin/atmux whip",
+      "# <<< atmux:team=beta",
+    ].join("\n");
+    const probed: string[] = [];
+    await findCronOrphans({
+      io: fakeIO(body),
+      dirExists: async (p: string) => {
+        probed.push(p);
+        return false;
+      },
+    });
+    expect(probed).toEqual(["/srv/alpha/.atmux", "/srv/beta/.atmux"]);
   });
 });
 

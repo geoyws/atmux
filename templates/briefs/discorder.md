@@ -52,15 +52,64 @@ Heartbeat does NOT touch the progress cursor.
 
 ## Composition voice
 
-Discord pings render as embeds with a per-team color + leading emoji glyph (per [ADR-019](../../docs/adr/019-discord-domain-separator.md)). Body shape per the canonical templates in `~/.claude/CLAUDE.md` §Discord message format AND `~/.claude/skills/whip/whip-prompt.md` §6 + §7:
+Discord pings render as embeds with a per-team color + leading emoji glyph (per [ADR-019](../../docs/adr/019-discord-domain-separator.md)). **Verdict-first, milestone-grade, ask-loudly** — the canonical shape lives in `~/.claude/CLAUDE.md` §Discord message format AND `~/.claude/skills/whip/whip-prompt.md` §6 + §7.5. Every send has this exact shape:
 
-- **Header**: `<emoji> **[category]** · \`{{TEAM}}\` · HH:MM MYT` — MYT via `TZ='Asia/Kuala_Lumpur' date +'%H:%M MYT'`. Never a bare `HH:MM`.
-- **Blank line**, then **bulleted body only** — every fact is its own bullet, each starting with a status emoji, ≤80 chars per bullet.
-- **Section labels** in bold (`🏗️ **Shipped**`, `📊 **In flight**`, `🛑 **Blocked**`, `🎯 **Team state**`); content under them is bullets, not prose.
-- Per-bullet emojis: ✅ shipped · 🧪 test green · 🛠️ fix · ➡️ dispatch · ♻️ rotation · 🟢🟡🔴 teammate state · 🔐 security · 🎨 UI · 📦 deps · 🙏 ask · 📍 context pointer.
-- Code-format (backticks) for member names, SHAs, file paths, task IDs, URLs.
-- Compact human-readable durations: `<60min` → `Nmin`, `≥60min` → `HhMm` (`6h45m`, `2h`, `25h49m`). Drop `m` when `==0`. Never raw minutes.
-- **Banned**: unprefixed `[whip]` catch-all, single-paragraph status walls, run-on em-dash sentences. Every send is a *named template* (`[whip-progress]`, `[whip-heartbeat]`).
+```
+{header-emoji} **[{category}]** · `{{TEAM}}` · HH:MM MYT
+
+**{VERDICT}** — one-line state, ≤80 chars
+
+✨ **What's new** (optional, ≤3 milestone-named bullets — NOT SHA-named)
+- {what shipped, milestone-named}
+- {what shipped, milestone-named}
+
+📍 last commit Xmin ago · lead Ymin uptime · K complaints (footer, optional)
+```
+
+- **Header**: `<emoji> **[category]** · \`{{TEAM}}\` · HH:MM MYT` — MYT via `TZ='Asia/Kuala_Lumpur' date +'%H:%M MYT'`. Never a bare `HH:MM`. Categories: `[progress]`, `[heartbeat]`, `[decisions]`. Drop the legacy `whip-` prefix — every send is whip-shaped.
+- **Verdict line** is mandatory. Pick exactly one:
+  - `🟢 Shipping` — N commits in window, healthy, no asks.
+  - `🟡 Cool` — quiet on purpose (between phases, waiting on user, member rotating).
+  - `🟡 Idle` — quiet by accident, not yet a stall (fresh team, first dispatch in flight, rate-limit window).
+- You DO NOT emit `🔴 Stalled` or `🚨 Need you` — those belong to the lead's `[blocker]` / `[watchdog]` channels.
+- **What's new bullets are hand-curated**, NOT SHA-listed. Translate `d0e4947 feat(start): port ADR-081 §C brief-paste` → `ADR-081 brief-paste lives in TS spawn loop now`. The reader gets the milestone, not the log.
+- **Footer** (optional): `last commit Xmin ago · lead Ymin uptime · K complaints`. Skip on routine 30-min progress; include on hourly heartbeat for liveness context. Compact durations: `<60min` → `Nmin`, `≥60min` → `HhMm` (`6h45m`, `2h`, `25h49m`). Drop `m` when `==0`. Never raw minutes.
+- Code-format (backticks) only for member names, file paths, task IDs, URLs. Not for SHAs unless one specific commit anchors a bullet.
+
+**Hard cuts** vs. older spec — DO NOT emit:
+- `🏗️ Shipped` / `📨 Dispatched` / `🎯 Team state` / `🔄 Rotations` sections. They were snapshots, not signals. Verdict carries state; What's new carries delta.
+- SHA-dump bullets (`✅ \`d0e4947\` — feat(start): ...`).
+- "Check team-log + panes for detail" footers. The message MUST be the value.
+- Per-bullet status emojis on the `✨ **What's new**` lines — the section label carries enough.
+
+**Banned**: prose walls, ad-hoc `[whip]` catch-all prefix, em-dash run-ons joining 3+ facts. Every send is a *named template* (`[progress]`, `[heartbeat]`).
+
+**Reference example — `[progress]`:**
+
+```
+📊 **[progress]** · `{{TEAM}}` · 14:30 MYT
+
+🟢 **Shipping** — 3 commits in 30min, 0 asks, 0 stalls
+
+✨ **What's new**
+- ADR-081 brief-paste lives in TS spawn loop now (replaces bash port)
+- `task update` subverb shipped (ADR-084 W3)
+- bun-cage preload prevents accidental `bun test` inside the team cage
+
+📍 last commit 2min ago · lead 28min uptime · 0 complaints
+```
+
+**Reference example — `[heartbeat]` (deliberate quiet only):**
+
+```
+💓 **[heartbeat]** · `{{TEAM}}` · 15:00 MYT
+
+🟡 **Cool** — between phases, Phase 3 sign-off pending
+
+📍 last commit 47min ago · lead 32min uptime · ready to resume on your nudge
+```
+
+If you can't name a concrete reason for the quiet (between phases, waiting on user, rotating member), **skip the heartbeat ping** — silence is better than a content-less liveness ping. Watchdog cron speaks 🔴 Stalled if the team should be working but isn't.
 
 Every send routes through `~/.claude/skills/whip/scripts/ping-discord.sh`; never POST to the webhook by hand.
 
