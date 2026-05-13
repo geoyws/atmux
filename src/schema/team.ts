@@ -254,14 +254,26 @@ export const TeamDecisions = z
 export type TeamDecisions = z.infer<typeof TeamDecisions>;
 
 /**
- * `team.json::groom` sub-config — daily groom hour-of-day (ADR-079 §A).
- * Groom runs once per day at the operator-chosen hour (default 04:00,
- * the quietest window).
+ * `team.json::groom` sub-config — daily groom hour-of-day (ADR-079 §A)
+ * + per-sub-op opt-in toggles. Groom runs once per day at the operator-
+ * chosen hour (default 04:00, the quietest window).
  */
 export const TeamGroom = z
   .object({
     /** Hour-of-day (0–23) at which `groom --quiet` fires. Default 4. */
     atHour: z.number().int().min(0).max(23).default(4),
+    /** ADR-062 §5 follow-up: invoke lane-drift-check as part of groom's
+     *  daily sweep. Optional: when **unset**, the sub-op auto-enables
+     *  iff `team.members[]` contains ≥1 entry with a non-empty `.lane`
+     *  field (same auto-shape as `crons.laneTickEnabled`). **Explicit
+     *  `false`** suppresses the sub-op regardless of roster — operators
+     *  who want fast-feedback only via the every-2-min cron line + standalone
+     *  `atmux lane-drift-check` toggle this off. **Explicit `true`**
+     *  always runs (even with zero lane-tagged members, where it's a
+     *  trivial no-op). Pairs with the standalone `atmux lane-drift-
+     *  check` verb — both paths coexist (cron for fast feedback, groom
+     *  for end-of-day catch-the-stragglers per Task t-3aa587cb). */
+    laneDriftCheck: z.boolean().optional(),
   })
   .strict();
 export type TeamGroom = z.infer<typeof TeamGroom>;
