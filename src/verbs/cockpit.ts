@@ -32,7 +32,12 @@ import { dirname } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { ensureDir } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  type SendTarget,
+  type TmuxConfig,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import {
   cageSessionName,
   cageSocketPath,
@@ -41,8 +46,8 @@ import {
   loadCockpit,
   resolveCockpitConfigPath,
 } from "../core/cockpit.ts";
-import { installCockpitCronBlock } from "../core/cron.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
+import { installCockpitCronBlock } from "../core/cron.ts";
 import {
   awaitClaudePaneReady,
   formatReadinessWarning,
@@ -78,6 +83,14 @@ export interface ResolveTeamWindowDeps {
    *  `claude` installed; tests inject `() => "sleep infinity"` so the
    *  window persists for topology assertions. */
   buildSuperdoctorCommand?: (sd: CockpitSuperdoctor) => string;
+  /** t-22453c1e: sleep override for the superdoctor auto-start poll loop.
+   *  Default `setTimeout`-backed. Tests pass a no-op so wait-for-readiness
+   *  doesn't burn real wall-clock seconds. */
+  autoStartSleep?: (ms: number) => Promise<void>;
+  /** t-22453c1e: capture-pane override. Default uses
+   *  `tmux.pane.capturePane`. Tests pass a stub returning a controlled
+   *  sequence of pane contents to drive the readiness branches. */
+  autoStartCapturePane?: (sessionName: string, windowIndex: number) => Promise<string>;
 }
 
 interface DriverSessionShape {
@@ -318,9 +331,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   // `ackDangerous` JSDoc on ParsedCockpitArgs.
   if (forceCycle && !ackDangerous) {
     throw new UsageError({
-      what:
-        "cockpit rebuild: --force-cycle requires " +
-        "--acknowledge-dangerous-bau-interruption",
+      what: "cockpit rebuild: --force-cycle requires " + "--acknowledge-dangerous-bau-interruption",
       hint:
         "--force-cycle tears down live claude TUI contexts across EVERY enabled team " +
         "(every member's in-flight reasoning + tool state is lost). " +
@@ -450,9 +461,7 @@ export async function cockpitRebuild(
       const unbootMsg =
         teamSummary.unbootstrapped.length > 0
           ? ` ⚠ unbootstrapped=${teamSummary.unbootstrapped.length} ` +
-            `(${teamSummary.unbootstrapped
-              .map((u) => `${u.member}:${u.result.state}`)
-              .join(", ")})`
+            `(${teamSummary.unbootstrapped.map((u) => `${u.member}:${u.result.state}`).join(", ")})`
           : "";
       logger.log(
         `  ✓ ${t.name}: launched=${teamSummary.launched} ` +
@@ -659,10 +668,7 @@ export interface AutolaunchSummary {
 /** Per-pane readiness probe signature. The default (constructed via
  *  {@link buildDefaultReadinessProbe}) wires {@link awaitClaudePaneReady}
  *  to `cageTmux.pane.capturePane`; tests inject a synchronous fake. */
-export type ReadinessProbe = (
-  target: string,
-  member: string,
-) => Promise<PaneReadinessResult>;
+export type ReadinessProbe = (target: string, member: string) => Promise<PaneReadinessResult>;
 
 export interface AutolaunchOpts {
   /** Skip the post-spawn readiness probe. Default `false` — production
@@ -783,10 +789,7 @@ export async function autolaunchTeam(
   return { launched, skipped, unbootstrapped };
 }
 
-function buildDefaultReadinessProbe(
-  cageTmux: TmuxNamespace,
-  opts: AutolaunchOpts,
-): ReadinessProbe {
+function buildDefaultReadinessProbe(cageTmux: TmuxNamespace, opts: AutolaunchOpts): ReadinessProbe {
   return async (target, _member) => {
     return await awaitClaudePaneReady(
       target,
@@ -865,6 +868,7 @@ export async function reconcileCockpitSession(
     const sdrv = windowsBefore.find((w) => w.name === "superdriver");
     const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
     let sd = windowsBefore.find((w) => w.name === "superdoctor");
+    let sdJustCreated = false;
     if (sd === undefined) {
       const cmd = (deps.buildSuperdoctorCommand ?? buildSuperdoctorWindowCommand)(superdoctor);
       const newId = await cockpitTmux.window.newWindow({
@@ -876,6 +880,7 @@ export async function reconcileCockpitSession(
       logger.log(`  ✓ added window 'superdoctor' (idx ${newId.windowIndex})`);
       windowsBefore = await cockpitTmux.window.listWindows(sessionName);
       sd = windowsBefore.find((w) => w.name === "superdoctor");
+      sdJustCreated = true;
     }
     if (sd !== undefined && sd.index !== targetIdx) {
       // Forced relocation; kill whatever sits at the target slot (likely a
@@ -887,6 +892,38 @@ export async function reconcileCockpitSession(
         kill: true,
       });
       logger.log(`  ✓ moved 'superdoctor' to idx ${targetIdx} (was idx ${sd.index})`);
+    }
+
+    // t-22453c1e: auto-fire `/loop /superdoctor` ONLY when this rebuild
+    // call JUST CREATED the window — pre-existing windows could be mid-
+    // loop / mid-thinking / mid-/clear and are not safe to re-poke.
+    // Honors `superdoctor.autoStart` (default true) so operators with
+    // manual-control workflows can opt out by flipping `false`.
+    if (sdJustCreated && superdoctor.autoStart !== false && sd !== undefined) {
+      const settleSec = superdoctor.autoStartTimeoutSec ?? 30;
+      try {
+        const autoStartOpts: AutoStartSuperdoctorOpts = {
+          tmux: cockpitTmux,
+          sessionName,
+          windowIndex: sd.index,
+          timeoutMs: settleSec * 1000,
+          logger,
+        };
+        // exactOptionalPropertyTypes: only forward the injection points
+        // when callers actually set them. Defaults inside the helper
+        // wire the real `setTimeout` + `tmux.pane.capturePane`.
+        if (deps.autoStartSleep !== undefined) autoStartOpts.sleep = deps.autoStartSleep;
+        if (deps.autoStartCapturePane !== undefined) {
+          autoStartOpts.capturePane = deps.autoStartCapturePane;
+        }
+        await autoStartSuperdoctorLoop(autoStartOpts);
+      } catch (e) {
+        // Defense-in-depth: autoStartSuperdoctorLoop is non-fatal by
+        // construction (all branches log + return); rethrow shouldn't
+        // happen but if a future bug raises one, don't wedge the rebuild.
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(`  ⚠ superdoctor auto-start fell through: ${cause}`);
+      }
     }
   }
 
@@ -957,4 +994,165 @@ export function buildSuperdoctorWindowCommand(sd: CockpitSuperdoctor): string {
     `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
     `claude${pluginFlag} --permission-mode ${permission}`
   );
+}
+
+// ---------- t-22453c1e: superdoctor auto-start ----------
+
+export interface AutoStartSuperdoctorOpts {
+  tmux: TmuxNamespace;
+  sessionName: string;
+  windowIndex: number;
+  /** Max wall-clock to wait for the pane to settle to a Claude idle
+   *  prompt before bailing without a send-keys. Operator falls back to
+   *  manual `/loop /superdoctor` when this fires. */
+  timeoutMs: number;
+  logger: Logger;
+  /** Test injection — defaults to `setTimeout`-backed. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Test injection — defaults to `tmux.pane.capturePane`. */
+  capturePane?: (sessionName: string, windowIndex: number) => Promise<string>;
+}
+
+/** Poll cadence when waiting for the Claude REPL idle prompt. 500ms is
+ *  the spec value from t-22453c1e — finer is wasted IO, coarser misses
+ *  the window between welcome-screen-finished and operator-tabbing-away. */
+const SUPERDOCTOR_POLL_INTERVAL_MS = 500;
+
+/** Settle window AFTER sendKeys before verifying the loop landed. Per
+ *  t-22453c1e §4 we wait up to 5s for the skill-loaded marker. */
+const SUPERDOCTOR_POST_SEND_VERIFY_MS = 5_000;
+
+/** Markers that indicate the Claude Code TUI is at an idle prompt (per
+ *  t-22453c1e §2 readiness check). Matched as substrings against the
+ *  full capture. The order is "best-confidence first" — the auto-mode
+ *  + tok 0/0 footer is the most reliable signal; the `❯ Try ` placeholder
+ *  is the visual prompt the operator sees on a fresh session. */
+const SUPERDOCTOR_READY_MARKERS: ReadonlyArray<string> = ["auto mode on", "❯ Try "];
+
+/** Bail markers — if any of these appear, the pane is NOT idle and the
+ *  send-keys would land in the wrong state (queued message, compacting,
+ *  thinking mid-turn). Spec §2. */
+const SUPERDOCTOR_NOT_READY_MARKERS: ReadonlyArray<string> = [
+  "Compacting conversation",
+  "thinking with",
+];
+
+/** Verification markers after send-keys. Either form is acceptable per
+ *  t-22453c1e §4 (skill loaded OR model acting on it). */
+const SUPERDOCTOR_LOOP_LANDED_MARKERS: ReadonlyArray<string> = [
+  "Successfully loaded skill",
+  "self-pace this loop",
+  "self-pacing this loop",
+];
+
+/**
+ * t-22453c1e: poll the freshly-created superdoctor pane until it settles
+ * to a Claude idle prompt, then `tmux send-keys` `/loop /superdoctor` +
+ * Enter. Non-fatal on every branch — a timeout / send failure logs a
+ * warning and the operator falls back to typing the keystroke manually.
+ *
+ * Three terminal outcomes:
+ *   - Idle prompt detected → send-keys → verify → log ok / warn-no-verify
+ *   - Timeout (default 30s, configurable) → warn + return
+ *   - Capture throws → warn + return
+ */
+export async function autoStartSuperdoctorLoop(opts: AutoStartSuperdoctorOpts): Promise<void> {
+  const sleep =
+    opts.sleep ??
+    ((ms: number) =>
+      new Promise<void>((res) => {
+        setTimeout(res, ms);
+      }));
+  const capturePane =
+    opts.capturePane ??
+    (async (session: string, idx: number): Promise<string> => {
+      return await opts.tmux.pane.capturePane({
+        target: { sessionName: session, windowIndex: idx },
+      });
+    });
+
+  const deadline = Date.now() + opts.timeoutMs;
+  let ready = false;
+  while (Date.now() < deadline) {
+    let capture: string;
+    try {
+      capture = await capturePane(opts.sessionName, opts.windowIndex);
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      opts.logger.warn(
+        `  ⚠ superdoctor auto-start: capture-pane failed (${cause}); operator falls back to manual \`/loop /superdoctor\``,
+      );
+      return;
+    }
+    if (paneIsReady(capture)) {
+      ready = true;
+      break;
+    }
+    await sleep(SUPERDOCTOR_POLL_INTERVAL_MS);
+  }
+  if (!ready) {
+    opts.logger.warn(
+      `  ⚠ superdoctor pane not ready after ${Math.floor(opts.timeoutMs / 1000)}s; type \`/loop /superdoctor\` manually`,
+    );
+    return;
+  }
+
+  // Send the keystroke. The text + Enter go in a single sendKeys call
+  // with `enter: true` — `tmux send-keys` natively appends C-m when
+  // `Enter` is passed alongside literal text, so we don't need the
+  // separate-call dance the bash equivalent does.
+  const target: SendTarget = {
+    kind: "member",
+    member: "superdoctor",
+    team: opts.sessionName,
+    target: { sessionName: opts.sessionName, windowIndex: opts.windowIndex },
+  };
+  try {
+    await opts.tmux.pane.sendKeys({
+      target,
+      keys: "/loop /superdoctor",
+      enter: true,
+    });
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    opts.logger.warn(
+      `  ⚠ superdoctor auto-start: send-keys failed (${cause}); operator falls back to manual`,
+    );
+    return;
+  }
+
+  // Verify the loop landed — best-effort. The skill-loaded marker takes
+  // a moment to render after Enter; cap the wait at SUPERDOCTOR_POST_SEND_
+  // VERIFY_MS so a slow loader doesn't wedge rebuild.
+  await sleep(SUPERDOCTOR_POST_SEND_VERIFY_MS);
+  let postCapture: string;
+  try {
+    postCapture = await capturePane(opts.sessionName, opts.windowIndex);
+  } catch {
+    // Verification capture failure is non-blocking — the send-keys may
+    // have landed fine. Log + treat as best-effort success.
+    opts.logger.log(
+      "  ✓ superdoctor auto-started (`/loop /superdoctor` sent; verification capture failed — assume ok)",
+    );
+    return;
+  }
+  if (SUPERDOCTOR_LOOP_LANDED_MARKERS.some((m) => postCapture.includes(m))) {
+    opts.logger.log("  ✓ superdoctor auto-started (`/loop /superdoctor` confirmed)");
+  } else {
+    opts.logger.warn(
+      "  ⚠ superdoctor auto-start: send-keys fired but verification marker not seen in 5s; operator should sanity-check the window",
+    );
+  }
+}
+
+/** Pane-ready predicate. Idle ⇔ at least one ready-marker present AND
+ *  no not-ready-marker (compacting / thinking). */
+function paneIsReady(capture: string): boolean {
+  for (const blocker of SUPERDOCTOR_NOT_READY_MARKERS) {
+    if (capture.includes(blocker)) return false;
+  }
+  for (const marker of SUPERDOCTOR_READY_MARKERS) {
+    if (capture.includes(marker)) return true;
+  }
+  return false;
 }
