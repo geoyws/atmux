@@ -11,17 +11,31 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigError } from "../../../src/errors.ts";
 import {
+  DEFAULT_PULSE_DEDUP_LADDER,
   DEFAULT_PULSE_DEDUP_MIN,
-  DEFAULT_PULSE_WINDOW_MIN,
   DEFAULT_PULSE_INTERVAL_MIN,
+  DEFAULT_PULSE_WINDOW_MIN,
   PULSE_DRIVER_INBOX_STALE_MIN,
+  type PulseDedupLadder,
   pulseStatePath,
   readPulseState,
   shouldFire,
   writePulseState,
 } from "../../../src/core/pulse-state.ts";
+import { ConfigError } from "../../../src/errors.ts";
+
+/** ADR-086 §Phase 1.5 test helper: build a ladder that mirrors the
+ *  pre-1.5 binary URGENT_VERDICTS semantic — flat int for 🔴 / 🚨,
+ *  default cadences for 🟡 / 🟢. Used by tests that pre-date the
+ *  ladder to keep their assertions identical without rewriting. */
+function flatLadder(n: number): PulseDedupLadder {
+  return {
+    ...DEFAULT_PULSE_DEDUP_LADDER,
+    "🔴 Stalled": n,
+    "🚨 Need you": n,
+  };
+}
 
 let home: string;
 beforeEach(async () => {
@@ -35,8 +49,21 @@ describe("constants", () => {
   test("defaults match the ADR-086 table", () => {
     expect(DEFAULT_PULSE_WINDOW_MIN).toBe(30);
     expect(DEFAULT_PULSE_INTERVAL_MIN).toBe(5);
-    expect(DEFAULT_PULSE_DEDUP_MIN).toBe(30);
+    // ADR-086 §Phase 1.1 bumped 30 → 120 (channel-noise reduction);
+    // §Phase 1.5 keeps the constant as the soft-deprecated flat
+    // fallback for legacy `cockpit.pulse.dedupMins` configs.
+    expect(DEFAULT_PULSE_DEDUP_MIN).toBe(120);
     expect(PULSE_DRIVER_INBOX_STALE_MIN).toBe(30);
+  });
+
+  test("ADR-086 §Phase 1.5 default ladder shape", () => {
+    // 5-verdict map; sustained-urgency cadences <= 60min; lull
+    // verdicts at 4h; 🟢 disabled.
+    expect(DEFAULT_PULSE_DEDUP_LADDER["🚨 Need you"]).toBe(60);
+    expect(DEFAULT_PULSE_DEDUP_LADDER["🔴 Stalled"]).toBe(30);
+    expect(DEFAULT_PULSE_DEDUP_LADDER["🟡 Cool"]).toBe(4 * 60);
+    expect(DEFAULT_PULSE_DEDUP_LADDER["🟡 Idle"]).toBe(4 * 60);
+    expect(DEFAULT_PULSE_DEDUP_LADDER["🟢 Shipping"]).toBeNull();
   });
 });
 
@@ -81,7 +108,7 @@ describe("shouldFire — first observation", () => {
       current: "🟢 Shipping",
       currentCommitCount: 3,
       nowSec: 1700000000,
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(true);
     expect(r.reason).toBe("first-observation");
@@ -97,7 +124,7 @@ describe("shouldFire — transitions", () => {
       current: "🟡 Idle",
       currentCommitCount: 0,
       nowSec: 1700001000,
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(true);
     expect(r.reason).toBe("transition");
@@ -112,7 +139,7 @@ describe("shouldFire — transitions", () => {
       current: "🟢 Shipping",
       currentCommitCount: 5,
       nowSec: 1700001000,
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(true);
     expect(r.reason).toBe("transition");
@@ -126,7 +153,7 @@ describe("shouldFire — sustained urgency", () => {
       current: "🔴 Stalled",
       currentCommitCount: 0,
       nowSec: 1700000000 + 10 * 60, // 10min later
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(false);
     expect(r.reason).toBe("deduped");
@@ -139,7 +166,7 @@ describe("shouldFire — sustained urgency", () => {
       current: "🔴 Stalled",
       currentCommitCount: 0,
       nowSec: 1700000000 + 30 * 60, // exactly window
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(true);
     expect(r.reason).toBe("sustained-urgency");
@@ -152,7 +179,7 @@ describe("shouldFire — sustained urgency", () => {
       current: "🚨 Need you",
       currentCommitCount: 0,
       nowSec: 1700000000 + 31 * 60,
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(true);
     expect(r.reason).toBe("sustained-urgency");
@@ -166,7 +193,7 @@ describe("shouldFire — non-urgent dedup", () => {
       current: "🟢 Shipping",
       currentCommitCount: 5,
       nowSec: 1700000000 + 24 * 60 * 60, // 24h later
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(false);
     expect(r.reason).toBe("deduped");
@@ -178,7 +205,7 @@ describe("shouldFire — non-urgent dedup", () => {
       current: "🟡 Cool",
       currentCommitCount: 0,
       nowSec: 1700000000 + 60 * 60,
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(false);
     expect(r.reason).toBe("deduped");
@@ -190,9 +217,119 @@ describe("shouldFire — non-urgent dedup", () => {
       current: "🟡 Idle",
       currentCommitCount: 0,
       nowSec: 1700000000 + 60 * 60,
-      dedupMins: 30,
+      dedupLadderMins: flatLadder(30),
     });
     expect(r.didFire).toBe(false);
     expect(r.reason).toBe("deduped");
+  });
+});
+
+// ---------- ADR-086 §Phase 1.5: verdict-specific dedup ladder ----------
+
+describe("shouldFire — Phase 1.5 ladder per-verdict cadence", () => {
+  test("🚨 Need you re-fires at the ladder cadence (60min default)", () => {
+    // 59min later → still deduped under the default ladder's 60min entry.
+    const before = shouldFire({
+      prior: { verdict: "🚨 Need you", lastFireEpoch: 1700000000, lastCommitCount: 0 },
+      current: "🚨 Need you",
+      currentCommitCount: 0,
+      nowSec: 1700000000 + 59 * 60,
+      dedupLadderMins: DEFAULT_PULSE_DEDUP_LADDER,
+    });
+    expect(before.didFire).toBe(false);
+    // 60min later → fires.
+    const at = shouldFire({
+      prior: { verdict: "🚨 Need you", lastFireEpoch: 1700000000, lastCommitCount: 0 },
+      current: "🚨 Need you",
+      currentCommitCount: 0,
+      nowSec: 1700000000 + 60 * 60,
+      dedupLadderMins: DEFAULT_PULSE_DEDUP_LADDER,
+    });
+    expect(at.didFire).toBe(true);
+    expect(at.reason).toBe("sustained-urgency");
+  });
+
+  test("🟡 Cool re-fires after 4h (steady-state confirm)", () => {
+    // 3h59m → still deduped.
+    const before = shouldFire({
+      prior: { verdict: "🟡 Cool", lastFireEpoch: 1700000000, lastCommitCount: 0 },
+      current: "🟡 Cool",
+      currentCommitCount: 0,
+      nowSec: 1700000000 + (4 * 60 - 1) * 60,
+      dedupLadderMins: DEFAULT_PULSE_DEDUP_LADDER,
+    });
+    expect(before.didFire).toBe(false);
+    // 4h00m → fires (removes the "cron broken or team cool?" silent
+    // ambiguity from Phase 1.1).
+    const at = shouldFire({
+      prior: { verdict: "🟡 Cool", lastFireEpoch: 1700000000, lastCommitCount: 0 },
+      current: "🟡 Cool",
+      currentCommitCount: 0,
+      nowSec: 1700000000 + 4 * 60 * 60,
+      dedupLadderMins: DEFAULT_PULSE_DEDUP_LADDER,
+    });
+    expect(at.didFire).toBe(true);
+    expect(at.reason).toBe("sustained-urgency");
+  });
+
+  test("🟢 Shipping null entry → never re-fires regardless of elapsed time", () => {
+    // 24h later, ladder['🟢 Shipping'] is null → silent.
+    const r = shouldFire({
+      prior: { verdict: "🟢 Shipping", lastFireEpoch: 1700000000, lastCommitCount: 0 },
+      current: "🟢 Shipping",
+      currentCommitCount: 5,
+      nowSec: 1700000000 + 24 * 60 * 60,
+      dedupLadderMins: DEFAULT_PULSE_DEDUP_LADDER,
+    });
+    expect(r.didFire).toBe(false);
+    expect(r.reason).toBe("deduped");
+  });
+
+  test("operator override of ladder entry to null disables re-fire", () => {
+    // 🔴 default is 30min; operator override to null disables.
+    const customLadder: PulseDedupLadder = { ...DEFAULT_PULSE_DEDUP_LADDER, "🔴 Stalled": null };
+    const r = shouldFire({
+      prior: { verdict: "🔴 Stalled", lastFireEpoch: 1700000000, lastCommitCount: 0 },
+      current: "🔴 Stalled",
+      currentCommitCount: 0,
+      nowSec: 1700000000 + 24 * 60 * 60,
+      dedupLadderMins: customLadder,
+    });
+    expect(r.didFire).toBe(false);
+  });
+
+  test("operator override of ladder entry to longer cadence works", () => {
+    // 🚨 set to 90min; 60min → still deduped.
+    const customLadder: PulseDedupLadder = { ...DEFAULT_PULSE_DEDUP_LADDER, "🚨 Need you": 90 };
+    const r = shouldFire({
+      prior: { verdict: "🚨 Need you", lastFireEpoch: 1700000000, lastCommitCount: 0 },
+      current: "🚨 Need you",
+      currentCommitCount: 0,
+      nowSec: 1700000000 + 60 * 60,
+      dedupLadderMins: customLadder,
+    });
+    expect(r.didFire).toBe(false);
+  });
+
+  test("transitions ALWAYS fire regardless of ladder entries", () => {
+    // Even with all ladder entries null (silent everywhere), a verdict
+    // change still fires — the transition branch precedes the ladder
+    // lookup.
+    const silentLadder: PulseDedupLadder = {
+      "🚨 Need you": null,
+      "🔴 Stalled": null,
+      "🟡 Cool": null,
+      "🟡 Idle": null,
+      "🟢 Shipping": null,
+    };
+    const r = shouldFire({
+      prior: { verdict: "🟢 Shipping", lastFireEpoch: 1700000000, lastCommitCount: 3 },
+      current: "🚨 Need you",
+      currentCommitCount: 0,
+      nowSec: 1700000000 + 60 * 60,
+      dedupLadderMins: silentLadder,
+    });
+    expect(r.didFire).toBe(true);
+    expect(r.reason).toBe("transition");
   });
 });

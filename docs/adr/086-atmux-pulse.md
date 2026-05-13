@@ -134,6 +134,59 @@ Manual install (for operators who don't run `cockpit rebuild`) is still document
 
 Phase 2 plan slot reserved (no number assigned yet).
 
+## Phase 1.5: Verdict-specific dedup ladder
+
+**Date added**: 2026-05-13. **Driver-ref**: driver-inbox 18:17 MYT 2026-05-13 (pulse-spam Discord cadence). **Task**: t-c99360fb.
+
+### Context
+
+Phase 1's `shouldFire` uses a single `dedupMins` window for ALL sustained-urgency verdicts (🔴 Stalled + 🚨 Need you). Phase 1.1's flat 30 → 120 bump reduces channel noise but doesn't differentiate urgency tiers, and leaves 🟡 Idle/Cool with no re-surface at all (silent ambiguity: "is the cron broken, or is the team genuinely cool?"). CLAUDE.md §Discord verdict-ladder explicitly orders 🚨 above 🔴 — they deserve distinct re-fire cadences.
+
+### Decision
+
+Per-verdict ladder constant + schema field; `shouldFire` consults the ladder instead of a flat int.
+
+```ts
+// src/core/pulse-state.ts
+export const DEFAULT_PULSE_DEDUP_LADDER: Readonly<Record<PulseVerdict, number | null>> = {
+  "🚨 Need you":  60,      // 1hr — loud but not training-the-eye
+  "🔴 Stalled":   30,      // 30min — degraded-state probe cadence
+  "🟡 Cool":      4 * 60,  // 4hr — confirm steady-state on long lull
+  "🟡 Idle":      4 * 60,  // 4hr — confirm steady-state on long lull
+  "🟢 Shipping":  null,    // never re-fire on shipping (transition only)
+};
+```
+
+Schema (`src/schema/cockpit.ts CockpitPulse`) gains an optional ladder override:
+
+```ts
+dedupLadderMins: z.partialRecord(VerdictSchema, z.number().int().positive().nullable()).optional(),
+```
+
+Operator override merges OVER the default ladder: missing verdicts inherit; explicit `null` disables re-fire for that verdict.
+
+`shouldFire` signature change: `dedupMins: number` → `dedupLadderMins: Record<PulseVerdict, number | null>`. Lookup `ladder[current]`: if `null` → skip (deduped); if number → compare against elapsed since `lastFireEpoch`. Transition path UNCHANGED — transitions always fire regardless of ladder.
+
+`URGENT_VERDICTS` set is REMOVED — replaced by "verdict has non-null entry in ladder".
+
+### Consequences
+
+- One config knob → one map. Operators can tune per-verdict via `cockpit.pulse.dedupLadderMins.🚨 Need you = 90` etc.
+- 🟡 Cool/Idle re-fires every 4hr → channel never goes >4hr-silent on a steady-state team. Removes "cron broken or team cool?" ambiguity.
+- Phase 1.1's flat `DEFAULT_PULSE_DEDUP_MIN = 120` becomes a **fallback const** (kept for any external caller passing flat int through legacy code paths) but the `atmux pulse` verb itself routes through the ladder.
+- Schema field `cockpit.pulse.dedupMins` is preserved as backward-compat alias: if set AND `dedupLadderMins` is unset, populate the ladder uniformly with that int FOR THE URGENT VERDICTS ONLY (mirrors pre-§1.5 binary URGENT_VERDICTS semantic). Soft-deprecate, don't break existing operator configs. Explicit `dedupLadderMins` wins over `dedupMins` when both are set — single-source-of-truth precedence.
+- **Phase 1.6 sustained-fire cap DEFERRED**. Unblock condition: if, post-Phase 1.5 soak (14 days), any team produces >2 sustained re-fires per 24h at the same verdict, file follow-up Task for `sustainedFireCount` field on `pulse-state.json` rows + per-team-per-day cap (default 3 → silence until verdict transitions).
+
+### Reversibility
+
+Medium — revert ladder const + schema field + `shouldFire` signature; restore flat `dedupMins` int path. Single commit revert if rolled back fast; two if mixed with Phase 1.6 follow-up.
+
+### Refs
+
+- Phase 1 (ADR-086 main body) — verdict + state file shape this extends.
+- Phase 1.1 — flat bump this supersedes (kept as fallback const).
+- CLAUDE.md §Discord verdict-ladder — source vocabulary.
+
 ## Refs
 
 - `src/verbs/pulse.ts` — verb entry, gather → verdict → fire pipeline.

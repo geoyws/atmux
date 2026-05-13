@@ -106,6 +106,18 @@ export type CockpitSuperdoctor = z.infer<typeof CockpitSuperdoctor>;
 
 /** ADR-086: cockpit-wide `atmux pulse` probe tunables. All fields opt-in;
  *  defaults are 30 / 5 / 30 (window / interval / dedup minutes). */
+/** ADR-086 §Phase 1.5: verdict literal keys for the per-verdict dedup
+ *  ladder. Restated here (not imported from `core/pulse-state.ts` to
+ *  avoid the schema → core dependency direction) — kept in lockstep
+ *  with `VerdictSchema` in pulse-state.ts. */
+const PulseVerdictLiteralSchema = z.enum([
+  "🟢 Shipping",
+  "🟡 Cool",
+  "🟡 Idle",
+  "🔴 Stalled",
+  "🚨 Need you",
+]);
+
 export const CockpitPulse = z
   .object({
     /** Commit-cadence observation window in minutes. Verdict logic
@@ -114,9 +126,22 @@ export const CockpitPulse = z
     /** Cron tick interval in minutes (documented in
      *  `docs/RUNBOOK-pulse.md`; auto-install is Phase 2). Default 5. */
     intervalMins: z.number().int().positive().optional(),
-    /** Re-fire dedup window for sustained-urgency verdicts (🔴 / 🚨)
-     *  in minutes. Default 30. */
+    /** **Soft-deprecated** as of ADR-086 §Phase 1.5 (2026-05-13).
+     *  Legacy flat re-fire window in minutes — when set AND
+     *  `dedupLadderMins` is unset, the verb populates the per-verdict
+     *  ladder uniformly with this value (backward-compat for operator
+     *  configs frozen pre-Phase-1.5). New configs prefer
+     *  `dedupLadderMins` for per-verdict cadence. */
     dedupMins: z.number().int().positive().optional(),
+    /** ADR-086 §Phase 1.5: per-verdict dedup ladder. Operator override
+     *  merges OVER `DEFAULT_PULSE_DEDUP_LADDER`: missing verdicts
+     *  inherit the default; explicit `null` disables re-fire for that
+     *  verdict (silence until verdict transitions); positive int sets
+     *  the cadence in minutes. Partial keys allowed — operators tune
+     *  only the verdicts they care about. */
+    dedupLadderMins: z
+      .partialRecord(PulseVerdictLiteralSchema, z.number().int().positive().nullable())
+      .optional(),
   })
   .strict();
 export type CockpitPulse = z.infer<typeof CockpitPulse>;
