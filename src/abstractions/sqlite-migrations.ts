@@ -140,4 +140,26 @@ export const migrations: readonly Migration[] = [
       db.exec("CREATE INDEX idx_complaints_opened_at ON complaints(opened_at DESC)");
     },
   },
+  // ---------- v2 → v3 ----------
+  // Per t-e5e5d576: structured provenance for cross-team analysis.
+  // `source_kind` (superdoctor/member/operator/cli/cron) + structured
+  // `source_id` give a queryable replacement for the free-form
+  // `opened_by` text field; `target_team` distinguishes the team a
+  // complaint is ABOUT from the team's state.db it happens to live
+  // in (needed once superdoctor files cross-team).
+  //
+  // Existing v2 rows get NULL in the three new columns — no heuristic
+  // backfill from `opened_by` (the inference risk isn't worth it; the
+  // verb requires explicit `--source-kind` for new rows).
+  {
+    from: 2,
+    to: 3,
+    up: (db) => {
+      db.exec("ALTER TABLE complaints ADD COLUMN source_kind TEXT");
+      db.exec("ALTER TABLE complaints ADD COLUMN source_id TEXT");
+      db.exec("ALTER TABLE complaints ADD COLUMN target_team TEXT");
+      db.exec("CREATE INDEX idx_complaints_source_kind ON complaints(source_kind)");
+      db.exec("CREATE INDEX idx_complaints_target_team ON complaints(target_team)");
+    },
+  },
 ];

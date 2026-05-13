@@ -21,6 +21,19 @@ import { z } from "zod";
 export const COMPLAINT_STATUSES = ["open", "resolved", "wontfix"] as const;
 export type ComplaintStatus = (typeof COMPLAINT_STATUSES)[number];
 
+/** Allowed `sourceKind` values at the verb layer (v3 / t-e5e5d576).
+ *  Schema stays free-form (TEXT) — same passthrough posture as
+ *  `status`. Documented mapping to `openedBy` / `sourceId` lives on
+ *  the task body + ADR follow-up. */
+export const COMPLAINT_SOURCE_KINDS = [
+  "superdoctor",
+  "member",
+  "operator",
+  "cli",
+  "cron",
+] as const;
+export type ComplaintSourceKind = (typeof COMPLAINT_SOURCE_KINDS)[number];
+
 export const Complaint = z
   .object({
     /** Stable ID, conventionally `c-` + 8 hex chars (mirrors task ID
@@ -48,6 +61,17 @@ export const Complaint = z
     resolvedBy: z.string().nullable().default(null),
     /** Kanban task ID that implements the preventive ask (when one exists). */
     relatedTaskId: z.string().nullable().default(null),
+    /** Provenance kind (v3 / t-e5e5d576). Allowlist values live in
+     *  `COMPLAINT_SOURCE_KINDS`; schema accepts any TEXT so v2 rows
+     *  parse unchanged. */
+    sourceKind: z.string().nullable().default(null),
+    /** Structured source identifier (v3). e.g. `atmux:planner`,
+     *  `sweep-1715290000`, `pid-12345`. Free-form at schema. */
+    sourceId: z.string().nullable().default(null),
+    /** Team this complaint is ABOUT (v3) — distinct from the team
+     *  whose state.db holds the row. Enables cross-team filing
+     *  (superdoctor on team A pinging about team B's bug). */
+    targetTeam: z.string().nullable().default(null),
     /** Forward-compat JSON bag (parsed on read; serialized on write). */
     extra: z.record(z.string(), z.unknown()).default({}),
   })
