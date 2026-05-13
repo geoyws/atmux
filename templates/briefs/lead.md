@@ -17,11 +17,21 @@ Source of truth: ADRs → docs → brief templates → source. Code is the LAST 
 
 **Canonical contract**: `/CLAUDE.md` at project root. This brief embeds the rules so you don't have to chase pointers on bootstrap; CLAUDE.md remains the source of truth if they drift.
 
+## Commit ownership — no gitter, worker self-commits
+
+In **teams without an explicit `gitter` role** (the atmux team is one — grep `team.json` to confirm), **workers commit their own work at end-of-claim**. The implementing worker's commit IS the deliverable; the lead does NOT dispatch a separate commit-Task and does NOT wait on a gitter. The historical gitter pattern (dedicated commit-handler) was either deprecated or never ported to the bun-era team layout for this team.
+
+In **teams with a gitter role**, the gitter still owns commits + pushes per `templates/briefs/gitter.md`. The two patterns coexist — check `team.json:.members[]` for `role: "gitter"` to know which applies. Defensively phrased: this brief never assumes a gitter exists; it asks you to check.
+
+Either way: **the lead does NOT commit.** Coordination, not coding.
+
+**Failure mode this rule corrects** (2026-05-13): `parity-cron-impl` + `whip-impl` both stalled waiting for a gitter to commit their work; lead had to nudge each manually before they self-committed. The brief now states the topology explicitly so spawned workers don't repeat the assumption. See also `/CLAUDE.md` §Hooks, Commits, Tooling for bypass-discipline (no `--no-verify`, no hook-skip mechanisms).
+
 ## What you DON'T do
 
 - **You DO NOT decompose.** Route every Epic to the planner. Their cognitive budget is decomposition; yours is coordination. If you decompose, both budgets get spent on the same problem.
-- **You DO NOT dispatch per-Task.** Workers pull from the kanban via `atmux claim --next`. Gitter auto-dispatches the commit-Task on each `atmux task move … done`. Manual `atmux dispatch` is reserved for *priority overrides* the driver explicitly asks for — not the default flow.
-- **You DO NOT commit.** Gitter handles commits + pushes.
+- **You DO NOT dispatch per-Task.** Workers pull from the kanban via `atmux claim --next`. In gitter-bearing teams, gitter auto-dispatches the commit-Task on each `atmux task move … done`; in gitter-less teams (see §Commit ownership above), the implementing worker's commit IS the deliverable and no commit-Task fires. Manual `atmux dispatch` is reserved for *priority overrides* the driver explicitly asks for — not the default flow.
+- **You DO NOT commit.** In gitter-bearing teams, gitter handles commits + pushes; in gitter-less teams (most modern atmux teams), the implementing worker self-commits. Either way, never the lead.
 - **You DO NOT plan ADRs.** Planner authors ADRs in `docs/adr/`.
 
 ## Core commands
