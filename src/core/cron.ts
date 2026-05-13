@@ -389,9 +389,93 @@ export function stripOrphanLines(body: string): string {
  *  TERM, narrow PATH) caused tmux 3.5a segfaults when invoked from
  *  atmux verbs (ADR-051). Idempotent. */
 export function ensureEnvPreamble(body: string): string {
-  if (!body.includes(BLOCK_HEADER_PREFIX)) return body;
+  // ADR-086: cockpit-scoped block also needs the env preamble — cron's
+  // bare env hits the same tmux/term issues regardless of which atmux
+  // verb fires.
+  if (!body.includes(BLOCK_HEADER_PREFIX) && !body.includes(COCKPIT_BLOCK_HEADER)) return body;
   if (body.includes(ENV_PREAMBLE_MARKER)) return body;
   return `${ENV_PREAMBLE}\n${body}`;
+}
+
+// ---------- ADR-086: cockpit-scoped cron block (pulse) ----------
+//
+// Distinct namespace from per-team blocks — uses `atmux:cockpit` markers
+// so per-team strip-by-name + strip-by-atmux-dir passes never touch it.
+// Idempotent on re-install (same strip → render → append pattern as
+// `installCronBlock`).
+//
+// Phase 1 content: just `atmux pulse`. Phase 2 may add other cockpit-
+// tier crons (LLM observer, multi-channel routing).
+
+const COCKPIT_BLOCK_HEADER =
+  "# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand";
+const COCKPIT_BLOCK_FOOTER = "# <<< atmux:cockpit";
+
+export interface RenderCockpitCronBlockOpts {
+  /** Absolute path to the atmux binary. Cron's bare env can't resolve
+   *  PATH-relative names. */
+  atmuxBin: string;
+  /** Absolute path to the cockpit config (defaults to `~/.atmux/cockpit.json`
+   *  when the verb is invoked; we don't bake the default into the cron line
+   *  so the operator can pass `--config <path>` overrides via env later). */
+  cockpitConfigPath?: string;
+  /** Absolute path for the log tail. Defaults to `~/.atmux/logs/pulse.log`. */
+  logPath?: string;
+  /** Optional cockpit.pulse.intervalMins (default 5). Must be a 60-divisor. */
+  pulseIntervalMins?: number;
+  /** Optional PATH prefix for the cron env (defaults to a sensible set
+   *  covering mise + system bins). */
+  cronPath?: string;
+}
+
+/** Pure: render the cockpit-scoped cron block (header + body + footer). */
+export function renderCockpitCronBlock(opts: RenderCockpitCronBlockOpts): string {
+  const interval = opts.pulseIntervalMins ?? 5;
+  const cronPath = opts.cronPath ?? "/root/.bun/bin:/usr/local/bin:/usr/bin:/bin";
+  const logPath = opts.logPath ?? "/root/.atmux/logs/pulse.log";
+  const configFlag =
+    opts.cockpitConfigPath !== undefined && opts.cockpitConfigPath !== ""
+      ? ` --config ${opts.cockpitConfigPath}`
+      : "";
+  const line = `${cronEvery(interval)} PATH=${cronPath} ${opts.atmuxBin} pulse${configFlag} >> ${logPath} 2>&1`;
+  return `${COCKPIT_BLOCK_HEADER}\n${line}\n${COCKPIT_BLOCK_FOOTER}\n`;
+}
+
+export interface InstallCockpitCronBlockOpts extends RenderCockpitCronBlockOpts {
+  /** Current crontab contents (`null`/empty == no crontab yet). */
+  current: string | null;
+}
+
+/** Pure transform: strip any existing cockpit block + append a fresh one.
+ *  Idempotent — re-running with the same opts yields byte-identical output. */
+export function installCockpitCronBlock(opts: InstallCockpitCronBlockOpts): string {
+  const stripped = stripCockpitBlock(opts.current ?? "");
+  const block = renderCockpitCronBlock(opts);
+  const trimmed = stripped.endsWith("\n") ? stripped.slice(0, -1) : stripped;
+  const joined = trimmed === "" ? block : `${trimmed}\n${block}`;
+  return ensureEnvPreamble(joined);
+}
+
+/** Strip the `# >>> atmux:cockpit` ... `# <<< atmux:cockpit` block, if
+ *  present. Bash-equivalent helper (no bash counterpart yet — cockpit
+ *  cron is new ground per ADR-086). */
+export function stripCockpitBlock(body: string): string {
+  if (body === "") return "";
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let inBlock = false;
+  for (const ln of lines) {
+    if (ln === COCKPIT_BLOCK_HEADER) {
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && ln === COCKPIT_BLOCK_FOOTER) {
+      inBlock = false;
+      continue;
+    }
+    if (!inBlock) out.push(ln);
+  }
+  return out.join("\n");
 }
 
 // ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------

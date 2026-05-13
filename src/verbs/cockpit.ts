@@ -29,6 +29,7 @@
 // the script and let the proper bun path become the runtime.
 
 import { dirname } from "node:path";
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { ensureDir } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
@@ -38,7 +39,9 @@ import {
   enabledTeams,
   type LoadCockpitOpts,
   loadCockpit,
+  resolveCockpitConfigPath,
 } from "../core/cockpit.ts";
+import { installCockpitCronBlock } from "../core/cron.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import {
   awaitClaudePaneReady,
@@ -353,6 +356,12 @@ export interface CockpitOpts {
    *  `start` verb. Tests stub this to assert dispatch shape without
    *  spinning a real tmux session. */
   startFn?: typeof start;
+  /** ADR-086: crontab IO seam for cockpit-scoped cron install (test
+   *  injection). Default `defaultCrontabIO()`. */
+  crontab?: CrontabIO;
+  /** ADR-086: resolve the atmux binary path for the cron line. Default
+   *  reads `ATMUX_BIN` env then falls back to `Bun.which("atmux")`. */
+  resolveAtmuxBin?: () => string | null;
 }
 
 /** Top-level dispatch for `atmux cockpit <subverb>`. */
@@ -463,6 +472,13 @@ export async function cockpitRebuild(
     cockpit.superdoctor,
   );
 
+  // Phase 6 (ADR-086): cockpit-scoped cron block install. Idempotent —
+  // strips any existing `# >>> atmux:cockpit` block and re-appends a
+  // fresh one with the resolved `atmux pulse` line. Honors
+  // `ATMUX_NO_CRON=1` opt-out + non-fatal posture (parity with per-team
+  // cron-install: a crontab swap failure warns, does not abort).
+  await installCockpitCron(opts, cockpit, logger, env);
+
   logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
   // ADR-077: nudge the operator to start the superdoctor loop manually.
   // Rebuild stays purely topological — auto-firing `/loop /superdoctor`
@@ -476,6 +492,80 @@ export async function cockpitRebuild(
     );
   }
   return 0;
+}
+
+// ---------- Phase 6 helper (ADR-086) ----------
+
+/** Install the cockpit-scoped cron block (currently just `atmux pulse`).
+ *  Mirrors the non-fatal posture of `src/verbs/cron-install.ts`: every
+ *  failure path warns to the logger and returns without throwing — a
+ *  cron hiccup MUST NOT wedge `atmux cockpit rebuild`. */
+export async function installCockpitCron(
+  opts: CockpitOpts,
+  cockpit: Awaited<ReturnType<typeof loadCockpit>>,
+  logger: Logger,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (isTruthyEnv(env.ATMUX_NO_CRON)) {
+    if (env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+      logger.log("  · cockpit cron: ATMUX_NO_CRON set, no-op");
+    }
+    return;
+  }
+  const crontab = opts.crontab ?? defaultCrontabIO();
+  if (!(await crontab.available())) {
+    logger.warn(
+      "cockpit cron: crontab not on PATH — skipping (install cron to enable scheduled pulse)",
+    );
+    return;
+  }
+  const atmuxBin = (opts.resolveAtmuxBin ?? defaultResolveAtmuxBin)();
+  if (atmuxBin === null || atmuxBin === "") {
+    logger.warn(
+      "cockpit cron: cannot resolve atmux binary path (set ATMUX_BIN or install atmux on PATH) — skipping",
+    );
+    return;
+  }
+  const cockpitConfigPath = resolveCockpitConfigPath({ env });
+  const pulseIntervalMins = cockpit.pulse?.intervalMins;
+  const current = await crontab.read();
+  const installOpts: Parameters<typeof installCockpitCronBlock>[0] = {
+    atmuxBin,
+    cockpitConfigPath,
+    current,
+  };
+  if (pulseIntervalMins !== undefined) installOpts.pulseIntervalMins = pulseIntervalMins;
+  const next = installCockpitCronBlock(installOpts);
+  if (next === (current ?? "")) {
+    logger.log("  · cockpit cron: up to date (atmux:cockpit block already current)");
+    return;
+  }
+  try {
+    await crontab.write(next);
+    logger.log(
+      `  ✓ cockpit cron: installed atmux pulse (inspect: crontab -l | grep 'atmux:cockpit')`,
+    );
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`cockpit cron: crontab swap failed — manual install required (${cause})`);
+  }
+}
+
+function isTruthyEnv(v: string | undefined): boolean {
+  if (v === undefined || v === "") return false;
+  switch (v.toLowerCase()) {
+    case "0":
+    case "false":
+      return false;
+    default:
+      return true;
+  }
+}
+
+function defaultResolveAtmuxBin(): string | null {
+  const envBin = process.env.ATMUX_BIN;
+  if (envBin !== undefined && envBin !== "") return envBin;
+  return Bun.which("atmux");
 }
 
 // ---------- Phase helpers (exported for test directness) ----------

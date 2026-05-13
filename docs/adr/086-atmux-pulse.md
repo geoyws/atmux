@@ -102,13 +102,17 @@ Body is verdict-only (single load-bearing line) with a 📍 footer carrying ambi
 
 ### Cron installation
 
-Cockpit-wide cron is new ground. Phase 1 ships **manual install** documented in `docs/RUNBOOK-pulse.md`:
+Cockpit-wide cron is new ground — distinct namespace from the existing per-team cron block. The auto-install fires from `atmux cockpit rebuild` as Phase 6 (after session reconcile), mirroring the per-team `atmux start → cron-install` flow:
 
-```
-*/5 * * * * /path/to/atmux pulse >> ~/.atmux/logs/pulse.log 2>&1
-```
+- Marker fence: `# >>> atmux:cockpit` / `# <<< atmux:cockpit` (separate from `atmux:team=<n>` so per-team strip passes never touch it).
+- One line: `*/<interval> PATH=... <atmux-bin> pulse --config <cockpit.json> >> <log> 2>&1`.
+- Interval default 5min, configurable via `cockpit.pulse.intervalMins`.
+- Idempotent: re-running `cockpit rebuild` is a no-op when the line is current; replaces the block when the interval changes.
+- Honors `ATMUX_NO_CRON=1` opt-out + non-fatal posture (crontab swap failure warns to the rebuild logger, does NOT abort the rebuild).
 
-Auto-install via `atmux cron-install --cockpit` is a follow-up Task, not part of this ADR. The verb works standalone the moment it's installed; the cron is just the trigger.
+The pure transforms live in `src/core/cron.ts`: `renderCockpitCronBlock`, `stripCockpitBlock`, `installCockpitCronBlock`. The verb-side install lives in `src/verbs/cockpit.ts::installCockpitCron`.
+
+Manual install (for operators who don't run `cockpit rebuild`) is still documented in `docs/RUNBOOK-pulse.md`. A future `atmux cron-install --cockpit` standalone verb is a deferred follow-up but not load-bearing — the auto-install already covers the common path.
 
 ## Consequences
 

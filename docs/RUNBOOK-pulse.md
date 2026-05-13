@@ -22,15 +22,23 @@ Discord is silent during steady-state 🟢 / 🟡 — you only hear it when some
 - `~/.atmux/cockpit.json` present, with at least one enabled team.
 - `ATMUX_DISCORD_WEBHOOK` env var set (or `~/.config/atmux/discord-webhook` file) when you want pings. Without a webhook, the verb still computes verdicts and updates state — it just skips the send.
 
-### 2. Manual cron install
+### 2. Cron install — automatic via `atmux cockpit rebuild`
 
-Edit your crontab (`crontab -e`) and add:
+`atmux cockpit rebuild` writes the cockpit-scoped cron block automatically (Phase 6 of rebuild). The block is marker-fenced:
 
 ```
-*/5 * * * * ATMUX_DISCORD_WEBHOOK=$(cat ~/.config/atmux/discord-webhook) /usr/local/bin/atmux pulse >> ~/.atmux/logs/pulse.log 2>&1
+# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand
+*/5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin /usr/local/bin/atmux pulse --config /root/.atmux/cockpit.json >> /root/.atmux/logs/pulse.log 2>&1
+# <<< atmux:cockpit
 ```
 
-Adjust the `atmux` binary path to match your install. The log path is informational — tail it to see what fired.
+Idempotent: re-running `atmux cockpit rebuild` is a no-op when the line is already current; it replaces the block whenever `cockpit.pulse.intervalMins` changes. Opt out via `ATMUX_NO_CRON=1` env. Inspect with `crontab -l | grep atmux:cockpit`.
+
+**Manual install** (if you don't run `cockpit rebuild`) — add this to your crontab via `crontab -e`:
+
+```
+*/5 * * * * /usr/local/bin/atmux pulse >> /root/.atmux/logs/pulse.log 2>&1
+```
 
 ### 3. Optional cockpit tunables
 
