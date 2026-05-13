@@ -1,7 +1,8 @@
 # ADR-093: Consolidate `docs/adr-bun/` into `docs/adr/` — single tree per project
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-13
+**Date-accepted**: 2026-05-13 — T4 landed (adr-bun/ deleted; 36 ADRs renumbered to adr/095-130; docs/adr/README.md gained §Historical-context appendix; bun README.md merged narrative + file deleted). T7 smoke (`t-f1576e0a`) verifies post-consolidation state asserts.
 **Driver-ref**: `.atmux/driver-inbox.md` 2026-05-13 08:25 MYT — *"adrs can't be split to bun and etc it should be one folder"* + *"make sure members read the docs"* + *"open sourced project to have it as a norm"*.
 **Parent Task**: t-0c4e6397 (docs-consolidation EPIC). **Authored under**: t-7167f272 (Seq 1/7, head of Story A linear chain).
 
