@@ -438,6 +438,9 @@ export async function claimTask(
         if (task === null) {
           throw new ConfigError({ what: `no such task: ${id}` });
         }
+        if (task.status === "done") {
+          throw new ConfigError({ what: doneRefuseMessage(task) });
+        }
         if (isDriverOnlyBlocked(task, opts.callerScope)) {
           throw new ConfigError({ what: driverOnlyRefuse });
         }
@@ -465,6 +468,9 @@ export async function claimTask(
       if (task === undefined) {
         throw new ConfigError({ what: `no such task: ${id}` });
       }
+      if (task.status === "done") {
+        throw new ConfigError({ what: doneRefuseMessage(task) });
+      }
       if (isDriverOnlyBlocked(task, opts.callerScope)) {
         throw new ConfigError({ what: driverOnlyRefuse });
       }
@@ -489,6 +495,33 @@ export async function claimTask(
     { initial: emptyKanban() },
   );
   return { pre, post };
+}
+
+/**
+ * t-381a6ea0: Build the refuse-message for a done-state claim attempt.
+ * The completedAt is rendered ISO-8601 + the owner inlined so the
+ * operator can correlate against `atmux task show <id>` audit fields
+ * without a second lookup. Recovery path explicitly cites
+ * `atmux task move <id> todo` per Task body — discoverability matters
+ * because re-opening a done Task is rare and the workflow shouldn't
+ * have to be hunted in docs.
+ *
+ * Exported for direct unit-testing — keeps the message format stable
+ * (operator + lead may grep for "already done" in audit trails).
+ */
+export function doneRefuseMessage(task: KanbanTask): string {
+  const completedIso =
+    task.completedAt !== null && task.completedAt !== undefined && task.completedAt > 0
+      ? new Date(task.completedAt * 1000).toISOString()
+      : "unknown";
+  const owner =
+    task.owner !== null && task.owner !== undefined && task.owner.length > 0
+      ? task.owner
+      : "unknown";
+  return (
+    `claim: task ${task.id} already done (completedAt=${completedIso}, owner=${owner}) — claim refused. ` +
+    `To re-open, use \`atmux task move ${task.id} todo\` first.`
+  );
 }
 
 /**
