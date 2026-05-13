@@ -35,6 +35,7 @@ import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.t
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
 import {
+  buildWindowName,
   driverInboxPath,
   getAtmuxDir,
   inboxPathFor,
@@ -44,7 +45,14 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import { cageSessionName, cageSocketPath } from "../core/cockpit.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
+import {
+  findPhantomInProgressClaims,
+  formatPruneIso,
+  type PhantomClaim,
+  prunePhantomInProgressClaims,
+} from "../core/phantom-prune.ts";
 import {
   type DriverInboxEntry,
   parseEntries as parseDriverInboxEntries,
@@ -566,6 +574,57 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
     label: "phantom-inbox",
     detail: `${p.member} inbox.inProgress contains phantom ${p.id} ("${p.subject}")`,
     hint: "atmux doctor --fix prunes; whip auto-prune sweep also handles in-flight",
+  }));
+}
+
+// ---------- Check 6b: phantom in-progress claims (t-af159454) ----------
+
+/** Resolve the set of member names with a live tmux window in the
+ *  team's cage. Returns an empty set on session-down / probe failure
+ *  — caller treats that as "no live members", which means ALL
+ *  in-progress claims get flagged as phantoms. Conservative bias
+ *  matches the auto-prune use case (operator wants the stale rows
+ *  surfaced loudly so the next session boot is clean).
+ *
+ *  Cage-only — singleSession teams short-circuit at the caller per
+ *  ADR-026 (the deprecated mode isn't the prune target). */
+async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
+  try {
+    const tmux = createTmux({ socketPath: cageSocketPath(team.name) });
+    const session = cageSessionName(team.name);
+    if (!(await tmux.session.hasSession(session))) return new Set();
+    const windows = await tmux.window.listWindows(session);
+    const liveNames = new Set(windows.map((w) => w.name));
+    const live = new Set<string>();
+    for (const m of team.members) {
+      const expected = buildWindowName(m.name, m.emoji);
+      if (liveNames.has(expected)) live.add(m.name);
+    }
+    return live;
+  } catch {
+    return new Set();
+  }
+}
+
+/** Doctor check: surface kanban in-progress rows whose owner has no
+ *  live tmux window in the cage. These are the rows `atmux doctor
+ *  --fix` and `atmux stop` prune. */
+export async function checkPhantomInProgressClaims(
+  atmuxDir: string,
+  team: Team | null,
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  if (team.singleSession === true) return [];
+  const phantoms = await findPhantomInProgressClaims({
+    atmuxDir,
+    team,
+    liveMembers: () => probeLiveMembers(team),
+  });
+  return phantoms.map((p) => ({
+    status: "yellow" as const,
+    label: "phantom-in-progress",
+    detail: `${p.id} ("${p.subject}") owned by ${p.owner} but no live pane`,
+    hint: "atmux doctor --fix flips it to blocked; atmux stop teardown does the same",
   }));
 }
 
@@ -1553,6 +1612,12 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
+  // t-af159454: phantom in-progress claims (kanban rows with dead
+  // owner panes). Distinct vulnerability class from phantom-inbox
+  // above (that one scans JSON inbox files; this scans the live
+  // kanban). Cage-only — singleSession teams short-circuit in the
+  // check itself.
+  rows.push(...(await checkPhantomInProgressClaims(atmuxDir, team)));
   // Cursor-plugin-cache parity — only fires when cursor-agent is
   // installed AND there's at least one directory-source marketplace
   // plugin missing its `~/.claude/plugins/cache/<m>/<p>/<v>` entry.
@@ -1608,12 +1673,11 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
     stderr(renderHuman(report));
   }
 
-  // --fix is a stub for V-24 in-scope: surface a hint, don't run
-  // anything destructive. Phantom-prune + team.json wizard re-run land
-  // when V-01 (up) wires doctor as start preflight per ADR-019 §"Fix".
-  // ADR-084 W2 (branch-orphan) carve-out: dry-run summary of safe-to-
-  // delete orphan branches surfaces here even while real deletion stays
-  // deferred — matches the per-class info rows above 1:1.
+  // --fix surfaces dry-run branch-orphan summary (deferred per ADR-019)
+  // AND runs the phantom in-progress prune (t-af159454 — operator can
+  // collapse the 5 cited phantom IDs in one shot). Branch deletion +
+  // team.json wizard re-run remain stubbed pending ADR-019 §"Fix"
+  // resolution.
   if (parsed.fix && !parsed.quiet) {
     const safeOrphans = collectSafeOrphanBranches(report.rows);
     if (safeOrphans.length > 0) {
@@ -1624,6 +1688,33 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
         stderr(`  - ${branch}\n`);
       }
     }
+    if (team !== null && team.singleSession !== true) {
+      const phantoms = await findPhantomInProgressClaims({
+        atmuxDir,
+        team,
+        liveMembers: () => probeLiveMembers(team),
+      });
+      if (phantoms.length > 0) {
+        const asOfIso = formatPruneIso(Date.now());
+        const result = await prunePhantomInProgressClaims({
+          atmuxDir,
+          phantoms,
+          asOfIso,
+          source: "doctor-fix",
+        });
+        stderr(
+          `\natmux doctor --fix: pruned ${result.prunedIds.length} phantom in-progress claim(s)` +
+            (result.alreadyPrunedIds.length > 0
+              ? ` (+${result.alreadyPrunedIds.length} already-pruned)`
+              : "") +
+            ":\n",
+        );
+        for (const id of result.prunedIds) stderr(`  - ${id} → blocked (${asOfIso})\n`);
+      }
+    }
+    // Other --fix paths (branch-orphan deletion, team.json wizard
+    // re-run) remain deferred per ADR-019 V-24. Phantom-prune above
+    // ships in t-af159454; the residual hint covers the rest.
     stderr(
       "\natmux doctor --fix: V-24 ships read-only checks; --fix actions deferred per ADR-019.\n",
     );
