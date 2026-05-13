@@ -1766,7 +1766,9 @@ describe("whip() — public verb", () => {
     expect(exit).toBe(0);
     const drift = sent.find((s) => s.template === "whip-config-drift");
     expect(drift).toBeDefined();
-    expect(drift?.bullets?.some((b: string) => b.includes("safe defaults"))).toBe(true);
+    // Verdict-first shape (CLAUDE.md §Discord, 2026-05-13) — "safe defaults"
+    // headline lives in `verdict`, body has issues / fix / hash bullets.
+    expect(drift?.verdict).toContain("safe defaults");
   });
 
   test("ADR-054: team.json with type mismatch → drift fires + safe default applied", async () => {
@@ -1815,11 +1817,9 @@ describe("whip() — public verb", () => {
     expect(exit).toBe(0);
     const drift = sent.find((s) => s.template === "whip-config-drift");
     expect(drift).toBeDefined();
-    expect(
-      drift?.bullets?.some(
-        (b: string) => b.includes("malformed") || b.includes("full safe defaults"),
-      ),
-    ).toBe(true);
+    // Verdict-first shape — catastrophic headline lives in `verdict`.
+    expect(drift?.verdict).toContain("malformed");
+    expect(drift?.verdict).toContain("full safe defaults");
   });
 
   test("ADR-054: dedup — same drift on consecutive ticks → only 1 ping in 24h", async () => {

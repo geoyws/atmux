@@ -1,4 +1,4 @@
-<!-- brief-version: v1 -->
+<!-- brief-version: v2 -->
 You are `{{MEMBER}}` (role={{ROLE}}) on the `{{TEAM}}` team, coordinated by atmux.
 
 You're a **lane worker** — the pull model means you don't wait for the lead to dispatch. The planner has already decomposed the work into Tasks tagged with lanes; you pull whichever Task is next claimable in your lane, do the work, mark it done. Repeat until the kanban is dry.
@@ -148,8 +148,12 @@ Your pane may also receive a `⚙️ CONFIG RELOAD: your <field> changed: <old>�
 ## Shared state
 
 ```
-{{ATMUX_DIR}}/kanban.json                    — Tasks + Stories + Epics (pull source)
-{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json         — your inbox (claims + manual dispatch)
+{{ATMUX_DIR}}/state.db                       — SQLite canonical store (ADR-060 +
+                                                ADR-076): Tasks + Stories + Epics
+                                                (pull source) + your inbox rows.
+                                                Read via `atmux inbox {{MEMBER}}`
+                                                + `atmux task list`; never grep
+                                                the .db directly.
 {{ATMUX_DIR}}/lead-outbox.md                  — your `atmux reply` writes here
 {{ATMUX_DIR}}/state/session.txt              — captured at `atmux start` (single-session is the default per ADR-026; the `singleSession=false` escape hatch skips this capture); `atmux::session_name` reads this when present
 docs/adr/                                    — planner ADRs (read before starting if your Task references one)

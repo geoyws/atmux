@@ -1,0 +1,56 @@
+# atmux — agent contract
+
+This file is the **canonical agent contract** for anyone running atmux on a codebase. It is what every spawned member — lead, planner, reviewer, lane workers — reads before doing any work in this project. If you're an open-source contributor or downstream user, treat this as the conventions document; agents will pick it up automatically via Claude Code's project-CLAUDE.md mechanism.
+
+## The ADR → docs → context chain
+
+**ADRs are the source of truth.** Every architectural decision lives as a numbered ADR under `docs/adr/`. ADRs are append-only: once accepted, they are not edited except for follow-up annotations. Superseding decisions get a new ADR that references the old one.
+
+**Docs distill ADRs.** Project documentation — `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK-*.md`, `docs/superdoctor.md`, `README.md`, `CHANGELOG.md` — are *distillations* of ADR decisions, not independent narratives. When a doc and an ADR disagree, the ADR wins and the doc is updated to match. When writing or updating a doc, reference the ADR(s) that authorized the content (`per ADR-052 §B`, `mirrors ADR-082 W3`).
+
+**Context flows from docs.** Members reading the codebase build context via the docs first, ADRs second, code third. The pull model only works if every claimer has the same vocabulary; the docs are what synchronize that vocabulary.
+
+## Discipline (binding on every agent)
+
+1. **Peruse before working.** On bootstrap and when claiming a Task that touches an unfamiliar area, read the relevant docs FIRST. At minimum: `docs/PRD.md`, `docs/ARCHITECTURE.md`, any `RUNBOOK-*` matching the affected surface, and the ADR(s) named in the Task body. A member surfacing "I didn't know X" when X is documented is a reviewer-flag failure mode.
+
+2. **Same-commit doc updates.** Code change that introduces, removes, or repositions a concept = same-commit doc + ADR-pointer update. This is the same rule as the existing "tests alongside code" discipline — different artifact, identical rationale. Examples of "documented surfaces" where this applies:
+   - Verb signature (anything reachable via `atmux <verb> …`)
+   - Brief vocabulary (anything in `templates/briefs/*.md`)
+   - State-file shape (`.atmux/state/*.json` or SQLite schemas under `.atmux/state.db`)
+   - Cron template (`atmux cron-install` output)
+   - Kanban / event schema
+   - ADR-named invariants (e.g. ADR-029 §F6 "byte-equal bash parity")
+
+3. **Reviewer enforces the gate.** The reviewer blocks code-without-doc-update on documented-surface changes. The block is not advisory — it's a fail-state until the doc lands in the same commit (or sibling commit on the same PR / Story). The reviewer's coverage table includes a "doc-update column" alongside the existing schema / GraphQL / authz / coverage columns.
+
+4. **ADR write-flow.** New decisions get a new ADR before code lands. ADRs follow the existing numbering convention (zero-padded three-digit, monotonic). A new ADR is "proposed" until it has reviewer signoff or an explicit driver/lead `decisions-add` event; only then does it become "accepted". Accepted ADRs are referenced by code via comment links (`// per ADR-052 §B`).
+
+## Where to look first
+
+When unsure about a topic, the lookup order is:
+
+1. **Grep ADRs**: `rg -i '<topic>' docs/adr/`
+2. **Grep docs**: `rg -i '<topic>' docs/ README.md CHANGELOG.md`
+3. **Grep brief templates** (for member-facing vocabulary): `rg -i '<topic>' templates/briefs/`
+4. **Grep source**: `rg -i '<topic>' src/`
+
+Code is the last resort, not the first. If the topic isn't in ADRs or docs and you have to grep source to learn it, that's a docs gap — file a Task to capture the finding back into the docs.
+
+## Pull model + auto-drain
+
+Members auto-claim Tasks via `atmux claim --next --as <member>`. The lead does NOT dispatch per-Task; the lead routes priority overrides and EPIC-level decomposition to the planner. Workers pull whichever Task is next claimable in their lane.
+
+This means the docs-discipline is **member-enforced first, reviewer-enforced second, lead-enforced third**. Every member is expected to peruse + update docs in their own loop; the reviewer catches what slips through; the lead only intervenes when a pattern emerges.
+
+## When the docs-discipline doesn't apply
+
+- Pure refactors that preserve every documented surface (no vocabulary change, no schema change, no verb-signature change) — no doc update needed; reviewer waives.
+- Generated code (e.g. SQL migrations from Zod schemas) — the schema source is documented, the generation is mechanical.
+- Test files — tests document themselves; no separate doc update unless the test surfaces a new public test-helper API.
+
+In all other cases, default to "doc update required." If unsure, the reviewer's call governs.
+
+## Related global rules
+
+Agents spawned by atmux also read the user's global `CLAUDE.md` (typically under `~/.claude/`). The global rules cover machine layout, timezone discipline, push policy, model selection, and the broader Driver Mode conventions. This project-local `CLAUDE.md` complements those rules — it does not override them, and where they apply (commit conventions, hook-bypass policy, etc.), the global rule wins for cross-project consistency.

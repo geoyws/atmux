@@ -27,6 +27,7 @@
 // lands) can sandwich the rendering in atomic-rename + flock per its
 // own preference.
 
+import type { CrontabIO } from "../abstractions/crontab.ts";
 import { ConfigError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
@@ -391,4 +392,102 @@ export function ensureEnvPreamble(body: string): string {
   if (!body.includes(BLOCK_HEADER_PREFIX)) return body;
   if (body.includes(ENV_PREAMBLE_MARKER)) return body;
   return `${ENV_PREAMBLE}\n${body}`;
+}
+
+// ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------
+
+/** A marker-fenced block's identity: team name from the header + the
+ *  first `ATMUX_DIR=<value>` baked into a body line. JSON serialization
+ *  at the verb boundary maps this to snake_case `atmux_dir` for bash
+ *  output compat. */
+export interface CronBlockTarget {
+  team: string;
+  atmuxDir: string;
+}
+
+/**
+ * Pure parser — mirrors bash `lib/cron.sh::atmux::cron_orphans` awk
+ * pass (lines 337-364). Walks every marker-fenced block and emits one
+ * `{team, atmuxDir}` per block whose body carries an `ATMUX_DIR=`
+ * assignment. Blocks lacking that assignment are skipped (matches bash
+ * `team != "" && atmux_dir != ""` guard at the footer).
+ *
+ * Header parse is lenient on the trailing `— managed by atmux start;
+ * do not edit by hand` suffix — strip if present, else keep the rest
+ * verbatim (bash awk's `sub(/<suffix>$/, "")` behavior). Footer match
+ * is prefix-only (`# <<< atmux:team=`) so a corrupt suffix doesn't
+ * leave the block hanging.
+ *
+ * No I/O. Composed with an injected `dirExists` predicate by
+ * `findCronOrphans` so unit tests can pin both sides.
+ */
+export function parseCronBlockTargets(body: string): CronBlockTarget[] {
+  if (body === "") return [];
+  const out: CronBlockTarget[] = [];
+  let team = "";
+  let atmuxDir = "";
+  let inBlock = false;
+  for (const ln of body.split("\n")) {
+    if (ln.startsWith(BLOCK_HEADER_PREFIX)) {
+      let rest = ln.slice(BLOCK_HEADER_PREFIX.length);
+      if (rest.endsWith(BLOCK_HEADER_SUFFIX)) {
+        rest = rest.slice(0, rest.length - BLOCK_HEADER_SUFFIX.length);
+      }
+      team = rest;
+      atmuxDir = "";
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && ln.startsWith(BLOCK_FOOTER_PREFIX)) {
+      if (team !== "" && atmuxDir !== "") {
+        out.push({ team, atmuxDir });
+      }
+      team = "";
+      atmuxDir = "";
+      inBlock = false;
+      continue;
+    }
+    if (inBlock && atmuxDir === "") {
+      // Bash awk: sub(/^.*ATMUX_DIR=/, "") + sub(/[[:space:]].*$/, "")
+      // → first occurrence per line, value up to first whitespace.
+      const idx = ln.indexOf("ATMUX_DIR=");
+      if (idx >= 0) {
+        const tail = ln.slice(idx + "ATMUX_DIR=".length);
+        const m = tail.match(/^(\S+)/);
+        if (m !== null && m[1] !== undefined) atmuxDir = m[1];
+      }
+    }
+  }
+  return out;
+}
+
+export interface FindCronOrphansOpts {
+  /** Crontab IO seam — `read()` returns `null` for no crontab. */
+  io: CrontabIO;
+  /** Returns true iff `path` resolves to a directory on disk. Injected
+   *  so unit tests can simulate moved / deleted paths without touching
+   *  the filesystem. */
+  dirExists: (path: string) => Promise<boolean>;
+}
+
+/**
+ * ADR-083 follow-up §DEFERRED row 2: compose `parseCronBlockTargets`
+ * with the injected `dirExists` predicate. Returns the rows whose
+ * `atmuxDir` is no longer a directory on disk — the "orphan cron block"
+ * signal for doctor + cockpit aggregators.
+ *
+ * Returns empty when the crontab is null / empty (no crontab installed
+ * → no orphans possible).
+ */
+export async function findCronOrphans(opts: FindCronOrphansOpts): Promise<CronBlockTarget[]> {
+  const body = await opts.io.read();
+  if (body === null || body === "") return [];
+  const blocks = parseCronBlockTargets(body);
+  const out: CronBlockTarget[] = [];
+  for (const b of blocks) {
+    if (!(await opts.dirExists(b.atmuxDir))) {
+      out.push(b);
+    }
+  }
+  return out;
 }

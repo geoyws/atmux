@@ -138,8 +138,10 @@ describe("watchdog stale members", () => {
     expect(exit).toBe(0);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.template).toBe("whip-watchdog");
+    // Verdict-first shape (CLAUDE.md §Discord, 2026-05-13) — headline lives in
+    // `verdict`, per-member detail stays in bullets.
+    expect(sent[0]?.verdict).toContain("1 member silent");
     const bullets = sent[0]?.bullets ?? [];
-    expect(bullets[0]).toContain("1 member(s) stalled");
     expect(bullets.some((b) => b.includes("alice: never stale"))).toBe(true);
 
     // State recorded.
@@ -184,8 +186,9 @@ describe("watchdog stale members", () => {
       },
     });
     expect(sent).toHaveLength(1);
+    // Verdict-first shape — headline lives in `verdict`.
+    expect(sent[0]?.verdict).toContain("2 members silent");
     const bullets = sent[0]?.bullets ?? [];
-    expect(bullets[0]).toContain("2 member(s) stalled");
     expect(bullets.some((b) => b.includes("alice"))).toBe(true);
     expect(bullets.some((b) => b.includes("bob"))).toBe(true);
     expect(bullets.some((b) => b.includes("charlie"))).toBe(false);
@@ -280,8 +283,9 @@ describe("watchdog dedup (24h re-fire window)", () => {
     });
     expect(sent).toHaveLength(1);
     // The second ping should reference bob (alice still in dedup window).
+    // Verdict-first shape — headline lives in `verdict`.
+    expect(sent[0]?.verdict).toContain("1 member silent");
     const bullets = sent[0]?.bullets ?? [];
-    expect(bullets[0]).toContain("1 member(s) stalled");
     expect(bullets.some((b) => b.includes("bob"))).toBe(true);
   });
 });
