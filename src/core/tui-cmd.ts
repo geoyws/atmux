@@ -96,6 +96,40 @@ export function resolveTuiCommand(
 
 // ---------- Built-ins ----------
 
+/**
+ * Build the spawn command for a `tui: "claude"` member.
+ *
+ * Bakes the CLAUDE.md §Spawn Pattern defaults per ADR-094 (c-alias
+ * spawn convention):
+ *   - `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh` (effort tier)
+ *   - `CLAUDE_GUARD_AGENT=1` (cage-aware safeguards, ADR-094 §A)
+ *   - `--plugin-dir=<dir>` (default `$HOME/.claude/plugins`, ADR-094 §B)
+ *   - `--permission-mode auto` (replaces the legacy `dontAsk` default,
+ *     ADR-094 §C — `auto` is the only mode that survives a nested-shell
+ *     `claude` call without re-prompting)
+ *
+ * Env-knob override surface (each may be overridden per-process):
+ *   - `ATMUX_CLAUDE_BIN`               (default `claude`)
+ *   - `ATMUX_CLAUDE_EFFORT`            (default `xhigh`)
+ *   - `ATMUX_CLAUDE_GUARD_AGENT`       (default `1`; set `0` to disable)
+ *   - `ATMUX_CLAUDE_PLUGIN_DIR`        (default `$HOME/.claude/plugins`;
+ *                                       set empty string to skip flag)
+ *   - `ATMUX_CLAUDE_PERMISSION`        (default `auto`)
+ *
+ * Per-member `claudeAccount` field (passthrough on TeamMember schema):
+ * when set + non-`default`, prefixes `CLAUDE_CONFIG_DIR=$HOME/.claude-
+ * <account>` so the member's nested-shell `claude` calls inherit an
+ * isolated config dir.
+ *
+ * Resulting target form (CLAUDE.md §Spawn Pattern reference):
+ * ```
+ * export ATMUX_MEMBER=<name> && cd <cwd> && \
+ *   [CLAUDE_CONFIG_DIR=$HOME/.claude-<acct>] \
+ *   CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 \
+ *   claude [--plugin-dir=$HOME/.claude/plugins] \
+ *   --permission-mode auto [--model X]
+ * ```
+ */
 function tuiClaude(
   name: string,
   cwd: string,
@@ -105,19 +139,33 @@ function tuiClaude(
 ): string {
   const bin = env.ATMUX_CLAUDE_BIN ?? "claude";
   const effort = env.ATMUX_CLAUDE_EFFORT ?? "xhigh";
-  const permission = env.ATMUX_CLAUDE_PERMISSION ?? "dontAsk";
-  const modelFlag = composeModelFlag(model);
-  // Per-member account isolation (ADR §"Per-member Claude account"):
-  // `member.claudeAccount` is a passthrough field on the schema (TeamMember
-  // is .passthrough()). When present + non-default, prefix the command
-  // with CLAUDE_CONFIG_DIR=$HOME/.claude-<account>.
+  const guard = env.ATMUX_CLAUDE_GUARD_AGENT ?? "1";
+  // ADR-094 §C: flip default `dontAsk` → `auto`. `auto` is the only
+  // permission mode that survives a nested-shell `claude` call without
+  // re-prompting (operators with workflows pinned to `dontAsk` override
+  // via `ATMUX_CLAUDE_PERMISSION=dontAsk`).
+  const permission = env.ATMUX_CLAUDE_PERMISSION ?? "auto";
   const home = env.HOME ?? "";
+  // ADR-094 §B: default plugin-dir to $HOME/.claude/plugins so the
+  // operator's plugin tree is auto-discovered. Empty string SKIPS the
+  // flag (deliberate test injection + escape hatch for plugin-less
+  // workflows). Per ADR-094 reviewer pre-flag, the dir must exist for
+  // claude to honor it; `atmux init` / `atmux doctor` should ensure it.
+  const pluginDirRaw =
+    env.ATMUX_CLAUDE_PLUGIN_DIR ?? (home.length > 0 ? `${home}/.claude/plugins` : "");
+  const pluginFlag = pluginDirRaw.length > 0 ? ` --plugin-dir=${posixQuote(pluginDirRaw)}` : "";
+  const modelFlag = composeModelFlag(model);
+  // Per-member account isolation (ADR-024 + ADR-094 §"Per-member
+  // Claude account"): `member.claudeAccount` is a passthrough field on
+  // the schema (TeamMember is .passthrough()). When present + non-
+  // `default`, prefix the command with `CLAUDE_CONFIG_DIR=$HOME/.claude-
+  // <account>` so nested-shell claude calls inherit the right config.
   let accountEnv = "";
   const ma = (member as unknown as Record<string, unknown>).claudeAccount;
   if (typeof ma === "string" && ma.length > 0 && ma !== "default" && home.length > 0) {
     accountEnv = `CLAUDE_CONFIG_DIR=${posixQuote(`${home}/.claude-${ma}`)} `;
   }
-  return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${accountEnv}CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} ${bin} --permission-mode ${permission}${modelFlag}`;
+  return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${accountEnv}CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=${guard} ${bin}${pluginFlag} --permission-mode ${permission}${modelFlag}`;
 }
 
 function tuiOpencode(name: string, cwd: string, model: string, env: NodeJS.ProcessEnv): string {
