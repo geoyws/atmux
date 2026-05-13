@@ -30,6 +30,7 @@ import {
   checkStateDir,
   checkSubmoduleIntegrity,
   checkTeam,
+  checkTuiCommandsClaudeOverride,
   checkTuis,
   checkWebhook,
   checkWhipConfigDrift,
@@ -734,10 +735,7 @@ describe("checkCursorPluginCache", () => {
   });
 
   test("malformed JSON → no throw, no rows", async () => {
-    await writeFile(
-      join(home, ".claude", "plugins", "installed_plugins.json"),
-      "{ not json",
-    );
+    await writeFile(join(home, ".claude", "plugins", "installed_plugins.json"), "{ not json");
     expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
   });
 
@@ -966,10 +964,7 @@ describe("checkCronIntervalDivisors", () => {
 // ---------- ADR-083 follow-up §DEFERRED row 2: checkCronOrphans ----------
 
 describe("checkCronOrphans", () => {
-  const fakeIO = (
-    body: string | null,
-    opts: { available?: boolean } = {},
-  ): CrontabIO => ({
+  const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
     read: async () => body,
     write: async () => {
       /* not invoked */
@@ -1049,10 +1044,7 @@ describe("checkCronOrphans", () => {
 // ---------- t-dcbff97c: checkCronBlock ----------
 
 describe("checkCronBlock", () => {
-  const fakeIO = (
-    body: string | null,
-    opts: { available?: boolean } = {},
-  ): CrontabIO => ({
+  const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
     read: async () => body,
     write: async () => {
       /* not invoked */
@@ -1121,6 +1113,89 @@ describe("checkCronBlock", () => {
     const rows = await checkCronBlock(team(), { crontab: fakeIO(null) });
     expect(rows.length).toBe(1);
     expect(rows[0]?.status).toBe("red");
+  });
+});
+
+// ---------- t-589145dc: checkTuiCommandsClaudeOverride ----------
+
+describe("checkTuiCommandsClaudeOverride", () => {
+  const team = (overrides: Partial<Team> = {}): Team =>
+    ({ name: "alpha", members: [], ...overrides }) as Team;
+
+  test("null team → no rows", () => {
+    expect(checkTuiCommandsClaudeOverride(null)).toEqual([]);
+  });
+
+  test("no tuiCommands → no rows", () => {
+    expect(checkTuiCommandsClaudeOverride(team())).toEqual([]);
+  });
+
+  test("tuiCommands.claude absent → no rows", () => {
+    const t = team({ tuiCommands: { opencode: "opencode" } as never });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
+  });
+
+  test("tuiCommands.claude with non-default suffix → no rows", () => {
+    const t = team({
+      tuiCommands: {
+        claude: "CLAUDE_CONFIG_DIR=$HOME/.claude-personal claude --permission-mode auto",
+      } as never,
+    });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
+  });
+
+  test("CLAUDE_CONFIG_DIR=$HOME/.claude bare default → YELLOW row", () => {
+    const t = team({
+      tuiCommands: {
+        claude: "CLAUDE_CONFIG_DIR=$HOME/.claude claude --permission-mode auto",
+      } as never,
+    });
+    const rows = checkTuiCommandsClaudeOverride(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("config-claude-account-tcoverride");
+    expect(rows[0]?.hint).toContain("env -u CLAUDE_CONFIG_DIR");
+    expect(rows[0]?.hint).toContain("claudeAccount");
+  });
+
+  test("CLAUDE_CONFIG_DIR=/root/.claude bare default → YELLOW row", () => {
+    const t = team({
+      tuiCommands: { claude: "CLAUDE_CONFIG_DIR=/root/.claude claude" } as never,
+    });
+    const rows = checkTuiCommandsClaudeOverride(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("yellow");
+  });
+
+  test("CLAUDE_CONFIG_DIR=${HOME}/.claude (brace expansion) → YELLOW row", () => {
+    const t = team({
+      tuiCommands: { claude: "CLAUDE_CONFIG_DIR=${HOME}/.claude claude" } as never,
+    });
+    const rows = checkTuiCommandsClaudeOverride(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("yellow");
+  });
+
+  test("CLAUDE_CONFIG_DIR=/root/.claude-unum (suffixed) → no row", () => {
+    // Negative lookahead must permit the suffix.
+    const t = team({
+      tuiCommands: { claude: "CLAUDE_CONFIG_DIR=/root/.claude-unum claude" } as never,
+    });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
+  });
+
+  test("CLAUDE_CONFIG_DIR=$HOME/.claude/sub (path continuation) → no row", () => {
+    // `.claude/sub` is structurally different from bare `.claude` —
+    // the lookahead `[\w/-]` rejects this from triggering.
+    const t = team({
+      tuiCommands: { claude: "CLAUDE_CONFIG_DIR=$HOME/.claude/sub claude" } as never,
+    });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
+  });
+
+  test("tuiCommands not an object → no rows", () => {
+    const t = team({ tuiCommands: "not-an-object" as never });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
   });
 });
 
@@ -1835,7 +1910,15 @@ describe("checkWorktreeIsolation", () => {
     };
   }
   function gitFail(stderr: string, code = 128): SpawnResult {
-    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+    return {
+      exitCode: code,
+      stdout: "",
+      stderr,
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
   }
   /** Build a `git worktree list --porcelain` block. */
   function porcelainBlock(path: string, branch: string | null): string {
@@ -1849,10 +1932,7 @@ describe("checkWorktreeIsolation", () => {
   function fakeReadDir(names: ReadonlyArray<string> | null): ReadDir {
     return async () => (names === null ? null : names.map((name) => ({ name, isDirectory: true })));
   }
-  function team(
-    members: ReadonlyArray<{ name: string }>,
-    overrides: Partial<Team> = {},
-  ): Team {
+  function team(members: ReadonlyArray<{ name: string }>, overrides: Partial<Team> = {}): Team {
     return { name: "demo", members, ...overrides } as Team;
   }
 
@@ -1942,7 +2022,9 @@ describe("checkWorktreeIsolation", () => {
     const gitSpawn: GitSpawn = async (argv) => {
       if (argv.includes("branch")) return gitOk("geoyws\n");
       if (argv.includes("list")) {
-        return gitOk([porcelainBlock(wtAlice, "feature-x"), porcelainBlock(wtBob, "geoyws")].join("\n"));
+        return gitOk(
+          [porcelainBlock(wtAlice, "feature-x"), porcelainBlock(wtBob, "geoyws")].join("\n"),
+        );
       }
       return gitOk("");
     };
@@ -2139,9 +2221,7 @@ describe("checkWorktreeIsolation", () => {
       atmuxDir,
       { readWorktreeDir: fakeReadDir([]), gitSpawn },
     );
-    const orphans = rows.filter((r) =>
-      r.label.startsWith("worktree:branch-orphan:"),
-    );
+    const orphans = rows.filter((r) => r.label.startsWith("worktree:branch-orphan:"));
     expect(orphans).toHaveLength(1);
     expect(orphans[0]?.label).toBe("worktree:branch-orphan:stale");
     expect(orphans[0]?.status).toBe("info");

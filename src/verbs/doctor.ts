@@ -727,9 +727,7 @@ export interface CheckCronOrphansOpts {
  * Operator-facing fix: `crontab -e` to drop the orphan block, or
  * restore the missing dir if the project simply moved.
  */
-export async function checkCronOrphans(
-  opts: CheckCronOrphansOpts = {},
-): Promise<DoctorRow[]> {
+export async function checkCronOrphans(opts: CheckCronOrphansOpts = {}): Promise<DoctorRow[]> {
   const crontab = opts.crontab ?? defaultCrontabIO();
   if (!(await crontab.available())) return [];
   const dirExists = opts.dirExists ?? defaultDirExistsForCron;
@@ -803,6 +801,63 @@ export async function checkCronBlock(
       hint: "run `atmux cron-install` (or re-run `atmux start`) — block uses ATMUX_DIR + optional TMUX_TMPDIR so worktree-isolation is safe",
     },
   ];
+}
+
+// ---------- t-589145dc: tuiCommands.claude default-target override ----------
+
+/**
+ * t-589145dc (c-alias Ask C, ADR-094 §"Doctor row"): warn when
+ * `team.json::tuiCommands.claude` embeds `CLAUDE_CONFIG_DIR=$HOME/.claude`
+ * or `=/root/.claude` (the DEFAULT config dir). Pinning the default
+ * inside the spawned shell BREAKS Claude's fresh-spawn auth flow:
+ * downstream `claude` invocations in nested shells re-export the env
+ * and end up re-running the OAuth dance instead of inheriting the
+ * operator's already-authed credentials.
+ *
+ * Operators who want account isolation should use a NON-default suffix
+ * (`$HOME/.claude-personal`, `$HOME/.claude-icloud`, etc.) via the
+ * member's `claudeAccount` field, or `env -u CLAUDE_CONFIG_DIR` in the
+ * tuiCommand prefix.
+ *
+ * Returns `[]` when:
+ *   - team is null,
+ *   - tuiCommands is absent / not an object,
+ *   - tuiCommands.claude is absent / not a string,
+ *   - the embedded path uses a non-default suffix.
+ * Otherwise: one YELLOW row.
+ */
+export function checkTuiCommandsClaudeOverride(team: Team | null): DoctorRow[] {
+  if (team === null) return [];
+  const tc = (team as { tuiCommands?: unknown }).tuiCommands;
+  if (tc === null || tc === undefined || typeof tc !== "object" || Array.isArray(tc)) {
+    return [];
+  }
+  const claudeCmd = (tc as Record<string, unknown>).claude;
+  if (typeof claudeCmd !== "string" || claudeCmd.length === 0) return [];
+  // Negative lookahead `[\w-]` rejects suffixed forms (.claude-personal,
+  // .claude_unum, etc.) — only the BARE default config dir triggers the
+  // warning. The two literal absolute paths cover the two canonical
+  // operator HOME layouts (Linux + Mac); the third regex catches
+  // `$HOME/.claude` for shell-expansion-time paths.
+  const TARGET_RES = [
+    /CLAUDE_CONFIG_DIR=\$HOME\/\.claude(?![\w/-])/,
+    /CLAUDE_CONFIG_DIR=\/root\/\.claude(?![\w/-])/,
+    /CLAUDE_CONFIG_DIR=\$\{HOME\}\/\.claude(?![\w/-])/,
+  ];
+  for (const re of TARGET_RES) {
+    if (re.test(claudeCmd)) {
+      return [
+        {
+          status: "yellow",
+          label: "config-claude-account-tcoverride",
+          detail:
+            "tuiCommands.claude embeds CLAUDE_CONFIG_DIR pointing to the default config dir — fresh-spawn TUI auth re-runs the OAuth flow in every nested shell.",
+          hint: 'use `env -u CLAUDE_CONFIG_DIR` in the prefix OR pin per-member `claudeAccount: "personal"` (or another non-default suffix). See ADR-094 c-alias spawn convention.',
+        },
+      ];
+    }
+  }
+  return [];
 }
 
 // ---------- Check 7a: cursor-plugin-cache ----------
@@ -899,15 +954,7 @@ export async function checkCursorPluginCache(
     if (srcStat === null) continue; // can't symlink to something missing
 
     for (const e of entries) {
-      const expected = join(
-        home,
-        ".claude",
-        "plugins",
-        "cache",
-        marketplace,
-        plugin,
-        e.version,
-      );
+      const expected = join(home, ".claude", "plugins", "cache", marketplace, plugin, e.version);
       const st = await statOrNull(expected);
       if (st !== null) continue;
       missing.push({
@@ -1501,9 +1548,7 @@ export async function checkWorktreeIsolation(
   if (baseBranch.length > 0) {
     const listR = await git2(["-C", projectRoot2, "branch", "--list", `${baseBranch}-*`]);
     if (listR.exitCode === 0) {
-      const sanitizedMembers = new Set(
-        team.members.map((m) => sanitizeBranchSegment(m.name)),
-      );
+      const sanitizedMembers = new Set(team.members.map((m) => sanitizeBranchSegment(m.name)));
       const prefix = `${baseBranch}-`;
       // `git branch --list <pat>` rows are 2-space indented; current
       // branch (impossible for an orphan but defensive) prefixes `* `.
@@ -1561,11 +1606,7 @@ async function defaultReadWorktreeDir(
     const entries = await readdir(path, { withFileTypes: true });
     return entries.map((e) => ({ name: String(e.name), isDirectory: e.isDirectory() }));
   } catch (err) {
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      (err as { code?: string }).code === "ENOENT"
-    ) {
+    if (typeof err === "object" && err !== null && (err as { code?: string }).code === "ENOENT") {
       return null;
     }
     throw err;
@@ -1584,8 +1625,7 @@ function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
     if (wtLine === undefined) continue;
     const path = wtLine.slice("worktree ".length);
     const branchLine = lines.find((l) => l.startsWith("branch "));
-    const branch =
-      branchLine === undefined ? "" : branchLine.slice("branch refs/heads/".length);
+    const branch = branchLine === undefined ? "" : branchLine.slice("branch refs/heads/".length);
     out.push({ path, branch });
   }
   return out;
@@ -1637,6 +1677,11 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // atmux team three consecutive overnights (cron block silently absent
   // → no whip pulse → lead stalls). Silent on opt-out + cron-less hosts.
   rows.push(...(await checkCronBlock(team)));
+  // t-589145dc (c-alias Ask C, ADR-094): YELLOW when tuiCommands.claude
+  // pins the DEFAULT CLAUDE_CONFIG_DIR — breaks fresh-spawn TUI auth
+  // (forces OAuth re-run in every nested shell). Silent when claude is
+  // absent or uses a non-default suffix.
+  rows.push(...checkTuiCommandsClaudeOverride(team));
   // ADR-082 §5 W5: per-member worktree-isolation anomalies. Returns
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
@@ -1701,9 +1746,7 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
  * its `detail`). Used by the `--fix` dry-run summary; deletion itself is
  * deferred per ADR-019 V-24.
  */
-export function collectSafeOrphanBranches(
-  rows: ReadonlyArray<DoctorRow>,
-): string[] {
+export function collectSafeOrphanBranches(rows: ReadonlyArray<DoctorRow>): string[] {
   const out: string[] = [];
   for (const r of rows) {
     if (!r.label.startsWith("worktree:branch-orphan:")) continue;
