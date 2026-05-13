@@ -1116,6 +1116,22 @@ describe("checkCronBlock", () => {
   });
 });
 
+// ---------- ADR-094 / t-d0c8b758 (T6) doctor-row coverage matrix ----------
+//
+// T6 §Unit tests doctor bullets map onto the
+// `checkTuiCommandsClaudeOverride` describe block below:
+//   • registered + runAllChecks-included     → wired at runAllChecks
+//                                              (in the source file);
+//                                              structural lint catches
+//                                              if the wire-up regresses.
+//   • warn on CLAUDE_CONFIG_DIR=$HOME/.claude → "CLAUDE_CONFIG_DIR=$HOME/.claude bare default..."
+//   • warn on CLAUDE_CONFIG_DIR=/root/.claude → "CLAUDE_CONFIG_DIR=/root/.claude bare default..."
+//   • ok on $HOME/.claude-personal (suffix)   → "tuiCommands.claude with non-default suffix..."
+//   • ok on absent tuiCommands.claude         → "tuiCommands.claude absent → no rows"
+//
+// Plus the brace-expansion `${HOME}` variant + the path-continuation
+// `.claude/sub` negative case for negative-lookahead robustness.
+
 // ---------- t-589145dc: checkTuiCommandsClaudeOverride ----------
 
 describe("checkTuiCommandsClaudeOverride", () => {

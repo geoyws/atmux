@@ -90,6 +90,26 @@ describe("resolveTuiCommand priority chain", () => {
     );
   });
 
+  // ---------- ADR-094 / t-d0c8b758 (T6) coverage matrix ----------
+  //
+  // The T6 §Unit tests bullets map onto tests below:
+  //   • baseline-all-defaults                 → "priority 3: built-in claude with default env knobs"
+  //   • ATMUX_CLAUDE_GUARD_AGENT=0 disabled    → "ADR-094: ATMUX_CLAUDE_GUARD_AGENT=0 disables..."
+  //   • ATMUX_CLAUDE_PLUGIN_DIR='' skip flag   → "ADR-094: ATMUX_CLAUDE_PLUGIN_DIR='' SKIPS..."
+  //   • ATMUX_CLAUDE_PERMISSION=dontAsk        → "priority 3: built-in claude honors ATMUX_CLAUDE..."
+  //   • claudeAccount=personal regression      → "priority 3: built-in claude with claudeAccount..."
+  //
+  // Init wizard tests (T5) — DEFERRED. The wizard path remains a
+  // ConfigError-on-invoke stub (see init.test.ts "init — --wizard not yet
+  // implemented (deferred)"). Once T5 ships the wizard prompt, the
+  // claudeAccount-prompt tests fold in there, not here.
+  //
+  // E2E `spawn-fresh-tui-auth.test.ts` — DEFERRED per t-d0c8b758 reviewer
+  // pre-flag: real-spawn coverage is heavy + bun-test cage-safety guard
+  // (memory: `feedback_pause_bun_tests.md`) makes it hard to land in the
+  // cage. The four unit-test bullets above provide structural coverage;
+  // e2e refile follows once the bun-test cage guard's escape-hatch lands.
+
   test("priority 3: built-in claude with default env knobs (ADR-094 defaults)", () => {
     // ADR-094 §A/B/C bakes GUARD_AGENT=1, --plugin-dir=$HOME/.claude/
     // plugins, --permission-mode auto into the default spawn. HOME is
