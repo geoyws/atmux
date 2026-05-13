@@ -43,62 +43,68 @@ Seven Tasks in linear sequence under EPIC `t-0c4e6397` (Story A):
 
 ### Renumber map
 
-Slugs are preserved verbatim. New monotonic IDs follow `docs/adr/`'s current max (086) + reserved team-of-teams range (087-092). Renumber starts at **093**.
+Slugs are preserved verbatim. New monotonic IDs follow `docs/adr/`'s current max (086) + reserved team-of-teams range (087-092) + this consolidation ADR at **093** + the c-alias ADR at **094** (both authored 2026-05-13 ahead of T2 execution). Renumber starts at **095**.
 
 | Old | New | Slug |
 |---|---|---|
-| `adr-bun/001` | `adr/093` | `why-typescript-on-bun` |
-| `adr-bun/002` | `adr/094` | ⚠️ collides with shipped `adr/094-c-alias-spawn-convention.md` — see resolution below |
-| `adr-bun/003` | `adr/095` | `module-taxonomy` |
-| `adr-bun/004` | `adr/096` | `tmux-abstraction` |
-| `adr-bun/005` | `adr/097` | `json-and-locking` |
-| `adr-bun/006` | `adr/098` | `error-handling` |
-| `adr-bun/007` | `adr/099` | `spawn-pattern` |
-| `adr-bun/008` | `adr/100` | `discord-webhook` |
-| `adr-bun/009` | `adr/101` | `test-strategy` |
-| `adr-bun/010` | `adr/102` | `cli-dispatcher` |
-| `adr-bun/011` | `adr/103` | `cutover-protocol` |
-| `adr-bun/012` | `adr/104` | `time-and-timezone` |
-| `adr-bun/013` | `adr/105` | `wip-bash-deferral` |
-| `adr-bun/014` | `adr/106` | `verb-design-debt` |
-| `adr-bun/015` | `adr/107` | `team-worktrees-by-default` |
-| `adr-bun/016` | `adr/108` | `schema-version-deferred` |
-| `adr-bun/017` | `adr/109` | `window-naming` |
-| `adr-bun/018` | `adr/110` | `coordination-skills-integration` |
-| `adr-bun/019` | `adr/111` | `doctor-port-scope` |
-| `adr-bun/020` | `adr/112` | `writer-abstraction` |
-| `adr-bun/021` | `adr/113` | `coordination-runtime-contract` |
-| `adr-bun/022` | `adr/114` | `whip-port-scope` |
-| `adr-bun/023` | `adr/115` | `llm-judge-cascade` |
-| `adr-bun/024` | `adr/116` | `spawn-account-matching` |
-| `adr-bun/025` | `adr/117` | `sendtarget-discriminated-union` |
-| `adr-bun/026` | `adr/118` | `parity-matrix-iter-1-scope` |
-| `adr-bun/027` | `adr/119` | `parity-channel-mask` |
-| `adr-bun/028` | `adr/120` | `phase3-cron-fired-lane-scope` |
-| `adr-bun/029` | `adr/121` | `phase3-state-mutating-lane-scope` |
-| `adr-bun/030` | `adr/122` | `phase3-read-only-lane-scope` |
-| `adr-bun/031` | `adr/123` | `phase3-lifecycle-lane-scope` |
-| `adr-bun/032` | `adr/124` | `phase4a-error-class-expansion-scope` |
-| `adr-bun/060` | `adr/125` | `sqlite-state-store` |
-| `adr-bun/062` | `adr/126` | `lane-claim-auto-pickup` |
-| `adr-bun/064` | `adr/127` | `complete-driver-role-port` |
-| `adr-bun/068` | `adr/128` | `dogfood-meta-bundled` |
+| `adr-bun/001` | `adr/095` | `why-typescript-on-bun` |
+| `adr-bun/002` | `adr/130` | ⚠️ collision-tail — see resolution below |
+| `adr-bun/003` | `adr/096` | `module-taxonomy` |
+| `adr-bun/004` | `adr/097` | `tmux-abstraction` |
+| `adr-bun/005` | `adr/098` | `json-and-locking` |
+| `adr-bun/006` | `adr/099` | `error-handling` |
+| `adr-bun/007` | `adr/100` | `spawn-pattern` |
+| `adr-bun/008` | `adr/101` | `discord-webhook` |
+| `adr-bun/009` | `adr/102` | `test-strategy` |
+| `adr-bun/010` | `adr/103` | `cli-dispatcher` |
+| `adr-bun/011` | `adr/104` | `cutover-protocol` |
+| `adr-bun/012` | `adr/105` | `time-and-timezone` |
+| `adr-bun/013` | `adr/106` | `wip-bash-deferral` |
+| `adr-bun/014` | `adr/107` | `verb-design-debt` |
+| `adr-bun/015` | `adr/108` | `team-worktrees-by-default` |
+| `adr-bun/016` | `adr/109` | `schema-version-deferred` |
+| `adr-bun/017` | `adr/110` | `window-naming` |
+| `adr-bun/018` | `adr/111` | `coordination-skills-integration` |
+| `adr-bun/019` | `adr/112` | `doctor-port-scope` |
+| `adr-bun/020` | `adr/113` | `writer-abstraction` |
+| `adr-bun/021` | `adr/114` | `coordination-runtime-contract` |
+| `adr-bun/022` | `adr/115` | `whip-port-scope` |
+| `adr-bun/023` | `adr/116` | `llm-judge-cascade` |
+| `adr-bun/024` | `adr/117` | `spawn-account-matching` |
+| `adr-bun/025` | `adr/118` | `sendtarget-discriminated-union` |
+| `adr-bun/026` | `adr/119` | `parity-matrix-iter-1-scope` |
+| `adr-bun/027` | `adr/120` | `parity-channel-mask` |
+| `adr-bun/028` | `adr/121` | `phase3-cron-fired-lane-scope` |
+| `adr-bun/029` | `adr/122` | `phase3-state-mutating-lane-scope` |
+| `adr-bun/030` | `adr/123` | `phase3-read-only-lane-scope` |
+| `adr-bun/031` | `adr/124` | `phase3-lifecycle-lane-scope` |
+| `adr-bun/032` | `adr/125` | `phase4a-error-class-expansion-scope` |
+| `adr-bun/060` | `adr/126` | `sqlite-state-store` |
+| `adr-bun/062` | `adr/127` | `lane-claim-auto-pickup` |
+| `adr-bun/064` | `adr/128` | `complete-driver-role-port` |
+| `adr-bun/068` | `adr/129` | `dogfood-meta-bundled` |
 
-**Total renumbered ADRs**: 36.
+**Total renumbered ADRs**: 36. **Range**: 095-130 inclusive (36 unique IDs).
 
 #### ⚠️ Collision resolution for `adr-bun/002`
 
-`adr/094-c-alias-spawn-convention.md` was authored under t-1a574d27 (Seq 1/6 of c-alias chain) on 2026-05-13 18:30 MYT — **after** this ADR-093 was filed, but **before** T2 (the bulk git-mv) executes. The natural slot for `adr-bun/002-project-layout` was `adr/094`.
+`adr/094-c-alias-spawn-convention.md` was authored under t-1a574d27 (Seq 1/6 of c-alias chain) on 2026-05-13 18:30 MYT — **after** the team-of-teams 087-092 reservation but **before** T2 (the bulk git-mv) executes. With **adr/093 = this consolidation ADR** (authored 2026-05-13 21:00 MYT under t-7167f272) **and adr/094 = c-alias**, the renumber start point shifts from a naive 093 to **095**.
 
-**Resolution**: `adr-bun/002-project-layout` becomes **`adr/129-project-layout.md`** (one slot past the renumber map's tail). This is the only collision in the map; documented inline so T2 (`t-a350cc9a` renumber execution) doesn't follow the table blindly.
+That alone wouldn't be a collision — but `adr-bun/002-project-layout` would have landed at 094 in a naive shift, and 094 is also taken by c-alias. The natural shift+2 places 001→095 (skipping 002) and would put 002 at the next-free slot in the tail.
 
-Updated map row:
+**Resolution**: `adr-bun/002-project-layout` becomes **`adr/130-project-layout.md`** — one slot past the renumber map's tail (which now ends at 129 for `adr-bun/068`). This keeps the renumber range tight (095-130 inclusive, no gaps inside the band) while letting the body of the map flow linearly from 001 → 095 onwards without a re-numbering hiccup.
+
+Updated collision row:
 
 | Old | New | Slug |
 |---|---|---|
-| `adr-bun/002` | `adr/129` | `project-layout` |
+| `adr-bun/002` | `adr/130` | `project-layout` |
 
-Reviewer pre-flag asked for "collision-free targets ≥093 (avoiding 087-092 team-of-teams reservation)" — this resolution honours that AC while accommodating the c-alias ADR that landed mid-flight.
+Reviewer pre-flag asked for "collision-free targets ≥093 (avoiding 087-092 team-of-teams reservation)" — this resolution honours that AC, accommodating both adr/093 (this consolidation ADR) and adr/094 (c-alias) which landed ahead of T2 execution.
+
+#### Amendment trail (self-correction, 2026-05-13)
+
+Initial draft (commit `70a4c60`) of this ADR contained a **self-collision** in the renumber map: it specified `adr-bun/001 → adr/093` while simultaneously living at `adr/093` itself, AND `adr-bun/002 → adr/094` while c-alias already occupied adr/094. Caught by docs at T2-claim time (`t-a350cc9a`); surfaced to lead; corrected map shifts the linear range start from 093 to 095 (this section). Single-commit amendment landed before T2 execution. ADR Status was `proposed` (still editable per docs-discipline append-only-once-accepted rule); amendment is in-band, no §Superseded marker required.
 
 ### Mechanical execution rules (T2)
 
@@ -106,8 +112,8 @@ T2 (`t-a350cc9a`) executes the renumber per these rules:
 
 1. **`git mv` preserves history**. Each file is `git mv docs/adr-bun/<old>-<slug>.md docs/adr/<new>-<slug>.md`. `git log --follow` walks through the rename — verified on at least one sample per T2 AC.
 2. **Slug preservation verbatim**. No re-slugging, no slug normalization, no abbreviation. `adr-bun/001-why-typescript-on-bun.md` → `adr/093-why-typescript-on-bun.md`, not `adr/093-bun-port-typescript.md`. Reviewer judgment on edge cases is reserved for **header line ID updates only**, not slugs.
-3. **Header line update**. Each renamed ADR's `# ADR-NNN: <title>` line updates to the new ID: `adr-bun/001`'s header `# ADR-001: Why TypeScript on Bun` becomes `# ADR-093: Why TypeScript on Bun`.
-4. **Intra-tree cross-references** within the renamed files get rewritten in the same T2 commit: `ADR-005` body refs → `ADR-097` (per the map), `docs/adr-bun/NNN-slug.md` paths → `docs/adr/MMM-slug.md`. Per inventory: ≥10 files carry intra-tree cross-refs (adr-bun/005, 009, 010, 011, 012, 016, 018, 019, 027, 030, 031, 032).
+3. **Header line update**. Each renamed ADR's `# ADR-NNN: <title>` line updates to the new ID: `adr-bun/001`'s header `# ADR-001: Why TypeScript on Bun` becomes `# ADR-095: Why TypeScript on Bun`.
+4. **Intra-tree cross-references** within the renamed files get rewritten in the same T2 commit: `ADR-005` body refs → `ADR-098` (per the corrected map), `docs/adr-bun/NNN-slug.md` paths → `docs/adr/MMM-slug.md`. Per inventory: ≥10 files carry intra-tree cross-refs (adr-bun/005, 009, 010, 011, 012, 016, 018, 019, 027, 030, 031, 032).
 5. **No content edits**. The renumber is mechanical-preserve-only. Reviewer rejects any T2 commit that adjusts Decision/Consequences/Open-questions content in the renamed files.
 
 ### External ref-update (T3)
