@@ -22,6 +22,8 @@
 //     `role: "discorder"` member; replaces the regular `report` line.
 //   - `unblocker tick` (2-min): when team has a `role: "unblocker"`
 //     member.
+//   - `lane-tick` (2-min, ADR-062 §Decision 4): when ≥1 member has a
+//     non-empty `.lane` field AND `team.crons.laneTickEnabled !== false`.
 //
 // Rendering is pure — no I/O, no flock — so the install verb (when it
 // lands) can sandwich the rendering in atomic-rename + flock per its
@@ -213,6 +215,27 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   const hasUnblocker = team.members.some((m) => (m as { role?: string }).role === "unblocker");
   if (hasUnblocker) {
     out.push(`${cronEvery(unblockerMins)} ${baseEnv} unblocker tick ${logTail("unblocker")}`);
+  }
+
+  // 7. lane-tick — ADR-062 §Decision 4. Hardcoded `*/2 * * * *` (the
+  // ADR fixes this cadence; sub-2-min would amplify any classifier bug,
+  // longer would dull the auto-claim chain). Gated by BOTH:
+  //   (a) ≥1 member has a non-empty `.lane` field (no lanes ⇒ nothing
+  //       for lane-tick to do; emitting the line would just spin a
+  //       no-op cron call), AND
+  //   (b) `team.crons.laneTickEnabled !== false` (per-team kill-switch
+  //       per ADR-062 §Rollback; default true so existing teams pick
+  //       up the line as soon as any member acquires a `.lane`).
+  // Placed last in the block per "pick last for least-churn diff" —
+  // existing tests asserting line ordering / counts (whip / report /
+  // decisions / groom / whip-resume-check / unblocker) remain stable.
+  const hasLaneMember = team.members.some((m) => {
+    const lane = (m as { lane?: string }).lane;
+    return typeof lane === "string" && lane.length > 0;
+  });
+  const laneTickEnabled = team.crons?.laneTickEnabled !== false;
+  if (hasLaneMember && laneTickEnabled) {
+    out.push(`*/2 * * * * ${baseEnv} lane-tick ${logTail("lane-tick")}`);
   }
 
   return out;

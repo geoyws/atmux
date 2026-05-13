@@ -281,6 +281,32 @@ export const TeamUnblocker = z
 export type TeamUnblocker = z.infer<typeof TeamUnblocker>;
 
 /**
+ * `team.json::crons` sub-config — per-line cron kill-switches (ADR-062
+ * §Rollback). Lets operators disable specific cron-emitted lines
+ * without a code change. Distinct from cadence knobs (`whip`, `report`,
+ * `decisions`, `groom`, `unblocker`) which live in their own sub-
+ * objects; `crons` is the place for boolean enable/disable toggles
+ * scoped to the cron emitter.
+ *
+ * Today only `laneTickEnabled` lives here (ADR-062 §Decision 4). Future
+ * line-level kill-switches (e.g. `whipResumeCheckEnabled` for teams
+ * that want claudeAccount probes but no auto-resume cron tick) would
+ * land here too.
+ */
+export const TeamCrons = z
+  .object({
+    /** ADR-062 §Rollback. When `false`, suppress the `lane-tick` cron
+     *  line even if the team has lane-tagged members. Default
+     *  `true` (effective only when the gating member-condition holds —
+     *  teams with zero `.lane`-tagged members skip the line regardless).
+     *  Operators flip this off to halt lane-driven auto-claim without
+     *  removing `.lane` annotations from `team.members[]`. */
+    laneTickEnabled: z.boolean().default(true),
+  })
+  .strict();
+export type TeamCrons = z.infer<typeof TeamCrons>;
+
+/**
  * `team.json::kanban` sub-config — kanban-orchestration knobs. ADR-062
  * §1 introduced `claim --next` lane-aware pull; the cross-lane fallback
  * gate lives here.
@@ -401,6 +427,8 @@ export const Team = z
     cron: TeamCron.optional(),
     /** ADR-062 §OQ4: kanban-orchestration knobs (cross-lane fallback). */
     kanban: TeamKanban.optional(),
+    /** ADR-062 §Decision 4: per-line cron kill-switches (lane-tick today). */
+    crons: TeamCrons.optional(),
     /** ADR-079 §A: cron cadence for report / discorder progress + heartbeat. */
     report: TeamReport.optional(),
     /** ADR-079 §A: cron cadence for `decisions digest`. */
