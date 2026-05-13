@@ -1,7 +1,8 @@
 # ADR-080: Operator-observed atmux improvements (sopx-driver bundle)
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-09
+**Date-accepted**: 2026-05-13 — all seven sub-sections shipped: §A1 `22d7daa` · §A2 `baafb16` · §B1 `0ecaa64` · §B2 `bbd9cef` · §C `17f0abf` · §D `bfb0193` · §E `1877af5`. Per t-bb05b9ba audit + reviewer signoff 2026-05-09 13:53 MYT.
 **Driver-ref**: 2026-05-09 07:25 MYT sopx-driver bundle (`/root/work/src/atmux/.atmux/driver-inbox.md` §07:25 entry). Five improvements observed in sopx-guild during demo-week prep — two structural (lead at 67% ctx not rotating; 29 stale `commit t-X` tasks accumulating), one design-coupled (lane-tick mid-think injection defeating rotation), two papercuts (CLI flag normalize, JSON escape).
 
 ## Context
