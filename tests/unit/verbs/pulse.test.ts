@@ -16,16 +16,16 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
-import type {
-  GitSpawn,
-} from "../../../src/abstractions/worktree.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
+import { DEFAULT_PULSE_DEDUP_LADDER } from "../../../src/core/pulse-state.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
   countBluePendingDecisions,
   entryHasTriageMarker,
   parsePulseArgs,
   pulse,
+  resolveDedupLadder,
 } from "../../../src/verbs/pulse.ts";
 
 let home: string;
@@ -166,7 +166,7 @@ function ok(stdout = ""): SpawnResult {
 function gitMockFor(commitsPerRoot: Record<string, number>): GitSpawn {
   return async (argv) => {
     const rootIdx = argv.indexOf("-C");
-    const root = rootIdx >= 0 ? argv[rootIdx + 1] ?? "" : "";
+    const root = rootIdx >= 0 ? (argv[rootIdx + 1] ?? "") : "";
     const n = commitsPerRoot[root] ?? 0;
     const lines = new Array(n).fill("abcd123 chore: x").join("\n");
     return ok(lines + (n > 0 ? "\n" : ""));
@@ -447,5 +447,53 @@ describe("pulse human output", () => {
     const lines = out.split("\n").filter((l) => l.length > 0);
     expect(lines).toHaveLength(3);
     expect(lines.some((l) => l.includes("alpha") && l.includes("commits=2"))).toBe(true);
+  });
+});
+
+// ---------- ADR-086 §Phase 1.5: resolveDedupLadder ----------
+
+describe("resolveDedupLadder", () => {
+  test("no operator config → DEFAULT_PULSE_DEDUP_LADDER verbatim", () => {
+    expect(resolveDedupLadder({})).toEqual(DEFAULT_PULSE_DEDUP_LADDER);
+  });
+
+  test("operator dedupLadderMins merges OVER the default", () => {
+    const got = resolveDedupLadder({
+      dedupLadderMins: { "🚨 Need you": 90 },
+    });
+    expect(got["🚨 Need you"]).toBe(90); // operator override
+    expect(got["🔴 Stalled"]).toBe(30); // inherited from default
+    expect(got["🟡 Cool"]).toBe(4 * 60); // inherited
+    expect(got["🟢 Shipping"]).toBeNull(); // inherited
+  });
+
+  test("operator dedupLadderMins null disables a verdict's re-fire", () => {
+    const got = resolveDedupLadder({
+      dedupLadderMins: { "🔴 Stalled": null },
+    });
+    expect(got["🔴 Stalled"]).toBeNull();
+    // other entries unchanged
+    expect(got["🚨 Need you"]).toBe(60);
+  });
+
+  test("legacy dedupMins flat int populates urgent verdicts uniformly", () => {
+    const got = resolveDedupLadder({ dedupMins: 45 });
+    expect(got["🔴 Stalled"]).toBe(45);
+    expect(got["🚨 Need you"]).toBe(45);
+    // non-urgent verdicts keep their default cadences (legacy semantic
+    // — URGENT_VERDICTS was a binary set; only 🔴/🚨 re-fired pre-§1.5).
+    expect(got["🟡 Cool"]).toBe(4 * 60);
+    expect(got["🟢 Shipping"]).toBeNull();
+  });
+
+  test("explicit dedupLadderMins WINS over legacy dedupMins (no ambiguity)", () => {
+    const got = resolveDedupLadder({
+      dedupMins: 45,
+      dedupLadderMins: { "🚨 Need you": 90 },
+    });
+    // ladder branch wins; the legacy field is ignored to avoid silent
+    // double-precedence confusion.
+    expect(got["🚨 Need you"]).toBe(90);
+    expect(got["🔴 Stalled"]).toBe(30); // ladder branch — DEFAULT (45 was ignored)
   });
 });
