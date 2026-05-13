@@ -39,6 +39,7 @@ describe("parseCockpitArgs", () => {
       forceCycle: false,
       ackDangerous: false,
       noLaunch: false,
+      yes: false,
     });
   });
   test("each flag parses individually", () => {
@@ -92,6 +93,7 @@ describe("parseCockpitArgs", () => {
       forceCycle: false,
       ackDangerous: false,
       noLaunch: true,
+      yes: false,
     });
   });
 
@@ -737,8 +739,10 @@ describe("reconcileCockpitSession", () => {
         .map((w) => w.name);
       expect(pre[0]).toBe("superdriver");
       expect(pre.slice(1).sort()).toEqual(["alpha", "beta"]);
-      // Upgrade — superdoctor enabled.
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sdNoAutoStart);
+      // Upgrade — superdoctor enabled. The move-with-kill on the
+      // displaced team viewer is a destructive op; t-8b0e077e requires
+      // --yes to apply, so we thread `yes=true` here.
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sdNoAutoStart, true);
       const post = (await fx.tmux.window.listWindows("s"))
         .slice()
         .sort((a, b) => a.index - b.index);
@@ -764,11 +768,12 @@ describe("reconcileCockpitSession", () => {
     try {
       const { logger } = makeLogger();
       const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
-      // First pass with superdoctor + alpha.
+      // First pass with superdoctor + alpha (non-destructive — fresh adds).
       await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sdNoAutoStart);
       // Second pass with superdoctor still enabled but alpha removed —
-      // alpha must be pruned, superdoctor must survive.
-      await reconcileCockpitSession(fx.tmux, "s", [], logger, sdDeps, sdNoAutoStart);
+      // alpha must be pruned, superdoctor must survive. The prune is
+      // a destructive op (t-8b0e077e) → thread `yes=true`.
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, sdDeps, sdNoAutoStart, true);
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
       expect(names).toContain("superdriver");
       expect(names).toContain("superdoctor");
@@ -959,6 +964,119 @@ describe("reconcileCockpitSession", () => {
       } catch {}
       await rm(fx.socketDir, { recursive: true, force: true });
     }
+  });
+
+  // ---------- t-8b0e077e: cockpit safety gate ----------
+
+  test("t-8b0e077e: orphan-prune without --yes refuses with UsageError", async () => {
+    const fx = await spinTmux("cockpit-safety-orphan-refuse");
+    try {
+      const { logger, logs } = makeLogger();
+      // Seed: superdriver + alpha + beta (no superdoctor for this case).
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      // Drop beta from the roster → second pass should plan a destructive
+      // orphan-prune; no --yes → refuse.
+      await expect(
+        reconcileCockpitSession(
+          fx.tmux,
+          "s",
+          [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam],
+          logger,
+        ),
+      ).rejects.toThrow(UsageError);
+      // The warn line names the orphan + the prune action.
+      expect(logs.some((l) => l.includes("destructive: prune-orphan 'beta'"))).toBe(true);
+      // Beta must STILL be alive — the refuse fired before any kill.
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
+      expect(names).toContain("beta");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("t-8b0e077e: orphan-prune WITH --yes applies the prune", async () => {
+    const fx = await spinTmux("cockpit-safety-orphan-yes");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam],
+        logger,
+        {},
+        undefined,
+        true, // --yes
+      );
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
+      expect(names).not.toContain("beta");
+      expect(names).toContain("alpha");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("t-8b0e077e: idempotent reload (no diff) needs no --yes", async () => {
+    const fx = await spinTmux("cockpit-safety-idempotent");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+      // First pass — additive (`newSession` + `newWindow`); not destructive.
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      // Second pass with identical config — zero destructive ops, no --yes
+      // required.
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
+      expect(names).toEqual(["alpha", "superdriver"]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("t-8b0e077e: --force-cycle requires --yes (parse-time gate)", () => {
+    // Already gated by --acknowledge-dangerous-bau-interruption for claude-
+    // TUI loss; --yes layers the cockpit-reconcile destructive-op gate.
+    expect(() =>
+      parseCockpitArgs([
+        "rebuild",
+        "--force-cycle",
+        "--acknowledge-dangerous-bau-interruption",
+        // intentionally missing --yes
+      ]),
+    ).toThrow(UsageError);
+    // With --yes added, the parse succeeds.
+    const p = parseCockpitArgs([
+      "rebuild",
+      "--force-cycle",
+      "--acknowledge-dangerous-bau-interruption",
+      "--yes",
+    ]);
+    expect(p.forceCycle).toBe(true);
+    expect(p.ackDangerous).toBe(true);
+    expect(p.yes).toBe(true);
+  });
+
+  test("t-8b0e077e: --yes / -y both parse", () => {
+    expect(parseCockpitArgs(["rebuild", "--yes"]).yes).toBe(true);
+    expect(parseCockpitArgs(["rebuild", "-y"]).yes).toBe(true);
+    expect(parseCockpitArgs(["reload", "--yes"]).yes).toBe(true);
   });
 });
 
@@ -1284,7 +1402,14 @@ describe("cockpitRebuild", () => {
     try {
       const { logger } = makeLogger();
       const code = await cockpitRebuild(
-        { subverb: "rebuild", noCycle: true, forceCycle: false, noLaunch: true },
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
         {
           env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
           tmuxFactory: (cfg) => {
@@ -1329,7 +1454,14 @@ describe("cockpitRebuild", () => {
     try {
       const { logger } = makeLogger();
       const code = await cockpitRebuild(
-        { subverb: "rebuild", noCycle: false, forceCycle: false, noLaunch: true },
+        {
+          subverb: "rebuild",
+          noCycle: false,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
         {
           env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
           tmuxFactory: () => fx.tmux,
@@ -1363,7 +1495,14 @@ describe("cockpitRebuild", () => {
     try {
       const { logger } = makeLogger();
       await cockpitRebuild(
-        { subverb: "rebuild", noCycle: false, forceCycle: true, noLaunch: true },
+        {
+          subverb: "rebuild",
+          noCycle: false,
+          forceCycle: true,
+          ackDangerous: true,
+          noLaunch: true,
+          yes: true,
+        },
         {
           env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
           tmuxFactory: () => fx.tmux,
@@ -1391,7 +1530,14 @@ describe("cockpitRebuild", () => {
     );
     const { logger, logs } = makeLogger();
     const code = await cockpitRebuild(
-      { subverb: "rebuild", noCycle: true, forceCycle: false, noLaunch: true },
+      {
+        subverb: "rebuild",
+        noCycle: true,
+        forceCycle: false,
+        ackDangerous: false,
+        noLaunch: true,
+        yes: false,
+      },
       { env: { HOME: homeDir, ATMUX_NO_CRON: "1" }, logger },
     );
     expect(code).toBe(0);
@@ -1415,7 +1561,14 @@ describe("cockpitRebuild", () => {
     try {
       const { logger, logs } = makeLogger();
       const code = await cockpitRebuild(
-        { subverb: "rebuild", noCycle: true, forceCycle: false, noLaunch: true },
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
         {
           env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
           tmuxFactory: () => fx.tmux,
@@ -1462,6 +1615,7 @@ describe("cockpitRebuild", () => {
           forceCycle: false,
           ackDangerous: false,
           noLaunch: true,
+          yes: false,
         },
         {
           env: { HOME: homeDir },
@@ -1485,6 +1639,7 @@ describe("cockpitRebuild", () => {
           forceCycle: false,
           ackDangerous: false,
           noLaunch: true,
+          yes: false,
         },
         {
           env: { HOME: homeDir },
@@ -1534,6 +1689,7 @@ describe("cockpitRebuild", () => {
           forceCycle: false,
           ackDangerous: false,
           noLaunch: true,
+          yes: false,
         },
         {
           env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
@@ -1579,6 +1735,7 @@ describe("cockpitRebuild", () => {
           forceCycle: false,
           ackDangerous: false,
           noLaunch: true,
+          yes: false,
         },
         {
           env: { HOME: homeDir },
@@ -1614,7 +1771,14 @@ describe("cockpitRebuild", () => {
     try {
       const { logger, logs } = makeLogger();
       const code = await cockpitRebuild(
-        { subverb: "rebuild", noCycle: true, forceCycle: false, noLaunch: true },
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
         {
           env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
           tmuxFactory: () => fx.tmux,
