@@ -87,7 +87,7 @@ out a tight first cut.
 |------|-----------------|--------|
 | `atmux cron-remove` verb + `stop.ts` wiring | Stop-without-cron-remove leaves stale block firing `atmux whip` against a down session — benign (whip exits early on no-session). Add later. | New story `cron-remove port` after install lands. |
 | `atmux cron-orphans` JSON output | Doctor consumer in a different lane; install dedup (strip-by-atmux_dir) already prevents the worst rename-orphan failure mode. | New story `cron-orphans for doctor`. |
-| `team-repair-rename.ts` Step 5 cron refresh | Already marked V1-deferred in source (`src/verbs/team-repair-rename.ts:508`). Drop-in: replace the warn with a call to `installCronBlock` once it exists. | Bundle with cron-remove port. |
+| ~~`team-repair-rename.ts` Step 5 cron refresh~~ | **LANDED (2026-05-13, t-a126fbbc):** `src/verbs/team-repair-rename.ts` Step 5 now calls `cronInstall(["--quiet", "--team-dir", <dir>])` after step 4. Non-fatal — a thrown `cronInstall` is logged + skipped so step 6 still runs. Stub-injected via `opts.cronInstallFn` for tests. | Closed. |
 | Schedule overrides beyond what ADR-079§A already supports | `whip.intervalMins` / `report.intervalMins` / `decisions.intervalHours` / `groom.atHour` / `unblocker.intervalMins` already land via renderer. Extra knobs (e.g. per-line PATH override beyond `team.cron.path`) — not requested. | Open new ADR if requested. |
 | Bash bats `tests/unit/team_rename.bats` parity for the rename-orphan scenario | Bash bats parity tracker lives in lane=parity-state per ADR-029; not this story's lane. | Surface to lead for cross-lane parity coverage. |
 
