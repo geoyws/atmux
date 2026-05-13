@@ -98,12 +98,21 @@ async function stageTeamWithSession(members: ReadonlyArray<string>): Promise<{
 
 describe("parseStopArgs", () => {
   test("empty argv → defaults", () => {
-    expect(parseStopArgs([])).toEqual({ force: false, archive: true });
+    expect(parseStopArgs([])).toEqual({ force: false, archive: true, soft: false });
   });
 
   test("--force / -f sets force=true", () => {
     expect(parseStopArgs(["--force"]).force).toBe(true);
     expect(parseStopArgs(["-f"]).force).toBe(true);
+  });
+
+  test("--soft sets soft=true (ADR-087)", () => {
+    expect(parseStopArgs(["--soft"]).soft).toBe(true);
+  });
+
+  test("--soft + --force → UsageError (mutually exclusive)", () => {
+    expect(() => parseStopArgs(["--soft", "--force"])).toThrow(UsageError);
+    expect(() => parseStopArgs(["-f", "--soft"])).toThrow(UsageError);
   });
 
   test("--no-archive sets archive=false", () => {

@@ -18,7 +18,10 @@ Setup:
   up                          Same as bare \`atmux\`: bring a team all the way up
   init [--name <team>]        Scaffold .atmux/team.json in current dir
   start                       Create tmux session, spawn all members
-  stop [--force]              Kill tmux session, archive state
+  stop [--force|--soft]       Kill tmux session, archive state.
+                              --soft (ADR-087): graceful path — notice every
+                              pane, grace window, write resume manifest at
+                              state/resume.json, NO worktree prune.
   attach                      tmux attach to the team session
   status                      Powerline team overview
   cockpit rebuild [--no-cycle|--force-cycle] [--no-launch] [--config <p>]

@@ -88,8 +88,9 @@
 // question listed in `src/core/common.ts` §"Socket resolver" + ADR-004
 // amend Consequences §Phase 2.
 
+import { rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { ensureDir, exists, writeText } from "../abstractions/fs.ts";
+import { ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
 import {
   createTmux,
@@ -117,7 +118,12 @@ import {
   teamJsonPath,
 } from "../core/common.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
+import {
+  consumedManifestPath,
+  resumeManifestPath,
+} from "../core/soft-stop.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
+import { ResumeManifest } from "../schema/resume.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
@@ -662,6 +668,19 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const startSeconds = Math.floor(now() / 1000);
   await writeText(join(stateDir(dir), "session-start.txt"), `${startSeconds}\n`);
 
+  // 10a. ADR-087: surface the resume manifest from the most recent
+  //      soft-stop, if any. Pure informational — kanban + worktree
+  //      already preserve in-flight state across stop+start, so this
+  //      hook does NOT auto-restore claims. Failures (parse error /
+  //      rename collision / clock drift) degrade silently to "no hint
+  //      surfaced" — never wedge the start path on a manifest hiccup.
+  try {
+    await surfaceResumeManifest(dir, startSeconds, logger);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`resume-hint: surface failed — continuing without hint (${cause})`);
+  }
+
   logger.ok(`team '${team.name}' is up. attach with: atmux attach`);
 
   // 11. ADR-083 §IN §4: auto-install the team's marker-fenced crontab
@@ -820,4 +839,74 @@ async function pasteBriefForMember(args: PasteBriefArgs): Promise<void> {
     const cause = e instanceof Error ? e.message : String(e);
     logger.warn(`  · ${member}: brief paste failed (${cause})`);
   }
+}
+
+/**
+ * ADR-087: read `<atmuxDir>/state/resume.json` if a prior soft-stop
+ * wrote one, log a one-line resume summary plus a per-member breakdown
+ * for entries with `lastClaim !== null`, then rename the manifest to
+ * `state/resume.json.<startSeconds>.consumed` so subsequent starts
+ * don't re-surface it.
+ *
+ * No-op when the file is absent (the common case). Failures are
+ * swallowed by the caller's outer try/catch — the start path must not
+ * wedge on a malformed manifest.
+ */
+async function surfaceResumeManifest(
+  atmuxDir: string,
+  startSeconds: number,
+  logger: Logger,
+): Promise<void> {
+  const manifestPath = resumeManifestPath(atmuxDir);
+  const raw = await readTextOrNull(manifestPath);
+  if (raw === null) return;
+  // Parse defensively — a corrupt manifest must not block start. Zod's
+  // strict mode catches unknown keys + missing fields; either path
+  // surfaces as a single warn line and the manifest stays in place for
+  // operator inspection.
+  let parsed: ResumeManifest;
+  try {
+    parsed = ResumeManifest.parse(JSON.parse(raw));
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`resume-hint: manifest at ${manifestPath} unparseable — ${cause}`);
+    return;
+  }
+  const inFlight = parsed.members.filter((m) => m.lastClaim !== null);
+  if (inFlight.length === 0) {
+    logger.log(
+      `resume: prior ${parsed.reason} captured at ${parsed.ts} — no members had in-flight Tasks`,
+    );
+  } else {
+    logger.log(
+      `resume: ${inFlight.length} member${inFlight.length === 1 ? "" : "s"} had in-flight Tasks at ${parsed.reason} (ts=${parsed.ts}) — see ${manifestPath}`,
+    );
+    for (const m of inFlight) {
+      const ageSeconds =
+        m.claimedAt !== null && m.claimedAt > 0 ? Math.max(0, startSeconds - m.claimedAt) : null;
+      const ageHint = ageSeconds !== null ? ` (claimed ${formatAge(ageSeconds)} ago)` : "";
+      logger.log(`  · ${m.name}: ${m.lastClaim}${ageHint}`);
+    }
+  }
+  // Rename so the next start doesn't re-surface the same manifest.
+  // Best-effort: if the rename fails (cross-device, permission), leave
+  // the manifest in place — better to re-surface than to lose forensic
+  // trail.
+  try {
+    await rename(manifestPath, consumedManifestPath(atmuxDir, startSeconds));
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`resume-hint: could not archive consumed manifest — ${cause}`);
+  }
+}
+
+/** Compact age formatter matching CLAUDE.md §"Duration formatting":
+ *  <60s → `<1min`; <60m → `Nmin`; ≥60m → `HhMm` or `Hh` on the hour. */
+function formatAge(seconds: number): string {
+  if (seconds < 60) return "<1min";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}min`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem === 0 ? `${hours}h` : `${hours}h${rem}m`;
 }
