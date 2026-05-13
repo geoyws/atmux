@@ -63,7 +63,7 @@ The bash project today has `lib/*.sh` flat (27 files at frozen worktree HEAD), `
 │       └── verbs/         # One spec file per verb under parity test
 ├── docs/
 │   ├── adr/               # legacy bash ADRs (frozen at worktree HEAD)
-│   └── adr-bun/           # this ADR series — port-specific
+│   └── adr/           # this ADR series — port-specific
 ├── package.json           # Bun-managed (no pnpm/npm)
 ├── bunfig.toml            # Bun config (test, install, runtime)
 ├── tsconfig.json          # strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes

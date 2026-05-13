@@ -1,4 +1,4 @@
-// Unit tests for src/abstractions/discord.ts (ADR-008).
+// Unit tests for src/abstractions/discord.ts (ADR-101).
 //
 // Covers:
 //   - Validation (R-rules: bullet length, emoji prefix, empty body)
@@ -389,7 +389,7 @@ describe("routing — recorder", () => {
 });
 
 // (Removed: spawn ping-discord.sh delegation tests. The spawn route was
-// dropped in favour of bun-native fetch — see ADR-008 §"Routing".)
+// dropped in favour of bun-native fetch — see ADR-101 §"Routing".)
 
 // ---------- Routing: direct-fetch ----------
 

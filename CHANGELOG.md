@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scanNeedsApproval` lib — approval-debt scanner** ([ADR-085](docs/adr/085-whip-approvals-watcher.md)
   §Scan API). New `src/lib/needs-approval.ts` exports
   `scanNeedsApproval(deps?) → NeedsApprovalReport` covering three buckets:
-  (A) ADRs under `docs/adr/*.md` / `docs/adr-bun/*.md` with `Status:
+  (A) ADRs under `docs/adr/*.md` / `docs/adr/*.md` with `Status:
   proposed|draft|wip|pending` and no `(deferred: ...)` escape hatch;
   (B) `driver-inbox.md` headings missing `✅`/`📤`/`⏳`/`❌` triage marker
   (`🚨`/`🪫` don't count) and stale (`ageMin > 30`); (C) kanban tasks with
