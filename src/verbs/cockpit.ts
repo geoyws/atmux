@@ -220,6 +220,14 @@ export interface ParsedCockpitArgs {
   noLaunch: boolean;
   /** Override cockpit.json path. */
   configPath?: string;
+  /** t-8b0e077e: confirm destructive cockpit-reconcile ops. Required when
+   *  the reconcile would `moveWindow --kill` an occupied target slot OR
+   *  `killWindow` an orphan team viewer. Cron / scripts pass `--yes` to
+   *  bypass; interactive operator gets a structured warn + non-zero
+   *  exit on the first run, re-runs with `--yes` after reviewing the
+   *  planned ops. ALSO required when `--force-cycle` is set (the
+   *  per-team cage cycle is destructive at the claude-TUI layer). */
+  yes: boolean;
 }
 
 /**
@@ -256,6 +264,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   let forceCycle = false;
   let ackDangerous = false;
   let noLaunch = sub === "reload";
+  let yes = false;
   let configPath: string | undefined;
 
   let i = 1;
@@ -294,6 +303,11 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
           });
         }
         noLaunch = true;
+        i += 1;
+        break;
+      case "--yes":
+      case "-y":
+        yes = true;
         i += 1;
         break;
       case "--config": {
@@ -341,12 +355,27 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     });
   }
 
+  // t-8b0e077e: --force-cycle ALSO needs --yes layered on top of the
+  // existing --acknowledge-dangerous-bau-interruption gate. The two flags
+  // gate distinct surfaces: ackDangerous covers the claude-TUI loss; yes
+  // covers the cockpit-reconcile destructive ops the same rebuild call
+  // is about to apply. Both are required.
+  if (forceCycle && !yes) {
+    throw new UsageError({
+      what: "cockpit rebuild: --force-cycle requires --yes",
+      hint:
+        "--force-cycle implies destructive cockpit-reconcile ops; pass --yes to confirm. " +
+        "(--acknowledge-dangerous-bau-interruption covers the claude-TUI loss; --yes covers the cockpit-window mutation set.)",
+    });
+  }
+
   const out: ParsedCockpitArgs = {
     subverb: sub as "rebuild" | "reload",
     noCycle,
     forceCycle,
     ackDangerous,
     noLaunch,
+    yes,
   };
   if (configPath !== undefined) out.configPath = configPath;
   return out;
@@ -479,6 +508,7 @@ export async function cockpitRebuild(
     logger,
     {},
     cockpit.superdoctor,
+    parsed.yes,
   );
 
   // Phase 6 (ADR-086): cockpit-scoped cron block install. Idempotent —
@@ -844,6 +874,10 @@ export async function reconcileCockpitSession(
   logger: Logger,
   deps: ResolveTeamWindowDeps = {},
   superdoctor?: CockpitSuperdoctor,
+  /** t-8b0e077e: confirm destructive cockpit-reconcile ops (move-with-kill
+   *  on superdoctor's target slot + orphan-prune). Required when count > 0.
+   *  Defaults to false — caller (cockpitRebuild) threads `parsed.yes`. */
+  yes = false,
 ): Promise<void> {
   const has = await cockpitTmux.session.hasSession(sessionName);
   if (!has) {
@@ -856,6 +890,21 @@ export async function reconcileCockpitSession(
   }
 
   const wantSuperdoctor = superdoctor?.enabled === true;
+
+  // t-8b0e077e: pre-pass destructive-op detection. Walk the windows
+  // ONCE before any mutation, compute the planned destructive set, and
+  // refuse with a structured warning when count > 0 AND yes is false.
+  // Race-window between dry-run + apply is fine for single-operator
+  // workflows; the gate's value is "don't silently nuke" not strict
+  // atomicity.
+  await refusePlannedDestructiveOps({
+    cockpitTmux,
+    sessionName,
+    teams,
+    wantSuperdoctor,
+    yes,
+    logger,
+  });
 
   // ADR-077: ensure superdoctor exists + sits IMMEDIATELY after the
   // superdriver window BEFORE adding team viewers, so on a fresh cockpit
@@ -994,6 +1043,105 @@ export function buildSuperdoctorWindowCommand(sd: CockpitSuperdoctor): string {
     `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
     `claude${pluginFlag} --permission-mode ${permission}`
   );
+}
+
+// ---------- t-8b0e077e: cockpit safety gate ----------
+
+/** One planned destructive cockpit-reconcile op. Surfaces in the warn
+ *  log + the UsageError message so the operator can review before
+ *  re-running with `--yes`. */
+export interface PlannedDestructiveOp {
+  /** Tmux window-name the op touches. */
+  window: string;
+  /** Human-readable action — `"move-with-kill"` or `"prune-orphan"`. */
+  action: "move-with-kill" | "prune-orphan";
+  /** Free-form context — e.g. `"target slot 2 occupied by team viewer 'alpha'"`. */
+  reason: string;
+}
+
+interface RefuseDestructiveOpts {
+  cockpitTmux: TmuxNamespace;
+  sessionName: string;
+  teams: ReadonlyArray<CockpitTeam>;
+  wantSuperdoctor: boolean;
+  yes: boolean;
+  logger: Logger;
+}
+
+/**
+ * Walk the cockpit's current window state ONCE before reconcile mutates
+ * anything; compute the destructive op set; if non-empty AND `yes` is
+ * false, log each op + throw `UsageError` with a hint to re-run with
+ * `--yes`. Idempotent reconciles (zero destructive ops planned) pass
+ * silently regardless of `yes`.
+ *
+ * Detected destructive cases — must stay in sync with the live
+ * `reconcileCockpitSession` body below:
+ *   1. `superdoctor` displacement — when wantSuperdoctor is on AND the
+ *      target slot (`superdriver.index + 1`) is currently occupied by a
+ *      NON-superdoctor window. The live code calls
+ *      `moveWindow({kill: true})` there.
+ *   2. Orphan-prune — any window not in {superdriver, superdoctor (when
+ *      enabled), team-names...} that the live code's `killWindow` would
+ *      sweep.
+ */
+async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise<void> {
+  const { cockpitTmux, sessionName, teams, wantSuperdoctor, yes, logger } = opts;
+  const windows = await cockpitTmux.window.listWindows(sessionName);
+  const planned: PlannedDestructiveOp[] = [];
+
+  // Case 1 — superdoctor displacement.
+  if (wantSuperdoctor) {
+    const sdrv = windows.find((w) => w.name === "superdriver");
+    const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
+    const sd = windows.find((w) => w.name === "superdoctor");
+    // Only counts as destructive when superdoctor EXISTS at a wrong
+    // index AND the target slot has someone else parked there. Fresh
+    // adds (sd === undefined) land in the empty slot non-destructively.
+    if (sd !== undefined && sd.index !== targetIdx) {
+      const occupant = windows.find((w) => w.index === targetIdx && w.name !== "superdoctor");
+      if (occupant !== undefined) {
+        planned.push({
+          window: occupant.name,
+          action: "move-with-kill",
+          reason: `target slot ${targetIdx} occupied by '${occupant.name}'; superdoctor relocation kills it`,
+        });
+      }
+    }
+  }
+
+  // Case 2 — orphan-prune. Compute the wanted-name set; anything else
+  // that isn't an always-preserved window gets killed.
+  const wanted = new Set<string>([
+    "superdriver",
+    ...(wantSuperdoctor ? ["superdoctor"] : []),
+    ...teams.map((t) => t.name),
+  ]);
+  for (const w of windows) {
+    if (wanted.has(w.name)) continue;
+    if (w.name === "superdriver" || w.name === "superdoctor") continue;
+    planned.push({
+      window: w.name,
+      action: "prune-orphan",
+      reason: "window not in cockpit.json roster + not preserved",
+    });
+  }
+
+  if (planned.length === 0) return; // idempotent — nothing to gate
+
+  // Log each planned op so a `--yes` re-run is informed by the same
+  // surface. Even when yes is true we keep the warn line so the operator
+  // sees what's about to happen.
+  for (const op of planned) {
+    logger.warn(`  ⚠ destructive: ${op.action} '${op.window}' — ${op.reason}`);
+  }
+  if (yes) return;
+  throw new UsageError({
+    what: `cockpit reconcile: ${planned.length} destructive op(s) planned; refusing without --yes`,
+    hint:
+      "Review the listed ops above. Re-run with `--yes` to apply, or edit cockpit.json " +
+      "to keep the windows in scope. (Cron / scripts should pass `--yes` to bypass.)",
+  });
 }
 
 // ---------- t-22453c1e: superdoctor auto-start ----------
