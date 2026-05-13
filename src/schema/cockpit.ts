@@ -87,6 +87,19 @@ export const CockpitSuperdoctor = z
     /** Optional TUI launch overrides. Same defaults as a team window
      *  (`effortLevel=xhigh`, `permissionMode=auto`). */
     tuiOverrides: CockpitTuiOverrides.optional(),
+    /** t-22453c1e: auto-fire `/loop /superdoctor` after a freshly-created
+     *  superdoctor window settles to its idle Claude prompt. Default true
+     *  when omitted (the reconcile-side check tests for explicit `false`).
+     *  Pre-existing windows are NEVER touched. Set `false` for manual REPL
+     *  control. `.optional()` rather than `.default()` so the inferred TS
+     *  type stays operator-friendly for direct-object fixtures (tests + the
+     *  reconcile call-path don't pay for a Zod parse trip). */
+    autoStart: z.boolean().optional(),
+    /** t-22453c1e: max wall-clock seconds to wait for the new superdoctor
+     *  pane to settle to a Claude idle prompt before bailing without a
+     *  send-keys. Defaults to 30 when omitted — empirically Claude welcome
+     *  screen + plugin load runs ~5-15s on hax; 30s leaves headroom. */
+    autoStartTimeoutSec: z.number().int().positive().optional(),
   })
   .strict();
 export type CockpitSuperdoctor = z.infer<typeof CockpitSuperdoctor>;

@@ -44,11 +44,8 @@ describe("parseCockpitArgs", () => {
   test("each flag parses individually", () => {
     expect(parseCockpitArgs(["rebuild", "--no-cycle"]).noCycle).toBe(true);
     expect(
-      parseCockpitArgs([
-        "rebuild",
-        "--force-cycle",
-        "--acknowledge-dangerous-bau-interruption",
-      ]).forceCycle,
+      parseCockpitArgs(["rebuild", "--force-cycle", "--acknowledge-dangerous-bau-interruption"])
+        .forceCycle,
     ).toBe(true);
     expect(parseCockpitArgs(["rebuild", "--no-launch"]).noLaunch).toBe(true);
   });
@@ -641,6 +638,13 @@ describe("reconcileCockpitSession", () => {
   // exits immediately + tmux destroys the window).
   const sdDeps: ResolveTeamWindowDeps = { buildSuperdoctorCommand: () => "sleep infinity" };
 
+  // t-22453c1e: existing tests opt out of auto-start since the
+  // `sleep infinity` pane has no Claude markers — the auto-start
+  // poll would either burn 30s timing out OR (with mock-sleep)
+  // tight-loop until the wall-clock deadline expires. Dedicated
+  // auto-start tests below cover the path explicitly.
+  const sdNoAutoStart = { enabled: true, autoStart: false };
+
   test("ADR-077: superdoctor opt-in places window 2 between superdriver and team viewers", async () => {
     const fx = await spinTmux("cockpit-sd-fresh");
     try {
@@ -649,7 +653,7 @@ describe("reconcileCockpitSession", () => {
         { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
         { name: "beta", root: "/b", enabled: true } as CockpitTeam,
       ];
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sdNoAutoStart);
       const wins = await fx.tmux.window.listWindows("s");
       const byIndex = wins.slice().sort((a, b) => a.index - b.index);
       // Window 1 = superdriver (created by newSession); window 2 = superdoctor;
@@ -694,7 +698,7 @@ describe("reconcileCockpitSession", () => {
     try {
       const { logger } = makeLogger();
       const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
-      const sd = { enabled: true };
+      const sd = sdNoAutoStart;
       await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sd);
       const before = (await fx.tmux.window.listWindows("s"))
         .slice()
@@ -734,7 +738,7 @@ describe("reconcileCockpitSession", () => {
       expect(pre[0]).toBe("superdriver");
       expect(pre.slice(1).sort()).toEqual(["alpha", "beta"]);
       // Upgrade — superdoctor enabled.
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sdNoAutoStart);
       const post = (await fx.tmux.window.listWindows("s"))
         .slice()
         .sort((a, b) => a.index - b.index);
@@ -761,14 +765,194 @@ describe("reconcileCockpitSession", () => {
       const { logger } = makeLogger();
       const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
       // First pass with superdoctor + alpha.
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, sdDeps, sdNoAutoStart);
       // Second pass with superdoctor still enabled but alpha removed —
       // alpha must be pruned, superdoctor must survive.
-      await reconcileCockpitSession(fx.tmux, "s", [], logger, sdDeps, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, sdDeps, sdNoAutoStart);
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
       expect(names).toContain("superdriver");
       expect(names).toContain("superdoctor");
       expect(names).not.toContain("alpha");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ---------- t-22453c1e: superdoctor auto-start ----------
+
+  test("t-22453c1e: autoStart fires `/loop /superdoctor` when pane settles to idle prompt", async () => {
+    const fx = await spinTmux("cockpit-sd-autostart");
+    try {
+      const { logger, logs } = makeLogger();
+      const teams: CockpitTeam[] = [];
+      // Capture-pane stub: first call returns not-ready (welcome still
+      // rendering), second returns the ready marker → auto-start
+      // proceeds. Third (post-send verification) returns the loop-loaded
+      // marker so we hit the ✓ branch.
+      let captureCalls = 0;
+      const captureSequence = [
+        "Welcome to Claude Code\nLoading...",
+        "❯ Try something\nauto mode on · tok 0/0",
+        "Skill(coordination:superdoctor) ⎿ Successfully loaded skill",
+      ];
+      const captures: { sessionName: string; windowIndex: number }[] = [];
+      const sentKeys: string[] = [];
+      // Wrap the real tmux's sendKeys so the assertion captures the
+      // literal keystroke — we can't easily mock the inner tmux pane
+      // namespace via deps, so we register a real call recorder via the
+      // capturePane injection (which IS in deps).
+      const deps: ResolveTeamWindowDeps = {
+        buildSuperdoctorCommand: () => "sleep infinity",
+        autoStartSleep: async () => {},
+        autoStartCapturePane: async (sessionName, windowIndex) => {
+          captures.push({ sessionName, windowIndex });
+          const out = captureSequence[Math.min(captureCalls, captureSequence.length - 1)] ?? "";
+          captureCalls += 1;
+          return out;
+        },
+      };
+      // Patch tmux.pane.sendKeys so we can assert what got sent. The
+      // namespace is plain methods; wrapping is direct.
+      const realSendKeys = fx.tmux.pane.sendKeys.bind(fx.tmux.pane);
+      // biome-ignore lint/suspicious/noExplicitAny: needed for test-time monkey-patch
+      (fx.tmux.pane as any).sendKeys = async (opts: Parameters<typeof realSendKeys>[0]) => {
+        sentKeys.push(opts.keys);
+        return await realSendKeys(opts);
+      };
+      try {
+        await reconcileCockpitSession(fx.tmux, "s", teams, logger, deps, { enabled: true });
+      } finally {
+        // biome-ignore lint/suspicious/noExplicitAny: restore
+        (fx.tmux.pane as any).sendKeys = realSendKeys;
+      }
+      expect(sentKeys).toContain("/loop /superdoctor");
+      expect(captures.length).toBeGreaterThanOrEqual(2);
+      expect(logs.some((l) => l.includes("superdoctor auto-started"))).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("t-22453c1e: autoStart=false → no send-keys (operator manual)", async () => {
+    const fx = await spinTmux("cockpit-sd-autostart-off");
+    try {
+      const { logger, logs } = makeLogger();
+      let captureCalls = 0;
+      const sentKeys: string[] = [];
+      const deps: ResolveTeamWindowDeps = {
+        buildSuperdoctorCommand: () => "sleep infinity",
+        autoStartSleep: async () => {},
+        autoStartCapturePane: async () => {
+          captureCalls += 1;
+          return "❯ Try\nauto mode on · tok 0/0";
+        },
+      };
+      const realSendKeys = fx.tmux.pane.sendKeys.bind(fx.tmux.pane);
+      // biome-ignore lint/suspicious/noExplicitAny: monkey-patch
+      (fx.tmux.pane as any).sendKeys = async (opts: Parameters<typeof realSendKeys>[0]) => {
+        sentKeys.push(opts.keys);
+        return await realSendKeys(opts);
+      };
+      try {
+        await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, {
+          enabled: true,
+          autoStart: false,
+        });
+      } finally {
+        // biome-ignore lint/suspicious/noExplicitAny: restore
+        (fx.tmux.pane as any).sendKeys = realSendKeys;
+      }
+      // autoStart=false → no capture poll, no send-keys.
+      expect(captureCalls).toBe(0);
+      expect(sentKeys).not.toContain("/loop /superdoctor");
+      expect(logs.some((l) => l.includes("superdoctor auto-started"))).toBe(false);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("t-22453c1e: timeout when pane never settles → warn + no send-keys", async () => {
+    const fx = await spinTmux("cockpit-sd-autostart-timeout");
+    try {
+      const { logger, logs } = makeLogger();
+      const sentKeys: string[] = [];
+      const deps: ResolveTeamWindowDeps = {
+        buildSuperdoctorCommand: () => "sleep infinity",
+        autoStartSleep: async () => {},
+        autoStartCapturePane: async () => "Loading...\n", // never settles
+      };
+      const realSendKeys = fx.tmux.pane.sendKeys.bind(fx.tmux.pane);
+      // biome-ignore lint/suspicious/noExplicitAny: monkey-patch
+      (fx.tmux.pane as any).sendKeys = async (opts: Parameters<typeof realSendKeys>[0]) => {
+        sentKeys.push(opts.keys);
+        return await realSendKeys(opts);
+      };
+      try {
+        await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, {
+          enabled: true,
+          autoStart: true,
+          autoStartTimeoutSec: 1, // 1s deadline — busy-loops 2 iterations
+        });
+      } finally {
+        // biome-ignore lint/suspicious/noExplicitAny: restore
+        (fx.tmux.pane as any).sendKeys = realSendKeys;
+      }
+      expect(sentKeys).not.toContain("/loop /superdoctor");
+      expect(logs.some((l) => l.includes("not ready after"))).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("t-22453c1e: re-run (idempotent) does NOT re-fire send-keys on pre-existing window", async () => {
+    const fx = await spinTmux("cockpit-sd-autostart-idem");
+    try {
+      const { logger, logs: _logs } = makeLogger();
+      const sentKeys: string[] = [];
+      const deps: ResolveTeamWindowDeps = {
+        buildSuperdoctorCommand: () => "sleep infinity",
+        autoStartSleep: async () => {},
+        autoStartCapturePane: async () => "❯ Try\nauto mode on · tok 0/0",
+      };
+      const realSendKeys = fx.tmux.pane.sendKeys.bind(fx.tmux.pane);
+      // biome-ignore lint/suspicious/noExplicitAny: monkey-patch
+      (fx.tmux.pane as any).sendKeys = async (opts: Parameters<typeof realSendKeys>[0]) => {
+        sentKeys.push(opts.keys);
+        return await realSendKeys(opts);
+      };
+      try {
+        await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, {
+          enabled: true,
+          autoStart: true,
+          autoStartTimeoutSec: 5,
+        });
+        const after1 = sentKeys.filter((k) => k === "/loop /superdoctor").length;
+        // Second run — window already exists, sdJustCreated=false → no
+        // additional send-keys.
+        await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, {
+          enabled: true,
+          autoStart: true,
+          autoStartTimeoutSec: 5,
+        });
+        const after2 = sentKeys.filter((k) => k === "/loop /superdoctor").length;
+        expect(after1).toBe(1);
+        expect(after2).toBe(1); // unchanged — no re-fire
+      } finally {
+        // biome-ignore lint/suspicious/noExplicitAny: restore
+        (fx.tmux.pane as any).sendKeys = realSendKeys;
+      }
     } finally {
       try {
         await fx.tmux.server.killServer();
