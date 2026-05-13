@@ -304,6 +304,45 @@ export async function moveTask(
   });
 }
 
+/** Per t-af159454: flip a task to `blocked` with an audit note in a
+ *  single transaction. Used by `phantom-prune` (doctor --fix + atmux
+ *  stop teardown) to surface auto-prune provenance in `task.note`
+ *  without losing the source-of-truth status flip.
+ *
+ *  Idempotent — if the task is already `blocked` AND the existing
+ *  note already starts with `auto-pruned`, this is a no-op (returns
+ *  `false`). Useful for repeated `--fix` runs.
+ *
+ *  Throws `ConfigError` when the id is unknown. */
+export async function markTaskBlockedWithNote(
+  atmuxDir: string,
+  id: string,
+  note: string,
+): Promise<boolean> {
+  if (await _useSqlite(atmuxDir)) {
+    return await _withDb(atmuxDir, (db, repo) => {
+      return transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        if (cur.status === "blocked" && (cur.note ?? "").startsWith("auto-pruned")) {
+          return false;
+        }
+        repo.upsertTask({ ...cur, status: "blocked", note });
+        return true;
+      });
+    });
+  }
+  let mutated = false;
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
+    if (t.status === "blocked" && (t.note ?? "").startsWith("auto-pruned")) {
+      return t;
+    }
+    mutated = true;
+    return { ...t, status: "blocked", note };
+  });
+  return mutated;
+}
+
 /** Update a task's lane (`fe`/`be`/`db`/`ops`/`test`/`review`/`misc`).
  *  Throws `ConfigError` on miss. Empty-string / `null` clears the lane. */
 export async function setTaskLane(
