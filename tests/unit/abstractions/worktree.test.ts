@@ -21,6 +21,7 @@ import { join } from "node:path";
 import {
   defaultGitSpawn,
   type GitSpawn,
+  initSubmodules,
   isWorktreeDirty,
   listManagedWorktrees,
   provisionWorktree,
@@ -335,6 +336,161 @@ describe("sanitizeBranchSegment", () => {
     expect(sanitizeBranchSegment("name with spaces")).toBe("name-with-spaces");
     expect(sanitizeBranchSegment("a.b.c")).toBe("a-b-c");
     expect(sanitizeBranchSegment("nested/path")).toBe("nested-path");
+  });
+});
+
+// ---------- initSubmodules (ADR-088) ----------
+
+describe("initSubmodules", () => {
+  test("invokes `git submodule update --init --recursive` at wtPath", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const git: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return ok("");
+    };
+    await initSubmodules("/wt/alice", { git });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(["-C", "/wt/alice", "submodule", "update", "--init", "--recursive"]);
+  });
+
+  test("non-zero exit warns but does NOT throw (best-effort)", async () => {
+    const warnings: string[] = [];
+    const git: GitSpawn = async () => fail("fatal: clone failed for submodule 'foo'", 1);
+    // Should NOT throw — we want warn-and-continue semantics.
+    await expect(
+      initSubmodules("/wt/alice", {
+        git,
+        warn: (m) => {
+          warnings.push(m);
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("initSubmodules");
+    expect(warnings[0]).toContain("rc=1");
+    expect(warnings[0]).toContain("clone failed for submodule 'foo'");
+    expect(warnings[0]).toContain("/wt/alice");
+  });
+
+  test("rc=0 + empty stdout (no submodules in repo) is a silent no-op", async () => {
+    const warnings: string[] = [];
+    const git: GitSpawn = async () => ok("");
+    await initSubmodules("/wt/alice", {
+      git,
+      warn: (m) => {
+        warnings.push(m);
+      },
+    });
+    expect(warnings).toHaveLength(0);
+  });
+
+  test("idempotent — second call also runs submodule update (git short-circuits internally)", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const git: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return ok("");
+    };
+    await initSubmodules("/wt/alice", { git });
+    await initSubmodules("/wt/alice", { git });
+    expect(calls).toHaveLength(2);
+    // Same argv both times — caller signature is idempotent.
+    expect(calls[0]).toEqual(calls[1]);
+  });
+});
+
+// ---------- provisionWorktree + initSubmodules opt-in (ADR-088) ----------
+
+describe("provisionWorktree initSubmodules opt-in", () => {
+  test("provisionWorktree({initSubmodules: false}) does NOT call submodule update", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const git: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return fail("", 1); // branch absent
+      return ok("");
+    };
+    const r = await provisionWorktree(
+      "/repo",
+      "geoyws",
+      "geoyws-alice",
+      "/repo/.atmux/worktrees/alice",
+      { git, initSubmodules: false },
+    );
+    expect(r.created).toBe(true);
+    expect(calls.some((c) => c.includes("submodule"))).toBe(false);
+  });
+
+  test("provisionWorktree({initSubmodules: true}) calls submodule update once after worktree-add", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const git: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return fail("", 1);
+      return ok("");
+    };
+    const r = await provisionWorktree(
+      "/repo",
+      "geoyws",
+      "geoyws-alice",
+      "/repo/.atmux/worktrees/alice",
+      { git, initSubmodules: true },
+    );
+    expect(r.created).toBe(true);
+    const subCalls = calls.filter((c) => c.includes("submodule"));
+    expect(subCalls).toHaveLength(1);
+    expect(subCalls[0]).toEqual([
+      "-C",
+      "/repo/.atmux/worktrees/alice",
+      "submodule",
+      "update",
+      "--init",
+      "--recursive",
+    ]);
+    // Submodule call comes AFTER worktree add (it's the last call).
+    expect(calls[calls.length - 1]).toBe(subCalls[0]);
+  });
+
+  test("provisionWorktree idempotent no-op path (worktree already present on wtBranch) does NOT call submodule update", async () => {
+    // Pre-existing worktree on the requested branch → `created: false`.
+    // ADR-088 §"Implementation surface": don't reach into operator state.
+    const stdout = porcelainBlock("/repo/.atmux/worktrees/bob", "geoyws-bob");
+    const calls: ReadonlyArray<string>[] = [];
+    const git: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return ok(stdout);
+    };
+    const r = await provisionWorktree(
+      "/repo",
+      "geoyws",
+      "geoyws-bob",
+      "/repo/.atmux/worktrees/bob",
+      { git, initSubmodules: true },
+    );
+    expect(r.created).toBe(false);
+    expect(calls.some((c) => c.includes("submodule"))).toBe(false);
+  });
+
+  test("submodule update failure does NOT abort the provision (warn-and-continue)", async () => {
+    const warnings: string[] = [];
+    const git: GitSpawn = async (argv) => {
+      if (argv.includes("rev-parse")) return fail("", 1);
+      if (argv.includes("submodule")) return fail("fatal: clone failed for submodule 'bar'", 1);
+      return ok("");
+    };
+    const r = await provisionWorktree(
+      "/repo",
+      "geoyws",
+      "geoyws-alice",
+      "/repo/.atmux/worktrees/alice",
+      {
+        git,
+        initSubmodules: true,
+        warn: (m) => {
+          warnings.push(m);
+        },
+      },
+    );
+    expect(r.created).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("clone failed for submodule 'bar'");
   });
 });
 
