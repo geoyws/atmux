@@ -791,4 +791,133 @@ describe("findCronOrphans", () => {
   });
 });
 
+// ---------- ADR-086: cockpit-scoped cron block ----------
+
+describe("renderCockpitCronBlock", () => {
+  test("renders the canonical pulse line with default interval (5)", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = renderCockpitCronBlock({ atmuxBin: "/usr/local/bin/atmux" });
+    expect(out).toContain("# >>> atmux:cockpit");
+    expect(out).toContain("# <<< atmux:cockpit");
+    expect(out).toMatch(/^\*\/5 \* \* \* \* PATH=/m);
+    expect(out).toContain("/usr/local/bin/atmux pulse");
+    expect(out).toContain(">> /root/.atmux/logs/pulse.log 2>&1");
+  });
+
+  test("honors intervalMins override (10)", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = renderCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      pulseIntervalMins: 10,
+    });
+    expect(out).toMatch(/^\*\/10 \* \* \* \* /m);
+  });
+
+  test("--config flag baked in when cockpitConfigPath is set", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = renderCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      cockpitConfigPath: "/alt/cockpit.json",
+    });
+    expect(out).toContain("atmux pulse --config /alt/cockpit.json");
+  });
+
+  test("logPath override honored", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = renderCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      logPath: "/var/log/pulse.log",
+    });
+    expect(out).toContain(">> /var/log/pulse.log 2>&1");
+  });
+
+  test("byte-identical output for same opts (idempotence guarantee)", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const a = renderCockpitCronBlock({ atmuxBin: "/u/atmux" });
+    const b = renderCockpitCronBlock({ atmuxBin: "/u/atmux" });
+    expect(a).toBe(b);
+  });
+});
+
+describe("stripCockpitBlock", () => {
+  test("removes the cockpit marker-fenced block", async () => {
+    const { stripCockpitBlock } = await import("../../../src/core/cron.ts");
+    const body = [
+      "FOO=bar",
+      "# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand",
+      "*/5 * * * * /u/atmux pulse",
+      "# <<< atmux:cockpit",
+      "OTHER=stuff",
+    ].join("\n");
+    expect(stripCockpitBlock(body)).toBe(["FOO=bar", "OTHER=stuff"].join("\n"));
+  });
+
+  test("empty body returns empty", async () => {
+    const { stripCockpitBlock } = await import("../../../src/core/cron.ts");
+    expect(stripCockpitBlock("")).toBe("");
+  });
+
+  test("no cockpit block → body returned verbatim", async () => {
+    const { stripCockpitBlock } = await import("../../../src/core/cron.ts");
+    expect(stripCockpitBlock("PATH=/bin\n# other\n")).toBe("PATH=/bin\n# other\n");
+  });
+});
+
+describe("installCockpitCronBlock", () => {
+  test("appends fresh block when current is null", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: null });
+    expect(out).toContain("# >>> atmux:cockpit");
+    expect(out).toContain("atmux pulse");
+    // ensureEnvPreamble should fire — atmux:cockpit qualifies.
+    expect(out).toContain("SHELL=/bin/bash");
+  });
+
+  test("re-install is byte-identical (idempotence)", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const first = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: null });
+    const second = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: first });
+    expect(second).toBe(first);
+  });
+
+  test("does NOT touch per-team blocks", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const existing = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/x/.atmux /u/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const out = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: existing });
+    expect(out).toContain("atmux:team=alpha");
+    expect(out).toContain("atmux:cockpit");
+  });
+
+  test("replaces an existing cockpit block (different interval)", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const stale = installCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      pulseIntervalMins: 5,
+      current: null,
+    });
+    const fresh = installCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      pulseIntervalMins: 10,
+      current: stale,
+    });
+    // Old 5-min line replaced by new 10-min line.
+    expect(fresh).not.toContain("*/5 * * * * PATH=");
+    expect(fresh).toContain("*/10 * * * * PATH=");
+    // Only one cockpit block present.
+    expect(fresh.split("# >>> atmux:cockpit").length - 1).toBe(1);
+  });
+
+  test("env preamble landing for cockpit-only crontab", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: "" });
+    expect(out).toContain("SHELL=/bin/bash");
+    expect(out).toContain("PATH=/usr/local/sbin");
+    expect(out).toContain("TERM=xterm-256color");
+  });
+});
+
 
