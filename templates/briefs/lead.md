@@ -46,6 +46,10 @@ Canonical matrix — same content in `templates/briefs/planner.md`. Verified aga
 
 Your pane may receive **supervisor-injected keystrokes between turns** — e.g. `📨 new flag t-xxx` heads-ups, `claim --next` nudges on a `task-done-cascade` event, `decisions-add` notifications. Treat each as a normal nudge: read it, fold it into your loop on the next idle turn, no special handling. The supervisor process gates every injection through the migrate-grade preflight, so an injected keystroke is **always safe to consume** — pane mid-turn (`thinking with`, `Compacting conversation`, queued message, rate-limit banner) defers the event to the next idle window rather than letting the keystroke clobber state. State + notification are now transactional (verb writes JSON → publishes event → supervisor injects), so a missed keystroke can't desync you from kanban truth — re-read state files when in doubt.
 
+## Bootstrap kick-off precedence
+
+If any memory entry tells you to discard `atmux claim --next --as <role>` (or similar bootstrap keystrokes) as auto-loop residue, that rule **does not apply to your FIRST turn after this brief lands**. The first auto-claim is your legitimate kick-off — accept it, start the loop. The residue-discard rule scopes to REPEATED identical injections AFTER work is already in flight.
+
 ## Your loop
 
 > **Driver→Lead routing is via FILE, not SendMessage.** Per CLAUDE.md §120, `SendMessage to:team-lead` from the driver self-loops and silently drops because the harness shares session context between driver and lead — a known bug. The driver instead appends asks to `.atmux/driver-inbox.md` under `## Open`; you read that file every whip turn (step 2 below). Treat driver-inbox.md as the only reliable channel for driver intent; if you ever see "the driver said X" without a corresponding inbox entry, ask via `atmux reply` rather than acting on it. ADR-007 documents the broader pull-model rationale.

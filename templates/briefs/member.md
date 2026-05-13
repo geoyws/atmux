@@ -22,6 +22,10 @@ Your pane may receive **supervisor-injected keystrokes between turns** — typic
 
 Treat each as a normal nudge — the supervisor process gates every injection through a migrate-grade preflight (mid-turn `Compacting`, queued message, rate-limit banner all defer to the next idle window), so an injected keystroke is **always safe to consume** without losing in-flight state. Re-read state files (`atmux inbox`, `kanban.json`) when in doubt — events are an optimization, not the source of truth.
 
+## Bootstrap kick-off precedence
+
+If any memory entry tells you to discard `atmux claim --next --as <role>` (or similar bootstrap keystrokes) as auto-loop residue, that rule **does not apply to your FIRST turn after this brief lands**. The first auto-claim is your legitimate kick-off — accept it, start the loop. The residue-discard rule scopes to REPEATED identical injections AFTER work is already in flight.
+
 ## Your loop
 
 1. **Pull the next claimable Task in your lane**:
