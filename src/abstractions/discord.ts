@@ -102,7 +102,15 @@ export type DiscordTemplate =
   // on verdict change OR sustained-urgency dedup expiry. Header emoji is
   // chosen per-verdict (💓 / 📊 / 🛑 / 🚨) — verify the four are in
   // the per-bullet allowlist + the CategoryEmoji union above.
-  | "pulse-verdict";
+  | "pulse-verdict"
+  // ADR-085 §Three surfaces #2: approval-debt watcher. Fired by
+  // `src/verbs/whip.ts` §2.5 each tick when `scanNeedsApproval()`
+  // returns `total > 0`. Renderer below (`renderWhipNeedsApproval`);
+  // skipped entirely when total is 0 (no ✅-all spam). No dedup —
+  // operator sees the same proposed ADRs each tick because they're
+  // STILL proposed; mitigation is `(deferred: <reason>)` annotation
+  // per ADR-085 §Consequences.
+  | "whip-needs-approval";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1482,4 +1490,122 @@ function pulseCategoryFor(verdict: PulseVerdictLiteral): CategoryEmoji {
     case "🚨 Need you":
       return "🚨";
   }
+}
+
+// ---------- ADR-085 §Three surfaces #2 [whip-needs-approval] ----------
+
+/** Per-entry input shape — mirrors `NeedsApprovalEntry` from
+ *  `src/lib/needs-approval.ts` without an import cycle (abstractions
+ *  must not import from src/lib/* per ADR-003). The lib's report shape
+ *  is structurally compatible; the verb hands us individual entries. */
+export interface NeedsApprovalRendererEntry {
+  id: string;
+  subject: string;
+  ageMin: number;
+}
+
+export interface WhipNeedsApprovalOpts {
+  team: string;
+  /** Proposed-ADR bucket entries. Empty array = section dropped. */
+  adr: ReadonlyArray<NeedsApprovalRendererEntry>;
+  /** Untriaged driver-inbox entries. Empty array = section dropped. */
+  inbox: ReadonlyArray<NeedsApprovalRendererEntry>;
+  /** Long-blocked kanban entries. Empty array = section dropped. */
+  kanban: ReadonlyArray<NeedsApprovalRendererEntry>;
+  /** Optional test override of the wall-clock — drives footer + chunk
+   *  splits identically to other renderers. */
+  whenMs?: number;
+}
+
+/** ADR-085 OQ2: hard-cap per bucket. Overflow surfaces as "+N more"
+ *  tail per the recommended default — driver reaches for
+ *  `atmux status --json | jq .needsApproval` for the full list. */
+const NEEDS_APPROVAL_PER_BUCKET_MAX = 5;
+
+/**
+ * Build the `[whip-needs-approval]` Discord send opts per CLAUDE.md
+ * §Discord message format §6.
+ *
+ * Caller (whip §2.5) gates emission on `total > 0` — passing a zero-
+ * total report through this renderer still produces a valid payload
+ * (header + verdict + footer; bullets all empty), but callers
+ * shouldn't ship that to Discord. The skip-zero gate lives at the
+ * call site, NOT here, so tests of the renderer aren't tangled with
+ * call-site policy.
+ *
+ * Sections in fixed order — ADR / Inbox / Kanban — matching ADR-085
+ * §Three surfaces #2. Empty buckets render as label-less skips (no
+ * `**Proposed ADRs (0)**` waste).
+ */
+export function renderWhipNeedsApproval(opts: WhipNeedsApprovalOpts): DiscordSendOpts {
+  const total = opts.adr.length + opts.inbox.length + opts.kanban.length;
+  const sections: DiscordSection[] = [];
+  if (opts.adr.length > 0) {
+    sections.push({
+      label: `📋 **Proposed ADRs (${opts.adr.length})**`,
+      bullets: makeBucketBullets(opts.adr),
+    });
+  }
+  if (opts.inbox.length > 0) {
+    sections.push({
+      label: `⏳ **Untriaged asks (${opts.inbox.length})**`,
+      bullets: makeBucketBullets(opts.inbox),
+    });
+  }
+  if (opts.kanban.length > 0) {
+    sections.push({
+      label: `🛑 **Blocked tasks (${opts.kanban.length})**`,
+      bullets: makeBucketBullets(opts.kanban),
+    });
+  }
+  const out: DiscordSendOpts = {
+    template: "whip-needs-approval",
+    team: opts.team,
+    category: "📋",
+    verdict: `📋 ${total} item${total === 1 ? "" : "s"} awaiting triage`,
+    sections,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+/** Render up to NEEDS_APPROVAL_PER_BUCKET_MAX bullets + an overflow
+ *  `+N more` tail when the bucket has more. Each bullet is
+ *  bullet80-truncated AND emoji-prefixed with 📍 (allowed per ALLOWED_
+ *  BULLET_PREFIX) so the validator accepts it. ageMin formatted via
+ *  the shared compact-duration grammar (CLAUDE.md §Duration formatting). */
+function makeBucketBullets(
+  entries: ReadonlyArray<NeedsApprovalRendererEntry>,
+): ReadonlyArray<string> {
+  const visible = entries.slice(0, NEEDS_APPROVAL_PER_BUCKET_MAX);
+  const bullets: string[] = [];
+  for (const e of visible) {
+    bullets.push(naBullet80(`📍 ${formatAge(e.ageMin)} · ${e.subject}`));
+  }
+  if (entries.length > NEEDS_APPROVAL_PER_BUCKET_MAX) {
+    const overflow = entries.length - NEEDS_APPROVAL_PER_BUCKET_MAX;
+    bullets.push(`📍 +${overflow} more`);
+  }
+  return bullets;
+}
+
+/** Compact-duration formatter matching CLAUDE.md §Duration formatting:
+ *  <60min → `Nmin`; ≥60min → `HhMm` or `Hh` on the hour. */
+function formatAge(ageMin: number): string {
+  if (ageMin < 60) return `${ageMin}min`;
+  const hours = Math.floor(ageMin / 60);
+  const rem = ageMin % 60;
+  return rem === 0 ? `${hours}h` : `${hours}h${rem}m`;
+}
+
+/** Inline 80-grapheme truncation — same shape as the bullet80 helper
+ *  exported from whip.ts but kept here to avoid a discord → whip import
+ *  cycle (per ADR-003 abstractions must not import from verbs). Reuses
+ *  the module-private GRAPHEME_SEG segmenter declared near `graphemes()`. */
+function naBullet80(s: string): string {
+  const max = 80;
+  const segs: string[] = [];
+  for (const seg of GRAPHEME_SEG.segment(s)) segs.push(seg.segment);
+  if (segs.length <= max) return s;
+  return `${segs.slice(0, max - 1).join("")}…`;
 }

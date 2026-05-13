@@ -134,6 +134,13 @@ export const TeamWhip = z
     /** Whitelist of recipe ids the cursor may auto-apply. Default []. */
     selfHealRecipes: z.array(z.string()).default([]),
 
+    // ---------- ADR-085 needs-approval watcher ----------
+    /** Whip §2.5: scan proposed-ADR / untriaged-inbox / long-blocked-
+     *  kanban buckets each tick, fire Discord ping on `total > 0`,
+     *  append a lead-events JSONL row regardless. Default true.
+     *  Setting `false` skips scan + ping + JSONL — pure opt-out. */
+    needsApprovalEnabled: z.boolean().default(true),
+
     // ---------- ADR-056 account-swap opt-in ----------
     /** Ordered fallback chain of Claude accounts. Default []. */
     accountFallback: z.array(z.string()).default([]),

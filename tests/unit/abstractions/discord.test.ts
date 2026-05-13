@@ -27,6 +27,7 @@ import {
   renderWhipBudgetResume,
   renderWhipBudgetWarning,
   renderWhipConfigDrift,
+  renderWhipNeedsApproval,
   resolveWebhookUrl,
   send,
 } from "../../../src/abstractions/discord.ts";
@@ -1811,5 +1812,130 @@ describe("renderPulseVerdict", () => {
     const written = await readFile(recorder, "utf8");
     expect(written).toContain("[pulse-verdict]");
     expect(written).toContain("3 commits in 30min");
+  });
+});
+
+// ---------- ADR-085 §Three surfaces #2 — renderWhipNeedsApproval ----------
+
+describe("renderWhipNeedsApproval", () => {
+  function adrEntry(
+    id: string,
+    subject: string,
+    ageMin = 60,
+  ): {
+    id: string;
+    subject: string;
+    ageMin: number;
+  } {
+    return { id, subject, ageMin };
+  }
+
+  test("renders all three bucket sections when each has entries", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [adrEntry("085-foo", "ADR-085 needs-approval", 120)],
+      inbox: [adrEntry("planner-question", "planner needs answer", 45)],
+      kanban: [adrEntry("t-aaaa1111", "long-blocked task", 240)],
+    });
+    expect(out.template).toBe("whip-needs-approval");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("📋");
+    expect(out.verdict).toContain("3 items awaiting triage");
+    const labels = (out.sections ?? []).map((s) => s.label);
+    expect(labels).toEqual([
+      "📋 **Proposed ADRs (1)**",
+      "⏳ **Untriaged asks (1)**",
+      "🛑 **Blocked tasks (1)**",
+    ]);
+  });
+
+  test("singular `1 item` verdict copy when total=1", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [adrEntry("a", "x", 1)],
+      inbox: [],
+      kanban: [],
+    });
+    expect(out.verdict).toContain("1 item awaiting triage");
+    expect(out.verdict).not.toContain("1 items");
+  });
+
+  test("empty buckets are dropped entirely (no `(0)` waste)", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [adrEntry("a", "x", 1)],
+      inbox: [],
+      kanban: [],
+    });
+    const labels = (out.sections ?? []).map((s) => s.label);
+    expect(labels).toEqual(["📋 **Proposed ADRs (1)**"]);
+  });
+
+  test("OQ2 hard-cap: 5 per bucket + `+N more` tail", () => {
+    const six = Array.from({ length: 6 }, (_, i) => adrEntry(`adr-${i}`, `subject ${i}`, 10 + i));
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: six,
+      inbox: [],
+      kanban: [],
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets.length).toBe(6); // 5 visible + 1 overflow
+    expect(bullets[5]).toBe("📍 +1 more");
+  });
+
+  test("exactly 5 entries → no `+0 more` tail", () => {
+    const five = Array.from({ length: 5 }, (_, i) => adrEntry(`adr-${i}`, `subject ${i}`, 10));
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: five,
+      inbox: [],
+      kanban: [],
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets.length).toBe(5);
+    for (const b of bullets) {
+      expect(b).not.toContain("+0 more");
+    }
+  });
+
+  test("ageMin compact-duration grammar: <60min → Nmin; ≥60 → HhMm", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [
+        adrEntry("a", "fresh", 47),
+        adrEntry("b", "two-hour", 120),
+        adrEntry("c", "mixed", 125),
+      ],
+      inbox: [],
+      kanban: [],
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets[0]).toContain("47min");
+    expect(bullets[1]).toContain("2h ");
+    expect(bullets[2]).toContain("2h5m");
+  });
+
+  test("zero total still produces a valid payload (caller gates emission)", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [],
+      inbox: [],
+      kanban: [],
+    });
+    expect(out.template).toBe("whip-needs-approval");
+    expect(out.verdict).toContain("0 items");
+    expect(out.sections).toEqual([]);
+  });
+
+  test("whenMs threaded through for test injection", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [adrEntry("a", "x", 1)],
+      inbox: [],
+      kanban: [],
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
   });
 });
