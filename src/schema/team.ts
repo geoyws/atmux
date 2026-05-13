@@ -347,6 +347,26 @@ export const TeamGitter = z
   .strict();
 export type TeamGitter = z.infer<typeof TeamGitter>;
 
+/**
+ * t-e89c03f7: observability sub-shape — opt-in toggles for forensic
+ * data collection that's useful for offline analysis but isn't load-
+ * bearing for any live verb. Symmetric with ADR-062 lane-tick gating
+ * (the same field shape is used to opt into expensive observability
+ * paths without making them mandatory).
+ */
+export const TeamObservability = z
+  .object({
+    /** t-e89c03f7: when true, every UNKNOWN classification from
+     *  `classifyPane` appends a redacted-evidence row to
+     *  `<atmuxDir>/logs/pane-state-unknown.jsonl`. Used for the
+     *  Phase B classifier-extension pass (top-N pattern catalog
+     *  refinement). Default false — opt-in to avoid disk churn on
+     *  teams that aren't analyzing the data. */
+    paneStateUnknownLog: z.boolean().optional(),
+  })
+  .strict();
+export type TeamObservability = z.infer<typeof TeamObservability>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -421,6 +441,8 @@ export const Team = z
     unblocker: TeamUnblocker.optional(),
     /** ADR-080 §B2: gitter-member knobs (auto-done scan repo path). */
     gitter: TeamGitter.optional(),
+    /** t-e89c03f7: observability toggles (forensic data collection). */
+    observability: TeamObservability.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

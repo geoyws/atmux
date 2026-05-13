@@ -7,14 +7,18 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  buildUnknownPaneEvent,
   classifyPane,
   classifyText,
   isRetryable,
   isSendable,
+  maybeLogUnknownPane,
   type PaneClassification,
   type PaneState,
   REFUSAL_SEVERITY,
   RETRY_POLICY,
+  redactSensitive,
+  serializeUnknownEvent,
 } from "../../../src/core/pane-state.ts";
 
 const FIXED_NOW = 1_700_000_000_000;
@@ -311,5 +315,201 @@ describe("PaneState exhaustiveness", () => {
   test("PaneClassification shape is fully typed", () => {
     const c: PaneClassification = { state: "READY", evidence: "ok", capturedAt: 1 };
     expect(c.state).toBe("READY");
+  });
+});
+
+// ---------- t-e89c03f7: UNKNOWN-pane forensic logging ----------
+
+describe("redactSensitive", () => {
+  test("redacts sk- tokens", () => {
+    const got = redactSensitive("api error: sk-ant-api03-AbCd1234EfGh5678IjKlMnOp\n");
+    expect(got).toContain("[REDACTED:sk]");
+    expect(got).not.toContain("sk-ant-api03");
+  });
+
+  test("redacts pat- tokens", () => {
+    const got = redactSensitive("PAT='pat-1234567890abcdef1234567890abcdef'");
+    expect(got).toContain("[REDACTED:pat]");
+    expect(got).not.toContain("pat-1234567890");
+  });
+
+  test("redacts ghp_ GitHub PATs", () => {
+    const got = redactSensitive("ghp_ABCDEFGHIJKLMNOPQRSTUVWX1234567890");
+    expect(got).toContain("[REDACTED:gh]");
+    expect(got).not.toContain("ghp_ABCDEFGHIJ");
+  });
+
+  test("redacts $HOME/.claude paths", () => {
+    const got = redactSensitive("CLAUDE_CONFIG_DIR=/root/.claude claude --plugin-dir");
+    expect(got).toContain("[REDACTED:path]/.claude");
+    expect(got).not.toContain("/root/.claude ");
+  });
+
+  test("redacts $HOME/.claude-personal (suffixed)", () => {
+    const got = redactSensitive("CLAUDE_CONFIG_DIR=/Users/jdoe/.claude-personal");
+    expect(got).toContain("[REDACTED:path]/.claude-personal");
+  });
+
+  test("leaves token-shaped-but-too-short strings alone (false positive guard)", () => {
+    // sk-foo with only 4 chars after the prefix doesn't trigger the
+    // 20+ char minimum match — operator code that uses `sk-foo` as a
+    // variable name survives.
+    const got = redactSensitive("var sk-foo = 'literal';\n");
+    expect(got).toContain("sk-foo");
+    expect(got).not.toContain("[REDACTED:sk]");
+  });
+});
+
+describe("buildUnknownPaneEvent", () => {
+  test("captures target + timestamps + redacted evidence", () => {
+    const event = buildUnknownPaneEvent({
+      target: "atmux-x:🧭lead",
+      text: "weird pane content with sk-ant-api03-AbCd1234EfGh5678IjKlMnOp inside",
+      capturedAt: 1_700_000_000_000,
+      now: () => 1_700_000_001_000,
+    });
+    expect(event.target).toBe("atmux-x:🧭lead");
+    expect(event.capturedAt).toBe(1_700_000_000_000);
+    expect(event.ts).toBe(1_700_000_001_000);
+    expect(event.evidenceFirst200chars).toContain("[REDACTED:sk]");
+    expect(event.evidenceFirst200chars).not.toContain("sk-ant-api03");
+  });
+
+  test("truncates evidence to 200 chars", () => {
+    const event = buildUnknownPaneEvent({
+      target: "atmux-x:lead",
+      text: "a".repeat(500),
+      capturedAt: 100,
+      now: () => 200,
+    });
+    expect(event.evidenceFirst200chars.length).toBe(200);
+  });
+});
+
+describe("serializeUnknownEvent", () => {
+  test("produces a JSONL line with trailing newline", () => {
+    const line = serializeUnknownEvent({
+      ts: 1,
+      target: "t",
+      evidenceFirst200chars: "x",
+      capturedAt: 2,
+    });
+    expect(line.endsWith("\n")).toBe(true);
+    const parsed = JSON.parse(line.trim());
+    expect(parsed.target).toBe("t");
+  });
+});
+
+describe("maybeLogUnknownPane", () => {
+  test("no-op when team.observability.paneStateUnknownLog !== true", async () => {
+    const appended: { path: string; content: string }[] = [];
+    await maybeLogUnknownPane({
+      team: { observability: {} }, // field absent → opt-out by default
+      atmuxDir: "/srv/.atmux",
+      target: "t",
+      text: "anything",
+      capturedAt: 1,
+      appendFn: async (p, c) => {
+        appended.push({ path: p, content: c });
+      },
+      now: () => 2,
+    });
+    expect(appended).toEqual([]);
+  });
+
+  test("no-op when team.observability is absent", async () => {
+    const appended: { path: string; content: string }[] = [];
+    await maybeLogUnknownPane({
+      team: {},
+      atmuxDir: "/srv/.atmux",
+      target: "t",
+      text: "anything",
+      capturedAt: 1,
+      appendFn: async (p, c) => {
+        appended.push({ path: p, content: c });
+      },
+      now: () => 2,
+    });
+    expect(appended).toEqual([]);
+  });
+
+  test("opt-in flag true → appends to <atmuxDir>/logs/pane-state-unknown.jsonl", async () => {
+    const appended: { path: string; content: string }[] = [];
+    await maybeLogUnknownPane({
+      team: { observability: { paneStateUnknownLog: true } },
+      atmuxDir: "/srv/.atmux",
+      target: "atmux-x:🧭lead",
+      text: "weird content with /root/.claude embedded path",
+      capturedAt: 1_000,
+      appendFn: async (p, c) => {
+        appended.push({ path: p, content: c });
+      },
+      now: () => 2_000,
+    });
+    expect(appended.length).toBe(1);
+    expect(appended[0]?.path).toBe("/srv/.atmux/logs/pane-state-unknown.jsonl");
+    const event = JSON.parse(appended[0]?.content.trim() ?? "{}");
+    expect(event.target).toBe("atmux-x:🧭lead");
+    expect(event.ts).toBe(2_000);
+    expect(event.capturedAt).toBe(1_000);
+    expect(event.evidenceFirst200chars).toContain("[REDACTED:path]/.claude");
+  });
+
+  test("appendFn throw is swallowed (best-effort observability)", async () => {
+    // Disk full / perms / fs-on-fire — must not propagate to caller.
+    await maybeLogUnknownPane({
+      team: { observability: { paneStateUnknownLog: true } },
+      atmuxDir: "/srv/.atmux",
+      target: "t",
+      text: "x",
+      capturedAt: 1,
+      appendFn: async () => {
+        throw new Error("disk on fire");
+      },
+      now: () => 2,
+    });
+    // Reaching this line is the assertion — no throw escaped.
+    expect(true).toBe(true);
+  });
+});
+
+describe("classifyPane unknownLogger opt", () => {
+  test("logger fires only on UNKNOWN state", async () => {
+    const logCalls: { target: string }[] = [];
+    const logger = async (args: { target: string }): Promise<void> => {
+      logCalls.push({ target: args.target });
+    };
+    // READY pane — no log.
+    await classifyPane(
+      "t1",
+      async () => "❯\n",
+      () => 1,
+      { unknownLogger: logger },
+    );
+    expect(logCalls).toEqual([]);
+
+    // UNKNOWN pane — log fires.
+    await classifyPane(
+      "t2",
+      async () => "asdfqwertyxxx no patterns match",
+      () => 2,
+      { unknownLogger: logger },
+    );
+    expect(logCalls.length).toBe(1);
+    expect(logCalls[0]?.target).toBe("t2");
+  });
+
+  test("logger throw doesn't propagate (best-effort)", async () => {
+    const result = await classifyPane(
+      "t",
+      async () => "asdfqwertyxxx",
+      () => 1,
+      {
+        unknownLogger: async () => {
+          throw new Error("logger failed");
+        },
+      },
+    );
+    expect(result.state).toBe("UNKNOWN");
   });
 });
