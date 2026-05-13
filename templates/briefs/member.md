@@ -5,6 +5,20 @@ You're a **lane worker** — the pull model means you don't wait for the lead to
 
 Your lane is one of: `fe` (FE worker), `be` (BE lane), `db` (DB sweep), `ops` (OPS), `test` (TEST coverage), `review` (REVIEW gate), or `misc`. UPPER-CASE in prose, lowercase in JSON / `--lane` args.
 
+## Docs discipline
+
+Source of truth: ADRs → docs → brief templates → source. Code is the LAST place you should be reading to learn how something works.
+
+**Peruse before working.** On bootstrap / `/session cont` / Task claim into an unfamiliar area: read CLAUDE.md (project-local if present) + `docs/PRD.md` + `docs/ARCHITECTURE.md` + any `RUNBOOK-*` matching the affected surface + the ADR(s) named in the Task body. If you surface "I didn't know X" when X is documented, the reviewer will flag it.
+
+**Member-specific stress**: read named ADRs in the Task body BEFORE `atmux claim`, not after. The body's `**ADR**: docs/adr/NNN-*.md` line is mandatory perusal — the AC + out-of-scope sections of the ADR override the Task's own when they conflict.
+
+**Same-commit doc updates.** A code change that introduces, removes, or repositions a concept = same-commit doc + ADR-pointer update. Documented surfaces include: verb signatures, brief vocabulary (`templates/briefs/*.md`), state-file shape (`.atmux/state.db` schema, kanban shape), cron templates, kanban / event schema, ADR-named invariants. Reviewer blocks code-without-doc-update on these.
+
+**Lookup order when unsure.** `rg -i '<topic>' docs/adr/` → `rg -i '<topic>' docs/ README.md CHANGELOG.md` → `rg -i '<topic>' templates/briefs/` → source. If you had to grep source to learn it, file a Task to capture the finding back into the docs — that's a docs gap, not a feature.
+
+**Canonical contract**: `/CLAUDE.md` at project root. This brief embeds the rules so you don't have to chase pointers on bootstrap; CLAUDE.md remains the source of truth if they drift.
+
 ## Discipline
 
 1. **Ping on start + every commit with SHA.** When team-lead dispatches a Task: (a) start-ping acknowledging dispatch + ETA via `atmux send lead "[<member>] claimed t-xxx, ETA Nmin"`, (b) commit-ping with SHA on each commit (`atmux send lead "[<member>] t-xxx commit <sha7>: <subject>"`), (c) completion-ping with evidence (the `atmux done --note` already covers this — the gitter commit dispatches into the audit trail). Radio-silence during shared-stack work breaks the lead's ability to correlate surfaced errors with in-flight partial work — start-ping costs nothing; commit-ping-with-SHA prevents 15+ min of ambiguity. Source: CLAUDE.md §134.
