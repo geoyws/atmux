@@ -13,6 +13,7 @@ import type { Database } from "bun:sqlite";
 import {
   type Complaint,
   Complaint as ComplaintSchema,
+  type ComplaintSourceKind,
   type ComplaintStatus,
 } from "../../schema/complaints.ts";
 
@@ -29,6 +30,9 @@ interface ComplaintRow {
   resolved_at: number | null;
   resolved_by: string | null;
   related_task_id: string | null;
+  source_kind: string | null;
+  source_id: string | null;
+  target_team: string | null;
   extra: string | null;
 }
 
@@ -47,6 +51,9 @@ export function complaintFromRow(row: ComplaintRow): Complaint {
     resolvedAt: row.resolved_at,
     resolvedBy: row.resolved_by,
     relatedTaskId: row.related_task_id,
+    sourceKind: row.source_kind,
+    sourceId: row.source_id,
+    targetTeam: row.target_team,
     extra,
   });
 }
@@ -63,6 +70,9 @@ export function complaintToRow(c: Complaint): ComplaintRow {
     resolved_at: c.resolvedAt ?? null,
     resolved_by: c.resolvedBy ?? null,
     related_task_id: c.relatedTaskId ?? null,
+    source_kind: c.sourceKind ?? null,
+    source_id: c.sourceId ?? null,
+    target_team: c.targetTeam ?? null,
     extra: c.extra && Object.keys(c.extra).length > 0 ? JSON.stringify(c.extra) : null,
   };
 }
@@ -72,6 +82,11 @@ export function complaintToRow(c: Complaint): ComplaintRow {
 export interface ListComplaintsOpts {
   /** Filter by status. Omit for all statuses. */
   status?: ComplaintStatus;
+  /** Filter by source_kind (v3 / t-e5e5d576). Allowlist-enforced at
+   *  the verb; schema is free-form so unknown values reach here. */
+  sourceKind?: ComplaintSourceKind | string;
+  /** Filter by target_team (v3). Exact match. */
+  targetTeam?: string;
   /** Cap result set. Default `1000`. */
   limit?: number;
 }
@@ -86,8 +101,8 @@ export class ComplaintsRepo {
         `INSERT INTO complaints (
             id, opened_at, opened_by, incident_summary, root_cause,
             preventive_ask, status, resolved_at, resolved_by,
-            related_task_id, extra
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            related_task_id, source_kind, source_id, target_team, extra
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.id,
@@ -100,6 +115,9 @@ export class ComplaintsRepo {
         row.resolved_at,
         row.resolved_by,
         row.related_task_id,
+        row.source_kind,
+        row.source_id,
+        row.target_team,
         row.extra,
       );
   }
@@ -114,16 +132,29 @@ export class ComplaintsRepo {
 
   list(opts: ListComplaintsOpts = {}): Complaint[] {
     const limit = opts.limit ?? 1000;
-    let rows: ComplaintRow[];
+    // Compose WHERE clauses dynamically so any combination of
+    // status / source_kind / target_team filters works without an
+    // SQL explosion. The base case (no filters) drops the WHERE
+    // entirely. Parameter order tracks the `where[]` push order.
+    const where: string[] = [];
+    const params: Array<string | number> = [];
     if (opts.status !== undefined) {
-      rows = this.db
-        .query("SELECT * FROM complaints WHERE status = ? ORDER BY opened_at DESC LIMIT ?")
-        .all(opts.status, limit) as ComplaintRow[];
-    } else {
-      rows = this.db
-        .query("SELECT * FROM complaints ORDER BY opened_at DESC LIMIT ?")
-        .all(limit) as ComplaintRow[];
+      where.push("status = ?");
+      params.push(opts.status);
     }
+    if (opts.sourceKind !== undefined) {
+      where.push("source_kind = ?");
+      params.push(opts.sourceKind);
+    }
+    if (opts.targetTeam !== undefined) {
+      where.push("target_team = ?");
+      params.push(opts.targetTeam);
+    }
+    const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")} ` : "";
+    params.push(limit);
+    const rows = this.db
+      .query(`SELECT * FROM complaints ${whereSql}ORDER BY opened_at DESC LIMIT ?`)
+      .all(...params) as ComplaintRow[];
     return rows.map(complaintFromRow);
   }
 
