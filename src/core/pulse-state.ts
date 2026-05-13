@@ -21,9 +21,10 @@ import { tryReadJson, writeJson } from "../abstractions/json.ts";
 import { ConfigError } from "../errors.ts";
 import type { PulseVerdict } from "./pulse-verdict.ts";
 
-/** Default re-fire dedup window for sustained urgency (🔴 / 🚨). 30min
- *  matches the verdict-defaults table in `cockpit.pulse.dedupMins`. */
-export const DEFAULT_PULSE_DEDUP_MIN = 30;
+/** Default re-fire dedup window for sustained urgency (🔴 / 🚨). 120min
+ *  default matches the verdict-defaults table in `cockpit.pulse.dedupMins`
+ *  (per ADR-086 §Phase 1.1). */
+export const DEFAULT_PULSE_DEDUP_MIN = 120;
 
 /** Default observation window for commit-cadence (verdict logic). */
 export const DEFAULT_PULSE_WINDOW_MIN = 30;

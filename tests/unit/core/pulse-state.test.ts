@@ -35,7 +35,7 @@ describe("constants", () => {
   test("defaults match the ADR-086 table", () => {
     expect(DEFAULT_PULSE_WINDOW_MIN).toBe(30);
     expect(DEFAULT_PULSE_INTERVAL_MIN).toBe(5);
-    expect(DEFAULT_PULSE_DEDUP_MIN).toBe(30);
+    expect(DEFAULT_PULSE_DEDUP_MIN).toBe(120);
     expect(PULSE_DRIVER_INBOX_STALE_MIN).toBe(30);
   });
 });

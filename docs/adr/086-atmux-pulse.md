@@ -134,6 +134,22 @@ Manual install (for operators who don't run `cockpit rebuild`) is still document
 
 Phase 2 plan slot reserved (no number assigned yet).
 
+## Phase 1.1: dedup default revision
+
+**Date added**: 2026-05-13. **Driver-ref**: driver-inbox 18:17 MYT 2026-05-13 (pulse-spam Discord cadence).
+
+**Symptom**: `atmux` + `sopx` teams stuck at `🚨 Need you` (correct verdict) re-fired every 30min per `DEFAULT_PULSE_DEDUP_MIN = 30`. ≈4 pings/hr from pulse alone — violates CLAUDE.md §Discord "every `🚨` trains the eye".
+
+**Decision**: bump `DEFAULT_PULSE_DEDUP_MIN` 30 → 120 (Phase 1's flat-window default is too aggressive). Schema field `cockpit.pulse.dedupMins` already wired (per main body) — operators can override per-cockpit.
+
+**Consequences**:
+- Worst-case re-fire rate halves twice (30 → 120 min) for sustained-urgency teams. ≈1 ping per 2h per stuck team instead of 4/hr.
+- Verdict transitions still always fire (unchanged).
+- `🟡 Cool/Idle` re-fires unchanged (Phase 1 skipped them entirely; this section doesn't address that — see Phase 1.5).
+- **Phase 1.5 deferred follow-up**: per-verdict dedup ladder (🚨=60min / 🔴=30min / 🟡=4h) supersedes this flat default. Filed as sibling Task with deps on this commit's soak. Until 1.5 lands, 120min flat is the operating cadence.
+
+**Reversibility**: trivial — single-line revert of the const.
+
 ## Refs
 
 - `src/verbs/pulse.ts` — verb entry, gather → verdict → fire pipeline.
