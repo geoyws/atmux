@@ -139,6 +139,26 @@ describe("parseInitArgs", () => {
     expect(() => parseInitArgs(["--name"])).toThrow(UsageError);
   });
 
+  // t-3866c5b1 / ADR-094: --claude-account flag
+  test("--claude-account <suffix> captured", () => {
+    const r = parseInitArgs(["--claude-account", "personal"]);
+    expect(r.claudeAccount).toBe("personal");
+  });
+
+  test("--claude-account without value → UsageError", () => {
+    expect(() => parseInitArgs(["--claude-account"])).toThrow(UsageError);
+  });
+
+  test("--claude-account with empty value → UsageError", () => {
+    expect(() => parseInitArgs(["--claude-account", ""])).toThrow(UsageError);
+  });
+
+  test("--claude-account default literal is captured (verb-side filters)", () => {
+    // The parser passes through "default" verbatim; the verb body
+    // skips the stamp when the value is literally "default".
+    expect(parseInitArgs(["--claude-account", "default"]).claudeAccount).toBe("default");
+  });
+
   test("unknown arg → UsageError with bash-shape what", () => {
     try {
       parseInitArgs(["--bogus"]);
@@ -188,6 +208,51 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     expect(tj.members.filter((m) => m.role === "gitter").length).toBe(1);
     expect(tj.members.filter((m) => m.role === "dba").length).toBe(1);
     expect(tj.members.find((m) => m.name === "fe-auth")).toBeDefined();
+  });
+
+  // t-3866c5b1 / ADR-094: --claude-account flag end-to-end
+  test("--claude-account personal stamps every member with claudeAccount field", async () => {
+    await runInit(["--name", "alpha", "--claude-account", "personal"]);
+    const tj = JSON.parse(await readFile(join(env.cwd, ".atmux", "team.json"), "utf8")) as {
+      members: { name: string; claudeAccount?: string }[];
+    };
+    // Every member entry carries the field — applied uniformly (no
+    // per-member override at init time; that's the `atmux reconfigure`
+    // path per ADR-094).
+    for (const m of tj.members) {
+      expect(m.claudeAccount).toBe("personal");
+    }
+  });
+
+  test("--claude-account default → NO claudeAccount field on disk (schema-default)", async () => {
+    await runInit(["--name", "alpha", "--claude-account", "default"]);
+    const tj = JSON.parse(await readFile(join(env.cwd, ".atmux", "team.json"), "utf8")) as {
+      members: { name: string; claudeAccount?: string }[];
+    };
+    // Per ADR-094 §"Default handling": "default" means "no field on
+    // disk; schema-default applies" — don't litter team.json with the
+    // implicit default value.
+    for (const m of tj.members) {
+      expect(m.claudeAccount).toBeUndefined();
+    }
+  });
+
+  test("no --claude-account → NO claudeAccount field on disk (preserves template)", async () => {
+    await runInit(["--name", "alpha"]);
+    const tj = JSON.parse(await readFile(join(env.cwd, ".atmux", "team.json"), "utf8")) as {
+      members: { name: string; claudeAccount?: string }[];
+    };
+    // The lead entry in templates/team.example.json carries a
+    // demonstration `claudeAccount: "personal"` field (added by
+    // t-bd618833). When --claude-account is unset, the template's
+    // value passes through verbatim — operator gets the template's
+    // example unless they override.
+    const lead = tj.members.find((m) => m.name === "lead");
+    expect(lead?.claudeAccount).toBe("personal");
+    // Other members in the template don't carry the field, so they
+    // stay undefined post-init.
+    const planner = tj.members.find((m) => m.name === "planner");
+    expect(planner?.claudeAccount).toBeUndefined();
   });
 
   test("seeds kanban.json + driver-inbox.md + per-member inbox files (byte-exact)", async () => {
