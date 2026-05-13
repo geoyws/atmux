@@ -8,7 +8,7 @@
 // Block shape (marker-fenced, idempotent re-install via fence-replace):
 //
 //     # >>> atmux:team=<n> — managed by atmux start; do not edit by hand
-//     */5 * * * * <atmuxDir prefix> atmux whip                  >> .../whip.log 2>&1
+//     */15 * * * * <atmuxDir prefix> atmux whip                 >> .../whip.log 2>&1
 //     */30 * * * * <prefix> atmux report                         >> .../report.log 2>&1
 //     0 */4 * * * <prefix> atmux decisions digest                >> .../decisions-digest.log 2>&1
 //     0 4 * * * <prefix> atmux groom --quiet                     >> .../groom.log 2>&1
@@ -168,14 +168,20 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   // at render time on out-of-range or non-divisor values; the doctor's
   // `cron-interval-divisor` check surfaces the same warning at
   // config-load time so operators see it before `atmux start` trips.
-  const whipMins = team.whip?.intervalMins ?? 5;
+  // t-dcbff97c §4 (George 08:00 MYT call 2026-05-13): default raised
+  // from 5 → 15min. Auto-drain teams (members pull from kanban via
+  // `atmux claim --next`) only need the lead awake ~4× / hour; a 5min
+  // cadence amplifies whip's rate-limit footprint without commensurate
+  // benefit. Operators who want tighter cadence set `team.whip.intervalMins`
+  // explicitly (sopx historically pins 5).
+  const whipMins = team.whip?.intervalMins ?? 15;
   const reportMins = team.report?.intervalMins ?? 30;
   const heartbeatHours = team.report?.heartbeatHours ?? 1;
   const decisionsHours = team.decisions?.intervalHours ?? 4;
   const groomHour = team.groom?.atHour ?? 4;
   const unblockerMins = team.unblocker?.intervalMins ?? 2;
 
-  // 1. whip — full sweep on team.whip.intervalMins (default 5).
+  // 1. whip — full sweep on team.whip.intervalMins (default 15).
   out.push(`${cronEvery(whipMins)} ${baseEnv} whip ${logTail("whip")}`);
 
   // 2. report or discorder pair (mutually exclusive per ADR-022 OQ-D4).
@@ -575,3 +581,4 @@ export async function findCronOrphans(opts: FindCronOrphansOpts): Promise<CronBl
   }
   return out;
 }
+

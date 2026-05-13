@@ -19,6 +19,7 @@ import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
+  checkCronBlock,
   checkCronIntervalDivisors,
   checkCronOrphans,
   checkCursorPluginCache,
@@ -1042,6 +1043,84 @@ describe("checkCronOrphans", () => {
     expect(rows.length).toBe(1);
     expect(rows[0]?.detail).toContain("ghost");
     expect(rows[0]?.detail).not.toContain("alpha");
+  });
+});
+
+// ---------- t-dcbff97c: checkCronBlock ----------
+
+describe("checkCronBlock", () => {
+  const fakeIO = (
+    body: string | null,
+    opts: { available?: boolean } = {},
+  ): CrontabIO => ({
+    read: async () => body,
+    write: async () => {
+      /* not invoked */
+    },
+    available: async () => opts.available ?? true,
+  });
+
+  const team = (overrides: Partial<Team> = {}): Team =>
+    ({ name: "alpha", members: [], ...overrides }) as Team;
+
+  test("null team → no rows", async () => {
+    expect(await checkCronBlock(null, { crontab: fakeIO(null) })).toEqual([]);
+  });
+
+  test("kanban.cronAutoInstall=false → silent (explicit opt-out)", async () => {
+    const t = team({ kanban: { cronAutoInstall: false } as never });
+    // Body that would otherwise trip the RED row (no matching marker) —
+    // the opt-out short-circuits BEFORE we even read crontab.
+    const rows = await checkCronBlock(t, { crontab: fakeIO("") });
+    expect(rows).toEqual([]);
+  });
+
+  test("crontab not available on host → silent (cron-less host)", async () => {
+    const rows = await checkCronBlock(team(), {
+      crontab: fakeIO(null, { available: false }),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("crontab present with matching marker → no row", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/15 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    expect(await checkCronBlock(team(), { crontab: fakeIO(body) })).toEqual([]);
+  });
+
+  test("empty crontab → one RED row pointing at cron-install", async () => {
+    const rows = await checkCronBlock(team(), { crontab: fakeIO("") });
+    expect(rows.length).toBe(1);
+    const r = rows[0];
+    expect(r?.status).toBe("red");
+    expect(r?.label).toBe("cron-block:missing");
+    expect(r?.detail).toContain("alpha");
+    expect(r?.detail).toContain("whip");
+    expect(r?.hint).toContain("atmux cron-install");
+  });
+
+  test("crontab has OTHER team's block but not ours → RED row", async () => {
+    // Substring-brushby guard: a block for `alpha-staging` MUST NOT
+    // false-pass for team name `alpha`. The marker match uses the exact
+    // rendered header line so similar-prefix team names can't collide.
+    const body = [
+      "# >>> atmux:team=alpha-staging — managed by atmux start; do not edit by hand",
+      "*/15 * * * * ATMUX_DIR=/srv/alpha-staging/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha-staging",
+    ].join("\n");
+    const rows = await checkCronBlock(team(), { crontab: fakeIO(body) });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.label).toBe("cron-block:missing");
+    expect(rows[0]?.status).toBe("red");
+  });
+
+  test("crontab null (no crontab installed) → RED row", async () => {
+    const rows = await checkCronBlock(team(), { crontab: fakeIO(null) });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("red");
   });
 });
 
