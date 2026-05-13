@@ -43,11 +43,11 @@ import {
   kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { cronRemove } from "./cron-remove.ts";
-import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux stop [--force|-f] [--no-archive]";
 
@@ -142,7 +142,12 @@ export async function stop(
   const team: Team = await requireTeam(dirOpts);
   const sessionName = await getSessionName({ ...dirOpts, team });
   const atmuxDir = await getAtmuxDir(dirOpts);
-  const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
+  // t-f786031f: honour team.tmuxTmpdir for the cage socket. Pre-fix
+  // pinned `/tmp/atmux-<team>/sock` unconditionally; on project-local-
+  // tmpdir teams `atmux stop` checked an empty path, hit
+  // `hasSession === false`, and exited 0 without killing the live cage.
+  // Same fix as tell-lead / send / dispatch in this commit.
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
 
   if (!(await tmux.session.hasSession(`=${sessionName}`))) {

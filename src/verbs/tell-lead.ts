@@ -23,12 +23,12 @@ import {
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { recordHeadsUp, shouldEmitHeadsUp } from "../core/heads-up-cursor.ts";
 import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux tell-lead <msg...>";
 
@@ -140,7 +140,15 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   const shouldEmit = await shouldEmitHeadsUp(cursorOpts);
 
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
+  // t-f786031f: honour team.tmuxTmpdir for the cage socket (resolver
+  // already used by every read site + whip/up/lane-tick/audit). Pre-fix
+  // tell-lead pinned `/tmp/atmux-<team>/sock` unconditionally and broke
+  // the heads-up ping whenever team.json declared a project-local
+  // `.atmux/tmux` tmpdir. The inbox append still landed (it predates
+  // the send), so the symptom was "driver-inbox.md got the entry but
+  // the lead pane never woke" — exactly the 07:52 + 08:25 MYT
+  // 2026-05-13 failures.
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
   const target = `${sessionName}:${buildWindowName(lead.name, lead.emoji)}`;
   // Bash heads-up (lib/tell.sh:43): "📬 driver-inbox has a new ask: <msg≤80>…"

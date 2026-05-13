@@ -548,8 +548,15 @@ export interface ResolveTeamSocketOpts {
  * tmpdir; canonical fallback is wrong when the team was started under
  * bash or a tmpdir-honoring start path).
  *
- * Read-only sites (status, doctor orphan-session probe) MUST use this
- * resolver to reach the actual live socket.
+ * All sites (read AND write) MUST use this resolver to reach the actual
+ * live socket. The pre-2026-05-13 carve-out for write verbs (send /
+ * dispatch / tell-lead / stop) was the root cause of t-f786031f: pinning
+ * `/tmp/atmux-<team>/sock` unconditionally meant cage rebuilds on
+ * project-local-tmpdir teams routed keystrokes at a non-existent socket,
+ * surfacing as "no tmux window for lead" (tell-lead) or queued-but-
+ * never-Enter'd compose-box text (send / dispatch). All four verbs were
+ * migrated to `resolveTeamSocket(team)` in the same commit — keep the
+ * invariant uniform across verbs to avoid the next regression.
  */
 export function resolveTeamSocket(
   team: Pick<TeamShape, "name" | "tmuxTmpdir">,
