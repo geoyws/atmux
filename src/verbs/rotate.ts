@@ -16,13 +16,14 @@ import { createTmux, type SendTarget, type TmuxNamespace } from "../abstractions
 import {
   buildWindowName,
   getAtmuxDir,
-  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { writeLeadHandoff } from "../core/lead-handoff.ts";
+import { writeLeadSessionStart } from "../core/lead-marker.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { safePreflight } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -170,8 +171,13 @@ export interface RotateOpts {
    *  socketPath })` per the verb's resolved socket path. */
   buildTmux?: (socketPath: string) => TmuxNamespace;
   /** Clock override (epoch ms). Defaults to `time.now()`. Used for the
-   *  pre-rotate handoff file path + header timestamp (D2c). */
+   *  pre-rotate handoff file path + header timestamp (D2c) AND the
+   *  post-rotate `lead-session-start.txt` marker write (t-afd3fe38). */
   now?: () => number;
+  /** Override `$HOME` for the `~/.claude/teams/<team>/lead-session-start.txt`
+   *  marker write (t-afd3fe38). Tests pass a scratch dir so the marker
+   *  doesn't touch the operator's real `~/.claude`. */
+  leadMarkerHome?: string;
 }
 
 /** Default `setTimeout`-backed sleep. Exported so the same code path
@@ -324,6 +330,27 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
     // pre-existing rotate-specific settle (rotation runs once per
     // teammate; the extra 500ms over the §A floor isn't latency-sensitive).
     await submitAfterPaste(tmux, sendTarget, { settleMs: 1_000, sleep });
+  }
+
+  // 3. t-afd3fe38: on the team-lead path, refresh `lead-session-start.txt`
+  //    with the new spawn epoch so ADR-143's cron-fired uptime gate
+  //    reads the rotated lead's clock, not the stale pre-rotate one.
+  //    Without this, the marker stays at the OLD value → uptime gate
+  //    re-fires on every tick → rotation flap loop. Best-effort: a
+  //    marker-write failure logs to stderr but doesn't abort (the
+  //    rotation itself succeeded; only the cron-gate hint stays stale).
+  if (role === "team-lead") {
+    const clock = opts.now ?? nowMs;
+    const epochSec = Math.floor(clock() / 1000);
+    try {
+      const markerOpts = opts.leadMarkerHome !== undefined ? { home: opts.leadMarkerHome } : {};
+      await writeLeadSessionStart(team.name, epochSec, markerOpts);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      stderr(
+        `rotate: warn: lead-session-start.txt write failed (${reason}); ADR-143 cron-gate may flap\n`,
+      );
+    }
   }
 
   stdout(`rotated ${target.name} (role=${role}, tui=${tui})\n`);
