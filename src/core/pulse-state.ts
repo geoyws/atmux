@@ -21,9 +21,39 @@ import { tryReadJson, writeJson } from "../abstractions/json.ts";
 import { ConfigError } from "../errors.ts";
 import type { PulseVerdict } from "./pulse-verdict.ts";
 
-/** Default re-fire dedup window for sustained urgency (🔴 / 🚨). 30min
- *  matches the verdict-defaults table in `cockpit.pulse.dedupMins`. */
-export const DEFAULT_PULSE_DEDUP_MIN = 30;
+/** Phase 1.1 fallback for the flat `cockpit.pulse.dedupMins` legacy
+ *  knob. Kept as the soft-deprecated default when an operator config
+ *  pins a single int; the verb populates the per-verdict ladder
+ *  uniformly with this value in that case. ADR-086 §Phase 1.5
+ *  documents the soft-deprecation. */
+export const DEFAULT_PULSE_DEDUP_MIN = 120;
+
+/** ADR-086 §Phase 1.5: verdict-specific dedup ladder. Operator config
+ *  may override per-verdict via `cockpit.pulse.dedupLadderMins`;
+ *  missing keys inherit from this default, explicit `null` disables
+ *  re-fire for that verdict (silence until verdict transitions).
+ *
+ *  Rationale (ADR-086 §Phase 1.5):
+ *   - 🚨 Need you  → 60min — loud-but-not-training-the-eye.
+ *   - 🔴 Stalled   → 30min — degraded-state probe cadence.
+ *   - 🟡 Cool/Idle → 4h    — confirm steady-state on long lull;
+ *                            removes "cron broken or team cool?"
+ *                            ambiguity from Phase 1.1 (silent past
+ *                            first transition).
+ *   - 🟢 Shipping  → null  — never re-fire on healthy steady-state;
+ *                            transitions fire as usual (covered by
+ *                            shouldFire's transition branch). */
+export const DEFAULT_PULSE_DEDUP_LADDER: Readonly<Record<PulseVerdict, number | null>> = {
+  "🚨 Need you": 60,
+  "🔴 Stalled": 30,
+  "🟡 Cool": 4 * 60,
+  "🟡 Idle": 4 * 60,
+  "🟢 Shipping": null,
+};
+
+/** Resolved dedup-ladder shape — operator override merges OVER the
+ *  default ladder. Missing keys inherit; explicit `null` disables. */
+export type PulseDedupLadder = Readonly<Record<PulseVerdict, number | null>>;
 
 /** Default observation window for commit-cadence (verdict logic). */
 export const DEFAULT_PULSE_WINDOW_MIN = 30;
@@ -64,12 +94,10 @@ export const PulseStateSchema = z
   .passthrough();
 export type PulseState = z.infer<typeof PulseStateSchema>;
 
-/** Severity ladder — used to decide "is this a sustained-urgency
- *  verdict worth re-firing past the dedup window?" */
-const URGENT_VERDICTS: ReadonlySet<PulseVerdict> = new Set<PulseVerdict>([
-  "🔴 Stalled",
-  "🚨 Need you",
-]);
+// ADR-086 §Phase 1.5: `URGENT_VERDICTS` removed. The
+// binary urgent-set semantics is replaced by "ladder[verdict] !== null"
+// — per-verdict ladder governs re-fire cadence (see
+// `DEFAULT_PULSE_DEDUP_LADDER`).
 
 export interface PulseStatePathOpts {
   /** Override the home directory (test injection). */
@@ -126,9 +154,12 @@ export interface ShouldFireInputs {
   currentCommitCount: number;
   /** Epoch-seconds (test injection). */
   nowSec: number;
-  /** Re-fire window in minutes — used only when current verdict is
-   *  sustained-urgency (🔴 / 🚨). */
-  dedupMins: number;
+  /** ADR-086 §Phase 1.5: resolved per-verdict ladder of re-fire windows
+   *  in minutes. Lookup `ladder[current]`: `null` → skip (deduped);
+   *  number → compare against elapsed-since-`prior.lastFireEpoch`.
+   *  Transitions always fire regardless of ladder (handled by the
+   *  transition branch). */
+  dedupLadderMins: PulseDedupLadder;
 }
 
 export interface ShouldFireResult {
@@ -156,7 +187,7 @@ export interface ShouldFireResult {
  * is measured against the LAST FIRE, not against ticks observed.
  */
 export function shouldFire(inputs: ShouldFireInputs): ShouldFireResult {
-  const { prior, current, currentCommitCount, nowSec, dedupMins } = inputs;
+  const { prior, current, currentCommitCount, nowSec, dedupLadderMins } = inputs;
 
   // 1. First observation.
   if (prior === null) {
@@ -176,10 +207,15 @@ export function shouldFire(inputs: ShouldFireInputs): ShouldFireResult {
     };
   }
 
-  // 3. Sustained urgency.
-  if (URGENT_VERDICTS.has(current)) {
+  // 3. ADR-086 §Phase 1.5: ladder lookup. `null` (or missing) → silent;
+  //    a number → re-fire when elapsed-since-last-fire ≥ that many
+  //    minutes. The binary URGENT_VERDICTS semantic is replaced; 🟡
+  //    Cool / Idle now re-fires every 4h by default (removes the
+  //    "cron broken or team cool?" ambiguity Phase 1.1 left behind).
+  const cadenceMins = dedupLadderMins[current];
+  if (cadenceMins !== null && cadenceMins !== undefined) {
     const elapsedSec = nowSec - prior.lastFireEpoch;
-    if (elapsedSec >= dedupMins * 60) {
+    if (elapsedSec >= cadenceMins * 60) {
       return {
         didFire: true,
         reason: "sustained-urgency",

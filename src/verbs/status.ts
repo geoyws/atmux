@@ -30,6 +30,7 @@ import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-heal
 import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { UsageError } from "../errors.ts";
+import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
 import type { Team } from "../schema/team.ts";
 import { collectOpenEntries } from "./reply.ts";
 
@@ -138,6 +139,10 @@ export interface StatusSnapshot {
   /** ADR-077 §F5: cockpit superdoctor snapshot. Always populated;
    *  renderer skips display when `configured=false`. */
   superdoctor: SuperdoctorState;
+  /** ADR-085 §Three surfaces #1: approval-debt scan across ADRs +
+   *  driver-inbox + blocked kanban. Live per ADR-068 §HC#4 — no cache;
+   *  re-run every `gatherStatus` invocation. */
+  needsApproval: NeedsApprovalReport;
 }
 
 /** Test-injection seam for `gatherStatus` cockpit probe. */
@@ -255,6 +260,12 @@ export async function gatherStatus(
   // factory. Silent when no cockpit is configured.
   const superdoctor = await probeSuperdoctor(deps);
 
+  // ADR-085 §Three surfaces #1: live approval-debt scan. Per-bucket
+  // failure isolation lives inside `scanNeedsApproval` — a corrupt
+  // ADR / missing inbox / kanban absence degrades to an empty bucket
+  // rather than failing the whole status snapshot.
+  const needsApproval = await scanNeedsApproval();
+
   return {
     team: team.name,
     session: sessionName,
@@ -264,6 +275,7 @@ export async function gatherStatus(
     driverInboxOpen,
     driverPane,
     superdoctor,
+    needsApproval,
   };
 }
 
@@ -298,6 +310,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       driverInboxOpen: snap.driverInboxOpen,
       driverPane: snap.driverPane,
       superdoctor: snap.superdoctor,
+      needsApproval: snap.needsApproval,
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     return 0;
@@ -383,6 +396,17 @@ function renderTextStatus(snap: StatusSnapshot): void {
   process.stdout.write(
     `\n📋 kanban  📌 todo=${k.todo}  🟡 in-progress=${k.inProgress}  ✅ done=${k.done}  🛑 blocked=${k.blocked}\n`,
   );
+  // ADR-085 §Three surfaces #1: approval-debt row. Positive-state when
+  // total=0 so the operator sees the green even on a clean run — same
+  // grammar as the driver-pane / superdoctor rows below.
+  const na = snap.needsApproval;
+  if (na.total === 0) {
+    process.stdout.write(`📝 NEEDS APPROVAL: ✅ clear\n`);
+  } else {
+    process.stdout.write(
+      `📝 NEEDS APPROVAL: ${na.adr.length} ADRs / ${na.inbox.length} inbox / ${na.kanban.length} kanban\n`,
+    );
+  }
   if (snap.driverInboxOpen > 0) {
     process.stdout.write(`📬 driver-inbox  open=${snap.driverInboxOpen}\n`);
   }

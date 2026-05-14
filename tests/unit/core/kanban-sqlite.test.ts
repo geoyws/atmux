@@ -28,6 +28,7 @@ import {
   moveTask,
   removeTask,
   setTaskLane,
+  setTaskPriority,
   showTask,
 } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -344,6 +345,24 @@ describe("kanban (SQLite mode)", () => {
 
   test("setTaskLane: missing id throws ConfigError", async () => {
     await expect(setTaskLane(env.atmuxDir, "t-deadbeef", "fe")).rejects.toThrow(ConfigError);
+  });
+
+  test("setTaskPriority: set integer; null clears (ADR-131)", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "no-prio task" });
+    let t = await showTask(env.atmuxDir, id);
+    expect(t?.priority).toBeNull();
+
+    await setTaskPriority(env.atmuxDir, id, 3);
+    t = await showTask(env.atmuxDir, id);
+    expect(t?.priority).toBe(3);
+
+    await setTaskPriority(env.atmuxDir, id, null);
+    t = await showTask(env.atmuxDir, id);
+    expect(t?.priority).toBeNull();
+  });
+
+  test("setTaskPriority: missing id throws ConfigError", async () => {
+    await expect(setTaskPriority(env.atmuxDir, "t-deadbeef", 1)).rejects.toThrow(ConfigError);
   });
 
   test("loadKanban: returns full snapshot in SQLite mode", async () => {

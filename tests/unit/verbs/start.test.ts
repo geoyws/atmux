@@ -55,6 +55,7 @@ interface TestEnv {
 let env: TestEnv;
 let socketDir: string;
 let priorTmux: string | undefined;
+let priorNoCron: string | undefined;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-start-sock-"));
@@ -67,6 +68,15 @@ beforeEach(async () => {
   await mkdir(atmuxDir, { recursive: true });
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
+  // t-e1247699: start() auto-installs cron via cronInstall (start.ts §11).
+  // Pin ATMUX_NO_CRON=1 so the verb's internal gate short-circuits before
+  // it can reach the host crontab — without this, every test in this file
+  // leaks an `atmux:team=<random>` block pointing at the mkdtemp dir,
+  // which `afterEach`'s rm-rf cannot recover (cron edits live in the
+  // host crontab, not ATMUX_TEST_TMP). Mirrors stop.test.ts:35-36 +
+  // tests/helpers/setup.bash:47 (bash sandbox parity).
+  priorNoCron = process.env.ATMUX_NO_CRON;
+  process.env.ATMUX_NO_CRON = "1";
   // Use `/dev/null` config so tmux behaviour is reproducible regardless
   // of the operator's ~/.tmux.conf (base-index, key-bindings, etc.).
   const tmux = createTmux({ socketPath, configFile: "/dev/null" });
@@ -90,6 +100,8 @@ afterEach(async () => {
     // expected: server may already be gone (idempotent teardown)
   }
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  if (priorNoCron !== undefined) process.env.ATMUX_NO_CRON = priorNoCron;
+  else delete process.env.ATMUX_NO_CRON;
   await rm(socketDir, { recursive: true, force: true });
   await rm(env.atmuxDir, { recursive: true, force: true });
 });
@@ -144,12 +156,19 @@ async function runStart(
     briefsDir?: string;
     spawnWaitMs?: number;
     sleep?: (ms: number) => Promise<void>;
+    /** t-dcbff97c: inject the cron-install verb so unit tests never
+     *  touch the host crontab. Default = silent no-op (returns 0). */
+    cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
   } = {},
 ): Promise<number> {
   const startOpts: Parameters<typeof start>[1] = {
     env: { ...process.env, ATMUX_DIR: env.atmuxDir },
     cwd: env.atmuxDir,
     logger: env.logger,
+    // Default the cron-install hook to a silent no-op so legacy tests
+    // that don't care about cron don't shell out to the host crontab.
+    // Tests that DO care override via opts.cronInstallFn.
+    cronInstallFn: opts.cronInstallFn ?? (async () => 0),
   };
   if (opts.gitSpawn !== undefined) startOpts.gitSpawn = opts.gitSpawn;
   if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
@@ -1326,5 +1345,121 @@ describe("start — ADR-081 §C brief-paste", () => {
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------- t-dcbff97c: start fires cron-install unconditionally ----------
+
+describe("start — t-dcbff97c cron-install wiring", () => {
+  test("fires cron-install with --quiet + explicit --team-dir on a vanilla team", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const cronCalls: ReadonlyArray<string>[] = [];
+    const cronInstallFn = async (argv: ReadonlyArray<string>): Promise<number> => {
+      cronCalls.push(argv);
+      return 0;
+    };
+    const exit = await runStart([], { cronInstallFn });
+    expect(exit).toBe(0);
+    expect(cronCalls).toHaveLength(1);
+    const args = cronCalls[0] ?? [];
+    expect(args).toContain("--quiet");
+    expect(args).toContain("--team-dir");
+    // The --team-dir value MUST be the project root (containing .atmux/),
+    // never the .atmux dir itself — otherwise cron-install would
+    // double-suffix `<atmuxDir>/.atmux/team.json`. Match the rule in
+    // start.ts:679 (`dirname(dir)`).
+    const idx = args.indexOf("--team-dir");
+    expect(idx).toBeGreaterThan(-1);
+    const projectRoot = args[idx + 1];
+    expect(projectRoot).toBeDefined();
+    expect(projectRoot).not.toMatch(/\.atmux\/?$/);
+  });
+
+  test("fires cron-install ALSO under worktreeIsolation=true (no silent skip)", async () => {
+    // Regression guard for t-dcbff97c: the 2026-05-13 overnight death
+    // hypothesised an isolation-gated skip. If a future commit re-adds
+    // such a gate, this test fails.
+    type GitSpawn = import("../../../src/abstractions/worktree.ts").GitSpawn;
+    type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
+    const ok = (stdout = ""): SpawnResult => ({
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    });
+    const fail = (stderr: string, code = 128): SpawnResult => ({
+      exitCode: code,
+      stdout: "",
+      stderr,
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    });
+    await writeTeamJson({
+      members: [
+        { name: "alice", role: "team-lead" },
+        { name: "bob", role: "reviewer" },
+      ],
+      worktreeIsolation: true,
+    });
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("--show-toplevel")) return ok("/srv/fake-repo\n");
+      if (argv.includes("--verify")) return fail("", 1);
+      if (argv.includes("branch")) return ok("geoyws\n");
+      if (argv.includes("list")) return ok("");
+      return ok("");
+    };
+    const cronCalls: ReadonlyArray<string>[] = [];
+    const cronInstallFn = async (argv: ReadonlyArray<string>): Promise<number> => {
+      cronCalls.push(argv);
+      return 0;
+    };
+    const exit = await runStart([], { gitSpawn, cronInstallFn });
+    expect(exit).toBe(0);
+    expect(cronCalls).toHaveLength(1);
+    expect(cronCalls[0]).toContain("--quiet");
+    expect(cronCalls[0]).toContain("--team-dir");
+  });
+
+  test("skipped when team.kanban.cronAutoInstall === false (explicit opt-out)", async () => {
+    // shouldAutoInstallCron honors the opt-out; the verb must not be
+    // invoked at all (not even with a no-op). Distinct from the
+    // ATMUX_NO_CRON path which is enforced inside cronInstall itself.
+    const body = {
+      name: env.team,
+      members: [{ name: "alice", role: "team-lead" }],
+      kanban: { cronAutoInstall: false },
+    };
+    await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
+    const cronCalls: ReadonlyArray<string>[] = [];
+    const cronInstallFn = async (argv: ReadonlyArray<string>): Promise<number> => {
+      cronCalls.push(argv);
+      return 0;
+    };
+    const exit = await runStart([], { cronInstallFn });
+    expect(exit).toBe(0);
+    expect(cronCalls).toEqual([]);
+  });
+
+  test("cron-install throw is swallowed — start still returns 0 + logs warn", async () => {
+    // Defense-in-depth: cronInstall is non-fatal internally, but if a
+    // future bug raises an unhandled error, start.ts wraps in try/catch.
+    await writeTeamJson({ members: [{ name: "alice", role: "team-lead" }] });
+    const cronInstallFn = async (): Promise<number> => {
+      throw new Error("simulated cron-install bug");
+    };
+    const exit = await runStart([], { cronInstallFn });
+    expect(exit).toBe(0);
+    expect(
+      env.logs.some(
+        (l) => l.kind === "warn" && l.msg.includes("cron-install fell through"),
+      ),
+    ).toBe(true);
   });
 });

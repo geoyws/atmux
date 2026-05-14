@@ -21,27 +21,21 @@
 // team). Written ONLY when at least one team fired this tick.
 
 import { join } from "node:path";
-import {
-  renderPulseVerdict,
-  send as defaultDiscordSend,
-} from "../abstractions/discord.ts";
+import { send as defaultDiscordSend, renderPulseVerdict } from "../abstractions/discord.ts";
 import { exists, readTextOrNull } from "../abstractions/fs.ts";
-import {
-  defaultGitSpawn,
-  type GitSpawn,
-} from "../abstractions/worktree.ts";
+import { tryReadJson } from "../abstractions/json.ts";
+import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import { enabledTeams, loadCockpit } from "../core/cockpit.ts";
-import {
-  driverInboxPath,
-  kanbanJsonPath,
-  teamJsonPath,
-} from "../core/common.ts";
+import { driverInboxPath, kanbanJsonPath, teamJsonPath } from "../core/common.ts";
 import { parseEntries } from "../core/driver-inbox.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { loadKanban } from "../core/kanban.ts";
 import {
+  DEFAULT_PULSE_DEDUP_LADDER,
   DEFAULT_PULSE_DEDUP_MIN,
   DEFAULT_PULSE_WINDOW_MIN,
   PULSE_DRIVER_INBOX_STALE_MIN,
+  type PulseDedupLadder,
   type PulseState,
   type PulseStatePathOpts,
   pulseStatePath,
@@ -55,20 +49,15 @@ import {
   type PulseInputs,
   type PulseVerdict,
 } from "../core/pulse-verdict.ts";
-import type {
-  CockpitPulse,
-  CockpitTeam,
-} from "../schema/cockpit.ts";
-import type { Team } from "../schema/team.ts";
-import { tryReadJson } from "../abstractions/json.ts";
-import { Team as TeamSchema } from "../schema/team.ts";
-import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
+import type { CockpitPulse, CockpitTeam } from "../schema/cockpit.ts";
+import type { Team } from "../schema/team.ts";
+import { Team as TeamSchema } from "../schema/team.ts";
 import {
   buildReport,
-  runAllChecks as defaultRunDoctorChecks,
   type DoctorReport,
   type DoctorRow,
+  runAllChecks as defaultRunDoctorChecks,
 } from "./doctor.ts";
 
 const USAGE = "atmux pulse [--json] [--ping] [--config <path>]";
@@ -156,17 +145,9 @@ export async function gatherTeamInputs(
   // 1. git log --since=<windowMin>min --oneline | wc -l (root repo only).
   let commitCount = 0;
   try {
-    const res = await git([
-      "-C",
-      team.root,
-      "log",
-      `--since=${deps.windowMin}min`,
-      "--oneline",
-    ]);
+    const res = await git(["-C", team.root, "log", `--since=${deps.windowMin}min`, "--oneline"]);
     if (res.exitCode === 0) {
-      const lines = res.stdout
-        .split("\n")
-        .filter((l) => l.trim().length > 0);
+      const lines = res.stdout.split("\n").filter((l) => l.trim().length > 0);
       commitCount = lines.length;
     }
   } catch {
@@ -321,10 +302,7 @@ export interface PulseOpts {
 }
 
 /** `atmux pulse [--json] [--ping] [--config <path>]`. */
-export async function pulse(
-  argv: ReadonlyArray<string>,
-  opts: PulseOpts = {},
-): Promise<number> {
+export async function pulse(argv: ReadonlyArray<string>, opts: PulseOpts = {}): Promise<number> {
   const parsed = parsePulseArgs(argv);
   const stdout = opts.stdout ?? defaultStdoutWrite;
   const stderr = opts.stderr ?? defaultStderrWrite;
@@ -341,7 +319,16 @@ export async function pulse(
 
   const pulseCfg: CockpitPulse = cockpit.pulse ?? {};
   const windowMin = pulseCfg.windowMins ?? DEFAULT_PULSE_WINDOW_MIN;
-  const dedupMins = pulseCfg.dedupMins ?? DEFAULT_PULSE_DEDUP_MIN;
+  // ADR-086 §Phase 1.5: resolve the per-verdict ladder. Resolution
+  // precedence:
+  //   1. Operator-supplied `dedupLadderMins` MERGED OVER the default
+  //      (missing verdicts inherit; explicit null disables re-fire).
+  //   2. Legacy `dedupMins` flat int (Phase 1 / 1.1) populates the
+  //      ladder UNIFORMLY when no ladder is supplied — backward-compat
+  //      for operator configs frozen before §Phase 1.5.
+  //   3. No operator pulse config at all → DEFAULT_PULSE_DEDUP_LADDER
+  //      verbatim.
+  const dedupLadderMins = resolveDedupLadder(pulseCfg);
 
   // Gather inputs per enabled team.
   const teams = enabledTeams(cockpit);
@@ -372,7 +359,7 @@ export async function pulse(
       current: verdict,
       currentCommitCount: obs.commitCount,
       nowSec,
-      dedupMins,
+      dedupLadderMins,
     });
 
     if (fireDecision.didFire && fireDecision.next !== null) {
@@ -443,4 +430,40 @@ export async function pulse(
 
 function stringifyErr(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * ADR-086 §Phase 1.5: resolve the per-verdict dedup ladder from
+ * operator config. Three branches:
+ *
+ *   1. `dedupLadderMins` is set — merge OVER the default ladder
+ *      (operator entries win; missing verdicts inherit; explicit
+ *      `null` disables re-fire for that verdict).
+ *   2. `dedupLadderMins` is unset BUT legacy `dedupMins` is set —
+ *      uniform-fill the ladder with the flat int (backward-compat
+ *      for pre-§1.5 operator configs).
+ *   3. Neither set — return `DEFAULT_PULSE_DEDUP_LADDER` verbatim.
+ *
+ * Pure helper — testable directly via the unit test fixture without
+ * a full verb-tick spin.
+ */
+export function resolveDedupLadder(pulseCfg: CockpitPulse): PulseDedupLadder {
+  // Branch 1: explicit per-verdict overrides.
+  if (pulseCfg.dedupLadderMins !== undefined) {
+    return { ...DEFAULT_PULSE_DEDUP_LADDER, ...pulseCfg.dedupLadderMins };
+  }
+  // Branch 2: legacy flat-int populates the ladder uniformly. Note:
+  // the legacy semantic only re-fires on URGENT verdicts; we replicate
+  // that by uniform-filling 🔴 / 🚨 with the int and keeping 🟡 / 🟢
+  // at the default-ladder values. This preserves Phase 1 / 1.1
+  // behaviour exactly for configs that hadn't moved to the ladder yet.
+  if (pulseCfg.dedupMins !== undefined) {
+    return {
+      ...DEFAULT_PULSE_DEDUP_LADDER,
+      "🔴 Stalled": pulseCfg.dedupMins,
+      "🚨 Need you": pulseCfg.dedupMins,
+    };
+  }
+  // Branch 3: vanilla defaults.
+  return DEFAULT_PULSE_DEDUP_LADDER;
 }

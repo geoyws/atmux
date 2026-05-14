@@ -525,9 +525,14 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         // member gets its own fork off the team's current branch.
         const wtBranch = `${branch}-${sanitizeBranchSegment(member.name)}`;
         try {
-          const r = await provisionWorktree(repoPath, branch, wtBranch, wtPath, {
+          // ADR-088 §"Implementation surface": pass `initSubmodules` through
+          // when team opts in. Opt-out (default) means `git submodule update`
+          // is never invoked — teams without submodules pay zero cost.
+          const provOpts: Parameters<typeof provisionWorktree>[4] = {
             git: gitSpawn,
-          });
+          };
+          if (team.worktreeInitSubmodules === true) provOpts.initSubmodules = true;
+          const r = await provisionWorktree(repoPath, branch, wtBranch, wtPath, provOpts);
           worktreeCwd.set(member.name, wtPath);
           logger.log(
             `  · worktree ${r.created ? "created" : "reused"}: ${member.name} → ${wtPath} [${wtBranch}]`,
@@ -692,10 +697,22 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //     management). Non-fatal: the verb itself swallows all install
   //     failures (warn + exit 0) so `start` never aborts because cron
   //     hiccuped.
+  //
+  //     t-dcbff97c: fires unconditionally — including under
+  //     `worktreeIsolation=true`. The block's `ATMUX_DIR=<dir>` +
+  //     `TMUX_TMPDIR=<tmuxTmpdir>` baking points cron at the team's
+  //     project root regardless of where the worktrees themselves live,
+  //     so worktree isolation is not a reason to skip. Origin:
+  //     2026-05-13 overnight death of the atmux team — silently missing
+  //     cron block on a worktree-isolated team starved the lead pane of
+  //     external pulses. The explicit `--team-dir` forces cron-install
+  //     to resolve the SAME team that start just loaded — no cwd /
+  //     env-ATMUX_DIR drift between resolution sites.
   if (shouldAutoInstallCron(team, env)) {
     const cronFn = opts.cronInstallFn ?? cronInstall;
+    const cronTeamDir = dirname(dir);
     try {
-      await cronFn(["--quiet"]);
+      await cronFn(["--quiet", "--team-dir", cronTeamDir]);
     } catch (e) {
       // Defense in depth: cronInstall is already non-fatal internally,
       // but if a future bug raised an unhandled error we'd rather warn

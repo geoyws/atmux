@@ -77,9 +77,12 @@ export type TeamEmojis = z.infer<typeof TeamEmojis>;
  */
 export const TeamWhip = z
   .object({
-    /** Cron interval in minutes. Default 5. ADR-054 OQ-1 surfaces
-     *  cron-vs-schema mismatch as future doctor work. */
-    intervalMins: z.number().int().positive().default(5),
+    /** Cron interval in minutes. Default 15 (raised from 5 on
+     *  2026-05-13 per t-dcbff97c §4 — auto-drain teams only need the
+     *  lead awake ~4× / hour; the prior 5min cadence amplified the
+     *  whip rate-limit footprint without commensurate benefit). ADR-054
+     *  OQ-1 surfaces cron-vs-schema mismatch as future doctor work. */
+    intervalMins: z.number().int().positive().default(15),
     /** Stale-task threshold (min). Default 90 (raised from bash 30 in
      *  bash E2/S7 — demo-walk tasks legitimately run 60-90min). */
     staleMin: z.number().int().nonnegative().default(90),
@@ -130,6 +133,13 @@ export const TeamWhip = z
     selfHealEnabled: z.boolean().default(false),
     /** Whitelist of recipe ids the cursor may auto-apply. Default []. */
     selfHealRecipes: z.array(z.string()).default([]),
+
+    // ---------- ADR-085 needs-approval watcher ----------
+    /** Whip §2.5: scan proposed-ADR / untriaged-inbox / long-blocked-
+     *  kanban buckets each tick, fire Discord ping on `total > 0`,
+     *  append a lead-events JSONL row regardless. Default true.
+     *  Setting `false` skips scan + ping + JSONL — pure opt-out. */
+    needsApprovalEnabled: z.boolean().default(true),
 
     // ---------- ADR-056 account-swap opt-in ----------
     /** Ordered fallback chain of Claude accounts. Default []. */
@@ -366,6 +376,13 @@ export const Team = z
      *  of the team's filesystem footprint. No-op when isolation is
      *  off. Use {@link DEFAULT_WORKTREE_ROOT} when reading. */
     worktreeRoot: z.string().optional(),
+    /** ADR-088: when `true` AND `worktreeIsolation === true`, `atmux start`
+     *  passes `initSubmodules: true` through to `provisionWorktree`, which
+     *  runs `git submodule update --init --recursive` inside each newly
+     *  created worktree. Best-effort: a non-zero exit warns to stderr but
+     *  does not abort provisioning. Default `false` — teams without
+     *  submodules pay zero cost; teams with submodules opt in explicitly. */
+    worktreeInitSubmodules: z.boolean().optional(),
     /** Single-session opt-in (default `false` per 2026-04-30 reversal,
      *  see templates/team.example.json comment). */
     singleSession: z.boolean().optional(),
