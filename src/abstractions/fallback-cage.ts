@@ -1,21 +1,36 @@
-// ADR-058 §D3+§D4: multi-tier fallback-cage builder + brief generator.
+// ADR-058 §D3+§D4 + ADR-050 v1 + Task t-706655ee: fallback-cage builder
+// + brief generator.
+//
+// **Scope reduction 2026-05-14** (Task t-706655ee revised body): the
+// `createFallbackCage` create-path is **Tier 2 (Cursor) only**. Tier 3
+// (Kimi) and Tier 4 (MiniMax) are PERMANENTLY OUT of scope per
+// operator evaluation: *"MiniMax + Kimi are unreliable and not smart
+// enough"* — spawning a low-quality executor at budget-pause produces
+// more cleanup than the saved budget gains. Cursor composer-2-fast is
+// the only accepted fallback. The hard gate fires synchronously at
+// `createFallbackCage` entry; see {@link FallbackTierDroppedError}.
 //
 // Tier 2 (Cursor) → operator UID, full git, dedicated cage tmux server
 // at TMUX_TMPDIR=/tmp/atmux_fallback_<team>_<lane>/.
-// Tier 3 (Kimi)   → dedicated `kimi-agent` user, NO .git in workspace,
-// rsync'd workspace at /home/kimi-agent/cages/<team>-<lane>/work/.
-// Tier 4 (MiniMax) → CLI not GA; stub returns Tier4_NOT_AVAILABLE error
-// per OQ6 until the binary lands.
+// Tier 3 (Kimi)   → **DROPPED** per ADR-050 v1 (formerly: dedicated
+//                   `kimi-agent` user, no .git in workspace).
+// Tier 4 (MiniMax) → **DROPPED** per ADR-050 v1 (formerly: stubbed
+//                    behind MINIMAX_CLI_AVAILABLE env flag).
+//
+// The Tier 3+ helpers (workspace builder, sudo-tmux spawn path, brief
+// composers, archive paths, rsync excludes) remain in this module so
+// `destroyFallbackCage` can tear down legacy `CageHandle` rows
+// persisted before the 2026-05-14 reduction. New cages of tier !== 2
+// are refused at the create path — the destroy path is best-effort
+// cleanup, not a re-entry point.
 //
 // Brief composers are folded into this module per ADR-058 §D4 — the
 // brief embeds tier-identity (agent name, workDir, git policy), so
 // splitting them across modules introduces an artificial seam.
 //
-// Hard rule: NO direct git invocation from Tier 3+ cage path. Reviewer-
-// gated. The whole point of the kernel-isolated user is that the agent
-// has no .git in its workspace — invoking git from THIS module's T3+
-// path would defeat the design (operator-side reconciliation is the
-// only mutative-git surface for T3+).
+// Hard rule: NO direct git invocation from Tier 3+ cage path. (Now
+// moot for new cages — Tier 3+ creation is blocked — but retained as
+// a doc-rule for the dead-code teardown path.)
 
 import { spawn as defaultSpawn, type SpawnOpts, type SpawnResult } from "./spawn.ts";
 import type { TmuxConfig, TmuxNamespace } from "./tmux.ts";
@@ -99,14 +114,42 @@ export interface ComposeBriefOpts {
 
 // ---------- Errors ----------
 
-/** Thrown when Tier 4 (MiniMax) is requested but the CLI isn't GA yet
- *  per ADR-058 OQ6. Catchable via instanceof for the budget-pause path
- *  to fall back to Tier 3 or surface a flag. */
+/** ADR-050 v1 + Task t-706655ee §scope (revised 2026-05-14): Tier 3
+ *  (Kimi) and Tier 4 (MiniMax) are PERMANENTLY OUT of scope for
+ *  fallback-cage creation. Operator evaluation: *"MiniMax + Kimi are
+ *  unreliable and not smart enough"* — spawning a low-quality
+ *  executor at budget-pause creates more cleanup than the saved
+ *  budget gains. Only Tier 2 (Cursor composer-2) is accepted.
+ *
+ *  Thrown synchronously from {@link createFallbackCage} on any
+ *  `tier !== 2`. Catchable via `instanceof` so the budget-pause path
+ *  can route to `atmux flag add --severity high` + a Discord
+ *  `[fallback-tier-unavailable]` ping. */
+export class FallbackTierDroppedError extends Error {
+  readonly tier: FallbackTier;
+  constructor(tier: FallbackTier) {
+    super(
+      `Tier ${tier} fallback cage is permanently out of scope per ADR-050 v1 ` +
+        `+ Task t-706655ee (2026-05-14 operator scope reduction). ` +
+        `Only Tier 2 (Cursor / composer-2) is accepted. ` +
+        `Caller must route Tier ${tier} requests to a flag instead.`,
+    );
+    this.name = "FallbackTierDroppedError";
+    this.tier = tier;
+  }
+}
+
+/** @deprecated ADR-050 v1 + Task t-706655ee scope reduction (2026-05-14)
+ *  — Tier 4 (MiniMax) is permanently dropped, not "not GA". Use
+ *  {@link FallbackTierDroppedError} instead. This class is retained
+ *  for one release cycle so existing instanceof callers + tests in
+ *  the wider codebase keep loading; new callers MUST NOT throw it. */
 export class Tier4NotAvailableError extends Error {
   constructor() {
     super(
-      "Tier 4 (MiniMax) CLI is not yet GA — see ADR-058 §OQ6. " +
-        "Use Tier 2 (Cursor) or Tier 3 (Kimi) until the CLI lands.",
+      "Tier 4 (MiniMax) CLI is permanently dropped per ADR-050 v1 + " +
+        "Task t-706655ee (2026-05-14 operator scope reduction). " +
+        "Use Tier 2 (Cursor) — the only accepted fallback in v1.",
     );
     this.name = "Tier4NotAvailableError";
   }
@@ -231,9 +274,18 @@ export function composeTier2Brief(opts: ComposeBriefOpts): string {
 }
 
 /**
- * Tier 3 brief — Kimi (kimi-cli). Dedicated `kimi-agent` user, NO .git
- * in workspace, kernel-isolated. Operator manually reconciles via
- * scripts/fallback-reconcile.sh per ADR-058 §D5.
+ * @deprecated ADR-050 v1 + Task t-706655ee (2026-05-14 scope
+ * reduction) — Tier 3 (Kimi) is permanently dropped. New callers
+ * must NOT compose Tier 3 briefs; `createFallbackCage` rejects
+ * `tier === 3` synchronously. This function is retained only so
+ * existing test fixtures + the `destroyFallbackCage` teardown path
+ * for legacy persisted Tier 3 handles keep compiling. Slated for
+ * removal once the deprecation cycle closes.
+ *
+ * Original spec: Tier 3 brief — Kimi (kimi-cli). Dedicated
+ * `kimi-agent` user, NO .git in workspace, kernel-isolated.
+ * Operator manually reconciled via scripts/fallback-reconcile.sh
+ * per ADR-058 §D5.
  */
 export function composeTier3Brief(opts: ComposeBriefOpts): string {
   return [
@@ -279,8 +331,18 @@ export function composeTier3Brief(opts: ComposeBriefOpts): string {
 }
 
 /**
- * Tier 4 brief — MiniMax (CLI when GA). Same as Tier 3 isolation +
- * additional 'CLI may be unavailable' guard per parent task body.
+ * @deprecated ADR-050 v1 + Task t-706655ee (2026-05-14 scope
+ * reduction) — Tier 4 (MiniMax) is permanently dropped, not "not
+ * GA". `createFallbackCage` rejects `tier === 4` synchronously
+ * without checking the legacy `MINIMAX_CLI_AVAILABLE` env flag.
+ * This function is retained only so test fixtures + the
+ * `destroyFallbackCage` teardown path for legacy persisted Tier 4
+ * handles keep compiling. Slated for removal once the deprecation
+ * cycle closes.
+ *
+ * Original spec: Tier 4 brief — MiniMax (CLI when GA). Same as
+ * Tier 3 isolation + additional 'CLI may be unavailable' guard per
+ * parent task body.
  */
 export function composeTier4Brief(opts: ComposeBriefOpts): string {
   return [
@@ -423,22 +485,33 @@ async function buildTier3PlusWorkspace(
 }
 
 /**
- * Create a fallback cage for a single lane. Tier 2 spawns a cage tmux
- * server in the operator's project cwd. Tier 3+ provisions a workspace
- * under the dedicated user's home (sudo + rsync + chown), then spawns
- * an isolated cage tmux server inside that user's TMUX_TMPDIR.
+ * Create a fallback cage for a single lane. ADR-050 v1 + Task t-706655ee
+ * (2026-05-14 operator scope reduction) restrict creation to **Tier 2
+ * (Cursor) only** — Tier 3 (Kimi) and Tier 4 (MiniMax) are permanently
+ * out of scope. Tier 2 spawns a cage tmux server in the operator's
+ * project cwd; the cage runs `cursor-agent --print --model composer-2
+ * --force` against the original member's worktree.
  *
- * Throws Tier4NotAvailableError for tier=4 unless the operator has
- * wired the CLI manually + set MINIMAX_CLI_AVAILABLE=1 in the env
- * inherited by spawnFn.
+ * Throws {@link FallbackTierDroppedError} synchronously for any
+ * `tier !== 2`. The caller (typically `whip-budget-fallback` on a
+ * sustained budget-pause) should route dropped-tier requests to
+ * `atmux flag add --severity high` + a Discord
+ * `[fallback-tier-unavailable]` ping rather than retrying.
  *
- * Throws FallbackUserMissingError for tier=3 when kimi-agent isn't
- * provisioned (operator must run scripts/provision-fallback-user.sh).
+ * The brief composers + workspace builders for Tier 3+ remain in this
+ * module for the `destroyFallbackCage` teardown path (handles
+ * `CageHandle` rows persisted before the 2026-05-14 reduction); the
+ * **create** path is the hard gate, not the destroy path.
  */
 export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<CageHandle> {
   const tier = opts.tier;
-  if (tier === 4 && process.env.MINIMAX_CLI_AVAILABLE !== "1") {
-    throw new Tier4NotAvailableError();
+  // ADR-050 v1 + Task t-706655ee — refuse-at-entry for dropped tiers.
+  // No env override (operator's "permanently out" is binding); legacy
+  // MINIMAX_CLI_AVAILABLE env is intentionally ignored. The previous
+  // tier=4-only gate via Tier4NotAvailableError is superseded by this
+  // tier!=2 gate.
+  if (tier !== 2) {
+    throw new FallbackTierDroppedError(tier);
   }
 
   const spawnFn = opts.spawnFn ?? defaultSpawn;

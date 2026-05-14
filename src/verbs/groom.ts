@@ -22,10 +22,10 @@
 //               [--decisions-days N]  # default 30
 //               [--keep-bak N]        # default 5
 
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ensureDir } from "../abstractions/fs.ts";
 import { acquireWithTTL } from "../abstractions/lock.ts";
-import { getAtmuxDir, stateDir } from "../core/common.ts";
+import { getAtmuxDir, stateDir, tryLoadTeam } from "../core/common.ts";
 import {
   type ArchiveSizeWarning,
   archiveDecisions,
@@ -42,6 +42,14 @@ import { groomArchive, type GroomArchiveResult } from "../core/groom-archive.ts"
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { LockError, LockTimeoutError, UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
+import {
+  DEFAULT_CLAIMED_AT_THRESHOLD_MIN,
+} from "../core/lane-drift.ts";
+import {
+  type LaneDriftCheckResult,
+  runLaneDriftCheck,
+} from "./lane-drift-check.ts";
 
 // ---------- Args ----------
 
@@ -178,6 +186,14 @@ export interface GroomOptions {
   atmuxDir?: string;
   /** Test injection — clock. Defaults to time.now(). */
   nowMs?: number;
+  /** ADR-062 §5 follow-up: test injection — pre-loaded team. Skips the
+   *  internal `tryLoadTeam` call; useful for tests that don't seed a
+   *  `team.json` file. Production callers leave this unset. */
+  team?: Team;
+  /** ADR-062 §5 follow-up: test injection — substitute for
+   *  `runLaneDriftCheck`. Lets tests assert invocation + skip without
+   *  loading the real implementation's `git log` / tmux probes. */
+  runLaneDriftCheckFn?: typeof runLaneDriftCheck;
 }
 
 const USAGE_TEXT = `\
@@ -203,7 +219,11 @@ Sub-operations (all idempotent):
   3. kanban.json: summarize + remove done/cancelled cards older than --kanban-days.
   4. .bak.* files: keep newest --keep-bak per family.
   5. archive/ size guard: warn if growth exceeds threshold.
-  6. (--archive) state.db → archive.db row move (tasks + inbox_messages).
+  6. lane-drift-check: revert stuck in-progress claims (ADR-062 §5 catch-the-stragglers
+     pass; auto-gated on team.json::groom.laneDriftCheck — default true when team has
+     lane-tagged members, false to disable). Pairs with the every-2-min cron line for fast
+     feedback + the standalone \`atmux lane-drift-check\` verb for ad-hoc invocation.
+  7. (--archive) state.db → archive.db row move (tasks + inbox_messages).
 
 Fires daily via cron (04:00) and once on every \`atmux start\`.
 `;
@@ -214,11 +234,37 @@ export interface GroomResult {
   kanban: KanbanSummarizeResult;
   bakCull: BakCullResult[];
   sizeWarnings: ArchiveSizeWarning[];
+  /** ADR-062 §5 follow-up: lane-drift-check sub-op result. `undefined`
+   *  when the sub-op was skipped (no team.json / opt-out / no lane-
+   *  tagged members). */
+  laneDrift?: LaneDriftCheckResult;
   /** t-8287b37d C1: present only when `--archive` was passed. */
   archive?: GroomArchiveResult;
   /** Sub-ops that threw — surfaced as warnings; verb still returns 0. */
   errors: { op: string; message: string }[];
   skippedReason?: "no-groom-env" | "lock-held";
+}
+
+/** ADR-062 §5 follow-up. Resolution order for the groom→lane-drift-
+ *  check gate:
+ *
+ *  1. `team.groom.laneDriftCheck === false` → never run.
+ *  2. `team.groom.laneDriftCheck === true`  → always run.
+ *  3. unset                                  → run iff ≥1 member has a
+ *     non-empty `.lane` field.
+ *
+ *  Matches the auto-shape of `crons.laneTickEnabled` (the every-2-min
+ *  cron line — t-727f1f42 sibling): both default-enable on lane presence,
+ *  both let operators force-disable without removing `.lane`
+ *  annotations from `team.members[]`. */
+export function shouldRunLaneDriftCheck(team: Team): boolean {
+  const explicit = team.groom?.laneDriftCheck;
+  if (explicit === false) return false;
+  if (explicit === true) return true;
+  return team.members.some((m) => {
+    const lane = (m as { lane?: string }).lane;
+    return typeof lane === "string" && lane.length > 0;
+  });
 }
 
 export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}): Promise<number> {
@@ -385,6 +431,72 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
     } catch (e) {
       logger.warn(`groom: size-check sub-op failed (continuing): ${errMsg(e)}`);
       result.errors.push({ op: "size-check", message: errMsg(e) });
+    }
+
+    // ADR-062 §5 follow-up: lane-drift-check sub-op (catch-the-stragglers
+    // pass). Cron's `*/2` lane-tick line gives real-time drift feedback;
+    // this daily groom pass catches drift the cron missed (e.g. host
+    // suspended overnight, cron disabled, pane classifier wedged for a
+    // window). Sweep before the `--archive` sub-op (which depends on
+    // kanban state being finalized) per Task body — drift-check is the
+    // slowest piece (one git log + per-task pane probe), so sweep
+    // late so partial-run still benefits the cheap flushes above.
+    //
+    // Sub-op error-contained like the others. Loads team.json via the
+    // tryLoadTeam null-on-missing form: missing team.json is treated as
+    // "no team config to drive drift-check from" → silent skip, not a
+    // crash (groom is cron-fired; a host transient that nukes team.json
+    // shouldn't kill the rest of the sweep).
+    try {
+      const team = opts.team ?? (await tryLoadTeam({ teamDir: dirname(atmuxDir) }));
+      if (team === null) {
+        if (env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+          logger.log("groom: lane-drift-check skipped (no team.json at expected path)");
+        }
+      } else if (!shouldRunLaneDriftCheck(team)) {
+        if (env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+          logger.log(
+            "groom: lane-drift-check skipped (groom.laneDriftCheck=false or no lane-tagged members)",
+          );
+        }
+      } else {
+        const driftFn = opts.runLaneDriftCheckFn ?? runLaneDriftCheck;
+        const driftResult = await driftFn(
+          atmuxDir,
+          team,
+          {
+            thresholdMin: DEFAULT_CLAIMED_AT_THRESHOLD_MIN,
+            commits: 30,
+            // Map groom's --dry-run to drift's dry-run; otherwise run
+            // in reset-mode (mutate kanban + raise flags). Cron's daily
+            // 04:00 invocation never passes --dry-run, so the default
+            // production path resets stale claims.
+            reset: !parsed.dryRun,
+            dryRun: parsed.dryRun,
+          },
+          {},
+        );
+        result.laneDrift = driftResult;
+        if (!parsed.quiet) {
+          if (parsed.dryRun) {
+            logger.log(
+              `groom[dry-run]: would lane-drift-check ${driftResult.scanned} in-progress task(s) — ` +
+                `${driftResult.decisions.filter((d) => d.action === "revert").length} revert candidate(s)`,
+            );
+          } else if (driftResult.reverted > 0 || driftResult.flagsRaised > 0) {
+            logger.ok(
+              `groom: lane-drift-check reverted ${driftResult.reverted} stuck claim(s), raised ${driftResult.flagsRaised} flag(s)`,
+            );
+          } else if (driftResult.scanned > 0) {
+            logger.ok(
+              `groom: lane-drift-check scanned ${driftResult.scanned} in-progress task(s) — no drift`,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn(`groom: lane-drift-check sub-op failed (continuing): ${errMsg(e)}`);
+      result.errors.push({ op: "lane-drift-check", message: errMsg(e) });
     }
 
     // t-8287b37d C1: state.db → archive.db row move. Opt-in via

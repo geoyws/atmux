@@ -110,7 +110,44 @@ export type DiscordTemplate =
   // operator sees the same proposed ADRs each tick because they're
   // STILL proposed; mitigation is `(deferred: <reason>)` annotation
   // per ADR-085 §Consequences.
-  | "whip-needs-approval";
+  | "whip-needs-approval"
+  // ADR-077 §F6: superdoctor self-escalation. Fired when the skill
+  // has attempted 3 structural fixes against the same complaint hash
+  // and all failed. Renderer below (`renderSelfHealFailed`); dedup
+  // state in state_kv (feature `superdoctor-self-heal-escalation`,
+  // key = complaint_id) with a 1h re-fire window.
+  | "self-heal-failed"
+  // t-351318dc: cockpit-pulse meta-watchdog. Fired when superdoctor
+  // itself looks dormant (≥1 open complaint anywhere AND no
+  // superdoctor_attempts.attempted_at row newer than 2h). Renderer
+  // below (`renderMetaWatchdog`); dedup state on `PulseState.metaWatchdog`
+  // (paged + dormantSinceSec) — one ping per dormancy streak.
+  | "meta-watchdog"
+  // ADR-131 §D5 (T5): superdoctor kanban-hygiene blocker. Fired by
+  // the drain loop ONLY when (severity===P0) AND (wedgedMin >=240)
+  // AND refuse-and-ask escape triggered (zero deterministic
+  // candidates per §D3 rule 4). Renderer below
+  // (`renderHygieneBlocker`); P0 with a deterministic fix is
+  // silently auto-fixed + complaint-box logged, NOT pinged here.
+  // No dedup — wedge persists across ticks because no deterministic
+  // candidate yet exists; suppression is the caller's gate, not
+  // the renderer's.
+  | "hygiene-blocker"
+  // ADR-142 §D4: modal-cycling detector. Fired when ≥cycleThreshold
+  // distinct modal-hashes within windowMin AND 0 commits in
+  // commitGracePeriodMin. Renderer below (`renderWhipModalCycling`);
+  // dedup state at `<atmuxDir>/state/modal-cycling-dedup-state.json`
+  // (per-member, dedupMin window — default 30min).
+  | "whip-modal-cycling"
+  // ADR-137 §D3: member-forcepush-recent post-hoc surface. Fired when
+  // the `checkMemberForcePushRecent` doctor probe surfaces a recent
+  // force-push event on a per-member branch — nudges the team toward
+  // the ADR-137 merge-over-rebase convention. Renderer below
+  // (`renderMemberForcePushWarning`); dedup state at
+  // `<atmuxDir>/state/member-forcepush-dedup-state.json` (per-team:
+  // per-branch, 30min dedup window — operator may see the same
+  // member's force-push twice in 30min only if there's a second one).
+  | "member-forcepush-warning";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1408,6 +1445,67 @@ export function renderWhipDefunctCwd(opts: WhipDefunctCwdOpts): DiscordSendOpts 
   return out;
 }
 
+// ---------- ADR-137 — renderMemberForcePushWarning ----------
+
+export interface MemberForcePushWarningMember {
+  /** Member name whose per-member branch surfaced the recent
+   *  force-push reflog entry. */
+  member: string;
+  /** Branch name (typically `<base>-<member>`) carrying the
+   *  force-push event. */
+  branch: string;
+  /** Short reflog message (one line, ≤80 char — truncated upstream). */
+  reflogMsg: string;
+}
+
+export interface MemberForcePushWarningOpts {
+  team: string;
+  /** Members + branches that surfaced the doctor probe. */
+  events: ReadonlyArray<MemberForcePushWarningMember>;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[member-forcepush-warning]` Discord send opts per
+ * ADR-137 §D3. Warn-class (🟡 Cool) — the harness force-push deny
+ * rule remains the actual gate; this template is the post-hoc
+ * surface for force-pushes that DID land (operator authorized via
+ * the prompt, OR the deny rule wasn't engaged because the worktree
+ * was outside its scope).
+ *
+ * Composition:
+ *   - Verdict: `🟡 **Cool** — N member(s) force-pushed in last hour`
+ *   - Bullet per affected member: `🟡 <member>: <branch> reflog: <msg>`
+ *   - Fix bullet: `🛠️ fix: use \`git merge origin/<base>\` for trunk integration (ADR-137 §D1)`
+ *
+ * Dedup state lives at `<atmuxDir>/state/member-forcepush-dedup-state.json`
+ * keyed on `<team>:<branch>` with a 30min window — the doctor probe
+ * itself is live-not-cached (re-fires every tick if reflog still
+ * matches), but the Discord ping is dedup'd so a single force-push
+ * doesn't ping every tick for 12 ticks.
+ */
+export function renderMemberForcePushWarning(
+  opts: MemberForcePushWarningOpts,
+): DiscordSendOpts {
+  const n = opts.events.length;
+  const verdict = `🟡 **Cool** — ${n} member${n === 1 ? "" : "s"} force-pushed within the last hour`;
+  const bullets: string[] = [];
+  for (const e of opts.events) {
+    const short = e.reflogMsg.length > 40 ? `${e.reflogMsg.slice(0, 40)}…` : e.reflogMsg;
+    bullets.push(`🟡 ${e.member}: ${e.branch} reflog: ${short}`);
+  }
+  bullets.push("🛠️ fix: use `git merge origin/<base>` for trunk integration (ADR-137 §D1)");
+  const out: DiscordSendOpts = {
+    template: "member-forcepush-warning",
+    team: opts.team,
+    category: "📋",
+    verdict,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
 // ---------- ADR-086 — renderPulseVerdict ----------
 
 /** Closed verdict-literal set the renderer accepts. Mirrors the
@@ -1443,6 +1541,35 @@ export interface PulseVerdictOpts {
   fireReason: "first-observation" | "transition" | "sustained-urgency" | "deduped";
   /** Window minutes used for the cadence number in the footer. */
   windowMin: number;
+  whenMs?: number;
+}
+
+// ---------- ADR-077 §F6 — renderSelfHealFailed ----------
+
+export interface SelfHealFailedOpts {
+  team: string;
+  /** One-line symptom — what stayed broken after the attempts. The
+   *  skill composes this from the complaint's `incident_summary`. */
+  symptom: string;
+  /** Count of failed attempts on this complaint hash. The escalation
+   *  trigger is N=3 (per ADR-077 §F6); the renderer surfaces the
+   *  actual count so a 4th failure that beats dedup still reads
+   *  correctly. */
+  attempts: number;
+  /** Active member count the proposed restart would clear. Surfaced
+   *  in option A so the operator sees the blast radius. */
+  members: number;
+  /** Current account label (e.g. `personal`, `icloud`). Option B
+   *  proposes swapping AWAY from this. Null when account info is
+   *  unavailable; the option renders without a `from`. */
+  fromAccount: string | null;
+  /** Proposed swap target (e.g. `icloud`). Same nullability semantics
+   *  as `fromAccount`. */
+  toAccount: string | null;
+  /** Open complaint count for the team — footer signal. */
+  complaintsOpen: number;
+  /** Whip-strike accumulator from the skill's tracking — footer signal. */
+  whipStrikes: number;
   whenMs?: number;
 }
 
@@ -1608,4 +1735,349 @@ function naBullet80(s: string): string {
   for (const seg of GRAPHEME_SEG.segment(s)) segs.push(seg.segment);
   if (segs.length <= max) return s;
   return `${segs.slice(0, max - 1).join("")}…`;
+}
+
+/**
+ * Build the `[self-heal-failed]` Discord send opts per ADR-077 §F6.
+ * Verdict-first, milestone-grade, ask-loudly per CLAUDE.md §Discord —
+ * the operator should be able to reply with a single letter from a
+ * phone and have the skill apply the named action.
+ *
+ * Bullets:
+ *   - `🚨 self-heal failed: <symptom> — N=<attempts> attempts`
+ *   - `🙏 reply A/B/C — one letter pivots cheaply`
+ *   - `🛠️ A) /team stop + start <team> — restarts <members> member(s) ~30s`
+ *   - `🔁 B) swap account <from> → <to> — wk budget reset` (or generic
+ *     swap line when account labels are unavailable)
+ *   - `⏳ C) park <team> for the night — re-engage at session start`
+ *   - `⏰ default at <HH:MM MYT>: A — cheap to pivot if you redirect`
+ *   - `📍 <complaintsOpen> open · <whipStrikes> strikes`
+ *
+ * The "default at HH:MM MYT" deadline is 30 minutes after the ping's
+ * own timestamp — gives the operator enough phone-time to triage
+ * without sitting on a broken team overnight. Derived from `whenMs`
+ * (or `now()`) so test injection threads through cleanly.
+ */
+export function renderSelfHealFailed(opts: SelfHealFailedOpts): DiscordSendOpts {
+  const whenMs = opts.whenMs ?? now();
+  const defaultAtMs = whenMs + 30 * 60 * 1000;
+  const swapLine =
+    opts.fromAccount !== null && opts.toAccount !== null
+      ? `🔁 B) swap account ${opts.fromAccount} → ${opts.toAccount} — wk budget reset`
+      : "🔁 B) swap account — wk budget reset";
+  const bullets: string[] = [
+    `🚨 self-heal failed: ${opts.symptom} — N=${opts.attempts} attempts`,
+    "🙏 reply A/B/C — one letter pivots cheaply",
+    `🛠️ A) /team stop + start ${opts.team} — restarts ${opts.members} member(s) ~30s`,
+    swapLine,
+    `⏳ C) park ${opts.team} for the night — re-engage at session start`,
+    `⏰ default at ${formatMyt(defaultAtMs)}: A — cheap to pivot if you redirect`,
+    `📍 ${opts.complaintsOpen} open · ${opts.whipStrikes} strikes`,
+  ];
+  const out: DiscordSendOpts = {
+    template: "self-heal-failed",
+    team: opts.team,
+    category: "🚨",
+    bullets,
+    whenMs,
+  };
+  return out;
+}
+
+// ---------- t-351318dc — renderMetaWatchdog ----------
+
+export interface MetaWatchdogOpts {
+  /** Cockpit identifier — code-formatted in header. The probe is
+   *  cockpit-scoped (one superdoctor across all teams), so we surface
+   *  the cockpit name here rather than a team. */
+  cockpit: string;
+  /** Aggregate count of open complaints across every cockpit-enabled
+   *  team's complaint box. The dormancy gate is `> 0`. */
+  openComplaints: number;
+  /** Seconds since the latest `superdoctor_attempts.attempted_at` row
+   *  across every cockpit-enabled team. Null when no attempt rows
+   *  exist anywhere (cold cockpit — superdoctor never acted). */
+  dormantSec: number | null;
+  /** Brief one-line summary of the oldest open complaint — surfaces
+   *  in the footer so the operator can triage on phone without
+   *  opening the cockpit. Empty string when no complaints exist
+   *  (degenerate; shouldn't happen given the dormancy gate). */
+  oldestComplaintSummary: string;
+  /** Team that owns the oldest open complaint — also surfaced in the
+   *  footer. Empty string when no complaints. */
+  oldestComplaintTeam: string;
+  /** Age of the oldest open complaint, in seconds. */
+  oldestComplaintAgeSec: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[meta-watchdog]` Discord send opts per t-351318dc.
+ * Verdict-first, milestone-grade, ask-loudly per CLAUDE.md §Discord —
+ * one letter (A or B) from a phone resolves the page.
+ *
+ * Bullets:
+ *   - `🚨 superdoctor dormant — <N> open complaints, no attempts in <Hh:Mm>`
+ *     (or `... no attempts on record` when `dormantSec === null`)
+ *   - `🙏 reply A/B — one letter pivots cheaply`
+ *   - `🛠️ A) check superdoctor pane (cockpit w2) — likely saturated / wedged`
+ *   - `♻️ B) restart superdoctor — kill+respawn`
+ *   - `⏰ default at <HH:MM MYT>: A — cheap to pivot if you redirect`
+ *   - `📍 oldest: <team> · <summary> · <Hh:Mm> ago`
+ *
+ * Default deadline is +30min (same operator-window as
+ * `renderSelfHealFailed`) — phone-triage time without sitting on
+ * a broken cockpit overnight.
+ */
+export function renderMetaWatchdog(opts: MetaWatchdogOpts): DiscordSendOpts {
+  const whenMs = opts.whenMs ?? now();
+  const defaultAtMs = whenMs + 30 * 60 * 1000;
+  const dormantStr =
+    opts.dormantSec === null ? "no attempts on record" : `no attempts in ${formatDuration(opts.dormantSec * 1000)}`;
+  const oldestAge = formatDuration(opts.oldestComplaintAgeSec * 1000);
+  const bullets: string[] = [
+    `🚨 superdoctor dormant — ${opts.openComplaints} open complaints, ${dormantStr}`,
+    "🙏 reply A/B — one letter pivots cheaply",
+    "🛠️ A) check superdoctor pane (cockpit w2) — likely saturated / wedged",
+    "♻️ B) restart superdoctor — kill+respawn",
+    `⏰ default at ${formatMyt(defaultAtMs)}: A — cheap to pivot if you redirect`,
+    `📍 oldest: ${opts.oldestComplaintTeam} · ${opts.oldestComplaintSummary} · ${oldestAge} ago`,
+  ];
+  const out: DiscordSendOpts = {
+    template: "meta-watchdog",
+    team: opts.cockpit,
+    category: "🚨",
+    bullets,
+    whenMs,
+  };
+  return out;
+}
+
+// ---------- ADR-131 §D5 T5 — renderHygieneBlocker ----------
+//
+// **Sibling-branch type-dep**: `HygieneFingerprintClass` is canonical
+// in `src/core/superdoctor-hygiene/_shared.ts` (landed in T2 commit
+// 38a9338 on geoyws-parity-state-impl, not yet on this worktree's
+// trunk). Per the no-self-merge policy (2026-05-14 16:40 MYT pivot,
+// memory `feedback_atmux_no_gitter_worker_commits`), this file
+// re-declares the same literal-union as a LOCAL type — the drain-
+// loop call site in T3 holds the cross-module type alignment when
+// gitter merges the branches. Adding a new fingerprint class
+// requires editing BOTH this literal-union AND the canonical one
+// in `_shared.ts` in lockstep.
+//
+// Layering note: abstractions/ MUST NOT import from core/ per
+// ADR-003. Even after gitter fan-in, this stays a local literal-
+// union to preserve the direction.
+
+/** Local mirror of `src/core/superdoctor-hygiene/_shared.ts`'s
+ *  `HygieneFingerprintClass`. See block-comment above for the
+ *  lockstep-update rule. */
+export type HygieneFingerprintClass =
+  | "ghost-owner"
+  | "lane-mismatch"
+  | "role-mismatch"
+  | "lane-null-orphan"
+  | "prio-null";
+
+/** Optional ask block — emitted only when the drain loop's refuse-
+ *  and-ask escape triggered (§D3 rule 4: zero deterministic
+ *  candidates). Caller composes the question + 2-3 lettered
+ *  options + the recommended default tagged with a silent-default
+ *  deadline (MYT). */
+export interface HygieneBlockerNeedFromGeorge {
+  /** One-line ask (≤60 graphemes for the on-bullet shape — the
+   *  validator caps at 80 across the board; 60 leaves headroom for
+   *  the `🙏 ` prefix). */
+  question: string;
+  /** 2-3 lettered options (`"A) reassign manually"`, `"B) leave wedged"`).
+   *  Optional — when omitted, only the question + default-deadline
+   *  pair renders. */
+  options?: ReadonlyArray<string>;
+  /** Recommended default option text — referenced in the
+   *  silent-default line as `**Default at <deadline> if silent:**
+   *  <default>`. */
+  default: string;
+  /** MYT-formatted deadline (e.g. `"HH:MM MYT"`) at which the
+   *  default applies if no operator response. The renderer does
+   *  NOT compute this — caller composes per the drain-loop's tick
+   *  budget. */
+  deadline: string;
+}
+
+export interface HygieneBlockerOpts {
+  team: string;
+  /** Wedged kanban task id (e.g. `"t-aaaa1111"`). Rendered inside
+   *  backticks in the verdict line. */
+  taskId: string;
+  /** Hygiene fingerprint class — surfaces in the verdict line's
+   *  root-cause clause via the canonical human-readable label. */
+  fingerprintClass: HygieneFingerprintClass;
+  /** Minutes the wedge has persisted. ADR-131 §D5 caller-side gate:
+   *  >=240 (4h) is the threshold for Discord surfacing. Compact-
+   *  duration grammar (CLAUDE.md §Duration formatting) used for
+   *  the verdict-line rendering. */
+  wedgedMin: number;
+  /** Human-readable description of the fix superdoctor wants to
+   *  apply (or already applied). Surfaces as the single ✨ What's
+   *  new milestone — prose-grade ≤80 graphemes, no emoji prefix. */
+  proposedFix: string;
+  /** Monotonic tick counter (ADR-077 §D3 hourly-tick id). Surfaced
+   *  in the footer so operator can correlate across ticks. */
+  superdoctorTick: number;
+  /** Count of hygiene fixes applied this tick across all teams.
+   *  Operator-side density signal: high values = busy hygiene cycle. */
+  fixesThisTick: number;
+  /** Count of complaints filed this tick (ADR-077 §D5 complaint box).
+   *  Independent counter; not necessarily ==`fixesThisTick`. */
+  complaintsFiled: number;
+  /** Optional ask block — supplied when refuse-and-ask escape
+   *  triggered. Absent ⇒ pure-blocker shape (no Need-from-George
+   *  section); the wedge is still surfaced for operator awareness. */
+  needFromGeorge?: HygieneBlockerNeedFromGeorge;
+  whenMs?: number;
+}
+
+/** Canonical human-readable label per fingerprint class. Surfaces in
+ *  the verdict-line root-cause clause. Co-located here (not in the
+ *  detector files) because the wording is Discord-output-shaped — it
+ *  belongs with the renderer, not the detection logic. */
+const HYGIENE_CLASS_LABEL: Record<HygieneFingerprintClass, string> = {
+  "ghost-owner": "owner not in roster",
+  "lane-mismatch": "owner lane ≠ task lane",
+  "role-mismatch": "non-execution role on execution task",
+  "lane-null-orphan": "lane=null orphan",
+  "prio-null": "priority unset",
+};
+
+/**
+ * Build the `[hygiene-blocker]` Discord send opts per ADR-131 §D5.
+ *
+ * **Caller-side gate** (drain loop in T3): emission fires ONLY when
+ *
+ *   1. severity === P0 (ghost-owner zero-candidates / lane-mismatch P0)
+ *   2. wedgedMin >= 240 (4h wedge threshold)
+ *   3. refuse-and-ask escape triggered (zero deterministic candidates
+ *      per §D3 rule 4)
+ *
+ * The renderer enforces NONE of these — passing a payload that fails
+ * the call-site gates still produces a valid `DiscordSendOpts`, so
+ * tests can exercise the renderer in isolation without simulating
+ * the drain-loop policy.
+ *
+ * Body shape per ADR-131 §D5:
+ *
+ *   - Header: 🔧 [hygiene-blocker] · `{team}` · HH:MM MYT
+ *   - Verdict: 🔴 Stalled — \`{taskId}\` wedged {duration}, {label}
+ *   - ✨ What's new: 1 bullet — `proposedFix`
+ *   - 🙏 Need from George (only when `needFromGeorge` present):
+ *       question + lettered options + silent-default line
+ *   - 📍 footer: `superdoctor tick #N · K fixes applied · C complaints`
+ */
+export function renderHygieneBlocker(opts: HygieneBlockerOpts): DiscordSendOpts {
+  const duration = formatDuration(opts.wedgedMin * 60_000);
+  const label = HYGIENE_CLASS_LABEL[opts.fingerprintClass];
+  const verdict = `🔴 **Stalled** — \`${opts.taskId}\` wedged ${duration}, ${label}`;
+
+  // ✨ What's new — single milestone bullet (prose-grade, no emoji prefix).
+  const whatsNew: string[] = [opts.proposedFix];
+
+  // 🙏 Need from George — optional section. Bullets ARE emoji-prefixed
+  // (sections use the emoji-prefix validator), so each bullet leads
+  // with 🙏 / 🛠️ / 📍 per the ALLOWED_BULLET_PREFIX set.
+  const sections: DiscordSection[] = [];
+  if (opts.needFromGeorge !== undefined) {
+    const nfg = opts.needFromGeorge;
+    const bullets: string[] = [`🙏 ${nfg.question}`];
+    if (nfg.options !== undefined) {
+      for (const opt of nfg.options) {
+        bullets.push(`📍 ${opt}`);
+      }
+    }
+    bullets.push(`📍 **Default at ${nfg.deadline} if silent:** ${nfg.default}`);
+    sections.push({
+      label: "🙏 **Need from George** (zero deterministic candidates)",
+      bullets,
+    });
+  }
+
+  const footer =
+    `superdoctor tick #${opts.superdoctorTick} · ` +
+    `${opts.fixesThisTick} fixes applied · ` +
+    `${opts.complaintsFiled} complaints`;
+
+  const out: DiscordSendOpts = {
+    template: "hygiene-blocker",
+    team: opts.team,
+    category: "🔧",
+    verdict,
+    whatsNew,
+    footer,
+  };
+  if (sections.length > 0) out.sections = sections;
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-142 §D4 — renderWhipModalCycling ----------
+
+export interface WhipModalCyclingSeen {
+  /** Coarse modal class label — `choice-prompt` / `numbered-prompt` /
+   *  `confirm-prompt` / `enter-prompt`. */
+  modalClass: string;
+  /** First line of the modal text, truncated for the bullet (the full
+   *  modalText already lives on disk in modal-history-<member>.json). */
+  firstLine: string;
+}
+
+export interface WhipModalCyclingOpts {
+  team: string;
+  /** Cycling member. */
+  member: string;
+  /** Member's currently-claimed task id — surfaced in the verdict so
+   *  operator can correlate the cycling with kanban state. */
+  taskId: string;
+  /** Distinct modal-class count within the window. */
+  distinctCount: number;
+  /** Window size in minutes (matches `modalCycling.windowMin`). */
+  windowMin: number;
+  /** Last 3 modals observed within the window — renderer truncates if
+   *  caller passes more. */
+  modalsSeen: ReadonlyArray<WhipModalCyclingSeen>;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-modal-cycling]` Discord send opts per ADR-142 §D4.
+ *
+ * Verdict: `🟡 Modal-cycling — <member> thrashed N modal-classes in
+ *           Wmin, 0 commits on claimed <taskId>`.
+ *
+ * Bullets (last-3 modals truncated to 80 graphemes each):
+ *   - `📋 <modalClass>: <first-line-truncated>` per modal
+ *   - `🙏 Auto-action — clarifier dispatched + flag filed`
+ *   - `📍 detector fires once per 30min dedup window`
+ *
+ * Category emoji `🔄` — sibling to ADR-056's lifecycle headers; the
+ * modal-cycling event is a re-classification of the member, same
+ * "circling back" visual semantic.
+ */
+export function renderWhipModalCycling(opts: WhipModalCyclingOpts): DiscordSendOpts {
+  const verdict = `🟡 **Modal-cycling** — \`${opts.member}\` thrashed ${opts.distinctCount} modal-classes in ${opts.windowMin}min, 0 commits on \`${opts.taskId}\``;
+  const seen = opts.modalsSeen.slice(-3);
+  const bullets: string[] = [];
+  for (const s of seen) {
+    bullets.push(naBullet80(`📋 ${s.modalClass}: ${s.firstLine}`));
+  }
+  bullets.push("🙏 Auto-action — clarifier dispatched + flag filed");
+  bullets.push("📍 detector fires once per dedup window");
+  const out: DiscordSendOpts = {
+    template: "whip-modal-cycling",
+    team: opts.team,
+    category: "🔄",
+    verdict,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
 }

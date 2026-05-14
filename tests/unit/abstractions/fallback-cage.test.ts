@@ -4,7 +4,7 @@
 // Sub-commit (b) adds: createFallbackCage + destroyFallbackCage lifecycle
 // + Tier 4 stub guard. Tests below at "Lifecycle —" describe blocks.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   type CageHandle,
   type ComposeBriefOpts,
@@ -20,6 +20,7 @@ import {
   destroyFallbackCage,
   type FallbackAgent,
   type FallbackTier,
+  FallbackTierDroppedError,
   FallbackUserMissingError,
   TIER_AGENT,
   TIER3_RSYNC_EXCLUDES,
@@ -501,86 +502,17 @@ describe("Lifecycle — createFallbackCage Tier 2 (Cursor)", () => {
   });
 });
 
-describe("Lifecycle — createFallbackCage Tier 3 (Kimi)", () => {
-  test("happy path: getent + mkdir + rsync + git context dump + chown + sudo tmux", async () => {
-    const spawn = makeSpawnRecorder([
-      { matchCmd: "getent", exitCode: 0 },
-      {
-        matchCmd: "git",
-        matchArgvIncludes: "log",
-        exitCode: 0,
-        stdout: "abc123 commit one\n",
-      },
-      {
-        matchCmd: "git",
-        matchArgvIncludes: "status",
-        exitCode: 0,
-        stdout: "On branch foo\n",
-      },
-      {
-        matchCmd: "git",
-        matchArgvIncludes: "branch",
-        exitCode: 0,
-        stdout: "foo\n",
-      },
-    ]);
-    const tmuxState: FakeTmuxState = {
-      newSessionCalls: [],
-      killSessionCalls: [],
-      killSessionShouldThrow: false,
-    };
-    const handle = await createFallbackCage({
-      team: "alpha",
-      lane: "fe",
-      tier: 3,
-      taskId: "t-x",
-      atmuxDir: "/p/.atmux",
-      projectCwd: "/p",
-      spawnFn: spawn.fn,
-      tmuxFactory: makeFakeTmuxFactory(tmuxState),
-      nowSec: () => 1700_000_000,
-    });
-    expect(handle.tier).toBe(3);
-    expect(handle.agent).toBe("kimi-agent");
-    expect(handle.workDir).toBe("/home/kimi-agent/cages/alpha-fe/work");
-    expect(handle.tmuxTmpdir).toBe("/tmp/atmux_fallback_alpha_fe_kimi-agent/");
-    // Did getent run for kimi-agent?
-    expect(
-      spawn.calls.some(
-        (c) => c.cmd === "getent" && c.argv.includes("passwd") && c.argv.includes("kimi-agent"),
-      ),
-    ).toBe(true);
-    // Did mkdir under /home/kimi-agent/...?
-    expect(
-      spawn.calls.some(
-        (c) =>
-          c.cmd === "sudo" &&
-          c.argv.includes("mkdir") &&
-          c.argv.some((a) => a.includes("/home/kimi-agent/cages/alpha-fe/work")),
-      ),
-    ).toBe(true);
-    // Did rsync run with the canonical excludes?
-    const rsyncCall = spawn.calls.find((c) => c.cmd === "rsync");
-    expect(rsyncCall).toBeDefined();
-    for (const exclude of TIER3_RSYNC_EXCLUDES) {
-      expect(rsyncCall?.argv.includes(`--exclude=${exclude}`)).toBe(true);
-    }
-    // Tier 2 path NOT taken — no operator-side newSession call.
-    expect(tmuxState.newSessionCalls.length).toBe(0);
-    // Sudo tmux new-session WAS called with kimi-agent.
-    expect(
-      spawn.calls.some(
-        (c) =>
-          c.cmd === "sudo" &&
-          c.argv.includes("kimi-agent") &&
-          c.argv.includes("tmux") &&
-          c.argv.includes("new-session"),
-      ),
-    ).toBe(true);
-  });
+// ADR-050 v1 + Task t-706655ee (2026-05-14 operator scope reduction):
+// `createFallbackCage` refuses every tier !== 2. Tier 3 (Kimi) and
+// Tier 4 (MiniMax) are PERMANENTLY OUT of scope for the create path.
+// The tests below assert the hard-refuse contract; the legacy
+// Tier 3 happy-path / Tier 3 git-context-dump / Tier 3
+// FallbackUserMissingError / Tier 4 MINIMAX_CLI_AVAILABLE-env-flag
+// tests are deleted because their behaviour is now unreachable.
 
-  test("missing kimi-agent → throws FallbackUserMissingError", async () => {
-    const spawn = makeSpawnRecorder([{ matchCmd: "getent", exitCode: 2 }]);
+describe("Lifecycle — createFallbackCage Tier 3+ refused (ADR-050 v1)", () => {
+  test("Tier 3 (Kimi) → throws FallbackTierDroppedError, no side effects", async () => {
+    const spawn = makeSpawnRecorder();
     const tmuxState: FakeTmuxState = {
       newSessionCalls: [],
       killSessionCalls: [],
@@ -601,123 +533,109 @@ describe("Lifecycle — createFallbackCage Tier 3 (Kimi)", () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught instanceof FallbackUserMissingError).toBe(true);
-    expect((caught as FallbackUserMissingError).agent).toBe("kimi-agent");
-    // Must abort BEFORE any rsync / tmux spawn.
-    expect(spawn.calls.some((c) => c.cmd === "rsync")).toBe(false);
+    expect(caught instanceof FallbackTierDroppedError).toBe(true);
+    expect((caught as FallbackTierDroppedError).tier).toBe(3);
+    // Hard gate must abort BEFORE any side effect (no getent, no
+    // sudo, no rsync, no tmux). Previous behaviour ran the
+    // kimi-agent provisioning chain; the gate hoists the refusal
+    // above all of it.
+    expect(spawn.calls.length).toBe(0);
+    expect(tmuxState.newSessionCalls.length).toBe(0);
   });
 
-  test("git context dump writes _history.log / _status.log / _branch.log via sudo tee", async () => {
-    const spawn = makeSpawnRecorder([
-      { matchCmd: "getent", exitCode: 0 },
-      {
-        matchCmd: "git",
-        matchArgvIncludes: "log",
-        exitCode: 0,
-        stdout: "log-output",
-      },
-      {
-        matchCmd: "git",
-        matchArgvIncludes: "status",
-        exitCode: 0,
-        stdout: "status-output",
-      },
-      {
-        matchCmd: "git",
-        matchArgvIncludes: "branch",
-        exitCode: 0,
-        stdout: "branch-output",
-      },
-    ]);
-    const tmuxState: FakeTmuxState = {
-      newSessionCalls: [],
-      killSessionCalls: [],
-      killSessionShouldThrow: false,
-    };
-    await createFallbackCage({
-      team: "alpha",
-      lane: "fe",
-      tier: 3,
-      taskId: "t-x",
-      atmuxDir: "/p/.atmux",
-      projectCwd: "/p",
-      spawnFn: spawn.fn,
-      tmuxFactory: makeFakeTmuxFactory(tmuxState),
-    });
-    const teeCalls = spawn.calls.filter((c) => c.cmd === "sudo" && c.argv.includes("tee"));
-    expect(teeCalls.length).toBe(3);
-    const targets = teeCalls.map((c) => c.argv[c.argv.length - 1]);
-    expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_history.log");
-    expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_status.log");
-    expect(targets).toContain("/home/kimi-agent/cages/alpha-fe/work/_branch.log");
-    // History file's stdin must be the captured git log output.
-    const historyTee = teeCalls.find((c) => c.argv[c.argv.length - 1]?.endsWith("_history.log"));
-    expect(historyTee?.stdin).toBe("log-output");
+  test("Tier 4 (MiniMax) → throws FallbackTierDroppedError regardless of MINIMAX_CLI_AVAILABLE", async () => {
+    // The legacy env flag is intentionally ignored — Task t-706655ee
+    // §scope says "permanently out", which is stronger than the prior
+    // "not GA" framing.
+    const ORIG_ENV = process.env.MINIMAX_CLI_AVAILABLE;
+    process.env.MINIMAX_CLI_AVAILABLE = "1";
+    try {
+      const spawn = makeSpawnRecorder();
+      const tmuxState: FakeTmuxState = {
+        newSessionCalls: [],
+        killSessionCalls: [],
+        killSessionShouldThrow: false,
+      };
+      let caught: unknown = null;
+      try {
+        await createFallbackCage({
+          team: "alpha",
+          lane: "fe",
+          tier: 4,
+          taskId: "t-x",
+          atmuxDir: "/p/.atmux",
+          projectCwd: "/p",
+          spawnFn: spawn.fn,
+          tmuxFactory: makeFakeTmuxFactory(tmuxState),
+        });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught instanceof FallbackTierDroppedError).toBe(true);
+      expect((caught as FallbackTierDroppedError).tier).toBe(4);
+      expect(spawn.calls.length).toBe(0);
+    } finally {
+      if (ORIG_ENV === undefined) delete process.env.MINIMAX_CLI_AVAILABLE;
+      else process.env.MINIMAX_CLI_AVAILABLE = ORIG_ENV;
+    }
+  });
+
+  test("Tier 4 without MINIMAX_CLI_AVAILABLE → also FallbackTierDroppedError (not legacy Tier4NotAvailableError)", async () => {
+    const ORIG_ENV = process.env.MINIMAX_CLI_AVAILABLE;
+    delete process.env.MINIMAX_CLI_AVAILABLE;
+    try {
+      const spawn = makeSpawnRecorder();
+      const tmuxState: FakeTmuxState = {
+        newSessionCalls: [],
+        killSessionCalls: [],
+        killSessionShouldThrow: false,
+      };
+      let caught: unknown = null;
+      try {
+        await createFallbackCage({
+          team: "alpha",
+          lane: "fe",
+          tier: 4,
+          taskId: "t-x",
+          atmuxDir: "/p/.atmux",
+          projectCwd: "/p",
+          spawnFn: spawn.fn,
+          tmuxFactory: makeFakeTmuxFactory(tmuxState),
+        });
+      } catch (e) {
+        caught = e;
+      }
+      // The new hard gate supersedes the old MINIMAX_CLI_AVAILABLE
+      // check — both env states route through FallbackTierDroppedError.
+      expect(caught instanceof FallbackTierDroppedError).toBe(true);
+      // And the legacy Tier4NotAvailableError class is NOT thrown by
+      // createFallbackCage anymore (still exported for in-flight
+      // instanceof checks at call sites that haven't migrated yet).
+      expect(caught instanceof Tier4NotAvailableError).toBe(false);
+      expect(spawn.calls.length).toBe(0);
+    } finally {
+      if (ORIG_ENV === undefined) delete process.env.MINIMAX_CLI_AVAILABLE;
+      else process.env.MINIMAX_CLI_AVAILABLE = ORIG_ENV;
+    }
   });
 });
 
-describe("Lifecycle — createFallbackCage Tier 4 stub", () => {
-  const ORIG_ENV = process.env.MINIMAX_CLI_AVAILABLE;
-
-  afterEach(() => {
-    if (ORIG_ENV === undefined) delete process.env.MINIMAX_CLI_AVAILABLE;
-    else process.env.MINIMAX_CLI_AVAILABLE = ORIG_ENV;
+describe("FallbackTierDroppedError", () => {
+  test("message names the refused tier + ADR-050 + Task t-706655ee", () => {
+    const e = new FallbackTierDroppedError(3);
+    expect(e.message).toContain("Tier 3");
+    expect(e.message).toContain("ADR-050");
+    expect(e.message).toContain("t-706655ee");
   });
-
-  test("Tier 4 without MINIMAX_CLI_AVAILABLE → throws Tier4NotAvailableError", async () => {
-    delete process.env.MINIMAX_CLI_AVAILABLE;
-    const spawn = makeSpawnRecorder();
-    const tmuxState: FakeTmuxState = {
-      newSessionCalls: [],
-      killSessionCalls: [],
-      killSessionShouldThrow: false,
-    };
-    let caught: unknown = null;
-    try {
-      await createFallbackCage({
-        team: "alpha",
-        lane: "fe",
-        tier: 4,
-        taskId: "t-x",
-        atmuxDir: "/p/.atmux",
-        projectCwd: "/p",
-        spawnFn: spawn.fn,
-        tmuxFactory: makeFakeTmuxFactory(tmuxState),
-      });
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught instanceof Tier4NotAvailableError).toBe(true);
-    // Must abort BEFORE any side effect.
-    expect(spawn.calls.length).toBe(0);
+  test("tier property pinned for catch-site routing", () => {
+    expect(new FallbackTierDroppedError(3).tier).toBe(3);
+    expect(new FallbackTierDroppedError(4).tier).toBe(4);
   });
-
-  test("Tier 4 with MINIMAX_CLI_AVAILABLE=1 → falls through to Tier 3-style path", async () => {
-    process.env.MINIMAX_CLI_AVAILABLE = "1";
-    const spawn = makeSpawnRecorder([
-      { matchCmd: "getent", exitCode: 0 },
-      { matchCmd: "git", matchArgvIncludes: "log", exitCode: 0, stdout: "" },
-      { matchCmd: "git", matchArgvIncludes: "status", exitCode: 0, stdout: "" },
-      { matchCmd: "git", matchArgvIncludes: "branch", exitCode: 0, stdout: "" },
-    ]);
-    const tmuxState: FakeTmuxState = {
-      newSessionCalls: [],
-      killSessionCalls: [],
-      killSessionShouldThrow: false,
-    };
-    const handle = await createFallbackCage({
-      team: "alpha",
-      lane: "fe",
-      tier: 4,
-      taskId: "t-x",
-      atmuxDir: "/p/.atmux",
-      projectCwd: "/p",
-      spawnFn: spawn.fn,
-      tmuxFactory: makeFakeTmuxFactory(tmuxState),
-    });
-    expect(handle.tier).toBe(4);
-    expect(handle.agent).toBe("minimax-agent");
-    expect(handle.workDir).toBe("/home/minimax-agent/cages/alpha-fe/work");
+  test("instanceof Error", () => {
+    expect(new FallbackTierDroppedError(4) instanceof Error).toBe(true);
+  });
+  test("name property is 'FallbackTierDroppedError'", () => {
+    expect(new FallbackTierDroppedError(3).name).toBe("FallbackTierDroppedError");
   });
 });
 

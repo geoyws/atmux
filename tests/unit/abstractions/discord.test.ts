@@ -1,4 +1,4 @@
-// Unit tests for src/abstractions/discord.ts (ADR-008).
+// Unit tests for src/abstractions/discord.ts (ADR-101).
 //
 // Covers:
 //   - Validation (R-rules: bullet length, emoji prefix, empty body)
@@ -27,6 +27,7 @@ import {
   renderWhipBudgetResume,
   renderWhipBudgetWarning,
   renderWhipConfigDrift,
+  renderHygieneBlocker,
   renderWhipNeedsApproval,
   resolveWebhookUrl,
   send,
@@ -390,7 +391,7 @@ describe("routing — recorder", () => {
 });
 
 // (Removed: spawn ping-discord.sh delegation tests. The spawn route was
-// dropped in favour of bun-native fetch — see ADR-008 §"Routing".)
+// dropped in favour of bun-native fetch — see ADR-101 §"Routing".)
 
 // ---------- Routing: direct-fetch ----------
 
@@ -1688,6 +1689,105 @@ describe("renderWhipDefunctCwd", () => {
   });
 });
 
+// ---------- ADR-137 — renderMemberForcePushWarning ----------
+
+describe("renderMemberForcePushWarning", () => {
+  test("single member force-push produces verdict + 2 bullets (member + fix)", async () => {
+    const { renderMemberForcePushWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [
+        {
+          member: "alice",
+          branch: "geoyws-alice",
+          reflogMsg: "update by push (forced)",
+        },
+      ],
+    });
+    expect(out.template).toBe("member-forcepush-warning");
+    expect(out.category).toBe("📋");
+    expect(out.team).toBe("atmux");
+    // Verdict is warn-class (🟡 Cool) per ADR-137 §D3 — not Need-you.
+    expect(out.verdict).toBe(
+      "🟡 **Cool** — 1 member force-pushed within the last hour",
+    );
+    expect(out.bullets).toHaveLength(2);
+    expect(out.bullets?.[0]).toBe(
+      "🟡 alice: geoyws-alice reflog: update by push (forced)",
+    );
+    expect(out.bullets?.[1]).toContain("git merge origin/<base>");
+    expect(out.bullets?.[1]).toContain("ADR-137");
+  });
+
+  test("multiple members surfaced as separate bullets + plural verdict", async () => {
+    const { renderMemberForcePushWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [
+        { member: "alice", branch: "geoyws-alice", reflogMsg: "forced-update" },
+        { member: "bob", branch: "geoyws-bob", reflogMsg: "update by push (forced)" },
+      ],
+    });
+    expect(out.verdict).toContain("2 members force-pushed");
+    expect(out.bullets).toHaveLength(3); // 2 per-member + 1 fix
+  });
+
+  test("long reflog message truncated with ellipsis at 40 chars", async () => {
+    const { renderMemberForcePushWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const longMsg =
+      "update by push (forced) — bumped past trunk after rebase against geoyws";
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: longMsg }],
+    });
+    const bullet = out.bullets?.[0] ?? "";
+    expect(bullet).toContain("…");
+    // Bullet format: "🟡 alice: geoyws-alice reflog: <truncated>…"
+    // Truncation is on the message body alone (40 chars + ellipsis).
+    const reflogPart = bullet.split("reflog: ")[1] ?? "";
+    // 40 chars of message + 1 ellipsis = 41 total.
+    expect(reflogPart.length).toBe(41);
+  });
+
+  test("whenMs override is propagated", async () => {
+    const { renderMemberForcePushWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: "forced-update" }],
+      whenMs: 7777,
+    });
+    expect(out.whenMs).toBe(7777);
+  });
+
+  test("send-time validation passes (full template wiring works end-to-end)", async () => {
+    const { renderMemberForcePushWarning, send } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const recorder = join(tmpRoot, "member-forcepush-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderMemberForcePushWarning({
+        team: "atmux",
+        events: [
+          { member: "alice", branch: "geoyws-alice", reflogMsg: "update by push (forced)" },
+        ],
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[member-forcepush-warning]");
+    expect(written).toContain("geoyws-alice");
+    expect(written).toContain("ADR-137");
+  });
+});
+
 // ---------- ADR-086 — renderPulseVerdict ----------
 
 describe("renderPulseVerdict", () => {
@@ -1937,5 +2037,505 @@ describe("renderWhipNeedsApproval", () => {
       whenMs: 1_700_000_000_000,
     });
     expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+});
+
+// ---------- ADR-077 §F6 — renderSelfHealFailed ----------
+
+describe("renderSelfHealFailed", () => {
+  test("renders self-heal-failed template with ABC menu + default deadline", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    // Mon 2026-05-04 03:44 UTC → 11:44 MYT. Default at +30min → 12:14 MYT.
+    const whenMs = Date.UTC(2026, 4, 4, 3, 44, 0);
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "rotate-lead swallowed under auto-mode",
+      attempts: 3,
+      members: 12,
+      fromAccount: "personal",
+      toAccount: "icloud",
+      complaintsOpen: 7,
+      whipStrikes: 4,
+      whenMs,
+    });
+    expect(out.template).toBe("self-heal-failed");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🚨");
+    expect(out.whenMs).toBe(whenMs);
+    const bullets = out.bullets ?? [];
+    expect(bullets).toHaveLength(7);
+    expect(bullets[0]).toContain("rotate-lead swallowed under auto-mode");
+    expect(bullets[0]).toContain("N=3 attempts");
+    expect(bullets[1]).toContain("reply A/B/C");
+    expect(bullets[2]).toContain("A) /team stop + start atmux");
+    expect(bullets[2]).toContain("12 member(s)");
+    expect(bullets[3]).toBe("🔁 B) swap account personal → icloud — wk budget reset");
+    expect(bullets[4]).toContain("C) park atmux for the night");
+    expect(bullets[5]).toContain("default at 12:14 MYT: A");
+    expect(bullets[6]).toBe("📍 7 open · 4 strikes");
+  });
+
+  test("nullable account labels collapse to a generic swap line", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "members idle 3h after rebuild",
+      attempts: 3,
+      members: 8,
+      fromAccount: null,
+      toAccount: null,
+      complaintsOpen: 2,
+      whipStrikes: 1,
+      whenMs: Date.UTC(2026, 4, 4, 3, 44, 0),
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[3]).toBe("🔁 B) swap account — wk budget reset");
+  });
+
+  test("whenMs defaults to now() when omitted", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    const before = Date.now();
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "test",
+      attempts: 4,
+      members: 1,
+      fromAccount: "a",
+      toAccount: "b",
+      complaintsOpen: 0,
+      whipStrikes: 0,
+    });
+    const after = Date.now();
+    expect(out.whenMs).toBeGreaterThanOrEqual(before);
+    expect(out.whenMs as number).toBeLessThanOrEqual(after);
+  });
+
+  test("send-time validation passes — bullets carry allowed prefixes", async () => {
+    const { renderSelfHealFailed, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "self-heal-failed-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderSelfHealFailed({
+        team: "atmux",
+        symptom: "kill+respawn welcome-screen-gates",
+        attempts: 3,
+        members: 5,
+        fromAccount: "personal",
+        toAccount: "icloud",
+        complaintsOpen: 1,
+        whipStrikes: 2,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[self-heal-failed]");
+    expect(written).toContain("kill+respawn welcome-screen-gates");
+  });
+});
+
+// ---------- t-351318dc — renderMetaWatchdog ----------
+
+describe("renderMetaWatchdog", () => {
+  test("renders meta-watchdog template with A/B menu + dormancy summary", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    // 2026-05-04 03:44 UTC → 11:44 MYT. Default at +30min → 12:14 MYT.
+    const whenMs = Date.UTC(2026, 4, 4, 3, 44, 0);
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 4,
+      dormantSec: 3 * 60 * 60, // 3h
+      oldestComplaintSummary: "cage cycled itself",
+      oldestComplaintTeam: "sopx",
+      oldestComplaintAgeSec: 5 * 60 * 60, // 5h
+      whenMs,
+    });
+    expect(out.template).toBe("meta-watchdog");
+    expect(out.team).toBe("atmux_teams");
+    expect(out.category).toBe("🚨");
+    expect(out.whenMs).toBe(whenMs);
+    const bullets = out.bullets ?? [];
+    expect(bullets).toHaveLength(6);
+    expect(bullets[0]).toContain("superdoctor dormant");
+    expect(bullets[0]).toContain("4 open complaints");
+    expect(bullets[0]).toContain("3h");
+    expect(bullets[1]).toContain("reply A/B");
+    expect(bullets[2]).toContain("A) check superdoctor pane");
+    expect(bullets[3]).toContain("B) restart superdoctor");
+    expect(bullets[4]).toContain("default at 12:14 MYT: A");
+    expect(bullets[5]).toContain("oldest: sopx");
+    expect(bullets[5]).toContain("cage cycled itself");
+    expect(bullets[5]).toContain("5h");
+  });
+
+  test("cold cockpit (dormantSec=null) reads as 'no attempts on record'", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 1,
+      dormantSec: null,
+      oldestComplaintSummary: "initial complaint",
+      oldestComplaintTeam: "atmux",
+      oldestComplaintAgeSec: 60 * 60,
+      whenMs: Date.UTC(2026, 4, 4, 3, 44, 0),
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[0]).toContain("no attempts on record");
+  });
+
+  test("whenMs defaults to now() when omitted", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const before = Date.now();
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 1,
+      dormantSec: 7200,
+      oldestComplaintSummary: "test",
+      oldestComplaintTeam: "test-team",
+      oldestComplaintAgeSec: 7200,
+    });
+    const after = Date.now();
+    expect(out.whenMs).toBeGreaterThanOrEqual(before);
+    expect(out.whenMs as number).toBeLessThanOrEqual(after);
+  });
+
+  test("send-time validation passes — every bullet carries an allowed prefix", async () => {
+    const { renderMetaWatchdog, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "meta-watchdog-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderMetaWatchdog({
+        cockpit: "atmux_teams",
+        openComplaints: 2,
+        dormantSec: 4 * 60 * 60,
+        oldestComplaintSummary: "stale cage",
+        oldestComplaintTeam: "sopx",
+        oldestComplaintAgeSec: 6 * 60 * 60,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[meta-watchdog]");
+    expect(written).toContain("superdoctor dormant");
+  });
+});
+
+// ---------- ADR-131 §D5 T5 — renderHygieneBlocker ----------
+
+describe("renderHygieneBlocker — base shape", () => {
+  test("emits header (🔧 category) + template literal", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign t-aaaa1111 to fe-1 (lowest-load fe member)",
+      superdoctorTick: 42,
+      fixesThisTick: 3,
+      complaintsFiled: 1,
+    });
+    expect(out.template).toBe("hygiene-blocker");
+    expect(out.team).toBe("sopx");
+    expect(out.category).toBe("🔧");
+  });
+
+  test("verdict line carries 🔴 Stalled + taskId + duration + class label", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.verdict).toContain("🔴 **Stalled**");
+    expect(out.verdict).toContain("`t-aaaa1111`");
+    // 240min = 4h exactly per formatDuration.
+    expect(out.verdict).toContain("4h");
+    expect(out.verdict).toContain("owner not in roster");
+  });
+
+  test("whatsNew carries the proposedFix as a single prose-grade bullet", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign t-aaaa1111 to fe-1 (lowest-load fe member)",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.whatsNew).toEqual([
+      "Reassign t-aaaa1111 to fe-1 (lowest-load fe member)",
+    ]);
+  });
+
+  test("footer carries tick number + fixes + complaints counters", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 42,
+      fixesThisTick: 3,
+      complaintsFiled: 1,
+    });
+    expect(out.footer).toBe("superdoctor tick #42 · 3 fixes applied · 1 complaints");
+  });
+
+  test("no needFromGeorge → no sections (pure-blocker shape)", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.sections).toBeUndefined();
+  });
+
+  test("whenMs threaded through for test injection", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+});
+
+describe("renderHygieneBlocker — fingerprint-class labels", () => {
+  test("every fingerprint class has a distinct human-readable label", () => {
+    const labels = new Map<string, string>();
+    const classes = [
+      "ghost-owner",
+      "lane-mismatch",
+      "role-mismatch",
+      "lane-null-orphan",
+      "prio-null",
+    ] as const;
+    for (const fc of classes) {
+      const out = renderHygieneBlocker({
+        team: "atmux",
+        taskId: "t-x",
+        fingerprintClass: fc,
+        wedgedMin: 240,
+        proposedFix: "x",
+        superdoctorTick: 1,
+        fixesThisTick: 0,
+        complaintsFiled: 0,
+      });
+      // Strip the leading verdict + duration to get just the label.
+      const m = out.verdict?.match(/wedged \S+, (.+)$/);
+      expect(m).not.toBeNull();
+      const label = m?.[1] ?? "";
+      labels.set(fc, label);
+    }
+    expect(labels.size).toBe(5);
+    expect(new Set(labels.values()).size).toBe(5); // all distinct
+  });
+});
+
+describe("renderHygieneBlocker — wedge-duration formatting", () => {
+  test("240min → 4h exact", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.verdict).toContain("wedged 4h,");
+  });
+
+  test("47min → `47min` shape", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 47,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.verdict).toContain("wedged 47min,");
+  });
+
+  test("125min → `2h5m` shape", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 125,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.verdict).toContain("wedged 2h5m,");
+  });
+});
+
+describe("renderHygieneBlocker — Need-from-George section", () => {
+  test("present needFromGeorge → 🙏 section with question + default-line", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+      needFromGeorge: {
+        question: "no exec-class members on the lane — pick one",
+        default: "A) reassign to fe-1 anyway",
+        deadline: "16:42 MYT",
+      },
+    });
+    expect(out.sections).toHaveLength(1);
+    const sec = out.sections?.[0];
+    expect(sec?.label).toBe(
+      "🙏 **Need from George** (zero deterministic candidates)",
+    );
+    expect(sec?.bullets[0]).toBe(
+      "🙏 no exec-class members on the lane — pick one",
+    );
+    expect(sec?.bullets[sec.bullets.length - 1]).toContain(
+      "**Default at 16:42 MYT if silent:** A) reassign to fe-1 anyway",
+    );
+  });
+
+  test("lettered options render as 📍-prefixed bullets between question + default", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+      needFromGeorge: {
+        question: "pick one",
+        options: ["A) reassign to fe-1", "B) leave wedged"],
+        default: "A) reassign to fe-1",
+        deadline: "16:42 MYT",
+      },
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets).toHaveLength(4); // question + 2 options + default-line
+    expect(bullets[1]).toBe("📍 A) reassign to fe-1");
+    expect(bullets[2]).toBe("📍 B) leave wedged");
+  });
+
+  test("no options → only question + default-line render (2 bullets total)", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+      needFromGeorge: {
+        question: "no exec-class members on the lane",
+        default: "leave wedged for now",
+        deadline: "16:42 MYT",
+      },
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets).toHaveLength(2);
+  });
+});
+
+// ---------- R10 named-template enforcement ----------
+//
+// Per CLAUDE.md §Discord: every Discord send is a named template; the
+// renderer is the single source of truth for the template literal +
+// emoji-prefix vocabulary. These tests assert the contract end-to-end
+// against the `validateOpts` validator at send() entry — proving a
+// caller can route the renderer's output through send() without a
+// validation rejection (mock-recorded, no real webhook).
+
+describe("renderHygieneBlocker — R10 send() round-trip (recorder path)", () => {
+  let recorderPath: string;
+  let recorderDir: string;
+
+  beforeEach(async () => {
+    recorderDir = await mkdtemp(join(tmpdir(), "atmux-hygiene-recorder-"));
+    recorderPath = join(recorderDir, "discord.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorderPath;
+    // Webhook URL is required by send() even on the recorder path.
+    process.env.ATMUX_DISCORD_WEBHOOK = "https://recorder.invalid/x";
+  });
+
+  afterEach(async () => {
+    delete process.env.ATMUX_DISCORD_RECORDER;
+    delete process.env.ATMUX_DISCORD_WEBHOOK;
+    await rm(recorderDir, { recursive: true, force: true });
+  });
+
+  test("renderer output passes validateOpts via send() → recorder receives JSONL", async () => {
+    const opts = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign t-aaaa1111 to fe-1 (lowest-load)",
+      superdoctorTick: 42,
+      fixesThisTick: 3,
+      complaintsFiled: 1,
+      needFromGeorge: {
+        question: "no exec-class members on lane — pick one",
+        options: ["A) reassign to fe-1", "B) leave wedged"],
+        default: "A) reassign to fe-1",
+        deadline: "16:42 MYT",
+      },
+      whenMs: 1_700_000_000_000,
+    });
+    await send(opts);
+    const log = await readFile(recorderPath, "utf8");
+    // Recorder captures the rendered chunk content (header + body),
+    // not the structured template metadata — assert against the
+    // header's `[hygiene-blocker]` literal + team + verdict-line
+    // root-cause label.
+    expect(log).toContain("[hygiene-blocker]");
+    expect(log).toContain("sopx");
+    expect(log).toContain("owner not in roster");
+  });
+
+  test("renderer output without needFromGeorge passes validateOpts (whatsNew satisfies non-empty body)", async () => {
+    const opts = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-x",
+      fingerprintClass: "lane-mismatch",
+      wedgedMin: 300,
+      proposedFix: "set task lane = test (owner's natural lane)",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    await send(opts);
+    const log = await readFile(recorderPath, "utf8");
+    // Recorder captures rendered content — assert against label
+    // surface ("owner lane ≠ task lane") which is the lane-mismatch
+    // class's verdict-line root-cause clause.
+    expect(log).toContain("owner lane");
   });
 });

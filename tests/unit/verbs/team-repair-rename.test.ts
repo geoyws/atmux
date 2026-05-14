@@ -221,7 +221,8 @@ describe("renderPlan", () => {
     expect(text).toContain("__old__alice → __new__alice");
     expect(text).toContain("__old__bob → __new__bob");
     expect(text).toContain("team.json:.tmuxTmpdir = /tmp/atmux_tmux_new");
-    expect(text).toContain("cron-block install DEFERRED");
+    expect(text).toContain("cron-install --quiet");
+    expect(text).toContain("refresh crontab block under 'new'");
     expect(text).toContain(".atmux/state/session.txt: old → new");
   });
 
@@ -1027,6 +1028,115 @@ describe("teamRepairRename", () => {
     } finally {
       await rm("/tmp/atmux_tmux_new", { recursive: true, force: true });
     }
+  });
+
+  // ---------- Step 5 cron refresh (ADR-083 follow-up) ----------
+
+  test("step 5 — cronInstallFn invoked with --quiet --team-dir after step 4", async () => {
+    const oldTmpdir = `/tmp/atmux_tmux_repair_cron_${Date.now()}`;
+    fixture = await buildFixture({
+      teamName: "new",
+      oldTmpdir,
+      createOldTmpdir: true,
+      stateContent: "old\n",
+    });
+    const { factory } = buildStubFactory({});
+    const cronCalls: Array<ReadonlyArray<string>> = [];
+    const cronInstallFn = async (argv: ReadonlyArray<string>): Promise<number> => {
+      cronCalls.push([...argv]);
+      return 0;
+    };
+    const code = await teamRepairRename(["--team-dir", join(fixture.atmuxDir, ".."), "new"], {
+      buildTmux: factory,
+      cronInstallFn,
+      stdout: () => true,
+      stderr: () => true,
+    });
+    expect(code).toBe(0);
+    expect(cronCalls).toHaveLength(1);
+    const argv = cronCalls[0]!;
+    expect(argv).toContain("--quiet");
+    const i = argv.indexOf("--team-dir");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(argv[i + 1]).toBe(join(fixture.atmuxDir, ".."));
+  });
+
+  test("step 5 — cronInstallFn throw is non-fatal; step 6 still runs", async () => {
+    const oldTmpdir = `/tmp/atmux_tmux_repair_cron_throw_${Date.now()}`;
+    fixture = await buildFixture({
+      teamName: "new",
+      oldTmpdir,
+      createOldTmpdir: true,
+      stateContent: "old\n",
+    });
+    const { factory } = buildStubFactory({});
+    const cronInstallFn = async (): Promise<number> => {
+      throw new Error("crontab swap exploded");
+    };
+    const errStr: string[] = [];
+    const code = await teamRepairRename(["--team-dir", join(fixture.atmuxDir, ".."), "new"], {
+      buildTmux: factory,
+      cronInstallFn,
+      stdout: () => true,
+      stderr: (s) => {
+        errStr.push(s);
+        return true;
+      },
+    });
+    expect(code).toBe(0);
+    expect(errStr.join("")).toContain("step 5 cron-install fell through");
+    expect(errStr.join("")).toContain("crontab swap exploded");
+    // Step 6 still ran — state.txt holds the new content.
+    expect(await readFile(fixture.stateFile, "utf8")).toBe("new\n");
+  });
+
+  test("step 5 — converged-team early return skips cronInstallFn entirely", async () => {
+    fixture = await buildFixture({
+      teamName: "acme",
+      oldTmpdir: "/tmp/atmux_tmux_acme",
+      stateContent: "acme\n",
+    });
+    const { factory } = buildStubFactory({});
+    let cronCalls = 0;
+    const cronInstallFn = async (): Promise<number> => {
+      cronCalls += 1;
+      return 0;
+    };
+    const code = await teamRepairRename(["--team-dir", join(fixture.atmuxDir, ".."), "acme"], {
+      buildTmux: factory,
+      cronInstallFn,
+      stdout: () => true,
+      stderr: () => true,
+    });
+    expect(code).toBe(0);
+    expect(cronCalls).toBe(0);
+  });
+
+  test("step 5 — --dry-run skips cronInstallFn", async () => {
+    const oldTmpdir = `/tmp/atmux_tmux_repair_cron_dryrun_${Date.now()}`;
+    fixture = await buildFixture({
+      teamName: "new",
+      oldTmpdir,
+      createOldTmpdir: true,
+      stateContent: "old\n",
+    });
+    const { factory } = buildStubFactory({});
+    let cronCalls = 0;
+    const cronInstallFn = async (): Promise<number> => {
+      cronCalls += 1;
+      return 0;
+    };
+    const code = await teamRepairRename(
+      ["--team-dir", join(fixture.atmuxDir, ".."), "--dry-run", "new"],
+      {
+        buildTmux: factory,
+        cronInstallFn,
+        stdout: () => true,
+        stderr: () => true,
+      },
+    );
+    expect(code).toBe(0);
+    expect(cronCalls).toBe(0);
   });
 });
 

@@ -46,7 +46,7 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
-import { cageSessionName, cageSocketPath } from "../core/cockpit.ts";
+import { cageSessionName } from "../core/cockpit.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import { classifyText } from "../core/pane-state.ts";
 import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
@@ -593,7 +593,7 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
  *  ADR-026 (the deprecated mode isn't the prune target). */
 async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
   try {
-    const tmux = createTmux({ socketPath: cageSocketPath(team.name) });
+    const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
     const session = cageSessionName(team.name);
     if (!(await tmux.session.hasSession(session))) return new Set();
     const windows = await tmux.window.listWindows(session);
@@ -789,9 +789,7 @@ export interface CheckCronOrphansOpts {
  * Operator-facing fix: `crontab -e` to drop the orphan block, or
  * restore the missing dir if the project simply moved.
  */
-export async function checkCronOrphans(
-  opts: CheckCronOrphansOpts = {},
-): Promise<DoctorRow[]> {
+export async function checkCronOrphans(opts: CheckCronOrphansOpts = {}): Promise<DoctorRow[]> {
   const crontab = opts.crontab ?? defaultCrontabIO();
   if (!(await crontab.available())) return [];
   const dirExists = opts.dirExists ?? defaultDirExistsForCron;
@@ -865,6 +863,63 @@ export async function checkCronBlock(
       hint: "run `atmux cron-install` (or re-run `atmux start`) — block uses ATMUX_DIR + optional TMUX_TMPDIR so worktree-isolation is safe",
     },
   ];
+}
+
+// ---------- t-589145dc: tuiCommands.claude default-target override ----------
+
+/**
+ * t-589145dc (c-alias Ask C, ADR-094 §"Doctor row"): warn when
+ * `team.json::tuiCommands.claude` embeds `CLAUDE_CONFIG_DIR=$HOME/.claude`
+ * or `=/root/.claude` (the DEFAULT config dir). Pinning the default
+ * inside the spawned shell BREAKS Claude's fresh-spawn auth flow:
+ * downstream `claude` invocations in nested shells re-export the env
+ * and end up re-running the OAuth dance instead of inheriting the
+ * operator's already-authed credentials.
+ *
+ * Operators who want account isolation should use a NON-default suffix
+ * (`$HOME/.claude-personal`, `$HOME/.claude-icloud`, etc.) via the
+ * member's `claudeAccount` field, or `env -u CLAUDE_CONFIG_DIR` in the
+ * tuiCommand prefix.
+ *
+ * Returns `[]` when:
+ *   - team is null,
+ *   - tuiCommands is absent / not an object,
+ *   - tuiCommands.claude is absent / not a string,
+ *   - the embedded path uses a non-default suffix.
+ * Otherwise: one YELLOW row.
+ */
+export function checkTuiCommandsClaudeOverride(team: Team | null): DoctorRow[] {
+  if (team === null) return [];
+  const tc = (team as { tuiCommands?: unknown }).tuiCommands;
+  if (tc === null || tc === undefined || typeof tc !== "object" || Array.isArray(tc)) {
+    return [];
+  }
+  const claudeCmd = (tc as Record<string, unknown>).claude;
+  if (typeof claudeCmd !== "string" || claudeCmd.length === 0) return [];
+  // Negative lookahead `[\w-]` rejects suffixed forms (.claude-personal,
+  // .claude_unum, etc.) — only the BARE default config dir triggers the
+  // warning. The two literal absolute paths cover the two canonical
+  // operator HOME layouts (Linux + Mac); the third regex catches
+  // `$HOME/.claude` for shell-expansion-time paths.
+  const TARGET_RES = [
+    /CLAUDE_CONFIG_DIR=\$HOME\/\.claude(?![\w/-])/,
+    /CLAUDE_CONFIG_DIR=\/root\/\.claude(?![\w/-])/,
+    /CLAUDE_CONFIG_DIR=\$\{HOME\}\/\.claude(?![\w/-])/,
+  ];
+  for (const re of TARGET_RES) {
+    if (re.test(claudeCmd)) {
+      return [
+        {
+          status: "yellow",
+          label: "config-claude-account-tcoverride",
+          detail:
+            "tuiCommands.claude embeds CLAUDE_CONFIG_DIR pointing to the default config dir — fresh-spawn TUI auth re-runs the OAuth flow in every nested shell.",
+          hint: 'use `env -u CLAUDE_CONFIG_DIR` in the prefix OR pin per-member `claudeAccount: "personal"` (or another non-default suffix). See ADR-094 c-alias spawn convention.',
+        },
+      ];
+    }
+  }
+  return [];
 }
 
 // ---------- Check 7a: cursor-plugin-cache ----------
@@ -961,15 +1016,7 @@ export async function checkCursorPluginCache(
     if (srcStat === null) continue; // can't symlink to something missing
 
     for (const e of entries) {
-      const expected = join(
-        home,
-        ".claude",
-        "plugins",
-        "cache",
-        marketplace,
-        plugin,
-        e.version,
-      );
+      const expected = join(home, ".claude", "plugins", "cache", marketplace, plugin, e.version);
       const st = await statOrNull(expected);
       if (st !== null) continue;
       missing.push({
@@ -1813,9 +1860,7 @@ export async function checkWorktreeIsolation(
   if (baseBranch.length > 0) {
     const listR = await git2(["-C", projectRoot2, "branch", "--list", `${baseBranch}-*`]);
     if (listR.exitCode === 0) {
-      const sanitizedMembers = new Set(
-        team.members.map((m) => sanitizeBranchSegment(m.name)),
-      );
+      const sanitizedMembers = new Set(team.members.map((m) => sanitizeBranchSegment(m.name)));
       const prefix = `${baseBranch}-`;
       // `git branch --list <pat>` rows are 2-space indented; current
       // branch (impossible for an orphan but defensive) prefixes `* `.
@@ -1873,11 +1918,7 @@ async function defaultReadWorktreeDir(
     const entries = await readdir(path, { withFileTypes: true });
     return entries.map((e) => ({ name: String(e.name), isDirectory: e.isDirectory() }));
   } catch (err) {
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      (err as { code?: string }).code === "ENOENT"
-    ) {
+    if (typeof err === "object" && err !== null && (err as { code?: string }).code === "ENOENT") {
       return null;
     }
     throw err;
@@ -1896,8 +1937,7 @@ function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
     if (wtLine === undefined) continue;
     const path = wtLine.slice("worktree ".length);
     const branchLine = lines.find((l) => l.startsWith("branch "));
-    const branch =
-      branchLine === undefined ? "" : branchLine.slice("branch refs/heads/".length);
+    const branch = branchLine === undefined ? "" : branchLine.slice("branch refs/heads/".length);
     out.push({ path, branch });
   }
   return out;
@@ -2136,6 +2176,11 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // atmux team three consecutive overnights (cron block silently absent
   // → no whip pulse → lead stalls). Silent on opt-out + cron-less hosts.
   rows.push(...(await checkCronBlock(team)));
+  // t-589145dc (c-alias Ask C, ADR-094): YELLOW when tuiCommands.claude
+  // pins the DEFAULT CLAUDE_CONFIG_DIR — breaks fresh-spawn TUI auth
+  // (forces OAuth re-run in every nested shell). Silent when claude is
+  // absent or uses a non-default suffix.
+  rows.push(...checkTuiCommandsClaudeOverride(team));
   // ADR-082 §5 W5: per-member worktree-isolation anomalies. Returns
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
@@ -2407,15 +2452,137 @@ export interface FixStarvingOpts {
   verifyPollIntervalMs?: number;
 }
 
+// ---------- ADR-137: member-forcepush-recent probe ----------
+
+export interface CheckMemberForcePushRecentOpts {
+  /** Git spawn override (test injection). Default uses the local
+   *  `defaultGitSpawn` shared with the other doctor probes. */
+  gitSpawn?: GitSpawn;
+  /** Epoch-seconds clock override. Default `Date.now() / 1000`. Tests
+   *  pin this to make `reflog --date=unix` matching deterministic. */
+  now?: () => number;
+  /** Time window in seconds. Default 3600 (1h). Reflog entries older
+   *  than `now - windowSec` are skipped — the probe only fires on
+   *  recent force-pushes; ancient history doesn't ping.
+   *
+   *  Operators who want a wider window can override via the `--`
+   *  command-line wiring (deferred — not in this Task's scope). */
+  windowSec?: number;
+}
+
+/**
+ * ADR-137 §D3 — surface force-push events on per-member branches within
+ * the last hour as YELLOW (warn-class, not block-class). The probe is
+ * advisory: the harness force-push deny rule remains the actual gate;
+ * this probe is the post-hoc surface for cases where the operator
+ * authorized the force-push and the team-lead wants to know it
+ * happened so the team can be nudged toward the ADR-137 merge-over-
+ * rebase convention.
+ *
+ * Mechanism — for each member with a worktree under `<atmuxDir>/worktrees/`:
+ *
+ *   1. Resolve the worktree path (skipped if `worktreeIsolation !== true`
+ *      — single-trunk teams don't have per-member branches to probe).
+ *   2. Resolve the worktree's current branch via `git -C <wt>
+ *      branch --show-current`. Skip if unresolvable (detached HEAD,
+ *      missing worktree, broken git state — `checkWorktreeIsolation`
+ *      already surfaces those).
+ *   3. Read the reflog for that branch with `git -C <wt> reflog show
+ *      <branch> --date=unix --format='%gd %gs' -n 30`. Entries arrive
+ *      newest-first.
+ *   4. Parse each line for `@{<unix>}` timestamp + reflog message.
+ *      Filter: timestamp must be within `windowSec` of `now`, AND
+ *      message must match `/forced/i` (covers `update by push
+ *      (forced)`, `forced-update`, and the older `non-fast forward`
+ *      reflog wordings).
+ *   5. One YELLOW row per member with at least one matching event.
+ *      Multiple force-pushes in the window collapse to a single row
+ *      (the hint is the same regardless of count).
+ *
+ * Returns `[]` when no force-push events found or when the team's
+ * worktree-isolation isn't on. Probe failures (git missing, worktree
+ * unreadable) collapse to `[]` rather than throw — the team's own
+ * doctor surface must stay green even when this probe can't run.
+ */
+export async function checkMemberForcePushRecent(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckMemberForcePushRecentOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  if (team.worktreeIsolation !== true) return [];
+  const git = opts.gitSpawn ?? defaultGitSpawn;
+  const nowFn = opts.now ?? ((): number => Math.floor(Date.now() / 1000));
+  const windowSec = opts.windowSec ?? 3600;
+  const now = nowFn();
+  const cutoff = now - windowSec;
+
+  const rows: DoctorRow[] = [];
+  for (const member of team.members) {
+    const wt = resolveWorktreePath(team, member.name, atmuxDir);
+    let branch: string;
+    try {
+      const branchR = await git(["-C", wt, "branch", "--show-current"]);
+      if (branchR.exitCode !== 0) continue;
+      branch = branchR.stdout.trim();
+      if (branch.length === 0) continue; // detached HEAD
+    } catch {
+      continue; // worktree gone, git missing, etc. — skip silently
+    }
+
+    let reflog: string;
+    try {
+      const reflogR = await git([
+        "-C",
+        wt,
+        "reflog",
+        "show",
+        branch,
+        "--date=unix",
+        "-n",
+        "30",
+        "--format=%gd %gs",
+      ]);
+      if (reflogR.exitCode !== 0) continue;
+      reflog = reflogR.stdout;
+    } catch {
+      continue;
+    }
+
+    let matchedMsg: string | null = null;
+    for (const line of reflog.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      const m = /@\{(\d+)\}:?\s*(.*)$/.exec(trimmed);
+      if (m === null) continue;
+      const ts = Number.parseInt(m[1] ?? "", 10);
+      const msg = m[2] ?? "";
+      if (!Number.isFinite(ts) || ts < cutoff) continue;
+      if (/forced/i.test(msg)) {
+        matchedMsg = msg;
+        break;
+      }
+    }
+    if (matchedMsg !== null) {
+      const short = matchedMsg.length > 60 ? `${matchedMsg.slice(0, 60)}…` : matchedMsg;
+      rows.push({
+        status: "yellow",
+        label: `member-forcepush-recent:${member.name}`,
+        detail: `${branch} reflog within ${windowSec}s: ${short}`,
+        hint: "did you mean to merge instead of rebase? see ADR-137 §D1 — `git merge origin/<base>` keeps the branch in a consistent published state",
+      });
+    }
+  }
+  return rows;
+}
+
 /**
  * Extract orphan-branch names safe to auto-delete from the doctor row set.
  * "Safe" == 0 commits ahead of base (info row carries `(safe to delete)` in
  * its `detail`). Used by the `--fix` dry-run summary; deletion itself is
  * deferred per ADR-019 V-24.
  */
-export function collectSafeOrphanBranches(
-  rows: ReadonlyArray<DoctorRow>,
-): string[] {
+export function collectSafeOrphanBranches(rows: ReadonlyArray<DoctorRow>): string[] {
   const out: string[] = [];
   for (const r of rows) {
     if (!r.label.startsWith("worktree:branch-orphan:")) continue;

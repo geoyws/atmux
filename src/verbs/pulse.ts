@@ -21,7 +21,11 @@
 // team). Written ONLY when at least one team fired this tick.
 
 import { join } from "node:path";
-import { send as defaultDiscordSend, renderPulseVerdict } from "../abstractions/discord.ts";
+import {
+  send as defaultDiscordSend,
+  renderMetaWatchdog,
+  renderPulseVerdict,
+} from "../abstractions/discord.ts";
 import { exists, readTextOrNull } from "../abstractions/fs.ts";
 import { tryReadJson } from "../abstractions/json.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
@@ -49,6 +53,11 @@ import {
   type PulseInputs,
   type PulseVerdict,
 } from "../core/pulse-verdict.ts";
+import {
+  decideMetaWatchdogFire,
+  gatherSuperdoctorActivity,
+  type MetaWatchdogTeam,
+} from "../core/superdoctor-activity.ts";
 import { UsageError } from "../errors.ts";
 import type { CockpitPulse, CockpitTeam } from "../schema/cockpit.ts";
 import type { Team } from "../schema/team.ts";
@@ -382,10 +391,37 @@ export async function pulse(argv: ReadonlyArray<string>, opts: PulseOpts = {}): 
     });
   }
 
-  // Persist state if anything fired.
+  // t-351318dc: meta-watchdog — aggregate superdoctor liveness across
+  // every team's complaint box + attempts log, then decide whether to
+  // emit a `[meta-watchdog]` page this tick. Failure-isolated: any
+  // exception collapses to "skip the meta-watchdog this tick" without
+  // crashing the verdict pulse.
+  const metaWatchdogTeams: MetaWatchdogTeam[] = teams.map((t) => ({ name: t.name, root: t.root }));
+  let metaDecision: ReturnType<typeof decideMetaWatchdogFire> | null = null;
+  let metaActivity: ReturnType<typeof gatherSuperdoctorActivity> | null = null;
+  try {
+    metaActivity = gatherSuperdoctorActivity(metaWatchdogTeams, { nowSec });
+    metaDecision = decideMetaWatchdogFire({
+      activity: metaActivity,
+      prior: prior.metaWatchdog ?? null,
+      nowSec,
+    });
+  } catch (e) {
+    stderr(`pulse: meta-watchdog probe failed (continuing): ${stringifyErr(e)}\n`);
+  }
+
+  // Persist state if anything fired (verdict OR meta-watchdog).
   const anyFired = tickResults.some((r) => r.didFire);
-  if (anyFired) {
-    await writePulseState(statePath, { teams: nextTeams });
+  const metaStreakChanged =
+    metaDecision !== null &&
+    (metaDecision.next.paged !== (prior.metaWatchdog?.paged ?? false) ||
+      metaDecision.next.dormantSinceSec !== (prior.metaWatchdog?.dormantSinceSec ?? null));
+  if (anyFired || metaStreakChanged) {
+    const out: PulseState = anyFired ? { teams: nextTeams } : { teams: prior.teams };
+    if (metaDecision !== null) {
+      out.metaWatchdog = metaDecision.next;
+    }
+    await writePulseState(statePath, out);
   }
 
   // Discord — gated behind --ping OR webhook env presence.
@@ -411,6 +447,30 @@ export async function pulse(argv: ReadonlyArray<string>, opts: PulseOpts = {}): 
         );
       } catch (e) {
         stderr(`pulse: Discord send failed for ${r.team} (continuing): ${stringifyErr(e)}\n`);
+      }
+    }
+
+    // Meta-watchdog send — separate emit, separate failure mode.
+    if (metaDecision !== null && metaDecision.shouldFire && metaActivity !== null) {
+      const oldest = metaActivity.oldest;
+      const dormantSec =
+        metaActivity.latestAttemptedAtSec === null
+          ? null
+          : Math.max(0, nowSec - metaActivity.latestAttemptedAtSec);
+      try {
+        await send(
+          renderMetaWatchdog({
+            cockpit: cockpit.cockpitSession ?? "cockpit",
+            openComplaints: metaActivity.openComplaints,
+            dormantSec,
+            oldestComplaintSummary: oldest?.summary ?? "",
+            oldestComplaintTeam: oldest?.team ?? "",
+            oldestComplaintAgeSec: oldest?.ageSec ?? 0,
+            whenMs: nowMs,
+          }),
+        );
+      } catch (e) {
+        stderr(`pulse: meta-watchdog Discord send failed (continuing): ${stringifyErr(e)}\n`);
       }
     }
   }

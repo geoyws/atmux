@@ -1,9 +1,12 @@
-// ADR-077 §F2: complaints verb family.
+// ADR-077 §F2 / ADR-133: complaints verb family.
 //
-// `atmux complaints {list,file,resolve}` — operator + superdoctor
-// surface for reading, filing, and resolving complaints. Per-team
-// storage: each team's `<root>/.atmux/state.db` `complaints` table
-// holds its own rows (per ADR-077 §Open bias toward per-team).
+// `atmux complaints {list,file,resolve}` — operator + medic (formerly
+// named `superdoctor`; renamed per ADR-133, both `--by medic` /
+// `--by superdoctor` literals accepted during the one-release-cycle
+// deprecation window) surface for reading, filing, and resolving
+// complaints. Per-team storage: each team's `<root>/.atmux/state.db`
+// `complaints` table holds its own rows (per ADR-077 §Open bias toward
+// per-team).
 //
 // Sub-verbs:
 //
@@ -48,7 +51,7 @@ function stateDbPath(atmuxDir: string): string {
 
 const USAGE =
   "atmux complaints {list [--status <s>|--all] [--source-kind <k>] [--target-team <t>] [--json] | " +
-  "file --summary <s> [--root-cause <r>] [--ask <a>] [--by <id>] [--kind <k>] " +
+  "file (--summary <s>|--title <s>) [--root-cause <r>|--body <r>] [--ask <a>] [--by <id>] [--kind <k>] [--severity <s>] " +
   "[--source-kind <k>] [--source-id <id>] [--target-team <t>] [--related-task <id>] | " +
   "resolve <id> [--status resolved|wontfix] [--by <id>] [--note <t>] [--related-task <id>]}";
 
@@ -70,6 +73,11 @@ export interface ParsedComplaintsArgs {
   sourceKind?: string;
   sourceId?: string;
   targetTeam?: string;
+  /** t-7bd53cba: severity classification for `file` subverb. Free-form
+   *  string (commonly `low`/`medium`/`high`) — stored in
+   *  `extra.severity` since the Complaint schema has no first-class
+   *  severity column. Whip-side cron filers pass `--severity high`. */
+  severity?: string;
   /** resolve */
   id?: string;
   resolveStatus?: "resolved" | "wontfix";
@@ -129,11 +137,27 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
         i += 1;
         break;
       case "--summary":
-        out.summary = need("--summary");
+      case "--title":
+        // `--title` is an alias for `--summary` (t-7bd53cba). The whip
+        // velocity-gate shell scripts use the more-natural `--title`
+        // term; the verb's canonical field is incidentSummary so we
+        // continue to populate `out.summary` for downstream uniformity.
+        out.summary = need(a);
         i += 2;
         break;
       case "--root-cause":
-        out.rootCause = need("--root-cause");
+      case "--body":
+        // `--body` is an alias for `--root-cause` (t-7bd53cba). Same
+        // pattern as `--title`/`--summary` — whip-side callers prefer
+        // the more-natural term; canonical field stays `rootCause`.
+        out.rootCause = need(a);
+        i += 2;
+        break;
+      case "--severity":
+        // t-7bd53cba: free-form severity stored in `extra.severity`.
+        // No allowlist enforcement here — callers (whip-velocity-gate,
+        // operators) classify per their own conventions.
+        out.severity = need("--severity");
         i += 2;
         break;
       case "--ask":
@@ -194,10 +218,7 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
         hint: USAGE,
       });
     }
-    if (
-      out.sourceKind !== undefined &&
-      !COMPLAINT_SOURCE_KINDS.includes(out.sourceKind as never)
-    ) {
+    if (out.sourceKind !== undefined && !COMPLAINT_SOURCE_KINDS.includes(out.sourceKind as never)) {
       throw new UsageError({
         what: `complaints file: --source-kind must be one of ${COMPLAINT_SOURCE_KINDS.join("|")} (got: ${out.sourceKind})`,
         hint: USAGE,
@@ -230,10 +251,7 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
         hint: USAGE,
       });
     }
-    if (
-      out.sourceKind !== undefined &&
-      !COMPLAINT_SOURCE_KINDS.includes(out.sourceKind as never)
-    ) {
+    if (out.sourceKind !== undefined && !COMPLAINT_SOURCE_KINDS.includes(out.sourceKind as never)) {
       throw new UsageError({
         what: `complaints list: --source-kind must be one of ${COMPLAINT_SOURCE_KINDS.join("|")} (got: ${out.sourceKind})`,
         hint: USAGE,
@@ -287,7 +305,7 @@ async function complaintsList(parsed: ParsedComplaintsArgs): Promise<number> {
 
 async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-  await requireTeam(dirOpts);
+  const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
   const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
@@ -296,6 +314,20 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
     const now = Math.floor(Date.now() / 1000);
     const extra: Record<string, unknown> = {};
     if (parsed.kind !== undefined && parsed.kind.length > 0) extra.kind = parsed.kind;
+    // t-7bd53cba: severity is free-form metadata stashed in `extra` —
+    // Complaint schema has no first-class severity column. Whip-side
+    // filers pass `--severity high`; superdoctor reads `extra.severity`
+    // for triage ordering.
+    if (parsed.severity !== undefined && parsed.severity.length > 0) {
+      extra.severity = parsed.severity;
+    }
+
+    // t-7bd53cba: when --target-team omitted, default to the current
+    // team's name. Preserves the pre-v3 implicit "complaint in team X's
+    // DB is about team X" semantics — explicit cross-team callers
+    // (cockpit whip-velocity-gate) still pass --target-team to file
+    // against a different observed team.
+    const targetTeam = parsed.targetTeam ?? team.name;
 
     const c: Complaint = {
       id,
@@ -310,7 +342,7 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
       relatedTaskId: parsed.relatedTask ?? null,
       sourceKind: parsed.sourceKind ?? null,
       sourceId: parsed.sourceId ?? null,
-      targetTeam: parsed.targetTeam ?? null,
+      targetTeam,
       extra,
     };
     repo.insert(c);

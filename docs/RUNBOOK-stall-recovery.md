@@ -15,7 +15,7 @@ ping fires.
 
 **Pre-reads:**
 
-- [`docs/adr-bun/057-stall-prevention.md`](adr-bun/057-stall-prevention.md) — full Decision rationale (D1-D7) + open questions.
+- [`docs/adr/057-stall-prevention.md`](adr/057-stall-prevention.md) — full Decision rationale (D1-D7) + open questions.
 - [`HANDOFF.md` §🛡️ v1.1.x stall-prevention](../HANDOFF.md) — operator-facing usage notes per Decision.
 - [`docs/RUNBOOK-cron-migration.md` §v1.1.x cron-block migration](RUNBOOK-cron-migration.md#v11x-cron-block-migration--watchdog-line-adr-057-d6b) — installing the `*/2 atmux watchdog` cron line.
 
@@ -187,6 +187,76 @@ notification only.
 **If you ARE the reviewer:** `git fetch origin && git log --oneline
 origin/<branch> -5` to see what landed. Per-commit reviewer cycle per
 CLAUDE.md ReviewDiscipline.
+
+### `[whip-modal-cycling] <member>` (ADR-142)
+
+**Source:** whip §1c modal-cycling detector. Fires when ≥3 distinct
+modal-prompts land on a member's pane within
+`modalCycling.windowMin` (default 30 min) AND `git log --since=<window>`
+returns zero commits matching the member's claimed task. Pre-martinet-
+ship runs here; ADR-140 forward-compat ports the same detection
+function to martinet's per-tick observer.
+
+**What it usually means:** member is thrashing across a class of related
+prompts (push variants, approval variants, retry variants) without
+making real task progress. Distinct from `whip §1c teammate-blocked-
+on-prompt` static-stuck (which catches *same prompt repeating*) —
+modal-cycling catches *different prompts in rapid sequence*.
+
+**Auto-recovery (happens before you see the ping):**
+
+- Clarifier dispatched to member's pane: `[detector] modal-cycling
+  detected — N prompts in <window>, 0 commits on <taskId>. Recommend:
+  unclaim + retry from clean, or surface blocker via atmux reply if
+  the prompt class is genuinely blocking work.`
+- `atmux flags add` filed with severity=high + the modal class
+  sequence in the body.
+- Discord template fires once per `modalCycling.dedupMin` (default
+  30 min) — recording continues every tick, only the surface action
+  dedup'd.
+
+**Manual escalation — if the cycling resumes after the clarifier:**
+
+1. Read the modal-history file:
+   `cat ~/.atmux/state/modal-history-<member>.json | jq '.[]
+   | .modalText'` — see the prompt classes the agent's stuck in.
+2. If a brief-content problem (wrong instructions causing the prompt
+   loop): edit the member's brief, then `atmux clear <member>` to
+   force a fresh session pick up the new brief.
+3. If a genuine blocker (modal-cycling is the AGENT'S signal that
+   the work is mis-specified): `atmux unclaim <taskId>` and re-route
+   to planner via `atmux tell-lead`.
+
+**Per-team opt-out / tuning:**
+
+```json
+// team.json
+{
+  "modalCycling": {
+    "enabled": true,          // false to disable detection entirely
+    "cycleThreshold": 3,      // distinct hashes in window to trigger
+    "windowMin": 30,
+    "commitGracePeriodMin": 30, // commits in this window suppresses fire
+    "dedupMin": 30,             // surface-action dedup
+    "exemptMembers": []         // designated roles that legitimately
+                                // navigate modal sequences
+  }
+}
+```
+
+**Testing the detection (operator-side rehearsal):**
+
+```bash
+# Run the focused unit + e2e specs against your changes.
+unset TMUX && bun test --timeout 30000 \
+  tests/unit/core/modal-cycling-detector.test.ts \
+  tests/unit/core/modal-cycling-state.test.ts \
+  tests/e2e/modal-cycling-detector.test.ts
+```
+
+Each spec is a 1x cold-start walk per CLAUDE.md "stateful e2e specs
+are not repeatable smokes" — don't streak; re-run with a fresh tmpdir
+between invocations.
 
 ---
 
@@ -392,7 +462,7 @@ After enabling v1.1.x stall-prevention on a team:
 
 ## Reference
 
-- **ADR:** [`docs/adr-bun/057-stall-prevention.md`](adr-bun/057-stall-prevention.md) — full design.
+- **ADR:** [`docs/adr/057-stall-prevention.md`](adr/057-stall-prevention.md) — full design.
 - **HANDOFF section:** [`HANDOFF.md` §🛡️ v1.1.x stall-prevention (ADR-057)](../HANDOFF.md).
 - **Cron migration:** [`RUNBOOK-cron-migration.md` §v1.1.x cron-block migration](RUNBOOK-cron-migration.md#v11x-cron-block-migration--watchdog-line-adr-057-d6b).
 - **Watchdog verb:** `src/verbs/watchdog.ts`. Heartbeat reader: `src/core/heartbeat.ts::readHeartbeatAges`.

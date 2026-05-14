@@ -4,7 +4,7 @@
 
 > 🎮 **Driver** (you) → 🧭 **Team Lead** → 🐝 **Team Members** — coordinated through tmux, not an API.
 
-> **State storage.** Per [ADR-060](docs/adr-bun/060-sqlite-state-store.md) +
+> **State storage.** Per [ADR-126](docs/adr/126-sqlite-state-store.md) +
 > ADR-076 (inbox JSON elimination — file pending; see commits `27d80ee` →
 > `5c16432`), kanban + inboxes + per-feature state live in **`.atmux/state.db`**
 > (SQLite, WAL). The bash dispatcher was retired in the bun cutover —
@@ -200,7 +200,7 @@ By default every member in an atmux team shares one working tree — `team.json`
 
 - `atmux start` provisions one worktree per member via `git worktree add -b <base>-<member> <wtPath> <base>` BEFORE spawning each member's TUI. The base branch is whatever the parent worktree currently has checked out; per-member branches are idempotent (existing `<base>-<member>` branches re-used on re-provision).
 - Each member's `tmux new-window` `cwd` is overridden to their isolated path — they only see their own `git status`, their own staged files. The on-disk `team.json` `cwd` is unchanged.
-- `atmux stop --force` calls `git worktree remove` for each *clean* worktree; **dirty worktrees are skipped** with a warning (never silently destroy uncommitted work). The `<base>-<member>` branch is left behind for operator inspection; `git branch -D <base>-<member>` to clean up.
+- `atmux stop --force` calls `git worktree remove` for each *clean* worktree; **dirty worktrees are skipped** with a warning (never silently destroy uncommitted work). The `<base>-<member>` branch is left behind by default; add `--prune-branch` (requires `--force`) to also delete each pruned worktree's branch via safe `git branch -d` (unmerged branches refuse the delete and are surfaced as a warning — operator escalates to `git branch -D` manually).
 - `atmux stop` (no `--force`) does NOT prune. Worktrees survive normal stop+start cycles.
 - `atmux doctor` adds four worktree probe classes:
   - `worktree-missing` — isolation on but no worktree dir for a member (auto-fixable: re-provision via `--fix`).
@@ -217,11 +217,11 @@ By default every member in an atmux team shares one working tree — `team.json`
 
 ```bash
 jq '.worktreeIsolation = false' .atmux/team.json | sponge .atmux/team.json
-atmux stop --force                                         # prunes clean worktrees; dirty skipped
+atmux stop --force --prune-branch                          # prunes clean worktrees + safe-deletes merged branches
 atmux start
 ```
 
-Per-member branches are NOT auto-deleted on rollback — `git branch -D <base>-<member>` is left to the operator (per the "destructive git ops need explicit auth" rule — never silently destroy work).
+`--prune-branch` is opt-in (requires `--force`) and only deletes branches whose worktrees were successfully pruned. Unmerged branches refuse the delete (no `-D` escalation); those + dirty-worktree branches stay for the operator to handle, per the "destructive git ops need explicit auth" rule.
 
 **Known gaps (post-MVP):**
 
@@ -601,13 +601,15 @@ Resolution: `claudeAccount: "<suffix>"` → spawn cmd prepends `CLAUDE_CONFIG_DI
 
 **Override path interaction.** `member.command` (full override) and `team.tuiCommands[<tui>]` (custom prefix) paths bypass this auto-application — those are operator-owned envelopes; if you want the env var there, write it into the prefix/override yourself. The auto-apply is on the built-in claude path only.
 
+**Operator-shell env scrub.** `atmux start` strips `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CONFIG_DIR` from the cage tmux session's environment after `new-session`. This is defense-in-depth for member.command / tuiCommands paths that bypass tuiClaude's own `env -u` prefix (bug t-4d2936ac, 2026-05-14 incident): without the scrub, an operator running `atmux start` from a shell with `ANTHROPIC_API_KEY` exported would have every claude pane fall into env-key bearer mode + hit the "Do you want to use this API key?" dialog every spawn. The scrub is unconditional + idempotent — no operator action needed before invoking `atmux start`.
+
 ## Commands
 
 ```
 🏁 Setup
 atmux init [--wizard] [--force] [--name <team>]
 atmux start [--force]
-atmux stop [--force] [--no-archive]
+atmux stop [--force] [--no-archive] [--prune-branch]
 atmux attach
 atmux status [--json]
 
@@ -666,6 +668,8 @@ atmux whip-resume-check [--no-discord]       # 1-min auto-resume cron precision 
 atmux watchdog [--no-discord]                # 2-min heartbeat staleness detector (ADR-057 §D6b)
               [--team-dir <dir>]
 atmux pulse [--json] [--ping] [--config <p>] # 5-min cockpit-wide verdict probe (ADR-086)
+atmux hygiene-tick [--team-dir <d>]          # superdoctor kanban-hygiene pass (ADR-131)
+              [--no-json]                    #   one auto-fix per tick via severity/confidence ladder
 
 🔧 Maintenance
 atmux rotate <member>
@@ -678,7 +682,7 @@ atmux dashboard [--interval <s>]             # live full-screen panel
 
 ## 🌱 Eternal-improvement (ADR-052)
 
-`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr-bun/052-eternal-improvement.md`](docs/adr-bun/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
+`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement.md`](docs/adr/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
 
 ## State layout
 

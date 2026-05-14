@@ -25,11 +25,13 @@ import {
   checkCursorPluginCache,
   checkDeps,
   checkInboxMarks,
+  checkMemberForcePushRecent,
   checkOrphanSessions,
   checkPhantomInboxes,
   checkStateDir,
   checkSubmoduleIntegrity,
   checkTeam,
+  checkTuiCommandsClaudeOverride,
   checkTuis,
   checkWebhook,
   checkMemberCageStates,
@@ -738,10 +740,7 @@ describe("checkCursorPluginCache", () => {
   });
 
   test("malformed JSON → no throw, no rows", async () => {
-    await writeFile(
-      join(home, ".claude", "plugins", "installed_plugins.json"),
-      "{ not json",
-    );
+    await writeFile(join(home, ".claude", "plugins", "installed_plugins.json"), "{ not json");
     expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
   });
 
@@ -970,10 +969,7 @@ describe("checkCronIntervalDivisors", () => {
 // ---------- ADR-083 follow-up §DEFERRED row 2: checkCronOrphans ----------
 
 describe("checkCronOrphans", () => {
-  const fakeIO = (
-    body: string | null,
-    opts: { available?: boolean } = {},
-  ): CrontabIO => ({
+  const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
     read: async () => body,
     write: async () => {
       /* not invoked */
@@ -1053,10 +1049,7 @@ describe("checkCronOrphans", () => {
 // ---------- t-dcbff97c: checkCronBlock ----------
 
 describe("checkCronBlock", () => {
-  const fakeIO = (
-    body: string | null,
-    opts: { available?: boolean } = {},
-  ): CrontabIO => ({
+  const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
     read: async () => body,
     write: async () => {
       /* not invoked */
@@ -1125,6 +1118,105 @@ describe("checkCronBlock", () => {
     const rows = await checkCronBlock(team(), { crontab: fakeIO(null) });
     expect(rows.length).toBe(1);
     expect(rows[0]?.status).toBe("red");
+  });
+});
+
+// ---------- ADR-094 / t-d0c8b758 (T6) doctor-row coverage matrix ----------
+//
+// T6 §Unit tests doctor bullets map onto the
+// `checkTuiCommandsClaudeOverride` describe block below:
+//   • registered + runAllChecks-included     → wired at runAllChecks
+//                                              (in the source file);
+//                                              structural lint catches
+//                                              if the wire-up regresses.
+//   • warn on CLAUDE_CONFIG_DIR=$HOME/.claude → "CLAUDE_CONFIG_DIR=$HOME/.claude bare default..."
+//   • warn on CLAUDE_CONFIG_DIR=/root/.claude → "CLAUDE_CONFIG_DIR=/root/.claude bare default..."
+//   • ok on $HOME/.claude-personal (suffix)   → "tuiCommands.claude with non-default suffix..."
+//   • ok on absent tuiCommands.claude         → "tuiCommands.claude absent → no rows"
+//
+// Plus the brace-expansion `${HOME}` variant + the path-continuation
+// `.claude/sub` negative case for negative-lookahead robustness.
+
+// ---------- t-589145dc: checkTuiCommandsClaudeOverride ----------
+
+describe("checkTuiCommandsClaudeOverride", () => {
+  const team = (overrides: Partial<Team> = {}): Team =>
+    ({ name: "alpha", members: [], ...overrides }) as Team;
+
+  test("null team → no rows", () => {
+    expect(checkTuiCommandsClaudeOverride(null)).toEqual([]);
+  });
+
+  test("no tuiCommands → no rows", () => {
+    expect(checkTuiCommandsClaudeOverride(team())).toEqual([]);
+  });
+
+  test("tuiCommands.claude absent → no rows", () => {
+    const t = team({ tuiCommands: { opencode: "opencode" } as never });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
+  });
+
+  test("tuiCommands.claude with non-default suffix → no rows", () => {
+    const t = team({
+      tuiCommands: {
+        claude: "CLAUDE_CONFIG_DIR=$HOME/.claude-personal claude --permission-mode auto",
+      } as never,
+    });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
+  });
+
+  test("CLAUDE_CONFIG_DIR=$HOME/.claude bare default → YELLOW row", () => {
+    const t = team({
+      tuiCommands: {
+        claude: "CLAUDE_CONFIG_DIR=$HOME/.claude claude --permission-mode auto",
+      } as never,
+    });
+    const rows = checkTuiCommandsClaudeOverride(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("config-claude-account-tcoverride");
+    expect(rows[0]?.hint).toContain("env -u CLAUDE_CONFIG_DIR");
+    expect(rows[0]?.hint).toContain("claudeAccount");
+  });
+
+  test("CLAUDE_CONFIG_DIR=/root/.claude bare default → YELLOW row", () => {
+    const t = team({
+      tuiCommands: { claude: "CLAUDE_CONFIG_DIR=/root/.claude claude" } as never,
+    });
+    const rows = checkTuiCommandsClaudeOverride(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("yellow");
+  });
+
+  test("CLAUDE_CONFIG_DIR=${HOME}/.claude (brace expansion) → YELLOW row", () => {
+    const t = team({
+      tuiCommands: { claude: "CLAUDE_CONFIG_DIR=${HOME}/.claude claude" } as never,
+    });
+    const rows = checkTuiCommandsClaudeOverride(t);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("yellow");
+  });
+
+  test("CLAUDE_CONFIG_DIR=/root/.claude-unum (suffixed) → no row", () => {
+    // Negative lookahead must permit the suffix.
+    const t = team({
+      tuiCommands: { claude: "CLAUDE_CONFIG_DIR=/root/.claude-unum claude" } as never,
+    });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
+  });
+
+  test("CLAUDE_CONFIG_DIR=$HOME/.claude/sub (path continuation) → no row", () => {
+    // `.claude/sub` is structurally different from bare `.claude` —
+    // the lookahead `[\w/-]` rejects this from triggering.
+    const t = team({
+      tuiCommands: { claude: "CLAUDE_CONFIG_DIR=$HOME/.claude/sub claude" } as never,
+    });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
+  });
+
+  test("tuiCommands not an object → no rows", () => {
+    const t = team({ tuiCommands: "not-an-object" as never });
+    expect(checkTuiCommandsClaudeOverride(t)).toEqual([]);
   });
 });
 
@@ -1839,7 +1931,15 @@ describe("checkWorktreeIsolation", () => {
     };
   }
   function gitFail(stderr: string, code = 128): SpawnResult {
-    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+    return {
+      exitCode: code,
+      stdout: "",
+      stderr,
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
   }
   /** Build a `git worktree list --porcelain` block. */
   function porcelainBlock(path: string, branch: string | null): string {
@@ -1853,10 +1953,7 @@ describe("checkWorktreeIsolation", () => {
   function fakeReadDir(names: ReadonlyArray<string> | null): ReadDir {
     return async () => (names === null ? null : names.map((name) => ({ name, isDirectory: true })));
   }
-  function team(
-    members: ReadonlyArray<{ name: string }>,
-    overrides: Partial<Team> = {},
-  ): Team {
+  function team(members: ReadonlyArray<{ name: string }>, overrides: Partial<Team> = {}): Team {
     return { name: "demo", members, ...overrides } as Team;
   }
 
@@ -1946,7 +2043,9 @@ describe("checkWorktreeIsolation", () => {
     const gitSpawn: GitSpawn = async (argv) => {
       if (argv.includes("branch")) return gitOk("geoyws\n");
       if (argv.includes("list")) {
-        return gitOk([porcelainBlock(wtAlice, "feature-x"), porcelainBlock(wtBob, "geoyws")].join("\n"));
+        return gitOk(
+          [porcelainBlock(wtAlice, "feature-x"), porcelainBlock(wtBob, "geoyws")].join("\n"),
+        );
       }
       return gitOk("");
     };
@@ -2143,9 +2242,7 @@ describe("checkWorktreeIsolation", () => {
       atmuxDir,
       { readWorktreeDir: fakeReadDir([]), gitSpawn },
     );
-    const orphans = rows.filter((r) =>
-      r.label.startsWith("worktree:branch-orphan:"),
-    );
+    const orphans = rows.filter((r) => r.label.startsWith("worktree:branch-orphan:"));
     expect(orphans).toHaveLength(1);
     expect(orphans[0]?.label).toBe("worktree:branch-orphan:stale");
     expect(orphans[0]?.status).toBe("info");
@@ -2988,5 +3085,214 @@ describe("checkMergerFanIn", () => {
     expect(gitCalls).toBe(0); // staleness probe never fires.
     expect(rows).toHaveLength(1);
     expect(rows[0]?.label).toBe("merger:disabled-but-member-present:fan");
+  });
+});
+
+// ---------- ADR-137: checkMemberForcePushRecent ----------
+
+describe("checkMemberForcePushRecent", () => {
+  type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
+  type GitSpawn = NonNullable<
+    NonNullable<Parameters<typeof checkMemberForcePushRecent>[2]>["gitSpawn"]
+  >;
+
+  function gitOk(stdout = ""): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  function gitFail(code = 128): SpawnResult {
+    return {
+      exitCode: code,
+      stdout: "",
+      stderr: "fatal: not a git repository",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  function team(
+    members: ReadonlyArray<{ name: string }>,
+    overrides: Partial<Team> = {},
+  ): Team {
+    return {
+      name: "demo",
+      worktreeIsolation: true,
+      members,
+      ...overrides,
+    } as Team;
+  }
+
+  /** Stub that responds to `branch --show-current` with `branchName`
+   *  for every member, then returns `reflogOut` for `reflog show
+   *  <branch>`. */
+  function gitStub(branchName: string, reflogOut: string): GitSpawn {
+    return async (argv) => {
+      if (argv.includes("--show-current")) return gitOk(`${branchName}\n`);
+      if (argv.includes("reflog")) return gitOk(reflogOut);
+      return gitOk("");
+    };
+  }
+
+  test("team === null → empty rows", async () => {
+    expect(await checkMemberForcePushRecent(null, "/p/.atmux")).toEqual([]);
+  });
+
+  test("worktreeIsolation !== true → empty rows (single-trunk teams skipped)", async () => {
+    const rows = await checkMemberForcePushRecent(
+      team([{ name: "alice" }], { worktreeIsolation: false }),
+      "/p/.atmux",
+    );
+    expect(rows).toEqual([]);
+  });
+
+  test("worktreeIsolation undefined → empty rows", async () => {
+    const t = { name: "demo", members: [{ name: "alice" }] } as Team;
+    expect(await checkMemberForcePushRecent(t, "/p/.atmux")).toEqual([]);
+  });
+
+  test("no force-push events in reflog → empty rows", async () => {
+    const reflog = [
+      "refs/heads/main-alice@{1700000000} commit: feat(x): land thing",
+      "refs/heads/main-alice@{1699999000} commit: docs(y): tweak readme",
+    ].join("\n");
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("recent force-push (`update by push (forced)`) → yellow row with ADR-137 hint", async () => {
+    const reflog = [
+      "refs/heads/main-alice@{1700000900} update by push (forced)",
+      "refs/heads/main-alice@{1699998000} commit: feat(x): earlier work",
+    ].join("\n");
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
+    expect(rows[0]?.hint).toContain("ADR-137");
+    expect(rows[0]?.hint).toContain("merge");
+  });
+
+  test("`forced-update` (alt reflog wording) also matched", async () => {
+    const reflog = "refs/heads/main-bob@{1700000950} forced-update";
+    const rows = await checkMemberForcePushRecent(team([{ name: "bob" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-bob", reflog),
+      now: () => 1700001000,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-forcepush-recent:bob");
+  });
+
+  test("force-push OUTSIDE the time window → empty rows (>1h ago is stale)", async () => {
+    const reflog = "refs/heads/main-alice@{1699990000} update by push (forced)";
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000, // 11000s after the force-push → outside default 3600s window
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("custom windowSec opens the time window (operator-tunable)", async () => {
+    const reflog = "refs/heads/main-alice@{1699990000} update by push (forced)";
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000,
+      windowSec: 12_000, // widen — now the force-push is in-window
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
+  });
+
+  test("multiple members — only those with recent force-push surface", async () => {
+    const aliceReflog = "refs/heads/main-alice@{1700000950} update by push (forced)";
+    const bobReflog = "refs/heads/main-bob@{1700000900} commit: docs(y): work";
+    const gitMulti: GitSpawn = async (argv) => {
+      if (argv.includes("--show-current")) {
+        // Resolve current branch from the worktree path arg (-C <wt>).
+        const cIdx = argv.indexOf("-C");
+        const wt = argv[cIdx + 1] ?? "";
+        if (wt.endsWith("/alice")) return gitOk("main-alice\n");
+        if (wt.endsWith("/bob")) return gitOk("main-bob\n");
+        return gitFail();
+      }
+      if (argv.includes("reflog")) {
+        const refIdx = argv.indexOf("show");
+        const ref = argv[refIdx + 1] ?? "";
+        if (ref === "main-alice") return gitOk(aliceReflog);
+        if (ref === "main-bob") return gitOk(bobReflog);
+        return gitOk("");
+      }
+      return gitOk("");
+    };
+    const rows = await checkMemberForcePushRecent(
+      team([{ name: "alice" }, { name: "bob" }]),
+      "/p/.atmux",
+      { gitSpawn: gitMulti, now: () => 1700001000 },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
+  });
+
+  test("detached HEAD (`branch --show-current` empty) → silently skip member", async () => {
+    const gitDetached: GitSpawn = async (argv) => {
+      if (argv.includes("--show-current")) return gitOk(""); // empty = detached
+      return gitOk("");
+    };
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitDetached,
+      now: () => 1700001000,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("git spawn throws → silently skip member (probe doesn't crash team status)", async () => {
+    const gitThrows: GitSpawn = async () => {
+      throw new Error("spawn failed");
+    };
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitThrows,
+      now: () => 1700001000,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("reflog command non-zero exit → silently skip member", async () => {
+    const gitReflogFails: GitSpawn = async (argv) => {
+      if (argv.includes("--show-current")) return gitOk("main-alice\n");
+      if (argv.includes("reflog")) return gitFail();
+      return gitOk("");
+    };
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitReflogFails,
+      now: () => 1700001000,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("multiple force-pushes for same member collapse to ONE row (same nudge)", async () => {
+    const reflog = [
+      "refs/heads/main-alice@{1700000950} update by push (forced)",
+      "refs/heads/main-alice@{1700000800} update by push (forced)",
+      "refs/heads/main-alice@{1700000600} update by push (forced)",
+    ].join("\n");
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
   });
 });

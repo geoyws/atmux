@@ -1,4 +1,4 @@
-// ADR-010: CLI dispatcher — `team repair-rename` sub-verb.
+// ADR-103: CLI dispatcher — `team repair-rename` sub-verb.
 // Bash spec: lib/team-repair-rename.sh @ worktree-frozen (380 LOC).
 //
 // Idempotent recovery verb for teams where `atmux team rename` mutated
@@ -9,27 +9,29 @@
 // recovery path until planner folds it back into rename's main flow.
 //
 // ────────────────────────────────────────────────────────────────────
-// V1 SCOPE (this commit) — explicit-team mode + 5/6 steps + rollback:
+// V1 SCOPE — explicit-team mode + 6/6 steps + rollback:
 //   ✅ Step 1: mv <tmpdir> → /tmp/atmux_tmux_<team>
 //   ✅ Step 2: tmux rename-session <old> → <team>           (cage internal)
 //   ✅ Step 3: tmux rename-window __<old>__* → __<team>__*  (per-window)
 //   ✅ Step 4: team.json:.tmuxTmpdir = /tmp/atmux_tmux_<team>
-//   ⏸  Step 5: cron-block install                            DEFERRED
+//   ✅ Step 5: cron-block refresh via cron-install verb
+//             (ADR-083 follow-up — installCronBlock strip-by-atmux_dir
+//             scrubs the rename-orphan block, then writes a fresh block
+//             under the new team name)
 //   ✅ Step 6: .atmux/state/session.txt = <team>
 //   ✅ Convergence check + idempotent no-op
 //   ✅ --dry-run plan render
 //   ✅ Rollback on partial failure (reverse-walk recorded ops)
+//
+// Step 5 is non-fatal — cron-install itself swallows env-skip /
+// missing-binary / swap-failure cases (warn + exit 0) so a hiccuped
+// crontab never aborts a repair that already mutated state-file truth.
 //
 // DEFERRED (not in V1, follow-up tasks under lead's open queue):
 //   ⏸  Fleet auto-detect — bash scans `atmux::registry_list --json` for
 //      drifted teams when no team arg given. Bun registry abstraction
 //      not yet ported (only `src/verbs/audit.ts` + start.ts reference it
 //      via TODO). V1 requires explicit `<team>` positional.
-//   ⏸  Step 5 cron install — bash calls `atmux::cron_install` which
-//      rewrites the crontab block from team.json. Bun's cron.ts has the
-//      render helpers (renderCronBlock/Lines) but no install function.
-//      V1 emits a stderr WARN telling the operator to re-run start /
-//      future `atmux cron-install` to refresh the cron block.
 //   ⏸  `--force` flag — only meaningful for fleet auto-detect mode
 //      (forces repair of multiple drifted teams). Unused without auto-
 //      detect; omitted in V1.
@@ -49,7 +51,6 @@
 
 import { rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { atomicWrite, exists, readTextOrNull } from "../abstractions/fs.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
@@ -61,10 +62,10 @@ import {
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
-import { installCronBlock } from "../core/cron.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team } from "../schema/team.ts";
+import { cronInstall } from "./cron-install.ts";
 
 const USAGE = "atmux team repair-rename <team> [--dry-run]";
 
@@ -247,7 +248,7 @@ export function renderPlan(
   lines.push({ step: 4, body: `team.json:.tmuxTmpdir = ${snap.newTmpdir}` });
   lines.push({
     step: 5,
-    body: "cron-block install DEFERRED (V1) — re-run `atmux start` to refresh cron",
+    body: `cron-install --quiet  (refresh crontab block under '${team}'; strips rename-orphan)`,
   });
   if (flags.needsStateSync) {
     lines.push({
@@ -349,16 +350,11 @@ type RollbackOp =
 
 export interface ApplyDeps extends ProbeDeps {
   stderr: Writer;
-  /** ADR-083 follow-up §DEFERRED row 3: crontab IO seam for Step 5
-   *  cron-block refresh. Defaults to `defaultCrontabIO()` at the verb
-   *  entry point. */
-  crontab?: CrontabIO;
-  /** Returns the atmux binary path baked into cron lines. Defaults to
-   *  `process.env.ATMUX_BIN ?? Bun.which("atmux")`. Tests pin a
-   *  deterministic value. */
-  resolveBin?: () => string | null;
-  /** Defaults to `process.env`. Tests pin `ATMUX_NO_CRON`. */
-  env?: Readonly<Record<string, string | undefined>>;
+  /** ADR-083 follow-up: Step 5 cron refresh. Defaults to the
+   *  `cronInstall` verb-level entry; tests inject a stub. Argv is
+   *  threaded through verbatim so the call honors `--team-dir` for the
+   *  test sandbox and `--quiet` to suppress the success line. */
+  cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
 }
 
 export interface ApplyResult {
@@ -517,10 +513,31 @@ export async function applyRepair(
     };
   }
 
-  // Step 5: cron install — DEFERRED in V1. Emit warn.
-  deps.stderr(
-    "  · step 5 cron-block install DEFERRED in V1 — re-run `atmux start` to refresh the cron block\n",
-  );
+  // Step 5: cron-block refresh (ADR-083 follow-up).
+  //
+  // `installCronBlock`'s `stripByAtmuxDir` pass drops any marker block
+  // whose body references the same `ATMUX_DIR=<atmuxDir>` — i.e. the
+  // pre-rename block written under the OLD team name. We then append a
+  // fresh block under the new name. Net: exactly one block named
+  // `<team>` pointing at `<atmuxDir>`, regardless of prior crontab
+  // state. Strictly non-fatal: cron-install internally swallows env-
+  // skip / missing-binary / swap-failure cases (warn + exit 0), and we
+  // wrap any out-of-band throw in a try/catch so step 6 (state.txt
+  // sync) still runs and the verb itself never rolls back on cron
+  // hiccups. Not tracked in `ops` — crontab swap is observably
+  // idempotent (re-run cron-install to converge), so rollback is
+  // unnecessary AND would risk re-writing the old-team block from a
+  // best-effort path.
+  {
+    const cronFn = deps.cronInstallFn ?? cronInstall;
+    const teamDir = dirname(atmuxDir);
+    try {
+      await cronFn(["--quiet", "--team-dir", teamDir]);
+      appliedSteps.push(5);
+    } catch (e) {
+      deps.stderr(`  · step 5 cron-install fell through: ${errMsg(e)}\n`);
+    }
+  }
 
   // Step 6: state/session.txt sync.
   if (flags.needsStateSync) {
@@ -562,6 +579,12 @@ export interface TeamRepairRenameOpts {
   buildTmux?: (socketPath: string) => TmuxNamespace;
   stdout?: Writer;
   stderr?: Writer;
+  /** ADR-083 follow-up: inject a stub `cronInstall` for tests so the
+   *  Step 5 refresh path is observable without touching the host
+   *  crontab. Production callers leave this unset and the verb-level
+   *  `cronInstall` (gated by its own `ATMUX_NO_CRON` / missing-binary
+   *  no-ops) wins. */
+  cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
 }
 
 export function defaultBuildTmux(socketPath: string): TmuxNamespace {
@@ -589,6 +612,9 @@ export async function teamRepairRename(
     buildTmuxAtSocket,
     stderr,
   };
+  if (opts.cronInstallFn !== undefined) {
+    deps.cronInstallFn = opts.cronInstallFn;
+  }
 
   const snap = await probeDrift(atmuxDir, parsed.team, deps);
   const flags = evaluateDrift(snap, parsed.team);

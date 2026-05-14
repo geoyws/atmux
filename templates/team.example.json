@@ -12,6 +12,7 @@
   "emojis": {
     "mode": "random"
   },
+  "_comment_claudeAccount": "Per-member Claude config-dir isolation. Valid values: 'default' (host default — Claude reads its standard config dir), 'personal', 'icloud', 'ifca', 'unum', OR any custom suffix the operator maintains. When set + != 'default', spawn prefixes 'CLAUDE_CONFIG_DIR=<HOME>/.claude-<value>' so the member's nested-shell `claude` invocations inherit an account-isolated config tree (no OAuth cross-pollination, no fresh-spawn re-auth dance). Per ADR-024 spawn-account-matching + ADR-094 c-alias spawn convention. Field lives at the MEMBER level (per-member override); template's lead carries an example string below.",
   "members": [
     {
       "name": "lead",
@@ -19,7 +20,8 @@
       "lane": "misc",
       "tui": "claude",
       "model": "default",
-      "cwd": "."
+      "cwd": ".",
+      "claudeAccount": "personal"
     },
     {
       "name": "planner",
