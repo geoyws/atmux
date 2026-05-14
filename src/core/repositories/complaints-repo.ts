@@ -199,4 +199,43 @@ export class ComplaintsRepo {
       .get(status) as { n: number } | null;
     return r?.n ?? 0;
   }
+
+  /** Find the most recent OPEN complaint with this `source_id`, filtered to
+   *  rows opened at or after `sinceSec`. Used by the dedup-aware filer
+   *  (`src/core/complaints.ts::fileDedupedComplaint`) to coalesce repeated
+   *  strikes into a single row + bumped `extra.source_count` rather than
+   *  flooding the box with one row per tick (Task t-e91fec98 §5). The
+   *  `opened_at` lower bound is what enforces the 1h dedup window — older
+   *  open rows fall outside and the caller inserts fresh. */
+  findOpenBySourceId(sourceId: string, sinceSec: number): Complaint | null {
+    const row = this.db
+      .query(
+        `SELECT * FROM complaints
+         WHERE source_id = ? AND status = 'open' AND opened_at >= ?
+         ORDER BY opened_at DESC LIMIT 1`,
+      )
+      .get(sourceId, sinceSec) as ComplaintRow | null;
+    if (row === null) return null;
+    return complaintFromRow(row);
+  }
+
+  /** Bump `extra.source_count` + `extra.last_seen` on an existing complaint
+   *  row, preserving every other field (status / opened_at / preventive_ask
+   *  unchanged). Used by the dedup-aware filer when a re-file lands within
+   *  the dedup window. Returns true on update, false when no row matched
+   *  the id. The caller supplies `newCount` so the math (existing+1) stays
+   *  with the orchestration layer — this method is the persistence-only
+   *  primitive. */
+  bumpSourceCount(id: string, lastSeenSec: number, newCount: number): boolean {
+    const cur = this.getById(id);
+    if (cur === null) return false;
+    const newExtra: Record<string, unknown> = {
+      ...cur.extra,
+      source_count: newCount,
+      last_seen: lastSeenSec,
+    };
+    const extraStr = JSON.stringify(newExtra);
+    this.db.prepare("UPDATE complaints SET extra = ? WHERE id = ?").run(extraStr, id);
+    return true;
+  }
 }

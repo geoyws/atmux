@@ -496,9 +496,9 @@ describe("parseComplaintsArgs — v3 provenance flags", () => {
   });
 
   test("file --source-kind allowlist rejects unknown values", () => {
-    expect(() =>
-      parseComplaintsArgs(["file", "--summary", "x", "--source-kind", "bogus"]),
-    ).toThrow(UsageError);
+    expect(() => parseComplaintsArgs(["file", "--summary", "x", "--source-kind", "bogus"])).toThrow(
+      UsageError,
+    );
   });
 
   test("list --source-kind / --target-team captured", () => {
@@ -803,5 +803,191 @@ describe("complaints verb — v3 integration", () => {
       process.stderr.write = origStderr;
     }
     void stderrBuf;
+  });
+});
+
+// ---------- t-7bd53cba — whip-velocity-gate compat (--title / --body / --severity / source-kind allowlist / default target_team) ----------
+
+describe("parseComplaintsArgs — t-7bd53cba flag-vocab compat", () => {
+  test("file --title is an alias for --summary", () => {
+    const a = parseComplaintsArgs([
+      "file",
+      "--title",
+      "team-a: eta-lied · 3 picks · whip-tried-2-menus",
+    ]);
+    expect(a.summary).toBe("team-a: eta-lied · 3 picks · whip-tried-2-menus");
+  });
+
+  test("file --body is an alias for --root-cause", () => {
+    const a = parseComplaintsArgs([
+      "file",
+      "--summary",
+      "x",
+      "--body",
+      "Whip-velocity-gate strike threshold 3 reached for team atmux",
+    ]);
+    expect(a.rootCause).toBe("Whip-velocity-gate strike threshold 3 reached for team atmux");
+  });
+
+  test("file --severity captured as free-form string", () => {
+    const a = parseComplaintsArgs(["file", "--summary", "x", "--severity", "high"]);
+    expect(a.severity).toBe("high");
+  });
+
+  test("file --severity accepts any string (no allowlist)", () => {
+    const a = parseComplaintsArgs(["file", "--summary", "x", "--severity", "P0-emergency"]);
+    expect(a.severity).toBe("P0-emergency");
+  });
+
+  test("file --source-kind allowlist now includes 'whip'", () => {
+    const a = parseComplaintsArgs(["file", "--summary", "x", "--source-kind", "whip"]);
+    expect(a.sourceKind).toBe("whip");
+  });
+
+  test("file --source-kind allowlist now includes 'whip-velocity-gate'", () => {
+    const a = parseComplaintsArgs([
+      "file",
+      "--summary",
+      "x",
+      "--source-kind",
+      "whip-velocity-gate",
+    ]);
+    expect(a.sourceKind).toBe("whip-velocity-gate");
+  });
+
+  test("file --title + --summary both passed → last one wins (single canonical field)", () => {
+    // Sanity: when both forms passed, the later argv value overrides.
+    // Same behavior as any other duplicate-flag case in the parser.
+    const a = parseComplaintsArgs(["file", "--summary", "first", "--title", "second"]);
+    expect(a.summary).toBe("second");
+  });
+});
+
+describe("complaints verb — t-7bd53cba target_team default + severity stashing", () => {
+  test("file with --target-team omitted defaults to current team name", async () => {
+    // Team config in beforeEach() has name: "test-team"
+    const { out } = await captureStdout(() =>
+      complaints(["file", "--summary", "x", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      const c = repo.getById(id);
+      expect(c?.targetTeam).toBe("test-team");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("file with explicit --target-team wins over default", async () => {
+    const { out } = await captureStdout(() =>
+      complaints([
+        "file",
+        "--summary",
+        "x",
+        "--target-team",
+        "different-team",
+        "--team-dir",
+        teamDir,
+      ]),
+    );
+    const id = out.trim();
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      const c = repo.getById(id);
+      expect(c?.targetTeam).toBe("different-team");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("file --severity stashes value in extra.severity", async () => {
+    const { out } = await captureStdout(() =>
+      complaints(["file", "--summary", "x", "--severity", "high", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      const c = repo.getById(id);
+      expect(c?.extra.severity).toBe("high");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("file --severity omitted leaves extra.severity unset", async () => {
+    const { out } = await captureStdout(() =>
+      complaints(["file", "--summary", "x", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      const c = repo.getById(id);
+      expect(c?.extra.severity).toBeUndefined();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("smoke — whip-velocity-gate's exact CLI invocation lands a row", async () => {
+    // Mirrors the call shape in /root/.atmux/bin/whip-velocity-gate.sh
+    // verbatim. Acceptance bullet from Task t-7bd53cba: "Smoke test:
+    // simulate velocity-gate's exact CLI invocation, verify row lands."
+    const { out } = await captureStdout(() =>
+      complaints([
+        "file",
+        "--target-team",
+        "atmux",
+        "--severity",
+        "high",
+        "--kind",
+        "heads-up",
+        "--source-kind",
+        "whip-velocity-gate",
+        "--source-id",
+        "whip-atmux-velocity-stalled",
+        "--title",
+        "atmux: velocity-stalled · 0 commits in 60min · whip-tried-3-menus",
+        "--body",
+        "Whip-velocity-gate strike threshold 3 reached for team atmux. Symptom: 0 commits in last 60min, lead pane idle/wedged/saturated, action-menu injections produced no commit-shaped reply.",
+        "--team-dir",
+        teamDir,
+      ]),
+    );
+    const id = out.trim();
+    expect(id).toMatch(/^c-[0-9a-f]{8}$/);
+
+    // Verify the row lands with every field the script intended
+    const { out: jsonOut } = await captureStdout(() =>
+      complaints([
+        "list",
+        "--source-kind",
+        "whip-velocity-gate",
+        "--target-team",
+        "atmux",
+        "--json",
+        "--team-dir",
+        teamDir,
+      ]),
+    );
+    const parsed = JSON.parse(jsonOut);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].id).toBe(id);
+    expect(parsed[0].sourceKind).toBe("whip-velocity-gate");
+    expect(parsed[0].sourceId).toBe("whip-atmux-velocity-stalled");
+    expect(parsed[0].targetTeam).toBe("atmux");
+    expect(parsed[0].incidentSummary).toContain("atmux: velocity-stalled");
+    expect(parsed[0].rootCause).toContain("Whip-velocity-gate strike threshold");
+    expect(parsed[0].extra.kind).toBe("heads-up");
+    expect(parsed[0].extra.severity).toBe("high");
   });
 });
