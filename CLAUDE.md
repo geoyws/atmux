@@ -6,7 +6,7 @@ This file is the **canonical agent contract** for anyone running atmux on a code
 
 **ADRs are the source of truth.** Every architectural decision lives as a numbered ADR under `docs/adr/`. ADRs are append-only: once accepted, they are not edited except for follow-up annotations. Superseding decisions get a new ADR that references the old one.
 
-**Docs distill ADRs.** Project documentation — `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK-*.md`, `docs/superdoctor.md`, `README.md`, `CHANGELOG.md` — are *distillations* of ADR decisions, not independent narratives. When a doc and an ADR disagree, the ADR wins and the doc is updated to match. When writing or updating a doc, reference the ADR(s) that authorized the content (`per ADR-052 §B`, `mirrors ADR-082 W3`).
+**Docs distill ADRs.** Project documentation — `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK-*.md`, `docs/medic.md` (renamed from `docs/superdoctor.md` per ADR-133), `README.md`, `CHANGELOG.md` — are *distillations* of ADR decisions, not independent narratives. When a doc and an ADR disagree, the ADR wins and the doc is updated to match. When writing or updating a doc, reference the ADR(s) that authorized the content (`per ADR-052 §B`, `mirrors ADR-082 W3`).
 
 **Context flows from docs.** Members reading the codebase build context via the docs first, ADRs second, code third. The pull model only works if every claimer has the same vocabulary; the docs are what synchronize that vocabulary.
 
