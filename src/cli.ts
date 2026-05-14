@@ -57,6 +57,7 @@ import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
 import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
 import { laneTick } from "./verbs/lane-tick.ts";
+import { martinet } from "./verbs/martinet.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
@@ -249,6 +250,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cronOrphans(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
+    case "martinet":
+      return martinet(argv.slice(1));
     case "complaints":
       return complaints(argv.slice(1));
     case "doctor":

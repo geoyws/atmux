@@ -16,6 +16,8 @@ import { ConfigError } from "../errors.ts";
 import {
   Cockpit,
   type Cockpit as CockpitShape,
+  type CockpitMartinet,
+  type CockpitMedic,
   type CockpitSessionT,
   type CockpitSuperdoctor,
   type CockpitTeam,
@@ -23,9 +25,12 @@ import {
 } from "../schema/cockpit.ts";
 
 /** Output of `loadCockpit` — same as `Cockpit` but with the legacy
- *  back-compat fields (`teams`, `superdoctor`) narrowed: `teams` is
- *  always populated by `enrichLegacyFields`, and `superdoctor` is
- *  populated when at least one `type: "superdoctor"` entry exists. */
+ *  back-compat fields (`teams`, `superdoctor`, `medic`, `martinet`)
+ *  narrowed: `teams` is always populated by `enrichLegacyFields`;
+ *  `superdoctor` / `medic` are populated when at least one
+ *  `type: "superdoctor"` OR `type: "medic"` entry exists (the loader
+ *  coerces both to medic semantics per ADR-133); `martinet` is
+ *  populated when at least one `type: "martinet"` entry exists. */
 export type LoadedCockpit = CockpitShape & { teams: CockpitTeam[] };
 
 export interface LoadCockpitOpts {
@@ -128,24 +133,66 @@ export function migrateLegacyShape(
     if (typeof t !== "object" || t === null) continue;
     sessions.push({ ...(t as Record<string, unknown>), type: "team" });
   }
-  // Legacy singleton superdoctor lifts into sessions[] as its own
-  // discriminated entry. Operator's original `enabled: false` carries
+  // Legacy singleton superdoctor / canonical medic lift into sessions[]
+  // as their own discriminated entry. ADR-133 resolution rule: `medic`
+  // wins over `superdoctor` when both present (loader warns + ignores
+  // the deprecated key). Operator's original `enabled: false` carries
   // through; the loader's enrichLegacyFields step also re-surfaces the
-  // singleton field for callers reading `cockpit.superdoctor`.
+  // singleton field for callers reading `cockpit.medic` /
+  // `cockpit.superdoctor`.
+  const medicBlock = obj.medic;
   const sd = obj.superdoctor;
-  if (typeof sd === "object" && sd !== null) {
+  if (typeof medicBlock === "object" && medicBlock !== null) {
+    const mObj = medicBlock as Record<string, unknown>;
+    sessions.push({
+      ...mObj,
+      type: "medic",
+      name: typeof mObj.name === "string" ? mObj.name : "medic",
+    });
+    if (typeof sd === "object" && sd !== null) {
+      warn(
+        `atmux: cockpit.json at ${path} contains BOTH 'medic' and 'superdoctor' blocks — ` +
+          `using 'medic' (canonical per ADR-133); 'superdoctor' block ignored. ` +
+          `Drop the legacy 'superdoctor' key to silence this warning.\n`,
+      );
+    }
+  } else if (typeof sd === "object" && sd !== null) {
     const sdObj = sd as Record<string, unknown>;
     sessions.push({
       ...sdObj,
       type: "superdoctor",
       name: typeof sdObj.name === "string" ? sdObj.name : "superdoctor",
     });
+    warn(
+      `atmux: cockpit.json at ${path} uses deprecated 'superdoctor' block — ` +
+        `rename to 'medic' per ADR-133 (medic-rename). Legacy key continues to work ` +
+        `during the one-release-cycle deprecation window.\n`,
+    );
+  }
+  // ADR-132 §D6 — top-level `martinet` block lifts into sessions[] as
+  // its own discriminated entry.
+  const martinetBlock = obj.martinet;
+  if (typeof martinetBlock === "object" && martinetBlock !== null) {
+    const mObj = martinetBlock as Record<string, unknown>;
+    sessions.push({
+      ...mObj,
+      type: "martinet",
+      name: typeof mObj.name === "string" ? mObj.name : "martinet",
+    });
   }
   // Strip the legacy keys so the new-shape parse doesn't see them — the
   // enrichment pass adds them back from sessions[] post-validation.
-  const { teams: _t, superdoctor: _s, ...rest } = obj;
+  const {
+    teams: _t,
+    superdoctor: _s,
+    medic: _m,
+    martinet: _mt,
+    ...rest
+  } = obj;
   void _t;
   void _s;
+  void _m;
+  void _mt;
   return { ...rest, schemaVersion: 1, sessions };
 }
 
@@ -158,7 +205,14 @@ export function migrateLegacyShape(
  */
 function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   const teams: CockpitTeam[] = [];
-  let superdoctor: CockpitSuperdoctor | undefined;
+  // ADR-133: medic is the canonical singleton. Loader resolves from
+  // either discriminator (`type: "medic"` canonical or `type: "superdoctor"`
+  // legacy) — first occurrence wins. `medic` discriminator takes precedence
+  // when both exist in the same sessions[] (matches the cockpit.json
+  // top-level resolution rule in `migrateLegacyShape`).
+  let medicResolved: CockpitMedic | undefined;
+  let martinet: CockpitMartinet | undefined;
+  // First pass: look for canonical `medic` entries.
   walkSessions(cockpit.sessions ?? [], 0, (node) => {
     if (node.type === "team") {
       const t: CockpitTeam = {
@@ -169,14 +223,41 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
       if (node.claudeAccount !== undefined) t.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) t.tuiOverrides = node.tuiOverrides;
       teams.push(t);
-    } else if (node.type === "superdoctor" && superdoctor === undefined) {
-      const s: CockpitSuperdoctor = { enabled: node.enabled };
-      if (node.claudeAccount !== undefined) s.claudeAccount = node.claudeAccount;
-      if (node.tuiOverrides !== undefined) s.tuiOverrides = node.tuiOverrides;
-      superdoctor = s;
+    } else if (node.type === "medic" && medicResolved === undefined) {
+      const m: CockpitMedic = { enabled: node.enabled };
+      if (node.claudeAccount !== undefined) m.claudeAccount = node.claudeAccount;
+      if (node.tuiOverrides !== undefined) m.tuiOverrides = node.tuiOverrides;
+      medicResolved = m;
+    } else if (node.type === "martinet" && martinet === undefined) {
+      const mt: CockpitMartinet = { enabled: node.enabled };
+      if (node.claudeAccount !== undefined) mt.claudeAccount = node.claudeAccount;
+      if (node.tuiOverrides !== undefined) mt.tuiOverrides = node.tuiOverrides;
+      martinet = mt;
     }
   });
-  return { ...cockpit, teams, ...(superdoctor !== undefined ? { superdoctor } : {}) };
+  // Second pass (fallback): coerce legacy `superdoctor` entries when no
+  // canonical `medic` was seen. ADR-133 §D2 — schema-load coerces to
+  // medic semantics during the deprecation window.
+  if (medicResolved === undefined) {
+    walkSessions(cockpit.sessions ?? [], 0, (node) => {
+      if (node.type === "superdoctor" && medicResolved === undefined) {
+        const m: CockpitMedic = { enabled: node.enabled };
+        if (node.claudeAccount !== undefined) m.claudeAccount = node.claudeAccount;
+        if (node.tuiOverrides !== undefined) m.tuiOverrides = node.tuiOverrides;
+        medicResolved = m;
+      }
+    });
+  }
+  const out: LoadedCockpit = { ...cockpit, teams };
+  // Surface BOTH `medic` (canonical) AND `superdoctor` (deprecated alias)
+  // so duck-typed consumers reading either field during the deprecation
+  // window see the same resolved shape. New code reads `cockpit.medic`.
+  if (medicResolved !== undefined) {
+    out.medic = medicResolved;
+    out.superdoctor = medicResolved as CockpitSuperdoctor;
+  }
+  if (martinet !== undefined) out.martinet = martinet;
+  return out;
 }
 
 /** A flattened team entry — one row per `type: "team"` or `epic-team"`
@@ -206,8 +287,9 @@ export interface FlattenedTeamEntry {
 /** Depth-first flattener — ADR-089 §F + T5 prep. Returns enabled
  *  team-shaped entries (both `type: "team"` and `type: "epic-team"`)
  *  with their nesting `level` annotated. `superdriver` /
- *  `superdoctor` entries are excluded — they're cockpit-internal
- *  singletons, not iterable "teams" in the legacy sense.
+ *  `superdoctor` / `medic` / `martinet` entries are excluded —
+ *  they're cockpit-internal singletons, not iterable "teams" in the
+ *  legacy sense.
  *
  *  Legacy callers iterating `enabledTeams(cockpit)` keep working
  *  because the returned shape exposes `.name` / `.root` / `.enabled`
