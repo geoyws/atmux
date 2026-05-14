@@ -123,6 +123,71 @@ process-frozen — see t-e91fec98 §2). V1 has one symptom hash:
 - [x] Tests: classifier + strike-file IO (target 100% line cover per
       ADR-009 narrowed denominator)
 
+## What T2 ships (Task t-e91fec98)
+
+T2 (this commit) lands the strike→complaint escalation pipeline. The
+strike counter from T1 is now wired to the complaints box: when a
+symptom-hash hits `strikeThreshold` strikes, T2 files a dedup-aware
+complaint via the cockpit-scoped superdoctor pipeline and resets the
+strike counter so the next escalation lands on a clean window.
+
+- [x] `src/core/complaints.ts` — `fileDedupedComplaint(db, nowSec, opts)`
+      orchestrator. Pure-aside-from-the-db-argument; `nowSec` injected
+      for clock-determinism in tests. Dedup window default 3600s (1h)
+      per Task body §5; bumps `extra.source_count` + `extra.last_seen`
+      on the existing OPEN row when re-files land within the window.
+      Resolved/wontfix rows do NOT block fresh inserts.
+- [x] `src/core/whip-strikes.ts` (extensions) — three new symptom-hash
+      builders (`etaLiedSymptomHash`, `classifierSwallowSymptomHash`,
+      `processFrozenSymptomHash`) covering Task body §2's failure
+      modes. Plus `renderStrikeTimeline(record, nowSec)` —
+      "strikes 0→N over Δt=Xmin; last reason: …" — used by T2's
+      body builder.
+- [x] `src/core/whip-escalation.ts` — `maybeEscalateStrikes(opts)`
+      ties the strike record to the complaint filer + handles
+      title/body templating (Task body §3-4) + strike-record reset
+      (Task body §6). Threshold defaults to 3 per Task body §1;
+      callers may override via `team.json::whip.velocityGate
+      .strikeThreshold` once the wiring lands in t-5d85dddb.
+- [x] `src/core/repositories/complaints-repo.ts` (extensions) —
+      `findOpenBySourceId(sourceId, sinceSec)` + `bumpSourceCount(id,
+      lastSeenSec, newCount)` SQL primitives the dedup orchestrator
+      uses. Keeps SQL ownership in the repo per the project's
+      existing layering convention.
+- [x] Tests: complaints filer (32 cases), escalation orchestrator
+      (19 cases), strikes extensions (10 cases). 100% line cover on
+      the three new files. In-memory SQLite (`:memory:`) fixtures
+      with the production migration ladder.
+
+### Symptom hash vocabulary (Task t-e91fec98 §2)
+
+| Hash | Failure mode |
+|------|--------------|
+| `whip-<team>-velocity-stalled` | V1 baseline — generic BAD verdict |
+| `whip-<team>-eta-lied` | Lead picked D=Standby N times without ETA hitting |
+| `whip-<team>-classifier-swallow` | Queued compose text persists across ≥2 ticks (auto-mode keystroke swallow) |
+| `whip-<team>-process-frozen` | Token count unchanged across 3+ ticks AND last commit > 2h |
+
+T2 does not WIRE the symptom-detection logic — that lives in the
+deferred wire-up Task t-5d85dddb (whip.ts runTick + reply
+validation). T2 ships the post-detection escalation surface so
+t-5d85dddb can call into it without re-deriving the title format,
+dedup window, or strike-reset semantics.
+
+### Complaint shape (Task t-e91fec98 §3-4)
+
+- **Title** (incidentSummary): `<team>: <symptom> · <observable-evidence> · whip-tried-N-menus`
+- **Body** (rootCause): `<strike-timeline>. <unshipped-tasks-list>.`
+- **sourceKind** = `whip`; **sourceId** = symptom hash; **targetTeam** = team name; **openedBy** = `whip:<team>`
+- **extra.kind** = `heads-up`; **extra.severity** = `high`; **extra.source_count** + **extra.last_seen** managed by the filer
+
+### Dedup contract (Task t-e91fec98 §5-6)
+
+1. Lookup: `SELECT * FROM complaints WHERE source_id = ? AND status = 'open' AND opened_at >= (nowSec - dedupWindowSec)`
+2. If found → bump `extra.source_count` + `extra.last_seen` on that row; return `{ isNew: false, sourceCount: N+1 }`
+3. If not found → INSERT fresh with `extra.source_count = 1` + `extra.last_seen = nowSec`; return `{ isNew: true, sourceCount: 1 }`
+4. After EITHER outcome → reset the strike record (Task body §6 — strikes have done their job once a complaint exists)
+
 ## What V1 defers (follow-up Task to file post-commit)
 
 - [ ] `src/verbs/whip.ts` wiring — call classifier per tick, write
@@ -188,17 +253,22 @@ incoming strikes and never escalates. Reversible.
       emits menu via `safeSendKeys` (verified via tmux capture-pane).
 - [ ] (follow-up) Lead A-reply with payload triggers expected
       dispatch.
-- [ ] (follow-up) Lead D-reply tracked; missed ETA strikes; 3 strikes
-      → T2 complaint filed.
+- [x] (T2) 3 strikes → complaint filed via `maybeEscalateStrikes`;
+      dedup within 1h bumps existing row; strike record resets after.
+- [ ] (follow-up t-5d85dddb) Lead D-reply tracked; missed ETA strikes
+      → calls into `maybeEscalateStrikes` with `etaLiedSymptomHash`.
 - [ ] (follow-up) Kill-switch (`crons.whipVelocityGateEnabled=false`)
       flips off cleanly.
 
 ## Refs
 
-- `src/core/velocity.ts` (this commit)
-- `src/core/whip-strikes.ts` (this commit)
-- `src/schema/team.ts` (this commit)
-- Sibling Task t-e91fec98 (whip→superdoctor escalation via complaints)
+- `src/core/velocity.ts` (T1)
+- `src/core/whip-strikes.ts` (T1 kernel + T2 symptom-hash extensions)
+- `src/schema/team.ts` (T1)
+- `src/core/complaints.ts` (T2)
+- `src/core/whip-escalation.ts` (T2)
+- `src/core/repositories/complaints-repo.ts` (T2 — `findOpenBySourceId` + `bumpSourceCount`)
+- Sibling Task t-e91fec98 (T2 — this commit's escalation surface)
 - ADR-062 §Rollback (`crons.laneTickEnabled` precedent for the
   fleet-consistent kill-switch shape)
 - CLAUDE.md "0-commit overnight excuses → Reddit receipts" — the
