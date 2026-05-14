@@ -582,3 +582,36 @@ export async function findCronOrphans(opts: FindCronOrphansOpts): Promise<CronBl
   return out;
 }
 
+/**
+ * t-e1247699: one-shot recovery for bun-test cron leaks. Reads the
+ * crontab once, identifies every block whose ATMUX_DIR is missing on
+ * disk, strips each via `stripBlockByTeam`, and rewrites atomically via
+ * `io.write`. Returns the list of pruned blocks for the verb to surface
+ * to the caller.
+ *
+ * Single-read TOCTOU window: detection + strip share the same `body`
+ * snapshot, so an orphan that materialized mid-pass isn't missed and a
+ * concurrent `atmux start` install isn't clobbered (the new block lands
+ * AFTER our `io.write`'s post-read; bash-level cron mutations don't
+ * overlap because `crontab <file>` is itself atomic).
+ *
+ * No write when there are no orphans — saves a needless `crontab <file>`
+ * cycle (and avoids touching mtime on healthy hosts).
+ */
+export async function pruneCronOrphans(opts: FindCronOrphansOpts): Promise<CronBlockTarget[]> {
+  const body = await opts.io.read();
+  if (body === null || body === "") return [];
+  const blocks = parseCronBlockTargets(body);
+  const orphans: CronBlockTarget[] = [];
+  let newBody = body;
+  for (const b of blocks) {
+    if (!(await opts.dirExists(b.atmuxDir))) {
+      orphans.push(b);
+      newBody = stripBlockByTeam(newBody, b.team);
+    }
+  }
+  if (orphans.length > 0 && newBody !== body) {
+    await opts.io.write(newBody);
+  }
+  return orphans;
+}

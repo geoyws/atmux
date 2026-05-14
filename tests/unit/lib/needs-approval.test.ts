@@ -465,3 +465,158 @@ describe("default impls", () => {
     expect(typeof k.listBlocked).toBe("function");
   });
 });
+
+// ---------- ADR-085 §Decision acceptance fixtures (t-3516d73a) ----------
+//
+// The block above tests features one-at-a-time (one status keyword per
+// case, one marker per case). These fixtures pin the literal acceptance
+// counts from t-3516d73a so a future regression that double-counts /
+// off-by-ones any bucket trips here even when the per-feature cases
+// stay green. Each fixture mirrors ADR-085 §Decision exactly.
+
+describe("ADR-085 acceptance — bucket A (4 ADR files → 2 entries)", () => {
+  test("2 proposed (one deferred) + 1 accepted + 1 wip → 2 entries", async () => {
+    const adrDir = `${ROOT}/docs/adr`;
+    const fs = fakeFs({
+      nowSec: NOW,
+      dirs: {
+        [adrDir]: ["010-a-proposed.md", "011-b-deferred.md", "012-c-accepted.md", "013-d-wip.md"],
+      },
+      files: {
+        [`${adrDir}/010-a-proposed.md`]: "# Live proposed\n\n**Status**: proposed\n",
+        [`${adrDir}/011-b-deferred.md`]:
+          "# Deferred proposed\n\n**Status**: proposed (deferred: discussion)\n",
+        [`${adrDir}/012-c-accepted.md`]: "# Accepted\n\n**Status**: accepted\n",
+        [`${adrDir}/013-d-wip.md`]: "# Wip\n\n**Status**: wip\n",
+      },
+    });
+    const rows = await scanProposedAdrs(ROOT, fs, () => NOW);
+    expect(rows.map((r) => r.id).sort()).toEqual(["010-a-proposed", "013-d-wip"]);
+    expect(rows.length).toBe(2);
+    // Deferred must NOT leak — accidentally surfacing it would re-enable
+    // the failure mode ADR-085 §Open questions OQ3 was carved out for.
+    expect(rows.some((r) => r.id.includes("deferred"))).toBe(false);
+  });
+});
+
+describe("ADR-085 acceptance — bucket B (6 headings → 1 entry)", () => {
+  // Build a heading at fixed clock-vs-age offset. `ageMin` is computed
+  // from (NOW - headingTimestamp) / 60; the heading's own MYT stamp is
+  // derived from headingEpoch. Tests fix clock at NOW so ageMin is
+  // deterministic.
+  function head(ageMin: number, subject: string, headingMarker?: string): string {
+    const ts = NOW - ageMin * 60;
+    const d = new Date((ts + 8 * 3600) * 1000); // MYT shift
+    const hh = String(d.getUTCHours()).padStart(2, "0");
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    const marker = headingMarker !== undefined ? ` ${headingMarker}` : "";
+    return `## ${hh}:${mm} MYT — ${subject}${marker}`;
+  }
+
+  test("2 inline-marked + 2 body-marked + 1 stale-31min + 1 fresh-29min → 1 entry (only 31min)", async () => {
+    const inbox = `${ROOT}/.atmux/driver-inbox.md`;
+    const body = [
+      // Two with inline marker on the heading itself
+      head(45, "ask-1-inline", "✅"),
+      "  (already triaged)\n",
+      head(60, "ask-2-inline", "📤"),
+      "  (already dispatched)\n",
+      // Two with marker in section body (within first 20 lines)
+      head(50, "ask-3-body-marked"),
+      "⏳ pending in flight\n",
+      head(55, "ask-4-body-marked"),
+      "❌ rejected — see lead-outbox.md\n",
+      // One unmarked stale (31min)
+      head(31, "ask-5-untriaged-stale"),
+      "body line one\n",
+      // One unmarked fresh (29min, under threshold)
+      head(29, "ask-6-untriaged-fresh"),
+      "body line one\n",
+    ].join("\n");
+    const fs = fakeFs({ nowSec: NOW, files: { [inbox]: body } });
+    const rows = await scanInboxAsks(ROOT, fs, () => NOW);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.subject).toContain("ask-5-untriaged-stale");
+    expect(rows[0]?.ageMin).toBe(31);
+  });
+
+  test("clock fixed at 12:00 MYT → ageMin computed correctly from heading timestamp", async () => {
+    // 12:00 MYT == 04:00 UTC. Anchor NOW at that exact second.
+    const noonMyt = Date.UTC(2026, 4, 14, 4, 0, 0) / 1000; // 2026-05-14 12:00 MYT
+    // Heading at 11:00 MYT (60min ago) — past the 30-min threshold.
+    const inbox = `${ROOT}/.atmux/driver-inbox.md`;
+    const body = `## 11:00 MYT — old untriaged ask\nbody\n`;
+    const fs = fakeFs({ nowSec: noonMyt, files: { [inbox]: body } });
+    const rows = await scanInboxAsks(ROOT, fs, () => noonMyt);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.ageMin).toBe(60);
+  });
+});
+
+describe("ADR-085 acceptance — bucket C (5 tasks → 2 entries)", () => {
+  test("2 blocked >2h + 1 blocked <2h + 2 done → 2 entries", async () => {
+    const kanban = fakeKanban([
+      // 2 blocked >2h (3h and 4h)
+      {
+        id: "t-blocked-3h",
+        subject: "long-blocked-3h",
+        status: "blocked",
+        claimedAt: NOW - 3 * 3600,
+      } as KanbanTask,
+      {
+        id: "t-blocked-4h",
+        subject: "long-blocked-4h",
+        status: "blocked",
+        claimedAt: NOW - 4 * 3600,
+      } as KanbanTask,
+      // 1 blocked <2h (1h, under threshold)
+      {
+        id: "t-blocked-1h",
+        subject: "fresh-blocked",
+        status: "blocked",
+        claimedAt: NOW - 1 * 3600,
+      } as KanbanTask,
+      // 2 done (excluded by listBlocked status filter)
+      {
+        id: "t-done-1",
+        subject: "shipped",
+        status: "done",
+        claimedAt: NOW - 5 * 3600,
+      } as KanbanTask,
+      {
+        id: "t-done-2",
+        subject: "shipped-2",
+        status: "done",
+        claimedAt: NOW - 6 * 3600,
+      } as KanbanTask,
+    ]);
+    const rows = await scanBlockedTasks(ROOT, kanban, () => NOW);
+    expect(rows.map((r) => r.id).sort()).toEqual(["t-blocked-3h", "t-blocked-4h"]);
+    expect(rows.length).toBe(2);
+  });
+});
+
+// needsApprovalEnabled=false suppression — verified at the CALLER (whip.ts
+// gates `runNeedsApprovalCheck` on `config.needsApprovalEnabled`). The lib
+// has no awareness of the team config; testing the gate at the lib level
+// would test nothing meaningful. The e2e in tests/e2e/whip-needs-approval
+// covers the integrated path; the unit-level assertion is that the lib
+// always scans when invoked — there's no escape hatch inside the lib.
+describe("ADR-085 acceptance — needsApprovalEnabled gate is caller-side", () => {
+  test("lib always returns a non-null report regardless of config", async () => {
+    // Sanity: even on a completely empty seed, scanNeedsApproval returns
+    // {adr: [], inbox: [], kanban: [], total: 0} — not null/undefined.
+    // The caller (whip.ts) is responsible for early-return on the
+    // needsApprovalEnabled flag; the lib stays config-unaware.
+    const fs = fakeFs({ nowSec: NOW });
+    const kanban = fakeKanban([]);
+    const report = await scanNeedsApproval({
+      fs,
+      kanban,
+      clock: () => NOW,
+      projectRoot: ROOT,
+    });
+    expect(report).not.toBeNull();
+    expect(report.total).toBe(0);
+  });
+});

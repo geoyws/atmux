@@ -135,11 +135,17 @@ beforeAll(async () => {
 
   // Pin envs so verbs resolve to OUR atmux dir + don't think they're
   // already inside tmux (which would short-circuit attach paths).
-  for (const k of ["ATMUX_DIR", "ATMUX_TEAM_DIR", "ATMUX_SESSION", "TMUX"]) {
+  // t-e1247699: ATMUX_NO_CRON=1 pinned alongside the resolve envs — start()
+  // auto-installs cron (start.ts §11), and `afterAll`'s rm-rf only reaps
+  // the on-disk fixture, leaving 4 cron lines per run pointing at the now-
+  // deleted /tmp/atmux-lifecycle-XXXXXX/. Mirrors stop.test.ts:35-36 +
+  // tests/helpers/setup.bash:47 (bash sandbox parity).
+  for (const k of ["ATMUX_DIR", "ATMUX_TEAM_DIR", "ATMUX_SESSION", "TMUX", "ATMUX_NO_CRON"]) {
     priorEnv[k] = process.env[k];
   }
   process.env.ATMUX_DIR = atmuxDir;
   process.env.ATMUX_TEAM_DIR = teamDir;
+  process.env.ATMUX_NO_CRON = "1";
   delete process.env.ATMUX_SESSION;
   delete process.env.TMUX;
 
