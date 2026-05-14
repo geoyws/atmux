@@ -46,6 +46,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **ADR-140 — cheap-model-first principle (Cursor composer-2-fast martinet; medic event-driven)** ([docs/adr/140-cheap-model-first.md](docs/adr/140-cheap-model-first.md)).
+  ADR text only (T1 of EPIC `t-83dcef6b`). Principle: Claude (Opus
+  xhigh) stays for strategic + code-gen + review work; Cursor
+  composer-2-fast (via martinet, Tier 2 cage per ADR-058) handles
+  ALL mechanical execution loops + uncomfortable-but-routine
+  actions. Codifies the operator's 4-message arc on 2026-05-14
+  (MiniMax + Kimi explicitly rejected — capability bar too low;
+  Cursor composer-2-fast is the production-grade tradeoff).
+  Includes canonical roles+responsibilities matrix (superdriver,
+  medic, martinet, team-lead, planner/reviewer/workers, gitter)
+  and a back-of-envelope token-burn projection: ~440k Claude
+  tokens/hour mechanical → ~60k Claude + ~137k Cursor tokens/hour
+  post-migration (~65–70% Claude-burn replaced by Cursor cost).
+  Rotation authority split: routine triggers (context >400k,
+  refusal-pattern, dormancy-window) → martinet; emergency
+  triggers (broken claude proc, planner misalignment) → medic
+  + lead. T2–T4 (ADR annotations, medic refactor, martinet
+  NudgeAction enum extension) remain open under the EPIC —
+  recommend planner-near decomposes into separate kanban Tasks
+  so they're claimable. Kanban Task `t-83dcef6b` (EPIC; T1 done
+  this commit).
 - **ADR-138 — verified send-keys (verify-and-retry pattern)** ([docs/adr/138-verified-send-keys.md](docs/adr/138-verified-send-keys.md)).
   ADR text only (T1 of EPIC `t-5df48a74`). Decision: new
   `safeSendKeysWithVerify` helper in `src/abstractions/tmux.ts` —
