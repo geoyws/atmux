@@ -4,6 +4,10 @@
 **Date**: 2026-05-08
 **Driver-ref**: 2026-05-08 hax session — operator asked "can the whip ask a superdoctor (sitting beside the superdriver) whether everything seems normal in atmuxland, and if not fix it, find out why, and make sure it doesn't happen again?" Existing surface (ADR-019 `atmux doctor` verb, ADR-040 whip watchdog) handles **detection**; nothing today owns the **diagnosis → systemic-fix** loop. atmux teams have died from causes that recur (e.g. a member running e2e tests inside the team's own tmux cage instead of an isolated cage and trampling the live stack) and the recurrence is the bug, not the death.
 
+> ⚠️ **RENAMED 2026-05-14**: this role is now called **medic** per [ADR-133](133-medic-rename.md).
+> Supersedes naming only — design decisions in this ADR remain canonical for the role.
+> Original term "superdoctor" retained in this file for historical accuracy.
+
 ## Context
 
 Three pieces of the self-healing puzzle already exist:
