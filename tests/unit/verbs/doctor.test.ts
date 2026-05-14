@@ -27,6 +27,7 @@ import {
   checkInboxMarks,
   checkMemberForcePushRecent,
   checkOrphanSessions,
+  checkSendKeysFailureRecent,
   checkPhantomInboxes,
   checkStateDir,
   checkSubmoduleIntegrity,
@@ -2869,5 +2870,168 @@ describe("checkMemberForcePushRecent", () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
+  });
+});
+
+// ---------- ADR-138: checkSendKeysFailureRecent ----------
+
+describe("checkSendKeysFailureRecent", () => {
+  // Anchor every test to 2026-05-15 10:00 MYT (== 2026-05-15T02:00:00Z).
+  // The probe's `now` injection is offset from this constant so the
+  // test stays readable regardless of JS Date math quirks.
+  const BASE_EPOCH = Math.floor(Date.parse("2026-05-15T10:00:00+08:00") / 1000);
+
+  let logDir: string;
+  let logPath: string;
+
+  beforeEach(async () => {
+    logDir = await mkdtemp(join(tmpdir(), "atmux-sk-log-"));
+    logPath = join(logDir, "send-keys-failures.log");
+  });
+
+  afterEach(async () => {
+    await rm(logDir, { recursive: true, force: true });
+  });
+
+  /** Compose the canonical entry shape that `writeEscalationLog`
+   *  produces in `src/core/safe-send.ts`. Tests pin every probe
+   *  assertion to this exact format so a future log-format tweak
+   *  surfaces here. */
+  function entry(ts: string, target: string): string {
+    return (
+      `[${ts}] target=${target} keys='hello\\n' attempts=2 timeout=3000ms\n` +
+      `preCapture: line1\nline2\nline3\nline4\nline5\n` +
+      `postCapture: line1\nline2\nline3\nline4\nline5\n` +
+      `---\n`
+    );
+  }
+
+  test("missing log file → empty rows", async () => {
+    const rows = await checkSendKeysFailureRecent({ logPath: `${logPath}-missing` });
+    expect(rows).toEqual([]);
+  });
+
+  test("empty log → empty rows", async () => {
+    await writeFile(logPath, "", "utf8");
+    const rows = await checkSendKeysFailureRecent({ logPath });
+    expect(rows).toEqual([]);
+  });
+
+  test("entry within window → 1 YELLOW row, count + target in detail", async () => {
+    // 2026-05-15 10:00 MYT == 2026-05-15T10:00+08:00 == epoch BASE_EPOCH
+    await writeFile(logPath, entry("10:00 MYT 2026-05-15", "atmux-demo:🛠️worker1"), "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 1800, // 30min later
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "yellow",
+      label: "send-keys-failure-recent",
+    });
+    expect(rows[0]?.detail).toContain("1 send-keys failure in last hour");
+    expect(rows[0]?.detail).toContain("atmux-demo:🛠️worker1");
+    expect(rows[0]?.hint).toContain("ADR-138");
+  });
+
+  test("entry older than window → empty rows", async () => {
+    // entry at 10:00 MYT; probe runs 2h later (7200s)
+    await writeFile(logPath, entry("10:00 MYT 2026-05-15", "atmux-demo:tgt"), "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 7200,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("multiple entries within window → ONE row with count = N", async () => {
+    const body =
+      entry("09:30 MYT 2026-05-15", "tgt-a") +
+      entry("09:45 MYT 2026-05-15", "tgt-b") +
+      entry("10:00 MYT 2026-05-15", "tgt-c");
+    await writeFile(logPath, body, "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 600, // 10min after the latest entry
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("3 send-keys failures");
+    // Most recent target should be the latest entry's target.
+    expect(rows[0]?.detail).toContain("tgt-c");
+  });
+
+  test("mixed in-window + out-of-window → row counts only in-window entries", async () => {
+    const body =
+      entry("08:00 MYT 2026-05-15", "stale-tgt") + // 2h+ before probe
+      entry("10:00 MYT 2026-05-15", "fresh-tgt");
+    await writeFile(logPath, body, "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 600,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("1 send-keys failure");
+    expect(rows[0]?.detail).toContain("fresh-tgt");
+    expect(rows[0]?.detail).not.toContain("stale-tgt");
+  });
+
+  test("custom window (windowSec=60) tightens the cutoff", async () => {
+    // Entry was 10min ago; with windowSec=60 (1min), it's stale.
+    await writeFile(logPath, entry("10:00 MYT 2026-05-15", "tgt"), "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 600,
+      windowSec: 60,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("malformed log (no timestamp anchors) → empty rows", async () => {
+    await writeFile(logPath, "garbage\nmore garbage\n---\n", "utf8");
+    const rows = await checkSendKeysFailureRecent({ logPath });
+    expect(rows).toEqual([]);
+  });
+
+  test("entry without target= field → row omits the target hint", async () => {
+    const malformed = `[10:00 MYT 2026-05-15] no-target-field keys='x' attempts=1 timeout=100ms\n`;
+    await writeFile(logPath, malformed, "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 600,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("1 send-keys failure in last hour");
+    expect(rows[0]?.detail).not.toContain("(last:");
+  });
+
+  test("home override resolves $HOME/.atmux/state/send-keys-failures.log", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-sk-home-"));
+    try {
+      const stateDir = join(home, ".atmux", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, "send-keys-failures.log"),
+        entry("10:00 MYT 2026-05-15", "home-tgt"),
+        "utf8",
+      );
+      const rows = await checkSendKeysFailureRecent({
+        home,
+        now: () => BASE_EPOCH + 600,
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.detail).toContain("home-tgt");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("empty home + no override → relative-path log read, returns empty when absent", async () => {
+    // Force the empty-home branch — the resolver falls back to the
+    // bare relative path `.atmux/state/send-keys-failures.log`. The
+    // test process's cwd doesn't have that file, so the probe collapses
+    // to `[]`. This pins the no-home branch separately from the
+    // present-home branch above.
+    const rows = await checkSendKeysFailureRecent({ home: "" });
+    expect(rows).toEqual([]);
   });
 });

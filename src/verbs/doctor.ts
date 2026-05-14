@@ -31,6 +31,7 @@ import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
+import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
@@ -2395,6 +2396,119 @@ export async function checkMemberForcePushRecent(
     }
   }
   return rows;
+}
+
+// ---------- ADR-138 T3: send-keys-failure-recent probe ----------
+
+export interface CheckSendKeysFailureRecentOpts {
+  /** Override the `$HOME` used to resolve the escalation log path.
+   *  Defaults to `process.env.HOME ?? ""`. Tests pin this so the probe
+   *  reads from a sandbox directory. */
+  home?: string;
+  /** Direct override of the escalation log path. Wins over `home` when
+   *  set. */
+  logPath?: string;
+  /** Epoch-seconds clock override (test injection). Defaults to
+   *  `Date.now() / 1000`. */
+  now?: () => number;
+  /** Time window in seconds. Default 3600 (1h). Entries older than
+   *  `now - windowSec` are not counted. */
+  windowSec?: number;
+}
+
+/**
+ * ADR-138 §"Doctor probe" — surfaces send-keys verification failures
+ * (entries appended to `~/.atmux/state/send-keys-failures.log` by
+ * `safeSendKeysWithVerify`'s escalation path) within the last hour
+ * as a single YELLOW row.
+ *
+ * Warn-class because:
+ *   - The escalation log is post-hoc evidence; the calling verb has
+ *     already decided "this send-keys didn't verify" and returned its
+ *     own non-zero or `success: false`.
+ *   - The fix is operator-side (investigate stuck member, check budget,
+ *     rotate-lead, etc.); the probe's role is surfacing, not blocking.
+ *
+ * Returns `[]` when the log is absent, empty, or has zero entries
+ * within the window. Log-parse failures (corrupt file, permission
+ * error, decode error) collapse to `[]` — the team's own doctor
+ * surface must stay green even when this probe can't run. The log is
+ * append-only + operator-managed; the probe doesn't truncate or
+ * rewrite.
+ *
+ * Log entry shape (per `writeEscalationLog` in `src/core/safe-send.ts`):
+ *
+ *   [HH:MM MYT YYYY-MM-DD] target=<tgt> keys='<keys>' attempts=N timeout=Nms
+ *   preCapture: <last 5 lines>
+ *   postCapture: <last 5 lines>
+ *   ---
+ *
+ * Parser anchors on the leading `[HH:MM MYT YYYY-MM-DD]` timestamp;
+ * every other line is body and ignored. MYT is `+08:00` per global
+ * CLAUDE.md §Timezone — the timestamp is parsed as a literal
+ * `YYYY-MM-DDTHH:MM:00+08:00` ISO string.
+ */
+export async function checkSendKeysFailureRecent(
+  opts: CheckSendKeysFailureRecentOpts = {},
+): Promise<DoctorRow[]> {
+  const nowFn = opts.now ?? ((): number => Math.floor(Date.now() / 1000));
+  const windowSec = opts.windowSec ?? 3600;
+  const now = nowFn();
+  const cutoff = now - windowSec;
+
+  const logPath =
+    opts.logPath ??
+    (() => {
+      const home = opts.home ?? process.env.HOME ?? "";
+      return home === ""
+        ? DEFAULT_SEND_KEYS_FAILURES_LOG_REL
+        : `${home}/${DEFAULT_SEND_KEYS_FAILURES_LOG_REL}`;
+    })();
+
+  const text = await readTextOrNull(logPath).catch(() => null);
+  if (text === null || text.length === 0) return [];
+
+  // Anchor on `[HH:MM MYT YYYY-MM-DD]` at line start. The MYT marker
+  // disambiguates the timestamp shape from any timestamps that might
+  // appear inside the `preCapture` / `postCapture` body lines.
+  const tsRe = /^\[(\d{2}):(\d{2}) MYT (\d{4}-\d{2}-\d{2})\]/gm;
+  let recentCount = 0;
+  let mostRecentTs = 0;
+  let mostRecentTarget = "";
+  let m: RegExpExecArray | null = tsRe.exec(text);
+  while (m !== null) {
+    const [, hh, mm, ymd] = m;
+    const epoch = Math.floor(
+      Date.parse(`${ymd}T${hh}:${mm}:00+08:00`) / 1000,
+    );
+    if (Number.isFinite(epoch) && epoch >= cutoff && epoch <= now) {
+      recentCount += 1;
+      if (epoch > mostRecentTs) {
+        mostRecentTs = epoch;
+        // Pull the `target=<tgt>` from the rest of the matched line for
+        // the hint. `target` field is always present on entries written
+        // by `writeEscalationLog` — defensive null on a malformed line.
+        const lineEnd = text.indexOf("\n", m.index);
+        const rest = text.slice(m.index, lineEnd === -1 ? text.length : lineEnd);
+        const tm = /target=(\S+)/.exec(rest);
+        mostRecentTarget = tm?.[1] ?? "";
+      }
+    }
+    m = tsRe.exec(text);
+  }
+
+  if (recentCount === 0) return [];
+
+  const ageMin = Math.max(1, Math.floor((now - mostRecentTs) / 60));
+  const targetHint = mostRecentTarget.length > 0 ? ` (last: ${mostRecentTarget})` : "";
+  return [
+    {
+      status: "yellow",
+      label: "send-keys-failure-recent",
+      detail: `${recentCount} send-keys failure${recentCount === 1 ? "" : "s"} in last hour${targetHint} — most recent ${ageMin}min ago`,
+      hint: "send-keys failed N times in last hour; check ADR-138 escalation log at ~/.atmux/state/send-keys-failures.log",
+    },
+  ];
 }
 
 /**
