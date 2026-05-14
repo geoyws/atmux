@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > by a follow-up docs sweep — current cycle covers the ADR-076 / 0.5.0 cutover
 > only (see body of `atmux task show t-41ddf1e6`).
 
+### 📝 Added — Whip §2.5 needs-approval surfacing (ADR-085, accepted)
+
+- **`needs-approval` scan** in every whip tick — surfaces three approval-debt buckets that previously aged silently: proposed ADRs that shipped impl but never had Status flipped, untriaged driver-inbox asks (>30min since the heading timestamp), and long-blocked kanban tasks (>2h since most recent transition). Live-not-cached per ADR-068 §HC#4.
+- **`atmux status` gains a NEEDS APPROVAL row** — text output shows per-bucket counts (`3 ADRs / 1 inbox / 0 kanban`); collapses to `✅ clear` when all buckets empty. `--json` snapshot grows a `needsApproval` field with per-bucket structured lists for downstream tooling (atmux-dashboard, medic loop, cockpit pulse).
+- **New Discord `[whip-needs-approval]` template** — verdict-first format, dedup-keyed on `<team>:<bucket>:<id>` with 30min window so the scan can stay live without the ping spamming.
+- **New `(deferred: <reason>)` ADR-status annotation convention** — an ADR intentionally held in `proposed` (waiting on an upstream dep, parallel decision, or operator review window) carries the `Status: proposed (deferred: <reason>)` annotation to suppress the per-tick ping. Bare `Status: proposed` continues to ping; the scanner reads the annotation literally. Convention-only — no lint gate today; if rot recurs, formalize as a pre-commit check.
+- **Opt-out**: `team.json::whip.needsApprovalEnabled = false` disables the surfacing pipeline for a team. Default: `true`.
+- **Operator reference doc**: new `docs/whip-needs-approval.md`.
+
 ### 🔁 Renamed — cockpit role `superdoctor` → `medic` (ADR-133)
 
 - **Role rename** — the cockpit-tier self-healing role introduced in ADR-077 is renamed `superdoctor` → `medic`. Motivation: the existing `atmux doctor` verb caused operator confusion ("is doctor the verb or the cockpit process?"), and a single-word identifier reads cleaner in log lines + Discord pings + brief templates. Path B (`medic`, collision-free) picked over Path A (`doctor`, accept collision).

@@ -26,6 +26,8 @@ This file is the **canonical agent contract** for anyone running atmux on a code
 
 4. **ADR write-flow.** New decisions get a new ADR before code lands. ADRs follow the existing numbering convention (zero-padded three-digit, monotonic). A new ADR is "proposed" until it has reviewer signoff or an explicit driver/lead `decisions-add` event; only then does it become "accepted". Accepted ADRs are referenced by code via comment links (`// per ADR-052 §B`).
 
+   **Deferred-pending annotation (ADR-085 §2.5 interaction).** An ADR whose acceptance is intentionally held — pending an upstream dep, a parallel decision, an operator review window — MUST carry the annotation `Status: proposed (deferred: <one-line reason>)` rather than bare `Status: proposed`. ADR-085's `needs-approval` whip surfacer treats bare `proposed` as "ping every tick"; the `(deferred: …)` annotation signals "intentionally not-yet-accepted, don't surface". Convention-only — no lint gate today; if rot recurs, formalize as a pre-commit check (out-of-scope per Task t-968416aa).
+
 ## Where to look first
 
 When unsure about a topic, the lookup order is:
