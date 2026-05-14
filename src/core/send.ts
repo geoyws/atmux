@@ -48,8 +48,15 @@ import { appendText, ensureDir } from "../abstractions/fs.ts";
 import { nowIso } from "../abstractions/time.ts";
 import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
 import { classifyPaneState, logsDir, type PaneStateSnapshot } from "./common.ts";
-import { submitAfterPaste } from "./paste-submit.ts";
-import { type SafePreflightResult, safePreflight } from "./safe-send.ts";
+import { PASTE_SUBMIT_SETTLE_FLOOR_MS, submitAfterPaste } from "./paste-submit.ts";
+import {
+  type AppendLogFn,
+  type PaneVerifier,
+  type SafePreflightResult,
+  type SafeSendKeysWithVerifyResult,
+  safePreflight,
+  safeSendKeysWithVerify,
+} from "./safe-send.ts";
 
 // ---------- Public API ----------
 
@@ -82,6 +89,48 @@ export interface SendOpts {
    * through the same hook so a single override silences both.
    */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * ADR-138 T3b (option a — compose): when set, the C-m submit step
+   * routes through `safeSendKeysWithVerify` with this verifier instead
+   * of the bare `submitAfterPaste`. Verify-and-retry layer ADDS
+   * observability + escalation logging on send-keys verification
+   * failure WITHOUT removing the existing post-send heuristic
+   * (`looksLikeNotConsumed` in step 6 of `sendToMember`) — the two
+   * verifications coexist as defense-in-depth.
+   *
+   * Default (`undefined`): the existing `submitAfterPaste` path runs
+   * unchanged; behavior identical to pre-T3b. Verbs opt in per-callsite
+   * by passing `composerEmpty()` / `agentThinking()` / etc. as the
+   * task body (t-63d0b342) prescribes.
+   *
+   * Retries are pinned to 0 internally — re-firing C-m on a non-empty
+   * composer would risk double-submit (ADR-138 §"Why not blanket-3x
+   * Enter"). The verifier-fail path escalates (writes the escalation
+   * log) without re-send.
+   */
+  expectVerifier?: PaneVerifier;
+  /**
+   * Verify timeout budget (ms). Default 3000. Only honored when
+   * {@link expectVerifier} is set. Sets the maximum wait for the
+   * verifier to return true after the C-m submit. */
+  verifyTimeoutMs?: number;
+  /**
+   * Override the escalation log path (test injection). When set, the
+   * verify-fail path writes to this path instead of resolving via
+   * `$HOME/.atmux/state/send-keys-failures.log`. Only honored when
+   * {@link expectVerifier} is set. */
+  escalationLogPath?: string;
+  /**
+   * Override the appendFile sink for the escalation log (test
+   * injection). Defaults to a real `fs/promises.appendFile` inside
+   * `safeSendKeysWithVerify`. Only honored when
+   * {@link expectVerifier} is set. */
+  appendLog?: AppendLogFn;
+  /**
+   * Override `$HOME` for escalation-log path resolution (test
+   * injection). Only honored when {@link expectVerifier} is set AND
+   * {@link escalationLogPath} is not. */
+  home?: string;
 }
 
 /**
@@ -137,6 +186,14 @@ export interface SendOutcome {
    * so our paste doesn't land inside the modal's input.
    */
   preflight: SafePreflightResult;
+  /**
+   * ADR-138 T3b: post-submit verify result. Populated only when
+   * {@link SendOpts.expectVerifier} was set; `undefined` on the legacy
+   * `submitAfterPaste` path. Callers can inspect `verifyResult.success`
+   * to gate per-callsite recovery (e.g. lane-tick records a skip-reason
+   * when the agent never showed the post-submit composer-empty state).
+   */
+  verifyResult?: SafeSendKeysWithVerifyResult;
 }
 
 /**
@@ -223,15 +280,70 @@ export async function sendToMember(
     return { kind: "queued", preSnapshot, preWarn, preflight };
   }
 
-  // 4. Settle + C-m submit. ADR-081 §A: the bracketed-paste envelope
-  //    that wraps `paste-buffer -d` eats a trailing Enter as a newline
-  //    inside the pasted message; `C-m` (literal carriage return)
-  //    bypasses that interpretation. `submitAfterPaste` clamps below-
+  // 4. Settle + C-m submit.
+  //
+  // Two paths depending on `expectVerifier`:
+  //
+  //   (a) ADR-138 T3b compose path — wraps the C-m submit in
+  //       `safeSendKeysWithVerify` for post-send verification +
+  //       escalation logging. Retries pinned to 0 (re-firing C-m
+  //       on non-empty composer is exactly the failure mode ADR-138
+  //       §"Why not blanket-3x Enter" enumerates). The pre-C-m
+  //       settle delay still runs (PASTE_SUBMIT_SETTLE_FLOOR_MS
+  //       floor honored), just inline before calling the verify
+  //       wrapper.
+  //
+  //   (b) Legacy path — `submitAfterPaste` does the settle + C-m
+  //       send unchanged. Zero observable change for callsites
+  //       that don't opt in.
+  //
+  // In both paths the post-send `looksLikeNotConsumed` heuristic (step
+  // 6) runs on top — defense-in-depth, NOT removed by T3b. ADR-081 §A:
+  // the bracketed-paste envelope that wraps `paste-buffer -d` eats a
+  // trailing Enter as a newline inside the pasted message; `C-m`
+  // (literal carriage return) bypasses that interpretation.
+  // `submitAfterPaste` clamps below-
   //    floor settle values up to PASTE_SUBMIT_SETTLE_FLOOR_MS (500ms).
-  await submitAfterPaste(tmux, sendTarget, {
-    settleMs: preSubmitDelayMs,
-    sleep,
-  });
+  let verifyResult: SafeSendKeysWithVerifyResult | undefined;
+  if (opts?.expectVerifier !== undefined) {
+    // (a) Verify-and-escalate path. Settle floor clamping mirrors the
+    //     legacy `submitAfterPaste` ladder so the bracketed-paste-mode
+    //     timing invariants stay intact regardless of which path runs.
+    const settleRequested = preSubmitDelayMs;
+    const settle =
+      settleRequested >= PASTE_SUBMIT_SETTLE_FLOOR_MS
+        ? settleRequested
+        : PASTE_SUBMIT_SETTLE_FLOOR_MS;
+    await sleep(settle);
+    const verifyOpts: Parameters<typeof safeSendKeysWithVerify>[0] = {
+      target: target.target,
+      keys: "C-m",
+      expectVerifier: opts.expectVerifier,
+      // Retries pinned to 0 — re-firing C-m on a non-empty composer
+      // is the ADR-138 §"Why not blanket-3x Enter" failure mode.
+      retries: 0,
+      timeoutMs: opts.verifyTimeoutMs ?? 3000,
+      capture: (t) => tmux.pane.capturePane({ target: t, start: -postLines }),
+      sendKeys: async (t, keys) => {
+        await tmux.pane.sendKeys({ target: sendTarget, keys, enter: false });
+        // `t` is the same `target.target` we pass via `target` above;
+        // serializer needs it via the `sendTarget` discriminated union
+        // (compile-time driver-pane gate), not the raw string param.
+        void t;
+      },
+      sleep,
+    };
+    if (opts.escalationLogPath !== undefined) verifyOpts.escalationLogPath = opts.escalationLogPath;
+    if (opts.appendLog !== undefined) verifyOpts.appendLog = opts.appendLog;
+    if (opts.home !== undefined) verifyOpts.home = opts.home;
+    verifyResult = await safeSendKeysWithVerify(verifyOpts);
+  } else {
+    // (b) Legacy path. Behavior identical to pre-T3b — bash-faithful.
+    await submitAfterPaste(tmux, sendTarget, {
+      settleMs: preSubmitDelayMs,
+      sleep,
+    });
+  }
 
   // 5. Append to the per-member log (lib/send.sh:136-145).
   await appendSendLog(atmuxDir, target.member, msg);
@@ -244,11 +356,15 @@ export async function sendToMember(
       start: -postLines,
     });
     if (looksLikeNotConsumed(post, msg)) {
-      return { kind: "warn-not-consumed", preSnapshot, preWarn, preflight };
+      const outcome: SendOutcome = { kind: "warn-not-consumed", preSnapshot, preWarn, preflight };
+      if (verifyResult !== undefined) outcome.verifyResult = verifyResult;
+      return outcome;
     }
   }
 
-  return { kind: "ok", preSnapshot, preWarn, preflight };
+  const outcome: SendOutcome = { kind: "ok", preSnapshot, preWarn, preflight };
+  if (verifyResult !== undefined) outcome.verifyResult = verifyResult;
+  return outcome;
 }
 
 // ---------- Internals ----------
