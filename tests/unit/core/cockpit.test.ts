@@ -294,6 +294,101 @@ describe("loadCockpit — migration shim end-to-end", () => {
   });
 });
 
+// ---------- ADR-133: medic block resolution + deprecation warnings ----------
+//
+// Three resolution rules per ADR-133 §D2:
+//   1. Both `medic` + `superdoctor` blocks present → `medic` wins, warn.
+//   2. Only `superdoctor` block present → coerce to medic semantics, warn.
+//   3. Only `medic` block present → canonical path, NO warning.
+// These tests are the EPIC t-d25ff629 TR7 acceptance smoke for the
+// loader-side migration shim shipped in TR2.
+
+describe("ADR-133: medic block resolution + deprecation warnings", () => {
+  test("only `medic` block (canonical) — no deprecation warning", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      teams: [{ name: "x", root: "/x", enabled: true }],
+      medic: { enabled: true },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    // Both back-compat aliases populated for duck-typed consumers per
+    // ADR-133 §D2; canonical `medic` and legacy `superdoctor` mirror.
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    // ADR-133 deprecation-warn must NOT fire on the canonical path —
+    // the only acceptable warning here is the legacy `teams[]` warning
+    // (issued by the flat-teams branch) which is unrelated.
+    const adr133Warnings = warned.filter((w) => w.includes("ADR-133"));
+    expect(adr133Warnings).toHaveLength(0);
+  });
+
+  test("only `superdoctor` block (deprecated) — emits ADR-133 deprecation warning, still loads", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      teams: [{ name: "x", root: "/x", enabled: true }],
+      superdoctor: { enabled: true },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    // Coerces to medic semantics — both back-compat aliases populated.
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    const adr133Warnings = warned.filter((w) => w.includes("ADR-133"));
+    expect(adr133Warnings).toHaveLength(1);
+    expect(adr133Warnings[0]).toContain("deprecated 'superdoctor' block");
+    expect(adr133Warnings[0]).toContain("rename to 'medic'");
+  });
+
+  test("BOTH `medic` and `superdoctor` blocks — medic wins, warns about ignored superdoctor", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      teams: [{ name: "x", root: "/x", enabled: true }],
+      medic: { enabled: true },
+      // Legacy block carries a clashing `enabled: false` to assert
+      // medic actually wins (not coalesced).
+      superdoctor: { enabled: false },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    // Medic wins: `enabled: true` from the medic block, not `false`
+    // from the legacy superdoctor block.
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    const adr133Warnings = warned.filter((w) => w.includes("ADR-133"));
+    expect(adr133Warnings).toHaveLength(1);
+    expect(adr133Warnings[0]).toContain("BOTH 'medic' and 'superdoctor' blocks");
+    expect(adr133Warnings[0]).toContain("'superdoctor' block ignored");
+  });
+
+  test("neither block present — role disabled, no warning", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      teams: [{ name: "x", root: "/x", enabled: true }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic).toBeUndefined();
+    expect(cockpit.superdoctor).toBeUndefined();
+    const adr133Warnings = warned.filter((w) => w.includes("ADR-133"));
+    expect(adr133Warnings).toHaveLength(0);
+  });
+
+  test("medic block in new sessions[] shape — canonical, no warning", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        { type: "superdriver", name: "superdriver" },
+        { type: "medic", name: "medic", enabled: true },
+        { type: "team", name: "sopx", root: "/p/sopx" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    // Legacy mirror also populated so duck-typed callers reading
+    // `cockpit.superdoctor` keep working.
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    expect(warned).toHaveLength(0);
+  });
+});
+
 // ---------- ADR-089: walkSessions DFS ----------
 
 describe("walkSessions — depth-first traversal", () => {
