@@ -140,4 +140,39 @@ export const migrations: readonly Migration[] = [
       db.exec("CREATE INDEX idx_complaints_opened_at ON complaints(opened_at DESC)");
     },
   },
+  // ---------- v2 → v3 ----------
+  // ADR-131 §D4 / T3 (t-247b4b35): per-team kanban-hygiene fingerprint
+  // table. Idempotent upsert keyed on (task_id, fingerprint_class) so
+  // re-detection across ticks bumps last_seen_at without duplicating
+  // rows. Severity is stored as INTEGER for cheap `ORDER BY` in the
+  // drain loop (P0=0, P1=1, P3=3 — P2 reserved but unused). Drain-loop
+  // sort: severity ASC, detected_at ASC, then confidence-ladder filter.
+  {
+    from: 2,
+    to: 3,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE superdoctor_hygiene (
+					task_id TEXT NOT NULL,
+					fingerprint_class TEXT NOT NULL,
+					severity INTEGER NOT NULL,
+					confidence TEXT NOT NULL,
+					diagnosis TEXT NOT NULL,
+					detected_at INTEGER NOT NULL,
+					last_seen_at INTEGER NOT NULL,
+					attempted_fix TEXT,
+					fix_applied_at INTEGER,
+					fix_successful INTEGER,
+					PRIMARY KEY (task_id, fingerprint_class)
+				) STRICT;
+			`);
+      // Drain-loop hot path: list unfixed rows by severity/detected
+      // ordering. Partial index on `fix_applied_at IS NULL` keeps the
+      // index small (fixed rows live forever for audit but aren't
+      // re-scanned).
+      db.exec(
+        "CREATE INDEX idx_hygiene_unfixed ON superdoctor_hygiene(severity ASC, detected_at ASC) WHERE fix_applied_at IS NULL",
+      );
+    },
+  },
 ];

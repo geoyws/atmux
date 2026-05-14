@@ -664,6 +664,8 @@ atmux whip-resume-check [--no-discord]       # 1-min auto-resume cron precision 
 atmux watchdog [--no-discord]                # 2-min heartbeat staleness detector (ADR-057 §D6b)
               [--team-dir <dir>]
 atmux pulse [--json] [--ping] [--config <p>] # 5-min cockpit-wide verdict probe (ADR-086)
+atmux hygiene-tick [--team-dir <d>]          # superdoctor kanban-hygiene pass (ADR-131)
+              [--no-json]                    #   one auto-fix per tick via severity/confidence ladder
 
 🔧 Maintenance
 atmux rotate <member>
