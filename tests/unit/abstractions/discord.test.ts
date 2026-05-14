@@ -2031,3 +2031,88 @@ describe("renderSelfHealFailed", () => {
     expect(written).toContain("kill+respawn welcome-screen-gates");
   });
 });
+
+// ---------- t-351318dc — renderMetaWatchdog ----------
+
+describe("renderMetaWatchdog", () => {
+  test("renders meta-watchdog template with A/B menu + dormancy summary", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    // 2026-05-04 03:44 UTC → 11:44 MYT. Default at +30min → 12:14 MYT.
+    const whenMs = Date.UTC(2026, 4, 4, 3, 44, 0);
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 4,
+      dormantSec: 3 * 60 * 60, // 3h
+      oldestComplaintSummary: "cage cycled itself",
+      oldestComplaintTeam: "sopx",
+      oldestComplaintAgeSec: 5 * 60 * 60, // 5h
+      whenMs,
+    });
+    expect(out.template).toBe("meta-watchdog");
+    expect(out.team).toBe("atmux_teams");
+    expect(out.category).toBe("🚨");
+    expect(out.whenMs).toBe(whenMs);
+    const bullets = out.bullets ?? [];
+    expect(bullets).toHaveLength(6);
+    expect(bullets[0]).toContain("superdoctor dormant");
+    expect(bullets[0]).toContain("4 open complaints");
+    expect(bullets[0]).toContain("3h");
+    expect(bullets[1]).toContain("reply A/B");
+    expect(bullets[2]).toContain("A) check superdoctor pane");
+    expect(bullets[3]).toContain("B) restart superdoctor");
+    expect(bullets[4]).toContain("default at 12:14 MYT: A");
+    expect(bullets[5]).toContain("oldest: sopx");
+    expect(bullets[5]).toContain("cage cycled itself");
+    expect(bullets[5]).toContain("5h");
+  });
+
+  test("cold cockpit (dormantSec=null) reads as 'no attempts on record'", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 1,
+      dormantSec: null,
+      oldestComplaintSummary: "initial complaint",
+      oldestComplaintTeam: "atmux",
+      oldestComplaintAgeSec: 60 * 60,
+      whenMs: Date.UTC(2026, 4, 4, 3, 44, 0),
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[0]).toContain("no attempts on record");
+  });
+
+  test("whenMs defaults to now() when omitted", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const before = Date.now();
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 1,
+      dormantSec: 7200,
+      oldestComplaintSummary: "test",
+      oldestComplaintTeam: "test-team",
+      oldestComplaintAgeSec: 7200,
+    });
+    const after = Date.now();
+    expect(out.whenMs).toBeGreaterThanOrEqual(before);
+    expect(out.whenMs as number).toBeLessThanOrEqual(after);
+  });
+
+  test("send-time validation passes — every bullet carries an allowed prefix", async () => {
+    const { renderMetaWatchdog, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "meta-watchdog-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderMetaWatchdog({
+        cockpit: "atmux_teams",
+        openComplaints: 2,
+        dormantSec: 4 * 60 * 60,
+        oldestComplaintSummary: "stale cage",
+        oldestComplaintTeam: "sopx",
+        oldestComplaintAgeSec: 6 * 60 * 60,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[meta-watchdog]");
+    expect(written).toContain("superdoctor dormant");
+  });
+});

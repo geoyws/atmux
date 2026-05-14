@@ -116,7 +116,13 @@ export type DiscordTemplate =
   // and all failed. Renderer below (`renderSelfHealFailed`); dedup
   // state in state_kv (feature `superdoctor-self-heal-escalation`,
   // key = complaint_id) with a 1h re-fire window.
-  | "self-heal-failed";
+  | "self-heal-failed"
+  // t-351318dc: cockpit-pulse meta-watchdog. Fired when superdoctor
+  // itself looks dormant (≥1 open complaint anywhere AND no
+  // superdoctor_attempts.attempted_at row newer than 2h). Renderer
+  // below (`renderMetaWatchdog`); dedup state on `PulseState.metaWatchdog`
+  // (paged + dormantSinceSec) — one ping per dormancy streak.
+  | "meta-watchdog";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1685,6 +1691,75 @@ export function renderSelfHealFailed(opts: SelfHealFailedOpts): DiscordSendOpts 
   const out: DiscordSendOpts = {
     template: "self-heal-failed",
     team: opts.team,
+    category: "🚨",
+    bullets,
+    whenMs,
+  };
+  return out;
+}
+
+// ---------- t-351318dc — renderMetaWatchdog ----------
+
+export interface MetaWatchdogOpts {
+  /** Cockpit identifier — code-formatted in header. The probe is
+   *  cockpit-scoped (one superdoctor across all teams), so we surface
+   *  the cockpit name here rather than a team. */
+  cockpit: string;
+  /** Aggregate count of open complaints across every cockpit-enabled
+   *  team's complaint box. The dormancy gate is `> 0`. */
+  openComplaints: number;
+  /** Seconds since the latest `superdoctor_attempts.attempted_at` row
+   *  across every cockpit-enabled team. Null when no attempt rows
+   *  exist anywhere (cold cockpit — superdoctor never acted). */
+  dormantSec: number | null;
+  /** Brief one-line summary of the oldest open complaint — surfaces
+   *  in the footer so the operator can triage on phone without
+   *  opening the cockpit. Empty string when no complaints exist
+   *  (degenerate; shouldn't happen given the dormancy gate). */
+  oldestComplaintSummary: string;
+  /** Team that owns the oldest open complaint — also surfaced in the
+   *  footer. Empty string when no complaints. */
+  oldestComplaintTeam: string;
+  /** Age of the oldest open complaint, in seconds. */
+  oldestComplaintAgeSec: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[meta-watchdog]` Discord send opts per t-351318dc.
+ * Verdict-first, milestone-grade, ask-loudly per CLAUDE.md §Discord —
+ * one letter (A or B) from a phone resolves the page.
+ *
+ * Bullets:
+ *   - `🚨 superdoctor dormant — <N> open complaints, no attempts in <Hh:Mm>`
+ *     (or `... no attempts on record` when `dormantSec === null`)
+ *   - `🙏 reply A/B — one letter pivots cheaply`
+ *   - `🛠️ A) check superdoctor pane (cockpit w2) — likely saturated / wedged`
+ *   - `♻️ B) restart superdoctor — kill+respawn`
+ *   - `⏰ default at <HH:MM MYT>: A — cheap to pivot if you redirect`
+ *   - `📍 oldest: <team> · <summary> · <Hh:Mm> ago`
+ *
+ * Default deadline is +30min (same operator-window as
+ * `renderSelfHealFailed`) — phone-triage time without sitting on
+ * a broken cockpit overnight.
+ */
+export function renderMetaWatchdog(opts: MetaWatchdogOpts): DiscordSendOpts {
+  const whenMs = opts.whenMs ?? now();
+  const defaultAtMs = whenMs + 30 * 60 * 1000;
+  const dormantStr =
+    opts.dormantSec === null ? "no attempts on record" : `no attempts in ${formatDuration(opts.dormantSec * 1000)}`;
+  const oldestAge = formatDuration(opts.oldestComplaintAgeSec * 1000);
+  const bullets: string[] = [
+    `🚨 superdoctor dormant — ${opts.openComplaints} open complaints, ${dormantStr}`,
+    "🙏 reply A/B — one letter pivots cheaply",
+    "🛠️ A) check superdoctor pane (cockpit w2) — likely saturated / wedged",
+    "♻️ B) restart superdoctor — kill+respawn",
+    `⏰ default at ${formatMyt(defaultAtMs)}: A — cheap to pivot if you redirect`,
+    `📍 oldest: ${opts.oldestComplaintTeam} · ${opts.oldestComplaintSummary} · ${oldestAge} ago`,
+  ];
+  const out: DiscordSendOpts = {
+    template: "meta-watchdog",
+    team: opts.cockpit,
     category: "🚨",
     bullets,
     whenMs,

@@ -199,3 +199,36 @@ Medium — revert ladder const + schema field + `shouldFire` signature; restore 
 - ADR-077 — superdoctor; complementary at hourly LLM tier.
 - ADR-057 §D6b — watchdog; complementary at per-team heartbeat tier.
 - `CLAUDE.md` §Discord — verdict vocabulary + format this ADR implements.
+
+## Phase 2: Meta-watchdog (t-351318dc)
+
+### Context
+
+The `[pulse-verdict]` ping fires on per-team commit/doctor/inbox state. It is silent about **superdoctor's own liveness**. If superdoctor (the ADR-077 self-healing role) is saturated, wedged, or its claude process has crashed, the whip → complaints → superdoctor escalation chain silently breaks — complaints accumulate, no one acts.
+
+### Decision
+
+The same 5-min cron tick that emits `[pulse-verdict]` also probes the cockpit's aggregate superdoctor activity. Probe = walk every cockpit-enabled team's `state.db`, aggregate:
+
+- **Open complaints** — `SUM(complaints WHERE status='open')` across teams. The "is anyone unhappy" signal.
+- **Latest attempt epoch** — `MAX(superdoctor_attempts.attempted_at)` across teams (the ADR-077 §F6 table). The "is superdoctor acting at all" signal.
+
+**Dormancy gate**: `openComplaints > 0 AND (latestAttempt IS NULL OR now - latestAttempt >= 2h)`. A cold cockpit (no attempts on record) with open complaints qualifies — the cockpit never started healing.
+
+**Fire policy**: 1 page per dormancy streak. Streak ends when (a) a fresh attempt lands, or (b) all complaints clear. State row on `pulse-state.json::metaWatchdog = { paged, dormantSinceSec }`.
+
+**Discord template** `[meta-watchdog]` — verdict-first 2-button menu (A: check superdoctor pane, B: kill+respawn) with a 30-min default deadline.
+
+### Implementation
+
+- `src/core/superdoctor-activity.ts` — `gatherSuperdoctorActivity` (probe) + `decideMetaWatchdogFire` (pure policy).
+- `src/abstractions/discord.ts` — `renderMetaWatchdog` template.
+- `src/core/pulse-state.ts` — `PulseMetaWatchdogSchema` (optional field on root `PulseState`).
+- `src/verbs/pulse.ts` — gather + decide + emit, sequenced after the per-team verdict loop. Failure-isolated: probe exceptions don't crash the verdict pulse.
+
+### Refs
+
+- ADR-077 §F6 — the `superdoctor_attempts` table this probes.
+- ADR-077 §D5 — the `complaints` table this aggregates.
+- Phase 1 (this ADR's main body) — the cron + state.json shape this extends.
+- t-351318dc — kanban Task that authored the implementation.

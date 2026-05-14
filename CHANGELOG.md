@@ -46,6 +46,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **cockpit-pulse meta-watchdog — bypass-page George when superdoctor itself is dormant** ([ADR-086 §Phase 2](docs/adr/086-atmux-pulse.md)).
+  Extends the 5-min cockpit-pulse cron tick with an aggregate
+  superdoctor-liveness probe. Walks every cockpit-enabled team's
+  `state.db`, sums `complaints WHERE status='open'` and takes
+  `MAX(superdoctor_attempts.attempted_at)` across teams. When at
+  least one open complaint exists AND the latest attempt is ≥2h
+  stale (or there's never been an attempt), pulse emits a new
+  `[meta-watchdog]` Discord template — verdict-first 2-button menu
+  (A: check superdoctor pane, B: kill+respawn) with a 30-min
+  default deadline keyed off `whenMs`. Dedup is "1 page per
+  dormancy streak": `pulse-state.json::metaWatchdog = { paged,
+  dormantSinceSec }`; streak ends when a fresh attempt lands or all
+  complaints clear. Closes the "if superdoctor itself goes silent,
+  no one notices" gap left by ADR-077. (`src/core/superdoctor-activity.ts`,
+  `src/abstractions/discord.ts::renderMetaWatchdog`,
+  `src/core/pulse-state.ts::PulseMetaWatchdogSchema`,
+  `src/verbs/pulse.ts`.) Kanban Task `t-351318dc`.
 - **CONVENTION-059 — Generic indexed member naming** ([docs/CONVENTION-059-indexed-member-naming.md](docs/CONVENTION-059-indexed-member-naming.md)).
   Codifies the `<lane><index>` pattern (`fe0`, `fe1`, `be0`, `be1`,
   `ops0`, ...) for fungible team members — zero-indexed, no separator,

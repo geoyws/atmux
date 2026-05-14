@@ -108,4 +108,16 @@ export class SuperdoctorAttemptsRepo {
       .get(complaintId) as AttemptRow | null;
     return row === null ? null : attemptFromRow(row);
   }
+
+  /** Most recent attempted_at epoch across ALL complaints in this DB.
+   *  Returns null when the table is empty. Used by the cockpit-pulse
+   *  meta-watchdog (t-351318dc) to detect superdoctor dormancy — the
+   *  aggregate caller takes MAX across every cockpit-enabled team's
+   *  state.db to get the global latest activity. */
+  latestAttemptedAt(): number | null {
+    const r = this.db
+      .query("SELECT MAX(attempted_at) AS max FROM superdoctor_attempts")
+      .get() as { max: number | null } | null;
+    return r?.max ?? null;
+  }
 }

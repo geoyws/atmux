@@ -86,10 +86,26 @@ export const PulseTeamStateSchema = z
   .strict();
 export type PulseTeamState = z.infer<typeof PulseTeamStateSchema>;
 
+/** t-351318dc: meta-watchdog dedup row. One per cockpit. `paged` flips
+ *  true on the first dormancy page of a streak; resets to false when
+ *  dormancy clears (an attempt lands OR all complaints resolve).
+ *  `dormantSinceSec` carries the streak's start epoch — load-bearing
+ *  for "1 ping per streak" semantics across pulse ticks. */
+export const PulseMetaWatchdogSchema = z
+  .object({
+    paged: z.boolean(),
+    dormantSinceSec: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+export type PulseMetaWatchdogState = z.infer<typeof PulseMetaWatchdogSchema>;
+
 /** Top-level shape of `~/.atmux/state/pulse-state.json`. */
 export const PulseStateSchema = z
   .object({
     teams: z.record(z.string(), PulseTeamStateSchema),
+    /** t-351318dc: meta-watchdog dedup. Optional — absent on
+     *  pulse-state files frozen before this Task. */
+    metaWatchdog: PulseMetaWatchdogSchema.optional(),
   })
   .passthrough();
 export type PulseState = z.infer<typeof PulseStateSchema>;
