@@ -427,6 +427,13 @@ export const Team = z
      *  of the team's filesystem footprint. No-op when isolation is
      *  off. Use {@link DEFAULT_WORKTREE_ROOT} when reading. */
     worktreeRoot: z.string().optional(),
+    /** ADR-088: when `true` AND `worktreeIsolation === true`, `atmux start`
+     *  passes `initSubmodules: true` through to `provisionWorktree`, which
+     *  runs `git submodule update --init --recursive` inside each newly
+     *  created worktree. Best-effort: a non-zero exit warns to stderr but
+     *  does not abort provisioning. Default `false` — teams without
+     *  submodules pay zero cost; teams with submodules opt in explicitly. */
+    worktreeInitSubmodules: z.boolean().optional(),
     /** Single-session opt-in (default `false` per 2026-04-30 reversal,
      *  see templates/team.example.json comment). */
     singleSession: z.boolean().optional(),

@@ -41,6 +41,16 @@ Task board (kanban):
   task move <id> <todo|in-progress|done|blocked>
   task update <id> [--body <text>] [--deps <id,id>]
 
+Hierarchy (ADR-007):
+  epic add <title> [--body <text>] [--driver-ref <ref>]
+  epic list [--status <s>] [--json]
+  epic show <id> [--json]
+  epic advance <id> [--to <state>]    States: planning→ready→in-progress→review→done
+  story add <title> --epic <eid> [--ac <criteria>] [--body <text>]
+  story list --epic <eid> [--status <s>] [--json]
+  story show <id> [--json]
+  story advance <id> [--to <state>]   States: planning→ready→in-progress→testing→review→merging→done
+
 Dispatch + work:
   dispatch <member> <task-id> Push task to member's inbox + ping them
   inbox <member>              Show member's inbox

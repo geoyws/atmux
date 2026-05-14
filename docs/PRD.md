@@ -120,7 +120,7 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 |----------------------|---------------------------------------------------------------------------|
 | Lifecycle            | `up` / `init` / `start` / `stop` / `attach` / `status`                    |
 | Messaging            | `send` / `broadcast` / `tell-lead` / `reply` / `outbox`                   |
-| Task board           | `task add/list/show/move/assign/rm`                                       |
+| Task board           | `task add/list/show/move/assign/lane/priority/update/rm`                  |
 | Pull kanban          | `epic` / `story` / `claim` / `done` / `dispatch` / `inbox`                |
 | Cron-fired           | `whip` / `report` / `decisions digest` / `groom` / `whip-resume-check` (1-min, ADR-053 §D4) / `watchdog` (2-min, ADR-057 §D6b) / `pulse` (5-min, cockpit-wide, ADR-086) |
 | Eternal-improvement  | `improve` (Mode A user-invoked / Mode B idle-fallback) — ADR-052          |

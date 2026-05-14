@@ -15,16 +15,16 @@
 // - `crontab -l` returns empty  → emit `[]`, exit 0.
 // - All blocks live on disk     → emit `[]`, exit 0.
 //
-// Pure read-only verb — no `--quiet` / `--team-dir` flags; the team's
-// .atmux dir is irrelevant (the check operates on the host's entire
-// crontab, not just this team's block).
+// t-e1247699: `--prune` flag adds one-shot recovery — emits the same
+// JSON payload (so cockpit aggregators stay shape-agnostic) AND rewrites
+// the host crontab via `pruneCronOrphans`. Read-only default unchanged.
 
 import { statOrNull } from "../abstractions/fs.ts";
 import { defaultCrontabIO, type CrontabIO } from "../abstractions/crontab.ts";
-import { findCronOrphans } from "../core/cron.ts";
+import { findCronOrphans, pruneCronOrphans } from "../core/cron.ts";
 import { UsageError } from "../errors.ts";
 
-const USAGE = "atmux cron-orphans";
+const USAGE = "atmux cron-orphans [--prune]";
 
 export interface CronOrphansOpts {
   /** Defaults to `defaultCrontabIO()`. Tests inject a fake. */
@@ -35,24 +35,36 @@ export interface CronOrphansOpts {
   stdout?: (s: string) => void;
 }
 
-/** Pure parser — refuses any args (read-only verb with no flags). */
-export function parseCronOrphansArgs(argv: ReadonlyArray<string>): void {
+export interface ParsedCronOrphansArgs {
+  /** `--prune` — strip orphan blocks from the crontab atomically. */
+  prune: boolean;
+}
+
+/** Pure parser — accepts `--prune`; refuses everything else. */
+export function parseCronOrphansArgs(argv: ReadonlyArray<string>): ParsedCronOrphansArgs {
+  let prune = false;
   for (const a of argv) {
     if (a === undefined) continue;
+    if (a === "--prune") {
+      prune = true;
+      continue;
+    }
     if (a.startsWith("-")) {
       throw new UsageError({ what: `cron-orphans: unknown flag: ${a}`, hint: USAGE });
     }
     throw new UsageError({ what: `cron-orphans: unexpected arg: ${a}`, hint: USAGE });
   }
+  return { prune };
 }
 
 /** Public entry point. Always exit 0 — orphans are informational, not
- *  a hard failure (doctor uses yellow severity). */
+ *  a hard failure (doctor uses yellow severity). With `--prune`, also
+ *  rewrites the host crontab to remove every orphan block (t-e1247699). */
 export async function cronOrphans(
   argv: ReadonlyArray<string>,
   opts: CronOrphansOpts = {},
 ): Promise<number> {
-  parseCronOrphansArgs(argv);
+  const parsed = parseCronOrphansArgs(argv);
   const stdout = opts.stdout ?? ((s: string) => void process.stdout.write(s));
   const crontab = opts.crontab ?? defaultCrontabIO();
   const dirExists = opts.dirExists ?? defaultDirExists;
@@ -62,7 +74,9 @@ export async function cronOrphans(
     return 0;
   }
 
-  const orphans = await findCronOrphans({ io: crontab, dirExists });
+  const orphans = parsed.prune
+    ? await pruneCronOrphans({ io: crontab, dirExists })
+    : await findCronOrphans({ io: crontab, dirExists });
   // Bash JSON shape: `[{"team": "<n>", "atmux_dir": "<p>"}, ...]` — map
   // the internal camelCase `atmuxDir` to the snake_case key consumers
   // expect.

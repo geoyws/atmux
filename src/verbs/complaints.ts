@@ -36,15 +36,20 @@ import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { ComplaintsRepo } from "../core/repositories/complaints-repo.ts";
 import { UsageError } from "../errors.ts";
-import { COMPLAINT_STATUSES, type Complaint } from "../schema/complaints.ts";
+import {
+  COMPLAINT_SOURCE_KINDS,
+  COMPLAINT_STATUSES,
+  type Complaint,
+} from "../schema/complaints.ts";
 
 function stateDbPath(atmuxDir: string): string {
   return join(atmuxDir, "state.db");
 }
 
 const USAGE =
-  "atmux complaints {list [--status <s>|--all] [--json] | " +
-  "file --summary <s> [--root-cause <r>] [--ask <a>] [--by <id>] [--kind <k>] [--related-task <id>] | " +
+  "atmux complaints {list [--status <s>|--all] [--source-kind <k>] [--target-team <t>] [--json] | " +
+  "file --summary <s> [--root-cause <r>] [--ask <a>] [--by <id>] [--kind <k>] " +
+  "[--source-kind <k>] [--source-id <id>] [--target-team <t>] [--related-task <id>] | " +
   "resolve <id> [--status resolved|wontfix] [--by <id>] [--note <t>] [--related-task <id>]}";
 
 export interface ParsedComplaintsArgs {
@@ -60,6 +65,11 @@ export interface ParsedComplaintsArgs {
   by?: string;
   relatedTask?: string;
   kind?: string;
+  /** v3 / t-e5e5d576: structured provenance — used by both `file`
+   *  (writes the columns) and `list` (filters). */
+  sourceKind?: string;
+  sourceId?: string;
+  targetTeam?: string;
   /** resolve */
   id?: string;
   resolveStatus?: "resolved" | "wontfix";
@@ -138,6 +148,18 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
         out.kind = need("--kind");
         i += 2;
         break;
+      case "--source-kind":
+        out.sourceKind = need("--source-kind");
+        i += 2;
+        break;
+      case "--source-id":
+        out.sourceId = need("--source-id");
+        i += 2;
+        break;
+      case "--target-team":
+        out.targetTeam = need("--target-team");
+        i += 2;
+        break;
       case "--related-task":
         out.relatedTask = need("--related-task");
         i += 2;
@@ -172,6 +194,15 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
         hint: USAGE,
       });
     }
+    if (
+      out.sourceKind !== undefined &&
+      !COMPLAINT_SOURCE_KINDS.includes(out.sourceKind as never)
+    ) {
+      throw new UsageError({
+        what: `complaints file: --source-kind must be one of ${COMPLAINT_SOURCE_KINDS.join("|")} (got: ${out.sourceKind})`,
+        hint: USAGE,
+      });
+    }
   }
   if (sub === "resolve") {
     if (out.resolveStatus === undefined && out.status !== undefined) {
@@ -196,6 +227,15 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
     if (out.status !== undefined && !COMPLAINT_STATUSES.includes(out.status as never)) {
       throw new UsageError({
         what: `complaints list: --status must be one of ${COMPLAINT_STATUSES.join("|")} (got: ${out.status})`,
+        hint: USAGE,
+      });
+    }
+    if (
+      out.sourceKind !== undefined &&
+      !COMPLAINT_SOURCE_KINDS.includes(out.sourceKind as never)
+    ) {
+      throw new UsageError({
+        what: `complaints list: --source-kind must be one of ${COMPLAINT_SOURCE_KINDS.join("|")} (got: ${out.sourceKind})`,
         hint: USAGE,
       });
     }
@@ -227,9 +267,13 @@ async function complaintsList(parsed: ParsedComplaintsArgs): Promise<number> {
   try {
     const repo = new ComplaintsRepo(db);
     const status = parsed.all === true ? undefined : (parsed.status ?? "open");
-    const rows = repo.list(
-      status === undefined ? {} : { status: status as Complaint["status"] as never },
-    );
+    const listOpts: Parameters<typeof repo.list>[0] = {};
+    if (status !== undefined) {
+      listOpts.status = status as Complaint["status"] as never;
+    }
+    if (parsed.sourceKind !== undefined) listOpts.sourceKind = parsed.sourceKind;
+    if (parsed.targetTeam !== undefined) listOpts.targetTeam = parsed.targetTeam;
+    const rows = repo.list(listOpts);
     if (parsed.json === true) {
       process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
     } else {
@@ -264,6 +308,9 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
       resolvedAt: null,
       resolvedBy: null,
       relatedTaskId: parsed.relatedTask ?? null,
+      sourceKind: parsed.sourceKind ?? null,
+      sourceId: parsed.sourceId ?? null,
+      targetTeam: parsed.targetTeam ?? null,
       extra,
     };
     repo.insert(c);

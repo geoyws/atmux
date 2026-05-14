@@ -55,6 +55,7 @@ interface TestEnv {
 let env: TestEnv;
 let socketDir: string;
 let priorTmux: string | undefined;
+let priorNoCron: string | undefined;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-start-sock-"));
@@ -67,6 +68,15 @@ beforeEach(async () => {
   await mkdir(atmuxDir, { recursive: true });
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
+  // t-e1247699: start() auto-installs cron via cronInstall (start.ts §11).
+  // Pin ATMUX_NO_CRON=1 so the verb's internal gate short-circuits before
+  // it can reach the host crontab — without this, every test in this file
+  // leaks an `atmux:team=<random>` block pointing at the mkdtemp dir,
+  // which `afterEach`'s rm-rf cannot recover (cron edits live in the
+  // host crontab, not ATMUX_TEST_TMP). Mirrors stop.test.ts:35-36 +
+  // tests/helpers/setup.bash:47 (bash sandbox parity).
+  priorNoCron = process.env.ATMUX_NO_CRON;
+  process.env.ATMUX_NO_CRON = "1";
   // Use `/dev/null` config so tmux behaviour is reproducible regardless
   // of the operator's ~/.tmux.conf (base-index, key-bindings, etc.).
   const tmux = createTmux({ socketPath, configFile: "/dev/null" });
@@ -90,6 +100,8 @@ afterEach(async () => {
     // expected: server may already be gone (idempotent teardown)
   }
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  if (priorNoCron !== undefined) process.env.ATMUX_NO_CRON = priorNoCron;
+  else delete process.env.ATMUX_NO_CRON;
   await rm(socketDir, { recursive: true, force: true });
   await rm(env.atmuxDir, { recursive: true, force: true });
 });

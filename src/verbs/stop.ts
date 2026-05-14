@@ -49,6 +49,12 @@ import {
 } from "../core/common.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
+import {
+  findPhantomInProgressClaims,
+  formatPruneIso,
+  prunePhantomInProgressClaims,
+} from "../core/phantom-prune.ts";
+import type { TmuxNamespace } from "../abstractions/tmux.ts";
 import { cronRemove } from "./cron-remove.ts";
 
 const USAGE = "atmux stop [--force|-f] [--no-archive] [--prune-branch]";
@@ -183,6 +189,16 @@ export async function stop(
     await sleep(2000);
   }
 
+  // t-af159454: prune phantom in-progress claims BEFORE archive so the
+  // snapshot captures the post-prune state (operator-visible audit trail
+  // for what session-stop flipped). Best-effort: errors during probe or
+  // prune are surfaced as warnings, not fatal — the rest of teardown
+  // (archive + killSession) MUST still complete. Cage-only — singleSession
+  // teams skip per ADR-026.
+  if (team.singleSession !== true) {
+    await runStopPhantomPrune(tmux, sessionName, team, atmuxDir);
+  }
+
   if (parsed.archive) {
     await archiveState(atmuxDir);
   }
@@ -229,6 +245,56 @@ export async function stop(
 }
 
 // ---------- Internals ----------
+
+/** t-af159454: probe live windows + prune any in-progress kanban rows
+ *  whose owner has no live pane. Best-effort — every failure path
+ *  warns + continues so teardown's killSession is reached.
+ *
+ *  Note operators: the C-c + 2s sleep above gives wrap-up time for
+ *  members actively running `atmux done`; anything still in-progress
+ *  at this point is genuinely stale. We probe the live window set
+ *  one more time (rather than blanket-pruning) so a member that
+ *  raced + committed during the sleep keeps its claim intact. */
+async function runStopPhantomPrune(
+  tmux: TmuxNamespace,
+  sessionName: string,
+  team: Team,
+  atmuxDir: string,
+): Promise<void> {
+  try {
+    const phantoms = await findPhantomInProgressClaims({
+      atmuxDir,
+      team,
+      liveMembers: async () => {
+        if (!(await tmux.session.hasSession(`=${sessionName}`))) return new Set();
+        const windows = await tmux.window.listWindows(sessionName);
+        const liveNames = new Set(windows.map((w) => w.name));
+        const live = new Set<string>();
+        for (const m of team.members) {
+          const expected = buildWindowName(m.name, m.emoji);
+          if (liveNames.has(expected)) live.add(m.name);
+        }
+        return live;
+      },
+    });
+    if (phantoms.length === 0) return;
+    const asOfIso = formatPruneIso(Date.now());
+    const result = await prunePhantomInProgressClaims({
+      atmuxDir,
+      phantoms,
+      asOfIso,
+      source: "session-stop",
+    });
+    if (result.prunedIds.length > 0) {
+      process.stdout.write(
+        `stop: auto-pruned ${result.prunedIds.length} phantom in-progress claim(s) @ ${asOfIso}\n`,
+      );
+    }
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`atmux: warn: phantom-prune fell through: ${cause}\n`);
+  }
+}
 
 /**
  * ADR-082 W4: per-member worktree prune. Resolves repo root via

@@ -141,15 +141,44 @@ export const migrations: readonly Migration[] = [
     },
   },
   // ---------- v2 → v3 ----------
+  // Per t-e5e5d576: structured provenance for cross-team analysis.
+  // `source_kind` (superdoctor/member/operator/cli/cron) + structured
+  // `source_id` give a queryable replacement for the free-form
+  // `opened_by` text field; `target_team` distinguishes the team a
+  // complaint is ABOUT from the team's state.db it happens to live
+  // in (needed once superdoctor files cross-team).
+  //
+  // Existing v2 rows get NULL in the three new columns — no heuristic
+  // backfill from `opened_by` (the inference risk isn't worth it; the
+  // verb requires explicit `--source-kind` for new rows).
+  {
+    from: 2,
+    to: 3,
+    up: (db) => {
+      db.exec("ALTER TABLE complaints ADD COLUMN source_kind TEXT");
+      db.exec("ALTER TABLE complaints ADD COLUMN source_id TEXT");
+      db.exec("ALTER TABLE complaints ADD COLUMN target_team TEXT");
+      db.exec("CREATE INDEX idx_complaints_source_kind ON complaints(source_kind)");
+      db.exec("CREATE INDEX idx_complaints_target_team ON complaints(target_team)");
+    },
+  },
+  // ---------- v3 → v4 ----------
   // ADR-131 §D4 / T3 (t-247b4b35): per-team kanban-hygiene fingerprint
   // table. Idempotent upsert keyed on (task_id, fingerprint_class) so
   // re-detection across ticks bumps last_seen_at without duplicating
   // rows. Severity is stored as INTEGER for cheap `ORDER BY` in the
   // drain loop (P0=0, P1=1, P3=3 — P2 reserved but unused). Drain-loop
   // sort: severity ASC, detected_at ASC, then confidence-ladder filter.
+  //
+  // Renumbered v2→v3 → v3→v4 at trunk-merge time (15:40 MYT 2026-05-14):
+  // origin/geoyws shipped the complaints-provenance v2→v3 migration
+  // (t-e5e5d576) before this hygiene table landed. The complaints
+  // ALTER ran first on every downstream DB, so this CREATE TABLE
+  // moves into the next slot — append-only ladder discipline
+  // preserved per ADR-060 §D5.
   {
-    from: 2,
-    to: 3,
+    from: 3,
+    to: 4,
     up: (db) => {
       db.exec(`
 				CREATE TABLE superdoctor_hygiene (

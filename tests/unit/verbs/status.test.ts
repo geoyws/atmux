@@ -362,3 +362,168 @@ describe("status verb — integration", () => {
     expect(out).toMatch(/(🔴 cockpit-down|🔴 window-missing)/);
   });
 });
+
+// ---------- ADR-085 §Three surfaces #1: NEEDS APPROVAL row (t-3516d73a) ----------
+//
+// scanNeedsApproval reads `<projectRoot>/docs/adr/*.md`,
+// `<projectRoot>/.atmux/driver-inbox.md`, and the kanban DB.
+// `projectRoot` resolves to the parent of the `.atmux` dir from
+// `getAtmuxDir()`, which honors `ATMUX_DIR` env first. Pinning that
+// env to the test sandbox makes the live scan deterministic.
+//
+// Tests pin `ATMUX_DIR=<atmuxDir>` so scanNeedsApproval lands on our
+// per-test sandbox (NOT the real atmux repo it's running inside).
+
+describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
+  let priorAtmuxDir: string | undefined;
+  let priorAtmuxTeamDir: string | undefined;
+
+  beforeEach(() => {
+    priorAtmuxDir = process.env.ATMUX_DIR;
+    priorAtmuxTeamDir = process.env.ATMUX_TEAM_DIR;
+    // Pin both — scanNeedsApproval walks via getAtmuxDir which checks
+    // ATMUX_DIR first, then ATMUX_TEAM_DIR. Without these, scan walks
+    // cwd up to /, lands on the operator's real .atmux, and pollutes
+    // the test signal with whatever ADRs / inbox happen to be there.
+    process.env.ATMUX_DIR = atmuxDir;
+    process.env.ATMUX_TEAM_DIR = teamDir;
+  });
+
+  afterEach(() => {
+    if (priorAtmuxDir !== undefined) process.env.ATMUX_DIR = priorAtmuxDir;
+    else delete process.env.ATMUX_DIR;
+    if (priorAtmuxTeamDir !== undefined) process.env.ATMUX_TEAM_DIR = priorAtmuxTeamDir;
+    else delete process.env.ATMUX_TEAM_DIR;
+  });
+
+  test("N+M+K=0 → '📝 NEEDS APPROVAL: ✅ clear' row in text mode", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    // No ADRs / no driver-inbox stale / no blocked tasks — total=0.
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("📝 NEEDS APPROVAL: ✅ clear");
+    // The non-zero shape must NOT appear when total=0.
+    expect(out).not.toMatch(/NEEDS APPROVAL: \d+ ADRs/);
+  });
+
+  test("N+M+K=5 (2 ADRs / 2 inbox / 1 kanban) → row body matches ADR-085 grammar", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+
+    // Bucket A: stage 2 proposed ADRs under teamDir/docs/adr/. The
+    // scanner walks `<projectRoot>/docs/adr` where projectRoot is the
+    // parent of atmuxDir (i.e., teamDir).
+    const adrDir = join(teamDir, "docs", "adr");
+    await mkdir(adrDir, { recursive: true });
+    await writeFile(
+      join(adrDir, "200-foo.md"),
+      "# Foo\n\n**Status**: proposed\n",
+    );
+    await writeFile(
+      join(adrDir, "201-bar.md"),
+      "# Bar\n\n**Status**: proposed\n",
+    );
+
+    // Bucket B: 2 stale, untriaged driver-inbox headings (45 min ago,
+    // past the 30-min threshold).
+    const stale = (offsetMin: number): string => {
+      const ts = Math.floor(Date.now() / 1000) - offsetMin * 60;
+      const d = new Date((ts + 8 * 3600) * 1000); // MYT shift
+      const hh = String(d.getUTCHours()).padStart(2, "0");
+      const mm = String(d.getUTCMinutes()).padStart(2, "0");
+      return `${hh}:${mm}`;
+    };
+    await writeFile(
+      join(atmuxDir, "driver-inbox.md"),
+      [
+        `## ${stale(45)} MYT — open question one`,
+        "body one\n",
+        `## ${stale(50)} MYT — open question two`,
+        "body two\n",
+      ].join("\n"),
+    );
+
+    // Bucket C: 1 blocked task >2h. scanBlockedTasks uses
+    // `claimedAt ?? createdAt`; addTask sets createdAt to now and
+    // claimedAt to null, so a fresh row reads as ageMin≈0. To age it
+    // past the 120-min threshold without rebuilding the kanban API to
+    // accept a clock seam, write `kanban.json` directly — the kanban
+    // module falls back to JSON when state.db is absent, and listTasks
+    // / scanBlockedTasks both read through that fallback. Predates the
+    // SQLite cutover by design (ADR-060 §D2 leaves the JSON path live
+    // for tests that need a clock-aged row).
+    const aged = Math.floor(Date.now() / 1000) - 3 * 3600; // 3h ago
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({
+        tasks: [
+          {
+            id: "t-aged001",
+            subject: "blocked-old",
+            body: "",
+            status: "blocked",
+            owner: null,
+            deps: [],
+            priority: null,
+            lane: null,
+            createdAt: aged,
+            claimedAt: aged,
+            completedAt: null,
+          },
+        ],
+        epics: [],
+        stories: [],
+      }),
+    );
+
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("📝 NEEDS APPROVAL: 2 ADRs / 2 inbox / 1 kanban");
+    expect(out).not.toContain("✅ clear");
+  });
+
+  test("--json snapshot grows additive `needsApproval` key matching ADR-085 §Scan API shape", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    // Key present — the additive contract from ADR-085 §Three surfaces #1.
+    expect(parsed).toHaveProperty("needsApproval");
+    const na = parsed.needsApproval;
+    // Shape: { adr: [], inbox: [], kanban: [], total: 0 } per
+    // NeedsApprovalReport. The empty fixture yields all-zero.
+    expect(Array.isArray(na.adr)).toBe(true);
+    expect(Array.isArray(na.inbox)).toBe(true);
+    expect(Array.isArray(na.kanban)).toBe(true);
+    expect(typeof na.total).toBe("number");
+    expect(na.total).toBe(na.adr.length + na.inbox.length + na.kanban.length);
+  });
+
+  test("--json with seeded entries surfaces every bucket entry as NeedsApprovalEntry", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    // One proposed ADR — minimal seed to verify the bucket-A entry shape.
+    const adrDir = join(teamDir, "docs", "adr");
+    await mkdir(adrDir, { recursive: true });
+    await writeFile(
+      join(adrDir, "300-x.md"),
+      "# X title\n\n**Status**: proposed\n",
+    );
+
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.needsApproval.adr.length).toBe(1);
+    const entry = parsed.needsApproval.adr[0];
+    // Per ADR-085 §Scan API NeedsApprovalEntry shape.
+    expect(entry).toMatchObject({
+      bucket: "adr",
+      id: "300-x",
+      subject: "X title",
+    });
+    expect(typeof entry.path).toBe("string");
+    expect(typeof entry.ageMin).toBe("number");
+  });
+});

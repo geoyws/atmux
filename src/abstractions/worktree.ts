@@ -98,6 +98,14 @@ export interface ProvisionWorktreeResult {
 export interface ProvisionOpts {
   /** Git spawn override (test injection). */
   git?: GitSpawn;
+  /** ADR-088: when `true`, runs `initSubmodules(worktreePath)` after a
+   *  successful `git worktree add`. No-op on the idempotent path
+   *  (`created === false`) — an existing worktree may have intentionally
+   *  not initialized submodules; we don't reach in. Default `false`. */
+  initSubmodules?: boolean;
+  /** Warn-sink for non-fatal init failures. Defaults to `process.stderr.write`.
+   *  Test injection point. */
+  warn?: (msg: string) => void;
 }
 
 /**
@@ -174,7 +182,49 @@ export async function provisionWorktree(
       hint: result.stderr.trim() || "(no stderr)",
     });
   }
+  // ADR-088: opt-in submodule init. Only when the worktree was actually
+  // created this call — operator-managed existing worktrees may have
+  // intentionally not initialized submodules.
+  if (opts.initSubmodules === true) {
+    const subOpts: { git: GitSpawn; warn?: (msg: string) => void } = { git };
+    if (opts.warn !== undefined) subOpts.warn = opts.warn;
+    await initSubmodules(worktreePath, subOpts);
+  }
   return { created: true, path: worktreePath };
+}
+
+/**
+ * ADR-088: initialize git submodules under `wtPath` via
+ * `git submodule update --init --recursive`.
+ *
+ * **Idempotent.** Re-running short-circuits on already-initialized
+ * submodules.
+ *
+ * **No-op on submodule-less repos.** `git submodule update` exits 0
+ * with no output when `.gitmodules` is absent; we don't pre-check.
+ *
+ * **Best-effort.** A non-zero exit logs a warning to `opts.warn`
+ * (default `process.stderr.write`) and returns — does NOT throw.
+ * Rationale: a single failing transitive submodule shouldn't abort
+ * the entire worktree provision. Operator can recover with
+ * `git -C <wtPath> submodule update --init <path>` after the fact.
+ */
+export async function initSubmodules(
+  wtPath: string,
+  opts: { git?: GitSpawn; warn?: (msg: string) => void } = {},
+): Promise<void> {
+  const git = opts.git ?? defaultGitSpawn;
+  const warn = opts.warn ?? ((msg: string) => process.stderr.write(msg));
+  const result = await git(["-C", wtPath, "submodule", "update", "--init", "--recursive"]);
+  if (result.exitCode !== 0) {
+    const errLine = result.stderr.trim() || "(no stderr)";
+    warn(
+      `initSubmodules: \`git submodule update --init --recursive\` rc=${result.exitCode} ` +
+        `at ${wtPath} — ${errLine}\n` +
+        `  → operator can reconcile with \`git -C ${wtPath} submodule update --init <path>\` ` +
+        `for any specific submodule\n`,
+    );
+  }
 }
 
 /**
