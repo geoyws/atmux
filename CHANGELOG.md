@@ -46,6 +46,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **ADR-136 — hot-rename member labels (Option B — id + label + emoji split)** ([docs/adr/136-hot-rename-member-labels.md](docs/adr/136-hot-rename-member-labels.md)).
+  ADR text only (TR1 of EPIC `t-13367b7a`). Decision: add an optional
+  `label` field to `TeamMember`; `name` stays the immutable ASCII ID;
+  `atmux member rename` mutates `label` only. Display surfaces render
+  `label ?? name`; id-keyed state (worktrees, branches, inboxes,
+  kanban owner, lane-tick args, paused.json, resume.json) stays
+  pinned to `name`. Option A (emoji-as-stable-ID) was rejected on two
+  hazards documented inline — variation-selector trap
+  (`🛠️` 2-codepoint vs `🛠` 1-codepoint), and
+  `sanitizeBranchSegment` already strips non-ASCII at
+  `src/abstractions/worktree.ts:189-195`. All 4 OQs settled in-spec.
+  Cross-refs ADR-027 (team-rename sibling), ADR-030 (registry —
+  accepts label drift), ADR-082+ADR-084 (worktree substrate uses
+  name not label), CONVENTION-059 (id-layer; ADR-136 composes the
+  display layer on top). Sub-tasks TR2–TR5 filed under the EPIC for
+  schema + verb + display-fallback + e2e implementation. Kanban
+  Tasks `t-13367b7a` (EPIC), `t-646bc535` (TR1, this commit).
 - **cockpit-pulse meta-watchdog — bypass-page George when superdoctor itself is dormant** ([ADR-086 §Phase 2](docs/adr/086-atmux-pulse.md)).
   Extends the 5-min cockpit-pulse cron tick with an aggregate
   superdoctor-liveness probe. Walks every cockpit-enabled team's
