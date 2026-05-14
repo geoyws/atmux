@@ -138,7 +138,6 @@ describe("groomArchive — tasks", () => {
     seedTask(atmuxDir, {
       id: "t-todo",
       status: "todo",
-      completedAt: undefined,
     });
 
     const r = await groomArchive(atmuxDir, { days: 30, nowMs: NOW_MS });
@@ -154,7 +153,6 @@ describe("groomArchive — tasks", () => {
     seedTask(atmuxDir, {
       id: "t-null-completed",
       status: "done",
-      completedAt: undefined,
     });
     const r = await groomArchive(atmuxDir, { days: 30, nowMs: NOW_MS });
     expect(r.tasksArchived).toBe(0);
@@ -187,7 +185,7 @@ describe("groomArchive — inbox_messages", () => {
     // Need to materialize state.db first; seedTask does that as a
     // side-effect, but we want a pure inbox test. Use seedTask to
     // create the file then add inbox rows.
-    seedTask(atmuxDir, { id: "t-anchor", status: "todo", completedAt: undefined });
+    seedTask(atmuxDir, { id: "t-anchor", status: "todo" });
     seedInboxMessage(atmuxDir, {
       member: "alpha",
       body: "old msg",
