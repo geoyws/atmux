@@ -124,6 +124,11 @@ import {
   bootClaudeMember,
   renderBootFailureNotice,
 } from "../core/boot-claude.ts";
+import {
+  loadCockpit,
+  readNestingLevel,
+  resolvePrefix,
+} from "../core/cockpit.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import {
   consumedManifestPath,
@@ -488,15 +493,28 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     }
   }
 
-  // 7a. Apply the C-\ cage prefix on the cage tmux server (lib/start.sh:
-  //     206-236). Server-level option — once-per-start is sufficient and
-  //     idempotent on the incremental-restart path. Best-effort: failures
-  //     swallow inside `applyCagePrefix` (the prefix is cosmetic, not a
-  //     precondition for cage operation). Lifted from cockpit.ts so
-  //     standalone `atmux start <team>` matches `atmux cockpit rebuild`
-  //     Phase 3 — the bisection that motivated this port (2026-05-09)
-  //     showed unum cages started outside cockpit landing on default C-b.
-  await applyCagePrefix(tmux);
+  // 7a. ADR-089 §C — apply the level-resolved prefix on the cage tmux
+  //     server. Reads `ATMUX_NESTING_LEVEL` from env (default 1 for
+  //     top-level cockpit / standalone start) and resolves the prefix
+  //     from the operator-supplied `cockpit.prefixChain` if a cockpit
+  //     config exists, falling back to the {@link DEFAULT_PREFIX_CHAIN}.
+  //
+  //     Pre-ADR-089 behaviour was a hardcoded `C-\` (cosmetic, chosen to
+  //     avoid collision with operator-bound outer-tmux prefixes). The
+  //     new path keeps the same fall-through best-effort semantics —
+  //     failures swallow inside `applyCagePrefix` (the prefix is
+  //     cosmetic, not a precondition for cage operation) — but when the
+  //     resolved prefix is available, nested cages chain unambiguously
+  //     per the F-key ladder.
+  //
+  //     Loading the cockpit is best-effort too: standalone `atmux start`
+  //     runs against teams that may not be in any cockpit roster, and
+  //     missing / unparseable cockpit.json should NOT block the start.
+  //     The fall-back chain still produces a valid prefix per level.
+  const nestingLevel = readNestingLevel(env);
+  const cagePrefix = await resolveCagePrefixBestEffort(nestingLevel, opts, logger);
+  await applyCagePrefix(tmux, cagePrefix);
+  logger.log(`cage prefix: level=${nestingLevel} prefix=${cagePrefix}`);
 
   // 7b. ADR-082 W3 — per-member git worktree provisioning. Only fires
   //     when team.json sets `worktreeIsolation: true`; legacy teams take
@@ -1001,4 +1019,38 @@ function formatAge(seconds: number): string {
   const hours = Math.floor(minutes / 60);
   const rem = minutes % 60;
   return rem === 0 ? `${hours}h` : `${hours}h${rem}m`;
+}
+
+/**
+ * ADR-089 §C — best-effort prefix resolution for the cage tmux
+ * server. Loads `cockpit.json` to pick up an operator-supplied
+ * `prefixChain`; falls back to the default F-key chain when:
+ *
+ *   - No cockpit config is present (standalone team not in any cockpit).
+ *   - Cockpit config exists but `prefixChain` is unset.
+ *   - Cockpit load fails (malformed config) — surface a warn, keep
+ *     starting the cage on the default chain so a broken cockpit
+ *     doesn't wedge `atmux start`.
+ *
+ * The level itself is read upstream from `ATMUX_NESTING_LEVEL` via
+ * `readNestingLevel(env)` and threaded in.
+ */
+async function resolveCagePrefixBestEffort(
+  level: number,
+  opts: StartOpts,
+  logger: Logger,
+): Promise<string> {
+  try {
+    const cockpit = await loadCockpit({ env: opts.env ?? process.env });
+    return resolvePrefix(level, cockpit.prefixChain);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    // Cockpit absent / malformed is the common case for teams that
+    // aren't in a cockpit roster. Surface as a single log line at the
+    // verbose tier (logger.log, not warn) — operator already sees the
+    // resolved prefix in the next log line; this just explains the
+    // fallback path.
+    logger.log(`cockpit prefix-chain unavailable (${cause}) — using default F-key chain`);
+    return resolvePrefix(level);
+  }
 }

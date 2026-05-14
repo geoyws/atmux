@@ -673,11 +673,21 @@ export async function cageAlive(cageTmux: TmuxNamespace): Promise<boolean> {
   return false;
 }
 
-/** Apply the C-\ cage prefix. Best-effort — failures swallow (the
- *  prefix is cosmetic, not a precondition for cage operation). */
-export async function applyCagePrefix(cageTmux: TmuxNamespace): Promise<void> {
+/** ADR-089 §C: apply the cage's tmux prefix. Pre-ADR-089 path hardcoded
+ *  `C-\` (cosmetic, chosen because it doesn't collide with operator-bound
+ *  outer-tmux prefixes); post-ADR-089 callers pass the level-derived
+ *  F-key (or operator-override entry) so nested cages chain
+ *  unambiguously per `resolvePrefix(level, chain)`. The legacy default
+ *  `"C-\\"` is preserved when `prefix` is omitted so existing single-cage
+ *  callers (today's `atmux start` pre-ADR-089-T5 wiring) stay byte-equal
+ *  until T5 wires the chain resolution into `start.ts`.
+ *
+ *  Best-effort — failures swallow (the prefix is cosmetic, not a
+ *  precondition for cage operation). */
+export async function applyCagePrefix(cageTmux: TmuxNamespace, prefix?: string): Promise<void> {
+  const value = prefix !== undefined && prefix.length > 0 ? prefix : "C-\\";
   try {
-    await cageTmux.option.setOption({ name: "prefix", value: "C-\\", global: true });
+    await cageTmux.option.setOption({ name: "prefix", value, global: true });
   } catch {
     // ignored
   }
