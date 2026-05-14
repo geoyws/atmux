@@ -324,6 +324,28 @@ export async function setTaskLane(
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, lane }));
 }
 
+/** Update a task's priority (integer; lower = higher priority in
+ *  bash list-sort). Throws `ConfigError` on miss. `null` clears the
+ *  priority (treated as default 99 in selection / list ordering, per
+ *  bash `lib/kanban.sh:91` `sort_by(.priority // 99)`). */
+export async function setTaskPriority(
+  atmuxDir: string,
+  id: string,
+  priority: number | null,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, priority });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, priority }));
+}
+
 /** Update a task's body (multi-line prose stored in `tasks.body`). Throws
  *  `ConfigError` on miss. `null` / empty-string both clear the body. */
 export async function setTaskBody(

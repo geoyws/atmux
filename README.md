@@ -634,6 +634,8 @@ atmux task list [--status …] [--assignee <m>] [--json]
 atmux task show <id>
 atmux task move <id> <todo|in-progress|done|blocked>   # done auto-dispatches commit-Task to gitter
 atmux task assign <id> <member>
+atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->     # `-` clears lane
+atmux task priority <id> <N|->                                       # `-` clears priority (treated as default 99)
 atmux task rm <id>
 
 📨 Dispatch / work
