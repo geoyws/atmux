@@ -178,6 +178,45 @@ export const TeamWhip = z
       })
       .strict()
       .optional(),
+
+    // ---------- ADR-050 fallback chain v1 (Tier 2 Cursor only) ----------
+    /** ADR-050 §Decision. Per-team Tier 2 (Cursor) fallback policy for
+     *  budget-pause recovery. Distinct from `team.fallback` (top-level,
+     *  ADR-058 multi-tier cascade) — v1 narrows to Tier 2 only with a
+     *  refuse-at-load `tier: z.literal(2)` so a misconfigured Tier 3+
+     *  value can't reach the v1 spawn path. Tier 3+ stays available
+     *  via the ADR-058 entry points (`dispatchFallbackOnPause`); the
+     *  v1 narrow path (`spawnFallbackCage` / `teardownFallbackCage`)
+     *  hits this sub-config. Once ADR-050b folds in Tier 3+, this
+     *  literal lifts. Default: every field has a default → omitting
+     *  the whole `fallback` block is equivalent to `enabled: false`
+     *  (existing teams see no behavior change). */
+    fallback: z
+      .object({
+        /** Master switch (v1 path). Default `false` — operator opts
+         *  in per-team after reading ADR-050 §Trigger semantics. */
+        enabled: z.boolean().default(false),
+        /** Minutes the budget-pause must be continuously active
+         *  before fallback fires. Default 30 — matches ADR-050
+         *  §Trigger §1 "one-off rate-limit blips that resolve
+         *  <30min do NOT spawn a fallback cage". Min 5 — anything
+         *  shorter risks spawning a cage that immediately gets torn
+         *  down when the resume tick arrives. */
+        sustainMins: z.number().int().min(5).default(30),
+        /** ADR-050 v1 supports Tier 2 only. `z.literal(2)` rejects
+         *  any other value at schema-load (the schema-layer half of
+         *  the Reviewer-pre-flag "defense-in-depth refuse at
+         *  schema-load + call-site" gate). Tier 3+ deferred to
+         *  ADR-050b — different isolation model (dedicated Linux
+         *  user, ACL-restricted workspace, no .git in cage). */
+        tier: z.literal(2).default(2),
+        /** Cursor model passed to `cursor-agent --print --model
+         *  <value> --force`. Default `composer-2` per ADR-050
+         *  §"Cursor's mutative-git path is e2e-validated" reference. */
+        cursorModel: z.string().default("composer-2"),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type TeamWhip = z.infer<typeof TeamWhip>;
