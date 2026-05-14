@@ -59,6 +59,7 @@ import { init } from "./verbs/init.ts";
 import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
 import { laneTick } from "./verbs/lane-tick.ts";
 import { martinet } from "./verbs/martinet.ts";
+import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
@@ -211,6 +212,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return story(argv.slice(1));
     case "team":
       return dispatchTeamSubverb(argv.slice(1));
+    case "member":
+      return dispatchMemberSubverb(argv.slice(1));
     case "tell-lead":
       return tellLead(argv.slice(1));
     case "claim":
