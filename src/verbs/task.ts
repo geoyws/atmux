@@ -34,6 +34,7 @@ import {
   setTaskBody,
   setTaskDeps,
   setTaskLane,
+  setTaskPriority,
   showTask,
 } from "../core/kanban.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -46,7 +47,7 @@ import { ConfigError, UsageError } from "../errors.ts";
 const STATUSES_THAT_DRAIN_INBOX = new Set(["blocked", "todo"]);
 
 const USAGE_HINT_ROOT =
-  "atmux task <add|list|show|move|assign|lane|update|rm> [args] " +
+  "atmux task <add|list|show|move|assign|lane|priority|update|rm> [args] " +
   "(see 'atmux task' for per-subverb help)";
 
 const USAGE_ADD =
@@ -54,6 +55,7 @@ const USAGE_ADD =
 const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--json]";
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
+const USAGE_PRIORITY = "atmux task priority <id> <N|->";
 const USAGE_UPDATE = "atmux task update <id> [--body <text>] [--deps <a,b>]";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
@@ -151,6 +153,9 @@ export async function task(argv: ReadonlyArray<string>): Promise<number> {
       return await taskAssign(rest);
     case "lane":
       return await taskLane(rest);
+    case "priority":
+    case "prio":
+      return await taskPriority(rest);
     case "update":
       return await taskUpdate(rest);
     case "rm":
@@ -158,7 +163,7 @@ export async function task(argv: ReadonlyArray<string>): Promise<number> {
       return await taskRemove(rest);
     default:
       throw new UsageError({
-        what: `task: unknown verb: ${verb} (use add|list|show|move|assign|lane|update|rm)`,
+        what: `task: unknown verb: ${verb} (use add|list|show|move|assign|lane|priority|update|rm)`,
         hint: USAGE_HINT_ROOT,
       });
   }
@@ -207,6 +212,42 @@ async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
   // `-` clears the lane (sets to null).
   const lane = laneArg === "-" ? null : laneArg;
   await setTaskLane(atmuxDir, id, lane);
+  return 0;
+}
+
+// `atmux task priority <id> <N|->` — `-` clears (treated as default 99
+// in selection / list ordering per bash sort `// 99`). Aliased as
+// `atmux task prio <id> <N|->`. Used by hygiene auto-fix to repair
+// `prio-null` cases per ADR-131.
+async function taskPriority(argv: ReadonlyArray<string>): Promise<number> {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  const teamDir = (() => {
+    const idx = argv.indexOf("--team-dir");
+    return idx >= 0 ? argv[idx + 1] : undefined;
+  })();
+  if (positional.length !== 2) {
+    throw new UsageError({
+      what: "task priority: requires <id> and <N|->",
+      hint: USAGE_PRIORITY,
+    });
+  }
+  const [id, prioArg] = positional as [string, string];
+  let priority: number | null;
+  if (prioArg === "-") {
+    priority = null;
+  } else {
+    const n = Number.parseInt(prioArg, 10);
+    if (!Number.isFinite(n) || String(n) !== prioArg) {
+      throw new UsageError({
+        what: `task priority: <N> must be an integer or '-' (got: ${prioArg})`,
+        hint: USAGE_PRIORITY,
+      });
+    }
+    priority = n;
+  }
+  const dirOpts = teamDir !== undefined ? { teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  await setTaskPriority(atmuxDir, id, priority);
   return 0;
 }
 
