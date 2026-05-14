@@ -231,6 +231,62 @@ describe("kanban (SQLite mode)", () => {
     expect(post.owner).toBe("be0");
   });
 
+  // t-381a6ea0: done-state refuse-gate (SQLite path). The gate fires
+  // INSIDE the BEGIN IMMEDIATE block via repo.getTask + status check
+  // before repo.upsertTask. Reviewer pre-flag: a concurrent done-flip
+  // can't slip between check and mutation because both run under the
+  // same SQLite transaction lock. Origin: docs auditor surfaced an
+  // anomaly 2026-05-13 — `atmux claim t-0c4e6397` against a done Task
+  // silently flipped done → in-progress (the 2026-05-12 in-progress
+  // gate's docstring explicitly allowed this as "idempotent"; that
+  // tolerance was the bug).
+  test("claimTask (SQLite path): refuses done-state Task with clear error", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "shipped already" });
+    await claimTask(env.atmuxDir, id, "fe0");
+    await markTaskDone(env.atmuxDir, id, "shipped");
+    await expect(claimTask(env.atmuxDir, id, "be0")).rejects.toThrow(
+      /already done.*claim refused/,
+    );
+  });
+
+  test("claimTask (SQLite path): refused done-state claim does NOT mutate state", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "shipped already" });
+    await claimTask(env.atmuxDir, id, "fe0");
+    await markTaskDone(env.atmuxDir, id, "shipped");
+    const before = await showTask(env.atmuxDir, id);
+    await expect(claimTask(env.atmuxDir, id, "be0")).rejects.toThrow(ConfigError);
+    const after = await showTask(env.atmuxDir, id);
+    expect(after?.status).toBe("done");
+    expect(after?.owner).toBe(before?.owner ?? null);
+    expect(after?.claimedAt).toBe(before?.claimedAt ?? null);
+    expect(after?.completedAt).toBe(before?.completedAt ?? null);
+  });
+
+  test("claimTask (SQLite path): refuse message cites task move recovery path", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "shipped already" });
+    await claimTask(env.atmuxDir, id, "fe0");
+    await markTaskDone(env.atmuxDir, id, "shipped");
+    try {
+      await claimTask(env.atmuxDir, id, "be0");
+      throw new Error("should have thrown");
+    } catch (e) {
+      const msg = (e as ConfigError).message;
+      expect(msg).toContain(`atmux task move ${id} todo`);
+      expect(msg).toContain("owner=fe0");
+    }
+  });
+
+  test("claimTask (SQLite path): in-progress unowned claim still succeeds — gate is done-only", async () => {
+    // Move to in-progress manually (no owner). The done-gate must ONLY
+    // refuse status='done'; in-progress unowned remains claimable per
+    // the existing "re-claim by SAME owner / unowned" path.
+    const id = await addTask(env.atmuxDir, { subject: "manually-set" });
+    await moveTask(env.atmuxDir, id, "in-progress");
+    const { post } = await claimTask(env.atmuxDir, id, "fe0");
+    expect(post.status).toBe("in-progress");
+    expect(post.owner).toBe("fe0");
+  });
+
   test("markTaskDone: stamps completedAt + optional note", async () => {
     const id = await addTask(env.atmuxDir, { subject: "x" });
     const done = await markTaskDone(env.atmuxDir, id, "shipped via PR #42");
