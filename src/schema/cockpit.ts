@@ -218,7 +218,10 @@ export type CockpitTeam = z.infer<typeof CockpitTeam>;
  * `sessions[]`.
  *
  * @deprecated v2-bump: drop in favour of `SuperdoctorSession` from
- *   `sessions[]`.
+ *   `sessions[]`. ADR-133 also renames this role to `medic` at the
+ *   top-level `cockpit.medic` key — see {@link CockpitMedic} for the
+ *   new canonical name. This export stays through the deprecation
+ *   window so existing consumers (status.ts, audit.ts) don't churn.
  */
 export const CockpitSuperdoctor = z
   .object({
@@ -241,6 +244,24 @@ export const CockpitSuperdoctor = z
   })
   .strict();
 export type CockpitSuperdoctor = z.infer<typeof CockpitSuperdoctor>;
+
+/**
+ * ADR-133: new canonical name for the cockpit health-check singleton.
+ * Same shape as the deprecated {@link CockpitSuperdoctor} — the rename
+ * is naming-only at the config + process surface to avoid collision
+ * with the `atmux doctor` verb. Operator-visible config key is
+ * `cockpit.medic` (TR2 ships top-level alias; TR3 ships verb / window /
+ * skill renames).
+ *
+ * During the one-release deprecation window both `cockpit.medic` and
+ * `cockpit.superdoctor` keys parse successfully — `loadCockpit`
+ * pre-parse shim (`migrateSuperdoctorBlockToMedic`) collapses the
+ * legacy key to `medic` with a stderr warning. The next-release ADR-133
+ * follow-up strips the `superdoctor` field entirely and flips the
+ * warning to a hard schema error.
+ */
+export const CockpitMedic = CockpitSuperdoctor;
+export type CockpitMedic = z.infer<typeof CockpitMedic>;
 
 /** ADR-086 §Phase 1.5: verdict literal keys for the per-verdict dedup
  *  ladder. Restated here (not imported from `core/pulse-state.ts` to
@@ -311,9 +332,22 @@ export const Cockpit = z
     teams: z.array(CockpitTeam).optional(),
     /** Legacy singleton superdoctor — populated by `loadCockpit`
      *  post-parse from the first `type: "superdoctor"` entry in
-     *  `sessions[]`. New code should walk `sessions[]` directly.
-     *  @deprecated v2-bump per ADR-089 §F. */
+     *  `sessions[]`. New code should walk `sessions[]` directly OR
+     *  read the renamed {@link Cockpit.medic} key (ADR-133 §TR2).
+     *  @deprecated v2-bump per ADR-089 §F; ADR-133 renames the
+     *    operator-visible key to `medic`. */
     superdoctor: CockpitSuperdoctor.optional(),
+    /** ADR-133 TR2: new canonical key for the cockpit health-check
+     *  singleton. Accepts the same shape as the deprecated
+     *  {@link Cockpit.superdoctor} field. During the one-release
+     *  deprecation window, `loadCockpit`'s pre-parse shim renames an
+     *  on-disk `superdoctor` block to `medic` with a stderr warning
+     *  (operator-driven config edits only — the file itself isn't
+     *  auto-migrated). When both keys are present, `medic` wins +
+     *  shim warns. `enrichLegacyFields` also synthesizes this field
+     *  from `sessions[]` `type: "superdoctor"` entries alongside
+     *  `superdoctor`, so callers reading either keep working. */
+    medic: CockpitMedic.optional(),
     /** Optional ADR-086 pulse probe tunables. Omit for defaults. */
     pulse: CockpitPulse.optional(),
   })

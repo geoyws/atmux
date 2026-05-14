@@ -40,13 +40,15 @@ import {
 } from "../abstractions/tmux.ts";
 import {
   cageSessionName,
+  cageSocketPath,
   enabledTeams,
   type LoadCockpitOpts,
   loadCockpit,
+  perTeamCageSocketPath,
   resolveCageSocket,
   resolveCockpitConfigPath,
 } from "../core/cockpit.ts";
-import { loadTeam, resolveTeamSocket, teamJsonPath } from "../core/common.ts";
+import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
 import {
   awaitClaudePaneReady,
@@ -76,9 +78,19 @@ export type TeamWindowMode =
 export interface ResolveTeamWindowDeps {
   /** Override `loadTeam` for tests. Default reads `<root>/.atmux/team.json`. */
   loadTeam?: (opts: { teamDir: string }) => Promise<Team>;
-  /** Build the team's cage TmuxNamespace from its resolved socket path
-   *  (`team.tmuxTmpdir`-aware via {@link resolveCageSocket}). Default
-   *  `createTmux({ socketPath })`. Test injection seam. */
+  /** ADR-063 follow-up (t-31bef86e): override the socket resolver.
+   *  Default probes both legacy `/tmp/atmux-<team>/sock` AND per-team
+   *  `<root>/.atmux/tmux/tmux-<uid>/default` via
+   *  `core/cockpit::resolveCageSocket`, returning whichever exists
+   *  (legacy-first for back-compat, falls through to legacy when neither
+   *  exists). Tests inject a constant returning a known path to assert
+   *  which socket the cage factory is built against. Supersedes the
+   *  prior single-socket `resolveTeamSocket(teamShape)` path from
+   *  t-b5864443 — see ADR-063 follow-up commit 3cab619. */
+  resolveCageSocket?: (teamName: string, teamRoot: string) => Promise<string>;
+  /** Build the team's cage TmuxNamespace. Default `createTmux({socketPath})`.
+   *  Receives the socket path resolved by `resolveCageSocket` so tests
+   *  can capture which candidate was picked. */
   createCageTmux?: (socketPath: string) => TmuxNamespace;
   /** Override the superdoctor window's shell command (test injection).
    *  Default uses `buildSuperdoctorWindowCommand`. CI runners don't have
@@ -133,17 +145,27 @@ export async function resolveTeamWindowMode(
 
   // driverSession is configured — probe the cage. We use a fresh
   // TmuxNamespace per team since each cage runs on its own socket
-  // (ADR-018). Socket path is resolved from the loaded `teamShape` via
-  // `resolveTeamSocket` so per-team `tmuxTmpdir` is honoured (the
-  // hardcoded `/tmp/atmux-<team>/sock` was the t-b5864443 bug — it
-  // sent every probe to the canonical fallback even when team.json
-  // declared a project-local tmpdir). Probe failures (cage tmux not
-  // reachable, no session) → "session-down" placeholder rather than
-  // tearing down the rebuild.
-  const cageFactory = deps.createCageTmux ?? makeDefaultCageTmux;
+  // (ADR-018). Probe failures (cage tmux not reachable, no session)
+  // → "session-down" placeholder rather than tearing down the rebuild.
+  //
+  // ADR-063 follow-up (t-31bef86e): discover socket via the dual-path
+  // resolver so a cage running on the per-team `team.tmuxTmpdir`
+  // convention (sopx / unum / atmux dogfood) isn't misclassified as
+  // "session-down" just because legacy `/tmp/atmux-<team>/sock` is
+  // absent. Supersedes the prior single-`resolveTeamSocket(teamShape)`
+  // path from t-b5864443 — the dual-probe avoids the failure mode
+  // where team.json was unreadable AND legacy socket missing.
+  const socketResolver = deps.resolveCageSocket ?? resolveCageSocket;
+  let sock: string;
+  try {
+    sock = await socketResolver(team.name, team.root);
+  } catch {
+    return "session-down";
+  }
+  const cageFactory = deps.createCageTmux ?? defaultCageTmuxFactory;
   let cageTmux: TmuxNamespace;
   try {
-    cageTmux = cageFactory(resolveTeamSocket(teamShape));
+    cageTmux = cageFactory(sock);
   } catch {
     return "session-down";
   }
@@ -158,7 +180,7 @@ export async function resolveTeamWindowMode(
   }
 }
 
-function makeDefaultCageTmux(socketPath: string): TmuxNamespace {
+function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
   return createTmux({ socketPath });
 }
 
@@ -166,40 +188,57 @@ function makeDefaultCageTmux(socketPath: string): TmuxNamespace {
  * Build the shell command the cockpit per-team window runs. Switches
  * on `mode`:
  *
- *   - `"attach"` — same retry-loop pattern as the pre-ADR-064 cockpit
- *     viewer, but targets `<session>:driver` so the cockpit operator
- *     lands on the team's driver pane on focus (OQ4 default).
- *   - `"no-driver-config"` / `"session-down"` — print an explanatory
- *     line + `sleep infinity` so the window stays alive (operator can
- *     re-read at any time; rebuild restores attach on next run after
- *     remediation).
+ *   - `"attach"` — dual-socket retry-loop attaching `<session>:driver`
+ *     so the cockpit operator lands on the team's driver pane on focus
+ *     (OQ4 default). Tries legacy `/tmp/atmux-<team>/sock` first then
+ *     per-team `<root>/.atmux/tmux/tmux-<uid>/default` so cage flips
+ *     between conventions self-recover (ADR-063 follow-up t-31bef86e).
+ *   - `"session-down"` — print a one-shot "not running" status THEN
+ *     the same dual-socket retry-loop so the window self-heals once
+ *     the cage comes back up. Pre-2026-05-14 this branch planted
+ *     `sleep infinity`, which left the window dead until a manual
+ *     rebuild — exactly the bug reported in driver-inbox 2026-05-14.
+ *   - `"no-driver-config"` — print an explanatory line + `sleep
+ *     infinity`. No retry loop because waiting can't fix a missing
+ *     `team.json::driverSession`; the operator must edit team.json
+ *     and re-run rebuild.
  *
- * `socketPath` MUST be the per-team-aware cage socket resolved via
- * {@link resolveCageSocket} (which honours `team.tmuxTmpdir`). Callers
- * that pass a hardcoded `/tmp/atmux-<team>/sock` will produce a stub
- * viewer for any team with a project-local tmpdir — that was the
- * t-b5864443 bug.
+ * Supersedes the t-b5864443 socketPath-arg signature — the dual-socket
+ * retry-loop derives BOTH paths internally from the team name + root,
+ * so callers no longer need to thread a pre-resolved socketPath.
  */
-export function buildTeamWindowCommand(
-  team: CockpitTeam,
-  mode: TeamWindowMode,
-  socketPath: string,
-): string {
-  const session = cageSessionName(team.name);
+export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode): string {
   switch (mode) {
     case "attach":
-      // Retry-loop covers cage restart + first-attach race; sleeps 1s
-      // between retries so the cage can come up after its own start.
-      // Targeting `<session>:driver` (vs bare `<session>`) lands the
-      // operator on the driver pane per OQ4.
-      return `while true; do tmux -S ${socketPath} attach -t ${session}:driver 2>/dev/null; sleep 1; done`;
+      return cageRetryLoop(team);
     case "no-driver-config":
       return shellPlaceholder(
         `no driver configured for ${team.name} — set team.json::driverSession to enable`,
       );
-    case "session-down":
-      return shellPlaceholder(`team ${team.name} session not running — atmux start ${team.name}`);
+    case "session-down": {
+      const msg = `team ${team.name} session not running — atmux start ${team.name}`;
+      const safe = msg.replace(/'/g, "'\\''");
+      return `printf '%s\\n' '${safe}'; ${cageRetryLoop(team)}`;
+    }
   }
+}
+
+/** Dual-socket attach retry-loop shared by the `attach` and `session-down`
+ *  modes. Tries the legacy `/tmp/atmux-<team>/sock` first (back-compat),
+ *  falls through to the per-team `<root>/.atmux/tmux/tmux-<uid>/default`
+ *  (current convention) inside ONE shell iteration, then sleeps 1s.
+ *  Targets `<session>:driver` per OQ4. */
+function cageRetryLoop(team: CockpitTeam): string {
+  const legacy = cageSocketPath(team.name);
+  const perTeam = perTeamCageSocketPath(team.root);
+  const session = cageSessionName(team.name);
+  return (
+    `while true; do ` +
+    `tmux -S ${legacy} attach -t ${session}:driver 2>/dev/null ` +
+    `|| tmux -S ${perTeam} attach -t ${session}:driver 2>/dev/null; ` +
+    `sleep 1; ` +
+    `done`
+  );
 }
 
 /** Shell-quote-safe single-message placeholder. The single-quote
@@ -468,7 +507,7 @@ export async function cockpitRebuild(
   // Phase 2: cycle cages (live-team-aware unless --force-cycle).
   if (!parsed.noCycle) {
     for (const t of teams) {
-      const sock = await resolveCageSocket(t);
+      const sock = await resolveCageSocket(t.name, t.root);
       const cageTmux = factory({ socketPath: sock });
       const alive = await cageAlive(cageTmux);
       if (alive && !parsed.forceCycle) {
@@ -492,7 +531,7 @@ export async function cockpitRebuild(
 
   // Phase 3: apply C-\ cage prefix on every enabled cage.
   for (const t of teams) {
-    const sock = await resolveCageSocket(t);
+    const sock = await resolveCageSocket(t.name, t.root);
     const cageTmux = factory({ socketPath: sock });
     await applyCagePrefix(cageTmux);
   }
@@ -500,7 +539,7 @@ export async function cockpitRebuild(
   // Phase 4: TUI auto-launch (idempotent — skips panes already on claude).
   if (!parsed.noLaunch) {
     for (const t of teams) {
-      const sock = await resolveCageSocket(t);
+      const sock = await resolveCageSocket(t.name, t.root);
       const cageTmux = factory({ socketPath: sock });
       const teamSummary = await autolaunchTeam(t, cageTmux, env, logger);
       const unbootMsg =
@@ -516,6 +555,13 @@ export async function cockpitRebuild(
   }
 
   // Phase 5: cockpit session on default socket.
+  // ADR-133 TR2: read the resolved `medic` block (post-shim canonical
+  // name). For sessions[]-based configs `enrichLegacyFields` synthesizes
+  // both `superdoctor` and `medic` from the same `type: "superdoctor"`
+  // entry; for top-level legacy configs the pre-parse shim renames
+  // `superdoctor` → `medic` with a deprecation warning. The downstream
+  // reconcile + window-name convention stays "superdoctor" until TR3
+  // ships the verb / window / skill renames.
   const cockpitTmux = factory({ socket: "default" });
   await reconcileCockpitSession(
     cockpitTmux,
@@ -523,7 +569,7 @@ export async function cockpitRebuild(
     teams,
     logger,
     {},
-    cockpit.superdoctor,
+    cockpit.medic,
     parsed.yes,
   );
 
@@ -535,15 +581,16 @@ export async function cockpitRebuild(
   await installCockpitCron(opts, cockpit, logger, env);
 
   logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
-  // ADR-077: nudge the operator to start the superdoctor loop manually.
-  // Rebuild stays purely topological — auto-firing `/loop /superdoctor`
-  // on every rebuild would either re-fire on idempotent re-runs or need
-  // fragile send-keys timing against a freshly-spawned claude. Manual
-  // start is one slash command and matches how the operator drives
-  // superdriver in window 1.
-  if (cockpit.superdoctor?.enabled === true) {
+  // ADR-077 + ADR-133: nudge the operator to start the medic loop
+  // manually. Rebuild stays purely topological — auto-firing
+  // `/loop /superdoctor` on every rebuild would either re-fire on
+  // idempotent re-runs or need fragile send-keys timing against a
+  // freshly-spawned claude. Manual start is one slash command and
+  // matches how the operator drives superdriver in window 1. Skill
+  // slug stays `/superdoctor` until TR3 ships the cascade rename.
+  if (cockpit.medic?.enabled === true) {
     logger.log(
-      `  ▸ superdoctor: select window 2 ('superdoctor') and type \`/loop /superdoctor\` to start the hourly diagnosis loop`,
+      `  ▸ medic: select window 2 ('superdoctor') and type \`/loop /superdoctor\` to start the hourly diagnosis loop`,
     );
   }
   return 0;
@@ -1052,8 +1099,7 @@ export async function reconcileCockpitSession(
       continue;
     }
     const mode = await resolveTeamWindowMode(t, deps);
-    const sock = await resolveCageSocket(t, deps.loadTeam ? { loadTeam: deps.loadTeam } : {});
-    const cmd = buildTeamWindowCommand(t, mode, sock);
+    const cmd = buildTeamWindowCommand(t, mode);
     await cockpitTmux.window.newWindow({
       sessionName,
       name: t.name,
