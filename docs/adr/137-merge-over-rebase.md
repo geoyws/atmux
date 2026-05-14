@@ -124,9 +124,9 @@ Second commit (deferred per the task body's reviewer-split sanction):
 
 ## Acceptance gates
 
-- [x] `docs/adr/137-merge-over-rebase.md` exists with `Status: proposed` (this commit).
-- [x] `templates/briefs/member.md` gains §Trunk integration mandating merge-over-rebase (this commit).
-- [x] `/CLAUDE.md` gains §Trunk integration under Push Policy (this commit).
-- [ ] `atmux doctor` reports zero `member-forcepush-recent` warnings on a fresh team that follows the new convention (second commit).
-- [ ] Discord `[member-forcepush-warning]` template fires on synthetic force-push event in test (second commit).
+- [x] `docs/adr/137-merge-over-rebase.md` exists with `Status: proposed` (commit 1/2).
+- [x] `templates/briefs/member.md` gains §Trunk integration mandating merge-over-rebase (commit 1/2).
+- [x] `/CLAUDE.md` gains §Trunk integration under Push Policy (commit 1/2).
+- [x] `atmux doctor` reports zero `member-forcepush-recent` warnings on a fresh team that follows the new convention (commit 2/2 — `checkMemberForcePushRecent` in `src/verbs/doctor.ts`; empty rows when the per-member-branch reflog has no `forced`-matching entries within the 1h window).
+- [x] Discord `[member-forcepush-warning]` template fires on synthetic force-push event in test (commit 2/2 — `renderMemberForcePushWarning` in `src/abstractions/discord.ts`; `member-forcepush-warning` literal added to the `DiscordTemplate` union for R10 compile-time enforcement).
 - [ ] Reviewer-gated across the chain.
