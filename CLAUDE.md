@@ -6,7 +6,7 @@ This file is the **canonical agent contract** for anyone running atmux on a code
 
 **ADRs are the source of truth.** Every architectural decision lives as a numbered ADR under `docs/adr/`. ADRs are append-only: once accepted, they are not edited except for follow-up annotations. Superseding decisions get a new ADR that references the old one.
 
-**Docs distill ADRs.** Project documentation — `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK-*.md`, `docs/superdoctor.md`, `README.md`, `CHANGELOG.md` — are *distillations* of ADR decisions, not independent narratives. When a doc and an ADR disagree, the ADR wins and the doc is updated to match. When writing or updating a doc, reference the ADR(s) that authorized the content (`per ADR-052 §B`, `mirrors ADR-082 W3`).
+**Docs distill ADRs.** Project documentation — `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK-*.md`, `docs/medic.md` (renamed from `docs/superdoctor.md` per ADR-133), `README.md`, `CHANGELOG.md` — are *distillations* of ADR decisions, not independent narratives. When a doc and an ADR disagree, the ADR wins and the doc is updated to match. When writing or updating a doc, reference the ADR(s) that authorized the content (`per ADR-052 §B`, `mirrors ADR-082 W3`).
 
 **Context flows from docs.** Members reading the codebase build context via the docs first, ADRs second, code third. The pull model only works if every claimer has the same vocabulary; the docs are what synchronize that vocabulary.
 
@@ -25,6 +25,8 @@ This file is the **canonical agent contract** for anyone running atmux on a code
 3. **Reviewer enforces the gate.** The reviewer blocks code-without-doc-update on documented-surface changes. The block is not advisory — it's a fail-state until the doc lands in the same commit (or sibling commit on the same PR / Story). The reviewer's coverage table includes a "doc-update column" alongside the existing schema / GraphQL / authz / coverage columns.
 
 4. **ADR write-flow.** New decisions get a new ADR before code lands. ADRs follow the existing numbering convention (zero-padded three-digit, monotonic). A new ADR is "proposed" until it has reviewer signoff or an explicit driver/lead `decisions-add` event; only then does it become "accepted". Accepted ADRs are referenced by code via comment links (`// per ADR-052 §B`).
+
+   **Deferred-pending annotation (ADR-085 §2.5 interaction).** An ADR whose acceptance is intentionally held — pending an upstream dep, a parallel decision, an operator review window — MUST carry the annotation `Status: proposed (deferred: <one-line reason>)` rather than bare `Status: proposed`. ADR-085's `needs-approval` whip surfacer treats bare `proposed` as "ping every tick"; the `(deferred: …)` annotation signals "intentionally not-yet-accepted, don't surface". Convention-only — no lint gate today; if rot recurs, formalize as a pre-commit check (out-of-scope per Task t-968416aa).
 
 ## Where to look first
 
@@ -50,6 +52,21 @@ This means the docs-discipline is **member-enforced first, reviewer-enforced sec
 - Test files — tests document themselves; no separate doc update unless the test surfaces a new public test-helper API.
 
 In all other cases, default to "doc update required." If unsure, the reviewer's call governs.
+
+## Trunk integration — merge, not rebase (per [ADR-137](docs/adr/137-merge-over-rebase.md))
+
+When a member's `<base>-<member>` branch falls behind `origin/<base>`, integrate via `git merge`, NOT `git rebase`. Per-member branches are long-lived (ADR-082 + ADR-084); a rebase forces a force-push, trips the harness deny on non-staging branches, and makes sibling members' `git fetch` views inconsistent. Merge keeps the branch in a consistent published state; the criss-cross history is collapsed when gitter (ADR-134) fans the branch back into trunk.
+
+```bash
+# CANONICAL
+git -C <worktree-root> fetch origin
+git -C <worktree-root> merge origin/<base> --no-edit
+
+# FORBIDDEN
+git -C <worktree-root> rebase origin/<base>
+```
+
+Carve-outs: voluntary history cleanup (squash, fixup), epic-team-base → parent-trunk fan-in (ADR-091 gitter, rebase-then-merge per its pre-flag #4), and final fan-in via gitter (ADR-134, works on any internal shape). See ADR-137 for the full table.
 
 ## Related global rules
 

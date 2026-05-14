@@ -91,12 +91,28 @@ export function inboxPathFor(atmuxDir: string, member: string): string {
   return join(atmuxDir, "inboxes", `${member}.json`);
 }
 
-/** ADR-077 §D4 / §F3: reserved inbox key for the cockpit-tier
- *  superdoctor role. Not a member of any team.json — `atmux send`
+/** ADR-077 §D4 / §F3 / ADR-133: reserved inbox key for the cockpit-tier
+ *  medic role (canonical name). Not a member of any team.json — `atmux send`
  *  recognises it as a special target and writes to the team's
  *  `inbox_messages` table instead of attempting tmux pane delivery.
- *  Superdoctor reads matching rows on its hourly whip turn. */
+ *  Medic reads matching rows on its hourly whip turn. */
+export const MEDIC_INBOX_KEY = "__medic__";
+
+/** ADR-133 deprecated alias for {@link MEDIC_INBOX_KEY}. Accepted as an
+ *  inbox target during the one-release-cycle deprecation window so
+ *  in-flight scripts + skill briefs continue routing while operators
+ *  migrate. New callers should reference `MEDIC_INBOX_KEY`; this alias
+ *  is dropped once the deprecation closes. */
 export const SUPERDOCTOR_INBOX_KEY = "__superdoctor__";
+
+/** ADR-133: returns true when `member` matches the canonical medic
+ *  inbox key OR its deprecated `__superdoctor__` alias. Use this in
+ *  place of bare `=== SUPERDOCTOR_INBOX_KEY` checks so the routing
+ *  path stays single-source-of-truth on which keys reach the medic
+ *  inbox writer. */
+export function isMedicInboxKey(member: string | undefined): boolean {
+  return member === MEDIC_INBOX_KEY || member === SUPERDOCTOR_INBOX_KEY;
+}
 
 export function logsDir(atmuxDir: string): string {
   return join(atmuxDir, "logs");

@@ -1689,6 +1689,105 @@ describe("renderWhipDefunctCwd", () => {
   });
 });
 
+// ---------- ADR-137 — renderMemberForcePushWarning ----------
+
+describe("renderMemberForcePushWarning", () => {
+  test("single member force-push produces verdict + 2 bullets (member + fix)", async () => {
+    const { renderMemberForcePushWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [
+        {
+          member: "alice",
+          branch: "geoyws-alice",
+          reflogMsg: "update by push (forced)",
+        },
+      ],
+    });
+    expect(out.template).toBe("member-forcepush-warning");
+    expect(out.category).toBe("📋");
+    expect(out.team).toBe("atmux");
+    // Verdict is warn-class (🟡 Cool) per ADR-137 §D3 — not Need-you.
+    expect(out.verdict).toBe(
+      "🟡 **Cool** — 1 member force-pushed within the last hour",
+    );
+    expect(out.bullets).toHaveLength(2);
+    expect(out.bullets?.[0]).toBe(
+      "🟡 alice: geoyws-alice reflog: update by push (forced)",
+    );
+    expect(out.bullets?.[1]).toContain("git merge origin/<base>");
+    expect(out.bullets?.[1]).toContain("ADR-137");
+  });
+
+  test("multiple members surfaced as separate bullets + plural verdict", async () => {
+    const { renderMemberForcePushWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [
+        { member: "alice", branch: "geoyws-alice", reflogMsg: "forced-update" },
+        { member: "bob", branch: "geoyws-bob", reflogMsg: "update by push (forced)" },
+      ],
+    });
+    expect(out.verdict).toContain("2 members force-pushed");
+    expect(out.bullets).toHaveLength(3); // 2 per-member + 1 fix
+  });
+
+  test("long reflog message truncated with ellipsis at 40 chars", async () => {
+    const { renderMemberForcePushWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const longMsg =
+      "update by push (forced) — bumped past trunk after rebase against geoyws";
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: longMsg }],
+    });
+    const bullet = out.bullets?.[0] ?? "";
+    expect(bullet).toContain("…");
+    // Bullet format: "🟡 alice: geoyws-alice reflog: <truncated>…"
+    // Truncation is on the message body alone (40 chars + ellipsis).
+    const reflogPart = bullet.split("reflog: ")[1] ?? "";
+    // 40 chars of message + 1 ellipsis = 41 total.
+    expect(reflogPart.length).toBe(41);
+  });
+
+  test("whenMs override is propagated", async () => {
+    const { renderMemberForcePushWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: "forced-update" }],
+      whenMs: 7777,
+    });
+    expect(out.whenMs).toBe(7777);
+  });
+
+  test("send-time validation passes (full template wiring works end-to-end)", async () => {
+    const { renderMemberForcePushWarning, send } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const recorder = join(tmpRoot, "member-forcepush-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderMemberForcePushWarning({
+        team: "atmux",
+        events: [
+          { member: "alice", branch: "geoyws-alice", reflogMsg: "update by push (forced)" },
+        ],
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[member-forcepush-warning]");
+    expect(written).toContain("geoyws-alice");
+    expect(written).toContain("ADR-137");
+  });
+});
+
 // ---------- ADR-086 — renderPulseVerdict ----------
 
 describe("renderPulseVerdict", () => {

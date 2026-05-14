@@ -672,7 +672,10 @@ describe("reconcileCockpitSession", () => {
       // teams 3..N. Indices may not literally be 1,2,3 if tmux is configured
       // with base-index != 1, but RELATIVE order is what we assert.
       expect(byIndex[0]?.name).toBe("superdriver");
-      expect(byIndex[1]?.name).toBe("superdoctor");
+      // ADR-133: window renamed superdoctor → medic. Legacy alias kept
+      //          in buildSuperdoctorCommand dep for back-compat; window
+      //          name is canonical "medic".
+      expect(byIndex[1]?.name).toBe("medic");
       expect(
         byIndex
           .slice(2)
@@ -757,7 +760,8 @@ describe("reconcileCockpitSession", () => {
         .slice()
         .sort((a, b) => a.index - b.index);
       expect(post[0]?.name).toBe("superdriver");
-      expect(post[1]?.name).toBe("superdoctor");
+      // ADR-133: W2 named "medic" canonically.
+      expect(post[1]?.name).toBe("medic");
       // Both teams must still be present (one was displaced + recreated).
       expect(
         post
@@ -786,7 +790,8 @@ describe("reconcileCockpitSession", () => {
       await reconcileCockpitSession(fx.tmux, "s", [], logger, sdDeps, sdNoAutoStart, true);
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
       expect(names).toContain("superdriver");
-      expect(names).toContain("superdoctor");
+      // ADR-133: W2 canonically named "medic". Legacy "superdoctor" window is preserved by orphan-prune for back-compat, but fresh creations use "medic".
+      expect(names).toContain("medic");
       expect(names).not.toContain("alpha");
     } finally {
       try {

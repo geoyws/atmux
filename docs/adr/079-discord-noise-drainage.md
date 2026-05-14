@@ -4,6 +4,8 @@
 **Date**: 2026-05-09
 **Driver-ref**: 2026-05-08 17:07 MYT superdriver three-bug bundle + 18:35 MYT sopx-driver 5-finding addendum (`/root/work/src/atmux/.atmux/handoff/superdriver-to-driver-discord-noise-20260508T1707-MYT.md`). Gate cleared by ADR-077 superdoctor wave shipping (`6db43f6` chore(release): 0.6.0). Operator (sopx-driver, 2026-05-08 18:30 MYT) measured `sopx/.atmux/logs/discord.log` at ~275 pings/24h with 90% bare-`[whip]` boilerplate; target ≤80/24h. Demo-week deadline 2026-05-13.
 
+> **Naming note 2026-05-14**: the role formerly called `superdoctor` (mentioned in §Driver-ref + §Context "what already shipped" rows) is now called **medic** per [ADR-133](133-medic-rename.md). Body refs to "superdoctor" retained for historical accuracy; supersession is naming-only, design unchanged.
+
 ## Context
 
 ### What already shipped (out of scope; referenced for context only)

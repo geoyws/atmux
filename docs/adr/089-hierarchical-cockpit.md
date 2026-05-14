@@ -7,6 +7,8 @@
 **Numbering shift**: this ADR is the **+1 shift** of driver-inbox's §ADR-088 hierarchical-cockpit ask, bumped to avoid collision with the live **ADR-086** (atmux-pulse, already shipped). The full shift is `driver-inbox §ADR-086→087, §ADR-087→088, §ADR-088→089 (this), §ADR-089→090, §ADR-090→091, §ADR-091→092`. Future readers MUST cross-reference using the shifted IDs, not the original driver-inbox numbering.
 **Reviewer pre-flag**: `.atmux/reviewer-preflag-ADR089-091.md` (signed 2026-05-13). Adjacent-class audit: `.atmux/audits/adr-089-091-adjacent-class-2026-05-13.md` (Class 2 F-key rebinding). All 7 §Decision-anchors + 3 Class-2 recommendations folded into §Decision below.
 
+> **Naming note 2026-05-14**: the `superdoctor` literal in this ADR's discriminated-union session-subtype examples (§Decision-anchor #2 + §Schema example + §Backward-compat) is now **medic** per [ADR-133](133-medic-rename.md). The Zod literal in `src/schema/cockpit.ts` has been renamed to `medic` with `superdoctor` accepted as a deprecated alias during a one-release-cycle deprecation window. Cockpit-topology decisions in this ADR remain canonical under the new name; supersession is naming-only.
+
 ## Context
 
 ### Current state — flat cockpit roster

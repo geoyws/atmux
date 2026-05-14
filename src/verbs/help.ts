@@ -34,6 +34,12 @@ Setup:
                               TUI auto-launch + cockpit session). Reads roster
                               from ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
+  martinet [tick|status] [--once] [--config <p>] [--state <p>]
+                              ADR-132 §D2: cockpit-tier fleet-wide whip-manager
+                              tick loop (window W3, sibling of medic at W2).
+                              'tick' iterates every enabled team; 'status'
+                              prints last-tick JSON. State persists at
+                              ~/.atmux/state/martinet-state.json.
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane

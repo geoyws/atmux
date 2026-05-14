@@ -130,6 +130,26 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Decisions / flags    | `decisions add/list/show/digest` / `flags add/list/show/resolve`          |
 | Driver self-state    | `brief-driver` / `driver note` / `reload brief-reload` / `reload config-reload` |
 | Superdriver          | `super-attach` (cross-team / fleet — ADR-025 in parent repo)              |
+| Cockpit              | `cockpit rebuild / reload` (ADR-063), `martinet tick / status` (ADR-132) |
+
+#### Cockpit topology (ADR-063 + ADR-077 + ADR-132 + ADR-133)
+
+The operator cockpit session (`atmux_teams` by default) carries the
+following window order — opt-in surfaces (`medic`, `martinet`) are
+gated by `cockpit.json` blocks, per-team viewers shift down by the
+number of opt-in surfaces enabled:
+
+| # | Window | Role | Authorizing ADR |
+|---|--------|------|-----------------|
+| 1 | `superdriver` | Operator cross-team REPL | ADR-063 |
+| 2 | `medic` (was `superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 |
+| 3 | `martinet` | Pluggable per-team whip-manager + fleet-wide iterator | ADR-132 §D2 |
+| 4..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
+
+Backward-compat: a cockpit.json without `medic` / `martinet` blocks
+retains the pre-ADR-077 / pre-ADR-132 topology (W1 superdriver +
+W2..N per-team viewers). Loader migrates legacy `superdoctor` keys
+to medic semantics with a deprecation warning per ADR-133 §D2.
 
 **ADR-132 §D6 (T5)** — `team.json::martinet` selects which pluggable
 cockpit-W3 whip-manager (`"claude"` degenerate baseline / `"cursor"`

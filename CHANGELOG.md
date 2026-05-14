@@ -16,6 +16,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 📝 Added — Whip §2.5 needs-approval surfacing (ADR-085, accepted)
+
+- **`needs-approval` scan** in every whip tick — surfaces three approval-debt buckets that previously aged silently: proposed ADRs that shipped impl but never had Status flipped, untriaged driver-inbox asks (>30min since the heading timestamp), and long-blocked kanban tasks (>2h since most recent transition). Live-not-cached per ADR-068 §HC#4.
+- **`atmux status` gains a NEEDS APPROVAL row** — text output shows per-bucket counts (`3 ADRs / 1 inbox / 0 kanban`); collapses to `✅ clear` when all buckets empty. `--json` snapshot grows a `needsApproval` field with per-bucket structured lists for downstream tooling (atmux-dashboard, medic loop, cockpit pulse).
+- **New Discord `[whip-needs-approval]` template** — verdict-first format, dedup-keyed on `<team>:<bucket>:<id>` with 30min window so the scan can stay live without the ping spamming.
+- **New `(deferred: <reason>)` ADR-status annotation convention** — an ADR intentionally held in `proposed` (waiting on an upstream dep, parallel decision, or operator review window) carries the `Status: proposed (deferred: <reason>)` annotation to suppress the per-tick ping. Bare `Status: proposed` continues to ping; the scanner reads the annotation literally. Convention-only — no lint gate today; if rot recurs, formalize as a pre-commit check.
+- **Opt-out**: `team.json::whip.needsApprovalEnabled = false` disables the surfacing pipeline for a team. Default: `true`.
+- **Operator reference doc**: new `docs/whip-needs-approval.md`.
+
+### 🔁 Renamed — cockpit role `superdoctor` → `medic` (ADR-133)
+
+- **Role rename** — the cockpit-tier self-healing role introduced in ADR-077 is renamed `superdoctor` → `medic`. Motivation: the existing `atmux doctor` verb caused operator confusion ("is doctor the verb or the cockpit process?"), and a single-word identifier reads cleaner in log lines + Discord pings + brief templates. Path B (`medic`, collision-free) picked over Path A (`doctor`, accept collision).
+- **Surfaces renamed**: cockpit window W2 name, `cockpit.json` block key, cockpit inbox key (`__superdoctor__` → `__medic__`), operator-doc filename (`docs/superdoctor.md` → `docs/medic.md`), skill directory + prompt filename (operator-dotfiles scope, out-of-band).
+- **Backward-compat shim** (one-release-cycle deprecation window): `cockpit.json` schema accepts both `medic` and `superdoctor` keys. Both present → `medic` wins, warn *"ignoring deprecated superdoctor block; medic block in effect (ADR-133)"*. Only `superdoctor` → coerce to medic semantics, warn *"deprecated key `superdoctor`, rename to `medic` per ADR-133"*. Only `medic` → canonical path, no warning. Same pattern for the `__medic__` / `__superdoctor__` inbox key in the `inbox_messages` SQLite table and the `medic` / `superdoctor` literals in the `complaints.source_kind` enum.
+- **Scope is naming-only**: ADR-077's design decisions (cockpit topology, cadence, authority bounds, P0 escalation runbook, complaint-box residency) remain canonical under the new name. ADR-077 retains its filename per the append-only ADR convention; a top-of-file annotation header points at ADR-133. Storage table names (any pre-existing `superdoctor_*` rows / tables) are out of scope — operator-facing surface only.
+
+> **NEXT RELEASE (BREAKING)** — once the deprecation window closes, the `superdoctor` key in `cockpit.json`, the `__superdoctor__` inbox key, and the `superdoctor` value in `complaints.source_kind` will be dropped from the schema. Schema-load on a config with the deprecated keys will soft-fail the cockpit rebuild with an actionable error pointing at ADR-133.
+
 ### ✨ Added — `atmux pulse` (ADR-086)
 
 - **`atmux pulse`** — cockpit-wide deterministic verdict probe. Iterates every enabled team in `~/.atmux/cockpit.json`, gathers commit count + doctor red count + kanban / driver-inbox / pending-decisions inputs, computes one of five verdicts (`🟢 Shipping` / `🟡 Cool` / `🟡 Idle` / `🔴 Stalled` / `🚨 Need you`), and pings Discord on verdict change or sustained-urgency dedup expiry. Phase 1 of the MiniMax observer (Phase 2 swaps the renderer for an LLM call against the same input bundle).

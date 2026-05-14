@@ -474,7 +474,6 @@ describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
       superdoctor: { enabled: true },
     });
     const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
-    // Shim lifts superdoctor → medic at the operator-config layer.
     expect(cockpit.medic?.enabled).toBe(true);
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain("deprecated top-level 'superdoctor'");
@@ -492,8 +491,6 @@ describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
     const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
     expect(cockpit.medic?.enabled).toBe(true);
     expect(cockpit.medic?.autoStart).toBe(false);
-    // Pre-parse shim stripped on-disk superdoctor; nothing left for the
-    // synthesized superdoctor (no sessions[] type=superdoctor either).
     expect(cockpit.superdoctor).toBeUndefined();
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain("BOTH");
@@ -513,9 +510,6 @@ describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
   });
 
   test('sessions[] `type: "superdoctor"` entry synthesizes BOTH cockpit.medic AND cockpit.superdoctor', async () => {
-    // Enrichment pass populates both back-compat fields from a single
-    // sessions[] entry so callers reading either keep working across
-    // the TR2 deprecation window.
     await writeCockpit({
       schemaVersion: 1,
       sessions: [
@@ -526,6 +520,25 @@ describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
     const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
     expect(cockpit.superdoctor?.enabled).toBe(true);
     expect(cockpit.medic?.enabled).toBe(true);
+  });
+
+  test('sessions[] `type: "medic"` entry synthesizes BOTH cockpit.medic AND cockpit.superdoctor (canonical path)', async () => {
+    // ADR-133 canonical session-walk path — operators landing on the
+    // new discriminator literal get both back-compat fields populated
+    // so duck-typed callers across the deprecation window keep working.
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        { type: "superdriver", name: "superdriver" },
+        { type: "medic", name: "medic", enabled: true },
+        { type: "team", name: "sopx", root: "/p/sopx" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    expect(warned).toHaveLength(0);
   });
 
   test("legacy flat roster (teams[] + superdoctor) shape-migrates first, no top-level superdoctor remains after shim", async () => {
