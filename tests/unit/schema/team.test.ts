@@ -25,7 +25,11 @@ import {
 describe("TeamWhip — valid shape + defaults", () => {
   test("empty object parses to all defaults", () => {
     const w = TeamWhip.parse({});
-    expect(w.intervalMins).toBe(5);
+    // intervalMins default raised from 5 → 15 on 2026-05-13 per
+    // t-dcbff97c §4: auto-drain teams only need the lead awake ~4×/hr,
+    // and the prior 5min cadence amplified the whip rate-limit footprint
+    // without commensurate benefit. Schema doc-comment is the SoT.
+    expect(w.intervalMins).toBe(15);
     expect(w.staleMin).toBe(90);
     expect(w.leadMaxMin).toBe(60);
     expect(w.autoRotate).toBe(false);
@@ -47,7 +51,7 @@ describe("TeamWhip — valid shape + defaults", () => {
     const w = TeamWhip.parse({ staleMin: 120, autoRotate: true });
     expect(w.staleMin).toBe(120);
     expect(w.autoRotate).toBe(true);
-    expect(w.intervalMins).toBe(5); // default
+    expect(w.intervalMins).toBe(15); // default (2026-05-13 bump per t-dcbff97c)
     expect(w.budgetPauseThreshold).toBe(90); // default
   });
 
