@@ -460,6 +460,53 @@ describe("start — happy path", () => {
     });
     expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F2");
   });
+
+  test("bug t-4d2936ac — start scrubs ANTHROPIC_API_KEY / AUTH_TOKEN / CLAUDE_CONFIG_DIR from the session env", async () => {
+    // Regression: operator-shell ANTHROPIC_API_KEY inheriting through
+    // the cage tmux session triggered the "Do you want to use this API
+    // key?" dialog on OAuth-account claude TUIs (2026-05-14 incident).
+    // start.ts now fires `tmux set-environment -u <var>` for each
+    // scrub-target var AFTER session creation; defense-in-depth for
+    // non-claude TUIs + member.command overrides that bypass tuiClaude.
+    //
+    // Empirical tmux behaviour (verified manually): `set-environment -u
+    // VAR` on a session WHERE the var was previously set drops the var
+    // from `show-environment` output. We seed the three scrub-target
+    // vars on the session post-start, run an INCREMENTAL start (which
+    // re-fires the scrub loop), and verify the seeded vars are gone.
+    await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
+    await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
+    const session = `atmux-${env.team}`;
+    // Seed the three target vars on the session.
+    for (const v of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR"]) {
+      await env.tmux.session.setEnvironment({ target: session, name: v, value: "seeded" });
+    }
+    // Sanity check: seed landed.
+    {
+      const proc = Bun.spawnSync({
+        cmd: ["tmux", "-S", env.socketPath, "show-environment", "-t", session],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const out = new TextDecoder().decode(proc.stdout);
+      expect(out).toContain("ANTHROPIC_API_KEY=seeded");
+      expect(out).toContain("ANTHROPIC_AUTH_TOKEN=seeded");
+      expect(out).toContain("CLAUDE_CONFIG_DIR=seeded");
+    }
+    // Incremental re-run — the post-newSession scrub loop fires
+    // regardless of sessionExisted (idempotent + cheap).
+    await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
+    // Seeded vars must now be gone.
+    const proc = Bun.spawnSync({
+      cmd: ["tmux", "-S", env.socketPath, "show-environment", "-t", session],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = new TextDecoder().decode(proc.stdout);
+    expect(out).not.toContain("ANTHROPIC_API_KEY=seeded");
+    expect(out).not.toContain("ANTHROPIC_AUTH_TOKEN=seeded");
+    expect(out).not.toContain("CLAUDE_CONFIG_DIR=seeded");
+  });
 });
 
 // ---------- start verb — live-lead guard ----------

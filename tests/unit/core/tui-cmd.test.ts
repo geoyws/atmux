@@ -93,7 +93,7 @@ describe("resolveTuiCommand priority chain", () => {
   test("priority 3: built-in claude with default env knobs", () => {
     const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "default" });
     expect(resolveTuiCommand(m, baseTeam, { env: {} })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
     );
   });
 
@@ -105,18 +105,18 @@ describe("resolveTuiCommand priority chain", () => {
       ATMUX_CLAUDE_PERMISSION: "auto",
     };
     expect(resolveTuiCommand(m, baseTeam, { env })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=high claude-canary --permission-mode auto",
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=high claude-canary --permission-mode auto",
     );
   });
 
   test("priority 3: built-in claude appends --model when explicit", () => {
     const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "claude-opus-4-7" });
     expect(resolveTuiCommand(m, baseTeam, { env: {} })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk --model claude-opus-4-7",
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk --model claude-opus-4-7",
     );
   });
 
-  test("priority 3: built-in claude with claudeAccount adds CLAUDE_CONFIG_DIR", () => {
+  test("priority 3: built-in claude with claudeAccount adds CLAUDE_CONFIG_DIR AFTER env -u strip", () => {
     const m = {
       name: "x",
       tui: "claude",
@@ -124,12 +124,15 @@ describe("resolveTuiCommand priority chain", () => {
       model: "default",
       claudeAccount: "ifca",
     } as unknown as TeamMember;
+    // The env -u CLAUDE_CONFIG_DIR strip comes FIRST; the per-process
+    // CLAUDE_CONFIG_DIR=... assignment comes AFTER and wins per POSIX
+    // semantics (`env -u FOO BAR=baz cmd` first strips, then assigns).
     expect(resolveTuiCommand(m, baseTeam, { env: { HOME: "/root" } })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDE_CONFIG_DIR=/root/.claude-ifca CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=/root/.claude-ifca CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
     );
   });
 
-  test("priority 3: claudeAccount=default suppresses CLAUDE_CONFIG_DIR", () => {
+  test("priority 3: claudeAccount=default suppresses CLAUDE_CONFIG_DIR assignment (env -u strip still fires)", () => {
     const m = {
       name: "x",
       tui: "claude",
@@ -137,9 +140,28 @@ describe("resolveTuiCommand priority chain", () => {
       model: "default",
       claudeAccount: "default",
     } as unknown as TeamMember;
+    // No CLAUDE_CONFIG_DIR=... assignment, but the env -u strip still
+    // protects against a stale operator-shell CLAUDE_CONFIG_DIR leaking.
     expect(resolveTuiCommand(m, baseTeam, { env: { HOME: "/root" } })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
     );
+  });
+
+  test("priority 3: bug t-4d2936ac — env -u scrub prefix lands BEFORE per-process assignments", () => {
+    // Regression test for the 2026-05-14 OAuth-account "Do you want to
+    // use this API key?" dialog: operator-shell ANTHROPIC_API_KEY leaked
+    // through tuiClaude unchanged. The env -u prefix MUST cover all
+    // three target vars in the documented order.
+    const m = mkMember({ name: "x", tui: "claude", cwd: "/p" });
+    const out = resolveTuiCommand(m, baseTeam, { env: {} });
+    expect(out).toContain("env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR");
+    // env -u prefix sits between the ATMUX_MEMBER/cd preamble and the
+    // CLAUDECODE=1 marker (i.e. immediately before any per-process
+    // assignments).
+    const envIdx = out.indexOf("env -u");
+    const claudecodeIdx = out.indexOf("CLAUDECODE=1");
+    expect(envIdx).toBeGreaterThan(-1);
+    expect(claudecodeIdx).toBeGreaterThan(envIdx);
   });
 
   test("default tui is claude when member.tui is unset", () => {

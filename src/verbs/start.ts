@@ -130,7 +130,7 @@ import {
 } from "../core/soft-stop.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ResumeManifest } from "../schema/resume.ts";
-import { resolveTuiCommand } from "../core/tui-cmd.ts";
+import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { applyCagePrefix, reconcileCockpitSession } from "./cockpit.ts";
@@ -488,6 +488,29 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         cwd: opts.cwd ?? process.cwd(),
       });
       logger.ok(`created tmux session: ${session}`);
+    }
+  }
+
+  // 7-env-scrub. Strip operator-shell artefacts from the cage tmux
+  //              session's environment BEFORE any pane spawn. The tmux
+  //              server inherits the calling process env at session-
+  //              creation time; without this scrub, a parent shell with
+  //              ANTHROPIC_API_KEY set flips every claude pane into env-
+  //              key bearer mode + triggers the "Do you want to use this
+  //              API key?" dialog (operator 2026-05-14 incident).
+  //              tuiClaude's `env -u …` prefix (src/core/tui-cmd.ts)
+  //              already protects the claude binary's process env; this
+  //              setenv -u layer is defense-in-depth for non-claude TUIs
+  //              + member.command overrides that bypass tuiClaude.
+  //              Best-effort: failures logged + ignored (the tuiClaude
+  //              prefix is the primary protection).
+  for (const v of CLAUDE_TUI_SCRUB_VARS) {
+    try {
+      await tmux.session.setEnvironment({ target: session, name: v, unset: true });
+    } catch (err) {
+      logger.warn(
+        `session env scrub: tmux set-environment -u ${v} failed (${err instanceof Error ? err.message : String(err)}) — tuiClaude prefix still protects claude TUIs`,
+      );
     }
   }
 

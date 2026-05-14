@@ -58,6 +58,7 @@ function buildFakeTmux(opts: {
       killSession: async () => {},
       listSessions: async () => [],
       renameSession: async () => {},
+      setEnvironment: async () => {},
     },
     window: {
       listWindows: async () =>

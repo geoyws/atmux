@@ -601,6 +601,8 @@ Resolution: `claudeAccount: "<suffix>"` → spawn cmd prepends `CLAUDE_CONFIG_DI
 
 **Override path interaction.** `member.command` (full override) and `team.tuiCommands[<tui>]` (custom prefix) paths bypass this auto-application — those are operator-owned envelopes; if you want the env var there, write it into the prefix/override yourself. The auto-apply is on the built-in claude path only.
 
+**Operator-shell env scrub.** `atmux start` strips `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CONFIG_DIR` from the cage tmux session's environment after `new-session`. This is defense-in-depth for member.command / tuiCommands paths that bypass tuiClaude's own `env -u` prefix (bug t-4d2936ac, 2026-05-14 incident): without the scrub, an operator running `atmux start` from a shell with `ANTHROPIC_API_KEY` exported would have every claude pane fall into env-key bearer mode + hit the "Do you want to use this API key?" dialog every spawn. The scrub is unconditional + idempotent — no operator action needed before invoking `atmux start`.
+
 ## Commands
 
 ```

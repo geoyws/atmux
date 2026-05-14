@@ -498,6 +498,7 @@ function buildFakeTmux(setup: FakeTmuxSetup): TmuxNamespace {
       killSession: async () => {},
       listSessions: async () => [],
       renameSession: async () => {},
+      setEnvironment: async () => {},
     },
     window: {
       listWindows: async (_session: string) => {

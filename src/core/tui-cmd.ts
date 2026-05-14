@@ -96,6 +96,22 @@ export function resolveTuiCommand(
 
 // ---------- Built-ins ----------
 
+/** Env vars stripped from the claude TUI invocation. ANTHROPIC_API_KEY +
+ *  ANTHROPIC_AUTH_TOKEN are operator-shell artefacts that flip the claude
+ *  CLI to env-key bearer mode — OAuth-account teams hit the "Do you want
+ *  to use this API key?" dialog every spawn (2026-05-14 incident).
+ *  CLAUDE_CONFIG_DIR is stripped because a stale parent-shell value would
+ *  win over our intentional non-default-account assignment if we didn't
+ *  scrub first; for default accounts the strip is the only protection
+ *  against a leaked operator value. The `env -u …` prefix must come
+ *  BEFORE the per-process var assignments — POSIX semantics: `env -u FOO
+ *  BAR=baz cmd` first strips FOO, then sets BAR, then execs cmd. */
+const CLAUDE_TUI_ENV_SCRUB = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR"];
+
+function claudeEnvScrubPrefix(): string {
+  return `env ${CLAUDE_TUI_ENV_SCRUB.map((v) => `-u ${v}`).join(" ")} `;
+}
+
 function tuiClaude(
   name: string,
   cwd: string,
@@ -117,8 +133,11 @@ function tuiClaude(
   if (typeof ma === "string" && ma.length > 0 && ma !== "default" && home.length > 0) {
     accountEnv = `CLAUDE_CONFIG_DIR=${posixQuote(`${home}/.claude-${ma}`)} `;
   }
-  return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${accountEnv}CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} ${bin} --permission-mode ${permission}${modelFlag}`;
+  return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${claudeEnvScrubPrefix()}${accountEnv}CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} ${bin} --permission-mode ${permission}${modelFlag}`;
 }
+
+/** Exported for callers (start.ts session-level setenv -u, tests). */
+export const CLAUDE_TUI_SCRUB_VARS: ReadonlyArray<string> = CLAUDE_TUI_ENV_SCRUB;
 
 function tuiOpencode(name: string, cwd: string, model: string, env: NodeJS.ProcessEnv): string {
   const bin = env.ATMUX_OPENCODE_BIN ?? "opencode";
