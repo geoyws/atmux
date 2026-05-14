@@ -29,7 +29,7 @@
 
 import type { CrontabIO } from "../abstractions/crontab.ts";
 import { ConfigError } from "../errors.ts";
-import type { Team } from "../schema/team.ts";
+import { DEFAULT_MERGER_CYCLE_INTERVAL_MINS, type Team } from "../schema/team.ts";
 
 /**
  * ADR-079 §A: render a "star-slash-N stars" cron expression for an
@@ -119,6 +119,12 @@ export interface RenderCronBlockOpts {
   /** Optional `TMUX_TMPDIR=<value> ` prefix per ADR-018 (cage socket
    *  isolation). Bash equivalent: `lib/cron.sh:46-48`. */
   tmuxTmpdir?: string;
+  /** ADR-088 W7 (t-2f12839e) — transient override for the `merge-cycle`
+   *  line's cadence (minutes). When set, beats the team.merger
+   *  .cycleIntervalMins config for THIS render. Used by `atmux
+   *  cron-install --template merge-cycle --interval <N>` so the
+   *  operator can pin a one-off cadence without rewriting team.json. */
+  mergerIntervalOverride?: number;
 }
 
 /**
@@ -222,6 +228,20 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
     out.push(`${cronEvery(unblockerMins)} ${baseEnv} unblocker tick ${logTail("unblocker")}`);
   }
 
+  // 7. ADR-088 §Decision-5 W7 — merge-cycle: bulk per-member-branch
+  // fan-in. Gated on `team.merger.enabled === true`. Cadence:
+  // (a) `opts.mergerIntervalOverride` (transient install-time override
+  // from `cron-install --template merge-cycle --interval <N>`) wins
+  // first, then (b) `team.merger.cycleIntervalMins`, then (c) the
+  // module's `DEFAULT_MERGER_CYCLE_INTERVAL_MINS` (15).
+  if (team.merger?.enabled === true) {
+    const mergerMins =
+      opts.mergerIntervalOverride ??
+      team.merger.cycleIntervalMins ??
+      DEFAULT_MERGER_CYCLE_INTERVAL_MINS;
+    out.push(`${cronEvery(mergerMins)} ${baseEnv} merge-cycle --push ${logTail("merge-cycle")}`);
+  }
+
   return out;
 }
 
@@ -241,8 +261,7 @@ const ENV_PREAMBLE = [
 
 /** Atmux verb names that appeared as bare cron lines in pre-marker
  *  installs. Used to scrub pre-marker orphans during install. */
-const ORPHAN_VERB_RE =
-  /\batmux\s+(whip|report|decisions|groom|discorder|unblocker)([\s]|$)/;
+const ORPHAN_VERB_RE = /\batmux\s+(whip|report|decisions|groom|discorder|unblocker)([\s]|$)/;
 
 export interface InstallCronBlockOpts extends RenderCronBlockOpts {
   /** Current crontab contents (from `CrontabIO.read()`) — `null` /
@@ -276,9 +295,7 @@ export interface InstallCronBlockOpts extends RenderCronBlockOpts {
 export function installCronBlock(opts: InstallCronBlockOpts): string {
   const { team, atmuxDir, current } = opts;
   const body = current ?? "";
-  const stripped = stripOrphanLines(
-    stripByAtmuxDir(stripBlockByTeam(body, team.name), atmuxDir),
-  );
+  const stripped = stripOrphanLines(stripByAtmuxDir(stripBlockByTeam(body, team.name), atmuxDir));
   const block = renderCronBlock(opts);
   // Bash trims exactly ONE trailing newline (`${stripped%$'\n'}`) — match
   // that so a crontab with a deliberate trailing blank line stays

@@ -232,7 +232,7 @@ describe("mergeCycle — mixed outcomes", () => {
       _base: string,
       wtBranch: string,
       _repoPath: string,
-      _opts: MergeMemberOpts,
+      _opts?: MergeMemberOpts,
     ): Promise<MergeMemberResult> => {
       if (wtBranch === "geoyws-alpha") {
         return { status: "merged", sha: "sha-alpha" };

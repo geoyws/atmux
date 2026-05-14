@@ -463,9 +463,24 @@ export const TeamMerger = z
      *  than this AND zero merge-back fires the probe. Default `24`
      *  (one-day fan-in cadence target). */
     stalenessHours: z.number().int().min(1).default(24),
+    /** ADR-088 §Decision-5 / W7 (t-2f12839e) — cron cadence for the
+     *  `atmux merge-cycle` line (added to the team's standard cron
+     *  block only when `enabled === true`). Default `15` (minutes);
+     *  must be one of cron's divisor-of-60 set (1, 2, 3, 4, 5, 6, 10,
+     *  12, 15, 20, 30, 60). The `cronEvery` renderer fail-fasts on
+     *  non-divisors, but specifying directly here keeps the operator's
+     *  intent visible in team.json. `atmux cron-install --template
+     *  merge-cycle --interval <N>` accepts a transient override that
+     *  applies for the install without rewriting this field. */
+    cycleIntervalMins: z.number().int().positive().optional(),
   })
   .strict();
 export type TeamMerger = z.infer<typeof TeamMerger>;
+
+/** ADR-088 §Decision-5 / W7 default — used by `cron.ts::renderCronLines`
+ *  + `cron-install` verb when `team.merger.cycleIntervalMins` is unset.
+ *  Matches the 15-min default the ADR specifies. */
+export const DEFAULT_MERGER_CYCLE_INTERVAL_MINS = 15;
 
 export const TeamObservability = z
   .object({
