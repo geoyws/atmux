@@ -207,7 +207,7 @@ describe("makeDriftSafeDefaults", () => {
     const raw = { name: "t", members: [] };
     const safe = makeDriftSafeDefaults(raw);
     const parsed = Team.parse(safe);
-    expect(parsed.whip?.intervalMins).toBe(5);
+    expect(parsed.whip?.intervalMins).toBe(15); // schema default (2026-05-13 t-dcbff97c)
     expect(parsed.whip?.staleMin).toBe(90);
     expect(parsed.whip?.leadMaxMin).toBe(60);
     expect(parsed.whip?.autoRotate).toBe(false);
@@ -266,7 +266,7 @@ describe("makeDriftSafeDefaults", () => {
 describe("TeamWhip schema", () => {
   test("empty object parses to all defaults", () => {
     const w = TeamWhip.parse({});
-    expect(w.intervalMins).toBe(5);
+    expect(w.intervalMins).toBe(15); // schema default (2026-05-13 t-dcbff97c)
     expect(w.staleMin).toBe(90);
     expect(w.leadMaxMin).toBe(60);
     expect(w.autoRotate).toBe(false);

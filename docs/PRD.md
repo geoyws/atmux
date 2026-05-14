@@ -131,6 +131,17 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Driver self-state    | `brief-driver` / `driver note` / `reload brief-reload` / `reload config-reload` |
 | Superdriver          | `super-attach` (cross-team / fleet — ADR-025 in parent repo)              |
 
+**ADR-132 §D6 (T5)** — `team.json::martinet` selects which pluggable
+cockpit-W3 whip-manager (`"claude"` degenerate baseline / `"cursor"`
+composer-2-fast production default) observes + nudges this team.
+Resolution: `team.martinet` > `cockpit.defaultMartinet` > hardcoded
+`"claude"`. Existing rosters without the field keep the per-team
+whip codepath unchanged. Companion `team.martinetOverrides` tunes
+`cadenceSec` (default 270s) and `escalationConfidenceThreshold`
+(default 0.7). Cockpit-level provisioning lives in `cockpit.json::
+martinet` — see ADR-132 §D6 for the W3 cage / `cursor-agent` path /
+cage-tier shape.
+
 ### 3.2 TUI matrix
 
 | TUI         | Binary           | Default model                                  |

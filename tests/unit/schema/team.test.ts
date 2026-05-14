@@ -10,9 +10,13 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  DEFAULT_MARTINET_CADENCE_SEC,
+  DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
   DEFAULT_WORKTREE_ROOT,
+  MartinetImpl,
   Team,
   TeamFallback,
+  TeamMartinetOverrides,
   TeamMember,
   TeamWhip,
 } from "../../../src/schema/team.ts";
@@ -22,7 +26,11 @@ import {
 describe("TeamWhip — valid shape + defaults", () => {
   test("empty object parses to all defaults", () => {
     const w = TeamWhip.parse({});
-    expect(w.intervalMins).toBe(5);
+    // intervalMins default raised from 5 → 15 on 2026-05-13 per
+    // t-dcbff97c §4: auto-drain teams only need the lead awake ~4×/hr,
+    // and the prior 5min cadence amplified the whip rate-limit footprint
+    // without commensurate benefit. Schema doc-comment is the SoT.
+    expect(w.intervalMins).toBe(15);
     expect(w.staleMin).toBe(90);
     expect(w.leadMaxMin).toBe(60);
     expect(w.autoRotate).toBe(false);
@@ -44,7 +52,7 @@ describe("TeamWhip — valid shape + defaults", () => {
     const w = TeamWhip.parse({ staleMin: 120, autoRotate: true });
     expect(w.staleMin).toBe(120);
     expect(w.autoRotate).toBe(true);
-    expect(w.intervalMins).toBe(5); // default
+    expect(w.intervalMins).toBe(15); // default (2026-05-13 bump per t-dcbff97c)
     expect(w.budgetPauseThreshold).toBe(90); // default
   });
 
@@ -369,5 +377,121 @@ describe("TeamMember — label field (ADR-136 Option B)", () => {
   test("unicode + emoji label parses successfully — freeform allowed", () => {
     const m = TeamMember.parse({ name: "up-impl", label: "🎨 freeform unicode" });
     expect(m.label).toBe("🎨 freeform unicode");
+  });
+});
+
+// ---------- ADR-132 §D6: MartinetImpl + TeamMartinetOverrides ----------
+
+describe("MartinetImpl — 2026-05-14 two-impl enum", () => {
+  test("accepts 'claude' and 'cursor' literals", () => {
+    expect(MartinetImpl.parse("claude")).toBe("claude");
+    expect(MartinetImpl.parse("cursor")).toBe("cursor");
+  });
+
+  test("rejects dropped backends 'minimax' and 'kimi'", () => {
+    // Per the 2026-05-14 12:53 MYT driver simplification: MiniMax +
+    // Kimi were dropped pre-implementation ("unreliable and not
+    // smart enough"). The schema is the canonical fence — re-
+    // introducing either requires both this enum AND the
+    // `Martinet["name"]` literal in src/abstractions/martinet.ts
+    // to be updated in lockstep.
+    expect(() => MartinetImpl.parse("minimax")).toThrow();
+    expect(() => MartinetImpl.parse("kimi")).toThrow();
+  });
+
+  test("rejects arbitrary strings", () => {
+    expect(() => MartinetImpl.parse("gpt5")).toThrow();
+    expect(() => MartinetImpl.parse("")).toThrow();
+    expect(() => MartinetImpl.parse("CLAUDE")).toThrow(); // case-sensitive
+  });
+});
+
+describe("TeamMartinetOverrides — defaults + bounds", () => {
+  test("empty object parses cleanly — both fields are opt-in", () => {
+    const o = TeamMartinetOverrides.parse({});
+    expect(o.cadenceSec).toBeUndefined();
+    expect(o.escalationConfidenceThreshold).toBeUndefined();
+  });
+
+  test("cadenceSec accepts positive integers", () => {
+    const o = TeamMartinetOverrides.parse({ cadenceSec: 300 });
+    expect(o.cadenceSec).toBe(300);
+  });
+
+  test("cadenceSec rejects zero / negatives / non-integers", () => {
+    expect(() => TeamMartinetOverrides.parse({ cadenceSec: 0 })).toThrow();
+    expect(() => TeamMartinetOverrides.parse({ cadenceSec: -30 })).toThrow();
+    expect(() => TeamMartinetOverrides.parse({ cadenceSec: 1.5 })).toThrow();
+  });
+
+  test("escalationConfidenceThreshold accepts 0.0-1.0 bounds inclusive", () => {
+    expect(
+      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: 0 })
+        .escalationConfidenceThreshold,
+    ).toBe(0);
+    expect(
+      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: 1 })
+        .escalationConfidenceThreshold,
+    ).toBe(1);
+    expect(
+      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: 0.7 })
+        .escalationConfidenceThreshold,
+    ).toBe(0.7);
+  });
+
+  test("escalationConfidenceThreshold rejects out-of-range values", () => {
+    expect(() =>
+      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: -0.01 }),
+    ).toThrow();
+    expect(() =>
+      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: 1.01 }),
+    ).toThrow();
+  });
+
+  test("unknown keys rejected (.strict drift detection)", () => {
+    expect(() =>
+      TeamMartinetOverrides.parse({ cadenceSecondz: 270 }),
+    ).toThrow();
+  });
+
+  test("Team accepts martinet + martinetOverrides at top-level", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      martinet: "cursor",
+      martinetOverrides: { cadenceSec: 180, escalationConfidenceThreshold: 0.8 },
+    });
+    expect(team.martinet).toBe("cursor");
+    expect(team.martinetOverrides?.cadenceSec).toBe(180);
+    expect(team.martinetOverrides?.escalationConfidenceThreshold).toBe(0.8);
+  });
+
+  test("Team without martinet field parses (backward compat — defaults to undefined)", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.martinet).toBeUndefined();
+    expect(team.martinetOverrides).toBeUndefined();
+  });
+
+  test("Team.martinet rejects dropped 'minimax' value at the top-level too", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        martinet: "minimax" as unknown as MartinetImpl,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("Martinet per-impl default constants", () => {
+  test("DEFAULT_MARTINET_CADENCE_SEC is 270s (ADR-132 §D3)", () => {
+    // Both shipping impls (claude + cursor) default to 270s — pin
+    // the constant so a drift here surfaces in the resolver test
+    // alongside this one.
+    expect(DEFAULT_MARTINET_CADENCE_SEC).toBe(270);
+  });
+
+  test("DEFAULT_MARTINET_ESCALATION_CONFIDENCE is 0.7 (ADR-132 §D5 E5)", () => {
+    expect(DEFAULT_MARTINET_ESCALATION_CONFIDENCE).toBe(0.7);
   });
 });

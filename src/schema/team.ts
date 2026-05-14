@@ -412,6 +412,58 @@ export const TeamObservability = z
   .strict();
 export type TeamObservability = z.infer<typeof TeamObservability>;
 
+/**
+ * `team.json::martinet` enum — pluggable cockpit-W3 whip-manager impl
+ * picked for this team. Two-impl set per the 2026-05-14 12:53 MYT
+ * ADR-132 simplification (MiniMax + Kimi dropped as "unreliable and
+ * not smart enough"; `claude` is the degenerate baseline, `cursor`
+ * runs composer-2-fast as the production default).
+ *
+ * Adding a new backend requires extending this enum AND
+ * `Martinet["name"]` in `src/abstractions/martinet.ts` in lockstep —
+ * the runtime resolver (`resolveMartinet`) lives in
+ * `src/core/martinet-config.ts` and bridges schema-string to impl-
+ * factory dispatch.
+ */
+export const MartinetImpl = z.enum(["claude", "cursor"]);
+export type MartinetImpl = z.infer<typeof MartinetImpl>;
+
+/**
+ * `team.json::martinetOverrides` — per-team knobs that compose over
+ * the impl-side defaults baked into each Martinet factory. Both
+ * fields opt-in; the resolver merges-by-key so explicit values win
+ * over per-impl defaults.
+ *
+ * `.strict()` consistent with the surrounding sub-blocks — drift
+ * detection requires unknown-key rejection (ADR-054 §D3).
+ */
+export const TeamMartinetOverrides = z
+  .object({
+    /** Per-tick cadence in seconds. Per-impl defaults: `claude` 270s,
+     *  `cursor` 270s (per ADR-132 §D3 — both stay aligned with the
+     *  existing 270s whip cadence; tuned per-team only when commit
+     *  cadence pressure or budget pressure demands it). */
+    cadenceSec: z.number().int().positive().optional(),
+    /** Self-confidence floor (0.0-1.0) below which the non-Claude
+     *  Martinet escalates instead of acting autonomously. Default
+     *  0.7 per ADR-132 §D5 E5. Ignored by ClaudeMartinet (the
+     *  degenerate impl has no self-confidence signal). */
+    escalationConfidenceThreshold: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+export type TeamMartinetOverrides = z.infer<typeof TeamMartinetOverrides>;
+
+/** ADR-132 §D5 E5 default — non-Claude Martinet's self-confidence
+ *  floor. Below this, the impl escalates to the Claude lead instead
+ *  of firing the action. Co-located with the schema so resolver
+ *  call-sites share the constant. */
+export const DEFAULT_MARTINET_ESCALATION_CONFIDENCE = 0.7;
+
+/** ADR-132 §D3 default — per-tick cadence in seconds for both
+ *  shipping impls. ClaudeMartinet matches the legacy 270s whip
+ *  cadence; CursorMartinet matches it for parity. */
+export const DEFAULT_MARTINET_CADENCE_SEC = 270;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -506,6 +558,16 @@ export const Team = z
      *  does not disable the feature (use bare `stop` for the no-grace
      *  path). */
     softStopGraceSeconds: z.number().int().nonnegative().optional(),
+    /** ADR-132 §D6: pluggable cockpit-W3 whip-manager impl. Default-
+     *  unset resolves to `cockpit.json::defaultMartinet`, then to the
+     *  hard-coded `"claude"` baseline (preserves the pre-Martinet
+     *  per-team whip codepath for existing rosters). Restart-to-swap
+     *  per OQ-1: changes require an `atmux cockpit rebuild` cycle. */
+    martinet: MartinetImpl.optional(),
+    /** ADR-132 §D6: per-team knobs that compose over per-impl
+     *  defaults baked into each Martinet factory. Resolver merges
+     *  by-key (explicit > per-impl default). */
+    martinetOverrides: TeamMartinetOverrides.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),
