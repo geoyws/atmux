@@ -66,14 +66,15 @@ Hourly `/loop /whip` cycle, in order:
 
 1. **Read its own inbox** (`inbox_messages` table, member `__superdoctor__`) — heads-up nudges from team leads or members.
 2. **Sweep each enabled team** — `atmux doctor --json` + `atmux status --json` per team. Detection layer (ADR-019).
-3. **Triage** — silent if all green. If yellow/red anywhere, route into investigation.
-4. **Investigate** — trace the anomaly to its root cause. Read git log, recent commits, lead-queue entries, driver-inbox archive. Forks an Agent (Sonnet for read-only research) when the search is wide.
-5. **Decide authority level**:
+3. **Kanban-hygiene pass** — `atmux hygiene-tick --team-dir <root> --json` per team (ADR-131). Runs five detectors (`ghost-owner`, `lane-mismatch`, `role-mismatch`, `lane-null-orphan`, `prio-null`); upserts fingerprints into `superdoctor_hygiene` table; drains ONE deterministic auto-fix per tick per team via the severity/confidence ladder. JSON output names what was detected, drained, or deferred — agent decides whether to surface to Discord (`[hygiene-blocker]` template only when a P0 wedged ≥4h has zero deterministic candidates).
+4. **Triage** — silent if all green. If yellow/red anywhere, route into investigation.
+5. **Investigate** — trace the anomaly to its root cause. Read git log, recent commits, lead-queue entries, driver-inbox archive. Forks an Agent (Sonnet for read-only research) when the search is wide.
+6. **Decide authority level**:
    - File-only (default): write a complaint to the affected team's complaint box; ping its lead via `atmux send <team>:<lead>`.
    - Action: rotate a wedged lead, clear a confused member, cycle a stuck cage, push a fix to atmux's own source on a branch.
    - P0 send-keys bypass (rare): direct `tmux send-keys` to a member or lead pane when the SQL inbox routing is too slow (e.g. demo in 20min, member wedged on a recoverable error).
-6. **Author preventive ask** — every complaint includes a `preventive_ask` field. The point isn't fixing this incident; it's ensuring the next one doesn't happen.
-7. **Log everything** — every action superdoctor takes is logged to its own complaint box first. Audit trail survives a misdiagnosis.
+7. **Author preventive ask** — every complaint includes a `preventive_ask` field. The point isn't fixing this incident; it's ensuring the next one doesn't happen.
+8. **Log everything** — every action superdoctor takes is logged to its own complaint box first. Audit trail survives a misdiagnosis.
 
 ## What its actions look like
 

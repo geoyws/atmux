@@ -33,6 +33,20 @@ export type TuiKind = z.infer<typeof TuiKind>;
 export const TeamMember = z
   .object({
     name: z.string().min(1),
+    /** ADR-136 (Option B): display label decoupled from member `name`.
+     *  When set, the display layer (buildWindowName, status, Discord,
+     *  briefs) uses `label`; the `name` field remains the immutable id
+     *  (kanban owner refs, state-file keys, socket-pubsub topics). When
+     *  unset, the display layer falls back to `name` — zero migration
+     *  for existing teams. Refine rule rejects `:` and `.` because both
+     *  are tmux window-name separator chars and would break
+     *  `__<team>__<member>` parsing. */
+    label: z
+      .string()
+      .refine((s) => !s.includes(":") && !s.includes("."), {
+        message: "label cannot contain ':' or '.' (tmux separator chars)",
+      })
+      .optional(),
     role: z.string().optional(),
     lane: z.string().optional(),
     tui: TuiKind.optional(),
@@ -347,6 +361,57 @@ export const TeamGitter = z
   .strict();
 export type TeamGitter = z.infer<typeof TeamGitter>;
 
+/**
+ * t-e89c03f7: observability sub-shape — opt-in toggles for forensic
+ * data collection that's useful for offline analysis but isn't load-
+ * bearing for any live verb. Symmetric with ADR-062 lane-tick gating
+ * (the same field shape is used to opt into expensive observability
+ * paths without making them mandatory).
+ */
+/** ADR-088 §Decision-2+3+6: per-member-branch fan-in policy ("merger"
+ *  role). Worktree-isolated teams accumulate `<base>-<member>` branches
+ *  whose commits never automatically return to `<base>`. Opt-in
+ *  `team.merger.enabled` activates either a `merger` member role
+ *  (Shape A) or driver-fired `atmux merge-cycle` verb (Shape B) — both
+ *  consume the same effective config. Defaults preserve the
+ *  pre-ADR-088 behaviour (operator-manual fan-in). */
+export const TeamMerger = z
+  .object({
+    /** When `true`, fan-in automation is enabled: a `merger` member
+     *  with role=`merger` runs the standard claim+work loop, or the
+     *  `atmux merge-cycle` cron-template fires unattended. Default
+     *  `false` — existing teams unaffected. */
+    enabled: z.boolean().default(false),
+    /** Branch to merge per-member branches into. Optional — when
+     *  unset, `resolveMergerConfig` resolves it at read-time via
+     *  `git -C <repoPath> branch --show-current` (mirrors ADR-088
+     *  §Decision-3 pseudocode). Explicit value useful when the team
+     *  operates on a branch other than the parent worktree's current
+     *  HEAD (e.g. cron-fired merges against a fixed `<product>-staging`
+     *  branch — gated by the push-policy guard in W2). */
+    baseBranch: z.string().min(1).optional(),
+    /** Hours-of-staleness threshold for the W6 `merger-branch-stale`
+     *  doctor probe. A `<base>-<member>` branch with commits older
+     *  than this AND zero merge-back fires the probe. Default `24`
+     *  (one-day fan-in cadence target). */
+    stalenessHours: z.number().int().min(1).default(24),
+  })
+  .strict();
+export type TeamMerger = z.infer<typeof TeamMerger>;
+
+export const TeamObservability = z
+  .object({
+    /** t-e89c03f7: when true, every UNKNOWN classification from
+     *  `classifyPane` appends a redacted-evidence row to
+     *  `<atmuxDir>/logs/pane-state-unknown.jsonl`. Used for the
+     *  Phase B classifier-extension pass (top-N pattern catalog
+     *  refinement). Default false — opt-in to avoid disk churn on
+     *  teams that aren't analyzing the data. */
+    paneStateUnknownLog: z.boolean().optional(),
+  })
+  .strict();
+export type TeamObservability = z.infer<typeof TeamObservability>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -428,6 +493,13 @@ export const Team = z
     unblocker: TeamUnblocker.optional(),
     /** ADR-080 §B2: gitter-member knobs (auto-done scan repo path). */
     gitter: TeamGitter.optional(),
+    /** ADR-088 §Decision-2: per-member-branch fan-in policy (merger
+     *  role). Opt-in via `merger.enabled: true`; effective config
+     *  resolved at read-time via {@link resolveMergerConfig} from
+     *  `src/core/merger-config.ts`. */
+    merger: TeamMerger.optional(),
+    /** t-e89c03f7: observability toggles (forensic data collection). */
+    observability: TeamObservability.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. Setting `0` collapses the grace to a single tick but
@@ -445,3 +517,9 @@ export type Team = z.infer<typeof Team>;
  *  is unset. Co-located with the schema so read-sites in W3 (start),
  *  W4 (stop), and W5 (doctor) share the same constant. */
 export const DEFAULT_WORKTREE_ROOT = ".atmux/worktrees";
+
+/** ADR-088 §Decision-3: default staleness window (hours) for the
+ *  merger-branch-stale doctor probe + general merger heuristics. Mirrors
+ *  the Zod `stalenessHours.default(24)` so non-Zod callers (W6 probe,
+ *  brief docs) share the same constant. */
+export const DEFAULT_MERGER_STALENESS_HOURS = 24;

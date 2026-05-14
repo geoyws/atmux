@@ -4,6 +4,7 @@
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-6dc9a673)
 **Parent EPIC**: t-753fb165
+**Driver-ref**: 2026-05-14 driver session — operator's diagnostic question: *"why was this not surfaced to the lead? why did the lead do nothing?"* after observing whip-impl spend ~2hr cycling through push-related modal prompts (each selected option spawned a new modal asking the next question) instead of implementing t-7e7031dc.
 **Resolves failure class**: agent-cycling-through-modal-soup (pane-alive-with-changing-prompts-and-zero-commits) — adjacent to ADR-139 refusal class but distinct in fingerprint.
 
 ## Context
@@ -122,7 +123,7 @@ On detection fire:
 2. **Flag filing** — `atmux flag add --severity high --subject "modal-cycling detected on <member>" --body "<modals seen + taskId + windowMin>"` — operator sees in normal complaint review.
 3. **Lead escalation** — `atmux tell-lead "[detector] modal-cycling on {member} — see flag {fid}"` — lead may itself be stuck per ADR-140 medic-event path, in which case the flag is the durable audit trail.
 
-Three surfaces (clarifier, flag, tell-lead) layered for resilience: clarifier might be ignored, tell-lead might race with stuck-lead, flag is the durable backstop.
+Three surfaces (clarifier, flag, tell-lead) layered for resilience: clarifier might be ignored, tell-lead might race with stuck-lead, flag is the durable backstop. **Durable-first** per ADR-091: the modal-history state-file row records detection BEFORE any external messaging fires, so a partial failure (Discord rate-limited / member pane gone) doesn't leave us with notification-without-state.
 
 ## State-file format (§D1 expanded)
 
@@ -274,3 +275,9 @@ Wider EPIC acceptance gates T2-T3 — those are out of T1's scope.
 - **LLM-classifier for modal-class semantic similarity** — v1 uses simple hash-equality on the modal-text region. "Is modal #2 semantically *the same problem* as modal #1?" is a richer question that the LLM-classifier could answer (catches near-duplicate prompts with slight wording variation that escape hash-equality). Deferred until regex+hash false-negative rate becomes operationally meaningful.
 - **Auto-rotation on modal-cycling** — v1 escalation chain is *clarifier + flag + tell-lead*, not rotation. Modal-cycling may be a brief-content problem (wrong instructions causing the prompt loop) rather than agent-context-degradation; rotating the agent doesn't fix a wrong brief. Rotation as remediation deferred to Phase 2 (after observing whether clarifier dispatch resolves the common cases).
 - **Productive-cycling whitelist** (modal patterns that are always-productive even with zero commits, e.g. multi-step deploy approval flows) — v1 covers via `exemptMembers` per-member opt-out. Per-modal-class whitelist deferred until concrete demand emerges.
+
+## Audit trail
+
+Origin: 2026-05-14 driver session observation — whip-impl 2hr push-modal cycling on `t-7e7031dc`. Operator diagnostic question recorded verbatim in frontmatter above. Modal-class sequence (push → variant-a/b → variant-c/unclaim) is the canonical fixture for T3 e2e synthesis. EPIC `t-753fb165` body lists all 5 architecture pieces verbatim; this ADR-142 is the T1 planner-decomp artifact.
+
+Merge-resolution note: this ADR was independently drafted on both `geoyws-planner` and `geoyws-up-impl` branches under the same Task `t-6dc9a673`. The trunk-side draft (more thorough — comparison table, adjacent-failure-class survey, tradeoff matrix) is preserved as the canonical body; the up-impl draft's `Driver-ref` frontmatter, durable-first reference, and this Audit-trail section have been folded in. Resolved at trunk-merge time by gitter per `t-84d73310`.

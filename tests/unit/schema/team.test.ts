@@ -13,6 +13,7 @@ import {
   DEFAULT_WORKTREE_ROOT,
   Team,
   TeamFallback,
+  TeamMember,
   TeamWhip,
 } from "../../../src/schema/team.ts";
 
@@ -340,5 +341,33 @@ describe("Team schema — worktreeIsolation + worktreeRoot (ADR-082 §2)", () =>
     // so the effective default has a single source of truth. Pin the
     // value so a rename in the schema file surfaces here.
     expect(DEFAULT_WORKTREE_ROOT).toBe(".atmux/worktrees");
+  });
+});
+
+// ---------- TeamMember.label (ADR-136 TR2) ----------
+
+describe("TeamMember — label field (ADR-136 Option B)", () => {
+  test("missing label parses successfully — backward compat with existing team.json", () => {
+    const m = TeamMember.parse({ name: "up-impl" });
+    expect(m.name).toBe("up-impl");
+    expect(m.label).toBeUndefined();
+  });
+
+  test("plain ASCII label parses successfully", () => {
+    const m = TeamMember.parse({ name: "up-impl", label: "My Custom Display" });
+    expect(m.label).toBe("My Custom Display");
+  });
+
+  test("label with ':' rejected — tmux separator", () => {
+    expect(() => TeamMember.parse({ name: "up-impl", label: "name:with:colon" })).toThrow();
+  });
+
+  test("label with '.' rejected — tmux separator", () => {
+    expect(() => TeamMember.parse({ name: "up-impl", label: "name.with.dot" })).toThrow();
+  });
+
+  test("unicode + emoji label parses successfully — freeform allowed", () => {
+    const m = TeamMember.parse({ name: "up-impl", label: "🎨 freeform unicode" });
+    expect(m.label).toBe("🎨 freeform unicode");
   });
 });
