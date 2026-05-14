@@ -12,6 +12,8 @@ import { exists } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { ConfigError } from "../errors.ts";
 import { Cockpit, type Cockpit as CockpitShape, type CockpitTeam } from "../schema/cockpit.ts";
+import type { Team as TeamShape } from "../schema/team.ts";
+import { getDefaultSocket, loadTeam, resolveTeamSocket } from "./common.ts";
 
 export interface LoadCockpitOpts {
   /** Environment hash. Defaults to `process.env`. Test injection point. */
@@ -68,12 +70,51 @@ export function enabledTeams(cockpit: CockpitShape): CockpitTeam[] {
 // the verb), so future changes (e.g. a different per-team-cage path) flip
 // in one place.
 
-/** Cage socket absolute path: `/tmp/atmux-<team>/sock`. Mirrors
- *  `core/common.ts::getDefaultSocket` — kept as a separate helper so
- *  cockpit topology can diverge from `atmux start`'s default later
- *  without churning unrelated callsites. */
-export function cageSocketPath(teamName: string): string {
-  return `/tmp/atmux-${teamName}/sock`;
+/** Options for {@link resolveCageSocket} — DI seams for tests. */
+export interface ResolveCageSocketOpts {
+  /** Override `loadTeam` (test injection). Default reads
+   *  `<cockpitTeam.root>/.atmux/team.json`. */
+  loadTeam?: (opts: { teamDir: string }) => Promise<TeamShape>;
+  /** Override `process.getuid()` (test injection — controls the
+   *  `tmux-<uid>` segment of the `tmuxTmpdir`-derived path). */
+  uid?: number;
+}
+
+/**
+ * Resolve a cockpit roster team's live cage tmux socket. Async because
+ * the answer depends on the team's `team.json::tmuxTmpdir`:
+ *   - When `tmuxTmpdir` is set, the socket lives at
+ *     `<tmuxTmpdir>/tmux-<uid>/default` (the standard tmux short-name
+ *     shape — tmux uses `TMUX_TMPDIR` to build its own path).
+ *   - Otherwise, falls back to the canonical `/tmp/atmux-<team>/sock`.
+ *
+ * Delegates to {@link resolveTeamSocket} (core/common.ts) so this is the
+ * single source of truth for "where does this team's cage socket live"
+ * — cockpit / doctor / status verbs route through here. Bug class fixed
+ * by t-b5864443: the pre-fix cockpit hardcoded `/tmp/atmux-<team>/sock`,
+ * which reported a live cage as `launched=0 skipped=0` whenever a team
+ * declared a project-local tmpdir (repro on the atmux dogfood team on
+ * 2026-05-13).
+ *
+ * On loadTeam failure (missing / unreadable / malformed `team.json`),
+ * falls back to the canonical path so the cockpit rebuild stays green
+ * even when a member team is misconfigured — mirrors
+ * `resolveTeamWindowMode`'s safe-fallback posture (no throw).
+ */
+export async function resolveCageSocket(
+  cockpitTeam: Pick<CockpitTeam, "name" | "root">,
+  opts: ResolveCageSocketOpts = {},
+): Promise<string> {
+  const loader = opts.loadTeam ?? loadTeam;
+  try {
+    const teamShape = await loader({ teamDir: cockpitTeam.root });
+    return resolveTeamSocket(
+      teamShape,
+      opts.uid !== undefined ? { uid: opts.uid } : {},
+    );
+  } catch {
+    return getDefaultSocket(cockpitTeam.name);
+  }
 }
 
 /** Cage tmux session name. Special-case: the `atmux` team itself uses a

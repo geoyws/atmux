@@ -1070,24 +1070,42 @@ describe("resolveTeamWindowMode", () => {
 
 describe("buildTeamWindowCommand", () => {
   const team = { name: "demo", root: "/d", enabled: true } as CockpitTeam;
+  const fallbackSock = "/tmp/atmux-demo/sock";
 
   test("attach mode targets <session>:driver via the retry loop", () => {
-    const cmd = buildTeamWindowCommand(team, "attach");
+    const cmd = buildTeamWindowCommand(team, "attach", fallbackSock);
     expect(cmd).toContain("attach -t");
     expect(cmd).toContain(":driver");
     expect(cmd).toContain("while true");
     expect(cmd).toContain("sleep 1");
   });
 
+  test("attach mode embeds the caller-supplied socketPath (tmuxTmpdir-aware)", () => {
+    // t-b5864443: the cockpit viewer for a team with `tmuxTmpdir` set
+    // must attach to `<tmuxTmpdir>/tmux-<uid>/default`, not the
+    // canonical `/tmp/atmux-<team>/sock`. The verb resolves the socket
+    // upstream via `resolveCageSocket`; this asserts the builder
+    // honours that resolved value verbatim instead of recomputing
+    // from team.name (the pre-fix bug).
+    const cmd = buildTeamWindowCommand(
+      { name: "atmux", root: "/root/work/src/atmux", enabled: true } as CockpitTeam,
+      "attach",
+      "/root/work/src/atmux/.atmux/tmux/tmux-0/default",
+    );
+    expect(cmd).toContain("tmux -S /root/work/src/atmux/.atmux/tmux/tmux-0/default attach");
+    expect(cmd).toContain("atmux:driver");
+    expect(cmd).not.toContain("/tmp/atmux-atmux/sock");
+  });
+
   test("no-driver-config emits the 'set team.json::driverSession' guidance", () => {
-    const cmd = buildTeamWindowCommand(team, "no-driver-config");
+    const cmd = buildTeamWindowCommand(team, "no-driver-config", fallbackSock);
     expect(cmd).toContain("no driver configured for demo");
     expect(cmd).toContain("team.json::driverSession");
     expect(cmd).toContain("sleep infinity");
   });
 
   test("session-down emits the 'atmux start' guidance", () => {
-    const cmd = buildTeamWindowCommand(team, "session-down");
+    const cmd = buildTeamWindowCommand(team, "session-down", fallbackSock);
     expect(cmd).toContain("session not running");
     expect(cmd).toContain("atmux start demo");
     expect(cmd).toContain("sleep infinity");
@@ -1095,7 +1113,7 @@ describe("buildTeamWindowCommand", () => {
 
   test("placeholder shell-quoting survives team names with apostrophes", () => {
     const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
-    const cmd = buildTeamWindowCommand(apostropheTeam, "no-driver-config");
+    const cmd = buildTeamWindowCommand(apostropheTeam, "no-driver-config", fallbackSock);
     // Resulting shell string is single-quoted; the apostrophe in the
     // team name must be escaped via the POSIX `'\''` idiom so the
     // surrounding `printf` quoting doesn't break.

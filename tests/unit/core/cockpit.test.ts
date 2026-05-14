@@ -6,13 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   cageSessionName,
-  cageSocketPath,
   defaultCockpitConfigPath,
   enabledTeams,
   loadCockpit,
+  resolveCageSocket,
   resolveCockpitConfigPath,
 } from "../../../src/core/cockpit.ts";
 import { ConfigError, SchemaError } from "../../../src/errors.ts";
+import type { Team as TeamShape } from "../../../src/schema/team.ts";
 
 let homeDir: string;
 
@@ -152,10 +153,60 @@ describe("enabledTeams", () => {
   });
 });
 
-describe("cageSocketPath", () => {
-  test("returns /tmp/atmux-<team>/sock", () => {
-    expect(cageSocketPath("sopx")).toBe("/tmp/atmux-sopx/sock");
-    expect(cageSocketPath("atmux")).toBe("/tmp/atmux-atmux/sock");
+describe("resolveCageSocket", () => {
+  function fakeTeam(extras: Partial<TeamShape>): TeamShape {
+    return { name: "demo", members: [], ...extras } as unknown as TeamShape;
+  }
+
+  test("(a) team with custom tmuxTmpdir → <tmuxTmpdir>/tmux-<uid>/default", async () => {
+    const cockpitTeam = { name: "atmux", root: "/p/atmux" };
+    const sock = await resolveCageSocket(cockpitTeam, {
+      loadTeam: async () =>
+        fakeTeam({ name: "atmux", tmuxTmpdir: "/root/work/src/atmux/.atmux/tmux" }),
+      uid: 0,
+    });
+    expect(sock).toBe("/root/work/src/atmux/.atmux/tmux/tmux-0/default");
+  });
+
+  test("(b) team without tmuxTmpdir → /tmp/atmux-<team>/sock fallback", async () => {
+    const cockpitTeam = { name: "sopx", root: "/p/sopx" };
+    const sock = await resolveCageSocket(cockpitTeam, {
+      loadTeam: async () => fakeTeam({ name: "sopx" }),
+      uid: 1000,
+    });
+    expect(sock).toBe("/tmp/atmux-sopx/sock");
+  });
+
+  test("(c) atmux dogfood team (real tmuxTmpdir shape) — honours uid in path segment", async () => {
+    const cockpitTeam = { name: "atmux", root: "/root/work/src/atmux" };
+    const sock = await resolveCageSocket(cockpitTeam, {
+      loadTeam: async () =>
+        fakeTeam({ name: "atmux", tmuxTmpdir: "/root/work/src/atmux/.atmux/tmux" }),
+      uid: 0,
+    });
+    // Bug repro source-of-truth: the manual-fix tmux invocation in
+    // t-b5864443's body uses exactly this socket path.
+    expect(sock).toBe("/root/work/src/atmux/.atmux/tmux/tmux-0/default");
+  });
+
+  test("empty-string tmuxTmpdir falls back to /tmp/atmux-<team>/sock", async () => {
+    const sock = await resolveCageSocket(
+      { name: "x", root: "/x" },
+      { loadTeam: async () => fakeTeam({ name: "x", tmuxTmpdir: "" }) },
+    );
+    expect(sock).toBe("/tmp/atmux-x/sock");
+  });
+
+  test("loadTeam failure (missing team.json) → /tmp/atmux-<team>/sock fallback", async () => {
+    const sock = await resolveCageSocket(
+      { name: "ghost", root: "/missing" },
+      {
+        loadTeam: async () => {
+          throw new Error("ENOENT team.json");
+        },
+      },
+    );
+    expect(sock).toBe("/tmp/atmux-ghost/sock");
   });
 });
 

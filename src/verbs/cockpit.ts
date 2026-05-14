@@ -34,12 +34,12 @@ import { updateJson } from "../abstractions/json.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   cageSessionName,
-  cageSocketPath,
   enabledTeams,
   type LoadCockpitOpts,
   loadCockpit,
+  resolveCageSocket,
 } from "../core/cockpit.ts";
-import { loadTeam, teamJsonPath } from "../core/common.ts";
+import { loadTeam, resolveTeamSocket, teamJsonPath } from "../core/common.ts";
 import {
   awaitClaudePaneReady,
   formatReadinessWarning,
@@ -68,8 +68,10 @@ export type TeamWindowMode =
 export interface ResolveTeamWindowDeps {
   /** Override `loadTeam` for tests. Default reads `<root>/.atmux/team.json`. */
   loadTeam?: (opts: { teamDir: string }) => Promise<Team>;
-  /** Build the team's cage TmuxNamespace. Default `createTmux({socketPath})`. */
-  createCageTmux?: (teamName: string) => TmuxNamespace;
+  /** Build the team's cage TmuxNamespace from its resolved socket path
+   *  (`team.tmuxTmpdir`-aware via {@link resolveCageSocket}). Default
+   *  `createTmux({ socketPath })`. Test injection seam. */
+  createCageTmux?: (socketPath: string) => TmuxNamespace;
   /** Override the superdoctor window's shell command (test injection).
    *  Default uses `buildSuperdoctorWindowCommand`. CI runners don't have
    *  `claude` installed; tests inject `() => "sleep infinity"` so the
@@ -115,12 +117,17 @@ export async function resolveTeamWindowMode(
 
   // driverSession is configured — probe the cage. We use a fresh
   // TmuxNamespace per team since each cage runs on its own socket
-  // (ADR-018). Probe failures (cage tmux not reachable, no session)
-  // → "session-down" placeholder rather than tearing down the rebuild.
+  // (ADR-018). Socket path is resolved from the loaded `teamShape` via
+  // `resolveTeamSocket` so per-team `tmuxTmpdir` is honoured (the
+  // hardcoded `/tmp/atmux-<team>/sock` was the t-b5864443 bug — it
+  // sent every probe to the canonical fallback even when team.json
+  // declared a project-local tmpdir). Probe failures (cage tmux not
+  // reachable, no session) → "session-down" placeholder rather than
+  // tearing down the rebuild.
   const cageFactory = deps.createCageTmux ?? makeDefaultCageTmux;
   let cageTmux: TmuxNamespace;
   try {
-    cageTmux = cageFactory(team.name);
+    cageTmux = cageFactory(resolveTeamSocket(teamShape));
   } catch {
     return "session-down";
   }
@@ -135,8 +142,8 @@ export async function resolveTeamWindowMode(
   }
 }
 
-function makeDefaultCageTmux(teamName: string): TmuxNamespace {
-  return createTmux({ socketPath: cageSocketPath(teamName) });
+function makeDefaultCageTmux(socketPath: string): TmuxNamespace {
+  return createTmux({ socketPath });
 }
 
 /**
@@ -150,9 +157,18 @@ function makeDefaultCageTmux(teamName: string): TmuxNamespace {
  *     line + `sleep infinity` so the window stays alive (operator can
  *     re-read at any time; rebuild restores attach on next run after
  *     remediation).
+ *
+ * `socketPath` MUST be the per-team-aware cage socket resolved via
+ * {@link resolveCageSocket} (which honours `team.tmuxTmpdir`). Callers
+ * that pass a hardcoded `/tmp/atmux-<team>/sock` will produce a stub
+ * viewer for any team with a project-local tmpdir — that was the
+ * t-b5864443 bug.
  */
-export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode): string {
-  const sock = cageSocketPath(team.name);
+export function buildTeamWindowCommand(
+  team: CockpitTeam,
+  mode: TeamWindowMode,
+  socketPath: string,
+): string {
   const session = cageSessionName(team.name);
   switch (mode) {
     case "attach":
@@ -160,7 +176,7 @@ export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode):
       // between retries so the cage can come up after its own start.
       // Targeting `<session>:driver` (vs bare `<session>`) lands the
       // operator on the driver pane per OQ4.
-      return `while true; do tmux -S ${sock} attach -t ${session}:driver 2>/dev/null; sleep 1; done`;
+      return `while true; do tmux -S ${socketPath} attach -t ${session}:driver 2>/dev/null; sleep 1; done`;
     case "no-driver-config":
       return shellPlaceholder(
         `no driver configured for ${team.name} — set team.json::driverSession to enable`,
@@ -403,7 +419,7 @@ export async function cockpitRebuild(
   // Phase 2: cycle cages (live-team-aware unless --force-cycle).
   if (!parsed.noCycle) {
     for (const t of teams) {
-      const sock = cageSocketPath(t.name);
+      const sock = await resolveCageSocket(t);
       const cageTmux = factory({ socketPath: sock });
       const alive = await cageAlive(cageTmux);
       if (alive && !parsed.forceCycle) {
@@ -427,7 +443,7 @@ export async function cockpitRebuild(
 
   // Phase 3: apply C-\ cage prefix on every enabled cage.
   for (const t of teams) {
-    const sock = cageSocketPath(t.name);
+    const sock = await resolveCageSocket(t);
     const cageTmux = factory({ socketPath: sock });
     await applyCagePrefix(cageTmux);
   }
@@ -435,7 +451,7 @@ export async function cockpitRebuild(
   // Phase 4: TUI auto-launch (idempotent — skips panes already on claude).
   if (!parsed.noLaunch) {
     for (const t of teams) {
-      const sock = cageSocketPath(t.name);
+      const sock = await resolveCageSocket(t);
       const cageTmux = factory({ socketPath: sock });
       const teamSummary = await autolaunchTeam(t, cageTmux, env, logger);
       const unbootMsg =
@@ -849,7 +865,8 @@ export async function reconcileCockpitSession(
       continue;
     }
     const mode = await resolveTeamWindowMode(t, deps);
-    const cmd = buildTeamWindowCommand(t, mode);
+    const sock = await resolveCageSocket(t, deps.loadTeam ? { loadTeam: deps.loadTeam } : {});
+    const cmd = buildTeamWindowCommand(t, mode, sock);
     await cockpitTmux.window.newWindow({
       sessionName,
       name: t.name,
