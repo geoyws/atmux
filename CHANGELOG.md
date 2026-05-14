@@ -46,6 +46,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **ADR-140 — cheap-model-first principle (Cursor composer-2-fast martinet; medic event-driven)** ([docs/adr/140-cheap-model-first.md](docs/adr/140-cheap-model-first.md)).
+  ADR text only (T1 of EPIC `t-83dcef6b`). Principle: Claude (Opus
+  xhigh) stays for strategic + code-gen + review work; Cursor
+  composer-2-fast (via martinet, Tier 2 cage per ADR-058) handles
+  ALL mechanical execution loops + uncomfortable-but-routine
+  actions. Codifies the operator's 4-message arc on 2026-05-14
+  (MiniMax + Kimi explicitly rejected — capability bar too low;
+  Cursor composer-2-fast is the production-grade tradeoff).
+  Includes canonical roles+responsibilities matrix (superdriver,
+  medic, martinet, team-lead, planner/reviewer/workers, gitter)
+  and a back-of-envelope token-burn projection: ~440k Claude
+  tokens/hour mechanical → ~60k Claude + ~137k Cursor tokens/hour
+  post-migration (~65–70% Claude-burn replaced by Cursor cost).
+  Rotation authority split: routine triggers (context >400k,
+  refusal-pattern, dormancy-window) → martinet; emergency
+  triggers (broken claude proc, planner misalignment) → medic
+  + lead. T2–T4 (ADR annotations, medic refactor, martinet
+  NudgeAction enum extension) remain open under the EPIC —
+  recommend planner-near decomposes into separate kanban Tasks
+  so they're claimable. Kanban Task `t-83dcef6b` (EPIC; T1 done
+  this commit).
+- **ADR-138 — verified send-keys (verify-and-retry pattern)** ([docs/adr/138-verified-send-keys.md](docs/adr/138-verified-send-keys.md)).
+  ADR text only (T1 of EPIC `t-5df48a74`). Decision: new
+  `safeSendKeysWithVerify` helper in `src/abstractions/tmux.ts` —
+  send once, capture pane, assert state transition via caller-
+  supplied `PaneVerifier`, retry once on timeout, escalate to
+  `~/.atmux/state/send-keys-failures.log` + doctor probe + Discord
+  template `[send-keys-failure]`. Ships 6 built-in verifiers
+  (`composerEmpty`, `agentThinking`, `modalClosed`, `contextNonZero`,
+  `paneMatchesRegex`, caller-closure). Migration plan touches 6
+  caller files (send / dispatch / lane-tick / start / rotate +
+  driver modal-release helpers); direct `tmux send-keys` remains
+  only for window-rename / layout commands. Rejected blanket-3x-Enter
+  alternative inline — state-destructive at every pane mode (would
+  submit empty prompts on composer, wrong defaults on modals, etc.).
+  Cross-refs ADR-081 §A (C-m submit cascade — layer below) and
+  ADR-132 (martinet — long-term home, inherits the helper). Sub-tasks
+  T2 (helper impl + tests) and T3 (caller migration + e2e) filed
+  under the EPIC. Kanban Tasks `t-5df48a74` (EPIC), `t-f58c6ccc` (T1,
+  this commit).
+- **ADR-136 — hot-rename member labels (Option B — id + label + emoji split)** ([docs/adr/136-hot-rename-member-labels.md](docs/adr/136-hot-rename-member-labels.md)).
+  ADR text only (TR1 of EPIC `t-13367b7a`). Decision: add an optional
+  `label` field to `TeamMember`; `name` stays the immutable ASCII ID;
+  `atmux member rename` mutates `label` only. Display surfaces render
+  `label ?? name`; id-keyed state (worktrees, branches, inboxes,
+  kanban owner, lane-tick args, paused.json, resume.json) stays
+  pinned to `name`. Option A (emoji-as-stable-ID) was rejected on two
+  hazards documented inline — variation-selector trap
+  (`🛠️` 2-codepoint vs `🛠` 1-codepoint), and
+  `sanitizeBranchSegment` already strips non-ASCII at
+  `src/abstractions/worktree.ts:189-195`. All 4 OQs settled in-spec.
+  Cross-refs ADR-027 (team-rename sibling), ADR-030 (registry —
+  accepts label drift), ADR-082+ADR-084 (worktree substrate uses
+  name not label), CONVENTION-059 (id-layer; ADR-136 composes the
+  display layer on top). Sub-tasks TR2–TR5 filed under the EPIC for
+  schema + verb + display-fallback + e2e implementation. Kanban
+  Tasks `t-13367b7a` (EPIC), `t-646bc535` (TR1, this commit).
 - **cockpit-pulse meta-watchdog — bypass-page George when superdoctor itself is dormant** ([ADR-086 §Phase 2](docs/adr/086-atmux-pulse.md)).
   Extends the 5-min cockpit-pulse cron tick with an aggregate
   superdoctor-liveness probe. Walks every cockpit-enabled team's
