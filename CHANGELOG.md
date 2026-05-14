@@ -37,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **CONVENTION-067 — `develop` branch for integration** ([docs/CONVENTION-067-develop-branch-integration.md](docs/CONVENTION-067-develop-branch-integration.md)).
+  Workflow convention codifying the `feat/<topic>` and `<account>-<role>`
+  worker branches → `develop` integration tip → `main` release-cut
+  topology. First named convention doc in the project. Authored
+  2026-05-14 after a docs worker hit a concrete cross-branch dep
+  blocker — `t-289119f2` was marked `done` on the kanban (kernel commit
+  `2a7db33`) but the kernel files lived on `geoyws-parity-cron-impl`,
+  invisible to sibling worker branches. The convention defines the
+  integration rhythm that prevents that drift: branch off `develop`,
+  merge back to `develop` once green, pull from `develop` before
+  claiming a dep-having task. Kanban Task `t-221eb576`.
 - **Superdoctor self-escalation primitives** ([ADR-077 §F6](docs/adr/077-superdoctor-cockpit-role.md)).
   Without these, superdoctor silently loops while a team stays broken
   (rotate-lead swallowed under auto-mode; kill+respawn welcome-screen-gates;
