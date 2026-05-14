@@ -14,7 +14,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   Cockpit,
+  CockpitMedic,
   CockpitSession,
+  CockpitSuperdoctor,
   EpicTeamSession,
   SuperdoctorSession,
   SuperdriverSession,
@@ -59,14 +61,10 @@ describe("EpicTeamSession — leaf shape", () => {
     expect(e.sessions).toEqual([]);
   });
   test("rejects missing parent", () => {
-    expect(() =>
-      EpicTeamSession.parse({ type: "epic-team", name: "x", epicId: "e-1" }),
-    ).toThrow();
+    expect(() => EpicTeamSession.parse({ type: "epic-team", name: "x", epicId: "e-1" })).toThrow();
   });
   test("rejects missing epicId", () => {
-    expect(() =>
-      EpicTeamSession.parse({ type: "epic-team", name: "x", parent: "p" }),
-    ).toThrow();
+    expect(() => EpicTeamSession.parse({ type: "epic-team", name: "x", parent: "p" })).toThrow();
   });
   test("rejects unknown leaf keys (.strict)", () => {
     expect(() =>
@@ -124,9 +122,7 @@ describe("CockpitSession discriminated union", () => {
     expect(s.type).toBe("superdoctor");
   });
   test("rejects unknown `type` discriminator value (reviewer pre-flag)", () => {
-    expect(() =>
-      CockpitSession.parse({ type: "rogue-type", name: "x" }),
-    ).toThrow();
+    expect(() => CockpitSession.parse({ type: "rogue-type", name: "x" })).toThrow();
   });
   test("rejects missing `type` discriminator", () => {
     expect(() => CockpitSession.parse({ name: "x" })).toThrow();
@@ -275,8 +271,61 @@ describe("Cockpit — top-level shape + defaults", () => {
     expect(c.teams).toHaveLength(1);
   });
   test("rejects sessions[] entries with unknown `type`", () => {
-    expect(() =>
-      Cockpit.parse({ sessions: [{ type: "rogue", name: "x" }] }),
-    ).toThrow();
+    expect(() => Cockpit.parse({ sessions: [{ type: "rogue", name: "x" }] })).toThrow();
+  });
+
+  // ADR-133 TR2: medic / superdoctor top-level keys coexist during
+  // the deprecation window. The schema accepts both shapes; the
+  // loader's `migrateSuperdoctorBlockToMedic` pre-parse shim resolves
+  // precedence + warns (covered in tests/unit/core/cockpit.test.ts).
+  test("accepts top-level `medic` block (ADR-133 new canonical key)", () => {
+    const c = Cockpit.parse({
+      sessions: [],
+      medic: { enabled: true },
+    });
+    expect(c.medic?.enabled).toBe(true);
+    expect(c.superdoctor).toBeUndefined();
+  });
+  test("accepts top-level `superdoctor` block (deprecated; back-compat)", () => {
+    const c = Cockpit.parse({
+      sessions: [],
+      superdoctor: { enabled: true },
+    });
+    expect(c.superdoctor?.enabled).toBe(true);
+    expect(c.medic).toBeUndefined();
+  });
+  test("accepts BOTH `medic` AND `superdoctor` top-level blocks (precedence in loader, not schema)", () => {
+    const c = Cockpit.parse({
+      sessions: [],
+      medic: { enabled: true },
+      superdoctor: { enabled: false },
+    });
+    expect(c.medic?.enabled).toBe(true);
+    expect(c.superdoctor?.enabled).toBe(false);
+  });
+});
+
+// ---------- ADR-133 TR2: CockpitMedic schema alias ----------
+
+describe("CockpitMedic — ADR-133 alias of CockpitSuperdoctor", () => {
+  test("parses the same shape as CockpitSuperdoctor", () => {
+    const sd = CockpitSuperdoctor.parse({ enabled: true });
+    const m = CockpitMedic.parse({ enabled: true });
+    expect(m).toEqual(sd);
+  });
+  test("inherits tuiOverrides + claudeAccount + autoStart fields", () => {
+    const m = CockpitMedic.parse({
+      enabled: true,
+      claudeAccount: { configDir: "/root/.claude-ifca" },
+      tuiOverrides: { effortLevel: "xhigh", permissionMode: "auto" },
+      autoStart: false,
+      autoStartTimeoutSec: 45,
+    });
+    expect(m.claudeAccount?.configDir).toBe("/root/.claude-ifca");
+    expect(m.autoStart).toBe(false);
+    expect(m.autoStartTimeoutSec).toBe(45);
+  });
+  test("rejects unknown keys (.strict carried over)", () => {
+    expect(() => CockpitMedic.parse({ enabled: true, typo: "fail" })).toThrow();
   });
 });

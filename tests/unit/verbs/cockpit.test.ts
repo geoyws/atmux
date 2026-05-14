@@ -1659,6 +1659,192 @@ describe("cockpitRebuild", () => {
     }
   });
 
+  // ADR-133 TR2: top-level `medic` block resolves the same way as the
+  // deprecated `superdoctor` block. Window name stays "superdoctor"
+  // until TR3 ships the verb / window / skill renames.
+  test("ADR-133 TR2: top-level `medic` block enables the W2 medic window + nudge", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "test_cockpit_medic_nudge",
+        medic: { enabled: true },
+        sessions: [{ type: "team", name: "demo", root: projRoot }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-medic-nudge");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      // Nudge fires from the new canonical `cockpit.medic` read.
+      expect(joined).toContain("/loop /superdoctor");
+      expect(joined).toContain("medic");
+      // TR2 keeps window name as "superdoctor" (per task body — TR3
+      // ships the cascade rename).
+      const wins = await fx.tmux.window.listWindows("test_cockpit_medic_nudge");
+      expect(wins.map((w) => w.name)).toContain("superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ADR-133 TR2: top-level `superdoctor` block (recursive sessions[]
+  // shape, NOT legacy flat) — shim lifts to medic + warns.
+  test("ADR-133 TR2: top-level `superdoctor` on new-shape config → medic resolves + deprecation warn fires", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "test_cockpit_sd_depr",
+        superdoctor: { enabled: true },
+        sessions: [{ type: "team", name: "demo", root: projRoot }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-sd-depr");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      // Nudge fires (medic resolved post-shim).
+      expect(joined).toContain("/loop /superdoctor");
+      // Deprecation warning surfaces via stderr (default warn sink) —
+      // not captured by `logs[]` since logger isn't passed to
+      // loadCockpit's warn. The W2 window still provisions.
+      const wins = await fx.tmux.window.listWindows("test_cockpit_sd_depr");
+      expect(wins.map((w) => w.name)).toContain("superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ADR-133 TR2: BOTH `medic` and `superdoctor` set — medic wins.
+  test("ADR-133 TR2: both `medic` and `superdoctor` set → medic wins; superdoctor stripped pre-parse", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "test_cockpit_both",
+        medic: { enabled: true, autoStart: false },
+        superdoctor: { enabled: false, autoStart: true },
+        sessions: [{ type: "team", name: "demo", root: projRoot }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-both");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      // medic.enabled=true wins; nudge fires. superdoctor.enabled=false
+      // would have suppressed the nudge if it had won.
+      expect(joined).toContain("/loop /superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ADR-133 TR2: neither key set — no nudge.
+  test("ADR-133 TR2: neither `medic` nor `superdoctor` set → no nudge in output", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "test_cockpit_neither",
+        sessions: [{ type: "team", name: "demo", root: projRoot }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-neither");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      // No medic / superdoctor configured → no /loop nudge surfaces.
+      expect(joined).not.toContain("/loop /superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
   test("ADR-086: rebuild installs the cockpit cron block (atmux pulse)", async () => {
     await writeFile(
       join(homeDir, ".atmux", "cockpit.json"),

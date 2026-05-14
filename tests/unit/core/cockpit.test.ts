@@ -15,6 +15,7 @@ import {
   loadCockpit,
   MAX_NESTING_LEVEL,
   migrateLegacyShape,
+  migrateSuperdoctorBlockToMedic,
   perTeamCageSocketPath,
   readNestingLevel,
   resolveCageSocket,
@@ -349,6 +350,195 @@ describe("loadCockpit — migration shim end-to-end", () => {
     // Synthesized teams[]: DFS-ordered, type==="team" only. Excludes
     // superdriver (cockpit singleton) but INCLUDES nested team children.
     expect(cockpit.teams.map((t) => t.name)).toEqual(["sopx", "outer", "inner"]);
+  });
+});
+
+// ---------- ADR-133 TR2: migrateSuperdoctorBlockToMedic shim ----------
+
+describe("migrateSuperdoctorBlockToMedic — top-level superdoctor → medic", () => {
+  test("only `superdoctor` set → lifts to `medic` + warns deprecated", () => {
+    const warned: string[] = [];
+    const out = migrateSuperdoctorBlockToMedic(
+      {
+        schemaVersion: 1,
+        sessions: [],
+        superdoctor: { enabled: true, autoStart: false },
+      },
+      "/fake/path.json",
+      (m) => warned.push(m),
+    ) as Record<string, unknown>;
+    expect(out.medic).toEqual({ enabled: true, autoStart: false });
+    expect(out.superdoctor).toBeUndefined();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("deprecated top-level 'superdoctor' key");
+    expect(warned[0]).toContain("rename to 'medic'");
+    expect(warned[0]).toContain("ADR-133");
+    expect(warned[0]).toContain("/fake/path.json");
+  });
+
+  test("only `medic` set → no-op, no warning", () => {
+    const warned: string[] = [];
+    const input = {
+      schemaVersion: 1,
+      sessions: [],
+      medic: { enabled: true },
+    };
+    const out = migrateSuperdoctorBlockToMedic(input, "/p.json", (m) => warned.push(m));
+    expect(out).toBe(input);
+    expect(warned).toHaveLength(0);
+  });
+
+  test("BOTH `medic` and `superdoctor` set → medic wins, superdoctor stripped, warns dual", () => {
+    const warned: string[] = [];
+    const out = migrateSuperdoctorBlockToMedic(
+      {
+        schemaVersion: 1,
+        sessions: [],
+        medic: { enabled: true },
+        superdoctor: { enabled: false }, // operator forgot to delete this
+      },
+      "/p.json",
+      (m) => warned.push(m),
+    ) as Record<string, unknown>;
+    expect(out.medic).toEqual({ enabled: true });
+    expect(out.superdoctor).toBeUndefined();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("BOTH");
+    expect(warned[0]).toContain("'medic' wins");
+    expect(warned[0]).toContain("ADR-133");
+  });
+
+  test("neither set → passes through unchanged + no warning", () => {
+    const warned: string[] = [];
+    const input = { schemaVersion: 1, sessions: [] };
+    const out = migrateSuperdoctorBlockToMedic(input, "/p.json", (m) => warned.push(m));
+    expect(out).toBe(input);
+    expect(warned).toHaveLength(0);
+  });
+
+  test("non-object input passes through unchanged", () => {
+    const warned: string[] = [];
+    expect(migrateSuperdoctorBlockToMedic(null, "/p.json", (m) => warned.push(m))).toBe(null);
+    expect(migrateSuperdoctorBlockToMedic("string", "/p.json", (m) => warned.push(m))).toBe(
+      "string",
+    );
+    expect(warned).toHaveLength(0);
+  });
+
+  test("preserves all other top-level fields when lifting", () => {
+    const warned: string[] = [];
+    const out = migrateSuperdoctorBlockToMedic(
+      {
+        schemaVersion: 1,
+        cockpitSession: "custom_session",
+        sessions: [{ type: "team", name: "x", root: "/x" }],
+        prefixChain: ["F1", "F2"],
+        superdoctor: { enabled: true },
+      },
+      "/p.json",
+      (m) => warned.push(m),
+    ) as Record<string, unknown>;
+    expect(out.schemaVersion).toBe(1);
+    expect(out.cockpitSession).toBe("custom_session");
+    expect(out.sessions).toEqual([{ type: "team", name: "x", root: "/x" }]);
+    expect(out.prefixChain).toEqual(["F1", "F2"]);
+    expect(out.medic).toEqual({ enabled: true });
+    expect(out.superdoctor).toBeUndefined();
+  });
+});
+
+describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
+  test("config with only `medic` block → cockpit.medic populated, no warning", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      medic: { enabled: true },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(warned).toHaveLength(0);
+  });
+
+  test("config with only `superdoctor` top-level block → cockpit.medic populated + deprecation warn", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      superdoctor: { enabled: true },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    // Shim lifts superdoctor → medic at the operator-config layer.
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("deprecated top-level 'superdoctor'");
+    expect(warned[0]).toContain("ADR-133");
+  });
+
+  test("config with BOTH `medic` and `superdoctor` → medic wins + dual-key warn", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      medic: { enabled: true, autoStart: false },
+      superdoctor: { enabled: false },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.medic?.autoStart).toBe(false);
+    // Pre-parse shim stripped on-disk superdoctor; nothing left for the
+    // synthesized superdoctor (no sessions[] type=superdoctor either).
+    expect(cockpit.superdoctor).toBeUndefined();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("BOTH");
+    expect(warned[0]).toContain("'medic' wins");
+  });
+
+  test("config with neither key → defaults applied, both fields undefined", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic).toBeUndefined();
+    expect(cockpit.superdoctor).toBeUndefined();
+    expect(warned).toHaveLength(0);
+  });
+
+  test('sessions[] `type: "superdoctor"` entry synthesizes BOTH cockpit.medic AND cockpit.superdoctor', async () => {
+    // Enrichment pass populates both back-compat fields from a single
+    // sessions[] entry so callers reading either keep working across
+    // the TR2 deprecation window.
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        { type: "team", name: "x", root: "/x" },
+        { type: "superdoctor", name: "sd", enabled: true },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    expect(cockpit.medic?.enabled).toBe(true);
+  });
+
+  test("legacy flat roster (teams[] + superdoctor) shape-migrates first, no top-level superdoctor remains after shim", async () => {
+    // Legacy flat case: migrateLegacyShape lifts both teams[] + the
+    // top-level superdoctor INTO sessions[]; by the time the medic
+    // shim runs, the on-disk top-level superdoctor key is already
+    // gone. Only ADR-089 §B warning fires; no ADR-133 warning fires.
+    const warned: string[] = [];
+    await writeCockpit({
+      teams: [{ name: "x", root: "/x", enabled: true }],
+      superdoctor: { enabled: true },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    // Exactly one warning — the ADR-089 flat-shape one. The TR2 medic
+    // shim should NOT double-warn for this case.
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("legacy flat teams[]");
   });
 });
 

@@ -543,6 +543,13 @@ export async function cockpitRebuild(
   }
 
   // Phase 5: cockpit session on default socket.
+  // ADR-133 TR2: read the resolved `medic` block (post-shim canonical
+  // name). For sessions[]-based configs `enrichLegacyFields` synthesizes
+  // both `superdoctor` and `medic` from the same `type: "superdoctor"`
+  // entry; for top-level legacy configs the pre-parse shim renames
+  // `superdoctor` → `medic` with a deprecation warning. The downstream
+  // reconcile + window-name convention stays "superdoctor" until TR3
+  // ships the verb / window / skill renames.
   const cockpitTmux = factory({ socket: "default" });
   await reconcileCockpitSession(
     cockpitTmux,
@@ -550,7 +557,7 @@ export async function cockpitRebuild(
     teams,
     logger,
     {},
-    cockpit.superdoctor,
+    cockpit.medic,
     parsed.yes,
   );
 
@@ -562,15 +569,16 @@ export async function cockpitRebuild(
   await installCockpitCron(opts, cockpit, logger, env);
 
   logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
-  // ADR-077: nudge the operator to start the superdoctor loop manually.
-  // Rebuild stays purely topological — auto-firing `/loop /superdoctor`
-  // on every rebuild would either re-fire on idempotent re-runs or need
-  // fragile send-keys timing against a freshly-spawned claude. Manual
-  // start is one slash command and matches how the operator drives
-  // superdriver in window 1.
-  if (cockpit.superdoctor?.enabled === true) {
+  // ADR-077 + ADR-133: nudge the operator to start the medic loop
+  // manually. Rebuild stays purely topological — auto-firing
+  // `/loop /superdoctor` on every rebuild would either re-fire on
+  // idempotent re-runs or need fragile send-keys timing against a
+  // freshly-spawned claude. Manual start is one slash command and
+  // matches how the operator drives superdriver in window 1. Skill
+  // slug stays `/superdoctor` until TR3 ships the cascade rename.
+  if (cockpit.medic?.enabled === true) {
     logger.log(
-      `  ▸ superdoctor: select window 2 ('superdoctor') and type \`/loop /superdoctor\` to start the hourly diagnosis loop`,
+      `  ▸ medic: select window 2 ('superdoctor') and type \`/loop /superdoctor\` to start the hourly diagnosis loop`,
     );
   }
   return 0;
