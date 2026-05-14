@@ -159,10 +159,14 @@ async function runStart(
     /** t-dcbff97c: inject the cron-install verb so unit tests never
      *  touch the host crontab. Default = silent no-op (returns 0). */
     cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
+    /** ADR-089 §D (t-7e7031dc): extra env keys merged on top of the
+     *  default test env. Used to exercise ATMUX_NESTING_LEVEL / cockpit
+     *  override / ATMUX_NO_CRON paths without polluting `process.env`. */
+    extraEnv?: Record<string, string>;
   } = {},
 ): Promise<number> {
   const startOpts: Parameters<typeof start>[1] = {
-    env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+    env: { ...process.env, ATMUX_DIR: env.atmuxDir, ...(opts.extraEnv ?? {}) },
     cwd: env.atmuxDir,
     logger: env.logger,
     // Default the cron-install hook to a silent no-op so legacy tests
@@ -400,30 +404,46 @@ describe("start — happy path", () => {
     expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
   });
 
-  test("applies the C-\\ cage prefix globally on the tmux server", async () => {
+  test("applies the level-resolved cage prefix globally on the tmux server (ADR-089 §C)", async () => {
     // 2026-05-09 bisection — standalone `atmux start <team>` was NOT
     // applying the cage prefix that nested-tmux topology requires;
     // only `atmux cockpit rebuild` Phase 3 was. unum cages started
     // outside cockpit landed on default C-b. Fix: lift the helper from
     // cockpit.ts and call it after session creation in start.ts.
+    //
+    // Post-ADR-089 §C (t-7e7031dc): prefix is level-driven, not hard-
+    // coded `C-\`. Without `ATMUX_NESTING_LEVEL` in env, level=1 →
+    // resolvePrefix(1) === "F1" via DEFAULT_PREFIX_CHAIN.
     await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
-    await runStart([]);
+    await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
     const opts = await env.tmux.option.showOptions({ global: true });
-    expect(opts.prefix).toBe("C-\\");
+    expect(opts.prefix).toBe("F1");
   });
 
-  test("cage prefix is applied on incremental-restart path too (idempotent)", async () => {
+  test("cage prefix is applied on incremental-restart path too (idempotent) (ADR-089 §C)", async () => {
     // The prefix-set is server-level; re-running start against an
     // existing session must not regress the prefix. Belt-and-braces
     // assertion that the helper runs in the warn-keep branch (no
     // --force, session already exists).
     await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
-    await runStart([]);
+    await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
     // Manually clobber the prefix to verify the second start re-applies.
     await env.tmux.option.setOption({ name: "prefix", value: "C-b", global: true });
     expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("C-b");
-    await runStart([]);
-    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("C-\\");
+    await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
+    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F1");
+  });
+
+  test("cage prefix honours ATMUX_NESTING_LEVEL env (level=2 → F2)", async () => {
+    // ADR-089 §D: env-driven level selection. Child cages spawned by
+    // a future spawn-epic verb will export ATMUX_NESTING_LEVEL=2 (via
+    // childNestingEnv from src/core/cockpit.ts); start.ts must pick up
+    // F2 from the default chain when that var is set.
+    await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
+    await runStart([], {
+      extraEnv: { ATMUX_NO_CRON: "1", ATMUX_NESTING_LEVEL: "2" },
+    });
+    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F2");
   });
 });
 

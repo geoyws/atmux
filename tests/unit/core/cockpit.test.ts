@@ -5,13 +5,20 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ATMUX_NESTING_LEVEL_ENV,
   cageSessionName,
   cageSocketPath,
+  childNestingEnv,
+  DEFAULT_PREFIX_CHAIN,
   defaultCockpitConfigPath,
   enabledTeams,
   loadCockpit,
+  MAX_NESTING_LEVEL,
   migrateLegacyShape,
+  readNestingLevel,
   resolveCockpitConfigPath,
+  resolvePrefix,
+  validatePrefixChain,
   walkSessions,
 } from "../../../src/core/cockpit.ts";
 import { ConfigError, SchemaError } from "../../../src/errors.ts";
@@ -497,5 +504,169 @@ describe("loadCockpit — discriminated union strict mode", () => {
       teams: [{ name: "x", root: "/x", typo: "should-fail" }],
     });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
+  });
+});
+
+// ---------- ADR-089 §C: prefix-chain + ATMUX_NESTING_LEVEL ----------
+
+describe("DEFAULT_PREFIX_CHAIN — F-key default ladder", () => {
+  test("contains 12 entries (F1..F12)", () => {
+    expect(DEFAULT_PREFIX_CHAIN).toHaveLength(12);
+    expect(DEFAULT_PREFIX_CHAIN[0]).toBe("F1");
+    expect(DEFAULT_PREFIX_CHAIN[11]).toBe("F12");
+  });
+
+  test("covers MAX_NESTING_LEVEL with headroom", () => {
+    expect(DEFAULT_PREFIX_CHAIN.length).toBeGreaterThanOrEqual(MAX_NESTING_LEVEL);
+  });
+
+  test("all entries are unique", () => {
+    expect(new Set(DEFAULT_PREFIX_CHAIN).size).toBe(DEFAULT_PREFIX_CHAIN.length);
+  });
+});
+
+describe("readNestingLevel — env-driven level parser", () => {
+  test("missing env var → 1 (top-level default)", () => {
+    expect(readNestingLevel({})).toBe(1);
+  });
+
+  test("empty env value → 1 (defensive)", () => {
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "" })).toBe(1);
+  });
+
+  test("valid integer → parsed value", () => {
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "3" })).toBe(3);
+  });
+
+  test("non-numeric → falls back to 1", () => {
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "abc" })).toBe(1);
+  });
+
+  test("zero / negative → falls back to 1", () => {
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "0" })).toBe(1);
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "-2" })).toBe(1);
+  });
+});
+
+describe("resolvePrefix — level → prefix lookup", () => {
+  test("level=1 on default chain → F1", () => {
+    expect(resolvePrefix(1)).toBe("F1");
+  });
+
+  test("level=4 on default chain → F4", () => {
+    expect(resolvePrefix(4)).toBe("F4");
+  });
+
+  test("operator override chain wins over default", () => {
+    expect(resolvePrefix(1, ["C-q", "C-w", "C-e", "C-r", "C-t", "C-y"])).toBe("C-q");
+    expect(resolvePrefix(3, ["C-q", "C-w", "C-e", "C-r", "C-t", "C-y"])).toBe("C-e");
+  });
+
+  test("empty chain falls back to default (length-0 treated as unset)", () => {
+    expect(resolvePrefix(2, [])).toBe("F2");
+  });
+
+  test("level=0 → ConfigError (must be positive)", () => {
+    expect(() => resolvePrefix(0)).toThrow(ConfigError);
+  });
+
+  test("level exceeds chain length → ConfigError with helpful hint", () => {
+    expect(() => resolvePrefix(7, ["F1", "F2", "F3"])).toThrow(/exceeds prefix chain length/);
+  });
+
+  test("non-integer level → ConfigError", () => {
+    expect(() => resolvePrefix(1.5)).toThrow(ConfigError);
+  });
+});
+
+describe("validatePrefixChain — load-time validation", () => {
+  test("happy path — long unique chain → ok", () => {
+    const v = validatePrefixChain(["F1", "F2", "F3", "F4", "F5", "F6"]);
+    expect(v.ok).toBe(true);
+  });
+
+  test("chain shorter than MAX_NESTING_LEVEL → not ok with explicit reason", () => {
+    const v = validatePrefixChain(["F1", "F2", "F3"]);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain(`≥${MAX_NESTING_LEVEL}`);
+  });
+
+  test("duplicate entry → not ok with collision reason", () => {
+    const v = validatePrefixChain(["F1", "F2", "F2", "F3", "F4", "F5"]);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain("duplicated");
+    expect(v.reason).toContain("F2");
+  });
+
+  test("empty entry → not ok", () => {
+    const v = validatePrefixChain(["F1", "", "F3", "F4", "F5", "F6"]);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain("empty");
+  });
+
+  test("operator-preferred mobile chain (Ctrl-letter) → ok when long enough", () => {
+    const v = validatePrefixChain(["C-q", "C-w", "C-e", "C-r", "C-t", "C-y"]);
+    expect(v.ok).toBe(true);
+  });
+});
+
+describe("childNestingEnv — parent → child level propagation (§Decision-anchor #5)", () => {
+  test("parentLevel=1 → child env carries ATMUX_NESTING_LEVEL=2", () => {
+    expect(childNestingEnv(1)).toEqual({ [ATMUX_NESTING_LEVEL_ENV]: "2" });
+  });
+
+  test("parentLevel=2 → child env carries ATMUX_NESTING_LEVEL=3", () => {
+    expect(childNestingEnv(2)).toEqual({ [ATMUX_NESTING_LEVEL_ENV]: "3" });
+  });
+
+  test("parentLevel=0 → ConfigError (must be ≥1)", () => {
+    expect(() => childNestingEnv(0)).toThrow(ConfigError);
+  });
+
+  test("parentLevel would push child past MAX_NESTING_LEVEL → ConfigError", () => {
+    expect(() => childNestingEnv(MAX_NESTING_LEVEL)).toThrow(/exceed max depth/);
+  });
+
+  test("non-integer parentLevel → ConfigError", () => {
+    expect(() => childNestingEnv(1.5)).toThrow(ConfigError);
+  });
+});
+
+describe("loadCockpit — prefixChain validation (§Decision-anchor #4)", () => {
+  test("valid 6+ unique chain → load succeeds", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2", "F3", "F4", "F5", "F6"],
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.prefixChain).toEqual(["F1", "F2", "F3", "F4", "F5", "F6"]);
+  });
+
+  test("missing prefixChain → load succeeds (default-chain fallback)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.prefixChain).toBeUndefined();
+  });
+
+  test("too-short prefixChain → ConfigError at load", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2"],
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
+  });
+
+  test("duplicate-entry prefixChain → ConfigError at load", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2", "F2", "F3", "F4", "F5"],
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/duplicated/);
   });
 });
