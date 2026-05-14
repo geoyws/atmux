@@ -16,23 +16,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
-### 📝 Added — Whip §2.5 needs-approval surfacing (ADR-085, accepted)
+### 🏷️ Renamed — `superdoctor` → `medic` (ADR-133)
 
-- **`needs-approval` scan** in every whip tick — surfaces three approval-debt buckets that previously aged silently: proposed ADRs that shipped impl but never had Status flipped, untriaged driver-inbox asks (>30min since the heading timestamp), and long-blocked kanban tasks (>2h since most recent transition). Live-not-cached per ADR-068 §HC#4.
-- **`atmux status` gains a NEEDS APPROVAL row** — text output shows per-bucket counts (`3 ADRs / 1 inbox / 0 kanban`); collapses to `✅ clear` when all buckets empty. `--json` snapshot grows a `needsApproval` field with per-bucket structured lists for downstream tooling (atmux-dashboard, medic loop, cockpit pulse).
-- **New Discord `[whip-needs-approval]` template** — verdict-first format, dedup-keyed on `<team>:<bucket>:<id>` with 30min window so the scan can stay live without the ping spamming.
-- **New `(deferred: <reason>)` ADR-status annotation convention** — an ADR intentionally held in `proposed` (waiting on an upstream dep, parallel decision, or operator review window) carries the `Status: proposed (deferred: <reason>)` annotation to suppress the per-tick ping. Bare `Status: proposed` continues to ping; the scanner reads the annotation literally. Convention-only — no lint gate today; if rot recurs, formalize as a pre-commit check.
-- **Opt-out**: `team.json::whip.needsApprovalEnabled = false` disables the surfacing pipeline for a team. Default: `true`.
-- **Operator reference doc**: new `docs/whip-needs-approval.md`.
+- **Cockpit self-healing role renamed** from `superdoctor` to `medic` per [ADR-133](docs/adr/133-medic-rename.md) to eliminate the `atmux doctor` verb-vs-process naming collision. `medic` is collision-free and semantically tight for the cockpit-fleet-healer role.
+- **Operator-visible surface:** `cockpit.json.medic` is the new canonical config block. The legacy `cockpit.json.superdoctor` key is still accepted during the deprecation window — `atmux cockpit rebuild` emits a one-line deprecation warning (`deprecated key, rename to medic per ADR-133`) but proceeds normally. If both keys are present, `medic` wins and a warning lists `superdoctor` as ignored.
+- **Window 2** of the cockpit session is renamed `medic` (was `superdoctor`).
+- **Docs:** `docs/superdoctor.md` → `docs/medic.md`. Cross-refs in ADR-081 / ADR-079 / ADR-086 updated with first-occurrence footnotes citing the rename. ADR-077 carries an annotation header per the append-only ADR convention (the file is not renamed).
+- **Out of scope this release:** storage-layer identifiers — `superdoctor_attempts` table, `SuperdoctorAttemptsRepo` class, `__superdoctor__` member sentinel, `superdoctor-self-heal-escalation` Discord dedup key, `src/core/superdoctor-activity.ts` source path, `~/.claude/skills/superdoctor/` skill path, and `[superdoctor]` Discord template prefix all remain unchanged. Schema renames require a separate migration ADR; skill source + Discord template renames ship under EPIC `t-d25ff629` TR5+.
 
-### 🔁 Renamed — cockpit role `superdoctor` → `medic` (ADR-133)
+### ⚙️ Migration — `atmux superdoctor` → `atmux medic` cron-line rewrite (ADR-133 TR6)
 
-- **Role rename** — the cockpit-tier self-healing role introduced in ADR-077 is renamed `superdoctor` → `medic`. Motivation: the existing `atmux doctor` verb caused operator confusion ("is doctor the verb or the cockpit process?"), and a single-word identifier reads cleaner in log lines + Discord pings + brief templates. Path B (`medic`, collision-free) picked over Path A (`doctor`, accept collision).
-- **Surfaces renamed**: cockpit window W2 name, `cockpit.json` block key, cockpit inbox key (`__superdoctor__` → `__medic__`), operator-doc filename (`docs/superdoctor.md` → `docs/medic.md`), skill directory + prompt filename (operator-dotfiles scope, out-of-band).
-- **Backward-compat shim** (one-release-cycle deprecation window): `cockpit.json` schema accepts both `medic` and `superdoctor` keys. Both present → `medic` wins, warn *"ignoring deprecated superdoctor block; medic block in effect (ADR-133)"*. Only `superdoctor` → coerce to medic semantics, warn *"deprecated key `superdoctor`, rename to `medic` per ADR-133"*. Only `medic` → canonical path, no warning. Same pattern for the `__medic__` / `__superdoctor__` inbox key in the `inbox_messages` SQLite table and the `medic` / `superdoctor` literals in the `complaints.source_kind` enum.
-- **Scope is naming-only**: ADR-077's design decisions (cockpit topology, cadence, authority bounds, P0 escalation runbook, complaint-box residency) remain canonical under the new name. ADR-077 retains its filename per the append-only ADR convention; a top-of-file annotation header points at ADR-133. Storage table names (any pre-existing `superdoctor_*` rows / tables) are out of scope — operator-facing surface only.
+- **`atmux cron-install` now idempotently rewrites any `atmux superdoctor [args]` cron line inside an atmux-managed block** (`# >>> atmux:team=...` / `# >>> atmux:cockpit`) to `atmux medic [args]`. No-op on every current installation (atmux does NOT write `atmux superdoctor` cron lines today — the cockpit superdoctor runs via tmux pane keystroke `/loop /superdoctor`, not crontab), but forward-compat for the deprecation window if any path begins emitting them or if operators have hand-installed legacy lines inside a managed block.
+- **Operator-manual cron lines OUTSIDE atmux-managed blocks are PRESERVED** — the migration only touches lines fenced by the `# >>> atmux:...` / `# <<<` markers.
+- **Audit log** at `~/.atmux/state/cron-rename-migration.log` records every rewrite (no-op on installs where no migrations fire).
+- Source: `src/core/cron.ts::migrateSuperdoctorToMedicCronLines` (pure transform) + `src/verbs/cron-install.ts` wiring + unit + integration tests.
 
-> **NEXT RELEASE (BREAKING)** — once the deprecation window closes, the `superdoctor` key in `cockpit.json`, the `__superdoctor__` inbox key, and the `superdoctor` value in `complaints.source_kind` will be dropped from the schema. Schema-load on a config with the deprecated keys will soft-fail the cockpit rebuild with an actionable error pointing at ADR-133.
+### ⚠️ Deprecated — `cockpit.json.superdoctor` block (ADR-133)
+
+- The `superdoctor` key in `~/.atmux/cockpit.json` is **deprecated as of this release**. Operators should rename their cockpit config to use the new `medic` key. The deprecation window is **one release cycle**; the next release ships the BREAKING removal below.
+- Migration path:
+  ```bash
+  # in ~/.atmux/cockpit.json, rename the block:
+  # before: "superdoctor": { ... }
+  # after:  "medic": { ... }
+  atmux cockpit rebuild
+  ```
+- The deprecation warning fires on every `atmux cockpit rebuild` until the rename ships. Silent on `atmux status` / `atmux doctor` for now.
+
+### 🚨 Coming next release — BREAKING: drop `cockpit.json.superdoctor` key (ADR-133)
+
+- **Next release will REMOVE the `superdoctor` key acceptance from `cockpit.json` schema.** Operators on the legacy key will fail-fast on `atmux cockpit rebuild` until they migrate. The deprecation warning shipping this release is the operator's one-cycle migration window.
+- Plan ahead: rename `superdoctor` → `medic` in your cockpit config before upgrading past the next release. Schema validation will reject the legacy key with a clear error pointing to ADR-133.
 
 ### ✨ Added — `atmux pulse` (ADR-086)
 
@@ -63,24 +77,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > per-claim state work).
 
 ### ✨ Added — post-0.6.0 follow-ups
-
-- **ADR-088 W2 — `atmux merge-member <member> [--push]` verb wiring** (t-e7724527).
-  Wraps the W1 primitive with the policy + surfacing layer. Steps: `requireTeam` → `resolveMergerConfig` to get `baseBranch` (explicit or via current-HEAD) → `wtBranch = ${base}-${sanitizeBranchSegment(member)}` → W1 primitive → outcome handling. Exit-code contract: `0` on merged / no-op / push-refused-by-policy; `1` on conflict / push-failure. Flag surface: appends to `<atmuxDir>/flags.md` (`severity=high` for conflict + push-failure; `severity=medium` for push-refused). Push policy: reuses `isPushAllowed` from `src/core/auto-push.ts` — same staging-pattern regex (`-staging$`, `^main$`, `^master$`, `^production$`) gates both `atmux done` auto-push + merger fan-in push. Refused pushes keep the merge locally + raise a flag for operator's manual follow-up. CLI dispatch registered at `case "merge-member"` in `src/cli.ts`. 20 unit tests / 99.15% line coverage. Unblocks W3 (`merge-cycle` bulk wrapper) + W5/W6/W7/W8 downstream.
-
-- **ADR-088 W1 — `src/abstractions/branch-merge.ts` `mergeMember(base, wtBranch, repoPath, opts)` primitive** (t-bed51da2).
-  Per-member branch fan-in primitive ([docs/adr/088-per-member-branch-fan-in.md](docs/adr/088-per-member-branch-fan-in.md) §Decision-3). Pure git-shell wrapper using the `GitSpawn` injectable pattern (mirrors `worktree.ts` / `auto-push.ts`); every invocation routes through `git -C <repoPath>` so the function is repoPath-agnostic at the spawn layer. Idempotent (returns `{ status: "no-op", reason: "no-commits-ahead" }` when re-fired post-merge). Three hard-refuse guards: `guardBaseWorktreeClean` (uncommitted changes), `guardBranchExists` (missing wtBranch), `guardCommitsAhead` (zero-ahead → no-op exit). On conflict: captures porcelain status for the conflicted-path list, fires `git merge --abort` to restore the worktree to clean, throws `MergeConflictError` carrying both `wtBranch` + `conflictPaths`. New `MergeConflictError` class extends `ConfigError`. Unit suite: 27 cases / 100% line + func coverage on the new module (mock-injected GitSpawn for every decision-tree branch; one real-git smoke against `defaultGitSpawn`). Gates 6 downstream ADR-088 W2-W8 tasks (verb wiring, bulk merge-cycle, brief, doctor probe, cron template, e2e).
-
-- **`atmux complaints file` — whip-velocity-gate flag-vocab compat** (t-7bd53cba).
-  Three new flags + one default-behavior change so cockpit-level whip
-  cron scripts (`/root/.atmux/bin/whip-velocity-gate.sh`) can file
-  complaints AGAINST observed teams without their entire CLI call
-  failing at the first unknown arg:
-  - **`--title <s>`** — alias for `--summary` (canonical field stays `incidentSummary`)
-  - **`--body <r>`** — alias for `--root-cause` (canonical field stays `rootCause`)
-  - **`--severity <s>`** — free-form severity classifier; stored in `extra.severity` (no first-class column)
-  - **`--target-team` defaults to current team's name** when omitted (was: defaults to `null`). Preserves the pre-v3 implicit "complaint in team X's DB is about team X" semantics — cross-team callers still pass `--target-team` to file against a different observed team.
-  - **`COMPLAINT_SOURCE_KINDS` allowlist** extended with `"whip"` and `"whip-velocity-gate"` so velocity-gate's `--source-kind whip-velocity-gate` doesn't reject.
-  Acceptance: end-to-end smoke test mirroring the velocity-gate's exact CLI invocation lands a row recoverable via `complaints list --source-kind whip-velocity-gate --target-team <team>`. No schema migration required — uses the existing v3 `target_team` column + the existing `extra` JSON bag.
 
 - **ADR-140 — cheap-model-first principle (Cursor composer-2-fast martinet; medic event-driven)** ([docs/adr/140-cheap-model-first.md](docs/adr/140-cheap-model-first.md)).
   ADR text only (T1 of EPIC `t-83dcef6b`). Principle: Claude (Opus

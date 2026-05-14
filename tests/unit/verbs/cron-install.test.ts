@@ -321,3 +321,107 @@ describe("cronInstall — strip-and-replace semantics", () => {
     expect(body.includes("# >>> atmux:team=demo")).toBe(true);
   });
 });
+
+// ---------- ADR-133 TR6: superdoctor → medic cron-line migration ----------
+
+describe("cronInstall — ADR-133 TR6 superdoctor→medic migration", () => {
+  let scratch: string;
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "atmux-cron-install-tr6-"));
+    const atmuxDir = join(scratch, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({ name: "demo", members: [] }),
+    );
+  });
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  test("legacy atmux superdoctor line in foreign team block is rewritten", async () => {
+    // Foreign team's managed block carries the legacy invocation. The
+    // demo team's install pass rewrites it on the way through (managed-
+    // block-only migration).
+    const existing = [
+      "# >>> atmux:team=other — managed by atmux start; do not edit by hand",
+      "0 * * * * ATMUX_DIR=/srv/other/.atmux /usr/local/bin/atmux superdoctor --once",
+      "# <<< atmux:team=other",
+    ].join("\n");
+    const { io, captured } = makeFakeCrontab(existing);
+    await cronInstall(["--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    const body = captured.writes[0] ?? "";
+    expect(body.includes("/usr/local/bin/atmux medic --once")).toBe(true);
+    expect(body.includes("atmux superdoctor")).toBe(false);
+  });
+
+  test("operator-manual atmux superdoctor outside managed blocks is PRESERVED", async () => {
+    const existing = [
+      "# operator's own cron line — DO NOT touch",
+      "0 0 * * * /usr/local/bin/atmux superdoctor --my-custom-flag",
+    ].join("\n");
+    const { io, captured } = makeFakeCrontab(existing);
+    await cronInstall(["--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    const body = captured.writes[0] ?? "";
+    // Operator-manual line untouched.
+    expect(body.includes("0 0 * * * /usr/local/bin/atmux superdoctor --my-custom-flag")).toBe(true);
+  });
+
+  test("no legacy lines → no migration log written (no-op path)", async () => {
+    // Default state for every current installation.
+    const { io } = makeFakeCrontab(null);
+    const stderrBuf: string[] = [];
+    await cronInstall(["--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: (s) => stderrBuf.push(s),
+      stdout: () => {},
+    });
+    // Log file must not exist when no migration fired.
+    const fs = await import("node:fs/promises");
+    const logPath = join(scratch, ".atmux", "state", "cron-rename-migration.log");
+    let logExists = true;
+    try {
+      await fs.access(logPath);
+    } catch {
+      logExists = false;
+    }
+    expect(logExists).toBe(false);
+    expect(stderrBuf.join("")).toBe("");
+  });
+
+  test("migration writes log to ~/.atmux/state/cron-rename-migration.log when rewrites fire", async () => {
+    const existing = [
+      "# >>> atmux:team=other — managed by atmux start; do not edit by hand",
+      "0 * * * * /usr/local/bin/atmux superdoctor",
+      "# <<< atmux:team=other",
+    ].join("\n");
+    const { io } = makeFakeCrontab(existing);
+    await cronInstall(["--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    const fs = await import("node:fs/promises");
+    const logPath = join(scratch, ".atmux", "state", "cron-rename-migration.log");
+    const logContent = await fs.readFile(logPath, "utf-8");
+    expect(logContent).toContain("team=demo");
+    expect(logContent).toContain("migrated=1");
+    expect(logContent).toContain("ADR-133 TR6");
+  });
+});

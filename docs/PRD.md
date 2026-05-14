@@ -197,7 +197,8 @@ Custom launch commands via `team.json:.tuiCommands` map per `README.md`
 │   ├── session.txt            # captured at `atmux start` (ADR-026 single-session default)
 │   ├── session-start.txt      # epoch seconds (whip's lead-uptime source)
 │   ├── last-report.epoch      # last `atmux report` fire
-│   └── budget-pause.json      # per ADR-049 (when paused)
+│   ├── budget-pause.json      # per ADR-049 (when paused)
+│   └── cron-rename-migration.log  # ADR-133 TR6: append-only audit of `atmux superdoctor` → `atmux medic` cron-line rewrites (no-op on installs with no legacy lines)
 ├── archive/<timestamp>/       # created on atmux stop
 └── sockets/                   # ADR-032 socket-pubsub (parent repo) when enabled
 ```
