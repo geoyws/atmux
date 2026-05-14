@@ -110,7 +110,17 @@ export type DiscordTemplate =
   // operator sees the same proposed ADRs each tick because they're
   // STILL proposed; mitigation is `(deferred: <reason>)` annotation
   // per ADR-085 §Consequences.
-  | "whip-needs-approval";
+  | "whip-needs-approval"
+  // ADR-131 §D5 (T5): superdoctor kanban-hygiene blocker. Fired by
+  // the drain loop ONLY when (severity===P0) AND (wedgedMin >=240)
+  // AND refuse-and-ask escape triggered (zero deterministic
+  // candidates per §D3 rule 4). Renderer below
+  // (`renderHygieneBlocker`); P0 with a deterministic fix is
+  // silently auto-fixed + complaint-box logged, NOT pinged here.
+  // No dedup — wedge persists across ticks because no deterministic
+  // candidate yet exists; suppression is the caller's gate, not
+  // the renderer's.
+  | "hygiene-blocker";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1608,4 +1618,170 @@ function naBullet80(s: string): string {
   for (const seg of GRAPHEME_SEG.segment(s)) segs.push(seg.segment);
   if (segs.length <= max) return s;
   return `${segs.slice(0, max - 1).join("")}…`;
+}
+
+// ---------- ADR-131 §D5 T5 — renderHygieneBlocker ----------
+//
+// **Sibling-branch type-dep**: `HygieneFingerprintClass` is canonical
+// in `src/core/superdoctor-hygiene/_shared.ts` (landed in T2 commit
+// 38a9338 on geoyws-parity-state-impl, not yet on this worktree's
+// trunk). Per the no-self-merge policy (2026-05-14 16:40 MYT pivot,
+// memory `feedback_atmux_no_gitter_worker_commits`), this file
+// re-declares the same literal-union as a LOCAL type — the drain-
+// loop call site in T3 holds the cross-module type alignment when
+// gitter merges the branches. Adding a new fingerprint class
+// requires editing BOTH this literal-union AND the canonical one
+// in `_shared.ts` in lockstep.
+//
+// Layering note: abstractions/ MUST NOT import from core/ per
+// ADR-003. Even after gitter fan-in, this stays a local literal-
+// union to preserve the direction.
+
+/** Local mirror of `src/core/superdoctor-hygiene/_shared.ts`'s
+ *  `HygieneFingerprintClass`. See block-comment above for the
+ *  lockstep-update rule. */
+export type HygieneFingerprintClass =
+  | "ghost-owner"
+  | "lane-mismatch"
+  | "role-mismatch"
+  | "lane-null-orphan"
+  | "prio-null";
+
+/** Optional ask block — emitted only when the drain loop's refuse-
+ *  and-ask escape triggered (§D3 rule 4: zero deterministic
+ *  candidates). Caller composes the question + 2-3 lettered
+ *  options + the recommended default tagged with a silent-default
+ *  deadline (MYT). */
+export interface HygieneBlockerNeedFromGeorge {
+  /** One-line ask (≤60 graphemes for the on-bullet shape — the
+   *  validator caps at 80 across the board; 60 leaves headroom for
+   *  the `🙏 ` prefix). */
+  question: string;
+  /** 2-3 lettered options (`"A) reassign manually"`, `"B) leave wedged"`).
+   *  Optional — when omitted, only the question + default-deadline
+   *  pair renders. */
+  options?: ReadonlyArray<string>;
+  /** Recommended default option text — referenced in the
+   *  silent-default line as `**Default at <deadline> if silent:**
+   *  <default>`. */
+  default: string;
+  /** MYT-formatted deadline (e.g. `"HH:MM MYT"`) at which the
+   *  default applies if no operator response. The renderer does
+   *  NOT compute this — caller composes per the drain-loop's tick
+   *  budget. */
+  deadline: string;
+}
+
+export interface HygieneBlockerOpts {
+  team: string;
+  /** Wedged kanban task id (e.g. `"t-aaaa1111"`). Rendered inside
+   *  backticks in the verdict line. */
+  taskId: string;
+  /** Hygiene fingerprint class — surfaces in the verdict line's
+   *  root-cause clause via the canonical human-readable label. */
+  fingerprintClass: HygieneFingerprintClass;
+  /** Minutes the wedge has persisted. ADR-131 §D5 caller-side gate:
+   *  >=240 (4h) is the threshold for Discord surfacing. Compact-
+   *  duration grammar (CLAUDE.md §Duration formatting) used for
+   *  the verdict-line rendering. */
+  wedgedMin: number;
+  /** Human-readable description of the fix superdoctor wants to
+   *  apply (or already applied). Surfaces as the single ✨ What's
+   *  new milestone — prose-grade ≤80 graphemes, no emoji prefix. */
+  proposedFix: string;
+  /** Monotonic tick counter (ADR-077 §D3 hourly-tick id). Surfaced
+   *  in the footer so operator can correlate across ticks. */
+  superdoctorTick: number;
+  /** Count of hygiene fixes applied this tick across all teams.
+   *  Operator-side density signal: high values = busy hygiene cycle. */
+  fixesThisTick: number;
+  /** Count of complaints filed this tick (ADR-077 §D5 complaint box).
+   *  Independent counter; not necessarily ==`fixesThisTick`. */
+  complaintsFiled: number;
+  /** Optional ask block — supplied when refuse-and-ask escape
+   *  triggered. Absent ⇒ pure-blocker shape (no Need-from-George
+   *  section); the wedge is still surfaced for operator awareness. */
+  needFromGeorge?: HygieneBlockerNeedFromGeorge;
+  whenMs?: number;
+}
+
+/** Canonical human-readable label per fingerprint class. Surfaces in
+ *  the verdict-line root-cause clause. Co-located here (not in the
+ *  detector files) because the wording is Discord-output-shaped — it
+ *  belongs with the renderer, not the detection logic. */
+const HYGIENE_CLASS_LABEL: Record<HygieneFingerprintClass, string> = {
+  "ghost-owner": "owner not in roster",
+  "lane-mismatch": "owner lane ≠ task lane",
+  "role-mismatch": "non-execution role on execution task",
+  "lane-null-orphan": "lane=null orphan",
+  "prio-null": "priority unset",
+};
+
+/**
+ * Build the `[hygiene-blocker]` Discord send opts per ADR-131 §D5.
+ *
+ * **Caller-side gate** (drain loop in T3): emission fires ONLY when
+ *
+ *   1. severity === P0 (ghost-owner zero-candidates / lane-mismatch P0)
+ *   2. wedgedMin >= 240 (4h wedge threshold)
+ *   3. refuse-and-ask escape triggered (zero deterministic candidates
+ *      per §D3 rule 4)
+ *
+ * The renderer enforces NONE of these — passing a payload that fails
+ * the call-site gates still produces a valid `DiscordSendOpts`, so
+ * tests can exercise the renderer in isolation without simulating
+ * the drain-loop policy.
+ *
+ * Body shape per ADR-131 §D5:
+ *
+ *   - Header: 🔧 [hygiene-blocker] · `{team}` · HH:MM MYT
+ *   - Verdict: 🔴 Stalled — \`{taskId}\` wedged {duration}, {label}
+ *   - ✨ What's new: 1 bullet — `proposedFix`
+ *   - 🙏 Need from George (only when `needFromGeorge` present):
+ *       question + lettered options + silent-default line
+ *   - 📍 footer: `superdoctor tick #N · K fixes applied · C complaints`
+ */
+export function renderHygieneBlocker(opts: HygieneBlockerOpts): DiscordSendOpts {
+  const duration = formatDuration(opts.wedgedMin * 60_000);
+  const label = HYGIENE_CLASS_LABEL[opts.fingerprintClass];
+  const verdict = `🔴 **Stalled** — \`${opts.taskId}\` wedged ${duration}, ${label}`;
+
+  // ✨ What's new — single milestone bullet (prose-grade, no emoji prefix).
+  const whatsNew: string[] = [opts.proposedFix];
+
+  // 🙏 Need from George — optional section. Bullets ARE emoji-prefixed
+  // (sections use the emoji-prefix validator), so each bullet leads
+  // with 🙏 / 🛠️ / 📍 per the ALLOWED_BULLET_PREFIX set.
+  const sections: DiscordSection[] = [];
+  if (opts.needFromGeorge !== undefined) {
+    const nfg = opts.needFromGeorge;
+    const bullets: string[] = [`🙏 ${nfg.question}`];
+    if (nfg.options !== undefined) {
+      for (const opt of nfg.options) {
+        bullets.push(`📍 ${opt}`);
+      }
+    }
+    bullets.push(`📍 **Default at ${nfg.deadline} if silent:** ${nfg.default}`);
+    sections.push({
+      label: "🙏 **Need from George** (zero deterministic candidates)",
+      bullets,
+    });
+  }
+
+  const footer =
+    `superdoctor tick #${opts.superdoctorTick} · ` +
+    `${opts.fixesThisTick} fixes applied · ` +
+    `${opts.complaintsFiled} complaints`;
+
+  const out: DiscordSendOpts = {
+    template: "hygiene-blocker",
+    team: opts.team,
+    category: "🔧",
+    verdict,
+    whatsNew,
+    footer,
+  };
+  if (sections.length > 0) out.sections = sections;
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
 }
