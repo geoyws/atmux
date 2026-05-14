@@ -1226,17 +1226,71 @@ describe("resolveTeamWindowMode", () => {
     };
     expect(await resolveTeamWindowMode(team, deps)).toBe("session-down");
   });
+
+  // ADR-063 follow-up: socket resolver wired through deps so cockpit
+  // can detect cages running on the per-team `team.tmuxTmpdir`
+  // convention, not just the legacy `/tmp/atmux-<team>/sock` path.
+  test("resolveCageSocket=per-team + cage alive → 'attach' (regression for driver-inbox 2026-05-14 bug)", async () => {
+    let factorySocket: string | undefined;
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      resolveCageSocket: async (_name, root) => `${root}/.atmux/tmux/tmux-0/default`,
+      createCageTmux: (sock) => {
+        factorySocket = sock;
+        return fakeCageTmux({
+          hasSession: true,
+          windows: [{ index: 1, name: "driver" }],
+        });
+      },
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("attach");
+    // Compat verify: the resolved per-team socket was the one the
+    // factory was called with — proves the threading works end-to-end.
+    expect(factorySocket).toBe("/d/.atmux/tmux/tmux-0/default");
+  });
+
+  test("resolveCageSocket=legacy + cage alive → 'attach' (compat regression)", async () => {
+    let factorySocket: string | undefined;
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      resolveCageSocket: async (name) => `/tmp/atmux-${name}/sock`,
+      createCageTmux: (sock) => {
+        factorySocket = sock;
+        return fakeCageTmux({
+          hasSession: true,
+          windows: [{ index: 1, name: "driver" }],
+        });
+      },
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("attach");
+    expect(factorySocket).toBe("/tmp/atmux-demo/sock");
+  });
+
+  test("resolveCageSocket throws → 'session-down' (resolver failure is non-fatal)", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      resolveCageSocket: async () => {
+        throw new Error("simulated resolver failure");
+      },
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("session-down");
+  });
 });
 
 describe("buildTeamWindowCommand", () => {
   const team = { name: "demo", root: "/d", enabled: true } as CockpitTeam;
+  const uid = process.getuid?.() ?? 0;
 
-  test("attach mode targets <session>:driver via the retry loop", () => {
+  test("attach mode targets <session>:driver via the dual-socket retry loop", () => {
     const cmd = buildTeamWindowCommand(team, "attach");
     expect(cmd).toContain("attach -t");
     expect(cmd).toContain(":driver");
     expect(cmd).toContain("while true");
     expect(cmd).toContain("sleep 1");
+    // ADR-063 follow-up: both socket conventions inside one iteration.
+    expect(cmd).toContain("/tmp/atmux-demo/sock");
+    expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
+    expect(cmd).toContain("||");
   });
 
   test("no-driver-config emits the 'set team.json::driverSession' guidance", () => {
@@ -1246,11 +1300,18 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain("sleep infinity");
   });
 
-  test("session-down emits the 'atmux start' guidance", () => {
+  test("session-down emits the 'atmux start' guidance + self-healing retry-loop", () => {
     const cmd = buildTeamWindowCommand(team, "session-down");
     expect(cmd).toContain("session not running");
     expect(cmd).toContain("atmux start demo");
-    expect(cmd).toContain("sleep infinity");
+    // ADR-063 follow-up: replaced `sleep infinity` with a retry-loop so
+    // the window re-attaches when the cage comes back up — see
+    // driver-inbox 2026-05-14 bug report.
+    expect(cmd).not.toContain("sleep infinity");
+    expect(cmd).toContain("while true");
+    expect(cmd).toContain("sleep 1");
+    expect(cmd).toContain("/tmp/atmux-demo/sock");
+    expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
   });
 
   test("placeholder shell-quoting survives team names with apostrophes", () => {
@@ -1260,6 +1321,16 @@ describe("buildTeamWindowCommand", () => {
     // team name must be escaped via the POSIX `'\''` idiom so the
     // surrounding `printf` quoting doesn't break.
     expect(cmd).toContain("'\\''");
+  });
+
+  test("session-down printf message is shell-safe for team names with apostrophes", () => {
+    const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
+    const cmd = buildTeamWindowCommand(apostropheTeam, "session-down");
+    // The printf prelude single-quotes its message; the apostrophe in
+    // "ali's-team" must be POSIX-escaped or the rest of the command
+    // string breaks the shell parse.
+    expect(cmd).toContain("'\\''");
+    expect(cmd).toContain("while true");
   });
 });
 
@@ -1580,6 +1651,192 @@ describe("cockpitRebuild", () => {
       const joined = logs.join("\n");
       expect(joined).toContain("/loop /superdoctor");
       expect(joined).toContain("superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ADR-133 TR2: top-level `medic` block resolves the same way as the
+  // deprecated `superdoctor` block. Window name stays "superdoctor"
+  // until TR3 ships the verb / window / skill renames.
+  test("ADR-133 TR2: top-level `medic` block enables the W2 medic window + nudge", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "test_cockpit_medic_nudge",
+        medic: { enabled: true },
+        sessions: [{ type: "team", name: "demo", root: projRoot }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-medic-nudge");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      // Nudge fires from the new canonical `cockpit.medic` read.
+      expect(joined).toContain("/loop /superdoctor");
+      expect(joined).toContain("medic");
+      // TR2 keeps window name as "superdoctor" (per task body — TR3
+      // ships the cascade rename).
+      const wins = await fx.tmux.window.listWindows("test_cockpit_medic_nudge");
+      expect(wins.map((w) => w.name)).toContain("superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ADR-133 TR2: top-level `superdoctor` block (recursive sessions[]
+  // shape, NOT legacy flat) — shim lifts to medic + warns.
+  test("ADR-133 TR2: top-level `superdoctor` on new-shape config → medic resolves + deprecation warn fires", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "test_cockpit_sd_depr",
+        superdoctor: { enabled: true },
+        sessions: [{ type: "team", name: "demo", root: projRoot }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-sd-depr");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      // Nudge fires (medic resolved post-shim).
+      expect(joined).toContain("/loop /superdoctor");
+      // Deprecation warning surfaces via stderr (default warn sink) —
+      // not captured by `logs[]` since logger isn't passed to
+      // loadCockpit's warn. The W2 window still provisions.
+      const wins = await fx.tmux.window.listWindows("test_cockpit_sd_depr");
+      expect(wins.map((w) => w.name)).toContain("superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ADR-133 TR2: BOTH `medic` and `superdoctor` set — medic wins.
+  test("ADR-133 TR2: both `medic` and `superdoctor` set → medic wins; superdoctor stripped pre-parse", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "test_cockpit_both",
+        medic: { enabled: true, autoStart: false },
+        superdoctor: { enabled: false, autoStart: true },
+        sessions: [{ type: "team", name: "demo", root: projRoot }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-both");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      // medic.enabled=true wins; nudge fires. superdoctor.enabled=false
+      // would have suppressed the nudge if it had won.
+      expect(joined).toContain("/loop /superdoctor");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ADR-133 TR2: neither key set — no nudge.
+  test("ADR-133 TR2: neither `medic` nor `superdoctor` set → no nudge in output", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "test_cockpit_neither",
+        sessions: [{ type: "team", name: "demo", root: projRoot }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-reb-neither");
+    try {
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "rebuild",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      // No medic / superdoctor configured → no /loop nudge surfaces.
+      expect(joined).not.toContain("/loop /superdoctor");
     } finally {
       try {
         await fx.tmux.server.killServer();

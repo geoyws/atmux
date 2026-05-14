@@ -15,8 +15,9 @@ import { readJson } from "../abstractions/json.ts";
 import { ConfigError } from "../errors.ts";
 import {
   Cockpit,
-  type Cockpit as CockpitShape,
+  type CockpitMedic,
   type CockpitSessionT,
+  type Cockpit as CockpitShape,
   type CockpitSuperdoctor,
   type CockpitTeam,
   type TeamSessionT,
@@ -85,14 +86,20 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
       hint: `seed it with a roster like:\n  {\n    "schemaVersion": 1,\n    "cockpitSession": "atmux_teams",\n    "sessions": [\n      { "type": "team", "name": "<team>", "root": "/abs/path/to/project" }\n    ]\n  }`,
     });
   }
-  // Read raw first so the migration shim can inspect the on-disk shape
-  // before Zod validation. `z.unknown()` always succeeds; it's a typed
-  // raw read that honours the `JSON.parse`-only-in-abstractions/json.ts
-  // invariant (R3 per ADR-006).
+  // Read raw first so the migration shims can inspect the on-disk
+  // shape before Zod validation. `z.unknown()` always succeeds; it's a
+  // typed raw read that honours the `JSON.parse`-only-in-abstractions/
+  // json.ts invariant (R3 per ADR-006). Two shims run in order:
+  //   1. `migrateLegacyShape` — ADR-089 §B flat `teams[]` → recursive
+  //      `sessions[]`.
+  //   2. `migrateSuperdoctorBlockToMedic` — ADR-133 TR2 top-level
+  //      `superdoctor` key → `medic` with deprecation warning. Both
+  //      shims are idempotent on inputs that already use the new shape.
   const raw = await readJson(path, z.unknown());
   const warn = opts.warn ?? ((msg: string) => process.stderr.write(msg));
   const migrated = migrateLegacyShape(raw, path, warn);
-  const parsed = Cockpit.parse(migrated);
+  const medicShimmed = migrateSuperdoctorBlockToMedic(migrated, path, warn);
+  const parsed = Cockpit.parse(medicShimmed);
   // ADR-089 §Decision-anchor #4: validate operator-supplied prefixChain
   // (length ≥ MAX_NESTING_LEVEL + uniqueness) at load time. Failing here
   // is preferable to a runtime KeyError when resolvePrefix is called
@@ -162,11 +169,65 @@ export function migrateLegacyShape(
 }
 
 /**
+ * ADR-133 TR2: pre-parse shim that renames the top-level `superdoctor`
+ * block to `medic`. Runs AFTER `migrateLegacyShape` so a fully-legacy
+ * config (flat `teams[]` + top-level `superdoctor`) flows through
+ * shape-migration first; this shim then only fires for configs that
+ * declared `superdoctor` at the top level alongside (or instead of) a
+ * `medic` key.
+ *
+ * Three branches:
+ *   1. `medic` set + `superdoctor` set → strip `superdoctor`, warn
+ *      operator that the deprecated key is being ignored.
+ *   2. Only `superdoctor` set → rename to `medic`, warn operator that
+ *      they should rename the key in their cockpit.json.
+ *   3. Only `medic` set OR neither set → no-op.
+ *
+ * Idempotent on already-migrated inputs (no `superdoctor` key). Does
+ * NOT auto-migrate the on-disk file — the warning is the call to
+ * action. After one release cycle, a follow-up Task flips `superdoctor`
+ * to a schema-level reject and removes this shim.
+ */
+export function migrateSuperdoctorBlockToMedic(
+  raw: unknown,
+  path: string,
+  warn: (msg: string) => void,
+): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const obj = raw as Record<string, unknown>;
+  if (obj.superdoctor === undefined) return obj;
+  if (obj.medic !== undefined) {
+    warn(
+      `atmux: cockpit.json at ${path} has BOTH deprecated top-level 'superdoctor' AND 'medic' keys ` +
+        `— 'medic' wins; remove the 'superdoctor' block per ADR-133. ` +
+        `Accepting this release; will fail next release.\n`,
+    );
+    const { superdoctor: _drop, ...rest } = obj;
+    void _drop;
+    return rest;
+  }
+  warn(
+    `atmux: cockpit.json at ${path} uses deprecated top-level 'superdoctor' key — ` +
+      `rename to 'medic' per ADR-133. ` +
+      `Accepting this release; will fail next release.\n`,
+  );
+  const { superdoctor, ...rest } = obj;
+  return { ...rest, medic: superdoctor };
+}
+
+/**
  * Post-parse synthesis of legacy back-compat fields. Walks `sessions[]`
  * DFS and populates `teams: CockpitTeam[]` (type==="team" entries) +
  * `superdoctor: CockpitSuperdoctor` (first type==="superdoctor" entry).
  * Existing duck-typed consumers in audit.ts / status.ts / verbs/cockpit.ts
  * read these synthesized fields unchanged.
+ *
+ * ADR-133 TR2: also populates `medic: CockpitMedic` alongside
+ * `superdoctor` from the same `type: "superdoctor"` entry. Callers
+ * reading the new field (cockpit verb's W2 provisioning, post-TR2)
+ * work for sessions[]-based configs without forcing operators to
+ * restructure. The session discriminator stays `"superdoctor"` until
+ * TR3+ ships the wider rename.
  */
 function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   const teams: CockpitTeam[] = [];
@@ -188,7 +249,17 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
       superdoctor = s;
     }
   });
-  return { ...cockpit, teams, ...(superdoctor !== undefined ? { superdoctor } : {}) };
+  // ADR-133 TR2: when the operator already declared a top-level `medic`
+  // (post-shim), preserve it as the canonical source. Otherwise fall
+  // back to the synthesized `superdoctor` so sessions[]-based configs
+  // surface `cockpit.medic` to new callers without restructuring.
+  const medic: CockpitMedic | undefined = cockpit.medic ?? superdoctor;
+  return {
+    ...cockpit,
+    teams,
+    ...(superdoctor !== undefined ? { superdoctor } : {}),
+    ...(medic !== undefined ? { medic } : {}),
+  };
 }
 
 /** A flattened team entry — one row per `type: "team"` or `epic-team"`
@@ -460,6 +531,48 @@ export function childNestingEnv(parentLevel: number): Record<string, string> {
  *  without churning unrelated callsites. */
 export function cageSocketPath(teamName: string): string {
   return `/tmp/atmux-${teamName}/sock`;
+}
+
+/** Per-team cage socket absolute path under team-root convention:
+ *  `<teamRoot>/.atmux/tmux/tmux-<uid>/default`. Used by teams with
+ *  `team.tmuxTmpdir` set (sopx / unum / atmux dogfood). The uid suffix
+ *  matches tmux's own `default` socket naming under `TMUX_TMPDIR` — see
+ *  `core/common.ts::resolveTeamSocket` for the parallel resolver on the
+ *  team-level side. */
+export function perTeamCageSocketPath(teamRoot: string): string {
+  const uid = process.getuid?.() ?? 0;
+  return `${teamRoot}/.atmux/tmux/tmux-${uid}/default`;
+}
+
+/**
+ * ADR-063 follow-up (driver-inbox 2026-05-14): probe BOTH socket
+ * conventions used by atmux cages and return the first that exists.
+ * Order:
+ *   1. Legacy `/tmp/atmux-<team>/sock` (ADR-063 era; back-compat first).
+ *   2. Per-team `<teamRoot>/.atmux/tmux/tmux-<uid>/default` (current
+ *      convention used by teams with `team.tmuxTmpdir` set).
+ *
+ * Falls through to the legacy path when neither exists, so downstream
+ * error messages reference a canonical location. Pure modulo `exists`;
+ * tests inject `deps.exists` to drive every branch.
+ *
+ * Mirrors the same widening that landed in claude-skills `bau` socket
+ * resolver (790dc4e) — single source of truth for cockpit-side cage
+ * socket discovery so the next probe-widening lands in one place.
+ */
+export async function resolveCageSocket(
+  teamName: string,
+  teamRoot: string,
+  deps: { exists?: (p: string) => Promise<boolean> } = {},
+): Promise<string> {
+  const existsFn = deps.exists ?? exists;
+  const legacy = cageSocketPath(teamName);
+  const perTeam = perTeamCageSocketPath(teamRoot);
+  const candidates = [legacy, perTeam];
+  for (const p of candidates) {
+    if (await existsFn(p)) return p;
+  }
+  return legacy;
 }
 
 /** Cage tmux session name. Special-case: the `atmux` team itself uses a
