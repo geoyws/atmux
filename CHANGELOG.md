@@ -46,6 +46,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **ADR-138 — verified send-keys (verify-and-retry pattern)** ([docs/adr/138-verified-send-keys.md](docs/adr/138-verified-send-keys.md)).
+  ADR text only (T1 of EPIC `t-5df48a74`). Decision: new
+  `safeSendKeysWithVerify` helper in `src/abstractions/tmux.ts` —
+  send once, capture pane, assert state transition via caller-
+  supplied `PaneVerifier`, retry once on timeout, escalate to
+  `~/.atmux/state/send-keys-failures.log` + doctor probe + Discord
+  template `[send-keys-failure]`. Ships 6 built-in verifiers
+  (`composerEmpty`, `agentThinking`, `modalClosed`, `contextNonZero`,
+  `paneMatchesRegex`, caller-closure). Migration plan touches 6
+  caller files (send / dispatch / lane-tick / start / rotate +
+  driver modal-release helpers); direct `tmux send-keys` remains
+  only for window-rename / layout commands. Rejected blanket-3x-Enter
+  alternative inline — state-destructive at every pane mode (would
+  submit empty prompts on composer, wrong defaults on modals, etc.).
+  Cross-refs ADR-081 §A (C-m submit cascade — layer below) and
+  ADR-132 (martinet — long-term home, inherits the helper). Sub-tasks
+  T2 (helper impl + tests) and T3 (caller migration + e2e) filed
+  under the EPIC. Kanban Tasks `t-5df48a74` (EPIC), `t-f58c6ccc` (T1,
+  this commit).
 - **ADR-136 — hot-rename member labels (Option B — id + label + emoji split)** ([docs/adr/136-hot-rename-member-labels.md](docs/adr/136-hot-rename-member-labels.md)).
   ADR text only (TR1 of EPIC `t-13367b7a`). Decision: add an optional
   `label` field to `TeamMember`; `name` stays the immutable ASCII ID;
