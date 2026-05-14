@@ -95,6 +95,18 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   const warn = opts.warn ?? ((msg: string) => process.stderr.write(msg));
   const migrated = migrateLegacyShape(raw, path, warn);
   const parsed = Cockpit.parse(migrated);
+  // ADR-089 §Decision-anchor #4: validate operator-supplied prefixChain
+  // (length ≥ MAX_NESTING_LEVEL + uniqueness) at load time. Failing here
+  // is preferable to a runtime KeyError when resolvePrefix is called
+  // from a deeply-nested cage and the chain doesn't reach that level.
+  if (parsed.prefixChain !== undefined) {
+    const v = validatePrefixChain(parsed.prefixChain);
+    if (!v.ok) {
+      throw new ConfigError({
+        what: `cockpit.json at ${path}: invalid prefixChain — ${v.reason ?? "unknown"}`,
+      });
+    }
+  }
   return enrichLegacyFields(parsed);
 }
 
@@ -271,6 +283,175 @@ export function walkSessions(
       }
     }
   }
+}
+
+// ---------- ADR-089 §C: F-key prefix chain + ATMUX_NESTING_LEVEL ----------
+
+/** Default F-key prefix chain. Twelve entries (F1..F12) cover every
+ *  level the schema's max-depth cap (6) allows plus headroom for any
+ *  future super-cockpit / multi-epic chains. Operator override via
+ *  `cockpit.prefixChain` flips the whole chain (per-level overrides
+ *  are out of scope per ADR-089 §C). */
+export const DEFAULT_PREFIX_CHAIN: ReadonlyArray<string> = [
+  "F1",
+  "F2",
+  "F3",
+  "F4",
+  "F5",
+  "F6",
+  "F7",
+  "F8",
+  "F9",
+  "F10",
+  "F11",
+  "F12",
+];
+
+/** ADR-089 §Decision-anchor #6 — max nesting depth cockpit.json may
+ *  declare. Computed as L1-L4 reserved (cockpit + team + epic-team +
+ *  one chain step) + 2 headroom. Used by validatePrefixChain (the
+ *  chain must be long enough to assign a prefix per level) and by
+ *  loadCockpit's depth check. */
+export const MAX_NESTING_LEVEL = 6;
+
+/** ADR-089 §D — env-var name carrying the cage's own nesting level.
+ *  Centralised constant so callers don't drift on the spelling. */
+export const ATMUX_NESTING_LEVEL_ENV = "ATMUX_NESTING_LEVEL";
+
+/**
+ * ADR-089 §D — read the nesting level from `env`. Missing /
+ * malformed / non-positive values fall back to **1** (top-level
+ * operation; cockpit / standalone `atmux start` case). 1-indexed
+ * for human readability — L1 = outermost cage.
+ *
+ * Pure. Exported for direct unit-testing.
+ */
+export function readNestingLevel(env: NodeJS.ProcessEnv): number {
+  const raw = env[ATMUX_NESTING_LEVEL_ENV];
+  if (raw === undefined || raw === "") return 1;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return n;
+}
+
+/**
+ * ADR-089 §C — resolve the tmux prefix for a given nesting level
+ * from the (optional) operator-supplied chain, falling back to the
+ * default F-key chain. Level is 1-indexed; an out-of-range level
+ * (level > chain.length) is treated as a logic error from the
+ * caller — throws `ConfigError` to fail loud rather than silently
+ * collapsing to a possibly-colliding prefix.
+ *
+ * Pure. Validation of the chain itself (length + uniqueness) lives
+ * in `validatePrefixChain` and is invoked once at `loadCockpit` time
+ * so callers can rely on a pre-validated chain when calling this.
+ */
+export function resolvePrefix(level: number, chain?: ReadonlyArray<string>): string {
+  const effective = chain !== undefined && chain.length > 0 ? chain : DEFAULT_PREFIX_CHAIN;
+  if (!Number.isInteger(level) || level < 1) {
+    throw new ConfigError({
+      what: `resolvePrefix: level must be a positive integer, got ${level}`,
+    });
+  }
+  if (level > effective.length) {
+    throw new ConfigError({
+      what: `resolvePrefix: level ${level} exceeds prefix chain length ${effective.length}`,
+      hint: `add more entries to cockpit.prefixChain or reduce nesting depth (max ${MAX_NESTING_LEVEL})`,
+    });
+  }
+  return effective[level - 1] as string;
+}
+
+/** Result of `validatePrefixChain`. `ok: false` carries a `reason`
+ *  string suitable for direct surfacing in a `ConfigError`. */
+export interface PrefixChainValidation {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * ADR-089 §Decision-anchor #4 — validate a prefix chain at
+ * `loadCockpit` time:
+ *   1. Length MUST be ≥ {@link MAX_NESTING_LEVEL} so every reachable
+ *      level has a slot.
+ *   2. Entries MUST be unique. Duplicates collide: `["F1","F2","F2"]`
+ *      means child + grand-child cages both bind `F2`, and tmux can't
+ *      route the prefix unambiguously.
+ *   3. Entries MUST be non-empty strings.
+ *
+ * Pure — no IO. Loader uses this once at parse time then trusts the
+ * chain everywhere downstream.
+ */
+export function validatePrefixChain(chain: ReadonlyArray<string>): PrefixChainValidation {
+  if (chain.length < MAX_NESTING_LEVEL) {
+    return {
+      ok: false,
+      reason:
+        `prefixChain has ${chain.length} entries but must have ≥${MAX_NESTING_LEVEL} ` +
+        `(one per level up to the max-depth cap). Add ${MAX_NESTING_LEVEL - chain.length} ` +
+        `more entries or omit the field to use the default F-key chain.`,
+    };
+  }
+  for (let i = 0; i < chain.length; i += 1) {
+    const entry = chain[i];
+    if (typeof entry !== "string" || entry.length === 0) {
+      return {
+        ok: false,
+        reason: `prefixChain[${i}] is empty or non-string — every entry must be a tmux key spec like "F1" or "C-q"`,
+      };
+    }
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < chain.length; i += 1) {
+    const entry = chain[i] as string;
+    if (seen.has(entry)) {
+      return {
+        ok: false,
+        reason:
+          `prefixChain[${i}] = "${entry}" is duplicated — every entry must be unique so ` +
+          `nested cages bind orthogonal prefixes (a duplicate would collide between levels).`,
+      };
+    }
+    seen.add(entry);
+  }
+  return { ok: true };
+}
+
+/**
+ * ADR-089 §Decision-anchor #5 — build the env mutations a parent
+ * cage applies when spawning a child cage. Returns a plain object
+ * suitable for spread onto `process.env` clones (or passed to a
+ * spawner that takes `env`). The contract is:
+ *
+ *   1. UNSET inherited `ATMUX_NESTING_LEVEL` (callers spread
+ *      `{ [ATMUX_NESTING_LEVEL_ENV]: undefined }` and remove the key).
+ *   2. SET own level = `parentLevel + 1`.
+ *
+ * Concretely the return value contains the SET step; the UNSET step
+ * is "delete the key from the cloned env before spread". Callers
+ * compose like:
+ *
+ *   const childEnv = { ...parentEnv };
+ *   delete childEnv[ATMUX_NESTING_LEVEL_ENV];
+ *   Object.assign(childEnv, childNestingEnv(parentLevel));
+ *
+ * Pure helper — no IO. Exported for direct unit-testing of the
+ * contract.
+ */
+export function childNestingEnv(parentLevel: number): Record<string, string> {
+  if (!Number.isInteger(parentLevel) || parentLevel < 1) {
+    throw new ConfigError({
+      what: `childNestingEnv: parentLevel must be a positive integer, got ${parentLevel}`,
+    });
+  }
+  const childLevel = parentLevel + 1;
+  if (childLevel > MAX_NESTING_LEVEL) {
+    throw new ConfigError({
+      what: `childNestingEnv: would exceed max depth ${MAX_NESTING_LEVEL} (parent=${parentLevel}, child=${childLevel})`,
+      hint: "reduce the nesting depth in cockpit.json",
+    });
+  }
+  return { [ATMUX_NESTING_LEVEL_ENV]: String(childLevel) };
 }
 
 // ---------- Topology helpers ----------
