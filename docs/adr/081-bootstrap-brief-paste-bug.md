@@ -14,7 +14,9 @@ The atmux team's last commit was `d899f9e` (`feat(doctor): cursor-plugin-cache p
 - 0 task completions in window
 - 9 of 12 members at the Claude welcome screen with `ctx --` / `0 tokens` — claude TUI **alive in every pane** but **never received its bootstrap brief**
 - Lead (window 2) at 10% ctx, idle, asking *"What did you want this to do?"* — clear sign the lead itself had taken keystrokes that landed at its compose box without context to act on
-- Three open superdoctor complaints (`c-7193c689`, `c-8ecd3a61`, `c-368c375b`) already documenting the pathology
+- Three open medic complaints[^medic-rename] (`c-7193c689`, `c-8ecd3a61`, `c-368c375b`) already documenting the pathology
+
+[^medic-rename]: The cockpit self-healing role was renamed `superdoctor` → `medic` on 2026-05-14 per [ADR-133](./133-medic-rename.md). All references to "medic" below originally read "superdoctor"; storage-layer identifiers (`superdoctor_attempts` table, `__superdoctor__` sentinel) remain unchanged for the deprecation window per ADR-133 §Out of scope.
 
 Manual recovery (`atmux stop --force && atmux start`) **reproduced the same starving state** — fresh cage, all 12 claude TUIs running, none with a brief. The bug is in the spawn-then-brief pipeline, not in any specific cage state.
 
@@ -88,7 +90,7 @@ Doctor's `--fix` for `starving` state: paste the brief (same path as §C) and ve
 
 ### (E) Move starving-bootstrap recovery to the cockpit/supervisor (per c-7193c689)
 
-The lead's whip §4a `auto-bootstrap-starving-members` step is removed and the equivalent logic lives in `cockpit autolaunch` (or `superdoctor`'s starvation-detection rule). Rationale: a stuck lead cannot fire whip; supervisor-side recovery breaks the chicken-and-egg. `superdoctor` already has the authority (ADR-077 §D3 — rotate leads, clear members, cycle cages) and the cross-team scope; adding "if a team has ≥1 starving member AND lead has been idle ≥5min, paste briefs to starving members" is a narrow extension.
+The lead's whip §4a `auto-bootstrap-starving-members` step is removed and the equivalent logic lives in `cockpit autolaunch` (or `medic`'s starvation-detection rule). Rationale: a stuck lead cannot fire whip; supervisor-side recovery breaks the chicken-and-egg. `medic` already has the authority (ADR-077 §D3 — rotate leads, clear members, cycle cages) and the cross-team scope; adding "if a team has ≥1 starving member AND lead has been idle ≥5min, paste briefs to starving members" is a narrow extension.
 
 ### (F) First-turn precedence over residue-discard memory rules
 
@@ -117,13 +119,13 @@ The lead's whip §4a `auto-bootstrap-starving-members` step is removed and the e
 
 - **One round of edits across `src/verbs/start.ts`, `src/abstractions/tmux.ts` callsites, and `src/verbs/doctor.ts`.** §B already landed in `7aa7cf2`. Remaining estimate: ~100 LOC additions + ~30 LOC modifications + ~50 LOC of regression tests.
 - **`templates/briefs/team-lead.md` is now a symlink to `lead.md`** (landed in `7aa7cf2`).
-- **Existing teams with starving members get auto-recovered on the next superdoctor tick** rather than waiting on lead-side whip §4a. Acceptable: superdoctor cadence is hourly (cron); the bar is "not 20h dormant," not "<1 min recovery."
+- **Existing teams with starving members get auto-recovered on the next medic tick** rather than waiting on lead-side whip §4a. Acceptable: medic cadence is hourly (cron); the bar is "not 20h dormant," not "<1 min recovery." (Post-[ADR-140] cheap-model-first, this becomes event-driven via martinet.)
 - **Reversibility**: each of (A)–(E) is independently reversible. (A) is a one-line revert. (B) drops the alias map. (C) reverts to deferred state (regression). (D) drops the new doctor state. (E) re-adds the whip §4a step.
-- **Open superdoctor complaints to close on landing**: `c-7193c689` (starving-bootstrap, addressed by §C + §E — resolved manually for this incident; structural fix tracked here). `c-8ecd3a61` (doctor blind spot, addressed by §D). Keep `c-368c375b` (phantom-inbox residue) open — different bug class, not addressed here.
+- **Open medic complaints to close on landing**: `c-7193c689` (starving-bootstrap, addressed by §C + §E — resolved manually for this incident; structural fix tracked here). `c-8ecd3a61` (doctor blind spot, addressed by §D). Keep `c-368c375b` (phantom-inbox residue) open — different bug class, not addressed here.
 
 ## Cross-references
 
-- ADR-077 — superdoctor cockpit-level self-healing (the §E recovery hook lives here).
+- ADR-077 — medic (formerly `superdoctor`, renamed per ADR-133) cockpit-level self-healing (the §E recovery hook lives here).
 - ADR-052 — eternal-improvement loop (the auto-detect-then-fix pattern §E extends).
 - ADR-018 — per-team tmux socket isolation (the cage topology this incident occurred inside).
 - `t-eee0a7f6` — Git worktree per-member isolation (concurrent stash-collision-prevention, related but distinct concern).

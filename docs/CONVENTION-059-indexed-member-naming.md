@@ -41,10 +41,12 @@ Three reasons, weighted by frequency of impact:
    name — just the spawn account. The lane stays `fe`, the slot stays
    `0`, and every kanban Task that names `fe0` continues to address
    the same slot post-swap.
-3. **Superdoctor + watchdog templates already assume it.** The
+3. **Medic[^medic-rename] + watchdog templates already assume it.** The
    `clear-member:fe0` action string in the ADR-077 §F6 attempts log
    already uses this shape. Codifying the convention means existing
    tooling references aren't bespoke.
+
+[^medic-rename]: The cockpit self-healing role was renamed `superdoctor` → `medic` on 2026-05-14 per [ADR-133](./adr/133-medic-rename.md). Storage-layer identifiers like the `superdoctor_attempts` table referenced below remain unchanged for the deprecation window per ADR-133 §Out of scope.
 
 ## The rule
 
