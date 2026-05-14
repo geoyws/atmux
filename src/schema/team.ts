@@ -171,6 +171,37 @@ export const TeamWhip = z
      *  survive `atmux handoff`. Default lead/planner/reviewer
      *  (ADR-056 §"Lead/planner exclusion"). */
     accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
+
+    // ---------- ADR-087 velocity-gate cadence knobs ----------
+    /** ADR-087 §Spec. Per-team tunables for the whip velocity-gate
+     *  classifier + strike counter. Operators rarely need to tune —
+     *  the defaults match the operator-observed failure mode that
+     *  drove the ADR (10 zero-commit heartbeats over 4.5h). The
+     *  feature kill-switch is `crons.whipVelocityGateEnabled` (lives
+     *  in `crons` for fleet-consistent shape with `laneTickEnabled`);
+     *  this sub-config carries the threshold knobs. */
+    velocityGate: z
+      .object({
+        /** Sliding window (minutes) over which the classifier counts
+         *  ground-truth commits. Default 60 — one hour; matches the
+         *  operator's "an hour without a commit on an active team is
+         *  the threshold of suspicion" framing in the Task body. */
+        windowMin: z.number().int().positive().optional(),
+        /** Strike count that escalates to a complaint via the
+         *  superdoctor-escalation pipeline (sibling Task t-e91fec98).
+         *  Default 3 — matches Task body §6 "3+ strikes → file
+         *  complaint for superdoctor". */
+        strikeThreshold: z.number().int().positive().optional(),
+        /** Standby grace window (minutes) — if a ground-truth commit
+         *  landed within this lookback, BAD is downgraded to STANDBY
+         *  (someone shipped recently; the team is not stalled, just
+         *  catching breath). Default 30 — half the main window, so
+         *  the "we just shipped, lead reading the next Task" state
+         *  doesn't strike. */
+        standbyGraceMin: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type TeamWhip = z.infer<typeof TeamWhip>;
@@ -303,6 +334,43 @@ export const TeamUnblocker = z
   })
   .strict();
 export type TeamUnblocker = z.infer<typeof TeamUnblocker>;
+
+/**
+ * `team.json::crons` sub-config — per-line cron kill-switches (ADR-062
+ * §Rollback). Lets operators disable specific cron-emitted lines
+ * without a code change. Distinct from cadence knobs (`whip`, `report`,
+ * `decisions`, `groom`, `unblocker`) which live in their own sub-
+ * objects; `crons` is the place for boolean enable/disable toggles
+ * scoped to the cron emitter.
+ *
+ * Today only `laneTickEnabled` lives here (ADR-062 §Decision 4). Future
+ * line-level kill-switches (e.g. `whipResumeCheckEnabled` for teams
+ * that want claudeAccount probes but no auto-resume cron tick) would
+ * land here too.
+ */
+export const TeamCrons = z
+  .object({
+    /** ADR-062 §Rollback. When `false`, suppress the `lane-tick` cron
+     *  line even if the team has lane-tagged members. Default
+     *  `true` (effective only when the gating member-condition holds —
+     *  teams with zero `.lane`-tagged members skip the line regardless).
+     *  Operators flip this off to halt lane-driven auto-claim without
+     *  removing `.lane` annotations from `team.members[]`. */
+    laneTickEnabled: z.boolean().default(true),
+    /** ADR-087 §Rollback. Velocity-gate kill-switch. When `false`,
+     *  whip skips ground-truth velocity classification + strike-counter
+     *  bumping entirely (effectively reverting to pre-ADR-087 fake-
+     *  liveness reliance on lead self-report). Default `true` — the
+     *  gate is opt-OUT, not opt-in, because the operator-observed
+     *  failure mode (10 zero-commit heartbeats over 4.5h) is what
+     *  ADR-087 was authored to prevent. Pairs with
+     *  `whip.velocityGate` cadence knobs (window minute count + strike
+     *  threshold); the kill-switch lives here for fleet-consistent
+     *  shape with `laneTickEnabled`. */
+    whipVelocityGateEnabled: z.boolean().default(true),
+  })
+  .strict();
+export type TeamCrons = z.infer<typeof TeamCrons>;
 
 /**
  * `team.json::kanban` sub-config — kanban-orchestration knobs. ADR-062
