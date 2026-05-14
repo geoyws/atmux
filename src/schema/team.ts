@@ -147,6 +147,37 @@ export const TeamWhip = z
      *  survive `atmux handoff`. Default lead/planner/reviewer
      *  (ADR-056 §"Lead/planner exclusion"). */
     accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
+
+    // ---------- ADR-087 velocity-gate cadence knobs ----------
+    /** ADR-087 §Spec. Per-team tunables for the whip velocity-gate
+     *  classifier + strike counter. Operators rarely need to tune —
+     *  the defaults match the operator-observed failure mode that
+     *  drove the ADR (10 zero-commit heartbeats over 4.5h). The
+     *  feature kill-switch is `crons.whipVelocityGateEnabled` (lives
+     *  in `crons` for fleet-consistent shape with `laneTickEnabled`);
+     *  this sub-config carries the threshold knobs. */
+    velocityGate: z
+      .object({
+        /** Sliding window (minutes) over which the classifier counts
+         *  ground-truth commits. Default 60 — one hour; matches the
+         *  operator's "an hour without a commit on an active team is
+         *  the threshold of suspicion" framing in the Task body. */
+        windowMin: z.number().int().positive().optional(),
+        /** Strike count that escalates to a complaint via the
+         *  superdoctor-escalation pipeline (sibling Task t-e91fec98).
+         *  Default 3 — matches Task body §6 "3+ strikes → file
+         *  complaint for superdoctor". */
+        strikeThreshold: z.number().int().positive().optional(),
+        /** Standby grace window (minutes) — if a ground-truth commit
+         *  landed within this lookback, BAD is downgraded to STANDBY
+         *  (someone shipped recently; the team is not stalled, just
+         *  catching breath). Default 30 — half the main window, so
+         *  the "we just shipped, lead reading the next Task" state
+         *  doesn't strike. */
+        standbyGraceMin: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type TeamWhip = z.infer<typeof TeamWhip>;
@@ -314,6 +345,17 @@ export const TeamCrons = z
      *  Operators flip this off to halt lane-driven auto-claim without
      *  removing `.lane` annotations from `team.members[]`. */
     laneTickEnabled: z.boolean().default(true),
+    /** ADR-087 §Rollback. Velocity-gate kill-switch. When `false`,
+     *  whip skips ground-truth velocity classification + strike-counter
+     *  bumping entirely (effectively reverting to pre-ADR-087 fake-
+     *  liveness reliance on lead self-report). Default `true` — the
+     *  gate is opt-OUT, not opt-in, because the operator-observed
+     *  failure mode (10 zero-commit heartbeats over 4.5h) is what
+     *  ADR-087 was authored to prevent. Pairs with
+     *  `whip.velocityGate` cadence knobs (window minute count + strike
+     *  threshold); the kill-switch lives here for fleet-consistent
+     *  shape with `laneTickEnabled`. */
+    whipVelocityGateEnabled: z.boolean().default(true),
   })
   .strict();
 export type TeamCrons = z.infer<typeof TeamCrons>;
