@@ -335,6 +335,41 @@ export function assertValidMemberName(name: string): void {
   }
 }
 
+/** CONVENTION-059: canonical lane prefixes for indexed member names.
+ *  Mirrors the lane slugs used in `team.json :: members[].lane` and the
+ *  superdoctor / watchdog templates. Adding a lane prefix here is the
+ *  intentional friction CLAUDE.md asks for — keeps the convention from
+ *  drifting. */
+export const CONVENTION_059_LANE_PREFIXES = [
+  "fe",
+  "be",
+  "ops",
+  "test",
+  "review",
+  "db",
+  "misc",
+] as const;
+export type Convention059LanePrefix = (typeof CONVENTION_059_LANE_PREFIXES)[number];
+
+/** `^(fe|be|ops|test|review|db|misc)\d+$` — zero-indexed, no separator. */
+const INDEXED_MEMBER_NAME_REGEX = new RegExp(
+  `^(${CONVENTION_059_LANE_PREFIXES.join("|")})\\d+$`,
+);
+
+/** CONVENTION-059 soft validator. Returns `null` on a name that matches
+ *  the indexed-member shape (`fe0` / `be1` / `ops0` / ...), or a
+ *  human-readable reason string otherwise. Advisory-only — never thrown
+ *  from. Existing names that don't match (e.g. `whip-impl` on atmux,
+ *  `eng-mobile` on unum) are still valid wire names per
+ *  `checkMemberName`; this helper captures the *target* shape for new
+ *  fungible-slot members + migration-time guidance. */
+export function checkIndexedMemberName(name: string): string | null {
+  if (!INDEXED_MEMBER_NAME_REGEX.test(name)) {
+    return `name '${name}' does not match CONVENTION-059 indexed shape: ${INDEXED_MEMBER_NAME_REGEX.source}`;
+  }
+  return null;
+}
+
 /**
  * Normalize a free-form member name to the canonical wire form:
  *   - lowercase

@@ -9,9 +9,11 @@ import {
   assertValidMemberName,
   assertValidTeamName,
   buildWindowName,
+  checkIndexedMemberName,
   checkMemberName,
   checkTeamName,
   classifyPaneState,
+  CONVENTION_059_LANE_PREFIXES,
   defaultEmojiForRole,
   detectRateLimit,
   driverInboxPath,
@@ -743,5 +745,66 @@ describe("resolveCallerScope (ADR-033 driver-only refuse-gate)", () => {
         process.env.ATMUX_CALLER_SCOPE = prior;
       }
     }
+  });
+});
+
+// ---------- CONVENTION-059 — checkIndexedMemberName ----------
+
+describe("checkIndexedMemberName (CONVENTION-059)", () => {
+  test("accepts every canonical lane prefix + zero-indexed integer", () => {
+    for (const lane of CONVENTION_059_LANE_PREFIXES) {
+      expect(checkIndexedMemberName(`${lane}0`)).toBeNull();
+      expect(checkIndexedMemberName(`${lane}1`)).toBeNull();
+      expect(checkIndexedMemberName(`${lane}10`)).toBeNull();
+    }
+  });
+
+  test("rejects hyphenated indexed forms (`fe-1` is legacy, not CONVENTION-059)", () => {
+    expect(checkIndexedMemberName("fe-1")).not.toBeNull();
+    expect(checkIndexedMemberName("be-2")).not.toBeNull();
+  });
+
+  test("rejects domain-named members (`eng-mobile`, `whip-impl`)", () => {
+    expect(checkIndexedMemberName("eng-mobile")).not.toBeNull();
+    expect(checkIndexedMemberName("whip-impl")).not.toBeNull();
+    expect(checkIndexedMemberName("parity-cron-impl")).not.toBeNull();
+  });
+
+  test("rejects named roles (`lead`, `planner`, `reviewer`, `gitter`)", () => {
+    expect(checkIndexedMemberName("lead")).not.toBeNull();
+    expect(checkIndexedMemberName("planner")).not.toBeNull();
+    expect(checkIndexedMemberName("reviewer")).not.toBeNull();
+    expect(checkIndexedMemberName("gitter")).not.toBeNull();
+  });
+
+  test("rejects unknown lane prefixes", () => {
+    expect(checkIndexedMemberName("frontend0")).not.toBeNull();
+    expect(checkIndexedMemberName("backend0")).not.toBeNull();
+    expect(checkIndexedMemberName("dev0")).not.toBeNull();
+  });
+
+  test("rejects non-numeric index (`feA`, `feX`)", () => {
+    expect(checkIndexedMemberName("feA")).not.toBeNull();
+    expect(checkIndexedMemberName("feX")).not.toBeNull();
+  });
+
+  test("rejection reason mentions the regex shape so callers can echo it", () => {
+    const reason = checkIndexedMemberName("fe-1");
+    expect(reason).not.toBeNull();
+    if (reason === null) return;
+    expect(reason).toContain("fe-1");
+    expect(reason).toContain("CONVENTION-059");
+  });
+
+  test("CONVENTION_059_LANE_PREFIXES is the canonical list (regression: don't silently grow)", () => {
+    expect([...CONVENTION_059_LANE_PREFIXES]).toEqual([
+      "fe",
+      "be",
+      "ops",
+      "test",
+      "review",
+      "db",
+      "misc",
+    ]);
   });
 });

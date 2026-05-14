@@ -1,6 +1,6 @@
 # atmux architecture
 
-> **Storage in atmux-bun.** Per [ADR-060](adr-bun/060-sqlite-state-store.md), kanban
+> **Storage in atmux-bun.** Per [ADR-060](adr/126-sqlite-state-store.md), kanban
 > (tasks/epics/stories), inboxes, and per-feature state moved to **`.atmux/state.db`**
 > (SQLite, WAL). The text below referencing `.atmux/kanban.json` describes the legacy
 > JSON model — still accurate for bash atmux and for teams not yet migrated, but on the

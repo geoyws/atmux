@@ -4,7 +4,7 @@
 
 > 🎮 **Driver** (you) → 🧭 **Team Lead** → 🐝 **Team Members** — coordinated through tmux, not an API.
 
-> **State storage.** Per [ADR-060](docs/adr-bun/060-sqlite-state-store.md) +
+> **State storage.** Per [ADR-126](docs/adr/126-sqlite-state-store.md) +
 > ADR-076 (inbox JSON elimination — file pending; see commits `27d80ee` →
 > `5c16432`), kanban + inboxes + per-feature state live in **`.atmux/state.db`**
 > (SQLite, WAL). The bash dispatcher was retired in the bun cutover —
@@ -678,7 +678,7 @@ atmux dashboard [--interval <s>]             # live full-screen panel
 
 ## 🌱 Eternal-improvement (ADR-052)
 
-`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr-bun/052-eternal-improvement.md`](docs/adr-bun/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
+`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement.md`](docs/adr/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
 
 ## State layout
 

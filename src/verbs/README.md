@@ -6,7 +6,7 @@ One file per CLI verb. Each file exports exactly:
 export default async function run(args: string[]): Promise<number>
 ```
 
-Returning the process exit code. The dispatcher in `src/cli.ts` resolves `verb → file → run` (per [ADR-010](../../docs/adr-bun/010-cli-dispatcher.md)).
+Returning the process exit code. The dispatcher in `src/cli.ts` resolves `verb → file → run` (per [ADR-010](../../docs/adr/103-cli-dispatcher.md)).
 
 ## Verb roster (v1, frozen scope)
 
@@ -22,9 +22,9 @@ doctor.ts
 
 `improve.ts` arms the ADR-052 eternal-improvement loop (kanban-empty fallback → autonomous self-improvement cycles, bounded by token budget). Lands as part of the automation bucket alongside `whip` / `report`.
 
-`whip-resume-check.ts` is the ADR-053 1-min cron-precision verb for auto-resume from budget-pause. Lock-skipped on contention; ~1 probe call per active account per tick (mostly cache reads). Cron line is gated on `team.whip.claudeAccount` per `src/core/cron.ts::renderCronBlock`. See [ADR-053 §D4](../../docs/adr-bun/053-budget-observability.md).
+`whip-resume-check.ts` is the ADR-053 1-min cron-precision verb for auto-resume from budget-pause. Lock-skipped on contention; ~1 probe call per active account per tick (mostly cache reads). Cron line is gated on `team.whip.claudeAccount` per `src/core/cron.ts::renderCronBlock`. See [ADR-053 §D4](../../docs/adr/053-budget-observability.md).
 
-`watchdog.ts` is the ADR-057 §D6b heartbeat-staleness detector — a separate `*/2` cron line independent of whip's body-hash logic so a stuck whip doesn't blind the watchdog. On each tick it reads `<atmuxDir>/heartbeats/<member>.epoch`, flags members whose heartbeat is older than `team.whip.stallPrevention.heartbeatStaleSec` (default 300s), fires a 24h-deduped 🛑 `[whip-watchdog]` Discord ping, and audit-logs to `.atmux/logs/watchdog.log`. USAGE: `atmux watchdog [--no-discord] [--team-dir <dir>]`. See [ADR-057 §D6](../../docs/adr-bun/057-stall-prevention.md) and the [stall-recovery runbook](../../docs/RUNBOOK-stall-recovery.md).
+`watchdog.ts` is the ADR-057 §D6b heartbeat-staleness detector — a separate `*/2` cron line independent of whip's body-hash logic so a stuck whip doesn't blind the watchdog. On each tick it reads `<atmuxDir>/heartbeats/<member>.epoch`, flags members whose heartbeat is older than `team.whip.stallPrevention.heartbeatStaleSec` (default 300s), fires a 24h-deduped 🛑 `[whip-watchdog]` Discord ping, and audit-logs to `.atmux/logs/watchdog.log`. USAGE: `atmux watchdog [--no-discord] [--team-dir <dir>]`. See [ADR-057 §D6](../../docs/adr/057-stall-prevention.md) and the [stall-recovery runbook](../../docs/RUNBOOK-stall-recovery.md).
 
 ## Cursor self-heal recipes (`src/core/cursor-recipes/`)
 
@@ -38,7 +38,7 @@ Aliases routed in `src/cli.ts`: `broadcast` → `send`, `tell-lead` → `tell`, 
 
 - Verbs MAY import from `src/core/*`, `src/abstractions/*`, `src/schema/*`, `src/errors`.
 - Verbs MUST NOT import from another verb. Shared logic moves to `src/core/`.
-- Verbs MUST NOT contain `JSON.parse` (use `src/abstractions/json.ts`), `Bun.spawn` (use `src/abstractions/spawn.ts`), or `new Date().toLocale*` (use `src/abstractions/time.ts`). Reviewer regex enforces ([ADR-003](../../docs/adr-bun/003-module-taxonomy.md), [ADR-006](../../docs/adr-bun/006-error-handling.md)).
+- Verbs MUST NOT contain `JSON.parse` (use `src/abstractions/json.ts`), `Bun.spawn` (use `src/abstractions/spawn.ts`), or `new Date().toLocale*` (use `src/abstractions/time.ts`). Reviewer regex enforces ([ADR-003](../../docs/adr/096-module-taxonomy.md), [ADR-006](../../docs/adr/099-error-handling.md)).
 
 ## v2 (Phase 6, ADR-014)
 

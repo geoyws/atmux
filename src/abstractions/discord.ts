@@ -110,7 +110,19 @@ export type DiscordTemplate =
   // operator sees the same proposed ADRs each tick because they're
   // STILL proposed; mitigation is `(deferred: <reason>)` annotation
   // per ADR-085 §Consequences.
-  | "whip-needs-approval";
+  | "whip-needs-approval"
+  // ADR-077 §F6: superdoctor self-escalation. Fired when the skill
+  // has attempted 3 structural fixes against the same complaint hash
+  // and all failed. Renderer below (`renderSelfHealFailed`); dedup
+  // state in state_kv (feature `superdoctor-self-heal-escalation`,
+  // key = complaint_id) with a 1h re-fire window.
+  | "self-heal-failed"
+  // t-351318dc: cockpit-pulse meta-watchdog. Fired when superdoctor
+  // itself looks dormant (≥1 open complaint anywhere AND no
+  // superdoctor_attempts.attempted_at row newer than 2h). Renderer
+  // below (`renderMetaWatchdog`); dedup state on `PulseState.metaWatchdog`
+  // (paged + dormantSinceSec) — one ping per dormancy streak.
+  | "meta-watchdog";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1446,6 +1458,35 @@ export interface PulseVerdictOpts {
   whenMs?: number;
 }
 
+// ---------- ADR-077 §F6 — renderSelfHealFailed ----------
+
+export interface SelfHealFailedOpts {
+  team: string;
+  /** One-line symptom — what stayed broken after the attempts. The
+   *  skill composes this from the complaint's `incident_summary`. */
+  symptom: string;
+  /** Count of failed attempts on this complaint hash. The escalation
+   *  trigger is N=3 (per ADR-077 §F6); the renderer surfaces the
+   *  actual count so a 4th failure that beats dedup still reads
+   *  correctly. */
+  attempts: number;
+  /** Active member count the proposed restart would clear. Surfaced
+   *  in option A so the operator sees the blast radius. */
+  members: number;
+  /** Current account label (e.g. `personal`, `icloud`). Option B
+   *  proposes swapping AWAY from this. Null when account info is
+   *  unavailable; the option renders without a `from`. */
+  fromAccount: string | null;
+  /** Proposed swap target (e.g. `icloud`). Same nullability semantics
+   *  as `fromAccount`. */
+  toAccount: string | null;
+  /** Open complaint count for the team — footer signal. */
+  complaintsOpen: number;
+  /** Whip-strike accumulator from the skill's tracking — footer signal. */
+  whipStrikes: number;
+  whenMs?: number;
+}
+
 /**
  * Build the `[pulse-verdict]` Discord send opts per ADR-086 Phase 1.
  *
@@ -1608,4 +1649,120 @@ function naBullet80(s: string): string {
   for (const seg of GRAPHEME_SEG.segment(s)) segs.push(seg.segment);
   if (segs.length <= max) return s;
   return `${segs.slice(0, max - 1).join("")}…`;
+}
+
+/**
+ * Build the `[self-heal-failed]` Discord send opts per ADR-077 §F6.
+ * Verdict-first, milestone-grade, ask-loudly per CLAUDE.md §Discord —
+ * the operator should be able to reply with a single letter from a
+ * phone and have the skill apply the named action.
+ *
+ * Bullets:
+ *   - `🚨 self-heal failed: <symptom> — N=<attempts> attempts`
+ *   - `🙏 reply A/B/C — one letter pivots cheaply`
+ *   - `🛠️ A) /team stop + start <team> — restarts <members> member(s) ~30s`
+ *   - `🔁 B) swap account <from> → <to> — wk budget reset` (or generic
+ *     swap line when account labels are unavailable)
+ *   - `⏳ C) park <team> for the night — re-engage at session start`
+ *   - `⏰ default at <HH:MM MYT>: A — cheap to pivot if you redirect`
+ *   - `📍 <complaintsOpen> open · <whipStrikes> strikes`
+ *
+ * The "default at HH:MM MYT" deadline is 30 minutes after the ping's
+ * own timestamp — gives the operator enough phone-time to triage
+ * without sitting on a broken team overnight. Derived from `whenMs`
+ * (or `now()`) so test injection threads through cleanly.
+ */
+export function renderSelfHealFailed(opts: SelfHealFailedOpts): DiscordSendOpts {
+  const whenMs = opts.whenMs ?? now();
+  const defaultAtMs = whenMs + 30 * 60 * 1000;
+  const swapLine =
+    opts.fromAccount !== null && opts.toAccount !== null
+      ? `🔁 B) swap account ${opts.fromAccount} → ${opts.toAccount} — wk budget reset`
+      : "🔁 B) swap account — wk budget reset";
+  const bullets: string[] = [
+    `🚨 self-heal failed: ${opts.symptom} — N=${opts.attempts} attempts`,
+    "🙏 reply A/B/C — one letter pivots cheaply",
+    `🛠️ A) /team stop + start ${opts.team} — restarts ${opts.members} member(s) ~30s`,
+    swapLine,
+    `⏳ C) park ${opts.team} for the night — re-engage at session start`,
+    `⏰ default at ${formatMyt(defaultAtMs)}: A — cheap to pivot if you redirect`,
+    `📍 ${opts.complaintsOpen} open · ${opts.whipStrikes} strikes`,
+  ];
+  const out: DiscordSendOpts = {
+    template: "self-heal-failed",
+    team: opts.team,
+    category: "🚨",
+    bullets,
+    whenMs,
+  };
+  return out;
+}
+
+// ---------- t-351318dc — renderMetaWatchdog ----------
+
+export interface MetaWatchdogOpts {
+  /** Cockpit identifier — code-formatted in header. The probe is
+   *  cockpit-scoped (one superdoctor across all teams), so we surface
+   *  the cockpit name here rather than a team. */
+  cockpit: string;
+  /** Aggregate count of open complaints across every cockpit-enabled
+   *  team's complaint box. The dormancy gate is `> 0`. */
+  openComplaints: number;
+  /** Seconds since the latest `superdoctor_attempts.attempted_at` row
+   *  across every cockpit-enabled team. Null when no attempt rows
+   *  exist anywhere (cold cockpit — superdoctor never acted). */
+  dormantSec: number | null;
+  /** Brief one-line summary of the oldest open complaint — surfaces
+   *  in the footer so the operator can triage on phone without
+   *  opening the cockpit. Empty string when no complaints exist
+   *  (degenerate; shouldn't happen given the dormancy gate). */
+  oldestComplaintSummary: string;
+  /** Team that owns the oldest open complaint — also surfaced in the
+   *  footer. Empty string when no complaints. */
+  oldestComplaintTeam: string;
+  /** Age of the oldest open complaint, in seconds. */
+  oldestComplaintAgeSec: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[meta-watchdog]` Discord send opts per t-351318dc.
+ * Verdict-first, milestone-grade, ask-loudly per CLAUDE.md §Discord —
+ * one letter (A or B) from a phone resolves the page.
+ *
+ * Bullets:
+ *   - `🚨 superdoctor dormant — <N> open complaints, no attempts in <Hh:Mm>`
+ *     (or `... no attempts on record` when `dormantSec === null`)
+ *   - `🙏 reply A/B — one letter pivots cheaply`
+ *   - `🛠️ A) check superdoctor pane (cockpit w2) — likely saturated / wedged`
+ *   - `♻️ B) restart superdoctor — kill+respawn`
+ *   - `⏰ default at <HH:MM MYT>: A — cheap to pivot if you redirect`
+ *   - `📍 oldest: <team> · <summary> · <Hh:Mm> ago`
+ *
+ * Default deadline is +30min (same operator-window as
+ * `renderSelfHealFailed`) — phone-triage time without sitting on
+ * a broken cockpit overnight.
+ */
+export function renderMetaWatchdog(opts: MetaWatchdogOpts): DiscordSendOpts {
+  const whenMs = opts.whenMs ?? now();
+  const defaultAtMs = whenMs + 30 * 60 * 1000;
+  const dormantStr =
+    opts.dormantSec === null ? "no attempts on record" : `no attempts in ${formatDuration(opts.dormantSec * 1000)}`;
+  const oldestAge = formatDuration(opts.oldestComplaintAgeSec * 1000);
+  const bullets: string[] = [
+    `🚨 superdoctor dormant — ${opts.openComplaints} open complaints, ${dormantStr}`,
+    "🙏 reply A/B — one letter pivots cheaply",
+    "🛠️ A) check superdoctor pane (cockpit w2) — likely saturated / wedged",
+    "♻️ B) restart superdoctor — kill+respawn",
+    `⏰ default at ${formatMyt(defaultAtMs)}: A — cheap to pivot if you redirect`,
+    `📍 oldest: ${opts.oldestComplaintTeam} · ${opts.oldestComplaintSummary} · ${oldestAge} ago`,
+  ];
+  const out: DiscordSendOpts = {
+    template: "meta-watchdog",
+    team: opts.cockpit,
+    category: "🚨",
+    bullets,
+    whenMs,
+  };
+  return out;
 }
