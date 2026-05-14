@@ -89,7 +89,7 @@
 // amend Consequences §Phase 2.
 
 import { dirname, join } from "node:path";
-import { ensureDir, exists, writeText } from "../abstractions/fs.ts";
+import { appendText, ensureDir, exists, writeText } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
 import {
   createTmux,
@@ -111,11 +111,18 @@ import {
   getAtmuxDir,
   getDefaultSocket,
   getSessionName,
+  leadOutboxPath,
   loadTeam,
   resolveTeamSocket,
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
+import {
+  type BootClaudeOpts,
+  type BootResult,
+  bootClaudeMember,
+  renderBootFailureNotice,
+} from "../core/boot-claude.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
@@ -266,6 +273,14 @@ export interface StartOpts {
    *  spawn-wait and the post-paste settle inside `submitAfterPaste`.
    *  Default = `setTimeout`-backed. Tests pass a no-op. */
   sleep?: (ms: number) => Promise<void>;
+  /** ADR-081 §C completion (t-94d7ad60): override the boot-claude
+   *  knobs for claude-TUI members. Tests inject a no-op
+   *  sleep + a fake capture-pane via a wrapped tmux to keep the
+   *  readiness/post-boot polls deterministic. The `tmux`, `sendTarget`,
+   *  `paneTargetString`, `team`, `member` fields are always overwritten
+   *  by start.ts — the override is just for the tunable subset
+   *  (timeouts, sleep, etc.). */
+  bootClaude?: Partial<BootClaudeOpts>;
 }
 
 /**
@@ -611,23 +626,80 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         keys: cmd,
         enter: true,
       });
-      // ADR-081 §C: paste the role brief after the TUI has time to come
-      // up. Per-member best-effort: a paste failure on one member must
-      // not wedge the rest of the team spawn. Iteration order is
-      // declarative (team.members[]) — lead conventionally first per
-      // ADR-044, so the lead's brief lands first by construction.
-      await pasteBriefForMember({
-        tmux,
-        target: memberTarget,
-        member: member.name,
-        role,
-        team: team.name,
-        atmuxDir: dir,
-        briefsDir,
-        spawnWaitMs,
-        sleep: briefSleep,
-        logger,
-      });
+      // ADR-081 §C completion (t-94d7ad60): claude TUIs go through
+      // the readiness-poll + single-line boot-prompt path so a
+      // slow cold-start doesn't drop the brief into the spinner.
+      // Non-claude TUIs (kimi, cursor) keep the legacy
+      // paste-buffer flow — different welcome rendering, no
+      // bracketed-paste hazard, the fixed-sleep is still adequate
+      // there.
+      if (tuiKind === "claude") {
+        const bootOpts: BootClaudeOpts = {
+          tmux,
+          sendTarget: memberTarget,
+          paneTargetString: `${session}:${win}`,
+          team: team.name,
+          member: member.name,
+        };
+        if (opts.bootClaude !== undefined) {
+          Object.assign(bootOpts, opts.bootClaude);
+        }
+        let bootResult: BootResult;
+        try {
+          bootResult = await bootClaudeMember(bootOpts);
+        } catch (e) {
+          const cause = e instanceof Error ? e.message : String(e);
+          logger.warn(`  · ${member.name}: bootClaudeMember threw (${cause})`);
+          bootResult = { status: "failed", attempts: 0, reason: "capture-error" };
+        }
+        if (bootResult.status === "booted") {
+          logger.log(`  · ${member.name}: bootstrapped (${bootResult.attempts} attempt(s))`);
+        } else if (bootResult.status === "already-booted") {
+          logger.log(`  · ${member.name}: already booted — boot prompt skipped`);
+        } else {
+          logger.warn(
+            `  · ${member.name}: bootstrap FAILED after ${bootResult.attempts} attempt(s) (${bootResult.reason ?? "?"})`,
+          );
+          // Best-effort: surface to lead-outbox.md so the operator
+          // sees an undead pane on the next review. Non-fatal.
+          try {
+            const nowIso = new Date().toISOString();
+            await appendText(
+              leadOutboxPath(dir),
+              renderBootFailureNotice({
+                team: team.name,
+                member: member.name,
+                result: bootResult,
+                nowIso,
+              }),
+            );
+          } catch (e) {
+            const cause = e instanceof Error ? e.message : String(e);
+            logger.warn(
+              `  · ${member.name}: failed to write boot-failure notice (${cause})`,
+            );
+          }
+        }
+      } else {
+        // ADR-081 §C: paste the role brief after the TUI has time
+        // to come up. Per-member best-effort: a paste failure on
+        // one member must not wedge the rest of the team spawn.
+        // Iteration order is declarative (team.members[]) — lead
+        // conventionally first per ADR-044, so the lead's brief
+        // lands first by construction.
+        await pasteBriefForMember({
+          tmux,
+          target: memberTarget,
+          member: member.name,
+          role,
+          team: team.name,
+          atmuxDir: dir,
+          briefsDir,
+          spawnWaitMs,
+          sleep: briefSleep,
+          logger,
+        });
+      }
     }
   }
 
