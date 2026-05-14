@@ -170,6 +170,77 @@ Currently `claudeAccount: "personal"` matches the rest of atmux-team. Some teams
 
 Driver override via decisions log when budget-isolation surfaces concrete demand.
 
+## Trunk-merge dispatch (amended 2026-05-14, t-f462289a)
+
+ADR-145 §D2 specifies gitter owns all three merge classes (Task→commit, Story→done, branch→trunk). The first two have established Task shapes documented in `templates/briefs/gitter.md`. The **branch→trunk** dispatch shape was not explicitly defined; this section closes the gap.
+
+### Task subject convention
+
+```
+merge t-xxx (branch→trunk): geoyws-<member> → trunk
+```
+
+- Subject MUST include the literal `(branch→trunk)` marker so gitter's brief switches into trunk-merge mode (vs Story-merge / Task-commit modes).
+- `geoyws-<member>` names the source branch (atmux convention; substitute `<base>-<member>` for other teams whose base branch is not `geoyws`).
+- `trunk` is symbolic — gitter resolves to the team's current base branch via `git -C <teamRoot> branch --show-current` from the parent worktree (`geoyws` for atmux).
+
+### Task body — required fields
+
+```yaml
+source-branch: geoyws-<member>          # full ref, e.g. geoyws-up-impl
+target:        trunk                     # symbolic; gitter resolves to <base>
+owning-lane:   <member>'s natural lane   # e.g. lifecycle, error-class — for dispatch routing
+conflict-hint: <short prose>             # known collision surface (file paths, schemas, ADRs)
+```
+
+`conflict-hint` is optional but high-value: when populated, gitter pre-reads the cited files BEFORE attempting the merge so conflict resolution doesn't waste a full merge-abort cycle. Empty hint = clean FF expected.
+
+### Gitter brief addendum
+
+`templates/briefs/gitter.md` §"How work reaches you" gains a fourth Task shape (alongside `commit t-xxx`, `merge s-xxx`, `persist deferred items`):
+
+```
+4. merge t-xxx (branch→trunk) — fired when planner files a trunk-merge Task
+   against an active per-member branch. Body has source-branch / target /
+   owning-lane / conflict-hint fields. Gitter:
+     a. Read source Task body — note source-branch + conflict-hint.
+     b. Verify base worktree is clean (per ADR-088 §Decision-3 safeguard).
+     c. git -C <teamRoot> fetch origin
+     d. git -C <teamRoot> checkout <base>
+     e. git -C <teamRoot> merge --no-ff <source-branch>
+        - On clean merge: push trunk, mark Task done with --note "merged
+          <source-branch> at <SHA>"
+        - On conflict: read conflict-hint, resolve in-place if straightforward
+          (rename/path-only conflicts), OR git merge --abort + atmux flag add
+          --severity high + atmux reply "[gitter] conflict on <source-branch>;
+          see flag <fid>" to escalate
+     f. Push trunk only when merge is clean + reviewer-gated per CLAUDE.md
+        Push Policy (geoyws is per-developer-staging shape; auto-push allowed)
+```
+
+The brief addendum lands in ADR-145 T2's member-brief sweep (per §Implementation plan T2 follow-up). Until then, gitter operates on the addendum prose from this ADR section directly.
+
+### Dispatch ownership
+
+- **Planner** files the `merge t-xxx (branch→trunk)` Task with all four fields populated.
+- **Lead** verifies the field shape + dispatches to gitter (or planner can `atmux dispatch gitter t-xxx` directly when the trunk-merge is part of a planner-coordinated decompose pass — e.g. this Task t-f462289a's 6 trunk-merge filings).
+- **Gitter** claims via the auto-dispatch cascade (ADR-032) AND/OR via cron-backstop sweep (per ADR-134 §Cron backstop) — same plumbing as Task→commit dispatch.
+
+### High-leverage convergence pattern (per Part C of t-f462289a)
+
+When multiple trunk-merge candidates collide on the same source files (e.g. 3+ branches all modify `src/schema/cockpit.ts`), filing a **convergence pre-Task** that gitter runs FIRST collapses the merge cost:
+
+```
+Subject: cockpit-schema-convergence (pre-trunk-merge reconciliation)
+Body: gitter pulls all N colliding branches' versions of <shared-file-list>,
+      manually composes the union/superset, pushes as single trunk commit.
+      Subsequent per-branch trunk-merges then FF or near-FF.
+```
+
+The convergence pre-Task is head-of-queue (deps=[]) + priority 1; the colliding per-branch trunk-merges have `deps=[<convergence-task-id>]` so they only fire after the convergence lands. Non-colliding trunk-merges run in parallel without the dep.
+
+This pattern is documented here for repeat use; planner files it discretionary (when the conflict-hint analysis surfaces ≥3 same-file collisions).
+
 ## Implementation plan
 
 This ADR commits the **policy decision + team.json schema change** in a single commit per acceptance gate:
