@@ -1,8 +1,7 @@
 # ADR-079: Discord noise drainage — wave 2
 
-**Status**: accepted
+**Status**: accepted (impl wave shipped + reviewer signoff 2026-05-09 13:53 MYT; status-flip 2026-05-12 per t-bb05b9ba — driver-inbox 16:46 MYT 2026-05-10 ask. Shipped commits: §A `ace99b4` · §B `8d8de60` · §C `5d128ec` · §D `cb25664`. Reviewer signoff doc at `docs/reviews/ADR-079+080-revise-pass-1-signoff-2026-05-09.md`.)
 **Date**: 2026-05-09
-**Date-accepted**: 2026-05-13 — all four sub-sections shipped: §A `ace99b4` (cron schedules from config) · §B `8d8de60` (audit verb bun port + driver-name rule) · §C `5d128ec` (`[whip]` template-namespace structural lint) · §D `cb25664` (per-finding hash dedup + transitions-only emit). Per t-bb05b9ba audit + reviewer signoff 2026-05-09 13:53 MYT.
 **Driver-ref**: 2026-05-08 17:07 MYT superdriver three-bug bundle + 18:35 MYT sopx-driver 5-finding addendum (`/root/work/src/atmux/.atmux/handoff/superdriver-to-driver-discord-noise-20260508T1707-MYT.md`). Gate cleared by ADR-077 superdoctor wave shipping (`6db43f6` chore(release): 0.6.0). Operator (sopx-driver, 2026-05-08 18:30 MYT) measured `sopx/.atmux/logs/discord.log` at ~275 pings/24h with 90% bare-`[whip]` boilerplate; target ≤80/24h. Demo-week deadline 2026-05-13.
 
 ## Context

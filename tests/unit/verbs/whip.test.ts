@@ -105,6 +105,7 @@ describe("readWhipConfig", () => {
       selfHealEnabled: false,
       selfHealRecipes: [],
       selfHealTokenCaps: {},
+      needsApprovalEnabled: true,
     });
   });
 
@@ -148,6 +149,7 @@ describe("readWhipConfig", () => {
       selfHealEnabled: false,
       selfHealRecipes: [],
       selfHealTokenCaps: {},
+      needsApprovalEnabled: true,
     });
   });
 
@@ -1766,7 +1768,9 @@ describe("whip() — public verb", () => {
     expect(exit).toBe(0);
     const drift = sent.find((s) => s.template === "whip-config-drift");
     expect(drift).toBeDefined();
-    expect(drift?.bullets?.some((b: string) => b.includes("safe defaults"))).toBe(true);
+    // Verdict-first shape (CLAUDE.md §Discord, 2026-05-13) — "safe defaults"
+    // headline lives in `verdict`, body has issues / fix / hash bullets.
+    expect(drift?.verdict).toContain("safe defaults");
   });
 
   test("ADR-054: team.json with type mismatch → drift fires + safe default applied", async () => {
@@ -1815,11 +1819,9 @@ describe("whip() — public verb", () => {
     expect(exit).toBe(0);
     const drift = sent.find((s) => s.template === "whip-config-drift");
     expect(drift).toBeDefined();
-    expect(
-      drift?.bullets?.some(
-        (b: string) => b.includes("malformed") || b.includes("full safe defaults"),
-      ),
-    ).toBe(true);
+    // Verdict-first shape — catastrophic headline lives in `verdict`.
+    expect(drift?.verdict).toContain("malformed");
+    expect(drift?.verdict).toContain("full safe defaults");
   });
 
   test("ADR-054: dedup — same drift on consecutive ticks → only 1 ping in 24h", async () => {
@@ -2095,160 +2097,160 @@ describe("whip() — public verb", () => {
   // + stdout/stderr fixtures).
 
   describe("ADR-079 §D dedup gate", () => {
-  // Scenario stays inside the whip() describe block's beforeEach/afterEach
-  // (atmuxDir + teamDir + homeDir already wired). Two whip() invocations
-  // share the same atmuxDir → state file persists across ticks.
-  test("identical hash within heartbeat → second tick suppresses", async () => {
-    await seedTeam(atmuxDir, {
-      name: "demo",
-      members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
-      // leadMaxMin=1, uptime=5min → lead-uptime overdue fires each tick
-      // with the SAME bullet text (uptimeMin pinned via fixed `now`).
-      whip: { leadMaxMin: 1, heartbeat: false },
-    });
-    await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
-    await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
-    const sent: DiscordSendOpts[] = [];
-    const tickArgs = {
-      stdout,
-      stderr,
-      now: () => 1_700_000_000_000,
-      home: homeDir,
-      env: {},
-      tmux: buildFakeTmux({
-        sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
-      }),
-      discordSend: async (o: DiscordSendOpts) => {
-        sent.push(o);
-      },
-    };
+    // Scenario stays inside the whip() describe block's beforeEach/afterEach
+    // (atmuxDir + teamDir + homeDir already wired). Two whip() invocations
+    // share the same atmuxDir → state file persists across ticks.
+    test("identical hash within heartbeat → second tick suppresses", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
+        // leadMaxMin=1, uptime=5min → lead-uptime overdue fires each tick
+        // with the SAME bullet text (uptimeMin pinned via fixed `now`).
+        whip: { leadMaxMin: 1, heartbeat: false },
+      });
+      await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
+      await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
+      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+      const sent: DiscordSendOpts[] = [];
+      const tickArgs = {
+        stdout,
+        stderr,
+        now: () => 1_700_000_000_000,
+        home: homeDir,
+        env: {},
+        tmux: buildFakeTmux({
+          sessionUp: true,
+          panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+        }),
+        discordSend: async (o: DiscordSendOpts) => {
+          sent.push(o);
+        },
+      };
 
-    // Tick 1: emit (transition from no-state).
-    await whip(["--team-dir", teamDir], tickArgs);
-    const tick1Overdue = sent.filter((s) => s.template === "whip-overdue").length;
-    const tick1Progress = sent.filter((s) => s.template === "whip-progress").length;
-    expect(tick1Overdue).toBe(1);
-    expect(tick1Progress).toBe(1);
-
-    // Tick 2 (same clock → identical bullet): SUPPRESS.
-    await whip(["--team-dir", teamDir], tickArgs);
-    const tick2Overdue = sent.filter((s) => s.template === "whip-overdue").length;
-    const tick2Progress = sent.filter((s) => s.template === "whip-progress").length;
-    expect(tick2Overdue).toBe(1); // unchanged from tick 1
-    expect(tick2Progress).toBe(1); // unchanged from tick 1
-  });
-
-  test("changed hash → both ticks emit", async () => {
-    await seedTeam(atmuxDir, {
-      name: "demo",
-      members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
-      whip: { leadMaxMin: 1, heartbeat: false },
-    });
-    await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
-    await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
-    const sent: DiscordSendOpts[] = [];
-    const baseArgs = {
-      stdout,
-      stderr,
-      home: homeDir,
-      env: {},
-      tmux: buildFakeTmux({
-        sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
-      }),
-      discordSend: async (o: DiscordSendOpts) => {
-        sent.push(o);
-      },
-    };
-
-    // Tick 1 at uptime=5min.
-    await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_000_000 });
-    expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(1);
-
-    // Tick 2 at uptime=10min (different bullet → different hash → emit).
-    await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_300_000 });
-    expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(2);
-  });
-
-  test("identical hash 65min apart → second tick fires as heartbeat", async () => {
-    await seedTeam(atmuxDir, {
-      name: "demo",
-      members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
-      // heartbeat: true (default) → 1h re-fire window active.
-      whip: { leadMaxMin: 9999, leadCtxRotateThreshold: 30, heartbeat: true },
-    });
-    await writeLeadSessionStart("demo", 1_700_000_000 - 60, { home: homeDir });
-    await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
-    const sent: DiscordSendOpts[] = [];
-    const baseArgs = {
-      stdout,
-      stderr,
-      home: homeDir,
-      env: {},
-      // Fix `tok 67k/100` so ctx-pct stays constant across both ticks
-      // (bullet identical → identical hash).
-      tmux: buildFakeTmux({
-        sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "tok 67k/100", pid: 0 } },
-      }),
-      discordSend: async (o: DiscordSendOpts) => {
-        sent.push(o);
-      },
-    };
-
-    // Tick 1.
-    await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_000_000 });
-    expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(1);
-
-    // Tick 2 at +65min (past 60min heartbeat window): re-emit.
-    await whip(["--team-dir", teamDir], {
-      ...baseArgs,
-      now: () => 1_700_000_000_000 + 65 * 60_000,
-    });
-    expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(2);
-  });
-
-  test("auto-preclear regression: 12 consecutive ticks with identical hash → 1 emit", async () => {
-    // Sopx-driver 2026-05-08 17:07 MYT bundle: auto-preclear-failed
-    // re-fires every 5min with identical bullet text. Pin: 12 ticks
-    // (1h of 5-min ticks) with same hash → exactly 1 emit per template.
-    await seedTeam(atmuxDir, {
-      name: "demo",
-      members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
-      whip: { leadMaxMin: 1, heartbeat: false },
-    });
-    await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
-    await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
-    const sent: DiscordSendOpts[] = [];
-    const tickArgs = {
-      stdout,
-      stderr,
-      now: () => 1_700_000_000_000, // pin nowSec → identical bullet across ticks
-      home: homeDir,
-      env: {},
-      tmux: buildFakeTmux({
-        sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
-      }),
-      discordSend: async (o: DiscordSendOpts) => {
-        sent.push(o);
-      },
-    };
-
-    for (let i = 0; i < 12; i++) {
+      // Tick 1: emit (transition from no-state).
       await whip(["--team-dir", teamDir], tickArgs);
-    }
+      const tick1Overdue = sent.filter((s) => s.template === "whip-overdue").length;
+      const tick1Progress = sent.filter((s) => s.template === "whip-progress").length;
+      expect(tick1Overdue).toBe(1);
+      expect(tick1Progress).toBe(1);
 
-    // Exactly 1 emit per gated template (tick 1 transitions; ticks 2-12
-    // suppress because heartbeat=false → tickHeartbeatSec is +Inf, no
-    // re-fire window). 12-fold reduction matches sopx target.
-    expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(1);
-    expect(sent.filter((s) => s.template === "whip-progress").length).toBe(1);
-  });
+      // Tick 2 (same clock → identical bullet): SUPPRESS.
+      await whip(["--team-dir", teamDir], tickArgs);
+      const tick2Overdue = sent.filter((s) => s.template === "whip-overdue").length;
+      const tick2Progress = sent.filter((s) => s.template === "whip-progress").length;
+      expect(tick2Overdue).toBe(1); // unchanged from tick 1
+      expect(tick2Progress).toBe(1); // unchanged from tick 1
+    });
+
+    test("changed hash → both ticks emit", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
+        whip: { leadMaxMin: 1, heartbeat: false },
+      });
+      await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
+      await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
+      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+      const sent: DiscordSendOpts[] = [];
+      const baseArgs = {
+        stdout,
+        stderr,
+        home: homeDir,
+        env: {},
+        tmux: buildFakeTmux({
+          sessionUp: true,
+          panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+        }),
+        discordSend: async (o: DiscordSendOpts) => {
+          sent.push(o);
+        },
+      };
+
+      // Tick 1 at uptime=5min.
+      await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_000_000 });
+      expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(1);
+
+      // Tick 2 at uptime=10min (different bullet → different hash → emit).
+      await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_300_000 });
+      expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(2);
+    });
+
+    test("identical hash 65min apart → second tick fires as heartbeat", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
+        // heartbeat: true (default) → 1h re-fire window active.
+        whip: { leadMaxMin: 9999, leadCtxRotateThreshold: 30, heartbeat: true },
+      });
+      await writeLeadSessionStart("demo", 1_700_000_000 - 60, { home: homeDir });
+      await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
+      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+      const sent: DiscordSendOpts[] = [];
+      const baseArgs = {
+        stdout,
+        stderr,
+        home: homeDir,
+        env: {},
+        // Fix `tok 67k/100` so ctx-pct stays constant across both ticks
+        // (bullet identical → identical hash).
+        tmux: buildFakeTmux({
+          sessionUp: true,
+          panes: { "🧭lead": { paneCmd: "claude", state: "tok 67k/100", pid: 0 } },
+        }),
+        discordSend: async (o: DiscordSendOpts) => {
+          sent.push(o);
+        },
+      };
+
+      // Tick 1.
+      await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_000_000 });
+      expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(1);
+
+      // Tick 2 at +65min (past 60min heartbeat window): re-emit.
+      await whip(["--team-dir", teamDir], {
+        ...baseArgs,
+        now: () => 1_700_000_000_000 + 65 * 60_000,
+      });
+      expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(2);
+    });
+
+    test("auto-preclear regression: 12 consecutive ticks with identical hash → 1 emit", async () => {
+      // Sopx-driver 2026-05-08 17:07 MYT bundle: auto-preclear-failed
+      // re-fires every 5min with identical bullet text. Pin: 12 ticks
+      // (1h of 5-min ticks) with same hash → exactly 1 emit per template.
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "lead", role: "team-lead", tui: "claude", emoji: "🧭" }],
+        whip: { leadMaxMin: 1, heartbeat: false },
+      });
+      await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
+      await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
+      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+      const sent: DiscordSendOpts[] = [];
+      const tickArgs = {
+        stdout,
+        stderr,
+        now: () => 1_700_000_000_000, // pin nowSec → identical bullet across ticks
+        home: homeDir,
+        env: {},
+        tmux: buildFakeTmux({
+          sessionUp: true,
+          panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+        }),
+        discordSend: async (o: DiscordSendOpts) => {
+          sent.push(o);
+        },
+      };
+
+      for (let i = 0; i < 12; i++) {
+        await whip(["--team-dir", teamDir], tickArgs);
+      }
+
+      // Exactly 1 emit per gated template (tick 1 transitions; ticks 2-12
+      // suppress because heartbeat=false → tickHeartbeatSec is +Inf, no
+      // re-fire window). 12-fold reduction matches sopx target.
+      expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(1);
+      expect(sent.filter((s) => s.template === "whip-progress").length).toBe(1);
+    });
   });
 });

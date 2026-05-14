@@ -29,17 +29,25 @@
 // the script and let the proper bun path become the runtime.
 
 import { dirname } from "node:path";
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { ensureDir } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  type SendTarget,
+  type TmuxConfig,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import {
   cageSessionName,
   cageSocketPath,
   enabledTeams,
   type LoadCockpitOpts,
   loadCockpit,
+  resolveCockpitConfigPath,
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
+import { installCockpitCronBlock } from "../core/cron.ts";
 import {
   awaitClaudePaneReady,
   formatReadinessWarning,
@@ -75,6 +83,14 @@ export interface ResolveTeamWindowDeps {
    *  `claude` installed; tests inject `() => "sleep infinity"` so the
    *  window persists for topology assertions. */
   buildSuperdoctorCommand?: (sd: CockpitSuperdoctor) => string;
+  /** t-22453c1e: sleep override for the superdoctor auto-start poll loop.
+   *  Default `setTimeout`-backed. Tests pass a no-op so wait-for-readiness
+   *  doesn't burn real wall-clock seconds. */
+  autoStartSleep?: (ms: number) => Promise<void>;
+  /** t-22453c1e: capture-pane override. Default uses
+   *  `tmux.pane.capturePane`. Tests pass a stub returning a controlled
+   *  sequence of pane contents to drive the readiness branches. */
+  autoStartCapturePane?: (sessionName: string, windowIndex: number) => Promise<string>;
 }
 
 interface DriverSessionShape {
@@ -204,6 +220,14 @@ export interface ParsedCockpitArgs {
   noLaunch: boolean;
   /** Override cockpit.json path. */
   configPath?: string;
+  /** t-8b0e077e: confirm destructive cockpit-reconcile ops. Required when
+   *  the reconcile would `moveWindow --kill` an occupied target slot OR
+   *  `killWindow` an orphan team viewer. Cron / scripts pass `--yes` to
+   *  bypass; interactive operator gets a structured warn + non-zero
+   *  exit on the first run, re-runs with `--yes` after reviewing the
+   *  planned ops. ALSO required when `--force-cycle` is set (the
+   *  per-team cage cycle is destructive at the claude-TUI layer). */
+  yes: boolean;
 }
 
 /**
@@ -240,6 +264,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   let forceCycle = false;
   let ackDangerous = false;
   let noLaunch = sub === "reload";
+  let yes = false;
   let configPath: string | undefined;
 
   let i = 1;
@@ -280,6 +305,11 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
         noLaunch = true;
         i += 1;
         break;
+      case "--yes":
+      case "-y":
+        yes = true;
+        i += 1;
+        break;
       case "--config": {
         const val = args[i + 1];
         if (val === undefined || val.length === 0) {
@@ -315,9 +345,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   // `ackDangerous` JSDoc on ParsedCockpitArgs.
   if (forceCycle && !ackDangerous) {
     throw new UsageError({
-      what:
-        "cockpit rebuild: --force-cycle requires " +
-        "--acknowledge-dangerous-bau-interruption",
+      what: "cockpit rebuild: --force-cycle requires " + "--acknowledge-dangerous-bau-interruption",
       hint:
         "--force-cycle tears down live claude TUI contexts across EVERY enabled team " +
         "(every member's in-flight reasoning + tool state is lost). " +
@@ -327,12 +355,27 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     });
   }
 
+  // t-8b0e077e: --force-cycle ALSO needs --yes layered on top of the
+  // existing --acknowledge-dangerous-bau-interruption gate. The two flags
+  // gate distinct surfaces: ackDangerous covers the claude-TUI loss; yes
+  // covers the cockpit-reconcile destructive ops the same rebuild call
+  // is about to apply. Both are required.
+  if (forceCycle && !yes) {
+    throw new UsageError({
+      what: "cockpit rebuild: --force-cycle requires --yes",
+      hint:
+        "--force-cycle implies destructive cockpit-reconcile ops; pass --yes to confirm. " +
+        "(--acknowledge-dangerous-bau-interruption covers the claude-TUI loss; --yes covers the cockpit-window mutation set.)",
+    });
+  }
+
   const out: ParsedCockpitArgs = {
     subverb: sub as "rebuild" | "reload",
     noCycle,
     forceCycle,
     ackDangerous,
     noLaunch,
+    yes,
   };
   if (configPath !== undefined) out.configPath = configPath;
   return out;
@@ -353,6 +396,12 @@ export interface CockpitOpts {
    *  `start` verb. Tests stub this to assert dispatch shape without
    *  spinning a real tmux session. */
   startFn?: typeof start;
+  /** ADR-086: crontab IO seam for cockpit-scoped cron install (test
+   *  injection). Default `defaultCrontabIO()`. */
+  crontab?: CrontabIO;
+  /** ADR-086: resolve the atmux binary path for the cron line. Default
+   *  reads `ATMUX_BIN` env then falls back to `Bun.which("atmux")`. */
+  resolveAtmuxBin?: () => string | null;
 }
 
 /** Top-level dispatch for `atmux cockpit <subverb>`. */
@@ -441,9 +490,7 @@ export async function cockpitRebuild(
       const unbootMsg =
         teamSummary.unbootstrapped.length > 0
           ? ` ⚠ unbootstrapped=${teamSummary.unbootstrapped.length} ` +
-            `(${teamSummary.unbootstrapped
-              .map((u) => `${u.member}:${u.result.state}`)
-              .join(", ")})`
+            `(${teamSummary.unbootstrapped.map((u) => `${u.member}:${u.result.state}`).join(", ")})`
           : "";
       logger.log(
         `  ✓ ${t.name}: launched=${teamSummary.launched} ` +
@@ -461,7 +508,15 @@ export async function cockpitRebuild(
     logger,
     {},
     cockpit.superdoctor,
+    parsed.yes,
   );
+
+  // Phase 6 (ADR-086): cockpit-scoped cron block install. Idempotent —
+  // strips any existing `# >>> atmux:cockpit` block and re-appends a
+  // fresh one with the resolved `atmux pulse` line. Honors
+  // `ATMUX_NO_CRON=1` opt-out + non-fatal posture (parity with per-team
+  // cron-install: a crontab swap failure warns, does not abort).
+  await installCockpitCron(opts, cockpit, logger, env);
 
   logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
   // ADR-077: nudge the operator to start the superdoctor loop manually.
@@ -476,6 +531,80 @@ export async function cockpitRebuild(
     );
   }
   return 0;
+}
+
+// ---------- Phase 6 helper (ADR-086) ----------
+
+/** Install the cockpit-scoped cron block (currently just `atmux pulse`).
+ *  Mirrors the non-fatal posture of `src/verbs/cron-install.ts`: every
+ *  failure path warns to the logger and returns without throwing — a
+ *  cron hiccup MUST NOT wedge `atmux cockpit rebuild`. */
+export async function installCockpitCron(
+  opts: CockpitOpts,
+  cockpit: Awaited<ReturnType<typeof loadCockpit>>,
+  logger: Logger,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (isTruthyEnv(env.ATMUX_NO_CRON)) {
+    if (env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+      logger.log("  · cockpit cron: ATMUX_NO_CRON set, no-op");
+    }
+    return;
+  }
+  const crontab = opts.crontab ?? defaultCrontabIO();
+  if (!(await crontab.available())) {
+    logger.warn(
+      "cockpit cron: crontab not on PATH — skipping (install cron to enable scheduled pulse)",
+    );
+    return;
+  }
+  const atmuxBin = (opts.resolveAtmuxBin ?? defaultResolveAtmuxBin)();
+  if (atmuxBin === null || atmuxBin === "") {
+    logger.warn(
+      "cockpit cron: cannot resolve atmux binary path (set ATMUX_BIN or install atmux on PATH) — skipping",
+    );
+    return;
+  }
+  const cockpitConfigPath = resolveCockpitConfigPath({ env });
+  const pulseIntervalMins = cockpit.pulse?.intervalMins;
+  const current = await crontab.read();
+  const installOpts: Parameters<typeof installCockpitCronBlock>[0] = {
+    atmuxBin,
+    cockpitConfigPath,
+    current,
+  };
+  if (pulseIntervalMins !== undefined) installOpts.pulseIntervalMins = pulseIntervalMins;
+  const next = installCockpitCronBlock(installOpts);
+  if (next === (current ?? "")) {
+    logger.log("  · cockpit cron: up to date (atmux:cockpit block already current)");
+    return;
+  }
+  try {
+    await crontab.write(next);
+    logger.log(
+      `  ✓ cockpit cron: installed atmux pulse (inspect: crontab -l | grep 'atmux:cockpit')`,
+    );
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`cockpit cron: crontab swap failed — manual install required (${cause})`);
+  }
+}
+
+function isTruthyEnv(v: string | undefined): boolean {
+  if (v === undefined || v === "") return false;
+  switch (v.toLowerCase()) {
+    case "0":
+    case "false":
+      return false;
+    default:
+      return true;
+  }
+}
+
+function defaultResolveAtmuxBin(): string | null {
+  const envBin = process.env.ATMUX_BIN;
+  if (envBin !== undefined && envBin !== "") return envBin;
+  return Bun.which("atmux");
 }
 
 // ---------- Phase helpers (exported for test directness) ----------
@@ -569,10 +698,7 @@ export interface AutolaunchSummary {
 /** Per-pane readiness probe signature. The default (constructed via
  *  {@link buildDefaultReadinessProbe}) wires {@link awaitClaudePaneReady}
  *  to `cageTmux.pane.capturePane`; tests inject a synchronous fake. */
-export type ReadinessProbe = (
-  target: string,
-  member: string,
-) => Promise<PaneReadinessResult>;
+export type ReadinessProbe = (target: string, member: string) => Promise<PaneReadinessResult>;
 
 export interface AutolaunchOpts {
   /** Skip the post-spawn readiness probe. Default `false` — production
@@ -693,10 +819,7 @@ export async function autolaunchTeam(
   return { launched, skipped, unbootstrapped };
 }
 
-function buildDefaultReadinessProbe(
-  cageTmux: TmuxNamespace,
-  opts: AutolaunchOpts,
-): ReadinessProbe {
+function buildDefaultReadinessProbe(cageTmux: TmuxNamespace, opts: AutolaunchOpts): ReadinessProbe {
   return async (target, _member) => {
     return await awaitClaudePaneReady(
       target,
@@ -751,6 +874,10 @@ export async function reconcileCockpitSession(
   logger: Logger,
   deps: ResolveTeamWindowDeps = {},
   superdoctor?: CockpitSuperdoctor,
+  /** t-8b0e077e: confirm destructive cockpit-reconcile ops (move-with-kill
+   *  on superdoctor's target slot + orphan-prune). Required when count > 0.
+   *  Defaults to false — caller (cockpitRebuild) threads `parsed.yes`. */
+  yes = false,
 ): Promise<void> {
   const has = await cockpitTmux.session.hasSession(sessionName);
   if (!has) {
@@ -764,6 +891,21 @@ export async function reconcileCockpitSession(
 
   const wantSuperdoctor = superdoctor?.enabled === true;
 
+  // t-8b0e077e: pre-pass destructive-op detection. Walk the windows
+  // ONCE before any mutation, compute the planned destructive set, and
+  // refuse with a structured warning when count > 0 AND yes is false.
+  // Race-window between dry-run + apply is fine for single-operator
+  // workflows; the gate's value is "don't silently nuke" not strict
+  // atomicity.
+  await refusePlannedDestructiveOps({
+    cockpitTmux,
+    sessionName,
+    teams,
+    wantSuperdoctor,
+    yes,
+    logger,
+  });
+
   // ADR-077: ensure superdoctor exists + sits IMMEDIATELY after the
   // superdriver window BEFORE adding team viewers, so on a fresh cockpit
   // the team viewers naturally land at the slots after superdoctor.
@@ -775,6 +917,7 @@ export async function reconcileCockpitSession(
     const sdrv = windowsBefore.find((w) => w.name === "superdriver");
     const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
     let sd = windowsBefore.find((w) => w.name === "superdoctor");
+    let sdJustCreated = false;
     if (sd === undefined) {
       const cmd = (deps.buildSuperdoctorCommand ?? buildSuperdoctorWindowCommand)(superdoctor);
       const newId = await cockpitTmux.window.newWindow({
@@ -786,6 +929,7 @@ export async function reconcileCockpitSession(
       logger.log(`  ✓ added window 'superdoctor' (idx ${newId.windowIndex})`);
       windowsBefore = await cockpitTmux.window.listWindows(sessionName);
       sd = windowsBefore.find((w) => w.name === "superdoctor");
+      sdJustCreated = true;
     }
     if (sd !== undefined && sd.index !== targetIdx) {
       // Forced relocation; kill whatever sits at the target slot (likely a
@@ -797,6 +941,38 @@ export async function reconcileCockpitSession(
         kill: true,
       });
       logger.log(`  ✓ moved 'superdoctor' to idx ${targetIdx} (was idx ${sd.index})`);
+    }
+
+    // t-22453c1e: auto-fire `/loop /superdoctor` ONLY when this rebuild
+    // call JUST CREATED the window — pre-existing windows could be mid-
+    // loop / mid-thinking / mid-/clear and are not safe to re-poke.
+    // Honors `superdoctor.autoStart` (default true) so operators with
+    // manual-control workflows can opt out by flipping `false`.
+    if (sdJustCreated && superdoctor.autoStart !== false && sd !== undefined) {
+      const settleSec = superdoctor.autoStartTimeoutSec ?? 30;
+      try {
+        const autoStartOpts: AutoStartSuperdoctorOpts = {
+          tmux: cockpitTmux,
+          sessionName,
+          windowIndex: sd.index,
+          timeoutMs: settleSec * 1000,
+          logger,
+        };
+        // exactOptionalPropertyTypes: only forward the injection points
+        // when callers actually set them. Defaults inside the helper
+        // wire the real `setTimeout` + `tmux.pane.capturePane`.
+        if (deps.autoStartSleep !== undefined) autoStartOpts.sleep = deps.autoStartSleep;
+        if (deps.autoStartCapturePane !== undefined) {
+          autoStartOpts.capturePane = deps.autoStartCapturePane;
+        }
+        await autoStartSuperdoctorLoop(autoStartOpts);
+      } catch (e) {
+        // Defense-in-depth: autoStartSuperdoctorLoop is non-fatal by
+        // construction (all branches log + return); rethrow shouldn't
+        // happen but if a future bug raises one, don't wedge the rebuild.
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(`  ⚠ superdoctor auto-start fell through: ${cause}`);
+      }
     }
   }
 
@@ -867,4 +1043,264 @@ export function buildSuperdoctorWindowCommand(sd: CockpitSuperdoctor): string {
     `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
     `claude${pluginFlag} --permission-mode ${permission}`
   );
+}
+
+// ---------- t-8b0e077e: cockpit safety gate ----------
+
+/** One planned destructive cockpit-reconcile op. Surfaces in the warn
+ *  log + the UsageError message so the operator can review before
+ *  re-running with `--yes`. */
+export interface PlannedDestructiveOp {
+  /** Tmux window-name the op touches. */
+  window: string;
+  /** Human-readable action — `"move-with-kill"` or `"prune-orphan"`. */
+  action: "move-with-kill" | "prune-orphan";
+  /** Free-form context — e.g. `"target slot 2 occupied by team viewer 'alpha'"`. */
+  reason: string;
+}
+
+interface RefuseDestructiveOpts {
+  cockpitTmux: TmuxNamespace;
+  sessionName: string;
+  teams: ReadonlyArray<CockpitTeam>;
+  wantSuperdoctor: boolean;
+  yes: boolean;
+  logger: Logger;
+}
+
+/**
+ * Walk the cockpit's current window state ONCE before reconcile mutates
+ * anything; compute the destructive op set; if non-empty AND `yes` is
+ * false, log each op + throw `UsageError` with a hint to re-run with
+ * `--yes`. Idempotent reconciles (zero destructive ops planned) pass
+ * silently regardless of `yes`.
+ *
+ * Detected destructive cases — must stay in sync with the live
+ * `reconcileCockpitSession` body below:
+ *   1. `superdoctor` displacement — when wantSuperdoctor is on AND the
+ *      target slot (`superdriver.index + 1`) is currently occupied by a
+ *      NON-superdoctor window. The live code calls
+ *      `moveWindow({kill: true})` there.
+ *   2. Orphan-prune — any window not in {superdriver, superdoctor (when
+ *      enabled), team-names...} that the live code's `killWindow` would
+ *      sweep.
+ */
+async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise<void> {
+  const { cockpitTmux, sessionName, teams, wantSuperdoctor, yes, logger } = opts;
+  const windows = await cockpitTmux.window.listWindows(sessionName);
+  const planned: PlannedDestructiveOp[] = [];
+
+  // Case 1 — superdoctor displacement.
+  if (wantSuperdoctor) {
+    const sdrv = windows.find((w) => w.name === "superdriver");
+    const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
+    const sd = windows.find((w) => w.name === "superdoctor");
+    // Only counts as destructive when superdoctor EXISTS at a wrong
+    // index AND the target slot has someone else parked there. Fresh
+    // adds (sd === undefined) land in the empty slot non-destructively.
+    if (sd !== undefined && sd.index !== targetIdx) {
+      const occupant = windows.find((w) => w.index === targetIdx && w.name !== "superdoctor");
+      if (occupant !== undefined) {
+        planned.push({
+          window: occupant.name,
+          action: "move-with-kill",
+          reason: `target slot ${targetIdx} occupied by '${occupant.name}'; superdoctor relocation kills it`,
+        });
+      }
+    }
+  }
+
+  // Case 2 — orphan-prune. Compute the wanted-name set; anything else
+  // that isn't an always-preserved window gets killed.
+  const wanted = new Set<string>([
+    "superdriver",
+    ...(wantSuperdoctor ? ["superdoctor"] : []),
+    ...teams.map((t) => t.name),
+  ]);
+  for (const w of windows) {
+    if (wanted.has(w.name)) continue;
+    if (w.name === "superdriver" || w.name === "superdoctor") continue;
+    planned.push({
+      window: w.name,
+      action: "prune-orphan",
+      reason: "window not in cockpit.json roster + not preserved",
+    });
+  }
+
+  if (planned.length === 0) return; // idempotent — nothing to gate
+
+  // Log each planned op so a `--yes` re-run is informed by the same
+  // surface. Even when yes is true we keep the warn line so the operator
+  // sees what's about to happen.
+  for (const op of planned) {
+    logger.warn(`  ⚠ destructive: ${op.action} '${op.window}' — ${op.reason}`);
+  }
+  if (yes) return;
+  throw new UsageError({
+    what: `cockpit reconcile: ${planned.length} destructive op(s) planned; refusing without --yes`,
+    hint:
+      "Review the listed ops above. Re-run with `--yes` to apply, or edit cockpit.json " +
+      "to keep the windows in scope. (Cron / scripts should pass `--yes` to bypass.)",
+  });
+}
+
+// ---------- t-22453c1e: superdoctor auto-start ----------
+
+export interface AutoStartSuperdoctorOpts {
+  tmux: TmuxNamespace;
+  sessionName: string;
+  windowIndex: number;
+  /** Max wall-clock to wait for the pane to settle to a Claude idle
+   *  prompt before bailing without a send-keys. Operator falls back to
+   *  manual `/loop /superdoctor` when this fires. */
+  timeoutMs: number;
+  logger: Logger;
+  /** Test injection — defaults to `setTimeout`-backed. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Test injection — defaults to `tmux.pane.capturePane`. */
+  capturePane?: (sessionName: string, windowIndex: number) => Promise<string>;
+}
+
+/** Poll cadence when waiting for the Claude REPL idle prompt. 500ms is
+ *  the spec value from t-22453c1e — finer is wasted IO, coarser misses
+ *  the window between welcome-screen-finished and operator-tabbing-away. */
+const SUPERDOCTOR_POLL_INTERVAL_MS = 500;
+
+/** Settle window AFTER sendKeys before verifying the loop landed. Per
+ *  t-22453c1e §4 we wait up to 5s for the skill-loaded marker. */
+const SUPERDOCTOR_POST_SEND_VERIFY_MS = 5_000;
+
+/** Markers that indicate the Claude Code TUI is at an idle prompt (per
+ *  t-22453c1e §2 readiness check). Matched as substrings against the
+ *  full capture. The order is "best-confidence first" — the auto-mode
+ *  + tok 0/0 footer is the most reliable signal; the `❯ Try ` placeholder
+ *  is the visual prompt the operator sees on a fresh session. */
+const SUPERDOCTOR_READY_MARKERS: ReadonlyArray<string> = ["auto mode on", "❯ Try "];
+
+/** Bail markers — if any of these appear, the pane is NOT idle and the
+ *  send-keys would land in the wrong state (queued message, compacting,
+ *  thinking mid-turn). Spec §2. */
+const SUPERDOCTOR_NOT_READY_MARKERS: ReadonlyArray<string> = [
+  "Compacting conversation",
+  "thinking with",
+];
+
+/** Verification markers after send-keys. Either form is acceptable per
+ *  t-22453c1e §4 (skill loaded OR model acting on it). */
+const SUPERDOCTOR_LOOP_LANDED_MARKERS: ReadonlyArray<string> = [
+  "Successfully loaded skill",
+  "self-pace this loop",
+  "self-pacing this loop",
+];
+
+/**
+ * t-22453c1e: poll the freshly-created superdoctor pane until it settles
+ * to a Claude idle prompt, then `tmux send-keys` `/loop /superdoctor` +
+ * Enter. Non-fatal on every branch — a timeout / send failure logs a
+ * warning and the operator falls back to typing the keystroke manually.
+ *
+ * Three terminal outcomes:
+ *   - Idle prompt detected → send-keys → verify → log ok / warn-no-verify
+ *   - Timeout (default 30s, configurable) → warn + return
+ *   - Capture throws → warn + return
+ */
+export async function autoStartSuperdoctorLoop(opts: AutoStartSuperdoctorOpts): Promise<void> {
+  const sleep =
+    opts.sleep ??
+    ((ms: number) =>
+      new Promise<void>((res) => {
+        setTimeout(res, ms);
+      }));
+  const capturePane =
+    opts.capturePane ??
+    (async (session: string, idx: number): Promise<string> => {
+      return await opts.tmux.pane.capturePane({
+        target: { sessionName: session, windowIndex: idx },
+      });
+    });
+
+  const deadline = Date.now() + opts.timeoutMs;
+  let ready = false;
+  while (Date.now() < deadline) {
+    let capture: string;
+    try {
+      capture = await capturePane(opts.sessionName, opts.windowIndex);
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      opts.logger.warn(
+        `  ⚠ superdoctor auto-start: capture-pane failed (${cause}); operator falls back to manual \`/loop /superdoctor\``,
+      );
+      return;
+    }
+    if (paneIsReady(capture)) {
+      ready = true;
+      break;
+    }
+    await sleep(SUPERDOCTOR_POLL_INTERVAL_MS);
+  }
+  if (!ready) {
+    opts.logger.warn(
+      `  ⚠ superdoctor pane not ready after ${Math.floor(opts.timeoutMs / 1000)}s; type \`/loop /superdoctor\` manually`,
+    );
+    return;
+  }
+
+  // Send the keystroke. The text + Enter go in a single sendKeys call
+  // with `enter: true` — `tmux send-keys` natively appends C-m when
+  // `Enter` is passed alongside literal text, so we don't need the
+  // separate-call dance the bash equivalent does.
+  const target: SendTarget = {
+    kind: "member",
+    member: "superdoctor",
+    team: opts.sessionName,
+    target: { sessionName: opts.sessionName, windowIndex: opts.windowIndex },
+  };
+  try {
+    await opts.tmux.pane.sendKeys({
+      target,
+      keys: "/loop /superdoctor",
+      enter: true,
+    });
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    opts.logger.warn(
+      `  ⚠ superdoctor auto-start: send-keys failed (${cause}); operator falls back to manual`,
+    );
+    return;
+  }
+
+  // Verify the loop landed — best-effort. The skill-loaded marker takes
+  // a moment to render after Enter; cap the wait at SUPERDOCTOR_POST_SEND_
+  // VERIFY_MS so a slow loader doesn't wedge rebuild.
+  await sleep(SUPERDOCTOR_POST_SEND_VERIFY_MS);
+  let postCapture: string;
+  try {
+    postCapture = await capturePane(opts.sessionName, opts.windowIndex);
+  } catch {
+    // Verification capture failure is non-blocking — the send-keys may
+    // have landed fine. Log + treat as best-effort success.
+    opts.logger.log(
+      "  ✓ superdoctor auto-started (`/loop /superdoctor` sent; verification capture failed — assume ok)",
+    );
+    return;
+  }
+  if (SUPERDOCTOR_LOOP_LANDED_MARKERS.some((m) => postCapture.includes(m))) {
+    opts.logger.log("  ✓ superdoctor auto-started (`/loop /superdoctor` confirmed)");
+  } else {
+    opts.logger.warn(
+      "  ⚠ superdoctor auto-start: send-keys fired but verification marker not seen in 5s; operator should sanity-check the window",
+    );
+  }
+}
+
+/** Pane-ready predicate. Idle ⇔ at least one ready-marker present AND
+ *  no not-ready-marker (compacting / thinking). */
+function paneIsReady(capture: string): boolean {
+  for (const blocker of SUPERDOCTOR_NOT_READY_MARKERS) {
+    if (capture.includes(blocker)) return false;
+  }
+  for (const marker of SUPERDOCTOR_READY_MARKERS) {
+    if (capture.includes(marker)) return true;
+  }
+  return false;
 }

@@ -15,23 +15,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > drainage + improvement bundles (each bullet now cross-references its ADR
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
->
-> Themes that still apply to the next release: **pull-model kanban** (Epic
-> 1, see ADR-007) — Epic/Story/Task data model, lane-aware `claim --next`,
-> auto-dispatched commit-Tasks, Story-level reviewer signoff, `atmux
-> decisions add` verb; plus **whip Since-last-tick delta enrichment +
-> richer decisions** (Epic 2, see ADR-009 §S7–§S10 + ADR-008 §S9–§S10) —
-> per-bullet renders for done-tasks/commits/advanced-stories with
-> `[E#/S#]`/`<sha>`/`<sid>` anchors, `story.advancedAt` schema field,
-> decisions verb gains 4 optional fields (`--context` / `--option` ×5 /
-> `--impact` / `--decided-by`) with section-aware multi-message Discord
-> chunking + `[N/M]` headers; plus **auto-rotation infrastructure**
-> (ADR-009 §S1–§S5) — opt-in `team.whip.autoRotate` flag, per-member
-> rotated.epoch anchor, banner preclear; plus **`atmux flag` verb** (Epic
-> 4, see ADR-010) — member→lead structured issue surfacing with p0 Discord
-> gating + `--task --needs unblock` atomic blocked-state mutation; plus
-> **hot reload** (Epic 3, see ADR-011) — `atmux brief-reload`, `atmux
-> config-reload`, `atmux verify-libs`, versioned briefs with whip
+
+### ✨ Added — `atmux pulse` (ADR-086)
+
+- **`atmux pulse`** — cockpit-wide deterministic verdict probe. Iterates every enabled team in `~/.atmux/cockpit.json`, gathers commit count + doctor red count + kanban / driver-inbox / pending-decisions inputs, computes one of five verdicts (`🟢 Shipping` / `🟡 Cool` / `🟡 Idle` / `🔴 Stalled` / `🚨 Need you`), and pings Discord on verdict change or sustained-urgency dedup expiry. Phase 1 of the MiniMax observer (Phase 2 swaps the renderer for an LLM call against the same input bundle).
+- **New Discord template `pulse-verdict`** in `src/abstractions/discord.ts` — verdict-first format with per-verdict header emoji (💓 / 📊 / 🛑 / 🚨).
+- **New cockpit schema field `pulse`** (`windowMins` / `intervalMins` / `dedupMins`, defaults 30 / 5 / 30).
+- **New state file** `~/.atmux/state/pulse-state.json` — cockpit-scoped, one row per team, dedup via `shouldFire(prior, current, now, dedupMins)`.
+- **Auto cron install** wired into `atmux cockpit rebuild` Phase 6 — a new `# >>> atmux:cockpit` marker-fenced block (distinct namespace from per-team blocks) lands `*/5 * * * * atmux pulse` idempotently every rebuild. Honors `ATMUX_NO_CRON=1` + cockpit.pulse.intervalMins override. Manual install line preserved in `docs/RUNBOOK-pulse.md` for operators who don't run `cockpit rebuild`.
+
+## [0.5.0] — 2026-05-08
+
+> Themes: **pull-model kanban** (Epic 1, see ADR-007)
+> — Epic/Story/Task data model, lane-aware `claim --next`, auto-dispatched
+> commit-Tasks, Story-level reviewer signoff, `atmux decisions add` verb;
+> plus **whip Since-last-tick delta enrichment + richer decisions** (Epic 2,
+> see ADR-009 §S7–§S10 + ADR-008 §S9–§S10) — per-bullet renders for done-
+> tasks/commits/advanced-stories with `[E#/S#]`/`<sha>`/`<sid>` anchors,
+> `story.advancedAt` schema field, decisions verb gains 4 optional fields
+> (`--context` / `--option` ×5 / `--impact` / `--decided-by`) with section-
+> aware multi-message Discord chunking + `[N/M]` headers; plus **auto-rotation
+> infrastructure** (ADR-009 §S1–§S5) — opt-in `team.whip.autoRotate` flag,
+> per-member rotated.epoch anchor, banner preclear; plus **`atmux flag` verb**
+> (Epic 4, see ADR-010) — member→lead structured issue surfacing with p0
+> Discord gating + `--task --needs unblock` atomic blocked-state mutation;
+> plus **hot reload** (Epic 3, see ADR-011) — `atmux brief-reload`,
+> `atmux config-reload`, `atmux verify-libs`, versioned briefs with whip
 > auto-detect (verbs 3 + 6 carved to recommended **E5** for pane lifecycle +
 > per-claim state work).
 
@@ -420,6 +429,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coverage (18/18 incl. real-git regression for the format→tformat
   fix from f-3229e152).
 
+### ✨ Added — SQLite state cutover (ADR-076)
+
+ADR-076 collapses the legacy JSON-canonical inbox (`.atmux/inboxes/<member>.json`)
+into the SQLite `state.db` already introduced by ADR-060. Five phases shipped
+2026-05-08:
+
+- **Phase 1 — `atmux migrate-state --target=inboxes`** (commit `27d80ee`). One-
+  shot backfill: reads every `.atmux/inboxes/*.json` into the `inbox_messages`
+  SQLite table, idempotent on re-run, dry-run support. Safety net for operators
+  upgrading existing teams (run before flipping to SQL-canonical reads).
+- **Phase 2 — SQL-canonical `loadInbox`** (commit `c3c6cc0`). Inbox readers
+  switch to `state.db` when present, falling back to the JSON file when not.
+  Per-team SQL detection via the presence of `state.db` + the `inbox_messages`
+  table; old teams continue working on JSON without migration.
+- **Phase 3 — inbox writer no-op on SQL-canonical teams** (commit `95b45c9`).
+  Inbox writes route to SQLite on SQL-canonical teams; the JSON-file writer
+  is a no-op rather than a dual-write (avoiding drift between the two stores).
+  Legacy `inboxes/*.json` files survive untouched as historical artifacts.
+- **Phase 4 — `atmux status` column update** (commit `8005c69`). The per-
+  member "📨 N pending" inbox column is replaced by "🟡 N active 📌 N todo"
+  reading from the kanban directly — pending-inbox semantics were a JSON-era
+  artifact (the inbox JSON tracked `{pending, inProgress, done}` slots per
+  member); on SQL-canonical teams the kanban `tasks` table is the source of
+  truth for what a member is working on.
+- **Phase 5 — 0.5.0 release tag** (commit `5c16432`). All four phases bundled
+  in a single minor release because the migration story is atomic per-team.
+  Operators upgrading from 0.4.x: run `atmux migrate-state --target=inboxes`
+  once per team root before the next `atmux start`.
+
+Cross-refs in code: `src/core/inbox.ts`, `src/verbs/migrate-state.ts`,
+`src/verbs/status.ts`, `src/verbs/whip.ts`. SQLite schema migration ladder
+at `src/abstractions/sqlite-migrations.ts`.
+
 ### ✨ Added — atmux flag verb (Epic 4)
 
 - **`atmux flag` — member→lead structured issue surfacing** (E4,
@@ -623,6 +665,18 @@ its own ADR — pane lifecycle + per-claim state).
 - **Lead no longer dispatches per-Task by default**. Workers pull. Manual
   `atmux dispatch <member> <task-id>` is reserved for explicit driver-
   requested priority overrides; default flow is `atmux claim --next`.
+- **Per-member inbox JSON files are no longer the source of truth**
+  (ADR-076). Reads + writes route to SQLite `state.db` on teams that have
+  it; the legacy `.atmux/inboxes/<member>.json` files remain on disk for
+  legacy teams + as historical artifacts but new operations do not touch
+  them. Operators upgrading from 0.4.x: run `atmux migrate-state
+  --target=inboxes` once per team root to backfill the SQLite store from
+  the legacy JSON before the next `atmux start`. Same applies to the
+  kanban (`atmux migrate-state --target=tasks` per ADR-060).
+- **`atmux status` per-member column format changed**. The "📨 N pending"
+  inbox column is now "🟡 N active 📌 N todo" reading from the kanban
+  rather than the inbox file. Downstream scrapers / dashboards parsing the
+  old format need to update their regex.
 
 ### ✨ Added — pre-Epic-1 (already in Unreleased before this Epic)
 
@@ -808,7 +862,8 @@ its own ADR — pane lifecycle + per-claim state).
 - Test suite: 80 bats-core tests (70 unit + 10 e2e), all green. E2E uses
   `tui=shell` so CI needs no AI API keys.
 
-[Unreleased]: https://github.com/geoyws/atmux/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/geoyws/atmux/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/geoyws/atmux/compare/v0.3.0...v0.5.0
 [0.3.0]: https://github.com/geoyws/atmux/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/geoyws/atmux/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/geoyws/atmux/releases/tag/v0.1.0

@@ -38,6 +38,7 @@ import {
   type KanbanSummarizeResult,
   summarizeKanban,
 } from "../core/groom.ts";
+import { groomArchive, type GroomArchiveResult } from "../core/groom-archive.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { LockError, LockTimeoutError, UsageError } from "../errors.ts";
@@ -52,6 +53,9 @@ export interface ParsedGroomArgs {
   kanbanDays: number;
   decisionsDays: number;
   keepBak: number;
+  /** t-8287b37d C1: when set, also archive state.db rows (tasks +
+   *  inbox_messages) older than `kanbanDays` into sibling archive.db. */
+  archive: boolean;
   /** When true, the verb returns 0 immediately after arg parse. Bash
    *  emits help via `_groom_usage` then `return 0`. */
   showHelp: boolean;
@@ -68,6 +72,7 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
   let dryRun = false;
   let quiet = false;
   let showHelp = false;
+  let archive = false;
   let inboxDays = DEFAULTS.inboxDays;
   let kanbanDays = DEFAULTS.kanbanDays;
   let decisionsDays = DEFAULTS.decisionsDays;
@@ -83,6 +88,11 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     }
     if (a === "--quiet") {
       quiet = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--archive") {
+      archive = true;
       i += 1;
       continue;
     }
@@ -134,7 +144,7 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     });
   }
 
-  return { dryRun, quiet, inboxDays, kanbanDays, decisionsDays, keepBak, showHelp };
+  return { dryRun, quiet, archive, inboxDays, kanbanDays, decisionsDays, keepBak, showHelp };
 }
 
 // ---------- ATMUX_NO_GROOM kill-switch ----------
@@ -183,6 +193,9 @@ Flags:
   --kanban-days N          Threshold for done/cancelled card summary (default 30).
   --decisions-days N       Threshold for decisions.md entry archival (default 30).
   --keep-bak N             Keep newest N of each .bak.* family (default 5).
+  --archive                Also move state.db rows (done tasks + inbox
+                           messages older than --kanban-days) into a
+                           sibling archive.db. Idempotent. Per t-8287b37d.
 
 Sub-operations (all idempotent):
   1. driver-inbox.md / lead-outbox.md: flush \`## Archive\` body into dated archive.
@@ -190,6 +203,7 @@ Sub-operations (all idempotent):
   3. kanban.json: summarize + remove done/cancelled cards older than --kanban-days.
   4. .bak.* files: keep newest --keep-bak per family.
   5. archive/ size guard: warn if growth exceeds threshold.
+  6. (--archive) state.db → archive.db row move (tasks + inbox_messages).
 
 Fires daily via cron (04:00) and once on every \`atmux start\`.
 `;
@@ -200,6 +214,8 @@ export interface GroomResult {
   kanban: KanbanSummarizeResult;
   bakCull: BakCullResult[];
   sizeWarnings: ArchiveSizeWarning[];
+  /** t-8287b37d C1: present only when `--archive` was passed. */
+  archive?: GroomArchiveResult;
   /** Sub-ops that threw — surfaced as warnings; verb still returns 0. */
   errors: { op: string; message: string }[];
   skippedReason?: "no-groom-env" | "lock-held";
@@ -369,6 +385,30 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
     } catch (e) {
       logger.warn(`groom: size-check sub-op failed (continuing): ${errMsg(e)}`);
       result.errors.push({ op: "size-check", message: errMsg(e) });
+    }
+
+    // t-8287b37d C1: state.db → archive.db row move. Opt-in via
+    // --archive; runs last so any earlier sub-op failures (which
+    // surfaced as warnings, not aborts) don't pollute the archive
+    // with rows that should have been rewritten by an earlier step.
+    if (parsed.archive) {
+      try {
+        const ar = await groomArchive(atmuxDir, {
+          days: parsed.kanbanDays,
+          dryRun: parsed.dryRun,
+          ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+        });
+        result.archive = ar;
+        if (!parsed.quiet && (ar.tasksArchived > 0 || ar.inboxArchived > 0)) {
+          const verb = parsed.dryRun ? "would archive" : "archived";
+          logger.ok(
+            `groom: ${verb} ${ar.tasksArchived} task(s) + ${ar.inboxArchived} inbox row(s) (state.db → archive.db, cutoff=${parsed.kanbanDays}d)`,
+          );
+        }
+      } catch (e) {
+        logger.warn(`groom: archive sub-op failed (continuing): ${errMsg(e)}`);
+        result.errors.push({ op: "archive", message: errMsg(e) });
+      }
     }
   } finally {
     if (handle !== null) await handle.release();

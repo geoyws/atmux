@@ -8,7 +8,7 @@
 // Block shape (marker-fenced, idempotent re-install via fence-replace):
 //
 //     # >>> atmux:team=<n> — managed by atmux start; do not edit by hand
-//     */5 * * * * <atmuxDir prefix> atmux whip                  >> .../whip.log 2>&1
+//     */15 * * * * <atmuxDir prefix> atmux whip                 >> .../whip.log 2>&1
 //     */30 * * * * <prefix> atmux report                         >> .../report.log 2>&1
 //     0 */4 * * * <prefix> atmux decisions digest                >> .../decisions-digest.log 2>&1
 //     0 4 * * * <prefix> atmux groom --quiet                     >> .../groom.log 2>&1
@@ -27,6 +27,7 @@
 // lands) can sandwich the rendering in atomic-rename + flock per its
 // own preference.
 
+import type { CrontabIO } from "../abstractions/crontab.ts";
 import { ConfigError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
@@ -167,14 +168,20 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   // at render time on out-of-range or non-divisor values; the doctor's
   // `cron-interval-divisor` check surfaces the same warning at
   // config-load time so operators see it before `atmux start` trips.
-  const whipMins = team.whip?.intervalMins ?? 5;
+  // t-dcbff97c §4 (George 08:00 MYT call 2026-05-13): default raised
+  // from 5 → 15min. Auto-drain teams (members pull from kanban via
+  // `atmux claim --next`) only need the lead awake ~4× / hour; a 5min
+  // cadence amplifies whip's rate-limit footprint without commensurate
+  // benefit. Operators who want tighter cadence set `team.whip.intervalMins`
+  // explicitly (sopx historically pins 5).
+  const whipMins = team.whip?.intervalMins ?? 15;
   const reportMins = team.report?.intervalMins ?? 30;
   const heartbeatHours = team.report?.heartbeatHours ?? 1;
   const decisionsHours = team.decisions?.intervalHours ?? 4;
   const groomHour = team.groom?.atHour ?? 4;
   const unblockerMins = team.unblocker?.intervalMins ?? 2;
 
-  // 1. whip — full sweep on team.whip.intervalMins (default 5).
+  // 1. whip — full sweep on team.whip.intervalMins (default 15).
   out.push(`${cronEvery(whipMins)} ${baseEnv} whip ${logTail("whip")}`);
 
   // 2. report or discorder pair (mutually exclusive per ADR-022 OQ-D4).
@@ -388,7 +395,223 @@ export function stripOrphanLines(body: string): string {
  *  TERM, narrow PATH) caused tmux 3.5a segfaults when invoked from
  *  atmux verbs (ADR-051). Idempotent. */
 export function ensureEnvPreamble(body: string): string {
-  if (!body.includes(BLOCK_HEADER_PREFIX)) return body;
+  // ADR-086: cockpit-scoped block also needs the env preamble — cron's
+  // bare env hits the same tmux/term issues regardless of which atmux
+  // verb fires.
+  if (!body.includes(BLOCK_HEADER_PREFIX) && !body.includes(COCKPIT_BLOCK_HEADER)) return body;
   if (body.includes(ENV_PREAMBLE_MARKER)) return body;
   return `${ENV_PREAMBLE}\n${body}`;
+}
+
+// ---------- ADR-086: cockpit-scoped cron block (pulse) ----------
+//
+// Distinct namespace from per-team blocks — uses `atmux:cockpit` markers
+// so per-team strip-by-name + strip-by-atmux-dir passes never touch it.
+// Idempotent on re-install (same strip → render → append pattern as
+// `installCronBlock`).
+//
+// Phase 1 content: just `atmux pulse`. Phase 2 may add other cockpit-
+// tier crons (LLM observer, multi-channel routing).
+
+const COCKPIT_BLOCK_HEADER =
+  "# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand";
+const COCKPIT_BLOCK_FOOTER = "# <<< atmux:cockpit";
+
+export interface RenderCockpitCronBlockOpts {
+  /** Absolute path to the atmux binary. Cron's bare env can't resolve
+   *  PATH-relative names. */
+  atmuxBin: string;
+  /** Absolute path to the cockpit config (defaults to `~/.atmux/cockpit.json`
+   *  when the verb is invoked; we don't bake the default into the cron line
+   *  so the operator can pass `--config <path>` overrides via env later). */
+  cockpitConfigPath?: string;
+  /** Absolute path for the log tail. Defaults to `~/.atmux/logs/pulse.log`. */
+  logPath?: string;
+  /** Optional cockpit.pulse.intervalMins (default 5). Must be a 60-divisor. */
+  pulseIntervalMins?: number;
+  /** Optional PATH prefix for the cron env (defaults to a sensible set
+   *  covering mise + system bins). */
+  cronPath?: string;
+}
+
+/** Pure: render the cockpit-scoped cron block (header + body + footer). */
+export function renderCockpitCronBlock(opts: RenderCockpitCronBlockOpts): string {
+  const interval = opts.pulseIntervalMins ?? 5;
+  const cronPath = opts.cronPath ?? "/root/.bun/bin:/usr/local/bin:/usr/bin:/bin";
+  const logPath = opts.logPath ?? "/root/.atmux/logs/pulse.log";
+  const configFlag =
+    opts.cockpitConfigPath !== undefined && opts.cockpitConfigPath !== ""
+      ? ` --config ${opts.cockpitConfigPath}`
+      : "";
+  const line = `${cronEvery(interval)} PATH=${cronPath} ${opts.atmuxBin} pulse${configFlag} >> ${logPath} 2>&1`;
+  return `${COCKPIT_BLOCK_HEADER}\n${line}\n${COCKPIT_BLOCK_FOOTER}\n`;
+}
+
+export interface InstallCockpitCronBlockOpts extends RenderCockpitCronBlockOpts {
+  /** Current crontab contents (`null`/empty == no crontab yet). */
+  current: string | null;
+}
+
+/** Pure transform: strip any existing cockpit block + append a fresh one.
+ *  Idempotent — re-running with the same opts yields byte-identical output. */
+export function installCockpitCronBlock(opts: InstallCockpitCronBlockOpts): string {
+  const stripped = stripCockpitBlock(opts.current ?? "");
+  const block = renderCockpitCronBlock(opts);
+  const trimmed = stripped.endsWith("\n") ? stripped.slice(0, -1) : stripped;
+  const joined = trimmed === "" ? block : `${trimmed}\n${block}`;
+  return ensureEnvPreamble(joined);
+}
+
+/** Strip the `# >>> atmux:cockpit` ... `# <<< atmux:cockpit` block, if
+ *  present. Bash-equivalent helper (no bash counterpart yet — cockpit
+ *  cron is new ground per ADR-086). */
+export function stripCockpitBlock(body: string): string {
+  if (body === "") return "";
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let inBlock = false;
+  for (const ln of lines) {
+    if (ln === COCKPIT_BLOCK_HEADER) {
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && ln === COCKPIT_BLOCK_FOOTER) {
+      inBlock = false;
+      continue;
+    }
+    if (!inBlock) out.push(ln);
+  }
+  return out.join("\n");
+}
+
+// ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------
+
+/** A marker-fenced block's identity: team name from the header + the
+ *  first `ATMUX_DIR=<value>` baked into a body line. JSON serialization
+ *  at the verb boundary maps this to snake_case `atmux_dir` for bash
+ *  output compat. */
+export interface CronBlockTarget {
+  team: string;
+  atmuxDir: string;
+}
+
+/**
+ * Pure parser — mirrors bash `lib/cron.sh::atmux::cron_orphans` awk
+ * pass (lines 337-364). Walks every marker-fenced block and emits one
+ * `{team, atmuxDir}` per block whose body carries an `ATMUX_DIR=`
+ * assignment. Blocks lacking that assignment are skipped (matches bash
+ * `team != "" && atmux_dir != ""` guard at the footer).
+ *
+ * Header parse is lenient on the trailing `— managed by atmux start;
+ * do not edit by hand` suffix — strip if present, else keep the rest
+ * verbatim (bash awk's `sub(/<suffix>$/, "")` behavior). Footer match
+ * is prefix-only (`# <<< atmux:team=`) so a corrupt suffix doesn't
+ * leave the block hanging.
+ *
+ * No I/O. Composed with an injected `dirExists` predicate by
+ * `findCronOrphans` so unit tests can pin both sides.
+ */
+export function parseCronBlockTargets(body: string): CronBlockTarget[] {
+  if (body === "") return [];
+  const out: CronBlockTarget[] = [];
+  let team = "";
+  let atmuxDir = "";
+  let inBlock = false;
+  for (const ln of body.split("\n")) {
+    if (ln.startsWith(BLOCK_HEADER_PREFIX)) {
+      let rest = ln.slice(BLOCK_HEADER_PREFIX.length);
+      if (rest.endsWith(BLOCK_HEADER_SUFFIX)) {
+        rest = rest.slice(0, rest.length - BLOCK_HEADER_SUFFIX.length);
+      }
+      team = rest;
+      atmuxDir = "";
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && ln.startsWith(BLOCK_FOOTER_PREFIX)) {
+      if (team !== "" && atmuxDir !== "") {
+        out.push({ team, atmuxDir });
+      }
+      team = "";
+      atmuxDir = "";
+      inBlock = false;
+      continue;
+    }
+    if (inBlock && atmuxDir === "") {
+      // Bash awk: sub(/^.*ATMUX_DIR=/, "") + sub(/[[:space:]].*$/, "")
+      // → first occurrence per line, value up to first whitespace.
+      const idx = ln.indexOf("ATMUX_DIR=");
+      if (idx >= 0) {
+        const tail = ln.slice(idx + "ATMUX_DIR=".length);
+        const m = tail.match(/^(\S+)/);
+        if (m !== null && m[1] !== undefined) atmuxDir = m[1];
+      }
+    }
+  }
+  return out;
+}
+
+export interface FindCronOrphansOpts {
+  /** Crontab IO seam — `read()` returns `null` for no crontab. */
+  io: CrontabIO;
+  /** Returns true iff `path` resolves to a directory on disk. Injected
+   *  so unit tests can simulate moved / deleted paths without touching
+   *  the filesystem. */
+  dirExists: (path: string) => Promise<boolean>;
+}
+
+/**
+ * ADR-083 follow-up §DEFERRED row 2: compose `parseCronBlockTargets`
+ * with the injected `dirExists` predicate. Returns the rows whose
+ * `atmuxDir` is no longer a directory on disk — the "orphan cron block"
+ * signal for doctor + cockpit aggregators.
+ *
+ * Returns empty when the crontab is null / empty (no crontab installed
+ * → no orphans possible).
+ */
+export async function findCronOrphans(opts: FindCronOrphansOpts): Promise<CronBlockTarget[]> {
+  const body = await opts.io.read();
+  if (body === null || body === "") return [];
+  const blocks = parseCronBlockTargets(body);
+  const out: CronBlockTarget[] = [];
+  for (const b of blocks) {
+    if (!(await opts.dirExists(b.atmuxDir))) {
+      out.push(b);
+    }
+  }
+  return out;
+}
+
+/**
+ * t-e1247699: one-shot recovery for bun-test cron leaks. Reads the
+ * crontab once, identifies every block whose ATMUX_DIR is missing on
+ * disk, strips each via `stripBlockByTeam`, and rewrites atomically via
+ * `io.write`. Returns the list of pruned blocks for the verb to surface
+ * to the caller.
+ *
+ * Single-read TOCTOU window: detection + strip share the same `body`
+ * snapshot, so an orphan that materialized mid-pass isn't missed and a
+ * concurrent `atmux start` install isn't clobbered (the new block lands
+ * AFTER our `io.write`'s post-read; bash-level cron mutations don't
+ * overlap because `crontab <file>` is itself atomic).
+ *
+ * No write when there are no orphans — saves a needless `crontab <file>`
+ * cycle (and avoids touching mtime on healthy hosts).
+ */
+export async function pruneCronOrphans(opts: FindCronOrphansOpts): Promise<CronBlockTarget[]> {
+  const body = await opts.io.read();
+  if (body === null || body === "") return [];
+  const blocks = parseCronBlockTargets(body);
+  const orphans: CronBlockTarget[] = [];
+  let newBody = body;
+  for (const b of blocks) {
+    if (!(await opts.dirExists(b.atmuxDir))) {
+      orphans.push(b);
+      newBody = stripBlockByTeam(newBody, b.team);
+    }
+  }
+  if (orphans.length > 0 && newBody !== body) {
+    await opts.io.write(newBody);
+  }
+  return orphans;
 }

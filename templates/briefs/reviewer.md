@@ -55,15 +55,32 @@ Source of truth: ADRs → docs → brief templates → source. Code is the LAST 
 
    Or, if Tasks reference Story-id in commit subjects (`feat(scope): … [s-xxx]`), `git log --grep "s-xxx" --oneline` then diff the bracket.
 
-5. **Audit checklist** (narrow + deep on the cumulative diff):
-   - **Acceptance criteria coverage** — every AC clause has a corresponding code path + test.
-   - **Schema hygiene** — JSON shapes, kanban field validation, backwards-compat on read.
-   - **Authz / boundary writes** — tenant / account scoping has explicit filter predicates, not assumed.
-   - **Secrets** — no env/credentials/webhook strings committed.
-   - **Test coverage on tracked paths** — every code-shipping Task has a paired TEST-lane Task or folded test commit. Reviewer blocks code without tests on tracked paths.
-   - **No bypass mechanisms** — no `--no-verify`, no `core.hooksPath=/dev/null`, no `HUSKY=0`, no unexplained `@ts-ignore`, no swallowed errors.
-   - **Vocabulary** — UPPER-CASE lane tokens in prose; lowercase in JSON / args.
-   - **ADR alignment** — if an ADR was authored mid-Story, the diff matches the accepted decision.
+5. **Audit checklist** (narrow + deep on the cumulative diff). Every column is a fail-state, not advisory — one ❌ blocks signoff:
+
+   | Column | PASS criterion | FAIL criterion |
+   |---|---|---|
+   | **Acceptance criteria coverage** | Every AC clause has a corresponding code path + test | Any AC clause unimplemented or untested |
+   | **Schema hygiene** | JSON shapes / kanban field validation / backwards-compat on read all green | Schema drift, missing `.strict()` at leaf, unparseable legacy reads |
+   | **Authz / boundary writes** | Tenant / account scoping has explicit filter predicates | Implicit / assumed scoping; missing predicate at write site |
+   | **Secrets** | No env / credentials / webhook strings committed | Any plaintext secret in diff |
+   | **Test coverage on tracked paths** | Every code-shipping Task has a paired TEST-lane Task OR folded test commit | Code-without-tests on tracked path (resolvers / service handlers / authz helpers / UI with logic / shared utils / validators) |
+   | **No bypass mechanisms** | No `--no-verify`, no `core.hooksPath=/dev/null`, no `HUSKY=0`, no unexplained `@ts-ignore`, no swallowed errors | Any bypass mechanism present without an explicit "Approved bypass: <reason>" footer in the commit body |
+   | **Vocabulary** | UPPER-CASE lane tokens in prose; lowercase in JSON / args | Lowercase lane tokens in prose, or UPPER-CASE in JSON values |
+   | **ADR alignment** | If an ADR was authored mid-Story, the diff matches the accepted decision | Diff contradicts ADR §Decision text, or cites the wrong ADR |
+   | **`doc-update`** | Either (a) diff touches NO documented surface, OR (b) every documented-surface change carries a same-commit doc update with an explicit ADR-pointer (`per ADR-xxx`, `mirrors ADR-yyy`) | Documented-surface change with no same-commit doc + ADR-pointer update |
+
+   **Documented surfaces** (closed-world inventory — anything in this list is a `doc-update` gate trigger):
+
+   - **Verb signatures** — anything reachable via the project's CLI (`src/verbs/*.ts`, `src/cli.ts` registrations). Adding / removing / renaming a verb, flag, or arg shape changes a doc surface.
+   - **Brief vocabulary** — `templates/briefs/*.md`. Adding / removing / renaming a brief section, role token, or placeholder is a doc surface change.
+   - **State-file shape** — `.atmux/state.db` SQLite schema (per ADR-060), JSON state files under `.atmux/state/`, the kanban shape in `src/schema/kanban.ts`, the team config shape in `src/schema/team.ts`, the cockpit shape in `src/schema/cockpit.ts`.
+   - **Cron / scheduled-job templates** — `templates/cron/*`, atmux start/stop cron-block management (per ADR-051, ADR-083).
+   - **Event schema** — socket-pubsub event types (per ADR-032), kanban event payloads, inbox shape (per ADR-076).
+   - **ADR-named invariants** — anything flagged by an ADR header comment as a load-bearing rule (e.g. "byte-equal bash parity" per ADR-013, "RLS tenant gate", "per-member branch lock-in" per ADR-084).
+
+   Private helpers, internal types not re-exported from a package boundary, generated code, and lockfiles are NOT documented surfaces — no `doc-update` gate fires on them.
+
+   See also `/CLAUDE.md §Docs Discipline` (same-commit doc updates, peruse-before-working, single ADR tree per project) for the canonical contract this gate enforces. ADR-093 is the docs-consolidation tombstone authorizing the `adr-bun → adr` collapse referenced by `doc-update` ADR-pointer audits; if T1 shifts the number, treat the latest tombstone ADR as canonical.
 
 6. **Decide**:
 
@@ -79,6 +96,19 @@ Only when the lead explicitly asks. Exhaustive grep + negative-space proof is th
 - Be specific: `file:line` + what's wrong + fix sketch. Not "LGTM minus nit"; not "looks fine, ship it" without the audit.
 - Push back on stub-scaffolds requested purely for demo narrative when the real implementation already works — propose a signoff carve-out + ADR rather than shipping a no-op.
 - Submodule boundary discipline: if a blocker lives outside your lane's reach, surface-with-evidence (`file:line` + repro + fix sketch) to the owning lane via `atmux send <owner>` rather than patching cross-lane.
+
+**`doc-update` REJECT template** — when the diff touches a documented surface without a same-commit doc + ADR-pointer update:
+
+```
+[reviewer] s-xxx REJECT — docs-discipline: <surface> changed at <file:line>
+without same-commit doc update. Either bundle the doc update into this
+commit (per ADR-093) or split the commit so the code change rides with
+its doc. The `doc-update` gate is fail-state, not advisory — see
+templates/briefs/reviewer.md §Audit checklist + /CLAUDE.md §Docs
+Discipline.
+```
+
+`<surface>` cites the inventory category (verb signature / brief vocabulary / state-file shape / cron template / event schema / ADR-named invariant) so the member can find the right doc to update without re-deriving it.
 
 ## main/master push refuse — AC scope-check ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
 

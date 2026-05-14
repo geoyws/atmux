@@ -26,6 +26,7 @@
 //   deferred per ADR-019).
 
 import { join } from "node:path";
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
@@ -34,6 +35,7 @@ import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.t
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
 import {
+  buildWindowName,
   driverInboxPath,
   getAtmuxDir,
   inboxPathFor,
@@ -43,6 +45,14 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import { cageSessionName, cageSocketPath } from "../core/cockpit.ts";
+import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
+import {
+  findPhantomInProgressClaims,
+  formatPruneIso,
+  type PhantomClaim,
+  prunePhantomInProgressClaims,
+} from "../core/phantom-prune.ts";
 import {
   type DriverInboxEntry,
   parseEntries as parseDriverInboxEntries,
@@ -116,7 +126,7 @@ export function parseDoctorArgs(argv: ReadonlyArray<string>): DoctorArgs {
 
 // ---------- Row + report shape ----------
 
-export type DoctorStatus = "green" | "yellow" | "red";
+export type DoctorStatus = "green" | "yellow" | "red" | "info";
 
 export interface DoctorRow {
   status: DoctorStatus;
@@ -567,6 +577,57 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
   }));
 }
 
+// ---------- Check 6b: phantom in-progress claims (t-af159454) ----------
+
+/** Resolve the set of member names with a live tmux window in the
+ *  team's cage. Returns an empty set on session-down / probe failure
+ *  — caller treats that as "no live members", which means ALL
+ *  in-progress claims get flagged as phantoms. Conservative bias
+ *  matches the auto-prune use case (operator wants the stale rows
+ *  surfaced loudly so the next session boot is clean).
+ *
+ *  Cage-only — singleSession teams short-circuit at the caller per
+ *  ADR-026 (the deprecated mode isn't the prune target). */
+async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
+  try {
+    const tmux = createTmux({ socketPath: cageSocketPath(team.name) });
+    const session = cageSessionName(team.name);
+    if (!(await tmux.session.hasSession(session))) return new Set();
+    const windows = await tmux.window.listWindows(session);
+    const liveNames = new Set(windows.map((w) => w.name));
+    const live = new Set<string>();
+    for (const m of team.members) {
+      const expected = buildWindowName(m.name, m.emoji);
+      if (liveNames.has(expected)) live.add(m.name);
+    }
+    return live;
+  } catch {
+    return new Set();
+  }
+}
+
+/** Doctor check: surface kanban in-progress rows whose owner has no
+ *  live tmux window in the cage. These are the rows `atmux doctor
+ *  --fix` and `atmux stop` prune. */
+export async function checkPhantomInProgressClaims(
+  atmuxDir: string,
+  team: Team | null,
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  if (team.singleSession === true) return [];
+  const phantoms = await findPhantomInProgressClaims({
+    atmuxDir,
+    team,
+    liveMembers: () => probeLiveMembers(team),
+  });
+  return phantoms.map((p) => ({
+    status: "yellow" as const,
+    label: "phantom-in-progress",
+    detail: `${p.id} ("${p.subject}") owned by ${p.owner} but no live pane`,
+    hint: "atmux doctor --fix flips it to blocked; atmux stop teardown does the same",
+  }));
+}
+
 // ---------- ADR-054 §D4: whip-config-drift ----------
 
 /**
@@ -698,6 +759,109 @@ export function checkCronIntervalDivisors(team: Team | null): DoctorRow[] {
   checkMinutes("unblocker.intervalMins", team.unblocker?.intervalMins);
 
   return rows;
+}
+
+// ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------
+
+/**
+ * DI surface — `findCronOrphans` already takes its IO seam + dirExists
+ * predicate; we just thread defaults the same way as the verb does so
+ * tests can pin both sides via the doctor entry point too.
+ */
+export interface CheckCronOrphansOpts {
+  /** Defaults to `defaultCrontabIO()`. */
+  crontab?: CrontabIO;
+  /** Defaults to `statOrNull`-backed dir check. */
+  dirExists?: (path: string) => Promise<boolean>;
+}
+
+/**
+ * ADR-083 follow-up §DEFERRED row 2 (paired with `atmux cron-orphans`
+ * verb in `src/verbs/cron-orphans.ts`): surface marker-fenced crontab
+ * blocks whose `ATMUX_DIR=<path>` no longer exists on disk. Emits one
+ * `cron-config` yellow row per orphan (label + team + path); empty
+ * when host has no crontab, no crontab blocks, or every block's dir
+ * is alive.
+ *
+ * Operator-facing fix: `crontab -e` to drop the orphan block, or
+ * restore the missing dir if the project simply moved.
+ */
+export async function checkCronOrphans(
+  opts: CheckCronOrphansOpts = {},
+): Promise<DoctorRow[]> {
+  const crontab = opts.crontab ?? defaultCrontabIO();
+  if (!(await crontab.available())) return [];
+  const dirExists = opts.dirExists ?? defaultDirExistsForCron;
+  const orphans = await findCronOrphans({ io: crontab, dirExists });
+  return orphans.map((o: CronBlockTarget) => ({
+    status: "yellow" as const,
+    label: "cron-config",
+    detail: `orphan cron block: team='${o.team}' atmux_dir='${o.atmuxDir}' (path does not exist)`,
+    hint: `crontab -e to drop the block, or restore ${o.atmuxDir} if the project moved`,
+  }));
+}
+
+async function defaultDirExistsForCron(p: string): Promise<boolean> {
+  const s = await statOrNull(p);
+  return s !== null && s.isDirectory;
+}
+
+// ---------- t-dcbff97c: cron-block:missing — team has no managed block in host crontab ----------
+
+export interface CheckCronBlockOpts {
+  /** Defaults to `defaultCrontabIO()`. Tests inject a fake. */
+  crontab?: CrontabIO;
+}
+
+/**
+ * t-dcbff97c §2 — RED finding when a team that opts into cron auto-install
+ * has no marker-fenced block in the host crontab. The atmux team died
+ * three consecutive overnights because `atmux start` reported success
+ * but the cron block was absent; doctor missed it, so the only signal
+ * was the silently-stalled lead the morning after.
+ *
+ * Returns:
+ * - `[]` when team is null (the team-shape row already surfaced).
+ * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out;
+ *    the operator manages cron some other way and the absence is intent.
+ * - `[]` when `crontab` is not on the host (no PATH match); ADR-083
+ *    posture is "skip gracefully on cron-less hosts."
+ * - `[]` when the team's marker header (`# >>> atmux:team=<name> …`) is
+ *    present anywhere in the current crontab.
+ * - one RED row otherwise, hinting `atmux cron-install`.
+ *
+ * RED (not YELLOW) because the failure mode is overnight team death — a
+ * GREEN doctor that hides a missing cron block is a worse outcome than
+ * a noisy one. Operators who legitimately don't want a block set
+ * `kanban.cronAutoInstall: false` and the row stays silent.
+ */
+export async function checkCronBlock(
+  team: Team | null,
+  opts: CheckCronBlockOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  // Honor explicit opt-out — mirror `start.ts::shouldAutoInstallCron`
+  // semantics so doctor + start stay in lockstep on the gating decision.
+  const kanban = (team as { kanban?: { cronAutoInstall?: boolean } }).kanban;
+  if (kanban?.cronAutoInstall === false) return [];
+
+  const crontab = opts.crontab ?? defaultCrontabIO();
+  if (!(await crontab.available())) return [];
+
+  const current = (await crontab.read()) ?? "";
+  // Match the exact marker header rendered by `renderCronBlock` so a
+  // similarly-named team can't false-pass on a substring brush-by.
+  const header = `# >>> atmux:team=${team.name} — managed by atmux start; do not edit by hand`;
+  if (current.includes(header)) return [];
+
+  return [
+    {
+      status: "red",
+      label: "cron-block:missing",
+      detail: `no managed atmux:team=${team.name} block in host crontab — whip / report / decisions / groom won't fire`,
+      hint: "run `atmux cron-install` (or re-run `atmux start`) — block uses ATMUX_DIR + optional TMUX_TMPDIR so worktree-isolation is safe",
+    },
+  ];
 }
 
 // ---------- Check 7a: cursor-plugin-cache ----------
@@ -1163,6 +1327,7 @@ const STATUS_GLYPH: Record<DoctorStatus, string> = {
   green: "✅",
   yellow: "⚠️ ",
   red: "❌",
+  info: "ℹ️ ",
 };
 
 export function renderHuman(report: DoctorReport): string {
@@ -1251,6 +1416,16 @@ interface PorcelainWorktree {
  *                                    a batch operation). Hint: flip
  *                                    `worktreeIsolation: true` to resume
  *                                    management, OR `rm -rf` to discard.
+ *   5. `worktree-branch-orphan`    — isolation on; a `${base}-*` branch exists
+ *                                    whose suffix matches no current
+ *                                    `team.members[].name` (sanitized). INFO
+ *                                    (no count toward pass/fail). Hint: safe
+ *                                    auto-delete via `--fix` when 0 commits
+ *                                    ahead of base; surface-only with manual
+ *                                    review when commits are unmerged. ADR-084
+ *                                    §"Doctor probe update" — branches are left
+ *                                    in place by `stop --force` per OQ-2
+ *                                    default; over time they accumulate.
  *
  * Pure modulo IO — every IO call gated through `opts` for tests. When
  * `team === null` (team.json failed to load), returns empty: the
@@ -1371,6 +1546,69 @@ export async function checkWorktreeIsolation(
     }
   }
 
+  // Class 5 (ADR-084 W2 / branch-orphan) — surface stranded `${base}-*`
+  // branches whose suffix isn't a current member. Independent from the
+  // worktree state above: branches outlive worktrees (per ADR-084 OQ-2
+  // default, `stop --force` prunes the worktree but keeps the branch).
+  // Resolves baseBranch independently so the probe runs even when no
+  // managed worktrees are present (the worktree might already be gone;
+  // it's the leftover BRANCH we're surfacing).
+  const git2 = opts.gitSpawn ?? defaultGitSpawn;
+  const projectRoot2 = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
+  const baseR = await git2(["-C", projectRoot2, "branch", "--show-current"]);
+  const baseBranch = baseR.exitCode === 0 ? baseR.stdout.trim() : "";
+  if (baseBranch.length > 0) {
+    const listR = await git2(["-C", projectRoot2, "branch", "--list", `${baseBranch}-*`]);
+    if (listR.exitCode === 0) {
+      const sanitizedMembers = new Set(
+        team.members.map((m) => sanitizeBranchSegment(m.name)),
+      );
+      const prefix = `${baseBranch}-`;
+      // `git branch --list <pat>` rows are 2-space indented; current
+      // branch (impossible for an orphan but defensive) prefixes `* `.
+      const branchNames = listR.stdout
+        .split("\n")
+        .map((line) => line.replace(/^[\s*+]+/, "").trim())
+        .filter((line) => line.length > 0 && line.startsWith(prefix));
+      for (const branchName of branchNames) {
+        const suffix = branchName.slice(prefix.length);
+        if (sanitizedMembers.has(suffix)) continue;
+        // Orphan: count unmerged commits relative to base.
+        const countR = await git2([
+          "-C",
+          projectRoot2,
+          "rev-list",
+          "--count",
+          `${baseBranch}..${branchName}`,
+        ]);
+        const aheadRaw = countR.exitCode === 0 ? countR.stdout.trim() : "";
+        const aheadCount = /^\d+$/.test(aheadRaw) ? parseInt(aheadRaw, 10) : null;
+        if (aheadCount === null) {
+          rows.push({
+            status: "info",
+            label: `worktree:branch-orphan:${suffix}`,
+            detail: `${branchName} — unmerged-count probe failed (rc=${countR.exitCode})`,
+            hint: `manually verify before deletion: \`git log ${baseBranch}..${branchName}\``,
+          });
+        } else if (aheadCount === 0) {
+          rows.push({
+            status: "info",
+            label: `worktree:branch-orphan:${suffix}`,
+            detail: `${branchName} — 0 commits ahead of ${baseBranch} (safe to delete)`,
+            hint: `\`atmux doctor --fix\` would prune it (dry-run today); manual: \`git branch -d ${branchName}\``,
+          });
+        } else {
+          rows.push({
+            status: "info",
+            label: `worktree:branch-orphan:${suffix}`,
+            detail: `${branchName} — ${aheadCount} commit(s) ahead of ${baseBranch} (unmerged work)`,
+            hint: `review before deletion: \`git log ${baseBranch}..${branchName}\``,
+          });
+        }
+      }
+    }
+  }
+
   return rows;
 }
 
@@ -1432,6 +1670,12 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
+  // t-af159454: phantom in-progress claims (kanban rows with dead
+  // owner panes). Distinct vulnerability class from phantom-inbox
+  // above (that one scans JSON inbox files; this scans the live
+  // kanban). Cage-only — singleSession teams short-circuit in the
+  // check itself.
+  rows.push(...(await checkPhantomInProgressClaims(atmuxDir, team)));
   // Cursor-plugin-cache parity — only fires when cursor-agent is
   // installed AND there's at least one directory-source marketplace
   // plugin missing its `~/.claude/plugins/cache/<m>/<p>/<v>` entry.
@@ -1449,6 +1693,15 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // ADR-079 §A: cron interval values must be divisors of 60 (minutes)
   // or 24 (hours). Yellow per offender; surfaces before atmux start.
   rows.push(...checkCronIntervalDivisors(team));
+  // ADR-083 follow-up §DEFERRED row 2: cron-orphans — yellow per
+  // marker block whose `ATMUX_DIR=` path no longer exists on disk
+  // (moved / deleted projects). Silent on hosts without crontab.
+  rows.push(...(await checkCronOrphans()));
+  // t-dcbff97c §2: RED when team opts into cron-auto-install but no
+  // managed block is present. Catches the failure mode that killed the
+  // atmux team three consecutive overnights (cron block silently absent
+  // → no whip pulse → lead stalls). Silent on opt-out + cron-less hosts.
+  rows.push(...(await checkCronBlock(team)));
   // ADR-082 §5 W5: per-member worktree-isolation anomalies. Returns
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
@@ -1483,14 +1736,75 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
     stderr(renderHuman(report));
   }
 
-  // --fix is a stub for V-24 in-scope: surface a hint, don't run
-  // anything destructive. Phantom-prune + team.json wizard re-run land
-  // when V-01 (up) wires doctor as start preflight per ADR-019 §"Fix".
+  // --fix surfaces dry-run branch-orphan summary (deferred per ADR-019)
+  // AND runs the phantom in-progress prune (t-af159454 — operator can
+  // collapse the 5 cited phantom IDs in one shot). Branch deletion +
+  // team.json wizard re-run remain stubbed pending ADR-019 §"Fix"
+  // resolution.
   if (parsed.fix && !parsed.quiet) {
+    const safeOrphans = collectSafeOrphanBranches(report.rows);
+    if (safeOrphans.length > 0) {
+      stderr(
+        `\natmux doctor --fix (dry-run): would delete ${safeOrphans.length} orphan branch(es):\n`,
+      );
+      for (const branch of safeOrphans) {
+        stderr(`  - ${branch}\n`);
+      }
+    }
+    if (team !== null && team.singleSession !== true) {
+      const phantoms = await findPhantomInProgressClaims({
+        atmuxDir,
+        team,
+        liveMembers: () => probeLiveMembers(team),
+      });
+      if (phantoms.length > 0) {
+        const asOfIso = formatPruneIso(Date.now());
+        const result = await prunePhantomInProgressClaims({
+          atmuxDir,
+          phantoms,
+          asOfIso,
+          source: "doctor-fix",
+        });
+        stderr(
+          `\natmux doctor --fix: pruned ${result.prunedIds.length} phantom in-progress claim(s)` +
+            (result.alreadyPrunedIds.length > 0
+              ? ` (+${result.alreadyPrunedIds.length} already-pruned)`
+              : "") +
+            ":\n",
+        );
+        for (const id of result.prunedIds) stderr(`  - ${id} → blocked (${asOfIso})\n`);
+      }
+    }
+    // Other --fix paths (branch-orphan deletion, team.json wizard
+    // re-run) remain deferred per ADR-019 V-24. Phantom-prune above
+    // ships in t-af159454; the residual hint covers the rest.
     stderr(
       "\natmux doctor --fix: V-24 ships read-only checks; --fix actions deferred per ADR-019.\n",
     );
   }
 
   return report.redCount === 0 ? 0 : 1;
+}
+
+/**
+ * Extract orphan-branch names safe to auto-delete from the doctor row set.
+ * "Safe" == 0 commits ahead of base (info row carries `(safe to delete)` in
+ * its `detail`). Used by the `--fix` dry-run summary; deletion itself is
+ * deferred per ADR-019 V-24.
+ */
+export function collectSafeOrphanBranches(
+  rows: ReadonlyArray<DoctorRow>,
+): string[] {
+  const out: string[] = [];
+  for (const r of rows) {
+    if (!r.label.startsWith("worktree:branch-orphan:")) continue;
+    if (r.status !== "info") continue;
+    if (r.detail === undefined) continue;
+    if (!r.detail.includes("safe to delete")) continue;
+    // detail shape: "<branch> — 0 commits ahead of <base> (safe to delete)"
+    const dash = r.detail.indexOf(" — ");
+    const branch = dash >= 0 ? r.detail.slice(0, dash) : r.detail;
+    out.push(branch);
+  }
+  return out;
 }

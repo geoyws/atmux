@@ -120,9 +120,9 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 |----------------------|---------------------------------------------------------------------------|
 | Lifecycle            | `up` / `init` / `start` / `stop` / `attach` / `status`                    |
 | Messaging            | `send` / `broadcast` / `tell-lead` / `reply` / `outbox`                   |
-| Task board           | `task add/list/show/move/assign/rm`                                       |
+| Task board           | `task add/list/show/move/assign/lane/priority/update/rm`                  |
 | Pull kanban          | `epic` / `story` / `claim` / `done` / `dispatch` / `inbox`                |
-| Cron-fired           | `whip` / `report` / `decisions digest` / `groom` / `whip-resume-check` (1-min, ADR-053 §D4) |
+| Cron-fired           | `whip` / `report` / `decisions digest` / `groom` / `whip-resume-check` (1-min, ADR-053 §D4) / `watchdog` (2-min, ADR-057 §D6b) / `pulse` (5-min, cockpit-wide, ADR-086) |
 | Eternal-improvement  | `improve` (Mode A user-invoked / Mode B idle-fallback) — ADR-052          |
 | R1 wave (budget + self-heal) | `whip-resume-check` (ADR-053) — auto-resume; budget-pause + drift surfaced via `whip` (ADR-053/054); cursor self-heal opt-in via `team.json::whip.selfHealEnabled` (ADR-055); account-swap opt-in via `team.json::whip.accountFallback` (ADR-056) |
 | Cost + budget        | `cost` / `pause` / `resume`                                               |
@@ -150,13 +150,17 @@ Custom launch commands via `team.json:.tuiCommands` map per `README.md`
 ```
 .atmux/
 ├── team.json                  # source of truth (members, roles, TUIs, models)
-├── kanban.json                # shared task board (pull-kanban — ADR-007 in parent repo)
-├── driver-inbox.md            # driver → lead asks (markdown, greppable)
-├── lead-outbox.md             # lead → driver async replies
+├── state.db                   # SQLite canonical store (ADR-060 + ADR-076):
+│                              #   tasks (Epics + Stories + Tasks), inbox_messages
+│                              #   (per-member), complaints, handoff state.
+├── kanban.json                # legacy deprecation stub on post-cutover teams;
+│                              #   pre-cutover teams still read here.
+├── driver-inbox.md            # legacy stub; use `atmux tell-lead`
+├── lead-outbox.md             # lead/member → driver async replies
 ├── lead-queue.md              # lead's mid-turn deferrals
-├── decisions.json             # pending decisions cursor (ADR-008 in parent repo)
+├── decisions.md               # auto-mode resolutions (markdown, append-only)
 ├── flags.md                   # operator escalations
-├── inboxes/<member>.json      # {pending, inProgress, done}
+├── inboxes/<member>.json      # legacy — writes no-op on SQL-canonical teams
 ├── logs/                      # send-<member>.log / whip.log / report.log / etc
 ├── state/
 │   ├── session.txt            # captured at `atmux start` (ADR-026 single-session default)
@@ -513,6 +517,7 @@ Critical ADRs with active behavior:
 
 - **ADR-050** — Multi-tier fallback chain (per kanban `t-706655ee`).
 - **ADR-057** — Stall-prevention (R1-T13 follow-up; v1.1.x territory per planner intent).
+- **ADR-086** — `atmux pulse` (cockpit-wide deterministic verdict probe, Phase 1 of MiniMax observer). New cron-fired verb; ships verdict-first Discord template `pulse-verdict` + per-cockpit dedup state at `~/.atmux/state/pulse-state.json`. Phase 2 layers an LLM observer onto the same input bundle.
 
 ---
 

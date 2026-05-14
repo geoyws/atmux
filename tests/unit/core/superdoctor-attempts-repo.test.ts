@@ -1,6 +1,8 @@
 // Unit tests for src/core/repositories/superdoctor-attempts-repo.ts and
-// the v2→v3 migration that materialises the `superdoctor_attempts` table
-// (ADR-077 §F6).
+// the migration that materialises the `superdoctor_attempts` table
+// (ADR-077 §F6). Originally v2→v3; renumbered to v3→v4 at the
+// 2026-05-14 trunk-merge when complaints-provenance (t-e5e5d576)
+// claimed v3 first.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -22,14 +24,18 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-// ---------- migration v3 ----------
+// ---------- migration — superdoctor_attempts table ----------
 
-describe("superdoctor-attempts migration v3 — schema present", () => {
-  test("opening a fresh state.db materialises the table at user_version=3", () => {
+describe("superdoctor-attempts migration — schema present", () => {
+  test("opening a fresh state.db materialises the table at the ladder tip", () => {
     const db = openDatabase(dbPath, migrations);
     try {
       const v = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-      expect(v).toBe(3);
+      // Ladder tip drifts as new migrations land. The invariant
+      // superdoctor_attempts depends on is "table present after
+      // migration completes", not a literal version pin. Originally
+      // v2→v3; renumbered v3→v4 at trunk-merge 2026-05-14.
+      expect(v).toBeGreaterThanOrEqual(3);
       const tables = db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
         name: string;
       }>;

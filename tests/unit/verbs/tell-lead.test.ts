@@ -310,6 +310,67 @@ describe("tellLead — integration", () => {
     expect(di).toContain("duplicate ask");
   });
 
+  test("honours team.tmuxTmpdir when --socket is absent (t-f786031f regression)", async () => {
+    // t-f786031f: pre-fix, tell-lead pinned `/tmp/atmux-<team>/sock`
+    // unconditionally and ignored team.tmuxTmpdir. On project-local-
+    // tmpdir teams the cage socket lives at
+    // `<tmuxTmpdir>/tmux-<uid>/default` and `/tmp/...` is empty, so the
+    // heads-up keystroke failed with "no tmux window for lead" while
+    // the inbox append (which predates the send) still landed —
+    // exactly the 07:52 + 08:25 MYT 2026-05-13 failures driver hit.
+    //
+    // This test stages a team with `tmuxTmpdir` pointing at a controlled
+    // directory, runs a real tmux session at the resolveTeamSocket()-
+    // computed path, and calls tellLead WITHOUT --socket. Pre-fix this
+    // throws ConfigError (defaultSocketPath sees no socket at the
+    // hardcoded /tmp path); post-fix tellLead resolves through
+    // resolveTeamSocket(team) and the heads-up lands on the live cage.
+    const { join: pjoin } = await import("node:path");
+    const uid = process.getuid?.() ?? 0;
+    const tmpdirParent = socketDir;
+    const tmpdirSocket = pjoin(tmpdirParent, `tmux-${uid}`, "default");
+    // tmux needs the socket's parent dir to exist before bind(2).
+    await mkdir(pjoin(tmpdirParent, `tmux-${uid}`), { recursive: true });
+    // Spin a fresh tmux on the tmuxTmpdir-derived socket.
+    const tmpdirTmux = createTmux({ socketPath: tmpdirSocket, configFile: "/dev/null" });
+    try {
+      const teamName = `${sessionPrefix}-tmpdir`;
+      const sessionName = `atmux-${teamName}`;
+      await writeFile(
+        join(atmuxDir, "team.json"),
+        JSON.stringify({
+          name: teamName,
+          members: [{ name: "alpha", role: "team-lead" }],
+          tmuxTmpdir: tmpdirParent,
+        }),
+      );
+      await tmpdirTmux.session.newSession({
+        name: sessionName,
+        shellCommand: "cat",
+        windowName: "alpha",
+      });
+      await new Promise((r) => setTimeout(r, 80));
+
+      const { stderr } = await captureStdoutStderr(() =>
+        tellLead(["--team-dir", teamDir, "regression ping"]),
+      );
+      expect(stderr).toContain("✅ atmux tell-lead → alpha");
+      const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+      expect(di).toContain("regression ping");
+      // Per-member send log lands ONLY when the keystroke fired — proves
+      // tell-lead routed to the live tmpdir-derived socket, not the
+      // hardcoded /tmp path.
+      const log = await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).text();
+      expect(log).toContain("regression ping");
+    } finally {
+      try {
+        await tmpdirTmux.server.killServer();
+      } catch {
+        // expected when test cleanup races
+      }
+    }
+  });
+
   test("zero-byte driver-inbox.md does not get a leading \\n on first append (ADR-029 §F14)", async () => {
     // Bash `printf >> file` appends to EOF; a zero-byte file produces
     // just the entry, no leading separator. Earlier TS port falsely

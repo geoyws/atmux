@@ -3,12 +3,15 @@
 // straight assertion suite over `renderCronLines` + `renderCronBlock`.
 
 import { describe, expect, test } from "bun:test";
+import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import {
   cronAtHour,
   cronEvery,
   cronEveryHour,
   ensureEnvPreamble,
+  findCronOrphans,
   installCronBlock,
+  parseCronBlockTargets,
   renderCronBlock,
   renderCronLines,
   stripBlockByTeam,
@@ -624,6 +627,296 @@ describe("installCronBlock", () => {
     // Count preamble marker occurrences — must be exactly 1.
     expect(again.split(ENV_PREAMBLE_FIRST).length - 1).toBe(1);
     expect(again.split(ENV_TERM).length - 1).toBe(1);
+  });
+});
+
+// ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------
+
+describe("parseCronBlockTargets", () => {
+  test("empty body → []", () => {
+    expect(parseCronBlockTargets("")).toEqual([]);
+  });
+
+  test("crontab without any atmux block → []", () => {
+    const body = "MAILTO=ops@example.com\n0 0 * * * /usr/bin/backup.sh\n";
+    expect(parseCronBlockTargets(body)).toEqual([]);
+  });
+
+  test("single block with ATMUX_DIR → returns one target", () => {
+    const body = [
+      "# >>> atmux:team=demo — managed by atmux start; do not edit by hand",
+      "*/5 * * * * PATH=/root/.bun/bin:/usr/bin ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1",
+      "# <<< atmux:team=demo",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "demo", atmuxDir: "/srv/demo/.atmux" },
+    ]);
+  });
+
+  test("two blocks → two targets", () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:team=beta — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/beta/.atmux /bin/atmux whip",
+      "# <<< atmux:team=beta",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "alpha", atmuxDir: "/srv/alpha/.atmux" },
+      { team: "beta", atmuxDir: "/srv/beta/.atmux" },
+    ]);
+  });
+
+  test("block without ATMUX_DIR in body → skipped (bash parity)", () => {
+    // Bash awk guards: `team != "" && atmux_dir != ""` before emitting.
+    const body = [
+      "# >>> atmux:team=stub — managed by atmux start; do not edit by hand",
+      "# placeholder, no ATMUX_DIR= yet",
+      "# <<< atmux:team=stub",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([]);
+  });
+
+  test("first ATMUX_DIR wins when multiple present in a block", () => {
+    const body = [
+      "# >>> atmux:team=demo — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/first /bin/atmux whip",
+      "*/5 * * * * ATMUX_DIR=/second /bin/atmux report",
+      "# <<< atmux:team=demo",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "demo", atmuxDir: "/first" },
+    ]);
+  });
+
+  test("header without canonical suffix → still captures team verbatim", () => {
+    // Bash: sub(/<suffix>$/, "") is a no-op when suffix is missing; the
+    // remaining header is the team string.
+    const body = [
+      "# >>> atmux:team=hand-edited-marker",
+      "*/5 * * * * ATMUX_DIR=/srv/hand/.atmux /bin/atmux whip",
+      "# <<< atmux:team=hand-edited-marker",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "hand-edited-marker", atmuxDir: "/srv/hand/.atmux" },
+    ]);
+  });
+
+  test("ATMUX_DIR value terminates at first whitespace, not newline", () => {
+    const body = [
+      "# >>> atmux:team=demo — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/demo/.atmux\tTMUX_TMPDIR=/tmp /bin/atmux whip",
+      "# <<< atmux:team=demo",
+    ].join("\n");
+    expect(parseCronBlockTargets(body)).toEqual([
+      { team: "demo", atmuxDir: "/srv/demo/.atmux" },
+    ]);
+  });
+});
+
+describe("findCronOrphans", () => {
+  const fakeIO = (body: string | null): CrontabIO => ({
+    read: async () => body,
+    write: async () => {
+      /* not invoked */
+    },
+    available: async () => true,
+  });
+
+  test("null crontab → []", async () => {
+    const out = await findCronOrphans({
+      io: fakeIO(null),
+      dirExists: async () => false,
+    });
+    expect(out).toEqual([]);
+  });
+
+  test("empty crontab → []", async () => {
+    const out = await findCronOrphans({
+      io: fakeIO(""),
+      dirExists: async () => false,
+    });
+    expect(out).toEqual([]);
+  });
+
+  test("all blocks live → []", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const out = await findCronOrphans({
+      io: fakeIO(body),
+      dirExists: async () => true,
+    });
+    expect(out).toEqual([]);
+  });
+
+  test("one orphan + one live → returns only the orphan", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:team=ghost — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/ghost/.atmux /bin/atmux whip",
+      "# <<< atmux:team=ghost",
+    ].join("\n");
+    const live = new Set(["/srv/alpha/.atmux"]);
+    const out = await findCronOrphans({
+      io: fakeIO(body),
+      dirExists: async (p: string) => live.has(p),
+    });
+    expect(out).toEqual([{ team: "ghost", atmuxDir: "/srv/ghost/.atmux" }]);
+  });
+
+  test("dirExists checked per-orphan (no batching surprises)", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:team=beta — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/beta/.atmux /bin/atmux whip",
+      "# <<< atmux:team=beta",
+    ].join("\n");
+    const probed: string[] = [];
+    await findCronOrphans({
+      io: fakeIO(body),
+      dirExists: async (p: string) => {
+        probed.push(p);
+        return false;
+      },
+    });
+    expect(probed).toEqual(["/srv/alpha/.atmux", "/srv/beta/.atmux"]);
+  });
+});
+
+// ---------- ADR-086: cockpit-scoped cron block ----------
+
+describe("renderCockpitCronBlock", () => {
+  test("renders the canonical pulse line with default interval (5)", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = renderCockpitCronBlock({ atmuxBin: "/usr/local/bin/atmux" });
+    expect(out).toContain("# >>> atmux:cockpit");
+    expect(out).toContain("# <<< atmux:cockpit");
+    expect(out).toMatch(/^\*\/5 \* \* \* \* PATH=/m);
+    expect(out).toContain("/usr/local/bin/atmux pulse");
+    expect(out).toContain(">> /root/.atmux/logs/pulse.log 2>&1");
+  });
+
+  test("honors intervalMins override (10)", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = renderCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      pulseIntervalMins: 10,
+    });
+    expect(out).toMatch(/^\*\/10 \* \* \* \* /m);
+  });
+
+  test("--config flag baked in when cockpitConfigPath is set", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = renderCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      cockpitConfigPath: "/alt/cockpit.json",
+    });
+    expect(out).toContain("atmux pulse --config /alt/cockpit.json");
+  });
+
+  test("logPath override honored", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = renderCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      logPath: "/var/log/pulse.log",
+    });
+    expect(out).toContain(">> /var/log/pulse.log 2>&1");
+  });
+
+  test("byte-identical output for same opts (idempotence guarantee)", async () => {
+    const { renderCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const a = renderCockpitCronBlock({ atmuxBin: "/u/atmux" });
+    const b = renderCockpitCronBlock({ atmuxBin: "/u/atmux" });
+    expect(a).toBe(b);
+  });
+});
+
+describe("stripCockpitBlock", () => {
+  test("removes the cockpit marker-fenced block", async () => {
+    const { stripCockpitBlock } = await import("../../../src/core/cron.ts");
+    const body = [
+      "FOO=bar",
+      "# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand",
+      "*/5 * * * * /u/atmux pulse",
+      "# <<< atmux:cockpit",
+      "OTHER=stuff",
+    ].join("\n");
+    expect(stripCockpitBlock(body)).toBe(["FOO=bar", "OTHER=stuff"].join("\n"));
+  });
+
+  test("empty body returns empty", async () => {
+    const { stripCockpitBlock } = await import("../../../src/core/cron.ts");
+    expect(stripCockpitBlock("")).toBe("");
+  });
+
+  test("no cockpit block → body returned verbatim", async () => {
+    const { stripCockpitBlock } = await import("../../../src/core/cron.ts");
+    expect(stripCockpitBlock("PATH=/bin\n# other\n")).toBe("PATH=/bin\n# other\n");
+  });
+});
+
+describe("installCockpitCronBlock", () => {
+  test("appends fresh block when current is null", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: null });
+    expect(out).toContain("# >>> atmux:cockpit");
+    expect(out).toContain("atmux pulse");
+    // ensureEnvPreamble should fire — atmux:cockpit qualifies.
+    expect(out).toContain("SHELL=/bin/bash");
+  });
+
+  test("re-install is byte-identical (idempotence)", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const first = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: null });
+    const second = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: first });
+    expect(second).toBe(first);
+  });
+
+  test("does NOT touch per-team blocks", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const existing = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/x/.atmux /u/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const out = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: existing });
+    expect(out).toContain("atmux:team=alpha");
+    expect(out).toContain("atmux:cockpit");
+  });
+
+  test("replaces an existing cockpit block (different interval)", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const stale = installCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      pulseIntervalMins: 5,
+      current: null,
+    });
+    const fresh = installCockpitCronBlock({
+      atmuxBin: "/u/atmux",
+      pulseIntervalMins: 10,
+      current: stale,
+    });
+    // Old 5-min line replaced by new 10-min line.
+    expect(fresh).not.toContain("*/5 * * * * PATH=");
+    expect(fresh).toContain("*/10 * * * * PATH=");
+    // Only one cockpit block present.
+    expect(fresh.split("# >>> atmux:cockpit").length - 1).toBe(1);
+  });
+
+  test("env preamble landing for cockpit-only crontab", async () => {
+    const { installCockpitCronBlock } = await import("../../../src/core/cron.ts");
+    const out = installCockpitCronBlock({ atmuxBin: "/u/atmux", current: "" });
+    expect(out).toContain("SHELL=/bin/bash");
+    expect(out).toContain("PATH=/usr/local/sbin");
+    expect(out).toContain("TERM=xterm-256color");
   });
 });
 

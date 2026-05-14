@@ -14,11 +14,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
+  checkCronBlock,
   checkCronIntervalDivisors,
+  checkCronOrphans,
   checkCursorPluginCache,
   checkDeps,
   checkInboxMarks,
@@ -31,6 +34,7 @@ import {
   checkWebhook,
   checkWhipConfigDrift,
   checkWorktreeIsolation,
+  collectSafeOrphanBranches,
   type DoctorRow,
   doctor,
   findInboxTaskMarks,
@@ -959,6 +963,167 @@ describe("checkCronIntervalDivisors", () => {
   });
 });
 
+// ---------- ADR-083 follow-up §DEFERRED row 2: checkCronOrphans ----------
+
+describe("checkCronOrphans", () => {
+  const fakeIO = (
+    body: string | null,
+    opts: { available?: boolean } = {},
+  ): CrontabIO => ({
+    read: async () => body,
+    write: async () => {
+      /* not invoked */
+    },
+    available: async () => opts.available ?? true,
+  });
+
+  test("crontab not on PATH → no rows (silent on cronless hosts)", async () => {
+    const rows = await checkCronOrphans({
+      crontab: fakeIO(null, { available: false }),
+      dirExists: async () => false,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("empty crontab → no rows", async () => {
+    const rows = await checkCronOrphans({
+      crontab: fakeIO(""),
+      dirExists: async () => false,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("all blocks live on disk → no rows", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const rows = await checkCronOrphans({
+      crontab: fakeIO(body),
+      dirExists: async () => true,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("orphan block (atmuxDir gone) → one yellow row with team+dir", async () => {
+    const body = [
+      "# >>> atmux:team=ghost — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/ghost/.atmux /bin/atmux whip",
+      "# <<< atmux:team=ghost",
+    ].join("\n");
+    const rows = await checkCronOrphans({
+      crontab: fakeIO(body),
+      dirExists: async () => false,
+    });
+    expect(rows.length).toBe(1);
+    const r = rows[0];
+    expect(r?.status).toBe("yellow");
+    expect(r?.label).toBe("cron-config");
+    expect(r?.detail).toContain("ghost");
+    expect(r?.detail).toContain("/srv/ghost/.atmux");
+    expect(r?.detail).toContain("does not exist");
+    expect(r?.hint).toContain("crontab -e");
+  });
+
+  test("mix of live + orphan blocks → only orphans surface", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:team=ghost — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/srv/ghost/.atmux /bin/atmux whip",
+      "# <<< atmux:team=ghost",
+    ].join("\n");
+    const live = new Set(["/srv/alpha/.atmux"]);
+    const rows = await checkCronOrphans({
+      crontab: fakeIO(body),
+      dirExists: async (p: string) => live.has(p),
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.detail).toContain("ghost");
+    expect(rows[0]?.detail).not.toContain("alpha");
+  });
+});
+
+// ---------- t-dcbff97c: checkCronBlock ----------
+
+describe("checkCronBlock", () => {
+  const fakeIO = (
+    body: string | null,
+    opts: { available?: boolean } = {},
+  ): CrontabIO => ({
+    read: async () => body,
+    write: async () => {
+      /* not invoked */
+    },
+    available: async () => opts.available ?? true,
+  });
+
+  const team = (overrides: Partial<Team> = {}): Team =>
+    ({ name: "alpha", members: [], ...overrides }) as Team;
+
+  test("null team → no rows", async () => {
+    expect(await checkCronBlock(null, { crontab: fakeIO(null) })).toEqual([]);
+  });
+
+  test("kanban.cronAutoInstall=false → silent (explicit opt-out)", async () => {
+    const t = team({ kanban: { cronAutoInstall: false } as never });
+    // Body that would otherwise trip the RED row (no matching marker) —
+    // the opt-out short-circuits BEFORE we even read crontab.
+    const rows = await checkCronBlock(t, { crontab: fakeIO("") });
+    expect(rows).toEqual([]);
+  });
+
+  test("crontab not available on host → silent (cron-less host)", async () => {
+    const rows = await checkCronBlock(team(), {
+      crontab: fakeIO(null, { available: false }),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("crontab present with matching marker → no row", async () => {
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/15 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    expect(await checkCronBlock(team(), { crontab: fakeIO(body) })).toEqual([]);
+  });
+
+  test("empty crontab → one RED row pointing at cron-install", async () => {
+    const rows = await checkCronBlock(team(), { crontab: fakeIO("") });
+    expect(rows.length).toBe(1);
+    const r = rows[0];
+    expect(r?.status).toBe("red");
+    expect(r?.label).toBe("cron-block:missing");
+    expect(r?.detail).toContain("alpha");
+    expect(r?.detail).toContain("whip");
+    expect(r?.hint).toContain("atmux cron-install");
+  });
+
+  test("crontab has OTHER team's block but not ours → RED row", async () => {
+    // Substring-brushby guard: a block for `alpha-staging` MUST NOT
+    // false-pass for team name `alpha`. The marker match uses the exact
+    // rendered header line so similar-prefix team names can't collide.
+    const body = [
+      "# >>> atmux:team=alpha-staging — managed by atmux start; do not edit by hand",
+      "*/15 * * * * ATMUX_DIR=/srv/alpha-staging/.atmux /bin/atmux whip",
+      "# <<< atmux:team=alpha-staging",
+    ].join("\n");
+    const rows = await checkCronBlock(team(), { crontab: fakeIO(body) });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.label).toBe("cron-block:missing");
+    expect(rows[0]?.status).toBe("red");
+  });
+
+  test("crontab null (no crontab installed) → RED row", async () => {
+    const rows = await checkCronBlock(team(), { crontab: fakeIO(null) });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe("red");
+  });
+});
+
 // ---------- renderHuman / renderJson ----------
 
 describe("renderHuman", () => {
@@ -1151,6 +1316,45 @@ describe("doctor() — public verb", () => {
       runChecks: async () => [{ status: "green", label: "ok" }],
     });
     expect(stderrBuf).toBe("");
+  });
+
+  test("ADR-084 W2: --fix dry-run summary lists safe-to-delete orphan branches", async () => {
+    // Two info rows (one safe, one unmerged) + the existing deferred-
+    // actions hint. The summary enumerates only the safe one.
+    await seedTeam();
+    await doctor(["--team-dir", dir, "--fix"], {
+      stdout,
+      stderr,
+      runChecks: async () => [
+        {
+          status: "info",
+          label: "worktree:branch-orphan:stale",
+          detail: "geoyws-stale — 0 commits ahead of geoyws (safe to delete)",
+          hint: "atmux doctor --fix would prune it",
+        },
+        {
+          status: "info",
+          label: "worktree:branch-orphan:dirty",
+          detail: "geoyws-dirty — 4 commit(s) ahead of geoyws (unmerged work)",
+          hint: "review before deletion",
+        },
+      ],
+    });
+    expect(stderrBuf).toContain("would delete 1 orphan branch(es)");
+    expect(stderrBuf).toContain("- geoyws-stale");
+    expect(stderrBuf).not.toContain("- geoyws-dirty");
+    expect(stderrBuf).toContain("--fix actions deferred per ADR-019");
+  });
+
+  test("ADR-084 W2: --fix without any safe orphans skips the dry-run summary", async () => {
+    await seedTeam();
+    await doctor(["--team-dir", dir, "--fix"], {
+      stdout,
+      stderr,
+      runChecks: async () => [{ status: "green", label: "stub" }],
+    });
+    expect(stderrBuf).not.toContain("would delete");
+    expect(stderrBuf).toContain("--fix actions deferred per ADR-019");
   });
 
   test("malformed team.json doesn't crash; checkTeam emits red", async () => {
@@ -1874,10 +2078,297 @@ describe("checkWorktreeIsolation", () => {
     expect(rows.find((r) => r.label === "worktree:wrong-branch:bob")?.status).toBe("yellow");
   });
 
+  // ---------- Class 5 (ADR-084 W2): branch-orphan ----------
+  //
+  // Tests pair `branch --show-current` (returns the base) with `branch
+  // --list '<base>-*'` (returns the per-member fork branches). For each
+  // orphan, a third call to `rev-list --count <base>..<branch>` reports
+  // unmerged commit count. The fakeGitSpawn helper dispatches on argv
+  // shape so each call returns a distinct fixture.
+
+  /** Build a gitSpawn fixture that dispatches by argv shape. Any call
+   *  not matched defaults to `gitOk("")` — mimicking a clean git env. */
+  function fakeGitSpawn(spec: {
+    showCurrent?: string;
+    branchList?: string;
+    branchListFails?: boolean;
+    revListByBranch?: Record<string, string>;
+    revListFailsByBranch?: Record<string, true>;
+    // also the W5 wrong-branch probe — porcelain output for `worktree
+    // list --porcelain` (separate from --list).
+    worktreeListPorcelain?: string;
+  }): GitSpawn {
+    return async (argv) => {
+      if (argv.includes("--show-current")) {
+        return gitOk(spec.showCurrent ?? "");
+      }
+      if (argv.includes("worktree") && argv.includes("list")) {
+        return gitOk(spec.worktreeListPorcelain ?? "");
+      }
+      if (argv.includes("branch") && argv.includes("--list")) {
+        if (spec.branchListFails === true) {
+          return gitFail("fatal: bad list", 128);
+        }
+        return gitOk(spec.branchList ?? "");
+      }
+      if (argv.includes("rev-list")) {
+        // argv tail: ["rev-list", "--count", "<base>..<branch>"]
+        const range = argv[argv.length - 1] ?? "";
+        const branch = range.split("..")[1] ?? "";
+        if (spec.revListFailsByBranch?.[branch] === true) {
+          return gitFail("fatal: bad rev-list", 128);
+        }
+        const count = spec.revListByBranch?.[branch] ?? "0";
+        return gitOk(`${count}\n`);
+      }
+      return gitOk("");
+    };
+  }
+
+  test("isolation ON + safe orphan (0 commits ahead) → INFO 'branch-orphan:<name>' with safe-to-delete hint", async () => {
+    // alice is current; stale was a former member whose branch survived
+    // `stop --force` per ADR-084 OQ-2. Zero commits ahead of geoyws
+    // means the branch is safely deletable.
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n  geoyws-stale\n",
+      revListByBranch: { "geoyws-stale": "0" },
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    const orphans = rows.filter((r) =>
+      r.label.startsWith("worktree:branch-orphan:"),
+    );
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]?.label).toBe("worktree:branch-orphan:stale");
+    expect(orphans[0]?.status).toBe("info");
+    expect(orphans[0]?.detail).toContain("geoyws-stale");
+    expect(orphans[0]?.detail).toContain("0 commits ahead");
+    expect(orphans[0]?.detail).toContain("safe to delete");
+    expect(orphans[0]?.hint).toContain("atmux doctor --fix");
+    expect(orphans[0]?.hint).toContain("git branch -d geoyws-stale");
+  });
+
+  test("isolation ON + orphan with unmerged commits → INFO with manual-review hint, no auto-delete signal", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-stale\n",
+      revListByBranch: { "geoyws-stale": "7" },
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    const orphan = rows.find((r) => r.label === "worktree:branch-orphan:stale");
+    expect(orphan).toBeDefined();
+    expect(orphan?.status).toBe("info");
+    expect(orphan?.detail).toContain("7 commit(s) ahead");
+    expect(orphan?.detail).toContain("unmerged work");
+    expect(orphan?.hint).toContain("review before deletion");
+    // Auto-delete signal absent — must NOT mention --fix.
+    expect(orphan?.detail).not.toContain("safe to delete");
+  });
+
+  test("isolation ON + known-member branch (suffix in roster) → NO branch-orphan row", async () => {
+    // geoyws-alice corresponds to a current roster member → not orphan.
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "3" }, // even with commits, not an orphan
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    expect(rows.filter((r) => r.label.startsWith("worktree:branch-orphan:"))).toEqual([]);
+  });
+
+  test("isolation ON + sanitized member name matches (emoji/dot member) → NO orphan row", async () => {
+    // ADR-084: provisionWorktree uses sanitizeBranchSegment("up.impl") =
+    // "up-impl"; the branch on disk is `geoyws-up-impl`. The orphan check
+    // must compare via the SAME sanitiser — otherwise live members with
+    // non-alphanumeric chars would falsely surface as orphans.
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-up-impl\n",
+      revListByBranch: { "geoyws-up-impl": "0" },
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "up.impl" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    expect(rows.filter((r) => r.label.startsWith("worktree:branch-orphan:"))).toEqual([]);
+  });
+
+  test("isolation ON + branch --list fails → degrades silently (no orphan rows, no crash)", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchListFails: true,
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    expect(rows.filter((r) => r.label.startsWith("worktree:branch-orphan:"))).toEqual([]);
+  });
+
+  test("isolation ON + rev-list fails for an orphan → INFO with probe-failed detail", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-stale\n",
+      revListFailsByBranch: { "geoyws-stale": true },
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    const orphan = rows.find((r) => r.label === "worktree:branch-orphan:stale");
+    expect(orphan).toBeDefined();
+    expect(orphan?.status).toBe("info");
+    expect(orphan?.detail).toContain("unmerged-count probe failed");
+    expect(orphan?.hint).toContain("manually verify");
+  });
+
+  test("isolation ON + detached HEAD (empty base) → orphan probe skipped entirely", async () => {
+    // baseR.stdout.trim() === "" — the orphan filter requires a base to
+    // anchor against. Skip is graceful; W5's branch-probe-skipped row
+    // already covers operator visibility.
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "\n",
+      branchList: "  geoyws-stale\n", // present, but won't be queried
+      revListByBranch: { "geoyws-stale": "0" },
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    expect(rows.filter((r) => r.label.startsWith("worktree:branch-orphan:"))).toEqual([]);
+  });
+
+  test("isolation ON + branch list contains base branch itself (no '-' suffix) → not flagged as orphan", async () => {
+    // `git branch --list 'geoyws-*'` shouldn't return bare `geoyws` —
+    // but defensive: the prefix filter requires `${base}-` so bare base
+    // can never match even if it sneaks in.
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws\n  geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "0" },
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    expect(rows.filter((r) => r.label.startsWith("worktree:branch-orphan:"))).toEqual([]);
+  });
+
+  test("isolation ON + current-branch marker (`* geoyws-stale`) in branch list → still detected as orphan", async () => {
+    // `git branch --list` prefixes the current branch with `* `. The
+    // strip-leading-marker regex must handle it. (Realistically an
+    // orphan can't be current — but the parser MUST be robust.)
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "* geoyws-stale\n",
+      revListByBranch: { "geoyws-stale": "0" },
+    });
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: true }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    const orphan = rows.find((r) => r.label === "worktree:branch-orphan:stale");
+    expect(orphan).toBeDefined();
+    expect(orphan?.detail).toContain("safe to delete");
+  });
+
+  test("isolation OFF → orphan probe doesn't run (returns early at disabled-but-present check)", async () => {
+    // Class 4 short-circuit: when isolation is off we don't even reach
+    // the orphan probe. fakeGitSpawn doesn't get invoked.
+    let gitCalls = 0;
+    const gitSpawn: GitSpawn = async () => {
+      gitCalls += 1;
+      return gitOk("");
+    };
+    const rows = await checkWorktreeIsolation(
+      team([{ name: "alice" }], { worktreeIsolation: false }),
+      atmuxDir,
+      { readWorktreeDir: fakeReadDir([]), gitSpawn },
+    );
+    expect(rows).toEqual([]);
+    expect(gitCalls).toBe(0);
+  });
+
   // Helper: resolve a worktree path against the test's atmuxDir, matching
   // what the production `resolveWorktreePath` derives.
   function resolveWtPath(member: string): string {
     const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
     return join(projectRoot, ".atmux", "worktrees", member);
   }
+});
+
+// ---------- ADR-084 W2: collectSafeOrphanBranches ----------
+
+describe("collectSafeOrphanBranches", () => {
+  test("returns branch names for info rows tagged 'safe to delete' only", () => {
+    const rows: DoctorRow[] = [
+      {
+        status: "info",
+        label: "worktree:branch-orphan:stale",
+        detail: "geoyws-stale — 0 commits ahead of geoyws (safe to delete)",
+        hint: "atmux doctor --fix would prune it",
+      },
+      {
+        status: "info",
+        label: "worktree:branch-orphan:dirty",
+        detail: "geoyws-dirty — 5 commit(s) ahead of geoyws (unmerged work)",
+        hint: "review before deletion",
+      },
+      // Non-orphan label — must be ignored.
+      { status: "yellow", label: "worktree:wrong-branch:alice", detail: "anything" },
+    ];
+    expect(collectSafeOrphanBranches(rows)).toEqual(["geoyws-stale"]);
+  });
+
+  test("returns empty when no info rows", () => {
+    const rows: DoctorRow[] = [
+      { status: "red", label: "worktree:missing:alice", detail: "expected …" },
+    ];
+    expect(collectSafeOrphanBranches(rows)).toEqual([]);
+  });
+
+  test("non-info status with branch-orphan label is ignored (defensive)", () => {
+    const rows: DoctorRow[] = [
+      {
+        status: "yellow",
+        label: "worktree:branch-orphan:weird",
+        detail: "geoyws-weird — 0 commits ahead of geoyws (safe to delete)",
+      },
+    ];
+    expect(collectSafeOrphanBranches(rows)).toEqual([]);
+  });
+
+  test("preserves order of detection (stable, matches doctor render)", () => {
+    const rows: DoctorRow[] = [
+      {
+        status: "info",
+        label: "worktree:branch-orphan:bob",
+        detail: "geoyws-bob — 0 commits ahead of geoyws (safe to delete)",
+      },
+      {
+        status: "info",
+        label: "worktree:branch-orphan:alice",
+        detail: "geoyws-alice — 0 commits ahead of geoyws (safe to delete)",
+      },
+    ];
+    expect(collectSafeOrphanBranches(rows)).toEqual(["geoyws-bob", "geoyws-alice"]);
+  });
 });

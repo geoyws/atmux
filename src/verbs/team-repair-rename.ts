@@ -49,6 +49,7 @@
 
 import { rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { atomicWrite, exists, readTextOrNull } from "../abstractions/fs.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
@@ -60,6 +61,7 @@ import {
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
+import { installCronBlock } from "../core/cron.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team } from "../schema/team.ts";
@@ -347,6 +349,16 @@ type RollbackOp =
 
 export interface ApplyDeps extends ProbeDeps {
   stderr: Writer;
+  /** ADR-083 follow-up §DEFERRED row 3: crontab IO seam for Step 5
+   *  cron-block refresh. Defaults to `defaultCrontabIO()` at the verb
+   *  entry point. */
+  crontab?: CrontabIO;
+  /** Returns the atmux binary path baked into cron lines. Defaults to
+   *  `process.env.ATMUX_BIN ?? Bun.which("atmux")`. Tests pin a
+   *  deterministic value. */
+  resolveBin?: () => string | null;
+  /** Defaults to `process.env`. Tests pin `ATMUX_NO_CRON`. */
+  env?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface ApplyResult {

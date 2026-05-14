@@ -156,23 +156,47 @@ describe("parseComplaintsArgs", () => {
   });
 });
 
-// ---------- migration v2 ----------
+// ---------- complaints migration ----------
 
-describe("complaints migration v2 — schema present", () => {
+describe("complaints migration — schema present", () => {
   test("opening a fresh state.db materialises the complaints table at the ladder tip", async () => {
     const path = join(atmuxDir, "state.db");
     const db = openDatabase(path, migrations);
     try {
       const v = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-      // Ladder tip drifts as new migrations land (v3: superdoctor_attempts
-      // per ADR-077 §F6). Assert v ≥ 2 + table presence — that's the
-      // invariant complaints depends on, not the literal version.
-      expect(v).toBeGreaterThanOrEqual(2);
+      // Ladder tip drifts as new migrations land. complaints landed at
+      // v2; provenance columns added v2→v3 (t-e5e5d576);
+      // superdoctor_attempts table added v3→v4 (ADR-077 §F6,
+      // renumbered at 2026-05-14 trunk-merge). The invariant this
+      // test depends on is "complaints table present after migration
+      // completes", not the literal user_version.
+      expect(v).toBeGreaterThanOrEqual(3);
       const tables = db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
         name: string;
       }>;
       const names = tables.map((t) => t.name);
       expect(names).toContain("complaints");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("v3 added source_kind / source_id / target_team columns + the two indexes", async () => {
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const cols = db.query("PRAGMA table_info(complaints)").all() as Array<{ name: string }>;
+      const colNames = new Set(cols.map((c) => c.name));
+      expect(colNames.has("source_kind")).toBe(true);
+      expect(colNames.has("source_id")).toBe(true);
+      expect(colNames.has("target_team")).toBe(true);
+
+      const indexes = db
+        .query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='complaints'")
+        .all() as Array<{ name: string }>;
+      const idxNames = new Set(indexes.map((i) => i.name));
+      expect(idxNames.has("idx_complaints_source_kind")).toBe(true);
+      expect(idxNames.has("idx_complaints_target_team")).toBe(true);
     } finally {
       closeDatabase(db);
     }
@@ -198,6 +222,9 @@ describe("ComplaintsRepo — typed CRUD", () => {
         resolvedAt: null,
         resolvedBy: null,
         relatedTaskId: null,
+        sourceKind: null,
+        sourceId: null,
+        targetTeam: null,
         extra: { kind: "incident" },
       });
       const got = repo.getById("c-aaaaaaaa");
@@ -226,6 +253,9 @@ describe("ComplaintsRepo — typed CRUD", () => {
         resolvedAt: null,
         resolvedBy: null,
         relatedTaskId: null,
+        sourceKind: null,
+        sourceId: null,
+        targetTeam: null,
         extra: {},
       });
       repo.insert({
@@ -239,6 +269,9 @@ describe("ComplaintsRepo — typed CRUD", () => {
         resolvedAt: 250,
         resolvedBy: null,
         relatedTaskId: null,
+        sourceKind: null,
+        sourceId: null,
+        targetTeam: null,
         extra: {},
       });
       repo.insert({
@@ -252,6 +285,9 @@ describe("ComplaintsRepo — typed CRUD", () => {
         resolvedAt: null,
         resolvedBy: null,
         relatedTaskId: null,
+        sourceKind: null,
+        sourceId: null,
+        targetTeam: null,
         extra: {},
       });
       const open = repo.list({ status: "open" });
@@ -279,6 +315,9 @@ describe("ComplaintsRepo — typed CRUD", () => {
         resolvedAt: null,
         resolvedBy: null,
         relatedTaskId: null,
+        sourceKind: null,
+        sourceId: null,
+        targetTeam: null,
         extra: {},
       });
       const ok = repo.resolve({
@@ -426,5 +465,343 @@ describe("complaints verb — integration", () => {
   test("list with no matching rows prints (no complaints …) sentinel", async () => {
     const { out } = await captureStdout(() => complaints(["list", "--team-dir", teamDir]));
     expect(out).toContain("(no complaints");
+  });
+});
+
+// ---------- v3 provenance: parser ----------
+
+describe("parseComplaintsArgs — v3 provenance flags", () => {
+  test("file --source-kind / --source-id / --target-team captured", () => {
+    const a = parseComplaintsArgs([
+      "file",
+      "--summary",
+      "x",
+      "--source-kind",
+      "superdoctor",
+      "--source-id",
+      "sweep-1715290000",
+      "--target-team",
+      "sopx",
+    ]);
+    expect(a.sourceKind).toBe("superdoctor");
+    expect(a.sourceId).toBe("sweep-1715290000");
+    expect(a.targetTeam).toBe("sopx");
+  });
+
+  test("file --source-kind allowlist accepts known values", () => {
+    for (const kind of ["superdoctor", "member", "operator", "cli", "cron"]) {
+      const a = parseComplaintsArgs(["file", "--summary", "x", "--source-kind", kind]);
+      expect(a.sourceKind).toBe(kind);
+    }
+  });
+
+  test("file --source-kind allowlist rejects unknown values", () => {
+    expect(() =>
+      parseComplaintsArgs(["file", "--summary", "x", "--source-kind", "bogus"]),
+    ).toThrow(UsageError);
+  });
+
+  test("list --source-kind / --target-team captured", () => {
+    const a = parseComplaintsArgs([
+      "list",
+      "--source-kind",
+      "superdoctor",
+      "--target-team",
+      "sopx",
+    ]);
+    expect(a.sourceKind).toBe("superdoctor");
+    expect(a.targetTeam).toBe("sopx");
+  });
+
+  test("list --source-kind allowlist rejects unknown values", () => {
+    expect(() => parseComplaintsArgs(["list", "--source-kind", "bogus"])).toThrow(UsageError);
+  });
+
+  test("source-kind / source-id / target-team unset → undefined", () => {
+    const a = parseComplaintsArgs(["file", "--summary", "x"]);
+    expect(a.sourceKind).toBeUndefined();
+    expect(a.sourceId).toBeUndefined();
+    expect(a.targetTeam).toBeUndefined();
+  });
+});
+
+// ---------- v3 provenance: schema ----------
+
+describe("Complaint schema — v3 provenance fields", () => {
+  test("optional fields default to null when absent", async () => {
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      repo.insert({
+        id: "c-v3-1",
+        openedAt: 100,
+        openedBy: null,
+        incidentSummary: "a",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "open",
+        resolvedAt: null,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: null,
+        sourceId: null,
+        targetTeam: null,
+        extra: {},
+      });
+      const got = repo.getById("c-v3-1");
+      expect(got?.sourceKind).toBeNull();
+      expect(got?.sourceId).toBeNull();
+      expect(got?.targetTeam).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});
+
+// ---------- v3 provenance: ComplaintsRepo round-trip + filters ----------
+
+describe("ComplaintsRepo — v3 provenance", () => {
+  test("insert + getById round-trip preserves source_kind / source_id / target_team", async () => {
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      repo.insert({
+        id: "c-prov",
+        openedAt: 100,
+        openedBy: "superdoctor",
+        incidentSummary: "cross-team incident",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "open",
+        resolvedAt: null,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: "superdoctor",
+        sourceId: "sweep-1715290000",
+        targetTeam: "sopx",
+        extra: {},
+      });
+      const got = repo.getById("c-prov");
+      expect(got?.sourceKind).toBe("superdoctor");
+      expect(got?.sourceId).toBe("sweep-1715290000");
+      expect(got?.targetTeam).toBe("sopx");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("list filters by sourceKind", async () => {
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      repo.insert({
+        id: "c-sd",
+        openedAt: 100,
+        openedBy: null,
+        incidentSummary: "a",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "open",
+        resolvedAt: null,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: "superdoctor",
+        sourceId: null,
+        targetTeam: null,
+        extra: {},
+      });
+      repo.insert({
+        id: "c-op",
+        openedAt: 200,
+        openedBy: null,
+        incidentSummary: "b",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "open",
+        resolvedAt: null,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: "operator",
+        sourceId: null,
+        targetTeam: null,
+        extra: {},
+      });
+      const sd = repo.list({ sourceKind: "superdoctor" });
+      expect(sd.map((c) => c.id)).toEqual(["c-sd"]);
+      const op = repo.list({ sourceKind: "operator" });
+      expect(op.map((c) => c.id)).toEqual(["c-op"]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("list filters by targetTeam", async () => {
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      repo.insert({
+        id: "c-tx",
+        openedAt: 100,
+        openedBy: null,
+        incidentSummary: "a",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "open",
+        resolvedAt: null,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: "superdoctor",
+        sourceId: null,
+        targetTeam: "sopx",
+        extra: {},
+      });
+      repo.insert({
+        id: "c-ty",
+        openedAt: 200,
+        openedBy: null,
+        incidentSummary: "b",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "open",
+        resolvedAt: null,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: "superdoctor",
+        sourceId: null,
+        targetTeam: "atmux",
+        extra: {},
+      });
+      const sopx = repo.list({ targetTeam: "sopx" });
+      expect(sopx.map((c) => c.id)).toEqual(["c-tx"]);
+      const atmuxRows = repo.list({ targetTeam: "atmux" });
+      expect(atmuxRows.map((c) => c.id)).toEqual(["c-ty"]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("list combines status + sourceKind filters", async () => {
+    const path = join(atmuxDir, "state.db");
+    const db = openDatabase(path, migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      // two open superdoctor rows
+      repo.insert({
+        id: "c-a",
+        openedAt: 100,
+        openedBy: null,
+        incidentSummary: "a",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "open",
+        resolvedAt: null,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: "superdoctor",
+        sourceId: null,
+        targetTeam: null,
+        extra: {},
+      });
+      repo.insert({
+        id: "c-b",
+        openedAt: 200,
+        openedBy: null,
+        incidentSummary: "b",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "resolved",
+        resolvedAt: 250,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: "superdoctor",
+        sourceId: null,
+        targetTeam: null,
+        extra: {},
+      });
+      // one open operator row (different source_kind)
+      repo.insert({
+        id: "c-c",
+        openedAt: 300,
+        openedBy: null,
+        incidentSummary: "c",
+        rootCause: null,
+        preventiveAsk: null,
+        status: "open",
+        resolvedAt: null,
+        resolvedBy: null,
+        relatedTaskId: null,
+        sourceKind: "operator",
+        sourceId: null,
+        targetTeam: null,
+        extra: {},
+      });
+      const openSd = repo.list({ status: "open", sourceKind: "superdoctor" });
+      expect(openSd.map((c) => c.id)).toEqual(["c-a"]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});
+
+// ---------- v3 provenance: verb integration ----------
+
+describe("complaints verb — v3 integration", () => {
+  test("file --source-kind + --source-id + --target-team persists via repo + list filter recovers", async () => {
+    const { out } = await captureStdout(() =>
+      complaints([
+        "file",
+        "--summary",
+        "cross-team bug",
+        "--source-kind",
+        "superdoctor",
+        "--source-id",
+        "sweep-1715290000",
+        "--target-team",
+        "sopx",
+        "--team-dir",
+        teamDir,
+      ]),
+    );
+    const id = out.trim();
+    const { out: jsonOut } = await captureStdout(() =>
+      complaints([
+        "list",
+        "--source-kind",
+        "superdoctor",
+        "--target-team",
+        "sopx",
+        "--json",
+        "--team-dir",
+        teamDir,
+      ]),
+    );
+    const parsed = JSON.parse(jsonOut);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].id).toBe(id);
+    expect(parsed[0].sourceKind).toBe("superdoctor");
+    expect(parsed[0].sourceId).toBe("sweep-1715290000");
+    expect(parsed[0].targetTeam).toBe("sopx");
+  });
+
+  test("file --source-kind=bogus → UsageError surface", async () => {
+    let stderrBuf = "";
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string | Uint8Array) => {
+      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await expect(
+        complaints(["file", "--summary", "x", "--source-kind", "bogus", "--team-dir", teamDir]),
+      ).rejects.toThrow(UsageError);
+    } finally {
+      process.stderr.write = origStderr;
+    }
+    void stderrBuf;
   });
 });
