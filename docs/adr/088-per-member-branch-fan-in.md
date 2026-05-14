@@ -182,7 +182,7 @@ This ADR is filed standalone; impl decomposed into the following sub-tasks (sing
 | W5 | t-ab5e31f6 | docs | `templates/briefs/merger.md` — loop-based merger member brief | W3 |
 | W6 | t-81fca58f | be | `src/verbs/doctor.ts` — `merger-fan-in` probe class | W3, W4 |
 | W7 ✅ | t-2f12839e | be | `src/verbs/cron-install.ts` — `--template merge-cycle` entry | W3 |
-| W8 | t-7a7f0825 | test | `tests/e2e/merger-fan-in.test.ts` — fixture team, per-member branches with commits, merge-cycle → all merge clean + conflict surface + doctor probe + stop cleanup | W5, W6, W7 |
+| W8 ✅ | t-7a7f0825 | test | `tests/e2e/merger-fan-in.test.ts` — fixture team, per-member branches with commits, merge-cycle → all merge clean + conflict surface + doctor probe + stop cleanup | W5, W6, W7 |
 
 `merger.enabled: true` flip on atmux-team's own `team.json` is **gated to a separate W9 dogfood-flip Task post-W8 green** — matches the ADR-082 W6a discipline.
 
