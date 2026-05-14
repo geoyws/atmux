@@ -118,6 +118,63 @@ const PulseVerdictLiteralSchema = z.enum([
   "🚨 Need you",
 ]);
 
+/**
+ * ADR-132 §D6: cockpit-level `martinet` block — fleet-wide knobs for
+ * the pluggable cockpit-W3 whip-manager (provisioned at cockpit
+ * rebuild per ADR-132 §D3, sibling of superdoctor at W2 per
+ * ADR-077 §D2).
+ *
+ * `enabled` defaults `false` — existing cockpit rosters carry no
+ * breaking change. When unset / false, W3 is NOT provisioned and
+ * per-team viewers stay at the pre-W3 window positions per
+ * ADR-132 §D2 backward-compatibility note.
+ *
+ * `model` is `cursor`-only — `claude` backend has no model selector
+ * (it runs the operator's standard Claude TUI). When the resolved
+ * martinet is `claude`, this field is ignored.
+ *
+ * `cageTier` literal-pinned to `"tier-2"`: per ADR-132 §D4 the
+ * Cursor impl runs in the operator-user cage tier (full git access
+ * for in-line cleanup ops like `atmux task assign` reassignments).
+ * `claude` (degenerate) runs Tier 1 — the cockpit-rebuild path
+ * short-circuits the cage provisioning step entirely.
+ *
+ * `claudeAccount` re-uses {@link CockpitClaudeAccount} from the
+ * existing superdoctor/team session pattern. Only relevant when the
+ * resolved martinet is `claude` — it bounds the operator account
+ * the W3 cage spawns under. Ignored for `cursor`.
+ *
+ * `.strict()` consistent with the surrounding leaf-object pattern —
+ * typo'd keys (`enbled`, `cursorBin`) surface via drift detection.
+ */
+export const CockpitMartinet = z
+  .object({
+    /** Master switch. Default false (W3 NOT provisioned; per-team
+     *  whip stays in-team, classic codepath). */
+    enabled: z.boolean().default(false),
+    /** Absolute path to the `cursor-agent` binary. Default targets
+     *  the operator-standard `/usr/local/bin/cursor-agent` install
+     *  path. Override on hosts where Cursor lives elsewhere. Used
+     *  only when the resolved martinet is `cursor`. */
+    cursorBinPath: z.string().default("/usr/local/bin/cursor-agent"),
+    /** Cursor model identifier. Default `composer-2-fast` (the
+     *  cost-efficient choice for the cockpit-tick observation pass;
+     *  upgrade to `composer-2` only when a team needs deeper
+     *  reasoning at the martinet tier — typically not). */
+    model: z.enum(["composer-2-fast", "composer-2"]).default("composer-2-fast"),
+    /** Cursor cage tier — pinned to `tier-2` per ADR-132 §D4.
+     *  Future tiers (3+ for Linux-user-isolated cages) would need
+     *  a fresh ADR + enum bump. */
+    cageTier: z.literal("tier-2").default("tier-2"),
+    /** Claude account binding for the degenerate `claude` impl.
+     *  Only used when the resolved martinet is `claude`; ignored
+     *  otherwise. Same shape as the superdoctor / team-session
+     *  pattern — single source of `configDir` + `label`. */
+    claudeAccount: CockpitClaudeAccount.optional(),
+  })
+  .strict();
+export type CockpitMartinet = z.infer<typeof CockpitMartinet>;
+
 export const CockpitPulse = z
   .object({
     /** Commit-cadence observation window in minutes. Verdict logic
@@ -162,6 +219,18 @@ export const Cockpit = z
     superdoctor: CockpitSuperdoctor.optional(),
     /** Optional ADR-086 pulse probe tunables. Omit for defaults. */
     pulse: CockpitPulse.optional(),
+    /** ADR-132 §D6: fleet-wide default martinet impl. Per-team
+     *  `team.json::martinet` overrides this; this value beats the
+     *  hard-coded `"claude"` fallback. `cursor` is the recommended
+     *  production default for cost-tier reasons (composer-2-fast
+     *  vs Opus on mechanical observation work — per ADR-132 §"Cost"
+     *  win, ~10× token reduction). */
+    defaultMartinet: z.enum(["claude", "cursor"]).optional(),
+    /** ADR-132 §D6: cockpit-level martinet block — provisioning +
+     *  binary path + model + cage tier + (claude-only) account
+     *  binding. See {@link CockpitMartinet} doc-comment for field-
+     *  by-field rationale. */
+    martinet: CockpitMartinet.optional(),
   })
   .passthrough();
 export type Cockpit = z.infer<typeof Cockpit>;
