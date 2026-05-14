@@ -108,23 +108,32 @@ export interface KanbanCounts {
   blocked: number;
 }
 
-/** ADR-077 §F5: cockpit superdoctor presence/health snapshot. Surfaced
- *  in `atmux status` so the operator can verify a `cockpit rebuild`
- *  actually took effect. */
-export interface SuperdoctorState {
-  /** True iff `~/.atmux/cockpit.json` exists AND has a `superdoctor`
-   *  block. False when no cockpit is configured at all (silent — most
-   *  per-team status calls won't have one). */
+/** ADR-077 §F5 / ADR-133: cockpit medic presence/health snapshot
+ *  (formerly named `SuperdoctorState`; renamed per ADR-133, alias
+ *  preserved below). Surfaced in `atmux status` so the operator can
+ *  verify a `cockpit rebuild` actually took effect. */
+export interface MedicState {
+  /** True iff `~/.atmux/cockpit.json` exists AND has a `medic` block
+   *  (or the deprecated `superdoctor` block, which the loader coerces
+   *  to medic semantics per ADR-133 §D2). False when no cockpit is
+   *  configured at all (silent — most per-team status calls won't
+   *  have one). */
   configured: boolean;
-  /** True iff `superdoctor.enabled === true` in cockpit.json. */
+  /** True iff `medic.enabled === true` (or legacy `superdoctor.enabled`)
+   *  in cockpit.json. */
   enabled: boolean;
   /** True iff the cockpit tmux session exists on the operator's
    *  default socket. Probed only when `enabled === true`. */
   sessionAlive: boolean;
-  /** True iff a window named `superdoctor` exists in the cockpit
-   *  session. Probed only when `sessionAlive === true`. */
+  /** True iff a window named `medic` (canonical) OR `superdoctor`
+   *  (deprecated alias accepted during the rename window) exists in
+   *  the cockpit session. Probed only when `sessionAlive === true`. */
   windowAlive: boolean;
 }
+
+/** @deprecated ADR-133 — use {@link MedicState}. Kept as a type alias
+ *  for importers during the one-release-cycle deprecation window. */
+export type SuperdoctorState = MedicState;
 
 export interface StatusSnapshot {
   team: string;
@@ -136,9 +145,16 @@ export interface StatusSnapshot {
   /** ADR-064 §4: driver-pane health snapshot. Always populated;
    *  renderer skips display when `configured=false`. */
   driverPane: DriverPaneHealth;
-  /** ADR-077 §F5: cockpit superdoctor snapshot. Always populated;
-   *  renderer skips display when `configured=false`. */
-  superdoctor: SuperdoctorState;
+  /** ADR-077 §F5 / ADR-133: cockpit medic snapshot. Always populated;
+   *  renderer skips display when `configured=false`. The deprecated
+   *  `superdoctor` field below mirrors this same data during the
+   *  rename window — both keys appear in `--json` output. */
+  medic: MedicState;
+  /** @deprecated ADR-133 — mirror of {@link StatusSnapshot.medic}.
+   *  Retained for one release cycle so JSON consumers reading
+   *  `snap.superdoctor` (per ADR-077 §F5) continue working
+   *  unchanged. Removed once the deprecation window closes. */
+  superdoctor: MedicState;
   /** ADR-085 §Three surfaces #1: approval-debt scan across ADRs +
    *  driver-inbox + blocked kanban. Live per ADR-068 §HC#4 — no cache;
    *  re-run every `gatherStatus` invocation. */
@@ -155,13 +171,20 @@ export interface GatherStatusDeps {
 }
 
 /**
- * ADR-077 §F5: probe the cockpit for superdoctor presence/health.
+ * ADR-077 §F5 / ADR-133: probe the cockpit for medic presence/health.
  * Silently returns the all-false default when no cockpit is configured
  * (most per-team status calls have no cockpit). Probe failures collapse
  * to `false` rather than throwing — the team's own status must stay
  * green even when the cockpit is misconfigured.
+ *
+ * Reads `cockpit.medic` first (canonical per ADR-133 — the loader
+ * always populates this when either `medic` or legacy `superdoctor`
+ * block is present). The window-alive probe accepts BOTH the
+ * canonical `medic` window name AND the legacy `superdoctor` name so
+ * a cockpit that hasn't yet been rebuilt after the rename still
+ * surfaces as healthy.
  */
-export async function probeSuperdoctor(deps: GatherStatusDeps = {}): Promise<SuperdoctorState> {
+export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicState> {
   const env = deps.env ?? process.env;
   const loadOpts: LoadCockpitOpts = { env };
   let cockpit: Awaited<ReturnType<typeof loadCockpit>>;
@@ -170,11 +193,11 @@ export async function probeSuperdoctor(deps: GatherStatusDeps = {}): Promise<Sup
   } catch {
     return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
   }
-  const sd = cockpit.superdoctor;
-  if (sd === undefined) {
+  const m = cockpit.medic ?? cockpit.superdoctor;
+  if (m === undefined) {
     return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
   }
-  if (!sd.enabled) {
+  if (!m.enabled) {
     return { configured: true, enabled: false, sessionAlive: false, windowAlive: false };
   }
   const factory = deps.cockpitTmuxFactory ?? createTmux;
@@ -185,13 +208,18 @@ export async function probeSuperdoctor(deps: GatherStatusDeps = {}): Promise<Sup
     sessionAlive = await cockpitTmux.session.hasSession(cockpit.cockpitSession);
     if (sessionAlive) {
       const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
-      windowAlive = wins.some((w) => w.name === "superdoctor");
+      windowAlive = wins.some((w) => w.name === "medic" || w.name === "superdoctor");
     }
   } catch {
     // tmux not running, socket unreachable, etc. — collapse to down.
   }
   return { configured: true, enabled: true, sessionAlive, windowAlive };
 }
+
+/** @deprecated ADR-133 — use {@link probeMedic}. Thin wrapper retained
+ *  for the deprecation window so callers reaching for the legacy
+ *  symbol keep working unchanged. */
+export const probeSuperdoctor = probeMedic;
 
 /**
  * Gather all status data into a structured snapshot. Pure (modulo
@@ -255,10 +283,10 @@ export async function gatherStatus(
   // setup; the helper itself stays I/O-bounded to one capture call.
   const driverPane = await probeDriverPane(team, atmuxDir, { tmux });
 
-  // ADR-077 §F5: cockpit superdoctor probe. Independent of the team's
-  // own cage tmux — uses the operator's default socket via a separate
-  // factory. Silent when no cockpit is configured.
-  const superdoctor = await probeSuperdoctor(deps);
+  // ADR-077 §F5 / ADR-133: cockpit medic probe. Independent of the
+  // team's own cage tmux — uses the operator's default socket via a
+  // separate factory. Silent when no cockpit is configured.
+  const medic = await probeMedic(deps);
 
   // ADR-085 §Three surfaces #1: live approval-debt scan. Per-bucket
   // failure isolation lives inside `scanNeedsApproval` — a corrupt
@@ -274,7 +302,10 @@ export async function gatherStatus(
     kanban: counts,
     driverInboxOpen,
     driverPane,
-    superdoctor,
+    medic,
+    // ADR-133 deprecation alias — same data, retained for one cycle
+    // so JSON consumers reading `snap.superdoctor` keep working.
+    superdoctor: medic,
     needsApproval,
   };
 }
@@ -309,6 +340,10 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
       driverPane: snap.driverPane,
+      // ADR-133: emit BOTH `medic` (canonical) AND `superdoctor`
+      // (deprecated alias, same data) during the rename window so JSON
+      // consumers continue working. `superdoctor` drops next release.
+      medic: snap.medic,
       superdoctor: snap.superdoctor,
       needsApproval: snap.needsApproval,
     };
@@ -398,7 +433,7 @@ function renderTextStatus(snap: StatusSnapshot): void {
   );
   // ADR-085 §Three surfaces #1: approval-debt row. Positive-state when
   // total=0 so the operator sees the green even on a clean run — same
-  // grammar as the driver-pane / superdoctor rows below.
+  // grammar as the driver-pane / medic rows below.
   const na = snap.needsApproval;
   if (na.total === 0) {
     process.stdout.write(`📝 NEEDS APPROVAL: ✅ clear\n`);
@@ -410,18 +445,18 @@ function renderTextStatus(snap: StatusSnapshot): void {
   if (snap.driverInboxOpen > 0) {
     process.stdout.write(`📬 driver-inbox  open=${snap.driverInboxOpen}\n`);
   }
-  // ADR-077 §F5: superdoctor row — skip when no cockpit at all.
-  if (snap.superdoctor.configured) {
-    const sd = snap.superdoctor;
-    const stateLabel = !sd.enabled
+  // ADR-077 §F5 / ADR-133: medic row — skip when no cockpit at all.
+  if (snap.medic.configured) {
+    const md = snap.medic;
+    const stateLabel = !md.enabled
       ? "disabled"
-      : !sd.sessionAlive
+      : !md.sessionAlive
         ? "cockpit-down"
-        : !sd.windowAlive
+        : !md.windowAlive
           ? "window-missing"
           : "alive";
     const stateEmoji = stateLabel === "alive" ? "🟢" : stateLabel === "disabled" ? "⚪" : "🔴";
-    process.stdout.write(`📋 superdoctor  ${stateEmoji} ${stateLabel}\n`);
+    process.stdout.write(`📋 medic  ${stateEmoji} ${stateLabel}\n`);
   }
 }
 
