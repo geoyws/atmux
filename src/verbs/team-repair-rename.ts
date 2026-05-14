@@ -1,4 +1,4 @@
-// ADR-010: CLI dispatcher — `team repair-rename` sub-verb.
+// ADR-103: CLI dispatcher — `team repair-rename` sub-verb.
 // Bash spec: lib/team-repair-rename.sh @ worktree-frozen (380 LOC).
 //
 // Idempotent recovery verb for teams where `atmux team rename` mutated

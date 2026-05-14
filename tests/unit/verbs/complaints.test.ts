@@ -156,15 +156,21 @@ describe("parseComplaintsArgs", () => {
   });
 });
 
-// ---------- migration v3 (latest) ----------
+// ---------- complaints migration ----------
 
-describe("complaints migration v3 — schema present", () => {
-  test("opening a fresh state.db materialises the complaints table at user_version=3", async () => {
+describe("complaints migration — schema present", () => {
+  test("opening a fresh state.db materialises the complaints table at the ladder tip", async () => {
     const path = join(atmuxDir, "state.db");
     const db = openDatabase(path, migrations);
     try {
       const v = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-      expect(v).toBe(3);
+      // Ladder tip drifts as new migrations land. complaints landed at
+      // v2; provenance columns added v2→v3 (t-e5e5d576);
+      // superdoctor_attempts table added v3→v4 (ADR-077 §F6,
+      // renumbered at 2026-05-14 trunk-merge). The invariant this
+      // test depends on is "complaints table present after migration
+      // completes", not the literal user_version.
+      expect(v).toBeGreaterThanOrEqual(3);
       const tables = db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
         name: string;
       }>;

@@ -1,6 +1,6 @@
 # ADR-082: Per-member git worktree isolation — concurrency safety at 20+ member scale
 
-**Status**: proposed
+**Status**: proposed (deferred: W6c in-team verify + W9 adversarial regression test remain blocked — t-4c6a30bf + t-c10459f4)
 **Date**: 2026-05-12
 **Driver-ref**: 2026-05-12 07:15 MYT cockpit driver — *"can we prioritise the git worktree feature? its dangerous to stash right now with over 20members working at the same time"*. Tracked on the kanban as `t-eee0a7f6` (P100, lane=ops).
 

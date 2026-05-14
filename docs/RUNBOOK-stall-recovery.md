@@ -15,7 +15,7 @@ ping fires.
 
 **Pre-reads:**
 
-- [`docs/adr-bun/057-stall-prevention.md`](adr-bun/057-stall-prevention.md) — full Decision rationale (D1-D7) + open questions.
+- [`docs/adr/057-stall-prevention.md`](adr/057-stall-prevention.md) — full Decision rationale (D1-D7) + open questions.
 - [`HANDOFF.md` §🛡️ v1.1.x stall-prevention](../HANDOFF.md) — operator-facing usage notes per Decision.
 - [`docs/RUNBOOK-cron-migration.md` §v1.1.x cron-block migration](RUNBOOK-cron-migration.md#v11x-cron-block-migration--watchdog-line-adr-057-d6b) — installing the `*/2 atmux watchdog` cron line.
 
@@ -392,7 +392,7 @@ After enabling v1.1.x stall-prevention on a team:
 
 ## Reference
 
-- **ADR:** [`docs/adr-bun/057-stall-prevention.md`](adr-bun/057-stall-prevention.md) — full design.
+- **ADR:** [`docs/adr/057-stall-prevention.md`](adr/057-stall-prevention.md) — full design.
 - **HANDOFF section:** [`HANDOFF.md` §🛡️ v1.1.x stall-prevention (ADR-057)](../HANDOFF.md).
 - **Cron migration:** [`RUNBOOK-cron-migration.md` §v1.1.x cron-block migration](RUNBOOK-cron-migration.md#v11x-cron-block-migration--watchdog-line-adr-057-d6b).
 - **Watchdog verb:** `src/verbs/watchdog.ts`. Heartbeat reader: `src/core/heartbeat.ts::readHeartbeatAges`.

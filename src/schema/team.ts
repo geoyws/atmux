@@ -486,6 +486,12 @@ export const Team = z
     merger: TeamMerger.optional(),
     /** t-e89c03f7: observability toggles (forensic data collection). */
     observability: TeamObservability.optional(),
+    /** ADR-087: `atmux stop --soft` grace window between the per-member
+     *  notify and the manifest write + session kill. Default 5 seconds
+     *  when unset. Setting `0` collapses the grace to a single tick but
+     *  does not disable the feature (use bare `stop` for the no-grace
+     *  path). */
+    softStopGraceSeconds: z.number().int().nonnegative().optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

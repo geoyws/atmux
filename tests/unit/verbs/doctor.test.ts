@@ -33,9 +33,11 @@ import {
   checkTuiCommandsClaudeOverride,
   checkTuis,
   checkWebhook,
+  checkMemberCageStates,
   checkWhipConfigDrift,
   checkWorktreeIsolation,
   collectSafeOrphanBranches,
+  collectStarvingMembers,
   type DoctorRow,
   doctor,
   findInboxTaskMarks,
@@ -48,6 +50,7 @@ import {
   renderJson,
   resolveMemberBin,
   runAllChecks,
+  STARVING_THRESHOLD_S,
 } from "../../../src/verbs/doctor.ts";
 
 // ---------- parseDoctorArgs ----------
@@ -2466,5 +2469,195 @@ describe("collectSafeOrphanBranches", () => {
       },
     ];
     expect(collectSafeOrphanBranches(rows)).toEqual(["geoyws-bob", "geoyws-alice"]);
+  });
+});
+
+// ---------- ADR-081 §D: checkMemberCageStates + collectStarvingMembers ----------
+
+describe("checkMemberCageStates — ADR-081 §D classifier", () => {
+  const makeTeam = (members: Array<Partial<TeamMember>>): Team =>
+    ({
+      name: "starve-team",
+      members: members.map((m, i) => ({
+        name: m.name ?? `m${i}`,
+        role: m.role ?? "member",
+        emoji: m.emoji ?? "🐝",
+        tui: m.tui ?? "claude",
+        ...m,
+      })),
+    }) as Team;
+
+  test("team=null → empty rows (no work)", async () => {
+    expect(await checkMemberCageStates(null, "/tmp/atmux-x")).toEqual([]);
+  });
+
+  test("session down → empty rows (other checks cover it)", async () => {
+    const rows = await checkMemberCageStates(makeTeam([{ name: "lead" }]), "/tmp/atmux-x", {
+      hasSession: async () => false,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("active member → no row (silent-green)", async () => {
+    const team = makeTeam([{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+    const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
+      hasSession: async () => true,
+      probe: async (_t, m) => ({
+        member: m.name,
+        windowName: `🧭${m.name}`,
+        state: "active",
+        paneUptimeSec: 600,
+        evidence: "tok 12.5k/200k",
+      }),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("down member → yellow row with 'pane down' detail", async () => {
+    const team = makeTeam([{ name: "w1" }]);
+    const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
+      hasSession: async () => true,
+      probe: async (_t, m) => ({
+        member: m.name,
+        windowName: `🐝${m.name}`,
+        state: "down",
+        paneUptimeSec: null,
+        evidence: "",
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("member-cage-state:w1");
+    expect(rows[0]?.detail).toContain("pane down");
+  });
+
+  test("starving + uptime above threshold → yellow row with banner-persistent detail", async () => {
+    const team = makeTeam([{ name: "w1" }]);
+    const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
+      hasSession: async () => true,
+      probe: async (_t, m) => ({
+        member: m.name,
+        windowName: `🐝${m.name}`,
+        state: "starving",
+        paneUptimeSec: STARVING_THRESHOLD_S + 60,
+        evidence: "Welcome to Claude Code",
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("member-cage-state:w1");
+    expect(rows[0]?.detail).toContain("welcome banner persistent");
+    expect(rows[0]?.detail).toContain("uptime");
+    expect(rows[0]?.hint).toContain("--fix");
+  });
+
+  test("starving + uptime below threshold → silent (bootstrapping transient)", async () => {
+    const team = makeTeam([{ name: "w1" }]);
+    const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
+      hasSession: async () => true,
+      probe: async (_t, m) => ({
+        member: m.name,
+        windowName: `🐝${m.name}`,
+        state: "starving",
+        paneUptimeSec: 10, // 10s < default 60s threshold
+        evidence: "Welcome to Claude Code",
+      }),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("starvingThresholdSec override flips bootstrapping → starving (test injection)", async () => {
+    // Same uptime, but with threshold lowered to 0 — the same pane is
+    // now "long enough" to be flagged starving. Confirms the threshold
+    // gate is the only thing keeping the transient state silent.
+    const team = makeTeam([{ name: "w1" }]);
+    const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
+      hasSession: async () => true,
+      starvingThresholdSec: 0,
+      probe: async (_t, m) => ({
+        member: m.name,
+        windowName: `🐝${m.name}`,
+        state: "starving",
+        paneUptimeSec: 5,
+        evidence: "Welcome to Claude Code",
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("welcome banner persistent");
+  });
+
+  test("mixed roster — surface only down + starving rows; active silent", async () => {
+    const team = makeTeam([
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "w1", emoji: "🐝" },
+      { name: "w2", emoji: "🐝" },
+    ]);
+    const states: Record<string, "down" | "starving" | "active"> = {
+      lead: "active",
+      w1: "starving",
+      w2: "down",
+    };
+    const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
+      hasSession: async () => true,
+      probe: async (_t, m) => ({
+        member: m.name,
+        windowName: `${m.emoji ?? "🐝"}${m.name}`,
+        state: states[m.name] ?? "active",
+        paneUptimeSec: 600,
+        evidence: states[m.name] === "starving" ? "Welcome to Claude Code" : "tok 12.5k/200k",
+      }),
+    });
+    expect(rows).toHaveLength(2);
+    const labels = rows.map((r) => r.label).sort();
+    expect(labels).toEqual(["member-cage-state:w1", "member-cage-state:w2"]);
+  });
+});
+
+describe("collectStarvingMembers — ADR-081 §D row-scan", () => {
+  test("empty rows → empty list", () => {
+    expect(collectStarvingMembers([])).toEqual([]);
+  });
+
+  test("extracts member names from starving rows", () => {
+    const rows: DoctorRow[] = [
+      {
+        status: "yellow",
+        label: "member-cage-state:w1",
+        detail: "welcome banner persistent — claude alive in 🐝w1 ...",
+      },
+      {
+        status: "yellow",
+        label: "member-cage-state:w2",
+        detail: "welcome banner persistent — ...",
+      },
+    ];
+    expect(collectStarvingMembers(rows)).toEqual(["w1", "w2"]);
+  });
+
+  test("skips 'down' rows (different detail substring)", () => {
+    const rows: DoctorRow[] = [
+      {
+        status: "yellow",
+        label: "member-cage-state:w1",
+        detail: "pane down — no `claude` in window 🐝w1",
+      },
+    ];
+    expect(collectStarvingMembers(rows)).toEqual([]);
+  });
+
+  test("skips non-yellow rows + unrelated labels", () => {
+    const rows: DoctorRow[] = [
+      {
+        status: "green",
+        label: "member-cage-state:w1",
+        detail: "welcome banner persistent ...",
+      },
+      {
+        status: "yellow",
+        label: "worktree:missing:w1",
+        detail: "welcome banner persistent ...",
+      },
+    ];
+    expect(collectStarvingMembers(rows)).toEqual([]);
   });
 });
