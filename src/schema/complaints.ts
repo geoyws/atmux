@@ -24,13 +24,20 @@ export type ComplaintStatus = (typeof COMPLAINT_STATUSES)[number];
 /** Allowed `sourceKind` values at the verb layer (v3 / t-e5e5d576).
  *  Schema stays free-form (TEXT) — same passthrough posture as
  *  `status`. Documented mapping to `openedBy` / `sourceId` lives on
- *  the task body + ADR follow-up. */
+ *  the task body + ADR follow-up.
+ *
+ *  Whip-side values (`whip`, `whip-velocity-gate`) added per
+ *  t-7bd53cba — cockpit-level whip cron files complaints AGAINST
+ *  observed teams using these source-kinds so superdoctor can
+ *  distinguish whip-driven escalations from operator/CLI filings. */
 export const COMPLAINT_SOURCE_KINDS = [
   "superdoctor",
   "member",
   "operator",
   "cli",
   "cron",
+  "whip",
+  "whip-velocity-gate",
 ] as const;
 export type ComplaintSourceKind = (typeof COMPLAINT_SOURCE_KINDS)[number];
 

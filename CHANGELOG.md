@@ -46,6 +46,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **`atmux complaints file` — whip-velocity-gate flag-vocab compat** (t-7bd53cba).
+  Three new flags + one default-behavior change so cockpit-level whip
+  cron scripts (`/root/.atmux/bin/whip-velocity-gate.sh`) can file
+  complaints AGAINST observed teams without their entire CLI call
+  failing at the first unknown arg:
+  - **`--title <s>`** — alias for `--summary` (canonical field stays `incidentSummary`)
+  - **`--body <r>`** — alias for `--root-cause` (canonical field stays `rootCause`)
+  - **`--severity <s>`** — free-form severity classifier; stored in `extra.severity` (no first-class column)
+  - **`--target-team` defaults to current team's name** when omitted (was: defaults to `null`). Preserves the pre-v3 implicit "complaint in team X's DB is about team X" semantics — cross-team callers still pass `--target-team` to file against a different observed team.
+  - **`COMPLAINT_SOURCE_KINDS` allowlist** extended with `"whip"` and `"whip-velocity-gate"` so velocity-gate's `--source-kind whip-velocity-gate` doesn't reject.
+  Acceptance: end-to-end smoke test mirroring the velocity-gate's exact CLI invocation lands a row recoverable via `complaints list --source-kind whip-velocity-gate --target-team <team>`. No schema migration required — uses the existing v3 `target_team` column + the existing `extra` JSON bag.
+
 - **ADR-140 — cheap-model-first principle (Cursor composer-2-fast martinet; medic event-driven)** ([docs/adr/140-cheap-model-first.md](docs/adr/140-cheap-model-first.md)).
   ADR text only (T1 of EPIC `t-83dcef6b`). Principle: Claude (Opus
   xhigh) stays for strategic + code-gen + review work; Cursor
