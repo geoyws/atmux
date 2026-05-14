@@ -4,6 +4,8 @@
 **Date**: 2026-05-12
 **Incident**: 2026-05-12 ~06:57–07:25 MYT atmux team starvation diagnosis + manual recovery (cockpit BAU surfaced; driver re-bootstrapped 11/12 panes via `tmux load-buffer + paste-buffer + C-m`).
 
+> **Naming note 2026-05-14**: the cockpit-tier self-healing role referenced in §E supervisor-side recovery (`superdoctor`) is now called **medic** per [ADR-133](133-medic-rename.md). The starvation-detection rule + complaint-resolution hook described under §E remain canonical under the new name; supersession is naming-only.
+
 ## Context
 
 ### 2026-05-12 incident — 20h+ atmux team dormancy

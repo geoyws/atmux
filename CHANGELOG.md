@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > by a follow-up docs sweep — current cycle covers the ADR-076 / 0.5.0 cutover
 > only (see body of `atmux task show t-41ddf1e6`).
 
+### 🔁 Renamed — cockpit role `superdoctor` → `medic` (ADR-133)
+
+- **Role rename** — the cockpit-tier self-healing role introduced in ADR-077 is renamed `superdoctor` → `medic`. Motivation: the existing `atmux doctor` verb caused operator confusion ("is doctor the verb or the cockpit process?"), and a single-word identifier reads cleaner in log lines + Discord pings + brief templates. Path B (`medic`, collision-free) picked over Path A (`doctor`, accept collision).
+- **Surfaces renamed**: cockpit window W2 name, `cockpit.json` block key, cockpit inbox key (`__superdoctor__` → `__medic__`), operator-doc filename (`docs/superdoctor.md` → `docs/medic.md`), skill directory + prompt filename (operator-dotfiles scope, out-of-band).
+- **Backward-compat shim** (one-release-cycle deprecation window): `cockpit.json` schema accepts both `medic` and `superdoctor` keys. Both present → `medic` wins, warn *"ignoring deprecated superdoctor block; medic block in effect (ADR-133)"*. Only `superdoctor` → coerce to medic semantics, warn *"deprecated key `superdoctor`, rename to `medic` per ADR-133"*. Only `medic` → canonical path, no warning. Same pattern for the `__medic__` / `__superdoctor__` inbox key in the `inbox_messages` SQLite table and the `medic` / `superdoctor` literals in the `complaints.source_kind` enum.
+- **Scope is naming-only**: ADR-077's design decisions (cockpit topology, cadence, authority bounds, P0 escalation runbook, complaint-box residency) remain canonical under the new name. ADR-077 retains its filename per the append-only ADR convention; a top-of-file annotation header points at ADR-133. Storage table names (any pre-existing `superdoctor_*` rows / tables) are out of scope — operator-facing surface only.
+
+> **NEXT RELEASE (BREAKING)** — once the deprecation window closes, the `superdoctor` key in `cockpit.json`, the `__superdoctor__` inbox key, and the `superdoctor` value in `complaints.source_kind` will be dropped from the schema. Schema-load on a config with the deprecated keys will soft-fail the cockpit rebuild with an actionable error pointing at ADR-133.
+
 ### ✨ Added — `atmux pulse` (ADR-086)
 
 - **`atmux pulse`** — cockpit-wide deterministic verdict probe. Iterates every enabled team in `~/.atmux/cockpit.json`, gathers commit count + doctor red count + kanban / driver-inbox / pending-decisions inputs, computes one of five verdicts (`🟢 Shipping` / `🟡 Cool` / `🟡 Idle` / `🔴 Stalled` / `🚨 Need you`), and pings Discord on verdict change or sustained-urgency dedup expiry. Phase 1 of the MiniMax observer (Phase 2 swaps the renderer for an LLM call against the same input bundle).

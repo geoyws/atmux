@@ -3,6 +3,8 @@
 **Status**: proposed
 **Date**: 2026-05-13
 
+> **Naming note 2026-05-14**: the cockpit-tier hourly role this ADR compares against (named `superdoctor` in §Context "complementary at hourly LLM tier" bullet + §Cross-refs) is now called **medic** per [ADR-133](133-medic-rename.md). Supersession is naming-only — design canonical per ADR-077.
+
 ## Context
 
 The cockpit runs several liveness layers already:
