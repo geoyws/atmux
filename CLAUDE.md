@@ -51,6 +51,21 @@ This means the docs-discipline is **member-enforced first, reviewer-enforced sec
 
 In all other cases, default to "doc update required." If unsure, the reviewer's call governs.
 
+## Trunk integration — merge, not rebase (per [ADR-137](docs/adr/137-merge-over-rebase.md))
+
+When a member's `<base>-<member>` branch falls behind `origin/<base>`, integrate via `git merge`, NOT `git rebase`. Per-member branches are long-lived (ADR-082 + ADR-084); a rebase forces a force-push, trips the harness deny on non-staging branches, and makes sibling members' `git fetch` views inconsistent. Merge keeps the branch in a consistent published state; the criss-cross history is collapsed when gitter (ADR-134) fans the branch back into trunk.
+
+```bash
+# CANONICAL
+git -C <worktree-root> fetch origin
+git -C <worktree-root> merge origin/<base> --no-edit
+
+# FORBIDDEN
+git -C <worktree-root> rebase origin/<base>
+```
+
+Carve-outs: voluntary history cleanup (squash, fixup), epic-team-base → parent-trunk fan-in (ADR-091 gitter, rebase-then-merge per its pre-flag #4), and final fan-in via gitter (ADR-134, works on any internal shape). See ADR-137 for the full table.
+
 ## Related global rules
 
 Agents spawned by atmux also read the user's global `CLAUDE.md` (typically under `~/.claude/`). The global rules cover machine layout, timezone discipline, push policy, model selection, and the broader Driver Mode conventions. This project-local `CLAUDE.md` complements those rules — it does not override them, and where they apply (commit conventions, hook-bypass policy, etc.), the global rule wins for cross-project consistency.
