@@ -136,6 +136,10 @@ async function writeTeamJson(opts: {
  *  Tests pass args + the team-specific socket-path flag automatically.
  *  Optional `opts` lets ADR-082 W3 tests inject a `gitSpawn` mock so
  *  the worktree-provisioning path never shells out to the live repo. */
+type StartOpts = NonNullable<Parameters<typeof start>[1]>;
+type LoadCockpitFn = NonNullable<StartOpts["loadCockpitFn"]>;
+type CockpitReconcileFn = NonNullable<StartOpts["cockpitReconcileFn"]>;
+
 async function runStart(
   args: ReadonlyArray<string>,
   opts: {
@@ -144,17 +148,28 @@ async function runStart(
     briefsDir?: string;
     spawnWaitMs?: number;
     sleep?: (ms: number) => Promise<void>;
+    /** ADR-063 ergonomic fix (t-ab8df0b4): cockpit reconcile injection. */
+    loadCockpitFn?: LoadCockpitFn;
+    cockpitReconcileFn?: CockpitReconcileFn;
   } = {},
 ): Promise<number> {
-  const startOpts: Parameters<typeof start>[1] = {
+  const startOpts: StartOpts = {
     env: { ...process.env, ATMUX_DIR: env.atmuxDir },
     cwd: env.atmuxDir,
     logger: env.logger,
+    // ADR-063 default for the test harness: skip the cockpit reconcile
+    // path UNLESS the test explicitly opts in. Without this, every
+    // existing test would try to load `~/.atmux/cockpit.json` on the
+    // dev host (varies per machine) and possibly succeed-with-noise.
+    // Opt-in tests override `loadCockpitFn` to inject a fake roster.
+    loadCockpitFn: async () => null,
   };
   if (opts.gitSpawn !== undefined) startOpts.gitSpawn = opts.gitSpawn;
   if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
   if (opts.spawnWaitMs !== undefined) startOpts.spawnWaitMs = opts.spawnWaitMs;
   if (opts.sleep !== undefined) startOpts.sleep = opts.sleep;
+  if (opts.loadCockpitFn !== undefined) startOpts.loadCockpitFn = opts.loadCockpitFn;
+  if (opts.cockpitReconcileFn !== undefined) startOpts.cockpitReconcileFn = opts.cockpitReconcileFn;
   return await start([...args, "--socket-path", env.socketPath], startOpts);
 }
 
@@ -1326,5 +1341,178 @@ describe("start — ADR-081 §C brief-paste", () => {
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------- ADR-063 ergonomic fix: auto-reconcile cockpit (t-ab8df0b4) ----------
+
+describe("start — ADR-063 cockpit auto-reconcile", () => {
+  // Type aliases for the reconcile recorder.
+  type ReconcileRecord = {
+    sessionName: string;
+    teamNames: string[];
+    onlyTeam: string | undefined;
+  };
+  type Cockpit = Awaited<ReturnType<LoadCockpitFn>>;
+
+  function makeReconcileRecorder(): {
+    fn: CockpitReconcileFn;
+    calls: ReconcileRecord[];
+  } {
+    const calls: ReconcileRecord[] = [];
+    const fn: CockpitReconcileFn = async (
+      _tmux,
+      sessionName,
+      teams,
+      _logger,
+      _deps,
+      _superdoctor,
+      reconcileOpts,
+    ) => {
+      calls.push({
+        sessionName,
+        teamNames: teams.map((t) => t.name),
+        onlyTeam: reconcileOpts?.onlyTeam,
+      });
+    };
+    return { fn, calls };
+  }
+
+  function fakeCockpit(opts: {
+    teams: Array<{ name: string; enabled: boolean }>;
+    cockpitSession?: string;
+  }): Cockpit {
+    return {
+      cockpitSession: opts.cockpitSession ?? "atmux_teams",
+      teams: opts.teams.map((t) => ({
+        name: t.name,
+        root: `/tmp/${t.name}-root`,
+        enabled: t.enabled,
+      })),
+    } as unknown as Cockpit;
+  }
+
+  test("(a) rostered + enabled team → reconcile called with onlyTeam scope", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: true }] });
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.onlyTeam).toBe(env.team);
+    expect(calls[0]!.teamNames).toEqual([env.team]);
+    expect(calls[0]!.sessionName).toBe("atmux_teams");
+    // ✓ log line emitted on success.
+    expect(env.logs.some((l) => l.msg.includes("cockpit window") && l.msg.includes(env.team))).toBe(
+      true,
+    );
+  });
+
+  test("(b) team NOT in roster → reconcile NOT called (silent skip)", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    // Roster has a different team name; our cwd team is un-rostered.
+    const loadCockpitFn = async () =>
+      fakeCockpit({ teams: [{ name: "some-other-team", enabled: true }] });
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    // No WARN, no cockpit log line — silent skip.
+    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
+  });
+
+  test("(c) cockpit.json missing (loader returns null) → reconcile NOT called", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const loadCockpitFn = async () => null;
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    // No WARN — missing config is silent skip per the behaviour matrix.
+    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
+  });
+
+  test("(d) team rostered but enabled:false → reconcile NOT called (silent skip)", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: false }] });
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("(e) cockpit loader throws (malformed) → reconcile NOT called, WARN logged", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const loadCockpitFn = async () => {
+      throw new Error("cockpit.json: unexpected token at line 5");
+    };
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    // WARN emitted — distinct from silent skip.
+    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("loader threw"))).toBe(true);
+  });
+
+  test("reconcile throw is non-fatal — start still returns 0 with WARN", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: true }] });
+    const cockpitReconcileFn: CockpitReconcileFn = async () => {
+      throw new Error("tmux server unreachable on default socket");
+    };
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn });
+    expect(exit).toBe(0);
+    expect(
+      env.logs.some(
+        (l) =>
+          l.kind === "warn" &&
+          l.msg.includes("cockpit reconcile failed") &&
+          l.msg.includes(env.team),
+      ),
+    ).toBe(true);
+  });
+
+  test("default loadCockpitFn (production path) — no cockpit.json on dev host → silent skip", async () => {
+    // The harness defaults loadCockpitFn to `async () => null` to keep
+    // existing tests host-independent; this test asserts the real
+    // default is host-agnostic too (no cockpit.json should mean silent
+    // skip, not a thrown error).
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    // Force ATMUX_COCKPIT_CONFIG to a non-existent path so loadCockpit
+    // hits its ConfigError branch → null.
+    const exit = await start(["--socket-path", env.socketPath], {
+      env: {
+        ...process.env,
+        ATMUX_DIR: env.atmuxDir,
+        ATMUX_COCKPIT_CONFIG: "/tmp/atmux-nonexistent-cockpit-config.json",
+      },
+      cwd: env.atmuxDir,
+      logger: env.logger,
+      cockpitReconcileFn: reconcileFn,
+    });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
   });
 });

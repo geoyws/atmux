@@ -778,6 +778,148 @@ describe("reconcileCockpitSession", () => {
   });
 });
 
+// ---------- ADR-063 ergonomic fix: onlyTeam scope (t-ab8df0b4) ----------
+
+describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", () => {
+  test("onlyTeam adds named window when missing, leaves siblings untouched", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-add");
+    try {
+      const { logger } = makeLogger();
+      // Seed: fleet-wide with sibling 'alpha' already present.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam],
+        logger,
+      );
+      const before = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(before).toContain("alpha");
+      expect(before).not.toContain("unum");
+
+      // Per-team add of 'unum' — siblings preserved.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "unum", root: "/u", enabled: true } as CockpitTeam],
+        logger,
+        {},
+        undefined,
+        { onlyTeam: "unum" },
+      );
+      const after = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(after).toContain("alpha"); // sibling preserved
+      expect(after).toContain("unum"); // target added
+      expect(after).toContain("superdriver");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("onlyTeam idempotent — window already present is no-op", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-idem");
+    try {
+      const { logger } = makeLogger();
+      // Seed.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "unum", root: "/u", enabled: true } as CockpitTeam],
+        logger,
+      );
+      const before = (await fx.tmux.window.listWindows("s")).map(
+        (w) => `${w.index}:${w.name}`,
+      );
+
+      // Re-run with onlyTeam — no-op.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "unum", root: "/u", enabled: true } as CockpitTeam],
+        logger,
+        {},
+        undefined,
+        { onlyTeam: "unum" },
+      );
+      const after = (await fx.tmux.window.listWindows("s")).map(
+        (w) => `${w.index}:${w.name}`,
+      );
+      expect(after).toEqual(before);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("onlyTeam does NOT remove orphan sibling windows (additive only)", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-no-orphan");
+    try {
+      const { logger } = makeLogger();
+      // Seed two team windows fleet-wide.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [
+          { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+          { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+        ],
+        logger,
+      );
+      // Per-team reconcile with ONLY 'alpha' — fleet-wide mode would
+      // delete 'beta' as an orphan, but onlyTeam mode must preserve it.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam],
+        logger,
+        {},
+        undefined,
+        { onlyTeam: "alpha" },
+      );
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("alpha");
+      expect(names).toContain("beta"); // NOT removed — onlyTeam is additive
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("onlyTeam filters teams[] arg defensively (mismatched name ignored)", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-filter");
+    try {
+      const { logger } = makeLogger();
+      // Caller passes both teams but onlyTeam pins to 'unum' only.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [
+          { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+          { name: "unum", root: "/u", enabled: true } as CockpitTeam,
+        ],
+        logger,
+        {},
+        undefined,
+        { onlyTeam: "unum" },
+      );
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("unum"); // pinned by onlyTeam
+      expect(names).not.toContain("alpha"); // filtered out
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------- ADR-077: buildSuperdoctorWindowCommand ----------
 
 describe("buildSuperdoctorWindowCommand (ADR-077)", () => {

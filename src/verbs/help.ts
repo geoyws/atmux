@@ -17,7 +17,12 @@ Usage: atmux <verb> [args]
 Setup:
   up                          Same as bare \`atmux\`: bring a team all the way up
   init [--name <team>]        Scaffold .atmux/team.json in current dir
-  start                       Create tmux session, spawn all members
+  start                       Create tmux session, spawn all members. Also
+                              auto-adds the team's cockpit viewer window if
+                              this team is rostered + enabled in
+                              ~/.atmux/cockpit.json (ADR-063 ergonomic fix —
+                              additive, sibling windows untouched; un-
+                              rostered + disabled teams silent-skip).
   stop [--force]              Kill tmux session, archive state
   attach                      tmux attach to the team session
   status                      Powerline team overview

@@ -744,6 +744,25 @@ function buildDefaultReadinessProbe(
  * land on the next rebuild that actually creates the window (operator
  * removes the placeholder, re-runs).
  */
+/** Optional knobs for {@link reconcileCockpitSession}. */
+export interface ReconcileCockpitOpts {
+  /** ADR-063 ergonomic fix (t-ab8df0b4): narrow reconcile to JUST the
+   *  named team's viewer window. When set:
+   *   - Session is created if missing (additive, same as fleet path).
+   *   - Superdoctor is created if missing + enabled, but NOT relocated
+   *     (relocation could displace sibling teams the caller doesn't
+   *     own).
+   *   - Only the named team's window is added (other teams in the
+   *     `teams[]` arg are ignored — the caller should pass only the
+   *     target team, but the parameter is the source of truth here).
+   *   - Orphan removal pass is SKIPPED entirely (additive only —
+   *     never delete sibling windows during a per-team reconcile).
+   *  When undefined: existing fleet-wide behaviour (orphans removed,
+   *  superdoctor force-relocated to slot 2, every team in `teams[]`
+   *  processed). */
+  onlyTeam?: string;
+}
+
 export async function reconcileCockpitSession(
   cockpitTmux: TmuxNamespace,
   sessionName: string,
@@ -751,7 +770,9 @@ export async function reconcileCockpitSession(
   logger: Logger,
   deps: ResolveTeamWindowDeps = {},
   superdoctor?: CockpitSuperdoctor,
+  reconcileOpts: ReconcileCockpitOpts = {},
 ): Promise<void> {
+  const onlyTeam = reconcileOpts.onlyTeam;
   const has = await cockpitTmux.session.hasSession(sessionName);
   if (!has) {
     await cockpitTmux.session.newSession({
@@ -770,6 +791,12 @@ export async function reconcileCockpitSession(
   // The target index is `superdriver.index + 1` rather than a literal
   // `2` because tmux's `base-index` option (operator-config dependent)
   // determines whether window 1 sits at index 0 or 1.
+  //
+  // Per-team mode (ADR-063 ergonomic fix): create-if-missing is fine
+  // (additive), but the forced-relocation pass is SKIPPED — moving the
+  // superdoctor window could displace sibling team viewers that the
+  // single-team caller has no authority to disturb. The fleet-wide
+  // `cockpit rebuild` is responsible for the relocation invariant.
   if (wantSuperdoctor) {
     let windowsBefore = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = windowsBefore.find((w) => w.name === "superdriver");
@@ -787,10 +814,11 @@ export async function reconcileCockpitSession(
       windowsBefore = await cockpitTmux.window.listWindows(sessionName);
       sd = windowsBefore.find((w) => w.name === "superdoctor");
     }
-    if (sd !== undefined && sd.index !== targetIdx) {
+    if (onlyTeam === undefined && sd !== undefined && sd.index !== targetIdx) {
       // Forced relocation; kill whatever sits at the target slot (likely a
       // team viewer from a pre-ADR-077 cockpit). It's recreated below in
-      // the missing-viewer phase.
+      // the missing-viewer phase. Fleet-wide only — per-team mode skips
+      // this to preserve sibling team viewers.
       await cockpitTmux.window.moveWindow({
         source: { sessionName, windowIndex: sd.index },
         target: { sessionName, windowIndex: targetIdx },
@@ -808,8 +836,14 @@ export async function reconcileCockpitSession(
     ...teams.map((t) => t.name),
   ]);
 
+  // Per-team mode: filter teams to JUST the named one before the add
+  // pass — defensive against callers passing the full roster but
+  // wanting only one window touched.
+  const teamsToAdd =
+    onlyTeam !== undefined ? teams.filter((t) => t.name === onlyTeam) : teams;
+
   // Add missing viewer windows.
-  for (const t of teams) {
+  for (const t of teamsToAdd) {
     if (present.has(t.name)) {
       logger.log(`  · window '${t.name}' already present`);
       continue;
@@ -827,6 +861,12 @@ export async function reconcileCockpitSession(
 
   // Remove orphan viewer windows (e.g. team that was removed/disabled).
   // superdriver + superdoctor (when enabled) are always preserved.
+  //
+  // Per-team mode (ADR-063 ergonomic fix): SKIP this pass entirely.
+  // The single-team caller has no authority to remove sibling team
+  // viewers; only the fleet-wide `cockpit rebuild` does that.
+  if (onlyTeam !== undefined) return;
+
   for (const w of windows) {
     if (wanted.has(w.name)) continue;
     if (w.name === "superdriver") continue;
