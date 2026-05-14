@@ -760,7 +760,10 @@ export function resolveSpawnWaitMs(override: number | undefined, env: NodeJS.Pro
   return 6000;
 }
 
-interface PasteBriefArgs {
+/** ADR-081 §C / §D: arguments for {@link pasteBriefForMember}. Exported
+ *  so ADR-081 §D's `doctor --fix` path can re-paste the brief on a
+ *  starving member without duplicating the spawn-time logic. */
+export interface PasteBriefArgs {
   tmux: TmuxNamespace;
   target: SendTarget;
   member: string;
@@ -788,7 +791,7 @@ interface PasteBriefArgs {
  *    `[[ -f "$brief" ]] && _atmux_paste_brief ...`). Other failures
  *    (read, render, tmux load/paste) surface as a warn line.
  */
-async function pasteBriefForMember(args: PasteBriefArgs): Promise<void> {
+export async function pasteBriefForMember(args: PasteBriefArgs): Promise<void> {
   const { tmux, target, member, role, team, atmuxDir, briefsDir, spawnWaitMs, sleep, logger } =
     args;
   // 1. Resolve brief BEFORE the spawn-wait — if there's nothing to paste,

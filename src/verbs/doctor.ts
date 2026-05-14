@@ -35,6 +35,7 @@ import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.t
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
 import {
+  defaultEmojiForRole,
   driverInboxPath,
   getAtmuxDir,
   inboxPathFor,
@@ -44,6 +45,8 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import { classifyText } from "../core/pane-state.ts";
+import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import {
   type DriverInboxEntry,
@@ -1106,6 +1109,256 @@ function truncateEvidence(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
+// ---------- ADR-081 §D: member cage-state ----------
+
+/** Default seconds a pane can sit at the welcome screen before doctor
+ *  flags it `starving` (vs the silent `bootstrapping` transient). 60s
+ *  matches the ADR-081 §D spec — long enough that a fresh claude TUI
+ *  has rendered its banner + had time to consume a same-spawn brief
+ *  paste, short enough that a real starvation surfaces before the
+ *  operator gives up and ssh's in. */
+export const STARVING_THRESHOLD_S = 60;
+
+/** ADR-081 §D classifier output. The four-state ladder doctor surfaces
+ *  per member pane. Matches the ADR's narrative names so audits can
+ *  grep for the same vocabulary. */
+export type MemberCageState =
+  /** No tmux session OR pane window absent OR no `claude` in the pane's
+   *  process tree. Yellow row — operator must `atmux start` or attach
+   *  manually. */
+  | "down"
+  /** `claude` PID alive, ctx==0, welcome banner still visible, pane
+   *  uptime > {@link STARVING_THRESHOLD_S}. Yellow row + `--fix` path
+   *  re-pastes the brief. Matches the c-8ecd3a61 incident state. */
+  | "starving"
+  /** `claude` PID alive, ctx==0 but pane uptime ≤ threshold. Transient
+   *  — silent in the doctor output (no row) so a fresh `atmux start`
+   *  doesn't paint the table yellow for 60s. */
+  | "bootstrapping"
+  /** `claude` PID alive AND ctx > 0 OR token-counter present. Green —
+   *  silent in the output to keep the human render compact (matches
+   *  driver-pane-state behaviour at lines 1051-1062). */
+  | "active";
+
+export interface MemberCageHealth {
+  /** Member name from `team.members[].name`. */
+  member: string;
+  /** Resolved `<emoji><member>` window name (post-ADR-017). */
+  windowName: string;
+  /** Classifier verdict. */
+  state: MemberCageState;
+  /** Seconds the pane process has been alive. `null` when uptime probe
+   *  failed (e.g. `ps` not on PATH) — we fall back to flagging starving
+   *  on banner-match alone to be conservative. */
+  paneUptimeSec: number | null;
+  /** Tail of the last pane capture (≤200 chars). Empty when state is
+   *  `down` (no pane to capture). */
+  evidence: string;
+}
+
+/** Test-side injection points for {@link checkMemberCageStates}. */
+export interface CheckMemberCageStatesOpts {
+  /** Override the per-member probe — single-shot fixture covers each
+   *  member's classification without spinning up a real tmux server. */
+  probe?: (
+    team: Team,
+    member: TeamMember,
+    sessionName: string,
+    socketPath: string,
+  ) => Promise<MemberCageHealth | null>;
+  /** Override `STARVING_THRESHOLD_S`. Tests use a tiny value (e.g. 0s)
+   *  to exercise the starving branch without sleeping; operators can
+   *  pin a custom threshold via this opt (not yet exposed on the CLI). */
+  starvingThresholdSec?: number;
+  /** `tmux.session.hasSession` override (test injection). */
+  hasSession?: (name: string, socketPath: string) => Promise<boolean>;
+}
+
+/**
+ * ADR-081 §D: per-member cage-state check. For each declared member,
+ * classify into `down` / `starving` / `bootstrapping` / `active` and
+ * surface a yellow row only for the operator-actionable states
+ * (`down` + `starving`). Mirrors the {@link checkDriverPaneState}
+ * cadence — single label across all rows: `member-cage-state:<member>`.
+ *
+ * Skips silently when:
+ *   - `team === null` (other checks already flagged the broken state)
+ *   - team session doesn't exist (the session-down state is surfaced
+ *     by other checks; per-member rows would just duplicate the noise)
+ */
+export async function checkMemberCageStates(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckMemberCageStatesOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  if (team.members.length === 0) return [];
+
+  const socketPath = resolveTeamSocket(team);
+  const sessionName = `atmux-${team.name}`;
+  const threshold = opts.starvingThresholdSec ?? STARVING_THRESHOLD_S;
+
+  // Skip when the session is down — other checks already cover that.
+  const hasSession =
+    opts.hasSession ??
+    (async (name: string, sock: string) => {
+      const tmux = createTmux({ socketPath: sock });
+      return await tmux.session.hasSession(name);
+    });
+  if (!(await hasSession(sessionName, socketPath))) return [];
+
+  const probe = opts.probe ?? defaultProbeMemberCage;
+
+  const rows: DoctorRow[] = [];
+  for (const member of team.members) {
+    const health = await probe(team, member, sessionName, socketPath);
+    if (health === null) continue; // probe declined (e.g. window missing AND member.tui shell-only)
+
+    // `bootstrapping` is silent (transient on a fresh atmux start);
+    // `active` is silent (green, no row); only `down`/`starving`
+    // surface. Apply the uptime threshold here AFTER the probe so
+    // the probe can stay pure-classification.
+    let surfaced: MemberCageState = health.state;
+    if (surfaced === "starving" && health.paneUptimeSec !== null && health.paneUptimeSec < threshold) {
+      surfaced = "bootstrapping";
+    }
+    if (surfaced === "active" || surfaced === "bootstrapping") continue;
+
+    const label = `member-cage-state:${member.name}`;
+    const evidence = truncateEvidence(health.evidence, 60);
+    if (surfaced === "down") {
+      rows.push({
+        status: "yellow",
+        label,
+        detail: `pane down — no \`claude\` in window ${health.windowName}`,
+        hint: `attach + check the pane manually, or restart via \`atmux start --force\``,
+      });
+      continue;
+    }
+    // surfaced === "starving"
+    const upMin =
+      health.paneUptimeSec !== null ? `${Math.floor(health.paneUptimeSec / 60)}min` : "unknown";
+    rows.push({
+      status: "yellow",
+      label,
+      detail: `welcome banner persistent — claude alive in ${health.windowName} but brief never landed (uptime ${upMin})${evidence === "" ? "" : ` (${evidence})`}`,
+      hint: `run \`atmux doctor --fix\` to re-paste the brief, or \`--force\` to override if the member is intentionally idle`,
+    });
+  }
+
+  return rows;
+}
+
+/** Default per-member probe. Captures the pane scrollback, reads pane
+ *  pid via tmux list-panes, derives pane-pid uptime via `ps`, and
+ *  classifies via the same `inspectClaudeReadiness` predicate ADR-081
+ *  §C uses for `atmux start`'s post-spawn verification — the readiness
+ *  module is the single source of truth for "claude alive + brief
+ *  consumed."
+ *
+ *  Exposed as a named const (not arrow inline) so tests can stub it
+ *  via {@link CheckMemberCageStatesOpts.probe}. */
+const defaultProbeMemberCage = async (
+  team: Team,
+  member: TeamMember,
+  sessionName: string,
+  socketPath: string,
+): Promise<MemberCageHealth | null> => {
+  const tmux = createTmux({ socketPath });
+  const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
+  const windowName = `${emoji}${member.name}`;
+  const target = `${sessionName}:${windowName}`;
+
+  // Window present? listPanes throws if window missing — treat as down.
+  let panePid: number | null = null;
+  try {
+    const panes = await tmux.pane.listPanes(target);
+    panePid = panes[0]?.pid ?? null;
+  } catch {
+    return {
+      member: member.name,
+      windowName,
+      state: "down",
+      paneUptimeSec: null,
+      evidence: "",
+    };
+  }
+  if (panePid === null) {
+    return { member: member.name, windowName, state: "down", paneUptimeSec: null, evidence: "" };
+  }
+
+  // Capture last 30 lines — enough to see token-counter footer + the
+  // welcome banner near the top of the visible region. Matches the
+  // window used by inspectClaudeReadiness for the readiness probe.
+  let text = "";
+  try {
+    text = await tmux.pane.capturePane({ target, start: -30 });
+  } catch {
+    // Pane capture failed mid-flight — surface as down rather than
+    // mis-classifying as starving.
+    return {
+      member: member.name,
+      windowName,
+      state: "down",
+      paneUptimeSec: null,
+      evidence: "",
+    };
+  }
+
+  const classification = classifyText(text);
+  const verdict = inspectClaudeReadiness(text, classification, true);
+  // Map readiness verdicts to ADR-081 §D states:
+  //   - "absent" (pane SHELL — no claude TUI) → "down"
+  //   - "starving" (welcome banner persistent, no token counter) →
+  //     "starving" (the threshold step downgrades to "bootstrapping"
+  //     when uptime is below the cut-off)
+  //   - "ready" (TUI alive + token counter OR no banner) → "active"
+  //   - "pending" (UNKNOWN classification mid-flight) → treat as
+  //     "active" defensively — don't flag a pane yellow because the
+  //     scrollback didn't classify; the next tick will catch real
+  //     starvation.
+  let state: MemberCageState;
+  if (verdict === "absent") state = "down";
+  else if (verdict === "starving") state = "starving";
+  else state = "active";
+
+  const paneUptimeSec = await readPaneUptimeSec(panePid);
+
+  // Team config is read in the outer check; the member arg drives the
+  // probe. Threading `team` here is for future hooks (rotate-policy
+  // overrides). Suppress unused for now.
+  void team;
+
+  return {
+    member: member.name,
+    windowName,
+    state,
+    paneUptimeSec,
+    evidence: text.slice(-200),
+  };
+};
+
+/** Read the elapsed wall-time of a process via `ps -o etimes= -p <pid>`.
+ *  Returns the value in seconds, or `null` when ps fails / output
+ *  doesn't parse. Pure helper — exported for test directness via the
+ *  module's main check. */
+async function readPaneUptimeSec(pid: number): Promise<number | null> {
+  try {
+    const r = await defaultSpawn({
+      cmd: "ps",
+      argv: ["-o", "etimes=", "-p", String(pid)],
+      expectExitCode: "any",
+      timeoutMs: 2_000,
+    });
+    if (r.exitCode !== 0) return null;
+    const n = Number.parseInt(r.stdout.trim(), 10);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return n;
+  } catch {
+    return null;
+  }
+}
+
 // ---------- ADR-057 §D5c: inbox-mark verification ----------
 
 /** Marker pattern emitted by lead in driver-inbox: `📤 task <id>`.
@@ -1540,6 +1793,10 @@ export interface DoctorOpts {
   stderr?: Writer;
   /** Inject the underlying check executors (test override). */
   runChecks?: (atmuxDir: string, team: Team | null) => Promise<DoctorRow[]>;
+  /** ADR-081 §D: opts threaded into {@link fixStarvingMembers} when
+   *  `--fix` finds starving rows. Test fixtures inject a no-op sleep +
+   *  tiny verify deadline; production callers omit. */
+  fixStarvingOpts?: FixStarvingOpts;
 }
 
 /** Default chain — all in-scope checks invoked in bash main() order. */
@@ -1567,6 +1824,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkInboxMarks(atmuxDir)));
   // ADR-064 §4: driver-pane health (no row when team unconfigured).
   rows.push(...(await checkDriverPaneState(team, atmuxDir)));
+  // ADR-081 §D: per-member cage-state — surface `starving` panes whose
+  // brief never landed, and `down` panes where claude isn't running.
+  // Silent on a healthy team (active members emit no row).
+  rows.push(...(await checkMemberCageStates(team, atmuxDir)));
   // ADR-079 §A: cron interval values must be divisors of 60 (minutes)
   // or 24 (hours). Yellow per offender; surfaces before atmux start.
   rows.push(...checkCronIntervalDivisors(team));
@@ -1608,13 +1869,24 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
     stderr(renderHuman(report));
   }
 
-  // --fix is a stub for V-24 in-scope: surface a hint, don't run
+  // --fix is mostly a stub for V-24 in-scope: surface a hint, don't run
   // anything destructive. Phantom-prune + team.json wizard re-run land
   // when V-01 (up) wires doctor as start preflight per ADR-019 §"Fix".
   // ADR-084 W2 (branch-orphan) carve-out: dry-run summary of safe-to-
   // delete orphan branches surfaces here even while real deletion stays
   // deferred — matches the per-class info rows above 1:1.
   if (parsed.fix && !parsed.quiet) {
+    // ADR-081 §D: real --fix action — re-paste the brief on starving
+    // members so the operator doesn't have to ssh in + run the manual
+    // recovery sequence captured in the ADR's audit trail. Runs BEFORE
+    // the dry-run report so any successful re-pastes flip rows to active
+    // in the user's mental model.
+    if (team !== null) {
+      const starving = collectStarvingMembers(report.rows);
+      if (starving.length > 0) {
+        await fixStarvingMembers(team, atmuxDir, starving, opts.fixStarvingOpts ?? {}, stderr);
+      }
+    }
     const safeOrphans = collectSafeOrphanBranches(report.rows);
     if (safeOrphans.length > 0) {
       stderr(
@@ -1630,6 +1902,170 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
   }
 
   return report.redCount === 0 ? 0 : 1;
+}
+
+/**
+ * ADR-081 §D: scan doctor rows for starving-member yellow rows.
+ * Returns the member names extracted from the `member-cage-state:<name>`
+ * label suffix. The "starving" branch of {@link checkMemberCageStates}
+ * is identified by the row's `detail` text containing `welcome banner
+ * persistent` — stable substring per the row composer.
+ *
+ * Exported for direct unit-testing without spinning the full doctor
+ * pipeline. Pure scan; no IO.
+ */
+export function collectStarvingMembers(rows: ReadonlyArray<DoctorRow>): string[] {
+  const out: string[] = [];
+  for (const r of rows) {
+    if (r.status !== "yellow") continue;
+    if (!r.label.startsWith("member-cage-state:")) continue;
+    if (r.detail === undefined) continue;
+    if (!r.detail.includes("welcome banner persistent")) continue;
+    out.push(r.label.slice("member-cage-state:".length));
+  }
+  return out;
+}
+
+/**
+ * ADR-081 §D: re-paste the role brief on each starving member via the
+ * same path `atmux start` uses (`pasteBriefForMember` exported from
+ * `verbs/start.ts`), with `spawnWaitMs=0` because the TUI is already
+ * alive — no welcome-screen settle needed.
+ *
+ * After paste, probes each pane for up to 30s (ADR-081 §D acceptance)
+ * to confirm ctx > 0 OR welcome banner cleared. Surfaces the result to
+ * stderr; failures degrade gracefully (no throw) — best-effort matches
+ * the rest of the doctor verb's behaviour.
+ */
+async function fixStarvingMembers(
+  team: Team,
+  atmuxDir: string,
+  starving: ReadonlyArray<string>,
+  opts: FixStarvingOpts,
+  stderr: Writer,
+): Promise<void> {
+  // Lazy import — keeps the import surface of doctor.ts narrow and
+  // avoids the verb-to-verb cycle risk if start.ts ever ends up
+  // importing doctor symbols.
+  const { pasteBriefForMember } = await import("./start.ts");
+  const { defaultBriefsDir } = await import("./rotate.ts");
+
+  const socketPath = resolveTeamSocket(team);
+  const sessionName = `atmux-${team.name}`;
+  const tmux = createTmux({ socketPath });
+  const briefsDir = opts.briefsDir ?? defaultBriefsDir();
+  const sleep =
+    opts.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      }));
+  const verifyDeadlineMs = opts.verifyDeadlineMs ?? 30_000;
+  const verifyPollIntervalMs = opts.verifyPollIntervalMs ?? 1_000;
+
+  stderr(`\natmux doctor --fix: re-pasting brief on ${starving.length} starving member(s)\n`);
+
+  for (const memberName of starving) {
+    const member = team.members.find((m) => m.name === memberName);
+    if (member === undefined) {
+      stderr(`  ✗ ${memberName}: not in roster — skipping\n`);
+      continue;
+    }
+    const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
+    const windowName = `${emoji}${member.name}`;
+    const target = `${sessionName}:${windowName}`;
+    const role = typeof member.role === "string" ? member.role : "member";
+    const sendTarget =
+      role === "team-lead"
+        ? ({ kind: "lead" as const, team: team.name, target } as const)
+        : ({ kind: "member" as const, member: member.name, team: team.name, target } as const);
+
+    // The fix call mirrors start.ts's spawn-time invocation but with
+    // `spawnWaitMs=0` — the TUI is already up, no welcome-screen
+    // settle is required.
+    try {
+      await pasteBriefForMember({
+        tmux,
+        target: sendTarget,
+        member: member.name,
+        role,
+        team: team.name,
+        atmuxDir,
+        briefsDir,
+        spawnWaitMs: 0,
+        sleep,
+        logger: {
+          log: (s: string) => stderr(`    ${s}\n`),
+          warn: (s: string) => stderr(`    ${s}\n`),
+          ok: (s: string) => stderr(`    ${s}\n`),
+          err: (s: string) => stderr(`    ${s}\n`),
+        },
+      });
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      stderr(`  ✗ ${memberName}: paste failed — ${cause}\n`);
+      continue;
+    }
+
+    // Verify within deadline that the pane transitioned to active.
+    const verified = await verifyStarvingResolved(
+      tmux,
+      target,
+      verifyDeadlineMs,
+      verifyPollIntervalMs,
+      sleep,
+    );
+    if (verified) {
+      stderr(`  ✅ ${memberName}: brief re-pasted + pane reached active state\n`);
+    } else {
+      stderr(
+        `  ⚠ ${memberName}: brief re-pasted but pane did NOT reach active within ${verifyDeadlineMs}ms — inspect manually\n`,
+      );
+    }
+  }
+}
+
+/** ADR-081 §D verification step — poll a pane up to `deadlineMs` for
+ *  transition from starving → active (ctx > 0 OR banner cleared).
+ *  Pure-ish: tmux IO + sleep, no other side effects. */
+async function verifyStarvingResolved(
+  tmux: ReturnType<typeof createTmux>,
+  target: string,
+  deadlineMs: number,
+  pollIntervalMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < deadlineMs) {
+    let text = "";
+    try {
+      text = await tmux.pane.capturePane({ target, start: -30 });
+    } catch {
+      // Pane vanished mid-verify — caller treats as not-resolved.
+      return false;
+    }
+    const classification = classifyText(text);
+    const verdict = inspectClaudeReadiness(text, classification, true);
+    if (verdict === "ready") return true;
+    await sleep(pollIntervalMs);
+  }
+  return false;
+}
+
+/** Options for `fixStarvingMembers`. Tests inject sleep + verify deadline
+ *  to keep unit suites fast; the `verbs/doctor` CLI path passes nothing
+ *  (defaults: real setTimeout, 30s deadline, 1s poll). */
+export interface FixStarvingOpts {
+  /** Override the briefs dir resolution (test injection). */
+  briefsDir?: string;
+  /** Sleep override — defaults to `setTimeout`-backed promise. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Wall-clock budget for the post-paste verify probe. Default 30_000ms
+   *  per ADR-081 §D acceptance. */
+  verifyDeadlineMs?: number;
+  /** Poll interval inside the verify loop. Default 1_000ms — balances
+   *  responsiveness with not hammering the tmux server. */
+  verifyPollIntervalMs?: number;
 }
 
 /**
