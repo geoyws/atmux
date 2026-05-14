@@ -33,6 +33,20 @@ export type TuiKind = z.infer<typeof TuiKind>;
 export const TeamMember = z
   .object({
     name: z.string().min(1),
+    /** ADR-136 (Option B): display label decoupled from member `name`.
+     *  When set, the display layer (buildWindowName, status, Discord,
+     *  briefs) uses `label`; the `name` field remains the immutable id
+     *  (kanban owner refs, state-file keys, socket-pubsub topics). When
+     *  unset, the display layer falls back to `name` — zero migration
+     *  for existing teams. Refine rule rejects `:` and `.` because both
+     *  are tmux window-name separator chars and would break
+     *  `__<team>__<member>` parsing. */
+    label: z
+      .string()
+      .refine((s) => !s.includes(":") && !s.includes("."), {
+        message: "label cannot contain ':' or '.' (tmux separator chars)",
+      })
+      .optional(),
     role: z.string().optional(),
     lane: z.string().optional(),
     tui: TuiKind.optional(),
