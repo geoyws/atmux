@@ -466,6 +466,22 @@ export const TeamGitter = z
   .strict();
 export type TeamGitter = z.infer<typeof TeamGitter>;
 
+/** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
+ *  All fields optional; defaults applied at the call-site per ADR-142
+ *  §Configuration. `.strict()` so typos (`windowMins` etc.) trip the
+ *  same drift-detection ping as `whip` / `gitter`. */
+export const TeamModalCycling = z
+  .object({
+    enabled: z.boolean().optional(),
+    cycleThreshold: z.number().int().positive().optional(),
+    windowMin: z.number().int().positive().optional(),
+    commitGracePeriodMin: z.number().int().nonnegative().optional(),
+    dedupMin: z.number().int().nonnegative().optional(),
+    exemptMembers: z.array(z.string()).optional(),
+  })
+  .strict();
+export type TeamModalCycling = z.infer<typeof TeamModalCycling>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -549,6 +565,9 @@ export const Team = z
     unblocker: TeamUnblocker.optional(),
     /** ADR-080 §B2: gitter-member knobs (auto-done scan repo path). */
     gitter: TeamGitter.optional(),
+    /** ADR-142: modal-cycling detector tunables. Defaults applied per
+     *  ADR-142 §Configuration when the block is absent. */
+    modalCycling: TeamModalCycling.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. Setting `0` collapses the grace to a single tick but

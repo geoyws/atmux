@@ -2253,4 +2253,254 @@ describe("whip() — public verb", () => {
       expect(sent.filter((s) => s.template === "whip-progress").length).toBe(1);
     });
   });
+
+  // ---------- ADR-142 §1c modal-cycling integration ----------
+
+  describe("modal-cycling — §1c detector wire-in", () => {
+    const NOW_SEC = 1_700_000_000;
+    const NOW_MS = NOW_SEC * 1000;
+
+    const MODAL_TEXTS = [
+      "❯ 1. Force-push to origin?\n  2. Pause and ask\n  0. Dismiss",
+      "❯ 1. Use --force-with-lease?\n  2. Use --force?\n  0. Cancel",
+      "❯ 1. Retry from clean?\n  2. Unclaim?\n  0. Pause",
+    ] as const;
+
+    /** Seed two prior history entries so a fresh modal-on-pane this tick
+     *  trips the 3-distinct-in-window threshold. */
+    async function seedTwoPriorEntries(
+      atmuxDirPath: string,
+      member: string,
+      anchorSec: number,
+    ): Promise<void> {
+      const path = join(atmuxDirPath, "state", `modal-history-${member}.json`);
+      const { createHash } = await import("node:crypto");
+      const hashOf = (s: string): string => createHash("sha256").update(s).digest("hex");
+      const entries = [
+        {
+          member,
+          paneTextHash: hashOf(MODAL_TEXTS[0]),
+          detectedAt: anchorSec - 1200,
+          modalText: MODAL_TEXTS[0],
+          modalClass: "choice-prompt",
+        },
+        {
+          member,
+          paneTextHash: hashOf(MODAL_TEXTS[1]),
+          detectedAt: anchorSec - 600,
+          modalText: MODAL_TEXTS[1],
+          modalClass: "choice-prompt",
+        },
+      ];
+      await mkdir(join(atmuxDirPath, "state"), { recursive: true });
+      await writeFile(path, JSON.stringify(entries), "utf8");
+    }
+
+    test("3rd distinct modal + 0 commits → Discord + clarifier + flag fire", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+      });
+      await seedTwoPriorEntries(atmuxDir, "alice", NOW_SEC);
+
+      const sent: DiscordSendOpts[] = [];
+      const clarifierCalls: Array<{ member: string; message: string }> = [];
+      const flagCalls: Array<{ subject: string; body: string }> = [];
+
+      await whip(["--team-dir", teamDir], {
+        stdout,
+        stderr,
+        now: () => NOW_MS,
+        home: homeDir,
+        env: {},
+        tmux: buildFakeTmux({
+          sessionUp: true,
+          panes: {
+            "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+          },
+        }),
+        discordSend: async (o) => {
+          sent.push(o);
+        },
+        commitCountInWindow: async () => 0,
+        dispatchModalCyclingClarifier: async (member, message) => {
+          clarifierCalls.push({ member, message });
+        },
+        fileModalCyclingFlag: async (subject, body) => {
+          flagCalls.push({ subject, body });
+        },
+      });
+
+      const cycling = sent.find((s) => s.template === "whip-modal-cycling");
+      expect(cycling).toBeDefined();
+      expect(cycling?.verdict ?? "").toMatch(/Modal-cycling/);
+      expect(cycling?.verdict ?? "").toMatch(/alice/);
+
+      expect(clarifierCalls).toHaveLength(1);
+      expect(clarifierCalls[0]?.member).toBe("alice");
+      expect(clarifierCalls[0]?.message).toMatch(/modal-cycling detected/);
+
+      expect(flagCalls).toHaveLength(1);
+      expect(flagCalls[0]?.subject).toMatch(/modal-cycling detected on alice/);
+
+      // Dedup state should now have alice stamped at NOW_SEC.
+      const dedupRaw = await readFile(
+        join(atmuxDir, "state", "modal-cycling-dedup-state.json"),
+        "utf8",
+      );
+      const dedup = JSON.parse(dedupRaw) as Record<string, number>;
+      expect(dedup.alice).toBe(NOW_SEC);
+    });
+
+    test("dedup respected — second tick within window does not re-fire", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+      });
+      await seedTwoPriorEntries(atmuxDir, "alice", NOW_SEC);
+
+      const tmuxNs = buildFakeTmux({
+        sessionUp: true,
+        panes: {
+          "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+        },
+      });
+
+      const sent: DiscordSendOpts[] = [];
+      const clarifierCalls: string[] = [];
+      const flagCalls: string[] = [];
+      const baseOpts = {
+        stdout,
+        stderr,
+        home: homeDir,
+        env: {},
+        tmux: tmuxNs,
+        discordSend: async (o: DiscordSendOpts) => {
+          sent.push(o);
+        },
+        commitCountInWindow: async () => 0,
+        dispatchModalCyclingClarifier: async (m: string) => {
+          clarifierCalls.push(m);
+        },
+        fileModalCyclingFlag: async (s: string) => {
+          flagCalls.push(s);
+        },
+      };
+
+      // Tick 1 — fires.
+      await whip(["--team-dir", teamDir], { ...baseOpts, now: () => NOW_MS });
+      // Tick 2 — 5 min later, within 30min dedup window → must NOT re-fire.
+      await whip(["--team-dir", teamDir], { ...baseOpts, now: () => NOW_MS + 5 * 60 * 1000 });
+
+      expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(1);
+      expect(clarifierCalls).toHaveLength(1);
+      expect(flagCalls).toHaveLength(1);
+    });
+
+    test("commits-in-window > 0 → no fire (productive ceremony)", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+      });
+      await seedTwoPriorEntries(atmuxDir, "alice", NOW_SEC);
+
+      const sent: DiscordSendOpts[] = [];
+      const clarifierCalls: string[] = [];
+
+      await whip(["--team-dir", teamDir], {
+        stdout,
+        stderr,
+        now: () => NOW_MS,
+        home: homeDir,
+        env: {},
+        tmux: buildFakeTmux({
+          sessionUp: true,
+          panes: {
+            "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+          },
+        }),
+        discordSend: async (o) => {
+          sent.push(o);
+        },
+        commitCountInWindow: async () => 1,
+        dispatchModalCyclingClarifier: async (m) => {
+          clarifierCalls.push(m);
+        },
+        fileModalCyclingFlag: async () => {},
+      });
+
+      expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(0);
+      expect(clarifierCalls).toHaveLength(0);
+    });
+
+    test("exempt member — detector records nothing, surfaces nothing", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+        modalCycling: { exemptMembers: ["alice"] },
+      } as { name: string; members: unknown[]; modalCycling: unknown });
+      await seedTwoPriorEntries(atmuxDir, "alice", NOW_SEC);
+
+      const sent: DiscordSendOpts[] = [];
+      const clarifierCalls: string[] = [];
+
+      await whip(["--team-dir", teamDir], {
+        stdout,
+        stderr,
+        now: () => NOW_MS,
+        home: homeDir,
+        env: {},
+        tmux: buildFakeTmux({
+          sessionUp: true,
+          panes: {
+            "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+          },
+        }),
+        discordSend: async (o) => {
+          sent.push(o);
+        },
+        commitCountInWindow: async () => 0,
+        dispatchModalCyclingClarifier: async (m) => {
+          clarifierCalls.push(m);
+        },
+        fileModalCyclingFlag: async () => {},
+      });
+
+      expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(0);
+      expect(clarifierCalls).toHaveLength(0);
+    });
+
+    test("enabled=false → detector entirely skipped", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+        modalCycling: { enabled: false },
+      } as { name: string; members: unknown[]; modalCycling: unknown });
+      await seedTwoPriorEntries(atmuxDir, "alice", NOW_SEC);
+
+      const sent: DiscordSendOpts[] = [];
+
+      await whip(["--team-dir", teamDir], {
+        stdout,
+        stderr,
+        now: () => NOW_MS,
+        home: homeDir,
+        env: {},
+        tmux: buildFakeTmux({
+          sessionUp: true,
+          panes: {
+            "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+          },
+        }),
+        discordSend: async (o) => {
+          sent.push(o);
+        },
+        commitCountInWindow: async () => 0,
+        dispatchModalCyclingClarifier: async () => {},
+        fileModalCyclingFlag: async () => {},
+      });
+
+      expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(0);
+    });
+  });
 });
