@@ -68,6 +68,8 @@ import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
+import { epic } from "./verbs/epic.ts";
+import { story } from "./verbs/story.ts";
 import { task } from "./verbs/task.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
@@ -201,6 +203,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return send(["--broadcast", ...argv.slice(1)]);
     case "task":
       return task(argv.slice(1));
+    case "epic":
+      return epic(argv.slice(1));
+    case "story":
+      return story(argv.slice(1));
     case "team":
       return dispatchTeamSubverb(argv.slice(1));
     case "tell-lead":

@@ -519,9 +519,14 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         // member gets its own fork off the team's current branch.
         const wtBranch = `${branch}-${sanitizeBranchSegment(member.name)}`;
         try {
-          const r = await provisionWorktree(repoPath, branch, wtBranch, wtPath, {
+          // ADR-088 §"Implementation surface": pass `initSubmodules` through
+          // when team opts in. Opt-out (default) means `git submodule update`
+          // is never invoked — teams without submodules pay zero cost.
+          const provOpts: Parameters<typeof provisionWorktree>[4] = {
             git: gitSpawn,
-          });
+          };
+          if (team.worktreeInitSubmodules === true) provOpts.initSubmodules = true;
+          const r = await provisionWorktree(repoPath, branch, wtBranch, wtPath, provOpts);
           worktreeCwd.set(member.name, wtPath);
           logger.log(
             `  · worktree ${r.created ? "created" : "reused"}: ${member.name} → ${wtPath} [${wtBranch}]`,
