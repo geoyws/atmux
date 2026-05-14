@@ -37,6 +37,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **Superdoctor self-escalation primitives** ([ADR-077 §F6](docs/adr/077-superdoctor-cockpit-role.md)).
+  Without these, superdoctor silently loops while a team stays broken
+  (rotate-lead swallowed under auto-mode; kill+respawn welcome-screen-gates;
+  members idle 3h after rebuild). Ships three primitives the deferred
+  `~/.claude/skills/superdoctor/` skill consumes: (a) SQLite migration
+  v2→v3 materialising `superdoctor_attempts(complaint_id, attempt_n,
+  outcome ∈ {resolved, partial, failed}, attempted_at, action, note,
+  extra)` per-team — one row per structural-fix attempt with a CHECK
+  constraint on `outcome`; (b) typed CRUD via `SuperdoctorAttemptsRepo`
+  (`src/core/repositories/superdoctor-attempts-repo.ts`) — load-bearing
+  query is `countByOutcomeFor(complaintId, 'failed')`, reaching 3 is the
+  page-George trigger; (c) Discord template `[self-heal-failed]` +
+  renderer `renderSelfHealFailed` (`src/abstractions/discord.ts`) —
+  verdict-first ABC menu (`A` /team stop+start, `B` swap account,
+  `C` park for the night) with a 30-min default deadline keyed off
+  `whenMs`. Operator replies one letter from a phone. Dedup state lives
+  in `state_kv` (feature `superdoctor-self-heal-escalation`, key per
+  `complaint_id`, 1h re-fire window). Documented end-to-end in
+  [`docs/superdoctor.md` § "Self-escalation when fixes keep failing"](docs/superdoctor.md).
 - **`atmux stop --soft` + resume manifest** ([ADR-087](docs/adr/087-stop-soft-resume-manifest.md)).
   Graceful counterpart to bare `stop`. Reads kanban for in-progress Tasks,
   sends a `# soft-stop incoming — finish current operation, no new claims`

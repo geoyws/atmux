@@ -159,12 +159,15 @@ describe("parseComplaintsArgs", () => {
 // ---------- migration v2 ----------
 
 describe("complaints migration v2 — schema present", () => {
-  test("opening a fresh state.db materialises the complaints table at user_version=2", async () => {
+  test("opening a fresh state.db materialises the complaints table at the ladder tip", async () => {
     const path = join(atmuxDir, "state.db");
     const db = openDatabase(path, migrations);
     try {
       const v = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-      expect(v).toBe(2);
+      // Ladder tip drifts as new migrations land (v3: superdoctor_attempts
+      // per ADR-077 §F6). Assert v ≥ 2 + table presence — that's the
+      // invariant complaints depends on, not the literal version.
+      expect(v).toBeGreaterThanOrEqual(2);
       const tables = db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
         name: string;
       }>;

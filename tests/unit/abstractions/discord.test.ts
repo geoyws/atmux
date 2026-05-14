@@ -1673,3 +1673,95 @@ describe("renderWhipDefunctCwd", () => {
     expect(written).toContain("/tmp/x");
   });
 });
+
+// ---------- ADR-077 §F6 — renderSelfHealFailed ----------
+
+describe("renderSelfHealFailed", () => {
+  test("renders self-heal-failed template with ABC menu + default deadline", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    // Mon 2026-05-04 03:44 UTC → 11:44 MYT. Default at +30min → 12:14 MYT.
+    const whenMs = Date.UTC(2026, 4, 4, 3, 44, 0);
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "rotate-lead swallowed under auto-mode",
+      attempts: 3,
+      members: 12,
+      fromAccount: "personal",
+      toAccount: "icloud",
+      complaintsOpen: 7,
+      whipStrikes: 4,
+      whenMs,
+    });
+    expect(out.template).toBe("self-heal-failed");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🚨");
+    expect(out.whenMs).toBe(whenMs);
+    const bullets = out.bullets ?? [];
+    expect(bullets).toHaveLength(7);
+    expect(bullets[0]).toContain("rotate-lead swallowed under auto-mode");
+    expect(bullets[0]).toContain("N=3 attempts");
+    expect(bullets[1]).toContain("reply A/B/C");
+    expect(bullets[2]).toContain("A) /team stop + start atmux");
+    expect(bullets[2]).toContain("12 member(s)");
+    expect(bullets[3]).toBe("🔁 B) swap account personal → icloud — wk budget reset");
+    expect(bullets[4]).toContain("C) park atmux for the night");
+    expect(bullets[5]).toContain("default at 12:14 MYT: A");
+    expect(bullets[6]).toBe("📍 7 open · 4 strikes");
+  });
+
+  test("nullable account labels collapse to a generic swap line", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "members idle 3h after rebuild",
+      attempts: 3,
+      members: 8,
+      fromAccount: null,
+      toAccount: null,
+      complaintsOpen: 2,
+      whipStrikes: 1,
+      whenMs: Date.UTC(2026, 4, 4, 3, 44, 0),
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[3]).toBe("🔁 B) swap account — wk budget reset");
+  });
+
+  test("whenMs defaults to now() when omitted", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    const before = Date.now();
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "test",
+      attempts: 4,
+      members: 1,
+      fromAccount: "a",
+      toAccount: "b",
+      complaintsOpen: 0,
+      whipStrikes: 0,
+    });
+    const after = Date.now();
+    expect(out.whenMs).toBeGreaterThanOrEqual(before);
+    expect(out.whenMs as number).toBeLessThanOrEqual(after);
+  });
+
+  test("send-time validation passes — bullets carry allowed prefixes", async () => {
+    const { renderSelfHealFailed, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "self-heal-failed-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderSelfHealFailed({
+        team: "atmux",
+        symptom: "kill+respawn welcome-screen-gates",
+        attempts: 3,
+        members: 5,
+        fromAccount: "personal",
+        toAccount: "icloud",
+        complaintsOpen: 1,
+        whipStrikes: 2,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[self-heal-failed]");
+    expect(written).toContain("kill+respawn welcome-screen-gates");
+  });
+});

@@ -134,6 +134,13 @@ Deferred follow-up tasks (filed in atmux kanban under epic `t-274ec70c`):
 - F2: per-team complaint box SQLite schema + verb family (`atmux complaints …`).
 - F3: `atmux send` / `atmux receive` recognise `__superdoctor__` as a valid inbox member at the cockpit tier.
 - F4: P0 send-keys escalation runbook (when superdoctor is allowed to bypass the SQL inbox and write directly to a teammate's pane).
+- **F6**: superdoctor self-escalation when its own structural fixes fail. Without this, superdoctor silently loops while the team stays broken (rotate-lead swallowed under auto-mode, kill+respawn welcome-screen-gates, all members idle 3h after rebuild). Primitives shipped in atmux:
+  - Migration v2→v3 (`src/abstractions/sqlite-migrations.ts`) materialises `superdoctor_attempts(id, complaint_id, attempt_n, outcome ∈ {resolved, partial, failed}, attempted_at, action, note, extra)` per-team. One row per structural-fix attempt the skill takes; CHECK constraint on `outcome`.
+  - Typed CRUD via `SuperdoctorAttemptsRepo` (`src/core/repositories/superdoctor-attempts-repo.ts`) — `insert` / `listForComplaint` / `countByOutcomeFor` / `latestFor`. The load-bearing query is `countByOutcomeFor(complaintId, 'failed')`; reaching 3 triggers the escalation.
+  - Discord template `self-heal-failed` + renderer `renderSelfHealFailed` (`src/abstractions/discord.ts`) — verdict-first ABC menu (`A` /team stop+start, `B` swap account, `C` park for the night) with a 30min-default deadline keyed off `whenMs`. Operator replies one letter from a phone.
+  - Dedup state lives in `state_kv` (feature `superdoctor-self-heal-escalation`, key per `complaint_id`) with a 1h re-fire window — the table is the durable attempt log, not the dedup ledger.
+
+  The hourly self-heal logic itself (record-attempt-with-outcome, check threshold, render-and-emit, action handler for the operator's letter reply) lives in `~/.claude/skills/superdoctor/superdoctor-prompt.md` (F1) and `~/.claude/skills/superdoctor/scripts/*` — the skill operates against the typed primitives this ADR ships in atmux.
 
 ## Out of scope
 

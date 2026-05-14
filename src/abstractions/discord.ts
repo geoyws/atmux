@@ -96,7 +96,13 @@ export type DiscordTemplate =
   // json (24h per-member); defunct-cwd fires every tick (no dedup — a
   // defunct cwd is a P1 demand for operator action).
   | "whip-perm-mode-drift"
-  | "whip-defunct-cwd";
+  | "whip-defunct-cwd"
+  // ADR-077 §F6: superdoctor self-escalation. Fired when the skill
+  // has attempted 3 structural fixes against the same complaint hash
+  // and all failed. Renderer below (`renderSelfHealFailed`); dedup
+  // state in state_kv (feature `superdoctor-self-heal-escalation`,
+  // key = complaint_id) with a 1h re-fire window.
+  | "self-heal-failed";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1284,5 +1290,81 @@ export function renderWhipDefunctCwd(opts: WhipDefunctCwdOpts): DiscordSendOpts 
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-077 §F6 — renderSelfHealFailed ----------
+
+export interface SelfHealFailedOpts {
+  team: string;
+  /** One-line symptom — what stayed broken after the attempts. The
+   *  skill composes this from the complaint's `incident_summary`. */
+  symptom: string;
+  /** Count of failed attempts on this complaint hash. The escalation
+   *  trigger is N=3 (per ADR-077 §F6); the renderer surfaces the
+   *  actual count so a 4th failure that beats dedup still reads
+   *  correctly. */
+  attempts: number;
+  /** Active member count the proposed restart would clear. Surfaced
+   *  in option A so the operator sees the blast radius. */
+  members: number;
+  /** Current account label (e.g. `personal`, `icloud`). Option B
+   *  proposes swapping AWAY from this. Null when account info is
+   *  unavailable; the option renders without a `from`. */
+  fromAccount: string | null;
+  /** Proposed swap target (e.g. `icloud`). Same nullability semantics
+   *  as `fromAccount`. */
+  toAccount: string | null;
+  /** Open complaint count for the team — footer signal. */
+  complaintsOpen: number;
+  /** Whip-strike accumulator from the skill's tracking — footer signal. */
+  whipStrikes: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[self-heal-failed]` Discord send opts per ADR-077 §F6.
+ * Verdict-first, milestone-grade, ask-loudly per CLAUDE.md §Discord —
+ * the operator should be able to reply with a single letter from a
+ * phone and have the skill apply the named action.
+ *
+ * Bullets:
+ *   - `🚨 self-heal failed: <symptom> — N=<attempts> attempts`
+ *   - `🙏 reply A/B/C — one letter pivots cheaply`
+ *   - `🛠️ A) /team stop + start <team> — restarts <members> member(s) ~30s`
+ *   - `🔁 B) swap account <from> → <to> — wk budget reset` (or generic
+ *     swap line when account labels are unavailable)
+ *   - `⏳ C) park <team> for the night — re-engage at session start`
+ *   - `⏰ default at <HH:MM MYT>: A — cheap to pivot if you redirect`
+ *   - `📍 <complaintsOpen> open · <whipStrikes> strikes`
+ *
+ * The "default at HH:MM MYT" deadline is 30 minutes after the ping's
+ * own timestamp — gives the operator enough phone-time to triage
+ * without sitting on a broken team overnight. Derived from `whenMs`
+ * (or `now()`) so test injection threads through cleanly.
+ */
+export function renderSelfHealFailed(opts: SelfHealFailedOpts): DiscordSendOpts {
+  const whenMs = opts.whenMs ?? now();
+  const defaultAtMs = whenMs + 30 * 60 * 1000;
+  const swapLine =
+    opts.fromAccount !== null && opts.toAccount !== null
+      ? `🔁 B) swap account ${opts.fromAccount} → ${opts.toAccount} — wk budget reset`
+      : "🔁 B) swap account — wk budget reset";
+  const bullets: string[] = [
+    `🚨 self-heal failed: ${opts.symptom} — N=${opts.attempts} attempts`,
+    "🙏 reply A/B/C — one letter pivots cheaply",
+    `🛠️ A) /team stop + start ${opts.team} — restarts ${opts.members} member(s) ~30s`,
+    swapLine,
+    `⏳ C) park ${opts.team} for the night — re-engage at session start`,
+    `⏰ default at ${formatMyt(defaultAtMs)}: A — cheap to pivot if you redirect`,
+    `📍 ${opts.complaintsOpen} open · ${opts.whipStrikes} strikes`,
+  ];
+  const out: DiscordSendOpts = {
+    template: "self-heal-failed",
+    team: opts.team,
+    category: "🚨",
+    bullets,
+    whenMs,
+  };
   return out;
 }

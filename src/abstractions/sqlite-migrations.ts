@@ -140,4 +140,34 @@ export const migrations: readonly Migration[] = [
       db.exec("CREATE INDEX idx_complaints_opened_at ON complaints(opened_at DESC)");
     },
   },
+  // ---------- v2 → v3 ----------
+  // ADR-077 §F6: superdoctor self-escalation event log. One row per
+  // structural-fix attempt against a complaint. After N=3 rows with
+  // `outcome='failed'` for the same `complaint_id`, the skill emits
+  // exactly one `[self-heal-failed]` Discord ping (renderer in
+  // src/abstractions/discord.ts). Dedup state for the ping lives in
+  // state_kv (feature `superdoctor-self-heal-escalation`); this table
+  // is the durable attempt log, not the dedup ledger.
+  {
+    from: 2,
+    to: 3,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE superdoctor_attempts (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					complaint_id TEXT NOT NULL,
+					attempt_n INTEGER NOT NULL,
+					outcome TEXT NOT NULL CHECK(outcome IN ('resolved','partial','failed')),
+					attempted_at INTEGER NOT NULL,
+					action TEXT,
+					note TEXT,
+					extra TEXT
+				) STRICT;
+			`);
+      db.exec(
+        "CREATE INDEX idx_sd_attempts_complaint ON superdoctor_attempts(complaint_id, attempted_at DESC)",
+      );
+      db.exec("CREATE INDEX idx_sd_attempts_outcome ON superdoctor_attempts(outcome)");
+    },
+  },
 ];
