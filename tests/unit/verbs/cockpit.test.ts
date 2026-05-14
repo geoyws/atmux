@@ -1226,17 +1226,71 @@ describe("resolveTeamWindowMode", () => {
     };
     expect(await resolveTeamWindowMode(team, deps)).toBe("session-down");
   });
+
+  // ADR-063 follow-up: socket resolver wired through deps so cockpit
+  // can detect cages running on the per-team `team.tmuxTmpdir`
+  // convention, not just the legacy `/tmp/atmux-<team>/sock` path.
+  test("resolveCageSocket=per-team + cage alive → 'attach' (regression for driver-inbox 2026-05-14 bug)", async () => {
+    let factorySocket: string | undefined;
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      resolveCageSocket: async (_name, root) => `${root}/.atmux/tmux/tmux-0/default`,
+      createCageTmux: (sock) => {
+        factorySocket = sock;
+        return fakeCageTmux({
+          hasSession: true,
+          windows: [{ index: 1, name: "driver" }],
+        });
+      },
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("attach");
+    // Compat verify: the resolved per-team socket was the one the
+    // factory was called with — proves the threading works end-to-end.
+    expect(factorySocket).toBe("/d/.atmux/tmux/tmux-0/default");
+  });
+
+  test("resolveCageSocket=legacy + cage alive → 'attach' (compat regression)", async () => {
+    let factorySocket: string | undefined;
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      resolveCageSocket: async (name) => `/tmp/atmux-${name}/sock`,
+      createCageTmux: (sock) => {
+        factorySocket = sock;
+        return fakeCageTmux({
+          hasSession: true,
+          windows: [{ index: 1, name: "driver" }],
+        });
+      },
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("attach");
+    expect(factorySocket).toBe("/tmp/atmux-demo/sock");
+  });
+
+  test("resolveCageSocket throws → 'session-down' (resolver failure is non-fatal)", async () => {
+    const deps: ResolveTeamWindowDeps = {
+      loadTeam: async () => fakeTeam({ tui: "claude" }),
+      resolveCageSocket: async () => {
+        throw new Error("simulated resolver failure");
+      },
+    };
+    expect(await resolveTeamWindowMode(team, deps)).toBe("session-down");
+  });
 });
 
 describe("buildTeamWindowCommand", () => {
   const team = { name: "demo", root: "/d", enabled: true } as CockpitTeam;
+  const uid = process.getuid?.() ?? 0;
 
-  test("attach mode targets <session>:driver via the retry loop", () => {
+  test("attach mode targets <session>:driver via the dual-socket retry loop", () => {
     const cmd = buildTeamWindowCommand(team, "attach");
     expect(cmd).toContain("attach -t");
     expect(cmd).toContain(":driver");
     expect(cmd).toContain("while true");
     expect(cmd).toContain("sleep 1");
+    // ADR-063 follow-up: both socket conventions inside one iteration.
+    expect(cmd).toContain("/tmp/atmux-demo/sock");
+    expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
+    expect(cmd).toContain("||");
   });
 
   test("no-driver-config emits the 'set team.json::driverSession' guidance", () => {
@@ -1246,11 +1300,18 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain("sleep infinity");
   });
 
-  test("session-down emits the 'atmux start' guidance", () => {
+  test("session-down emits the 'atmux start' guidance + self-healing retry-loop", () => {
     const cmd = buildTeamWindowCommand(team, "session-down");
     expect(cmd).toContain("session not running");
     expect(cmd).toContain("atmux start demo");
-    expect(cmd).toContain("sleep infinity");
+    // ADR-063 follow-up: replaced `sleep infinity` with a retry-loop so
+    // the window re-attaches when the cage comes back up — see
+    // driver-inbox 2026-05-14 bug report.
+    expect(cmd).not.toContain("sleep infinity");
+    expect(cmd).toContain("while true");
+    expect(cmd).toContain("sleep 1");
+    expect(cmd).toContain("/tmp/atmux-demo/sock");
+    expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
   });
 
   test("placeholder shell-quoting survives team names with apostrophes", () => {
@@ -1260,6 +1321,16 @@ describe("buildTeamWindowCommand", () => {
     // team name must be escaped via the POSIX `'\''` idiom so the
     // surrounding `printf` quoting doesn't break.
     expect(cmd).toContain("'\\''");
+  });
+
+  test("session-down printf message is shell-safe for team names with apostrophes", () => {
+    const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
+    const cmd = buildTeamWindowCommand(apostropheTeam, "session-down");
+    // The printf prelude single-quotes its message; the apostrophe in
+    // "ali's-team" must be POSIX-escaped or the rest of the command
+    // string breaks the shell parse.
+    expect(cmd).toContain("'\\''");
+    expect(cmd).toContain("while true");
   });
 });
 

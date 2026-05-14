@@ -15,7 +15,9 @@ import {
   loadCockpit,
   MAX_NESTING_LEVEL,
   migrateLegacyShape,
+  perTeamCageSocketPath,
   readNestingLevel,
+  resolveCageSocket,
   resolveCockpitConfigPath,
   resolvePrefix,
   validatePrefixChain,
@@ -166,6 +168,55 @@ describe("cageSocketPath", () => {
   test("returns /tmp/atmux-<team>/sock", () => {
     expect(cageSocketPath("sopx")).toBe("/tmp/atmux-sopx/sock");
     expect(cageSocketPath("atmux")).toBe("/tmp/atmux-atmux/sock");
+  });
+});
+
+describe("perTeamCageSocketPath", () => {
+  test("returns <teamRoot>/.atmux/tmux/tmux-<uid>/default", () => {
+    const uid = process.getuid?.() ?? 0;
+    expect(perTeamCageSocketPath("/p/sopx")).toBe(`/p/sopx/.atmux/tmux/tmux-${uid}/default`);
+    expect(perTeamCageSocketPath("/root/work/src/atmux")).toBe(
+      `/root/work/src/atmux/.atmux/tmux/tmux-${uid}/default`,
+    );
+  });
+});
+
+describe("resolveCageSocket (ADR-063 follow-up)", () => {
+  test("returns legacy path when only legacy exists", async () => {
+    const seen: string[] = [];
+    const exists = async (p: string) => {
+      seen.push(p);
+      return p === "/tmp/atmux-x/sock";
+    };
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
+    // Probe stopped at legacy hit; per-team path never queried.
+    expect(seen).toEqual(["/tmp/atmux-x/sock"]);
+  });
+
+  test("returns per-team path when only per-team exists", async () => {
+    const perTeam = perTeamCageSocketPath("/root/x");
+    const exists = async (p: string) => p === perTeam;
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe(perTeam);
+  });
+
+  test("returns legacy first when both exist (backward-compat precedence)", async () => {
+    const exists = async () => true;
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
+  });
+
+  test("falls through to legacy when neither exists", async () => {
+    const exists = async () => false;
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
+  });
+
+  test("probe order matches helper output (legacy → per-team)", async () => {
+    const seen: string[] = [];
+    const exists = async (p: string) => {
+      seen.push(p);
+      return false;
+    };
+    await resolveCageSocket("z", "/some/root", { exists });
+    expect(seen).toEqual(["/tmp/atmux-z/sock", perTeamCageSocketPath("/some/root")]);
   });
 });
 
@@ -334,9 +385,7 @@ describe("walkSessions — depth-first traversal", () => {
             name: "L1a",
             root: "/L1a",
             enabled: true,
-            sessions: [
-              { type: "team", name: "L2", root: "/L2", enabled: true, sessions: [] },
-            ],
+            sessions: [{ type: "team", name: "L2", root: "/L2", enabled: true, sessions: [] }],
           },
           { type: "team", name: "L1b", root: "/L1b", enabled: true, sessions: [] },
         ],
@@ -397,9 +446,7 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
               type: "team",
               name: "inner-a",
               root: "/p/inner-a",
-              sessions: [
-                { type: "team", name: "leaf", root: "/p/leaf" },
-              ],
+              sessions: [{ type: "team", name: "leaf", root: "/p/leaf" }],
             },
             { type: "team", name: "inner-b", root: "/p/inner-b" },
           ],

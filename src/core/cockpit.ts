@@ -15,8 +15,8 @@ import { readJson } from "../abstractions/json.ts";
 import { ConfigError } from "../errors.ts";
 import {
   Cockpit,
-  type Cockpit as CockpitShape,
   type CockpitSessionT,
+  type Cockpit as CockpitShape,
   type CockpitSuperdoctor,
   type CockpitTeam,
   type TeamSessionT,
@@ -460,6 +460,48 @@ export function childNestingEnv(parentLevel: number): Record<string, string> {
  *  without churning unrelated callsites. */
 export function cageSocketPath(teamName: string): string {
   return `/tmp/atmux-${teamName}/sock`;
+}
+
+/** Per-team cage socket absolute path under team-root convention:
+ *  `<teamRoot>/.atmux/tmux/tmux-<uid>/default`. Used by teams with
+ *  `team.tmuxTmpdir` set (sopx / unum / atmux dogfood). The uid suffix
+ *  matches tmux's own `default` socket naming under `TMUX_TMPDIR` — see
+ *  `core/common.ts::resolveTeamSocket` for the parallel resolver on the
+ *  team-level side. */
+export function perTeamCageSocketPath(teamRoot: string): string {
+  const uid = process.getuid?.() ?? 0;
+  return `${teamRoot}/.atmux/tmux/tmux-${uid}/default`;
+}
+
+/**
+ * ADR-063 follow-up (driver-inbox 2026-05-14): probe BOTH socket
+ * conventions used by atmux cages and return the first that exists.
+ * Order:
+ *   1. Legacy `/tmp/atmux-<team>/sock` (ADR-063 era; back-compat first).
+ *   2. Per-team `<teamRoot>/.atmux/tmux/tmux-<uid>/default` (current
+ *      convention used by teams with `team.tmuxTmpdir` set).
+ *
+ * Falls through to the legacy path when neither exists, so downstream
+ * error messages reference a canonical location. Pure modulo `exists`;
+ * tests inject `deps.exists` to drive every branch.
+ *
+ * Mirrors the same widening that landed in claude-skills `bau` socket
+ * resolver (790dc4e) — single source of truth for cockpit-side cage
+ * socket discovery so the next probe-widening lands in one place.
+ */
+export async function resolveCageSocket(
+  teamName: string,
+  teamRoot: string,
+  deps: { exists?: (p: string) => Promise<boolean> } = {},
+): Promise<string> {
+  const existsFn = deps.exists ?? exists;
+  const legacy = cageSocketPath(teamName);
+  const perTeam = perTeamCageSocketPath(teamRoot);
+  const candidates = [legacy, perTeam];
+  for (const p of candidates) {
+    if (await existsFn(p)) return p;
+  }
+  return legacy;
 }
 
 /** Cage tmux session name. Special-case: the `atmux` team itself uses a
