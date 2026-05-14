@@ -1,6 +1,6 @@
 # ADR-050: Multi-tier executor fallback chain — Tier 2 Cursor v1, Tier 3+ deferred
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 
 ## Context

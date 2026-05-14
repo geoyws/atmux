@@ -1,6 +1,6 @@
 # ADR-086: `atmux pulse` — cockpit-wide deterministic verdict probe (Phase 1 of MiniMax observer)
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-13
 
 ## Context

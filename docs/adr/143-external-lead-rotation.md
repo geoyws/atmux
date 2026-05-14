@@ -1,6 +1,6 @@
 # ADR-143: External cron-fired lead-rotation enforcer (stopgap until martinet ships)
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Driver-ref**: 2026-05-14 driver session — operator: *"why is it that we always fail to rotate the lead?"*
 **EPIC parent**: `t-a6a7afa0` (this Task — operates as informal EPIC pending planner re-decomp).

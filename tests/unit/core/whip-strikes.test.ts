@@ -6,9 +6,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  classifierSwallowSymptomHash,
+  etaLiedSymptomHash,
   incrementStrike,
+  processFrozenSymptomHash,
   readStrikeRecord,
   readStrikesFile,
+  renderStrikeTimeline,
   resetStrikeRecord,
   type StrikesFile,
   strikesPath,
@@ -31,9 +35,7 @@ afterEach(async () => {
 
 describe("strikesPath", () => {
   test("builds <atmuxDir>/state/whip-strikes-<team>.json", () => {
-    expect(strikesPath("/srv/.atmux", "demo")).toBe(
-      "/srv/.atmux/state/whip-strikes-demo.json",
-    );
+    expect(strikesPath("/srv/.atmux", "demo")).toBe("/srv/.atmux/state/whip-strikes-demo.json");
   });
 
   test("preserves hyphens + underscores in team name", () => {
@@ -45,6 +47,104 @@ describe("strikesPath", () => {
 describe("velocityStalledSymptomHash", () => {
   test("returns canonical `whip-<team>-velocity-stalled` form", () => {
     expect(velocityStalledSymptomHash("demo")).toBe("whip-demo-velocity-stalled");
+  });
+});
+
+// ---------- ADR-087 §T2 (Task t-e91fec98 §2) symptom hashes ----------
+
+describe("etaLiedSymptomHash", () => {
+  test("returns canonical `whip-<team>-eta-lied` form", () => {
+    expect(etaLiedSymptomHash("demo")).toBe("whip-demo-eta-lied");
+  });
+
+  test("preserves hyphens in team name", () => {
+    expect(etaLiedSymptomHash("sopx-staging")).toBe("whip-sopx-staging-eta-lied");
+  });
+});
+
+describe("classifierSwallowSymptomHash", () => {
+  test("returns canonical `whip-<team>-classifier-swallow` form", () => {
+    expect(classifierSwallowSymptomHash("demo")).toBe("whip-demo-classifier-swallow");
+  });
+});
+
+describe("processFrozenSymptomHash", () => {
+  test("returns canonical `whip-<team>-process-frozen` form", () => {
+    expect(processFrozenSymptomHash("demo")).toBe("whip-demo-process-frozen");
+  });
+});
+
+describe("all four symptom hashes are distinct for the same team", () => {
+  test("four distinct strings", () => {
+    const hashes = new Set([
+      velocityStalledSymptomHash("demo"),
+      etaLiedSymptomHash("demo"),
+      classifierSwallowSymptomHash("demo"),
+      processFrozenSymptomHash("demo"),
+    ]);
+    expect(hashes.size).toBe(4);
+  });
+});
+
+// ---------- renderStrikeTimeline ----------
+
+describe("renderStrikeTimeline", () => {
+  test("renders strikes 0→N over Δt + last reason", () => {
+    expect(
+      renderStrikeTimeline(
+        {
+          count: 3,
+          firstStrikeSec: 1000,
+          lastStrikeSec: 1180,
+          lastReason: "BAD: 0 commits in 60min window",
+        },
+        2200,
+      ),
+    ).toBe("strikes 0→3 over Δt=20min; last reason: BAD: 0 commits in 60min window");
+  });
+
+  test("returns 'no strikes recorded' for empty record", () => {
+    expect(
+      renderStrikeTimeline(
+        { count: 0, firstStrikeSec: null, lastStrikeSec: null, lastReason: null },
+        2000,
+      ),
+    ).toBe("no strikes recorded");
+  });
+
+  test("returns 'no strikes recorded' when firstStrikeSec is null even if count>0 (defensive)", () => {
+    expect(
+      renderStrikeTimeline(
+        { count: 5, firstStrikeSec: null, lastStrikeSec: null, lastReason: "x" },
+        2000,
+      ),
+    ).toBe("no strikes recorded");
+  });
+
+  test("clamps Δt to ≥1min so sub-60s windows don't render Δt=0min", () => {
+    const out = renderStrikeTimeline(
+      { count: 1, firstStrikeSec: 1000, lastStrikeSec: 1015, lastReason: "x" },
+      1015,
+    );
+    expect(out).toContain("Δt=1min");
+  });
+
+  test("substitutes <no reason> when lastReason is null", () => {
+    expect(
+      renderStrikeTimeline(
+        { count: 2, firstStrikeSec: 1000, lastStrikeSec: 1500, lastReason: null },
+        2000,
+      ),
+    ).toContain("last reason: <no reason>");
+  });
+
+  test("counts increment in render output", () => {
+    expect(
+      renderStrikeTimeline(
+        { count: 7, firstStrikeSec: 1000, lastStrikeSec: 1500, lastReason: "x" },
+        2000,
+      ),
+    ).toContain("strikes 0→7");
   });
 });
 
@@ -218,7 +318,7 @@ describe("file format on disk", () => {
     await incrementStrike(atmuxDir, "demo", "h1", "r", 1000);
     const text = await readFile(strikesPath(atmuxDir, "demo"), "utf8");
     // Pretty-print: at least one nested-key line starts with 2+ spaces.
-    expect(text).toMatch(/\n  "/);
+    expect(text).toMatch(/\n {2}"/);
   });
 
   test("file ends with trailing newline (POSIX convention)", async () => {

@@ -1,6 +1,6 @@
 # ADR-138: Verified send-keys — verify-and-retry pattern
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Driver-ref**: 2026-05-14 driver session — operator: *"we have a problem with send keys not really sending… perhaps Enter has to be hit 3x? or something? to be safe? and we have to check if the enter was truly hit? of course send keys will be done via minimax later"*
 **EPIC parent**: `t-5df48a74` · **TR1**: `t-f58c6ccc`

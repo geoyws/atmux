@@ -1,6 +1,6 @@
 # ADR-146: Kanban auto-files trunk-merge Task on Story-done — supersedes branch-watcher/cron suggestion
 
-**Status**: Proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-f462289a follow-on per lead 23:01 MYT P0 BLAST)
 **Driver-ref**: 2026-05-14 23:01 MYT cockpit driver — operator chat-YES auth. *"kanban auto-files trunk-merge Task on Story-done; gitter drains via plain claim cascade. Supersedes branch-watcher/cron suggestion."*
