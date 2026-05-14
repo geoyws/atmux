@@ -49,6 +49,7 @@ import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { groom } from "./verbs/groom.ts";
+import { hygieneTick } from "./verbs/hygiene-tick.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
 import { help } from "./verbs/help.ts";
@@ -272,6 +273,14 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return improve(argv.slice(1));
     case "groom":
       return groom(argv.slice(1));
+    case "hygiene-tick": {
+      // ADR-131 T3 (t-247b4b35): superdoctor's kanban-hygiene pass.
+      // hygieneTick returns a DrainTickResult; the CLI dispatcher
+      // discards it and returns exit code 0 unless an exception
+      // bubbles up.
+      await hygieneTick(argv.slice(1));
+      return 0;
+    }
     case "cleanup":
       return cleanup(argv.slice(1));
     case "discorder":

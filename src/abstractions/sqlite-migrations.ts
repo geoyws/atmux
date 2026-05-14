@@ -165,4 +165,78 @@ export const migrations: readonly Migration[] = [
       db.exec("CREATE INDEX idx_complaints_target_team ON complaints(target_team)");
     },
   },
+  // ---------- v3 → v4 ----------
+  // ADR-077 §F6: superdoctor self-escalation event log. One row per
+  // structural-fix attempt against a complaint. After N=3 rows with
+  // `outcome='failed'` for the same `complaint_id`, the skill emits
+  // exactly one `[self-heal-failed]` Discord ping (renderer in
+  // src/abstractions/discord.ts). Dedup state for the ping lives in
+  // state_kv (feature `superdoctor-self-heal-escalation`); this table
+  // is the durable attempt log, not the dedup ledger.
+  //
+  // Renumbered v2→v3 → v3→v4 at trunk-merge 2026-05-14: trunk's
+  // complaints provenance migration (t-e5e5d576) claimed v3 first;
+  // the migration ladder must stay monotonic so this lands on top.
+  {
+    from: 3,
+    to: 4,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE superdoctor_attempts (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					complaint_id TEXT NOT NULL,
+					attempt_n INTEGER NOT NULL,
+					outcome TEXT NOT NULL CHECK(outcome IN ('resolved','partial','failed')),
+					attempted_at INTEGER NOT NULL,
+					action TEXT,
+					note TEXT,
+					extra TEXT
+				) STRICT;
+			`);
+      db.exec(
+        "CREATE INDEX idx_sd_attempts_complaint ON superdoctor_attempts(complaint_id, attempted_at DESC)",
+      );
+      db.exec("CREATE INDEX idx_sd_attempts_outcome ON superdoctor_attempts(outcome)");
+    },
+  },
+  // ---------- v4 → v5 ----------
+  // ADR-131 §D4 / T3 (t-247b4b35): per-team kanban-hygiene fingerprint
+  // table. Idempotent upsert keyed on (task_id, fingerprint_class) so
+  // re-detection across ticks bumps last_seen_at without duplicating
+  // rows. Severity is stored as INTEGER for cheap `ORDER BY` in the
+  // drain loop (P0=0, P1=1, P3=3 — P2 reserved but unused). Drain-loop
+  // sort: severity ASC, detected_at ASC, then confidence-ladder filter.
+  //
+  // Renumbered v3→v4 → v4→v5 at trunk-merge round 2 (2026-05-14 16:05
+  // MYT): trunk's superdoctor_attempts migration (4836a7e, ADR-077 §F6)
+  // claimed v3→v4 first; this hygiene table appends as v4→v5 to keep
+  // the migration ladder monotonic per ADR-060 §D5.
+  {
+    from: 4,
+    to: 5,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE superdoctor_hygiene (
+					task_id TEXT NOT NULL,
+					fingerprint_class TEXT NOT NULL,
+					severity INTEGER NOT NULL,
+					confidence TEXT NOT NULL,
+					diagnosis TEXT NOT NULL,
+					detected_at INTEGER NOT NULL,
+					last_seen_at INTEGER NOT NULL,
+					attempted_fix TEXT,
+					fix_applied_at INTEGER,
+					fix_successful INTEGER,
+					PRIMARY KEY (task_id, fingerprint_class)
+				) STRICT;
+			`);
+      // Drain-loop hot path: list unfixed rows by severity/detected
+      // ordering. Partial index on `fix_applied_at IS NULL` keeps the
+      // index small (fixed rows live forever for audit but aren't
+      // re-scanned).
+      db.exec(
+        "CREATE INDEX idx_hygiene_unfixed ON superdoctor_hygiene(severity ASC, detected_at ASC) WHERE fix_applied_at IS NULL",
+      );
+    },
+  },
 ];

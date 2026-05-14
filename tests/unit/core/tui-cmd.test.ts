@@ -90,33 +90,57 @@ describe("resolveTuiCommand priority chain", () => {
     );
   });
 
-  test("priority 3: built-in claude with default env knobs", () => {
+  // ---------- ADR-094 / t-d0c8b758 (T6) coverage matrix ----------
+  //
+  // The T6 §Unit tests bullets map onto tests below:
+  //   • baseline-all-defaults                 → "priority 3: built-in claude with default env knobs"
+  //   • ATMUX_CLAUDE_GUARD_AGENT=0 disabled    → "ADR-094: ATMUX_CLAUDE_GUARD_AGENT=0 disables..."
+  //   • ATMUX_CLAUDE_PLUGIN_DIR='' skip flag   → "ADR-094: ATMUX_CLAUDE_PLUGIN_DIR='' SKIPS..."
+  //   • ATMUX_CLAUDE_PERMISSION=dontAsk        → "priority 3: built-in claude honors ATMUX_CLAUDE..."
+  //   • claudeAccount=personal regression      → "priority 3: built-in claude with claudeAccount..."
+  //
+  // Init wizard tests (T5) — DEFERRED. The wizard path remains a
+  // ConfigError-on-invoke stub (see init.test.ts "init — --wizard not yet
+  // implemented (deferred)"). Once T5 ships the wizard prompt, the
+  // claudeAccount-prompt tests fold in there, not here.
+  //
+  // E2E `spawn-fresh-tui-auth.test.ts` — DEFERRED per t-d0c8b758 reviewer
+  // pre-flag: real-spawn coverage is heavy + bun-test cage-safety guard
+  // (memory: `feedback_pause_bun_tests.md`) makes it hard to land in the
+  // cage. The four unit-test bullets above provide structural coverage;
+  // e2e refile follows once the bun-test cage guard's escape-hatch lands.
+
+  test("priority 3: built-in claude with default env knobs (ADR-094 defaults)", () => {
+    // ADR-094 §A/B/C bakes GUARD_AGENT=1, --plugin-dir=$HOME/.claude/
+    // plugins, --permission-mode auto into the default spawn. HOME is
+    // required for plugin-dir resolution; absent HOME suppresses the flag.
     const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "default" });
-    expect(resolveTuiCommand(m, baseTeam, { env: {} })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
+    expect(resolveTuiCommand(m, baseTeam, { env: { HOME: "/root" } })).toBe(
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 claude --plugin-dir=/root/.claude/plugins --permission-mode auto",
     );
   });
 
   test("priority 3: built-in claude honors ATMUX_CLAUDE_BIN/EFFORT/PERMISSION", () => {
     const m = mkMember({ name: "x", tui: "claude", cwd: "/p" });
     const env = {
+      HOME: "/root",
       ATMUX_CLAUDE_BIN: "claude-canary",
       ATMUX_CLAUDE_EFFORT: "high",
-      ATMUX_CLAUDE_PERMISSION: "auto",
+      ATMUX_CLAUDE_PERMISSION: "dontAsk",
     };
     expect(resolveTuiCommand(m, baseTeam, { env })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=high claude-canary --permission-mode auto",
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=high CLAUDE_GUARD_AGENT=1 claude-canary --plugin-dir=/root/.claude/plugins --permission-mode dontAsk",
     );
   });
 
   test("priority 3: built-in claude appends --model when explicit", () => {
     const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "claude-opus-4-7" });
-    expect(resolveTuiCommand(m, baseTeam, { env: {} })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk --model claude-opus-4-7",
+    expect(resolveTuiCommand(m, baseTeam, { env: { HOME: "/root" } })).toBe(
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 claude --plugin-dir=/root/.claude/plugins --permission-mode auto --model claude-opus-4-7",
     );
   });
 
-  test("priority 3: built-in claude with claudeAccount adds CLAUDE_CONFIG_DIR", () => {
+  test("priority 3: built-in claude with claudeAccount adds CLAUDE_CONFIG_DIR AFTER env -u strip", () => {
     const m = {
       name: "x",
       tui: "claude",
@@ -124,12 +148,15 @@ describe("resolveTuiCommand priority chain", () => {
       model: "default",
       claudeAccount: "ifca",
     } as unknown as TeamMember;
+    // The env -u CLAUDE_CONFIG_DIR strip comes FIRST; the per-process
+    // CLAUDE_CONFIG_DIR=... assignment comes AFTER and wins per POSIX
+    // semantics (`env -u FOO BAR=baz cmd` first strips, then assigns).
     expect(resolveTuiCommand(m, baseTeam, { env: { HOME: "/root" } })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDE_CONFIG_DIR=/root/.claude-ifca CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=/root/.claude-ifca CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 claude --plugin-dir=/root/.claude/plugins --permission-mode auto",
     );
   });
 
-  test("priority 3: claudeAccount=default suppresses CLAUDE_CONFIG_DIR", () => {
+  test("priority 3: claudeAccount=default suppresses CLAUDE_CONFIG_DIR assignment (env -u strip still fires)", () => {
     const m = {
       name: "x",
       tui: "claude",
@@ -137,9 +164,73 @@ describe("resolveTuiCommand priority chain", () => {
       model: "default",
       claudeAccount: "default",
     } as unknown as TeamMember;
+    // No CLAUDE_CONFIG_DIR=... assignment, but the env -u strip still
+    // protects against a stale operator-shell CLAUDE_CONFIG_DIR leaking.
     expect(resolveTuiCommand(m, baseTeam, { env: { HOME: "/root" } })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude --permission-mode dontAsk",
+      "export ATMUX_MEMBER=x && cd /p && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 claude --plugin-dir=/root/.claude/plugins --permission-mode auto",
     );
+  });
+
+  // ADR-094 §A: GUARD_AGENT knob.
+  test("ADR-094: ATMUX_CLAUDE_GUARD_AGENT=0 disables the guard env", () => {
+    const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "default" });
+    const got = resolveTuiCommand(m, baseTeam, {
+      env: { HOME: "/root", ATMUX_CLAUDE_GUARD_AGENT: "0" },
+    });
+    expect(got).toContain("CLAUDE_GUARD_AGENT=0");
+    expect(got).not.toContain("CLAUDE_GUARD_AGENT=1");
+  });
+
+  // ADR-094 §B: --plugin-dir knob.
+  test("ADR-094: ATMUX_CLAUDE_PLUGIN_DIR override threads through", () => {
+    const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "default" });
+    const got = resolveTuiCommand(m, baseTeam, {
+      env: { HOME: "/root", ATMUX_CLAUDE_PLUGIN_DIR: "/srv/custom-plugins" },
+    });
+    expect(got).toContain("--plugin-dir=/srv/custom-plugins");
+    expect(got).not.toContain("/root/.claude/plugins");
+  });
+
+  test("ADR-094: ATMUX_CLAUDE_PLUGIN_DIR='' SKIPS the --plugin-dir flag", () => {
+    const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "default" });
+    const got = resolveTuiCommand(m, baseTeam, {
+      env: { HOME: "/root", ATMUX_CLAUDE_PLUGIN_DIR: "" },
+    });
+    expect(got).not.toContain("--plugin-dir");
+  });
+
+  test("ADR-094: plugin-dir with spaces gets POSIX-quoted", () => {
+    const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "default" });
+    const got = resolveTuiCommand(m, baseTeam, {
+      env: { HOME: "/root", ATMUX_CLAUDE_PLUGIN_DIR: "/path with spaces/plugins" },
+    });
+    // posixQuote single-quotes when the value contains whitespace
+    expect(got).toContain("--plugin-dir='/path with spaces/plugins'");
+  });
+
+  test("ADR-094: HOME unset → plugin-dir defaults to empty (flag skipped)", () => {
+    // Defensive — operators with empty HOME (containers, init scripts)
+    // shouldn't get a malformed `--plugin-dir=/.claude/plugins`.
+    const m = mkMember({ name: "x", tui: "claude", cwd: "/p", model: "default" });
+    const got = resolveTuiCommand(m, baseTeam, { env: {} });
+    expect(got).not.toContain("--plugin-dir");
+  });
+
+  test("priority 3: bug t-4d2936ac — env -u scrub prefix lands BEFORE per-process assignments", () => {
+    // Regression test for the 2026-05-14 OAuth-account "Do you want to
+    // use this API key?" dialog: operator-shell ANTHROPIC_API_KEY leaked
+    // through tuiClaude unchanged. The env -u prefix MUST cover all
+    // three target vars in the documented order.
+    const m = mkMember({ name: "x", tui: "claude", cwd: "/p" });
+    const out = resolveTuiCommand(m, baseTeam, { env: {} });
+    expect(out).toContain("env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR");
+    // env -u prefix sits between the ATMUX_MEMBER/cd preamble and the
+    // CLAUDECODE=1 marker (i.e. immediately before any per-process
+    // assignments).
+    const envIdx = out.indexOf("env -u");
+    const claudecodeIdx = out.indexOf("CLAUDECODE=1");
+    expect(envIdx).toBeGreaterThan(-1);
+    expect(claudecodeIdx).toBeGreaterThan(envIdx);
   });
 
   test("default tui is claude when member.tui is unset", () => {

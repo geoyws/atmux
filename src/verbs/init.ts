@@ -78,6 +78,13 @@ export interface ParsedInitArgs {
   force: boolean;
   /** --wizard / -w — interactive setup (NOT yet implemented in port). */
   wizard: boolean;
+  /** t-3866c5b1 / ADR-094: non-interactive equivalent of the wizard's
+   *  team-wide claudeAccount prompt. When set + != "default", every
+   *  member entry in the rendered team.json is stamped with
+   *  `claudeAccount: <value>`. "default" (or absent) leaves the field
+   *  unset (schema-default applies). Operators run `atmux reconfigure`
+   *  to override per-member after init. */
+  claudeAccount?: string;
 }
 
 /**
@@ -94,6 +101,7 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
   let name: string | undefined;
   let force = false;
   let wizard = false;
+  let claudeAccount: string | undefined;
 
   let i = 0;
   while (i < args.length) {
@@ -104,7 +112,7 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
         if (val === undefined) {
           throw new UsageError({
             what: "init: --name requires a value",
-            hint: "usage: atmux init [--name <team>] [--force|-f]",
+            hint: "usage: atmux init [--name <team>] [--force|-f] [--claude-account <suffix>]",
           });
         }
         name = val;
@@ -121,17 +129,37 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
         wizard = true;
         i += 1;
         break;
+      case "--claude-account": {
+        // t-3866c5b1 / ADR-094: non-interactive twin of the wizard's
+        // team-wide claudeAccount prompt. Validation is value-shape
+        // only — refuse empty + non-finite (any operator-defined
+        // suffix is otherwise acceptable; the corresponding
+        // `$HOME/.claude-<suffix>` dir is operator-maintained).
+        const val = args[i + 1];
+        if (val === undefined || val.length === 0) {
+          throw new UsageError({
+            what: "init: --claude-account requires a value",
+            hint: "valid: default | personal | icloud | ifca | unum | <custom-suffix>",
+          });
+        }
+        claudeAccount = val;
+        i += 2;
+        break;
+      }
       default:
         throw new UsageError({
           what: `init: unknown arg: ${a}`,
-          hint: "usage: atmux init [--name <team>] [--force|-f]",
+          hint: "usage: atmux init [--name <team>] [--force|-f] [--claude-account <suffix>]",
         });
     }
   }
-  // exactOptionalPropertyTypes: only set the `name` key when defined
-  // (an explicit `name: undefined` is not the same as an absent key under
-  // the strict tsconfig).
-  return name === undefined ? { force, wizard } : { name, force, wizard };
+  // exactOptionalPropertyTypes: only set keys when defined (an explicit
+  // `name: undefined` is not the same as an absent key under the strict
+  // tsconfig). Build the shape conditionally.
+  const out: ParsedInitArgs = { force, wizard };
+  if (name !== undefined) out.name = name;
+  if (claudeAccount !== undefined) out.claudeAccount = claudeAccount;
+  return out;
 }
 
 // ---------- Template path resolution ----------
@@ -243,11 +271,24 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const templatesDir = opts.templatesDir ?? defaultTemplatesDir(env);
   const templatePath = join(templatesDir, "team.example.json");
   const team = await readJson(templatePath, Team);
+  // t-3866c5b1 / ADR-094: when --claude-account <suffix> is set AND
+  // != "default", stamp every member entry with `claudeAccount: <suffix>`
+  // so the spawn-time tuiClaude resolver picks up the CLAUDE_CONFIG_DIR
+  // prefix on every pane. "default" (the schema-default value) results
+  // in NO field on disk per ADR-094 — schema-default applies, no extra
+  // env clutter. Operators run `atmux reconfigure` post-init to override
+  // per-member.
+  const stampAccount =
+    parsed.claudeAccount !== undefined &&
+    parsed.claudeAccount.length > 0 &&
+    parsed.claudeAccount !== "default";
   const rendered: TeamShape = {
     ...team,
     name: teamName,
     tmuxTmpdir: `/tmp/atmux-tmux_${teamName}`,
-    members: team.members.map((m) => ({ ...m, cwd })),
+    members: team.members.map((m) =>
+      stampAccount ? { ...m, cwd, claudeAccount: parsed.claudeAccount } : { ...m, cwd },
+    ),
   };
   // Compact serialization to keep team.json human-readable + match the
   // shape jq emits (2-space indent + trailing newline). The parity

@@ -1,6 +1,6 @@
 # ADR-081: Bootstrap brief-paste reliability — bracketed-paste Enter, role aliasing, supervisor-side recovery
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-12
 **Incident**: 2026-05-12 ~06:57–07:25 MYT atmux team starvation diagnosis + manual recovery (cockpit BAU surfaced; driver re-bootstrapped 11/12 panes via `tmux load-buffer + paste-buffer + C-m`).
 
@@ -75,6 +75,15 @@ Lift `.archive-bash-atmux-20260507/lib/start.sh:418-487` (`_atmux_spawn_member` 
 
 Lead spawns first; lead's brief lands first; teammate briefs follow. Failure surface: if any brief paste throws, log per-member + continue (so a partial-fail-during-spawn doesn't wedge the whole team).
 
+**Completion update (2026-05-14, t-94d7ad60).** The §C port above was insufficient for the recurrence-class of undead-pane fingerprint observed 3rd+ time (operator memory `feedback_member_pane_no_atmux_member.md`): the fixed `ATMUX_SPAWN_WAIT` sleep races against claude TUI's variable cold-start (5-15s observed under load), so the paste can land BEFORE the compose box exists and bytes scroll past startup output silently. For **claude TUI specifically**, the spawn path now switches to a poll-and-send mechanism:
+
+- **`src/core/boot-claude.ts`** — `bootClaudeMember()` orchestrates: (a) capture-pane sentinel check for already-booted (tokens count > 0); (b) poll capture-pane up to 30s for TUI ready (`❯` glyph or `tokens` footer); (c) `tmux send-keys` a single-line boot prompt (`"Read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as that team member. Your role is {member}."`) with `enter:true`; (d) poll for tokens-moved sentinel up to 30s; (e) retry the send-keys once on first-attempt miss; (f) on full failure, surface to `lead-outbox.md` via `renderBootFailureNotice` so the operator sees the undead pane on next review.
+- `src/verbs/start.ts` + `src/verbs/rotate.ts` route claude-TUI members through `bootClaudeMember`. **Non-claude TUIs** (kimi, cursor, opencode) keep the §C-original paste-buffer + C-m flow — different welcome rendering, no bracketed-paste-newline hazard.
+- The boot prompt is **single-line** (Reviewer pre-flag confirmed: bracketed-paste with newlines silently fails to submit, same trap as `clear-member.sh`).
+- The brief CONTENT is no longer pasted at start time — claude reads `templates/briefs/<role>.md` itself on first turn per the boot prompt's instruction. The original render-and-paste of the brief body becomes redundant once the boot prompt fires.
+
+Tests in `tests/unit/core/boot-claude.test.ts` pin sentinel / ready-poll / retry / both-attempts-fail / send-keys-verb-failure / capture-error scenarios.
+
 ### (D) `atmux doctor` learns the `starving-claude` state (per c-8ecd3a61)
 
 Add a fourth cage state alongside `down` / `bootstrapping` / `active`:
@@ -91,6 +100,29 @@ Doctor's `--fix` for `starving` state: paste the brief (same path as §C) and ve
 ### (E) Move starving-bootstrap recovery to the cockpit/supervisor (per c-7193c689)
 
 The lead's whip §4a `auto-bootstrap-starving-members` step is removed and the equivalent logic lives in `cockpit autolaunch` (or `superdoctor`'s starvation-detection rule). Rationale: a stuck lead cannot fire whip; supervisor-side recovery breaks the chicken-and-egg. `superdoctor` already has the authority (ADR-077 §D3 — rotate leads, clear members, cycle cages) and the cross-team scope; adding "if a team has ≥1 starving member AND lead has been idle ≥5min, paste briefs to starving members" is a narrow extension.
+
+### (F) First-turn precedence over residue-discard memory rules
+
+**Date added**: 2026-05-13. **Driver-ref**: `.atmux/driver-inbox.md` 17:52 MYT 2026-05-13.
+
+**Symptom**: fresh leads/members (typically after `atmux team rebuild` / cockpit-driven cage cycle) discard their FIRST `atmux claim --next --as <role>` keystroke because operator-memory rules like `feedback_atmux_claim_next_as_role_residue.md` win precedence on the first turn after a brief lands. Brief pastes cleanly (ctx 7% / 69900 tokens observed), but the pane idles *"Standing by for a real prompt"* instead of starting its loop — blocks dormant-team revival via auto-rotation + cockpit-rebuild flows.
+
+**Root cause**: the residue-discard memory rule is correct in steady-state (lane-tick re-injects `atmux claim --next --as <role>` into members already mid-task), but wrongly fires on bootstrap kick-off too. `templates/briefs/lead.md` + `templates/briefs/member.md` do not pre-empt the memory rule for the first turn → memory beats brief.
+
+**Decision**: brief-template language explicitly anchors first-turn precedence above operator memory. Both `templates/briefs/lead.md` and `templates/briefs/member.md` carry a §"Bootstrap kick-off precedence" landing BEFORE §"Your loop", reading:
+
+> If any memory entry tells you to discard `atmux claim --next --as <role>` (or similar bootstrap keystrokes) as auto-loop residue, that rule **does not apply to your FIRST turn after this brief lands**. The first auto-claim is your legitimate kick-off — accept it, start the loop. The residue-discard rule scopes to REPEATED identical injections AFTER work is already in flight.
+
+**Consequences**:
+
+- Future memory entries authored against bootstrap-keystroke noise MUST scope to "AFTER work is in flight" or carry an explicit first-turn carve-out. The brief is authoritative.
+- §C (start.ts brief-paste port) reliability is unaffected — the keystroke lands; the issue was the fresh pane's first-turn interpretation of WHEN to apply discard rules.
+- **§F renderer preamble DEFERRED**. A one-line preamble in `src/verbs/start.ts` `pasteBriefForMember` / `renderBrief` ("BOOTSTRAP — this is your first turn. Read the brief fully BEFORE applying memory-based discard rules.") was considered but deferred. **Unblock condition**: if any team reports kick-off discard within 14 days of this commit landing, file a follow-up task to add the renderer preamble. Until then, template §F is sufficient.
+- **Out of scope**: sopx-side `feedback_atmux_claim_next_as_role_residue.md` memory shape — driver surfaces to the sopx operator separately. atmux's job is to make the brief authoritative regardless of downstream memory.
+
+**Reversibility**: low — revert both template § + the ADR §F entry + the proposed-status; one commit.
+
+**Cross-references**: §A–§E above; project CLAUDE.md §Same-commit doc updates (brief vocabulary IS documented surface — this fix lands ADR + brief-template edit in ONE commit).
 
 ## Consequences
 

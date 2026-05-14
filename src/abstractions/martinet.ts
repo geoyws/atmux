@@ -219,8 +219,10 @@ export interface ApplyResult {
  * Per ADR-132 §D2 the dispatcher lives in cockpit W3 (sibling of
  * medic at W2 — formerly named `superdoctor`; renamed per ADR-133).
  * The impl itself does NOT manage its own cage — the cockpit rebuild
- * step provisions cages per `cockpit.martinet.{claudeAccount,
- * tuiOverrides}` (ADR-077 §D2 pattern verbatim).
+ * step provisions cages per the resolved variant of `cockpit.martinet`
+ * (claude variant: `{claudeAccount, tuiOverrides}`; cursor variant:
+ * `{cursorBinPath, model, cageTier}` — ADR-132 §D4 discriminated
+ * union; sibling of ADR-077 §D2's superdoctor pattern).
  */
 export interface Martinet {
   /** Impl identifier. Constrained to `claude` (degenerate

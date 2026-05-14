@@ -15,10 +15,10 @@ import { readJson } from "../abstractions/json.ts";
 import { ConfigError } from "../errors.ts";
 import {
   Cockpit,
-  type Cockpit as CockpitShape,
   type CockpitMartinet,
   type CockpitMedic,
   type CockpitSessionT,
+  type Cockpit as CockpitShape,
   type CockpitSuperdoctor,
   type CockpitTeam,
   type TeamSessionT,
@@ -90,14 +90,32 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
       hint: `seed it with a roster like:\n  {\n    "schemaVersion": 1,\n    "cockpitSession": "atmux_teams",\n    "sessions": [\n      { "type": "team", "name": "<team>", "root": "/abs/path/to/project" }\n    ]\n  }`,
     });
   }
-  // Read raw first so the migration shim can inspect the on-disk shape
-  // before Zod validation. `z.unknown()` always succeeds; it's a typed
-  // raw read that honours the `JSON.parse`-only-in-abstractions/json.ts
-  // invariant (R3 per ADR-006).
+  // Read raw first so the migration shims can inspect the on-disk
+  // shape before Zod validation. `z.unknown()` always succeeds; it's a
+  // typed raw read that honours the `JSON.parse`-only-in-abstractions/
+  // json.ts invariant (R3 per ADR-006). Two shims run in order:
+  //   1. `migrateLegacyShape` — ADR-089 §B flat `teams[]` → recursive
+  //      `sessions[]`.
+  //   2. `migrateSuperdoctorBlockToMedic` — ADR-133 TR2 top-level
+  //      `superdoctor` key → `medic` with deprecation warning. Both
+  //      shims are idempotent on inputs that already use the new shape.
   const raw = await readJson(path, z.unknown());
   const warn = opts.warn ?? ((msg: string) => process.stderr.write(msg));
   const migrated = migrateLegacyShape(raw, path, warn);
-  const parsed = Cockpit.parse(migrated);
+  const medicShimmed = migrateSuperdoctorBlockToMedic(migrated, path, warn);
+  const parsed = Cockpit.parse(medicShimmed);
+  // ADR-089 §Decision-anchor #4: validate operator-supplied prefixChain
+  // (length ≥ MAX_NESTING_LEVEL + uniqueness) at load time. Failing here
+  // is preferable to a runtime KeyError when resolvePrefix is called
+  // from a deeply-nested cage and the chain doesn't reach that level.
+  if (parsed.prefixChain !== undefined) {
+    const v = validatePrefixChain(parsed.prefixChain);
+    if (!v.ok) {
+      throw new ConfigError({
+        what: `cockpit.json at ${path}: invalid prefixChain — ${v.reason ?? "unknown"}`,
+      });
+    }
+  }
   return enrichLegacyFields(parsed);
 }
 
@@ -197,11 +215,65 @@ export function migrateLegacyShape(
 }
 
 /**
+ * ADR-133 TR2: pre-parse shim that renames the top-level `superdoctor`
+ * block to `medic`. Runs AFTER `migrateLegacyShape` so a fully-legacy
+ * config (flat `teams[]` + top-level `superdoctor`) flows through
+ * shape-migration first; this shim then only fires for configs that
+ * declared `superdoctor` at the top level alongside (or instead of) a
+ * `medic` key.
+ *
+ * Three branches:
+ *   1. `medic` set + `superdoctor` set → strip `superdoctor`, warn
+ *      operator that the deprecated key is being ignored.
+ *   2. Only `superdoctor` set → rename to `medic`, warn operator that
+ *      they should rename the key in their cockpit.json.
+ *   3. Only `medic` set OR neither set → no-op.
+ *
+ * Idempotent on already-migrated inputs (no `superdoctor` key). Does
+ * NOT auto-migrate the on-disk file — the warning is the call to
+ * action. After one release cycle, a follow-up Task flips `superdoctor`
+ * to a schema-level reject and removes this shim.
+ */
+export function migrateSuperdoctorBlockToMedic(
+  raw: unknown,
+  path: string,
+  warn: (msg: string) => void,
+): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const obj = raw as Record<string, unknown>;
+  if (obj.superdoctor === undefined) return obj;
+  if (obj.medic !== undefined) {
+    warn(
+      `atmux: cockpit.json at ${path} has BOTH deprecated top-level 'superdoctor' AND 'medic' keys ` +
+        `— 'medic' wins; remove the 'superdoctor' block per ADR-133. ` +
+        `Accepting this release; will fail next release.\n`,
+    );
+    const { superdoctor: _drop, ...rest } = obj;
+    void _drop;
+    return rest;
+  }
+  warn(
+    `atmux: cockpit.json at ${path} uses deprecated top-level 'superdoctor' key — ` +
+      `rename to 'medic' per ADR-133. ` +
+      `Accepting this release; will fail next release.\n`,
+  );
+  const { superdoctor, ...rest } = obj;
+  return { ...rest, medic: superdoctor };
+}
+
+/**
  * Post-parse synthesis of legacy back-compat fields. Walks `sessions[]`
  * DFS and populates `teams: CockpitTeam[]` (type==="team" entries) +
  * `superdoctor: CockpitSuperdoctor` (first type==="superdoctor" entry).
  * Existing duck-typed consumers in audit.ts / status.ts / verbs/cockpit.ts
  * read these synthesized fields unchanged.
+ *
+ * ADR-133 TR2: also populates `medic: CockpitMedic` alongside
+ * `superdoctor` from the same `type: "superdoctor"` entry. Callers
+ * reading the new field (cockpit verb's W2 provisioning, post-TR2)
+ * work for sessions[]-based configs without forcing operators to
+ * restructure. The session discriminator stays `"superdoctor"` until
+ * TR3+ ships the wider rename.
  */
 function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   const teams: CockpitTeam[] = [];
@@ -212,6 +284,11 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   // top-level resolution rule in `migrateLegacyShape`).
   let medicResolved: CockpitMedic | undefined;
   let martinet: CockpitMartinet | undefined;
+  // Legacy `superdoctor` synthesis bucket — populated when no canonical
+  // `medic` session entry is seen but a `superdoctor` session entry is.
+  // ADR-133 second pass coerces this into `medicResolved` if still
+  // undefined at end of walk.
+  let superdoctor: CockpitSuperdoctor | undefined;
   // First pass: look for canonical `medic` entries.
   walkSessions(cockpit.sessions ?? [], 0, (node) => {
     if (node.type === "team") {
@@ -224,40 +301,66 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
       if (node.tuiOverrides !== undefined) t.tuiOverrides = node.tuiOverrides;
       teams.push(t);
     } else if (node.type === "medic" && medicResolved === undefined) {
+      // ADR-133 canonical entry. Synthesize a claude-shape CockpitMedic
+      // (medic shape is structurally identical to legacy superdoctor).
       const m: CockpitMedic = { enabled: node.enabled };
       if (node.claudeAccount !== undefined) m.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) m.tuiOverrides = node.tuiOverrides;
       medicResolved = m;
     } else if (node.type === "martinet" && martinet === undefined) {
-      const mt: CockpitMartinet = { enabled: node.enabled };
+      // ADR-132 §D6: synthesize a CockpitMartinet from the ADR-089
+      // sessions[] martinet discriminator. MartinetSessionT carries
+      // claude-shape fields (claudeAccount + tuiOverrides) only —
+      // session-level impl selection isn't currently modelled — so
+      // the synthesized config is always the claude variant. To
+      // declare a cursor-variant martinet, operators set the
+      // top-level `cockpit.martinet: { impl: "cursor", ... }` block
+      // directly; that path skips this session-walk synthesis.
+      const mt: CockpitMartinet = { impl: "claude", enabled: node.enabled };
       if (node.claudeAccount !== undefined) mt.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) mt.tuiOverrides = node.tuiOverrides;
       martinet = mt;
+    } else if (node.type === "superdoctor" && superdoctor === undefined) {
+      // Legacy ADR-077 sessions[] entry — preserve the full claude
+      // shape (autoStart + autoStartTimeoutSec retained per trunk's
+      // shipped fields). ADR-133 second-pass below coerces this to
+      // medic semantics when no canonical `medic` was seen.
+      const s: CockpitSuperdoctor = { enabled: node.enabled };
+      if (node.claudeAccount !== undefined) s.claudeAccount = node.claudeAccount;
+      if (node.tuiOverrides !== undefined) s.tuiOverrides = node.tuiOverrides;
+      if (node.autoStart !== undefined) s.autoStart = node.autoStart;
+      if (node.autoStartTimeoutSec !== undefined) {
+        s.autoStartTimeoutSec = node.autoStartTimeoutSec;
+      }
+      superdoctor = s;
     }
   });
-  // Second pass (fallback): coerce legacy `superdoctor` entries when no
-  // canonical `medic` was seen. ADR-133 §D2 — schema-load coerces to
-  // medic semantics during the deprecation window.
-  if (medicResolved === undefined) {
-    walkSessions(cockpit.sessions ?? [], 0, (node) => {
-      if (node.type === "superdoctor" && medicResolved === undefined) {
-        const m: CockpitMedic = { enabled: node.enabled };
-        if (node.claudeAccount !== undefined) m.claudeAccount = node.claudeAccount;
-        if (node.tuiOverrides !== undefined) m.tuiOverrides = node.tuiOverrides;
-        medicResolved = m;
-      }
-    });
+  // ADR-133 §D2 second pass: when no canonical `medic` entry was seen
+  // in sessions[] AND no top-level `cockpit.medic` block is declared,
+  // coerce the legacy `superdoctor` session entry / top-level field
+  // to medic semantics during the deprecation window. After the
+  // window closes (v2 schema bump), this fallback is removed.
+  if (medicResolved === undefined && superdoctor !== undefined) {
+    medicResolved = superdoctor;
   }
-  const out: LoadedCockpit = { ...cockpit, teams };
-  // Surface BOTH `medic` (canonical) AND `superdoctor` (deprecated alias)
-  // so duck-typed consumers reading either field during the deprecation
-  // window see the same resolved shape. New code reads `cockpit.medic`.
-  if (medicResolved !== undefined) {
-    out.medic = medicResolved;
-    out.superdoctor = medicResolved as CockpitSuperdoctor;
-  }
-  if (martinet !== undefined) out.martinet = martinet;
-  return out;
+  // ADR-133 TR2: when the operator already declared a top-level
+  // `medic` (post-shim), it wins over any session-walk synthesis.
+  const medic: CockpitMedic | undefined = cockpit.medic ?? medicResolved;
+  // Surface BOTH `medic` (canonical) AND `superdoctor` (deprecated
+  // alias) so duck-typed consumers reading either field during the
+  // deprecation window see the same resolved shape. New code reads
+  // `cockpit.medic` directly.
+  return {
+    ...cockpit,
+    teams,
+    ...(superdoctor !== undefined
+      ? { superdoctor }
+      : medic !== undefined
+        ? { superdoctor: medic as CockpitSuperdoctor }
+        : {}),
+    ...(medic !== undefined ? { medic } : {}),
+    ...(martinet !== undefined ? { martinet } : {}),
+  };
 }
 
 /** A flattened team entry — one row per `type: "team"` or `epic-team"`
@@ -349,6 +452,175 @@ export function walkSessions(
   }
 }
 
+// ---------- ADR-089 §C: F-key prefix chain + ATMUX_NESTING_LEVEL ----------
+
+/** Default F-key prefix chain. Twelve entries (F1..F12) cover every
+ *  level the schema's max-depth cap (6) allows plus headroom for any
+ *  future super-cockpit / multi-epic chains. Operator override via
+ *  `cockpit.prefixChain` flips the whole chain (per-level overrides
+ *  are out of scope per ADR-089 §C). */
+export const DEFAULT_PREFIX_CHAIN: ReadonlyArray<string> = [
+  "F1",
+  "F2",
+  "F3",
+  "F4",
+  "F5",
+  "F6",
+  "F7",
+  "F8",
+  "F9",
+  "F10",
+  "F11",
+  "F12",
+];
+
+/** ADR-089 §Decision-anchor #6 — max nesting depth cockpit.json may
+ *  declare. Computed as L1-L4 reserved (cockpit + team + epic-team +
+ *  one chain step) + 2 headroom. Used by validatePrefixChain (the
+ *  chain must be long enough to assign a prefix per level) and by
+ *  loadCockpit's depth check. */
+export const MAX_NESTING_LEVEL = 6;
+
+/** ADR-089 §D — env-var name carrying the cage's own nesting level.
+ *  Centralised constant so callers don't drift on the spelling. */
+export const ATMUX_NESTING_LEVEL_ENV = "ATMUX_NESTING_LEVEL";
+
+/**
+ * ADR-089 §D — read the nesting level from `env`. Missing /
+ * malformed / non-positive values fall back to **1** (top-level
+ * operation; cockpit / standalone `atmux start` case). 1-indexed
+ * for human readability — L1 = outermost cage.
+ *
+ * Pure. Exported for direct unit-testing.
+ */
+export function readNestingLevel(env: NodeJS.ProcessEnv): number {
+  const raw = env[ATMUX_NESTING_LEVEL_ENV];
+  if (raw === undefined || raw === "") return 1;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return n;
+}
+
+/**
+ * ADR-089 §C — resolve the tmux prefix for a given nesting level
+ * from the (optional) operator-supplied chain, falling back to the
+ * default F-key chain. Level is 1-indexed; an out-of-range level
+ * (level > chain.length) is treated as a logic error from the
+ * caller — throws `ConfigError` to fail loud rather than silently
+ * collapsing to a possibly-colliding prefix.
+ *
+ * Pure. Validation of the chain itself (length + uniqueness) lives
+ * in `validatePrefixChain` and is invoked once at `loadCockpit` time
+ * so callers can rely on a pre-validated chain when calling this.
+ */
+export function resolvePrefix(level: number, chain?: ReadonlyArray<string>): string {
+  const effective = chain !== undefined && chain.length > 0 ? chain : DEFAULT_PREFIX_CHAIN;
+  if (!Number.isInteger(level) || level < 1) {
+    throw new ConfigError({
+      what: `resolvePrefix: level must be a positive integer, got ${level}`,
+    });
+  }
+  if (level > effective.length) {
+    throw new ConfigError({
+      what: `resolvePrefix: level ${level} exceeds prefix chain length ${effective.length}`,
+      hint: `add more entries to cockpit.prefixChain or reduce nesting depth (max ${MAX_NESTING_LEVEL})`,
+    });
+  }
+  return effective[level - 1] as string;
+}
+
+/** Result of `validatePrefixChain`. `ok: false` carries a `reason`
+ *  string suitable for direct surfacing in a `ConfigError`. */
+export interface PrefixChainValidation {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * ADR-089 §Decision-anchor #4 — validate a prefix chain at
+ * `loadCockpit` time:
+ *   1. Length MUST be ≥ {@link MAX_NESTING_LEVEL} so every reachable
+ *      level has a slot.
+ *   2. Entries MUST be unique. Duplicates collide: `["F1","F2","F2"]`
+ *      means child + grand-child cages both bind `F2`, and tmux can't
+ *      route the prefix unambiguously.
+ *   3. Entries MUST be non-empty strings.
+ *
+ * Pure — no IO. Loader uses this once at parse time then trusts the
+ * chain everywhere downstream.
+ */
+export function validatePrefixChain(chain: ReadonlyArray<string>): PrefixChainValidation {
+  if (chain.length < MAX_NESTING_LEVEL) {
+    return {
+      ok: false,
+      reason:
+        `prefixChain has ${chain.length} entries but must have ≥${MAX_NESTING_LEVEL} ` +
+        `(one per level up to the max-depth cap). Add ${MAX_NESTING_LEVEL - chain.length} ` +
+        `more entries or omit the field to use the default F-key chain.`,
+    };
+  }
+  for (let i = 0; i < chain.length; i += 1) {
+    const entry = chain[i];
+    if (typeof entry !== "string" || entry.length === 0) {
+      return {
+        ok: false,
+        reason: `prefixChain[${i}] is empty or non-string — every entry must be a tmux key spec like "F1" or "C-q"`,
+      };
+    }
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < chain.length; i += 1) {
+    const entry = chain[i] as string;
+    if (seen.has(entry)) {
+      return {
+        ok: false,
+        reason:
+          `prefixChain[${i}] = "${entry}" is duplicated — every entry must be unique so ` +
+          `nested cages bind orthogonal prefixes (a duplicate would collide between levels).`,
+      };
+    }
+    seen.add(entry);
+  }
+  return { ok: true };
+}
+
+/**
+ * ADR-089 §Decision-anchor #5 — build the env mutations a parent
+ * cage applies when spawning a child cage. Returns a plain object
+ * suitable for spread onto `process.env` clones (or passed to a
+ * spawner that takes `env`). The contract is:
+ *
+ *   1. UNSET inherited `ATMUX_NESTING_LEVEL` (callers spread
+ *      `{ [ATMUX_NESTING_LEVEL_ENV]: undefined }` and remove the key).
+ *   2. SET own level = `parentLevel + 1`.
+ *
+ * Concretely the return value contains the SET step; the UNSET step
+ * is "delete the key from the cloned env before spread". Callers
+ * compose like:
+ *
+ *   const childEnv = { ...parentEnv };
+ *   delete childEnv[ATMUX_NESTING_LEVEL_ENV];
+ *   Object.assign(childEnv, childNestingEnv(parentLevel));
+ *
+ * Pure helper — no IO. Exported for direct unit-testing of the
+ * contract.
+ */
+export function childNestingEnv(parentLevel: number): Record<string, string> {
+  if (!Number.isInteger(parentLevel) || parentLevel < 1) {
+    throw new ConfigError({
+      what: `childNestingEnv: parentLevel must be a positive integer, got ${parentLevel}`,
+    });
+  }
+  const childLevel = parentLevel + 1;
+  if (childLevel > MAX_NESTING_LEVEL) {
+    throw new ConfigError({
+      what: `childNestingEnv: would exceed max depth ${MAX_NESTING_LEVEL} (parent=${parentLevel}, child=${childLevel})`,
+      hint: "reduce the nesting depth in cockpit.json",
+    });
+  }
+  return { [ATMUX_NESTING_LEVEL_ENV]: String(childLevel) };
+}
+
 // ---------- Topology helpers ----------
 //
 // Cage socket + session-name conventions live HERE (not duplicated in
@@ -361,6 +633,48 @@ export function walkSessions(
  *  without churning unrelated callsites. */
 export function cageSocketPath(teamName: string): string {
   return `/tmp/atmux-${teamName}/sock`;
+}
+
+/** Per-team cage socket absolute path under team-root convention:
+ *  `<teamRoot>/.atmux/tmux/tmux-<uid>/default`. Used by teams with
+ *  `team.tmuxTmpdir` set (sopx / unum / atmux dogfood). The uid suffix
+ *  matches tmux's own `default` socket naming under `TMUX_TMPDIR` — see
+ *  `core/common.ts::resolveTeamSocket` for the parallel resolver on the
+ *  team-level side. */
+export function perTeamCageSocketPath(teamRoot: string): string {
+  const uid = process.getuid?.() ?? 0;
+  return `${teamRoot}/.atmux/tmux/tmux-${uid}/default`;
+}
+
+/**
+ * ADR-063 follow-up (driver-inbox 2026-05-14): probe BOTH socket
+ * conventions used by atmux cages and return the first that exists.
+ * Order:
+ *   1. Legacy `/tmp/atmux-<team>/sock` (ADR-063 era; back-compat first).
+ *   2. Per-team `<teamRoot>/.atmux/tmux/tmux-<uid>/default` (current
+ *      convention used by teams with `team.tmuxTmpdir` set).
+ *
+ * Falls through to the legacy path when neither exists, so downstream
+ * error messages reference a canonical location. Pure modulo `exists`;
+ * tests inject `deps.exists` to drive every branch.
+ *
+ * Mirrors the same widening that landed in claude-skills `bau` socket
+ * resolver (790dc4e) — single source of truth for cockpit-side cage
+ * socket discovery so the next probe-widening lands in one place.
+ */
+export async function resolveCageSocket(
+  teamName: string,
+  teamRoot: string,
+  deps: { exists?: (p: string) => Promise<boolean> } = {},
+): Promise<string> {
+  const existsFn = deps.exists ?? exists;
+  const legacy = cageSocketPath(teamName);
+  const perTeam = perTeamCageSocketPath(teamRoot);
+  const candidates = [legacy, perTeam];
+  for (const p of candidates) {
+    if (await existsFn(p)) return p;
+  }
+  return legacy;
 }
 
 /** Cage tmux session name. Special-case: the `atmux` team itself uses a

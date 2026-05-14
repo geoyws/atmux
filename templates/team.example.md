@@ -33,6 +33,28 @@ ADR-023's design, not ADR-024.
 
 ## Field semantics
 
+### `.members[].claudeAccount` (per ADR-094)
+
+Per-member Claude config-dir isolation. Optional — when set, the spawned
+shell exports `CLAUDE_CONFIG_DIR=<HOME>/.claude-<value>` so the member's
+nested `claude` invocations inherit an account-isolated config tree (no
+cross-OAuth, no fresh-spawn re-auth dance).
+
+Valid values:
+
+- `"default"` (or field absent) — host default config dir. The member's
+  TUI reads Claude's standard `$HOME/.claude` directory.
+- `"personal"` / `"icloud"` / `"ifca"` / `"unum"` — common operator
+  suffixes; the spawn prefixes `CLAUDE_CONFIG_DIR=$HOME/.claude-personal`
+  (etc.). These are conventions, not a closed enum.
+- Any custom suffix — e.g. `"work-2"`, `"client-acme"`. Operators
+  maintain the corresponding `$HOME/.claude-<suffix>` dir out-of-band
+  (typically copy + re-auth via `claude login`).
+
+Refs: ADR-024 spawn-account-matching · ADR-094 c-alias spawn convention.
+
+### `.members[].model`
+
 The `.members[].model` field accepts:
 
 - `"default"` (or field absent) — claude CLI default. Currently Opus via the

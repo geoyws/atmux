@@ -23,13 +23,13 @@
 //                               `/tmp/atmux_tmux_<team>` (ADR-018,
 //                               ADR-027 ADDENDUM 11).
 //   C — window-position drift.  pos 1 = driver, pos 2 = lead. Lead
-//                               name accepted in ADR-017 form
+//                               name accepted in ADR-110 form
 //                               (`<emoji>lead`) AND legacy prefixed
 //                               (`__<team>__<emoji>lead`) AND bare
 //                               `lead` — any mismatch is a finding.
 //   D — trailing punctuation    Legacy prefixed-form windows
 //       residue.                 (`__<team>__*`) with trailing `-`/`_`.
-//                               ADR-017 bare-emoji form is not in
+//                               ADR-110 bare-emoji form is not in
 //                               scope here; bash-bit-for-bit port.
 //   E — stray cage tmpdirs.     Filesystem walk of `<tmpRoot>/atmux*tmux*`
 //                               directories with no live socket and no
@@ -278,7 +278,7 @@ export function detectClassC(opts: {
         makeFinding(
           "C",
           team,
-          `window-position 2 is '${w2.name}' (expected lead pane: '<emoji>lead' per ADR-017)`,
+          `window-position 2 is '${w2.name}' (expected lead pane: '<emoji>lead' per ADR-110)`,
           "tmux swap-window -t :2 (target the lead pane's current index)",
         ),
       );
@@ -291,13 +291,13 @@ function isLeadName(name: string, team: string): boolean {
   if (name === "lead") return true;
   // pre-amend: __<team>__<glyph>lead
   if (name.startsWith(`__${team}__`) && name.endsWith("lead")) return true;
-  // ADR-017 post-amend: <emoji>lead — non-prefixed name ending in 'lead'
+  // ADR-110 post-amend: <emoji>lead — non-prefixed name ending in 'lead'
   if (!name.startsWith("__") && name.endsWith("lead")) return true;
   return false;
 }
 
 /** Class D — trailing punctuation residue on legacy `__<team>__*` windows.
- *  Bash-bit-for-bit port; ADR-017 bare-emoji windows are out of scope
+ *  Bash-bit-for-bit port; ADR-110 bare-emoji windows are out of scope
  *  here (their detector would need a different shape). */
 export function detectClassD(opts: {
   team: string;

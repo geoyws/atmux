@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   defaultGitSpawn,
+  deleteWorktreeBranch,
   type GitSpawn,
   initSubmodules,
   isWorktreeDirty,
@@ -605,6 +606,63 @@ describe("isWorktreeDirty", () => {
     const git: GitSpawn = async () => fail("fatal: not a git repository");
     await expect(isWorktreeDirty("/not-a-wt", { git })).rejects.toThrow(ConfigError);
     await expect(isWorktreeDirty("/not-a-wt", { git })).rejects.toThrow(/`git status` failed/);
+  });
+});
+
+// ---------- deleteWorktreeBranch ----------
+
+describe("deleteWorktreeBranch", () => {
+  test("`git branch -d` exits 0 → {deleted:true}", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const git: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return ok("Deleted branch geoyws-alice (was abc1234).\n");
+    };
+    const result = await deleteWorktreeBranch("/repo", "geoyws-alice", { git });
+    expect(result).toEqual({ deleted: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(["-C", "/repo", "branch", "-d", "geoyws-alice"]);
+  });
+
+  test("`not fully merged` stderr → {deleted:false, reason:'unmerged'} (no throw)", async () => {
+    const git: GitSpawn = async () =>
+      fail(
+        "error: the branch 'geoyws-alice' is not fully merged.\n" +
+          "If you are sure you want to delete it, run 'git branch -D geoyws-alice'.\n",
+        1,
+      );
+    const result = await deleteWorktreeBranch("/repo", "geoyws-alice", { git });
+    expect(result).toEqual({ deleted: false, reason: "unmerged" });
+  });
+
+  test("`branch not found` stderr → {deleted:false, reason:'missing'} (idempotent re-run)", async () => {
+    const git: GitSpawn = async () => fail("error: branch 'geoyws-alice' not found.\n", 1);
+    const result = await deleteWorktreeBranch("/repo", "geoyws-alice", { git });
+    expect(result).toEqual({ deleted: false, reason: "missing" });
+  });
+
+  test("unrecognised git failure → throws ConfigError surfacing stderr", async () => {
+    const git: GitSpawn = async () => fail("fatal: not a git repository", 128);
+    await expect(deleteWorktreeBranch("/not-a-repo", "geoyws-alice", { git })).rejects.toThrow(
+      ConfigError,
+    );
+    await expect(deleteWorktreeBranch("/not-a-repo", "geoyws-alice", { git })).rejects.toThrow(
+      /`git branch -d geoyws-alice` failed/,
+    );
+  });
+
+  test("safe-mode: argv never includes -D (destructive) — only -d", async () => {
+    // Documents the ADR-084 OQ2 invariant: this helper only offers safe
+    // delete. `-D` is operator-manual per
+    // feedback_destructive_ops_need_explicit_auth.md.
+    const calls: ReadonlyArray<string>[] = [];
+    const git: GitSpawn = async (argv) => {
+      calls.push(argv);
+      return ok();
+    };
+    await deleteWorktreeBranch("/repo", "geoyws-alice", { git });
+    expect(calls[0]).toContain("-d");
+    expect(calls[0]).not.toContain("-D");
   });
 });
 

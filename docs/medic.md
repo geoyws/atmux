@@ -70,14 +70,15 @@ Hourly `/loop /whip` cycle, in order:
 
 1. **Read its own inbox** (`inbox_messages` table, member `__medic__`; legacy `__superdoctor__` rows still readable during the deprecation window) — heads-up nudges from team leads or members.
 2. **Sweep each enabled team** — `atmux doctor --json` + `atmux status --json` per team. Detection layer (ADR-019).
-3. **Triage** — silent if all green. If yellow/red anywhere, route into investigation.
-4. **Investigate** — trace the anomaly to its root cause. Read git log, recent commits, lead-queue entries, driver-inbox archive. Forks an Agent (Sonnet for read-only research) when the search is wide.
-5. **Decide authority level**:
+3. **Kanban-hygiene pass** — `atmux hygiene-tick --team-dir <root> --json` per team (ADR-131). Runs five detectors (`ghost-owner`, `lane-mismatch`, `role-mismatch`, `lane-null-orphan`, `prio-null`); upserts fingerprints into `superdoctor_hygiene` table; drains ONE deterministic auto-fix per tick per team via the severity/confidence ladder. JSON output names what was detected, drained, or deferred — agent decides whether to surface to Discord (`[hygiene-blocker]` template only when a P0 wedged ≥4h has zero deterministic candidates).
+4. **Triage** — silent if all green. If yellow/red anywhere, route into investigation.
+5. **Investigate** — trace the anomaly to its root cause. Read git log, recent commits, lead-queue entries, driver-inbox archive. Forks an Agent (Sonnet for read-only research) when the search is wide.
+6. **Decide authority level**:
    - File-only (default): write a complaint to the affected team's complaint box; ping its lead via `atmux send <team>:<lead>`.
    - Action: rotate a wedged lead, clear a confused member, cycle a stuck cage, push a fix to atmux's own source on a branch.
    - P0 send-keys bypass (rare): direct `tmux send-keys` to a member or lead pane when the SQL inbox routing is too slow (e.g. demo in 20min, member wedged on a recoverable error).
-6. **Author preventive ask** — every complaint includes a `preventive_ask` field. The point isn't fixing this incident; it's ensuring the next one doesn't happen.
-7. **Log everything** — every action medic takes is logged to its own complaint box first. Audit trail survives a misdiagnosis.
+7. **Author preventive ask** — every complaint includes a `preventive_ask` field. The point isn't fixing this incident; it's ensuring the next one doesn't happen.
+8. **Log everything** — every action medic takes is logged to its own complaint box first. Audit trail survives a misdiagnosis.
 
 ## What its actions look like
 
@@ -205,6 +206,40 @@ The message lands in `inbox_messages` table with member `__medic__`. The legacy 
 
 **P0 to the operator** — medic itself escalates by writing to `pending-decisions.md` (operator's authoritative ask channel) and Discord-pinging George (`[medic]` prefix per CLAUDE.md format rules).
 
+## Self-escalation when fixes keep failing
+
+ADR-077 §F6 — without this, superdoctor silently loops while the team stays broken (rotate-lead swallowed under auto-mode; kill+respawn welcome-screen-gates; all members idle 3h after rebuild). Superdoctor logs every structural-fix attempt with its outcome; after **three failed attempts on the same complaint hash**, it pages George with a bounded ABC menu and stops trying that fix on that complaint until the operator picks an option.
+
+**Attempt log** — `superdoctor_attempts` table in each team's `<team-root>/.atmux/state.db` (migration v3):
+
+| column         | meaning                                                       |
+|----------------|---------------------------------------------------------------|
+| `complaint_id` | FK-style reference to `complaints.id`                         |
+| `attempt_n`    | 1-based attempt counter within the same `complaint_id`        |
+| `outcome`      | `resolved` / `partial` / `failed` (CHECK-constrained)         |
+| `attempted_at` | epoch seconds when the attempt completed                      |
+| `action`       | what fix was tried — `rotate-lead`, `kill-respawn`, etc.      |
+| `note`         | one-line observation (verify reason, pane state, SHA)         |
+
+Read via `SuperdoctorAttemptsRepo` (`src/core/repositories/superdoctor-attempts-repo.ts`). The trigger query is `countByOutcomeFor(complaintId, 'failed') >= 3`.
+
+**The page** — Discord template `[self-heal-failed]` (`renderSelfHealFailed`). Goal is 2-second triage on a phone:
+
+```
+🚨 [self-heal-failed] `<team>` · 14:22 MYT
+🚨 self-heal failed: <symptom> — N=3 attempts
+🙏 reply A/B/C — one letter pivots cheaply
+🛠️ A) /team stop + start <team> — restarts N member(s) ~30s
+🔁 B) swap account <from> → <to> — wk budget reset
+⏳ C) park <team> for the night — re-engage at session start
+⏰ default at 14:52 MYT: A — cheap to pivot if you redirect
+📍 <complaintsOpen> open · <whipStrikes> strikes
+```
+
+**Dedup** — one ping per complaint hash within a 1h window. State lives in `state_kv` (feature `superdoctor-self-heal-escalation`, key = `complaint_id`); subsequent failures inside the window record into `superdoctor_attempts` but skip the Discord emit.
+
+**Action on reply** — operator replies a single letter to the Discord thread; the skill's reply handler resolves the complaint and triggers the named action (`/team stop` + `/team start`, account swap, park-for-night). Operator silence past the 30-min default deadline = `A`.
+
 ## Comparison with other roles
 
 - **`atmux doctor` (verb)** — deterministic checks. Detection only, no diagnosis. Run on-demand or as `atmux start` preflight. Medic invokes `atmux doctor --json` as one input among many during its whip turn. (The verb-vs-process disambiguation was the original motivation for renaming the role off `superdoctor` per ADR-133.)
@@ -215,7 +250,7 @@ The message lands in `inbox_messages` table with member `__medic__`. The legacy 
 
 ## Status
 
-ADR-077 §D1 + §D2 (cockpit topology + schema), §F1 (skill brief in `~/.claude/skills/medic/`), §F2 (complaint box SQLite + `atmux complaints` verb), §F3 (`atmux send __medic__` validator), §F4 (P0 send-keys runbook), and §F5 (status verb medic surface) all ship. Setting `medic.enabled: true` in `~/.atmux/cockpit.json` and running `atmux cockpit rebuild` spawns window 2 with a Claude Opus session that — when invoked as `/loop /medic` — runs the hourly diagnosis loop end-to-end.
+ADR-077 §D1 + §D2 (cockpit topology + schema), §F1 (skill brief in `~/.claude/skills/medic/`), §F2 (complaint box SQLite + `atmux complaints` verb), §F3 (`atmux send __medic__` validator), §F4 (P0 send-keys runbook), §F5 (status verb medic surface), and §F6 (self-escalation primitives — `superdoctor_attempts` table [migration name retained per ADR-133 storage carve-out] + `renderSelfHealFailed` Discord template) all ship. Setting `medic.enabled: true` in `~/.atmux/cockpit.json` and running `atmux cockpit rebuild` spawns window 2 with a Claude Opus session that — when invoked as `/loop /medic` — runs the hourly diagnosis loop end-to-end.
 
 Open follow-ups (not blocking):
 

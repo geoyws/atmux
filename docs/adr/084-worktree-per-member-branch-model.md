@@ -1,7 +1,8 @@
 # ADR-084: Per-member branch model for worktree isolation — amends ADR-082 OQ6
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-12
+**Date-accepted**: 2026-05-13 — W1 `3bad83e7` provisionWorktree per-member-branch fix · W2 `3b50c6f` doctor branch-orphan info class · W3 `2ba5a12` task-update verb (rewires W6c verify) · main per-member branch model + cockpit safety gate shipped via `14450c4`.
 **Amends**: ADR-082 §"Decision (1) Branch model for MVP" + OQ6 resolution.
 **Driver-ref**: 2026-05-12 ~11:40 MYT cockpit driver — *"every member tries to checkout 'geoyws' which git refuses"*.
 
@@ -139,7 +140,7 @@ Prune now leaves an orphan `<base>-<member>` branch behind. Two options:
 
 OQ-1 — **Default `wtBranch` naming convention** — `<base>-<member>` vs `<member>-wt` vs `wt/<base>/<member>`. **Resolved default: `<base>-<member>`** (above rationale). Driver may override via `atmux decisions add` — namespace shape is the kind of bikeshed worth pinning early via the decisions log.
 
-OQ-2 — **Branch cleanup on `stop --force`** — leave orphan branches (default) vs always prune. **Resolved default: leave** (safer; respects feedback_destructive_ops_need_explicit_auth.md). Follow-up `--prune-branch` flag deferred. Driver may override.
+OQ-2 — **Branch cleanup on `stop --force`** — leave orphan branches (default) vs always prune. **Resolved default: leave** (safer; respects feedback_destructive_ops_need_explicit_auth.md). **Follow-up `--prune-branch` flag shipped (t-ff59de35)** — opt-in, requires `--force`, uses safe `git branch -d` (refuses unmerged branches), only fires on the worktree-pruned-success path. Unmerged + dirty-worktree branches still left for the operator. Driver may override.
 
 OQ-3 — **Gitter pattern alignment** — does the gitter role operate on its `geoyws-gitter` worktree branch, or on the parent repo's `geoyws` directly? **Deferred to operator.** Both work; no atmux-side enforcement.
 

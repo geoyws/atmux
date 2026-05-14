@@ -127,6 +127,12 @@ export interface SuperdoctorSessionT {
   prefixChain?: string[];
   claudeAccount?: CockpitClaudeAccount;
   tuiOverrides?: CockpitTuiOverrides;
+  /** t-22453c1e: parity with legacy `CockpitSuperdoctor.autoStart` so the
+   *  migration shim's spread-into-sessions[] doesn't strip a field the
+   *  reconcile-side check still reads. */
+  autoStart?: boolean;
+  /** t-22453c1e: parity with legacy `CockpitSuperdoctor.autoStartTimeoutSec`. */
+  autoStartTimeoutSec?: number;
 }
 
 /** Cockpit window 2 (post-ADR-133) — fleet self-healing role. Same
@@ -205,6 +211,8 @@ export const SuperdriverSession: z.ZodType<SuperdriverSessionT> = z.lazy(() =>
 export const SuperdoctorSession: z.ZodType<SuperdoctorSessionT> = z.lazy(() =>
   CockpitSessionBase.extend({
     type: z.literal("superdoctor"),
+    autoStart: z.boolean().optional(),
+    autoStartTimeoutSec: z.number().int().positive().optional(),
   }).strict(),
 ) as z.ZodType<SuperdoctorSessionT>;
 
@@ -275,8 +283,15 @@ export type CockpitTeam = z.infer<typeof CockpitTeam>;
  * entry in `sessions[]` (post-ADR-133 the loader coerces both to
  * medic-shape; this type aliases continue to surface for back-compat).
  *
- * @deprecated v2-bump: drop in favour of `MedicSession` from `sessions[]`
- *   (or read `cockpit.medic` directly — same shape, canonical name).
+ * @deprecated v2-bump per ADR-133. Drop in favour of `MedicSession` from
+ *   `sessions[]` OR read `cockpit.medic` directly — same Zod shape,
+ *   canonical name. The legacy `cockpit.superdoctor` key is accepted
+ *   during the one-release deprecation window; loader coerces it to
+ *   `medic` semantics with a stderr warning. Once the window closes
+ *   (v2 schema bump), schema-load on a config carrying `superdoctor`
+ *   soft-fails with an actionable error pointing at ADR-133. This
+ *   export stays through the window so existing consumers (status.ts,
+ *   audit.ts) don't churn.
  */
 export const CockpitSuperdoctor = z
   .object({
@@ -301,30 +316,106 @@ export const CockpitSuperdoctor = z
   .strict();
 export type CockpitSuperdoctor = z.infer<typeof CockpitSuperdoctor>;
 
-/** ADR-133 canonical alias for `CockpitSuperdoctor`. Same Zod schema;
- *  separate type alias so doc-discipline call sites can read `CockpitMedic`
- *  without churning the underlying struct during the deprecation window. */
+/**
+ * ADR-133: new canonical name for the cockpit health-check singleton.
+ * Same shape as the deprecated {@link CockpitSuperdoctor} — the rename
+ * is naming-only at the config + process surface to avoid collision
+ * with the `atmux doctor` verb. Operator-visible config key is
+ * `cockpit.medic`. Loader coerces legacy `cockpit.superdoctor` to
+ * `medic` semantics with a stderr warning during the deprecation
+ * window per ADR-133 §D2.
+ */
 export const CockpitMedic = CockpitSuperdoctor;
 export type CockpitMedic = z.infer<typeof CockpitMedic>;
 
-/** ADR-132 §D6: cockpit-tier Martinet configuration. Same struct pattern
- *  as `CockpitSuperdoctor` / `CockpitMedic` — singleton (one cage hosts
- *  the fleet-wide tick) with the standard `claudeAccount` +
- *  `tuiOverrides` knobs. */
-export const CockpitMartinet = z
+/**
+ * ADR-132 §D4 — `claude` variant of the pluggable martinet config.
+ * Reuses the cockpit-tier `claudeAccount` + `tuiOverrides` pattern
+ * verbatim from {@link CockpitSuperdoctor}. The cockpit-rebuild
+ * step provisions a Tier-1 (operator-runtime) cage at W3 when this
+ * variant is selected — no separate cage subprocess; the martinet
+ * runs in the operator's TUI under `claudeAccount`.
+ *
+ * `autoStart` + `autoStartTimeoutSec` mirror the superdoctor pattern
+ * (t-22453c1e): after a freshly-created martinet window settles to
+ * its idle Claude prompt, the cockpit-rebuild step fires
+ * `/loop /martinet` to begin the observation cycle. Defaults: true /
+ * 30s. Pre-existing windows are never re-fired; the auto-start gate
+ * is fresh-create-only.
+ */
+export const CockpitMartinetClaude = z
   .object({
+    impl: z.literal("claude"),
     enabled: z.boolean().default(false),
     claudeAccount: CockpitClaudeAccount.optional(),
     tuiOverrides: CockpitTuiOverrides.optional(),
-    /** Mirrors `CockpitSuperdoctor.autoStart` — auto-fire `/loop /martinet`
-     *  after the freshly-created window settles to its idle Claude prompt.
-     *  Default true when omitted. */
     autoStart: z.boolean().optional(),
-    /** Mirrors `CockpitSuperdoctor.autoStartTimeoutSec` — readiness-poll
-     *  deadline in seconds. Default 30. */
     autoStartTimeoutSec: z.number().int().positive().optional(),
   })
   .strict();
+export type CockpitMartinetClaude = z.infer<typeof CockpitMartinetClaude>;
+
+/**
+ * ADR-132 §D4 — `cursor` variant of the pluggable martinet config.
+ * The cockpit-rebuild step provisions a Tier-2 cage tmux server
+ * running `cursor-agent --model <model>` at W3 when this variant
+ * is selected. Tier-2 is full operator-UID with git access (per
+ * ADR-050 §D1 + ADR-058 §D3 trust posture — cursor-agent is the
+ * sole accepted fallback executor post-2026-05-14 scope reduction;
+ * the same cage tier carries over to the martinet pattern).
+ *
+ * `cursorBinPath` is the absolute path to the operator's
+ * `cursor-agent` install (default `/usr/local/bin/cursor-agent`,
+ * the project-canonical install location). `model` picks between
+ * `composer-2-fast` (default — cost-efficient mechanical-tier
+ * choice) and `composer-2` (for teams that need deeper reasoning
+ * at the martinet tier). `cageTier` is literal-pinned to `"tier-2"`
+ * per ADR-132 §D4 — Tier 3+ would require a fresh ADR + enum bump
+ * (out of scope per the 2026-05-14 reduction).
+ */
+export const CockpitMartinetCursor = z
+  .object({
+    impl: z.literal("cursor"),
+    enabled: z.boolean().default(false),
+    cursorBinPath: z.string().default("/usr/local/bin/cursor-agent"),
+    model: z
+      .enum(["composer-2-fast", "composer-2"])
+      .default("composer-2-fast"),
+    cageTier: z.literal("tier-2").default("tier-2"),
+  })
+  .strict();
+export type CockpitMartinetCursor = z.infer<typeof CockpitMartinetCursor>;
+
+/**
+ * ADR-132 §D4 — pluggable 2-impl martinet config as a discriminated
+ * union keyed on `impl`. Picking the variant at the schema layer
+ * means TS narrows correctly when callers read variant-specific
+ * fields (`.tuiOverrides` only valid on claude; `.cursorBinPath`
+ * only valid on cursor). Both variants share `enabled` + `impl`;
+ * everything else is impl-specific.
+ *
+ * Resolution order per ADR-132 §D6: per-team `team.json::martinet`
+ * beats `cockpit.defaultMartinet` beats hard-coded `"claude"`
+ * fallback. The `defaultMartinet` field at the top of `Cockpit`
+ * carries the fleet-wide default; this discriminated union carries
+ * the impl-specific provisioning knobs.
+ *
+ * Trunk-merge note (Task t-b86fd8cb, 2026-05-14): replaces both
+ * sides' flat singleton structs. whip-impl branch had a Claude-only
+ * shape with `tuiOverrides` + `autoStart`. trunk had a Cursor-only
+ * shape with `cursorBinPath` + `model`. The discriminated union
+ * embeds BOTH legitimately — neither side's fields are dropped,
+ * both find their proper variant home. Diverges from ADR-132 §D6's
+ * flat example by hoisting the impl-selector onto the block itself
+ * (§D6's example used `cockpit.defaultMartinet` separately +
+ * fields-vary-by-impl); this reshape is per Task t-b86fd8cb body's
+ * explicit "discriminated-union schema per ADR-132 §D4" mandate.
+ * ADR-132 §D6 same-commit pointer added to capture the divergence.
+ */
+export const CockpitMartinet = z.discriminatedUnion("impl", [
+  CockpitMartinetClaude,
+  CockpitMartinetCursor,
+]);
 export type CockpitMartinet = z.infer<typeof CockpitMartinet>;
 
 /** ADR-132 §D6 fleet-wide Martinet impl resolution: per-team
@@ -334,6 +425,7 @@ export type CockpitMartinet = z.infer<typeof CockpitMartinet>;
  *  backends dropped pre-implementation. */
 export const CockpitDefaultMartinet = z.enum(["claude", "cursor"]);
 export type CockpitDefaultMartinet = z.infer<typeof CockpitDefaultMartinet>;
+
 
 /** ADR-086 §Phase 1.5: verdict literal keys for the per-verdict dedup
  *  ladder. Restated here (not imported from `core/pulse-state.ts` to
@@ -346,6 +438,10 @@ const PulseVerdictLiteralSchema = z.enum([
   "🔴 Stalled",
   "🚨 Need you",
 ]);
+
+// (CockpitMartinet definition hoisted to the discriminated-union block
+// above, alongside CockpitMartinetClaude + CockpitMartinetCursor +
+// CockpitDefaultMartinet — see Task t-b86fd8cb resolution / ADR-132 §D4.)
 
 /** ADR-086: cockpit-wide `atmux pulse` probe tunables. All fields opt-in;
  *  defaults are 30 / 5 / 30 (window / interval / dedup minutes). */
@@ -423,14 +519,19 @@ export const Cockpit = z
      *  `superdoctor` block (deprecated). New code reads `cockpit.medic`
      *  directly. */
     medic: CockpitMedic.optional(),
-    /** ADR-132 §D6 — cockpit-tier Martinet block. Singleton; one cage
-     *  in cockpit window 3 hosts the fleet-wide tick loop. When unset
-     *  or `enabled: false`, no W3 window is provisioned and per-team
-     *  viewer windows occupy W3+ (the pre-ADR-132 topology). */
+    /** ADR-132 §D4 / §D6 — cockpit-tier Martinet block. Discriminated
+     *  union on `impl` (`claude` | `cursor`); one cage in cockpit
+     *  window 3 hosts the fleet-wide tick loop. When unset or
+     *  `enabled: false`, no W3 window is provisioned and per-team
+     *  viewer windows occupy W3+ (the pre-ADR-132 topology). See
+     *  {@link CockpitMartinet} for the variant-by-variant field
+     *  rationale. */
     martinet: CockpitMartinet.optional(),
-    /** ADR-132 §D6 — fleet default Martinet impl. Resolution order:
-     *  per-team `team.json::martinet` beats this beats hard-coded
-     *  `"claude"`. */
+    /** ADR-132 §D6 — fleet default Martinet impl when neither
+     *  `team.json::martinet` nor `cockpit.martinet.impl` resolves a
+     *  selection. Resolution order: per-team `team.json::martinet`
+     *  beats `cockpit.martinet.impl` beats `cockpit.defaultMartinet`
+     *  beats hard-coded `"claude"`. */
     defaultMartinet: CockpitDefaultMartinet.optional(),
     /** Optional ADR-086 pulse probe tunables. Omit for defaults. */
     pulse: CockpitPulse.optional(),

@@ -222,6 +222,20 @@ export interface TmuxNamespace {
     killSession(name: string): Promise<void>;
     listSessions(): Promise<{ name: string; windows: number; created: number }[]>;
     renameSession(oldName: string, newName: string): Promise<void>;
+    /** `tmux set-environment [-t <target>] [-u] <name> [<value>]`. Sets
+     *  or unsets a variable in the session's environment, inherited by
+     *  panes spawned afterward. `unset === true` calls `-u <name>` and
+     *  ignores `value`; otherwise sets `<name>=<value>`. `target` is the
+     *  session name (omitted → global server env). Used by start.ts to
+     *  scrub stale parent-shell variables (ANTHROPIC_API_KEY etc.) from
+     *  the session BEFORE pane spawn, per ADR §"per-team-session env
+     *  scrub". */
+    setEnvironment(opts: {
+      target?: string;
+      name: string;
+      value?: string;
+      unset?: boolean;
+    }): Promise<void>;
   };
   readonly window: {
     newWindow(opts: {
@@ -422,6 +436,19 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
       /** `tmux rename-session -t <oldName> <newName>`. */
       async renameSession(oldName, newName) {
         await tmuxRun(["rename-session", "-t", oldName, newName]);
+      },
+
+      /** `tmux set-environment [-t <target>] [-u] <name> [<value>]`. */
+      async setEnvironment(opts) {
+        const argv = ["set-environment"];
+        if (opts.target !== undefined) argv.push("-t", opts.target);
+        if (opts.unset === true) {
+          argv.push("-u", opts.name);
+        } else {
+          argv.push(opts.name);
+          if (opts.value !== undefined) argv.push(opts.value);
+        }
+        await tmuxRun(argv);
       },
     },
 
