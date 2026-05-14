@@ -125,6 +125,7 @@ import {
   renderBootFailureNotice,
 } from "../core/boot-claude.ts";
 import {
+  enabledTeams,
   loadCockpit,
   readNestingLevel,
   resolvePrefix,
@@ -136,10 +137,10 @@ import {
 } from "../core/soft-stop.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ResumeManifest } from "../schema/resume.ts";
-import { resolveTuiCommand } from "../core/tui-cmd.ts";
+import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
-import { applyCagePrefix } from "./cockpit.ts";
+import { applyCagePrefix, reconcileCockpitSession } from "./cockpit.ts";
 import { cronInstall } from "./cron-install.ts";
 import { defaultBriefsDir, getBriefPath, renderBrief } from "./rotate.ts";
 
@@ -292,6 +293,18 @@ export interface StartOpts {
    *  by start.ts — the override is just for the tunable subset
    *  (timeouts, sleep, etc.). */
   bootClaude?: Partial<BootClaudeOpts>;
+  /** ADR-063 ergonomic fix (t-ab8df0b4): inject the cockpit loader for
+   *  the post-bring-up reconcile hook. Default = the real
+   *  `loadCockpit` from `core/cockpit.ts`. Tests pass a no-cockpit
+   *  fixture or a stub roster to drive every branch (rostered+enabled,
+   *  un-rostered, enabled:false, missing-config). Return `null` to
+   *  signal a graceful skip (matches the missing-config silent path). */
+  loadCockpitFn?: () => Promise<Awaited<ReturnType<typeof loadCockpit>> | null>;
+  /** ADR-063 ergonomic fix: inject the cockpit reconcile primitive
+   *  itself for tests so they can assert per-team scope without
+   *  shelling out to a real tmux server. Default = real
+   *  `reconcileCockpitSession`. */
+  cockpitReconcileFn?: typeof reconcileCockpitSession;
 }
 
 /**
@@ -490,6 +503,29 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         cwd: opts.cwd ?? process.cwd(),
       });
       logger.ok(`created tmux session: ${session}`);
+    }
+  }
+
+  // 7-env-scrub. Strip operator-shell artefacts from the cage tmux
+  //              session's environment BEFORE any pane spawn. The tmux
+  //              server inherits the calling process env at session-
+  //              creation time; without this scrub, a parent shell with
+  //              ANTHROPIC_API_KEY set flips every claude pane into env-
+  //              key bearer mode + triggers the "Do you want to use this
+  //              API key?" dialog (operator 2026-05-14 incident).
+  //              tuiClaude's `env -u …` prefix (src/core/tui-cmd.ts)
+  //              already protects the claude binary's process env; this
+  //              setenv -u layer is defense-in-depth for non-claude TUIs
+  //              + member.command overrides that bypass tuiClaude.
+  //              Best-effort: failures logged + ignored (the tuiClaude
+  //              prefix is the primary protection).
+  for (const v of CLAUDE_TUI_SCRUB_VARS) {
+    try {
+      await tmux.session.setEnvironment({ target: session, name: v, unset: true });
+    } catch (err) {
+      logger.warn(
+        `session env scrub: tmux set-environment -u ${v} failed (${err instanceof Error ? err.message : String(err)}) — tuiClaude prefix still protects claude TUIs`,
+      );
     }
   }
 
@@ -813,7 +849,110 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     }
   }
 
+  // 12. ADR-063 ergonomic fix (t-ab8df0b4): auto-reconcile the cockpit
+  //     viewer window when this team is rostered + enabled in
+  //     `~/.atmux/cockpit.json`. Operators previously had to remember
+  //     the two-verb dance (`atmux start` then `atmux cockpit rebuild`);
+  //     this hook folds the per-team viewer-window add into start's
+  //     tail.
+  //
+  //     Scope: ADDITIVE only — `onlyTeam` mode in
+  //     `reconcileCockpitSession` skips orphan removal + superdoctor
+  //     relocation. Un-rostered teams + cockpit.json-missing + team-
+  //     rostered-but-disabled all silent-skip (no auto-rostering — that
+  //     stays operator-explicit).
+  //
+  //     Non-fatal: any cockpit.json read failure or tmux error from the
+  //     reconcile is logged at WARN and the verb still returns 0. Team-
+  //     side bring-up has already succeeded by this point; a cockpit
+  //     hiccup shouldn't fail `start`.
+  await autoReconcileCockpitForTeam(team, factory, logger, opts);
+
   return 0;
+}
+
+/** ADR-063 ergonomic fix (t-ab8df0b4): folded into `start.run()` tail.
+ *
+ *  Loads `~/.atmux/cockpit.json` (best-effort), checks whether the cwd
+ *  team is rostered + enabled, and calls `reconcileCockpitSession` with
+ *  `onlyTeam` scope so just this team's viewer window is added (if
+ *  missing) without disturbing sibling windows. Every failure mode is
+ *  silent-skip or stderr-WARN — never aborts `start`.
+ *
+ *  Behaviour matrix (matches `atmux start --help` line):
+ *
+ *    | cockpit.json | team rostered | team.enabled | action                            |
+ *    | ------------ | ------------- | ------------ | --------------------------------- |
+ *    | missing      | n/a           | n/a          | silent skip                       |
+ *    | malformed    | n/a           | n/a          | stderr WARN, skip                 |
+ *    | present      | no            | n/a          | silent skip (un-rostered teams    |
+ *    |              |               |              |   keep the two-verb separation)   |
+ *    | present      | yes           | false        | silent skip (disabled-by-operator |
+ *    |              |               |              |   intent honoured)                |
+ *    | present      | yes           | true         | reconcile this team's viewer only |
+ */
+async function autoReconcileCockpitForTeam(
+  team: Team,
+  factory: (cfg: TmuxConfig) => TmuxNamespace,
+  logger: Logger,
+  opts: StartOpts,
+): Promise<void> {
+  const load =
+    opts.loadCockpitFn ??
+    (async (): Promise<Awaited<ReturnType<typeof loadCockpit>> | null> => {
+      try {
+        return await loadCockpit();
+      } catch (e) {
+        // ConfigError on missing file is the silent-skip path. Schema
+        // errors (malformed JSON) surface as WARN. Distinguish via
+        // error name; anything else is also a WARN (defensive).
+        const isMissingConfig =
+          e instanceof Error && e.name === "ConfigError" && /no cockpit config/i.test(e.message);
+        if (isMissingConfig) return null;
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(`cockpit reconcile skipped: cannot load cockpit.json (${cause})`);
+        return null;
+      }
+    });
+
+  let cockpit: Awaited<ReturnType<typeof loadCockpit>> | null;
+  try {
+    cockpit = await load();
+  } catch (e) {
+    // Defense in depth — the default `load` already handles this, but a
+    // test-injected `loadCockpitFn` that throws should NOT take `start`
+    // down with it.
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`cockpit reconcile skipped: loader threw (${cause})`);
+    return;
+  }
+  if (cockpit === null) return; // silent skip — missing cockpit.json
+
+  const matched = enabledTeams(cockpit).find((t) => t.name === team.name);
+  if (matched === undefined) {
+    // Either un-rostered OR rostered-but-`enabled: false` — both
+    // silent-skip per the ADR-063 ergonomic fix's behaviour matrix.
+    return;
+  }
+
+  const reconcile = opts.cockpitReconcileFn ?? reconcileCockpitSession;
+  const cockpitTmux = factory({ socket: "default" });
+  try {
+    await reconcile(
+      cockpitTmux,
+      cockpit.cockpitSession,
+      [matched],
+      logger,
+      {},
+      cockpit.superdoctor,
+      false,
+      { onlyTeam: matched.name },
+    );
+    logger.log(`  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`cockpit reconcile failed for '${matched.name}': ${cause}`);
+  }
 }
 
 /** ADR-083 §IN §4: `kanban.cronAutoInstall` (default true) gates the

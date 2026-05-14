@@ -165,6 +165,12 @@ describe("enabledTeams", () => {
   });
 });
 
+// HEAD's `resolveCageSocket(cockpitTeam, opts)` tests removed —
+// superseded by ADR-063 follow-up (t-31bef86e) which switched the
+// signature to `(teamName, teamRoot, deps)` with `exists`-based dual-
+// probe. The new test suite below covers the same scenarios with the
+// new contract. See merge commit body for the supersession trail.
+
 describe("cageSocketPath", () => {
   test("returns /tmp/atmux-<team>/sock", () => {
     expect(cageSocketPath("sopx")).toBe("/tmp/atmux-sopx/sock");

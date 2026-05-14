@@ -45,8 +45,12 @@ describe("parseCockpitArgs", () => {
   test("each flag parses individually", () => {
     expect(parseCockpitArgs(["rebuild", "--no-cycle"]).noCycle).toBe(true);
     expect(
-      parseCockpitArgs(["rebuild", "--force-cycle", "--acknowledge-dangerous-bau-interruption"])
-        .forceCycle,
+      parseCockpitArgs([
+        "rebuild",
+        "--force-cycle",
+        "--acknowledge-dangerous-bau-interruption",
+        "--yes",
+      ]).forceCycle,
     ).toBe(true);
     expect(parseCockpitArgs(["rebuild", "--no-launch"]).noLaunch).toBe(true);
   });
@@ -61,6 +65,7 @@ describe("parseCockpitArgs", () => {
         "--no-cycle",
         "--force-cycle",
         "--acknowledge-dangerous-bau-interruption",
+        "--yes",
       ]),
     ).toThrow(UsageError);
   });
@@ -75,6 +80,7 @@ describe("parseCockpitArgs", () => {
       "rebuild",
       "--force-cycle",
       "--acknowledge-dangerous-bau-interruption",
+      "--yes",
     ]);
     expect(p.forceCycle).toBe(true);
     expect(p.ackDangerous).toBe(true);
@@ -614,12 +620,16 @@ describe("reconcileCockpitSession", () => {
         ],
         logger,
       );
-      // Second pass — drop "b".
+      // Second pass — drop "b". Passing yes=true so the t-8b0e077e
+      // safety gate doesn't refuse the planned orphan-prune.
       await reconcileCockpitSession(
         fx.tmux,
         "s",
         [{ name: "a", root: "/a", enabled: true } as CockpitTeam],
         logger,
+        {},
+        undefined,
+        true,
       );
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
       expect(names).toContain("superdriver");
@@ -1080,6 +1090,152 @@ describe("reconcileCockpitSession", () => {
   });
 });
 
+// ---------- ADR-063 ergonomic fix: onlyTeam scope (t-ab8df0b4) ----------
+
+describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", () => {
+  test("onlyTeam adds named window when missing, leaves siblings untouched", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-add");
+    try {
+      const { logger } = makeLogger();
+      // Seed: fleet-wide with sibling 'alpha' already present.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam],
+        logger,
+      );
+      const before = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(before).toContain("alpha");
+      expect(before).not.toContain("unum");
+
+      // Per-team add of 'unum' — siblings preserved.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "unum", root: "/u", enabled: true } as CockpitTeam],
+        logger,
+        {},
+        undefined,
+        false,
+        { onlyTeam: "unum" },
+      );
+      const after = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(after).toContain("alpha"); // sibling preserved
+      expect(after).toContain("unum"); // target added
+      expect(after).toContain("superdriver");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("onlyTeam idempotent — window already present is no-op", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-idem");
+    try {
+      const { logger } = makeLogger();
+      // Seed.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "unum", root: "/u", enabled: true } as CockpitTeam],
+        logger,
+      );
+      const before = (await fx.tmux.window.listWindows("s")).map(
+        (w) => `${w.index}:${w.name}`,
+      );
+
+      // Re-run with onlyTeam — no-op.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "unum", root: "/u", enabled: true } as CockpitTeam],
+        logger,
+        {},
+        undefined,
+        false,
+        { onlyTeam: "unum" },
+      );
+      const after = (await fx.tmux.window.listWindows("s")).map(
+        (w) => `${w.index}:${w.name}`,
+      );
+      expect(after).toEqual(before);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("onlyTeam does NOT remove orphan sibling windows (additive only)", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-no-orphan");
+    try {
+      const { logger } = makeLogger();
+      // Seed two team windows fleet-wide.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [
+          { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+          { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+        ],
+        logger,
+      );
+      // Per-team reconcile with ONLY 'alpha' — fleet-wide mode would
+      // delete 'beta' as an orphan, but onlyTeam mode must preserve it.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam],
+        logger,
+        {},
+        undefined,
+        false,
+        { onlyTeam: "alpha" },
+      );
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("alpha");
+      expect(names).toContain("beta"); // NOT removed — onlyTeam is additive
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("onlyTeam filters teams[] arg defensively (mismatched name ignored)", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-filter");
+    try {
+      const { logger } = makeLogger();
+      // Caller passes both teams but onlyTeam pins to 'unum' only.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [
+          { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+          { name: "unum", root: "/u", enabled: true } as CockpitTeam,
+        ],
+        logger,
+        {},
+        undefined,
+        false,
+        { onlyTeam: "unum" },
+      );
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("unum"); // pinned by onlyTeam
+      expect(names).not.toContain("alpha"); // filtered out
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------- ADR-077: buildSuperdoctorWindowCommand ----------
 
 describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
@@ -1287,7 +1443,11 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain(":driver");
     expect(cmd).toContain("while true");
     expect(cmd).toContain("sleep 1");
-    // ADR-063 follow-up: both socket conventions inside one iteration.
+    // ADR-063 follow-up (t-31bef86e): both socket conventions inside
+    // one iteration. Supersedes the t-b5864443 single-socketPath param —
+    // the dual-socket retry loop derives both paths internally from
+    // the team's name + root so cockpit viewers self-heal across cage
+    // socket-convention flips without requiring a pre-resolved socket.
     expect(cmd).toContain("/tmp/atmux-demo/sock");
     expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
     expect(cmd).toContain("||");
@@ -1623,7 +1783,11 @@ describe("cockpitRebuild", () => {
       join(homeDir, ".atmux", "cockpit.json"),
       JSON.stringify({
         cockpitSession: "test_cockpit_sd_nudge",
-        superdoctor: { enabled: true },
+        // autoStart: false keeps this test scoped to the manual-nudge
+        // contract (t-22453c1e's auto-start path has its own coverage;
+        // mixing them here would deadline-hang on the live capture-pane
+        // poll since the CI tmux pane never reaches a Claude prompt).
+        superdoctor: { enabled: true, autoStart: false },
         teams: [{ name: "demo", root: projRoot, enabled: true }],
       }),
       "utf8",

@@ -78,10 +78,15 @@ export type TeamWindowMode =
 export interface ResolveTeamWindowDeps {
   /** Override `loadTeam` for tests. Default reads `<root>/.atmux/team.json`. */
   loadTeam?: (opts: { teamDir: string }) => Promise<Team>;
-  /** ADR-063 follow-up: override the socket resolver. Default probes
-   *  both legacy and per-team paths via `core/cockpit::resolveCageSocket`.
-   *  Tests inject a constant returning a known path to assert which
-   *  socket the cage factory is built against. */
+  /** ADR-063 follow-up (t-31bef86e): override the socket resolver.
+   *  Default probes both legacy `/tmp/atmux-<team>/sock` AND per-team
+   *  `<root>/.atmux/tmux/tmux-<uid>/default` via
+   *  `core/cockpit::resolveCageSocket`, returning whichever exists
+   *  (legacy-first for back-compat, falls through to legacy when neither
+   *  exists). Tests inject a constant returning a known path to assert
+   *  which socket the cage factory is built against. Supersedes the
+   *  prior single-socket `resolveTeamSocket(teamShape)` path from
+   *  t-b5864443 — see ADR-063 follow-up commit 3cab619. */
   resolveCageSocket?: (teamName: string, teamRoot: string) => Promise<string>;
   /** Build the team's cage TmuxNamespace. Default `createTmux({socketPath})`.
    *  Receives the socket path resolved by `resolveCageSocket` so tests
@@ -143,10 +148,13 @@ export async function resolveTeamWindowMode(
   // (ADR-018). Probe failures (cage tmux not reachable, no session)
   // → "session-down" placeholder rather than tearing down the rebuild.
   //
-  // ADR-063 follow-up: discover socket via the dual-path resolver so a
-  // cage running on the per-team `team.tmuxTmpdir` convention (sopx /
-  // unum / atmux) isn't misclassified as "session-down" just because
-  // legacy `/tmp/atmux-<team>/sock` is absent.
+  // ADR-063 follow-up (t-31bef86e): discover socket via the dual-path
+  // resolver so a cage running on the per-team `team.tmuxTmpdir`
+  // convention (sopx / unum / atmux dogfood) isn't misclassified as
+  // "session-down" just because legacy `/tmp/atmux-<team>/sock` is
+  // absent. Supersedes the prior single-`resolveTeamSocket(teamShape)`
+  // path from t-b5864443 — the dual-probe avoids the failure mode
+  // where team.json was unreadable AND legacy socket missing.
   const socketResolver = deps.resolveCageSocket ?? resolveCageSocket;
   let sock: string;
   try {
@@ -184,7 +192,7 @@ function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
  *     so the cockpit operator lands on the team's driver pane on focus
  *     (OQ4 default). Tries legacy `/tmp/atmux-<team>/sock` first then
  *     per-team `<root>/.atmux/tmux/tmux-<uid>/default` so cage flips
- *     between conventions self-recover (ADR-063 follow-up).
+ *     between conventions self-recover (ADR-063 follow-up t-31bef86e).
  *   - `"session-down"` — print a one-shot "not running" status THEN
  *     the same dual-socket retry-loop so the window self-heals once
  *     the cage comes back up. Pre-2026-05-14 this branch planted
@@ -194,6 +202,10 @@ function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
  *     infinity`. No retry loop because waiting can't fix a missing
  *     `team.json::driverSession`; the operator must edit team.json
  *     and re-run rebuild.
+ *
+ * Supersedes the t-b5864443 socketPath-arg signature — the dual-socket
+ * retry-loop derives BOTH paths internally from the team name + root,
+ * so callers no longer need to thread a pre-resolved socketPath.
  */
 export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode): string {
   switch (mode) {
@@ -495,7 +507,7 @@ export async function cockpitRebuild(
   // Phase 2: cycle cages (live-team-aware unless --force-cycle).
   if (!parsed.noCycle) {
     for (const t of teams) {
-      const sock = cageSocketPath(t.name);
+      const sock = await resolveCageSocket(t.name, t.root);
       const cageTmux = factory({ socketPath: sock });
       const alive = await cageAlive(cageTmux);
       if (alive && !parsed.forceCycle) {
@@ -519,7 +531,7 @@ export async function cockpitRebuild(
 
   // Phase 3: apply C-\ cage prefix on every enabled cage.
   for (const t of teams) {
-    const sock = cageSocketPath(t.name);
+    const sock = await resolveCageSocket(t.name, t.root);
     const cageTmux = factory({ socketPath: sock });
     await applyCagePrefix(cageTmux);
   }
@@ -527,7 +539,7 @@ export async function cockpitRebuild(
   // Phase 4: TUI auto-launch (idempotent — skips panes already on claude).
   if (!parsed.noLaunch) {
     for (const t of teams) {
-      const sock = cageSocketPath(t.name);
+      const sock = await resolveCageSocket(t.name, t.root);
       const cageTmux = factory({ socketPath: sock });
       const teamSummary = await autolaunchTeam(t, cageTmux, env, logger);
       const unbootMsg =
@@ -928,6 +940,25 @@ function buildDefaultReadinessProbe(cageTmux: TmuxNamespace, opts: AutolaunchOpt
  * land on the next rebuild that actually creates the window (operator
  * removes the placeholder, re-runs).
  */
+/** Optional knobs for {@link reconcileCockpitSession}. */
+export interface ReconcileCockpitOpts {
+  /** ADR-063 ergonomic fix (t-ab8df0b4): narrow reconcile to JUST the
+   *  named team's viewer window. When set:
+   *   - Session is created if missing (additive, same as fleet path).
+   *   - Superdoctor is created if missing + enabled, but NOT relocated
+   *     (relocation could displace sibling teams the caller doesn't
+   *     own).
+   *   - Only the named team's window is added (other teams in the
+   *     `teams[]` arg are ignored — the caller should pass only the
+   *     target team, but the parameter is the source of truth here).
+   *   - Orphan removal pass is SKIPPED entirely (additive only —
+   *     never delete sibling windows during a per-team reconcile).
+   *  When undefined: existing fleet-wide behaviour (orphans removed,
+   *  superdoctor force-relocated to slot 2, every team in `teams[]`
+   *  processed). */
+  onlyTeam?: string;
+}
+
 export async function reconcileCockpitSession(
   cockpitTmux: TmuxNamespace,
   sessionName: string,
@@ -939,7 +970,9 @@ export async function reconcileCockpitSession(
    *  on superdoctor's target slot + orphan-prune). Required when count > 0.
    *  Defaults to false — caller (cockpitRebuild) threads `parsed.yes`. */
   yes = false,
+  reconcileOpts: ReconcileCockpitOpts = {},
 ): Promise<void> {
+  const onlyTeam = reconcileOpts.onlyTeam;
   const has = await cockpitTmux.session.hasSession(sessionName);
   if (!has) {
     await cockpitTmux.session.newSession({
@@ -965,6 +998,7 @@ export async function reconcileCockpitSession(
     wantSuperdoctor,
     yes,
     logger,
+    ...(onlyTeam !== undefined ? { onlyTeam } : {}),
   });
 
   // ADR-077: ensure superdoctor exists + sits IMMEDIATELY after the
@@ -973,6 +1007,12 @@ export async function reconcileCockpitSession(
   // The target index is `superdriver.index + 1` rather than a literal
   // `2` because tmux's `base-index` option (operator-config dependent)
   // determines whether window 1 sits at index 0 or 1.
+  //
+  // Per-team mode (ADR-063 ergonomic fix): create-if-missing is fine
+  // (additive), but the forced-relocation pass is SKIPPED — moving the
+  // superdoctor window could displace sibling team viewers that the
+  // single-team caller has no authority to disturb. The fleet-wide
+  // `cockpit rebuild` is responsible for the relocation invariant.
   if (wantSuperdoctor) {
     let windowsBefore = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = windowsBefore.find((w) => w.name === "superdriver");
@@ -992,10 +1032,11 @@ export async function reconcileCockpitSession(
       sd = windowsBefore.find((w) => w.name === "superdoctor");
       sdJustCreated = true;
     }
-    if (sd !== undefined && sd.index !== targetIdx) {
+    if (onlyTeam === undefined && sd !== undefined && sd.index !== targetIdx) {
       // Forced relocation; kill whatever sits at the target slot (likely a
       // team viewer from a pre-ADR-077 cockpit). It's recreated below in
-      // the missing-viewer phase.
+      // the missing-viewer phase. Fleet-wide only — per-team mode skips
+      // this to preserve sibling team viewers.
       await cockpitTmux.window.moveWindow({
         source: { sessionName, windowIndex: sd.index },
         target: { sessionName, windowIndex: targetIdx },
@@ -1045,8 +1086,14 @@ export async function reconcileCockpitSession(
     ...teams.map((t) => t.name),
   ]);
 
+  // Per-team mode: filter teams to JUST the named one before the add
+  // pass — defensive against callers passing the full roster but
+  // wanting only one window touched.
+  const teamsToAdd =
+    onlyTeam !== undefined ? teams.filter((t) => t.name === onlyTeam) : teams;
+
   // Add missing viewer windows.
-  for (const t of teams) {
+  for (const t of teamsToAdd) {
     if (present.has(t.name)) {
       logger.log(`  · window '${t.name}' already present`);
       continue;
@@ -1064,6 +1111,12 @@ export async function reconcileCockpitSession(
 
   // Remove orphan viewer windows (e.g. team that was removed/disabled).
   // superdriver + superdoctor (when enabled) are always preserved.
+  //
+  // Per-team mode (ADR-063 ergonomic fix): SKIP this pass entirely.
+  // The single-team caller has no authority to remove sibling team
+  // viewers; only the fleet-wide `cockpit rebuild` does that.
+  if (onlyTeam !== undefined) return;
+
   for (const w of windows) {
     if (wanted.has(w.name)) continue;
     if (w.name === "superdriver") continue;
@@ -1127,6 +1180,12 @@ interface RefuseDestructiveOpts {
   wantSuperdoctor: boolean;
   yes: boolean;
   logger: Logger;
+  /** ADR-063 ergonomic fix interplay (t-ab8df0b4): when set, the live
+   *  reconcile body skips BOTH the superdoctor-relocation path AND the
+   *  orphan-prune pass — so the dry-run gate must too, or the test/CI
+   *  caller's `onlyTeam` path collides with the safety gate over ops
+   *  that will never actually fire. */
+  onlyTeam?: string;
 }
 
 /**
@@ -1147,7 +1206,12 @@ interface RefuseDestructiveOpts {
  *      sweep.
  */
 async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise<void> {
-  const { cockpitTmux, sessionName, teams, wantSuperdoctor, yes, logger } = opts;
+  const { cockpitTmux, sessionName, teams, wantSuperdoctor, yes, logger, onlyTeam } = opts;
+  // Per-team (onlyTeam) mode is purely additive in the live body — no
+  // superdoctor relocation, no orphan-prune. Skip the dry-run entirely
+  // rather than report "destructive" ops that the live path will never
+  // execute (t-ab8df0b4 + t-8b0e077e interplay).
+  if (onlyTeam !== undefined) return;
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const planned: PlannedDestructiveOp[] = [];
 

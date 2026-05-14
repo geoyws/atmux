@@ -246,6 +246,10 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
       const s: CockpitSuperdoctor = { enabled: node.enabled };
       if (node.claudeAccount !== undefined) s.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) s.tuiOverrides = node.tuiOverrides;
+      if (node.autoStart !== undefined) s.autoStart = node.autoStart;
+      if (node.autoStartTimeoutSec !== undefined) {
+        s.autoStartTimeoutSec = node.autoStartTimeoutSec;
+      }
       superdoctor = s;
     }
   });

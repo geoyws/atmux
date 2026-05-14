@@ -37,7 +37,7 @@ function existingAdrIds(): Set<string> {
   const out = new Set<string>();
   for (const f of readdirSync(dir)) {
     const m = f.match(/^(\d{3})-.*\.md$/);
-    if (m) out.add(m[1]);
+    if (m?.[1] !== undefined) out.add(m[1]);
   }
   return out;
 }

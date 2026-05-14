@@ -119,6 +119,12 @@ export interface SuperdoctorSessionT {
   prefixChain?: string[];
   claudeAccount?: CockpitClaudeAccount;
   tuiOverrides?: CockpitTuiOverrides;
+  /** t-22453c1e: parity with legacy `CockpitSuperdoctor.autoStart` so the
+   *  migration shim's spread-into-sessions[] doesn't strip a field the
+   *  reconcile-side check still reads. */
+  autoStart?: boolean;
+  /** t-22453c1e: parity with legacy `CockpitSuperdoctor.autoStartTimeoutSec`. */
+  autoStartTimeoutSec?: number;
 }
 
 export type CockpitSessionT =
@@ -164,6 +170,8 @@ export const SuperdriverSession: z.ZodType<SuperdriverSessionT> = z.lazy(() =>
 export const SuperdoctorSession: z.ZodType<SuperdoctorSessionT> = z.lazy(() =>
   CockpitSessionBase.extend({
     type: z.literal("superdoctor"),
+    autoStart: z.boolean().optional(),
+    autoStartTimeoutSec: z.number().int().positive().optional(),
   }).strict(),
 ) as z.ZodType<SuperdoctorSessionT>;
 

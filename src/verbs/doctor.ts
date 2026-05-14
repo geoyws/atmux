@@ -46,7 +46,7 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
-import { cageSessionName, cageSocketPath } from "../core/cockpit.ts";
+import { cageSessionName } from "../core/cockpit.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import { classifyText } from "../core/pane-state.ts";
 import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
@@ -593,7 +593,7 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
  *  ADR-026 (the deprecated mode isn't the prune target). */
 async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
   try {
-    const tmux = createTmux({ socketPath: cageSocketPath(team.name) });
+    const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
     const session = cageSessionName(team.name);
     if (!(await tmux.session.hasSession(session))) return new Set();
     const windows = await tmux.window.listWindows(session);

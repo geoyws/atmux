@@ -132,7 +132,13 @@ export type DiscordTemplate =
   // No dedup — wedge persists across ticks because no deterministic
   // candidate yet exists; suppression is the caller's gate, not
   // the renderer's.
-  | "hygiene-blocker";
+  | "hygiene-blocker"
+  // ADR-142 §D4: modal-cycling detector. Fired when ≥cycleThreshold
+  // distinct modal-hashes within windowMin AND 0 commits in
+  // commitGracePeriodMin. Renderer below (`renderWhipModalCycling`);
+  // dedup state at `<atmuxDir>/state/modal-cycling-dedup-state.json`
+  // (per-member, dedupMin window — default 30min).
+  | "whip-modal-cycling";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1939,6 +1945,69 @@ export function renderHygieneBlocker(opts: HygieneBlockerOpts): DiscordSendOpts 
     footer,
   };
   if (sections.length > 0) out.sections = sections;
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-142 §D4 — renderWhipModalCycling ----------
+
+export interface WhipModalCyclingSeen {
+  /** Coarse modal class label — `choice-prompt` / `numbered-prompt` /
+   *  `confirm-prompt` / `enter-prompt`. */
+  modalClass: string;
+  /** First line of the modal text, truncated for the bullet (the full
+   *  modalText already lives on disk in modal-history-<member>.json). */
+  firstLine: string;
+}
+
+export interface WhipModalCyclingOpts {
+  team: string;
+  /** Cycling member. */
+  member: string;
+  /** Member's currently-claimed task id — surfaced in the verdict so
+   *  operator can correlate the cycling with kanban state. */
+  taskId: string;
+  /** Distinct modal-class count within the window. */
+  distinctCount: number;
+  /** Window size in minutes (matches `modalCycling.windowMin`). */
+  windowMin: number;
+  /** Last 3 modals observed within the window — renderer truncates if
+   *  caller passes more. */
+  modalsSeen: ReadonlyArray<WhipModalCyclingSeen>;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[whip-modal-cycling]` Discord send opts per ADR-142 §D4.
+ *
+ * Verdict: `🟡 Modal-cycling — <member> thrashed N modal-classes in
+ *           Wmin, 0 commits on claimed <taskId>`.
+ *
+ * Bullets (last-3 modals truncated to 80 graphemes each):
+ *   - `📋 <modalClass>: <first-line-truncated>` per modal
+ *   - `🙏 Auto-action — clarifier dispatched + flag filed`
+ *   - `📍 detector fires once per 30min dedup window`
+ *
+ * Category emoji `🔄` — sibling to ADR-056's lifecycle headers; the
+ * modal-cycling event is a re-classification of the member, same
+ * "circling back" visual semantic.
+ */
+export function renderWhipModalCycling(opts: WhipModalCyclingOpts): DiscordSendOpts {
+  const verdict = `🟡 **Modal-cycling** — \`${opts.member}\` thrashed ${opts.distinctCount} modal-classes in ${opts.windowMin}min, 0 commits on \`${opts.taskId}\``;
+  const seen = opts.modalsSeen.slice(-3);
+  const bullets: string[] = [];
+  for (const s of seen) {
+    bullets.push(naBullet80(`📋 ${s.modalClass}: ${s.firstLine}`));
+  }
+  bullets.push("🙏 Auto-action — clarifier dispatched + flag filed");
+  bullets.push("📍 detector fires once per dedup window");
+  const out: DiscordSendOpts = {
+    template: "whip-modal-cycling",
+    team: opts.team,
+    category: "🔄",
+    verdict,
+    bullets,
+  };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
   return out;
 }
