@@ -37,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **CONVENTION-059 — Generic indexed member naming** ([docs/CONVENTION-059-indexed-member-naming.md](docs/CONVENTION-059-indexed-member-naming.md)).
+  Codifies the `<lane><index>` pattern (`fe0`, `fe1`, `be0`, `be1`,
+  `ops0`, ...) for fungible team members — zero-indexed, no separator,
+  one of the canonical lane prefixes (`fe` / `be` / `ops` / `test` /
+  `review` / `db` / `misc`). Named roles (`lead`, `planner`,
+  `reviewer`, `gitter`, `dba`, `devops`, `auditor`, `discorder`,
+  `enforcer`, `unblocker`) keep their canonical names. Ships
+  `checkIndexedMemberName` + `CONVENTION_059_LANE_PREFIXES` in
+  `src/core/common.ts` — advisory-only validator, never throws.
+  `templates/briefs/member.md` cross-references the convention for new
+  brief consumers. Existing teams with non-indexed names (`whip-impl`
+  on atmux, `eng-mobile` on unum, `fe-1` on sopx) keep their names
+  until a deliberate migration cycle; the convention is forward-looking,
+  not a forced rename. Kanban Task `t-05ad3bb4`.
 - **CONVENTION-067 — `develop` branch for integration** ([docs/CONVENTION-067-develop-branch-integration.md](docs/CONVENTION-067-develop-branch-integration.md)).
   Workflow convention codifying the `feat/<topic>` and `<account>-<role>`
   worker branches → `develop` integration tip → `main` release-cut

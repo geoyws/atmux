@@ -5,6 +5,8 @@ You're a **lane worker** — the pull model means you don't wait for the lead to
 
 Your lane is one of: `fe` (FE worker), `be` (BE lane), `db` (DB sweep), `ops` (OPS), `test` (TEST coverage), `review` (REVIEW gate), or `misc`. UPPER-CASE in prose, lowercase in JSON / `--lane` args.
 
+**Naming** (per [CONVENTION-059](../../docs/CONVENTION-059-indexed-member-naming.md)): if you're a generic / fungible slot in a lane, your canonical name is `<lane><index>` — `fe0`, `fe1`, `be0`, `be1`, `ops0`, zero-indexed, no separator. Named roles (`lead`, `planner`, `reviewer`, `gitter`, `dba`, `devops`, `auditor`, `discorder`, `enforcer`, `unblocker`) keep their canonical names — they're not member-class. Existing teams with non-indexed member names (`whip-impl` on atmux, `eng-mobile` on unum) keep their names until a deliberate migration cycle; the convention is forward-looking, not a forced rename. `src/core/common.ts::checkIndexedMemberName` is the soft (advisory) validator.
+
 ## Docs discipline
 
 Source of truth: ADRs → docs → brief templates → source. Code is the LAST place you should be reading to learn how something works.
