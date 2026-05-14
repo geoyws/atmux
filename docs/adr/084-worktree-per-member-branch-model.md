@@ -1,7 +1,8 @@
 # ADR-084: Per-member branch model for worktree isolation — amends ADR-082 OQ6
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-12
+**Date-accepted**: 2026-05-13 — W1 `3bad83e7` provisionWorktree per-member-branch fix · W2 `3b50c6f` doctor branch-orphan info class · W3 `2ba5a12` task-update verb (rewires W6c verify) · main per-member branch model + cockpit safety gate shipped via `14450c4`.
 **Amends**: ADR-082 §"Decision (1) Branch model for MVP" + OQ6 resolution.
 **Driver-ref**: 2026-05-12 ~11:40 MYT cockpit driver — *"every member tries to checkout 'geoyws' which git refuses"*.
 

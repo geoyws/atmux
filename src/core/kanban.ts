@@ -304,6 +304,45 @@ export async function moveTask(
   });
 }
 
+/** Per t-af159454: flip a task to `blocked` with an audit note in a
+ *  single transaction. Used by `phantom-prune` (doctor --fix + atmux
+ *  stop teardown) to surface auto-prune provenance in `task.note`
+ *  without losing the source-of-truth status flip.
+ *
+ *  Idempotent — if the task is already `blocked` AND the existing
+ *  note already starts with `auto-pruned`, this is a no-op (returns
+ *  `false`). Useful for repeated `--fix` runs.
+ *
+ *  Throws `ConfigError` when the id is unknown. */
+export async function markTaskBlockedWithNote(
+  atmuxDir: string,
+  id: string,
+  note: string,
+): Promise<boolean> {
+  if (await _useSqlite(atmuxDir)) {
+    return await _withDb(atmuxDir, (db, repo) => {
+      return transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        if (cur.status === "blocked" && (cur.note ?? "").startsWith("auto-pruned")) {
+          return false;
+        }
+        repo.upsertTask({ ...cur, status: "blocked", note });
+        return true;
+      });
+    });
+  }
+  let mutated = false;
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
+    if (t.status === "blocked" && (t.note ?? "").startsWith("auto-pruned")) {
+      return t;
+    }
+    mutated = true;
+    return { ...t, status: "blocked", note };
+  });
+  return mutated;
+}
+
 /** Update a task's lane (`fe`/`be`/`db`/`ops`/`test`/`review`/`misc`).
  *  Throws `ConfigError` on miss. Empty-string / `null` clears the lane. */
 export async function setTaskLane(
@@ -322,6 +361,28 @@ export async function setTaskLane(
     return;
   }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, lane }));
+}
+
+/** Update a task's priority (integer; lower = higher priority in
+ *  bash list-sort). Throws `ConfigError` on miss. `null` clears the
+ *  priority (treated as default 99 in selection / list ordering, per
+ *  bash `lib/kanban.sh:91` `sort_by(.priority // 99)`). */
+export async function setTaskPriority(
+  atmuxDir: string,
+  id: string,
+  priority: number | null,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, priority });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, priority }));
 }
 
 /** Update a task's body (multi-line prose stored in `tasks.body`). Throws
@@ -438,6 +499,9 @@ export async function claimTask(
         if (task === null) {
           throw new ConfigError({ what: `no such task: ${id}` });
         }
+        if (task.status === "done") {
+          throw new ConfigError({ what: doneRefuseMessage(task) });
+        }
         if (isDriverOnlyBlocked(task, opts.callerScope)) {
           throw new ConfigError({ what: driverOnlyRefuse });
         }
@@ -465,6 +529,9 @@ export async function claimTask(
       if (task === undefined) {
         throw new ConfigError({ what: `no such task: ${id}` });
       }
+      if (task.status === "done") {
+        throw new ConfigError({ what: doneRefuseMessage(task) });
+      }
       if (isDriverOnlyBlocked(task, opts.callerScope)) {
         throw new ConfigError({ what: driverOnlyRefuse });
       }
@@ -489,6 +556,33 @@ export async function claimTask(
     { initial: emptyKanban() },
   );
   return { pre, post };
+}
+
+/**
+ * t-381a6ea0: Build the refuse-message for a done-state claim attempt.
+ * The completedAt is rendered ISO-8601 + the owner inlined so the
+ * operator can correlate against `atmux task show <id>` audit fields
+ * without a second lookup. Recovery path explicitly cites
+ * `atmux task move <id> todo` per Task body — discoverability matters
+ * because re-opening a done Task is rare and the workflow shouldn't
+ * have to be hunted in docs.
+ *
+ * Exported for direct unit-testing — keeps the message format stable
+ * (operator + lead may grep for "already done" in audit trails).
+ */
+export function doneRefuseMessage(task: KanbanTask): string {
+  const completedIso =
+    task.completedAt !== null && task.completedAt !== undefined && task.completedAt > 0
+      ? new Date(task.completedAt * 1000).toISOString()
+      : "unknown";
+  const owner =
+    task.owner !== null && task.owner !== undefined && task.owner.length > 0
+      ? task.owner
+      : "unknown";
+  return (
+    `claim: task ${task.id} already done (completedAt=${completedIso}, owner=${owner}) — claim refused. ` +
+    `To re-open, use \`atmux task move ${task.id} todo\` first.`
+  );
 }
 
 /**

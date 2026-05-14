@@ -56,6 +56,7 @@ describe("parseGroomArgs", () => {
     expect(got).toEqual({
       dryRun: false,
       quiet: false,
+      archive: false,
       inboxDays: 7,
       kanbanDays: 30,
       decisionsDays: 30,

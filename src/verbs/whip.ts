@@ -58,6 +58,7 @@ import {
   send as discordSend,
   renderWhipConfigDrift,
   renderWhipDefunctCwd,
+  renderWhipNeedsApproval,
   renderWhipPermModeDrift,
 } from "../abstractions/discord.ts";
 import type { CageHandle } from "../abstractions/fallback-cage.ts";
@@ -78,9 +79,10 @@ import {
   classifyPaneState,
   getAtmuxDir,
   getSessionName,
-  resolveTeamSocket,
+  logsDir,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
@@ -109,15 +111,6 @@ import {
   shouldFireDrift,
 } from "../core/perm-mode-drift-state.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
-import { advanceDecisionsCursor, checkDecisions } from "../core/whip-decisions-check.ts";
-import {
-  hashFindingBullets,
-  loadWhipFindingState,
-  recordFindingFire,
-  saveWhipFindingState,
-  shouldFireFinding,
-  type WhipFindingState,
-} from "../core/whip-finding-state.ts";
 import {
   type BudgetCheckCtx,
   type BudgetCheckDeps,
@@ -132,7 +125,21 @@ import {
   recordDriftPing,
   shouldFireDriftPing,
 } from "../core/whip-config-drift.ts";
+import { advanceDecisionsCursor, checkDecisions } from "../core/whip-decisions-check.ts";
+import {
+  hashFindingBullets,
+  loadWhipFindingState,
+  recordFindingFire,
+  saveWhipFindingState,
+  shouldFireFinding,
+  type WhipFindingState,
+} from "../core/whip-finding-state.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
+import {
+  type NeedsApprovalEntry,
+  type NeedsApprovalReport,
+  scanNeedsApproval,
+} from "../lib/needs-approval.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
 
 const USAGE = "atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]";
@@ -247,6 +254,9 @@ export interface WhipConfig {
   /** ADR-055 §D6: per-recipe token-cap overrides. Optional map; missing
    *  keys fall through to the recipe's own default. */
   selfHealTokenCaps: Readonly<Record<string, number>>;
+  /** ADR-085 §Three surfaces #2: needs-approval scan + ping. Default
+   *  true. Set false in team.json to skip scan + Discord + JSONL. */
+  needsApprovalEnabled: boolean;
 }
 
 const DEFAULT_WHIP_CONFIG: WhipConfig = {
@@ -268,6 +278,7 @@ const DEFAULT_WHIP_CONFIG: WhipConfig = {
   selfHealEnabled: false,
   selfHealRecipes: [],
   selfHealTokenCaps: {},
+  needsApprovalEnabled: true,
 };
 
 /** Pick a sub-field out of `team.whip` (typed as `unknown` — see
@@ -381,6 +392,11 @@ export function readWhipConfig(team: Team, env: NodeJS.ProcessEnv = process.env)
         if (typeof v === "number" && Number.isFinite(v) && v > 0) caps[k] = v;
       }
       cfg.selfHealTokenCaps = caps;
+    }
+    // ADR-085 needs-approval opt-out — explicit `false` only; missing
+    // OR `true` keeps the default-true.
+    if (typeof o.needsApprovalEnabled === "boolean") {
+      cfg.needsApprovalEnabled = o.needsApprovalEnabled;
     }
   }
   // Env override ladder. ATMUX_STALE_MIN + ATMUX_LEAD_MAX_MIN are bash
@@ -888,6 +904,27 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
       ctx.stderr(`whip: stale-anchor check failed: ${String(e)}\n`);
     }
 
+    // ---------- §2.5 ADR-085: needs-approval scan ----------
+    // Per ADR-085 §Three surfaces #2 — three buckets of paperwork debt
+    // (proposed ADRs / untriaged driver-inbox / long-blocked kanban).
+    // Live read, no cache, per ADR-068 §HC#4. Each tick:
+    //   1. scanNeedsApproval() — three concurrent bucket reads.
+    //   2. Append lead-events JSONL row regardless of total — zero-state
+    //      is observable, future dashboards can spot the "fell silent"
+    //      pattern.
+    //   3. If total > 0: fire ONE Discord ping via the named template
+    //      `whip-needs-approval`. Skip entirely on total === 0 (no
+    //      ✅-all spam).
+    // Gated on `team.json::whip.needsApprovalEnabled` (default true);
+    // false skips scan + ping + JSONL outright. Best-effort: a scan
+    // exception is logged + the tick continues.
+    if (config.needsApprovalEnabled && parsed.pushDiscord) {
+      try {
+        await runNeedsApprovalCheck(ctx);
+      } catch (e) {
+        ctx.stderr(`whip: needs-approval scan failed: ${String(e)}\n`);
+      }
+    }
 
     // ---------- Check 7: cursor self-heal pass (ADR-055 §D2) ----------
     // Runs AFTER per-member + lead-uptime + stale-anchor (per ADR-055
@@ -924,6 +961,84 @@ async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
   await writeLastHash(atmuxDir, nowSec);
   return 0;
 }
+
+// ---------- §2.5 ADR-085: needs-approval scan helper ----------
+
+/**
+ * One tick's worth of needs-approval work: scan + JSONL append +
+ * conditional Discord ping. Lifted out of `runTick` for readability;
+ * the call site is gated on `config.needsApprovalEnabled` AND
+ * `parsed.pushDiscord` (the latter so `--no-discord` skips the ping
+ * but still appends JSONL — observability stays on even when ops
+ * silences the wire).
+ *
+ * Per ADR-085 §Stale-threshold rationale + OQ2:
+ * - Discord fires ONLY when `report.total > 0`.
+ * - Lead-events JSONL row appends EVERY tick (kind:
+ *   `needs-approval-snapshot`) so future dashboards spot the
+ *   "fell silent" pattern.
+ * - The renderer's 5-per-bucket hard-cap + "+N more" tail caps body
+ *   size regardless of corpus size — operator shells in via
+ *   `atmux status --json | jq .needsApproval` for the full list.
+ */
+async function runNeedsApprovalCheck(ctx: TickCtx): Promise<void> {
+  const report = await scanNeedsApproval();
+  // Append regardless of total — zero-state is observable. JSONL write
+  // failures degrade silently; observability surfaces are best-effort.
+  await safeAppendLeadEvent(
+    ctx.atmuxDir,
+    ctx.nowSec,
+    {
+      kind: "needs-approval-snapshot",
+      report,
+    },
+    ctx.stderr,
+  );
+  if (report.total === 0) return;
+  // Build renderer entries — strip `bucket` + `path` (the renderer only
+  // needs id/subject/ageMin per its WhipNeedsApprovalOpts shape; the
+  // full report lives in the JSONL row above for click-through).
+  const sendOpts = renderWhipNeedsApproval({
+    team: ctx.team.name,
+    adr: toRendererEntries(report.adr),
+    inbox: toRendererEntries(report.inbox),
+    kanban: toRendererEntries(report.kanban),
+    whenMs: ctx.nowMs,
+  });
+  await ctx.send(sendOpts);
+}
+
+function toRendererEntries(
+  rows: ReadonlyArray<NeedsApprovalEntry>,
+): ReadonlyArray<{ id: string; subject: string; ageMin: number }> {
+  return rows.map((r) => ({ id: r.id, subject: r.subject, ageMin: r.ageMin }));
+}
+
+/** Append one JSONL row to `<atmuxDir>/logs/lead-events.jsonl`. New file
+ *  (not bucketed by month — ADR-085 §Three surfaces #3 doesn't specify
+ *  bucketing; a follow-up ADR can introduce monthly rotation if size
+ *  becomes a concern). Schema: `{ts, kind, ...extra}` — flat, forward-
+ *  compatible. Failures are non-fatal (best-effort observability). */
+async function safeAppendLeadEvent(
+  atmuxDir: string,
+  tsEpochSec: number,
+  extra: Record<string, unknown>,
+  stderr: Writer,
+): Promise<void> {
+  try {
+    const path = join(logsDir(atmuxDir), "lead-events.jsonl");
+    const row = { ts: tsEpochSec, ...extra };
+    await appendText(path, `${JSON.stringify(row)}\n`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    stderr(`whip: lead-events: append skipped (best-effort): ${msg}\n`);
+  }
+}
+
+// `NeedsApprovalReport` is imported but only referenced inside
+// `safeAppendLeadEvent`'s `extra` — keep the import lint-quiet via
+// a type-level alias used in the helper's signature.
+type _NeedsApprovalReportRef = NeedsApprovalReport;
 
 /** Recipe registry for the self-heal pass (ADR-055 §D4). v1 ships
  *  three recipes: schema drift, cron pollution, supervisor missing.

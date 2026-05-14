@@ -26,6 +26,7 @@
 //   deferred per ADR-019).
 
 import { join } from "node:path";
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
@@ -34,6 +35,8 @@ import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.t
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
 import {
+  buildWindowName,
+  defaultEmojiForRole,
   driverInboxPath,
   getAtmuxDir,
   inboxPathFor,
@@ -43,6 +46,16 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import { cageSessionName } from "../core/cockpit.ts";
+import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
+import { classifyText } from "../core/pane-state.ts";
+import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
+import {
+  findPhantomInProgressClaims,
+  formatPruneIso,
+  type PhantomClaim,
+  prunePhantomInProgressClaims,
+} from "../core/phantom-prune.ts";
 import {
   type DriverInboxEntry,
   parseEntries as parseDriverInboxEntries,
@@ -116,7 +129,7 @@ export function parseDoctorArgs(argv: ReadonlyArray<string>): DoctorArgs {
 
 // ---------- Row + report shape ----------
 
-export type DoctorStatus = "green" | "yellow" | "red";
+export type DoctorStatus = "green" | "yellow" | "red" | "info";
 
 export interface DoctorRow {
   status: DoctorStatus;
@@ -567,6 +580,57 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
   }));
 }
 
+// ---------- Check 6b: phantom in-progress claims (t-af159454) ----------
+
+/** Resolve the set of member names with a live tmux window in the
+ *  team's cage. Returns an empty set on session-down / probe failure
+ *  — caller treats that as "no live members", which means ALL
+ *  in-progress claims get flagged as phantoms. Conservative bias
+ *  matches the auto-prune use case (operator wants the stale rows
+ *  surfaced loudly so the next session boot is clean).
+ *
+ *  Cage-only — singleSession teams short-circuit at the caller per
+ *  ADR-026 (the deprecated mode isn't the prune target). */
+async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
+  try {
+    const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
+    const session = cageSessionName(team.name);
+    if (!(await tmux.session.hasSession(session))) return new Set();
+    const windows = await tmux.window.listWindows(session);
+    const liveNames = new Set(windows.map((w) => w.name));
+    const live = new Set<string>();
+    for (const m of team.members) {
+      const expected = buildWindowName(m.name, m.emoji);
+      if (liveNames.has(expected)) live.add(m.name);
+    }
+    return live;
+  } catch {
+    return new Set();
+  }
+}
+
+/** Doctor check: surface kanban in-progress rows whose owner has no
+ *  live tmux window in the cage. These are the rows `atmux doctor
+ *  --fix` and `atmux stop` prune. */
+export async function checkPhantomInProgressClaims(
+  atmuxDir: string,
+  team: Team | null,
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  if (team.singleSession === true) return [];
+  const phantoms = await findPhantomInProgressClaims({
+    atmuxDir,
+    team,
+    liveMembers: () => probeLiveMembers(team),
+  });
+  return phantoms.map((p) => ({
+    status: "yellow" as const,
+    label: "phantom-in-progress",
+    detail: `${p.id} ("${p.subject}") owned by ${p.owner} but no live pane`,
+    hint: "atmux doctor --fix flips it to blocked; atmux stop teardown does the same",
+  }));
+}
+
 // ---------- ADR-054 §D4: whip-config-drift ----------
 
 /**
@@ -698,6 +762,109 @@ export function checkCronIntervalDivisors(team: Team | null): DoctorRow[] {
   checkMinutes("unblocker.intervalMins", team.unblocker?.intervalMins);
 
   return rows;
+}
+
+// ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------
+
+/**
+ * DI surface — `findCronOrphans` already takes its IO seam + dirExists
+ * predicate; we just thread defaults the same way as the verb does so
+ * tests can pin both sides via the doctor entry point too.
+ */
+export interface CheckCronOrphansOpts {
+  /** Defaults to `defaultCrontabIO()`. */
+  crontab?: CrontabIO;
+  /** Defaults to `statOrNull`-backed dir check. */
+  dirExists?: (path: string) => Promise<boolean>;
+}
+
+/**
+ * ADR-083 follow-up §DEFERRED row 2 (paired with `atmux cron-orphans`
+ * verb in `src/verbs/cron-orphans.ts`): surface marker-fenced crontab
+ * blocks whose `ATMUX_DIR=<path>` no longer exists on disk. Emits one
+ * `cron-config` yellow row per orphan (label + team + path); empty
+ * when host has no crontab, no crontab blocks, or every block's dir
+ * is alive.
+ *
+ * Operator-facing fix: `crontab -e` to drop the orphan block, or
+ * restore the missing dir if the project simply moved.
+ */
+export async function checkCronOrphans(
+  opts: CheckCronOrphansOpts = {},
+): Promise<DoctorRow[]> {
+  const crontab = opts.crontab ?? defaultCrontabIO();
+  if (!(await crontab.available())) return [];
+  const dirExists = opts.dirExists ?? defaultDirExistsForCron;
+  const orphans = await findCronOrphans({ io: crontab, dirExists });
+  return orphans.map((o: CronBlockTarget) => ({
+    status: "yellow" as const,
+    label: "cron-config",
+    detail: `orphan cron block: team='${o.team}' atmux_dir='${o.atmuxDir}' (path does not exist)`,
+    hint: `crontab -e to drop the block, or restore ${o.atmuxDir} if the project moved`,
+  }));
+}
+
+async function defaultDirExistsForCron(p: string): Promise<boolean> {
+  const s = await statOrNull(p);
+  return s !== null && s.isDirectory;
+}
+
+// ---------- t-dcbff97c: cron-block:missing — team has no managed block in host crontab ----------
+
+export interface CheckCronBlockOpts {
+  /** Defaults to `defaultCrontabIO()`. Tests inject a fake. */
+  crontab?: CrontabIO;
+}
+
+/**
+ * t-dcbff97c §2 — RED finding when a team that opts into cron auto-install
+ * has no marker-fenced block in the host crontab. The atmux team died
+ * three consecutive overnights because `atmux start` reported success
+ * but the cron block was absent; doctor missed it, so the only signal
+ * was the silently-stalled lead the morning after.
+ *
+ * Returns:
+ * - `[]` when team is null (the team-shape row already surfaced).
+ * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out;
+ *    the operator manages cron some other way and the absence is intent.
+ * - `[]` when `crontab` is not on the host (no PATH match); ADR-083
+ *    posture is "skip gracefully on cron-less hosts."
+ * - `[]` when the team's marker header (`# >>> atmux:team=<name> …`) is
+ *    present anywhere in the current crontab.
+ * - one RED row otherwise, hinting `atmux cron-install`.
+ *
+ * RED (not YELLOW) because the failure mode is overnight team death — a
+ * GREEN doctor that hides a missing cron block is a worse outcome than
+ * a noisy one. Operators who legitimately don't want a block set
+ * `kanban.cronAutoInstall: false` and the row stays silent.
+ */
+export async function checkCronBlock(
+  team: Team | null,
+  opts: CheckCronBlockOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  // Honor explicit opt-out — mirror `start.ts::shouldAutoInstallCron`
+  // semantics so doctor + start stay in lockstep on the gating decision.
+  const kanban = (team as { kanban?: { cronAutoInstall?: boolean } }).kanban;
+  if (kanban?.cronAutoInstall === false) return [];
+
+  const crontab = opts.crontab ?? defaultCrontabIO();
+  if (!(await crontab.available())) return [];
+
+  const current = (await crontab.read()) ?? "";
+  // Match the exact marker header rendered by `renderCronBlock` so a
+  // similarly-named team can't false-pass on a substring brush-by.
+  const header = `# >>> atmux:team=${team.name} — managed by atmux start; do not edit by hand`;
+  if (current.includes(header)) return [];
+
+  return [
+    {
+      status: "red",
+      label: "cron-block:missing",
+      detail: `no managed atmux:team=${team.name} block in host crontab — whip / report / decisions / groom won't fire`,
+      hint: "run `atmux cron-install` (or re-run `atmux start`) — block uses ATMUX_DIR + optional TMUX_TMPDIR so worktree-isolation is safe",
+    },
+  ];
 }
 
 // ---------- Check 7a: cursor-plugin-cache ----------
@@ -1059,6 +1226,256 @@ function truncateEvidence(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
+// ---------- ADR-081 §D: member cage-state ----------
+
+/** Default seconds a pane can sit at the welcome screen before doctor
+ *  flags it `starving` (vs the silent `bootstrapping` transient). 60s
+ *  matches the ADR-081 §D spec — long enough that a fresh claude TUI
+ *  has rendered its banner + had time to consume a same-spawn brief
+ *  paste, short enough that a real starvation surfaces before the
+ *  operator gives up and ssh's in. */
+export const STARVING_THRESHOLD_S = 60;
+
+/** ADR-081 §D classifier output. The four-state ladder doctor surfaces
+ *  per member pane. Matches the ADR's narrative names so audits can
+ *  grep for the same vocabulary. */
+export type MemberCageState =
+  /** No tmux session OR pane window absent OR no `claude` in the pane's
+   *  process tree. Yellow row — operator must `atmux start` or attach
+   *  manually. */
+  | "down"
+  /** `claude` PID alive, ctx==0, welcome banner still visible, pane
+   *  uptime > {@link STARVING_THRESHOLD_S}. Yellow row + `--fix` path
+   *  re-pastes the brief. Matches the c-8ecd3a61 incident state. */
+  | "starving"
+  /** `claude` PID alive, ctx==0 but pane uptime ≤ threshold. Transient
+   *  — silent in the doctor output (no row) so a fresh `atmux start`
+   *  doesn't paint the table yellow for 60s. */
+  | "bootstrapping"
+  /** `claude` PID alive AND ctx > 0 OR token-counter present. Green —
+   *  silent in the output to keep the human render compact (matches
+   *  driver-pane-state behaviour at lines 1051-1062). */
+  | "active";
+
+export interface MemberCageHealth {
+  /** Member name from `team.members[].name`. */
+  member: string;
+  /** Resolved `<emoji><member>` window name (post-ADR-017). */
+  windowName: string;
+  /** Classifier verdict. */
+  state: MemberCageState;
+  /** Seconds the pane process has been alive. `null` when uptime probe
+   *  failed (e.g. `ps` not on PATH) — we fall back to flagging starving
+   *  on banner-match alone to be conservative. */
+  paneUptimeSec: number | null;
+  /** Tail of the last pane capture (≤200 chars). Empty when state is
+   *  `down` (no pane to capture). */
+  evidence: string;
+}
+
+/** Test-side injection points for {@link checkMemberCageStates}. */
+export interface CheckMemberCageStatesOpts {
+  /** Override the per-member probe — single-shot fixture covers each
+   *  member's classification without spinning up a real tmux server. */
+  probe?: (
+    team: Team,
+    member: TeamMember,
+    sessionName: string,
+    socketPath: string,
+  ) => Promise<MemberCageHealth | null>;
+  /** Override `STARVING_THRESHOLD_S`. Tests use a tiny value (e.g. 0s)
+   *  to exercise the starving branch without sleeping; operators can
+   *  pin a custom threshold via this opt (not yet exposed on the CLI). */
+  starvingThresholdSec?: number;
+  /** `tmux.session.hasSession` override (test injection). */
+  hasSession?: (name: string, socketPath: string) => Promise<boolean>;
+}
+
+/**
+ * ADR-081 §D: per-member cage-state check. For each declared member,
+ * classify into `down` / `starving` / `bootstrapping` / `active` and
+ * surface a yellow row only for the operator-actionable states
+ * (`down` + `starving`). Mirrors the {@link checkDriverPaneState}
+ * cadence — single label across all rows: `member-cage-state:<member>`.
+ *
+ * Skips silently when:
+ *   - `team === null` (other checks already flagged the broken state)
+ *   - team session doesn't exist (the session-down state is surfaced
+ *     by other checks; per-member rows would just duplicate the noise)
+ */
+export async function checkMemberCageStates(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckMemberCageStatesOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  if (team.members.length === 0) return [];
+
+  const socketPath = resolveTeamSocket(team);
+  const sessionName = `atmux-${team.name}`;
+  const threshold = opts.starvingThresholdSec ?? STARVING_THRESHOLD_S;
+
+  // Skip when the session is down — other checks already cover that.
+  const hasSession =
+    opts.hasSession ??
+    (async (name: string, sock: string) => {
+      const tmux = createTmux({ socketPath: sock });
+      return await tmux.session.hasSession(name);
+    });
+  if (!(await hasSession(sessionName, socketPath))) return [];
+
+  const probe = opts.probe ?? defaultProbeMemberCage;
+
+  const rows: DoctorRow[] = [];
+  for (const member of team.members) {
+    const health = await probe(team, member, sessionName, socketPath);
+    if (health === null) continue; // probe declined (e.g. window missing AND member.tui shell-only)
+
+    // `bootstrapping` is silent (transient on a fresh atmux start);
+    // `active` is silent (green, no row); only `down`/`starving`
+    // surface. Apply the uptime threshold here AFTER the probe so
+    // the probe can stay pure-classification.
+    let surfaced: MemberCageState = health.state;
+    if (surfaced === "starving" && health.paneUptimeSec !== null && health.paneUptimeSec < threshold) {
+      surfaced = "bootstrapping";
+    }
+    if (surfaced === "active" || surfaced === "bootstrapping") continue;
+
+    const label = `member-cage-state:${member.name}`;
+    const evidence = truncateEvidence(health.evidence, 60);
+    if (surfaced === "down") {
+      rows.push({
+        status: "yellow",
+        label,
+        detail: `pane down — no \`claude\` in window ${health.windowName}`,
+        hint: `attach + check the pane manually, or restart via \`atmux start --force\``,
+      });
+      continue;
+    }
+    // surfaced === "starving"
+    const upMin =
+      health.paneUptimeSec !== null ? `${Math.floor(health.paneUptimeSec / 60)}min` : "unknown";
+    rows.push({
+      status: "yellow",
+      label,
+      detail: `welcome banner persistent — claude alive in ${health.windowName} but brief never landed (uptime ${upMin})${evidence === "" ? "" : ` (${evidence})`}`,
+      hint: `run \`atmux doctor --fix\` to re-paste the brief, or \`--force\` to override if the member is intentionally idle`,
+    });
+  }
+
+  return rows;
+}
+
+/** Default per-member probe. Captures the pane scrollback, reads pane
+ *  pid via tmux list-panes, derives pane-pid uptime via `ps`, and
+ *  classifies via the same `inspectClaudeReadiness` predicate ADR-081
+ *  §C uses for `atmux start`'s post-spawn verification — the readiness
+ *  module is the single source of truth for "claude alive + brief
+ *  consumed."
+ *
+ *  Exposed as a named const (not arrow inline) so tests can stub it
+ *  via {@link CheckMemberCageStatesOpts.probe}. */
+const defaultProbeMemberCage = async (
+  team: Team,
+  member: TeamMember,
+  sessionName: string,
+  socketPath: string,
+): Promise<MemberCageHealth | null> => {
+  const tmux = createTmux({ socketPath });
+  const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
+  const windowName = `${emoji}${member.name}`;
+  const target = `${sessionName}:${windowName}`;
+
+  // Window present? listPanes throws if window missing — treat as down.
+  let panePid: number | null = null;
+  try {
+    const panes = await tmux.pane.listPanes(target);
+    panePid = panes[0]?.pid ?? null;
+  } catch {
+    return {
+      member: member.name,
+      windowName,
+      state: "down",
+      paneUptimeSec: null,
+      evidence: "",
+    };
+  }
+  if (panePid === null) {
+    return { member: member.name, windowName, state: "down", paneUptimeSec: null, evidence: "" };
+  }
+
+  // Capture last 30 lines — enough to see token-counter footer + the
+  // welcome banner near the top of the visible region. Matches the
+  // window used by inspectClaudeReadiness for the readiness probe.
+  let text = "";
+  try {
+    text = await tmux.pane.capturePane({ target, start: -30 });
+  } catch {
+    // Pane capture failed mid-flight — surface as down rather than
+    // mis-classifying as starving.
+    return {
+      member: member.name,
+      windowName,
+      state: "down",
+      paneUptimeSec: null,
+      evidence: "",
+    };
+  }
+
+  const classification = classifyText(text);
+  const verdict = inspectClaudeReadiness(text, classification, true);
+  // Map readiness verdicts to ADR-081 §D states:
+  //   - "absent" (pane SHELL — no claude TUI) → "down"
+  //   - "starving" (welcome banner persistent, no token counter) →
+  //     "starving" (the threshold step downgrades to "bootstrapping"
+  //     when uptime is below the cut-off)
+  //   - "ready" (TUI alive + token counter OR no banner) → "active"
+  //   - "pending" (UNKNOWN classification mid-flight) → treat as
+  //     "active" defensively — don't flag a pane yellow because the
+  //     scrollback didn't classify; the next tick will catch real
+  //     starvation.
+  let state: MemberCageState;
+  if (verdict === "absent") state = "down";
+  else if (verdict === "starving") state = "starving";
+  else state = "active";
+
+  const paneUptimeSec = await readPaneUptimeSec(panePid);
+
+  // Team config is read in the outer check; the member arg drives the
+  // probe. Threading `team` here is for future hooks (rotate-policy
+  // overrides). Suppress unused for now.
+  void team;
+
+  return {
+    member: member.name,
+    windowName,
+    state,
+    paneUptimeSec,
+    evidence: text.slice(-200),
+  };
+};
+
+/** Read the elapsed wall-time of a process via `ps -o etimes= -p <pid>`.
+ *  Returns the value in seconds, or `null` when ps fails / output
+ *  doesn't parse. Pure helper — exported for test directness via the
+ *  module's main check. */
+async function readPaneUptimeSec(pid: number): Promise<number | null> {
+  try {
+    const r = await defaultSpawn({
+      cmd: "ps",
+      argv: ["-o", "etimes=", "-p", String(pid)],
+      expectExitCode: "any",
+      timeoutMs: 2_000,
+    });
+    if (r.exitCode !== 0) return null;
+    const n = Number.parseInt(r.stdout.trim(), 10);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return n;
+  } catch {
+    return null;
+  }
+}
+
 // ---------- ADR-057 §D5c: inbox-mark verification ----------
 
 /** Marker pattern emitted by lead in driver-inbox: `📤 task <id>`.
@@ -1163,6 +1580,7 @@ const STATUS_GLYPH: Record<DoctorStatus, string> = {
   green: "✅",
   yellow: "⚠️ ",
   red: "❌",
+  info: "ℹ️ ",
 };
 
 export function renderHuman(report: DoctorReport): string {
@@ -1251,6 +1669,16 @@ interface PorcelainWorktree {
  *                                    a batch operation). Hint: flip
  *                                    `worktreeIsolation: true` to resume
  *                                    management, OR `rm -rf` to discard.
+ *   5. `worktree-branch-orphan`    — isolation on; a `${base}-*` branch exists
+ *                                    whose suffix matches no current
+ *                                    `team.members[].name` (sanitized). INFO
+ *                                    (no count toward pass/fail). Hint: safe
+ *                                    auto-delete via `--fix` when 0 commits
+ *                                    ahead of base; surface-only with manual
+ *                                    review when commits are unmerged. ADR-084
+ *                                    §"Doctor probe update" — branches are left
+ *                                    in place by `stop --force` per OQ-2
+ *                                    default; over time they accumulate.
  *
  * Pure modulo IO — every IO call gated through `opts` for tests. When
  * `team === null` (team.json failed to load), returns empty: the
@@ -1371,6 +1799,69 @@ export async function checkWorktreeIsolation(
     }
   }
 
+  // Class 5 (ADR-084 W2 / branch-orphan) — surface stranded `${base}-*`
+  // branches whose suffix isn't a current member. Independent from the
+  // worktree state above: branches outlive worktrees (per ADR-084 OQ-2
+  // default, `stop --force` prunes the worktree but keeps the branch).
+  // Resolves baseBranch independently so the probe runs even when no
+  // managed worktrees are present (the worktree might already be gone;
+  // it's the leftover BRANCH we're surfacing).
+  const git2 = opts.gitSpawn ?? defaultGitSpawn;
+  const projectRoot2 = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
+  const baseR = await git2(["-C", projectRoot2, "branch", "--show-current"]);
+  const baseBranch = baseR.exitCode === 0 ? baseR.stdout.trim() : "";
+  if (baseBranch.length > 0) {
+    const listR = await git2(["-C", projectRoot2, "branch", "--list", `${baseBranch}-*`]);
+    if (listR.exitCode === 0) {
+      const sanitizedMembers = new Set(
+        team.members.map((m) => sanitizeBranchSegment(m.name)),
+      );
+      const prefix = `${baseBranch}-`;
+      // `git branch --list <pat>` rows are 2-space indented; current
+      // branch (impossible for an orphan but defensive) prefixes `* `.
+      const branchNames = listR.stdout
+        .split("\n")
+        .map((line) => line.replace(/^[\s*+]+/, "").trim())
+        .filter((line) => line.length > 0 && line.startsWith(prefix));
+      for (const branchName of branchNames) {
+        const suffix = branchName.slice(prefix.length);
+        if (sanitizedMembers.has(suffix)) continue;
+        // Orphan: count unmerged commits relative to base.
+        const countR = await git2([
+          "-C",
+          projectRoot2,
+          "rev-list",
+          "--count",
+          `${baseBranch}..${branchName}`,
+        ]);
+        const aheadRaw = countR.exitCode === 0 ? countR.stdout.trim() : "";
+        const aheadCount = /^\d+$/.test(aheadRaw) ? parseInt(aheadRaw, 10) : null;
+        if (aheadCount === null) {
+          rows.push({
+            status: "info",
+            label: `worktree:branch-orphan:${suffix}`,
+            detail: `${branchName} — unmerged-count probe failed (rc=${countR.exitCode})`,
+            hint: `manually verify before deletion: \`git log ${baseBranch}..${branchName}\``,
+          });
+        } else if (aheadCount === 0) {
+          rows.push({
+            status: "info",
+            label: `worktree:branch-orphan:${suffix}`,
+            detail: `${branchName} — 0 commits ahead of ${baseBranch} (safe to delete)`,
+            hint: `\`atmux doctor --fix\` would prune it (dry-run today); manual: \`git branch -d ${branchName}\``,
+          });
+        } else {
+          rows.push({
+            status: "info",
+            label: `worktree:branch-orphan:${suffix}`,
+            detail: `${branchName} — ${aheadCount} commit(s) ahead of ${baseBranch} (unmerged work)`,
+            hint: `review before deletion: \`git log ${baseBranch}..${branchName}\``,
+          });
+        }
+      }
+    }
+  }
+
   return rows;
 }
 
@@ -1419,6 +1910,10 @@ export interface DoctorOpts {
   stderr?: Writer;
   /** Inject the underlying check executors (test override). */
   runChecks?: (atmuxDir: string, team: Team | null) => Promise<DoctorRow[]>;
+  /** ADR-081 §D: opts threaded into {@link fixStarvingMembers} when
+   *  `--fix` finds starving rows. Test fixtures inject a no-op sleep +
+   *  tiny verify deadline; production callers omit. */
+  fixStarvingOpts?: FixStarvingOpts;
 }
 
 /** Default chain — all in-scope checks invoked in bash main() order. */
@@ -1432,6 +1927,12 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
+  // t-af159454: phantom in-progress claims (kanban rows with dead
+  // owner panes). Distinct vulnerability class from phantom-inbox
+  // above (that one scans JSON inbox files; this scans the live
+  // kanban). Cage-only — singleSession teams short-circuit in the
+  // check itself.
+  rows.push(...(await checkPhantomInProgressClaims(atmuxDir, team)));
   // Cursor-plugin-cache parity — only fires when cursor-agent is
   // installed AND there's at least one directory-source marketplace
   // plugin missing its `~/.claude/plugins/cache/<m>/<p>/<v>` entry.
@@ -1446,9 +1947,22 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkInboxMarks(atmuxDir)));
   // ADR-064 §4: driver-pane health (no row when team unconfigured).
   rows.push(...(await checkDriverPaneState(team, atmuxDir)));
+  // ADR-081 §D: per-member cage-state — surface `starving` panes whose
+  // brief never landed, and `down` panes where claude isn't running.
+  // Silent on a healthy team (active members emit no row).
+  rows.push(...(await checkMemberCageStates(team, atmuxDir)));
   // ADR-079 §A: cron interval values must be divisors of 60 (minutes)
   // or 24 (hours). Yellow per offender; surfaces before atmux start.
   rows.push(...checkCronIntervalDivisors(team));
+  // ADR-083 follow-up §DEFERRED row 2: cron-orphans — yellow per
+  // marker block whose `ATMUX_DIR=` path no longer exists on disk
+  // (moved / deleted projects). Silent on hosts without crontab.
+  rows.push(...(await checkCronOrphans()));
+  // t-dcbff97c §2: RED when team opts into cron-auto-install but no
+  // managed block is present. Catches the failure mode that killed the
+  // atmux team three consecutive overnights (cron block silently absent
+  // → no whip pulse → lead stalls). Silent on opt-out + cron-less hosts.
+  rows.push(...(await checkCronBlock(team)));
   // ADR-082 §5 W5: per-member worktree-isolation anomalies. Returns
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
@@ -1483,14 +1997,256 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
     stderr(renderHuman(report));
   }
 
-  // --fix is a stub for V-24 in-scope: surface a hint, don't run
-  // anything destructive. Phantom-prune + team.json wizard re-run land
-  // when V-01 (up) wires doctor as start preflight per ADR-019 §"Fix".
+  // --fix runs three actions, in order of operator value:
+  //   1. ADR-081 §D — re-paste the role brief on every starving member
+  //      so the operator doesn't have to ssh in + run the manual
+  //      recovery sequence captured in the ADR's audit trail.
+  //   2. ADR-084 W2 (branch-orphan) — dry-run summary of safe-to-delete
+  //      orphan branches; actual deletion stays deferred per ADR-019.
+  //   3. t-af159454 — phantom in-progress prune (operator can collapse
+  //      cited phantom claim IDs in one shot).
+  // Other --fix paths (branch-orphan deletion, team.json wizard re-run)
+  // remain stubbed pending ADR-019 §"Fix" resolution; the trailing
+  // hint below covers the residual.
   if (parsed.fix && !parsed.quiet) {
+    // ADR-081 §D: real --fix action — re-paste the brief on starving
+    // members so the operator doesn't have to ssh in + run the manual
+    // recovery sequence captured in the ADR's audit trail. Runs BEFORE
+    // the dry-run report so any successful re-pastes flip rows to active
+    // in the user's mental model.
+    if (team !== null) {
+      const starving = collectStarvingMembers(report.rows);
+      if (starving.length > 0) {
+        await fixStarvingMembers(team, atmuxDir, starving, opts.fixStarvingOpts ?? {}, stderr);
+      }
+    }
+    const safeOrphans = collectSafeOrphanBranches(report.rows);
+    if (safeOrphans.length > 0) {
+      stderr(
+        `\natmux doctor --fix (dry-run): would delete ${safeOrphans.length} orphan branch(es):\n`,
+      );
+      for (const branch of safeOrphans) {
+        stderr(`  - ${branch}\n`);
+      }
+    }
+    if (team !== null && team.singleSession !== true) {
+      const phantoms = await findPhantomInProgressClaims({
+        atmuxDir,
+        team,
+        liveMembers: () => probeLiveMembers(team),
+      });
+      if (phantoms.length > 0) {
+        const asOfIso = formatPruneIso(Date.now());
+        const result = await prunePhantomInProgressClaims({
+          atmuxDir,
+          phantoms,
+          asOfIso,
+          source: "doctor-fix",
+        });
+        stderr(
+          `\natmux doctor --fix: pruned ${result.prunedIds.length} phantom in-progress claim(s)` +
+            (result.alreadyPrunedIds.length > 0
+              ? ` (+${result.alreadyPrunedIds.length} already-pruned)`
+              : "") +
+            ":\n",
+        );
+        for (const id of result.prunedIds) stderr(`  - ${id} → blocked (${asOfIso})\n`);
+      }
+    }
+    // Other --fix paths (branch-orphan deletion, team.json wizard
+    // re-run) remain deferred per ADR-019 V-24. Phantom-prune above
+    // ships in t-af159454; the residual hint covers the rest.
     stderr(
       "\natmux doctor --fix: V-24 ships read-only checks; --fix actions deferred per ADR-019.\n",
     );
   }
 
   return report.redCount === 0 ? 0 : 1;
+}
+
+/**
+ * ADR-081 §D: scan doctor rows for starving-member yellow rows.
+ * Returns the member names extracted from the `member-cage-state:<name>`
+ * label suffix. The "starving" branch of {@link checkMemberCageStates}
+ * is identified by the row's `detail` text containing `welcome banner
+ * persistent` — stable substring per the row composer.
+ *
+ * Exported for direct unit-testing without spinning the full doctor
+ * pipeline. Pure scan; no IO.
+ */
+export function collectStarvingMembers(rows: ReadonlyArray<DoctorRow>): string[] {
+  const out: string[] = [];
+  for (const r of rows) {
+    if (r.status !== "yellow") continue;
+    if (!r.label.startsWith("member-cage-state:")) continue;
+    if (r.detail === undefined) continue;
+    if (!r.detail.includes("welcome banner persistent")) continue;
+    out.push(r.label.slice("member-cage-state:".length));
+  }
+  return out;
+}
+
+/**
+ * ADR-081 §D: re-paste the role brief on each starving member via the
+ * same path `atmux start` uses (`pasteBriefForMember` exported from
+ * `verbs/start.ts`), with `spawnWaitMs=0` because the TUI is already
+ * alive — no welcome-screen settle needed.
+ *
+ * After paste, probes each pane for up to 30s (ADR-081 §D acceptance)
+ * to confirm ctx > 0 OR welcome banner cleared. Surfaces the result to
+ * stderr; failures degrade gracefully (no throw) — best-effort matches
+ * the rest of the doctor verb's behaviour.
+ */
+async function fixStarvingMembers(
+  team: Team,
+  atmuxDir: string,
+  starving: ReadonlyArray<string>,
+  opts: FixStarvingOpts,
+  stderr: Writer,
+): Promise<void> {
+  // Lazy import — keeps the import surface of doctor.ts narrow and
+  // avoids the verb-to-verb cycle risk if start.ts ever ends up
+  // importing doctor symbols.
+  const { pasteBriefForMember } = await import("./start.ts");
+  const { defaultBriefsDir } = await import("./rotate.ts");
+
+  const socketPath = resolveTeamSocket(team);
+  const sessionName = `atmux-${team.name}`;
+  const tmux = createTmux({ socketPath });
+  const briefsDir = opts.briefsDir ?? defaultBriefsDir();
+  const sleep =
+    opts.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      }));
+  const verifyDeadlineMs = opts.verifyDeadlineMs ?? 30_000;
+  const verifyPollIntervalMs = opts.verifyPollIntervalMs ?? 1_000;
+
+  stderr(`\natmux doctor --fix: re-pasting brief on ${starving.length} starving member(s)\n`);
+
+  for (const memberName of starving) {
+    const member = team.members.find((m) => m.name === memberName);
+    if (member === undefined) {
+      stderr(`  ✗ ${memberName}: not in roster — skipping\n`);
+      continue;
+    }
+    const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
+    const windowName = `${emoji}${member.name}`;
+    const target = `${sessionName}:${windowName}`;
+    const role = typeof member.role === "string" ? member.role : "member";
+    const sendTarget =
+      role === "team-lead"
+        ? ({ kind: "lead" as const, team: team.name, target } as const)
+        : ({ kind: "member" as const, member: member.name, team: team.name, target } as const);
+
+    // The fix call mirrors start.ts's spawn-time invocation but with
+    // `spawnWaitMs=0` — the TUI is already up, no welcome-screen
+    // settle is required.
+    try {
+      await pasteBriefForMember({
+        tmux,
+        target: sendTarget,
+        member: member.name,
+        role,
+        team: team.name,
+        atmuxDir,
+        briefsDir,
+        spawnWaitMs: 0,
+        sleep,
+        logger: {
+          log: (s: string) => stderr(`    ${s}\n`),
+          warn: (s: string) => stderr(`    ${s}\n`),
+          ok: (s: string) => stderr(`    ${s}\n`),
+          err: (s: string) => stderr(`    ${s}\n`),
+        },
+      });
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      stderr(`  ✗ ${memberName}: paste failed — ${cause}\n`);
+      continue;
+    }
+
+    // Verify within deadline that the pane transitioned to active.
+    const verified = await verifyStarvingResolved(
+      tmux,
+      target,
+      verifyDeadlineMs,
+      verifyPollIntervalMs,
+      sleep,
+    );
+    if (verified) {
+      stderr(`  ✅ ${memberName}: brief re-pasted + pane reached active state\n`);
+    } else {
+      stderr(
+        `  ⚠ ${memberName}: brief re-pasted but pane did NOT reach active within ${verifyDeadlineMs}ms — inspect manually\n`,
+      );
+    }
+  }
+}
+
+/** ADR-081 §D verification step — poll a pane up to `deadlineMs` for
+ *  transition from starving → active (ctx > 0 OR banner cleared).
+ *  Pure-ish: tmux IO + sleep, no other side effects. */
+async function verifyStarvingResolved(
+  tmux: ReturnType<typeof createTmux>,
+  target: string,
+  deadlineMs: number,
+  pollIntervalMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < deadlineMs) {
+    let text = "";
+    try {
+      text = await tmux.pane.capturePane({ target, start: -30 });
+    } catch {
+      // Pane vanished mid-verify — caller treats as not-resolved.
+      return false;
+    }
+    const classification = classifyText(text);
+    const verdict = inspectClaudeReadiness(text, classification, true);
+    if (verdict === "ready") return true;
+    await sleep(pollIntervalMs);
+  }
+  return false;
+}
+
+/** Options for `fixStarvingMembers`. Tests inject sleep + verify deadline
+ *  to keep unit suites fast; the `verbs/doctor` CLI path passes nothing
+ *  (defaults: real setTimeout, 30s deadline, 1s poll). */
+export interface FixStarvingOpts {
+  /** Override the briefs dir resolution (test injection). */
+  briefsDir?: string;
+  /** Sleep override — defaults to `setTimeout`-backed promise. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Wall-clock budget for the post-paste verify probe. Default 30_000ms
+   *  per ADR-081 §D acceptance. */
+  verifyDeadlineMs?: number;
+  /** Poll interval inside the verify loop. Default 1_000ms — balances
+   *  responsiveness with not hammering the tmux server. */
+  verifyPollIntervalMs?: number;
+}
+
+/**
+ * Extract orphan-branch names safe to auto-delete from the doctor row set.
+ * "Safe" == 0 commits ahead of base (info row carries `(safe to delete)` in
+ * its `detail`). Used by the `--fix` dry-run summary; deletion itself is
+ * deferred per ADR-019 V-24.
+ */
+export function collectSafeOrphanBranches(
+  rows: ReadonlyArray<DoctorRow>,
+): string[] {
+  const out: string[] = [];
+  for (const r of rows) {
+    if (!r.label.startsWith("worktree:branch-orphan:")) continue;
+    if (r.status !== "info") continue;
+    if (r.detail === undefined) continue;
+    if (!r.detail.includes("safe to delete")) continue;
+    // detail shape: "<branch> — 0 commits ahead of <base> (safe to delete)"
+    const dash = r.detail.indexOf(" — ");
+    const branch = dash >= 0 ? r.detail.slice(0, dash) : r.detail;
+    out.push(branch);
+  }
+  return out;
 }

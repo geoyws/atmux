@@ -546,6 +546,49 @@ describe("task verb — dispatch", () => {
     await expect(task(["assign", "--team-dir", teamDir])).rejects.toThrow(UsageError);
   });
 
+  // ---------- ADR-131 T4: 'task priority' ----------
+
+  test("'priority' sets the integer priority on an existing task", async () => {
+    const id = await addTask(atmuxDir, { subject: "p task" });
+    const { exit } = await captureStdout(() =>
+      task(["priority", id, "5", "--team-dir", teamDir]),
+    );
+    expect(exit).toBe(0);
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.priority).toBe(5);
+  });
+
+  test("'prio' alias works", async () => {
+    const id = await addTask(atmuxDir, { subject: "p task" });
+    await captureStdout(() => task(["prio", id, "2", "--team-dir", teamDir]));
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.priority).toBe(2);
+  });
+
+  test("'priority -' clears the priority (sets null)", async () => {
+    const id = await addTask(atmuxDir, { subject: "p task", priority: 3 });
+    await captureStdout(() => task(["priority", id, "-", "--team-dir", teamDir]));
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.priority).toBeNull();
+  });
+
+  test("'priority' rejects non-integer value", async () => {
+    const id = await addTask(atmuxDir, { subject: "p task" });
+    await expect(
+      task(["priority", id, "high", "--team-dir", teamDir]),
+    ).rejects.toThrow(UsageError);
+  });
+
+  test("'priority' missing args → UsageError", async () => {
+    await expect(task(["priority", "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("'priority' on missing id → ConfigError", async () => {
+    await expect(
+      task(["priority", "t-deadbeef", "1", "--team-dir", teamDir]),
+    ).rejects.toThrow(ConfigError);
+  });
+
   test("'rm' removes task", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
     const { exit, out } = await captureStdout(() => task(["rm", id, "--team-dir", teamDir]));

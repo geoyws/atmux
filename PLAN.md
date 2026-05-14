@@ -23,7 +23,7 @@ Success = TS atmux passes the parity harness on every verb (zero divergence vs b
 - **27 lib/*.sh files**, ~3500 LOC total. No file >355 LOC. No godfiles.
 - **24 .bats files** (23 unit + 1 e2e `lifecycle.bats` with 11 sequenced scenarios). 22/27 libs covered, 5 zero-coverage libs: attach, dashboard, inbox, reconfigure, rotate.
 - **External tooling surface:** tmux (45 calls / 11 subcommands), jq (157 calls), curl (2 — Discord webhook + doctor health check), flock (2), mktemp (5), date (8), command -v (7). Zero usage of socat, nc, ss, lsof, pgrep, pkill, setsid, nohup, gh, wget, git-as-vcs.
-- **6 ADRs** (001–006). Port adds its own series under `docs/adr-bun/`.
+- **6 ADRs** (001–006). Port adds its own series under `docs/adr/`.
 
 **Out of scope (deferred — port later, after they land in bash):**
 
@@ -126,7 +126,7 @@ Coordinated via **Claude Code's native team primitives** (NOT atmux — atmux is
 - **Member ↔ member:** porters DM `reviewer` when a verb is ready. Reviewer DMs back with merge/revise verdict. Porters DM `tester` when adding a parity fixture. Porters DM `architect` to clarify ADR intent.
 - **Idle handling:** members go idle after every turn. Driver and lead DO NOT nag idle members. Idle just means waiting for the next message; if there's no next task, that's intentional.
 - **Per-commit reviewer flow:** porter writes code → DMs reviewer with `git diff HEAD` summary + the verb name → reviewer pulls the diff, runs the 8-check gate (§9) → either DMs ✅ merge-ok or ❌ revise-with-reasons → porter merges or fixes.
-- **Persistence:** PLAN.md + `docs/adr-bun/` + ADR drafts + the shared task list are the durable record. Member chat history survives within their agent process; if a member is restarted, they re-read PLAN.md + their last completed task to recover context.
+- **Persistence:** PLAN.md + `docs/adr/` + ADR drafts + the shared task list are the durable record. Member chat history survives within their agent process; if a member is restarted, they re-read PLAN.md + their last completed task to recover context.
 
 ### 6.1 Verb split (Phase 2)
 
@@ -204,7 +204,7 @@ I-* IDs (like R-* and V-*) are stable across `/clear` cycles; flip Status only, 
 
 ---
 
-## 7. ADR backlog (`docs/adr-bun/`)
+## 7. ADR backlog (`docs/adr/`)
 
 Numbered separately from bash ADRs to avoid collision. Architect drafts 001–006 in Phase 0; remaining drafted as needs arise.
 

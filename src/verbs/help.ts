@@ -23,7 +23,10 @@ Setup:
                               ~/.atmux/cockpit.json (ADR-063 ergonomic fix —
                               additive, sibling windows untouched; un-
                               rostered + disabled teams silent-skip).
-  stop [--force]              Kill tmux session, archive state
+  stop [--force|--soft]       Kill tmux session, archive state.
+                              --soft (ADR-087): graceful path — notice every
+                              pane, grace window, write resume manifest at
+                              state/resume.json, NO worktree prune.
   attach                      tmux attach to the team session
   status                      Powerline team overview
   cockpit rebuild [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
@@ -45,6 +48,16 @@ Task board (kanban):
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
   task update <id> [--body <text>] [--deps <id,id>]
+
+Hierarchy (ADR-007):
+  epic add <title> [--body <text>] [--driver-ref <ref>]
+  epic list [--status <s>] [--json]
+  epic show <id> [--json]
+  epic advance <id> [--to <state>]    States: planning→ready→in-progress→review→done
+  story add <title> --epic <eid> [--ac <criteria>] [--body <text>]
+  story list --epic <eid> [--status <s>] [--json]
+  story show <id> [--json]
+  story advance <id> [--to <state>]   States: planning→ready→in-progress→testing→review→merging→done
 
 Dispatch + work:
   dispatch <member> <task-id> Push task to member's inbox + ping them

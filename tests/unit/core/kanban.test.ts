@@ -459,6 +459,135 @@ describe("claimTask — dep enforcement (bash claim.sh:42-50 parity)", () => {
       expect(ctx.what).toContain(dep2);
     }
   });
+
+  // t-381a6ea0: kanban-hygiene refuse-gate for done-state Tasks.
+  // Origin incident: docs ran `atmux claim t-0c4e6397 --as docs` against
+  // a done-state Task; the claim silently flipped done → in-progress with
+  // no work performed. The 2026-05-12 in-progress race-gate explicitly
+  // allowed "re-claiming a done task" as an idempotent path — that
+  // tolerance was the bug. Gate fires INSIDE the transaction
+  // (BEGIN IMMEDIATE in SQLite / updateJson under flock for JSON path)
+  // so a concurrent done-flip can't slip between check + mutation.
+  test("claimTask (JSON path): refuses done-state Task with clear error", async () => {
+    setNow(() => 1_700_000_000_000);
+    const id = await addTask(atmuxDir, { subject: "shipped already" });
+    await claimTask(atmuxDir, id, "alpha");
+    setNow(() => 1_700_000_500_000);
+    await markTaskDone(atmuxDir, id, "shipped");
+    setNow(() => 1_700_000_600_000);
+    await expect(claimTask(atmuxDir, id, "beta")).rejects.toThrow(
+      /already done.*claim refused/,
+    );
+  });
+
+  test("claimTask (JSON path): refused done-state claim does NOT mutate state", async () => {
+    const id = await addTask(atmuxDir, { subject: "shipped already" });
+    await claimTask(atmuxDir, id, "alpha");
+    await markTaskDone(atmuxDir, id, "shipped");
+    const before = await loadKanban(atmuxDir);
+    const beforeTask = before.tasks.find((t) => t.id === id);
+    await expect(claimTask(atmuxDir, id, "beta")).rejects.toThrow(ConfigError);
+    const after = await loadKanban(atmuxDir);
+    const afterTask = after.tasks.find((t) => t.id === id);
+    expect(afterTask?.status).toBe("done");
+    expect(afterTask?.owner).toBe(beforeTask?.owner);
+    expect(afterTask?.claimedAt).toBe(beforeTask?.claimedAt);
+    expect(afterTask?.completedAt).toBe(beforeTask?.completedAt);
+  });
+
+  test("claimTask (JSON path): refuse message cites task move recovery path + ISO completedAt + owner", async () => {
+    const id = await addTask(atmuxDir, { subject: "shipped already" });
+    await claimTask(atmuxDir, id, "alpha");
+    setNow(() => 1_700_000_500_000);
+    await markTaskDone(atmuxDir, id, "shipped");
+    try {
+      await claimTask(atmuxDir, id, "beta");
+      throw new Error("should have thrown");
+    } catch (e) {
+      const msg = (e as ConfigError).message;
+      // Recovery path discoverability per Task body + reviewer pre-flag.
+      expect(msg).toContain(`atmux task move ${id} todo`);
+      // ISO completedAt — operators correlate with audit fields.
+      expect(msg).toContain("2023-11-14T22:21:40.000Z");
+      // Owner inlined so the operator sees who held it without a second
+      // lookup.
+      expect(msg).toContain("owner=alpha");
+    }
+  });
+
+  test("claimTask (JSON path): todo claim still succeeds (regression guard)", async () => {
+    const id = await addTask(atmuxDir, { subject: "fresh" });
+    const { post } = await claimTask(atmuxDir, id, "alpha");
+    expect(post.status).toBe("in-progress");
+    expect(post.owner).toBe("alpha");
+  });
+
+  test("claimTask (JSON path): in-progress unowned claim still succeeds (regression guard)", async () => {
+    const id = await addTask(atmuxDir, { subject: "manually-set" });
+    // Move to in-progress without setting owner — simulates a manual
+    // `task move` path that didn't go through claim. The done-gate must
+    // ONLY refuse status='done'; in-progress unowned remains claimable.
+    await moveTask(atmuxDir, id, "in-progress");
+    const { post } = await claimTask(atmuxDir, id, "alpha");
+    expect(post.status).toBe("in-progress");
+    expect(post.owner).toBe("alpha");
+  });
+});
+
+describe("doneRefuseMessage — exported message-builder (t-381a6ea0)", () => {
+  test("formats completedAt as ISO + inlines owner + cites recovery path", async () => {
+    const { doneRefuseMessage } = await import("../../../src/core/kanban.ts");
+    const msg = doneRefuseMessage({
+      id: "t-deadbeef",
+      subject: "x",
+      status: "done",
+      owner: "alpha",
+      completedAt: 1_700_000_000, // 2023-11-14T22:13:20.000Z
+      claimedAt: null,
+      createdAt: 1_699_000_000,
+      deps: [],
+      priority: null,
+      lane: null,
+    });
+    expect(msg).toContain("task t-deadbeef already done");
+    expect(msg).toContain("owner=alpha");
+    expect(msg).toContain("2023-11-14T22:13:20.000Z");
+    expect(msg).toContain("atmux task move t-deadbeef todo");
+  });
+
+  test("missing completedAt renders 'unknown' (defensive — legacy rows)", async () => {
+    const { doneRefuseMessage } = await import("../../../src/core/kanban.ts");
+    const msg = doneRefuseMessage({
+      id: "t-legacy01",
+      subject: "x",
+      status: "done",
+      owner: "alpha",
+      completedAt: null,
+      claimedAt: null,
+      createdAt: 1_699_000_000,
+      deps: [],
+      priority: null,
+      lane: null,
+    });
+    expect(msg).toContain("completedAt=unknown");
+  });
+
+  test("missing owner renders 'unknown' (defensive — legacy rows)", async () => {
+    const { doneRefuseMessage } = await import("../../../src/core/kanban.ts");
+    const msg = doneRefuseMessage({
+      id: "t-legacy02",
+      subject: "x",
+      status: "done",
+      owner: null,
+      completedAt: 1_700_000_000,
+      claimedAt: null,
+      createdAt: 1_699_000_000,
+      deps: [],
+      priority: null,
+      lane: null,
+    });
+    expect(msg).toContain("owner=unknown");
+  });
 });
 
 describe("markTaskDone", () => {

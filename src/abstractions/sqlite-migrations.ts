@@ -140,4 +140,60 @@ export const migrations: readonly Migration[] = [
       db.exec("CREATE INDEX idx_complaints_opened_at ON complaints(opened_at DESC)");
     },
   },
+  // ---------- v2 → v3 ----------
+  // Per t-e5e5d576: structured provenance for cross-team analysis.
+  // `source_kind` (superdoctor/member/operator/cli/cron) + structured
+  // `source_id` give a queryable replacement for the free-form
+  // `opened_by` text field; `target_team` distinguishes the team a
+  // complaint is ABOUT from the team's state.db it happens to live
+  // in (needed once superdoctor files cross-team).
+  //
+  // Existing v2 rows get NULL in the three new columns — no heuristic
+  // backfill from `opened_by` (the inference risk isn't worth it; the
+  // verb requires explicit `--source-kind` for new rows).
+  {
+    from: 2,
+    to: 3,
+    up: (db) => {
+      db.exec("ALTER TABLE complaints ADD COLUMN source_kind TEXT");
+      db.exec("ALTER TABLE complaints ADD COLUMN source_id TEXT");
+      db.exec("ALTER TABLE complaints ADD COLUMN target_team TEXT");
+      db.exec("CREATE INDEX idx_complaints_source_kind ON complaints(source_kind)");
+      db.exec("CREATE INDEX idx_complaints_target_team ON complaints(target_team)");
+    },
+  },
+  // ---------- v3 → v4 ----------
+  // ADR-077 §F6: superdoctor self-escalation event log. One row per
+  // structural-fix attempt against a complaint. After N=3 rows with
+  // `outcome='failed'` for the same `complaint_id`, the skill emits
+  // exactly one `[self-heal-failed]` Discord ping (renderer in
+  // src/abstractions/discord.ts). Dedup state for the ping lives in
+  // state_kv (feature `superdoctor-self-heal-escalation`); this table
+  // is the durable attempt log, not the dedup ledger.
+  //
+  // Renumbered v2→v3 → v3→v4 at trunk-merge 2026-05-14: trunk's
+  // complaints provenance migration (t-e5e5d576) claimed v3 first;
+  // the migration ladder must stay monotonic so this lands on top.
+  {
+    from: 3,
+    to: 4,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE superdoctor_attempts (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					complaint_id TEXT NOT NULL,
+					attempt_n INTEGER NOT NULL,
+					outcome TEXT NOT NULL CHECK(outcome IN ('resolved','partial','failed')),
+					attempted_at INTEGER NOT NULL,
+					action TEXT,
+					note TEXT,
+					extra TEXT
+				) STRICT;
+			`);
+      db.exec(
+        "CREATE INDEX idx_sd_attempts_complaint ON superdoctor_attempts(complaint_id, attempted_at DESC)",
+      );
+      db.exec("CREATE INDEX idx_sd_attempts_outcome ON superdoctor_attempts(outcome)");
+    },
+  },
 ];

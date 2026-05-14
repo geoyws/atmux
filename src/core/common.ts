@@ -335,6 +335,41 @@ export function assertValidMemberName(name: string): void {
   }
 }
 
+/** CONVENTION-059: canonical lane prefixes for indexed member names.
+ *  Mirrors the lane slugs used in `team.json :: members[].lane` and the
+ *  superdoctor / watchdog templates. Adding a lane prefix here is the
+ *  intentional friction CLAUDE.md asks for — keeps the convention from
+ *  drifting. */
+export const CONVENTION_059_LANE_PREFIXES = [
+  "fe",
+  "be",
+  "ops",
+  "test",
+  "review",
+  "db",
+  "misc",
+] as const;
+export type Convention059LanePrefix = (typeof CONVENTION_059_LANE_PREFIXES)[number];
+
+/** `^(fe|be|ops|test|review|db|misc)\d+$` — zero-indexed, no separator. */
+const INDEXED_MEMBER_NAME_REGEX = new RegExp(
+  `^(${CONVENTION_059_LANE_PREFIXES.join("|")})\\d+$`,
+);
+
+/** CONVENTION-059 soft validator. Returns `null` on a name that matches
+ *  the indexed-member shape (`fe0` / `be1` / `ops0` / ...), or a
+ *  human-readable reason string otherwise. Advisory-only — never thrown
+ *  from. Existing names that don't match (e.g. `whip-impl` on atmux,
+ *  `eng-mobile` on unum) are still valid wire names per
+ *  `checkMemberName`; this helper captures the *target* shape for new
+ *  fungible-slot members + migration-time guidance. */
+export function checkIndexedMemberName(name: string): string | null {
+  if (!INDEXED_MEMBER_NAME_REGEX.test(name)) {
+    return `name '${name}' does not match CONVENTION-059 indexed shape: ${INDEXED_MEMBER_NAME_REGEX.source}`;
+  }
+  return null;
+}
+
 /**
  * Normalize a free-form member name to the canonical wire form:
  *   - lowercase
@@ -548,8 +583,15 @@ export interface ResolveTeamSocketOpts {
  * tmpdir; canonical fallback is wrong when the team was started under
  * bash or a tmpdir-honoring start path).
  *
- * Read-only sites (status, doctor orphan-session probe) MUST use this
- * resolver to reach the actual live socket.
+ * All sites (read AND write) MUST use this resolver to reach the actual
+ * live socket. The pre-2026-05-13 carve-out for write verbs (send /
+ * dispatch / tell-lead / stop) was the root cause of t-f786031f: pinning
+ * `/tmp/atmux-<team>/sock` unconditionally meant cage rebuilds on
+ * project-local-tmpdir teams routed keystrokes at a non-existent socket,
+ * surfacing as "no tmux window for lead" (tell-lead) or queued-but-
+ * never-Enter'd compose-box text (send / dispatch). All four verbs were
+ * migrated to `resolveTeamSocket(team)` in the same commit — keep the
+ * invariant uniform across verbs to avoid the next regression.
  */
 export function resolveTeamSocket(
   team: Pick<TeamShape, "name" | "tmuxTmpdir">,
