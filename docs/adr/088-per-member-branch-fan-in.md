@@ -175,7 +175,7 @@ This ADR is filed standalone; impl decomposed into the following sub-tasks (sing
 
 | Seq | ID | Lane | Subject | Deps |
 |---|---|---|---|---|
-| W1 | t-bed51da2 | be | `src/abstractions/branch-merge.ts` + unit tests — `mergeMember(base, wtBranch, repoPath, opts)` primitive | none |
+| W1 ✅ | t-bed51da2 | be | `src/abstractions/branch-merge.ts` + unit tests — `mergeMember(base, wtBranch, repoPath, opts)` primitive | none |
 | W2 | t-e7724527 | be | `src/verbs/merge-member.ts` + integration test — verb wiring + push-policy guard | W1, W4 |
 | W3 | t-d78127c7 | be | `src/verbs/merge-cycle.ts` — bulk wrapper + `--dry-run` + `--push` | W2 |
 | W4 | t-f9f49ded | be | `src/schema/team.ts` Zod — `team.merger.{enabled, baseBranch, stalenessHours}` | none (parallel to W1) |

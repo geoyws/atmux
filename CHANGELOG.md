@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — post-0.6.0 follow-ups
 
+- **ADR-088 W1 — `src/abstractions/branch-merge.ts` `mergeMember(base, wtBranch, repoPath, opts)` primitive** (t-bed51da2).
+  Per-member branch fan-in primitive ([docs/adr/088-per-member-branch-fan-in.md](docs/adr/088-per-member-branch-fan-in.md) §Decision-3). Pure git-shell wrapper using the `GitSpawn` injectable pattern (mirrors `worktree.ts` / `auto-push.ts`); every invocation routes through `git -C <repoPath>` so the function is repoPath-agnostic at the spawn layer. Idempotent (returns `{ status: "no-op", reason: "no-commits-ahead" }` when re-fired post-merge). Three hard-refuse guards: `guardBaseWorktreeClean` (uncommitted changes), `guardBranchExists` (missing wtBranch), `guardCommitsAhead` (zero-ahead → no-op exit). On conflict: captures porcelain status for the conflicted-path list, fires `git merge --abort` to restore the worktree to clean, throws `MergeConflictError` carrying both `wtBranch` + `conflictPaths`. New `MergeConflictError` class extends `ConfigError`. Unit suite: 27 cases / 100% line + func coverage on the new module (mock-injected GitSpawn for every decision-tree branch; one real-git smoke against `defaultGitSpawn`). Gates 6 downstream ADR-088 W2-W8 tasks (verb wiring, bulk merge-cycle, brief, doctor probe, cron template, e2e).
+
 - **`atmux complaints file` — whip-velocity-gate flag-vocab compat** (t-7bd53cba).
   Three new flags + one default-behavior change so cockpit-level whip
   cron scripts (`/root/.atmux/bin/whip-velocity-gate.sh`) can file
