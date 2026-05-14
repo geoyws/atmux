@@ -157,14 +157,19 @@ describe("getBriefPath", () => {
   // file; `docs` has no own brief and must fall through to member.md.
   // Without these the team rotation half-cycles panes — observed
   // 2026-05-12 after a 20h+ dormancy rebuild.
-  test.each(["team-lead", "lead", "member", "docs", "planner", "reviewer", "gitter"])(
-    "production briefs resolve role %s to an existing file",
-    async (role) => {
-      const path = await getBriefPath(role, defaultBriefsDir());
-      const content = await readFile(path, "utf8");
-      expect(content.length).toBeGreaterThan(0);
-    },
-  );
+  test.each([
+    "team-lead",
+    "lead",
+    "member",
+    "docs",
+    "planner",
+    "reviewer",
+    "gitter",
+  ])("production briefs resolve role %s to an existing file", async (role) => {
+    const path = await getBriefPath(role, defaultBriefsDir());
+    const content = await readFile(path, "utf8");
+    expect(content.length).toBeGreaterThan(0);
+  });
 });
 
 // ---------- renderBrief ----------
@@ -473,7 +478,10 @@ describe("rotate() — public verb", () => {
     const { tmux, calls } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
     });
-    type Event = { kind: "paste"; target: string } | { kind: "sleep"; ms: number } | { kind: "sendKeys"; keys: string };
+    type Event =
+      | { kind: "paste"; target: string }
+      | { kind: "sleep"; ms: number }
+      | { kind: "sendKeys"; keys: string };
     const timeline: Event[] = [];
     const wrappedTmux = {
       ...tmux,
@@ -511,14 +519,10 @@ describe("rotate() — public verb", () => {
     const nextSleep = afterPaste.find((e) => e.kind === "sleep");
     expect(nextSleep).toBeDefined();
     if (nextSleep?.kind === "sleep") expect(nextSleep.ms).toBeGreaterThanOrEqual(500);
-    const submitIdx = afterPaste.findIndex(
-      (e) => e.kind === "sendKeys" && e.keys === "C-m",
-    );
+    const submitIdx = afterPaste.findIndex((e) => e.kind === "sendKeys" && e.keys === "C-m");
     expect(submitIdx).toBeGreaterThanOrEqual(0);
     // No literal "Enter" sendKeys after the paste (the bug that §A fixes).
-    expect(
-      afterPaste.some((e) => e.kind === "sendKeys" && e.keys === "Enter"),
-    ).toBe(false);
+    expect(afterPaste.some((e) => e.kind === "sendKeys" && e.keys === "Enter")).toBe(false);
     // Calls accumulator (the existing fixture) sees the C-m hit too.
     expect(calls.sendKeys.at(-1)?.keys).toBe("C-m");
   });
@@ -645,6 +649,73 @@ describe("rotate() — public verb", () => {
     // No file in state/ matching the handoff prefix.
     const stateFiles = await readdir(join(atmuxDir, "state"));
     expect(stateFiles.some((f) => f.startsWith("lead-handoff-"))).toBe(false);
+  });
+
+  // t-afd3fe38: after `atmux rotate-lead`, `lead-session-start.txt`
+  // MUST equal the new spawn epoch so ADR-143's cron-fired uptime gate
+  // reads the rotated lead's clock — not the stale pre-rotate one. The
+  // ADR-143 §59 invariant "Re-running just after a force-rotate is also
+  // a no-op because atmux rotate-lead resets lead-session-start.txt to
+  // the new spawn epoch" depended on a missing write; without this,
+  // the cron-gate re-fires on every tick → rotation flap loop.
+  test("t-afd3fe38: rotate-lead writes lead-session-start.txt with new spawn epoch", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    const atmuxDir = join(scratch, ".atmux");
+    await seedTeam({
+      name: "t",
+      members: [{ name: "lead-x", role: "team-lead", tui: "claude" }],
+    });
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    const { tmux } = stubTmux({
+      windows: [{ index: 0, name: "lead-x", active: true }],
+    });
+    const fixedNowMs = 1778126400 * 1000;
+    const exit = await rotate(["--team-dir", scratch, "--lead"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: () => {},
+      now: () => fixedNowMs,
+      leadMarkerHome: scratch,
+    });
+    expect(exit).toBe(0);
+    const markerPath = join(scratch, ".claude", "teams", "t", "lead-session-start.txt");
+    const text = await readFile(markerPath, "utf8");
+    expect(text.trim()).toBe(String(Math.floor(fixedNowMs / 1000)));
+  });
+
+  test("t-afd3fe38: regular member rotation does NOT write lead-session-start.txt", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    await seedTeam({
+      name: "t",
+      members: [{ name: "alice", role: "member", tui: "claude" }],
+    });
+    const { tmux } = stubTmux({
+      windows: [{ index: 0, name: "alice", active: true }],
+    });
+    const exit = await rotate(["--team-dir", scratch, "alice"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: () => {},
+      leadMarkerHome: scratch,
+    });
+    expect(exit).toBe(0);
+    // No marker file under the scratch home.
+    const markerPath = join(scratch, ".claude", "teams", "t", "lead-session-start.txt");
+    let exists = true;
+    try {
+      await readFile(markerPath, "utf8");
+    } catch {
+      exists = false;
+    }
+    expect(exists).toBe(false);
   });
 
   test("ADR-057 §D2c: handoff write failure logs to stderr but does NOT abort", async () => {
