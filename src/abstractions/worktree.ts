@@ -313,7 +313,69 @@ export async function isWorktreeDirty(
   return r.stdout.trim().length > 0;
 }
 
-// ---------- (5) listManagedWorktrees ----------
+// ---------- (5) deleteWorktreeBranch ----------
+
+export interface DeleteBranchOpts {
+  git?: GitSpawn;
+}
+
+export interface DeleteBranchResult {
+  /** True iff `git branch -d` succeeded. False on the unmerged-refuse
+   *  path or when the branch was already absent. */
+  deleted: boolean;
+  /** Populated on the no-op path:
+   *   - `unmerged` — git refused because the branch has commits not
+   *     present in its upstream / HEAD (`error: the branch 'X' is not
+   *     fully merged`). Caller surfaces the skip; operator decides
+   *     whether to `git branch -D` manually.
+   *   - `missing` — the branch did not exist (`error: branch 'X' not
+   *     found`). Idempotent re-run path. */
+  reason?: "unmerged" | "missing";
+}
+
+/**
+ * Delete a per-member worktree branch via `git branch -d <wtBranch>`.
+ * Safe-mode only — `git branch -d` refuses unmerged branches; `-D`
+ * (destructive) is intentionally NOT exposed here. Operator handles
+ * unmerged-branch cleanup manually, mirroring the dirty-skip discipline
+ * of {@link pruneWorktree} and `feedback_destructive_ops_need_explicit_auth.md`.
+ *
+ * Used by ADR-084 OQ2 follow-up — `atmux stop --force --prune-branch`
+ * pairs the `git worktree remove` step with this branch cleanup. The
+ * helper is callable in isolation for any worktree-branch cleanup
+ * workflow.
+ *
+ * Idempotent: re-running on an already-deleted branch returns
+ * `{ deleted: false, reason: 'missing' }` (no throw).
+ */
+export async function deleteWorktreeBranch(
+  repoPath: string,
+  wtBranch: string,
+  opts: DeleteBranchOpts = {},
+): Promise<DeleteBranchResult> {
+  const git = opts.git ?? defaultGitSpawn;
+  const r = await git(["-C", repoPath, "branch", "-d", wtBranch]);
+  if (r.exitCode === 0) {
+    return { deleted: true };
+  }
+  // Parse stderr for the two recoverable failure modes. Git's wording
+  // is stable across versions covered by atmux's `git >= 2.20` floor:
+  //   `error: the branch 'X' is not fully merged.`
+  //   `error: branch 'X' not found.`
+  const stderr = r.stderr;
+  if (/not fully merged/i.test(stderr)) {
+    return { deleted: false, reason: "unmerged" };
+  }
+  if (/not found|no such branch/i.test(stderr)) {
+    return { deleted: false, reason: "missing" };
+  }
+  throw new ConfigError({
+    what: `deleteWorktreeBranch: \`git branch -d ${wtBranch}\` failed (rc=${r.exitCode})`,
+    hint: stderr.trim() || "(no stderr)",
+  });
+}
+
+// ---------- (6) listManagedWorktrees ----------
 
 /**
  * Enumerate every immediate subdirectory of `<atmuxDir>/worktrees/`.

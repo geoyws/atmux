@@ -29,9 +29,11 @@ import { exists } from "../abstractions/fs.ts";
 import { createTmux, type SendTarget } from "../abstractions/tmux.ts";
 import {
   defaultGitSpawn,
+  deleteWorktreeBranch,
   type GitSpawn,
   pruneWorktree,
   resolveWorktreePath,
+  sanitizeBranchSegment,
 } from "../abstractions/worktree.ts";
 import {
   archiveDir,
@@ -49,12 +51,17 @@ import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { cronRemove } from "./cron-remove.ts";
 
-const USAGE = "atmux stop [--force|-f] [--no-archive]";
+const USAGE = "atmux stop [--force|-f] [--no-archive] [--prune-branch]";
 
 /** Parsed `stop` argv. */
 export interface StopArgs {
   force: boolean;
   archive: boolean;
+  /** ADR-084 OQ2 opt-in: after `git worktree remove` succeeds for a
+   *  member, also run `git branch -d <base>-<member>` to delete the
+   *  orphan per-member branch. Requires `--force` (the layered opt-in
+   *  posture from {@link pruneWorktree}'s `dirty: 'force'`). */
+  pruneBranch: boolean;
   socketPath?: string;
   teamDir?: string;
 }
@@ -63,6 +70,7 @@ export interface StopArgs {
 export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
   let force = false;
   let archive = true;
+  let pruneBranch = false;
   let socketPath: string | undefined;
   let teamDir: string | undefined;
   let i = 0;
@@ -75,6 +83,11 @@ export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
     }
     if (a === "--no-archive") {
       archive = false;
+      i += 1;
+      continue;
+    }
+    if (a === "--prune-branch") {
+      pruneBranch = true;
       i += 1;
       continue;
     }
@@ -98,7 +111,17 @@ export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
     }
     throw new UsageError({ what: `stop: unknown arg: ${a ?? ""}`, hint: USAGE });
   }
-  const out: StopArgs = { force, archive };
+  // Layered opt-in: --prune-branch requires --force, same posture as
+  // pruneWorktree's `dirty: 'force'`. Without --force the prune step
+  // doesn't run at all (worktrees survive normal stop+start cycles per
+  // ADR-082 §4); pairing branch-delete with that no-op is meaningless.
+  if (pruneBranch && !force) {
+    throw new UsageError({
+      what: "stop: --prune-branch requires --force",
+      hint: USAGE,
+    });
+  }
+  const out: StopArgs = { force, archive, pruneBranch };
   if (socketPath !== undefined) out.socketPath = socketPath;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
@@ -171,7 +194,7 @@ export async function stop(
   // (no --force) intentionally does NOT prune: worktrees should
   // survive every stop+start cycle except the explicit teardown one.
   if (parsed.force && team.worktreeIsolation === true) {
-    await pruneWorktrees(team, atmuxDir, opts.gitSpawn);
+    await pruneWorktrees(team, atmuxDir, opts.gitSpawn, parsed.pruneBranch);
   }
 
   // Bash uses `kill-session ... 2>/dev/null || true` — best-effort.
@@ -228,6 +251,7 @@ async function pruneWorktrees(
   team: Team,
   atmuxDir: string,
   gitOverride?: GitSpawn,
+  pruneBranch = false,
 ): Promise<void> {
   const git = gitOverride ?? defaultGitSpawn;
   // Match start.ts's projectRoot resolution: regex-strip the trailing
@@ -244,15 +268,38 @@ async function pruneWorktrees(
   }
   const repoPath = rootR.stdout.trim();
 
+  // ADR-084 OQ2 opt-in: if --prune-branch was passed, resolve the
+  // team's current branch ONCE — used to derive each member's wtBranch
+  // as `${baseBranch}-${sanitizeBranchSegment(member.name)}`. Same
+  // convention as start.ts. If the lookup fails (detached HEAD, repo
+  // edge case), --prune-branch degrades to no-op with a warn but
+  // worktree-prune still runs.
+  let baseBranch: string | null = null;
+  if (pruneBranch) {
+    const br = await git(["-C", repoPath, "branch", "--show-current"]);
+    if (br.exitCode === 0 && br.stdout.trim() !== "") {
+      baseBranch = br.stdout.trim();
+    } else {
+      process.stderr.write(
+        "atmux: warn: --prune-branch skipped — cannot resolve base branch (detached HEAD?)\n",
+      );
+    }
+  }
+
   let pruned = 0;
   let dirty = 0;
   let missing = 0;
+  let branchDeleted = 0;
+  let branchUnmerged = 0;
+  let branchMissing = 0;
   for (const member of team.members) {
     const wtPath = resolveWorktreePath(team, member.name, atmuxDir);
+    let workPruned = false;
     try {
       const r = await pruneWorktree(repoPath, wtPath, { git });
       if (r.pruned) {
         pruned += 1;
+        workPruned = true;
       } else if (r.reason === "dirty") {
         dirty += 1;
         process.stderr.write(
@@ -267,11 +314,41 @@ async function pruneWorktrees(
         `atmux: warn: worktree ${member.name} prune failed — ${msg}\n`,
       );
     }
+    // ADR-084 OQ2: branch-delete only fires on the worktree-pruned
+    // success path. Dirty / missing / failed worktrees keep their
+    // branches — operator handles. Mirrors the "never silently destroy
+    // unpushed work" principle.
+    if (workPruned && pruneBranch && baseBranch !== null) {
+      const wtBranch = `${baseBranch}-${sanitizeBranchSegment(member.name)}`;
+      try {
+        const br = await deleteWorktreeBranch(repoPath, wtBranch, { git });
+        if (br.deleted) {
+          branchDeleted += 1;
+        } else if (br.reason === "unmerged") {
+          branchUnmerged += 1;
+          process.stderr.write(
+            `atmux: warn: branch ${wtBranch} not fully merged — left for operator\n`,
+          );
+        } else if (br.reason === "missing") {
+          branchMissing += 1;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `atmux: warn: branch ${wtBranch} delete failed — ${msg}\n`,
+        );
+      }
+    }
   }
   const total = team.members.length;
   process.stdout.write(
     `worktree: pruned ${pruned}/${total}; ${dirty} dirty (left for operator), ${missing} already gone\n`,
   );
+  if (pruneBranch && baseBranch !== null) {
+    process.stdout.write(
+      `worktree-branch: deleted ${branchDeleted}/${pruned}; ${branchUnmerged} unmerged (left for operator), ${branchMissing} already gone\n`,
+    );
+  }
 }
 
 async function sendCancelToMembers(

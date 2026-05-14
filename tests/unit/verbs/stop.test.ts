@@ -98,7 +98,7 @@ async function stageTeamWithSession(members: ReadonlyArray<string>): Promise<{
 
 describe("parseStopArgs", () => {
   test("empty argv → defaults", () => {
-    expect(parseStopArgs([])).toEqual({ force: false, archive: true });
+    expect(parseStopArgs([])).toEqual({ force: false, archive: true, pruneBranch: false });
   });
 
   test("--force / -f sets force=true", () => {
@@ -128,6 +128,22 @@ describe("parseStopArgs", () => {
 
   test("unknown arg → UsageError", () => {
     expect(() => parseStopArgs(["bogus"])).toThrow(UsageError);
+  });
+
+  // ADR-084 OQ2 follow-up — --prune-branch flag
+  test("--prune-branch + --force sets pruneBranch=true", () => {
+    const args = parseStopArgs(["--force", "--prune-branch"]);
+    expect(args.pruneBranch).toBe(true);
+    expect(args.force).toBe(true);
+  });
+
+  test("--prune-branch without --force → UsageError (layered opt-in)", () => {
+    expect(() => parseStopArgs(["--prune-branch"])).toThrow(UsageError);
+    expect(() => parseStopArgs(["--prune-branch"])).toThrow(/--prune-branch requires --force/);
+  });
+
+  test("--prune-branch defaults to false when omitted", () => {
+    expect(parseStopArgs(["--force"]).pruneBranch).toBe(false);
   });
 });
 
@@ -463,6 +479,139 @@ describe("stop verb — integration", () => {
     expect(stderr).toContain("cannot detect repo root");
     // The session still got killed — the warning didn't wedge stop.
     expect(await tmux.session.hasSession(`=${sessionName}`)).toBe(false);
+  });
+
+  // ---------- ADR-084 OQ2 follow-up: --prune-branch ----------
+
+  test("--force --prune-branch + clean worktree → deletes <base>-<member> branch", async () => {
+    await stageWorktreeTeam(["alpha"]);
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return gitOk("/srv/fake-repo\n");
+      // The branch-show-current call returns the team's base branch
+      // → drives `<baseBranch>-${member}` derivation.
+      if (argv.includes("--show-current")) return gitOk("geoyws\n");
+      if (argv.includes("status")) return gitOk("");
+      // `worktree remove` succeeds; `branch -d` succeeds.
+      return gitOk("");
+    };
+    const { result, stdout } = await captureStdoutStderr(() =>
+      stop(
+        ["--force", "--prune-branch", "--no-archive", "--socket", socketPath, "--team-dir", teamDir],
+        { gitSpawn },
+      ),
+    );
+    expect(result).toBe(0);
+    // git was invoked: rev-parse + branch --show-current + status + remove + branch -d
+    expect(calls.some((c) => c.includes("--show-current"))).toBe(true);
+    expect(calls.some((c) => c.includes("remove"))).toBe(true);
+    const branchDel = calls.find((c) => c.includes("branch") && c.includes("-d"));
+    expect(branchDel).toEqual(["-C", "/srv/fake-repo", "branch", "-d", "geoyws-alpha"]);
+    expect(stdout).toContain("worktree: pruned 1/1");
+    expect(stdout).toContain("worktree-branch: deleted 1/1");
+  });
+
+  test("--force --prune-branch + unmerged branch → warns, worktree still pruned", async () => {
+    await stageWorktreeTeam(["alpha"]);
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("rev-parse")) return gitOk("/srv/fake-repo\n");
+      if (argv.includes("--show-current")) return gitOk("geoyws\n");
+      if (argv.includes("status")) return gitOk("");
+      // `worktree remove` succeeds (no `-d`); `branch -d` fails with
+      // unmerged stderr.
+      if (argv.includes("branch") && argv.includes("-d")) {
+        return gitFail(
+          "error: the branch 'geoyws-alpha' is not fully merged.\n",
+          1,
+        );
+      }
+      return gitOk("");
+    };
+    const { result, stdout, stderr } = await captureStdoutStderr(() =>
+      stop(
+        ["--force", "--prune-branch", "--no-archive", "--socket", socketPath, "--team-dir", teamDir],
+        { gitSpawn },
+      ),
+    );
+    expect(result).toBe(0);
+    expect(stdout).toContain("worktree: pruned 1/1");
+    expect(stdout).toContain("worktree-branch: deleted 0/1");
+    expect(stdout).toContain("1 unmerged");
+    expect(stderr).toContain("branch geoyws-alpha not fully merged");
+  });
+
+  test("--force --prune-branch + dirty worktree → branch-delete SKIPPED (gated on worktree prune)", async () => {
+    // The branch cleanup must NOT fire when the worktree itself was
+    // left intact for the operator. ADR-084 OQ2 invariant.
+    await stageWorktreeTeam(["alpha"]);
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return gitOk("/srv/fake-repo\n");
+      if (argv.includes("--show-current")) return gitOk("geoyws\n");
+      if (argv.includes("status")) return gitOk(" M src/foo.ts\n"); // dirty
+      return gitOk("");
+    };
+    const { result, stdout } = await captureStdoutStderr(() =>
+      stop(
+        ["--force", "--prune-branch", "--no-archive", "--socket", socketPath, "--team-dir", teamDir],
+        { gitSpawn },
+      ),
+    );
+    expect(result).toBe(0);
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+    expect(calls.some((c) => c.includes("branch") && c.includes("-d"))).toBe(false);
+    expect(stdout).toContain("worktree-branch: deleted 0/0");
+  });
+
+  test("--force (no --prune-branch) → ZERO branch-delete invocations (back-compat)", async () => {
+    await stageWorktreeTeam(["alpha"]);
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return gitOk("/srv/fake-repo\n");
+      if (argv.includes("status")) return gitOk("");
+      return gitOk("");
+    };
+    const { result, stdout } = await captureStdoutStderr(() =>
+      stop(["--force", "--no-archive", "--socket", socketPath, "--team-dir", teamDir], {
+        gitSpawn,
+      }),
+    );
+    expect(result).toBe(0);
+    // Neither `branch --show-current` (resolve base) NOR `branch -d`
+    // (delete) should fire when --prune-branch is absent.
+    expect(calls.some((c) => c.includes("--show-current"))).toBe(false);
+    expect(calls.some((c) => c.includes("branch") && c.includes("-d"))).toBe(false);
+    // No worktree-branch summary line either.
+    expect(stdout).not.toContain("worktree-branch:");
+  });
+
+  test("--force --prune-branch + detached HEAD → warns + worktree still pruned + zero branch-delete", async () => {
+    await stageWorktreeTeam(["alpha"]);
+    const calls: ReadonlyArray<string>[] = [];
+    const gitSpawn: GitSpawn = async (argv) => {
+      calls.push(argv);
+      if (argv.includes("rev-parse")) return gitOk("/srv/fake-repo\n");
+      // Detached HEAD: `branch --show-current` exits 0 with empty stdout.
+      if (argv.includes("--show-current")) return gitOk("\n");
+      if (argv.includes("status")) return gitOk("");
+      return gitOk("");
+    };
+    const { result, stdout, stderr } = await captureStdoutStderr(() =>
+      stop(
+        ["--force", "--prune-branch", "--no-archive", "--socket", socketPath, "--team-dir", teamDir],
+        { gitSpawn },
+      ),
+    );
+    expect(result).toBe(0);
+    expect(stderr).toContain("--prune-branch skipped");
+    expect(stderr).toContain("detached HEAD");
+    expect(calls.some((c) => c.includes("remove"))).toBe(true); // worktree-prune still fired
+    expect(calls.some((c) => c.includes("branch") && c.includes("-d"))).toBe(false);
+    // No worktree-branch summary line because pruneBranch was disabled.
+    expect(stdout).not.toContain("worktree-branch:");
   });
 
 });
