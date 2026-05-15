@@ -16,6 +16,19 @@
 > below; martinet handles per-team observation + nudge work that
 > doesn't require Opus judgment. Verb impl: T8 of ADR-132 (commit
 > t-fb5e4c1f).
+>
+> **2026-05-14 cadence + authority narrowing** per [ADR-140](140-cheap-model-first.md)
+> (cheap-model-first principle, accepted 2026-05-15): §D3's "hourly cadence" is
+> **deprecated**; medic moves to **event-driven** (no idle hourly tick), listening
+> on `~/.atmux/state/medic-events.log` written by martinet. The scan-loop primitives
+> in §D2 (`atmux doctor --json` per team, complaint filing) are preserved but fire
+> only on event-arrival, not on a timer. §D3's "full action authority" is preserved
+> for **code-fix-to-atmux** + cage-cycle authority; **routine** rotation authority
+> (context-token >400k, refusal-pattern, dormancy-window per [[feedback_rotation_threshold_400k]])
+> moves to martinet (Cursor composer-2-fast) per ADR-140 §Decision. Medic retains
+> **emergency** rotation authority for code-fix scenarios where a member's claude
+> proc is genuinely broken and needs kill+respawn. Source: ADR-140 §"What MOVES /
+> What STAYS" + roles+responsibilities matrix.
 
 ## Context
 
