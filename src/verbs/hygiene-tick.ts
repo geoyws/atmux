@@ -35,6 +35,10 @@ import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import {
+  defaultGitSpawn,
+  type GitSpawn,
+} from "../abstractions/worktree.ts";
+import {
   buildWindowName,
   getSessionName,
   type ResolveDirOpts,
@@ -49,6 +53,11 @@ import {
   prunePhantomInProgressClaims,
   type PruneResult,
 } from "../core/phantom-prune.ts";
+import {
+  runReleaseNotesAutoAppend,
+  type ReleaseNotesSweepResult,
+} from "../core/release-notes-sweep.ts";
+import { resolveMergerConfig } from "../core/merger-config.ts";
 import { HygieneRepo } from "../core/repositories/hygiene-repo.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { type DrainTickResult, drainTick } from "../core/superdoctor-hygiene/drain.ts";
@@ -62,7 +71,8 @@ import { join } from "node:path";
  *  the stop hook couldn't capture (session died non-gracefully). */
 export const HYGIENE_TICK_PHANTOM_MIN_AGE_SEC = 86_400;
 
-const USAGE = "atmux hygiene-tick [--team-dir <dir>] [--json] [--no-phantom-prune]";
+const USAGE =
+  "atmux hygiene-tick [--team-dir <dir>] [--json] [--no-phantom-prune] [--no-release-notes]";
 
 interface HygieneTickArgs {
   teamDir?: string;
@@ -71,12 +81,20 @@ interface HygieneTickArgs {
    *  opt-out for the rare diagnosis where the auto-prune is the
    *  suspect and they want the 5-class drain only. */
   phantomPrune: boolean;
+  /** Skip the ADR-147 T8 release-notes auto-append sub-op. Default =
+   *  on. Operator opt-out for the rare diagnosis where the append
+   *  itself is the suspect; the drain + phantom-prune passes still
+   *  fire normally. The sub-op is also short-circuited internally on
+   *  any error (probe-failed) so explicit opt-out is mainly for
+   *  symmetry with `--no-phantom-prune`. */
+  releaseNotes: boolean;
 }
 
 export function parseHygieneTickArgs(argv: ReadonlyArray<string>): HygieneTickArgs {
   let teamDir: string | undefined;
   let json = true; // default to JSON output (agent-consumer assumption)
   let phantomPrune = true;
+  let releaseNotes = true;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -95,6 +113,11 @@ export function parseHygieneTickArgs(argv: ReadonlyArray<string>): HygieneTickAr
       i += 1;
       continue;
     }
+    if (a === "--no-release-notes") {
+      releaseNotes = false;
+      i += 1;
+      continue;
+    }
     if (a === "--team-dir") {
       const v = argv[i + 1];
       if (v === undefined) {
@@ -106,7 +129,7 @@ export function parseHygieneTickArgs(argv: ReadonlyArray<string>): HygieneTickAr
     }
     throw new UsageError({ what: `hygiene-tick: unknown arg: ${a ?? ""}`, hint: USAGE });
   }
-  const out: HygieneTickArgs = { json, phantomPrune };
+  const out: HygieneTickArgs = { json, phantomPrune, releaseNotes };
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }
@@ -129,6 +152,16 @@ export interface HygieneTickOpts {
    *  sub-op. Defaults to 24h (`HYGIENE_TICK_PHANTOM_MIN_AGE_SEC`).
    *  Tests pass `0` to disable filtering for fixture simplicity. */
   phantomMinAgeSec?: number;
+  /** ADR-147 T8 release-notes auto-append sub-op overrides. Tests
+   *  inject a stub `git` + an epoch-ms anchor for deterministic
+   *  "today" boundaries. Production uses `defaultGitSpawn` + real
+   *  clock. */
+  releaseNotesGit?: GitSpawn;
+  /** Epoch-ms anchor for the release-notes sub-op's "today" boundary.
+   *  Defaults to `Date.now()`. Distinct from `nowSeconds` (which is
+   *  the drain-loop's epoch-seconds clock) — the two clocks share no
+   *  contract and tests routinely freeze one without the other. */
+  releaseNotesNowMs?: number;
 }
 
 /** Output shape for the t-d6fc03a7 phantom-prune sub-op. Distinct
@@ -156,10 +189,31 @@ export interface HygieneTickPhantomResult {
   skipReason: "" | "disabled" | "singleSession" | "probe-failed" | "no-candidates";
 }
 
+/** ADR-147 T8 release-notes auto-append sub-op output. `null` when the
+ *  sub-op short-circuits (skipReason populated). */
+export interface HygieneTickReleaseNotesResult {
+  /** Day-file path the sweep wrote to (or would have, in skip cases). */
+  dayFilePath: string;
+  /** Per-section append-vs-skip breakdown. `appended[]` lists the
+   *  natural-key ids of entries that landed THIS tick; `skipped[]`
+   *  lists ids the sweep saw but found already-recorded (idempotent
+   *  re-fire). */
+  shipped: { appended: string[]; skipped: string[] };
+  merges: { appended: string[]; skipped: string[] };
+  adrsLanded: { appended: string[]; skipped: string[] };
+  /** Non-empty when the sub-op short-circuited:
+   *    - `"disabled"` — `--no-release-notes` flag.
+   *    - `"probe-failed"` — git or fs probe threw; sub-op aborted
+   *      without writes. */
+  skipReason: "" | "disabled" | "probe-failed";
+}
+
 /** Verb-level output — extends the drain-loop result with the
- *  t-d6fc03a7 phantom-prune sub-op outcome. */
+ *  t-d6fc03a7 phantom-prune sub-op outcome AND the ADR-147 T8
+ *  release-notes auto-append sub-op outcome. */
 export interface HygieneTickResult extends DrainTickResult {
   phantomPrune: HygieneTickPhantomResult | null;
+  releaseNotes: HygieneTickReleaseNotesResult | null;
 }
 
 /** Default verb shells. Each invokes the atmux CLI in a subprocess so
@@ -228,13 +282,111 @@ export async function hygieneTick(
     dirOpts,
   });
 
-  const result: HygieneTickResult = { ...drain, phantomPrune };
+  const releaseNotes = await runReleaseNotesAppend({
+    parsed,
+    opts,
+    team,
+    atmuxDir,
+  });
+
+  const result: HygieneTickResult = { ...drain, phantomPrune, releaseNotes };
   if (parsed.json) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     process.stdout.write(formatHuman(result));
   }
   return result;
+}
+
+/** ADR-147 T8 release-notes auto-append sub-op. Polls kanban + git for
+ *  today's done-tasks / merges / new-ADRs and appends a per-section
+ *  entry to today's `docs/release-notes/<Y>/<M>/<Y-M-D>.md` (creating
+ *  the skeleton if absent). Each append is idempotency-checked against
+ *  the current day-file body — re-runs are no-op on already-recorded
+ *  events.
+ *
+ *  Best-effort: any probe failure (git unreachable, fs error) degrades
+ *  to `skipReason: "probe-failed"` rather than aborting the verb.
+ *  `--no-release-notes` opt-outs short-circuit to
+ *  `skipReason: "disabled"` — symmetric with `runPhantomPrune`'s
+ *  posture. */
+async function runReleaseNotesAppend(args: {
+  parsed: HygieneTickArgs;
+  opts: HygieneTickOpts;
+  team: Awaited<ReturnType<typeof requireTeam>>;
+  atmuxDir: string;
+}): Promise<HygieneTickReleaseNotesResult> {
+  const { parsed, opts, team, atmuxDir } = args;
+  // The repoRoot we write release-notes into is the team's primary
+  // worktree (i.e. parent of `.atmux/`). Mirror gitter.ts's resolution
+  // so both verbs land notes at the same location.
+  const repoRoot = atmuxDir.endsWith("/.atmux")
+    ? atmuxDir.slice(0, -"/.atmux".length)
+    : join(atmuxDir, "..");
+
+  if (!parsed.releaseNotes) {
+    return emptyReleaseNotesResult(repoRoot, "disabled");
+  }
+
+  const git: GitSpawn = opts.releaseNotesGit ?? defaultGitSpawn;
+  const nowMs = opts.releaseNotesNowMs ?? Date.now();
+
+  // baseBranch resolution: prefer the merger-config helper (same path
+  // as gitter.ts), so `git log --merges <baseBranch>` reads the same
+  // line of trunk operators reason about. Fall back to "HEAD" on
+  // resolution failure — the merge probe still works, just scoped to
+  // whichever branch is currently checked out.
+  let baseBranch = "HEAD";
+  try {
+    const merger = await resolveMergerConfig(team, repoRoot, { git });
+    baseBranch = merger.baseBranch;
+  } catch {
+    // Leave baseBranch as "HEAD" — degraded but functional.
+  }
+
+  // Re-open the kanban repo specifically for the sweep so the snapshot
+  // is fresh post-drain (drainTick may have flipped task statuses).
+  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  let sweepResult: ReleaseNotesSweepResult;
+  try {
+    const kanban = new KanbanRepo(db).listTasks();
+    sweepResult = await runReleaseNotesAutoAppend({
+      repoRoot,
+      baseBranch,
+      kanban,
+      git,
+      nowMs,
+    });
+  } catch {
+    closeDatabase(db);
+    return emptyReleaseNotesResult(repoRoot, "probe-failed");
+  }
+  closeDatabase(db);
+
+  return {
+    dayFilePath: sweepResult.dayFilePath,
+    shipped: sweepResult.shipped,
+    merges: sweepResult.merges,
+    adrsLanded: sweepResult.adrsLanded,
+    skipReason: "",
+  };
+}
+
+function emptyReleaseNotesResult(
+  repoRoot: string,
+  skipReason: HygieneTickReleaseNotesResult["skipReason"],
+): HygieneTickReleaseNotesResult {
+  // The sweep was skipped; expose a path-shaped placeholder for the
+  // JSON output's consumer-side stability (path field is non-nullable).
+  // We don't compute the real MYT path here to keep the skip branch
+  // fully I/O-free.
+  return {
+    dayFilePath: `${repoRoot}/docs/release-notes/<skipped>`,
+    shipped: { appended: [], skipped: [] },
+    merges: { appended: [], skipped: [] },
+    adrsLanded: { appended: [], skipped: [] },
+    skipReason,
+  };
 }
 
 /** t-d6fc03a7 phantom-prune sub-op. Idempotent, best-effort: probe
@@ -354,6 +506,20 @@ function formatHuman(result: HygieneTickResult): string {
     } else {
       lines.push(
         `  phantom-prune: ${p.detected} detected, ${p.prunedIds.length} pruned, ${p.alreadyPrunedIds.length} already pruned`,
+      );
+    }
+  }
+  if (result.releaseNotes !== null) {
+    const rn = result.releaseNotes;
+    if (rn.skipReason !== "") {
+      lines.push(`  release-notes skipped: ${rn.skipReason}`);
+    } else {
+      const total =
+        rn.shipped.appended.length + rn.merges.appended.length + rn.adrsLanded.appended.length;
+      const skipped =
+        rn.shipped.skipped.length + rn.merges.skipped.length + rn.adrsLanded.skipped.length;
+      lines.push(
+        `  release-notes: ${total} appended (${rn.shipped.appended.length} shipped, ${rn.merges.appended.length} merges, ${rn.adrsLanded.appended.length} adrs), ${skipped} skipped`,
       );
     }
   }
