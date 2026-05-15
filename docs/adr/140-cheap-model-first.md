@@ -1,6 +1,6 @@
 # ADR-140: Cheap-model-first principle — periodic scans move to martinet; medic event-driven
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Driver-ref**: 2026-05-14 driver session — operator's progressive 4-message arc settled the framing.
 **EPIC**: `t-83dcef6b` · **T1 scope** (this commit). T2 (ADR annotations on ADR-077 / ADR-131 / ADR-132 / ADR-139), T3 (medic verb refactor to event-driven), T4 (martinet `NudgeAction` enum extension) remain open under the EPIC.

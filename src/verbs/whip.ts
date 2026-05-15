@@ -58,6 +58,7 @@ import {
   send as discordSend,
   renderWhipConfigDrift,
   renderWhipDefunctCwd,
+  renderWhipModalCycling,
   renderWhipNeedsApproval,
   renderWhipPermModeDrift,
 } from "../abstractions/discord.ts";
@@ -76,7 +77,9 @@ import {
   runSwapPass,
 } from "../core/account-swap.ts";
 import {
+  buildWindowName,
   classifyPaneState,
+  displayMemberName,
   getAtmuxDir,
   getSessionName,
   logsDir,
@@ -101,6 +104,21 @@ import {
   type SkillsTeamPathsOpts,
   writeLeadSessionStart,
 } from "../core/lead-marker.ts";
+import {
+  appendHistory,
+  classifyPaneAsModal,
+  computeModalHash,
+  type ModalHistoryEntry,
+  shouldFireCycleDetection,
+} from "../core/modal-cycling-detector.ts";
+import {
+  loadDedupState as loadModalCyclingDedupState,
+  loadModalHistory,
+  recordDedup as recordModalCyclingDedup,
+  saveDedupState as saveModalCyclingDedupState,
+  saveModalHistory,
+  shouldFireDedup as shouldFireModalCyclingDedup,
+} from "../core/modal-cycling-state.ts";
 import { classifyText } from "../core/pane-state.ts";
 import { PASTE_SUBMIT_SETTLE_FLOOR_MS, submitAfterPaste } from "../core/paste-submit.ts";
 import {
@@ -280,6 +298,152 @@ const DEFAULT_WHIP_CONFIG: WhipConfig = {
   selfHealTokenCaps: {},
   needsApprovalEnabled: true,
 };
+
+// ---------- ADR-142 modal-cycling resolved config ----------
+
+/** Resolved {@link Team.modalCycling} with defaults applied. */
+export interface ModalCyclingResolved {
+  enabled: boolean;
+  cycleThreshold: number;
+  windowMin: number;
+  commitGracePeriodMin: number;
+  dedupMin: number;
+  exemptMembers: ReadonlySet<string>;
+}
+
+/** Default tunables per ADR-142 §Configuration table. */
+export const DEFAULT_MODAL_CYCLING: ModalCyclingResolved = {
+  enabled: true,
+  cycleThreshold: 3,
+  windowMin: 30,
+  commitGracePeriodMin: 30,
+  dedupMin: 30,
+  exemptMembers: new Set(),
+};
+
+export function resolveModalCycling(team: Team): ModalCyclingResolved {
+  const raw = team.modalCycling;
+  if (raw === undefined || raw === null) return DEFAULT_MODAL_CYCLING;
+  const out: ModalCyclingResolved = {
+    enabled: raw.enabled ?? DEFAULT_MODAL_CYCLING.enabled,
+    cycleThreshold:
+      raw.cycleThreshold !== undefined && raw.cycleThreshold > 0
+        ? raw.cycleThreshold
+        : DEFAULT_MODAL_CYCLING.cycleThreshold,
+    windowMin:
+      raw.windowMin !== undefined && raw.windowMin > 0
+        ? raw.windowMin
+        : DEFAULT_MODAL_CYCLING.windowMin,
+    commitGracePeriodMin:
+      raw.commitGracePeriodMin !== undefined && raw.commitGracePeriodMin >= 0
+        ? raw.commitGracePeriodMin
+        : DEFAULT_MODAL_CYCLING.commitGracePeriodMin,
+    dedupMin:
+      raw.dedupMin !== undefined && raw.dedupMin >= 0
+        ? raw.dedupMin
+        : DEFAULT_MODAL_CYCLING.dedupMin,
+    exemptMembers: new Set(raw.exemptMembers ?? []),
+  };
+  return out;
+}
+
+// ---------- ADR-142 default surface implementations ----------
+//
+// `makeDefault*` factories return the production-default DI seam used by
+// runWhip when callers don't inject. Tests inject recorders directly via
+// the `WhipOpts.*` fields; the factories themselves stay simple +
+// best-effort (failure swallowed; tick continues).
+
+interface CommitCountFactoryArgs {
+  atmuxDir: string;
+}
+
+function makeDefaultCommitCount(
+  args: CommitCountFactoryArgs,
+): (member: TeamMember, windowMin: number) => Promise<number> {
+  return async (member: TeamMember, windowMin: number): Promise<number> => {
+    // Member worktree: explicit `member.cwd` if set; otherwise the
+    // project root that contains `.atmux/` (mirrors gitter's auto-done
+    // scan default).
+    const repoPath = member.cwd ?? dirname(args.atmuxDir);
+    try {
+      const { spawn } = await import("../abstractions/spawn.ts");
+      const result = await spawn({
+        cmd: "git",
+        argv: ["-C", repoPath, "log", `--since=${windowMin}.minutes`, "--pretty=format:%h"],
+        timeoutMs: 5_000,
+        expectExitCode: "any",
+      });
+      if (result.exitCode !== 0) return 0;
+      const lines = result.stdout.split("\n").filter((l) => l.trim().length > 0);
+      return lines.length;
+    } catch {
+      // git missing / wrong cwd / spawn timeout — treat as 0 commits;
+      // detector falls through to fire-on-cycle if threshold met.
+      return 0;
+    }
+  };
+}
+
+interface ModalCyclingClarifierArgs {
+  team: Team;
+  atmuxDir: string;
+  tmux: TmuxNamespace;
+  nowSec: number;
+}
+
+function makeDefaultModalCyclingClarifier(
+  args: ModalCyclingClarifierArgs,
+): (member: string, message: string) => Promise<void> {
+  return async (member: string, message: string): Promise<void> => {
+    const session = await getSessionName({ dir: args.atmuxDir, team: args.team });
+    const memberEntry = args.team.members.find((m) => m.name === member);
+    const windowName = `${memberEntry?.emoji ?? ""}${member}`;
+    const target = `${session}:${windowName}`;
+    const bufferName = `atmux-modal-cycling-${args.team.name}-${member}-${args.nowSec}`;
+    try {
+      await args.tmux.buffer.loadBuffer({ name: bufferName, data: message });
+      const sendTarget: SendTarget = {
+        kind: "member",
+        member,
+        team: args.team.name,
+        target,
+      };
+      await args.tmux.buffer.pasteBuffer({
+        name: bufferName,
+        target: sendTarget,
+        deleteAfter: true,
+      });
+      await submitAfterPaste(args.tmux, sendTarget);
+    } catch {
+      // Clarifier is best-effort — pane may be MODAL-busy or window
+      // missing; the flag + Discord surfaces still go out.
+    }
+  };
+}
+
+interface ModalCyclingFlagFilerArgs {
+  atmuxDir: string;
+}
+
+function makeDefaultModalCyclingFlagFiler(
+  args: ModalCyclingFlagFilerArgs,
+): (subject: string, body: string) => Promise<void> {
+  return async (subject: string, body: string): Promise<void> => {
+    try {
+      const { spawn } = await import("../abstractions/spawn.ts");
+      await spawn({
+        cmd: "atmux",
+        argv: ["flags", "add", subject, "--body", body, "--severity", "high"],
+        cwd: args.atmuxDir,
+        timeoutMs: 5_000,
+        expectExitCode: "any",
+      });
+    } catch {
+      // Flag filing is best-effort — Discord ping still goes out.
+    }
+  };
+}
 
 /** Pick a sub-field out of `team.whip` (typed as `unknown` — see
  *  src/schema/team.ts comment) coercing through the env override
@@ -628,6 +792,18 @@ export interface Finding {
    *  [whip-defunct-cwd] Discord ping (no dedup — fires every tick
    *  until the operator restores the path). */
   defunctCwd?: { member: string; cwd: string };
+  /** ADR-142 §D4-D5: optional modal-cycling payload. When present, the
+   *  tick fires `[whip-modal-cycling]` Discord (per-member dedup via
+   *  modalCycling.dedupMin) PLUS best-effort `atmux send` clarifier +
+   *  `atmux flags add` flag. Surface dispatch happens at tick-aggregate
+   *  time so the dedup state writes once even when a single tick fires
+   *  for multiple members. */
+  modalCycling?: {
+    member: string;
+    taskId: string;
+    distinctCount: number;
+    modalsSeen: ReadonlyArray<ModalHistoryEntry>;
+  };
 }
 
 // ---------- Public entrypoint ----------
@@ -667,6 +843,12 @@ export interface WhipOpts {
     account: string,
     opts?: { force?: boolean; refreshOnNearExpiry?: boolean },
   ) => Promise<BudgetProbeResult>;
+  /** ADR-142 DI seam — commit-count cross-check for modal-cycling. */
+  commitCountInWindow?: (member: TeamMember, windowMin: number) => Promise<number>;
+  /** ADR-142 DI seam — clarifier dispatch surface. */
+  dispatchModalCyclingClarifier?: (member: string, message: string) => Promise<void>;
+  /** ADR-142 DI seam — flag-add surface. */
+  fileModalCyclingFlag?: (subject: string, body: string) => Promise<void>;
 }
 
 /** `atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]`. */
@@ -724,6 +906,16 @@ export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Pr
     throw e;
   }
 
+  const modalCyclingConfig = resolveModalCycling(team);
+  const tmuxNs = opts.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const defaultCommitCount = makeDefaultCommitCount({ atmuxDir });
+  const defaultClarifier = makeDefaultModalCyclingClarifier({
+    team,
+    atmuxDir,
+    tmux: tmuxNs,
+    nowSec,
+  });
+  const defaultFlagFiler = makeDefaultModalCyclingFlagFiler({ atmuxDir });
   try {
     return await runTick(parsed, {
       team,
@@ -737,8 +929,13 @@ export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Pr
       send,
       readMemberEnv,
       ...(opts.webhookOverride !== undefined ? { webhookOverride: opts.webhookOverride } : {}),
-      tmux: opts.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) }),
+      tmux: tmuxNs,
       ...(opts.budgetProbe !== undefined ? { budgetProbe: opts.budgetProbe } : {}),
+      modalCyclingConfig,
+      commitCountInWindow: opts.commitCountInWindow ?? defaultCommitCount,
+      dispatchModalCyclingClarifier:
+        opts.dispatchModalCyclingClarifier ?? defaultClarifier,
+      fileModalCyclingFlag: opts.fileModalCyclingFlag ?? defaultFlagFiler,
     });
   } finally {
     await handle.release();
@@ -762,6 +959,23 @@ interface TickCtx {
     account: string,
     opts?: { force?: boolean; refreshOnNearExpiry?: boolean },
   ) => Promise<BudgetProbeResult>;
+  /** ADR-142 resolved config — defaults applied at the runWhip seam. */
+  modalCyclingConfig: ModalCyclingResolved;
+  /** ADR-142 §D3: commit-count cross-check. Returns the number of
+   *  commits attributed to `member` within `windowMin` on the member's
+   *  worktree (or shared tree, when worktree-isolation is off). Used
+   *  to gate cycle-fire on productive ceremony. DI-seam: tests inject
+   *  a stub; default implementation shells `git log --since=…min`. */
+  commitCountInWindow?: (member: TeamMember, windowMin: number) => Promise<number>;
+  /** ADR-142 §D5: clarifier dispatch — `atmux send <member> "[detector]
+   *  …"`. Best-effort; failure swallowed (dedup state still records the
+   *  fire so the surface action isn't retried until next dedup window).
+   *  DI-seam: tests inject a recorder. */
+  dispatchModalCyclingClarifier?: (member: string, message: string) => Promise<void>;
+  /** ADR-142 §D5: flag-add — `atmux flags add <subject> --body <body>
+   *  --severity high`. Best-effort; failure swallowed. DI-seam: tests
+   *  inject a recorder. */
+  fileModalCyclingFlag?: (subject: string, body: string) => Promise<void>;
 }
 
 async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
@@ -1345,7 +1559,12 @@ async function checkMember(
   // shape `start.ts::buildWindowName` spawns. Regular members go straight
   // to that form (memory feedback_window_naming_no_prefix).
   const role = (member.role ?? "member").toString();
-  const memberWindowName = `${member.emoji ?? ""}${member.name}`;
+  // ADR-135 + ADR-136 TR4: canonical `<emoji>-<label ?? name>` form.
+  const memberWindowName = buildWindowName(member.name, member.emoji, member.label);
+  // ADR-136 TR4: operator-facing display string. Used in bullet text +
+  // any Discord-rendered struct fields; internal storage / lookup
+  // paths continue to key on `member.name`.
+  const display = displayMemberName(member);
   const homeOpts: SkillsTeamPathsOpts & { fallback?: string } =
     ctx.home !== undefined ? { home: ctx.home } : {};
   if (role === "team-lead") homeOpts.fallback = memberWindowName;
@@ -1363,7 +1582,7 @@ async function checkMember(
   if (!windowExists) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🛑 ${member.name}: window missing (role=${role})`),
+      bullet: bullet80(`🛑 ${display}: window missing (role=${role})`),
     });
     return;
   }
@@ -1384,7 +1603,7 @@ async function checkMember(
     // this member. Same posture as bash whip's silent skip.
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🛑 ${member.name}: pane probe failed`),
+      bullet: bullet80(`🛑 ${display}: pane probe failed`),
     });
     return;
   }
@@ -1393,7 +1612,7 @@ async function checkMember(
   if (want !== null && paneCmd !== want) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🛑 ${member.name}: pane is \`${paneCmd}\` not \`${want}\``),
+      bullet: bullet80(`🛑 ${display}: pane is \`${paneCmd}\` not \`${want}\``),
     });
     return;
   }
@@ -1416,7 +1635,7 @@ async function checkMember(
           findings.push({
             category: "blocker",
             bullet: bullet80(
-              `🛑 ${member.name}: cross-account spawn (member=${memberTag}, driver=${driverTag})`,
+              `🛑 ${display}: cross-account spawn (member=${memberTag}, driver=${driverTag})`,
             ),
           });
         }
@@ -1439,28 +1658,28 @@ async function checkMember(
   if (snap.rateLimit === "hard") {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🔴 ${member.name}: HARD rate-limit banner visible`),
+      bullet: bullet80(`🔴 ${display}: HARD rate-limit banner visible`),
     });
   } else if (snap.rateLimit === "soft") {
     // ADR-022 + ADR-023: SOFT classifier is observed-but-not-acted-on
     // until the LLM-judge cascade ports.
     findings.push({
       category: "informational",
-      bullet: bullet80(`🟡 ${member.name}: SOFT rate-limit observed (judge deferred)`),
+      bullet: bullet80(`🟡 ${display}: SOFT rate-limit observed (judge deferred)`),
     });
   }
 
   if (snap.compacting) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🟡 ${member.name}: compacting — skip sends`),
+      bullet: bullet80(`🟡 ${display}: compacting — skip sends`),
     });
   }
 
   if (snap.queuedMessages && !snap.busy) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`📍 ${member.name}: messages queued but not submitted`),
+      bullet: bullet80(`📍 ${display}: messages queued but not submitted`),
     });
   }
 
@@ -1477,7 +1696,7 @@ async function checkMember(
       findings.push({
         category: "overdue",
         bullet: bullet80(
-          `⏰ ${member.name}: ${stale.length} task(s) in-progress > ${config.staleMin}min`,
+          `⏰ ${display}: ${stale.length} task(s) in-progress > ${config.staleMin}min`,
         ),
       });
     }
@@ -1493,8 +1712,11 @@ async function checkMember(
   if (permMode !== null && permMode !== "auto") {
     findings.push({
       category: "informational",
-      bullet: bullet80(`📋 ${member.name}: pane in '${permMode}' mode (expected 'auto')`),
-      permModeDrift: { member: member.name, mode: permMode },
+      bullet: bullet80(`📋 ${display}: pane in '${permMode}' mode (expected 'auto')`),
+      // Discord renderer formats this `member` field as the
+      // operator-facing display string — pass label-fallback, not the
+      // raw ID (the ID is the immutable key, label is the surface).
+      permModeDrift: { member: display, mode: permMode },
     });
   }
 
@@ -1520,8 +1742,9 @@ async function checkMember(
   if (panePath !== "" && !(await exists(panePath))) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🛑 ${member.name}: cwd ${panePath} does not exist`),
-      defunctCwd: { member: member.name, cwd: panePath },
+      bullet: bullet80(`🛑 ${display}: cwd ${panePath} does not exist`),
+      // Discord-bound — uses display string per ADR-136 TR4.
+      defunctCwd: { member: display, cwd: panePath },
     });
   }
 
@@ -1538,8 +1761,83 @@ async function checkMember(
     // flag-classifier missed (different regex catalog). Surface it.
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🔴 ${member.name}: RATE-LIMIT pane state (R57-T1 classifier)`),
+      bullet: bullet80(`🔴 ${display}: RATE-LIMIT pane state (R57-T1 classifier)`),
     });
+  }
+
+  // ---------- ADR-142 §1c modal-cycling detector ----------
+  // Sits AFTER the existing static-stuck classifier (`classifyText` ->
+  // MODAL bucket). The two checks share the captured pane text but
+  // target different signals: static-stuck = hash-equality across ticks
+  // (covered by other paths); cycling = ≥N DISTINCT modal-hashes within
+  // `windowMin` AND zero commits in `commitGracePeriodMin`.
+  //
+  // History recording is unconditional (within enabled + non-exempt
+  // members); only the SURFACE actions (Discord + clarifier + flag)
+  // are dedup'd in the tick aggregator. Per ADR-142 §OQ-2: this is the
+  // pre-martinet-ship call-site (lead's whip §1c); martinet's per-tick
+  // observer ports the same function post-ADR-140-ship.
+  const cyc = ctx.modalCyclingConfig;
+  if (cyc.enabled && !cyc.exemptMembers.has(member.name)) {
+    const classified = classifyPaneAsModal(state);
+    if (
+      classified.isModal &&
+      classified.modalText !== undefined &&
+      classified.modalClass !== undefined
+    ) {
+      const entry: ModalHistoryEntry = {
+        member: member.name,
+        paneTextHash: computeModalHash(classified.modalText),
+        detectedAt: nowSec,
+        modalText: classified.modalText,
+        modalClass: classified.modalClass,
+      };
+      try {
+        const history = await loadModalHistory(atmuxDir, member.name);
+        const retentionMin = cyc.windowMin * 2;
+        const nextHistory = appendHistory(history, entry, retentionMin);
+        await saveModalHistory(atmuxDir, member.name, nextHistory);
+
+        // Commits cross-check — caller-injected counter, default reads
+        // git log from the member's worktree (see TickCtx defaults at
+        // runWhip).
+        const commitsInWindow = ctx.commitCountInWindow
+          ? await ctx.commitCountInWindow(member, cyc.commitGracePeriodMin).catch(() => 0)
+          : 0;
+
+        const verdict = shouldFireCycleDetection(nextHistory, {
+          cycleThreshold: cyc.cycleThreshold,
+          windowMin: cyc.windowMin,
+          commitsInWindow,
+          commitGracePeriodMin: cyc.commitGracePeriodMin,
+        });
+        if (verdict.fire) {
+          const claimedTask = inbox.inProgress[0]?.id ?? "<unknown>";
+          const distinctCount = new Set(verdict.modalsSeen.map((m) => m.paneTextHash)).size;
+          findings.push({
+            category: "blocker",
+            bullet: bullet80(
+              `🔄 ${display}: modal-cycling (${distinctCount} distinct in ${cyc.windowMin}min, 0 commits)`,
+            ),
+            modalCycling: {
+              // Discord-bound — display string (Discord renderer
+              // formats this directly into the bullet). Internal
+              // modal-history `entry.member` stays as `member.name`
+              // (the ID) for SQLite owner-column consistency.
+              member: display,
+              taskId: claimedTask,
+              distinctCount,
+              modalsSeen: verdict.modalsSeen,
+            },
+          });
+        }
+      } catch (e) {
+        // History I/O is best-effort — a corrupt write or transient
+        // disk error must not crash the tick. Surface as a low-priority
+        // informational so operator sees it in the log.
+        ctx.stderr(`whip: modal-cycling state I/O failed: ${String(e)}\n`);
+      }
+    }
   }
 }
 
@@ -1815,6 +2113,63 @@ async function emitFindings(
       ...renderWhipDefunctCwd({ team: team.name, defunct: defunctFindings, whenMs: nowMs }),
       ...(webhookOverride !== undefined ? { webhookOverride } : {}),
     });
+  }
+
+  // ADR-142 §D4-D5: aggregate modal-cycling findings into per-member
+  // dedup'd Discord + clarifier dispatch + flag-add. State file:
+  // <atmuxDir>/state/modal-cycling-dedup-state.json.
+  type ModalCyclingPayload = NonNullable<Finding["modalCycling"]>;
+  const cyclingFindings = findings
+    .map((f) => f.modalCycling)
+    .filter((p): p is ModalCyclingPayload => p !== undefined);
+  if (cyclingFindings.length > 0) {
+    const cyc = ctx.modalCyclingConfig;
+    let dedupState = await loadModalCyclingDedupState(atmuxDir);
+    const dedupSec = cyc.dedupMin * 60;
+    for (const f of cyclingFindings) {
+      if (!shouldFireModalCyclingDedup(dedupState, f.member, nowSec, dedupSec)) continue;
+      // Discord — last 3 modals truncated for the bullet.
+      await tryDiscord(send, stderr, {
+        ...renderWhipModalCycling({
+          team: team.name,
+          member: f.member,
+          taskId: f.taskId,
+          distinctCount: f.distinctCount,
+          windowMin: cyc.windowMin,
+          modalsSeen: f.modalsSeen.slice(-3).map((m) => ({
+            modalClass: m.modalClass,
+            firstLine: m.modalText.split("\n")[0]?.trim() ?? "",
+          })),
+          whenMs: nowMs,
+        }),
+        ...(webhookOverride !== undefined ? { webhookOverride } : {}),
+      });
+      // Clarifier — best-effort send to the member's pane.
+      const clarifierMsg = `[detector] modal-cycling detected — ${f.distinctCount} prompts in ${cyc.windowMin}min, 0 commits on ${f.taskId}. Recommend: unclaim + retry from clean, or surface blocker via atmux reply if the prompt class is genuinely blocking work.`;
+      if (ctx.dispatchModalCyclingClarifier) {
+        try {
+          await ctx.dispatchModalCyclingClarifier(f.member, clarifierMsg);
+        } catch (e) {
+          stderr(`whip: modal-cycling clarifier dispatch failed: ${String(e)}\n`);
+        }
+      }
+      // Flag — `atmux flags add ... --severity high`.
+      if (ctx.fileModalCyclingFlag) {
+        const subject = `modal-cycling detected on ${f.member}`;
+        const seenLines = f.modalsSeen
+          .slice(-3)
+          .map((m) => `${m.modalClass}: ${m.modalText.split("\n")[0]?.trim() ?? ""}`)
+          .join(" | ");
+        const body = `${f.distinctCount} distinct modals in ${cyc.windowMin}min, 0 commits on ${f.taskId}. Modals: ${seenLines}`;
+        try {
+          await ctx.fileModalCyclingFlag(subject, body);
+        } catch (e) {
+          stderr(`whip: modal-cycling flag-add failed: ${String(e)}\n`);
+        }
+      }
+      dedupState = recordModalCyclingDedup(dedupState, f.member, nowSec);
+    }
+    await saveModalCyclingDedupState(atmuxDir, dedupState);
   }
 }
 

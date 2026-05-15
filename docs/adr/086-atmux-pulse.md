@@ -1,7 +1,9 @@
 # ADR-086: `atmux pulse` — cockpit-wide deterministic verdict probe (Phase 1 of MiniMax observer)
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-13
+
+> **Naming note 2026-05-14**: the cockpit-tier hourly role this ADR compares against (named `superdoctor` in §Context "complementary at hourly LLM tier" bullet + §Cross-refs) is now called **medic** per [ADR-133](133-medic-rename.md). Supersession is naming-only — design canonical per ADR-077.
 
 ## Context
 
@@ -135,6 +137,22 @@ Manual install (for operators who don't run `cockpit rebuild`) is still document
 - Historical verdict timeline (`atmux pulse history`).
 
 Phase 2 plan slot reserved (no number assigned yet).
+
+## Phase 1.1: dedup default revision
+
+**Date added**: 2026-05-13. **Driver-ref**: driver-inbox 18:17 MYT 2026-05-13 (pulse-spam Discord cadence).
+
+**Symptom**: `atmux` + `sopx` teams stuck at `🚨 Need you` (correct verdict) re-fired every 30min per `DEFAULT_PULSE_DEDUP_MIN = 30`. ≈4 pings/hr from pulse alone — violates CLAUDE.md §Discord "every `🚨` trains the eye".
+
+**Decision**: bump `DEFAULT_PULSE_DEDUP_MIN` 30 → 120 (Phase 1's flat-window default is too aggressive). Schema field `cockpit.pulse.dedupMins` already wired (per main body) — operators can override per-cockpit.
+
+**Consequences**:
+- Worst-case re-fire rate halves twice (30 → 120 min) for sustained-urgency teams. ≈1 ping per 2h per stuck team instead of 4/hr.
+- Verdict transitions still always fire (unchanged).
+- `🟡 Cool/Idle` re-fires unchanged (Phase 1 skipped them entirely; this section doesn't address that — see Phase 1.5).
+- **Phase 1.5 follow-up**: per-verdict dedup ladder (🚨=60min / 🔴=30min / 🟡=4h) supersedes this flat default — see next section. Until 1.5 lands, 120min flat is the operating cadence.
+
+**Reversibility**: trivial — single-line revert of the const.
 
 ## Phase 1.5: Verdict-specific dedup ladder
 

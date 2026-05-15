@@ -1,6 +1,6 @@
 # ADR-138: Verified send-keys — verify-and-retry pattern
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Driver-ref**: 2026-05-14 driver session — operator: *"we have a problem with send keys not really sending… perhaps Enter has to be hit 3x? or something? to be safe? and we have to check if the enter was truly hit? of course send keys will be done via minimax later"*
 **EPIC parent**: `t-5df48a74` · **TR1**: `t-f58c6ccc`
@@ -41,7 +41,17 @@ Every "extra" Enter is a state mutation, not a no-op. Blanket retry is unsafe at
 
 ### New helper: `safeSendKeysWithVerify`
 
-In `src/abstractions/tmux.ts`:
+**Placement**: `src/core/safe-send.ts` (alongside the existing `safeSendKeys` peer). Reviewer-signed-off 2026-05-14 (`t-76bed567`) overriding the initial pre-impl framing that named `src/abstractions/tmux.ts`. Rationale — `safeSendKeysWithVerify` is a *policy* (verify-and-retry + escalate-on-fail) that composes three core-layer concerns:
+
+1. The existing `safeSendKeys` preflight gate (`src/core/safe-send.ts:115`) — already core-layer with tmux injected via `opts.capture` + `opts.sendKeys`.
+2. The five built-in verifiers (`composerEmpty` / `agentThinking` / `modalClosed` / `contextNonZero` / `paneMatchesRegex`) — pane-classification predicates, semantically siblings to `src/core/pane-state.ts::classifyText`.
+3. The escalation log writer — a state-file concern at `~/.atmux/state/send-keys-failures.log`, owned by core.
+
+Placing the surface in `src/abstractions/tmux.ts` would force the abstraction layer to import from `src/core/` (pane-state classification, known-modals, retry policy), inverting the "core consumes abstractions, never the reverse" invariant. tmux remains a *dependency* of `safeSendKeysWithVerify`, injected via `opts.capture` / `opts.sendKeys` — same pattern `safeSendKeys` already uses. Runtime contract is identical between the two placements; only the dependency direction differs, and the core-side placement is the one that keeps the layering honest.
+
+Implementation reference: commit `d588fa8` (geoyws-test-impl) — `safeSendKeysWithVerify` at line 476, 5 verifier factories at lines 551-594, escalation log writer at lines 443+659. T3 caller migrations target `import ... from "../core/safe-send.ts"` (NOT `"../abstractions/tmux.ts"`).
+
+In `src/core/safe-send.ts`:
 
 ```ts
 export type PaneVerifier = (paneCapture: string) => boolean;

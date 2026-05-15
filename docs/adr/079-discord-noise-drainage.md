@@ -6,6 +6,8 @@
 
 [^medic-rename]: The cockpit self-healing role was renamed `superdoctor` → `medic` on 2026-05-14 per [ADR-133](./133-medic-rename.md). References to "medic" below originally read "superdoctor"; the ADR-077 wave shipped under the original name on 2026-05-08.
 
+> **Naming note 2026-05-14**: the role formerly called `superdoctor` (mentioned in §Driver-ref + §Context "what already shipped" rows) is now called **medic** per [ADR-133](133-medic-rename.md). Body refs to "superdoctor" retained for historical accuracy; supersession is naming-only, design unchanged.
+
 ## Context
 
 ### What already shipped (out of scope; referenced for context only)

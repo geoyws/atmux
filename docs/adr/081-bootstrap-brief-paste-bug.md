@@ -4,6 +4,8 @@
 **Date**: 2026-05-12
 **Incident**: 2026-05-12 ~06:57–07:25 MYT atmux team starvation diagnosis + manual recovery (cockpit BAU surfaced; driver re-bootstrapped 11/12 panes via `tmux load-buffer + paste-buffer + C-m`).
 
+> **Naming note 2026-05-14**: the cockpit-tier self-healing role referenced in §E supervisor-side recovery (`superdoctor`) is now called **medic** per [ADR-133](133-medic-rename.md). The starvation-detection rule + complaint-resolution hook described under §E remain canonical under the new name; supersession is naming-only.
+
 ## Context
 
 ### 2026-05-12 incident — 20h+ atmux team dormancy
@@ -74,6 +76,15 @@ Lift `.archive-bash-atmux-20260507/lib/start.sh:418-487` (`_atmux_spawn_member` 
 5. `tmux send-keys C-m` (per §A).
 
 Lead spawns first; lead's brief lands first; teammate briefs follow. Failure surface: if any brief paste throws, log per-member + continue (so a partial-fail-during-spawn doesn't wedge the whole team).
+
+**Completion update (2026-05-14, t-94d7ad60).** The §C port above was insufficient for the recurrence-class of undead-pane fingerprint observed 3rd+ time (operator memory `feedback_member_pane_no_atmux_member.md`): the fixed `ATMUX_SPAWN_WAIT` sleep races against claude TUI's variable cold-start (5-15s observed under load), so the paste can land BEFORE the compose box exists and bytes scroll past startup output silently. For **claude TUI specifically**, the spawn path now switches to a poll-and-send mechanism:
+
+- **`src/core/boot-claude.ts`** — `bootClaudeMember()` orchestrates: (a) capture-pane sentinel check for already-booted (tokens count > 0); (b) poll capture-pane up to 30s for TUI ready (`❯` glyph or `tokens` footer); (c) `tmux send-keys` a single-line boot prompt (`"Read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as that team member. Your role is {member}."`) with `enter:true`; (d) poll for tokens-moved sentinel up to 30s; (e) retry the send-keys once on first-attempt miss; (f) on full failure, surface to `lead-outbox.md` via `renderBootFailureNotice` so the operator sees the undead pane on next review.
+- `src/verbs/start.ts` + `src/verbs/rotate.ts` route claude-TUI members through `bootClaudeMember`. **Non-claude TUIs** (kimi, cursor, opencode) keep the §C-original paste-buffer + C-m flow — different welcome rendering, no bracketed-paste-newline hazard.
+- The boot prompt is **single-line** (Reviewer pre-flag confirmed: bracketed-paste with newlines silently fails to submit, same trap as `clear-member.sh`).
+- The brief CONTENT is no longer pasted at start time — claude reads `templates/briefs/<role>.md` itself on first turn per the boot prompt's instruction. The original render-and-paste of the brief body becomes redundant once the boot prompt fires.
+
+Tests in `tests/unit/core/boot-claude.test.ts` pin sentinel / ready-poll / retry / both-attempts-fail / send-keys-verb-failure / capture-error scenarios.
 
 ### (D) `atmux doctor` learns the `starving-claude` state (per c-8ecd3a61)
 

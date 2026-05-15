@@ -90,7 +90,7 @@
 
 import { rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
+import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
 import {
   createTmux,
@@ -107,16 +107,30 @@ import {
 } from "../abstractions/worktree.ts";
 import {
   buildWindowName,
+  buildWindowNameLegacy,
   defaultEmojiForRole,
   ensureAtmuxDirs,
   getAtmuxDir,
   getDefaultSocket,
   getSessionName,
+  leadOutboxPath,
   loadTeam,
   resolveTeamSocket,
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
+import {
+  type BootClaudeOpts,
+  type BootResult,
+  bootClaudeMember,
+  renderBootFailureNotice,
+} from "../core/boot-claude.ts";
+import {
+  enabledTeams,
+  loadCockpit,
+  readNestingLevel,
+  resolvePrefix,
+} from "../core/cockpit.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import {
   consumedManifestPath,
@@ -124,10 +138,10 @@ import {
 } from "../core/soft-stop.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ResumeManifest } from "../schema/resume.ts";
-import { resolveTuiCommand } from "../core/tui-cmd.ts";
+import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
-import { applyCagePrefix } from "./cockpit.ts";
+import { applyCagePrefix, reconcileCockpitSession } from "./cockpit.ts";
 import { cronInstall } from "./cron-install.ts";
 import { defaultBriefsDir, getBriefPath, renderBrief } from "./rotate.ts";
 
@@ -272,6 +286,26 @@ export interface StartOpts {
    *  spawn-wait and the post-paste settle inside `submitAfterPaste`.
    *  Default = `setTimeout`-backed. Tests pass a no-op. */
   sleep?: (ms: number) => Promise<void>;
+  /** ADR-081 §C completion (t-94d7ad60): override the boot-claude
+   *  knobs for claude-TUI members. Tests inject a no-op
+   *  sleep + a fake capture-pane via a wrapped tmux to keep the
+   *  readiness/post-boot polls deterministic. The `tmux`, `sendTarget`,
+   *  `paneTargetString`, `team`, `member` fields are always overwritten
+   *  by start.ts — the override is just for the tunable subset
+   *  (timeouts, sleep, etc.). */
+  bootClaude?: Partial<BootClaudeOpts>;
+  /** ADR-063 ergonomic fix (t-ab8df0b4): inject the cockpit loader for
+   *  the post-bring-up reconcile hook. Default = the real
+   *  `loadCockpit` from `core/cockpit.ts`. Tests pass a no-cockpit
+   *  fixture or a stub roster to drive every branch (rostered+enabled,
+   *  un-rostered, enabled:false, missing-config). Return `null` to
+   *  signal a graceful skip (matches the missing-config silent path). */
+  loadCockpitFn?: () => Promise<Awaited<ReturnType<typeof loadCockpit>> | null>;
+  /** ADR-063 ergonomic fix: inject the cockpit reconcile primitive
+   *  itself for tests so they can assert per-team scope without
+   *  shelling out to a real tmux server. Default = real
+   *  `reconcileCockpitSession`. */
+  cockpitReconcileFn?: typeof reconcileCockpitSession;
 }
 
 /**
@@ -473,15 +507,51 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     }
   }
 
-  // 7a. Apply the C-\ cage prefix on the cage tmux server (lib/start.sh:
-  //     206-236). Server-level option — once-per-start is sufficient and
-  //     idempotent on the incremental-restart path. Best-effort: failures
-  //     swallow inside `applyCagePrefix` (the prefix is cosmetic, not a
-  //     precondition for cage operation). Lifted from cockpit.ts so
-  //     standalone `atmux start <team>` matches `atmux cockpit rebuild`
-  //     Phase 3 — the bisection that motivated this port (2026-05-09)
-  //     showed unum cages started outside cockpit landing on default C-b.
-  await applyCagePrefix(tmux);
+  // 7-env-scrub. Strip operator-shell artefacts from the cage tmux
+  //              session's environment BEFORE any pane spawn. The tmux
+  //              server inherits the calling process env at session-
+  //              creation time; without this scrub, a parent shell with
+  //              ANTHROPIC_API_KEY set flips every claude pane into env-
+  //              key bearer mode + triggers the "Do you want to use this
+  //              API key?" dialog (operator 2026-05-14 incident).
+  //              tuiClaude's `env -u …` prefix (src/core/tui-cmd.ts)
+  //              already protects the claude binary's process env; this
+  //              setenv -u layer is defense-in-depth for non-claude TUIs
+  //              + member.command overrides that bypass tuiClaude.
+  //              Best-effort: failures logged + ignored (the tuiClaude
+  //              prefix is the primary protection).
+  for (const v of CLAUDE_TUI_SCRUB_VARS) {
+    try {
+      await tmux.session.setEnvironment({ target: session, name: v, unset: true });
+    } catch (err) {
+      logger.warn(
+        `session env scrub: tmux set-environment -u ${v} failed (${err instanceof Error ? err.message : String(err)}) — tuiClaude prefix still protects claude TUIs`,
+      );
+    }
+  }
+
+  // 7a. ADR-089 §C — apply the level-resolved prefix on the cage tmux
+  //     server. Reads `ATMUX_NESTING_LEVEL` from env (default 1 for
+  //     top-level cockpit / standalone start) and resolves the prefix
+  //     from the operator-supplied `cockpit.prefixChain` if a cockpit
+  //     config exists, falling back to the {@link DEFAULT_PREFIX_CHAIN}.
+  //
+  //     Pre-ADR-089 behaviour was a hardcoded `C-\` (cosmetic, chosen to
+  //     avoid collision with operator-bound outer-tmux prefixes). The
+  //     new path keeps the same fall-through best-effort semantics —
+  //     failures swallow inside `applyCagePrefix` (the prefix is
+  //     cosmetic, not a precondition for cage operation) — but when the
+  //     resolved prefix is available, nested cages chain unambiguously
+  //     per the F-key ladder.
+  //
+  //     Loading the cockpit is best-effort too: standalone `atmux start`
+  //     runs against teams that may not be in any cockpit roster, and
+  //     missing / unparseable cockpit.json should NOT block the start.
+  //     The fall-back chain still produces a valid prefix per level.
+  const nestingLevel = readNestingLevel(env);
+  const cagePrefix = await resolveCagePrefixBestEffort(nestingLevel, opts, logger);
+  await applyCagePrefix(tmux, cagePrefix);
+  logger.log(`cage prefix: level=${nestingLevel} prefix=${cagePrefix}`);
 
   // 7b. ADR-082 W3 — per-member git worktree provisioning. Only fires
   //     when team.json sets `worktreeIsolation: true`; legacy teams take
@@ -578,6 +648,31 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       logger.log(`  · ${member.name}: window exists, skipping (use --force to reset)`);
       continue;
     }
+    // ADR-135 §D4 — legacy member-window migration. Pre-ADR-135
+    // teams have windows named `<emoji><member>` (no separator);
+    // ADR-135 §D3 flipped buildWindowName to `<emoji>-<member>`. If
+    // a window with the legacy form exists for this member and the
+    // canonical form does not, rename it in-place via
+    // `tmux rename-window` (preserves pane PID + scroll history).
+    // Idempotent: re-running start after the rename is a no-op
+    // because `existingNames.has(win)` short-circuits above.
+    const winLegacy = buildWindowNameLegacy(member.name, emoji);
+    if (winLegacy !== win && existingNames.has(winLegacy)) {
+      try {
+        await tmux.window.renameWindow(`${session}:${winLegacy}`, win);
+        logger.log(
+          `  · ${member.name}: renamed legacy window '${winLegacy}' → '${win}' (ADR-135 migration)`,
+        );
+        existingNames.add(win);
+        existingNames.delete(winLegacy);
+        continue;
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(
+          `  ⚠ ${member.name}: failed to rename legacy window '${winLegacy}' → '${win}': ${cause} — falling through to spawn`,
+        );
+      }
+    }
     // ADR-082 W3: worktree-isolation cwd wins when provisioning
     // succeeded for this member. Empty `worktreeCwd` (legacy team or
     // provision-fail) falls through to the existing chain.
@@ -622,23 +717,80 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         keys: cmd,
         enter: true,
       });
-      // ADR-081 §C: paste the role brief after the TUI has time to come
-      // up. Per-member best-effort: a paste failure on one member must
-      // not wedge the rest of the team spawn. Iteration order is
-      // declarative (team.members[]) — lead conventionally first per
-      // ADR-044, so the lead's brief lands first by construction.
-      await pasteBriefForMember({
-        tmux,
-        target: memberTarget,
-        member: member.name,
-        role,
-        team: team.name,
-        atmuxDir: dir,
-        briefsDir,
-        spawnWaitMs,
-        sleep: briefSleep,
-        logger,
-      });
+      // ADR-081 §C completion (t-94d7ad60): claude TUIs go through
+      // the readiness-poll + single-line boot-prompt path so a
+      // slow cold-start doesn't drop the brief into the spinner.
+      // Non-claude TUIs (kimi, cursor) keep the legacy
+      // paste-buffer flow — different welcome rendering, no
+      // bracketed-paste hazard, the fixed-sleep is still adequate
+      // there.
+      if (tuiKind === "claude") {
+        const bootOpts: BootClaudeOpts = {
+          tmux,
+          sendTarget: memberTarget,
+          paneTargetString: `${session}:${win}`,
+          team: team.name,
+          member: member.name,
+        };
+        if (opts.bootClaude !== undefined) {
+          Object.assign(bootOpts, opts.bootClaude);
+        }
+        let bootResult: BootResult;
+        try {
+          bootResult = await bootClaudeMember(bootOpts);
+        } catch (e) {
+          const cause = e instanceof Error ? e.message : String(e);
+          logger.warn(`  · ${member.name}: bootClaudeMember threw (${cause})`);
+          bootResult = { status: "failed", attempts: 0, reason: "capture-error" };
+        }
+        if (bootResult.status === "booted") {
+          logger.log(`  · ${member.name}: bootstrapped (${bootResult.attempts} attempt(s))`);
+        } else if (bootResult.status === "already-booted") {
+          logger.log(`  · ${member.name}: already booted — boot prompt skipped`);
+        } else {
+          logger.warn(
+            `  · ${member.name}: bootstrap FAILED after ${bootResult.attempts} attempt(s) (${bootResult.reason ?? "?"})`,
+          );
+          // Best-effort: surface to lead-outbox.md so the operator
+          // sees an undead pane on the next review. Non-fatal.
+          try {
+            const nowIso = new Date().toISOString();
+            await appendText(
+              leadOutboxPath(dir),
+              renderBootFailureNotice({
+                team: team.name,
+                member: member.name,
+                result: bootResult,
+                nowIso,
+              }),
+            );
+          } catch (e) {
+            const cause = e instanceof Error ? e.message : String(e);
+            logger.warn(
+              `  · ${member.name}: failed to write boot-failure notice (${cause})`,
+            );
+          }
+        }
+      } else {
+        // ADR-081 §C: paste the role brief after the TUI has time
+        // to come up. Per-member best-effort: a paste failure on
+        // one member must not wedge the rest of the team spawn.
+        // Iteration order is declarative (team.members[]) — lead
+        // conventionally first per ADR-044, so the lead's brief
+        // lands first by construction.
+        await pasteBriefForMember({
+          tmux,
+          target: memberTarget,
+          member: member.name,
+          role,
+          team: team.name,
+          atmuxDir: dir,
+          briefsDir,
+          spawnWaitMs,
+          sleep: briefSleep,
+          logger,
+        });
+      }
     }
   }
 
@@ -723,7 +875,110 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     }
   }
 
+  // 12. ADR-063 ergonomic fix (t-ab8df0b4): auto-reconcile the cockpit
+  //     viewer window when this team is rostered + enabled in
+  //     `~/.atmux/cockpit.json`. Operators previously had to remember
+  //     the two-verb dance (`atmux start` then `atmux cockpit rebuild`);
+  //     this hook folds the per-team viewer-window add into start's
+  //     tail.
+  //
+  //     Scope: ADDITIVE only — `onlyTeam` mode in
+  //     `reconcileCockpitSession` skips orphan removal + superdoctor
+  //     relocation. Un-rostered teams + cockpit.json-missing + team-
+  //     rostered-but-disabled all silent-skip (no auto-rostering — that
+  //     stays operator-explicit).
+  //
+  //     Non-fatal: any cockpit.json read failure or tmux error from the
+  //     reconcile is logged at WARN and the verb still returns 0. Team-
+  //     side bring-up has already succeeded by this point; a cockpit
+  //     hiccup shouldn't fail `start`.
+  await autoReconcileCockpitForTeam(team, factory, logger, opts);
+
   return 0;
+}
+
+/** ADR-063 ergonomic fix (t-ab8df0b4): folded into `start.run()` tail.
+ *
+ *  Loads `~/.atmux/cockpit.json` (best-effort), checks whether the cwd
+ *  team is rostered + enabled, and calls `reconcileCockpitSession` with
+ *  `onlyTeam` scope so just this team's viewer window is added (if
+ *  missing) without disturbing sibling windows. Every failure mode is
+ *  silent-skip or stderr-WARN — never aborts `start`.
+ *
+ *  Behaviour matrix (matches `atmux start --help` line):
+ *
+ *    | cockpit.json | team rostered | team.enabled | action                            |
+ *    | ------------ | ------------- | ------------ | --------------------------------- |
+ *    | missing      | n/a           | n/a          | silent skip                       |
+ *    | malformed    | n/a           | n/a          | stderr WARN, skip                 |
+ *    | present      | no            | n/a          | silent skip (un-rostered teams    |
+ *    |              |               |              |   keep the two-verb separation)   |
+ *    | present      | yes           | false        | silent skip (disabled-by-operator |
+ *    |              |               |              |   intent honoured)                |
+ *    | present      | yes           | true         | reconcile this team's viewer only |
+ */
+async function autoReconcileCockpitForTeam(
+  team: Team,
+  factory: (cfg: TmuxConfig) => TmuxNamespace,
+  logger: Logger,
+  opts: StartOpts,
+): Promise<void> {
+  const load =
+    opts.loadCockpitFn ??
+    (async (): Promise<Awaited<ReturnType<typeof loadCockpit>> | null> => {
+      try {
+        return await loadCockpit();
+      } catch (e) {
+        // ConfigError on missing file is the silent-skip path. Schema
+        // errors (malformed JSON) surface as WARN. Distinguish via
+        // error name; anything else is also a WARN (defensive).
+        const isMissingConfig =
+          e instanceof Error && e.name === "ConfigError" && /no cockpit config/i.test(e.message);
+        if (isMissingConfig) return null;
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(`cockpit reconcile skipped: cannot load cockpit.json (${cause})`);
+        return null;
+      }
+    });
+
+  let cockpit: Awaited<ReturnType<typeof loadCockpit>> | null;
+  try {
+    cockpit = await load();
+  } catch (e) {
+    // Defense in depth — the default `load` already handles this, but a
+    // test-injected `loadCockpitFn` that throws should NOT take `start`
+    // down with it.
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`cockpit reconcile skipped: loader threw (${cause})`);
+    return;
+  }
+  if (cockpit === null) return; // silent skip — missing cockpit.json
+
+  const matched = enabledTeams(cockpit).find((t) => t.name === team.name);
+  if (matched === undefined) {
+    // Either un-rostered OR rostered-but-`enabled: false` — both
+    // silent-skip per the ADR-063 ergonomic fix's behaviour matrix.
+    return;
+  }
+
+  const reconcile = opts.cockpitReconcileFn ?? reconcileCockpitSession;
+  const cockpitTmux = factory({ socket: "default" });
+  try {
+    await reconcile(
+      cockpitTmux,
+      cockpit.cockpitSession,
+      [matched],
+      logger,
+      {},
+      cockpit.superdoctor,
+      false,
+      { onlyTeam: matched.name },
+    );
+    logger.log(`  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`cockpit reconcile failed for '${matched.name}': ${cause}`);
+  }
 }
 
 /** ADR-083 §IN §4: `kanban.cronAutoInstall` (default true) gates the
@@ -929,4 +1184,38 @@ function formatAge(seconds: number): string {
   const hours = Math.floor(minutes / 60);
   const rem = minutes % 60;
   return rem === 0 ? `${hours}h` : `${hours}h${rem}m`;
+}
+
+/**
+ * ADR-089 §C — best-effort prefix resolution for the cage tmux
+ * server. Loads `cockpit.json` to pick up an operator-supplied
+ * `prefixChain`; falls back to the default F-key chain when:
+ *
+ *   - No cockpit config is present (standalone team not in any cockpit).
+ *   - Cockpit config exists but `prefixChain` is unset.
+ *   - Cockpit load fails (malformed config) — surface a warn, keep
+ *     starting the cage on the default chain so a broken cockpit
+ *     doesn't wedge `atmux start`.
+ *
+ * The level itself is read upstream from `ATMUX_NESTING_LEVEL` via
+ * `readNestingLevel(env)` and threaded in.
+ */
+async function resolveCagePrefixBestEffort(
+  level: number,
+  opts: StartOpts,
+  logger: Logger,
+): Promise<string> {
+  try {
+    const cockpit = await loadCockpit({ env: opts.env ?? process.env });
+    return resolvePrefix(level, cockpit.prefixChain);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    // Cockpit absent / malformed is the common case for teams that
+    // aren't in a cockpit roster. Surface as a single log line at the
+    // verbose tier (logger.log, not warn) — operator already sees the
+    // resolved prefix in the next log line; this just explains the
+    // fallback path.
+    logger.log(`cockpit prefix-chain unavailable (${cause}) — using default F-key chain`);
+    return resolvePrefix(level);
+  }
 }

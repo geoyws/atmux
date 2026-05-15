@@ -36,13 +36,16 @@ import {
   buildWindowName,
   getAtmuxDir,
   getSessionName,
+  isMedicInboxKey,
+  MEDIC_INBOX_KEY,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
   SUPERDOCTOR_INBOX_KEY,
 } from "../core/common.ts";
 import { appendInboxMessage } from "../core/inbox.ts";
-import { sendToMember } from "../core/send.ts";
+import { sendToMember, type SendOpts } from "../core/send.ts";
+import { verifierForTui } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
@@ -220,13 +223,19 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
   return out;
 }
 
-/** Build the single-member target string `<sessionName>:<windowName>`. */
+/** Build the single-member target string `<sessionName>:<windowName>`.
+ *  ADR-136 TR4: optional `label` arg surfaces hot-renamed display names
+ *  in the target — callers with a `TeamMember` in scope pass `m.label`
+ *  so the resolved target matches the live tmux window (which may have
+ *  been renamed via `atmux member rename`). Pre-TR4 callers omit and
+ *  get the legacy `<emoji><name>` shape unchanged. */
 export function buildMemberTarget(
   sessionName: string,
   memberName: string,
   emoji: string | undefined,
+  label?: string,
 ): string {
-  return `${sessionName}:${buildWindowName(memberName, emoji)}`;
+  return `${sessionName}:${buildWindowName(memberName, emoji, label)}`;
 }
 
 /**
@@ -247,15 +256,16 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
 
   const team = await requireTeam(dirOpts);
 
-  // ADR-077 §F3: cockpit-tier inbox key short-circuit. When the target
-  // is `__superdoctor__`, write to the team's `inbox_messages` table
-  // and skip the entire tmux pane delivery path. Superdoctor is not a
-  // member of any team.json — it lives at the cockpit tier and reads
-  // inbox_messages on its hourly whip turn. Broadcast + this key
-  // combination is rejected (broadcast iterates team.members; the
-  // cockpit-tier key isn't one).
-  if (!parsed.broadcast && parsed.member === SUPERDOCTOR_INBOX_KEY) {
-    return await sendToSuperdoctorInbox(team, parsed, dirOpts);
+  // ADR-077 §F3 / ADR-133: cockpit-tier inbox key short-circuit. When
+  // the target is `__medic__` (canonical) or `__superdoctor__` (the
+  // deprecated alias accepted during the one-release-cycle window),
+  // write to the team's `inbox_messages` table and skip the entire
+  // tmux pane delivery path. Medic is not a member of any team.json —
+  // it lives at the cockpit tier and reads inbox_messages on its
+  // hourly whip turn. Broadcast + a cockpit-tier key is rejected
+  // (broadcast iterates team.members; the cockpit-tier key isn't one).
+  if (!parsed.broadcast && isMedicInboxKey(parsed.member)) {
+    return await sendToMedicInbox(team, parsed, dirOpts);
   }
 
   const sessionName = await getSessionName({ ...dirOpts, team });
@@ -269,7 +279,7 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
 
-  const sendOpts = {
+  const sendOpts: SendOpts = {
     verify: !parsed.noVerify,
     noSubmit: parsed.noSubmit,
   };
@@ -289,17 +299,24 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   if (memberEntry === undefined) {
     throw new ConfigError({
       what: `send: no such member in team.json: ${memberName}`,
-      hint: `run 'atmux status' to list members (or use '${SUPERDOCTOR_INBOX_KEY}' for the cockpit-tier inbox)`,
+      hint: `run 'atmux status' to list members (or use '${MEDIC_INBOX_KEY}' / legacy '${SUPERDOCTOR_INBOX_KEY}' for the cockpit-tier medic inbox)`,
     });
   }
-  const target = buildMemberTarget(sessionName, memberEntry.name, memberEntry.emoji);
+  const target = buildMemberTarget(sessionName, memberEntry.name, memberEntry.emoji, memberEntry.label);
   const atmuxDir = await getAtmuxDir(dirOpts);
+  // ADR-138 T3b2: per-TUI verifier dispatch. claude → composerEmpty();
+  // shell / non-Claude → null (legacy submitAfterPaste). Resolved
+  // per-member because broadcast/non-broadcast can target heterogeneous
+  // TUIs in a single team.
+  const verifier = verifierForTui(memberEntry.tui);
+  const perMemberOpts: SendOpts = { ...sendOpts };
+  if (verifier !== null) perMemberOpts.expectVerifier = verifier;
   await sendToMember(
     tmux,
     atmuxDir,
     { target, member: memberEntry.name, team: team.name },
     parsed.msg,
-    sendOpts,
+    perMemberOpts,
   );
   return 0;
 }
@@ -317,7 +334,7 @@ async function broadcastSend(
   team: Team,
   sessionName: string,
   parsed: SendArgs,
-  sendOpts: { verify: boolean; noSubmit: boolean },
+  sendOpts: SendOpts,
 ): Promise<number> {
   const dirOpts: ResolveDirOpts = {};
   if (parsed.teamDir !== undefined) dirOpts.teamDir = parsed.teamDir;
@@ -325,14 +342,20 @@ async function broadcastSend(
   let anyFailed = false;
   for (const m of team.members) {
     if (!parsed.includeDriver && m.name === "driver") continue;
-    const target = buildMemberTarget(sessionName, m.name, m.emoji);
+    const target = buildMemberTarget(sessionName, m.name, m.emoji, m.label);
+    // ADR-138 T3b2: per-member TUI dispatch (broadcast targets can be
+    // heterogeneous — claude members get composerEmpty(), shell members
+    // skip verify).
+    const verifier = verifierForTui(m.tui);
+    const perMemberOpts: SendOpts = { ...sendOpts };
+    if (verifier !== null) perMemberOpts.expectVerifier = verifier;
     try {
       await sendToMember(
         tmux,
         atmuxDir,
         { target, member: m.name, team: team.name },
         parsed.msg,
-        sendOpts,
+        perMemberOpts,
       );
     } catch (e) {
       anyFailed = true;
@@ -344,11 +367,17 @@ async function broadcastSend(
 }
 
 /**
- * ADR-077 §F3: cockpit-tier inbox writer. `atmux send __superdoctor__
- * "<msg>"` from a team's cwd writes a row to that team's
- * `inbox_messages` SQLite table instead of attempting tmux pane
- * delivery. Superdoctor (cockpit window 2) reads matching rows on its
- * hourly whip turn.
+ * ADR-077 §F3 / ADR-133: cockpit-tier inbox writer. `atmux send
+ * __medic__ "<msg>"` (canonical) or `atmux send __superdoctor__
+ * "<msg>"` (deprecated alias) from a team's cwd writes a row to that
+ * team's `inbox_messages` SQLite table instead of attempting tmux pane
+ * delivery. Medic (cockpit window 2) reads matching rows on its
+ * hourly whip turn — its reader coalesces both keys during the
+ * deprecation window.
+ *
+ * Storage policy: the row is written under whichever inbox key the
+ * caller passed (preserves in-flight `__superdoctor__` rows for read
+ * consumers). New tooling should pass `__medic__`.
  *
  * Sender defaults to `<team-name>:cli`; override via `--from <sender>`
  * (convention: `<team>:<member>` when a specific lead/member is
@@ -358,7 +387,7 @@ async function broadcastSend(
  * written; there's no tmux Enter to suppress). `--no-verify` and the
  * tmux-pane-delivery flags do not apply here.
  */
-async function sendToSuperdoctorInbox(
+async function sendToMedicInbox(
   team: Team,
   parsed: SendArgs,
   dirOpts: ResolveDirOpts,
@@ -366,8 +395,12 @@ async function sendToSuperdoctorInbox(
   const atmuxDir = await getAtmuxDir(dirOpts);
   const sender = parsed.from ?? `${team.name}:cli`;
   const kind = parsed.kind ?? "heads-up";
+  // Caller already passed an inbox key matching `isMedicInboxKey` so
+  // `parsed.member` is one of `__medic__` / `__superdoctor__`. Default
+  // to the canonical key only if (defensively) something stripped it.
+  const memberKey = parsed.member ?? MEDIC_INBOX_KEY;
   const opts: Parameters<typeof appendInboxMessage>[1] = {
-    member: SUPERDOCTOR_INBOX_KEY,
+    member: memberKey,
     sender,
     body: parsed.msg,
     kind,

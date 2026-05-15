@@ -1,6 +1,7 @@
 // Events log — one JSONL line per verb invocation at
 // `<atmuxDir>/logs/<YYYY>/<MM>/events.jsonl`. Single observability surface
-// for atmux-dashboard / forensics / superdoctor velocity sweeps.
+// for atmux-dashboard / forensics / medic velocity sweeps (medic was
+// formerly named `superdoctor`; renamed per ADR-133).
 //
 // Refs: kanban t-91cd050f. Driver chat 2026-05-09 — "good recommendations
 // for logging n monitoring? maybe we can build that into the atmux-dashboard"

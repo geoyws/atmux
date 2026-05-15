@@ -1,6 +1,6 @@
 # ADR-087: `atmux stop --soft` + resume manifest
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-13
 
 ## Context

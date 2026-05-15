@@ -1,6 +1,6 @@
 # ADR-132: Pluggable Martinet — cockpit-level pane-capture + nudging offload from Claude lead to any-LLM impl
 
-**Status**: Proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-0a889489)
 **Parent EPIC**: t-b9529ea9

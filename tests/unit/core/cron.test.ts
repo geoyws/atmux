@@ -184,6 +184,101 @@ describe("renderCronLines", () => {
     expect(lines.some((l) => l.includes("unblocker tick"))).toBe(true);
     expect(lines.some((l) => l.includes("discorder progress"))).toBe(true);
   });
+
+  // ---------- ADR-062 §Decision 4: lane-tick line ----------
+
+  test("lane-tick line: ≥1 member with .lane emits `*/2 ... lane-tick` line", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const laneLines = lines.filter((l) => l.includes(" lane-tick "));
+    expect(laneLines.length).toBe(1);
+    expect(laneLines[0]).toBe(
+      `*/2 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux lane-tick >> /srv/demo/.atmux/logs/lane-tick.log 2>&1`,
+    );
+    // Placed last per "least-churn diff" — total 4 base + lane-tick = 5,
+    // and lane-tick is the final line.
+    expect(lines.length).toBe(5);
+    expect(lines.at(-1)).toContain("lane-tick");
+  });
+
+  test("lane-tick line: zero members with .lane → no line emitted", () => {
+    const team = baseTeam({
+      members: [
+        { name: "fe", role: "fe", cwd: "/x" } as never, // no .lane
+        { name: "be", role: "be", cwd: "/x" } as never, // no .lane
+      ],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(false);
+    expect(lines.length).toBe(4);
+  });
+
+  test("lane-tick line: empty-string .lane treated as no lane (no emit)", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "", cwd: "/x" } as never],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(false);
+  });
+
+  test("lane-tick line: crons.laneTickEnabled=false suppresses even with lane-tagged members", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      crons: { laneTickEnabled: false } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(false);
+  });
+
+  test("lane-tick line: crons.laneTickEnabled=true (explicit) emits when lane member present", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      crons: { laneTickEnabled: true } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(true);
+  });
+
+  test("lane-tick line: crons block undefined defaults to enabled (back-compat)", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      // crons unset — should still emit when lane-tagged member present.
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(true);
+  });
+
+  test("lane-tick line: PATH= prefix + tmuxTmpdir flow through (same envelope as other lines)", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const lines = renderCronLines({
+      ...baseOpts(team),
+      tmuxTmpdir: "/tmp/atmux-demo",
+    });
+    const laneLine = lines.find((l) => l.includes("lane-tick"));
+    expect(laneLine).toBeDefined();
+    expect(laneLine).toContain(`PATH=${DEFAULT_PATH} `);
+    expect(laneLine).toContain("TMUX_TMPDIR=/tmp/atmux-demo ");
+    // Ordering: PATH=…TMUX_TMPDIR=…ATMUX_DIR= (matches the other lines'
+    // env envelope).
+    expect(laneLine!.indexOf("PATH=")).toBeLessThan(laneLine!.indexOf("TMUX_TMPDIR="));
+    expect(laneLine!.indexOf("TMUX_TMPDIR=")).toBeLessThan(laneLine!.indexOf("ATMUX_DIR="));
+  });
+
+  test("lane-tick line: one lane-tagged member among several non-lane members still emits", () => {
+    const team = baseTeam({
+      members: [
+        { name: "lead", role: "lead", cwd: "/x" } as never,
+        { name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never,
+        { name: "discord", role: "discorder", cwd: "/x" } as never,
+      ],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(true);
+  });
 });
 
 // ADR-079 §A: cron-expression helpers.

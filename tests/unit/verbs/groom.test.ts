@@ -11,7 +11,13 @@ import { join } from "node:path";
 import { acquire } from "../../../src/abstractions/lock.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { UsageError } from "../../../src/errors.ts";
-import { groom, groomDisabledByEnv, parseGroomArgs } from "../../../src/verbs/groom.ts";
+import type { Team } from "../../../src/schema/team.ts";
+import {
+  groom,
+  groomDisabledByEnv,
+  parseGroomArgs,
+  shouldRunLaneDriftCheck,
+} from "../../../src/verbs/groom.ts";
 
 const RUN_MS = Date.UTC(2026, 4, 8, 14, 55, 0);
 
@@ -351,4 +357,260 @@ describe("groom verb", () => {
     const warns = env.logs.filter((l) => l.kind === "warn").map((l) => l.msg);
     expect(warns.some((m) => m.includes("kanban-log archive"))).toBe(true);
   });
+
+  // ---------- ADR-062 §5 follow-up: lane-drift-check sub-op ----------
+
+  test("lane-drift-check: invokes runLaneDriftCheckFn when team has a lane-tagged member (auto-default)", async () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const calls: Array<{ atmuxDir: string; reset: boolean; dryRun: boolean }> = [];
+    const stub = async (atmuxDir: string, _t: Team, opts: { reset: boolean; dryRun: boolean }) => {
+      calls.push({ atmuxDir, reset: opts.reset, dryRun: opts.dryRun });
+      return { decisions: [], reverted: 0, flagsRaised: 0, scanned: 3 };
+    };
+    const rc = await groom([], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team,
+      runLaneDriftCheckFn: stub,
+    });
+    expect(rc).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.atmuxDir).toBe(env.atmuxDir);
+    // Production path mutates by default — only --dry-run disables reset.
+    expect(calls[0]!.reset).toBe(true);
+    expect(calls[0]!.dryRun).toBe(false);
+    const okMsgs = env.logs.filter((l) => l.kind === "ok").map((l) => l.msg);
+    expect(okMsgs.some((m) => m.includes("lane-drift-check scanned 3"))).toBe(true);
+  });
+
+  test("lane-drift-check: skipped when team has zero lane-tagged members (auto-default)", async () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", cwd: "/x" } as never],
+    });
+    let called = 0;
+    const stub = async () => {
+      called += 1;
+      return { decisions: [], reverted: 0, flagsRaised: 0, scanned: 0 };
+    };
+    await groom([], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team,
+      runLaneDriftCheckFn: stub,
+    });
+    expect(called).toBe(0);
+  });
+
+  test("lane-drift-check: explicit groom.laneDriftCheck=false suppresses even when lane-tagged member present", async () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      groom: { atHour: 4, laneDriftCheck: false } as never,
+    });
+    let called = 0;
+    const stub = async () => {
+      called += 1;
+      return { decisions: [], reverted: 0, flagsRaised: 0, scanned: 0 };
+    };
+    await groom([], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team,
+      runLaneDriftCheckFn: stub,
+    });
+    expect(called).toBe(0);
+  });
+
+  test("lane-drift-check: explicit groom.laneDriftCheck=true runs even with no lane-tagged members", async () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", cwd: "/x" } as never],
+      groom: { atHour: 4, laneDriftCheck: true } as never,
+    });
+    let called = 0;
+    const stub = async () => {
+      called += 1;
+      return { decisions: [], reverted: 0, flagsRaised: 0, scanned: 0 };
+    };
+    await groom([], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team,
+      runLaneDriftCheckFn: stub,
+    });
+    expect(called).toBe(1);
+  });
+
+  test("lane-drift-check: --dry-run passes through (reset=false, dryRun=true)", async () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const calls: Array<{ reset: boolean; dryRun: boolean }> = [];
+    const stub = async (_dir: string, _t: Team, opts: { reset: boolean; dryRun: boolean }) => {
+      calls.push({ reset: opts.reset, dryRun: opts.dryRun });
+      return { decisions: [], reverted: 0, flagsRaised: 0, scanned: 0 };
+    };
+    await groom(["--dry-run"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team,
+      runLaneDriftCheckFn: stub,
+    });
+    expect(calls[0]).toEqual({ reset: false, dryRun: true });
+    const dryLog = env.logs.find((l) => l.msg.includes("would lane-drift-check"));
+    expect(dryLog).toBeDefined();
+  });
+
+  test("lane-drift-check: thrown error contained — emits warn, verb still returns 0", async () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const stub = async () => {
+      throw new Error("git log exploded");
+    };
+    const rc = await groom([], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team,
+      runLaneDriftCheckFn: stub,
+    });
+    expect(rc).toBe(0);
+    const warns = env.logs.filter((l) => l.kind === "warn").map((l) => l.msg);
+    expect(warns.some((m) => m.includes("lane-drift-check sub-op failed"))).toBe(true);
+    expect(warns.some((m) => m.includes("git log exploded"))).toBe(true);
+  });
+
+  test("lane-drift-check: missing team.json + no opts.team → silent skip (no crash)", async () => {
+    // No team.json seeded under env.atmuxDir's parent; tryLoadTeam returns null.
+    let called = 0;
+    const stub = async () => {
+      called += 1;
+      return { decisions: [], reverted: 0, flagsRaised: 0, scanned: 0 };
+    };
+    const rc = await groom([], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      runLaneDriftCheckFn: stub,
+    });
+    expect(rc).toBe(0);
+    expect(called).toBe(0);
+    // No warn fired (silent skip is the spec).
+    const warns = env.logs.filter((l) => l.kind === "warn").map((l) => l.msg);
+    expect(warns.some((m) => m.includes("lane-drift-check"))).toBe(false);
+  });
+
+  test("lane-drift-check: --quiet suppresses ok log lines from the sub-op", async () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const stub = async () => ({
+      decisions: [],
+      reverted: 1,
+      flagsRaised: 1,
+      scanned: 5,
+    });
+    await groom(["--quiet"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team,
+      runLaneDriftCheckFn: stub,
+    });
+    const oks = env.logs.filter((l) => l.kind === "ok").map((l) => l.msg);
+    expect(oks.some((m) => m.includes("lane-drift-check"))).toBe(false);
+  });
+
+  test("lane-drift-check: non-zero reverted emits the 'reverted N stuck claim(s)' ok line", async () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const stub = async () => ({
+      decisions: [],
+      reverted: 2,
+      flagsRaised: 2,
+      scanned: 5,
+    });
+    await groom([], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team,
+      runLaneDriftCheckFn: stub,
+    });
+    const oks = env.logs.filter((l) => l.kind === "ok").map((l) => l.msg);
+    expect(oks.some((m) => m.includes("reverted 2 stuck claim(s), raised 2 flag(s)"))).toBe(true);
+  });
 });
+
+// ---------- shouldRunLaneDriftCheck (pure helper) ----------
+
+describe("shouldRunLaneDriftCheck", () => {
+  test("auto-default: true when ≥1 member has non-empty .lane", () => {
+    const team = makeTeam({
+      members: [
+        { name: "lead", role: "lead", cwd: "/x" } as never,
+        { name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never,
+      ],
+    });
+    expect(shouldRunLaneDriftCheck(team)).toBe(true);
+  });
+
+  test("auto-default: false when no member has .lane", () => {
+    const team = makeTeam({
+      members: [{ name: "lead", role: "lead", cwd: "/x" } as never],
+    });
+    expect(shouldRunLaneDriftCheck(team)).toBe(false);
+  });
+
+  test("auto-default: false when .lane is empty string", () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", lane: "", cwd: "/x" } as never],
+    });
+    expect(shouldRunLaneDriftCheck(team)).toBe(false);
+  });
+
+  test("explicit false wins even with lane-tagged members", () => {
+    const team = makeTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      groom: { atHour: 4, laneDriftCheck: false } as never,
+    });
+    expect(shouldRunLaneDriftCheck(team)).toBe(false);
+  });
+
+  test("explicit true wins even with no lane-tagged members", () => {
+    const team = makeTeam({
+      members: [{ name: "lead", role: "lead", cwd: "/x" } as never],
+      groom: { atHour: 4, laneDriftCheck: true } as never,
+    });
+    expect(shouldRunLaneDriftCheck(team)).toBe(true);
+  });
+
+  test("empty roster + unset → false", () => {
+    const team = makeTeam({ members: [] });
+    expect(shouldRunLaneDriftCheck(team)).toBe(false);
+  });
+});
+
+function makeTeam(overrides: Partial<Team> = {}): Team {
+  return {
+    name: "demo",
+    members: [],
+    ...overrides,
+  } as Team;
+}

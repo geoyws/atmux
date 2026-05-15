@@ -10,19 +10,27 @@
 // rotate.sh:52-54).
 
 import { resolve } from "node:path";
-import { exists } from "../abstractions/fs.ts";
+import { appendText, exists } from "../abstractions/fs.ts";
 import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux, type SendTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
+  type BootClaudeOpts,
+  type BootResult,
+  bootClaudeMember,
+  renderBootFailureNotice,
+} from "../core/boot-claude.ts";
+import {
   buildWindowName,
   getAtmuxDir,
-  resolveTeamSocket,
   getSessionName,
+  leadOutboxPath,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { writeLeadHandoff } from "../core/lead-handoff.ts";
+import { writeLeadSessionStart } from "../core/lead-marker.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { safePreflight } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -170,8 +178,19 @@ export interface RotateOpts {
    *  socketPath })` per the verb's resolved socket path. */
   buildTmux?: (socketPath: string) => TmuxNamespace;
   /** Clock override (epoch ms). Defaults to `time.now()`. Used for the
-   *  pre-rotate handoff file path + header timestamp (D2c). */
+   *  pre-rotate handoff file path + header timestamp (D2c) AND the
+   *  post-rotate `lead-session-start.txt` marker write (t-afd3fe38). */
   now?: () => number;
+  /** ADR-081 §C completion (t-94d7ad60): override the boot-claude
+   *  knobs for the claude-TUI re-bootstrap path. `tmux`, `sendTarget`,
+   *  `paneTargetString`, `team`, `member` are always overwritten by
+   *  rotate.ts; the override carries the tunable subset (timeouts,
+   *  sleep, etc.) for tests. */
+  bootClaude?: Partial<BootClaudeOpts>;
+  /** Override `$HOME` for the `~/.claude/teams/<team>/lead-session-start.txt`
+   *  marker write (t-afd3fe38). Tests pass a scratch dir so the marker
+   *  doesn't touch the operator's real `~/.claude`. */
+  leadMarkerHome?: string;
 }
 
 /** Default `setTimeout`-backed sleep. Exported so the same code path
@@ -293,37 +312,122 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
     stderr(`rotate: tui=${tui} has no /clear equivalent — will re-paste brief only\n`);
   }
 
-  // 2. Render + paste the role brief if present (parity with bash
-  //    rotate.sh:57-74). Bash silently skips when the brief file is
-  //    missing — we mirror.
-  const briefsDir = opts.briefsDir ?? defaultBriefsDir();
-  const briefPath = await getBriefPath(role, briefsDir);
-  if (await exists(briefPath)) {
-    const tpl = await Bun.file(briefPath).text();
-    const body = renderBrief(tpl, {
+  // 2. Re-bootstrap the rotated pane.
+  //
+  // For claude TUIs (the rotation hot path — `/clear` only fires on
+  // claude per step 1), use the readiness-poll + single-line
+  // boot-prompt mechanism (ADR-081 §C completion / t-94d7ad60). Same
+  // anti-undead-pane fix as start.ts — after `/clear` the compose
+  // box is briefly absent while claude re-renders welcome, so the
+  // boot prompt must wait for `❯` / `tokens` to re-appear before
+  // sending. The bootClaudeMember sentinel ALSO short-circuits when
+  // the rotation /clear didn't actually drain context (e.g. the
+  // user's screen had `tokens` mid-burst when /clear was queued
+  // and the prompt landed but never executed) — `already-booted`
+  // path skips re-sending.
+  //
+  // For non-claude TUIs (rotate's step 1 already warned that
+  // /clear has no equivalent), fall through to the legacy
+  // paste-buffer flow — these TUIs don't carry the
+  // bracketed-paste-newline trap that motivated the new path.
+  if (tui === "claude") {
+    const bootOpts: BootClaudeOpts = {
+      tmux,
+      sendTarget,
+      paneTargetString: tmuxTarget,
       team: team.name,
       member: target.name,
-      role,
-      atmuxDir,
-    });
-    // Preflight before paste so /clear's post-clear modal (or any
-    // residual feedback survey) doesn't eat the brief body.
-    // Warn-and-proceed: refusal does NOT abort the rotation (the
-    // brief MUST land or the rotation half-cycles).
-    await safePreflight(tmuxTarget, safeOpts);
-    const bufferName = `atmux_brief_rot_${target.name}`;
-    await tmux.buffer.loadBuffer({ name: bufferName, data: body });
-    await tmux.buffer.pasteBuffer({
-      name: bufferName,
-      target: sendTarget,
-      deleteAfter: true,
-    });
-    // ADR-081 §A: settle + C-m (not Enter) — bracketed-paste mode under
-    // claude TUIs eats the trailing Enter as a multi-line continuation,
-    // leaving the brief queued in the compose box. 1000ms here is the
-    // pre-existing rotate-specific settle (rotation runs once per
-    // teammate; the extra 500ms over the §A floor isn't latency-sensitive).
-    await submitAfterPaste(tmux, sendTarget, { settleMs: 1_000, sleep });
+    };
+    if (opts.bootClaude !== undefined) {
+      Object.assign(bootOpts, opts.bootClaude);
+    }
+    let bootResult: BootResult;
+    try {
+      bootResult = await bootClaudeMember(bootOpts);
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      stderr(`rotate: ${target.name}: bootClaudeMember threw (${cause})\n`);
+      bootResult = { status: "failed", attempts: 0, reason: "capture-error" };
+    }
+    if (bootResult.status === "booted") {
+      stdout(`rotate: ${target.name}: bootstrapped (${bootResult.attempts} attempt(s))\n`);
+    } else if (bootResult.status === "already-booted") {
+      stdout(`rotate: ${target.name}: already booted — boot prompt skipped\n`);
+    } else {
+      stderr(
+        `rotate: ${target.name}: bootstrap FAILED after ${bootResult.attempts} attempt(s) (${bootResult.reason ?? "?"})\n`,
+      );
+      // Best-effort: surface to lead-outbox.md per task body §4.
+      try {
+        const nowIso = new Date().toISOString();
+        await appendText(
+          leadOutboxPath(atmuxDir),
+          renderBootFailureNotice({
+            team: team.name,
+            member: target.name,
+            result: bootResult,
+            nowIso,
+          }),
+        );
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        stderr(`rotate: ${target.name}: failed to write boot-failure notice (${cause})\n`);
+      }
+    }
+  } else {
+    // Non-claude TUI: render + paste the role brief if present (parity
+    // with bash rotate.sh:57-74). Bash silently skips when the brief
+    // file is missing — we mirror.
+    const briefsDir = opts.briefsDir ?? defaultBriefsDir();
+    const briefPath = await getBriefPath(role, briefsDir);
+    if (await exists(briefPath)) {
+      const tpl = await Bun.file(briefPath).text();
+      const body = renderBrief(tpl, {
+        team: team.name,
+        member: target.name,
+        role,
+        atmuxDir,
+      });
+      // Preflight before paste so /clear's post-clear modal (or any
+      // residual feedback survey) doesn't eat the brief body.
+      // Warn-and-proceed: refusal does NOT abort the rotation (the
+      // brief MUST land or the rotation half-cycles).
+      await safePreflight(tmuxTarget, safeOpts);
+      const bufferName = `atmux_brief_rot_${target.name}`;
+      await tmux.buffer.loadBuffer({ name: bufferName, data: body });
+      await tmux.buffer.pasteBuffer({
+        name: bufferName,
+        target: sendTarget,
+        deleteAfter: true,
+      });
+      // ADR-081 §A: settle + C-m (not Enter) — bracketed-paste mode under
+      // claude TUIs eats the trailing Enter as a multi-line continuation,
+      // leaving the brief queued in the compose box. 1000ms here is the
+      // pre-existing rotate-specific settle (rotation runs once per
+      // teammate; the extra 500ms over the §A floor isn't latency-sensitive).
+      await submitAfterPaste(tmux, sendTarget, { settleMs: 1_000, sleep });
+    }
+  }
+
+  // 3. t-afd3fe38: on the team-lead path, refresh `lead-session-start.txt`
+  //    with the new spawn epoch so ADR-143's cron-fired uptime gate
+  //    reads the rotated lead's clock, not the stale pre-rotate one.
+  //    Without this, the marker stays at the OLD value → uptime gate
+  //    re-fires on every tick → rotation flap loop. Best-effort: a
+  //    marker-write failure logs to stderr but doesn't abort (the
+  //    rotation itself succeeded; only the cron-gate hint stays stale).
+  if (role === "team-lead") {
+    const clock = opts.now ?? nowMs;
+    const epochSec = Math.floor(clock() / 1000);
+    try {
+      const markerOpts = opts.leadMarkerHome !== undefined ? { home: opts.leadMarkerHome } : {};
+      await writeLeadSessionStart(team.name, epochSec, markerOpts);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      stderr(
+        `rotate: warn: lead-session-start.txt write failed (${reason}); ADR-143 cron-gate may flap\n`,
+      );
+    }
   }
 
   stdout(`rotated ${target.name} (role=${role}, tui=${tui})\n`);

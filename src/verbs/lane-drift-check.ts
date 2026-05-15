@@ -28,10 +28,10 @@ import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
   getAtmuxDir,
-  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { listTasks, moveTask } from "../core/kanban.ts";
 import {
@@ -40,7 +40,7 @@ import {
   type DriftDecision,
   formatDurationCompact,
 } from "../core/lane-drift.ts";
-import { classifyText, type PaneClassification } from "../core/pane-state.ts";
+import { classifyText, maybeLogUnknownPane, type PaneClassification } from "../core/pane-state.ts";
 import { UsageError } from "../errors.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 import type { Team } from "../schema/team.ts";
@@ -274,11 +274,25 @@ export async function runLaneDriftCheck(
     (async (memberName: string): Promise<PaneClassification | null> => {
       const memberEntry = team.members.find((m) => m.name === memberName);
       if (memberEntry === undefined || tmux === undefined) return null;
-      const windowName = buildWindowName(memberEntry.name, memberEntry.emoji);
+      const windowName = buildWindowName(memberEntry.name, memberEntry.emoji, memberEntry.label);
       const target = `${sessionName}:${windowName}`;
       try {
         const text = await tmux.pane.capturePane({ target, start: -30 });
-        return classifyText(text);
+        const classification = classifyText(text);
+        // t-e89c03f7: opt-in UNKNOWN-state forensic logging. Gated on
+        // `team.observability.paneStateUnknownLog === true`; default-off
+        // teams pay zero (gate returns immediately). Best-effort —
+        // append failures never block the classify path.
+        await maybeLogUnknownPane({
+          team: team as { observability?: { paneStateUnknownLog?: boolean } },
+          atmuxDir,
+          target,
+          text,
+          capturedAt: classification.capturedAt,
+          appendFn: appendText,
+          now: () => Date.now(),
+        });
+        return classification;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         log(`lane-drift-check: classify(${memberName}) error: ${msg}`);
