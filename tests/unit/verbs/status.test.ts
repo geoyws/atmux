@@ -147,18 +147,22 @@ describe("defaultRoleEmoji — bash status.sh:69-77 parity", () => {
 // ---------- status verb integration ----------
 
 describe("status verb — integration", () => {
-  test("session down: text mode shows 🔴 + (down) for panes", async () => {
+  test("session down: text mode shows 🔴 + 'down' state for panes (t-74273200)", async () => {
     await stageTeam([{ name: "alpha" }], false);
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
     expect(out).toContain("🔴");
     expect(out).toContain("[down]");
-    expect(out).toContain("(down)");
+    // Per t-74273200: text mode replaced the paneCommand column with
+    // the unified cage state. Session-down → every member's cageState
+    // is "down" (string in the state column, no parens).
+    expect(out).toContain("state");
+    expect(out).toMatch(/claude\s+down\s/);
     expect(out).toContain("📋 kanban");
   });
 
-  test("session up: text mode shows 🟢 + pane command", async () => {
+  test("session up: text mode shows 🟢 + cage state (claude TUI in cat pane → 'down')", async () => {
     await stageTeam([{ name: "alpha" }], true);
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
@@ -166,11 +170,14 @@ describe("status verb — integration", () => {
     expect(out).toContain("🟢");
     expect(out).toContain("[up]");
     expect(out).toContain("alpha");
-    // Pane command was `cat` per the staging shellCommand.
-    expect(out).toContain("cat");
+    // Pane runs `cat` — there's no `claude` in its child tree, so the
+    // cage-state probe correctly reports 'down' (per t-74273200's
+    // root-cause fix: pane_current_command was the misleading proxy;
+    // child-PID claude-exec check is the canonical signal).
+    expect(out).toMatch(/claude\s+down\s/);
   });
 
-  test("--json emits expected shape", async () => {
+  test("--json emits expected shape — includes cageState field (t-74273200)", async () => {
     await stageTeam([{ name: "alpha", role: "reviewer", tui: "claude" }], false);
     const { out } = await captureStdout(() =>
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
@@ -185,6 +192,7 @@ describe("status verb — integration", () => {
       role: "reviewer",
       tui: "claude",
       paneCommand: "(down)",
+      cageState: "down",
       pendingCount: 0,
       inProgressCount: 0,
     });
@@ -327,7 +335,7 @@ describe("status verb — integration", () => {
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    expect(out).toContain("📋 superdoctor");
+    expect(out).toContain("📋 medic"); // ADR-133: superdoctor → medic rename
     expect(out).toContain("⚪ disabled");
 
     const { out: jsonOut } = await captureStdout(() =>
@@ -355,7 +363,7 @@ describe("status verb — integration", () => {
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    expect(out).toContain("📋 superdoctor");
+    expect(out).toContain("📋 medic"); // ADR-133: superdoctor → medic rename
     // Probe runs against operator's default tmux socket — the named
     // session above won't exist, so we expect cockpit-down (or a
     // graceful collapse if the default socket is unreachable).
