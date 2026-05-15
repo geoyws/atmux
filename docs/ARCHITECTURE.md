@@ -174,6 +174,18 @@ Per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D2, the ombudsman role w
 
 The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because medic + whip-velocity-gate can file 5–10 complaints in a burst; batching the wake gives ombudsman the chance to drain in one session rather than wake-process-sleep × N. This matches the `groom-pending-judgment.json` pattern from the supergroomer parking-lot task (ADR-147 §D2 tradeoff section).
 
+## Module map (selected — health + observability)
+
+| Module | Purpose | Authoring ADR |
+|---|---|---|
+| `src/core/cage-state.ts` | Unified 4-state taxonomy (down/bootstrapping/active/wedged) for claude member panes. Replaces the `pane_current_command` proxy that mis-classified welcome-screen TUIs. | t-74273200 |
+| `src/core/cadence-classifier.ts` (T5 — pending) | Pure commit-cadence classifier consumed by status + martinet. Today's inline impl lives at `src/verbs/status.ts::classifyCadence` until T5 extracts it. | [ADR-148](adr/148-commit-cadence-truth-signal.md) |
+| `src/core/refusal-classifier.ts` | Pure pane-output refusal classifier. Four classes (soft / hard / role / meta) with regex primary + heuristic secondary. Sibling-not-extension of `safe-send.ts` (input-side refusal); ADR-139 §Grep findings audit covers the boundary. | [ADR-139](adr/139-refusal-pattern-auto-rotate.md) §D1 |
+| `src/core/refusal-threshold.ts` | Pure threshold gate over a refusal-event ledger. Decides whether accumulated detections cross the rotate threshold per ADR-139 §D3 (soft 3/30min, hard 2/10min, role 1/instant; meta never rotates). | [ADR-139](adr/139-refusal-pattern-auto-rotate.md) §D3 |
+| `src/core/lead-marker.ts` | I-1 (`lead-session-start.txt`) + I-2 (`lead-window-name.txt`) marker R/W. The rotation-gate canonical source per ADR-077 §lead-uptime-measurement — NEVER read `ps -o etime` for rotation decisions. | [ADR-077](adr/077-superdoctor-cockpit-role.md) §lead-uptime-measurement |
+| `src/core/branch-merge-state.ts` | Pure state machine for ADR-091 (epic-team) + ADR-134 (intra-team) auto-merger. 10-state lifecycle + pure transition function. | [ADR-091](adr/091-kanban-driven-auto-merge.md), [ADR-134](adr/134-in-team-auto-merger.md) |
+| `src/core/repositories/merger-state-repo.ts` | Typed CRUD over `merger_state` table; transactions wrap `BEGIN IMMEDIATE` to serialize concurrent ticks. | [ADR-134](adr/134-in-team-auto-merger.md) §state-machine |
+
 ## Why `tmux send-keys` and not SDK API calls?
 
 - **Works with any TUI** — we don't depend on a model-provider SDK. Cursor's CLI, Kimi's CLI, OpenCode, Claude Code all just get shell input.
