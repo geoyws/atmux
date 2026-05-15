@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — ADR-050 §Brief generator (Tier 2 fallback brief composer)
+
+- **New `src/core/fallback-brief.ts`** per [ADR-050](docs/adr/050-fallback-chain.md) §Brief generator (t-d15b23da). Pure-of-direct-IO module: `composeFallbackBrief(opts)` reads the member's pre-pause in-progress Task body + `templates/briefs/<role>.md` + `git log --oneline -10` + `lead-outbox.md` tail (50 lines), assembles per ADR-050 §step 1-5 order, writes to `<atmuxDir>/state/fallback-brief-<member>.md`. Cage spawn (`src/abstractions/fallback-cage.ts`) pipes this as the initial prompt to `cursor-agent --print`.
+- **Tier-2 guardrails preface** inserted verbatim from ADR-050 §step 3: 4 lines naming the executor (`cursor-agent`), the original member, the SAME-branch + SAME-commit-prefix commit policy, the `atmux reply '[fallback-cursor]'` exit protocol, and the mid-resume teardown notice. Substitutes the original member name + agent name at compose time.
+- **Missing-input degradation**: per-section notice lines when an input is missing (no in-progress task / brief template absent / git log empty / lead-outbox empty). Composer NEVER throws; the cage agent always sees a coherent document even when state is partial.
+- **Dep-injection seams** on every reader (gitLog / readTemplate / readLeadOutboxTail / writeBrief / taskBody override) — unit tests pin deterministic inputs without touching disk or shelling git. Default impls fall through to `Bun.file` / `runSpawn` / `loadInbox`.
+- **Same-commit tests** at `tests/unit/core/fallback-brief.test.ts` — 12 tests across 6 describe blocks (happy path, guardrails preface, missing-input degradation x5, section ordering, git-log fail-soft, result-shape contract). 100% line coverage on the new module.
+- **Out of scope this commit** — `src/verbs/whip.ts` extension that fires the composer at sustained-pause detection (T2 dep: `t-5881225a` ADR-050 §Trigger semantics); resume-continuity composer (T3 dep: `t-8ec31d4d` ADR-050 §Resume continuity); e2e (T4 dep: `t-7c491368` ADR-050 §E2E gate).
+
 ### 🟢 Shipped — ADR-141 Claude shared skills + memories (atmux-side scripts)
 
 - **New [ADR-141](docs/adr/141-claude-shared-skills-memories.md)** — canonical layout under operator's dotfiles repo (`~/work/journals/.sb/_dotfiles/claude-shared/`) with per-account symlinks. Memory + skill workspace dirs shared across all five `~/.claude*` accounts; auth + sessions + plugin-cache + settings.json stay strictly per-account.
