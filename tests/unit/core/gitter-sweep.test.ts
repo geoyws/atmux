@@ -1,0 +1,419 @@
+// Unit tests for src/core/gitter-sweep.ts (ADR-134 T4 / t-64e52aac).
+//
+// Coverage matrix (per CLAUDE.md "100% coverage with narrowed
+// denominator"):
+//   - listMemberBranches via `git branch --list <base>-*` mock —
+//     empty / multi / git-failure
+//   - countAhead — 0 / >0 / non-numeric / non-zero exit
+//   - per-branch eligibility decision tree:
+//     - 0 ahead → skipped-zero-ahead
+//     - in-flight state → skipped-in-flight
+//     - terminal state + commits after → queued (fresh tip)
+//     - never-transitioned (null state) → queued
+//     - dispatcher refuses → queue-refused
+//   - aggregate result counts: checked / queued / skipped / refused
+//   - idempotence — second sweep with same git output but populated
+//     state.db reflects "in-flight" → skipped on second pass
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import {
+  closeDatabase,
+  type Database,
+  openDatabase,
+} from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
+import type { BranchMergeState } from "../../../src/core/branch-merge-state.ts";
+import {
+  type GitterSweepDeps,
+  type QueueMergeFn,
+  gitterSweep,
+} from "../../../src/core/gitter-sweep.ts";
+import { MergerStateRepo } from "../../../src/core/repositories/merger-state-repo.ts";
+
+// ---------- Fixture helpers ----------
+
+interface GitCall {
+  argv: ReadonlyArray<string>;
+}
+
+function fakeSpawnResult(stdout: string, exitCode = 0): SpawnResult {
+  return {
+    cmd: "git",
+    argv: [],
+    exitCode,
+    signalled: null,
+    stdout,
+    stderr: "",
+    durationMs: 1,
+  };
+}
+
+/** Build a GitSpawn mock keyed on the first three argv elements
+ *  (`-C <root> <subcmd>`). Each entry returns a `(rest) => stdout`
+ *  responder so tests can differentiate `branch --list` from
+ *  `rev-list --count <range>`. */
+function makeGitSpawn(
+  responders: Record<
+    string,
+    (rest: ReadonlyArray<string>) => { stdout: string; exitCode?: number }
+  >,
+  calls: GitCall[] = [],
+): GitSpawn {
+  return async (argv) => {
+    calls.push({ argv });
+    // Find matching responder — match by `subcmd` (4th argv element
+    // after `-C <root> <subcmd>`).
+    const subcmd = argv[2];
+    if (subcmd === undefined) return fakeSpawnResult("", 1);
+    const responder = responders[subcmd];
+    if (responder === undefined) return fakeSpawnResult("", 1);
+    const r = responder(argv.slice(3));
+    return fakeSpawnResult(r.stdout, r.exitCode ?? 0);
+  };
+}
+
+const TEAM_ROOT = "/srv/demo";
+const BASE_BRANCH = "geoyws";
+
+let scratch: string;
+let db: Database;
+let repo: MergerStateRepo;
+
+beforeEach(async () => {
+  scratch = await mkdtemp(join(tmpdir(), "atmux-gitter-sweep-"));
+  db = openDatabase(join(scratch, "state.db"), migrations);
+  repo = new MergerStateRepo(db);
+});
+
+afterEach(async () => {
+  closeDatabase(db);
+  await rm(scratch, { recursive: true, force: true });
+});
+
+function seedRepoRow(
+  memberBranch: string,
+  state: BranchMergeState,
+  transitionedAt = 1_700_000_000,
+): void {
+  repo.transition({
+    memberBranch,
+    next: state,
+    transitionedAt,
+    by: "operator",
+  });
+}
+
+function buildDeps(opts: {
+  branches: string[];
+  aheadBy: Record<string, number>;
+  queue?: QueueMergeFn;
+  calls?: GitCall[];
+  gitOverrides?: Partial<Parameters<typeof makeGitSpawn>[0]>;
+}): GitterSweepDeps {
+  const branchesStdout = opts.branches.join("\n") + (opts.branches.length > 0 ? "\n" : "");
+  const calls = opts.calls ?? [];
+  const responders: Parameters<typeof makeGitSpawn>[0] = {
+    branch: () => ({ stdout: branchesStdout }),
+    "rev-list": (rest) => {
+      // rest = ["--count", "<base>..<member>"]
+      const range = rest[1] ?? "";
+      const member = range.replace(`${BASE_BRANCH}..`, "");
+      const count = opts.aheadBy[member] ?? 0;
+      return { stdout: `${count}\n` };
+    },
+    ...(opts.gitOverrides ?? {}),
+  };
+  const queue: QueueMergeFn =
+    opts.queue ?? (async () => ({ queued: true }));
+  return {
+    teamRoot: TEAM_ROOT,
+    baseBranch: BASE_BRANCH,
+    mergerStateRepo: repo,
+    queueMergeAttempt: queue,
+    git: makeGitSpawn(responders, calls),
+  };
+}
+
+// ---------- listMemberBranches ----------
+
+describe("gitterSweep — branch enumeration", () => {
+  test("empty branch list → 0 candidates, 0 queued", async () => {
+    const deps = buildDeps({ branches: [], aheadBy: {} });
+    const result = await gitterSweep(deps);
+    expect(result.checked).toBe(0);
+    expect(result.queued).toBe(0);
+    expect(result.entries).toEqual([]);
+  });
+
+  test("uses `git branch --list <base>-*` format", async () => {
+    const calls: GitCall[] = [];
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+      calls,
+    });
+    await gitterSweep(deps);
+    const branchCall = calls.find((c) => c.argv[2] === "branch");
+    expect(branchCall).toBeDefined();
+    expect(branchCall?.argv).toContain("--list");
+    expect(branchCall?.argv).toContain(`${BASE_BRANCH}-*`);
+    // `-C <teamRoot>` prefix is the cwd anchor.
+    expect(branchCall?.argv[0]).toBe("-C");
+    expect(branchCall?.argv[1]).toBe(TEAM_ROOT);
+  });
+
+  test("git branch failure → empty candidate set (graceful, not crash)", async () => {
+    const deps: GitterSweepDeps = {
+      teamRoot: TEAM_ROOT,
+      baseBranch: BASE_BRANCH,
+      mergerStateRepo: repo,
+      queueMergeAttempt: async () => ({ queued: true }),
+      git: makeGitSpawn({
+        branch: () => ({ stdout: "", exitCode: 1 }),
+      }),
+    };
+    const result = await gitterSweep(deps);
+    expect(result.checked).toBe(0);
+    expect(result.entries).toEqual([]);
+  });
+});
+
+// ---------- countAhead + zero-ahead skip ----------
+
+describe("gitterSweep — ahead-of-base check", () => {
+  test("branch with 0 commits ahead → skipped-zero-ahead", async () => {
+    const deps = buildDeps({
+      branches: ["geoyws-stable"],
+      aheadBy: { "geoyws-stable": 0 },
+    });
+    const result = await gitterSweep(deps);
+    expect(result.checked).toBe(1);
+    expect(result.queued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.entries[0]?.action).toBe("skipped-zero-ahead");
+  });
+
+  test("rev-list returning non-numeric → treats as 0 ahead", async () => {
+    const deps: GitterSweepDeps = {
+      teamRoot: TEAM_ROOT,
+      baseBranch: BASE_BRANCH,
+      mergerStateRepo: repo,
+      queueMergeAttempt: async () => ({ queued: true }),
+      git: makeGitSpawn({
+        branch: () => ({ stdout: "geoyws-fe-1\n" }),
+        "rev-list": () => ({ stdout: "garbage\n" }),
+      }),
+    };
+    const result = await gitterSweep(deps);
+    expect(result.entries[0]?.action).toBe("skipped-zero-ahead");
+  });
+
+  test("rev-list non-zero exit → treats as 0 ahead (skip)", async () => {
+    const deps: GitterSweepDeps = {
+      teamRoot: TEAM_ROOT,
+      baseBranch: BASE_BRANCH,
+      mergerStateRepo: repo,
+      queueMergeAttempt: async () => ({ queued: true }),
+      git: makeGitSpawn({
+        branch: () => ({ stdout: "geoyws-fe-1\n" }),
+        "rev-list": () => ({ stdout: "", exitCode: 128 }),
+      }),
+    };
+    const result = await gitterSweep(deps);
+    expect(result.entries[0]?.action).toBe("skipped-zero-ahead");
+  });
+
+  test("branch ahead by 3, never-transitioned state → queued", async () => {
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 3 },
+    });
+    const result = await gitterSweep(deps);
+    expect(result.queued).toBe(1);
+    expect(result.entries[0]?.action).toBe("queued");
+    expect(result.entries[0]?.aheadCount).toBe(3);
+    expect(result.entries[0]?.observedState).toBeNull();
+  });
+});
+
+// ---------- In-flight state skip ----------
+
+describe("gitterSweep — in-flight state recognition", () => {
+  test.each([
+    "in_progress",
+    "ready_to_merge",
+    "rebasing",
+    "merging",
+    "tested",
+    "test_failed",
+  ] as const)("state=%s → skipped-in-flight", async (state) => {
+    seedRepoRow("geoyws-fe-1", state);
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+    });
+    const result = await gitterSweep(deps);
+    expect(result.queued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.entries[0]?.action).toBe("skipped-in-flight");
+    expect(result.entries[0]?.observedState).toBe(state);
+  });
+
+  test("state=open with commits ahead → queued (open is initial, not in-flight)", async () => {
+    seedRepoRow("geoyws-fe-1", "open");
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 1 },
+    });
+    const result = await gitterSweep(deps);
+    expect(result.queued).toBe(1);
+    expect(result.entries[0]?.action).toBe("queued");
+  });
+});
+
+// ---------- Terminal-state + new commits ----------
+
+describe("gitterSweep — terminal state with fresh tip", () => {
+  test.each(["merged", "conflict", "reverted"] as const)(
+    "state=%s + commits ahead → queued (fresh work after terminal)",
+    async (state) => {
+      seedRepoRow("geoyws-fe-1", state);
+      const deps = buildDeps({
+        branches: ["geoyws-fe-1"],
+        aheadBy: { "geoyws-fe-1": 5 },
+      });
+      const result = await gitterSweep(deps);
+      expect(result.queued).toBe(1);
+      expect(result.entries[0]?.action).toBe("queued");
+      expect(result.entries[0]?.observedState).toBe(state);
+    },
+  );
+
+  test("state=merged + 0 ahead → skipped-zero-ahead (terminal stays terminal)", async () => {
+    seedRepoRow("geoyws-fe-1", "merged");
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 0 },
+    });
+    const result = await gitterSweep(deps);
+    expect(result.queued).toBe(0);
+    expect(result.entries[0]?.action).toBe("skipped-zero-ahead");
+  });
+});
+
+// ---------- Dispatcher refusal ----------
+
+describe("gitterSweep — dispatcher refusal", () => {
+  test("queue returns {queued:false, reason} → queue-refused with note", async () => {
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+      queue: async () => ({ queued: false, reason: "rate-limit cap reached" }),
+    });
+    const result = await gitterSweep(deps);
+    expect(result.queued).toBe(0);
+    expect(result.refused).toBe(1);
+    expect(result.entries[0]?.action).toBe("queue-refused");
+    expect(result.entries[0]?.note).toBe("rate-limit cap reached");
+  });
+
+  test("queue returns {queued:false} without reason → queue-refused, no note", async () => {
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+      queue: async () => ({ queued: false }),
+    });
+    const result = await gitterSweep(deps);
+    expect(result.refused).toBe(1);
+    expect(result.entries[0]?.action).toBe("queue-refused");
+    expect(result.entries[0]?.note).toBeUndefined();
+  });
+});
+
+// ---------- Multi-branch aggregate behaviour (task body acceptance) ----------
+
+describe("gitterSweep — multi-branch aggregate", () => {
+  test("3 branches: 2 ahead (1 in-flight, 1 fresh), 1 zero-ahead → 1 queued, 2 skipped", async () => {
+    // Mirrors the task body acceptance: "synthetic 3-member team, 2
+    // branches ahead, 1 already merging → assert sweep queues
+    // exactly the 1 missing".
+    seedRepoRow("geoyws-busy", "merging"); // already in-flight
+    // geoyws-stale: never transitioned, 0 ahead — skip-zero-ahead
+    // geoyws-fresh: never transitioned, 4 ahead — queue
+    const deps = buildDeps({
+      branches: ["geoyws-busy", "geoyws-stale", "geoyws-fresh"],
+      aheadBy: {
+        "geoyws-busy": 2,
+        "geoyws-stale": 0,
+        "geoyws-fresh": 4,
+      },
+    });
+    const result = await gitterSweep(deps);
+    expect(result.checked).toBe(3);
+    expect(result.queued).toBe(1);
+    expect(result.skipped).toBe(2);
+    expect(result.refused).toBe(0);
+
+    const queued = result.entries.find((e) => e.action === "queued");
+    expect(queued?.memberBranch).toBe("geoyws-fresh");
+    expect(queued?.aheadCount).toBe(4);
+
+    const inFlight = result.entries.find((e) => e.action === "skipped-in-flight");
+    expect(inFlight?.memberBranch).toBe("geoyws-busy");
+
+    const zeroAhead = result.entries.find((e) => e.action === "skipped-zero-ahead");
+    expect(zeroAhead?.memberBranch).toBe("geoyws-stale");
+  });
+});
+
+// ---------- Idempotence ----------
+
+describe("gitterSweep — idempotence", () => {
+  test("second sweep after dispatcher records in-flight transitions skips the branch", async () => {
+    // First sweep — branch fresh, dispatcher records the transition.
+    const deps1 = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+      queue: async ({ memberBranch }) => {
+        repo.transition({
+          memberBranch,
+          next: "in_progress",
+          transitionedAt: 1_700_000_000,
+          by: "cron",
+        });
+        return { queued: true };
+      },
+    });
+    const first = await gitterSweep(deps1);
+    expect(first.queued).toBe(1);
+
+    // Second sweep — same git output, but state.db now has the
+    // in-flight row → must skip.
+    const deps2 = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+    });
+    const second = await gitterSweep(deps2);
+    expect(second.queued).toBe(0);
+    expect(second.entries[0]?.action).toBe("skipped-in-flight");
+  });
+
+  test("all-branches-merged + 0 ahead → fully no-op", async () => {
+    seedRepoRow("geoyws-a", "merged");
+    seedRepoRow("geoyws-b", "merged");
+    const deps = buildDeps({
+      branches: ["geoyws-a", "geoyws-b"],
+      aheadBy: { "geoyws-a": 0, "geoyws-b": 0 },
+    });
+    const result = await gitterSweep(deps);
+    expect(result.checked).toBe(2);
+    expect(result.queued).toBe(0);
+    expect(result.skipped).toBe(2);
+    expect(result.refused).toBe(0);
+  });
+});
