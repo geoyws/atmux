@@ -15,6 +15,7 @@
 import { join } from "node:path";
 
 import { exists, readTextOrNull } from "../abstractions/fs.ts";
+import { spawn as runSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { type CageHealth, type CageState, probeCageState } from "../core/cage-state.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
@@ -34,7 +35,11 @@ import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { UsageError } from "../errors.ts";
 import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
-import type { Team } from "../schema/team.ts";
+import {
+  DEFAULT_CADENCE_CONFIG,
+  DEFAULT_CADENCE_THRESHOLDS,
+  type Team,
+} from "../schema/team.ts";
 import { collectOpenEntries } from "./reply.ts";
 
 const USAGE = "atmux status [--json]";
@@ -137,6 +142,36 @@ export interface MemberStatus {
    *  the operator can spot crashed claude processes vs healthy
    *  low-context members. */
   contextStale?: boolean;
+  /** ADR-148 §D2/§D3: commit-cadence verdict for this member's
+   *  worktree. Computed from `git -C <worktreePath> log --since=
+   *  <windowSec>s --author=<member>`. Surfaced in both text + JSON
+   *  output. Null when the member has no resolvable worktree path
+   *  (cwd missing in team.json AND no per-member worktree under
+   *  team.worktreeRoot — defensive; the gather call skips silently). */
+  cadence?: CadenceObservation;
+}
+
+/** ADR-148 §D2: cadence-classifier output for one member. T2 ships
+ *  the inline classifier in status.ts; T5 lifts it into
+ *  `src/core/cadence-classifier.ts` + adds martinet wiring. The
+ *  shape is the durable contract — T5 refactors location, not
+ *  fields. */
+export interface CadenceObservation {
+  /** Configured window-back for the commits-in-window count. */
+  windowSec: number;
+  /** Commits authored by this member within `windowSec`. */
+  commitsInWindow: number;
+  /** Epoch seconds of the most recent commit by this member, or
+   *  null when the member has never committed in this worktree. */
+  lastCommitAt: number | null;
+  /** Short SHA of the most recent commit, or null when none. */
+  lastCommitSha: string | null;
+  /** Age (seconds) since `lastCommitAt`. Null when no commits ever. */
+  ageOfLastCommitSec: number | null;
+  /** ADR-148 §D2 verdict. `exempt` added by the renderer when the
+   *  member's name is in `team.cadence.exemptMembers`; the
+   *  classifier itself never emits `exempt`. */
+  verdict: "shipping" | "idle" | "dormant" | "ship-zero-window" | "exempt";
 }
 
 export interface KanbanCounts {
@@ -216,6 +251,16 @@ export interface GatherStatusDeps {
    *  staleness window (2× this value). Default 270s — matches
    *  whip-prompt.md §1b. */
   whipCadenceSec?: number;
+  /** ADR-148 T2: injection seam for the per-member git log probe.
+   *  Default shells `git -C <worktreePath> log --since=<since>s
+   *  --author=<author> --format=%H %ct`. Tests pin to deterministic
+   *  output without touching disk. Returns the raw stdout lines
+   *  (`"<sha> <epoch-sec>"` per line). */
+  gitLog?: (
+    worktreePath: string,
+    sinceSec: number,
+    author: string,
+  ) => Promise<string[]>;
 }
 
 /** Per-task t-d98b2bd6 (whip-side signal shape). Mirrors the on-disk
@@ -332,6 +377,14 @@ export async function gatherStatus(
   const nowMs = (deps.now ?? Date.now)();
   const whipCadenceSec = deps.whipCadenceSec ?? 270;
   const staleAfterMs = whipCadenceSec * 2 * 1000;
+  const nowSec = Math.floor(nowMs / 1000);
+  // ADR-148 T2: resolve cadence config (defaults applied when team.json
+  // block absent). Probe runs per-member below; `enabled === false`
+  // skips the probe entirely + leaves `row.cadence` undefined so the
+  // renderer falls back to "—".
+  const cadenceCfg = resolveCadenceConfig(team);
+  const gitLog = deps.gitLog ?? defaultGitLog;
+  const exemptSet = new Set(cadenceCfg.exemptMembers);
 
   const members: MemberStatus[] = [];
   for (const m of team.members) {
@@ -378,6 +431,44 @@ export async function gatherStatus(
         row.contextTs = signal.ts;
         const signalAgeMs = nowMs - signal.ts * 1000;
         row.contextStale = signalAgeMs > staleAfterMs;
+      }
+    }
+    // ADR-148 T2: commit-cadence probe per member. Honors per-team
+    // `cadence.enabled` (default true) + per-member exemptMembers. The
+    // gitLog probe is fail-soft (returns [] on any error) so a missing
+    // worktree degrades to "no commits ever" rather than aborting the
+    // whole status snapshot.
+    if (cadenceCfg.enabled) {
+      if (exemptSet.has(m.name)) {
+        row.cadence = {
+          windowSec: cadenceCfg.windowSec,
+          commitsInWindow: 0,
+          lastCommitAt: null,
+          lastCommitSha: null,
+          ageOfLastCommitSec: null,
+          verdict: "exempt",
+        };
+      } else {
+        const wt = resolveMemberWorktree(team, m, atmuxDir);
+        if (wt !== null) {
+          // `--since=<sinceSec>` queries a wider window than the
+          // verdict's `windowSec` so the classifier sees the actual
+          // last commit too (used for `ageOfLastCommitSec`). Cap at
+          // the dormant threshold — any commit older than that is
+          // "dormant" regardless, so reading further back wastes
+          // git log time without affecting the verdict.
+          const sinceSec = Math.max(
+            cadenceCfg.windowSec,
+            cadenceCfg.thresholds.dormantMaxAgeSec,
+          );
+          const lines = await gitLog(wt, sinceSec, m.name);
+          row.cadence = classifyCadence(
+            lines,
+            nowSec,
+            cadenceCfg.windowSec,
+            cadenceCfg.thresholds,
+          );
+        }
       }
     }
     members.push(row);
@@ -478,6 +569,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           contextPct?: number;
           contextTs?: number;
           contextStale?: boolean;
+          cadence?: CadenceObservation;
         } = {
           name: m.name,
           role: m.role,
@@ -491,6 +583,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
         if (m.contextPct !== undefined) row.contextPct = m.contextPct;
         if (m.contextTs !== undefined) row.contextTs = m.contextTs;
         if (m.contextStale !== undefined) row.contextStale = m.contextStale;
+        if (m.cadence !== undefined) row.cadence = m.cadence;
         return row;
       }),
       kanban: snap.kanban,
@@ -574,13 +667,19 @@ function renderTextStatus(snap: StatusSnapshot): void {
   // t-74273200: text mode now leads with `cageState` (the unified 4-
   // state taxonomy: down/bootstrapping/active/wedged) in place of the
   // pane_current_command proxy that mis-reported welcome-screen claude
-  // TUIs as `(down)`. The legacy paneCommand column is preserved in
-  // JSON output (back-compat for consumers reading the field) but
-  // dropped from the text render to keep the row narrow.
+  // TUIs as `(down)`. ADR-148 §D3 renamed this column from `state` to
+  // `pane-state` to make the proxy explicit — pane-state is a process
+  // observable, NOT a verdict on whether the member is shipping.
   // Per-task t-d98b2bd6: `ctx` column added between state and tasks
   // — reads the whip-side `member-context/*.json` signal written by
   // measure-context.sh. Renders "—" / "(stale)" / "X.X%".
-  process.stdout.write(`member       role          tui        state         ctx      tasks\n`);
+  // ADR-148 §D3: new `cadence` column — canonical truth signal for
+  // "is this member shipping?". Sourced from per-member git log;
+  // formatted as `🟢 shipping (5min)` / `🟡 idle (1h2m)` / `🔴 dormant (15h)`
+  // / `🚨 ship-zero (3h)` per CLAUDE.md duration convention.
+  process.stdout.write(
+    `member       role          tui        pane-state    ctx      cadence              tasks\n`,
+  );
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
     // ADR-136 TR4: operator-facing text column uses label-fallback.
@@ -594,13 +693,16 @@ function renderTextStatus(snap: StatusSnapshot): void {
     // fall back to the legacy pane_current_command (the cage taxonomy
     // doesn't apply — non-claude TUIs don't have claude in their child
     // process tree by definition).
-    const state = (m.cageState ?? m.paneCommand).padEnd(14);
+    const paneState = (m.cageState ?? m.paneCommand).padEnd(14);
     // Per-task t-d98b2bd6: ctx % column rendered as "8.4%" /
     // "(stale)" / "—". Width pinned to 8 chars so the trailing
     // tasks block stays column-aligned across heterogeneous teams.
     const ctx = formatContextColumn(m).padEnd(8);
+    // ADR-148 §D3: cadence column. Width pinned to 20 chars — fits
+    // the longest expected verdict ("🚨 ship-zero (24h)" + change).
+    const cadence = formatCadenceColumn(m.cadence).padEnd(20);
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${state} ${ctx} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
     );
   }
   const k = snap.kanban;
@@ -651,6 +753,208 @@ export function formatContextColumn(m: MemberStatus): string {
   if (m.contextPct === undefined) return "—";
   if (m.contextStale === true) return "(stale)";
   return `${m.contextPct.toFixed(1)}%`;
+}
+
+// ---------- ADR-148 T2: cadence column helpers ----------
+
+/** Default `gitLog` impl — shells `git -C <path> log --since=<sec>s
+ *  --author=<author> --format=%H %ct`. Tolerant of probe failures:
+ *  non-zero exit (worktree missing, .git absent, malformed flags)
+ *  collapses to empty result so the cadence column degrades to
+ *  "no commits ever" rather than failing the whole status snapshot.
+ *
+ *  `--author` does substring-match in git, matching the member's
+ *  name against the commit's Author line. Members typically commit
+ *  as `<member> <member@example.invalid>` per atmux's setup, so the
+ *  raw name (`alpha`) matches `alpha <alpha@...>`. Co-Authored-By
+ *  trailers (gitter merges per ADR-145) are NOT counted by git's
+ *  --author filter unless the trailer's email appears in the
+ *  Author/Email field; this is intentional — cadence measures the
+ *  member's own commits, not co-authored merges from gitter. */
+async function defaultGitLog(
+  worktreePath: string,
+  sinceSec: number,
+  author: string,
+): Promise<string[]> {
+  try {
+    const r: SpawnResult = await runSpawn({
+      cmd: "git",
+      argv: [
+        "-C",
+        worktreePath,
+        "log",
+        `--since=${sinceSec}s`,
+        `--author=${author}`,
+        "--format=%H %ct",
+      ],
+      expectExitCode: "any",
+      timeoutMs: 5000,
+    });
+    if (r.exitCode !== 0) return [];
+    return r.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** ADR-148 §D2: pure cadence classifier. Inputs are the resolved
+ *  config + a list of `"<sha> <epoch-sec>"` lines from git log. The
+ *  function itself does no I/O — `gitLog` is resolved by the caller
+ *  and passed in here as the parsed lines list. T5 will lift this
+ *  helper into `src/core/cadence-classifier.ts` verbatim. */
+/** Plain-object shape for cadence thresholds — non-`as const` so
+ *  callers can build from arbitrary numbers without the literal-type
+ *  exact-match constraint. */
+export interface CadenceThresholds {
+  shippingMaxAgeSec: number;
+  idleMaxAgeSec: number;
+  dormantMaxAgeSec: number;
+  shipZeroWindowSec: number;
+}
+
+export function classifyCadence(
+  logLines: ReadonlyArray<string>,
+  nowSec: number,
+  windowSec: number,
+  thresholds: CadenceThresholds,
+): CadenceObservation {
+  let commitsInWindow = 0;
+  let lastCommitAt: number | null = null;
+  let lastCommitSha: string | null = null;
+  for (const line of logLines) {
+    const parts = line.split(/\s+/);
+    if (parts.length < 2) continue;
+    const sha = parts[0]!;
+    const ctStr = parts[1]!;
+    const ct = Number(ctStr);
+    if (!Number.isFinite(ct)) continue;
+    if (nowSec - ct <= windowSec) commitsInWindow += 1;
+    if (lastCommitAt === null || ct > lastCommitAt) {
+      lastCommitAt = ct;
+      lastCommitSha = sha.slice(0, 7);
+    }
+  }
+  const ageOfLastCommitSec = lastCommitAt === null ? null : Math.max(0, nowSec - lastCommitAt);
+  let verdict: CadenceObservation["verdict"];
+  if (commitsInWindow >= 1 && ageOfLastCommitSec !== null && ageOfLastCommitSec < thresholds.shippingMaxAgeSec) {
+    verdict = "shipping";
+  } else if (
+    commitsInWindow === 0 &&
+    ageOfLastCommitSec !== null &&
+    ageOfLastCommitSec >= thresholds.shipZeroWindowSec
+  ) {
+    // ship-zero-window is the escalation flag (≥2hr by default).
+    // Subset of dormant when dormantMaxAgeSec > shipZeroWindowSec —
+    // we want callers to see the escalation classification first
+    // (per ADR-148 §D2 table — it's the explicit "must fire" verdict).
+    verdict =
+      ageOfLastCommitSec >= thresholds.dormantMaxAgeSec ? "dormant" : "ship-zero-window";
+  } else if (ageOfLastCommitSec === null || ageOfLastCommitSec < thresholds.idleMaxAgeSec) {
+    verdict = "idle";
+  } else {
+    verdict = "dormant";
+  }
+  return {
+    windowSec,
+    commitsInWindow,
+    lastCommitAt,
+    lastCommitSha,
+    ageOfLastCommitSec,
+    verdict,
+  };
+}
+
+/** Resolve the worktree path for a member. Honors ADR-082 §2
+ *  `team.worktreeIsolation` — when isolation is on, per-member
+ *  worktrees live under `<teamRoot>/<worktreeRoot>/<member>/`.
+ *  Otherwise falls back to the member's declared `cwd`, then to the
+ *  parent of `atmuxDir`. Returns null only when none of those
+ *  resolve to a meaningful absolute-ish path — the caller skips the
+ *  cadence probe in that case rather than running git against an
+ *  empty string. */
+function resolveMemberWorktree(
+  team: Team,
+  member: { name: string; cwd?: string | undefined },
+  atmuxDir: string,
+): string | null {
+  if (team.worktreeIsolation === true) {
+    const root = team.worktreeRoot ?? ".atmux/worktrees";
+    // Project root = parent of .atmux dir.
+    const projectRoot = atmuxDir.replace(/\/?\.atmux$/, "");
+    const path = root.startsWith("/")
+      ? join(root, member.name)
+      : join(projectRoot, root, member.name);
+    return path;
+  }
+  if (member.cwd !== undefined && member.cwd.length > 0) return member.cwd;
+  const projectRoot = atmuxDir.replace(/\/?\.atmux$/, "");
+  return projectRoot.length > 0 ? projectRoot : null;
+}
+
+/** Resolve the effective cadence config — fills missing keys from
+ *  {@link DEFAULT_CADENCE_CONFIG} + {@link DEFAULT_CADENCE_THRESHOLDS}.
+ *  Returned object has every threshold populated so callers don't
+ *  re-coalesce. */
+export function resolveCadenceConfig(team: Team): {
+  enabled: boolean;
+  windowSec: number;
+  thresholds: CadenceThresholds;
+  laneStallEnabled: boolean;
+  laneStallMinAgeSec: number;
+  exemptMembers: ReadonlyArray<string>;
+} {
+  const c = team.cadence;
+  return {
+    enabled: c?.enabled ?? DEFAULT_CADENCE_CONFIG.enabled,
+    windowSec: c?.windowSec ?? DEFAULT_CADENCE_CONFIG.windowSec,
+    thresholds: {
+      shippingMaxAgeSec:
+        c?.thresholds?.shippingMaxAgeSec ?? DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
+      idleMaxAgeSec: c?.thresholds?.idleMaxAgeSec ?? DEFAULT_CADENCE_THRESHOLDS.idleMaxAgeSec,
+      dormantMaxAgeSec:
+        c?.thresholds?.dormantMaxAgeSec ?? DEFAULT_CADENCE_THRESHOLDS.dormantMaxAgeSec,
+      shipZeroWindowSec:
+        c?.thresholds?.shipZeroWindowSec ?? DEFAULT_CADENCE_THRESHOLDS.shipZeroWindowSec,
+    },
+    laneStallEnabled: c?.laneStallEnabled ?? DEFAULT_CADENCE_CONFIG.laneStallEnabled,
+    laneStallMinAgeSec: c?.laneStallMinAgeSec ?? DEFAULT_CADENCE_CONFIG.laneStallMinAgeSec,
+    exemptMembers: c?.exemptMembers ?? DEFAULT_CADENCE_CONFIG.exemptMembers,
+  };
+}
+
+/** CLAUDE.md duration-formatting convention: compact human-readable,
+ *  never raw minutes. `<60s` → "Ns"; `<60m` → "Nmin"; `≥60m` →
+ *  "HhMm" or "Hh" when on the hour. Used by the cadence column to
+ *  render `ageOfLastCommitSec` (and reusable in T3/T5 elsewhere). */
+export function formatDurationShort(seconds: number | null): string {
+  if (seconds === null) return "never";
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}min`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return m === 0 ? `${h}h` : `${h}h${m}m`;
+}
+
+/** Render one cadence cell — emoji + verdict + age. Stable width
+ *  isn't enforced here (text mode pads via String.prototype.padEnd
+ *  on the caller); this returns the unpadded display string. */
+export function formatCadenceColumn(obs: CadenceObservation | undefined): string {
+  if (obs === undefined) return "—";
+  if (obs.verdict === "exempt") return "(exempt)";
+  const age = formatDurationShort(obs.ageOfLastCommitSec);
+  switch (obs.verdict) {
+    case "shipping":
+      return `🟢 shipping (${age})`;
+    case "idle":
+      return `🟡 idle (${age})`;
+    case "dormant":
+      return `🔴 dormant (${age})`;
+    case "ship-zero-window":
+      return `🚨 ship-zero (${age})`;
+  }
 }
 
 /** Default role emoji per bash lib/status.sh:69-77. */

@@ -195,7 +195,13 @@ describe("status verb — integration", () => {
     expect(parsed.session).toMatch(/^atmux-/);
     expect(parsed.sessionState).toBe("down");
     expect(parsed.members).toHaveLength(1);
-    expect(parsed.members[0]).toEqual({
+    // ADR-148 T2: members[].cadence is the new commit-cadence column.
+    // The test worktree has no .git dir, so the git log probe returns
+    // [] → classifier emits verdict='idle' with null lastCommit fields.
+    // toMatchObject lets us assert the legacy contract (cageState
+    // backcompat) while leaving the deterministic cadence shape's
+    // verdict assertable independently.
+    expect(parsed.members[0]).toMatchObject({
       name: "alpha",
       role: "reviewer",
       tui: "claude",
@@ -203,6 +209,14 @@ describe("status verb — integration", () => {
       cageState: "down",
       pendingCount: 0,
       inProgressCount: 0,
+    });
+    expect(parsed.members[0].cadence).toEqual({
+      windowSec: 1800,
+      commitsInWindow: 0,
+      lastCommitAt: null,
+      lastCommitSha: null,
+      ageOfLastCommitSec: null,
+      verdict: "idle",
     });
     expect(parsed.kanban).toEqual({ todo: 0, inProgress: 0, done: 0, blocked: 0 });
     expect(parsed.driverInboxOpen).toBe(0);
@@ -828,3 +842,293 @@ describe("gatherStatus — member ctx fields populated from JSON", () => {
     }
   });
 });
+
+// ---------- ADR-148 T2: cadence column ----------
+
+import {
+  classifyCadence,
+  type CadenceObservation,
+  formatCadenceColumn,
+  formatDurationShort,
+  resolveCadenceConfig,
+} from "../../../src/verbs/status.ts";
+import {
+  DEFAULT_CADENCE_CONFIG,
+  DEFAULT_CADENCE_THRESHOLDS,
+  type Team,
+} from "../../../src/schema/team.ts";
+
+describe("classifyCadence — verdict branches (ADR-148 §D2)", () => {
+  const T = DEFAULT_CADENCE_THRESHOLDS;
+  const now = 10_000_000;
+
+  test("≥1 commit in window AND age < shippingMaxAge → 'shipping'", () => {
+    const lines = [`abc1234 ${now - 60}`];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.verdict).toBe("shipping");
+    expect(r.commitsInWindow).toBe(1);
+    expect(r.ageOfLastCommitSec).toBe(60);
+    expect(r.lastCommitSha).toBe("abc1234");
+  });
+
+  test("0 commits AND age < idleMax → 'idle'", () => {
+    // Commit 1h ago — outside the 30min window, but inside the 2h
+    // idleMax.
+    const lines = [`abc1234 ${now - 3600}`];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.verdict).toBe("idle");
+    expect(r.commitsInWindow).toBe(0);
+    expect(r.ageOfLastCommitSec).toBe(3600);
+  });
+
+  test("0 commits AND age >= shipZeroWindowSec AND < dormantMaxAge → 'ship-zero-window'", () => {
+    // 3h since last commit — past shipZeroWindow (2h) but under
+    // dormantMaxAge (6h).
+    const lines = [`abc1234 ${now - 3 * 3600}`];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.verdict).toBe("ship-zero-window");
+  });
+
+  test("0 commits AND age >= dormantMaxAge → 'dormant'", () => {
+    // 8h since last commit — past dormantMaxAge (6h). dormant wins
+    // even though ship-zero-window also matches.
+    const lines = [`abc1234 ${now - 8 * 3600}`];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.verdict).toBe("dormant");
+  });
+
+  test("no commits ever (empty log) → 'idle' (null age)", () => {
+    const r = classifyCadence([], now, 1800, T);
+    expect(r.verdict).toBe("idle");
+    expect(r.lastCommitAt).toBeNull();
+    expect(r.lastCommitSha).toBeNull();
+    expect(r.ageOfLastCommitSec).toBeNull();
+  });
+
+  test("malformed lines tolerated (skip non-numeric ct)", () => {
+    const lines = [
+      `abc1234 ${now - 60}`,
+      "garbage line", // 1 part — skipped
+      "deadbeef notanumber", // ct non-numeric — skipped
+    ];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.commitsInWindow).toBe(1);
+    expect(r.verdict).toBe("shipping");
+  });
+
+  test("lastCommitSha is 7-char short SHA from longest log entry", () => {
+    const lines = [
+      `abc12340000000000000000000000000000000000 ${now - 60}`,
+      `def56780000000000000000000000000000000000 ${now - 120}`,
+    ];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.lastCommitSha).toBe("abc1234"); // most-recent
+  });
+});
+
+describe("formatDurationShort — CLAUDE.md duration convention", () => {
+  test("null → 'never'", () => {
+    expect(formatDurationShort(null)).toBe("never");
+  });
+
+  test("<60s → 'Ns'", () => {
+    expect(formatDurationShort(45)).toBe("45s");
+  });
+
+  test("<60min → 'Nmin'", () => {
+    expect(formatDurationShort(1800)).toBe("30min");
+    expect(formatDurationShort(60)).toBe("1min");
+  });
+
+  test("≥60min on the hour → 'Hh'", () => {
+    expect(formatDurationShort(7200)).toBe("2h");
+    expect(formatDurationShort(3600)).toBe("1h");
+  });
+
+  test("≥60min with minutes → 'HhMm'", () => {
+    expect(formatDurationShort(3900)).toBe("1h5m"); // 65min
+    expect(formatDurationShort(54000)).toBe("15h"); // 15h on the hour
+    expect(formatDurationShort(54000 + 600)).toBe("15h10m");
+  });
+});
+
+describe("formatCadenceColumn — verdict-to-display", () => {
+  test("undefined → '—'", () => {
+    expect(formatCadenceColumn(undefined)).toBe("—");
+  });
+
+  test("'exempt' → '(exempt)'", () => {
+    const obs: CadenceObservation = {
+      windowSec: 1800,
+      commitsInWindow: 0,
+      lastCommitAt: null,
+      lastCommitSha: null,
+      ageOfLastCommitSec: null,
+      verdict: "exempt",
+    };
+    expect(formatCadenceColumn(obs)).toBe("(exempt)");
+  });
+
+  test("each non-exempt verdict carries its emoji + age", () => {
+    const base: Omit<CadenceObservation, "verdict"> = {
+      windowSec: 1800,
+      commitsInWindow: 1,
+      lastCommitAt: 1000,
+      lastCommitSha: "abc1234",
+      ageOfLastCommitSec: 300,
+    };
+    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe(
+      "🟢 shipping (5min)",
+    );
+    expect(
+      formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" }),
+    ).toBe("🟡 idle (1h)");
+    expect(
+      formatCadenceColumn({
+        ...base,
+        ageOfLastCommitSec: 15 * 3600,
+        verdict: "dormant",
+      }),
+    ).toBe("🔴 dormant (15h)");
+    expect(
+      formatCadenceColumn({
+        ...base,
+        ageOfLastCommitSec: 3 * 3600,
+        verdict: "ship-zero-window",
+      }),
+    ).toBe("🚨 ship-zero (3h)");
+  });
+});
+
+describe("resolveCadenceConfig — defaults + per-team overrides", () => {
+  function makeTeam(overrides?: Partial<Team["cadence"]>): Team {
+    return {
+      name: "t",
+      members: [],
+      ...(overrides !== undefined ? { cadence: overrides } : {}),
+    } as Team;
+  }
+
+  test("absent cadence block → all fields from DEFAULT_CADENCE_CONFIG", () => {
+    const r = resolveCadenceConfig(makeTeam());
+    expect(r.enabled).toBe(DEFAULT_CADENCE_CONFIG.enabled);
+    expect(r.windowSec).toBe(DEFAULT_CADENCE_CONFIG.windowSec);
+    expect(r.thresholds).toEqual(DEFAULT_CADENCE_THRESHOLDS);
+    expect(r.laneStallEnabled).toBe(DEFAULT_CADENCE_CONFIG.laneStallEnabled);
+    expect(r.exemptMembers).toEqual([]);
+  });
+
+  test("partial cadence block → unset fields fall back to defaults", () => {
+    const r = resolveCadenceConfig(makeTeam({ windowSec: 600 }));
+    expect(r.windowSec).toBe(600);
+    expect(r.enabled).toBe(DEFAULT_CADENCE_CONFIG.enabled);
+    expect(r.thresholds.shippingMaxAgeSec).toBe(
+      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
+    );
+  });
+
+  test("partial thresholds → unset threshold keys fall back to defaults", () => {
+    const r = resolveCadenceConfig(
+      makeTeam({ thresholds: { dormantMaxAgeSec: 3600 } }),
+    );
+    expect(r.thresholds.dormantMaxAgeSec).toBe(3600);
+    expect(r.thresholds.shippingMaxAgeSec).toBe(
+      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
+    );
+    expect(r.thresholds.idleMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.idleMaxAgeSec);
+  });
+
+  test("exemptMembers per-team override", () => {
+    const r = resolveCadenceConfig(makeTeam({ exemptMembers: ["planner", "reviewer"] }));
+    expect(r.exemptMembers).toEqual(["planner", "reviewer"]);
+  });
+});
+
+describe("gatherStatus — cadence column integration", () => {
+  test("cadence.enabled=false → row.cadence stays undefined", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const teamRaw = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const team: Team = { ...teamRaw, cadence: { enabled: false } };
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      gitLog: async () => [],
+    });
+    expect(snap.members[0]?.cadence).toBeUndefined();
+  });
+
+  test("exempt member → verdict='exempt', commits in log NOT consulted", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const teamRaw = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const team: Team = {
+      ...teamRaw,
+      cadence: { exemptMembers: ["alpha"] },
+    };
+    let gitCalls = 0;
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      gitLog: async () => {
+        gitCalls += 1;
+        return [];
+      },
+    });
+    expect(snap.members[0]?.cadence?.verdict).toBe("exempt");
+    expect(gitCalls).toBe(0);
+  });
+
+  test("gitLog injection drives verdict — fresh commit → 'shipping'", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const nowMs = 1_700_000_000_000;
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => nowMs,
+      gitLog: async () => [`abcdef1234 ${Math.floor(nowMs / 1000) - 60}`],
+    });
+    expect(snap.members[0]?.cadence?.verdict).toBe("shipping");
+    expect(snap.members[0]?.cadence?.ageOfLastCommitSec).toBe(60);
+  });
+
+  test("gitLog injection — stale commit (8h ago) → 'dormant'", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const nowMs = 1_700_000_000_000;
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => nowMs,
+      gitLog: async () => [`abcdef1234 ${Math.floor(nowMs / 1000) - 8 * 3600}`],
+    });
+    expect(snap.members[0]?.cadence?.verdict).toBe("dormant");
+  });
+});
+
+describe("text mode — pane-state column rename + cadence column", () => {
+  test("header row uses 'pane-state' (not 'alive' or bare 'state')", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("pane-state");
+    // 'cadence' header column is the canonical truth-signal column.
+    expect(out).toContain("cadence");
+  });
+
+  test("text mode shows 'idle' cadence for tmpdir worktree (no .git)", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    // No .git in the stage's teamDir → git log probe fails → empty
+    // log → verdict='idle' with null age. formatCadenceColumn renders
+    // "🟡 idle (never)".
+    expect(out).toMatch(/🟡 idle \(never\)/);
+  });
+});
+

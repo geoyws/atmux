@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — commit-cadence column in `atmux status` (ADR-148 T2)
+
+- **New cadence column** in `atmux status` output per [ADR-148](docs/adr/148-commit-cadence-truth-signal.md) §D3. Renders the canonical truth-signal for "is this member shipping?": one of `🟢 shipping (Nmin)` / `🟡 idle (HhMm)` / `🔴 dormant (Hh)` / `🚨 ship-zero (Hh)` per ADR-148 §D2 classifier. Sourced from per-member `git -C <worktree> log --since=<windowSec>s --author=<name>` — the cadence is the truth signal; pane-state is the proxy.
+- **`state` column renamed to `pane-state`** per ADR-148 §D3 to make the proxy explicit. Existing operators reading the column see the same cage-state values (`active`/`wedged`/`bootstrapping`/`down`); the header rename signals that this is a process observable, NOT a verdict on whether the member is shipping. The cadence column is the new primary verdict; the pane-state column persists for one release cycle so operators with muscle memory still see the process diagnostic.
+- **New `team.json::cadence` config block** per ADR-148 §D7 — opt-out via `cadence.enabled: false`; per-member opt-out via `cadence.exemptMembers: ["planner", "reviewer"]` (exempt members render as `(exempt)`); per-team threshold overrides under `cadence.thresholds` (shippingMaxAgeSec / idleMaxAgeSec / dormantMaxAgeSec / shipZeroWindowSec). Defaults match ADR-148 §D7 (30-min ship window, 2-hr ship-zero threshold matching CLAUDE.md whip §0.05 stake floor).
+- **JSON output gains `members[].cadence`** with the `CadenceObservation` shape (`windowSec`, `commitsInWindow`, `lastCommitAt`, `lastCommitSha`, `ageOfLastCommitSec`, `verdict`). Backwards-compat: the legacy `paneCommand` + `cageState` fields remain unchanged so existing consumers (dashboards, cockpit aggregators) are not broken.
+- **Out of scope this commit** — T3 (lane-stall cron rule) + T5 (`src/core/cadence-classifier.ts` extraction + martinet observe() wiring + `[ship-zero-window]` Discord template) ship in follow-up Tasks under the same EPIC. T2 inlines the classifier in `src/verbs/status.ts` so the column surfaces today; T5 lifts the classifier verbatim into the shared module.
+
 ### 📋 Proposed — ombudsman role + release-notes layout (ADR-147)
 
 - **New per-team role `ombudsman`** per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1 — adjudicates open complaints (filed by medic / whip-velocity-gate / operator / CLI) and writes a durable response log to the day's release-notes file. Closes the parking-lot task `t-441d6d4c` reframed as the EPIC umbrella.

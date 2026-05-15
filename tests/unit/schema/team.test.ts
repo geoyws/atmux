@@ -10,12 +10,16 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  DEFAULT_CADENCE_CONFIG,
+  DEFAULT_CADENCE_THRESHOLDS,
   DEFAULT_MARTINET_CADENCE_SEC,
   DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
   DEFAULT_WORKTREE_ROOT,
   MartinetImpl,
   Team,
+  TeamCadence,
+  TeamCadenceThresholds,
   TeamFallback,
   TeamMartinetOverrides,
   TeamMember,
@@ -616,5 +620,143 @@ describe("DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS constant (ADR-147 §D2)", () => {
     // precedent). A drift here is intentional — bump in lockstep with
     // the ADR §D2 default narrative.
     expect(DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS).toBe(15);
+  });
+});
+
+// ---------- TeamCadence — ADR-148 §D7 ----------
+
+describe("TeamCadenceThresholds — valid + defaults (ADR-148 §D2)", () => {
+  test("empty object parses cleanly — all fields optional", () => {
+    const t = TeamCadenceThresholds.parse({});
+    expect(t.shippingMaxAgeSec).toBeUndefined();
+    expect(t.idleMaxAgeSec).toBeUndefined();
+    expect(t.dormantMaxAgeSec).toBeUndefined();
+    expect(t.shipZeroWindowSec).toBeUndefined();
+  });
+
+  test("explicit values round-trip", () => {
+    const t = TeamCadenceThresholds.parse({
+      shippingMaxAgeSec: 600,
+      idleMaxAgeSec: 3600,
+      dormantMaxAgeSec: 14400,
+      shipZeroWindowSec: 7200,
+    });
+    expect(t.shippingMaxAgeSec).toBe(600);
+    expect(t.idleMaxAgeSec).toBe(3600);
+    expect(t.dormantMaxAgeSec).toBe(14400);
+    expect(t.shipZeroWindowSec).toBe(7200);
+  });
+
+  test("strict-mode rejects unknown keys (drift detection — ADR-054 §D3)", () => {
+    expect(() =>
+      TeamCadenceThresholds.parse({
+        shippingMaxAgeSec: 1800,
+        shippingMaxAgesSec: 1800, // typo with trailing 's'
+      }),
+    ).toThrow();
+  });
+
+  test("negative thresholds rejected (must be positive integer)", () => {
+    expect(() => TeamCadenceThresholds.parse({ shippingMaxAgeSec: -10 })).toThrow();
+    expect(() => TeamCadenceThresholds.parse({ idleMaxAgeSec: 0 })).toThrow();
+  });
+
+  test("non-integer values rejected", () => {
+    expect(() => TeamCadenceThresholds.parse({ shippingMaxAgeSec: 1.5 })).toThrow();
+  });
+});
+
+describe("TeamCadence — valid + defaults (ADR-148 §D7)", () => {
+  test("empty object parses cleanly", () => {
+    const c = TeamCadence.parse({});
+    expect(c.enabled).toBeUndefined();
+    expect(c.windowSec).toBeUndefined();
+    expect(c.thresholds).toBeUndefined();
+    expect(c.laneStallEnabled).toBeUndefined();
+    expect(c.exemptMembers).toBeUndefined();
+  });
+
+  test("full block round-trips", () => {
+    const c = TeamCadence.parse({
+      enabled: true,
+      windowSec: 1800,
+      thresholds: {
+        shippingMaxAgeSec: 1800,
+        idleMaxAgeSec: 7200,
+        dormantMaxAgeSec: 21600,
+        shipZeroWindowSec: 7200,
+      },
+      laneStallEnabled: true,
+      laneStallMinAgeSec: 1800,
+      exemptMembers: ["planner", "reviewer"],
+    });
+    expect(c.enabled).toBe(true);
+    expect(c.windowSec).toBe(1800);
+    expect(c.thresholds?.dormantMaxAgeSec).toBe(21600);
+    expect(c.exemptMembers).toEqual(["planner", "reviewer"]);
+  });
+
+  test("partial block (only windowSec) parses with others undefined", () => {
+    const c = TeamCadence.parse({ windowSec: 600 });
+    expect(c.windowSec).toBe(600);
+    expect(c.enabled).toBeUndefined();
+  });
+
+  test("strict-mode rejects unknown top-level keys", () => {
+    expect(() => TeamCadence.parse({ enabledd: true })).toThrow();
+  });
+
+  test("negative laneStallMinAgeSec rejected", () => {
+    expect(() => TeamCadence.parse({ laneStallMinAgeSec: -1 })).toThrow();
+    expect(() => TeamCadence.parse({ windowSec: 0 })).toThrow();
+  });
+
+  test("exemptMembers accepts empty array (default-equivalent)", () => {
+    const c = TeamCadence.parse({ exemptMembers: [] });
+    expect(c.exemptMembers).toEqual([]);
+  });
+});
+
+describe("Team schema integrates TeamCadence cleanly (ADR-148 §D7)", () => {
+  test("Team.parse accepts a `cadence` block", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      cadence: { enabled: true, windowSec: 900 },
+    });
+    expect(team.cadence?.enabled).toBe(true);
+    expect(team.cadence?.windowSec).toBe(900);
+  });
+
+  test("Team.parse without `cadence` block leaves field undefined", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.cadence).toBeUndefined();
+  });
+
+  test("nested invalid threshold rejects through Team.parse", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        cadence: { thresholds: { shippingMaxAgeSec: -1 } },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("DEFAULT_CADENCE_THRESHOLDS / DEFAULT_CADENCE_CONFIG constants (ADR-148 §D7)", () => {
+  test("threshold defaults match ADR-148 §D7 table", () => {
+    expect(DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec).toBe(1800);
+    expect(DEFAULT_CADENCE_THRESHOLDS.idleMaxAgeSec).toBe(7200);
+    expect(DEFAULT_CADENCE_THRESHOLDS.dormantMaxAgeSec).toBe(21600);
+    expect(DEFAULT_CADENCE_THRESHOLDS.shipZeroWindowSec).toBe(7200);
+  });
+
+  test("config defaults match ADR-148 §D7 narrative (cadence enabled by default)", () => {
+    expect(DEFAULT_CADENCE_CONFIG.enabled).toBe(true);
+    expect(DEFAULT_CADENCE_CONFIG.windowSec).toBe(1800);
+    expect(DEFAULT_CADENCE_CONFIG.laneStallEnabled).toBe(true);
+    expect(DEFAULT_CADENCE_CONFIG.laneStallMinAgeSec).toBe(1800);
+    expect(DEFAULT_CADENCE_CONFIG.exemptMembers).toEqual([]);
   });
 });

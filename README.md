@@ -101,7 +101,7 @@ atmux attach                  # tmux attach to watch
 
 # 3. Drive the team:
 atmux tell-lead "build a /healthz endpoint with 100% test coverage"
-atmux status                  # team pulse
+atmux status                  # team pulse + commit-cadence column (ADR-148)
 atmux outbox                  # read lead's async replies
 
 # 4. Automation is wired for you.
@@ -699,6 +699,43 @@ atmux add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--comman
 atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
 ```
+
+## 📡 Commit-cadence column (ADR-148)
+
+`atmux status` surfaces a per-member **cadence** column — the canonical truth-signal for "is this member shipping?" per [ADR-148](docs/adr/148-commit-cadence-truth-signal.md). The column reads the member's worktree git log directly (`git -C <worktree> log --since=<windowSec>s --author=<name>`) and renders one of four verdicts:
+
+| Verdict | Trigger | Display |
+|---|---|---|
+| `shipping` | ≥1 commit in window AND last commit `< shippingMaxAgeSec` (default 30 min) | `🟢 shipping (5min)` |
+| `idle` | 0 commits in window AND last commit `< idleMaxAgeSec` (default 2h) — could resume soon | `🟡 idle (1h2m)` |
+| `ship-zero-window` | 0 commits in window AND age `≥ shipZeroWindowSec` (default 2h) — escalation flag per ADR-132 §E6 | `🚨 ship-zero (3h)` |
+| `dormant` | 0 commits in window AND age `≥ dormantMaxAgeSec` (default 6h) | `🔴 dormant (15h)` |
+
+Per-member exemption (planners during long decomp passes, reviewers during multi-commit audit reviews) lands in `team.json::cadence.exemptMembers`; those rows render `(exempt)`.
+
+Cadence is the truth signal — **pane-state is the proxy.** The companion `pane-state` column (formerly `state`) shows the cage-state taxonomy (`active`/`wedged`/`bootstrapping`/`down`); use it for "is the process running?" diagnostics, NOT for "is work happening?" verdicts.
+
+Config under `team.json::cadence` — all fields optional, defaults applied per ADR-148 §D7:
+
+```jsonc
+{
+  "cadence": {
+    "enabled": true,
+    "windowSec": 1800,
+    "thresholds": {
+      "shippingMaxAgeSec": 1800,
+      "idleMaxAgeSec":     7200,
+      "dormantMaxAgeSec":  21600,
+      "shipZeroWindowSec": 7200
+    },
+    "laneStallEnabled":   true,
+    "laneStallMinAgeSec": 1800,
+    "exemptMembers":      []
+  }
+}
+```
+
+JSON output (`atmux status --json`) gains `members[].cadence` with the full observation shape: `windowSec`, `commitsInWindow`, `lastCommitAt`, `lastCommitSha`, `ageOfLastCommitSec`, `verdict`.
 
 ## 🌱 Eternal-improvement (ADR-052)
 
