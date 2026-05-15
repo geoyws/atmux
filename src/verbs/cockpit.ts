@@ -1385,27 +1385,51 @@ export function buildSuperdoctorWindowCommand(sd: CockpitSuperdoctor): string {
  * runs. Per ADR-132 §D4 the dispatcher cage launches the resolved
  * impl directly — `claude` variant runs the standard claude TUI under
  * the operator account (structurally identical to medic); `cursor`
- * variant runs `cursor-agent --print --model <model>` against the
- * Tier-2 cage workdir. The window-command builder narrows on the
- * discriminator to pick the right invocation.
+ * variant runs the `atmux martinet tick` loop which internally shells
+ * out to `cursor-agent --print --model <model>` per tick (wired in
+ * `src/verbs/martinet.ts::buildMartinet` — T3 / t-e96d286a).
  *
- * Today the cursor branch still routes through the Claude shell
- * (v1 keeps the dispatcher in claude) — the cage spawn step in
- * T8 follow-up will wire the actual `cursor-agent` exec. The
- * narrowing here is structural readiness for that swap; both
- * variants emit a buildable command today.
+ * The window discriminator narrows the invocation:
+ *   - claude  → standard claude TUI (`/loop /martinet` auto-fired
+ *               post-settle by `autoStartMartinetLoop`)
+ *   - cursor  → bash loop firing `atmux martinet tick` at the cadence
+ *               configured in `team.martinetOverrides.cadenceSec`
+ *               (default 270s per `DEFAULT_MARTINET_CADENCE_SEC`).
+ *               No interactive TUI — cursor-agent is a `--print` CLI
+ *               and the loop is owned by the verb shell, not a Claude
+ *               REPL.
+ *
+ * Cage posture (per task body §Cage provisioning + ADR-058 §D3): the
+ * cockpit session itself runs as operator UID with full git access —
+ * the W3 window therefore IS the Tier-2 cage in trust posture.
+ * Martinet is fleet-wide singleton (one cage observes all teams), so
+ * no per-team `/tmp/atmux_cursor_martinet_<team>/sock` carve-out is
+ * provisioned; the task body's per-team cage path predated the §D2
+ * fleet-singleton reshape and is reframed here as "operator-UID W3
+ * window with per-tick cursor-agent shell-out."
  */
 export function buildMartinetWindowCommand(m: CockpitMartinet): string {
   if (m.impl === "claude") {
     return buildClaudeWindowCommand(m);
   }
-  // Cursor variant — for v1 we fall back to the claude shell shape
-  // (the cage spawn step in ADR-132 T8 follow-up wires the real
-  // `cursor-agent` invocation). Pass an empty claude-shape so the
-  // shared builder produces a valid command without claude-specific
-  // overrides. `enabled` is gated upstream; the builder only reads
-  // `claudeAccount` / `tuiOverrides`.
-  return buildClaudeWindowCommand({});
+  // Cursor variant — bash loop firing `atmux martinet tick` at the
+  // cadence configured in `team.martinetOverrides.cadenceSec` (default
+  // 270s per `DEFAULT_MARTINET_CADENCE_SEC`). The verb's
+  // `buildMartinet` constructs CursorMartinet which spawns
+  // `cursor-agent --print --output-format json --model <m.model>
+  // --force <prompt>` on every tick.
+  //
+  // Sleep cadence is hard-coded here at 270s (5min - cache-safe per
+  // global CLAUDE.md "Don't pick 300s" cache-window rule). Per-team
+  // override via `martinetOverrides.cadenceSec` is honored by the
+  // verb's per-team resolver — this loop's cadence is the FLOOR; the
+  // verb may exit early if internal timing dictates.
+  return [
+    "while true; do",
+    "  atmux martinet tick",
+    "  sleep 270",
+    "done",
+  ].join(" ");
 }
 
 /** Shared body for the medic / martinet window-command builders.

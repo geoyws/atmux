@@ -1278,6 +1278,50 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
   });
 });
 
+// ---------- ADR-132 §D2: buildMartinetWindowCommand ----------
+
+describe("buildMartinetWindowCommand (ADR-132 §D2)", () => {
+  test("claude variant emits standard claude TUI invocation", async () => {
+    const { buildMartinetWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+    const cmd = buildMartinetWindowCommand({
+      impl: "claude",
+      enabled: true,
+    });
+    expect(cmd).toContain("claude");
+    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
+    expect(cmd).toContain("--permission-mode auto");
+  });
+
+  test("claude variant honours tuiOverrides + claudeAccount", async () => {
+    const { buildMartinetWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+    const cmd = buildMartinetWindowCommand({
+      impl: "claude",
+      enabled: true,
+      claudeAccount: { configDir: "/root/.claude-mart", label: "mart" },
+      tuiOverrides: { effortLevel: "high" },
+    });
+    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-mart");
+    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
+  });
+
+  test("cursor variant emits 'while true; do atmux martinet tick; sleep N; done' loop (T3)", async () => {
+    const { buildMartinetWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+    const cmd = buildMartinetWindowCommand({
+      impl: "cursor",
+      enabled: true,
+      cursorBinPath: "/usr/local/bin/cursor-agent",
+      model: "composer-2-fast",
+      cageTier: "tier-2",
+    });
+    expect(cmd).toContain("while true");
+    expect(cmd).toContain("atmux martinet tick");
+    expect(cmd).toContain("sleep");
+    // Cursor variant must NOT spawn a Claude TUI — it shells out to
+    // cursor-agent per tick from inside the verb.
+    expect(cmd).not.toContain("claude --permission-mode");
+  });
+});
+
 // ---------- ADR-064 §3: resolveTeamWindowMode + buildTeamWindowCommand ----------
 
 function fakeTeam(driverSession: { tui?: string | null } | null | undefined): Team {

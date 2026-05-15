@@ -76,37 +76,15 @@ const HAS_CURSOR_IMPL = existsSync(CURSOR_IMPL_URL.pathname);
 const HAS_CURSOR_AGENT = probeBin(["cursor-agent", "--version"]);
 const RUN_REAL_CURSOR = Bun.env.RUN_REAL_CURSOR === "1";
 
-// ---------- Dynamic import shim ----------
+// ---------- Static import (post-T3 / t-e96d286a) ----------
 //
-// CursorMartinet impl lands with ADR-132 T4 (`t-e96d286a`). Until then
-// the file doesn't exist; a static `import` would TS2307 the whole
-// suite. We funnel every use through `loadCursorMartinet()` so the
-// `@ts-expect-error` directive lives in exactly one place — when T4
-// ships, the directive itself becomes wrong (error-not-expected) and
-// surfaces as a typecheck failure pointing at the line to delete, which
-// is the natural trip-wire for "this helper is obsolete; switch to a
-// static typed import."
+// CursorMartinet shipped with ADR-132 T3 (commit landing this comment).
+// Pre-T3 this funnel was a dynamic import + `@ts-expect-error`
+// directive so the suite typechecked before cursor.ts existed; with
+// the impl in place the static import gives proper type narrowing
+// for every call site below.
 
-interface CursorMartinetCtorDeps {
-  observeFn: (team: string) => Promise<Observation>;
-  runCursorAgent: (args: string[]) => Promise<string>;
-  sendKeys?: (window: string, keys: string) => Promise<{ success: boolean }>;
-}
-
-interface CursorMartinetModule {
-  CursorMartinet: new (deps: CursorMartinetCtorDeps) => Martinet;
-}
-
-async function loadCursorMartinet(): Promise<CursorMartinetModule> {
-  // cursor.ts ships with ADR-132 T4 (t-e96d286a); until then the
-  // import path is unresolved at typecheck time. The @ts-expect-error
-  // directive lives on the import line itself; when T4 lands the
-  // directive errors and this helper should be replaced with a static
-  // typed import.
-  // @ts-expect-error — see comment above; remove when T4 (t-e96d286a) ships.
-  const mod = await import("../../src/abstractions/martinets/cursor.ts");
-  return mod as CursorMartinetModule;
-}
+import { CursorMartinet } from "../../src/abstractions/martinets/cursor.ts";
 
 // ---------- Token-burn ceilings ----------
 //
@@ -246,14 +224,13 @@ if (!RUN_REAL_CURSOR) {
 
 describe.skipIf(!HAS_CURSOR_IMPL)("CursorMartinet — module-load smoke", () => {
   test("imports + instantiates + satisfies Martinet interface", async () => {
-    const mod = await loadCursorMartinet();
-    expect(mod.CursorMartinet).toBeDefined();
-    expect(typeof mod.CursorMartinet).toBe("function");
+    expect(CursorMartinet).toBeDefined();
+    expect(typeof CursorMartinet).toBe("function");
 
     // Instantiation deps shape — `runCursorAgent` is the injectable
     // spawn-fn the impl uses. Mock returns the canonical envelope so
     // construction round-trips without a real cursor-agent.
-    const inst: Martinet = new mod.CursorMartinet({
+    const inst: Martinet = new CursorMartinet({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
@@ -273,9 +250,9 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
   "CursorMartinet — decide() invokes composer-2-fast",
   () => {
     test("model flag is 'composer-2-fast' when cursor-agent is spawned", async () => {
-      const mod = await loadCursorMartinet();
+
       const seenArgs: string[][] = [];
-      const inst: Martinet = new mod.CursorMartinet({
+      const inst: Martinet = new CursorMartinet({
         observeFn: async () => fixtureObservation(),
         runCursorAgent: async (args: string[]) => {
           seenArgs.push(args);
@@ -313,8 +290,8 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
   "CursorMartinet — §D5 E6 ship-zero mandatory escalation",
   () => {
     test("shouldEscalateToClaudeLead returns true when last2hr === 0", async () => {
-      const mod = await loadCursorMartinet();
-      const inst: Martinet = new mod.CursorMartinet({
+
+      const inst: Martinet = new CursorMartinet({
         observeFn: async () => fixtureObservation({ last2hrCommits: 0 }),
         runCursorAgent: async () =>
           JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
@@ -325,8 +302,8 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
     });
 
     test("shouldEscalateToClaudeLead returns false when last2hr > 0 AND no other E1-E5 trigger", async () => {
-      const mod = await loadCursorMartinet();
-      const inst: Martinet = new mod.CursorMartinet({
+
+      const inst: Martinet = new CursorMartinet({
         observeFn: async () => fixtureObservation({ last2hrCommits: 10 }),
         runCursorAgent: async () =>
           JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
@@ -343,13 +320,13 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
   "CursorMartinet — observe → decide → apply round-trip",
   () => {
     test("apply() returns success on a non-escalation NudgeAction", async () => {
-      const mod = await loadCursorMartinet();
+
 
       // Stub tmux send-fn — captures the dispatched action so apply()
       // has an observable side-effect.
       const tmuxSent: { window: string; keys: string }[] = [];
 
-      const inst: Martinet = new mod.CursorMartinet({
+      const inst: Martinet = new CursorMartinet({
         observeFn: async () => fixtureObservation(),
         runCursorAgent: async () =>
           JSON.stringify(
@@ -398,10 +375,10 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
   "CursorMartinet — token-burn (deterministic, mocked envelope)",
   () => {
     test("input + output tokens fit within budget envelope vs Claude baseline", async () => {
-      const mod = await loadCursorMartinet();
+
 
       let observedUsage: CursorAgentJsonEnvelope["usage"] | null = null;
-      const inst: Martinet = new mod.CursorMartinet({
+      const inst: Martinet = new CursorMartinet({
         observeFn: async () => fixtureObservation(),
         runCursorAgent: async () => {
           // Realistic-but-bounded composer-2-fast usage from a single
