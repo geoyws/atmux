@@ -51,9 +51,10 @@ export interface TaskRef {
 /** A kanban hygiene fingerprint flagged as `wedged` for Martinet's
  *  observe(). Composes on ADR-131's `HygieneFingerprintClass` set
  *  (ghost-owner, lane-mismatch, role-mismatch, lane-null-orphan,
- *  prio-null) — the Martinet observation surfaces wedges the
- *  superdoctor hygiene drain hasn't auto-fixed yet so the Claude
- *  lead can intervene via the E2 escalation channel (§D5). */
+ *  prio-null) — the Martinet observation surfaces wedges the medic
+ *  (formerly `superdoctor`; renamed per ADR-133) hygiene drain
+ *  hasn't auto-fixed yet so the Claude lead can intervene via the
+ *  E2 escalation channel (§D5). */
 export interface WedgeFingerprint {
   taskId: string;
   /** Free-form fingerprint class — typically maps 1:1 to
@@ -110,10 +111,11 @@ export interface Observation {
     /** Tasks transitioned to `done` since `lastTickAt`. */
     completedSinceLastTick: ReadonlyArray<TaskRef>;
     /** Active hygiene wedges (ADR-131 fingerprints not yet
-     *  auto-fixed by superdoctor's drain). Composes E2 escalation
-     *  evidence directly — Martinet shouldn't re-implement
-     *  detection; just observe whatever's in `superdoctor_hygiene`
-     *  table where `fix_applied_at IS NULL`. */
+     *  auto-fixed by medic's drain — renamed from `superdoctor` per
+     *  ADR-133). Composes E2 escalation evidence directly — Martinet
+     *  shouldn't re-implement detection; just observe whatever's in
+     *  the medic-hygiene table where `fix_applied_at IS NULL` (the
+     *  table name lands with the ADR-131 schema migration). */
     wedgedClaims: ReadonlyArray<WedgeFingerprint>;
   };
   /** Commit-cadence sweep counts — recent commit rate is the
@@ -215,10 +217,12 @@ export interface ApplyResult {
  *     mandatory E6 floor (T6 enforces the floor unconditionally).
  *
  * Per ADR-132 §D2 the dispatcher lives in cockpit W3 (sibling of
- * superdoctor at W2). The impl itself does NOT manage its own
- * cage — the cockpit rebuild step provisions cages per
- * `cockpit.martinet.{claudeAccount, tuiOverrides}` (ADR-077 §D2
- * pattern verbatim).
+ * medic at W2 — formerly named `superdoctor`; renamed per ADR-133).
+ * The impl itself does NOT manage its own cage — the cockpit rebuild
+ * step provisions cages per the resolved variant of `cockpit.martinet`
+ * (claude variant: `{claudeAccount, tuiOverrides}`; cursor variant:
+ * `{cursorBinPath, model, cageTier}` — ADR-132 §D4 discriminated
+ * union; sibling of ADR-077 §D2's superdoctor pattern).
  */
 export interface Martinet {
   /** Impl identifier. Constrained to `claude` (degenerate

@@ -2,7 +2,11 @@
 
 **Status**: accepted (impl wave shipped + reviewer signoff 2026-05-09 13:53 MYT; status-flip 2026-05-12 per t-bb05b9ba — driver-inbox 16:46 MYT 2026-05-10 ask. Shipped commits: §A `ace99b4` · §B `8d8de60` · §C `5d128ec` · §D `cb25664`. Reviewer signoff doc at `docs/reviews/ADR-079+080-revise-pass-1-signoff-2026-05-09.md`.)
 **Date**: 2026-05-09
-**Driver-ref**: 2026-05-08 17:07 MYT superdriver three-bug bundle + 18:35 MYT sopx-driver 5-finding addendum (`/root/work/src/atmux/.atmux/handoff/superdriver-to-driver-discord-noise-20260508T1707-MYT.md`). Gate cleared by ADR-077 superdoctor wave shipping (`6db43f6` chore(release): 0.6.0). Operator (sopx-driver, 2026-05-08 18:30 MYT) measured `sopx/.atmux/logs/discord.log` at ~275 pings/24h with 90% bare-`[whip]` boilerplate; target ≤80/24h. Demo-week deadline 2026-05-13.
+**Driver-ref**: 2026-05-08 17:07 MYT superdriver three-bug bundle + 18:35 MYT sopx-driver 5-finding addendum (`/root/work/src/atmux/.atmux/handoff/superdriver-to-driver-discord-noise-20260508T1707-MYT.md`). Gate cleared by ADR-077 medic[^medic-rename] wave shipping (`6db43f6` chore(release): 0.6.0). Operator (sopx-driver, 2026-05-08 18:30 MYT) measured `sopx/.atmux/logs/discord.log` at ~275 pings/24h with 90% bare-`[whip]` boilerplate; target ≤80/24h. Demo-week deadline 2026-05-13.
+
+[^medic-rename]: The cockpit self-healing role was renamed `superdoctor` → `medic` on 2026-05-14 per [ADR-133](./133-medic-rename.md). References to "medic" below originally read "superdoctor"; the ADR-077 wave shipped under the original name on 2026-05-08.
+
+> **Naming note 2026-05-14**: the role formerly called `superdoctor` (mentioned in §Driver-ref + §Context "what already shipped" rows) is now called **medic** per [ADR-133](133-medic-rename.md). Body refs to "superdoctor" retained for historical accuracy; supersession is naming-only, design unchanged.
 
 ## Context
 
@@ -211,7 +215,7 @@ This ADR addresses **emit-side** noise (validator allowlist, schedule cadence, t
 - **Webhook chunking** — covered by `discord.ts:8-9` (2000-byte hard limit).
 - **Receive-side filtering** (operator's Discord channel rules) — operator-owned, not atmux-owned.
 - **`[whip-audit]` stale rule beyond driver-name** — Class-B+ rules ported as-is in §B; broader audit-rule modernisation = separate ADR if surfaced.
-- **Bug 4 (cage-killing `bun test`)** — flagged in 17:07 MYT handoff add-on (00:50 MYT 2026-05-09); test-isolation lane, NOT Discord-noise. Recommend separate ADR if not already addressed in ADR-077 superdoctor wave.
+- **Bug 4 (cage-killing `bun test`)** — flagged in 17:07 MYT handoff add-on (00:50 MYT 2026-05-09); test-isolation lane, NOT Discord-noise. Recommend separate ADR if not already addressed in ADR-077 medic wave.
 
 ## Dispatch table
 

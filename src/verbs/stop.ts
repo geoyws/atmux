@@ -47,6 +47,7 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
+import { softStop } from "../core/soft-stop.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import {
@@ -57,12 +58,16 @@ import {
 import type { TmuxNamespace } from "../abstractions/tmux.ts";
 import { cronRemove } from "./cron-remove.ts";
 
-const USAGE = "atmux stop [--force|-f] [--no-archive] [--prune-branch]";
+const USAGE = "atmux stop [--force|-f] [--soft] [--no-archive] [--prune-branch]";
 
 /** Parsed `stop` argv. */
 export interface StopArgs {
   force: boolean;
   archive: boolean;
+  /** ADR-087: soft-stop path. Mutually exclusive with `--force` — the
+   *  former is a graceful "finish in flight + capture state" path, the
+   *  latter is an immediate teardown. Bare `stop` is unchanged. */
+  soft: boolean;
   /** ADR-084 OQ2 opt-in: after `git worktree remove` succeeds for a
    *  member, also run `git branch -d <base>-<member>` to delete the
    *  orphan per-member branch. Requires `--force` (the layered opt-in
@@ -76,6 +81,7 @@ export interface StopArgs {
 export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
   let force = false;
   let archive = true;
+  let soft = false;
   let pruneBranch = false;
   let socketPath: string | undefined;
   let teamDir: string | undefined;
@@ -84,6 +90,11 @@ export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
     const a = argv[i];
     if (a === "--force" || a === "-f") {
       force = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--soft") {
+      soft = true;
       i += 1;
       continue;
     }
@@ -117,6 +128,12 @@ export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
     }
     throw new UsageError({ what: `stop: unknown arg: ${a ?? ""}`, hint: USAGE });
   }
+  if (force && soft) {
+    throw new UsageError({
+      what: "stop: --force and --soft are mutually exclusive",
+      hint: "pick one — `--force` for immediate teardown, `--soft` for graceful in-flight capture",
+    });
+  }
   // Layered opt-in: --prune-branch requires --force, same posture as
   // pruneWorktree's `dirty: 'force'`. Without --force the prune step
   // doesn't run at all (worktrees survive normal stop+start cycles per
@@ -127,7 +144,7 @@ export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
       hint: USAGE,
     });
   }
-  const out: StopArgs = { force, archive, pruneBranch };
+  const out: StopArgs = { force, archive, soft, pruneBranch };
   if (socketPath !== undefined) out.socketPath = socketPath;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
@@ -184,7 +201,27 @@ export async function stop(
     return 0;
   }
 
-  if (!parsed.force) {
+  // ADR-087: soft-stop replaces the bare-stop C-c interrupt with a
+  // graceful "finish in flight + capture state" path. The soft-stop
+  // core sends a comment-prefixed notice (NOT C-c), waits the
+  // configurable grace window (`team.softStopGraceSeconds`, default 5s),
+  // and writes `<atmuxDir>/state/resume.json` for the next `atmux start`
+  // to surface. Hard-stop paths (bare + --force) keep their existing
+  // semantics; the mutual-exclusion gate in parseStopArgs prevents
+  // `--force --soft` ambiguity.
+  if (parsed.soft) {
+    const result = await softStop({
+      team,
+      atmuxDir,
+      sessionName,
+      tmux,
+      reason: "soft-stop",
+    });
+    process.stdout.write(
+      `soft-stop: notified ${result.notifiedCount}/${team.members.length} member panes; ` +
+        `${result.inFlightCount} in-flight task${result.inFlightCount === 1 ? "" : "s"} captured to ${result.manifestPath}\n`,
+    );
+  } else if (!parsed.force) {
     await sendCancelToMembers(tmux, sessionName, team);
     await sleep(2000);
   }

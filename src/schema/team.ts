@@ -33,6 +33,20 @@ export type TuiKind = z.infer<typeof TuiKind>;
 export const TeamMember = z
   .object({
     name: z.string().min(1),
+    /** ADR-136 (Option B): display label decoupled from member `name`.
+     *  When set, the display layer (buildWindowName, status, Discord,
+     *  briefs) uses `label`; the `name` field remains the immutable id
+     *  (kanban owner refs, state-file keys, socket-pubsub topics). When
+     *  unset, the display layer falls back to `name` — zero migration
+     *  for existing teams. Refine rule rejects `:` and `.` because both
+     *  are tmux window-name separator chars and would break
+     *  `__<team>__<member>` parsing. */
+    label: z
+      .string()
+      .refine((s) => !s.includes(":") && !s.includes("."), {
+        message: "label cannot contain ':' or '.' (tmux separator chars)",
+      })
+      .optional(),
     role: z.string().optional(),
     lane: z.string().optional(),
     tui: TuiKind.optional(),
@@ -157,6 +171,76 @@ export const TeamWhip = z
      *  survive `atmux handoff`. Default lead/planner/reviewer
      *  (ADR-056 §"Lead/planner exclusion"). */
     accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
+
+    // ---------- ADR-087 velocity-gate cadence knobs ----------
+    /** ADR-087 §Spec. Per-team tunables for the whip velocity-gate
+     *  classifier + strike counter. Operators rarely need to tune —
+     *  the defaults match the operator-observed failure mode that
+     *  drove the ADR (10 zero-commit heartbeats over 4.5h). The
+     *  feature kill-switch is `crons.whipVelocityGateEnabled` (lives
+     *  in `crons` for fleet-consistent shape with `laneTickEnabled`);
+     *  this sub-config carries the threshold knobs. */
+    velocityGate: z
+      .object({
+        /** Sliding window (minutes) over which the classifier counts
+         *  ground-truth commits. Default 60 — one hour; matches the
+         *  operator's "an hour without a commit on an active team is
+         *  the threshold of suspicion" framing in the Task body. */
+        windowMin: z.number().int().positive().optional(),
+        /** Strike count that escalates to a complaint via the
+         *  superdoctor-escalation pipeline (sibling Task t-e91fec98).
+         *  Default 3 — matches Task body §6 "3+ strikes → file
+         *  complaint for superdoctor". */
+        strikeThreshold: z.number().int().positive().optional(),
+        /** Standby grace window (minutes) — if a ground-truth commit
+         *  landed within this lookback, BAD is downgraded to STANDBY
+         *  (someone shipped recently; the team is not stalled, just
+         *  catching breath). Default 30 — half the main window, so
+         *  the "we just shipped, lead reading the next Task" state
+         *  doesn't strike. */
+        standbyGraceMin: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+
+    // ---------- ADR-050 fallback chain v1 (Tier 2 Cursor only) ----------
+    /** ADR-050 §Decision. Per-team Tier 2 (Cursor) fallback policy for
+     *  budget-pause recovery. Distinct from `team.fallback` (top-level,
+     *  ADR-058 multi-tier cascade) — v1 narrows to Tier 2 only with a
+     *  refuse-at-load `tier: z.literal(2)` so a misconfigured Tier 3+
+     *  value can't reach the v1 spawn path. Tier 3+ stays available
+     *  via the ADR-058 entry points (`dispatchFallbackOnPause`); the
+     *  v1 narrow path (`spawnFallbackCage` / `teardownFallbackCage`)
+     *  hits this sub-config. Once ADR-050b folds in Tier 3+, this
+     *  literal lifts. Default: every field has a default → omitting
+     *  the whole `fallback` block is equivalent to `enabled: false`
+     *  (existing teams see no behavior change). */
+    fallback: z
+      .object({
+        /** Master switch (v1 path). Default `false` — operator opts
+         *  in per-team after reading ADR-050 §Trigger semantics. */
+        enabled: z.boolean().default(false),
+        /** Minutes the budget-pause must be continuously active
+         *  before fallback fires. Default 30 — matches ADR-050
+         *  §Trigger §1 "one-off rate-limit blips that resolve
+         *  <30min do NOT spawn a fallback cage". Min 5 — anything
+         *  shorter risks spawning a cage that immediately gets torn
+         *  down when the resume tick arrives. */
+        sustainMins: z.number().int().min(5).default(30),
+        /** ADR-050 v1 supports Tier 2 only. `z.literal(2)` rejects
+         *  any other value at schema-load (the schema-layer half of
+         *  the Reviewer-pre-flag "defense-in-depth refuse at
+         *  schema-load + call-site" gate). Tier 3+ deferred to
+         *  ADR-050b — different isolation model (dedicated Linux
+         *  user, ACL-restricted workspace, no .git in cage). */
+        tier: z.literal(2).default(2),
+        /** Cursor model passed to `cursor-agent --print --model
+         *  <value> --force`. Default `composer-2` per ADR-050
+         *  §"Cursor's mutative-git path is e2e-validated" reference. */
+        cursorModel: z.string().default("composer-2"),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type TeamWhip = z.infer<typeof TeamWhip>;
@@ -264,14 +348,26 @@ export const TeamDecisions = z
 export type TeamDecisions = z.infer<typeof TeamDecisions>;
 
 /**
- * `team.json::groom` sub-config — daily groom hour-of-day (ADR-079 §A).
- * Groom runs once per day at the operator-chosen hour (default 04:00,
- * the quietest window).
+ * `team.json::groom` sub-config — daily groom hour-of-day (ADR-079 §A)
+ * + per-sub-op opt-in toggles. Groom runs once per day at the operator-
+ * chosen hour (default 04:00, the quietest window).
  */
 export const TeamGroom = z
   .object({
     /** Hour-of-day (0–23) at which `groom --quiet` fires. Default 4. */
     atHour: z.number().int().min(0).max(23).default(4),
+    /** ADR-062 §5 follow-up: invoke lane-drift-check as part of groom's
+     *  daily sweep. Optional: when **unset**, the sub-op auto-enables
+     *  iff `team.members[]` contains ≥1 entry with a non-empty `.lane`
+     *  field (same auto-shape as `crons.laneTickEnabled`). **Explicit
+     *  `false`** suppresses the sub-op regardless of roster — operators
+     *  who want fast-feedback only via the every-2-min cron line + standalone
+     *  `atmux lane-drift-check` toggle this off. **Explicit `true`**
+     *  always runs (even with zero lane-tagged members, where it's a
+     *  trivial no-op). Pairs with the standalone `atmux lane-drift-
+     *  check` verb — both paths coexist (cron for fast feedback, groom
+     *  for end-of-day catch-the-stragglers per Task t-3aa587cb). */
+    laneDriftCheck: z.boolean().optional(),
   })
   .strict();
 export type TeamGroom = z.infer<typeof TeamGroom>;
@@ -289,6 +385,43 @@ export const TeamUnblocker = z
   })
   .strict();
 export type TeamUnblocker = z.infer<typeof TeamUnblocker>;
+
+/**
+ * `team.json::crons` sub-config — per-line cron kill-switches (ADR-062
+ * §Rollback). Lets operators disable specific cron-emitted lines
+ * without a code change. Distinct from cadence knobs (`whip`, `report`,
+ * `decisions`, `groom`, `unblocker`) which live in their own sub-
+ * objects; `crons` is the place for boolean enable/disable toggles
+ * scoped to the cron emitter.
+ *
+ * Today only `laneTickEnabled` lives here (ADR-062 §Decision 4). Future
+ * line-level kill-switches (e.g. `whipResumeCheckEnabled` for teams
+ * that want claudeAccount probes but no auto-resume cron tick) would
+ * land here too.
+ */
+export const TeamCrons = z
+  .object({
+    /** ADR-062 §Rollback. When `false`, suppress the `lane-tick` cron
+     *  line even if the team has lane-tagged members. Default
+     *  `true` (effective only when the gating member-condition holds —
+     *  teams with zero `.lane`-tagged members skip the line regardless).
+     *  Operators flip this off to halt lane-driven auto-claim without
+     *  removing `.lane` annotations from `team.members[]`. */
+    laneTickEnabled: z.boolean().default(true),
+    /** ADR-087 §Rollback. Velocity-gate kill-switch. When `false`,
+     *  whip skips ground-truth velocity classification + strike-counter
+     *  bumping entirely (effectively reverting to pre-ADR-087 fake-
+     *  liveness reliance on lead self-report). Default `true` — the
+     *  gate is opt-OUT, not opt-in, because the operator-observed
+     *  failure mode (10 zero-commit heartbeats over 4.5h) is what
+     *  ADR-087 was authored to prevent. Pairs with
+     *  `whip.velocityGate` cadence knobs (window minute count + strike
+     *  threshold); the kill-switch lives here for fleet-consistent
+     *  shape with `laneTickEnabled`. */
+    whipVelocityGateEnabled: z.boolean().default(true),
+  })
+  .strict();
+export type TeamCrons = z.infer<typeof TeamCrons>;
 
 /**
  * `team.json::kanban` sub-config — kanban-orchestration knobs. ADR-062
@@ -398,6 +531,74 @@ export const TeamObservability = z
   .strict();
 export type TeamObservability = z.infer<typeof TeamObservability>;
 
+/**
+ * `team.json::martinet` enum — pluggable cockpit-W3 whip-manager impl
+ * picked for this team. Two-impl set per the 2026-05-14 12:53 MYT
+ * ADR-132 simplification (MiniMax + Kimi dropped as "unreliable and
+ * not smart enough"; `claude` is the degenerate baseline, `cursor`
+ * runs composer-2-fast as the production default).
+ *
+ * Adding a new backend requires extending this enum AND
+ * `Martinet["name"]` in `src/abstractions/martinet.ts` in lockstep —
+ * the runtime resolver (`resolveMartinet`) lives in
+ * `src/core/martinet-config.ts` and bridges schema-string to impl-
+ * factory dispatch.
+ */
+export const MartinetImpl = z.enum(["claude", "cursor"]);
+export type MartinetImpl = z.infer<typeof MartinetImpl>;
+
+/**
+ * `team.json::martinetOverrides` — per-team knobs that compose over
+ * the impl-side defaults baked into each Martinet factory. Both
+ * fields opt-in; the resolver merges-by-key so explicit values win
+ * over per-impl defaults.
+ *
+ * `.strict()` consistent with the surrounding sub-blocks — drift
+ * detection requires unknown-key rejection (ADR-054 §D3).
+ */
+export const TeamMartinetOverrides = z
+  .object({
+    /** Per-tick cadence in seconds. Per-impl defaults: `claude` 270s,
+     *  `cursor` 270s (per ADR-132 §D3 — both stay aligned with the
+     *  existing 270s whip cadence; tuned per-team only when commit
+     *  cadence pressure or budget pressure demands it). */
+    cadenceSec: z.number().int().positive().optional(),
+    /** Self-confidence floor (0.0-1.0) below which the non-Claude
+     *  Martinet escalates instead of acting autonomously. Default
+     *  0.7 per ADR-132 §D5 E5. Ignored by ClaudeMartinet (the
+     *  degenerate impl has no self-confidence signal). */
+    escalationConfidenceThreshold: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+export type TeamMartinetOverrides = z.infer<typeof TeamMartinetOverrides>;
+
+/** ADR-132 §D5 E5 default — non-Claude Martinet's self-confidence
+ *  floor. Below this, the impl escalates to the Claude lead instead
+ *  of firing the action. Co-located with the schema so resolver
+ *  call-sites share the constant. */
+export const DEFAULT_MARTINET_ESCALATION_CONFIDENCE = 0.7;
+
+/** ADR-132 §D3 default — per-tick cadence in seconds for both
+ *  shipping impls. ClaudeMartinet matches the legacy 270s whip
+ *  cadence; CursorMartinet matches it for parity. */
+export const DEFAULT_MARTINET_CADENCE_SEC = 270;
+
+/** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
+ *  All fields optional; defaults applied at the call-site per ADR-142
+ *  §Configuration. `.strict()` so typos (`windowMins` etc.) trip the
+ *  same drift-detection ping as `whip` / `gitter`. */
+export const TeamModalCycling = z
+  .object({
+    enabled: z.boolean().optional(),
+    cycleThreshold: z.number().int().positive().optional(),
+    windowMin: z.number().int().positive().optional(),
+    commitGracePeriodMin: z.number().int().nonnegative().optional(),
+    dedupMin: z.number().int().nonnegative().optional(),
+    exemptMembers: z.array(z.string()).optional(),
+  })
+  .strict();
+export type TeamModalCycling = z.infer<typeof TeamModalCycling>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -469,6 +670,8 @@ export const Team = z
     cron: TeamCron.optional(),
     /** ADR-062 §OQ4: kanban-orchestration knobs (cross-lane fallback). */
     kanban: TeamKanban.optional(),
+    /** ADR-062 §Decision 4: per-line cron kill-switches (lane-tick today). */
+    crons: TeamCrons.optional(),
     /** ADR-079 §A: cron cadence for report / discorder progress + heartbeat. */
     report: TeamReport.optional(),
     /** ADR-079 §A: cron cadence for `decisions digest`. */
@@ -486,6 +689,25 @@ export const Team = z
     merger: TeamMerger.optional(),
     /** t-e89c03f7: observability toggles (forensic data collection). */
     observability: TeamObservability.optional(),
+    /** ADR-142: modal-cycling detector tunables. Defaults applied per
+     *  ADR-142 §Configuration when the block is absent. */
+    modalCycling: TeamModalCycling.optional(),
+    /** ADR-087: `atmux stop --soft` grace window between the per-member
+     *  notify and the manifest write + session kill. Default 5 seconds
+     *  when unset. Setting `0` collapses the grace to a single tick but
+     *  does not disable the feature (use bare `stop` for the no-grace
+     *  path). */
+    softStopGraceSeconds: z.number().int().nonnegative().optional(),
+    /** ADR-132 §D6: pluggable cockpit-W3 whip-manager impl. Default-
+     *  unset resolves to `cockpit.json::defaultMartinet`, then to the
+     *  hard-coded `"claude"` baseline (preserves the pre-Martinet
+     *  per-team whip codepath for existing rosters). Restart-to-swap
+     *  per OQ-1: changes require an `atmux cockpit rebuild` cycle. */
+    martinet: MartinetImpl.optional(),
+    /** ADR-132 §D6: per-team knobs that compose over per-impl
+     *  defaults baked into each Martinet factory. Resolver merges
+     *  by-key (explicit > per-impl default). */
+    martinetOverrides: TeamMartinetOverrides.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

@@ -1,5 +1,6 @@
 // Unit tests for src/schema/cockpit.ts — ADR-089 recursive sessions[]
-// schema (replaces ADR-063 flat teams[]). Covers:
+// schema (replaces ADR-063 flat teams[]) AND ADR-132 §D6 martinet block.
+// Covers:
 //   - discriminatedUnion across team / epic-team / superdriver / superdoctor
 //   - .strict() leaf rejection of unknown keys
 //   - .strict() rejection of unknown `type` discriminator values
@@ -7,6 +8,8 @@
 //   - schemaVersion default + cockpitSession default + prefixChain pass-through
 //   - legacy back-compat fields (`teams`, `superdoctor`) accepted as optional
 //     so the loader's enrichment pass round-trips them
+//   - ADR-132 §D6 (t-f3e9ac2a) CockpitMartinet defaults + bounds + top-level
+//     defaultMartinet / martinet integration
 //
 // Migration-shim + DFS-walk + flattener tests live in
 // tests/unit/core/cockpit.test.ts.
@@ -14,7 +17,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   Cockpit,
+  CockpitMartinet,
+  CockpitMedic,
   CockpitSession,
+  CockpitSuperdoctor,
   EpicTeamSession,
   SuperdoctorSession,
   SuperdriverSession,
@@ -59,14 +65,10 @@ describe("EpicTeamSession — leaf shape", () => {
     expect(e.sessions).toEqual([]);
   });
   test("rejects missing parent", () => {
-    expect(() =>
-      EpicTeamSession.parse({ type: "epic-team", name: "x", epicId: "e-1" }),
-    ).toThrow();
+    expect(() => EpicTeamSession.parse({ type: "epic-team", name: "x", epicId: "e-1" })).toThrow();
   });
   test("rejects missing epicId", () => {
-    expect(() =>
-      EpicTeamSession.parse({ type: "epic-team", name: "x", parent: "p" }),
-    ).toThrow();
+    expect(() => EpicTeamSession.parse({ type: "epic-team", name: "x", parent: "p" })).toThrow();
   });
   test("rejects unknown leaf keys (.strict)", () => {
     expect(() =>
@@ -99,6 +101,120 @@ describe("SuperdriverSession + SuperdoctorSession — leaf shape", () => {
   });
 });
 
+// ---------- CockpitMartinet — discriminated union (ADR-132 §D4) ----------
+//
+// Post-merge reshape per Task t-b86fd8cb: CockpitMartinet is now a
+// discriminated union on `impl` (claude variant + cursor variant).
+// Tests below cover both variants explicitly + the discriminator gate.
+
+describe("CockpitMartinet — discriminated union on `impl`", () => {
+  test("rejects parse with no `impl` discriminator", () => {
+    expect(() => CockpitMartinet.parse({})).toThrow();
+    expect(() => CockpitMartinet.parse({ enabled: true })).toThrow();
+  });
+
+  test("rejects unknown `impl` literal", () => {
+    expect(() =>
+      CockpitMartinet.parse({ impl: "minimax" as unknown as "claude" }),
+    ).toThrow();
+  });
+});
+
+describe("CockpitMartinet — claude variant", () => {
+  test("claude variant parses with defaults", () => {
+    const m = CockpitMartinet.parse({ impl: "claude" });
+    expect(m.impl).toBe("claude");
+    expect(m.enabled).toBe(false);
+  });
+
+  test("claude variant accepts claudeAccount + tuiOverrides + autoStart fields", () => {
+    const m = CockpitMartinet.parse({
+      impl: "claude",
+      enabled: true,
+      claudeAccount: { configDir: "/root/.claude-unum", label: "unum" },
+      tuiOverrides: { effortLevel: "xhigh" },
+      autoStart: false,
+      autoStartTimeoutSec: 60,
+    });
+    if (m.impl !== "claude") throw new Error("variant narrowing failed");
+    expect(m.claudeAccount?.configDir).toBe("/root/.claude-unum");
+    expect(m.tuiOverrides?.effortLevel).toBe("xhigh");
+    expect(m.autoStart).toBe(false);
+    expect(m.autoStartTimeoutSec).toBe(60);
+  });
+
+  test("claude variant rejects cursor-only fields (.strict drift detection)", () => {
+    expect(() =>
+      CockpitMartinet.parse({ impl: "claude", cursorBinPath: "/usr/bin/cursor" }),
+    ).toThrow();
+    expect(() =>
+      CockpitMartinet.parse({ impl: "claude", model: "composer-2" }),
+    ).toThrow();
+  });
+});
+
+describe("CockpitMartinet — cursor variant", () => {
+  test("cursor variant parses with defaults", () => {
+    const m = CockpitMartinet.parse({ impl: "cursor" });
+    expect(m.impl).toBe("cursor");
+    if (m.impl !== "cursor") throw new Error("variant narrowing failed");
+    expect(m.enabled).toBe(false);
+    expect(m.cursorBinPath).toBe("/usr/local/bin/cursor-agent");
+    expect(m.model).toBe("composer-2-fast");
+    expect(m.cageTier).toBe("tier-2");
+  });
+
+  test("model accepts 'composer-2-fast' and 'composer-2' only", () => {
+    const a = CockpitMartinet.parse({ impl: "cursor", model: "composer-2-fast" });
+    const b = CockpitMartinet.parse({ impl: "cursor", model: "composer-2" });
+    if (a.impl !== "cursor" || b.impl !== "cursor") {
+      throw new Error("variant narrowing failed");
+    }
+    expect(a.model).toBe("composer-2-fast");
+    expect(b.model).toBe("composer-2");
+  });
+
+  test("model rejects arbitrary strings", () => {
+    expect(() =>
+      CockpitMartinet.parse({ impl: "cursor", model: "composer-2-slow" }),
+    ).toThrow();
+    expect(() => CockpitMartinet.parse({ impl: "cursor", model: "gpt-4" })).toThrow();
+  });
+
+  test("cageTier pinned to 'tier-2' (ADR-132 §D4)", () => {
+    const m = CockpitMartinet.parse({ impl: "cursor", cageTier: "tier-2" });
+    if (m.impl !== "cursor") throw new Error("variant narrowing failed");
+    expect(m.cageTier).toBe("tier-2");
+    expect(() =>
+      CockpitMartinet.parse({ impl: "cursor", cageTier: "tier-3" as unknown as "tier-2" }),
+    ).toThrow();
+    expect(() =>
+      CockpitMartinet.parse({ impl: "cursor", cageTier: "tier-1" as unknown as "tier-2" }),
+    ).toThrow();
+  });
+
+  test("cursor variant rejects claude-only fields (.strict drift detection)", () => {
+    expect(() =>
+      CockpitMartinet.parse({
+        impl: "cursor",
+        claudeAccount: { configDir: "/x", label: "y" },
+      }),
+    ).toThrow();
+    expect(() =>
+      CockpitMartinet.parse({ impl: "cursor", autoStart: true }),
+    ).toThrow();
+  });
+
+  test("unknown keys rejected (.strict drift detection)", () => {
+    expect(() =>
+      CockpitMartinet.parse({ impl: "cursor", enbled: true }),
+    ).toThrow();
+    expect(() =>
+      CockpitMartinet.parse({ impl: "cursor", cursorBin: "/usr/bin/cursor" }),
+    ).toThrow();
+  });
+});
+
 // ---------- Discriminated union — strict on `type` ----------
 
 describe("CockpitSession discriminated union", () => {
@@ -124,9 +240,7 @@ describe("CockpitSession discriminated union", () => {
     expect(s.type).toBe("superdoctor");
   });
   test("rejects unknown `type` discriminator value (reviewer pre-flag)", () => {
-    expect(() =>
-      CockpitSession.parse({ type: "rogue-type", name: "x" }),
-    ).toThrow();
+    expect(() => CockpitSession.parse({ type: "rogue-type", name: "x" })).toThrow();
   });
   test("rejects missing `type` discriminator", () => {
     expect(() => CockpitSession.parse({ name: "x" })).toThrow();
@@ -275,8 +389,120 @@ describe("Cockpit — top-level shape + defaults", () => {
     expect(c.teams).toHaveLength(1);
   });
   test("rejects sessions[] entries with unknown `type`", () => {
+    expect(() => Cockpit.parse({ sessions: [{ type: "rogue", name: "x" }] })).toThrow();
+  });
+
+  // ADR-133 TR2: medic / superdoctor top-level keys coexist during
+  // the deprecation window. The schema accepts both shapes; the
+  // loader's `migrateSuperdoctorBlockToMedic` pre-parse shim resolves
+  // precedence + warns (covered in tests/unit/core/cockpit.test.ts).
+  test("accepts top-level `medic` block (ADR-133 new canonical key)", () => {
+    const c = Cockpit.parse({
+      sessions: [],
+      medic: { enabled: true },
+    });
+    expect(c.medic?.enabled).toBe(true);
+    expect(c.superdoctor).toBeUndefined();
+  });
+  test("accepts top-level `superdoctor` block (deprecated; back-compat)", () => {
+    const c = Cockpit.parse({
+      sessions: [],
+      superdoctor: { enabled: true },
+    });
+    expect(c.superdoctor?.enabled).toBe(true);
+    expect(c.medic).toBeUndefined();
+  });
+  test("accepts BOTH `medic` AND `superdoctor` top-level blocks (precedence in loader, not schema)", () => {
+    const c = Cockpit.parse({
+      sessions: [],
+      medic: { enabled: true },
+      superdoctor: { enabled: false },
+    });
+    expect(c.medic?.enabled).toBe(true);
+    expect(c.superdoctor?.enabled).toBe(false);
+  });
+});
+
+// ---------- ADR-133 TR2: CockpitMedic schema alias ----------
+
+describe("CockpitMedic — ADR-133 alias of CockpitSuperdoctor", () => {
+  test("parses the same shape as CockpitSuperdoctor", () => {
+    const sd = CockpitSuperdoctor.parse({ enabled: true });
+    const m = CockpitMedic.parse({ enabled: true });
+    expect(m).toEqual(sd);
+  });
+  test("inherits tuiOverrides + claudeAccount + autoStart fields", () => {
+    const m = CockpitMedic.parse({
+      enabled: true,
+      claudeAccount: { configDir: "/root/.claude-ifca" },
+      tuiOverrides: { effortLevel: "xhigh", permissionMode: "auto" },
+      autoStart: false,
+      autoStartTimeoutSec: 45,
+    });
+    expect(m.claudeAccount?.configDir).toBe("/root/.claude-ifca");
+    expect(m.autoStart).toBe(false);
+    expect(m.autoStartTimeoutSec).toBe(45);
+  });
+  test("rejects unknown keys (.strict carried over)", () => {
+    expect(() => CockpitMedic.parse({ enabled: true, typo: "fail" })).toThrow();
+  });
+});
+
+// ---------- Cockpit — top-level defaultMartinet + martinet integration ----------
+
+describe("Cockpit — top-level defaultMartinet + martinet integration", () => {
+  test("Cockpit accepts defaultMartinet + cursor-variant martinet block at top-level", () => {
+    const c = Cockpit.parse({
+      teams: [],
+      defaultMartinet: "cursor",
+      martinet: { impl: "cursor", enabled: true, model: "composer-2" },
+    });
+    expect(c.defaultMartinet).toBe("cursor");
+    expect(c.martinet?.enabled).toBe(true);
+    if (c.martinet?.impl !== "cursor") {
+      throw new Error("expected cursor variant after discriminator narrowing");
+    }
+    expect(c.martinet.model).toBe("composer-2");
+    expect(c.martinet.cursorBinPath).toBe("/usr/local/bin/cursor-agent");
+  });
+
+  test("Cockpit accepts claude-variant martinet block at top-level (degenerate impl)", () => {
+    const c = Cockpit.parse({
+      teams: [],
+      defaultMartinet: "claude",
+      martinet: { impl: "claude", enabled: true, autoStart: false },
+    });
+    expect(c.defaultMartinet).toBe("claude");
+    if (c.martinet?.impl !== "claude") {
+      throw new Error("expected claude variant after discriminator narrowing");
+    }
+    expect(c.martinet.enabled).toBe(true);
+    expect(c.martinet.autoStart).toBe(false);
+  });
+
+  test("Cockpit without martinet fields parses (backward compat — defaults to undefined)", () => {
+    const c = Cockpit.parse({ teams: [] });
+    expect(c.defaultMartinet).toBeUndefined();
+    expect(c.martinet).toBeUndefined();
+  });
+
+  test("Cockpit.defaultMartinet rejects dropped 'minimax' + 'kimi' values", () => {
     expect(() =>
-      Cockpit.parse({ sessions: [{ type: "rogue", name: "x" }] }),
+      Cockpit.parse({
+        teams: [],
+        defaultMartinet: "minimax" as unknown as "cursor",
+      }),
     ).toThrow();
+    expect(() =>
+      Cockpit.parse({
+        teams: [],
+        defaultMartinet: "kimi" as unknown as "claude",
+      }),
+    ).toThrow();
+  });
+
+  test("Cockpit.defaultMartinet accepts 'claude' (degenerate fallback)", () => {
+    const c = Cockpit.parse({ teams: [], defaultMartinet: "claude" });
+    expect(c.defaultMartinet).toBe("claude");
   });
 });

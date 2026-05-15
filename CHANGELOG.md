@@ -7,9 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Post-0.5.0 work in flight (0.6.0 + 0.7.x). Entries to be filled retroactively
-> by a follow-up docs sweep — current cycle covers the ADR-076 / 0.5.0 cutover
-> only (see body of `atmux task show t-41ddf1e6`).
+> **Post-0.6.0 follow-ups** (catchup sweep 2026-05-13 per t-a1cc07bc).
+> `0.5.0` and `0.6.0` shipped without their own CHANGELOG sections — the
+> Epic 1 (pull-model kanban), Epic 2 (whip enrichment), Epic 3 (hot reload),
+> Epic 4 (atmux flag) bullet groups below cover the bulk of `0.5.0`'s scope;
+> `0.6.0` adds the ADR-077 **superdoctor wave** + ADR-079 / ADR-080 noise-
+> drainage + improvement bundles (each bullet now cross-references its ADR
+> for traceability). The remaining post-0.6.0 work is grouped below under
+> **post-0.6.0 follow-ups** until the next release cut.
+
+### 🏷️ Renamed — `superdoctor` → `medic` (ADR-133)
+
+- **Cockpit self-healing role renamed** from `superdoctor` to `medic` per [ADR-133](docs/adr/133-medic-rename.md) to eliminate the `atmux doctor` verb-vs-process naming collision. `medic` is collision-free and semantically tight for the cockpit-fleet-healer role.
+- **Operator-visible surface:** `cockpit.json.medic` is the new canonical config block. The legacy `cockpit.json.superdoctor` key is still accepted during the deprecation window — `atmux cockpit rebuild` emits a one-line deprecation warning (`deprecated key, rename to medic per ADR-133`) but proceeds normally. If both keys are present, `medic` wins and a warning lists `superdoctor` as ignored.
+- **Window 2** of the cockpit session is renamed `medic` (was `superdoctor`).
+- **Docs:** `docs/superdoctor.md` → `docs/medic.md`. Cross-refs in ADR-081 / ADR-079 / ADR-086 updated with first-occurrence footnotes citing the rename. ADR-077 carries an annotation header per the append-only ADR convention (the file is not renamed).
+- **Out of scope this release:** storage-layer identifiers — `superdoctor_attempts` table, `SuperdoctorAttemptsRepo` class, `__superdoctor__` member sentinel, `superdoctor-self-heal-escalation` Discord dedup key, `src/core/superdoctor-activity.ts` source path, `~/.claude/skills/superdoctor/` skill path, and `[superdoctor]` Discord template prefix all remain unchanged. Schema renames require a separate migration ADR; skill source + Discord template renames ship under EPIC `t-d25ff629` TR5+.
+
+### ⚙️ Migration — `atmux superdoctor` → `atmux medic` cron-line rewrite (ADR-133 TR6)
+
+- **`atmux cron-install` now idempotently rewrites any `atmux superdoctor [args]` cron line inside an atmux-managed block** (`# >>> atmux:team=...` / `# >>> atmux:cockpit`) to `atmux medic [args]`. No-op on every current installation (atmux does NOT write `atmux superdoctor` cron lines today — the cockpit superdoctor runs via tmux pane keystroke `/loop /superdoctor`, not crontab), but forward-compat for the deprecation window if any path begins emitting them or if operators have hand-installed legacy lines inside a managed block.
+- **Operator-manual cron lines OUTSIDE atmux-managed blocks are PRESERVED** — the migration only touches lines fenced by the `# >>> atmux:...` / `# <<<` markers.
+- **Audit log** at `~/.atmux/state/cron-rename-migration.log` records every rewrite (no-op on installs where no migrations fire).
+- Source: `src/core/cron.ts::migrateSuperdoctorToMedicCronLines` (pure transform) + `src/verbs/cron-install.ts` wiring + unit + integration tests.
+
+### ⚠️ Deprecated — `cockpit.json.superdoctor` block (ADR-133)
+
+- The `superdoctor` key in `~/.atmux/cockpit.json` is **deprecated as of this release**. Operators should rename their cockpit config to use the new `medic` key. The deprecation window is **one release cycle**; the next release ships the BREAKING removal below.
+- Migration path:
+  ```bash
+  # in ~/.atmux/cockpit.json, rename the block:
+  # before: "superdoctor": { ... }
+  # after:  "medic": { ... }
+  atmux cockpit rebuild
+  ```
+- The deprecation warning fires on every `atmux cockpit rebuild` until the rename ships. Silent on `atmux status` / `atmux doctor` for now.
+
+### 🚨 Coming next release — BREAKING: drop `cockpit.json.superdoctor` key (ADR-133)
+
+- **Next release will REMOVE the `superdoctor` key acceptance from `cockpit.json` schema.** Operators on the legacy key will fail-fast on `atmux cockpit rebuild` until they migrate. The deprecation warning shipping this release is the operator's one-cycle migration window.
+- Plan ahead: rename `superdoctor` → `medic` in your cockpit config before upgrading past the next release. Schema validation will reject the legacy key with a clear error pointing to ADR-133.
 
 ### ✨ Added — `atmux pulse` (ADR-086)
 
@@ -38,6 +75,320 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `atmux config-reload`, `atmux verify-libs`, versioned briefs with whip
 > auto-detect (verbs 3 + 6 carved to recommended **E5** for pane lifecycle +
 > per-claim state work).
+
+### ✨ Added — post-0.6.0 follow-ups
+
+- **ADR-140 — cheap-model-first principle (Cursor composer-2-fast martinet; medic event-driven)** ([docs/adr/140-cheap-model-first.md](docs/adr/140-cheap-model-first.md)).
+  ADR text only (T1 of EPIC `t-83dcef6b`). Principle: Claude (Opus
+  xhigh) stays for strategic + code-gen + review work; Cursor
+  composer-2-fast (via martinet, Tier 2 cage per ADR-058) handles
+  ALL mechanical execution loops + uncomfortable-but-routine
+  actions. Codifies the operator's 4-message arc on 2026-05-14
+  (MiniMax + Kimi explicitly rejected — capability bar too low;
+  Cursor composer-2-fast is the production-grade tradeoff).
+  Includes canonical roles+responsibilities matrix (superdriver,
+  medic, martinet, team-lead, planner/reviewer/workers, gitter)
+  and a back-of-envelope token-burn projection: ~440k Claude
+  tokens/hour mechanical → ~60k Claude + ~137k Cursor tokens/hour
+  post-migration (~65–70% Claude-burn replaced by Cursor cost).
+  Rotation authority split: routine triggers (context >400k,
+  refusal-pattern, dormancy-window) → martinet; emergency
+  triggers (broken claude proc, planner misalignment) → medic
+  + lead. T2–T4 (ADR annotations, medic refactor, martinet
+  NudgeAction enum extension) remain open under the EPIC —
+  recommend planner-near decomposes into separate kanban Tasks
+  so they're claimable. Kanban Task `t-83dcef6b` (EPIC; T1 done
+  this commit).
+- **ADR-138 — verified send-keys (verify-and-retry pattern)** ([docs/adr/138-verified-send-keys.md](docs/adr/138-verified-send-keys.md)).
+  ADR text only (T1 of EPIC `t-5df48a74`). Decision: new
+  `safeSendKeysWithVerify` helper in `src/abstractions/tmux.ts` —
+  send once, capture pane, assert state transition via caller-
+  supplied `PaneVerifier`, retry once on timeout, escalate to
+  `~/.atmux/state/send-keys-failures.log` + doctor probe + Discord
+  template `[send-keys-failure]`. Ships 6 built-in verifiers
+  (`composerEmpty`, `agentThinking`, `modalClosed`, `contextNonZero`,
+  `paneMatchesRegex`, caller-closure). Migration plan touches 6
+  caller files (send / dispatch / lane-tick / start / rotate +
+  driver modal-release helpers); direct `tmux send-keys` remains
+  only for window-rename / layout commands. Rejected blanket-3x-Enter
+  alternative inline — state-destructive at every pane mode (would
+  submit empty prompts on composer, wrong defaults on modals, etc.).
+  Cross-refs ADR-081 §A (C-m submit cascade — layer below) and
+  ADR-132 (martinet — long-term home, inherits the helper). Sub-tasks
+  T2 (helper impl + tests) and T3 (caller migration + e2e) filed
+  under the EPIC. Kanban Tasks `t-5df48a74` (EPIC), `t-f58c6ccc` (T1,
+  this commit).
+- **ADR-136 — hot-rename member labels (Option B — id + label + emoji split)** ([docs/adr/136-hot-rename-member-labels.md](docs/adr/136-hot-rename-member-labels.md)).
+  ADR text only (TR1 of EPIC `t-13367b7a`). Decision: add an optional
+  `label` field to `TeamMember`; `name` stays the immutable ASCII ID;
+  `atmux member rename` mutates `label` only. Display surfaces render
+  `label ?? name`; id-keyed state (worktrees, branches, inboxes,
+  kanban owner, lane-tick args, paused.json, resume.json) stays
+  pinned to `name`. Option A (emoji-as-stable-ID) was rejected on two
+  hazards documented inline — variation-selector trap
+  (`🛠️` 2-codepoint vs `🛠` 1-codepoint), and
+  `sanitizeBranchSegment` already strips non-ASCII at
+  `src/abstractions/worktree.ts:189-195`. All 4 OQs settled in-spec.
+  Cross-refs ADR-027 (team-rename sibling), ADR-030 (registry —
+  accepts label drift), ADR-082+ADR-084 (worktree substrate uses
+  name not label), CONVENTION-059 (id-layer; ADR-136 composes the
+  display layer on top). Sub-tasks TR2–TR5 filed under the EPIC for
+  schema + verb + display-fallback + e2e implementation. Kanban
+  Tasks `t-13367b7a` (EPIC), `t-646bc535` (TR1, this commit).
+- **cockpit-pulse meta-watchdog — bypass-page George when superdoctor itself is dormant** ([ADR-086 §Phase 2](docs/adr/086-atmux-pulse.md)).
+  Extends the 5-min cockpit-pulse cron tick with an aggregate
+  superdoctor-liveness probe. Walks every cockpit-enabled team's
+  `state.db`, sums `complaints WHERE status='open'` and takes
+  `MAX(superdoctor_attempts.attempted_at)` across teams. When at
+  least one open complaint exists AND the latest attempt is ≥2h
+  stale (or there's never been an attempt), pulse emits a new
+  `[meta-watchdog]` Discord template — verdict-first 2-button menu
+  (A: check superdoctor pane, B: kill+respawn) with a 30-min
+  default deadline keyed off `whenMs`. Dedup is "1 page per
+  dormancy streak": `pulse-state.json::metaWatchdog = { paged,
+  dormantSinceSec }`; streak ends when a fresh attempt lands or all
+  complaints clear. Closes the "if superdoctor itself goes silent,
+  no one notices" gap left by ADR-077. (`src/core/superdoctor-activity.ts`,
+  `src/abstractions/discord.ts::renderMetaWatchdog`,
+  `src/core/pulse-state.ts::PulseMetaWatchdogSchema`,
+  `src/verbs/pulse.ts`.) Kanban Task `t-351318dc`.
+- **CONVENTION-059 — Generic indexed member naming** ([docs/CONVENTION-059-indexed-member-naming.md](docs/CONVENTION-059-indexed-member-naming.md)).
+  Codifies the `<lane><index>` pattern (`fe0`, `fe1`, `be0`, `be1`,
+  `ops0`, ...) for fungible team members — zero-indexed, no separator,
+  one of the canonical lane prefixes (`fe` / `be` / `ops` / `test` /
+  `review` / `db` / `misc`). Named roles (`lead`, `planner`,
+  `reviewer`, `gitter`, `dba`, `devops`, `auditor`, `discorder`,
+  `enforcer`, `unblocker`) keep their canonical names. Ships
+  `checkIndexedMemberName` + `CONVENTION_059_LANE_PREFIXES` in
+  `src/core/common.ts` — advisory-only validator, never throws.
+  `templates/briefs/member.md` cross-references the convention for new
+  brief consumers. Existing teams with non-indexed names (`whip-impl`
+  on atmux, `eng-mobile` on unum, `fe-1` on sopx) keep their names
+  until a deliberate migration cycle; the convention is forward-looking,
+  not a forced rename. Kanban Task `t-05ad3bb4`.
+- **CONVENTION-067 — `develop` branch for integration** ([docs/CONVENTION-067-develop-branch-integration.md](docs/CONVENTION-067-develop-branch-integration.md)).
+  Workflow convention codifying the `feat/<topic>` and `<account>-<role>`
+  worker branches → `develop` integration tip → `main` release-cut
+  topology. First named convention doc in the project. Authored
+  2026-05-14 after a docs worker hit a concrete cross-branch dep
+  blocker — `t-289119f2` was marked `done` on the kanban (kernel commit
+  `2a7db33`) but the kernel files lived on `geoyws-parity-cron-impl`,
+  invisible to sibling worker branches. The convention defines the
+  integration rhythm that prevents that drift: branch off `develop`,
+  merge back to `develop` once green, pull from `develop` before
+  claiming a dep-having task. Kanban Task `t-221eb576`.
+- **Superdoctor self-escalation primitives** ([ADR-077 §F6](docs/adr/077-superdoctor-cockpit-role.md)).
+  Without these, superdoctor silently loops while a team stays broken
+  (rotate-lead swallowed under auto-mode; kill+respawn welcome-screen-gates;
+  members idle 3h after rebuild). Ships three primitives the deferred
+  `~/.claude/skills/superdoctor/` skill consumes: (a) SQLite migration
+  v2→v3 materialising `superdoctor_attempts(complaint_id, attempt_n,
+  outcome ∈ {resolved, partial, failed}, attempted_at, action, note,
+  extra)` per-team — one row per structural-fix attempt with a CHECK
+  constraint on `outcome`; (b) typed CRUD via `SuperdoctorAttemptsRepo`
+  (`src/core/repositories/superdoctor-attempts-repo.ts`) — load-bearing
+  query is `countByOutcomeFor(complaintId, 'failed')`, reaching 3 is the
+  page-George trigger; (c) Discord template `[self-heal-failed]` +
+  renderer `renderSelfHealFailed` (`src/abstractions/discord.ts`) —
+  verdict-first ABC menu (`A` /team stop+start, `B` swap account,
+  `C` park for the night) with a 30-min default deadline keyed off
+  `whenMs`. Operator replies one letter from a phone. Dedup state lives
+  in `state_kv` (feature `superdoctor-self-heal-escalation`, key per
+  `complaint_id`, 1h re-fire window). Documented end-to-end in
+  [`docs/superdoctor.md` § "Self-escalation when fixes keep failing"](docs/superdoctor.md).
+- **`atmux stop --soft` + resume manifest** ([ADR-087](docs/adr/087-stop-soft-resume-manifest.md)).
+  Graceful counterpart to bare `stop`. Reads kanban for in-progress Tasks,
+  sends a `# soft-stop incoming — finish current operation, no new claims`
+  send-keys comment to each non-shell member pane (enter-false so it lands
+  in the compose box without auto-submitting), sleeps
+  `team.softStopGraceSeconds` (default `5`), then atomic-writes
+  `<atmuxDir>/state/resume.json` (mktemp + rename). The next `atmux start`
+  surfaces a resume hint. First ADR in the team-of-teams ADR-087…092
+  sequence; smallest scope, independent of the rest. (`src/core/soft-stop.ts`,
+  `src/verbs/stop.ts`.)
+- **`scanNeedsApproval` lib — approval-debt scanner** ([ADR-085](docs/adr/085-whip-approvals-watcher.md)
+  §Scan API). New `src/lib/needs-approval.ts` exports
+  `scanNeedsApproval(deps?) → NeedsApprovalReport` covering three buckets:
+  (A) ADRs under `docs/adr/*.md` / `docs/adr/*.md` with `Status:
+  proposed|draft|wip|pending` and no `(deferred: ...)` escape hatch;
+  (B) `driver-inbox.md` headings missing `✅`/`📤`/`⏳`/`❌` triage marker
+  (`🚨`/`🪫` don't count) and stale (`ageMin > 30`); (C) kanban tasks with
+  `status='blocked'` stale beyond `ageMin > 120`. Each bucket is failure-
+  isolated (one exception doesn't poison the report); all three reads are
+  LIVE per ADR-068 §HC#4. Unblocks the whip §2.5 wire (t-21c3aa64) and
+  status-verb row (t-9281649f).
+- **`atmux groom` absorbs lane-drift-check** ([ADR-062](docs/adr/062-lane-claim-auto-pickup.md)
+  §5). Daily 04:00 sweep gains a 6th sub-op — lane-drift detection across
+  every team in the cockpit. Paired with the every-2-min cron lane-tick
+  line (below) for fast-feedback drift detection inside the day; groom is
+  the catch-the-stragglers pass for drift the cron missed (host suspended
+  overnight, cron disabled by `ATMUX_NO_CRON`, pane classifier wedged for
+  a window). The standalone `atmux lane-drift-check` verb stays — useful
+  for operator ad-hoc diagnosis.
+- **Cron emits `lane-tick` line + `crons.laneTickEnabled` kill-switch**
+  ([ADR-062](docs/adr/062-lane-claim-auto-pickup.md) §Decision 4).
+  `src/core/cron.ts::renderCronLines()` now emits a 7th line at end-of-
+  block: `*/2 * * * * <baseEnv> lane-tick >> <atmuxDir>/logs/lane-tick.log
+  2>&1`. Hardcoded `*/2` cadence per §OQ2 (tighter amplifies classifier
+  bugs; looser dulls auto-claim chain). Gating requires BOTH ≥1
+  `team.members[].lane` field set AND `team.crons.laneTickEnabled !==
+  false` — teams without lanes see no line; per-team kill-switch lives in
+  `team.json`.
+- **Complaints schema v3 — provenance columns** (per [ADR-077](docs/adr/077-superdoctor-cockpit-role.md)
+  §F2 follow-up). Per-team `complaints` table gains `source_kind`
+  (enum: `superdoctor` / `lead` / `member` / `driver` / `cron`),
+  `source_id` (free-text ID matching the kind — member name, cron line,
+  etc.), and `target_team` (when superdoctor files a complaint in team
+  A's `state.db` ABOUT team B). Closes the 2026-05-09 driver-chat ask:
+  "complaints box must also capture from whom it came". Cross-team
+  analysis (`show me all complaints superdoctor filed last week`) now
+  runs via indexed query instead of grep. SQLite migration in
+  `src/migrations/`.
+- **`atmux epic` + `atmux story` sub-verbs — bun port**
+  ([ADR-007](docs/adr/007-pull-model-kanban.md) hierarchy verbs).
+  Ports `lib/epic.sh` (318 LOC) + `lib/story.sh` (388 LOC) to TS. New
+  `src/core/epic.ts` (state-machine + auto-dispatch summary on review
+  entry) + `src/core/story.ts` (4 gates: non-test child tasks done →
+  `testing`; test-lane done → `review`; reviewer signoff → `merging`;
+  merge task done → `done`). Auto-flips parent Epic `ready → in-progress`
+  on first Story claim. Pre-req for proper kanban filing under
+  Epic/Story doctypes.
+
+### ✨ Added — atmux superdoctor wave (0.6.0, [ADR-077](docs/adr/077-superdoctor-cockpit-role.md))
+
+- **`superdoctor` cockpit role at window 2**. Self-healing diagnosis-and-
+  prevention loop; sits between superdriver (window 1) and per-team
+  viewers. Owns the structural-fix loop atmux teams lacked when an
+  anomaly fired (`atmux doctor` says *what* is wrong; `atmux whip` says
+  *that* something stalled; superdoctor asks *why* and proposes the
+  structural fix). Cockpit topology cutover (§D1+D2); inbox key
+  `__superdoctor__` for send-key routing (§F3); cockpit-state surface
+  on `atmux status` + P0 runbook (§F4+§F5); per-team complaint box +
+  `atmux complaints` verb (§F2); cockpit reload hot-edit (`atmux cockpit
+  reload`); rebuild prints superdoctor `/loop` nudge when enabled.
+- **`atmux complaints` verb** (§F2). Per-team SQLite-backed log of root
+  causes + preventive asks, distinct from driver-inbox (per-team asks at
+  the lead) and pending-decisions.md (asks at the operator). Verb shape
+  mirrors `atmux flag` — `complaints add|list|show|resolve`. Schema
+  carries provenance columns post-v3 (see post-0.6.0 follow-ups above).
+
+### ✨ Added — Discord noise drainage wave 2 (0.6.0, [ADR-079](docs/adr/079-discord-noise-drainage.md))
+
+- **§A — cron schedules read from `team.whip.intervalMins`** instead of
+  hardcoded `*/5` / `*/30` / `0 */4` / etc. (`src/core/cron.ts`). Schema
+  field `intervalMins` was previously written but unread.
+- **§B — `atmux audit` verb bun-ported** + ADR-044 driver-name rule
+  alignment (bare `driver` not `__atmux__driver`).
+- **§C — bare `[whip]` template-namespace lint** as structural CI gate.
+  `DiscordTemplate` union (`src/abstractions/discord.ts`) has no `whip`
+  literal; the compile-time invariant prevents bun-emit of bare `[whip]`.
+- **§D — per-finding hash dedup + transitions-only emit** (highest
+  leverage). Whip's per-member previous-state hash gates re-posting; only
+  state transitions emit to Discord. Subsumes the auto-preclear-failed
+  loop noise. ~70% reduction observed pre-demo-week.
+
+### ✨ Added — Operator-observed improvements bundle (0.6.0, [ADR-080](docs/adr/080-operator-observed-improvements.md))
+
+- **§A1 — ctx-pct rotation policy** in whip. `team.whip.ctxPctMax`
+  (default `30`) — leads above this threshold auto-rotate regardless of
+  uptime. Resolves the "lead at 67% ctx not rotating" sopx incident.
+- **§A2 — lane-tick ctx-threshold lead refusal**. Lane-tick refuses to
+  inject `claim --next` into a lead pane already above
+  `team.whip.ctxPctMax` — avoids defeating the rotation that whip
+  triggered.
+- **§B1 — `findCommitForTask` helper** in `src/core/auto-done.ts`. Scans
+  git history for `t-<id>` references; backbone for §B2.
+- **§B2 — lane-tick auto-done back-fill** for stale `commit t-X` Tasks
+  whose commit landed but `atmux done` never fired (sopx had 29 of
+  these on 2026-05-09).
+- **§C — pane-state `BUSY` for spinner verbs**. `pane-state.ts` gains a
+  BUSY classification covering `Honking`/`Cooked for Ns`/`✻`/etc.
+  spinners; lane-tick refuses claim injection on BUSY (was wrongly
+  classified UNKNOWN → `skip-capture-error`).
+- **§D — `task list --status` underscore normalize + did-you-mean error**.
+  `--status in_progress` now works (was silent `(no tasks)`); unknown
+  values produce `--status: 'xyz' not in {todo,in-progress,...}; did
+  you mean 'in-progress'?` instead of empty result.
+- **§E — `task list --json` escape audit** + regression fixture for
+  bodies containing backticks/newlines/quotes.
+
+### ✨ Added — Per-member worktree isolation (0.6.0+, [ADR-082](docs/adr/082-worktree-isolation-per-member.md) + [ADR-084](docs/adr/084-worktree-per-member-branch-model.md))
+
+- **`team.json.worktreeIsolation` + `worktreeRoot`** Zod fields (W2).
+  Each team member gets a private `<atmuxDir>/worktrees/<member>/`
+  working tree on a per-member branch (`<base>-<member>` —
+  `geoyws-up-impl`, etc.) so `lint-staged` stash-collisions can no
+  longer sweep another member's untracked edits into the commit index.
+  Demo-week-blocking concurrency-safety fix at 20+ member scale.
+- **`atmux start` per-member worktree provisioning** (W3) — provision
+  loop runs alongside the existing member spawn, with cwd override
+  passed into `tuiClaude()`.
+- **`atmux stop --force` worktree teardown** (W4) — `pruneWorktrees`
+  with dirty-skip; orphan branches surfaced via doctor.
+- **`atmux doctor` worktree-isolation probe** (W5) — four anomaly
+  classes (missing worktree, stale/locked, branch drift, dirty state).
+- **Per-member branch model** (ADR-084 amends ADR-082 OQ6) — fixes the
+  "every member tries to checkout 'geoyws' which git refuses" failure
+  surfaced during W6a dogfood-flip. `provisionWorktree` now creates
+  `-b <base>-<member>` per call; cockpit's `--force-cycle` safety gate
+  prevents accidental cross-member branch overwrite.
+
+### ✨ Added — Driver-only Task refuse-gate ([ADR-033](docs/adr/033-driveronly-task-refuse-gate.md))
+
+- **`Task.driverOnly: boolean`** schema field. `claim --next` skips
+  driver-only Tasks during auto-pickup; explicit `atmux claim <id>` from
+  a non-driver context refuses with a clear error; `atmux task move` /
+  `atmux done` enforce the gate on state transitions. `--driver-only`
+  flag on `atmux task add` stamps the field. Prevents auto-lane workers
+  from claiming Tasks the planner reserved for driver-side ops.
+
+### ✨ Added — Other 0.6.0 surfaces
+
+- **`atmux send` `__superdoctor__` inbox key** (ADR-077 §F3) — send-keys
+  routing for superdoctor pane lookup.
+- **`atmux cockpit reload`** sub-verb — hot-reload alias for
+  `cockpit.json` edits without process restart.
+- **`atmux health` verb** — composed read-only diagnostic snapshot
+  ([SPEC-066](docs/SPEC-066-health-verb.md)) bundling doctor + status +
+  whip-last-tick + scanNeedsApproval into a single JSON output.
+- **`atmux team repair-rename`** verb — V1 explicit-team port
+  (ADR-027 ADDENDUM 11) for the per-team rename flow.
+- **`atmux cron-install` + `atmux cron-remove`** explicit verbs ([ADR-083](docs/adr/083-cron-install-port-scope.md)).
+  Port `installCronBlock` + DI seam from bash to TS; `atmux start`/`stop`
+  call into them so cron block management is unified.
+- **`atmux task update` sub-verb** ([ADR-084](docs/adr/084-worktree-per-member-branch-model.md) W3)
+  — body + deps editor for in-flight tasks.
+- **`atmux task` race-condition gate** — refuses member claim of an
+  in-progress task owned by a different member (closes a kanban-state
+  race surfaced during ADR-084 dogfood).
+- **Bootstrap brief-paste port to `atmux start`** ([ADR-081](docs/adr/081-bootstrap-brief-paste-bug.md) §C).
+  Lifts `_atmux_paste_brief` from the archived bash path into the TS
+  spawn loop — fresh cages no longer silently starve on every `atmux
+  start`. Uses the §A `C-m`-after-paste-buffer discipline.
+- **Bun-runtime cage-safety preload** — refuses `bun test` inside an
+  atmux cage (`bun test` crashes Claude's TUI cage in atmux repo per
+  prior memory finding).
+- **Events log** ([t-91cd050f](#)) — unified per-verb JSONL observability
+  surface under `<atmuxDir>/logs/events.jsonl` (single line per state-
+  mutating verb invocation; replaces ad-hoc per-verb logs).
+- **`fix(cron)` config-driven schedules** — see ADR-079 §A above.
+- **`fix(budget-probe)` opt-in OAuth refresh** ([ADR-078](docs/adr/078-budget-probe-oauth-refresh.md))
+  — cockpit-rebuild TUI race resolved.
+
+### ♻️ Changed — post-0.6.0
+
+- **`atmux rotate-lead` team-lead role aliasing** — `team-lead` →
+  `lead.md` resolves before existence check via
+  `BRIEF_ALIASES: Readonly<Record<string,string>>` (ADR-081 §B; commit
+  `7aa7cf2`). The deprecated `templates/briefs/team-lead.md` is now a
+  symlink to `lead.md`.
+- **`tmux send-keys` paste-submit** uses `C-m` not literal `Enter`
+  ([ADR-081](docs/adr/081-bootstrap-brief-paste-bug.md) §A) — bracketed-
+  paste envelope eats the trailing Enter as multi-line continuation;
+  `C-m` is the literal carriage return that survives the envelope.
+  Applied across every paste-buffer call site.
+- **`atmux status` honors `team.tmuxTmpdir`** on read-side socket
+  lookup; `atmux start`/`whip` honor it on write-side socket resolution.
 
 ### ✨ Added — Pull-model kanban (Epic 1)
 
@@ -371,6 +722,45 @@ its own ADR — pane lifecycle + per-claim state).
   (state-machine aware: epic-states for `epic advance --to`, story-states
   for `story advance --to`); `task add` new-flag matrix; `claim --next` +
   `--lane` + `--as`.
+- **[ADR-081](docs/adr/081-bootstrap-brief-paste-bug.md) §F — first-turn
+  precedence over residue-discard memory rules**. New section + brief-
+  template anchors in `templates/briefs/lead.md` + `templates/briefs/member.md`
+  ensure fresh leads / members accept their FIRST `atmux claim --next
+  --as <role>` keystroke as legitimate kick-off, overriding any operator-
+  memory rule that says to discard such injections as auto-loop residue.
+  Status flipped `proposed → accepted` on the same commit.
+- **ADR status hygiene pass** — 4 ADRs flipped `proposed → accepted`
+  with per-§ commit-chain inline (ADR-077 superdoctor, ADR-079 discord-
+  noise drainage, ADR-080 operator-observed improvements, ADR-084
+  worktree per-member branch model); ADR-082 (worktree isolation)
+  annotated `proposed (deferred: W6c verify + W9 adversarial regression
+  test remain blocked)`. Pre-cleanup before whip §2.5 needs-approval
+  scanner lands, so the noise floor stays clean. AC: `rg '^Status:
+  proposed$' docs/adr/*.md` returns zero matches.
+- **Docs Discipline section in 5 brief templates** —
+  `templates/briefs/{lead,member,reviewer,planner,unblocker}.md` now
+  carry a Docs Discipline section near the top (after role intro,
+  before role-specific mechanics) embedding the ADRs → docs → brief
+  templates → source lookup order, peruse-before-working rule, and
+  same-commit doc-update rule. `/CLAUDE.md` cited as canonical contract.
+- **No-gitter, worker-self-commits pattern in `lead.md` + `member.md`**.
+  New §"Commit ownership" section in both briefs describing the two
+  topologies (gitter-bearing teams: stage + mark done, gitter commits on
+  the back; gitter-less teams: commit + push BEFORE `atmux done`). Five
+  contradictory existing lines reworded so the brief is internally
+  consistent. Defensively phrased — `team.json:.members[]` `role:
+  "gitter"` probe disambiguates at the call site so future gitter-bearing
+  teams aren't broken.
+- **[ADR-094](docs/adr/094-c-alias-spawn-convention.md) — c-alias
+  spawn convention as first-class**. Author the ADR proposing that
+  `atmux::tui_claude` bake the global `CLAUDE.md` §Spawn Pattern
+  defaults inline so per-team `tuiCommands.claude` overrides aren't
+  required for the canonical autonomous-team-member spawn shape
+  (CLAUDE_GUARD_AGENT=1 + --plugin-dir + --permission-mode auto). Asks
+  A+B+C cohesive design; D (init wizard prompt) cross-linked as
+  orthogonal. Three env knobs (`ATMUX_CLAUDE_GUARD_AGENT`,
+  `ATMUX_CLAUDE_PLUGIN_DIR`, `ATMUX_CLAUDE_PERMISSION`) gate the bake
+  with rollback-friendly defaults; no schema change. Status: proposed.
 
 ### 🚨 Breaking changes
 

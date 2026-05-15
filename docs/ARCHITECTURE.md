@@ -1,6 +1,6 @@
 # atmux architecture
 
-> **Storage in atmux-bun.** Per [ADR-060](adr-bun/060-sqlite-state-store.md), kanban
+> **Storage in atmux-bun.** Per [ADR-060](adr/126-sqlite-state-store.md), kanban
 > (tasks/epics/stories), inboxes, and per-feature state moved to **`.atmux/state.db`**
 > (SQLite, WAL). The text below referencing `.atmux/kanban.json` describes the legacy
 > JSON model — still accurate for bash atmux and for teams not yet migrated, but on the
@@ -123,6 +123,7 @@ The lead does **not** decompose Tasks itself and does **not** `atmux dispatch` p
 1. Session liveness (is the tmux session up?).
 2. Per-member pane: does `#{pane_current_command}` match the expected TUI binary?
 3. Per-member banners: `rate-limit`, `Compacting conversation`, `Press up to edit queued messages`.
+   - **Modal cycling** (per ADR-142, module `src/core/modal-cycling-detector.ts`): ≥N distinct modal-prompts within `modalCycling.windowMin` AND 0 commits in `commitGracePeriodMin` → fires `[whip-modal-cycling]` Discord + clarifier dispatch + flag. Sits one layer above the existing static-stuck classifier (which catches *same prompt repeating*); modal-cycling catches *different prompts in rapid sequence*, the pattern §1c missed on 2026-05-14 whip-impl. State at `~/.atmux/state/modal-history-<member>.json` + `modal-cycling-dedup-state.json`.
 4. Per-member staleness: any `inProgress` tasks older than `ATMUX_STALE_MIN`?
 5. Lead uptime: has the lead been alive longer than `ATMUX_LEAD_MAX_MIN`? If so, recommend `atmux rotate-lead`.
 

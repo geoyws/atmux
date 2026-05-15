@@ -22,6 +22,8 @@
 //     `role: "discorder"` member; replaces the regular `report` line.
 //   - `unblocker tick` (2-min): when team has a `role: "unblocker"`
 //     member.
+//   - `lane-tick` (2-min, ADR-062 §Decision 4): when ≥1 member has a
+//     non-empty `.lane` field AND `team.crons.laneTickEnabled !== false`.
 //
 // Rendering is pure — no I/O, no flock — so the install verb (when it
 // lands) can sandwich the rendering in atomic-rename + flock per its
@@ -220,6 +222,27 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   const hasUnblocker = team.members.some((m) => (m as { role?: string }).role === "unblocker");
   if (hasUnblocker) {
     out.push(`${cronEvery(unblockerMins)} ${baseEnv} unblocker tick ${logTail("unblocker")}`);
+  }
+
+  // 7. lane-tick — ADR-062 §Decision 4. Hardcoded `*/2 * * * *` (the
+  // ADR fixes this cadence; sub-2-min would amplify any classifier bug,
+  // longer would dull the auto-claim chain). Gated by BOTH:
+  //   (a) ≥1 member has a non-empty `.lane` field (no lanes ⇒ nothing
+  //       for lane-tick to do; emitting the line would just spin a
+  //       no-op cron call), AND
+  //   (b) `team.crons.laneTickEnabled !== false` (per-team kill-switch
+  //       per ADR-062 §Rollback; default true so existing teams pick
+  //       up the line as soon as any member acquires a `.lane`).
+  // Placed last in the block per "pick last for least-churn diff" —
+  // existing tests asserting line ordering / counts (whip / report /
+  // decisions / groom / whip-resume-check / unblocker) remain stable.
+  const hasLaneMember = team.members.some((m) => {
+    const lane = (m as { lane?: string }).lane;
+    return typeof lane === "string" && lane.length > 0;
+  });
+  const laneTickEnabled = team.crons?.laneTickEnabled !== false;
+  if (hasLaneMember && laneTickEnabled) {
+    out.push(`*/2 * * * * ${baseEnv} lane-tick ${logTail("lane-tick")}`);
   }
 
   return out;
@@ -482,6 +505,73 @@ export function stripCockpitBlock(body: string): string {
     if (!inBlock) out.push(ln);
   }
   return out.join("\n");
+}
+
+// ---------- ADR-133 TR6: superdoctor → medic cron-line migration ----------
+//
+// Defensive idempotent rewrite: any `atmux superdoctor [args]` invocation
+// inside an atmux-managed block (`# >>> atmux:team=...` or
+// `# >>> atmux:cockpit`) is rewritten to `atmux medic [args]`. Lines
+// OUTSIDE managed blocks are preserved verbatim — operators may have
+// hand-installed superdoctor invocations and we never touch those.
+//
+// Note on premise: atmux today does NOT write `atmux superdoctor` cron
+// lines (cockpit's superdoctor runs via tmux pane keystroke `/loop /
+// superdoctor`, not crontab). This migration is a forward-compat hygiene
+// pass that:
+//   - no-ops on every current install (no legacy lines to rewrite)
+//   - rewrites cleanly if ADR-133 TR3 (verb routing) ships an
+//     `atmux superdoctor` legacy alias for some path
+//   - rewrites any operator-hand-installed legacy invocation inside an
+//     atmux-managed block (rare; defensive)
+//
+// Idempotent: re-running on already-migrated body yields byte-identical
+// output. Safe to run on every cron-install invocation.
+
+const SUPERDOCTOR_VERB_RE = /\batmux superdoctor\b/g;
+
+/** Pure: rewrite `atmux superdoctor` → `atmux medic` on every line
+ *  inside an atmux-managed block. Returns the new body + the number of
+ *  rewrites applied (caller can decide whether to log the migration).
+ *
+ *  Idempotent: running on a body with zero matches returns the input
+ *  unchanged with `{ migrated: 0 }`. Running again on a body that
+ *  ALREADY contains `atmux medic` (no `atmux superdoctor` left) is a
+ *  no-op. */
+export function migrateSuperdoctorToMedicCronLines(body: string): {
+  body: string;
+  migrated: number;
+} {
+  if (body === "") return { body, migrated: 0 };
+  if (!body.includes("atmux superdoctor")) return { body, migrated: 0 };
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let inManagedBlock = false;
+  let migrated = 0;
+  for (const ln of lines) {
+    if (ln.startsWith(BLOCK_HEADER_PREFIX) || ln === COCKPIT_BLOCK_HEADER) {
+      inManagedBlock = true;
+      out.push(ln);
+      continue;
+    }
+    if (inManagedBlock && (ln.startsWith(BLOCK_FOOTER_PREFIX) || ln === COCKPIT_BLOCK_FOOTER)) {
+      inManagedBlock = false;
+      out.push(ln);
+      continue;
+    }
+    if (inManagedBlock && SUPERDOCTOR_VERB_RE.test(ln)) {
+      SUPERDOCTOR_VERB_RE.lastIndex = 0;
+      const rewritten = ln.replace(SUPERDOCTOR_VERB_RE, "atmux medic");
+      const count = (ln.match(SUPERDOCTOR_VERB_RE) ?? []).length;
+      SUPERDOCTOR_VERB_RE.lastIndex = 0;
+      migrated += count;
+      out.push(rewritten);
+      continue;
+    }
+    SUPERDOCTOR_VERB_RE.lastIndex = 0;
+    out.push(ln);
+  }
+  return { body: out.join("\n"), migrated };
 }
 
 // ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------

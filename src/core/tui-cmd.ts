@@ -96,6 +96,22 @@ export function resolveTuiCommand(
 
 // ---------- Built-ins ----------
 
+/** Env vars stripped from the claude TUI invocation. ANTHROPIC_API_KEY +
+ *  ANTHROPIC_AUTH_TOKEN are operator-shell artefacts that flip the claude
+ *  CLI to env-key bearer mode — OAuth-account teams hit the "Do you want
+ *  to use this API key?" dialog every spawn (2026-05-14 incident).
+ *  CLAUDE_CONFIG_DIR is stripped because a stale parent-shell value would
+ *  win over our intentional non-default-account assignment if we didn't
+ *  scrub first; for default accounts the strip is the only protection
+ *  against a leaked operator value. The `env -u …` prefix must come
+ *  BEFORE the per-process var assignments — POSIX semantics: `env -u FOO
+ *  BAR=baz cmd` first strips FOO, then sets BAR, then execs cmd. */
+const CLAUDE_TUI_ENV_SCRUB = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR"];
+
+function claudeEnvScrubPrefix(): string {
+  return `env ${CLAUDE_TUI_ENV_SCRUB.map((v) => `-u ${v}`).join(" ")} `;
+}
+
 /**
  * Build the spawn command for a `tui: "claude"` member.
  *
@@ -107,6 +123,11 @@ export function resolveTuiCommand(
  *   - `--permission-mode auto` (replaces the legacy `dontAsk` default,
  *     ADR-094 §C — `auto` is the only mode that survives a nested-shell
  *     `claude` call without re-prompting)
+ *
+ * Env scrub (t-4d2936ac, ADR-094 §A follow-up): the command prefix
+ * strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CONFIG_DIR
+ * via `env -u …` before per-process assignments — see
+ * {@link claudeEnvScrubPrefix} for rationale.
  *
  * Env-knob override surface (each may be overridden per-process):
  *   - `ATMUX_CLAUDE_BIN`               (default `claude`)
@@ -124,6 +145,7 @@ export function resolveTuiCommand(
  * Resulting target form (CLAUDE.md §Spawn Pattern reference):
  * ```
  * export ATMUX_MEMBER=<name> && cd <cwd> && \
+ *   env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR \
  *   [CLAUDE_CONFIG_DIR=$HOME/.claude-<acct>] \
  *   CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 \
  *   claude [--plugin-dir=$HOME/.claude/plugins] \
@@ -165,8 +187,11 @@ function tuiClaude(
   if (typeof ma === "string" && ma.length > 0 && ma !== "default" && home.length > 0) {
     accountEnv = `CLAUDE_CONFIG_DIR=${posixQuote(`${home}/.claude-${ma}`)} `;
   }
-  return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${accountEnv}CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=${guard} ${bin}${pluginFlag} --permission-mode ${permission}${modelFlag}`;
+  return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${claudeEnvScrubPrefix()}${accountEnv}CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=${guard} ${bin}${pluginFlag} --permission-mode ${permission}${modelFlag}`;
 }
+
+/** Exported for callers (start.ts session-level setenv -u, tests). */
+export const CLAUDE_TUI_SCRUB_VARS: ReadonlyArray<string> = CLAUDE_TUI_ENV_SCRUB;
 
 function tuiOpencode(name: string, cwd: string, model: string, env: NodeJS.ProcessEnv): string {
   const bin = env.ATMUX_OPENCODE_BIN ?? "opencode";

@@ -59,6 +59,15 @@ export const ALLOWLIST: ReadonlyArray<string> = [
   // deliberately anchor on the canonical socket as the post-repair
   // target.
   "verbs/team-repair-rename.ts",
+  // Justified fallback (t-b5864443): `resolveCageSocket` is the cockpit
+  // single-source-of-truth that goes through `resolveTeamSocket` on the
+  // happy path. When `loadTeam` throws (team.json missing / unreadable
+  // / malformed) there is no Team object available, so the canonical
+  // `/tmp/atmux-<cockpitTeam.name>/sock` fallback is the only safe
+  // default. Cockpit rebuild must stay green even when a member team
+  // is misconfigured — same posture as `resolveTeamWindowMode`'s
+  // `no-driver-config` placeholder branch.
+  "core/cockpit.ts",
 ];
 
 /** Match-anywhere: `getDefaultSocket(<ident>[.x.y]*.name)`. Captures
