@@ -81,22 +81,58 @@ describe("resolveCockpitConfigPath", () => {
 describe("loadCockpit", () => {
   test("reads + validates a valid roster", async () => {
     await writeCockpit({
-      cockpitSession: "atmux_teams",
+      cockpitSession: "atmux_cockpit",
       teams: [
         { name: "sopx", root: "/p/sopx", enabled: true },
         { name: "atmux", root: "/p/atmux", enabled: true },
       ],
     });
-    const cockpit = await loadCockpit({ home: homeDir });
-    expect(cockpit.cockpitSession).toBe("atmux_teams");
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.cockpitSession).toBe("atmux_cockpit");
     expect(cockpit.teams).toHaveLength(2);
     expect(cockpit.teams[0]?.name).toBe("sopx");
   });
 
   test("applies cockpitSession default when omitted", async () => {
     await writeCockpit({ teams: [{ name: "x", root: "/x", enabled: true }] });
-    const cockpit = await loadCockpit({ home: homeDir });
-    expect(cockpit.cockpitSession).toBe("atmux_teams");
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    // ADR-135: default is `atmux_cockpit` (was `atmux_teams` pre-rename).
+    expect(cockpit.cockpitSession).toBe("atmux_cockpit");
+  });
+
+  test("ADR-135 §D5 — coerces legacy cockpitSession 'atmux_teams' literal → 'atmux_cockpit' with deprecation warning", async () => {
+    await writeCockpit({
+      cockpitSession: "atmux_teams",
+      teams: [{ name: "x", root: "/x", enabled: true }],
+    });
+    const warnings: string[] = [];
+    const cockpit = await loadCockpit({
+      home: homeDir,
+      warn: (m) => warnings.push(m),
+    });
+    // Coerced to canonical at parse time.
+    expect(cockpit.cockpitSession).toBe("atmux_cockpit");
+    // Deprecation warning fired.
+    const warned = warnings.some(
+      (m) => m.includes("cockpitSession literal 'atmux_teams'") && m.includes("ADR-135"),
+    );
+    expect(warned).toBe(true);
+  });
+
+  test("ADR-135 §D5 — operator-chosen arbitrary cockpitSession passes through unchanged (only legacy literal triggers shim)", async () => {
+    await writeCockpit({
+      cockpitSession: "geoyws_cockpit",
+      teams: [{ name: "x", root: "/x", enabled: true }],
+    });
+    const warnings: string[] = [];
+    const cockpit = await loadCockpit({
+      home: homeDir,
+      warn: (m) => warnings.push(m),
+    });
+    expect(cockpit.cockpitSession).toBe("geoyws_cockpit");
+    // No ADR-135 deprecation warning for arbitrary names.
+    const adr135Warned = warnings.some((m) => m.includes("ADR-135"));
+    expect(adr135Warned).toBe(false);
   });
 
   test("applies team.enabled default (true) when omitted", async () => {
@@ -299,8 +335,12 @@ describe("migrateLegacyShape — flat teams[] → recursive sessions[]", () => {
 describe("loadCockpit — migration shim end-to-end", () => {
   test("legacy flat teams[] roster still loads + warns", async () => {
     const warned: string[] = [];
+    // Use canonical cockpitSession to keep this test focused on the
+    // teams[]-shape shim — the ADR-135 cockpitSession-literal shim is
+    // covered separately above and would produce an extra warning that
+    // muddies the assertion.
     await writeCockpit({
-      cockpitSession: "atmux_teams",
+      cockpitSession: "atmux_cockpit",
       teams: [
         { name: "sopx", root: "/p/sopx", enabled: true },
         { name: "atmux", root: "/p/atmux", enabled: true },

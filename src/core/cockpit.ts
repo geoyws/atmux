@@ -87,7 +87,7 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   if (!(await exists(path))) {
     throw new ConfigError({
       what: `no cockpit config at ${path}`,
-      hint: `seed it with a roster like:\n  {\n    "schemaVersion": 1,\n    "cockpitSession": "atmux_teams",\n    "sessions": [\n      { "type": "team", "name": "<team>", "root": "/abs/path/to/project" }\n    ]\n  }`,
+      hint: `seed it with a roster like:\n  {\n    "schemaVersion": 1,\n    "cockpitSession": "atmux_cockpit",\n    "sessions": [\n      { "type": "team", "name": "<team>", "root": "/abs/path/to/project" }\n    ]\n  }`,
     });
   }
   // Read raw first so the migration shims can inspect the on-disk
@@ -103,7 +103,8 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   const warn = opts.warn ?? ((msg: string) => process.stderr.write(msg));
   const migrated = migrateLegacyShape(raw, path, warn);
   const medicShimmed = migrateSuperdoctorBlockToMedic(migrated, path, warn);
-  const parsed = Cockpit.parse(medicShimmed);
+  const sessionShimmed = migrateCockpitSessionLegacyLiteral(medicShimmed, path, warn);
+  const parsed = Cockpit.parse(sessionShimmed);
   // ADR-089 §Decision-anchor #4: validate operator-supplied prefixChain
   // (length ≥ MAX_NESTING_LEVEL + uniqueness) at load time. Failing here
   // is preferable to a runtime KeyError when resolvePrefix is called
@@ -259,6 +260,38 @@ export function migrateSuperdoctorBlockToMedic(
   );
   const { superdoctor, ...rest } = obj;
   return { ...rest, medic: superdoctor };
+}
+
+/**
+ * ADR-135 §D5: pre-parse shim that coerces the legacy
+ * `cockpitSession: "atmux_teams"` literal to the canonical
+ * `"atmux_cockpit"` value. Runs AFTER the medic-block migration so
+ * the input has already been normalized for ADR-133. Only fires when
+ * the field is set to the historical literal — operator-chosen
+ * arbitrary names (e.g. `geoyws_cockpit`) pass through unchanged.
+ *
+ * Idempotent on already-canonical inputs. Does NOT auto-migrate the
+ * on-disk file — the warning is the call to action. The tmux-side
+ * rename of any existing `atmux_teams` session to `atmux_cockpit` is
+ * handled by `reconcileCockpitSession` (verbs/cockpit.ts) per ADR-135
+ * §D4. After one semver bump, a follow-up Task flips this shim to a
+ * schema-level reject.
+ */
+export function migrateCockpitSessionLegacyLiteral(
+  raw: unknown,
+  path: string,
+  warn: (msg: string) => void,
+): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const obj = raw as Record<string, unknown>;
+  if (obj.cockpitSession !== "atmux_teams") return obj;
+  warn(
+    `atmux: cockpit.json at ${path} uses deprecated cockpitSession literal 'atmux_teams' — ` +
+      `coercing to canonical 'atmux_cockpit' per ADR-135. ` +
+      `Update the on-disk value to silence this warning. ` +
+      `Accepting this release; will fail next release.\n`,
+  );
+  return { ...obj, cockpitSession: "atmux_cockpit" };
 }
 
 /**

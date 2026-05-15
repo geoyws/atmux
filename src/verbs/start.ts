@@ -107,6 +107,7 @@ import {
 } from "../abstractions/worktree.ts";
 import {
   buildWindowName,
+  buildWindowNameLegacy,
   defaultEmojiForRole,
   ensureAtmuxDirs,
   getAtmuxDir,
@@ -646,6 +647,31 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     if (existingNames.has(win)) {
       logger.log(`  · ${member.name}: window exists, skipping (use --force to reset)`);
       continue;
+    }
+    // ADR-135 §D4 — legacy member-window migration. Pre-ADR-135
+    // teams have windows named `<emoji><member>` (no separator);
+    // ADR-135 §D3 flipped buildWindowName to `<emoji>-<member>`. If
+    // a window with the legacy form exists for this member and the
+    // canonical form does not, rename it in-place via
+    // `tmux rename-window` (preserves pane PID + scroll history).
+    // Idempotent: re-running start after the rename is a no-op
+    // because `existingNames.has(win)` short-circuits above.
+    const winLegacy = buildWindowNameLegacy(member.name, emoji);
+    if (winLegacy !== win && existingNames.has(winLegacy)) {
+      try {
+        await tmux.window.renameWindow(`${session}:${winLegacy}`, win);
+        logger.log(
+          `  · ${member.name}: renamed legacy window '${winLegacy}' → '${win}' (ADR-135 migration)`,
+        );
+        existingNames.add(win);
+        existingNames.delete(winLegacy);
+        continue;
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(
+          `  ⚠ ${member.name}: failed to rename legacy window '${winLegacy}' → '${win}': ${cause} — falling through to spawn`,
+        );
+      }
     }
     // ADR-082 W3: worktree-isolation cwd wins when provisioning
     // succeeded for this member. Empty `worktreeCwd` (legacy team or

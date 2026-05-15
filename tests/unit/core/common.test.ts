@@ -311,10 +311,11 @@ describe("getSessionName", () => {
 
 describe("buildWindowName / isMemberWindowName", () => {
   // ADR-017 / operator decision 2026-05-05: drop the `__<team>__` prefix.
-  // New form: `<emoji><member>` when emoji is set, `<member>` when not.
+  // ADR-135 §D3: add hyphen separator between emoji and member name.
+  // Canonical form: `<emoji>-<member>` when emoji is set, `<member>` when not.
 
-  test("with emoji: <emoji><member>", () => {
-    expect(buildWindowName("alice", "🦊")).toBe("🦊alice");
+  test("with emoji: <emoji>-<member> (ADR-135 hyphen separator)", () => {
+    expect(buildWindowName("alice", "🦊")).toBe("🦊-alice");
   });
 
   test("without emoji: <member>", () => {
@@ -326,10 +327,15 @@ describe("buildWindowName / isMemberWindowName", () => {
   });
 
   test("multi-byte emoji characters preserved (e.g. compound 🗺️)", () => {
-    expect(buildWindowName("lead", "🗺️")).toBe("🗺️lead");
+    expect(buildWindowName("lead", "🗺️")).toBe("🗺️-lead");
   });
 
-  test("isMemberWindowName: roster match (with emoji)", () => {
+  test("isMemberWindowName: roster match (canonical hyphenated form)", () => {
+    const members = [{ name: "alice", emoji: "🦊" }];
+    expect(isMemberWindowName("🦊-alice", members)).toBe(true);
+  });
+
+  test("ADR-135 deprecation window — isMemberWindowName: roster match (legacy concatenated form)", () => {
     const members = [{ name: "alice", emoji: "🦊" }];
     expect(isMemberWindowName("🦊alice", members)).toBe(true);
   });

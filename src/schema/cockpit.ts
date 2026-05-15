@@ -484,8 +484,16 @@ export const Cockpit = z
      *  `1` = recursive native; `2+` reserved for shim removal. */
     schemaVersion: z.number().int().default(1),
     /** tmux session name on the operator's default socket. Default
-     *  `atmux_teams` per ADR-046 / ADR-050. */
-    cockpitSession: z.string().min(1).default("atmux_teams"),
+     *  `atmux_cockpit` per ADR-135 (was `atmux_teams` pre-ADR-135 per
+     *  ADR-046 / ADR-050). Legacy literal `atmux_teams` is still
+     *  accepted at parse time during the deprecation window — the
+     *  string-level value passes Zod validation unchanged; the
+     *  deprecation warning is emitted by `loadCockpit` when the field
+     *  matches the legacy literal, and `cockpit rebuild` applies the
+     *  in-place `tmux rename-session atmux_teams → atmux_cockpit`
+     *  shim (ADR-135 §D4). After one semver bump, the legacy literal
+     *  becomes a hard error pointing at ADR-135. */
+    cockpitSession: z.string().min(1).default("atmux_cockpit"),
     /** ADR-089 §Pillar 1: recursive session tree. DFS-ordered; window
      *  order matches DFS traversal. */
     sessions: z.array(CockpitSession).default([]),
