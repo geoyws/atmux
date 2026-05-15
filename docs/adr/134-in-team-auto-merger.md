@@ -282,3 +282,26 @@ Forward-flagged so the eventual T2-T8 reviewer (planner pair-review per t-cc4c5f
 5. **Revert commit message** — gitter-authored revert commits must carry `Revert: <subject> — failed <testCommand> (gitter auto-revert per ADR-134 §revertOnFail)` so the git log is honest about why the revert happened. Avoids ambiguity later.
 
 These five do not block T1 (this ADR); they're load-bearing for T2/T3/T7 implementers.
+
+## T8 acceptance proof — `tests/e2e/merger.test.ts` (t-c607d9f1)
+
+The EPIC's T8 acceptance proof lives at `tests/e2e/merger.test.ts`. It exercises the SHIPPED composition end-to-end against a real git repo + per-member worktrees + a real SQLite `merger_state` ledger:
+
+| Beat | Asserts | Wrapper-stop state |
+|---|---|---|
+| B1 | Happy 3-merge sequential — 3 member branches walk to wrapper stop; base advances by ≥3 commits | `tested` (× 3) |
+| B2 | Conflict path — colliding branch records `state="conflict"` in the ledger; base unchanged; member's branch retains the conflict commit | `conflict` |
+| B3 | Caller-driven no-op short-circuit — re-tick on `tested` returns `changed=false` with `reason=/caller-driven/`; ledger row + base SHA unchanged | `tested` |
+| B4 | Operator-reset + retry — manual `repo.transition({ next: "in_progress" })` post-conflict cleanup; next tick walks the post-reset branch to `tested` | `tested` |
+| B5 | `merge-cycle` bulk fan-in — current trunk merges land cleanly (3 successful, push ok) but the ledger rows stay null (verb bypasses `MergerStateRepo` today); pinned as a contract assertion that flips when the T6/T8 bridge wires through | n/a (verb path) |
+
+**Wrapper-stop vocabulary.** Happy path stops at `tested`, NOT `merged` — the `tested → merged` transition is the post-merge test gate driven by the T3+T4 outer dispatcher (still todo). The merge itself has already landed by the time the wrapper reaches `tested` (`mergeMember` runs during `merging → tested`); the ledger just hasn't been advanced to `merged` yet.
+
+**Deps NOT yet shipped — explicitly skip-documented in the spec header**:
+
+- **T3 (`t-27b06cda`)** socket-pubsub event-driven trigger on task-done. Original task body's Beat 3 ("event-driven path: 3 parallel happy commits → merge-queued event published within 1s") needs this dispatcher. Until T3 lands, the cron-backstop sibling path (T4, done) is the production fallback — same `performMerge` call site, different fire-source. The e2e exercises `performMerge` direct + via `mergeCycle`; the event-driven cascade is the T3-shipping-Task's e2e responsibility.
+- **T5 (`t-e9363607`)** conflict surface — `atmux send <member> ...`, `[merge-conflict]` Discord template, `atmux flag add`. Original task body's Beats 5+7 require T5 to assert the FAN-OUT side of conflict/test-fail handling. This e2e asserts the LEDGER side (state.db `merger_state` row with `state="conflict"`), which is what every T5 surface reads from. T5's e2e covers the renders + sends + flag write.
+- **Post-merge test-fail revert path** (Beat 7) — `performMerge`'s `test_failed` / `reverted` branches are caller-driven (per `intra-team-merge.ts:370-374`); they wait on T3+T4 wiring to run `bun test` after merge + auto-revert on red. The state machine accepts the states; the bun-test invocation + auto-revert composition isn't a unit-of-T8.
+- **Cockpit-W4 merger pane** — superseded by the EPIC reshape (see §"Why in-team, not cockpit" above). Original task body predates the reshape; the cockpit-W4 fixture is no longer applicable.
+
+Test result: `bun test tests/e2e/merger.test.ts` → 5 pass / 0 fail. Typecheck green. Single commit. Reviewer-gated.
