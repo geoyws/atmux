@@ -1,10 +1,12 @@
-# ADR-131: Superdoctor kanban-hygiene auto-fix loop
+# ADR-131: Medic kanban-hygiene auto-fix loop
 
-**Status**: Proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-ce96470b)
 **Extends**: ADR-077 §D2 detection-class chain (`atmux doctor` integrity probes) and §D5 complaint box.
 **Parent EPIC**: t-0ca510b2
+
+> **Rename note (2026-05-14, late afternoon)**: this ADR was first authored earlier on 2026-05-14 as "Superdoctor kanban-hygiene auto-fix loop". Later the same day the cockpit self-healing role was renamed `superdoctor` → `medic` per [ADR-133](./133-medic-rename.md). Body prose below refers to **medic** throughout (originally read "superdoctor"). Storage-layer identifiers (`superdoctor_attempts` table, `__superdoctor__` sentinel, `src/core/superdoctor-hygiene/` source dir) remain unchanged for the deprecation window per ADR-133 §Out of scope. The file slug `131-superdoctor-kanban-hygiene.md` is retained — renaming files breaks `git log --follow` and the ADR audit trail.
 
 ## Context
 
@@ -20,21 +22,21 @@ The 2026-05-14 SOPX cockpit diagnostic surfaced **five concrete kanban-data stru
 
 The same pattern has surfaced in the atmux-team kanban (different members, identical fingerprint shape) and is hypothesised to recur across every multi-team cluster. **Lead-of-team cannot detect these from inside** — the data drift is invisible to a single-team perspective (the lead doesn't have a current canonical roster of "valid owners" vs "stale strings"; doesn't have a deterministic policy for which member should pick up a lane=null orphan). A **fleet-level auditor** does.
 
-### Superdoctor is the natural home
+### Medic is the natural home
 
 ADR-077 already establishes the cockpit-tier diagnosis-and-prevention role: an hourly Opus + xhigh loop that runs `atmux doctor --json` + `atmux status --json` per team, investigates root causes, files complaints with preventive asks. §D2's detection-class chain currently covers tmux/cron/socket/cursor parity — adding a sixth class **`kanban-hygiene`** is on-mission: same loop, same authority bounds, same complaint-box write surface. The cost is one additional pass per tick over each team's `state.db` tasks table.
 
 ### Why "deterministic auto-fix" beats "refuse-and-ask"
 
-When superdoctor detects a ghost-owned task with multiple candidate members eligible to reassign (e.g. `fe-1` + `fe-2` both match lane affinity, both lowest-load), the choice between them is **bounded risk** — the work ships either way; the wrong choice means one member has slightly more load than the other for a window. The alternative is **silent skip with Discord ask-George** ("which member should pick this up — fe-1 or fe-2?"), which leaves the task wedged for an entire human response cycle (overnight: 8h+). Silent skip on bounded-risk decisions is **unbounded dormancy** — exactly the "0 overnight commits" fingerprint flagged in [[feedback_overnight_reddit_stakes]] (whip §0.05): operator-stated stake is *"keep burning nights with excuses + 0 overnight commits and screenshots land on r/ClaudeAI"*.
+When medic detects a ghost-owned task with multiple candidate members eligible to reassign (e.g. `fe-1` + `fe-2` both match lane affinity, both lowest-load), the choice between them is **bounded risk** — the work ships either way; the wrong choice means one member has slightly more load than the other for a window. The alternative is **silent skip with Discord ask-George** ("which member should pick this up — fe-1 or fe-2?"), which leaves the task wedged for an entire human response cycle (overnight: 8h+). Silent skip on bounded-risk decisions is **unbounded dormancy** — exactly the "0 overnight commits" fingerprint flagged in [[feedback_overnight_reddit_stakes]] (whip §0.05): operator-stated stake is *"keep burning nights with excuses + 0 overnight commits and screenshots land on r/ClaudeAI"*.
 
-Superdoctor's authority is already wide per ADR-077 §D3 (`/team rotate-lead`, `/team clear`, pushing source fixes, modifying cockpit config). Deterministic-pick of `fe-1` vs `fe-2` is dramatically narrower than any of those — it's the trivial extension of the existing authority bound.
+Medic's authority is already wide per ADR-077 §D3 (`/team rotate-lead`, `/team clear`, pushing source fixes, modifying cockpit config). Deterministic-pick of `fe-1` vs `fe-2` is dramatically narrower than any of those — it's the trivial extension of the existing authority bound.
 
 ## Decision
 
-### (D1) Add `kanban-hygiene` detector class to superdoctor's hourly tick
+### (D1) Add `kanban-hygiene` detector class to medic's hourly tick
 
-After the existing complaint-file pass (ADR-077 §D2 chain), superdoctor runs **one additional pass per team** over the team's `state.db` tasks table. Five sub-detector files under `src/core/superdoctor-hygiene/` produce a flat list of fingerprints; the drain loop picks the highest-severity unfixed fingerprint and applies its deterministic fix. One drain action per tick per team — bounded blast radius preserved.
+After the existing complaint-file pass (ADR-077 §D2 chain), medic runs **one additional pass per team** over the team's `state.db` tasks table. Five sub-detector files under `src/core/superdoctor-hygiene/` (source dir name unchanged per ADR-133 §Out of scope) produce a flat list of fingerprints; the drain loop picks the highest-severity unfixed fingerprint and applies its deterministic fix. One drain action per tick per team — bounded blast radius preserved.
 
 ### (D2) Five detectors, severity ordering, fix policy
 
@@ -105,20 +107,20 @@ Body format:
   - B) {option}
   - **Default at HH:MM MYT if silent:** {recommended option}
 
-📍 superdoctor tick #N · auto-fixes this tick: {K} · complaints filed: {C}
+📍 medic tick #N · auto-fixes this tick: {K} · complaints filed: {C}
 ```
 
 Header / verdict / What's new / Need from George / footer fields follow CLAUDE.md global Discord rules verbatim — categorisation `[hygiene-blocker]`, 🚨 reserved for genuinely-irreversible asks (not used here unless the wedge threatens a demo window).
 
 ### (D6) Verb surface dependencies
 
-Auto-fix actions shell to atmux verbs (no direct SQL writes from superdoctor):
+Auto-fix actions shell to atmux verbs (no direct SQL writes from medic):
 
 - `atmux task assign <id> <member>` — **EXISTS** as of 2026-05-14 per SOPX session capture.
 - `atmux task lane <id> <lane>` — **DOES NOT EXIST** today. Needs a sub-task (see EPIC body §Sub-tasks T4).
 - `atmux task priority <id> <N>` — **DOES NOT EXIST** today. Same sub-task.
 
-ADR-131's implementation is gated on those verbs landing. The detector files (T2) and hygiene table migration (T3) can land before the verbs; superdoctor's drain loop wires them in T3 + T6 (e2e). EPIC body §Sub-tasks already captures this sequencing.
+ADR-131's implementation is gated on those verbs landing. The detector files (T2) and hygiene table migration (T3) can land before the verbs; medic's drain loop wires them in T3 + T6 (e2e). EPIC body §Sub-tasks already captures this sequencing.
 
 ## Tradeoffs
 
@@ -130,13 +132,13 @@ ADR-131's implementation is gated on those verbs landing. The detector files (T2
 | Refuse and ask George ("`fe-1` or `fe-2`?") on every ambiguous reassign | **Unbounded**: overnight 0-commit fingerprint → Reddit receipts per whip §0.05 / [[feedback_overnight_reddit_stakes]] | ❌ |
 | Silent skip ghost-owner (status quo today) | **Unbounded**: P0 task wedged indefinitely; no detection mechanism today exists at the team-lead level | ❌ |
 
-The recurring failure mode operator has flagged dozens of times is: *agent reports "team alive / queued / dispatched" without verified turn-execution; user re-checks N min later; nothing moved; time wasted*. That failure mode is the ⏎ point of CLAUDE.md "Don't make a dormant team look like a working team" — `working` is defined by commit-cadence, not pane liveness. Auto-fix-deterministic is the structural antidote: superdoctor refuses to leave a P0 hygiene fingerprint un-actioned across a full tick when bounded fix candidates exist.
+The recurring failure mode operator has flagged dozens of times is: *agent reports "team alive / queued / dispatched" without verified turn-execution; user re-checks N min later; nothing moved; time wasted*. That failure mode is the ⏎ point of CLAUDE.md "Don't make a dormant team look like a working team" — `working` is defined by commit-cadence, not pane liveness. Auto-fix-deterministic is the structural antidote: medic refuses to leave a P0 hygiene fingerprint un-actioned across a full tick when bounded fix candidates exist.
 
 ### Misdiagnosis blast radius
 
 A bad reassignment doesn't lose work — the original task body is intact, the new owner picks it up via the existing `claim --next` path, the commit cadence resumes. The only failure shape is "the wrong member is slightly overloaded for a tick" — self-correcting on the next tick once they finish their current Task.
 
-A bad **`lane-mismatch` fix** is similar: if superdoctor's "owner is right, lane was wrong" assumption is inverted (owner was wrong, lane is right), the next `claim --next` for the correct member still surfaces the task (now with matching lane); a real-member can claim it; no work loss. Worst case is one extra tick of indirection.
+A bad **`lane-mismatch` fix** is similar: if medic's "owner is right, lane was wrong" assumption is inverted (owner was wrong, lane is right), the next `claim --next` for the correct member still surfaces the task (now with matching lane); a real-member can claim it; no work loss. Worst case is one extra tick of indirection.
 
 The complaint box (ADR-077 §D5) audit-logs every auto-fix BEFORE execution, so reversal (manual `atmux task assign` back to the original owner if operator disagrees) is always one verb away.
 
@@ -146,12 +148,12 @@ Each detector is a single `SELECT … FROM tasks` query with an index on `status
 
 ## Cross-references
 
-- **ADR-077** — superdoctor cockpit role. §D1-D2 establish the detection-class chain this ADR extends; §D3 cadence/authority bound; §D5 complaint box residency.
+- **ADR-077** — medic cockpit role. §D1-D2 establish the detection-class chain this ADR extends; §D3 cadence/authority bound; §D5 complaint box residency.
 - **ADR-082** — per-member worktree isolation. The 9 lane=null orphans observed in SOPX correlate with worktree-isolated teams where dispatch routing is per-lane; lane=null orphans become functionally invisible to the lane-affinity matcher.
 - **ADR-084** — per-member-branch model. Members' natural-lane resolution (used by deterministic-pick) reads from `team.members[].lane` introduced alongside this ADR's tier.
 - **ADR-076** — SQL-canonical inbox. Hygiene fingerprints live in the same `state.db` per the same residency pattern.
 - **ADR-060** — kanban storage in `state.db`. The tasks table this ADR audits.
-- **ADR-049** — budget-pause. Superdoctor's hourly cadence respects budget windows; hygiene pass skips when team is paused (no point fixing wedge fingerprints during a pause that already wedges everything).
+- **ADR-049** — budget-pause. Medic's hourly cadence respects budget windows; hygiene pass skips when team is paused (no point fixing wedge fingerprints during a pause that already wedges everything).
 - **CLAUDE.md** "Don't make a dormant team look like a working team" + whip §0.05 — the operator-side rule this ADR makes structurally enforced.
 - **`feedback_overnight_reddit_stakes`** — the operator-stated stake for not letting deterministic fixes get blocked on operator round-trips.
 
@@ -165,9 +167,9 @@ Each detector is a single `SELECT … FROM tasks` query with an index on `status
 
 **OQ-2 — Hygiene-DB residency: per-team `.atmux/state.db` or shared `~/.atmux/state/superdoctor-hygiene.db`?**
 
-Per-team is the existing canonical residency for kanban data (ADR-060 + ADR-076). Shared would centralise the audit trail across all teams superdoctor monitors but split the residency model (kanban here, hygiene there).
+Per-team is the existing canonical residency for kanban data (ADR-060 + ADR-076). Shared would centralise the audit trail across all teams medic monitors but split the residency model (kanban here, hygiene there).
 
-**Recommended default**: per-team `.atmux/state.db` (matches existing ADR-060/076 pattern; no residency drift; cross-team aggregation composable via `UNION ALL` query if needed; survives team archival as part of the team's own state). Override = move to shared store when superdoctor needs to correlate hygiene patterns across teams (e.g. "ghost-owner spikes after every cockpit rebuild" — a cross-team signal). Until that signal exists, per-team is cheaper.
+**Recommended default**: per-team `.atmux/state.db` (matches existing ADR-060/076 pattern; no residency drift; cross-team aggregation composable via `UNION ALL` query if needed; survives team archival as part of the team's own state). Override = move to shared store when medic needs to correlate hygiene patterns across teams (e.g. "ghost-owner spikes after every cockpit rebuild" — a cross-team signal). Until that signal exists, per-team is cheaper.
 
 ## Implementation plan
 

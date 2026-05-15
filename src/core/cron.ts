@@ -507,6 +507,73 @@ export function stripCockpitBlock(body: string): string {
   return out.join("\n");
 }
 
+// ---------- ADR-133 TR6: superdoctor → medic cron-line migration ----------
+//
+// Defensive idempotent rewrite: any `atmux superdoctor [args]` invocation
+// inside an atmux-managed block (`# >>> atmux:team=...` or
+// `# >>> atmux:cockpit`) is rewritten to `atmux medic [args]`. Lines
+// OUTSIDE managed blocks are preserved verbatim — operators may have
+// hand-installed superdoctor invocations and we never touch those.
+//
+// Note on premise: atmux today does NOT write `atmux superdoctor` cron
+// lines (cockpit's superdoctor runs via tmux pane keystroke `/loop /
+// superdoctor`, not crontab). This migration is a forward-compat hygiene
+// pass that:
+//   - no-ops on every current install (no legacy lines to rewrite)
+//   - rewrites cleanly if ADR-133 TR3 (verb routing) ships an
+//     `atmux superdoctor` legacy alias for some path
+//   - rewrites any operator-hand-installed legacy invocation inside an
+//     atmux-managed block (rare; defensive)
+//
+// Idempotent: re-running on already-migrated body yields byte-identical
+// output. Safe to run on every cron-install invocation.
+
+const SUPERDOCTOR_VERB_RE = /\batmux superdoctor\b/g;
+
+/** Pure: rewrite `atmux superdoctor` → `atmux medic` on every line
+ *  inside an atmux-managed block. Returns the new body + the number of
+ *  rewrites applied (caller can decide whether to log the migration).
+ *
+ *  Idempotent: running on a body with zero matches returns the input
+ *  unchanged with `{ migrated: 0 }`. Running again on a body that
+ *  ALREADY contains `atmux medic` (no `atmux superdoctor` left) is a
+ *  no-op. */
+export function migrateSuperdoctorToMedicCronLines(body: string): {
+  body: string;
+  migrated: number;
+} {
+  if (body === "") return { body, migrated: 0 };
+  if (!body.includes("atmux superdoctor")) return { body, migrated: 0 };
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let inManagedBlock = false;
+  let migrated = 0;
+  for (const ln of lines) {
+    if (ln.startsWith(BLOCK_HEADER_PREFIX) || ln === COCKPIT_BLOCK_HEADER) {
+      inManagedBlock = true;
+      out.push(ln);
+      continue;
+    }
+    if (inManagedBlock && (ln.startsWith(BLOCK_FOOTER_PREFIX) || ln === COCKPIT_BLOCK_FOOTER)) {
+      inManagedBlock = false;
+      out.push(ln);
+      continue;
+    }
+    if (inManagedBlock && SUPERDOCTOR_VERB_RE.test(ln)) {
+      SUPERDOCTOR_VERB_RE.lastIndex = 0;
+      const rewritten = ln.replace(SUPERDOCTOR_VERB_RE, "atmux medic");
+      const count = (ln.match(SUPERDOCTOR_VERB_RE) ?? []).length;
+      SUPERDOCTOR_VERB_RE.lastIndex = 0;
+      migrated += count;
+      out.push(rewritten);
+      continue;
+    }
+    SUPERDOCTOR_VERB_RE.lastIndex = 0;
+    out.push(ln);
+  }
+  return { body: out.join("\n"), migrated };
+}
+
 // ---------- ADR-083 follow-up §DEFERRED row 2: cron-orphans ----------
 
 /** A marker-fenced block's identity: team name from the header + the

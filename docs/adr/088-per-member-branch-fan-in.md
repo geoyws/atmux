@@ -1,6 +1,6 @@
 # ADR-088: Per-member-branch fan-in policy — `<base>-<member>` → `<base>` merger model
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Resolves**: ADR-082 §"Out of scope" OQ3 (commit-batching / gitter-pattern policy) + ADR-084 OQ-3 (gitter-pattern alignment with per-member branches)
 **Driver-ref**: 2026-05-14 ~08:00 MYT planner brief — *"planner-decompose next highest-value worktree epic — ADR-082 OQ items + ADR-084 OQ-2 (per-member-branch fan-in deferred decision)"*. Tracked on the kanban as t-71629309 (PLANNER decompose, this commit).
@@ -175,8 +175,8 @@ This ADR is filed standalone; impl decomposed into the following sub-tasks (sing
 
 | Seq | ID | Lane | Subject | Deps |
 |---|---|---|---|---|
-| W1 | t-bed51da2 | be | `src/abstractions/branch-merge.ts` + unit tests — `mergeMember(base, wtBranch, repoPath, opts)` primitive | none |
-| W2 | t-e7724527 | be | `src/verbs/merge-member.ts` + integration test — verb wiring + push-policy guard | W1, W4 |
+| W1 ✅ | t-bed51da2 | be | `src/abstractions/branch-merge.ts` + unit tests — `mergeMember(base, wtBranch, repoPath, opts)` primitive | none |
+| W2 ✅ | t-e7724527 | be | `src/verbs/merge-member.ts` + integration test — verb wiring + push-policy guard | W1, W4 |
 | W3 | t-d78127c7 | be | `src/verbs/merge-cycle.ts` — bulk wrapper + `--dry-run` + `--push` | W2 |
 | W4 | t-f9f49ded | be | `src/schema/team.ts` Zod — `team.merger.{enabled, baseBranch, stalenessHours}` | none (parallel to W1) |
 | W5 | t-ab5e31f6 | docs | `templates/briefs/merger.md` — loop-based merger member brief | W3 |

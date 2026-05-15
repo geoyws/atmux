@@ -1,6 +1,6 @@
 # ADR-145: atmux team adopts gitter — supersedes "workers commit + push own work" pattern
 
-**Status**: Proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-bcdd43f0)
 **Driver-ref**: 2026-05-14 16:40 MYT cockpit driver — three back-to-back messages: *"or get gitter to merge"* / *"gitter should be merging not the lead"* / *"make this the case in atmux as a policy"*. Followed by 16:38 MYT P1 FAN-OUT context where 5 outstanding trunk-merges were sitting un-coordinated.

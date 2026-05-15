@@ -181,3 +181,61 @@ export async function resetStrikeRecord(
 export function velocityStalledSymptomHash(teamName: string): string {
   return `whip-${teamName}-velocity-stalled`;
 }
+
+// ---------- ADR-087 §T2 (Task t-e91fec98 §2) symptom hash variants ----------
+//
+// Three failure modes the whip can recognize that warrant distinct
+// complaint rows — each gets its own dedup key so an alternating
+// pattern (eta-lied → classifier-swallow → eta-lied) doesn't trip the
+// same complaint as a sustained run of the same symptom. Documented
+// at Task t-e91fec98 §2; the strings are the literal contract the
+// superdoctor consumer reads.
+
+/** Symptom hash for the "eta-lied" failure mode (Task t-e91fec98 §2):
+ *  lead picked D=Standby N times without the promised ETA ever
+ *  hitting. Distinguishable from process-frozen by the fact that lead
+ *  IS responding — just not delivering. */
+export function etaLiedSymptomHash(teamName: string): string {
+  return `whip-${teamName}-eta-lied`;
+}
+
+/** Symptom hash for the "classifier-swallow" failure mode (Task
+ *  t-e91fec98 §2): queued-but-unsubmitted compose text persists across
+ *  ≥2 ticks — auto-mode swallowed the keystroke, the menu reply never
+ *  reached the model. Distinguishable from eta-lied by the queued
+ *  text being visible in the pane but never submitted. */
+export function classifierSwallowSymptomHash(teamName: string): string {
+  return `whip-${teamName}-classifier-swallow`;
+}
+
+/** Symptom hash for the "process-frozen" failure mode (Task t-e91fec98
+ *  §2): token count unchanged across 3+ ticks AND last commit > 2h.
+ *  Distinct from eta-lied (lead is producing tokens but not shipping)
+ *  and classifier-swallow (compose text is stuck but tokens may be
+ *  moving) — this one is the catatonic case where nothing's happening
+ *  at all. */
+export function processFrozenSymptomHash(teamName: string): string {
+  return `whip-${teamName}-process-frozen`;
+}
+
+/** Render a human-readable strike timeline for the complaint body —
+ *  "strikes 0→N over Δt=Xmin; last reason: <reason>". Used by T2's
+ *  complaint-body builder (Task t-e91fec98 §4 "Body: timeline of
+ *  strikes"); kept here so the rendering stays colocated with the
+ *  record shape. `nowSec` is injected so tests pin the clock.
+ *
+ *  Degenerate cases:
+ *  - count=0 OR firstStrikeSec=null → "no strikes recorded" (defensive;
+ *    the caller should not be rendering a timeline for an empty
+ *    record, but T2's error paths shouldn't crash on one). */
+export function renderStrikeTimeline(record: StrikeRecord, nowSec: number): string {
+  if (record.count === 0 || record.firstStrikeSec === null) {
+    return "no strikes recorded";
+  }
+  const deltaSec = nowSec - record.firstStrikeSec;
+  // Floor to whole minutes; clamp to ≥1 so "Δt=0min" never appears
+  // (would read as a typo even on sub-60s windows in tests).
+  const deltaMin = Math.max(1, Math.floor(deltaSec / 60));
+  const reason = record.lastReason ?? "<no reason>";
+  return `strikes 0→${record.count} over Δt=${deltaMin}min; last reason: ${reason}`;
+}

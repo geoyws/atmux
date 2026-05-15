@@ -48,11 +48,12 @@ import { discorder } from "./verbs/discorder.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
+import { epic } from "./verbs/epic.ts";
 import { groom } from "./verbs/groom.ts";
-import { hygieneTick } from "./verbs/hygiene-tick.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
 import { help } from "./verbs/help.ts";
+import { hygieneTick } from "./verbs/hygiene-tick.ts";
 import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
@@ -60,10 +61,11 @@ import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
 import { laneTick } from "./verbs/lane-tick.ts";
 import { martinet } from "./verbs/martinet.ts";
 import { dispatchMemberSubverb } from "./verbs/member.ts";
+import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { pause, resume } from "./verbs/pause.ts";
-import { reconfigure } from "./verbs/reconfigure.ts";
 import { pulse } from "./verbs/pulse.ts";
+import { reconfigure } from "./verbs/reconfigure.ts";
 import { outbox, reply } from "./verbs/reply.ts";
 import { report } from "./verbs/report.ts";
 import { rotate, rotateLead } from "./verbs/rotate.ts";
@@ -71,7 +73,6 @@ import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
-import { epic } from "./verbs/epic.ts";
 import { story } from "./verbs/story.ts";
 import { task } from "./verbs/task.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
@@ -228,6 +229,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return laneTick(argv.slice(1));
     case "lane-drift-check":
       return laneDriftCheck(argv.slice(1));
+    case "merge-member":
+      return mergeMember(argv.slice(1));
     case "pause":
       return pause(argv.slice(1));
     case "resume":

@@ -1,6 +1,6 @@
 # ADR-139: Refusal-pattern detection + auto-rotate (closes dormant-by-refusal failure class)
 
-**Status**: Proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-1db585de)
 **Parent EPIC**: t-dfbf7eb0
