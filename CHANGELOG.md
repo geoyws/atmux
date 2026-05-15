@@ -143,11 +143,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rotation authority split: routine triggers (context >400k,
   refusal-pattern, dormancy-window) → martinet; emergency
   triggers (broken claude proc, planner misalignment) → medic
-  + lead. T2–T4 (ADR annotations, medic refactor, martinet
-  NudgeAction enum extension) remain open under the EPIC —
-  recommend planner-near decomposes into separate kanban Tasks
-  so they're claimable. Kanban Task `t-83dcef6b` (EPIC; T1 done
-  this commit).
+  + lead. T2 — ADR-077/131/139 cross-reference annotations —
+  shipped via Task `t-d16c99ae` (commit `ad47419`); ADR-132 was
+  pre-annotated 2026-05-14. T3 (medic verb scan-loop → event-
+  listener, `t-e057d8ff`, lane=be) + T4 (martinet `NudgeAction`
+  enum extension, `t-1cc90cc0`, lane=be) filed and claimable
+  for be-lane workers, both deps-cleared on T2. Kanban Task
+  `t-83dcef6b` (EPIC; T1 + T2 done; T3 + T4 open).
 - **ADR-138 — verified send-keys (verify-and-retry pattern)** ([docs/adr/138-verified-send-keys.md](docs/adr/138-verified-send-keys.md)).
   ADR text only (T1 of EPIC `t-5df48a74`). Decision: new
   `safeSendKeysWithVerify` helper in `src/abstractions/tmux.ts` —
