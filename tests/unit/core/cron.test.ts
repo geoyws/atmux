@@ -614,19 +614,12 @@ describe("stripOrphanLines", () => {
   });
 
   test("leaves atmux lines INSIDE a marker block alone", () => {
-    const body = [
-      header("demo"),
-      "*/5 * * * * /bin/atmux whip",
-      footer("demo"),
-    ].join("\n");
+    const body = [header("demo"), "*/5 * * * * /bin/atmux whip", footer("demo")].join("\n");
     expect(stripOrphanLines(body)).toBe(body);
   });
 
   test("only matches atmux verbs from the orphan-set (whip/report/decisions/groom/discorder/unblocker)", () => {
-    const body = [
-      "* * * * * /bin/atmux unknown-verb",
-      "* * * * * /bin/atmux whip",
-    ].join("\n");
+    const body = ["* * * * * /bin/atmux unknown-verb", "* * * * * /bin/atmux whip"].join("\n");
     expect(stripOrphanLines(body)).toBe("* * * * * /bin/atmux unknown-verb");
   });
 });
@@ -743,9 +736,7 @@ describe("parseCronBlockTargets", () => {
       "*/5 * * * * PATH=/root/.bun/bin:/usr/bin ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1",
       "# <<< atmux:team=demo",
     ].join("\n");
-    expect(parseCronBlockTargets(body)).toEqual([
-      { team: "demo", atmuxDir: "/srv/demo/.atmux" },
-    ]);
+    expect(parseCronBlockTargets(body)).toEqual([{ team: "demo", atmuxDir: "/srv/demo/.atmux" }]);
   });
 
   test("two blocks → two targets", () => {
@@ -780,9 +771,7 @@ describe("parseCronBlockTargets", () => {
       "*/5 * * * * ATMUX_DIR=/second /bin/atmux report",
       "# <<< atmux:team=demo",
     ].join("\n");
-    expect(parseCronBlockTargets(body)).toEqual([
-      { team: "demo", atmuxDir: "/first" },
-    ]);
+    expect(parseCronBlockTargets(body)).toEqual([{ team: "demo", atmuxDir: "/first" }]);
   });
 
   test("header without canonical suffix → still captures team verbatim", () => {
@@ -804,9 +793,7 @@ describe("parseCronBlockTargets", () => {
       "*/5 * * * * ATMUX_DIR=/srv/demo/.atmux\tTMUX_TMPDIR=/tmp /bin/atmux whip",
       "# <<< atmux:team=demo",
     ].join("\n");
-    expect(parseCronBlockTargets(body)).toEqual([
-      { team: "demo", atmuxDir: "/srv/demo/.atmux" },
-    ]);
+    expect(parseCronBlockTargets(body)).toEqual([{ team: "demo", atmuxDir: "/srv/demo/.atmux" }]);
   });
 });
 
@@ -1125,4 +1112,51 @@ describe("migrateSuperdoctorToMedicCronLines", () => {
   });
 });
 
+// ---------- ADR-148 §D4 / T3: lane-stall-watch cron line ----------
 
+describe("renderCronLines — lane-stall-watch (ADR-148 §D4 / T3)", () => {
+  test("absent cadence block → no lane-stall-tick line", () => {
+    const lines = renderCronLines(baseOpts(baseTeam()));
+    expect(lines.find((l) => l.includes("lane-stall-tick"))).toBeUndefined();
+  });
+
+  test("cadence.enabled=false → no lane-stall-tick line", () => {
+    const team = baseTeam({
+      cadence: { enabled: false, laneStallEnabled: true },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.find((l) => l.includes("lane-stall-tick"))).toBeUndefined();
+  });
+
+  test("cadence.enabled=true + laneStallEnabled=true → renders at 5min default", () => {
+    const team = baseTeam({
+      cadence: { enabled: true, laneStallEnabled: true },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    const ll = lines.find((l) => l.includes("lane-stall-tick"));
+    expect(ll).toBeDefined();
+    expect(ll).toMatch(/^\*\/5 /);
+    expect(ll).toContain("lane-stall-tick");
+    expect(ll).toContain("/srv/demo/.atmux/logs/lane-stall.log");
+  });
+
+  test("cadence.enabled=true + laneStallEnabled=false → suppressed", () => {
+    const team = baseTeam({
+      cadence: { enabled: true, laneStallEnabled: false },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.find((l) => l.includes("lane-stall-tick"))).toBeUndefined();
+  });
+
+  test("laneStallIntervalOverride beats default 5min", () => {
+    const team = baseTeam({
+      cadence: { enabled: true, laneStallEnabled: true },
+    } as never);
+    const lines = renderCronLines({
+      ...baseOpts(team),
+      laneStallIntervalOverride: 10,
+    });
+    const ll = lines.find((l) => l.includes("lane-stall-tick"));
+    expect(ll).toMatch(/^\*\/10 /);
+  });
+});

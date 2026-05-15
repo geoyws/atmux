@@ -117,8 +117,8 @@ describe("parseCronInstallArgs — --template / --interval", () => {
     );
   });
 
-  test("CRON_INSTALL_TEMPLATES allowlist exports both merge-cycle + ombudsman-tick (T3 added)", () => {
-    expect(CRON_INSTALL_TEMPLATES).toEqual(["merge-cycle", "ombudsman-tick"]);
+  test("CRON_INSTALL_TEMPLATES allowlist exports merge-cycle + ombudsman-tick + lane-stall-watch (ADR-148 T3 added)", () => {
+    expect(CRON_INSTALL_TEMPLATES).toEqual(["merge-cycle", "ombudsman-tick", "lane-stall-watch"]);
   });
 });
 
@@ -615,9 +615,7 @@ describe("cronInstall — --template ombudsman-tick integration (ADR-147 T3)", (
     expect(rc).toBe(0);
     const body = captured.writes[0] ?? "";
     // Default 15min cadence → `*/15 * * * *`
-    expect(body).toMatch(
-      /\*\/15 \* \* \* \* .*atmux ombudsman tick >> .*\/ombudsman\.log/,
-    );
+    expect(body).toMatch(/\*\/15 \* \* \* \* .*atmux ombudsman tick >> .*\/ombudsman\.log/);
   });
 
   test("--template ombudsman-tick + enabled=false → ConfigError", async () => {
@@ -677,16 +675,13 @@ describe("cronInstall — --template ombudsman-tick integration (ADR-147 T3)", (
     const teamJsonPath = join(scratch, ".atmux", "team.json");
     const before = await readFile(teamJsonPath, "utf-8");
     const { io } = makeFakeCrontab(null);
-    await cronInstall(
-      ["--template", "ombudsman-tick", "--interval", "5m", "--team-dir", scratch],
-      {
-        crontab: io,
-        resolveBin: () => "/usr/local/bin/atmux",
-        env: {},
-        stderr: () => {},
-        stdout: () => {},
-      },
-    );
+    await cronInstall(["--template", "ombudsman-tick", "--interval", "5m", "--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
     const after = await readFile(teamJsonPath, "utf-8");
     expect(after).toBe(before);
   });
@@ -791,10 +786,7 @@ describe("cronInstall — ADR-133 TR6 superdoctor→medic migration", () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-cron-install-tr6-"));
     const atmuxDir = join(scratch, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
   });
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });
