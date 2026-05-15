@@ -805,6 +805,73 @@ export const DEFAULT_LANE_STALL_MIN_AGE_SEC = 1800;
  *  must-be-this-old gate inside the verb. */
 export const DEFAULT_LANE_STALL_CRON_INTERVAL_MINS = 5;
 
+/**
+ * `team.json::epicTeam` — ADR-090 §Schema. Ephemeral epic-team config
+ * block. Presence means the team is an epic-team (a child of some parent
+ * team that lives at `<projectRoot>-epics/<epicId>/`); absence means
+ * normal team (the existing topology).
+ *
+ * **§Decision-anchor #3 carve-out** (HARD CONFLICT with ADR-084 per
+ * ADR-090): when `epicTeam` is set, `worktreeIsolation` MUST be `false`.
+ * The cross-field refinement on the `Team` schema enforces this at
+ * `loadTeam` time — `team.epicTeam !== undefined && worktreeIsolation
+ * === true` refuses with an explicit error citing ADR-090 §Decision-
+ * anchor #3. Members of an epic-team SHARE one worktree (the epic-team's
+ * project root); per-member-branch isolation does NOT apply at this
+ * scope.
+ *
+ * **§Decision-anchor #6**: `mergeMode: "pr"` is schema-accept-but-
+ * runtime-noop in v1. The schema validates both values; ADR-091's
+ * auto-merge state machine only handles `"auto"` at this writing.
+ * `pr`-mode runtime impl is deferred to a future ADR.
+ *
+ * **§Decision-anchor #8 + #9**: when `mergeMode === "pr"`, `prTarget.base`
+ * AND `prAuthorUser` are REQUIRED. The Team-level superRefine enforces
+ * the cross-field gates; this sub-schema marks them `.optional()` so the
+ * auto-mode happy-path keeps zero required pr-fields.
+ *
+ * `.strict()` consistent with sibling sub-blocks (ombudsman / cadence /
+ * autoMerge) — typo'd keys surface as drift findings (ADR-054 §D3).
+ */
+export const TeamEpic = z
+  .object({
+    /** Parent team name. Cockpit walk uses this to attach the epic-team
+     *  cage under the parent's tmpdir at
+     *  `/tmp/atmux-<parent>/epics/<epicId>/sock` (per ADR-089 §Pillar 1). */
+    parent: z.string().min(1),
+    /** Parent's `state.db` Epic row id (`e-XXXXXXXX`). Parent reads
+     *  child's SQLite directly to render progress; this back-pointer lets
+     *  a child surface conflicts/notes back to the right parent EPIC row. */
+    parentEpicKanbanId: z.string().min(1),
+    /** Parent branch the epic-team will merge into. Used by ADR-091's
+     *  auto-merge state machine + `dissolve-epic` cleanup. Example: `"main"`,
+     *  `"geoyws"`, `"sopx-geoyws"`. */
+    parentBase: z.string().min(1),
+    /** Merge mode for ADR-091 auto-merge state machine. `"auto"` runs the
+     *  direct merge (default). `"pr"` is schema-accept-but-runtime-noop
+     *  per §Decision-anchor #6 — accepted at schema, no-op at runtime in
+     *  v1. Future ADR ships the pr-mode runtime. */
+    mergeMode: z.enum(["auto", "pr"]).default("auto"),
+    /** §Decision-anchor #8: required when `mergeMode === "pr"` (Team-level
+     *  superRefine refuses on missing `prTarget.base` under pr-mode).
+     *  `remote` defaults to `"origin"`; `base` has NO default
+     *  (operator-explicit to prevent silent-wrong-base merges). */
+    prTarget: z
+      .object({
+        remote: z.string().default("origin"),
+        base: z.string().min(1),
+      })
+      .strict()
+      .optional(),
+    /** §Decision-anchor #9: required when `mergeMode === "pr"` (Team-level
+     *  superRefine refuses on missing under pr-mode). Names the `gh` CLI
+     *  user that owns PR creation; ADR-091's pr-mode runtime resolves at
+     *  PR-creation time via `gh auth switch --user <prAuthorUser>`. */
+    prAuthorUser: z.string().optional(),
+  })
+  .strict();
+export type TeamEpic = z.infer<typeof TeamEpic>;
+
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
  *  All fields optional; defaults applied at the call-site per ADR-142
  *  §Configuration. `.strict()` so typos (`windowMins` etc.) trip the
@@ -933,6 +1000,18 @@ export const Team = z
      *  shape lands additively — T3 ships the full block so T2/T5
      *  merge cleanly. */
     cadence: TeamCadence.optional(),
+    /** ADR-090 §Schema: epic-team config. Presence marks the team as an
+     *  ephemeral epic-team child of some parent team. When set, the
+     *  Team-level superRefine enforces three cross-field gates:
+     *    (1) `worktreeIsolation === true` ⇒ refuse (§Decision-anchor #3,
+     *        HARD CONFLICT with ADR-084 — epic-team members share one
+     *        worktree, not per-member branches);
+     *    (2) `epicTeam.mergeMode === "pr" && !epicTeam.prTarget?.base` ⇒
+     *        refuse (§Decision-anchor #8);
+     *    (3) `epicTeam.mergeMode === "pr" && !epicTeam.prAuthorUser` ⇒
+     *        refuse (§Decision-anchor #9).
+     *  Absent block keeps existing teams unchanged (additive). */
+    epicTeam: TeamEpic.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. Setting `0` collapses the grace to a single tick but
@@ -953,7 +1032,52 @@ export const Team = z
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((team, ctx) => {
+    // ADR-090 §Decision-anchor #3 (HARD CONFLICT carve-out with ADR-084):
+    // an epic-team cannot also opt into per-member-branch isolation.
+    // Members SHARE one worktree at the epic-team's project root; the
+    // shared-worktree carve-out is structurally enforced here so a hand-
+    // edited team.json that sets both keys is refused at loadTeam time.
+    if (team.epicTeam !== undefined && team.worktreeIsolation === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["epicTeam"],
+        message:
+          "ADR-090 §Decision-anchor #3: team.epicTeam set with worktreeIsolation=true — HARD CONFLICT with ADR-084. Epic-team members share one worktree (the epic-team's project root); per-member-branch isolation is reserved for normal teams. Unset one of the two.",
+      });
+    }
+    // ADR-090 §Decision-anchor #8: when pr-mode is set, prTarget.base
+    // MUST be present. No default (operator-explicit) to prevent silent-
+    // wrong-base merges.
+    if (
+      team.epicTeam !== undefined &&
+      team.epicTeam.mergeMode === "pr" &&
+      team.epicTeam.prTarget?.base === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["epicTeam", "prTarget", "base"],
+        message:
+          "ADR-090 §Decision-anchor #8: epicTeam.mergeMode='pr' requires epicTeam.prTarget.base. No default — operator must name the target branch explicitly.",
+      });
+    }
+    // ADR-090 §Decision-anchor #9: when pr-mode is set, prAuthorUser
+    // MUST be present. ADR-091's pr-mode runtime calls
+    // `gh auth switch --user <prAuthorUser>` before `gh pr create`.
+    if (
+      team.epicTeam !== undefined &&
+      team.epicTeam.mergeMode === "pr" &&
+      team.epicTeam.prAuthorUser === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["epicTeam", "prAuthorUser"],
+        message:
+          "ADR-090 §Decision-anchor #9: epicTeam.mergeMode='pr' requires epicTeam.prAuthorUser. Names the gh CLI user that owns PR creation under pr-mode.",
+      });
+    }
+  });
 export type Team = z.infer<typeof Team>;
 
 /** ADR-082 §2: effective default for `team.worktreeRoot` when the field
