@@ -73,6 +73,29 @@ export function transact<T>(db: Database, fn: () => T): T {
   return result;
 }
 
+/**
+ * Wrap a function in an IMMEDIATE-mode transaction — acquires the
+ * write lock at BEGIN time rather than at first write. Required by
+ * ADR-134 §state-machine + the ADR-091 reviewer pre-flag audit §3 for
+ * the merger state transitions: when the event-driven path and the
+ * cron backstop fire concurrently on the same `<base>-<member>`, the
+ * second BEGIN IMMEDIATE waits on the busy_timeout for the first to
+ * commit + then sees the post-transition state. DEFERRED (the
+ * `transact` default) would let both reads escape the lock and race
+ * a double-write.
+ *
+ * bun:sqlite's wrapped-function form exposes `.immediate()` for this
+ * mode — call THAT (not the default closure) to get
+ * `BEGIN IMMEDIATE` instead of `BEGIN`. Rolls back on throw.
+ */
+export function transactImmediate<T>(db: Database, fn: () => T): T {
+  let result!: T;
+  db.transaction(() => {
+    result = fn();
+  }).immediate();
+  return result;
+}
+
 /** Close DB and flush WAL. Call from verb teardown / test cleanup. */
 export function closeDatabase(db: Database): void {
   db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
