@@ -239,7 +239,7 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
     expect(summary).toBeDefined();
   });
 
-  test("default queueMergeAttempt falls back to recordingQueueMergeAttempt", async () => {
+  test("default queueMergeAttempt is the production dispatcher (T9 / t-6987392a)", async () => {
     await seedTeam(fixture, {
       name: "demo",
       members: [],
@@ -253,7 +253,8 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
       warn: () => {},
       err: () => {},
     };
-    // No queueMergeAttempt override — should use the recording stub.
+    // No queueMergeAttempt override — should use the production
+    // dispatcher (T9 swap; see src/core/intra-team-merge-dispatcher.ts).
     const rc = await gitterSweepVerb(
       { subverb: "sweep", teamDir: fixture.scratch },
       {
@@ -264,12 +265,22 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
             return { stdout: "geoyws-fe-1\n" };
           },
           "rev-list": () => ({ stdout: "2\n" }),
+          // The production dispatcher probes worktree cleanliness +
+          // merge-base before driving the state machine. Local
+          // fixture: clean worktree, merge-base = base tip, no
+          // movement; the dispatcher walks open → in_progress and
+          // then gate-evaluates from kanban (zero open tasks since
+          // the fixture's kanban table is empty).
+          "merge-base": () => ({ stdout: "baseTip\n" }),
+          "rev-parse": () => ({ stdout: "baseTip\n" }),
+          status: () => ({ stdout: "" }),
         }),
       },
     );
     expect(rc).toBe(0);
-    // Recording stub log line.
-    expect(logs.some((l) => l.includes("would queue merge") && l.includes("T3"))).toBe(true);
+    // Production dispatcher emits its own structured log lines per
+    // tick (prefix `[dispatcher]`).
+    expect(logs.some((l) => l.includes("[dispatcher]"))).toBe(true);
   });
 });
 
