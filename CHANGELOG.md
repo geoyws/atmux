@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — kanban auto-emit trunk-merge Task on Story-done (ADR-146 T2)
+
+- **New `KanbanStory.branch` field** per [ADR-146](docs/adr/146-kanban-auto-files-trunk-merge.md) §D4 — source branch this Story's work lives on (typically `<base>-<member>` per ADR-082+084). Rides through the `extra` JSON column on the `stories` table; zero-migration roll-out.
+- **`moveTask` hook** — when a Task's status transitions to `done`, if it's the last non-done child of a branched Story AND the team has `worktreeIsolation: true`, atmux auto-files a `merge t-xxx (branch→trunk): <source-branch> → trunk` Task per ADR-146 §D1+D2 — assigned to `gitter` (or per `autoEmitTrunkMerge.fallbackAssignee`). The auto-file lands in the SAME `BEGIN IMMEDIATE` transaction as the move-to-done write, so the ADR-032 task-done cascade wakes only after BOTH rows commit (no false-positive idle nudge per §Atomic).
+- **Short-circuit rules** per ADR-146 §D5: Story without `branch` set, team without `worktreeIsolation`, `autoEmitTrunkMerge.enabled === false`, `Story.branch === team.merger.baseBranch` (when `shortCircuitOnSharedBase: true`), remaining non-done siblings, OR done-Task subject already matches the auto-emit pattern (loop-prevention) — any of these skip emit cleanly.
+- **New `team.json::autoEmitTrunkMerge` config block** per ADR-146 §D7 — `enabled` (default `true` when `worktreeIsolation: true`, `false` otherwise), `fallbackAssignee` (default `null` = unassigned), `shortCircuitOnSharedBase` (default `true`). Strict-mode Zod block; typos rejected per ADR-054 §D3 drift detection.
+- **Backfill script** at `scripts/backfill-story-branch.ts` — dry-run by default; `--apply` walks every Story with status `in-progress`/`testing`/`review`/`merging`/`done` and infers `<base>-<member>` from child-task owners when all children share a single declared member. Conservative (skips Stories with mixed owners or non-member owners — operator can hand-backfill via SQL). Idempotent; safe to re-run.
+- **Out of scope this commit** — `atmux story update s-xxx --branch <b>` verb (deferred per OQ-1 to a future commit); cron-backstop trunk-merge (already handled by ADR-134 §state-machine cron path); `tested → merged` test-gate chaining (separate ADR per §D6).
+
 ### 🟢 Shipped — commit-cadence column in `atmux status` (ADR-148 T2)
 
 - **New cadence column** in `atmux status` output per [ADR-148](docs/adr/148-commit-cadence-truth-signal.md) §D3. Renders the canonical truth-signal for "is this member shipping?": one of `🟢 shipping (Nmin)` / `🟡 idle (HhMm)` / `🔴 dormant (Hh)` / `🚨 ship-zero (Hh)` per ADR-148 §D2 classifier. Sourced from per-member `git -C <worktree> log --since=<windowSec>s --author=<name>` — the cadence is the truth signal; pane-state is the proxy.

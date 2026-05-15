@@ -609,3 +609,422 @@ describe("markTaskDone", () => {
     await expect(markTaskDone(atmuxDir, "t-missing0")).rejects.toThrow(ConfigError);
   });
 });
+
+// ---------- ADR-146 T2: trunk-merge auto-emit hook ----------
+
+import {
+  closeDatabase,
+  openDatabase,
+} from "../../../src/abstractions/sqlite.ts";
+import { migrations as sqliteMigrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import {
+  resolveAutoEmitTrunkMergeConfig,
+  tryAutoEmitTrunkMerge,
+} from "../../../src/core/kanban.ts";
+import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
+import type { KanbanStory } from "../../../src/schema/kanban.ts";
+import type { Team } from "../../../src/schema/team.ts";
+
+function makeTeam(overrides: Partial<Team> = {}): Team {
+  return {
+    name: "t",
+    worktreeIsolation: true,
+    members: [
+      { name: "lead", role: "team-lead" },
+      { name: "alpha", role: "member" },
+      { name: "gitter", role: "gitter" },
+    ],
+    ...overrides,
+  } as Team;
+}
+
+function stageStoryDb(): {
+  db: ReturnType<typeof openDatabase>;
+  repo: KanbanRepo;
+} {
+  const path = join(atmuxDir, "state.db");
+  const db = openDatabase(path, sqliteMigrations);
+  const repo = new KanbanRepo(db);
+  return { db, repo };
+}
+
+function seedStory(
+  repo: KanbanRepo,
+  id: string,
+  branch: string | null,
+): KanbanStory {
+  const story: KanbanStory = {
+    id,
+    epic: "e-test0001",
+    title: `story ${id}`,
+    body: null,
+    acceptanceCriteria: null,
+    status: "in-progress",
+    createdAt: 1_700_000_000,
+    completedAt: null,
+    reviewSignoff: false,
+    mergeTaskId: null,
+    branch,
+  };
+  repo.upsertStory(story);
+  return story;
+}
+
+function seedTask(
+  repo: KanbanRepo,
+  id: string,
+  story: string,
+  status: string,
+  subject = `task ${id}`,
+  lane: string | null = "be",
+): KanbanTask {
+  const task: KanbanTask = {
+    id,
+    subject,
+    body: "",
+    status,
+    owner: "alpha",
+    deps: [],
+    priority: null,
+    lane,
+    createdAt: 1_700_000_000,
+    claimedAt: null,
+    completedAt: status === "done" ? 1_700_000_100 : null,
+    story,
+  };
+  repo.addTask(task);
+  return task;
+}
+
+describe("resolveAutoEmitTrunkMergeConfig (ADR-146 §D7)", () => {
+  test("absent block + worktreeIsolation=true → enabled defaults true", () => {
+    const r = resolveAutoEmitTrunkMergeConfig(makeTeam());
+    expect(r.enabled).toBe(true);
+    expect(r.fallbackAssignee).toBeNull();
+    expect(r.shortCircuitOnSharedBase).toBe(true);
+  });
+
+  test("absent block + worktreeIsolation=false → enabled defaults false", () => {
+    const r = resolveAutoEmitTrunkMergeConfig(
+      makeTeam({ worktreeIsolation: false }),
+    );
+    expect(r.enabled).toBe(false);
+  });
+
+  test("explicit autoEmitTrunkMerge.enabled overrides default", () => {
+    const r = resolveAutoEmitTrunkMergeConfig(
+      makeTeam({
+        worktreeIsolation: false,
+        autoEmitTrunkMerge: { enabled: true },
+      }),
+    );
+    expect(r.enabled).toBe(true);
+  });
+
+  test("fallbackAssignee + shortCircuitOnSharedBase override", () => {
+    const r = resolveAutoEmitTrunkMergeConfig(
+      makeTeam({
+        autoEmitTrunkMerge: {
+          fallbackAssignee: "manual-merger",
+          shortCircuitOnSharedBase: false,
+        },
+      }),
+    );
+    expect(r.fallbackAssignee).toBe("manual-merger");
+    expect(r.shortCircuitOnSharedBase).toBe(false);
+  });
+});
+
+describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
+  test("happy path: last sibling done → auto-emit Task created", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0001", "geoyws-alpha");
+      seedTask(repo, "t-sibling1", "s-aaaa0001", "done");
+      const lastTask = seedTask(repo, "t-lastdone", "s-aaaa0001", "done");
+      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam());
+      expect(newId).not.toBeNull();
+      // The new Task lives in the kanban + has the §D2 shape.
+      const created = repo.getTask(newId!);
+      expect(created).not.toBeNull();
+      expect(created!.subject).toMatch(
+        /^merge t-[0-9a-f]+ \(branch→trunk\): geoyws-alpha → trunk$/,
+      );
+      expect(created!.owner).toBe("gitter");
+      expect(created!.lane).toBe("misc");
+      expect(created!.status).toBe("todo");
+      // Body carries the §D2 YAML fields.
+      expect(created!.body).toContain("source-branch: geoyws-alpha");
+      expect(created!.body).toContain("target: trunk");
+      expect(created!.body).toContain("auto-emitted: true");
+      expect(created!.body).toContain("parent-story: s-aaaa0001");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("short-circuit: Story.branch unset → no emit (returns null)", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0002", null);
+      const lastTask = seedTask(repo, "t-nobranch", "s-aaaa0002", "done");
+      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam());
+      expect(newId).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("short-circuit: storyless task → no emit", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      const task: KanbanTask = {
+        id: "t-orphan01",
+        subject: "orphan",
+        body: "",
+        status: "done",
+        owner: "alpha",
+        deps: [],
+        priority: null,
+        lane: "be",
+        createdAt: 1,
+        claimedAt: null,
+        completedAt: 2,
+      };
+      repo.addTask(task);
+      const newId = tryAutoEmitTrunkMerge(repo, task, makeTeam());
+      expect(newId).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("short-circuit: worktreeIsolation=false → no emit", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0003", "geoyws-alpha");
+      const lastTask = seedTask(repo, "t-sharedcwd", "s-aaaa0003", "done");
+      const newId = tryAutoEmitTrunkMerge(
+        repo,
+        lastTask,
+        makeTeam({ worktreeIsolation: false }),
+      );
+      expect(newId).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("short-circuit: autoEmitTrunkMerge.enabled=false → no emit", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0004", "geoyws-alpha");
+      const lastTask = seedTask(repo, "t-disabled", "s-aaaa0004", "done");
+      const newId = tryAutoEmitTrunkMerge(
+        repo,
+        lastTask,
+        makeTeam({ autoEmitTrunkMerge: { enabled: false } }),
+      );
+      expect(newId).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("short-circuit: Story.branch === merger.baseBranch → no emit (sharedBase)", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0005", "geoyws");
+      const lastTask = seedTask(repo, "t-onbase", "s-aaaa0005", "done");
+      const newId = tryAutoEmitTrunkMerge(
+        repo,
+        lastTask,
+        makeTeam({ merger: { enabled: true, baseBranch: "geoyws", stalenessHours: 24 } }),
+      );
+      expect(newId).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("short-circuit: remaining non-done siblings → no emit", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0006", "geoyws-alpha");
+      seedTask(repo, "t-still-wip", "s-aaaa0006", "in-progress");
+      const lastTask = seedTask(repo, "t-justdone", "s-aaaa0006", "done");
+      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam());
+      expect(newId).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("loop-prevention: an auto-emit Task itself transitioning to done does NOT re-emit", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0007", "geoyws-alpha");
+      // The done Task IS an auto-emit (subject matches the pattern).
+      const autoEmitTask: KanbanTask = {
+        id: "t-automerge",
+        subject: "merge t-deadbeef (branch→trunk): geoyws-alpha → trunk",
+        body: "auto-emitted: true",
+        status: "done",
+        owner: "gitter",
+        deps: [],
+        priority: null,
+        lane: "misc",
+        createdAt: 1,
+        claimedAt: null,
+        completedAt: 2,
+        story: "s-aaaa0007",
+      };
+      repo.addTask(autoEmitTask);
+      const newId = tryAutoEmitTrunkMerge(repo, autoEmitTask, makeTeam());
+      expect(newId).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("fallback assignee fires when team has no gitter member", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0008", "geoyws-alpha");
+      const lastTask = seedTask(repo, "t-nogitter", "s-aaaa0008", "done");
+      const newId = tryAutoEmitTrunkMerge(
+        repo,
+        lastTask,
+        makeTeam({
+          members: [
+            { name: "lead", role: "team-lead" },
+            { name: "alpha", role: "member" },
+          ],
+          autoEmitTrunkMerge: {
+            enabled: true,
+            fallbackAssignee: "manual-merger",
+          },
+        }),
+      );
+      expect(newId).not.toBeNull();
+      const created = repo.getTask(newId!);
+      expect(created!.owner).toBe("manual-merger");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("no gitter + no fallback → owner=null (unassigned)", () => {
+    const { db, repo } = stageStoryDb();
+    try {
+      seedStory(repo, "s-aaaa0009", "geoyws-alpha");
+      const lastTask = seedTask(repo, "t-unassigned", "s-aaaa0009", "done");
+      const newId = tryAutoEmitTrunkMerge(
+        repo,
+        lastTask,
+        makeTeam({
+          members: [
+            { name: "lead", role: "team-lead" },
+            { name: "alpha", role: "member" },
+          ],
+        }),
+      );
+      expect(newId).not.toBeNull();
+      const created = repo.getTask(newId!);
+      expect(created!.owner).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});
+
+describe("moveTask — ADR-146 auto-emit hook integration", () => {
+  test("moving last sibling to done auto-files the trunk-merge Task in same transaction", async () => {
+    // Stage a SQLite state.db with team.json so the auto-emit hook
+    // fires through the canonical moveTask SQL path.
+    const { db, repo } = stageStoryDb();
+    seedStory(repo, "s-bbbb0001", "geoyws-alpha");
+    seedTask(repo, "t-sib0001a", "s-bbbb0001", "done");
+    const lastTaskId = "t-lastopen";
+    seedTask(repo, lastTaskId, "s-bbbb0001", "in-progress");
+    closeDatabase(db);
+    // Stage team.json so tryLoadTeam picks it up.
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "demo",
+        worktreeIsolation: true,
+        members: [
+          { name: "lead", role: "team-lead" },
+          { name: "alpha", role: "member" },
+          { name: "gitter", role: "gitter" },
+        ],
+      }),
+    );
+    // Move the last open Task to done — the hook should fire.
+    await moveTask(atmuxDir, lastTaskId, "done");
+    const tasks = await listTasks(atmuxDir);
+    // 3 tasks now: 2 seed + 1 auto-emit.
+    expect(tasks.length).toBe(3);
+    const autoEmit = tasks.find((t) =>
+      /^merge t-[0-9a-f]+ \(branch→trunk\): geoyws-alpha → trunk$/.test(t.subject ?? ""),
+    );
+    expect(autoEmit).toBeDefined();
+    expect(autoEmit!.owner).toBe("gitter");
+    expect(autoEmit!.lane).toBe("misc");
+    expect(autoEmit!.status).toBe("todo");
+  });
+
+  test("moving a sibling to done while others still in-progress does NOT auto-emit", async () => {
+    const { db, repo } = stageStoryDb();
+    seedStory(repo, "s-bbbb0002", "geoyws-alpha");
+    seedTask(repo, "t-doneone", "s-bbbb0002", "in-progress");
+    seedTask(repo, "t-stillwip", "s-bbbb0002", "in-progress");
+    closeDatabase(db);
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "demo",
+        worktreeIsolation: true,
+        members: [
+          { name: "lead", role: "team-lead" },
+          { name: "alpha", role: "member" },
+          { name: "gitter", role: "gitter" },
+        ],
+      }),
+    );
+    await moveTask(atmuxDir, "t-doneone", "done");
+    const tasks = await listTasks(atmuxDir);
+    expect(tasks.length).toBe(2); // no auto-emit
+  });
+
+  test("missing team.json silently skips auto-emit (no throw)", async () => {
+    const { db, repo } = stageStoryDb();
+    seedStory(repo, "s-bbbb0003", "geoyws-alpha");
+    const lastTaskId = "t-noteamjson";
+    seedTask(repo, lastTaskId, "s-bbbb0003", "in-progress");
+    closeDatabase(db);
+    // No team.json staged.
+    await moveTask(atmuxDir, lastTaskId, "done");
+    const tasks = await listTasks(atmuxDir);
+    expect(tasks.length).toBe(1); // auto-emit skipped silently
+  });
+
+  test("non-done transitions do NOT trigger auto-emit (todo / in-progress / blocked)", async () => {
+    const { db, repo } = stageStoryDb();
+    seedStory(repo, "s-bbbb0004", "geoyws-alpha");
+    seedTask(repo, "t-stillwip2", "s-bbbb0004", "in-progress");
+    closeDatabase(db);
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "demo",
+        worktreeIsolation: true,
+        members: [{ name: "alpha", role: "member" }],
+      }),
+    );
+    await moveTask(atmuxDir, "t-stillwip2", "blocked");
+    const tasks = await listTasks(atmuxDir);
+    expect(tasks.length).toBe(1);
+  });
+});
