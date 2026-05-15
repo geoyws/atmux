@@ -36,7 +36,8 @@ import {
 import { appendDispatched, removeFromInProgress } from "../core/inbox.ts";
 import { claimTask, showTask } from "../core/kanban.ts";
 import { isPaused } from "../core/pause.ts";
-import { sendToMember } from "../core/send.ts";
+import { verifierForTui } from "../core/safe-send.ts";
+import { sendToMember, type SendOpts } from "../core/send.ts";
 import { resolveTarget } from "../core/window-id.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
@@ -213,14 +214,20 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     const body = typeof post.body === "string" ? post.body : "";
     const subject = typeof post.subject === "string" ? post.subject : "";
     const ping = buildDispatchPing({ id: parsed.id, subject, body });
+    // ADR-138 T3b2: per-TUI verifier dispatch. claude → composerEmpty()
+    // confirms the agent accepted the inbox-message ping; non-Claude
+    // TUIs (shell/cursor/etc.) skip verify to avoid false-positive
+    // escalation entries. Bash passes `0 0` (no-submit=0, verify=0).
+    const verifier = verifierForTui(memberEntry.tui);
+    const dispatchOpts: SendOpts = { verify: false };
+    if (verifier !== null) dispatchOpts.expectVerifier = verifier;
     try {
       await sendToMember(
         tmux,
         atmuxDir,
         { target, member: parsed.member, team: team.name },
         ping,
-        // Bash passes `0 0` (no-submit=0, verify=0) — submit + skip-verify.
-        { verify: false },
+        dispatchOpts,
       );
     } catch (e) {
       // Bash logs `atmux::warn "dispatch: ping to $member failed"` and
