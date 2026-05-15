@@ -37,6 +37,7 @@
 // the brief-content responsibility to claude's own file IO.
 
 import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
+import { pasteAndSubmit } from "./paste-submit.ts";
 
 // ---------- Tuning constants ----------
 
@@ -280,11 +281,14 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
   while (attempts < maxAttempts) {
     attempts += 1;
     try {
-      await opts.tmux.pane.sendKeys({
-        target: opts.sendTarget,
-        keys: prompt,
-        enter: true,
-      });
+      // ADR-138 T3b3 (t-06547e2d): route the bootstrap brief through
+      // the paste-submit cascade. The brief is a multi-line text
+      // body that lands in the compose box; raw `tmux send-keys
+      // <text> Enter` hits the bracketed-paste-Enter-swallow bug
+      // empirically observed on 2026-05-15 lane-tick recurrences.
+      // pasteAndSubmit's `load-buffer + paste-buffer -d + ≥500ms
+      // settle + C-m` cascade is the reliable shape.
+      await pasteAndSubmit(opts.tmux, opts.sendTarget, prompt);
     } catch {
       // send-keys failure on attempt N: try once more if we have
       // budget; otherwise surface.
