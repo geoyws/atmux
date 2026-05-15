@@ -1165,3 +1165,69 @@ describe("renderCronLines — lane-stall-watch (ADR-148 §D4 / T3)", () => {
     expect(ll).toMatch(/^\*\/10 /);
   });
 });
+
+// ---------- ADR-134 T7: gitter-sweep cron line ----------
+
+describe("renderCronLines — gitter-sweep (ADR-134 T7)", () => {
+  const withGitter = (overrides: Partial<Team> = {}): Team =>
+    baseTeam({
+      members: [{ name: "gitter", role: "gitter" }] as never,
+      ...overrides,
+    });
+
+  test("absent autoMerge block → no gitter --sweep line", () => {
+    const lines = renderCronLines(baseOpts(withGitter()));
+    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+  });
+
+  test("autoMerge.enabled=false → no gitter --sweep line", () => {
+    const team = withGitter({ autoMerge: { enabled: false } } as never);
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+  });
+
+  test("autoMerge.enabled=true WITHOUT a role:gitter member → suppressed", () => {
+    const team = baseTeam({
+      autoMerge: { enabled: true } as never,
+      members: [{ name: "lead", role: "lead" }] as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+  });
+
+  test("autoMerge.enabled=true + role:gitter member → renders at 10min default", () => {
+    const team = withGitter({ autoMerge: { enabled: true } } as never);
+    const lines = renderCronLines(baseOpts(team));
+    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    expect(gl).toBeDefined();
+    expect(gl).toMatch(/^\*\/10 /);
+    expect(gl).toContain("gitter --sweep");
+    expect(gl).toContain("/srv/demo/.atmux/logs/gitter-sweep.log");
+  });
+
+  test("autoMerge.cronBackstopMin overrides the 10min default", () => {
+    const team = withGitter({
+      autoMerge: { enabled: true, cronBackstopMin: 5 },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    expect(gl).toMatch(/^\*\/5 /);
+  });
+
+  test("gitterSweepIntervalOverride beats team.autoMerge.cronBackstopMin", () => {
+    const team = withGitter({
+      autoMerge: { enabled: true, cronBackstopMin: 5 },
+    } as never);
+    const lines = renderCronLines({
+      ...baseOpts(team),
+      gitterSweepIntervalOverride: 15,
+    });
+    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    expect(gl).toMatch(/^\*\/15 /);
+  });
+
+  test("idempotence: same opts yield byte-equal lines", () => {
+    const team = withGitter({ autoMerge: { enabled: true } } as never);
+    expect(renderCronLines(baseOpts(team))).toEqual(renderCronLines(baseOpts(team)));
+  });
+});

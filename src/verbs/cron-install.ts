@@ -27,27 +27,30 @@ import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
 const USAGE =
-  "atmux cron-install [--quiet] [--template merge-cycle|ombudsman-tick|lane-stall-watch] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
+  "atmux cron-install [--quiet] [--template merge-cycle|ombudsman-tick|lane-stall-watch|gitter-sweep] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
 
 /** Allowed `--template` values. ADR-088 W7 added `merge-cycle`;
  *  ADR-147 T3 (t-94a22bb0) added `ombudsman-tick` for the complaint-
  *  adjudicator role wake; ADR-148 §D4 / T3 (t-e9424574) added
- *  `lane-stall-watch` for the lane-stall fleet-wide safety net.
- *  Future templates extend this list. */
+ *  `lane-stall-watch` for the lane-stall fleet-wide safety net;
+ *  ADR-134 T7 (t-a87a39f1) added `gitter-sweep` for the intra-team
+ *  auto-merger's cron backstop. Future templates extend this list. */
 export const CRON_INSTALL_TEMPLATES = [
   "merge-cycle",
   "ombudsman-tick",
   "lane-stall-watch",
+  "gitter-sweep",
 ] as const;
 export type CronInstallTemplate = (typeof CRON_INSTALL_TEMPLATES)[number];
 
 /** Templates that accept a transient `--interval` cadence override.
- *  All three shipping templates honour it via their respective
+ *  All four shipping templates honour it via their respective
  *  `<X>IntervalOverride` field on {@link RenderCronBlockOpts}. */
 const TEMPLATES_WITH_INTERVAL: ReadonlySet<CronInstallTemplate> = new Set([
   "merge-cycle",
   "ombudsman-tick",
   "lane-stall-watch",
+  "gitter-sweep",
 ]);
 
 export interface CronInstallArgs {
@@ -280,6 +283,22 @@ export async function cronInstall(
     });
   }
 
+  // ADR-134 T7 (t-a87a39f1): when `--template gitter-sweep` is passed,
+  // validate `team.autoMerge.enabled === true`. Mirrors the ombudsman-
+  // tick / merge-cycle gate pattern — fail-fast at install time so the
+  // operator sees the misconfiguration before the cron line silently
+  // no-ops. The member-role half (`role: "gitter"` seat) is enforced at
+  // the renderer, not here — adding/removing a member is a separate
+  // team-config step from enabling the auto-merger.
+  if (parsed.template === "gitter-sweep" && (team as Team).autoMerge?.enabled !== true) {
+    throw new ConfigError({
+      what: "cron-install --template gitter-sweep: requires team.autoMerge.enabled = true in team.json",
+      hint:
+        'set `team.autoMerge: { enabled: true }` (per ADR-134) AND add a member with `role: "gitter"` ' +
+        "before installing the gitter-sweep cron template",
+    });
+  }
+
   const tmuxTmpdir = readTmuxTmpdir(team);
   const rawCurrent = await crontab.read();
 
@@ -316,6 +335,8 @@ export async function cronInstall(
       opts2.ombudsmanIntervalOverride = parsed.intervalMins;
     } else if (parsed.template === "lane-stall-watch") {
       opts2.laneStallIntervalOverride = parsed.intervalMins;
+    } else if (parsed.template === "gitter-sweep") {
+      opts2.gitterSweepIntervalOverride = parsed.intervalMins;
     }
   }
   const next = installCronBlock(opts2);

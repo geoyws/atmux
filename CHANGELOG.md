@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — `gitter-sweep` cron-install template (ADR-134 T7)
+
+- **New `--template gitter-sweep`** option on `atmux cron-install` per [ADR-134](docs/adr/134-in-team-auto-merger.md) §triggers + T7 scope (`t-a87a39f1`). Emits a `*/N * * * * <env> atmux gitter --sweep >> .../gitter-sweep.log` cron line that backstops the intra-team auto-merger when the gitter member misses an event (paused / rate-limited / restart). Mirrors the existing `--template ombudsman-tick` / `lane-stall-watch` shape: install-time `ConfigError` if `team.autoMerge.enabled !== true`; renderer dual-gate also checks the roster for a `role: "gitter"` member before emitting the line.
+- **Cadence resolution precedence**: (a) `cron-install --template gitter-sweep --interval <N>` transient override beats (b) `team.json::autoMerge.cronBackstopMin` config beats (c) the schema-side `DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN = 10`. Matches ADR-134 §Config OQ-default (10 minutes).
+- **Wiring surface**: new `gitterSweepIntervalOverride?: number` on `RenderCronBlockOpts` in `src/core/cron.ts`; new `"gitter-sweep"` entry in the `CRON_INSTALL_TEMPLATES` allowlist + `TEMPLATES_WITH_INTERVAL` set in `src/verbs/cron-install.ts`. Backward-compat: existing teams without `autoMerge.enabled` keep the old rendered block byte-equal (no spurious line; doctor sees no diff).
+- **Out of scope this commit** — T7's other scope items (gitter member entry in the atmux team's `.atmux/team.json`, `atmux start` spawn integration, doc updates beyond CHANGELOG) ship in follow-up Tasks under the same EPIC. Cron-install template is the lowest-risk slice that unlocks operator manual-install of the backstop on `autoMerge` teams today.
+
+### 🧹 Trunk fan-in cleanup — dedup duplicate `TeamCadence` Zod (ADR-148 T2 / T3)
+
+- **Removed duplicate `TeamCadence` + `TeamCadenceThresholds` Zod definitions** in `src/schema/team.ts` introduced by the parallel landing of ADR-148 T3 (`ce9467e` via `c22ff1a`) and T2 (`8f2b857` via `51e8362`). Both branches added the same schema independently against an older base; `git merge-ort` accepted both copies additively (different line ranges, no conflict marker), then `tsc` errored with `TS2451: Cannot redeclare block-scoped variable 'TeamCadence'` + `TS1117: object literal cannot have multiple properties with the same name` on the duplicate `cadence:` field in `Team`. Trunk now ships T2's version (`enabled.optional()` matches ADR-148 §D1's "cadence is canonical truth signal — surface by default" intent); `DEFAULT_LANE_STALL_MIN_AGE_SEC` + `DEFAULT_LANE_STALL_CRON_INTERVAL_MINS` consts (T3 origin) preserved unchanged so `lane-stall-tick` + `cron.ts` consumers still resolve.
+- **Why this row exists**: this is a trunk-fan-in artifact, not a feature/fix authored against a Task — surfaced post-merge by the T7 ship's `tsc --noEmit` gate. Captured here so future operators reading the CHANGELOG see the dedup context rather than wondering why a "Cadence schema (T2)" row sits next to a "Cadence schema cleanup" row.
+
 ### 🟢 Shipped — commit-cadence column in `atmux status` (ADR-148 T2)
 
 - **New cadence column** in `atmux status` output per [ADR-148](docs/adr/148-commit-cadence-truth-signal.md) §D3. Renders the canonical truth-signal for "is this member shipping?": one of `🟢 shipping (Nmin)` / `🟡 idle (HhMm)` / `🔴 dormant (Hh)` / `🚨 ship-zero (Hh)` per ADR-148 §D2 classifier. Sourced from per-member `git -C <worktree> log --since=<windowSec>s --author=<name>` — the cadence is the truth signal; pane-state is the proxy.
