@@ -1,7 +1,8 @@
 # ADR-147: Ombudsman role + release-notes layout — complaint adjudicator with durable response log
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-15
+**Accepted**: 2026-05-16 (T9 dogfood landed — atmux-team ombudsman pane alive, c-7a308f7f adjudicated via task t-82b6aed9, day-file `docs/release-notes/2026/05/2026-05-16.md` committed on `geoyws-ombudsman` @ b68f2b4)
 **Author**: atmux team (driver — operator 09:46 MYT chat brainstorm: "ombudsman is supposed to sit in every team to go through the complaints and create epics to address those complaints and to also somehow log his response somehow… maybe we should have the response in release notes perhaps?")
 **Relates**: ADR-077 (medic / superdoctor cockpit role — files complaints), ADR-131 (superdoctor kanban-hygiene auto-fix), ADR-133 (medic rename), ADR-091 (epic-team auto-merge — sibling pattern), ADR-145 (gitter-does-merges), ADR-146 (kanban auto-files trunk-merge — event-driven sibling pattern).
 **Kanban**: closes t-441d6d4c (Ombudsman role — event-driven via sentinel file + cron wake-up).
@@ -261,3 +262,28 @@ Reviewer / operator: any non-default on these flips `Status: proposed → accept
 - ADR-091 — epic-team auto-merge state machine — also event-driven, transaction-wrapped. Ombudsman reuses the BEGIN IMMEDIATE pattern for sentinel + DB consistency.
 - ADR-138 — verified send-keys — ombudsman pane wake via lane-tick uses `safeSendKeysWithVerify`, same as every other pane.
 - ADR-085 §2.5 — `Status: proposed` is the right starting point here; flip to accepted post-T9 dogfood per the gate above.
+
+## T9 dogfood — 2026-05-16 (annotation, append-only per ADR write-flow)
+
+Sub-tasks T1-T9 all landed:
+
+| Task | SHA | Owner | Subject |
+|---|---|---|---|
+| T1 (t-27da5517) | 7e8d3ae | up-impl-3 | feat(ombudsman,verbs) — tick/work/index sub-verbs + sentinel R/W |
+| T2 (t-aafd2e2d) | d61138a | parity-state-impl | feat(complaints) — sentinel write-through |
+| T3 (t-94a22bb0) | d3d243a | parity-cron-impl | feat(cron-install,cron) — `--template ombudsman-tick` |
+| T4 (t-2d46b574) | f3f611c | docs-2 | feat(schema,briefs) — `TeamOmbudsman` config + brief |
+| T5 (t-02a12bd8) | 75b8647 | up-impl-2 | feat(release-notes) — `appendSection` writer |
+| T6 (t-f0ce0ec0) | da40208 | up-impl-3 | feat(doctor) — `release-note-missing` probe |
+| T7 (t-bbc15985) | 7ebe6df | test-impl | test(e2e) — ombudsman lifecycle |
+| T8 (t-113ff137) | 9ad2496 | docs-2 | feat(release-notes,hygiene-tick) — auto-append `## Shipped`/`## Merges`/`## ADRs landed` |
+| T9 (t-8d374cf2) | this commit | parity-cron-impl | dogfood — atmux team.json + ADR status flip |
+
+T9 dogfood findings:
+
+- **Pre-T9 SQLite migration bug discovered** — pre-renumber state.db (user_version=4 + `superdoctor_hygiene` present, `superdoctor_attempts` absent) crashed every worktree-atmux open on the v4→v5 hygiene migration. Fixed in precursor commit `ed24844` (`fix(sqlite-migrations): legacy DB rescue + idempotent CREATEs`) with idempotent `CREATE TABLE IF NOT EXISTS` on v3→v4 + v4→v5 and a new v6→v7 backfill migration that re-runs the v3→v4 SQL idempotently. Required because the dogfood ombudsman pane couldn't open state.db until the legacy schema was healed.
+- **1 open complaint adjudicated, not 3** — c-475db11c + c-8ecd3a61 (cited in ADR §Context) were already operator-resolved before T9 ran. The only remaining open complaint at dogfood-time was c-7a308f7f (groom `--inbox-days` wired-but-unconsumed). Ombudsman filed task t-82b6aed9 (planner-routed, p=1, lane=be), resolved c-7a308f7f → resolved, and committed the day-file at `docs/release-notes/2026/05/2026-05-16.md` on `geoyws-ombudsman` @ b68f2b4. The acceptance "all backlog complaints resolved" is satisfied at 1/1 for the actually-open set.
+- **Sentinel was empty, not populated then drained** — `.atmux/state/ombudsman-pending.json` doesn't exist (pre-dates T2's sentinel write-through wiring, or was pruned). Per ADR §D2 fast-path semantics, missing-file = empty; ombudsman bootstrap-time drain handled the singleton complaint via direct `atmux complaints list` query, not via sentinel wake. Future complaints filed via `atmux complaints file` will populate the sentinel + drive the wake mechanism end-to-end.
+- **Cron line installed but binary stale** — `*/15 * * * * … /usr/local/bin/atmux ombudsman tick …` is in the atmux team's cron block (verified via `crontab -l | grep ombudsman`). The binary path resolves to `/opt/atmux/0.7.2`, which pre-dates the ombudsman verb and exits "unknown verb" on every tick until a build-install rolls the new atmux version. This is a cross-release coupling — T9 acceptance covers cron-line presence + correct templating; deploy-the-binary lives in the regular atmux release lifecycle.
+
+OQ1-OQ4 stayed at defaults (no operator override during dogfood). Status flips proposed → accepted on this commit per the gate above.
