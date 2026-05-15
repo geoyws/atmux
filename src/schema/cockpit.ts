@@ -59,6 +59,31 @@ export const CockpitTuiOverrides = z
   .strict();
 export type CockpitTuiOverrides = z.infer<typeof CockpitTuiOverrides>;
 
+/**
+ * t-72a6b7d7 / c-a99bf461: per-team operator-intent flag for the cage
+ * tmux socket. Lets medic / superdoctor sweeps distinguish
+ * "cage intentionally torn down" from "cage anomalously absent" — the
+ * pre-flag state where sockets-missing was indistinguishable from
+ * operator-driven direct mode forced the operator to manually annotate
+ * out-of-band.
+ *
+ *   - `autonomous` (default) — the team runs a cage and a missing
+ *     socket is anomalous. Medic flags it red. This is the existing
+ *     pre-flag behaviour and what every legacy cockpit.json (no
+ *     `cageMode` field at all) gets via the schema default.
+ *   - `direct` — the team is operator-driven: cage absence is
+ *     expected, presence is benign. Medic skips socket-presence checks
+ *     entirely (green).
+ *   - `paused` — the team is intentionally down today, expected to be
+ *     rebuilt on the next `atmux cockpit rebuild`. Medic shows a
+ *     yellow / informational row but does NOT escalate.
+ *
+ * Consumer logic lives in `src/core/superdoctor-cage-verdict.ts` —
+ * `verdictForCage(cageMode, sessionAlive) → CageVerdict`.
+ */
+export const CockpitTeamCageMode = z.enum(["autonomous", "direct", "paused"]);
+export type CockpitTeamCageMode = z.infer<typeof CockpitTeamCageMode>;
+
 /** Common fields shared across every `sessions[]` entry. Each concrete
  *  session schema extends this with its discriminator + own extras. */
 const CockpitSessionBase = z.object({
@@ -90,6 +115,11 @@ export interface TeamSessionT {
   prefixChain?: string[];
   claudeAccount?: CockpitClaudeAccount;
   tuiOverrides?: CockpitTuiOverrides;
+  /** t-72a6b7d7 / c-a99bf461 — operator-intent flag for the team's
+   *  cage tmux socket. See {@link CockpitTeamCageMode} for the
+   *  green/yellow/red interpretation. Defaults to `"autonomous"` at
+   *  parse time so configs without the field keep pre-flag semantics. */
+  cageMode?: CockpitTeamCageMode;
   /** Recursive — children of any session type. */
   sessions: CockpitSessionT[];
 }
@@ -108,6 +138,9 @@ export interface EpicTeamSessionT {
   prefixChain?: string[];
   claudeAccount?: CockpitClaudeAccount;
   tuiOverrides?: CockpitTuiOverrides;
+  /** t-72a6b7d7 — epic-teams inherit the same cageMode taxonomy as
+   *  standalone teams. See {@link CockpitTeamCageMode}. */
+  cageMode?: CockpitTeamCageMode;
   sessions: CockpitSessionT[];
 }
 
@@ -179,6 +212,7 @@ export const TeamSession: z.ZodType<TeamSessionT> = z.lazy(() =>
   CockpitSessionBase.extend({
     type: z.literal("team"),
     root: z.string().min(1),
+    cageMode: CockpitTeamCageMode.optional(),
     sessions: z.array(CockpitSession).default([]),
   }).strict(),
 ) as z.ZodType<TeamSessionT>;
@@ -190,6 +224,7 @@ export const EpicTeamSession: z.ZodType<EpicTeamSessionT> = z.lazy(() =>
     type: z.literal("epic-team"),
     parent: z.string().min(1),
     epicId: z.string().min(1),
+    cageMode: CockpitTeamCageMode.optional(),
     sessions: z.array(CockpitSession).default([]),
   }).strict(),
 ) as z.ZodType<EpicTeamSessionT>;
@@ -273,6 +308,10 @@ export const CockpitTeam = z
     enabled: z.boolean().default(true),
     claudeAccount: CockpitClaudeAccount.optional(),
     tuiOverrides: CockpitTuiOverrides.optional(),
+    /** t-72a6b7d7 — propagated through to the synthesized legacy roster
+     *  from the underlying `TeamSession`. Consumers (medic sweep) read
+     *  this off `cockpit.teams[]` rather than walking `sessions[]`. */
+    cageMode: CockpitTeamCageMode.optional(),
   })
   .strict();
 export type CockpitTeam = z.infer<typeof CockpitTeam>;

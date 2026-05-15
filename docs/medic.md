@@ -62,6 +62,30 @@ Window 2 of the cockpit session shows `medic` (formerly `superdoctor`). Per-team
 
 To disable: set `enabled: false` (or remove the block) and re-run `atmux cockpit rebuild`. The window is killed; no other cockpit shape changes.
 
+## Per-team `cageMode` flag (t-72a6b7d7 / c-a99bf461)
+
+Each team entry in `~/.atmux/cockpit.json` accepts an optional `cageMode` field that declares operator intent for the team's cage tmux socket. Medic's sweep cross-references the declared mode against live socket-presence to colour each row — eliminating the pre-flag failure mode where "cage intentionally torn down" looked identical to "cage anomalously absent".
+
+| `cageMode` value | sessionAlive=true | sessionAlive=false |
+|---|---|---|
+| `"autonomous"` (default — legacy configs without the field) | 🟢 cage healthy | 🔴 cage missing — autonomous team expected a live socket |
+| `"direct"` (operator-driven, no cage by design) | 🟡 unexpected live cage — confirm intent | 🟢 direct-driver mode (no cage by design) |
+| `"paused"` (intentionally down today) | 🟡 paused team has a live cage — clear pause or tear down | 🟡 paused — restart on next `atmux cockpit rebuild` |
+
+Only the 🔴 cell is `actionable` (medic escalates it to the operator); every other cell is informational. The classifier is `verdictForCage(cageMode, sessionAlive)` in `src/core/superdoctor-cage-verdict.ts` — call it directly when wiring custom sweep logic.
+
+```jsonc
+{
+  "sessions": [
+    { "type": "team", "name": "sopx", "root": "/p/sopx" },              // → "autonomous" (default)
+    { "type": "team", "name": "atmux", "root": "/p/atmux", "cageMode": "direct" },
+    { "type": "team", "name": "unum", "root": "/p/unum", "cageMode": "paused" }
+  ]
+}
+```
+
+Legacy cockpit.json files without `cageMode` keep their pre-flag behaviour exactly — every team defaults to `autonomous`, and the medic sweep continues to flag socket-missing rows red.
+
 ## What it does each whip turn
 
 Hourly `/loop /whip` cycle, in order:

@@ -141,6 +141,26 @@ describe("loadCockpit", () => {
     expect(cockpit.teams[0]?.enabled).toBe(true);
   });
 
+  test("t-72a6b7d7: cageMode flows from session entry → synthesized legacy CockpitTeam", async () => {
+    // Walks the loader's sessions[] → teams[] DFS to confirm
+    // operator-declared cageMode survives the synthesis pass. Medic
+    // sweeps + audit verbs read `cockpit.teams[].cageMode` directly.
+    await writeCockpit({
+      sessions: [
+        { type: "team", name: "a", root: "/a", cageMode: "autonomous" },
+        { type: "team", name: "b", root: "/b", cageMode: "direct" },
+        { type: "team", name: "c", root: "/c", cageMode: "paused" },
+        { type: "team", name: "d", root: "/d" }, // omitted → undefined (defaults at consumer layer)
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir });
+    const byName = new Map(cockpit.teams.map((t) => [t.name, t.cageMode]));
+    expect(byName.get("a")).toBe("autonomous");
+    expect(byName.get("b")).toBe("direct");
+    expect(byName.get("c")).toBe("paused");
+    expect(byName.get("d")).toBeUndefined();
+  });
+
   test("throws ConfigError with seed snippet when file missing", async () => {
     await expect(loadCockpit({ home: homeDir })).rejects.toThrow(ConfigError);
     try {
