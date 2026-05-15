@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — proposed ADRs
+
+- **ADR-152: atmux blockers list unified verb (proposed)** ([docs/adr/152-atmux-blockers-list-unified-verb.md](docs/adr/152-atmux-blockers-list-unified-verb.md)). New `atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]` verb fans across the 7 coordination surfaces (kanban / complaints / flags / driver-inbox / lead-outbox / decisions / todo) and emits normalized rows `{id, source, opened_at, age, summary, blocker_class, suggested_action, related_task_id?}`. 8-value `blocker_class` closed enum: `decision-pending` / `member-stuck` / `cross-lane-WIP` / `tooling-broken` / `stale-claim` / `dep-not-shipped` / `review-pending` / `push-policy-gate`. READ-ONLY aggregation layer — markdown surfaces stay markdown; SQLite surfaces (kanban, complaints) gain one additive `blocker_class` column; works BEFORE AND AFTER ADR-154 storage port. Closes complaint `c-1d28fc72` (originator: driver-claude-sopx 2026-05-15). Kanban Task `t-94a1c95e` (T1 doc; T2–T6 staged impl). Foundation for ADR-151 (unblocker) + ADR-153 (auto-promotion) + ADR-154 (storage port).
+
 ### 📋 Proposed — ombudsman role + release-notes layout (ADR-147)
 
 - **New per-team role `ombudsman`** per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1 — adjudicates open complaints (filed by medic / whip-velocity-gate / operator / CLI) and writes a durable response log to the day's release-notes file. Closes the parking-lot task `t-441d6d4c` reframed as the EPIC umbrella.
