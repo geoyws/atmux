@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 📋 Proposed — ombudsman role + release-notes layout (ADR-147)
+
+- **New per-team role `ombudsman`** per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1 — adjudicates open complaints (filed by medic / whip-velocity-gate / operator / CLI) and writes a durable response log to the day's release-notes file. Closes the parking-lot task `t-441d6d4c` reframed as the EPIC umbrella.
+- **Event-driven wake** per ADR-147 §D2: sentinel file `.atmux/state/ombudsman-pending.json` + 15min `atmux ombudsman tick` cron line. NOT in whip cadence — lane-tick must NOT inject `claim --next --as ombudsman`.
+- **Adjudication authority** per ADR-147 §D3: file epic / file task / wontfix / already-addressed / defer. Every action appends a one-line entry to today's `docs/release-notes/<Y>/<M>/<Y-M-D>.md` under `## Complaints adjudicated`.
+- **New release-notes layout** per ADR-147 §D4: `docs/release-notes/<YYYY>/<MM>/<YYYY-MM-DD>.md` with append-only sections (`## Shipped`, `## Merges`, `## ADRs landed`, `## Complaints adjudicated`, `## Doctor regressions`, `## Notes`). Each section is owned by a specific agent (gitter for Shipped + Merges, ombudsman for Complaints, medic for Doctor regressions). First writer of the day creates the file; section headers act as natural insertion anchors so concurrent appends stay conflict-free.
+- **Entry-point**: new `docs/release-notes/README.md` documents the layout + browsing convention + auto-generated 30-day TOC.
+- **Doctor probe `release-note-missing`** (warn-class) per ADR-147 §D5 — fires when today has ≥1 trunk commit AND `docs/release-notes/<Y>/<M>/<Y-M-D>.md` does not exist. Backstop for missed days; not a gate.
+- **Status: proposed** until ADR-147 T9 dogfood gate (atmux-team's first day-file lands cleanly + 3 known open complaints adjudicated by ombudsman, not operator).
+
 ### 🏷️ Renamed — cockpit naming convention (ADR-135)
 
 - **Cockpit session renamed** from `atmux_teams` to `atmux_cockpit` per [ADR-135](docs/adr/135-cockpit-naming-convention.md). New default for `cockpit.json::cockpitSession`; the literal `atmux_teams` is accepted during the deprecation window with a one-line warning (`deprecated literal, rename to atmux_cockpit per ADR-135`).
