@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — ADR-139 T5 e2e — refusal auto-rotate cold-start walk
+
+- **New `tests/e2e/refusal-pattern-auto-rotate.test.ts`** per [ADR-139](docs/adr/139-refusal-pattern-auto-rotate.md) §D1-D5 + T5 (t-f596a318). Walks the full chain end-to-end: pane capture → `classifyRefusal` (T2) → `refusal_events` write (T3) → threshold check (T2 `shouldRotate`) → `atmux rotate` spawn (T4) → rotations log append + cap accounting + complaint file + Discord `[member-refusal-rotate]` fire. Each scenario re-seeds a throwaway tmpdir + in-memory state.db per `beforeEach` — stateful 1x cold-start walks per CLAUDE.md testing discipline.
+- **Six scenarios cover the EPIC acceptance gate**: (1) 3 soft events → rotate fires + log row + Discord 🟡; (2) 2 hard events → rotate with class=hard; (3) 1 role event → instant rotate; (4) cap exhaustion (3/day) → 4th trip files complaint + emits 🚨, NO spawn; (5) exempt member → events recorded for audit but rotation skipped; (6) backward-compat — team without `refusalDetection` block → defaults apply + rotate fires on 3 soft events.
+- **Mocking shape**: `paneCapture` returns pre-canned ADR-139-classifier-matching strings per beat (real classifier runs on the captures); `openDb` pins to `:memory:`; `spawnAtmux` + `sendDiscord` are recorders. Per ADR-139 T5 task body's "OR by seeding pre-recorded captures into a fake tmux capture-pane shim" carve-out — full live tmux is unnecessary for the trigger-chain proof.
+- **Same-commit doc update**: `docs/RUNBOOK-stall-recovery.md` gains a `[member-refusal-rotate]` runbook entry mirroring the existing `[whip-modal-cycling]` shape — what fires it, auto-recovery surfaces, manual escalation steps, per-team opt-out JSON, rehearsal commands. Per CLAUDE.md "pair demo runbook beats with rehearsal spec steps" rule — runbook reads against the e2e walk's beats.
+- **EPIC complete**: ADR-139 T1+T2+T3+T4+T5 all shipped. Reviewer flips `Status: Proposed` → `Status: Accepted` in the follow-up `chore(adr)` commit.
+
 ### 🟢 Shipped — ADR-139 T4 refusal-rotate trigger + cap (`team.json::refusalDetection`)
 
 - **New `team.json::refusalDetection` Zod block** per [ADR-139](docs/adr/139-refusal-pattern-auto-rotate.md) §Config + T4 (t-a830d2ee). Strict-mode shape (ADR-054 §D3 drift detection — typos like `softTreshold` reject at load): `enabled`, `softThreshold`, `hardThreshold`, `roleThreshold`, `windowMin`, `exemptMembers`, `maxRotationsPerDay`. All fields optional; absent block resolves to defaults via `resolveRefusalConfig(team.refusalDetection)`. Defaults mirror ADR-139 §D3 table verbatim (soft=3, hard=2, role=1, window=30min, cap=3/day per OQ-2).

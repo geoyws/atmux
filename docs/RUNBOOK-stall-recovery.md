@@ -258,6 +258,56 @@ Each spec is a 1x cold-start walk per CLAUDE.md "stateful e2e specs
 are not repeatable smokes" — don't streak; re-run with a fresh tmpdir
 between invocations.
 
+### `[member-refusal-rotate] <member>` (ADR-139)
+
+**Source:** medic hourly tick (W2 per [ADR-077](adr/077-superdoctor-cockpit-role.md)) + martinet 270s tick (W3 per [ADR-132](adr/132-pluggable-martinet.md)), both invoking `atmux refusal-scan` per team. Threshold-trigger lives at `src/core/refusal-trigger.ts::runRefusalTriggerForTeam` per [ADR-139](adr/139-refusal-pattern-auto-rotate.md). Fires when a member's `refusal_events` ledger crosses one of the §D3 thresholds within `windowMin` (default 30) — soft=3, hard=2 (in fixed 10min sub-window), role=1 (instant).
+
+**What it usually means:** the agent at this member is producing refusal language ("don't poke me" / "I refuse to claim" / "rotate me already"). Context degradation, brief mismatch, or saturated patience. The trigger fires `atmux rotate <member>` to clear + re-bootstrap the pane.
+
+**Auto-recovery (happens before you see the ping):**
+
+- `atmux rotate <member>` spawn — pane gets `/clear` + role brief paste.
+- `<atmuxDir>/state/refusal-rotations.log` gains one tab-separated row (timestamp, UTC-day-key, team, member, severity, reason).
+- Discord `[member-refusal-rotate]` template fires with verdict 🟡 on green path, 🚨 on `cap-hit` or `spawn-failed` HARD paths.
+- On `cap-hit` (3 rotations already today for this member): complaint filed via `fileDedupedComplaint`, NO further rotation that day. Operator must intervene.
+
+**Manual escalation — if rotation doesn't help:**
+
+1. Inspect recent refusal events: `sqlite3 .atmux/state.db "SELECT * FROM refusal_events WHERE member='<m>' ORDER BY detected_at DESC LIMIT 10"` — see the phrases the classifier matched.
+2. If a brief-content problem (role-class refusal: agent thinks it's been miscast): edit `templates/briefs/<role>.md` + `atmux rotate <member>` manually with the corrected brief in place.
+3. If member is fundamentally saturated for the day: `atmux pause <member>` until the next session; `atmux resume <member>` clears the pause.
+4. To grant a planner / reviewer / similar "designated thinker" role a pass on the detector (legitimate echoing of operator directives): add the member to `team.json::refusalDetection.exemptMembers`.
+
+**Per-team opt-out / tuning:**
+
+```json
+// team.json
+{
+  "refusalDetection": {
+    "enabled": true,            // false to disable detection entirely
+    "softThreshold": 3,         // soft-class events in windowMin to fire
+    "hardThreshold": 2,         // hard-class events in fixed 10min window
+    "roleThreshold": 1,         // role-class events (instant)
+    "windowMin": 30,            // soft + role lookback in minutes
+    "exemptMembers": [],        // never auto-rotate these members
+    "maxRotationsPerDay": 3     // beyond N/day → HARD escalation
+  }
+}
+```
+
+**Testing the detection (operator-side rehearsal):**
+
+```bash
+# Run the focused unit + e2e specs against your changes.
+unset TMUX && bun test --timeout 30000 \
+  tests/unit/core/refusal-scan.test.ts \
+  tests/unit/core/refusal-trigger.test.ts \
+  tests/unit/abstractions/sqlite-migrations.test.ts \
+  tests/e2e/refusal-pattern-auto-rotate.test.ts
+```
+
+The e2e walks six scenarios (threshold trip per class, cap exhaustion, exempt member, backward-compat defaults) on a fresh in-memory state.db per `test()`. Per CLAUDE.md "stateful e2e specs are not repeatable smokes" — don't streak; re-run with a fresh tmpdir between invocations.
+
 ---
 
 ## Manual unblock — when auto-recovery fails
