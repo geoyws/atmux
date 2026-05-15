@@ -14,7 +14,7 @@ import {
   showTask,
 } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import { closestStatus, parseAddArgs, parseListArgs, task } from "../../../src/verbs/task.ts";
+import { closestStatus, parseAddArgs, parseListArgs, resolveLaneAlias, task } from "../../../src/verbs/task.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -682,6 +682,89 @@ describe("task verb — dispatch", () => {
 
   test("subverb --team-dir without value → UsageError", async () => {
     await expect(task(["show", "t-aaaaaaaa", "--team-dir"])).rejects.toThrow(UsageError);
+  });
+});
+
+// ---------- ADR t-cea78f99: --lane member-name aliases ----------
+
+describe("task --lane member-name aliases (t-cea78f99)", () => {
+  test("`task add --lane gitter` resolves to lane=git", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "test-gitter-alias", "--lane", "gitter", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    const created = k.tasks.find((t) => t.id === id);
+    expect(created?.lane).toBe("git");
+  });
+
+  test("`task lane <id> planner` resolves to lane=docs", async () => {
+    const id = await addTask(atmuxDir, { subject: "lane-alias-target" });
+    await captureStdout(() =>
+      task(["lane", id, "planner", "--team-dir", teamDir]),
+    );
+    const k = await loadKanban(atmuxDir);
+    const t = k.tasks.find((tt) => tt.id === id);
+    expect(t?.lane).toBe("docs");
+  });
+
+  test("`task add --lane reviewer` resolves to lane=review", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "reviewer-alias", "--lane", "reviewer", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks.find((t) => t.id === id)?.lane).toBe("review");
+  });
+
+  test("`task add --lane dba` resolves to lane=db", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "dba-alias", "--lane", "dba", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks.find((t) => t.id === id)?.lane).toBe("db");
+  });
+
+  test("`task add --lane devops` resolves to lane=ops", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "devops-alias", "--lane", "devops", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks.find((t) => t.id === id)?.lane).toBe("ops");
+  });
+
+  test("unknown lane STILL rejects (no alias match falls through)", async () => {
+    await expect(
+      captureStdout(() =>
+        task(["add", "bogus-lane", "--lane", "frontend", "--team-dir", teamDir]),
+      ),
+    ).rejects.toBeInstanceOf(UsageError);
+  });
+
+  test("canonical lanes pass through unchanged", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "canonical-be", "--lane", "be", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks.find((t) => t.id === id)?.lane).toBe("be");
+  });
+
+  test("resolveLaneAlias pure function: every known alias", () => {
+    expect(resolveLaneAlias("gitter")).toBe("git");
+    expect(resolveLaneAlias("planner")).toBe("docs");
+    expect(resolveLaneAlias("reviewer")).toBe("review");
+    expect(resolveLaneAlias("dba")).toBe("db");
+    expect(resolveLaneAlias("devops")).toBe("ops");
+  });
+
+  test("resolveLaneAlias pure function: unknown input passes through", () => {
+    expect(resolveLaneAlias("be")).toBe("be");
+    expect(resolveLaneAlias("frontend")).toBe("frontend");
+    expect(resolveLaneAlias("")).toBe("");
+    expect(resolveLaneAlias("-")).toBe("-");
   });
 });
 
