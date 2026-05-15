@@ -3,7 +3,7 @@
 // Covers:
 //   - parseMartinetArgs — default sub-verb, --once flag, --config, --state
 //   - resolveMartinetImplName — per-team > cockpit.defaultMartinet > "claude" fallback
-//   - buildMartinet — claude impl construction; unknown impl falls back to claude with warn
+//   - buildMartinet — claude + cursor impl construction (T3 / t-e96d286a wires CursorMartinet)
 //   - martinetTick — fleet-wide iteration writes state snapshot; per-team try/catch isolates failures
 //   - martinetStatus — prints JSON snapshot or empty shape when state absent
 //   - resolveStatePath — env / --state / default precedence
@@ -13,6 +13,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeMartinet } from "../../../src/abstractions/martinets/claude.ts";
+import { CursorMartinet } from "../../../src/abstractions/martinets/cursor.ts";
 import type { Observation } from "../../../src/abstractions/martinet.ts";
 import { createLogger } from "../../../src/core/tui.ts";
 import { UsageError } from "../../../src/errors.ts";
@@ -112,7 +113,7 @@ describe("buildMartinet", () => {
     expect(m).toBeInstanceOf(ClaudeMartinet);
     expect(m.name).toBe("claude");
   });
-  test("'cursor' falls back to ClaudeMartinet with warn (T3 follow-up)", () => {
+  test("'cursor' constructs CursorMartinet (T3 / t-e96d286a)", () => {
     const warns: string[] = [];
     const logger = {
       log: () => {},
@@ -124,10 +125,72 @@ describe("buildMartinet", () => {
     };
     const observeFn = (_t: string) => buildStubObservation("x");
     const m = buildMartinet("cursor", { observeFn, logger });
+    expect(m).toBeInstanceOf(CursorMartinet);
+    expect(m.name).toBe("cursor");
+    // No warn — cursor is now production-default per ADR-140.
+    expect(warns).toEqual([]);
+  });
+
+  test("'cursor' honors cockpit.martinet override of binPath + model", async () => {
+    const observeFn = (_t: string) => buildStubObservation("x");
+    const seenArgs: string[][] = [];
+    const m = buildMartinet("cursor", {
+      observeFn,
+      logger: createLogger(),
+      cockpit: {
+        schemaVersion: 1,
+        cockpitSession: "atmux_cockpit",
+        sessions: [],
+        martinet: {
+          impl: "cursor",
+          enabled: true,
+          cursorBinPath: "/opt/cursor-agent",
+          model: "composer-2",
+          cageTier: "tier-2",
+        },
+      },
+      runCursorAgent: async (args) => {
+        seenArgs.push(args);
+        return JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 1500,
+          result: "[]",
+          usage: { inputTokens: 10, outputTokens: 5 },
+        });
+      },
+    });
+    expect(m).toBeInstanceOf(CursorMartinet);
+    await m.decide(await buildStubObservation("x"));
+    const args = seenArgs[0];
+    expect(args).toBeDefined();
+    if (args === undefined) throw new Error("unreachable");
+    expect(args[args.indexOf("--model") + 1]).toBe("composer-2");
+  });
+
+  test("buildMartinet exhaustive fallback — unknown impl literal warns + falls back to claude", () => {
+    const warns: string[] = [];
+    const logger = {
+      log: () => {},
+      ok: () => {},
+      warn: (s: string) => {
+        warns.push(s);
+      },
+      err: () => {},
+    };
+    const observeFn = (_t: string) => buildStubObservation("x");
+    // Cast to bypass the literal-union narrowing — the fallback branch
+    // is reachable via a deliberate forward-compat literal that lands
+    // in cockpit.json from a future version.
+    const m = buildMartinet("future-impl" as "claude" | "cursor", {
+      observeFn,
+      logger,
+    });
     expect(m).toBeInstanceOf(ClaudeMartinet);
     expect(warns.length).toBeGreaterThanOrEqual(1);
-    expect(warns[0]).toContain("cursor");
-    expect(warns[0]).toContain("falling back");
+    expect(warns[0]).toContain("future-impl");
+    expect(warns[0]).toContain("not recognised");
   });
 });
 

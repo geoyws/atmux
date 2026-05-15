@@ -1788,6 +1788,100 @@ describe("renderMemberForcePushWarning", () => {
   });
 });
 
+// ---------- ADR-138 — renderSendKeysFailureWarning ----------
+
+describe("renderSendKeysFailureWarning", () => {
+  test("single failure: verdict singular + target bullet + fix bullet", async () => {
+    const { renderSendKeysFailureWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 1,
+      mostRecentTarget: "atmux-demo:🛠️worker1",
+      mostRecentAgeMin: 7,
+    });
+    expect(out.template).toBe("send-keys-failure");
+    expect(out.category).toBe("📋");
+    expect(out.team).toBe("atmux");
+    expect(out.verdict).toBe(
+      "🟡 **Cool** — 1 send-keys failure within the last hour",
+    );
+    expect(out.bullets).toHaveLength(2);
+    expect(out.bullets?.[0]).toBe("🟡 last: atmux-demo:🛠️worker1 (7min ago)");
+    expect(out.bullets?.[1]).toContain("ADR-138");
+    expect(out.bullets?.[1]).toContain("send-keys-failures.log");
+  });
+
+  test("plural verdict when failureCount > 1", async () => {
+    const { renderSendKeysFailureWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 4,
+      mostRecentTarget: "atmux-demo:lead",
+      mostRecentAgeMin: 15,
+    });
+    expect(out.verdict).toContain("4 send-keys failures");
+  });
+
+  test("omitted target → bullet shape collapses (no target row, fix bullet only)", async () => {
+    const { renderSendKeysFailureWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 2,
+    });
+    expect(out.bullets).toHaveLength(1);
+    expect(out.bullets?.[0]).toContain("send-keys-failures.log");
+  });
+
+  test("target without age suffix → bullet omits the (Nmin ago) tail", async () => {
+    const { renderSendKeysFailureWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 1,
+      mostRecentTarget: "atmux-demo:lead",
+    });
+    expect(out.bullets?.[0]).toBe("🟡 last: atmux-demo:lead");
+  });
+
+  test("whenMs override is propagated", async () => {
+    const { renderSendKeysFailureWarning } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 1,
+      whenMs: 8888,
+    });
+    expect(out.whenMs).toBe(8888);
+  });
+
+  test("send-time validation passes (full template wiring works end-to-end)", async () => {
+    const { renderSendKeysFailureWarning, send } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const recorder = join(tmpRoot, "send-keys-failure-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderSendKeysFailureWarning({
+        team: "atmux",
+        failureCount: 2,
+        mostRecentTarget: "atmux-demo:worker1",
+        mostRecentAgeMin: 10,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[send-keys-failure]");
+    expect(written).toContain("ADR-138");
+  });
+});
+
 // ---------- ADR-086 — renderPulseVerdict ----------
 
 describe("renderPulseVerdict", () => {

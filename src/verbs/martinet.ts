@@ -36,10 +36,16 @@ import { readJson, writeJson } from "../abstractions/json.ts";
 import { z } from "zod";
 import type { Martinet, Observation } from "../abstractions/martinet.ts";
 import { ClaudeMartinet } from "../abstractions/martinets/claude.ts";
+import {
+  type CursorRunFn,
+  type CursorSendKeysFn,
+  CursorMartinet,
+} from "../abstractions/martinets/cursor.ts";
+import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
-import type { CockpitDefaultMartinet } from "../schema/cockpit.ts";
+import type { Cockpit, CockpitDefaultMartinet } from "../schema/cockpit.ts";
 
 // ---------- Arg parsing ----------
 
@@ -185,22 +191,90 @@ export function resolveMartinetImplName(opts: {
   return "claude";
 }
 
-/** Construct a Martinet instance for a given impl name. T8 ships
- *  ClaudeMartinet only with a synthetic-Observation observer; real
- *  pane-state + kanban delta wiring lands in T6 + T7. */
+/** Construct a Martinet instance for a given impl name. T3 (t-e96d286a)
+ *  added the CursorMartinet branch — when impl=cursor, the verb wires
+ *  the default `cursor-agent --print --output-format json` shell-out
+ *  via the `defaultRunCursorAgent` factory below. The factory closes
+ *  over `cockpit.martinet.cursorBinPath` (when present) so per-cockpit
+ *  binary overrides land without restructuring `buildMartinet`'s
+ *  signature.
+ *
+ *  Send-keys for cursor's apply() is left UNWIRED at this verb-layer
+ *  (defaults to absent — apply() returns success=false with diagnostic
+ *  evidence). The cockpit-W3 dispatcher (T8 follow-up) wires a real
+ *  tmux send-keys closure once it owns the per-team window-target
+ *  resolution; for the verb's bare `martinet tick` invocation the
+ *  observation+escalation path is the load-bearing surface. */
 export function buildMartinet(
   implName: CockpitDefaultMartinet,
-  deps: { observeFn: (team: string) => Promise<Observation>; logger: Logger },
+  deps: {
+    observeFn: (team: string) => Promise<Observation>;
+    logger: Logger;
+    /** Optional cockpit config — when present and `cockpit.martinet.impl
+     *  === "cursor"`, the cursor binary path + model are sourced from
+     *  the resolved discriminated-union variant. Omit for tests + the
+     *  hardcoded-default path. */
+    cockpit?: Cockpit;
+    /** Test injection — override the cursor-agent spawn-fn. Defaults to
+     *  the shell-out factory below. */
+    runCursorAgent?: CursorRunFn;
+    /** Test / dispatcher injection — wire tmux send-keys for cursor's
+     *  apply() side-effect. */
+    sendKeys?: CursorSendKeysFn;
+  },
 ): Martinet {
   if (implName === "claude") {
     return new ClaudeMartinet({ observeFn: deps.observeFn });
   }
-  // Cursor impl not yet shipped (T3 follow-up). Fall back to claude
-  // with a warn so the cluster keeps moving rather than failing.
+  if (implName === "cursor") {
+    const cursorCfg =
+      deps.cockpit?.martinet?.impl === "cursor" ? deps.cockpit.martinet : undefined;
+    const binPath = cursorCfg?.cursorBinPath ?? "/usr/local/bin/cursor-agent";
+    const model = cursorCfg?.model ?? "composer-2-fast";
+    const runCursorAgent = deps.runCursorAgent ?? defaultRunCursorAgent(binPath);
+    const ctorDeps: ConstructorParameters<typeof CursorMartinet>[0] = {
+      observeFn: deps.observeFn,
+      runCursorAgent,
+      model,
+    };
+    if (deps.sendKeys !== undefined) ctorDeps.sendKeys = deps.sendKeys;
+    return new CursorMartinet(ctorDeps);
+  }
+  // Unknown impl literal — TS narrows this to `never` once `claude` and
+  // `cursor` are handled, but keep an exhaustive branch for forward-
+  // compat (a future impl literal would land here as `never` and the
+  // `as string` cast surfaces the mistake at the warn site rather than
+  // crashing the fleet tick).
   deps.logger.warn(
-    `martinet: impl "${implName}" not yet shipped on this version; falling back to "claude" (degenerate). See ADR-132 T3 follow-up.`,
+    `martinet: impl "${implName as string}" not recognised on this version; falling back to "claude" (degenerate).`,
   );
   return new ClaudeMartinet({ observeFn: deps.observeFn });
+}
+
+/** Default `runCursorAgent` factory — shells out to `cursor-agent
+ *  --print --output-format json --model <model> --force <prompt>` via
+ *  the shared `spawn()` abstraction. Returns the raw stdout string for
+ *  CursorMartinet's envelope parser to consume.
+ *
+ *  60s timeout — composer-2-fast averages ~6s on a small prompt;
+ *  belt-and-braces vs network flap. Non-zero exit codes are surfaced
+ *  as a thrown SpawnError; CursorMartinet.decide()'s catch path
+ *  re-routes to escalate-to-claude-lead so the broken-binary case
+ *  stays observable. */
+export function defaultRunCursorAgent(binPath: string): CursorRunFn {
+  return async (args: string[]): Promise<string> => {
+    const r = await defaultSpawn({
+      cmd: binPath,
+      argv: args,
+      timeoutMs: 60_000,
+      // Cursor exits non-zero on any error; let CursorMartinet's
+      // envelope parser route via the is_error / unparseable paths
+      // instead of throwing here (which would short-circuit the
+      // fail-loud escalation path inside decide()).
+      expectExitCode: "any",
+    });
+    return r.stdout;
+  };
 }
 
 // ---------- Observation stub (T6/T7 wiring deferred) ----------
@@ -314,7 +388,7 @@ export async function martinetTick(
       cockpit: { defaultMartinet: cockpit.defaultMartinet },
       logger,
     });
-    const m = build(implName, { observeFn: observe, logger });
+    const m = build(implName, { observeFn: observe, logger, cockpit });
 
     const actions: string[] = [];
     let escalated = false;

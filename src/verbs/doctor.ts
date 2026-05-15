@@ -31,6 +31,7 @@ import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
+import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
@@ -1943,6 +1944,179 @@ function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
   return out;
 }
 
+// ---------- ADR-088 W6: merger-fan-in probe class ----------
+
+/** ADR-088 §Decision-2+3+6: `team.merger` block, mirrored locally because
+ *  this branch (geoyws-up-impl-2) implements W6 in parallel with sibling
+ *  branches that own W3 (`merge-cycle` verb) and W4 (the canonical Zod
+ *  block on `team.ts`). When the trunk merge lands, the schema-level
+ *  `team.merger` is the source of truth; `Team.passthrough()` carries
+ *  the runtime payload either way. This local type is the
+ *  literal-union sibling-branch pattern from
+ *  `feedback_test_impl_session_pattern_2026_05_14.md`. */
+interface MergerConfig {
+  enabled?: boolean;
+  baseBranch?: string;
+  stalenessHours?: number;
+}
+
+/** ADR-088 §Decision-6 default. The W4 Zod default lives at the schema
+ *  layer; this constant is the read-site fallback so the probe runs
+ *  identically pre- and post-trunk-merge. */
+const DEFAULT_MERGER_STALENESS_HOURS = 24;
+
+/** Extract `team.merger` via runtime cast — schema definition lives on
+ *  the W4 sibling branch and merges in via trunk. Until then, `Team`'s
+ *  `.passthrough()` carries the field but the static type omits it. */
+function readMergerConfig(team: Team): MergerConfig | undefined {
+  const raw = (team as unknown as { merger?: unknown }).merger;
+  if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
+  return raw as MergerConfig;
+}
+
+export interface CheckMergerFanInOpts {
+  /** Git spawn override (test injection). */
+  gitSpawn?: GitSpawn;
+  /** Wall-clock "now" in epoch seconds. Default: `Date.now() / 1000`.
+   *  Injected by tests so the staleness probe runs deterministically. */
+  nowEpochSec?: () => number;
+}
+
+/**
+ * ADR-088 §Decision-6 — surface 2 anomaly classes for the merger fan-in
+ * policy. Both are pre-emptive: they flag misconfiguration / drift before
+ * unattended fan-in silently stops working.
+ *
+ * Classes:
+ *   1. `merger-branch-stale` — `team.merger.enabled === true` AND a
+ *                              `${base}-<m>` branch has commits older
+ *                              than `merger.stalenessHours`
+ *                              (default 24h). YELLOW. Hint: run
+ *                              `atmux merge-member <m>` manually. The
+ *                              ADR-088 §Decision-6 auto-fix path (clean
+ *                              base worktree + clean fast-forward) is
+ *                              wired into `--fix` once the W3
+ *                              `merge-cycle` verb merges into trunk;
+ *                              until then the probe surfaces only.
+ *   2. `merger-disabled-but-member-present` — `team.members[]` contains
+ *                              a member with `role: "merger"` but
+ *                              `team.merger.enabled !== true`. YELLOW.
+ *                              Surface only — operator intent ambiguous
+ *                              (might be a forgotten flip, might be an
+ *                              opt-out keeping the brief for later).
+ *                              Never auto-fixable.
+ *
+ * Pure modulo IO — every IO call gated through `opts` for tests. When
+ * `team === null` (team.json failed to load), returns empty: the
+ * `checkTeam` row already surfaced the broken state.
+ */
+export async function checkMergerFanIn(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckMergerFanInOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  const merger = readMergerConfig(team);
+  const enabled = merger?.enabled === true;
+
+  // Class 2 always evaluates — independent of enabled flag (the whole
+  // point is to flag the inconsistency between role-present and
+  // feature-off).
+  const rows: DoctorRow[] = [];
+  for (const member of team.members) {
+    if (member.role !== "merger") continue;
+    if (enabled) continue;
+    rows.push({
+      status: "yellow",
+      label: `merger:disabled-but-member-present:${member.name}`,
+      detail: `member '${member.name}' declares role=merger but team.merger.enabled !== true`,
+      hint: "either flip `team.merger.enabled: true` to activate fan-in, or drop the role from team.json",
+    });
+  }
+
+  // Class 1 only evaluates when the feature is opted in — staleness is
+  // meaningless when fan-in is disabled by design.
+  if (!enabled) return rows;
+
+  const stalenessHours =
+    typeof merger?.stalenessHours === "number" && merger.stalenessHours > 0
+      ? merger.stalenessHours
+      : DEFAULT_MERGER_STALENESS_HOURS;
+  const nowSec = (opts.nowEpochSec ?? (() => Math.floor(Date.now() / 1000)))();
+  const staleCutoffSec = nowSec - stalenessHours * 3600;
+
+  const git = opts.gitSpawn ?? defaultGitSpawn;
+  const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
+
+  // Resolve base — `merger.baseBranch` wins if set; otherwise fall back
+  // to current branch in the project root (matches ADR-088 §Decision-3
+  // resolution order in `mergeMember`).
+  let baseBranch = typeof merger?.baseBranch === "string" ? merger.baseBranch : "";
+  if (baseBranch.length === 0) {
+    const baseR = await git(["-C", projectRoot, "branch", "--show-current"]);
+    baseBranch = baseR.exitCode === 0 ? baseR.stdout.trim() : "";
+  }
+  if (baseBranch.length === 0) return rows; // detached HEAD — can't probe.
+
+  const listR = await git(["-C", projectRoot, "branch", "--list", `${baseBranch}-*`]);
+  if (listR.exitCode !== 0) return rows; // degrade silently.
+
+  const prefix = `${baseBranch}-`;
+  const branchNames = listR.stdout
+    .split("\n")
+    .map((line) => line.replace(/^[\s*+]+/, "").trim())
+    .filter((line) => line.length > 0 && line.startsWith(prefix));
+
+  // For each member-suffixed branch, probe its tip-commit time and
+  // commits-ahead count. We only surface branches that are:
+  //   (a) suffixed to a current team member (not a leftover orphan —
+  //       that's already handled by class 5 of checkWorktreeIsolation),
+  //   (b) have ≥1 commit ahead of base (a no-op merge would be silent),
+  //   (c) tip-commit older than the staleness cutoff.
+  const sanitizedToMember = new Map<string, string>();
+  for (const m of team.members) {
+    sanitizedToMember.set(sanitizeBranchSegment(m.name), m.name);
+  }
+
+  for (const branchName of branchNames) {
+    const suffix = branchName.slice(prefix.length);
+    const memberName = sanitizedToMember.get(suffix);
+    if (memberName === undefined) continue; // not a current member; class 5 surfaces this.
+
+    // Commits-ahead count gate.
+    const countR = await git([
+      "-C",
+      projectRoot,
+      "rev-list",
+      "--count",
+      `${baseBranch}..${branchName}`,
+    ]);
+    if (countR.exitCode !== 0) continue;
+    const aheadRaw = countR.stdout.trim();
+    if (!/^\d+$/.test(aheadRaw)) continue;
+    const ahead = parseInt(aheadRaw, 10);
+    if (ahead === 0) continue;
+
+    // Tip-commit author/commit time.
+    const timeR = await git(["-C", projectRoot, "log", "-1", "--format=%ct", branchName]);
+    if (timeR.exitCode !== 0) continue;
+    const tipRaw = timeR.stdout.trim();
+    if (!/^\d+$/.test(tipRaw)) continue;
+    const tipSec = parseInt(tipRaw, 10);
+    if (tipSec >= staleCutoffSec) continue; // fresh — not stale.
+
+    const ageHours = Math.floor((nowSec - tipSec) / 3600);
+    rows.push({
+      status: "yellow",
+      label: `merger:branch-stale:${memberName}`,
+      detail: `${branchName} — ${ahead} commit(s) ahead of ${baseBranch}, tip is ~${ageHours}h old (threshold ${stalenessHours}h)`,
+      hint: `run \`atmux merge-member ${memberName}\` to fan in — or wait for the merger loop / cron if installed`,
+    });
+  }
+
+  return rows;
+}
+
 // ---------- Public verb entry ----------
 
 export interface DoctorOpts {
@@ -2012,6 +2186,16 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
   rows.push(...(await checkWorktreeIsolation(team, atmuxDir)));
+  // ADR-136 TR4: member-label-collision — warn when 2+ members share
+  // the same `(emoji, label-or-name)` display tuple. Pure (no I/O);
+  // returns [] when team is null OR no collisions exist.
+  rows.push(...checkMemberLabelCollision(team));
+  // ADR-088 §Decision-6 W6: merger-fan-in anomalies — stale per-member
+  // branch + role/feature-flag mismatch. Silent when `team.merger` is
+  // unset or `merger.enabled !== true` (the staleness branch); the
+  // role-mismatch branch surfaces regardless when a `role: "merger"`
+  // member exists with the feature off.
+  rows.push(...(await checkMergerFanIn(team, atmuxDir)));
   return rows;
 }
 
@@ -2393,6 +2577,173 @@ export async function checkMemberForcePushRecent(
         hint: "did you mean to merge instead of rebase? see ADR-137 §D1 — `git merge origin/<base>` keeps the branch in a consistent published state",
       });
     }
+  }
+  return rows;
+}
+
+// ---------- ADR-138 T3: send-keys-failure-recent probe ----------
+
+export interface CheckSendKeysFailureRecentOpts {
+  /** Override the `$HOME` used to resolve the escalation log path.
+   *  Defaults to `process.env.HOME ?? ""`. Tests pin this so the probe
+   *  reads from a sandbox directory. */
+  home?: string;
+  /** Direct override of the escalation log path. Wins over `home` when
+   *  set. */
+  logPath?: string;
+  /** Epoch-seconds clock override (test injection). Defaults to
+   *  `Date.now() / 1000`. */
+  now?: () => number;
+  /** Time window in seconds. Default 3600 (1h). Entries older than
+   *  `now - windowSec` are not counted. */
+  windowSec?: number;
+}
+
+/**
+ * ADR-138 §"Doctor probe" — surfaces send-keys verification failures
+ * (entries appended to `~/.atmux/state/send-keys-failures.log` by
+ * `safeSendKeysWithVerify`'s escalation path) within the last hour
+ * as a single YELLOW row.
+ *
+ * Warn-class because:
+ *   - The escalation log is post-hoc evidence; the calling verb has
+ *     already decided "this send-keys didn't verify" and returned its
+ *     own non-zero or `success: false`.
+ *   - The fix is operator-side (investigate stuck member, check budget,
+ *     rotate-lead, etc.); the probe's role is surfacing, not blocking.
+ *
+ * Returns `[]` when the log is absent, empty, or has zero entries
+ * within the window. Log-parse failures (corrupt file, permission
+ * error, decode error) collapse to `[]` — the team's own doctor
+ * surface must stay green even when this probe can't run. The log is
+ * append-only + operator-managed; the probe doesn't truncate or
+ * rewrite.
+ *
+ * Log entry shape (per `writeEscalationLog` in `src/core/safe-send.ts`):
+ *
+ *   [HH:MM MYT YYYY-MM-DD] target=<tgt> keys='<keys>' attempts=N timeout=Nms
+ *   preCapture: <last 5 lines>
+ *   postCapture: <last 5 lines>
+ *   ---
+ *
+ * Parser anchors on the leading `[HH:MM MYT YYYY-MM-DD]` timestamp;
+ * every other line is body and ignored. MYT is `+08:00` per global
+ * CLAUDE.md §Timezone — the timestamp is parsed as a literal
+ * `YYYY-MM-DDTHH:MM:00+08:00` ISO string.
+ */
+export async function checkSendKeysFailureRecent(
+  opts: CheckSendKeysFailureRecentOpts = {},
+): Promise<DoctorRow[]> {
+  const nowFn = opts.now ?? ((): number => Math.floor(Date.now() / 1000));
+  const windowSec = opts.windowSec ?? 3600;
+  const now = nowFn();
+  const cutoff = now - windowSec;
+
+  const logPath =
+    opts.logPath ??
+    (() => {
+      const home = opts.home ?? process.env.HOME ?? "";
+      return home === ""
+        ? DEFAULT_SEND_KEYS_FAILURES_LOG_REL
+        : `${home}/${DEFAULT_SEND_KEYS_FAILURES_LOG_REL}`;
+    })();
+
+  const text = await readTextOrNull(logPath).catch(() => null);
+  if (text === null || text.length === 0) return [];
+
+  // Anchor on `[HH:MM MYT YYYY-MM-DD]` at line start. The MYT marker
+  // disambiguates the timestamp shape from any timestamps that might
+  // appear inside the `preCapture` / `postCapture` body lines.
+  const tsRe = /^\[(\d{2}):(\d{2}) MYT (\d{4}-\d{2}-\d{2})\]/gm;
+  let recentCount = 0;
+  let mostRecentTs = 0;
+  let mostRecentTarget = "";
+  let m: RegExpExecArray | null = tsRe.exec(text);
+  while (m !== null) {
+    const [, hh, mm, ymd] = m;
+    const epoch = Math.floor(
+      Date.parse(`${ymd}T${hh}:${mm}:00+08:00`) / 1000,
+    );
+    if (Number.isFinite(epoch) && epoch >= cutoff && epoch <= now) {
+      recentCount += 1;
+      if (epoch > mostRecentTs) {
+        mostRecentTs = epoch;
+        // Pull the `target=<tgt>` from the rest of the matched line for
+        // the hint. `target` field is always present on entries written
+        // by `writeEscalationLog` — defensive null on a malformed line.
+        const lineEnd = text.indexOf("\n", m.index);
+        const rest = text.slice(m.index, lineEnd === -1 ? text.length : lineEnd);
+        const tm = /target=(\S+)/.exec(rest);
+        mostRecentTarget = tm?.[1] ?? "";
+      }
+    }
+    m = tsRe.exec(text);
+  }
+
+  if (recentCount === 0) return [];
+
+  const ageMin = Math.max(1, Math.floor((now - mostRecentTs) / 60));
+  const targetHint = mostRecentTarget.length > 0 ? ` (last: ${mostRecentTarget})` : "";
+  return [
+    {
+      status: "yellow",
+      label: "send-keys-failure-recent",
+      detail: `${recentCount} send-keys failure${recentCount === 1 ? "" : "s"} in last hour${targetHint} — most recent ${ageMin}min ago`,
+      hint: "send-keys failed N times in last hour; check ADR-138 escalation log at ~/.atmux/state/send-keys-failures.log",
+    },
+  ];
+}
+
+// ---------- ADR-136 TR4: member-label-collision probe ----------
+
+/**
+ * ADR-136 TR4 §"Doctor probe" — surfaces members sharing the same
+ * `(emoji, display-name)` tuple as a YELLOW row. Display-name is
+ * `label ?? name`, so a fresh team without labels has zero collisions
+ * by construction (each ID is unique); the probe only fires when
+ * `atmux member rename` has produced a colliding display-name pair.
+ *
+ * Warn-class because:
+ *   - It's an operator-misconfiguration nudge, not a state corruption.
+ *     The underlying IDs (`member.name`) remain unique, so all
+ *     persistent storage classes (worktree path, branch name, kanban
+ *     owner, inbox file) still address each member unambiguously.
+ *   - Two members showing as `🛠️ worker` in `atmux status` is a UX
+ *     hazard — the operator can't tell them apart visually — but no
+ *     execution path is wrong; the bullet recommends a rename rather
+ *     than blocking.
+ *
+ * Skipped when `team === null`. Returns one row per colliding tuple
+ * (NOT per colliding member), listing both `name` IDs in `detail` so
+ * the operator can pick which one to rename. Members with no `emoji`
+ * collide on display-name alone; that's still a valid trip.
+ */
+export function checkMemberLabelCollision(team: Team | null): DoctorRow[] {
+  if (team === null) return [];
+  // Group members by `(emoji, displayName)` tuple. Empty/undefined emoji
+  // collapses to "" so name-only collisions still group correctly.
+  const groups = new Map<string, { ids: string[]; emoji: string; display: string }>();
+  for (const m of team.members) {
+    const emoji = m.emoji ?? "";
+    const display = m.label !== undefined && m.label.length > 0 ? m.label : m.name;
+    const key = `${emoji} ${display}`;
+    const existing = groups.get(key);
+    if (existing === undefined) {
+      groups.set(key, { ids: [m.name], emoji, display });
+    } else {
+      existing.ids.push(m.name);
+    }
+  }
+  const rows: DoctorRow[] = [];
+  for (const g of groups.values()) {
+    if (g.ids.length < 2) continue;
+    const visual = g.emoji.length > 0 ? `${g.emoji}-${g.display}` : g.display;
+    rows.push({
+      status: "yellow",
+      label: `member-label-collision:${g.display}`,
+      detail: `${g.ids.length} members share display '${visual}': ${g.ids.join(", ")}`,
+      hint: "rename one via `atmux member rename <id> --label <new>` so each member is visually distinct",
+    });
   }
   return rows;
 }

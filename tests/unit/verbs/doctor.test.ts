@@ -26,7 +26,9 @@ import {
   checkDeps,
   checkInboxMarks,
   checkMemberForcePushRecent,
+  checkMemberLabelCollision,
   checkOrphanSessions,
+  checkSendKeysFailureRecent,
   checkPhantomInboxes,
   checkStateDir,
   checkSubmoduleIntegrity,
@@ -35,6 +37,7 @@ import {
   checkTuis,
   checkWebhook,
   checkMemberCageStates,
+  checkMergerFanIn,
   checkWhipConfigDrift,
   checkWorktreeIsolation,
   collectSafeOrphanBranches,
@@ -2663,6 +2666,430 @@ describe("collectStarvingMembers — ADR-081 §D row-scan", () => {
   });
 });
 
+// ---------- ADR-088 §Decision-6 W6: checkMergerFanIn ----------
+
+describe("checkMergerFanIn", () => {
+  let atmuxDir: string;
+  beforeEach(async () => {
+    atmuxDir = await mkdtemp(join(tmpdir(), "atmux-doctor-merger-"));
+  });
+  afterEach(async () => {
+    await rm(atmuxDir, { recursive: true, force: true });
+  });
+
+  type GitSpawn = import("../../../src/abstractions/worktree.ts").GitSpawn;
+  type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
+  function gitOk(stdout = ""): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  function gitFail(stderr: string, code = 128): SpawnResult {
+    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+  }
+  /** Build a Team with optional `merger` block + roster. `merger` rides
+   *  the schema's `.passthrough()` so the runtime cast in
+   *  `readMergerConfig` picks it up exactly as a trunk-merged W4 would. */
+  function team(
+    members: ReadonlyArray<{ name: string; role?: string }>,
+    merger?: { enabled?: boolean; baseBranch?: string; stalenessHours?: number },
+  ): Team {
+    const base: Record<string, unknown> = { name: "demo", members };
+    if (merger !== undefined) base.merger = merger;
+    return base as Team;
+  }
+  /** Build a gitSpawn that dispatches on argv shape: show-current,
+   *  branch --list, rev-list --count, log -1 --format=%ct. */
+  function fakeGitSpawn(spec: {
+    showCurrent?: string;
+    branchList?: string;
+    branchListFails?: boolean;
+    revListByBranch?: Record<string, string>;
+    revListFailsByBranch?: Record<string, true>;
+    /** Tip-commit times (epoch seconds) per branch. */
+    tipTimeByBranch?: Record<string, string>;
+    tipTimeFailsByBranch?: Record<string, true>;
+  }): GitSpawn {
+    return async (argv) => {
+      if (argv.includes("--show-current")) {
+        return gitOk(spec.showCurrent ?? "");
+      }
+      if (argv.includes("branch") && argv.includes("--list")) {
+        if (spec.branchListFails === true) return gitFail("fatal: bad list");
+        return gitOk(spec.branchList ?? "");
+      }
+      if (argv.includes("rev-list")) {
+        const range = argv[argv.length - 1] ?? "";
+        const branch = range.split("..")[1] ?? "";
+        if (spec.revListFailsByBranch?.[branch] === true) return gitFail("fatal: bad rev-list");
+        const count = spec.revListByBranch?.[branch] ?? "0";
+        return gitOk(`${count}\n`);
+      }
+      if (argv.includes("log") && argv.includes("--format=%ct")) {
+        const branch = argv[argv.length - 1] ?? "";
+        if (spec.tipTimeFailsByBranch?.[branch] === true) return gitFail("fatal: bad log");
+        const tip = spec.tipTimeByBranch?.[branch] ?? "0";
+        return gitOk(`${tip}\n`);
+      }
+      return gitOk("");
+    };
+  }
+
+  /** Reference "now" fixture — 2026-05-15 12:00 UTC. */
+  const NOW_SEC = 1778889600;
+  const HOUR = 3600;
+
+  test("team === null → empty rows", async () => {
+    expect(await checkMergerFanIn(null, atmuxDir)).toEqual([]);
+  });
+
+  test("no merger block + no merger member → empty rows (default path)", async () => {
+    const rows = await checkMergerFanIn(team([{ name: "alice" }]), atmuxDir, {
+      gitSpawn: fakeGitSpawn({}),
+      nowEpochSec: () => NOW_SEC,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  // ---------- Class 2: merger-disabled-but-member-present ----------
+
+  test("role=merger member + merger.enabled !== true → YELLOW per offender", async () => {
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }, { name: "fan", role: "merger" }]),
+      atmuxDir,
+      { gitSpawn: fakeGitSpawn({}), nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("merger:disabled-but-member-present:fan");
+    expect(rows[0]?.detail).toContain("'fan'");
+    expect(rows[0]?.detail).toContain("role=merger");
+    expect(rows[0]?.detail).toContain("merger.enabled");
+    expect(rows[0]?.hint).toContain("team.merger.enabled: true");
+  });
+
+  test("role=merger + merger.enabled: false explicit → still YELLOW (treats falsy as disabled)", async () => {
+    const rows = await checkMergerFanIn(
+      team([{ name: "fan", role: "merger" }], { enabled: false }),
+      atmuxDir,
+      { gitSpawn: fakeGitSpawn({}), nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("merger:disabled-but-member-present:fan");
+  });
+
+  test("role=merger + merger.enabled: true → NO disabled-but-member-present row", async () => {
+    const rows = await checkMergerFanIn(
+      team([{ name: "fan", role: "merger" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn: fakeGitSpawn({ showCurrent: "geoyws\n" }), nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:disabled-but-member-present:"))).toEqual([]);
+  });
+
+  test("multiple role=merger members + disabled → one YELLOW per offender", async () => {
+    const rows = await checkMergerFanIn(
+      team([
+        { name: "fan-1", role: "merger" },
+        { name: "fan-2", role: "merger" },
+      ]),
+      atmuxDir,
+      { gitSpawn: fakeGitSpawn({}), nowEpochSec: () => NOW_SEC },
+    );
+    const offenders = rows.filter((r) => r.label.startsWith("merger:disabled-but-member-present:"));
+    expect(offenders).toHaveLength(2);
+    expect(offenders.map((r) => r.label).sort()).toEqual([
+      "merger:disabled-but-member-present:fan-1",
+      "merger:disabled-but-member-present:fan-2",
+    ]);
+  });
+
+  // ---------- Class 1: merger-branch-stale ----------
+
+  test("merger.enabled=true + stale branch (>24h, default threshold) → YELLOW with hint", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "3" },
+      tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 30 * HOUR) }, // 30h old
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    const stale = rows.filter((r) => r.label.startsWith("merger:branch-stale:"));
+    expect(stale).toHaveLength(1);
+    expect(stale[0]?.status).toBe("yellow");
+    expect(stale[0]?.label).toBe("merger:branch-stale:alice");
+    expect(stale[0]?.detail).toContain("geoyws-alice");
+    expect(stale[0]?.detail).toContain("3 commit(s) ahead");
+    expect(stale[0]?.detail).toContain("~30h old");
+    expect(stale[0]?.detail).toContain("threshold 24h");
+    expect(stale[0]?.hint).toContain("atmux merge-member alice");
+  });
+
+  test("merger.enabled=true + fresh branch (<24h) → NO stale row", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "3" },
+      tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 6 * HOUR) }, // 6h old
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
+  });
+
+  test("merger.enabled=true + custom stalenessHours: 6 + 8h-old branch → YELLOW (custom threshold honoured)", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "1" },
+      tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 8 * HOUR) },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true, stalenessHours: 6 }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    const stale = rows.filter((r) => r.label.startsWith("merger:branch-stale:"));
+    expect(stale).toHaveLength(1);
+    expect(stale[0]?.detail).toContain("threshold 6h");
+  });
+
+  test("merger.enabled=true + 0 commits ahead → NO stale row (no-op merge)", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "0" },
+      tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 30 * HOUR) },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
+  });
+
+  test("merger.enabled=true + branch suffix not in roster → NO stale row (class 5 of worktree-isolation owns orphans)", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-stale-departed\n",
+      revListByBranch: { "geoyws-stale-departed": "5" },
+      tipTimeByBranch: { "geoyws-stale-departed": String(NOW_SEC - 100 * HOUR) },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
+  });
+
+  test("merger.enabled=true + sanitized member name match (dotted member → dashed branch) → uses canonical member name in label", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-up-impl\n",
+      revListByBranch: { "geoyws-up-impl": "2" },
+      tipTimeByBranch: { "geoyws-up-impl": String(NOW_SEC - 30 * HOUR) },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "up.impl" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    const stale = rows.find((r) => r.label === "merger:branch-stale:up.impl");
+    expect(stale).toBeDefined();
+    expect(stale?.hint).toContain("atmux merge-member up.impl");
+  });
+
+  test("merger.enabled=true + explicit baseBranch override → uses configured base, ignores HEAD", async () => {
+    let showCurrentCalled = false;
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("--show-current")) {
+        showCurrentCalled = true;
+        return gitOk("wrong-base\n");
+      }
+      if (argv.includes("branch") && argv.includes("--list")) {
+        const pat = argv[argv.length - 1] ?? "";
+        if (pat === "configured-base-*") return gitOk("  configured-base-alice\n");
+        return gitOk("");
+      }
+      if (argv.includes("rev-list")) return gitOk("4\n");
+      if (argv.includes("--format=%ct")) return gitOk(String(NOW_SEC - 50 * HOUR) + "\n");
+      return gitOk("");
+    };
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true, baseBranch: "configured-base" }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(showCurrentCalled).toBe(false); // baseBranch override skips HEAD probe.
+    const stale = rows.find((r) => r.label === "merger:branch-stale:alice");
+    expect(stale).toBeDefined();
+    expect(stale?.detail).toContain("configured-base-alice");
+    expect(stale?.detail).toContain("configured-base");
+  });
+
+  test("merger.enabled !== true → staleness probe doesn't run (NO git invocations for stale class)", async () => {
+    let gitCalls = 0;
+    const gitSpawn: GitSpawn = async () => {
+      gitCalls++;
+      return gitOk("");
+    };
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }]),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows).toEqual([]);
+    expect(gitCalls).toBe(0);
+  });
+
+  test("merger.enabled=true + detached HEAD (empty show-current) + no baseBranch → skip stale probe (no rows, no crash)", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "\n",
+      branchList: "  geoyws-alice\n", // would be present if probed
+      tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 50 * HOUR) },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
+  });
+
+  test("merger.enabled=true + branch --list fails → degrades silently, no stale rows", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchListFails: true,
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
+  });
+
+  test("merger.enabled=true + rev-list fails → branch skipped (no stale row, no crash)", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n",
+      revListFailsByBranch: { "geoyws-alice": true },
+      tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 100 * HOUR) },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
+  });
+
+  test("merger.enabled=true + log %ct fails → branch skipped (can't compute age)", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "2" },
+      tipTimeFailsByBranch: { "geoyws-alice": true },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
+  });
+
+  test("merger.enabled=true + current-branch marker (`* geoyws-alice`) on the list → stripped + still detected", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "* geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "5" },
+      tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 48 * HOUR) },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.find((r) => r.label === "merger:branch-stale:alice")).toBeDefined();
+  });
+
+  test("merger.enabled=true + stalenessHours: 0 falls back to default (24h, not silently disable)", async () => {
+    // Defensive: a 0/negative threshold could silently disable the
+    // staleness check by making `staleCutoffSec === nowSec` (everything
+    // newer than now is fresh). Falling back to the default keeps the
+    // probe useful.
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n",
+      revListByBranch: { "geoyws-alice": "1" },
+      tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 30 * HOUR) },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }], { enabled: true, stalenessHours: 0 }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    const stale = rows.find((r) => r.label === "merger:branch-stale:alice");
+    expect(stale).toBeDefined();
+    expect(stale?.detail).toContain("threshold 24h");
+  });
+
+  // ---------- Composite (class 1 + class 2) ----------
+
+  test("merger.enabled=true + role=merger member + stale branch → ONLY class 1 surfaces (member-present is short-circuited when enabled)", async () => {
+    const gitSpawn = fakeGitSpawn({
+      showCurrent: "geoyws\n",
+      branchList: "  geoyws-alice\n  geoyws-fan\n",
+      revListByBranch: { "geoyws-alice": "2", "geoyws-fan": "0" },
+      tipTimeByBranch: {
+        "geoyws-alice": String(NOW_SEC - 40 * HOUR),
+        "geoyws-fan": String(NOW_SEC - 1 * HOUR),
+      },
+    });
+    const rows = await checkMergerFanIn(
+      team([{ name: "alice" }, { name: "fan", role: "merger" }], { enabled: true }),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(rows.filter((r) => r.label.startsWith("merger:disabled-but-member-present:"))).toEqual([]);
+    const stale = rows.filter((r) => r.label.startsWith("merger:branch-stale:"));
+    expect(stale).toHaveLength(1);
+    expect(stale[0]?.label).toBe("merger:branch-stale:alice");
+  });
+
+  test("merger.enabled !== true + role=merger member + stale branch on roster → class 2 only (class 1 short-circuits)", async () => {
+    let gitCalls = 0;
+    const gitSpawn: GitSpawn = async () => {
+      gitCalls++;
+      return gitOk("");
+    };
+    const rows = await checkMergerFanIn(
+      team([{ name: "fan", role: "merger" }]),
+      atmuxDir,
+      { gitSpawn, nowEpochSec: () => NOW_SEC },
+    );
+    expect(gitCalls).toBe(0); // staleness probe never fires.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("merger:disabled-but-member-present:fan");
+  });
+});
+
 // ---------- ADR-137: checkMemberForcePushRecent ----------
 
 describe("checkMemberForcePushRecent", () => {
@@ -2869,5 +3296,260 @@ describe("checkMemberForcePushRecent", () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
+  });
+});
+
+// ---------- ADR-138: checkSendKeysFailureRecent ----------
+
+describe("checkSendKeysFailureRecent", () => {
+  // Anchor every test to 2026-05-15 10:00 MYT (== 2026-05-15T02:00:00Z).
+  // The probe's `now` injection is offset from this constant so the
+  // test stays readable regardless of JS Date math quirks.
+  const BASE_EPOCH = Math.floor(Date.parse("2026-05-15T10:00:00+08:00") / 1000);
+
+  let logDir: string;
+  let logPath: string;
+
+  beforeEach(async () => {
+    logDir = await mkdtemp(join(tmpdir(), "atmux-sk-log-"));
+    logPath = join(logDir, "send-keys-failures.log");
+  });
+
+  afterEach(async () => {
+    await rm(logDir, { recursive: true, force: true });
+  });
+
+  /** Compose the canonical entry shape that `writeEscalationLog`
+   *  produces in `src/core/safe-send.ts`. Tests pin every probe
+   *  assertion to this exact format so a future log-format tweak
+   *  surfaces here. */
+  function entry(ts: string, target: string): string {
+    return (
+      `[${ts}] target=${target} keys='hello\\n' attempts=2 timeout=3000ms\n` +
+      `preCapture: line1\nline2\nline3\nline4\nline5\n` +
+      `postCapture: line1\nline2\nline3\nline4\nline5\n` +
+      `---\n`
+    );
+  }
+
+  test("missing log file → empty rows", async () => {
+    const rows = await checkSendKeysFailureRecent({ logPath: `${logPath}-missing` });
+    expect(rows).toEqual([]);
+  });
+
+  test("empty log → empty rows", async () => {
+    await writeFile(logPath, "", "utf8");
+    const rows = await checkSendKeysFailureRecent({ logPath });
+    expect(rows).toEqual([]);
+  });
+
+  test("entry within window → 1 YELLOW row, count + target in detail", async () => {
+    // 2026-05-15 10:00 MYT == 2026-05-15T10:00+08:00 == epoch BASE_EPOCH
+    await writeFile(logPath, entry("10:00 MYT 2026-05-15", "atmux-demo:🛠️worker1"), "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 1800, // 30min later
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "yellow",
+      label: "send-keys-failure-recent",
+    });
+    expect(rows[0]?.detail).toContain("1 send-keys failure in last hour");
+    expect(rows[0]?.detail).toContain("atmux-demo:🛠️worker1");
+    expect(rows[0]?.hint).toContain("ADR-138");
+  });
+
+  test("entry older than window → empty rows", async () => {
+    // entry at 10:00 MYT; probe runs 2h later (7200s)
+    await writeFile(logPath, entry("10:00 MYT 2026-05-15", "atmux-demo:tgt"), "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 7200,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("multiple entries within window → ONE row with count = N", async () => {
+    const body =
+      entry("09:30 MYT 2026-05-15", "tgt-a") +
+      entry("09:45 MYT 2026-05-15", "tgt-b") +
+      entry("10:00 MYT 2026-05-15", "tgt-c");
+    await writeFile(logPath, body, "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 600, // 10min after the latest entry
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("3 send-keys failures");
+    // Most recent target should be the latest entry's target.
+    expect(rows[0]?.detail).toContain("tgt-c");
+  });
+
+  test("mixed in-window + out-of-window → row counts only in-window entries", async () => {
+    const body =
+      entry("08:00 MYT 2026-05-15", "stale-tgt") + // 2h+ before probe
+      entry("10:00 MYT 2026-05-15", "fresh-tgt");
+    await writeFile(logPath, body, "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 600,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("1 send-keys failure");
+    expect(rows[0]?.detail).toContain("fresh-tgt");
+    expect(rows[0]?.detail).not.toContain("stale-tgt");
+  });
+
+  test("custom window (windowSec=60) tightens the cutoff", async () => {
+    // Entry was 10min ago; with windowSec=60 (1min), it's stale.
+    await writeFile(logPath, entry("10:00 MYT 2026-05-15", "tgt"), "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 600,
+      windowSec: 60,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("malformed log (no timestamp anchors) → empty rows", async () => {
+    await writeFile(logPath, "garbage\nmore garbage\n---\n", "utf8");
+    const rows = await checkSendKeysFailureRecent({ logPath });
+    expect(rows).toEqual([]);
+  });
+
+  test("entry without target= field → row omits the target hint", async () => {
+    const malformed = `[10:00 MYT 2026-05-15] no-target-field keys='x' attempts=1 timeout=100ms\n`;
+    await writeFile(logPath, malformed, "utf8");
+    const rows = await checkSendKeysFailureRecent({
+      logPath,
+      now: () => BASE_EPOCH + 600,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("1 send-keys failure in last hour");
+    expect(rows[0]?.detail).not.toContain("(last:");
+  });
+
+  test("home override resolves $HOME/.atmux/state/send-keys-failures.log", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-sk-home-"));
+    try {
+      const stateDir = join(home, ".atmux", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, "send-keys-failures.log"),
+        entry("10:00 MYT 2026-05-15", "home-tgt"),
+        "utf8",
+      );
+      const rows = await checkSendKeysFailureRecent({
+        home,
+        now: () => BASE_EPOCH + 600,
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.detail).toContain("home-tgt");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("empty home + no override → relative-path log read, returns empty when absent", async () => {
+    // Force the empty-home branch — the resolver falls back to the
+    // bare relative path `.atmux/state/send-keys-failures.log`. The
+    // test process's cwd doesn't have that file, so the probe collapses
+    // to `[]`. This pins the no-home branch separately from the
+    // present-home branch above.
+    const rows = await checkSendKeysFailureRecent({ home: "" });
+    expect(rows).toEqual([]);
+  });
+});
+
+// ---------- ADR-136 TR4: checkMemberLabelCollision ----------
+
+describe("checkMemberLabelCollision", () => {
+  function team(members: ReadonlyArray<{ name: string; emoji?: string; label?: string }>): Team {
+    return { name: "demo", members } as Team;
+  }
+
+  test("team === null → empty rows", () => {
+    expect(checkMemberLabelCollision(null)).toEqual([]);
+  });
+
+  test("no collisions → empty rows (each (emoji, display) unique)", () => {
+    const t = team([
+      { name: "alice", emoji: "🦊" },
+      { name: "bob", emoji: "🐝" },
+      { name: "carol", emoji: "🦝" },
+    ]);
+    expect(checkMemberLabelCollision(t)).toEqual([]);
+  });
+
+  test("two members share emoji + label → one YELLOW row", () => {
+    const t = team([
+      { name: "worker1", emoji: "🛠️", label: "Worker" },
+      { name: "worker2", emoji: "🛠️", label: "Worker" },
+    ]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "yellow",
+      label: "member-label-collision:Worker",
+    });
+    expect(rows[0]?.detail).toContain("2 members share display '🛠️-Worker'");
+    expect(rows[0]?.detail).toContain("worker1");
+    expect(rows[0]?.detail).toContain("worker2");
+    expect(rows[0]?.hint).toContain("atmux member rename");
+  });
+
+  test("different emojis with same label → NO collision (visually distinct)", () => {
+    const t = team([
+      { name: "fox", emoji: "🦊", label: "Helper" },
+      { name: "bee", emoji: "🐝", label: "Helper" },
+    ]);
+    expect(checkMemberLabelCollision(t)).toEqual([]);
+  });
+
+  test("name-only collision (both no label, both no emoji) → YELLOW row", () => {
+    // Edge case: two members with the same name (which the schema
+    // wouldn't normally allow, but the probe is defensive). The
+    // display falls back to name; tuple key collides.
+    const t = team([{ name: "x" }, { name: "x" }]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-label-collision:x");
+  });
+
+  test("three-way collision surfaces all IDs in one row", () => {
+    const t = team([
+      { name: "a", emoji: "🛠️", label: "Worker" },
+      { name: "b", emoji: "🛠️", label: "Worker" },
+      { name: "c", emoji: "🛠️", label: "Worker" },
+    ]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("3 members share");
+    expect(rows[0]?.detail).toMatch(/a.*b.*c/);
+  });
+
+  test("mixed: one collision pair + one unique → one YELLOW row only", () => {
+    const t = team([
+      { name: "a", emoji: "🛠️", label: "Worker" },
+      { name: "b", emoji: "🛠️", label: "Worker" },
+      { name: "unique", emoji: "🦊" },
+    ]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-label-collision:Worker");
+  });
+
+  test("label-vs-name collision: one with label, other with matching name", () => {
+    // Member A has label "shipper"; member B has name "shipper" (no
+    // label). Both render display "🛠️-shipper" → collision.
+    const t = team([
+      { name: "a", emoji: "🛠️", label: "shipper" },
+      { name: "shipper", emoji: "🛠️" },
+    ]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("a");
+    expect(rows[0]?.detail).toContain("shipper");
   });
 });

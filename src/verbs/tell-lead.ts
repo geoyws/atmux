@@ -150,7 +150,7 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   // 2026-05-13 failures.
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
-  const target = `${sessionName}:${buildWindowName(lead.name, lead.emoji)}`;
+  const target = `${sessionName}:${buildWindowName(lead.name, lead.emoji, lead.label)}`;
   // Bash heads-up (lib/tell.sh:43): "📬 driver-inbox has a new ask: <msg≤80>…"
   const headsUp = buildHeadsUp(parsed.msg);
   if (!shouldEmit) {

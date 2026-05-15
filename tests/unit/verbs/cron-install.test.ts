@@ -11,11 +11,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
-import { UsageError } from "../../../src/errors.ts";
+import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
-  cronInstall,
+  CRON_INSTALL_TEMPLATES,
   type CronInstallOpts,
+  cronInstall,
   parseCronInstallArgs,
+  parseIntervalToMins,
 } from "../../../src/verbs/cron-install.ts";
 
 // ---------- parseCronInstallArgs ----------
@@ -56,6 +58,98 @@ describe("parseCronInstallArgs", () => {
   });
 });
 
+// ---------- ADR-088 W7 (t-2f12839e) — --template + --interval ----------
+
+describe("parseCronInstallArgs — --template / --interval", () => {
+  test("--template merge-cycle captured", () => {
+    const a = parseCronInstallArgs(["--template", "merge-cycle"]);
+    expect(a.template).toBe("merge-cycle");
+  });
+
+  test("--template with unknown value → UsageError", () => {
+    expect(() => parseCronInstallArgs(["--template", "bogus"])).toThrow(UsageError);
+  });
+
+  test("--template without value → UsageError", () => {
+    expect(() => parseCronInstallArgs(["--template"])).toThrow(UsageError);
+  });
+
+  test("--interval 15m + --template merge-cycle captured (15 minutes)", () => {
+    const a = parseCronInstallArgs(["--template", "merge-cycle", "--interval", "15m"]);
+    expect(a.intervalMins).toBe(15);
+  });
+
+  test("--interval 1h → 60 minutes", () => {
+    const a = parseCronInstallArgs(["--template", "merge-cycle", "--interval", "1h"]);
+    expect(a.intervalMins).toBe(60);
+  });
+
+  test("--interval 5m → 5 minutes", () => {
+    const a = parseCronInstallArgs(["--template", "merge-cycle", "--interval", "5m"]);
+    expect(a.intervalMins).toBe(5);
+  });
+
+  test("--interval without --template merge-cycle → UsageError", () => {
+    expect(() => parseCronInstallArgs(["--interval", "15m"])).toThrow(UsageError);
+  });
+
+  test("--interval missing value → UsageError", () => {
+    expect(() => parseCronInstallArgs(["--template", "merge-cycle", "--interval"])).toThrow(
+      UsageError,
+    );
+  });
+
+  test("--interval with no unit → UsageError", () => {
+    expect(() => parseCronInstallArgs(["--template", "merge-cycle", "--interval", "15"])).toThrow(
+      UsageError,
+    );
+  });
+
+  test("--interval 0m / negative / non-numeric → UsageError", () => {
+    expect(() => parseCronInstallArgs(["--template", "merge-cycle", "--interval", "0m"])).toThrow(
+      UsageError,
+    );
+    expect(() => parseCronInstallArgs(["--template", "merge-cycle", "--interval", "-5m"])).toThrow(
+      UsageError,
+    );
+    expect(() => parseCronInstallArgs(["--template", "merge-cycle", "--interval", "abcm"])).toThrow(
+      UsageError,
+    );
+  });
+
+  test("CRON_INSTALL_TEMPLATES allowlist exports only 'merge-cycle' for now", () => {
+    expect(CRON_INSTALL_TEMPLATES).toEqual(["merge-cycle"]);
+  });
+});
+
+describe("parseIntervalToMins", () => {
+  test("Nm shape parses minutes verbatim", () => {
+    expect(parseIntervalToMins("15m")).toBe(15);
+    expect(parseIntervalToMins("1m")).toBe(1);
+    expect(parseIntervalToMins("60m")).toBe(60);
+  });
+
+  test("Nh shape multiplies into minutes", () => {
+    expect(parseIntervalToMins("1h")).toBe(60);
+    expect(parseIntervalToMins("2h")).toBe(120);
+  });
+
+  test("rejects bare numbers (no unit)", () => {
+    expect(() => parseIntervalToMins("15")).toThrow(UsageError);
+  });
+
+  test("rejects 0 / negative", () => {
+    expect(() => parseIntervalToMins("0m")).toThrow(UsageError);
+    expect(() => parseIntervalToMins("-1m")).toThrow(UsageError);
+    expect(() => parseIntervalToMins("0h")).toThrow(UsageError);
+  });
+
+  test("rejects garbage", () => {
+    expect(() => parseIntervalToMins("abcm")).toThrow(UsageError);
+    expect(() => parseIntervalToMins("xh")).toThrow(UsageError);
+  });
+});
+
 // ---------- cronInstall (verb) ----------
 
 interface CapturedIO {
@@ -93,10 +187,7 @@ describe("cronInstall — happy path", () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-cron-install-"));
     const atmuxDir = join(scratch, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
   });
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });
@@ -169,10 +260,7 @@ describe("cronInstall — non-fatal skip paths", () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-cron-install-skip-"));
     const atmuxDir = join(scratch, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
   });
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });
@@ -271,10 +359,7 @@ describe("cronInstall — strip-and-replace semantics", () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-cron-install-strip-"));
     const atmuxDir = join(scratch, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
   });
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });
@@ -319,6 +404,172 @@ describe("cronInstall — strip-and-replace semantics", () => {
     const body = captured.writes[0] ?? "";
     expect(body.includes("# >>> atmux:team=other")).toBe(true);
     expect(body.includes("# >>> atmux:team=demo")).toBe(true);
+  });
+});
+
+// ---------- ADR-088 W7 (t-2f12839e) — merge-cycle template integration ----------
+
+describe("cronInstall — --template merge-cycle integration", () => {
+  let scratch: string;
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "atmux-cron-tmpl-"));
+    const atmuxDir = join(scratch, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  async function seedTeam(merger?: Record<string, unknown>): Promise<void> {
+    const cfg: Record<string, unknown> = { name: "demo", members: [] };
+    if (merger !== undefined) cfg.merger = merger;
+    await writeFile(join(scratch, ".atmux", "team.json"), JSON.stringify(cfg));
+  }
+
+  test("--template merge-cycle + merger.enabled=true → block includes merge-cycle line", async () => {
+    await seedTeam({ enabled: true });
+    const { io, captured } = makeFakeCrontab(null);
+    const opts: CronInstallOpts = {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    };
+    const rc = await cronInstall(["--template", "merge-cycle", "--team-dir", scratch], opts);
+    expect(rc).toBe(0);
+    const body = captured.writes[0] ?? "";
+    // Default cadence is 15 minutes → `*/15`
+    expect(body).toMatch(/\*\/15 \* \* \* \* .*atmux merge-cycle --push >> .*\/merge-cycle\.log/);
+  });
+
+  test("--template merge-cycle + merger.enabled=false → ConfigError (helpful)", async () => {
+    await seedTeam({ enabled: false });
+    const { io } = makeFakeCrontab(null);
+    await expect(
+      cronInstall(["--template", "merge-cycle", "--team-dir", scratch], {
+        crontab: io,
+        resolveBin: () => "/usr/local/bin/atmux",
+        env: {},
+        stderr: () => {},
+        stdout: () => {},
+      }),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("--template merge-cycle + no merger config at all → ConfigError", async () => {
+    await seedTeam(); // no merger field
+    const { io } = makeFakeCrontab(null);
+    await expect(
+      cronInstall(["--template", "merge-cycle", "--team-dir", scratch], {
+        crontab: io,
+        resolveBin: () => "/usr/local/bin/atmux",
+        env: {},
+        stderr: () => {},
+        stdout: () => {},
+      }),
+    ).rejects.toThrow(/requires team\.merger\.enabled = true/);
+  });
+
+  test("--interval 5m overrides default 15min cadence in the rendered line", async () => {
+    await seedTeam({ enabled: true });
+    const { io, captured } = makeFakeCrontab(null);
+    const rc = await cronInstall(
+      ["--template", "merge-cycle", "--interval", "5m", "--team-dir", scratch],
+      {
+        crontab: io,
+        resolveBin: () => "/usr/local/bin/atmux",
+        env: {},
+        stderr: () => {},
+        stdout: () => {},
+      },
+    );
+    expect(rc).toBe(0);
+    const body = captured.writes[0] ?? "";
+    expect(body).toMatch(/\*\/5 \* \* \* \* .*atmux merge-cycle --push/);
+  });
+
+  test("--interval 1h overrides cadence to hourly", async () => {
+    await seedTeam({ enabled: true });
+    const { io, captured } = makeFakeCrontab(null);
+    await cronInstall(["--template", "merge-cycle", "--interval", "1h", "--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    const body = captured.writes[0] ?? "";
+    // 60min == hourly, rendered as "0 * * * *"
+    expect(body).toMatch(/0 \* \* \* \* .*atmux merge-cycle --push/);
+  });
+
+  test("team.merger.cycleIntervalMins=30 honored when --interval omitted", async () => {
+    await seedTeam({ enabled: true, cycleIntervalMins: 30 });
+    const { io, captured } = makeFakeCrontab(null);
+    await cronInstall(["--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    const body = captured.writes[0] ?? "";
+    expect(body).toMatch(/\*\/30 \* \* \* \* .*atmux merge-cycle --push/);
+  });
+
+  test("bare cron-install (no --template) on merger.enabled=true team STILL emits merge-cycle line", async () => {
+    // The merge-cycle line is gated on team.merger.enabled, NOT on the
+    // --template flag. The flag is the operator-facing "I want this
+    // template" assertion; the schema config is what actually drives
+    // the rendered line.
+    await seedTeam({ enabled: true });
+    const { io, captured } = makeFakeCrontab(null);
+    await cronInstall(["--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    const body = captured.writes[0] ?? "";
+    expect(body).toMatch(/atmux merge-cycle --push/);
+  });
+
+  test("merger.enabled=false → block does NOT include merge-cycle line", async () => {
+    await seedTeam({ enabled: false });
+    const { io, captured } = makeFakeCrontab(null);
+    await cronInstall(["--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    const body = captured.writes[0] ?? "";
+    expect(body).not.toContain("atmux merge-cycle");
+  });
+
+  test("idempotent re-install with --template merge-cycle → second write byte-identical", async () => {
+    await seedTeam({ enabled: true });
+    const { io: io1, captured: cap1 } = makeFakeCrontab(null);
+    await cronInstall(["--template", "merge-cycle", "--team-dir", scratch], {
+      crontab: io1,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    const firstBody = cap1.writes[0] ?? "";
+    const { io: io2, captured: cap2 } = makeFakeCrontab(firstBody);
+    await cronInstall(["--template", "merge-cycle", "--team-dir", scratch], {
+      crontab: io2,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    expect(cap2.writes[0]).toBe(firstBody);
   });
 });
 

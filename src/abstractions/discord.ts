@@ -147,7 +147,15 @@ export type DiscordTemplate =
   // `<atmuxDir>/state/member-forcepush-dedup-state.json` (per-team:
   // per-branch, 30min dedup window — operator may see the same
   // member's force-push twice in 30min only if there's a second one).
-  | "member-forcepush-warning";
+  | "member-forcepush-warning"
+  // ADR-138 T3: send-keys-failure post-hoc surface. Fired when the
+  // `checkSendKeysFailureRecent` doctor probe finds entries in the
+  // last hour of `~/.atmux/state/send-keys-failures.log` (written by
+  // `safeSendKeysWithVerify`'s escalation path). Renderer below
+  // (`renderSendKeysFailureWarning`); dedup state TBD — wire-in is
+  // deferred to a follow-up Task per the ADR-137 precedent (probe +
+  // template ship in this commit; surfacer wires later).
+  | "send-keys-failure";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1497,6 +1505,73 @@ export function renderMemberForcePushWarning(
   bullets.push("🛠️ fix: use `git merge origin/<base>` for trunk integration (ADR-137 §D1)");
   const out: DiscordSendOpts = {
     template: "member-forcepush-warning",
+    team: opts.team,
+    category: "📋",
+    verdict,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-138 T3 — renderSendKeysFailureWarning ----------
+
+export interface SendKeysFailureWarningOpts {
+  team: string;
+  /** Number of failures observed within the doctor probe's window
+   *  (default 1h). Mirrors the `recentCount` returned in the YELLOW
+   *  row's `detail`. */
+  failureCount: number;
+  /** tmux target string of the most-recent failure (`session:window`
+   *  or pane id). Surfaced as a footer-style bullet so the operator
+   *  knows which member to investigate first. Empty string when the
+   *  log was malformed at the `target=` field — bullet is then
+   *  omitted. */
+  mostRecentTarget?: string;
+  /** Minutes since the most-recent failure entry. Rendered when set;
+   *  surfaces freshness so the operator can tell whether this is an
+   *  active stall vs lingering tail of a now-recovered burst. */
+  mostRecentAgeMin?: number;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[send-keys-failure]` Discord send opts per ADR-138 T1's
+ * template format. Warn-class (🟡 Cool) — the calling verb has already
+ * decided "this send-keys didn't verify"; the Discord ping is the
+ * post-hoc surface so the team-lead / driver sees that send-keys is
+ * unreliable on at least one member pane.
+ *
+ * Composition:
+ *   - Verdict: `🟡 **Cool** — N send-keys failure(s) in last hour`
+ *   - Bullet (target): `🟡 last: <target> (Nmin ago)` — omitted when
+ *     `mostRecentTarget` is empty
+ *   - Fix bullet: `🛠️ fix: check ADR-138 escalation log at
+ *     ~/.atmux/state/send-keys-failures.log`
+ *
+ * Companion to the `checkSendKeysFailureRecent` doctor probe in
+ * `src/verbs/doctor.ts` — same Yellow / same window / same root
+ * artifact (the escalation log written by `safeSendKeysWithVerify`'s
+ * escalation path).
+ */
+export function renderSendKeysFailureWarning(
+  opts: SendKeysFailureWarningOpts,
+): DiscordSendOpts {
+  const n = opts.failureCount;
+  const verdict = `🟡 **Cool** — ${n} send-keys failure${n === 1 ? "" : "s"} within the last hour`;
+  const bullets: string[] = [];
+  if (typeof opts.mostRecentTarget === "string" && opts.mostRecentTarget.length > 0) {
+    const ageSuffix =
+      typeof opts.mostRecentAgeMin === "number" && opts.mostRecentAgeMin >= 0
+        ? ` (${opts.mostRecentAgeMin}min ago)`
+        : "";
+    bullets.push(`🟡 last: ${opts.mostRecentTarget}${ageSuffix}`);
+  }
+  bullets.push(
+    "🛠️ fix: check ADR-138 escalation log at `~/.atmux/state/send-keys-failures.log`",
+  );
+  const out: DiscordSendOpts = {
+    template: "send-keys-failure",
     team: opts.team,
     category: "📋",
     verdict,
