@@ -70,6 +70,7 @@ import { ombudsman } from "./verbs/ombudsman.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
+import { refusalScan } from "./verbs/refusal-scan.ts";
 import { outbox, reply } from "./verbs/reply.ts";
 import { report } from "./verbs/report.ts";
 import { rotate, rotateLead } from "./verbs/rotate.ts";
@@ -235,6 +236,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return laneStallTick(argv.slice(1));
     case "lane-drift-check":
       return laneDriftCheck(argv.slice(1));
+    case "refusal-scan":
+      return refusalScan(argv.slice(1));
     case "merge-cycle":
       return mergeCycle(argv.slice(1));
     case "merge-member":

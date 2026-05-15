@@ -281,4 +281,55 @@ export const migrations: readonly Migration[] = [
       );
     },
   },
+  // ---------- v6 → v7 ----------
+  // ADR-139 §D2 / T3 (t-841049e4): refusal-event ledger for the
+  // refusal-pattern auto-rotate path. Medic (hourly, ADR-077 / ADR-133)
+  // and martinet (per-tick, ADR-132) scan each member-pane via
+  // `classifyRefusal` from `src/core/refusal-classifier.ts` (T2); positive
+  // results record here. T3 ships only the SCAN + RECORD path; T4 reads
+  // these rows through `refusal-threshold.ts::shouldRotate` and fires
+  // `atmux rotate-member` when threshold crossed.
+  //
+  // Idempotency: `UNIQUE(member, minute_bucket, severity)` collapses
+  // repeat detections within the same minute to a single row. Re-scans
+  // across ticks within the same minute are no-ops via `INSERT OR IGNORE`
+  // at the call site. `minute_bucket = floor(detected_at / 60)` —
+  // computed by the caller (a generated column would couple this
+  // migration to bun-sqlite's STRICT-mode generated-column support; the
+  // explicit column is more portable).
+  //
+  // `phrases` is a JSON array of `{ phrase, class }` mirroring the
+  // `RefusalDetectionResult.phrases` shape from ADR-139 T2. `severity`
+  // is the highest-precedence class observed ('soft' / 'hard' / 'role' /
+  // 'meta'); the bare 'none' value never lands here (caller only writes
+  // on `detected === true`).
+  //
+  // Indexes:
+  //   - `(member, detected_at DESC)` — threshold-window lookup hot path
+  //     (T4 `shouldRotate(recentEvents, …)` reads last N events per
+  //     member).
+  //   - `severity` — cross-member audit + Discord aggregator (T4).
+  {
+    from: 6,
+    to: 7,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE refusal_events (
+					id TEXT PRIMARY KEY NOT NULL,
+					member TEXT NOT NULL,
+					team TEXT NOT NULL,
+					phrases TEXT NOT NULL CHECK(json_valid(phrases)),
+					severity TEXT NOT NULL,
+					confidence REAL NOT NULL,
+					detected_at INTEGER NOT NULL,
+					minute_bucket INTEGER NOT NULL,
+					UNIQUE(member, minute_bucket, severity)
+				) STRICT;
+			`);
+      db.exec(
+        "CREATE INDEX idx_refusal_events_member_detected ON refusal_events(member, detected_at DESC)",
+      );
+      db.exec("CREATE INDEX idx_refusal_events_severity ON refusal_events(severity)");
+    },
+  },
 ];
