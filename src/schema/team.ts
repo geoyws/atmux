@@ -514,9 +514,24 @@ export const TeamMerger = z
      *  than this AND zero merge-back fires the probe. Default `24`
      *  (one-day fan-in cadence target). */
     stalenessHours: z.number().int().min(1).default(24),
+    /** ADR-088 §Decision-5 / W7 (t-2f12839e) — cron cadence for the
+     *  `atmux merge-cycle` line (added to the team's standard cron
+     *  block only when `enabled === true`). Default `15` (minutes);
+     *  must be one of cron's divisor-of-60 set (1, 2, 3, 4, 5, 6, 10,
+     *  12, 15, 20, 30, 60). The `cronEvery` renderer fail-fasts on
+     *  non-divisors, but specifying directly here keeps the operator's
+     *  intent visible in team.json. `atmux cron-install --template
+     *  merge-cycle --interval <N>` accepts a transient override that
+     *  applies for the install without rewriting this field. */
+    cycleIntervalMins: z.number().int().positive().optional(),
   })
   .strict();
 export type TeamMerger = z.infer<typeof TeamMerger>;
+
+/** ADR-088 §Decision-5 / W7 default — used by `cron.ts::renderCronLines`
+ *  + `cron-install` verb when `team.merger.cycleIntervalMins` is unset.
+ *  Matches the 15-min default the ADR specifies. */
+export const DEFAULT_MERGER_CYCLE_INTERVAL_MINS = 15;
 
 export const TeamObservability = z
   .object({
@@ -582,6 +597,46 @@ export const DEFAULT_MARTINET_ESCALATION_CONFIDENCE = 0.7;
  *  shipping impls. ClaudeMartinet matches the legacy 270s whip
  *  cadence; CursorMartinet matches it for parity. */
 export const DEFAULT_MARTINET_CADENCE_SEC = 270;
+
+/**
+ * `team.json::ombudsman` sub-config — ADR-147 §D1 + §D2. Per-team
+ * complaint adjudicator role. Sentinel + cron wake; opt-in (default
+ * disabled). The cron tick line is gated on BOTH
+ * `team.ombudsman.enabled === true` AND `team.members[]` containing
+ * an entry with `role: "ombudsman"` — absent either, the line is
+ * suppressed (matches the `unblocker` precedent of gating cron output
+ * on member-roster presence).
+ *
+ * `.strict()` consistent with sibling sub-blocks (whip / fallback /
+ * merger) — drift detection requires unknown-key rejection (ADR-054 §D3).
+ */
+export const TeamOmbudsman = z
+  .object({
+    /** Master switch. Default `false` — existing teams keep current
+     *  manual-adjudicate-via-operator behavior. Setting `true` AND
+     *  including a `role: "ombudsman"` member activates the cron tick
+     *  + sentinel-driven wake. */
+    enabled: z.boolean().default(false),
+    /** Cron interval in minutes for `atmux ombudsman tick`. Default
+     *  resolved at read-time via {@link DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS}
+     *  (15 per ADR-147 §D2). Must ultimately be a divisor of 60 for
+     *  the `cronEvery` renderer (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30,
+     *  60); the renderer fail-fasts on non-divisors at install time.
+     *  Schema enforces positive-integer shape only (matches
+     *  TeamUnblocker / TeamReport precedent). */
+    tickIntervalMins: z.number().int().positive().optional(),
+  })
+  .strict();
+export type TeamOmbudsman = z.infer<typeof TeamOmbudsman>;
+
+/** ADR-147 §D2 default — used by `cron.ts::renderCronLines` + the
+ *  `atmux ombudsman tick` code path when
+ *  `team.ombudsman.tickIntervalMins` is unset. Co-located with the
+ *  schema so non-Zod call sites (cron renderer, tick verb) share the
+ *  same constant — mirrors the
+ *  {@link DEFAULT_MERGER_STALENESS_HOURS} / {@link DEFAULT_MARTINET_CADENCE_SEC}
+ *  precedent. */
+export const DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS = 15;
 
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
  *  All fields optional; defaults applied at the call-site per ADR-142
@@ -692,6 +747,11 @@ export const Team = z
     /** ADR-142: modal-cycling detector tunables. Defaults applied per
      *  ADR-142 §Configuration when the block is absent. */
     modalCycling: TeamModalCycling.optional(),
+    /** ADR-147 §D1/§D2: per-team complaint adjudicator config. Opt-in
+     *  via `ombudsman.enabled: true` AND a roster member with
+     *  `role: "ombudsman"`. Effective tick interval resolved at
+     *  read-time via {@link DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS}. */
+    ombudsman: TeamOmbudsman.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. Setting `0` collapses the grace to a single tick but

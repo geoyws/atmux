@@ -240,57 +240,44 @@ export const migrations: readonly Migration[] = [
     },
   },
   // ---------- v5 → v6 ----------
-  // ADR-134 §state-machine / T2 (t-b5f12ab1): branch-merge state
-  // ledger. One row per `(team, branch_key)` where `branch_key`
-  // is `<base>-<member>` (e.g. `geoyws-whip-impl`). All transitions
-  // route through `merger-state-repo::transition` which wraps a
-  // BEGIN IMMEDIATE transaction (reviewer pre-flag #1 per ADR-091
-  // audit) — concurrent dispatcher + cron-backstop fires serialize
-  // at the SQLite writer-lock level.
+  // ADR-134 §state-machine / t-6a959e02: per-member-branch merge state.
+  // One row per `<base>-<member>` branch under the team's gitter loop;
+  // primary key is the branch name itself (operator-visible, unique
+  // within the team's state.db scope). State literals match the 10-state
+  // BranchMergeState union from `src/core/branch-merge-state.ts`; permissive
+  // TEXT typing (no CHECK constraint) matches the bash-era posture used by
+  // the rest of this ladder and lets a future state-set extension land
+  // without an ALTER TABLE.
   //
-  // `state` mirrors the ten-state union in `branch-merge-state.ts`
-  // (open / in_progress / ready_to_merge / rebasing / merging /
-  // tested / merged / conflict / test_failed / reverted); kept as
-  // TEXT (not INTEGER) so SQLite-cli inspection reads naturally +
-  // operator-edits don't need a literal-index lookup. CHECK
-  // constraint pins the closed set; the Zod schema is the
-  // application-layer mirror.
+  // The `note` column carries the human-readable transition reason
+  // (PreMergeGateDecision.reason, conflict SHA, etc.) so operators
+  // inspecting state.db can answer "why is this branch stuck" without
+  // grepping logs. `transitioned_by` records the caller identity
+  // ('event' / 'cron' / 'operator' / <member-name>) for cross-trigger
+  // audit (ADR-134 §triggers — event-driven primary vs cron backstop).
   //
-  // `note` carries the operator-facing reason string (`from
-  // shouldTransitionFromInProgress.reason` or conflict SHA per
-  // ADR-134 §Conflict surface §1 "durable signal must precede
-  // fire-and-forget"). `updated_at` is set on every transition
-  // (event-driven dispatcher OR cron backstop), used by
-  // `merger-state-repo::loadAll` ordering + the auditor's
-  // staleness probe.
+  // Indexes:
+  //   - `state` — cron sweep's "list all not-terminal" hot path.
+  //   - `transitioned_at DESC` — recent-activity probes (doctor, audit).
   {
     from: 5,
     to: 6,
     up: (db) => {
       db.exec(`
-					CREATE TABLE merger_state (
-						team TEXT NOT NULL,
-						branch_key TEXT NOT NULL,
-						state TEXT NOT NULL CHECK(state IN (
-							'open','in_progress','ready_to_merge','rebasing',
-							'merging','tested','merged','conflict','test_failed','reverted'
-						)),
-						note TEXT,
-						updated_at INTEGER NOT NULL,
-						PRIMARY KEY (team, branch_key)
-					) STRICT;
-				`);
-      // Hot path: load by team, ordered by recency. Used by the
-      // ADR-134 dispatcher's per-tick sweep of in_progress /
-      // ready_to_merge rows.
+				CREATE TABLE merger_state (
+					member_branch TEXT PRIMARY KEY NOT NULL,
+					state TEXT NOT NULL,
+					note TEXT,
+					transitioned_at INTEGER NOT NULL,
+					transitioned_by TEXT,
+					base_sha TEXT,
+					conflict_sha TEXT,
+					extra TEXT
+				) STRICT;
+			`);
+      db.exec("CREATE INDEX idx_merger_state_state ON merger_state(state)");
       db.exec(
-        "CREATE INDEX idx_merger_state_team_updated ON merger_state(team, updated_at DESC)",
-      );
-      // Open-work index: dispatchers filter to non-terminal rows
-      // every tick; partial-index keeps it small (terminal rows
-      // stay forever for audit).
-      db.exec(
-        "CREATE INDEX idx_merger_state_open ON merger_state(team, state) WHERE state NOT IN ('merged','conflict','reverted')",
+        "CREATE INDEX idx_merger_state_transitioned ON merger_state(transitioned_at DESC)",
       );
     },
   },

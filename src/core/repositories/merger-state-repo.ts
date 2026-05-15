@@ -1,197 +1,226 @@
-// ADR-134 §state-machine: branch-merge state repository.
+// ADR-134 §state-machine / t-6a959e02: merger state repository.
 //
-// Reads / writes the v5→v6 `merger_state` table (one row per
-// `(team, branch_key)`). The primary contract is `transition()`:
-// it advances a branch from a known `fromState` to a new `toState`
-// inside a `BEGIN IMMEDIATE` SQLite transaction per ADR-091 audit
-// pre-flag #1. Concurrent event-driven dispatcher + cron-backstop
-// fires that race the same row both reach the writer lock; the
-// later one observes the post-transition state via its `fromState`
-// guard and short-circuits (returns `applied: false`) instead of
-// double-applying the transition.
+// Wraps the `merger_state` table (migration v5→v6 in
+// `src/abstractions/sqlite-migrations.ts`). One row per
+// `<base>-<member>` branch tracked by the team's gitter loop;
+// PRIMARY KEY is the branch name itself (operator-visible, unique
+// within the team's state.db scope per ADR-134 §state-machine).
 //
-// `BEGIN IMMEDIATE` vs default `BEGIN DEFERRED`: deferred upgrades
-// the read-locked transaction on first write, allowing two
-// concurrent writers to think they own the row until SQLITE_BUSY
-// surfaces at write time. IMMEDIATE acquires the writer lock at
-// `BEGIN` — only one transaction enters; the other waits or
-// retries. Matches the audit invariant in the ADR-091 reviewer
-// pre-flag.
+// Caller surface — `src/core/intra-team-merge.ts` (ADR-134 T2,
+// in-flight on whip-impl) consumes:
 //
-// Reads use a plain prepared SELECT (no transaction wrap); the
-// dispatcher's per-tick sweep is `loadAll(team)` ordered by
-// `updated_at DESC` which uses the `idx_merger_state_team_updated`
-// covering index.
+//   1. `getState(memberBranch)` — read current state + note before
+//      computing the next transition.
+//   2. `transition({ memberBranch, next, note?, by?, baseSha?,
+//      conflictSha? })` — atomic write of a state transition wrapped
+//      in BEGIN IMMEDIATE (per the ADR-091 reviewer pre-flag audit §3
+//      + ADR-134 §state-machine race-protection guarantee). Insert on
+//      first transition for a new branch; update on subsequent ones.
+//   3. `listByState(state)` — cron sweep input. Hits the v6 index
+//      `idx_merger_state_state`.
+//   4. `listAll()` — diagnostic / doctor sweep over every tracked
+//      branch.
+//
+// Zod validation runs at the function boundary: callers pass an
+// unvalidated `MergerStateTransition` and the repo parses it before
+// any SQL fires. This catches state-string typos (e.g. `merged ` with
+// trailing space) at the boundary rather than persisting them.
 
-import type { Database } from "bun:sqlite";
-import { type BranchMergeState, BRANCH_MERGE_STATES } from "../branch-merge-state.ts";
-import type { MergerStateRow } from "../../schema/merger-state.ts";
+import { z } from "zod";
+import {
+  type BranchMergeState,
+  BRANCH_MERGE_STATES,
+} from "../branch-merge-state.ts";
+import { type Database, transactImmediate } from "../../abstractions/sqlite.ts";
 
-// ---------- Row shape (SQL columns; raw bun:sqlite output) ----------
+/** Zod enum of every valid state literal. Mirrors
+ *  {@link BRANCH_MERGE_STATES}; the cast asserts the const tuple
+ *  shape Zod's `z.enum` requires. */
+const StateEnum = z.enum(
+  BRANCH_MERGE_STATES as unknown as readonly [string, ...string[]],
+);
 
-interface DbRow {
-  team: string;
-  branch_key: string;
-  state: string;
+/** Caller identity for `transitioned_by`. Permissive — accepts the
+ *  three canonical triggers plus an arbitrary string (typically a
+ *  member name for operator-driven manual transitions). */
+const TransitionByEnum = z.union([
+  z.literal("event"),
+  z.literal("cron"),
+  z.literal("operator"),
+  z.string().min(1),
+]);
+
+/** Input to {@link MergerStateRepo.transition}. Validated at the
+ *  function boundary so callers can pass loosely-typed data and trust
+ *  the repo to surface a `ZodError` with the offending field path
+ *  before any SQL fires. */
+export const MergerStateTransition = z.object({
+  /** The `<base>-<member>` branch name. Primary key in the
+   *  `merger_state` table — `geoyws-fe-1`, `geoyws-up-impl`, etc. */
+  memberBranch: z.string().min(1),
+  /** Next state. Must be one of {@link BRANCH_MERGE_STATES}. */
+  next: StateEnum,
+  /** Operator-facing reason for the transition. Lands in
+   *  `merger_state.note`. Optional — terminal-state transitions
+   *  typically carry an explanation (`"conflict at <SHA>"`,
+   *  `"test suite failed"`); cron-tick self-loops at `in_progress`
+   *  may set this to `null` or a stale reason. */
+  note: z.string().nullable().optional(),
+  /** Caller identity. `event` for the socket-pubsub fast path;
+   *  `cron` for the backstop sweep; `operator` for manual `atmux`
+   *  resets from a terminal state; any other string for member-driven
+   *  transitions. */
+  by: TransitionByEnum.optional(),
+  /** Optional commit SHA at the time of the transition. Useful for
+   *  `merging`/`tested`/`merged` — records the merge target SHA. */
+  baseSha: z.string().nullable().optional(),
+  /** Optional conflict SHA. Set on `conflict` transitions (the SHA
+   *  where the merge failed) so the operator-facing flag can surface
+   *  the location without re-running `git`. */
+  conflictSha: z.string().nullable().optional(),
+  /** Epoch seconds for the transition timestamp. Caller-provided so
+   *  tests can pin time; production callers pass `Math.floor(Date.now()
+   *  / 1000)`. */
+  transitionedAt: z.number().int(),
+});
+export type MergerStateTransition = z.infer<typeof MergerStateTransition>;
+
+/** Persisted shape of one merger_state row — repo-ergonomic field
+ *  names (camelCase) over the SQL column names (snake_case). State
+ *  strings are passed through unchanged from SQL; the
+ *  {@link BranchMergeState} type tightens the static typing at the
+ *  TypeScript boundary. */
+export interface MergerStateRow {
+  memberBranch: string;
+  state: BranchMergeState;
   note: string | null;
-  updated_at: number;
+  transitionedAt: number;
+  transitionedBy: string | null;
+  baseSha: string | null;
+  conflictSha: string | null;
 }
 
-const STATE_SET: ReadonlySet<string> = new Set(BRANCH_MERGE_STATES);
+interface MergerStateRawRow {
+  member_branch: string;
+  state: string;
+  note: string | null;
+  transitioned_at: number;
+  transitioned_by: string | null;
+  base_sha: string | null;
+  conflict_sha: string | null;
+}
 
-function rowFromDb(row: DbRow): MergerStateRow {
-  if (!STATE_SET.has(row.state)) {
-    // The CHECK constraint at the table level guarantees this in
-    // production; defensive throw guards against migrations that
-    // race the read or hand-edited rows.
-    throw new Error(`merger_state: invalid state literal '${row.state}'`);
-  }
+function rowFromRaw(raw: MergerStateRawRow): MergerStateRow {
   return {
-    team: row.team,
-    branchKey: row.branch_key,
-    state: row.state as BranchMergeState,
-    note: row.note,
-    updatedAt: row.updated_at,
+    memberBranch: raw.member_branch,
+    state: raw.state as BranchMergeState,
+    note: raw.note,
+    transitionedAt: raw.transitioned_at,
+    transitionedBy: raw.transitioned_by,
+    baseSha: raw.base_sha,
+    conflictSha: raw.conflict_sha,
   };
 }
 
-// ---------- Input shapes ----------
-
-/** Inputs to {@link MergerStateRepo.upsertOpen} — used by the
- *  dispatcher's "task done event arrived; seed an `open` row if
- *  none exists for this branch" path. Idempotent: existing rows
- *  for the same key short-circuit. */
-export interface UpsertOpenInput {
-  team: string;
-  branchKey: string;
-  now: number;
-}
-
-/** Inputs to {@link MergerStateRepo.transition} — explicit `from →
- *  to` shape required by the audit invariant (the guard checks the
- *  row's current state against `fromState` before applying `toState`;
- *  a mismatch surfaces as `applied: false` so the caller can decide
- *  to retry or accept the post-write state). */
-export interface TransitionInput {
-  team: string;
-  branchKey: string;
-  fromState: BranchMergeState;
-  toState: BranchMergeState;
-  note: string | null;
-  now: number;
-}
-
-export interface TransitionResult {
-  /** True when the transition was applied (row.state was `fromState`
-   *  on entry; now `toState`). False when the row was missing OR its
-   *  current state didn't match `fromState` (e.g. another writer
-   *  already advanced it). */
-  applied: boolean;
-  /** The row state on entry. `null` when no row existed. Used by the
-   *  caller's no-op log line. */
-  observedFrom: BranchMergeState | null;
-}
-
-// ---------- Repository ----------
-
 export class MergerStateRepo {
-  constructor(private readonly db: Database) {}
+  constructor(private db: Database) {}
 
-  /** Load a single row by `(team, branchKey)`. Returns `null` when
-   *  absent — the dispatcher's `task done` event seeds via
-   *  {@link upsertOpen} on null. */
-  load(team: string, branchKey: string): MergerStateRow | null {
-    const row = this.db
-      .prepare("SELECT team, branch_key, state, note, updated_at FROM merger_state WHERE team = ? AND branch_key = ?")
-      .get(team, branchKey) as DbRow | null;
-    return row === null ? null : rowFromDb(row);
-  }
-
-  /** Load every row for a team, ordered most-recently-touched first.
-   *  Used by the dispatcher's per-tick sweep + the auditor's
-   *  staleness probe. */
-  loadAll(team: string): MergerStateRow[] {
-    const rows = this.db
-      .prepare(
-        "SELECT team, branch_key, state, note, updated_at FROM merger_state WHERE team = ? ORDER BY updated_at DESC",
+  /** Read the current row for a member branch. Returns `null` when
+   *  the branch has never transitioned (callers treat null as
+   *  implicit `open` per ADR-134 §state-machine "initial state of
+   *  every per-member branch is `open`"). */
+  getState(memberBranch: string): MergerStateRow | null {
+    const raw = this.db
+      .query(
+        `SELECT * FROM merger_state
+         WHERE member_branch = $member_branch`,
       )
-      .all(team) as DbRow[];
-    return rows.map(rowFromDb);
+      .get({ $member_branch: memberBranch }) as MergerStateRawRow | null;
+    return raw === null ? null : rowFromRaw(raw);
   }
 
-  /** Load only non-terminal rows for a team. Backed by the partial
-   *  index `idx_merger_state_open`; cheap per-tick read. */
-  loadOpen(team: string): MergerStateRow[] {
-    const rows = this.db
-      .prepare(
-        "SELECT team, branch_key, state, note, updated_at FROM merger_state WHERE team = ? AND state NOT IN ('merged','conflict','reverted') ORDER BY updated_at DESC",
-      )
-      .all(team) as DbRow[];
-    return rows.map(rowFromDb);
-  }
-
-  /** Idempotent insert: seed an `open` row when none exists. Used
-   *  by the dispatcher on the first task-done event for a branch.
-   *  Pure no-op when a row already exists — does NOT bump
-   *  `updated_at` (the existing state is the source of truth). */
-  upsertOpen(input: UpsertOpenInput): boolean {
-    const r = this.db
-      .prepare(
-        "INSERT INTO merger_state (team, branch_key, state, note, updated_at) VALUES (?, ?, 'open', NULL, ?) ON CONFLICT(team, branch_key) DO NOTHING",
-      )
-      .run(input.team, input.branchKey, input.now);
-    return r.changes > 0;
-  }
-
-  /** Apply a state transition under a `BEGIN IMMEDIATE` transaction
-   *  per ADR-091 audit pre-flag #1.
+  /** Apply a state transition atomically. BEGIN IMMEDIATE so
+   *  concurrent event-driven + cron-backstop firings on the same
+   *  branch serialize correctly. UPSERT semantics — first call for a
+   *  given `memberBranch` inserts; subsequent calls update.
    *
-   *  Guard: the row's current state MUST equal `fromState`; otherwise
-   *  the transition is a no-op (returns `{ applied: false }`). This
-   *  is the load-bearing concurrency property — two writers racing
-   *  the same row will both reach the writer lock; the second one
-   *  sees the post-transition state in its guarded read and
-   *  short-circuits without overwriting.
-   *
-   *  Caller MUST NOT wrap this in `transact()` — `BEGIN IMMEDIATE`
-   *  is incompatible with bun:sqlite's `db.transaction()` default-
-   *  deferred wrapper. */
-  transition(input: TransitionInput): TransitionResult {
-    // Manual `BEGIN IMMEDIATE` so we get the writer-lock invariant
-    // ADR-091 audit pre-flag #1 demands. bun:sqlite's
-    // `db.transaction()` uses `BEGIN DEFERRED` which would let two
-    // concurrent dispatchers race past their guarded reads before
-    // either has committed; IMMEDIATE serializes them at BEGIN time.
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const cur = this.db
-        .prepare("SELECT state FROM merger_state WHERE team = ? AND branch_key = ?")
-        .get(input.team, input.branchKey) as { state: string } | null;
-      if (cur === null) {
-        this.db.exec("ROLLBACK");
-        return { applied: false, observedFrom: null };
-      }
-      if (cur.state !== input.fromState) {
-        this.db.exec("ROLLBACK");
-        return { applied: false, observedFrom: cur.state as BranchMergeState };
-      }
+   *  Validation: input runs through {@link MergerStateTransition}
+   *  parsing before any SQL — invalid state literals / empty strings
+   *  surface as `ZodError` (with field path) at the call site rather
+   *  than persisting bad data. */
+  transition(input: MergerStateTransition): MergerStateRow {
+    const parsed = MergerStateTransition.parse(input);
+    return transactImmediate(this.db, () => {
       this.db
-        .prepare(
-          "UPDATE merger_state SET state = ?, note = ?, updated_at = ? WHERE team = ? AND branch_key = ?",
+        .query(
+          `INSERT INTO merger_state (
+            member_branch, state, note, transitioned_at, transitioned_by,
+            base_sha, conflict_sha
+          )
+          VALUES ($member_branch, $state, $note, $transitioned_at, $transitioned_by,
+                  $base_sha, $conflict_sha)
+          ON CONFLICT(member_branch) DO UPDATE SET
+            state = excluded.state,
+            note = excluded.note,
+            transitioned_at = excluded.transitioned_at,
+            transitioned_by = excluded.transitioned_by,
+            base_sha = excluded.base_sha,
+            conflict_sha = excluded.conflict_sha`,
         )
-        .run(input.toState, input.note, input.now, input.team, input.branchKey);
-      this.db.exec("COMMIT");
-      return { applied: true, observedFrom: input.fromState };
-    } catch (e) {
-      // ROLLBACK is safe on a failed BEGIN/UPDATE; the SQLite
-      // writer lock is released regardless of which step threw.
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-        // expected: ROLLBACK on an already-rolled-back transaction
-        // throws; we swallow because we're already in an error path.
-      }
-      throw e;
-    }
+        .run({
+          $member_branch: parsed.memberBranch,
+          $state: parsed.next,
+          $note: parsed.note ?? null,
+          $transitioned_at: parsed.transitionedAt,
+          $transitioned_by: parsed.by ?? null,
+          $base_sha: parsed.baseSha ?? null,
+          $conflict_sha: parsed.conflictSha ?? null,
+        });
+      // Read-back inside the same transaction so the returned row
+      // reflects exactly what landed (defensive — guards against the
+      // UPSERT returning the pre-update row on some SQLite versions).
+      const raw = this.db
+        .query(
+          `SELECT * FROM merger_state
+           WHERE member_branch = $member_branch`,
+        )
+        .get({ $member_branch: parsed.memberBranch }) as MergerStateRawRow;
+      return rowFromRaw(raw);
+    });
+  }
+
+  /** List every row currently in the given state. Cron-sweep entry
+   *  point — pairs with the v6 `idx_merger_state_state` index. */
+  listByState(state: BranchMergeState): MergerStateRow[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM merger_state
+         WHERE state = $state
+         ORDER BY transitioned_at ASC`,
+      )
+      .all({ $state: state }) as MergerStateRawRow[];
+    return rows.map(rowFromRaw);
+  }
+
+  /** List every tracked branch, most-recently-transitioned first.
+   *  Diagnostic surface for doctor / status verbs. */
+  listAll(): MergerStateRow[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM merger_state
+         ORDER BY transitioned_at DESC`,
+      )
+      .all() as MergerStateRawRow[];
+    return rows.map(rowFromRaw);
+  }
+
+  /** Delete a row by branch — used by `atmux stop --prune-branch`
+   *  (ADR-084 OQ-2 follow-up) when the operator removes a merged
+   *  member branch and the state-row should follow. No-op when the
+   *  row doesn't exist. */
+  deleteState(memberBranch: string): void {
+    this.db
+      .query("DELETE FROM merger_state WHERE member_branch = $member_branch")
+      .run({ $member_branch: memberBranch });
   }
 }

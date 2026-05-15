@@ -1,19 +1,18 @@
 // Unit tests for src/core/intra-team-merge.ts (ADR-134 §state-machine
-// / t-b5f12ab1).
+// / t-2aae8a4c port).
 //
 // Coverage focus: each branch of `performMerge` — the seeding path
-// (no row → upsertOpen → in_progress), the gate-driven advance from
-// in_progress, the merge-attempt path from ready_to_merge (no-op /
-// merged / conflict), terminal short-circuits, caller-driven
-// holding states (rebasing / merging / tested / test_failed), and
-// the concurrency-loss branch on each transition site.
+// (no row → in_progress, existing open → in_progress), the gate-
+// driven advance from in_progress, the merge-attempt path from
+// ready_to_merge (no-op / merged / conflict), terminal short-
+// circuits, caller-driven holding states (rebasing / merging /
+// tested / test_failed), the concurrency-loss TOCTOU edges, and the
+// trunk-API attribution surfaces (transitioned_by + base_sha).
 //
 // Strategy: real SQLite DB (fresh per test), real
 // branch-merge-state.ts state machine, mocked `mergeMember` via
-// the `git` GitSpawn injection (we route mergeMember through a
-// stub by overriding the abstraction's spawn rather than mocking
-// the module). Tests stay narrow + deterministic — no tmux, no
-// disk-level git ops.
+// the `git` GitSpawn injection. Tests stay narrow + deterministic
+// — no tmux, no disk-level git ops.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -79,7 +78,7 @@ function spawnFail(stdout: string, stderr: string, code: number): SpawnResult {
  *
  *    - 'success' → status-clean, branch-exists, 1-commit-ahead,
  *      fetch ok, checkout ok, merge ok, rev-parse returns
- *      `'newSha'`.
+ *      `'newMergedSha'`.
  *    - 'no-op' → same shape but 0 commits ahead (early return
  *      from mergeMember).
  *    - 'conflict' → merge step returns non-zero; status returns
@@ -88,33 +87,25 @@ function makeGitStub(behavior: "success" | "no-op" | "conflict"): GitSpawn {
   let mergeFired = false;
   let abortFired = false;
   return async (argv) => {
-    // status --porcelain (first call: empty = clean)
     if (argv.includes("status") && argv.includes("--porcelain")) {
-      if (abortFired) return spawnOk(""); // post-abort clean
+      if (abortFired) return spawnOk("");
       if (mergeFired && behavior === "conflict") {
-        // Conflict marker. mergeMember's extractConflictPaths
-        // looks for `UU `, `AA `, etc. at line start.
         return spawnOk("UU file1.ts\nUU file2.ts\n");
       }
       return spawnOk("");
     }
-    // rev-parse --verify refs/heads/<branch> — branch exists.
     if (argv.includes("rev-parse") && argv.includes("--verify")) {
       return spawnOk("aaa\n");
     }
-    // rev-list --count <base>..<branch> — commits ahead probe.
     if (argv.includes("rev-list") && argv.includes("--count")) {
       return spawnOk(behavior === "no-op" ? "0\n" : "1\n");
     }
-    // fetch — always ok in tests.
     if (argv.includes("fetch")) {
       return spawnOk("");
     }
-    // checkout — always ok.
     if (argv.includes("checkout")) {
       return spawnOk("");
     }
-    // merge --no-ff — conflict path returns non-zero.
     if (argv.includes("merge") && argv.includes("--no-ff")) {
       mergeFired = true;
       if (behavior === "conflict") {
@@ -122,12 +113,10 @@ function makeGitStub(behavior: "success" | "no-op" | "conflict"): GitSpawn {
       }
       return spawnOk("");
     }
-    // merge --abort — cleanup path.
     if (argv.includes("merge") && argv.includes("--abort")) {
       abortFired = true;
       return spawnOk("");
     }
-    // rev-parse HEAD — final SHA.
     if (argv.includes("rev-parse") && argv.includes("HEAD")) {
       return spawnOk("newMergedSha\n");
     }
@@ -149,14 +138,18 @@ function gate(over: Partial<PreMergeGateInput> = {}): PreMergeGateInput {
   };
 }
 
-function baseCtx(overrides: Partial<IntraTeamMergeContext> = {}): IntraTeamMergeContext {
+const MEMBER_BRANCH = "geoyws-whip-impl";
+
+function baseCtx(
+  overrides: Partial<IntraTeamMergeContext> = {},
+): IntraTeamMergeContext {
   return {
-    team: "t1",
-    branchKey: "geoyws-whip-impl",
+    memberBranch: MEMBER_BRANCH,
     base: "geoyws",
     repoPath: "/tmp/fake-repo",
     gate: gate(),
     repo,
+    by: "event",
     now: () => 1000,
     git: async () => spawnOk(""),
     fetch: false,
@@ -164,22 +157,34 @@ function baseCtx(overrides: Partial<IntraTeamMergeContext> = {}): IntraTeamMerge
   };
 }
 
+/** Seed a row at the requested state, skipping the state-machine
+ *  validation (tests need to inject mid-flight states directly). */
+function seedState(state: string, t = 100, note: string | null = null): void {
+  repo.transition({
+    memberBranch: MEMBER_BRANCH,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    next: state as any,
+    note,
+    by: "operator",
+    transitionedAt: t,
+  });
+}
+
 // ---------- Seeding path (no row + open) ----------
 
 describe("performMerge — seeding path", () => {
-  test("no row → upsertOpen + advance to in_progress (one tick)", async () => {
+  test("no row → advance to in_progress (implicit open)", async () => {
     const r = await performMerge(baseCtx());
     expect(r).toEqual({
       state: "in_progress",
       changed: true,
       reason: "owner started work — fan-in pending",
     });
-    const row = repo.load("t1", "geoyws-whip-impl");
-    expect(row?.state).toBe("in_progress");
+    expect(repo.getState(MEMBER_BRANCH)?.state).toBe("in_progress");
   });
 
   test("existing `open` row → transitions to in_progress", async () => {
-    repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 500 });
+    seedState("open", 500);
     const r = await performMerge(baseCtx());
     expect(r.state).toBe("in_progress");
     expect(r.changed).toBe(true);
@@ -190,15 +195,7 @@ describe("performMerge — seeding path", () => {
 
 describe("performMerge — in_progress branch (gate decisions)", () => {
   beforeEach(() => {
-    repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 100 });
-    repo.transition({
-      team: "t1",
-      branchKey: "geoyws-whip-impl",
-      fromState: "open",
-      toState: "in_progress",
-      note: "seed",
-      now: 200,
-    });
+    seedState("in_progress", 200, "seed");
   });
 
   test("owner has open tasks → stays in_progress, note refreshed", async () => {
@@ -206,9 +203,9 @@ describe("performMerge — in_progress branch (gate decisions)", () => {
       baseCtx({ gate: gate({ ownerOpenTaskCount: 3 }) }),
     );
     expect(r.state).toBe("in_progress");
-    expect(r.changed).toBe(true); // note was refreshed
+    expect(r.changed).toBe(true); // note refreshed
     expect(r.reason).toContain("3 open tasks");
-    expect(repo.load("t1", "geoyws-whip-impl")?.note).toContain("3 open tasks");
+    expect(repo.getState(MEMBER_BRANCH)?.note).toContain("3 open tasks");
   });
 
   test("worktree dirty → stays in_progress with dirty reason", async () => {
@@ -231,7 +228,7 @@ describe("performMerge — in_progress branch (gate decisions)", () => {
     const r = await performMerge(baseCtx());
     expect(r.state).toBe("ready_to_merge");
     expect(r.changed).toBe(true);
-    expect(repo.load("t1", "geoyws-whip-impl")?.state).toBe("ready_to_merge");
+    expect(repo.getState(MEMBER_BRANCH)?.state).toBe("ready_to_merge");
   });
 
   test("gate clear, base moved → rebasing", async () => {
@@ -247,24 +244,7 @@ describe("performMerge — in_progress branch (gate decisions)", () => {
 
 describe("performMerge — ready_to_merge branch (merge attempts)", () => {
   beforeEach(() => {
-    // Seed directly into ready_to_merge.
-    repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 100 });
-    repo.transition({
-      team: "t1",
-      branchKey: "geoyws-whip-impl",
-      fromState: "open",
-      toState: "in_progress",
-      note: null,
-      now: 110,
-    });
-    repo.transition({
-      team: "t1",
-      branchKey: "geoyws-whip-impl",
-      fromState: "in_progress",
-      toState: "ready_to_merge",
-      note: null,
-      now: 120,
-    });
+    seedState("ready_to_merge", 120);
   });
 
   test("successful merge → tested + mergedSha set", async () => {
@@ -273,7 +253,10 @@ describe("performMerge — ready_to_merge branch (merge attempts)", () => {
     expect(r.changed).toBe(true);
     expect(r.mergedSha).toBe("newMergedSha");
     expect(r.reason).toContain("newMergedSha");
-    expect(repo.load("t1", "geoyws-whip-impl")?.state).toBe("tested");
+    const row = repo.getState(MEMBER_BRANCH);
+    expect(row?.state).toBe("tested");
+    // trunk schema: base_sha column gets the post-merge SHA on success
+    expect(row?.baseSha).toBe("newMergedSha");
   });
 
   test("no-op merge (no commits ahead) → merged terminal", async () => {
@@ -289,7 +272,7 @@ describe("performMerge — ready_to_merge branch (merge attempts)", () => {
     expect(r.state).toBe("conflict");
     expect(r.changed).toBe(true);
     expect(r.reason).toContain("file1.ts");
-    const row = repo.load("t1", "geoyws-whip-impl");
+    const row = repo.getState(MEMBER_BRANCH);
     expect(row?.state).toBe("conflict");
     expect(row?.note).toContain("file1.ts");
   });
@@ -301,66 +284,74 @@ describe("performMerge — terminal state short-circuit", () => {
   test.each([["merged"], ["conflict"], ["reverted"]] as const)(
     "terminal '%s' → no-op return, row untouched",
     async (terminal) => {
-      repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 100 });
-      repo.transition({
-        team: "t1",
-        branchKey: "geoyws-whip-impl",
-        fromState: "open",
-        toState: terminal,
-        note: "terminal",
-        now: 200,
-      });
+      seedState(terminal, 200, "terminal");
       const r = await performMerge(baseCtx());
       expect(r.state).toBe(terminal);
       expect(r.changed).toBe(false);
       expect(r.reason).toContain("terminal state");
-      // Row untouched.
-      expect(repo.load("t1", "geoyws-whip-impl")?.updatedAt).toBe(200);
+      // Row's transitioned_at untouched — no transition fired.
+      expect(repo.getState(MEMBER_BRANCH)?.transitionedAt).toBe(200);
     },
   );
 });
 
-// ---------- Concurrency-loss edges ----------
+// ---------- Concurrency-loss edges (TOCTOU guard) ----------
 
 describe("performMerge — concurrency-loss edges", () => {
-  test("open → in_progress loses to sibling writer: returns no-op with observed state", async () => {
-    repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 100 });
-    // Spy: intercept the repo's transition call so the first call
-    // (matching open→in_progress) reports `applied: false` simulating
-    // a sibling writer that beat us to the row.
-    const original = repo.transition.bind(repo);
-    let fired = 0;
-    repo.transition = ((args) => {
-      fired += 1;
-      // Force a concurrency loss on the first transition.
-      if (fired === 1) {
-        return { applied: false, observedFrom: "in_progress" };
+  test("open → in_progress loses to sibling writer: re-read shows different state", async () => {
+    // Seed in_progress so the wrapper's initial read sees that state
+    // (the wrapper would route to gate-decision, not seed). But for
+    // this test we want to exercise the guarded-transition branch
+    // where the EXPECTED fromState is `open` but the re-read shows
+    // a sibling writer already advanced. We achieve this by spying
+    // on `getState`: first call (top-of-tick) returns null (implicit
+    // open), second call (inside guardedTransition) returns
+    // in_progress.
+    const original = repo.getState.bind(repo);
+    let calls = 0;
+    repo.getState = ((branch: string) => {
+      calls += 1;
+      if (calls === 1) return null;
+      if (calls === 2) {
+        // Sibling raced past us — return a different state.
+        return {
+          memberBranch: branch,
+          state: "in_progress",
+          note: null,
+          transitionedAt: 50,
+          transitionedBy: "cron",
+          baseSha: null,
+          conflictSha: null,
+        };
       }
-      return original(args);
-    }) as typeof repo.transition;
+      return original(branch);
+    }) as typeof repo.getState;
     const r = await performMerge(baseCtx());
     expect(r.state).toBe("in_progress");
     expect(r.changed).toBe(false);
     expect(r.reason).toContain("concurrency lost");
   });
 
-  test("in_progress → ready_to_merge loses to sibling writer", async () => {
-    repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 100 });
-    repo.transition({
-      team: "t1",
-      branchKey: "geoyws-whip-impl",
-      fromState: "open",
-      toState: "in_progress",
-      note: null,
-      now: 200,
-    });
-    const original = repo.transition.bind(repo);
-    repo.transition = ((args) => {
-      if (args.toState === "ready_to_merge") {
-        return { applied: false, observedFrom: "merging" };
+  test("in_progress → ready_to_merge loses to sibling writer (re-read shows merging)", async () => {
+    seedState("in_progress", 200);
+    const original = repo.getState.bind(repo);
+    let calls = 0;
+    repo.getState = ((branch: string) => {
+      calls += 1;
+      if (calls === 1) return original(branch); // top-of-tick: real
+      if (calls === 2) {
+        return {
+          memberBranch: branch,
+          state: "merging",
+          note: null,
+          transitionedAt: 50,
+          transitionedBy: "cron",
+          baseSha: null,
+          conflictSha: null,
+        };
       }
-      return original(args);
-    }) as typeof repo.transition;
+      return original(branch);
+    }) as typeof repo.getState;
     const r = await performMerge(baseCtx());
     expect(r.state).toBe("merging");
     expect(r.changed).toBe(false);
@@ -368,31 +359,26 @@ describe("performMerge — concurrency-loss edges", () => {
   });
 
   test("ready_to_merge → merging entry loses to sibling: short-circuit before merge fires", async () => {
-    repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 100 });
-    repo.transition({
-      team: "t1",
-      branchKey: "geoyws-whip-impl",
-      fromState: "open",
-      toState: "in_progress",
-      note: null,
-      now: 110,
-    });
-    repo.transition({
-      team: "t1",
-      branchKey: "geoyws-whip-impl",
-      fromState: "in_progress",
-      toState: "ready_to_merge",
-      note: null,
-      now: 120,
-    });
-    const original = repo.transition.bind(repo);
-    let gitCalls = 0;
-    repo.transition = ((args) => {
-      if (args.fromState === "ready_to_merge" && args.toState === "merging") {
-        return { applied: false, observedFrom: "merging" };
+    seedState("ready_to_merge", 120);
+    const original = repo.getState.bind(repo);
+    let calls = 0;
+    repo.getState = ((branch: string) => {
+      calls += 1;
+      if (calls === 1) return original(branch); // top-of-tick: real
+      if (calls === 2) {
+        return {
+          memberBranch: branch,
+          state: "merging",
+          note: null,
+          transitionedAt: 50,
+          transitionedBy: "cron",
+          baseSha: null,
+          conflictSha: null,
+        };
       }
-      return original(args);
-    }) as typeof repo.transition;
+      return original(branch);
+    }) as typeof repo.getState;
+    let gitCalls = 0;
     const gitSpy: GitSpawn = async () => {
       gitCalls += 1;
       return spawnOk("");
@@ -400,27 +386,17 @@ describe("performMerge — concurrency-loss edges", () => {
     const r = await performMerge(baseCtx({ git: gitSpy }));
     expect(r.state).toBe("merging");
     expect(r.changed).toBe(false);
-    // Concurrency-loss short-circuited BEFORE the actual merge —
-    // no git calls fired.
+    // Concurrency-loss short-circuited BEFORE the actual merge.
     expect(gitCalls).toBe(0);
   });
 
-  test("upsertOpen succeeds but reload returns null → defensive 'row vanished' return", async () => {
-    // Override load() to return null on second call, after the
-    // initial null + upsertOpen. Mimics a concurrent deleter
-    // (impossible in practice; the repo has no delete method, but
-    // the defensive branch exists in the code).
-    const originalLoad = repo.load.bind(repo);
-    let loadCount = 0;
-    repo.load = ((team: string, branch: string) => {
-      loadCount += 1;
-      if (loadCount === 2) return null;
-      return originalLoad(team, branch);
-    }) as typeof repo.load;
-    const r = await performMerge(baseCtx());
-    expect(r.state).toBe("open");
-    expect(r.changed).toBe(false);
-    expect(r.reason).toContain("row vanished");
+  test("transitioned_by attribution: ctx.by flows through to merger_state row", async () => {
+    // Custom `by` value should land in the row's transitioned_by
+    // column. Cron-backstop attribution surface.
+    const r = await performMerge(baseCtx({ by: "cron" }));
+    expect(r.changed).toBe(true);
+    const row = repo.getState(MEMBER_BRANCH);
+    expect(row?.transitionedBy).toBe("cron");
   });
 });
 
@@ -428,28 +404,15 @@ describe("performMerge — concurrency-loss edges", () => {
 
 describe("performMerge — non-conflict merge throw", () => {
   test("git failure that ISN'T a MergeConflictError propagates after merging-state durable write", async () => {
-    repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 100 });
-    repo.transition({
-      team: "t1",
-      branchKey: "geoyws-whip-impl",
-      fromState: "open",
-      toState: "in_progress",
-      note: null,
-      now: 110,
-    });
-    repo.transition({
-      team: "t1",
-      branchKey: "geoyws-whip-impl",
-      fromState: "in_progress",
-      toState: "ready_to_merge",
-      note: null,
-      now: 120,
-    });
+    seedState("ready_to_merge", 120);
     // Git stub that fails the BRANCH-EXISTS guard (rev-parse
     // --verify returns non-zero) — mergeMember throws ConfigError,
     // NOT MergeConflictError. The wrapper rethrows; row stays in
     // `merging` for operator inspection.
     const gitFail: GitSpawn = async (argv) => {
+      if (argv.includes("status") && argv.includes("--porcelain")) {
+        return spawnOk("");
+      }
       if (argv.includes("rev-parse") && argv.includes("--verify")) {
         return spawnFail("", "fatal: ambiguous", 128);
       }
@@ -458,7 +421,7 @@ describe("performMerge — non-conflict merge throw", () => {
     await expect(performMerge(baseCtx({ git: gitFail }))).rejects.toThrow();
     // Row left in `merging` per the durable-signal-first invariant
     // (ADR-134 §Conflict surface §1).
-    expect(repo.load("t1", "geoyws-whip-impl")?.state).toBe("merging");
+    expect(repo.getState(MEMBER_BRANCH)?.state).toBe("merging");
   });
 });
 
@@ -468,74 +431,7 @@ describe("performMerge — caller-driven holding states", () => {
   test.each([["rebasing"], ["tested"], ["test_failed"]] as const)(
     "'%s' is caller-driven → no-op with 'waiting on outer wiring' reason",
     async (holding) => {
-      repo.upsertOpen({ team: "t1", branchKey: "geoyws-whip-impl", now: 100 });
-      // Multi-step seed to reach the holding state. open →
-      // in_progress → ready_to_merge → merging → <holding>.
-      const seedPath: ReadonlyArray<[string, string]> = [
-        ["open", "in_progress"],
-        ["in_progress", "ready_to_merge"],
-        ["ready_to_merge", "merging"],
-      ];
-      let t = 200;
-      for (const [from, to] of seedPath) {
-        repo.transition({
-          team: "t1",
-          branchKey: "geoyws-whip-impl",
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          fromState: from as any,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          toState: to as any,
-          note: null,
-          now: t,
-        });
-        t += 10;
-      }
-      // Now advance from merging to the target holding state.
-      const lastFrom = holding === "rebasing" ? "ready_to_merge" : "merging";
-      if (holding === "rebasing") {
-        // Rewire: rebasing reachable from ready_to_merge (per
-        // FORWARD_TRANSITIONS), so back the row out one step.
-        repo.transition({
-          team: "t1",
-          branchKey: "geoyws-whip-impl",
-          fromState: "merging",
-          toState: "tested",
-          note: null,
-          now: t,
-        });
-        // tested isn't reachable to rebasing — for this test we
-        // just inject the row directly via re-seed.
-        db.prepare("UPDATE merger_state SET state = ? WHERE team = ? AND branch_key = ?")
-          .run(holding, "t1", "geoyws-whip-impl");
-      } else if (holding === "tested") {
-        repo.transition({
-          team: "t1",
-          branchKey: "geoyws-whip-impl",
-          fromState: "merging",
-          toState: "tested",
-          note: null,
-          now: t,
-        });
-      } else {
-        // test_failed via tested first.
-        repo.transition({
-          team: "t1",
-          branchKey: "geoyws-whip-impl",
-          fromState: "merging",
-          toState: "tested",
-          note: null,
-          now: t,
-        });
-        repo.transition({
-          team: "t1",
-          branchKey: "geoyws-whip-impl",
-          fromState: "tested",
-          toState: "test_failed",
-          note: null,
-          now: t + 10,
-        });
-      }
-      void lastFrom;
+      seedState(holding, 200);
       const r = await performMerge(baseCtx());
       expect(r.state).toBe(holding);
       expect(r.changed).toBe(false);
