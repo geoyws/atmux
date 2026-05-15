@@ -16,6 +16,7 @@ import {
   CONVENTION_059_LANE_PREFIXES,
   defaultEmojiForRole,
   detectRateLimit,
+  displayMemberName,
   driverInboxPath,
   emojiPoolForRole,
   ensureAtmuxDirs,
@@ -362,6 +363,55 @@ describe("buildWindowName / isMemberWindowName", () => {
 
   test("isMemberWindowName: empty roster → always false", () => {
     expect(isMemberWindowName("anything", [])).toBe(false);
+  });
+
+  // ---------- ADR-136 TR4: label-aware variants ----------
+
+  test("buildWindowName(name, emoji, label): label overrides name for display", () => {
+    expect(buildWindowName("alice", "🦊", "Alice the Fox")).toBe("🦊-Alice the Fox");
+  });
+
+  test("buildWindowName: undefined / empty label falls back to name", () => {
+    expect(buildWindowName("alice", "🦊", undefined)).toBe("🦊-alice");
+    expect(buildWindowName("alice", "🦊", "")).toBe("🦊-alice");
+  });
+
+  test("buildWindowName: label without emoji renders bare display string", () => {
+    expect(buildWindowName("alice", undefined, "Alice")).toBe("Alice");
+  });
+
+  test("isMemberWindowName: roster match against renamed member's label", () => {
+    const members = [{ name: "alice", emoji: "🦊", label: "Alice Renamed" }];
+    expect(isMemberWindowName("🦊-Alice Renamed", members)).toBe(true);
+    // Pre-rename ID form no longer matches (the live tmux window
+    // carries the new label-derived name).
+    expect(isMemberWindowName("🦊-alice", members)).toBe(false);
+  });
+
+  test("isMemberWindowName: roster member with label undefined still matches name", () => {
+    const members = [{ name: "alice", emoji: "🦊", label: undefined }];
+    expect(isMemberWindowName("🦊-alice", members)).toBe(true);
+  });
+});
+
+// ---------- ADR-136 TR4: displayMemberName ----------
+
+describe("displayMemberName", () => {
+  test("returns label when set + non-empty", () => {
+    expect(displayMemberName({ name: "alice", label: "Alice Renamed" })).toBe("Alice Renamed");
+  });
+
+  test("falls back to name when label undefined", () => {
+    expect(displayMemberName({ name: "alice" })).toBe("alice");
+  });
+
+  test("falls back to name when label is empty string", () => {
+    expect(displayMemberName({ name: "alice", label: "" })).toBe("alice");
+  });
+
+  test("accepts free-form Unicode in label (the schema does the validation)", () => {
+    expect(displayMemberName({ name: "alice", label: "アリス" })).toBe("アリス");
+    expect(displayMemberName({ name: "alice", label: "Alice the 🦊" })).toBe("Alice the 🦊");
   });
 });
 

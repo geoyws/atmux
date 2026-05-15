@@ -60,6 +60,8 @@ import { init } from "./verbs/init.ts";
 import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
 import { laneTick } from "./verbs/lane-tick.ts";
 import { martinet } from "./verbs/martinet.ts";
+import { dispatchMemberSubverb } from "./verbs/member.ts";
+import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
@@ -213,6 +215,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return story(argv.slice(1));
     case "team":
       return dispatchTeamSubverb(argv.slice(1));
+    case "member":
+      return dispatchMemberSubverb(argv.slice(1));
     case "tell-lead":
       return tellLead(argv.slice(1));
     case "claim":
@@ -227,6 +231,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return laneTick(argv.slice(1));
     case "lane-drift-check":
       return laneDriftCheck(argv.slice(1));
+    case "merge-cycle":
+      return mergeCycle(argv.slice(1));
     case "merge-member":
       return mergeMember(argv.slice(1));
     case "pause":

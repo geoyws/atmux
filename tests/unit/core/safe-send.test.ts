@@ -24,6 +24,7 @@ import {
   safePreflight,
   safeSendKeys,
   safeSendKeysWithVerify,
+  verifierForTui,
 } from "../../../src/core/safe-send.ts";
 
 interface FlagCall {
@@ -1019,5 +1020,34 @@ describe("safeSendKeysWithVerify — resolveLogPath HOME-env fallback", () => {
       else process.env.HOME = priorHome;
       await fs.rm(tmpHome, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------- ADR-138 T3b2: verifierForTui ----------
+
+describe("verifierForTui", () => {
+  test("claude tui → composerEmpty verifier (matches `❯ ` at line end)", () => {
+    const v = verifierForTui("claude");
+    expect(v).not.toBeNull();
+    // Composer-empty regex matches Claude's prompt with optional
+    // trailing whitespace at end-of-line.
+    expect(v?.("user input here\n❯ ")).toBe(true);
+    expect(v?.("user input here\n❯  ")).toBe(true);
+    // Doesn't match plain shell prompt.
+    expect(v?.("user input here\n$ ")).toBe(false);
+  });
+
+  test.each([
+    [undefined],
+    [""],
+    ["shell"],
+    ["bash"],
+    ["zsh"],
+    ["opencode"],
+    ["kimi"],
+    ["cursor"],
+    ["custom-launcher-x"],
+  ])("'%s' tui → null (skip verify, falls back to legacy submitAfterPaste)", (tui) => {
+    expect(verifierForTui(tui)).toBeNull();
   });
 });
