@@ -15,6 +15,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serializeSendTarget, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { renderBootPrompt } from "../../../src/core/boot-claude.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   defaultBriefsDir,
@@ -28,6 +29,20 @@ import {
   rotateLead,
   windowExists,
 } from "../../../src/verbs/rotate.ts";
+
+/** ADR-081 §C / t-4ad7fc42: shared `bootClaude` opts override for every
+ *  rotate-into-claude test. Fast timeouts + no-op sleep so the readiness
+ *  + tokens-moved polls don't hang real setTimeout in the test runner.
+ *  Tests asserting the boot path's behaviour stage paneText sequences so
+ *  the polls flip from "ready" to "tokens moved" deterministically. */
+const FAST_BOOT_CLAUDE = {
+  readyPollIntervalMs: 5,
+  readyTimeoutMs: 100,
+  postBootPollIntervalMs: 5,
+  postBootTimeoutMs: 100,
+  maxAttempts: 1,
+  sleep: async () => {},
+} as const;
 
 // ---------- parseRotateArgs ----------
 
@@ -246,10 +261,15 @@ interface StubTmuxCalls {
 
 function stubTmux(opts: {
   windows?: ReadonlyArray<{ index: number; name: string; active: boolean }>;
-  /** Pane content returned to safePreflight. Default is empty
-   *  (classifies as UNKNOWN → preflight ready=false → no dismissals
-   *  → existing test assertions about sendKeys remain authoritative). */
-  paneText?: string;
+  /** Pane content returned to safePreflight + ADR-081 §C
+   *  bootClaudeMember probes. Default is empty (classifies as UNKNOWN
+   *  → preflight ready=false → no dismissals; bootClaude readiness
+   *  poll times out at its own deadline).
+   *
+   *  ADR-081 §C / t-4ad7fc42: pass an array to stage capture-pane
+   *  return values over multiple calls (last element sticky). Useful
+   *  for pinning the boot-prompt-then-tokens-moved transition. */
+  paneText?: string | ReadonlyArray<string>;
 }): { tmux: TmuxNamespace; calls: StubTmuxCalls } {
   const calls: StubTmuxCalls = {
     sendKeys: [],
@@ -258,7 +278,12 @@ function stubTmux(opts: {
     listWindows: [],
     capturePane: [],
   };
-  const paneText = opts.paneText ?? "";
+  const sequence: string[] = Array.isArray(opts.paneText)
+    ? [...opts.paneText]
+    : typeof opts.paneText === "string"
+      ? [opts.paneText]
+      : [""];
+  let captureIdx = 0;
   const tmux = {
     window: {
       async listWindows(session: string) {
@@ -282,7 +307,9 @@ function stubTmux(opts: {
       },
       async capturePane(o: { target: string; start?: number }) {
         calls.capturePane.push({ target: o.target, start: o.start });
-        return paneText;
+        const idx = Math.min(captureIdx, sequence.length - 1);
+        captureIdx++;
+        return sequence[idx] ?? "";
       },
     },
     buffer: {
@@ -406,7 +433,16 @@ describe("rotate() — public verb", () => {
     ).rejects.toBeInstanceOf(ConfigError);
   });
 
-  test("happy path: claude TUI → /clear sent + brief pasted", async () => {
+  test("ADR-081 §C: claude TUI → /clear + bootClaudeMember (boot prompt sent, no paste-buffer)", async () => {
+    // Post-t-94d7ad60 rotation flow: for claude TUIs, the legacy
+    // paste-buffer brief-deliver path was replaced by
+    // `bootClaudeMember`. The new sequence is:
+    //   1. safePreflight + /clear
+    //   2. bootClaudeMember: capture (sentinel) → poll-ready (capture
+    //      loop) → sendKeys(boot prompt, enter:true) → poll-tokens-moved.
+    // Paste-buffer / loadBuffer no longer fire for claude TUI; the
+    // role brief is fetched inside the spawned subagent itself via the
+    // boot prompt's "Read /tmp/atmux-brief-…" directive.
     process.env.ATMUX_SESSION = "atmux-t";
     await seedTeam({
       name: "t",
@@ -416,8 +452,14 @@ describe("rotate() — public verb", () => {
       join(briefsDir, "reviewer.md"),
       "team={{TEAM}} member={{MEMBER}} role={{ROLE}} dir={{ATMUX_DIR}}",
     );
+    // Staged paneText: first capture returns "ready but not booted"
+    // (matches `❯` for the readiness poll, no `\d+k tokens` so the
+    // already-booted sentinel doesn't short-circuit). Subsequent
+    // captures return "tokens moved" so the post-boot poll closes out
+    // on attempt 1. Last element is sticky.
     const { tmux, calls } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
+      paneText: ["❯ ready", "❯ ready", "❯ ↑ 5k tokens"],
     });
     let stdoutBuf = "";
     let stderrBuf = "";
@@ -433,6 +475,7 @@ describe("rotate() — public verb", () => {
       stderr: (s) => {
         stderrBuf += s;
       },
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
     // First send-keys is /clear.
@@ -441,34 +484,35 @@ describe("rotate() — public verb", () => {
       keys: "/clear",
       enter: true,
     });
-    // Then load + paste the rendered brief.
-    expect(calls.loadBuffer.length).toBe(1);
-    expect(calls.loadBuffer[0]?.name).toBe("atmux_brief_rot_alice");
-    expect(calls.loadBuffer[0]?.data).toBe(
-      `team=t member=alice role=reviewer dir=${join(scratch, ".atmux")}`,
-    );
-    expect(calls.pasteBuffer.length).toBe(1);
-    expect(calls.pasteBuffer[0]?.deleteAfter).toBe(true);
-    // ADR-081 §A: trailing C-m (NOT Enter) to submit the pasted body —
-    // bracketed-paste mode under claude TUIs eats a literal Enter as a
-    // newline inside the pasted message.
-    expect(calls.sendKeys[calls.sendKeys.length - 1]).toEqual({
+    // Boot prompt landed via sendKeys with enter:true — verbatim shape
+    // from `renderBootPrompt(team, member)`.
+    const bootPrompt = renderBootPrompt("t", "alice");
+    expect(calls.sendKeys).toContainEqual({
       target: "atmux-t:alice",
-      keys: "C-m",
-      enter: false,
+      keys: bootPrompt,
+      enter: true,
     });
-    expect(stdoutBuf).toBe("rotated alice (role=reviewer, tui=claude)\n");
+    // No paste-buffer / loadBuffer for claude TUI.
+    expect(calls.loadBuffer).toEqual([]);
+    expect(calls.pasteBuffer).toEqual([]);
+    // capturePane fired at least 3x (sentinel + readiness poll + post-boot poll).
+    expect(calls.capturePane.length).toBeGreaterThanOrEqual(3);
+    // Stdout carries the boot-success line + the final rotation summary.
+    expect(stdoutBuf).toContain("rotate: alice: bootstrapped");
+    expect(stdoutBuf).toContain("rotated alice (role=reviewer, tui=claude)");
     expect(stderrBuf).toBe("");
   });
 
-  test("ADR-081 §A: brief paste followed by sleep → C-m submit (sequence pinned)", async () => {
-    // Acceptance pin from t-e7de08c7: "Unit test in
-    // tests/unit/verbs/rotate.test.ts that mocks tmux.pane.sendKeys and
-    // asserts the sequence: paste-buffer call -> sleep -> sendKeys({keys:
-    // 'C-m'})." A timeline array captures the ordering of paste / sleep /
-    // submit so a future regression that re-introduces bare `Enter` (or
-    // drops the settle) shows up here, not in production where it
-    // resurrects c-fbecbf65's silent half-success pathology.
+  test("ADR-081 §C: claude TUI boot sequence pinned (capture → sendKeys(prompt) → capture, no paste-buffer)", async () => {
+    // t-4ad7fc42 rewrite of the legacy ADR-081 §A sequence pin. The
+    // paste-buffer + C-m flow was superseded for claude TUIs by
+    // bootClaudeMember (t-94d7ad60). New invariant: after /clear, the
+    // boot sequence is `capturePane (sentinel)` → `capturePane*
+    // (readiness poll)` → `sendKeys(bootPrompt, enter:true)` →
+    // `capturePane* (tokens-moved poll)`. Timeline must NOT contain
+    // any pasteBuffer / loadBuffer events for claude TUI; the brief
+    // is fetched by the spawned subagent itself per renderBootPrompt's
+    // "Read /tmp/atmux-brief-…" directive.
     process.env.ATMUX_SESSION = "atmux-t";
     await seedTeam({
       name: "t",
@@ -477,60 +521,84 @@ describe("rotate() — public verb", () => {
     await writeFile(join(briefsDir, "reviewer.md"), "BRIEF BODY");
     const { tmux, calls } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
+      paneText: ["❯ ready", "❯ ready", "❯ ↑ 5k tokens"],
     });
     type Event =
-      | { kind: "paste"; target: string }
-      | { kind: "sleep"; ms: number }
-      | { kind: "sendKeys"; keys: string };
+      | { kind: "capture" }
+      | { kind: "sendKeys"; keys: string; enter: boolean }
+      | { kind: "loadBuffer" }
+      | { kind: "pasteBuffer" };
     const timeline: Event[] = [];
     const wrappedTmux = {
       ...tmux,
       buffer: {
         ...tmux.buffer,
+        async loadBuffer(o: Parameters<typeof tmux.buffer.loadBuffer>[0]) {
+          timeline.push({ kind: "loadBuffer" });
+          return tmux.buffer.loadBuffer(o);
+        },
         async pasteBuffer(o: Parameters<typeof tmux.buffer.pasteBuffer>[0]) {
-          timeline.push({ kind: "paste", target: serializeSendTarget(o.target) });
+          timeline.push({ kind: "pasteBuffer" });
           return tmux.buffer.pasteBuffer(o);
         },
       },
       pane: {
         ...tmux.pane,
         async sendKeys(o: Parameters<typeof tmux.pane.sendKeys>[0]) {
-          timeline.push({ kind: "sendKeys", keys: o.keys });
+          timeline.push({ kind: "sendKeys", keys: o.keys, enter: o.enter === true });
           return tmux.pane.sendKeys(o);
+        },
+        async capturePane(o: Parameters<typeof tmux.pane.capturePane>[0]) {
+          timeline.push({ kind: "capture" });
+          return tmux.pane.capturePane(o);
         },
       },
     };
     const exit = await rotate(["--team-dir", scratch, "alice"], {
       buildTmux: () => wrappedTmux,
       briefsDir,
-      sleep: async (ms: number) => {
-        timeline.push({ kind: "sleep", ms });
-      },
+      sleep: async () => {},
       stdout: () => {},
       stderr: () => {},
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
-    // Find the paste-buffer event for the brief body.
-    const pasteIdx = timeline.findIndex((e) => e.kind === "paste");
-    expect(pasteIdx).toBeGreaterThanOrEqual(0);
-    // The events immediately following paste MUST be: sleep then sendKeys
-    // with C-m. The settle is ≥500ms per §A — rotate.ts passes 1000ms.
-    const afterPaste = timeline.slice(pasteIdx + 1);
-    const nextSleep = afterPaste.find((e) => e.kind === "sleep");
-    expect(nextSleep).toBeDefined();
-    if (nextSleep?.kind === "sleep") expect(nextSleep.ms).toBeGreaterThanOrEqual(500);
-    const submitIdx = afterPaste.findIndex((e) => e.kind === "sendKeys" && e.keys === "C-m");
-    expect(submitIdx).toBeGreaterThanOrEqual(0);
-    // No literal "Enter" sendKeys after the paste (the bug that §A fixes).
-    expect(afterPaste.some((e) => e.kind === "sendKeys" && e.keys === "Enter")).toBe(false);
-    // Calls accumulator (the existing fixture) sees the C-m hit too.
-    expect(calls.sendKeys.at(-1)?.keys).toBe("C-m");
+    // No paste / load events for claude TUI — the brief-delivery is
+    // baked into the boot prompt itself.
+    expect(timeline.some((e) => e.kind === "loadBuffer")).toBe(false);
+    expect(timeline.some((e) => e.kind === "pasteBuffer")).toBe(false);
+    // Locate the boot-prompt sendKeys (NOT /clear) and the capture
+    // events that bracket it. The post-/clear sequence MUST be:
+    // capture (sentinel) → capture* (readiness) → sendKeys(prompt,
+    // enter:true) → capture* (post-boot poll).
+    const bootPrompt = renderBootPrompt("t", "alice");
+    const bootIdx = timeline.findIndex(
+      (e) => e.kind === "sendKeys" && e.keys === bootPrompt && e.enter === true,
+    );
+    expect(bootIdx).toBeGreaterThan(0);
+    // At least one capture preceded the boot prompt (the sentinel +
+    // readiness poll).
+    const before = timeline.slice(0, bootIdx);
+    expect(before.some((e) => e.kind === "capture")).toBe(true);
+    // At least one capture followed the boot prompt (the tokens-moved
+    // poll observing the staged paneText flip).
+    const after = timeline.slice(bootIdx + 1);
+    expect(after.some((e) => e.kind === "capture")).toBe(true);
+    // Calls accumulator-level invariants: boot prompt is the LAST
+    // sendKeys (no trailing C-m re-submit; bracketed-paste mode is no
+    // longer relevant — single-line prompt with enter:true).
+    expect(calls.sendKeys.at(-1)?.keys).toBe(bootPrompt);
+    expect(calls.sendKeys.at(-1)?.enter).toBe(true);
   });
 
   test("safe-send: CC feedback survey is dismissed before /clear lands", async () => {
     // Stuck-pane scenario from t-06e7209d brief: Claude Code's
     // feedback modal eats keystrokes. safePreflight must auto-dismiss
     // it (sending "0") before the rotation's /clear hits the wire.
+    //
+    // t-4ad7fc42: staged paneText so post-dismiss captures look
+    // ready-to-booted to bootClaudeMember (the survey text vanishes
+    // after dismissal in production; we simulate by sequencing).
     process.env.ATMUX_SESSION = "atmux-t";
     await seedTeam({
       name: "t",
@@ -539,13 +607,20 @@ describe("rotate() — public verb", () => {
     await writeFile(join(briefsDir, "reviewer.md"), "ok");
     const { tmux, calls } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
-      paneText:
+      paneText: [
+        // safePreflight reads the survey, sends "0" to dismiss.
         "● How is Claude doing this session? (optional)\n  1: Bad    2: Fine   3: Good   0: Dismiss",
+        // bootClaudeMember sentinel + readiness poll see the cleared
+        // pane; tokens-moved poll closes the boot on attempt 1.
+        "❯ ready",
+        "❯ ↑ 5k tokens",
+      ],
     });
     const exit = await rotate(["--team-dir", scratch, "alice"], {
       buildTmux: () => tmux,
       briefsDir,
       sleep: async () => {},
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
     // The first sendKeys call is the dismissal "0" from preflight,
@@ -576,16 +651,19 @@ describe("rotate() — public verb", () => {
         { index: 0, name: "alpha", active: false },
         { index: 1, name: "lead-x", active: true },
       ],
+      paneText: "❯ ↑ 5k tokens", // already-booted: skip boot-prompt send.
     });
     const exit = await rotate(["--team-dir", scratch, "--lead"], {
       buildTmux: () => tmux,
       briefsDir, // BRIEF_ALIASES: team-lead → lead.md; neither staged → fall through to member.md (also absent → silent skip)
       sleep: async () => {},
       stdout: () => {},
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
     expect(calls.sendKeys[0]?.target).toBe("atmux-t:lead-x");
-    // No brief file in briefsDir → no loadBuffer / pasteBuffer.
+    // No brief file in briefsDir → no loadBuffer / pasteBuffer (also,
+    // claude TUI no longer takes the paste-buffer path regardless).
     expect(calls.loadBuffer).toEqual([]);
     expect(calls.pasteBuffer).toEqual([]);
   });
@@ -605,6 +683,7 @@ describe("rotate() — public verb", () => {
     );
     const { tmux } = stubTmux({
       windows: [{ index: 0, name: "lead-x", active: true }],
+      paneText: "❯ ↑ 5k tokens",
     });
     let stdoutBuf = "";
     const fixedNowMs = 1778126400 * 1000;
@@ -616,6 +695,7 @@ describe("rotate() — public verb", () => {
         stdoutBuf += s;
       },
       now: () => fixedNowMs,
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
     expect(stdoutBuf).toContain("lead handoff written to");
@@ -635,6 +715,7 @@ describe("rotate() — public verb", () => {
     await mkdir(join(atmuxDir, "state"), { recursive: true });
     const { tmux } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
+      paneText: "❯ ↑ 5k tokens",
     });
     let stdoutBuf = "";
     await rotate(["--team-dir", scratch, "alice"], {
@@ -644,6 +725,7 @@ describe("rotate() — public verb", () => {
       stdout: (s) => {
         stdoutBuf += s;
       },
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(stdoutBuf).not.toContain("lead handoff");
     // No file in state/ matching the handoff prefix.
@@ -672,6 +754,7 @@ describe("rotate() — public verb", () => {
     );
     const { tmux } = stubTmux({
       windows: [{ index: 0, name: "lead-x", active: true }],
+      paneText: "❯ ↑ 5k tokens",
     });
     const fixedNowMs = 1778126400 * 1000;
     const exit = await rotate(["--team-dir", scratch, "--lead"], {
@@ -682,6 +765,7 @@ describe("rotate() — public verb", () => {
       stderr: () => {},
       now: () => fixedNowMs,
       leadMarkerHome: scratch,
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
     const markerPath = join(scratch, ".claude", "teams", "t", "lead-session-start.txt");
@@ -697,6 +781,7 @@ describe("rotate() — public verb", () => {
     });
     const { tmux } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
+      paneText: "❯ ↑ 5k tokens",
     });
     const exit = await rotate(["--team-dir", scratch, "alice"], {
       buildTmux: () => tmux,
@@ -705,6 +790,7 @@ describe("rotate() — public verb", () => {
       stdout: () => {},
       stderr: () => {},
       leadMarkerHome: scratch,
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
     // No marker file under the scratch home.
@@ -731,6 +817,7 @@ describe("rotate() — public verb", () => {
     await writeFile(join(atmuxDir, "kanban.json"), "{ corrupt json");
     const { tmux } = stubTmux({
       windows: [{ index: 0, name: "lead-x", active: true }],
+      paneText: "❯ ↑ 5k tokens",
     });
     let stderrBuf = "";
     const exit = await rotate(["--team-dir", scratch, "--lead"], {
@@ -741,6 +828,7 @@ describe("rotate() — public verb", () => {
       stderr: (s) => {
         stderrBuf += s;
       },
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     // Rotation continues despite handoff failure.
     expect(exit).toBe(0);
@@ -785,6 +873,7 @@ describe("rotate() — public verb", () => {
     });
     const { tmux } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
+      paneText: "❯ ↑ 5k tokens",
     });
     let receivedSock = "";
     const exit = await rotate(["--team-dir", scratch, "--socket", "/custom/sock", "alice"], {
@@ -795,6 +884,7 @@ describe("rotate() — public verb", () => {
       briefsDir,
       sleep: async () => {},
       stdout: () => {},
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
     expect(receivedSock).toBe("/custom/sock");
@@ -808,6 +898,7 @@ describe("rotate() — public verb", () => {
     });
     const { tmux } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
+      paneText: "❯ ↑ 5k tokens",
     });
     let receivedSock = "";
     const exit = await rotate(["--team-dir", scratch, "alice"], {
@@ -818,6 +909,7 @@ describe("rotate() — public verb", () => {
       briefsDir,
       sleep: async () => {},
       stdout: () => {},
+      bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
     expect(receivedSock).toBe("/tmp/atmux-team-default/sock");
@@ -877,12 +969,14 @@ describe("rotateLead", () => {
       try {
         const { tmux, calls } = stubTmux({
           windows: [{ index: 0, name: "lead-x", active: true }],
+          paneText: "❯ ↑ 5k tokens",
         });
         const exit = await rotateLead(["--team-dir", dir], {
           buildTmux: () => tmux,
           briefsDir: briefs,
           sleep: async () => {},
           stdout: () => {},
+          bootClaude: FAST_BOOT_CLAUDE,
         });
         expect(exit).toBe(0);
         expect(calls.sendKeys[0]?.target).toBe("atmux-t:lead-x");
