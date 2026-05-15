@@ -27,6 +27,8 @@ import { ensureDir } from "../abstractions/fs.ts";
 import { acquireWithTTL } from "../abstractions/lock.ts";
 import { getAtmuxDir, stateDir, tryLoadTeam } from "../core/common.ts";
 import {
+  type AgeInboxResult,
+  ageInboxOpenToArchive,
   type ArchiveSizeWarning,
   archiveDecisions,
   archiveSizeCheck,
@@ -56,8 +58,18 @@ import {
 export interface ParsedGroomArgs {
   dryRun: boolean;
   quiet: boolean;
-  /** Reserved per bash flag set; not yet consumed by any sub-op. */
+  /** Days threshold for per-entry inbox aging (driver-inbox.md /
+   *  lead-outbox.md `## Open` → `## Archive`). Default 7. Entries
+   *  with parseable timestamps older than `now - inboxDays*86400s`
+   *  migrate; unparseable-timestamp entries stay (conservative).
+   *  `--inbox-days 0` OR `--aggressive` overrides both rules and
+   *  ages every entry in `## Open` regardless. */
   inboxDays: number;
+  /** When true (or when `inboxDays === 0`), the inbox-aging sub-op
+   *  ages EVERY entry in `## Open` regardless of timestamp shape.
+   *  One-shot historical-bloat clear (per t-82b6aed9 §Scope 4 —
+   *  sopx 10668-line outbox). */
+  aggressive: boolean;
   kanbanDays: number;
   decisionsDays: number;
   keepBak: number;
@@ -81,6 +93,7 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
   let quiet = false;
   let showHelp = false;
   let archive = false;
+  let aggressive = false;
   let inboxDays = DEFAULTS.inboxDays;
   let kanbanDays = DEFAULTS.kanbanDays;
   let decisionsDays = DEFAULTS.decisionsDays;
@@ -101,6 +114,15 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     }
     if (a === "--archive") {
       archive = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--aggressive") {
+      // Synonym for `--inbox-days 0`. Per t-82b6aed9 §Scope 4 — one-shot
+      // historical-bloat clear that moves every `## Open` entry to
+      // `## Archive` regardless of timestamp parseability.
+      aggressive = true;
+      inboxDays = 0;
       i += 1;
       continue;
     }
@@ -152,7 +174,17 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     });
   }
 
-  return { dryRun, quiet, archive, inboxDays, kanbanDays, decisionsDays, keepBak, showHelp };
+  return {
+    dryRun,
+    quiet,
+    archive,
+    aggressive,
+    inboxDays,
+    kanbanDays,
+    decisionsDays,
+    keepBak,
+    showHelp,
+  };
 }
 
 // ---------- ATMUX_NO_GROOM kill-switch ----------
@@ -204,8 +236,14 @@ Usage: atmux groom [flags]
 Flags:
   --dry-run                Show what would change; touch nothing.
   --quiet                  Suppress per-step ok/log lines (cron-friendly).
-  --inbox-days N           Reserved for future per-entry inbox parsing
-                           (currently flushes whole \`## Archive\` section).
+  --inbox-days N           Days threshold for per-entry inbox aging (default 7).
+                           Entries in driver-inbox.md / lead-outbox.md ## Open
+                           with parseable timestamps older than now-N*86400s
+                           migrate to the same file's ## Archive section.
+                           N=0 ages everything in ## Open (synonym for --aggressive).
+  --aggressive             One-shot historical-bloat clear: age every ## Open
+                           entry to ## Archive regardless of timestamp shape.
+                           Equivalent to --inbox-days 0.
   --kanban-days N          Threshold for done/cancelled card summary (default 30).
   --decisions-days N       Threshold for decisions.md entry archival (default 30).
   --keep-bak N             Keep newest N of each .bak.* family (default 5).
@@ -214,7 +252,10 @@ Flags:
                            sibling archive.db. Idempotent. Per t-8287b37d.
 
 Sub-operations (all idempotent):
-  1. driver-inbox.md / lead-outbox.md: flush \`## Archive\` body into dated archive.
+  1a. driver-inbox.md / lead-outbox.md: age stale ## Open entries → ## Archive
+      section per --inbox-days (per-entry aging; runs before 1b so the just-
+      aged entries get swept in the same pass).
+  1b. driver-inbox.md / lead-outbox.md: flush ## Archive body into dated archive.
   2. decisions.md: move entries older than --decisions-days to dated archive.
   3. kanban.json: summarize + remove done/cancelled cards older than --kanban-days.
   4. .bak.* files: keep newest --keep-bak per family.
@@ -229,6 +270,10 @@ Fires daily via cron (04:00) and once on every \`atmux start\`.
 `;
 
 export interface GroomResult {
+  /** t-82b6aed9: per-entry inbox aging (## Open → ## Archive within
+   *  driver-inbox.md / lead-outbox.md). Runs BEFORE inboxOutbox so the
+   *  just-aged entries get swept to the monthly archive in the same pass. */
+  inboxAge: AgeInboxResult[];
   inboxOutbox: InboxOutboxFlushResult[];
   decisions: DecisionsArchiveResult;
   kanban: KanbanSummarizeResult;
@@ -293,6 +338,7 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
     }));
 
   const result: GroomResult = {
+    inboxAge: [],
     inboxOutbox: [],
     decisions: { staleBlocks: 0, destPaths: [] },
     kanban: { removed: 0, destPaths: [] },
@@ -329,6 +375,41 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
   try {
     // Each sub-op is wrapped — failures surface as warnings; the
     // remaining steps still run. Mirrors bash `|| atmux::warn ...`.
+
+    // t-82b6aed9 / c-7a308f7f: age stale ## Open entries into ## Archive
+    // BEFORE the existing flushInboxOutboxArchive sub-op so the
+    // just-aged entries get swept to the monthly archive file in the
+    // SAME groom pass. Without this ordering, aging would land in
+    // ## Archive but require a SECOND groom tick to reach the monthly
+    // file — leaving inbox bloat on the demo path for 24h.
+    try {
+      result.inboxAge = await ageInboxOpenToArchive(atmuxDir, parsed.inboxDays, {
+        dryRun: parsed.dryRun,
+        aggressive: parsed.aggressive,
+        ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+      });
+      if (!parsed.quiet) {
+        for (const r of result.inboxAge) {
+          if (r.agedCount === 0) continue;
+          const note = parsed.aggressive
+            ? "aggressive: all entries"
+            : `older than ${parsed.inboxDays}d`;
+          if (parsed.dryRun) {
+            logger.log(
+              `groom[dry-run]: would age ${r.agedCount} ${r.file} ## Open entries → ## Archive (${note}; ${r.remainingOpen} entries kept)`,
+            );
+          } else {
+            logger.ok(
+              `groom: aged ${r.agedCount} ${r.file} ## Open entries → ## Archive (${note}; ${r.remainingOpen} entries kept)`,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn(`groom: inbox-age sub-op failed (continuing): ${errMsg(e)}`);
+      result.errors.push({ op: "inbox-age", message: errMsg(e) });
+    }
+
     try {
       result.inboxOutbox = await flushInboxOutboxArchive(atmuxDir, {
         dryRun: parsed.dryRun,

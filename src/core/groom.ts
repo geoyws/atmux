@@ -170,6 +170,320 @@ export async function flushInboxOutboxArchive(
   return out;
 }
 
+// ---------- Sub-op 1a: per-entry inbox aging (## Open → ## Archive) ----------
+//
+// Closes c-7a308f7f / t-82b6aed9. Wires the previously-reserved
+// --inbox-days flag (verbs/groom.ts) so per-entry timestamped rows in
+// driver-inbox.md / lead-outbox.md ## Open sections migrate to the
+// same file's ## Archive section once they pass the days threshold.
+//
+// Runs BEFORE flushInboxOutboxArchive in the same groom pass so the
+// just-aged entries get swept to the monthly archive file in one tick
+// (per t-82b6aed9 §Scope "same pass" intent — note the dispatch literal
+// said "Order AFTER flushInboxOutboxArchive" but the "same pass" sweep
+// requires aging BEFORE flush chronologically; this is the
+// chronological reading).
+//
+// Stopgap until ADR-154 (markdown→SQLite migration for driver-inbox +
+// lead-outbox) lands. Post-cutover the legacy .md files become read-
+// only renders of SQLite rows and this sub-op becomes dead code.
+
+export interface AgeInboxResult {
+  /** Filename — `driver-inbox.md` or `lead-outbox.md`. */
+  file: string;
+  /** Entries moved from `## Open` → `## Archive` this pass. */
+  agedCount: number;
+  /** Entries left in `## Open` (fresh + unparseable-timestamp entries
+   *  when not aggressive). */
+  remainingOpen: number;
+}
+
+export interface AgeInboxOpenToArchiveOpts {
+  /** When true, parse + count but skip writes. */
+  dryRun?: boolean;
+  /** Clock override (test injection). Defaults to `time.now()`. */
+  nowMs?: number;
+  /** Files (relative to atmuxDir) to consider. Default: the canonical
+   *  pair `["driver-inbox.md", "lead-outbox.md"]`. */
+  files?: ReadonlyArray<string>;
+  /** When true (or when `days === 0`), move EVERY entry in `## Open`
+   *  to `## Archive` regardless of timestamp (and regardless of whether
+   *  the timestamp parsed). Use case: historical bloat one-shot per
+   *  task-body §Scope 4 ("sopx 10668-line outbox" residue clear). */
+  aggressive?: boolean;
+}
+
+/**
+ * Age `## Open` entries older than `days * 86400s` into the same file's
+ * `## Archive` section. Conservative on unparseable timestamps (left in
+ * `## Open`) unless `aggressive` (or `days === 0`) is set.
+ *
+ * Returns one entry per file processed (even when zero entries aged —
+ * the `remainingOpen` count is still useful for observability). Files
+ * with no `## Open` section are skipped (no entry returned).
+ *
+ * Entry shape: list items starting with `- [HH:MM MYT]` or
+ * `- [HH:MM MYT YYYY-MM-DD]` (driver-inbox convention; date omitted is
+ * "today implicit"). lead-outbox additionally suffixes the member name
+ * (`- [HH:MM MYT] **<member>**:`), but the timestamp prefix shape is
+ * identical so one parser handles both. Continuation lines (anything
+ * up to the next entry-start `- [` line or section boundary) belong to
+ * the preceding entry.
+ */
+export async function ageInboxOpenToArchive(
+  atmuxDir: string,
+  days: number,
+  opts: AgeInboxOpenToArchiveOpts = {},
+): Promise<AgeInboxResult[]> {
+  const dryRun = opts.dryRun === true;
+  const stampMs = opts.nowMs ?? nowMs();
+  const aggressive = opts.aggressive === true || days === 0;
+  const cutoffEpoch = Math.floor(stampMs / 1000) - days * 86400;
+  const candidateFiles = opts.files ?? ["driver-inbox.md", "lead-outbox.md"];
+  const out: AgeInboxResult[] = [];
+
+  for (const file of candidateFiles) {
+    const src = join(atmuxDir, file);
+    if (!(await exists(src))) continue;
+
+    const text = await readText(src);
+    const sliced = sliceOpenArchive(text);
+    if (sliced === null) continue;
+
+    const { head, openHeader, openBody, archiveHeader, archiveBody } = sliced;
+    const entries = parseOpenEntries(openBody);
+    if (entries.length === 0) {
+      out.push({ file, agedCount: 0, remainingOpen: 0 });
+      continue;
+    }
+
+    const aged: ParsedInboxEntry[] = [];
+    const kept: ParsedInboxEntry[] = [];
+    for (const entry of entries) {
+      if (aggressive) {
+        aged.push(entry);
+        continue;
+      }
+      const epochSec = entry.epochSec;
+      if (epochSec === null) {
+        kept.push(entry); // conservative: unparseable timestamps stay
+      } else if (epochSec < cutoffEpoch) {
+        aged.push(entry);
+      } else {
+        kept.push(entry);
+      }
+    }
+
+    if (aged.length > 0 && !dryRun) {
+      const newOpenBody = kept.map((e) => e.text).join("");
+      // Aged entries land at the TOP of ARCHIVE — preserves newest-at-
+      // top within ARCHIVE assuming both OPEN + existing ARCHIVE follow
+      // the convention. We don't sort; we just splice in OPEN order.
+      const agedConcat = aged.map((e) => e.text).join("");
+      const newArchiveBody = `${agedConcat}${archiveBody}`;
+      const archiveSection = archiveHeader === null ? "\n## Archive\n" : archiveHeader;
+      const rebuilt = `${head}${openHeader}${newOpenBody}${archiveSection}${newArchiveBody}`;
+      await atomicWrite(src, rebuilt);
+    }
+
+    out.push({ file, agedCount: aged.length, remainingOpen: kept.length });
+  }
+  return out;
+}
+
+/** Inbox/outbox file shape after slicing on `## Open` / `## Archive`. */
+interface SlicedOpenArchive {
+  /** Everything before the `## Open` line (inclusive of trailing
+   *  newline if present). */
+  head: string;
+  /** The `## Open` header line itself, with trailing newline. */
+  openHeader: string;
+  /** Body between `## Open` line (exclusive) and `## Archive` line
+   *  (exclusive) — or to EOF if no `## Archive` header. */
+  openBody: string;
+  /** The `## Archive` header line itself with trailing newline, or
+   *  null if the file has no `## Archive` section (caller synthesizes). */
+  archiveHeader: string | null;
+  /** Body below the `## Archive` line; empty string when synthesizing. */
+  archiveBody: string;
+}
+
+/** Locate `## Open` + (optional) `## Archive` headers and slice the
+ *  file into HEAD / OPEN-body / ARCHIVE-body segments. Returns null when
+ *  no `## Open` is present (file isn't aging-eligible). Exported for
+ *  unit tests. */
+export function sliceOpenArchive(text: string): SlicedOpenArchive | null {
+  const lines = text.split("\n");
+  let openIdx = -1;
+  let archiveIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (openIdx < 0 && line === "## Open") {
+      openIdx = i;
+      continue;
+    }
+    if (openIdx >= 0 && archiveIdx < 0 && line.startsWith("## Archive")) {
+      archiveIdx = i;
+      break;
+    }
+  }
+  if (openIdx < 0) return null;
+
+  // HEAD = lines[0..openIdx-1] joined with `\n`, plus trailing `\n`
+  // to keep the `## Open` line as its own row when stitched.
+  const headLines = lines.slice(0, openIdx);
+  const head = headLines.length === 0 ? "" : `${headLines.join("\n")}\n`;
+  const openHeader = `${lines[openIdx] ?? "## Open"}\n`;
+
+  if (archiveIdx < 0) {
+    // No archive section yet — body runs to EOF; caller synthesizes
+    // the `## Archive` line.
+    const openBodyLines = lines.slice(openIdx + 1);
+    const openBody = openBodyLines.length === 0 ? "" : `${openBodyLines.join("\n")}`;
+    return {
+      head,
+      openHeader,
+      openBody,
+      archiveHeader: null,
+      archiveBody: "",
+    };
+  }
+
+  const openBodyLines = lines.slice(openIdx + 1, archiveIdx);
+  const openBody = openBodyLines.length === 0 ? "" : `${openBodyLines.join("\n")}\n`;
+  const archiveHeader = `${lines[archiveIdx] ?? "## Archive"}\n`;
+  const archiveBodyLines = lines.slice(archiveIdx + 1);
+  // Preserve final newline byte-for-byte: if split produced an empty
+  // trailing element, the original file ended with `\n` and we want to
+  // re-emit that. join("\n") gives us the body content; we restore the
+  // trailing newline only when the original archive body was non-empty.
+  const archiveBody = archiveBodyLines.length === 0 ? "" : archiveBodyLines.join("\n");
+  return { head, openHeader, openBody, archiveHeader, archiveBody };
+}
+
+/** One entry inside `## Open` — the leading list-item line plus any
+ *  continuation lines up to the next entry-start or section boundary.
+ *  `text` carries the verbatim slice including trailing newline so
+ *  splicing rebuilds byte-equivalently. */
+export interface ParsedInboxEntry {
+  /** Full entry text (leading `- [...]` line + continuation lines +
+   *  trailing newline). */
+  text: string;
+  /** Parsed timestamp epoch seconds, or null when the prefix didn't
+   *  match the `- [HH:MM MYT [YYYY-MM-DD]]` shape. */
+  epochSec: number | null;
+}
+
+/** Parse a `## Open` body into entries. An entry starts with `- [`
+ *  at column 0; everything up to (but excluding) the next `- [` line
+ *  is the entry's text. Lines before the first `- [` (e.g. a blank
+ *  line right after the `## Open` header) are NOT entries — they're
+ *  preserved on the FIRST entry's leading position to keep byte-shape
+ *  stable. Exported for unit tests.
+ *
+ *  `nowMs` controls today-implicit date resolution (entries with
+ *  `- [HH:MM MYT]` lacking a date). Defaults to `time.now()`. */
+export function parseOpenEntries(
+  openBody: string,
+  nowMsOverride?: number,
+): ParsedInboxEntry[] {
+  if (openBody.length === 0) return [];
+  const stampMs = nowMsOverride ?? nowMs();
+  const lines = openBody.split("\n");
+  // Find each entry start index.
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if ((lines[i] ?? "").startsWith("- [")) starts.push(i);
+  }
+  if (starts.length === 0) return [];
+
+  // openBody ends with `\n` whenever the source had non-empty content
+  // before `## Archive` (per sliceOpenArchive's join + tail-`\n`). If
+  // we get here with a trailing empty element from split, we drop it
+  // to avoid double-newline on the last entry; we restore it via the
+  // `\n` we append per-entry below.
+  const trailingBlank =
+    lines.length > 0 && lines[lines.length - 1] === "";
+  const effectiveEnd = trailingBlank ? lines.length - 1 : lines.length;
+
+  const entries: ParsedInboxEntry[] = [];
+  for (let s = 0; s < starts.length; s++) {
+    const startIdx = starts[s] ?? 0;
+    const endIdxExclusive = s + 1 < starts.length ? (starts[s + 1] ?? effectiveEnd) : effectiveEnd;
+    const slice = lines.slice(startIdx, endIdxExclusive).join("\n");
+    // Re-add the trailing newline so splicing is byte-stable.
+    const text = `${slice}\n`;
+    const epochSec = parseEntryTimestamp(lines[startIdx] ?? "", stampMs);
+    entries.push({ text, epochSec });
+  }
+  return entries;
+}
+
+/** Match the entry-start prefix `- [HH:MM MYT]` or
+ *  `- [HH:MM MYT YYYY-MM-DD]` (with or without trailing `**member**:`).
+ *  Returns epoch seconds (MYT interpreted as UTC+8) or null when the
+ *  shape doesn't match. Exported for unit tests. */
+export function parseEntryTimestamp(line: string, nowMs: number): number | null {
+  // `- [HH:MM MYT YYYY-MM-DD]` (driver-inbox, dated form)
+  // `- [HH:MM MYT]` (driver-inbox today-implicit OR lead-outbox)
+  const m = /^- \[(\d{2}):(\d{2}) MYT(?: (\d{4})-(\d{2})-(\d{2}))?\]/.exec(line);
+  if (m === null) return null;
+  const hh = Number.parseInt(m[1] ?? "", 10);
+  const mm = Number.parseInt(m[2] ?? "", 10);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  let yyyy: number;
+  let mo: number;
+  let dd: number;
+  if (m[3] !== undefined && m[4] !== undefined && m[5] !== undefined) {
+    yyyy = Number.parseInt(m[3], 10);
+    mo = Number.parseInt(m[4], 10);
+    dd = Number.parseInt(m[5], 10);
+  } else {
+    // Today-implicit — derive YYYY-MM-DD in MYT from nowMs.
+    const today = mytYmd(nowMs);
+    yyyy = today.y;
+    mo = today.m;
+    dd = today.d;
+  }
+  if (
+    !Number.isFinite(yyyy) ||
+    !Number.isFinite(mo) ||
+    !Number.isFinite(dd) ||
+    mo < 1 ||
+    mo > 12 ||
+    dd < 1 ||
+    dd > 31
+  ) {
+    return null;
+  }
+  // Construct epoch from MYT (UTC+8) wall-clock. Date.UTC takes 0-indexed
+  // month. MYT = UTC+8, so the UTC wall-clock for the same instant is
+  // HH-8:MM on the SAME calendar date (or previous date if HH < 8).
+  // Easier: build ISO string with `+08:00` offset and parse.
+  const iso = `${pad4(yyyy)}-${pad2(mo)}-${pad2(dd)}T${pad2(hh)}:${pad2(mm)}:00+08:00`;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return Math.floor(ms / 1000);
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+function pad4(n: number): string {
+  return String(n).padStart(4, "0");
+}
+
+/** YYYY-MM-DD components in MYT (UTC+8) for the given epoch ms. */
+function mytYmd(epochMs: number): { y: number; m: number; d: number } {
+  // MYT = UTC+8, no DST. Shift epoch by +8h then read UTC components.
+  const d = new Date(epochMs + 8 * 3600 * 1000);
+  return {
+    y: d.getUTCFullYear(),
+    m: d.getUTCMonth() + 1,
+    d: d.getUTCDate(),
+  };
+}
+
 // ---------- Sub-op 2: decisions archival ----------
 
 export interface DecisionsArchiveResult {
