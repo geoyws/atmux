@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🏷️ Renamed — cockpit naming convention (ADR-135)
+
+- **Cockpit session renamed** from `atmux_teams` to `atmux_cockpit` per [ADR-135](docs/adr/135-cockpit-naming-convention.md). New default for `cockpit.json::cockpitSession`; the literal `atmux_teams` is accepted during the deprecation window with a one-line warning (`deprecated literal, rename to atmux_cockpit per ADR-135`).
+- **Cockpit-role windows gain underscore prefix**: `superdriver → _superdriver`, `medic → _medic`, `martinet → _martinet`. Per-team viewer windows stay plain (no underscore). Single-underscore signals "cockpit system role" and sorts before plain team names in `tmux list-windows`. Double-underscore remains reserved for atmux-internal placeholder windows (`__home`, `__driver` in `start.ts`).
+- **Member windows gain hyphen separator**: `buildWindowName` emits `<emoji>-<member>` (was `<emoji><member>`). Examples: `🧭-lead` (was `🧭lead`), `📦-whip-impl` (was `📦whip-impl`). Symmetric with hyphenated member names already in use (`whip-impl`, `parity-cron-impl`); regex/tab-completion-friendly; no shell-quoting hazard around variation-selector emoji like `🛠️`.
+- **Migration is in-place + idempotent**: `atmux cockpit rebuild` detects legacy `atmux_teams` session + non-underscored cockpit-role windows and renames them via `tmux rename-session` + `tmux rename-window` (preserves pane PIDs, attached clients, scroll history). `atmux start` (or `atmux team rebuild --force-cycle`) applies the member-window hyphen migration the same way. Re-running rebuild after migration is a no-op.
+- **Cron migration**: `atmux cron-install` idempotently rewrites emitted cron lines that reference the old session/window names (`atmux_teams:medic` → `atmux_cockpit:_medic`, etc.), same pattern as ADR-133 TR6.
+- **No state-file migration**: `cockpit.json` is a value-level (string-literal) field, not a key-level change; legacy literal accepted with warning during the deprecation window. After one semver bump (timeline TBC), the literal becomes a hard error pointing at ADR-135.
+
 ### 🏷️ Renamed — `superdoctor` → `medic` (ADR-133)
 
 - **Cockpit self-healing role renamed** from `superdoctor` to `medic` per [ADR-133](docs/adr/133-medic-rename.md) to eliminate the `atmux doctor` verb-vs-process naming collision. `medic` is collision-free and semantically tight for the cockpit-fleet-healer role.
