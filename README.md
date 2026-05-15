@@ -389,6 +389,26 @@ The legacy `atmux report` cron line — pre-discorder, lead-composed report — 
 
 **See also**: [ADR-022](docs/adr/022-discorder-role.md) (role rationale + ownership split + open questions); `templates/briefs/discorder.md` (canonical brief loaded at spawn time); [ADR-024](docs/adr/024-per-member-model-selection.md) (per-member model + the discorder Sonnet carve-out).
 
+### Ombudsman role
+
+Optional per-team complaint-adjudicator member, spawned at `role=ombudsman, lane=misc` (emoji `⚖️`). Per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1, reads open complaints (filed by medic / whip-velocity-gate / operator / CLI), triages each into one of five outcomes (file epic / file task / wontfix / already-addressed / defer), and writes its adjudication entry to the day's release-notes file. Surface-only on the code side — never claims code Tasks, never plans, only writes kanban + complaint resolutions.
+
+**Why**: the complaint *filing* side has named owners (medic per ADR-077, whip per ADR-087), but the *adjudicating* side has none — open complaints linger indefinitely until the operator triages them by hand. Ombudsman closes that loop per ADR-147 §Context.
+
+**Wake mechanism** (per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D2): **event-driven, NOT whip-polled**. A sentinel file `.atmux/state/ombudsman-pending.json` is written-through by `atmux complaints file|resolve`; a cron line `atmux ombudsman tick` (default 15min via `team.ombudsman.tickIntervalMins`) fast-paths no-op when the sentinel is empty and wakes the ombudsman pane via verified send-keys ([ADR-138](docs/adr/138-verified-send-keys.md)) when non-empty. Lane-tick MUST NOT inject `atmux claim --next --as ombudsman` — the role is outside the pull-model cadence.
+
+**Adjudication authority** (per ADR-147 §D3): for each open complaint, file an epic (`atmux task add --epic`), file a single task, mark `wontfix` (with rationale), mark `resolved` (citing the SHA/ADR that already addressed it), or defer (leaves sentinel entry for next tick). Every action also appends a one-line entry to the day's release-notes file `docs/release-notes/<Y>/<M>/<Y-M-D>.md` under `## Complaints adjudicated`. See ADR-147 §D4 for the day-file layout.
+
+**When to add it.** Once a team has accumulated ≥3 open complaints + the operator finds themselves triaging them manually each session. Skip for teams with no medic / no velocity gate (complaint volume too low to warrant the role).
+
+**How to add it.** No config edit needed; `atmux add-member` does the team.json mutation + spawn:
+
+```bash
+atmux add-member ombudsman --role ombudsman --tui claude --lane misc --cwd "$PWD"
+```
+
+**See also**: [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) (role rationale + release-notes layout + sub-task decomposition); `templates/briefs/ombudsman.md` (canonical brief, ships with ADR-147 T4); `docs/release-notes/README.md` (the layout convention this role writes to per ADR-147 §D4 Discovery).
+
 ### Enforcer role
 
 Optional fleet-level audit consumer member, spawned on the **superdriver team** at `role=enforcer, lane=misc`. Walks `~/.claude/teams/registry.json` per tick, invokes `atmux audit --json` per registered team, aggregates findings, and routes by class — surface-only, never claims, never plans, never auto-fires high-blast fixes.

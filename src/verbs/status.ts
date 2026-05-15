@@ -16,6 +16,7 @@ import { join } from "node:path";
 
 import { exists, readTextOrNull } from "../abstractions/fs.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { type CageHealth, type CageState, probeCageState } from "../core/cage-state.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
   buildWindowName,
@@ -96,6 +97,13 @@ export interface MemberStatus {
    *  field (the ID) as the primary key. */
   label?: string;
   paneCommand: string;
+  /** t-74273200 / c-8ecd3a61: canonical 4-state cage taxonomy. Shared
+   *  with `atmux doctor` (`MemberCageState` is an alias). When the
+   *  member's `tui !== "claude"`, this is `null` — the cage-state
+   *  probe is claude-specific (it checks for `claude` exec in the
+   *  pane's child tree); non-claude TUIs are read via the legacy
+   *  `paneCommand` field above. */
+  cageState: CageState | null;
   /** Tasks owned by this member with status='todo'. Pre-ADR-076 this
    *  came from the JSON inbox `pending` bucket; post-cutover it's a
    *  direct query against the tasks table via `loadInbox`. Surfaced in
@@ -328,6 +336,23 @@ export async function gatherStatus(
   const members: MemberStatus[] = [];
   for (const m of team.members) {
     const paneCommand = await readPaneCommand(tmux, sessionName, m, sessionState === "up");
+    // t-74273200 / c-8ecd3a61: cage-state probe for claude TUI members
+    // — replaces the pane_current_command proxy which mis-reported
+    // welcome-screen claude TUIs as `(down)`. Non-claude TUIs skip the
+    // probe (cage taxonomy is claude-specific) and surface state=null.
+    let cageState: CageState | null = null;
+    if (sessionState === "up" && (m.tui ?? "claude") === "claude") {
+      try {
+        const health: CageHealth = await probeCageState(team, m, atmuxDir, { tmux });
+        cageState = health.state;
+      } catch {
+        // Probe failure → leave cageState null; the legacy paneCommand
+        // proxy still gives the operator something to look at.
+        cageState = null;
+      }
+    } else if (sessionState === "down") {
+      cageState = "down";
+    }
     const { pending: pendingCount, inProgress: inProgressCount } = await readMemberCounts(
       atmuxDir,
       m.name,
@@ -337,6 +362,7 @@ export async function gatherStatus(
       role: m.role ?? "member",
       tui: m.tui ?? "claude",
       paneCommand,
+      cageState,
       pendingCount,
       inProgressCount,
     };
@@ -445,6 +471,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           role: string;
           tui: string;
           paneCommand: string;
+          cageState: CageState | null;
           pendingCount: number;
           inProgressCount: number;
           label?: string;
@@ -456,6 +483,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           role: m.role,
           tui: m.tui,
           paneCommand: m.paneCommand,
+          cageState: m.cageState,
           pendingCount: m.pendingCount,
           inProgressCount: m.inProgressCount,
         };
@@ -543,7 +571,16 @@ function renderTextStatus(snap: StatusSnapshot): void {
     const evidence = dp.evidence.length > 60 ? `${dp.evidence.slice(0, 60)}…` : dp.evidence;
     process.stdout.write(`🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`);
   }
-  process.stdout.write(`member       role          tui        pane          ctx      tasks\n`);
+  // t-74273200: text mode now leads with `cageState` (the unified 4-
+  // state taxonomy: down/bootstrapping/active/wedged) in place of the
+  // pane_current_command proxy that mis-reported welcome-screen claude
+  // TUIs as `(down)`. The legacy paneCommand column is preserved in
+  // JSON output (back-compat for consumers reading the field) but
+  // dropped from the text render to keep the row narrow.
+  // Per-task t-d98b2bd6: `ctx` column added between state and tasks
+  // — reads the whip-side `member-context/*.json` signal written by
+  // measure-context.sh. Renders "—" / "(stale)" / "X.X%".
+  process.stdout.write(`member       role          tui        state         ctx      tasks\n`);
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
     // ADR-136 TR4: operator-facing text column uses label-fallback.
@@ -553,13 +590,17 @@ function renderTextStatus(snap: StatusSnapshot): void {
     const name = displayMemberName(m).padEnd(12);
     const role = m.role.padEnd(14);
     const tui = m.tui.padEnd(10);
-    const pane = m.paneCommand.padEnd(14);
+    // For claude TUIs: surface the cage state. For non-claude TUIs:
+    // fall back to the legacy pane_current_command (the cage taxonomy
+    // doesn't apply — non-claude TUIs don't have claude in their child
+    // process tree by definition).
+    const state = (m.cageState ?? m.paneCommand).padEnd(14);
     // Per-task t-d98b2bd6: ctx % column rendered as "8.4%" /
     // "(stale)" / "—". Width pinned to 8 chars so the trailing
     // tasks block stays column-aligned across heterogeneous teams.
     const ctx = formatContextColumn(m).padEnd(8);
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${pane} ${ctx} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${state} ${ctx} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
     );
   }
   const k = snap.kanban;

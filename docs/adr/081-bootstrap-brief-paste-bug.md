@@ -157,3 +157,16 @@ tmux -S /tmp/atmux-atmux/sock send-keys -t atmux:<window> C-m
 ```
 
 Result: 11/12 panes registered briefs (54k–117k tokens within 15s). Window 1 (cage driver) deliberately left untouched. Members began claiming kanban tasks within 5 minutes; one teammate independently picked up §B's `BRIEF_ALIASES` patch within ~15 min of bootstrap and committed it as `7aa7cf2` (closing the loop on §E's "team can self-heal once it's awake" hypothesis).
+
+## Annotation — 2026-05-15: §D cage-state taxonomy unified per t-74273200
+
+§D's 4-state ladder (`down` / `bootstrapping` / `active` / `starving`) is **superseded** by the unified 4-state taxonomy in `src/core/cage-state.ts` shared between `atmux status` + `atmux doctor` (t-74273200, resolving the second half of c-8ecd3a61). The new taxonomy:
+
+- `down` — unchanged from §D.
+- `bootstrapping` — collapses §D's `bootstrapping` (transient) + `starving` (uptime-aged) into one underlying state. Doctor's row-surfacing policy still distinguishes the two via the `STARVING_THRESHOLD_S` uptime gate (silent vs yellow), but the *state label* is now uniformly `bootstrapping`.
+- `active` — unchanged from §D.
+- `wedged` (NEW) — claude PID alive, tokens have moved at some point, but the pane is currently stuck (`hit your limit` rate-limit banner OR heartbeat staler than the 2h `WEDGED_HEARTBEAT_STALE_SEC` ceiling). Captures the failure mode §D didn't catch: a claude that started healthily but then froze.
+
+Both verbs now share the same vocabulary, eliminating the "atmux status says down, atmux doctor says starving" operator confusion from c-8ecd3a61. The implementation is `src/core/cage-state.ts::probeCageState`; both `src/verbs/status.ts` (replacing the `pane_current_command` proxy) and `src/verbs/doctor.ts` (replacing the local `defaultProbeMemberCage` body) delegate to it.
+
+**E2E gate (t-581ee81f)**: full-taxonomy walk lives at `tests/e2e/cage-state-transitions.test.ts`. Spins up a real tmux server with five members covering each state class (`down-mbr`, `bootstrap-mbr`, `active-mbr`, `wedged-rl-mbr`, `wedged-hb-mbr`) and asserts `atmux status` (text + `--json`) AND `atmux doctor` (text + `--json`) report the same state-class per member. Wedged exercised via both rate-limit-banner + heartbeat-stale sub-causes. `node -e 'process.stdin.resume()'` stands in for the claude binary (production probe accepts `node` as a Claude Code wrapper exec name per `cage-state.ts` §3). Skip-gated on `tmux` + `node` presence and `process.env.TMUX` absent.

@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addTask, listTasks, showTask } from "../../../src/core/kanban.ts";
+import { addTask, claimTask, listTasks, showTask } from "../../../src/core/kanban.ts";
 import {
   findPhantomInProgressClaims,
   formatPruneIso,
@@ -281,6 +281,104 @@ describe("phantom-prune end-to-end", () => {
     expect(stillInProgress).toHaveLength(0);
     const blocked = await listTasks(atmuxDir, { status: "blocked" });
     expect(blocked.length).toBeGreaterThanOrEqual(5);
+  });
+});
+
+// ---------- findPhantomInProgressClaims — t-d6fc03a7 age filter ----------
+
+describe("findPhantomInProgressClaims — minAgeSec filter (t-d6fc03a7)", () => {
+  /** Seed a row via the real `claimTask` so `claimedAt` is populated.
+   *  Returns the captured `claimedAt` so tests can do deterministic
+   *  age arithmetic without freezing the system clock. */
+  async function seedAndRealClaim(opts: {
+    subject: string;
+    owner: string;
+  }): Promise<{ id: string; claimedAt: number }> {
+    const id = await addTask(atmuxDir, { subject: opts.subject, assignee: opts.owner });
+    const { post } = await claimTask(atmuxDir, id, opts.owner);
+    const claimedAt = post.claimedAt;
+    if (claimedAt === null || claimedAt === undefined) {
+      throw new Error("test seed: claimTask did not stamp claimedAt");
+    }
+    return { id, claimedAt };
+  }
+
+  test("minAgeSec omitted → no filtering (existing behaviour preserved)", async () => {
+    const { id } = await seedAndRealClaim({ subject: "a", owner: "alpha" });
+    const team = makeTeam(["alpha"]);
+    // No minAgeSec — every dead-owner phantom returned regardless of age.
+    const got = await findPhantomInProgressClaims({
+      atmuxDir,
+      team,
+      liveMembers: async () => new Set(),
+    });
+    expect(got.map((p) => p.id)).toEqual([id]);
+  });
+
+  test("minAgeSec=86400 + claim within window → filtered out", async () => {
+    const { id, claimedAt } = await seedAndRealClaim({ subject: "a", owner: "alpha" });
+    const team = makeTeam(["alpha"]);
+    // nowSec = claimedAt + 100s (fresh claim, well inside 24h window).
+    const got = await findPhantomInProgressClaims({
+      atmuxDir,
+      team,
+      liveMembers: async () => new Set(),
+      minAgeSec: 86_400,
+      nowSec: claimedAt + 100,
+    });
+    expect(got).toEqual([]);
+    // Sanity: without the filter, the same row IS reported as phantom.
+    const unfiltered = await findPhantomInProgressClaims({
+      atmuxDir,
+      team,
+      liveMembers: async () => new Set(),
+      nowSec: claimedAt + 100,
+    });
+    expect(unfiltered.map((p) => p.id)).toEqual([id]);
+  });
+
+  test("minAgeSec=86400 + claim past window → returned", async () => {
+    const { id, claimedAt } = await seedAndRealClaim({ subject: "a", owner: "alpha" });
+    const team = makeTeam(["alpha"]);
+    // 25h later — past the 24h gate.
+    const got = await findPhantomInProgressClaims({
+      atmuxDir,
+      team,
+      liveMembers: async () => new Set(),
+      minAgeSec: 86_400,
+      nowSec: claimedAt + 90_000,
+    });
+    expect(got.map((p) => p.id)).toEqual([id]);
+  });
+
+  test("claimedAt=null (legacy row) → kept regardless of filter (fail-safe toward pruning)", async () => {
+    // addTask + moveTask does NOT stamp claimedAt — mirrors the
+    // legacy / pre-claim-stamp shape `findPhantomInProgressClaims`
+    // must still flag, since the only way to reach in-progress
+    // without a claimedAt is data drift on a stale row.
+    const id = await seedAndClaim({ subject: "legacy", owner: "alpha" });
+    const team = makeTeam(["alpha"]);
+    const got = await findPhantomInProgressClaims({
+      atmuxDir,
+      team,
+      liveMembers: async () => new Set(),
+      minAgeSec: 86_400,
+      nowSec: Math.floor(Date.now() / 1000),
+    });
+    expect(got.map((p) => p.id)).toEqual([id]);
+  });
+
+  test("hygiene-tick source carries through prune note", async () => {
+    const id = await seedAndClaim({ subject: "a", owner: "alpha" });
+    const r = await prunePhantomInProgressClaims({
+      atmuxDir,
+      phantoms: [{ id, owner: "alpha", subject: "a" }],
+      asOfIso: "2026-05-15T03:00:00Z",
+      source: "hygiene-tick",
+    });
+    expect(r.prunedIds).toEqual([id]);
+    const after = await showTask(atmuxDir, id);
+    expect(after?.note).toBe("auto-pruned at 2026-05-15T03:00:00Z via hygiene-tick");
   });
 });
 

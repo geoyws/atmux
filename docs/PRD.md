@@ -380,9 +380,10 @@ detail (lib edits in main checkout's `atmux-geoyws` branch).
 | Team-lead   | 1                    | claude        | Routes asks + dispatches; never plans itself |
 | Planner     | 2                    | claude        | Decomposes asks into kanban tasks + writes ADRs |
 | Reviewer    | 3                    | claude        | Reviews diffs, approves commits |
-| Gitter      | 4                    | claude        | Only member allowed to commit + push |
+| Gitter      | 4                    | claude        | **Two modes (auto-detected from `team.json`)**: (a) **single-trunk mode** when `worktreeIsolation: false` OR `autoMerge.enabled: false` — only member allowed to commit + push (per pull-model brief); (b) **auto-merge mode** when `worktreeIsolation: true` AND `autoMerge.enabled: true` per [ADR-134](adr/134-in-team-auto-merger.md) — watches `<base>-<member>` branches, auto-merges to base on task-done events via socket-pubsub + 10min cron backstop, runs the 9-state machine (`open → in_progress → ready_to_merge → rebasing? → merging → tested → merged|test_failed → reverted`) with BEGIN IMMEDIATE transactions, 3-way conflict surface (state.db → atmux flag → Discord `[merge-conflict]`), and post-merge test gate via `team.json::autoMerge.testCommand` (default `bun test`). Workers self-commit on their own branches in auto-merge mode; gitter owns only the merge layer. |
 | Devops      | 5                    | claude        | Deploys, env, CI/CD, infra |
 | Dba         | 6                    | claude (opt)  | Schema + migrations + data integrity |
+| Ombudsman   | (event-driven)       | claude (opt)  | Per-team complaint adjudicator per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D1. Reads open complaints, triages → epic / wontfix / resolved / defer, appends day-file entry under `docs/release-notes/<Y>/<M>/<Y-M-D>.md`. **Event-driven** (sentinel `.atmux/state/ombudsman-pending.json` + 15min cron tick); NOT in whip cadence (ADR-147 §D2). |
 | Members     | 7+                   | any           | Parallel throughput per feature lane |
 
 Driver ↔ lead routing: file-based (`~/.claude/teams/<team>/driver-inbox.md`)

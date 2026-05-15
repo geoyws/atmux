@@ -21,6 +21,10 @@
 //   - `atmux doctor --fix` — operator-driven, between sessions.
 //   - `atmux stop` — runs at session teardown so phantoms don't
 //     survive into the next boot.
+//   - `atmux hygiene-tick` — opportunistic cron-fired sweep (t-d6fc03a7)
+//     of long-lived phantoms (≥24h by default, via `minAgeSec`) whose
+//     owner-member is not currently attached. Catches the "team
+//     session died non-gracefully" path the stop hook can't cover.
 
 import { listTasks, markTaskBlockedWithNote } from "./kanban.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
@@ -50,6 +54,22 @@ export interface FindPhantomOpts {
   atmuxDir: string;
   team: Team;
   liveMembers: LiveMembersProbe;
+  /** Minimum age (seconds) since `claimedAt` before a phantom is
+   *  returned. Used by `atmux hygiene-tick` (default 86400s = 24h) to
+   *  spare fresh claims that may legitimately race the cron tick.
+   *  Stop + doctor callers omit — they're operator-driven and want
+   *  every detected phantom flipped immediately.
+   *
+   *  Rows missing `claimedAt` (legacy / never-set) are treated as
+   *  unboundedly old: they fall through the filter and are returned
+   *  whenever the filter is active. The fail-safe posture matches the
+   *  rest of the module — "owner can't possibly still be working" is
+   *  more important than the timestamp's presence. */
+  minAgeSec?: number;
+  /** Epoch seconds used as `now` for the `minAgeSec` comparison.
+   *  Injected by tests for deterministic age arithmetic; omitted by
+   *  production callers (defaults to `Math.floor(Date.now() / 1000)`). */
+  nowSec?: number;
 }
 
 /**
@@ -61,6 +81,11 @@ export interface FindPhantomOpts {
  *
  * Returns an empty array when no in-progress rows exist OR when every
  * in-progress owner has a live pane.
+ *
+ * When `minAgeSec` is set, rows whose `claimedAt` is within the window
+ * are filtered out. Rows with `claimedAt === null` are kept (legacy /
+ * pre-claim-stamp rows — fail-safe toward pruning, since the only way
+ * a row reaches `in-progress` without a `claimedAt` is data drift).
  */
 export async function findPhantomInProgressClaims(
   opts: FindPhantomOpts,
@@ -68,11 +93,16 @@ export async function findPhantomInProgressClaims(
   const inProgress = await listTasks(opts.atmuxDir, { status: "in-progress" });
   if (inProgress.length === 0) return [];
   const live = await opts.liveMembers();
+  const now = opts.nowSec ?? Math.floor(Date.now() / 1000);
   const phantoms: PhantomClaim[] = [];
   for (const t of inProgress) {
     const owner = t.owner;
     if (owner === null || owner === undefined || owner.length === 0) continue;
     if (live.has(owner)) continue;
+    if (opts.minAgeSec !== undefined && opts.minAgeSec > 0) {
+      const claimedAt = t.claimedAt ?? null;
+      if (claimedAt !== null && now - claimedAt < opts.minAgeSec) continue;
+    }
     phantoms.push({ id: t.id, owner, subject: t.subject ?? "" });
   }
   return phantoms;
@@ -80,7 +110,7 @@ export async function findPhantomInProgressClaims(
 
 // ---------- Prune ----------
 
-export type PruneSource = "doctor-fix" | "session-stop";
+export type PruneSource = "doctor-fix" | "session-stop" | "hygiene-tick";
 
 export interface PruneOpts {
   atmuxDir: string;

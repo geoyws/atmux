@@ -533,6 +533,88 @@ export type TeamMerger = z.infer<typeof TeamMerger>;
  *  Matches the 15-min default the ADR specifies. */
 export const DEFAULT_MERGER_CYCLE_INTERVAL_MINS = 15;
 
+/** ADR-134 §Config: per-team auto-merger config (intra-team gitter
+ *  event-driven + cron-backstop fan-in). Separate from {@link TeamMerger}
+ *  (ADR-088 bulk-merge-cycle verb) — they target different scopes:
+ *  - `team.merger` — operator-fired `atmux merge-cycle` bulk pass,
+ *    per ADR-088.
+ *  - `team.autoMerge` — gitter member's event-driven auto-merge +
+ *    cron-backstop sweep, per ADR-134.
+ *
+ *  The two can coexist: a team can opt into both ADR-088's hand-fired
+ *  bulk pass AND ADR-134's continuous gitter auto-merge. They serialize
+ *  through the same {@link MergerStateRepo} (ADR-091 + ADR-134 shared
+ *  state machine), so concurrent firings are safe — BEGIN IMMEDIATE
+ *  serializes the transitions.
+ *
+ *  Default state: absent (existing teams keep manual fan-in unchanged).
+ *  Recommendation: enable on `worktreeIsolation: true` teams; the
+ *  gitter brief (T6) auto-routes to worktree-fan-in mode when the
+ *  block is present and `enabled === true`.
+ *
+ *  Schema landed in this commit (ADR-134 T4 / t-64e52aac) as the first
+ *  consumer (the cron-backstop sweep). Other consumers — T6 gitter
+ *  member impl, T7 cron-install template wiring, T8 e2e — read these
+ *  fields without re-defining the surface. */
+export const TeamAutoMerge = z
+  .object({
+    /** Master switch per ADR-134 §Config. Default `false` when the
+     *  block is absent OR `enabled` is unset; existing teams keep the
+     *  pre-ADR-134 manual fan-in. ADR's "true when worktreeIsolation
+     *  is true" recommendation is operator-driven, not schema-default,
+     *  to preserve back-compat — every existing `worktreeIsolation`
+     *  team would otherwise flip silently. */
+    enabled: z.boolean().default(false),
+    /** ADR-134 §Config: when `true`, the gitter waits for a
+     *  `reviewer-trunk-signoff` task on the member's branch before
+     *  transitioning `ready_to_merge → merging`. v1 default `false`;
+     *  forward-compat for teams that want a reviewer gate on every
+     *  fan-in. Honored by T6 gitter member loop; the cron sweep
+     *  (T4 / this commit) doesn't read this field — the gate fires
+     *  at the per-merge step, not the queue step. */
+    requireReviewerSignoff: z.boolean().default(false),
+    /** ADR-134 §Config OQ-1: skip the post-merge `tested` state
+     *  entirely. `false` (the default) runs `testCommand` after every
+     *  merge; `true` short-circuits `merging → merged` and is the
+     *  escape hatch for docs-only / archival-only teams. Honored by
+     *  T6 gitter member loop. */
+    skipTestGate: z.boolean().default(false),
+    /** ADR-134 §Config OQ-1: the shell command the gitter runs to
+     *  gate `merging → tested → merged`. Default `"bun test"` matches
+     *  the atmux team's CI gate; per-team override (e.g. sopx might
+     *  use `"pnpm test:unit"`). Honored by T6 gitter member loop. */
+    testCommand: z.string().min(1).default("bun test"),
+    /** ADR-134 §Config OQ-2: when `true` (default), a failed
+     *  `testCommand` causes the gitter to `git revert` the merge
+     *  commit and transition to `reverted` (terminal). When `false`,
+     *  the gitter pauses at `test_failed` and pings the operator
+     *  without reverting. Honored by T6 gitter member loop. */
+    revertOnFail: z.boolean().default(true),
+    /** ADR-134 §Config: cadence in minutes for the cron backstop
+     *  sweep. Default `10`. Consumed by T7's cron-install template
+     *  emission — this field is the cadence input to `cronEvery(N)`.
+     *  T4's `atmux gitter --sweep` verb is cadence-agnostic; it runs
+     *  on whatever interval the cron line fires. Must be a divisor of
+     *  60 for `cronEvery` (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60);
+     *  the renderer fail-fasts on non-divisors at install time. */
+    cronBackstopMin: z.number().int().positive().default(10),
+    /** ADR-134 §Config OQ-3: rate-limit the gitter to N merges/hour.
+     *  Default `null` (uncapped) per the ADR's v1 recommendation;
+     *  numeric value gates `ready_to_merge → merging` when the
+     *  trailing-hour merge count is at or above the cap. Honored by
+     *  T6 gitter member loop. */
+    maxMergesPerHour: z.number().int().positive().nullable().default(null),
+  })
+  .strict();
+export type TeamAutoMerge = z.infer<typeof TeamAutoMerge>;
+
+/** ADR-134 §Config default — used by T4's `gitter --sweep` cron line
+ *  emission (T7 cron-install template) when `team.autoMerge
+ *  .cronBackstopMin` is unset. Matches the 10-min default the ADR
+ *  specifies; co-located with the schema so non-Zod call sites (cron
+ *  renderer, T7 install) share the same constant. */
+export const DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN = 10;
+
 export const TeamObservability = z
   .object({
     /** t-e89c03f7: when true, every UNKNOWN classification from
@@ -742,6 +824,12 @@ export const Team = z
      *  resolved at read-time via {@link resolveMergerConfig} from
      *  `src/core/merger-config.ts`. */
     merger: TeamMerger.optional(),
+    /** ADR-134 §Config: per-team intra-team auto-merger config
+     *  (gitter event-driven + cron-backstop fan-in). Distinct from
+     *  {@link merger} (ADR-088 bulk-merge-cycle verb) — see
+     *  {@link TeamAutoMerge} JSDoc for the scope comparison. Opt-in;
+     *  absent block keeps pre-ADR-134 manual fan-in. */
+    autoMerge: TeamAutoMerge.optional(),
     /** t-e89c03f7: observability toggles (forensic data collection). */
     observability: TeamObservability.optional(),
     /** ADR-142: modal-cycling detector tunables. Defaults applied per
