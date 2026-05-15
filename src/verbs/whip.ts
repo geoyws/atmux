@@ -77,7 +77,9 @@ import {
   runSwapPass,
 } from "../core/account-swap.ts";
 import {
+  buildWindowName,
   classifyPaneState,
+  displayMemberName,
   getAtmuxDir,
   getSessionName,
   logsDir,
@@ -1557,7 +1559,12 @@ async function checkMember(
   // shape `start.ts::buildWindowName` spawns. Regular members go straight
   // to that form (memory feedback_window_naming_no_prefix).
   const role = (member.role ?? "member").toString();
-  const memberWindowName = `${member.emoji ?? ""}${member.name}`;
+  // ADR-135 + ADR-136 TR4: canonical `<emoji>-<label ?? name>` form.
+  const memberWindowName = buildWindowName(member.name, member.emoji, member.label);
+  // ADR-136 TR4: operator-facing display string. Used in bullet text +
+  // any Discord-rendered struct fields; internal storage / lookup
+  // paths continue to key on `member.name`.
+  const display = displayMemberName(member);
   const homeOpts: SkillsTeamPathsOpts & { fallback?: string } =
     ctx.home !== undefined ? { home: ctx.home } : {};
   if (role === "team-lead") homeOpts.fallback = memberWindowName;
@@ -1575,7 +1582,7 @@ async function checkMember(
   if (!windowExists) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🛑 ${member.name}: window missing (role=${role})`),
+      bullet: bullet80(`🛑 ${display}: window missing (role=${role})`),
     });
     return;
   }
@@ -1596,7 +1603,7 @@ async function checkMember(
     // this member. Same posture as bash whip's silent skip.
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🛑 ${member.name}: pane probe failed`),
+      bullet: bullet80(`🛑 ${display}: pane probe failed`),
     });
     return;
   }
@@ -1605,7 +1612,7 @@ async function checkMember(
   if (want !== null && paneCmd !== want) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🛑 ${member.name}: pane is \`${paneCmd}\` not \`${want}\``),
+      bullet: bullet80(`🛑 ${display}: pane is \`${paneCmd}\` not \`${want}\``),
     });
     return;
   }
@@ -1628,7 +1635,7 @@ async function checkMember(
           findings.push({
             category: "blocker",
             bullet: bullet80(
-              `🛑 ${member.name}: cross-account spawn (member=${memberTag}, driver=${driverTag})`,
+              `🛑 ${display}: cross-account spawn (member=${memberTag}, driver=${driverTag})`,
             ),
           });
         }
@@ -1651,28 +1658,28 @@ async function checkMember(
   if (snap.rateLimit === "hard") {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🔴 ${member.name}: HARD rate-limit banner visible`),
+      bullet: bullet80(`🔴 ${display}: HARD rate-limit banner visible`),
     });
   } else if (snap.rateLimit === "soft") {
     // ADR-022 + ADR-023: SOFT classifier is observed-but-not-acted-on
     // until the LLM-judge cascade ports.
     findings.push({
       category: "informational",
-      bullet: bullet80(`🟡 ${member.name}: SOFT rate-limit observed (judge deferred)`),
+      bullet: bullet80(`🟡 ${display}: SOFT rate-limit observed (judge deferred)`),
     });
   }
 
   if (snap.compacting) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🟡 ${member.name}: compacting — skip sends`),
+      bullet: bullet80(`🟡 ${display}: compacting — skip sends`),
     });
   }
 
   if (snap.queuedMessages && !snap.busy) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`📍 ${member.name}: messages queued but not submitted`),
+      bullet: bullet80(`📍 ${display}: messages queued but not submitted`),
     });
   }
 
@@ -1689,7 +1696,7 @@ async function checkMember(
       findings.push({
         category: "overdue",
         bullet: bullet80(
-          `⏰ ${member.name}: ${stale.length} task(s) in-progress > ${config.staleMin}min`,
+          `⏰ ${display}: ${stale.length} task(s) in-progress > ${config.staleMin}min`,
         ),
       });
     }
@@ -1705,8 +1712,11 @@ async function checkMember(
   if (permMode !== null && permMode !== "auto") {
     findings.push({
       category: "informational",
-      bullet: bullet80(`📋 ${member.name}: pane in '${permMode}' mode (expected 'auto')`),
-      permModeDrift: { member: member.name, mode: permMode },
+      bullet: bullet80(`📋 ${display}: pane in '${permMode}' mode (expected 'auto')`),
+      // Discord renderer formats this `member` field as the
+      // operator-facing display string — pass label-fallback, not the
+      // raw ID (the ID is the immutable key, label is the surface).
+      permModeDrift: { member: display, mode: permMode },
     });
   }
 
@@ -1732,8 +1742,9 @@ async function checkMember(
   if (panePath !== "" && !(await exists(panePath))) {
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🛑 ${member.name}: cwd ${panePath} does not exist`),
-      defunctCwd: { member: member.name, cwd: panePath },
+      bullet: bullet80(`🛑 ${display}: cwd ${panePath} does not exist`),
+      // Discord-bound — uses display string per ADR-136 TR4.
+      defunctCwd: { member: display, cwd: panePath },
     });
   }
 
@@ -1750,7 +1761,7 @@ async function checkMember(
     // flag-classifier missed (different regex catalog). Surface it.
     findings.push({
       category: "blocker",
-      bullet: bullet80(`🔴 ${member.name}: RATE-LIMIT pane state (R57-T1 classifier)`),
+      bullet: bullet80(`🔴 ${display}: RATE-LIMIT pane state (R57-T1 classifier)`),
     });
   }
 
@@ -1806,10 +1817,14 @@ async function checkMember(
           findings.push({
             category: "blocker",
             bullet: bullet80(
-              `🔄 ${member.name}: modal-cycling (${distinctCount} distinct in ${cyc.windowMin}min, 0 commits)`,
+              `🔄 ${display}: modal-cycling (${distinctCount} distinct in ${cyc.windowMin}min, 0 commits)`,
             ),
             modalCycling: {
-              member: member.name,
+              // Discord-bound — display string (Discord renderer
+              // formats this directly into the bullet). Internal
+              // modal-history `entry.member` stays as `member.name`
+              // (the ID) for SQLite owner-column consistency.
+              member: display,
               taskId: claimedTask,
               distinctCount,
               modalsSeen: verdict.modalsSeen,

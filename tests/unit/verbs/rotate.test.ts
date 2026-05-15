@@ -180,10 +180,27 @@ describe("getBriefPath", () => {
     "planner",
     "reviewer",
     "gitter",
+    // ADR-147 T4: new role `ombudsman` ships with its own brief at
+    // `templates/briefs/ombudsman.md`. Including it in the regression
+    // sweep ensures the file is shipped + readable + resolves via
+    // getBriefPath without falling through to member.md (which would
+    // mean spawned ombudsman panes boot with the wrong role contract).
+    "ombudsman",
   ])("production briefs resolve role %s to an existing file", async (role) => {
     const path = await getBriefPath(role, defaultBriefsDir());
     const content = await readFile(path, "utf8");
     expect(content.length).toBeGreaterThan(0);
+  });
+
+  // ADR-147 T4: ombudsman brief must NOT fall back to member.md — its
+  // role contract (sentinel + cron, no kanban claims, no code edits)
+  // diverges sharply from the generic member loop. A fallback would
+  // boot the pane with member.md's claim-loop instructions, which is
+  // wrong for ombudsman.
+  test("role 'ombudsman' resolves to ombudsman.md, NOT member.md fallback", async () => {
+    const path = await getBriefPath("ombudsman", defaultBriefsDir());
+    expect(path.endsWith("/ombudsman.md")).toBe(true);
+    expect(path.endsWith("/member.md")).toBe(false);
   });
 });
 

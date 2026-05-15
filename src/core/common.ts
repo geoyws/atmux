@@ -242,10 +242,28 @@ export async function getSessionName(opts: SessionNameOpts = {}): Promise<string
  * pre-amend `__<team>__<emoji><member>` prefix to maximize horizontal
  * space in tmux's window-list UI.
  *
- * **New form** — `<emoji><member>` when emoji is set, `<member>` when not.
- * Concrete examples (5-char team `atmux`):
+ * **ADR-135 form** — `<emoji>-<member>` (hyphen-separated) when
+ * emoji is set, `<member>` when not. Concrete examples (5-char team
+ * `atmux`):
  *   pre-amend:  `__atmux__🗺️lead`     (12 chars + emoji)
  *   post-amend: `🗺️lead`              (4 chars + emoji)
+ *   post-ADR-135: `🗺️-lead`           (4 chars + emoji + hyphen)
+ *
+ * Why the hyphen (ADR-135 §D3):
+ *   - Shell-quoting safety: `tmux send-keys -t atmux:🗺️-lead` works
+ *     without quoting; the no-separator form is byte-glued and can
+ *     trip variation-selector emoji (🛠️ = U+1F6E0+U+FE0F) on some
+ *     terminal/escape paths.
+ *   - Regex/tab-completion friendly: matchers like `^.<emoji>-<name>$`
+ *     stay simple; tab-completion engines tokenise on hyphens
+ *     cleanly.
+ *   - Symmetric with existing hyphenated member names
+ *     (`whip-impl`, `parity-cron-impl`, `up-impl-2`).
+ *
+ * Legacy detection helper: {@link buildWindowNameLegacy} produces the
+ * pre-ADR-135 no-separator form — used by `start.ts` to detect
+ * legacy windows that need in-place renaming on first reboot under
+ * the new convention (ADR-135 §D4 migration shim).
  *
  * The bash side at HEAD 2aadc3f still uses the prefixed form
  * (`lib/common.sh::atmux::window_name`); port-back is non-urgent and
@@ -253,9 +271,70 @@ export async function getSessionName(opts: SessionNameOpts = {}): Promise<string
  * 5 deferral" governs the cross-language drift while the prefixed form
  * stays live in production bash).
  */
-export function buildWindowName(member: string, emoji?: string): string {
+export function buildWindowName(member: string, emoji?: string, label?: string): string {
+  // ADR-136 TR4: optional `label` overrides `member` (the ID) for the
+  // display segment only. Window name still couples emoji + display
+  // string; the underlying tmux window is keyed by name (mutable) but
+  // members are addressed by name (the immutable ID) via the
+  // worktree / branch / kanban / inbox storage classes — all of which
+  // continue to use `member` regardless of label.
+  //
+  // ADR-135 separator: `<emoji>-<display>` (hyphen-separated) when
+  // emoji is set. Two-arg callers (pre-TR4) pass `label === undefined`
+  // implicitly → display falls back to `member` (the ID), shape stays
+  // `<emoji>-<member>`. The label-fallback happens here so per-callsite
+  // migrations can pass `member.label` without each callsite
+  // re-implementing `label ?? name`.
+  const display = label !== undefined && label.length > 0 ? label : member;
+  if (emoji !== undefined && emoji.length > 0) return `${emoji}-${display}`;
+  return display;
+}
+
+/**
+ * Legacy pre-ADR-135 form of {@link buildWindowName} — `<emoji><member>`
+ * (no separator) when emoji is set, `<member>` when not. Used by
+ * `start.ts` to detect existing legacy windows that need in-place
+ * renaming via `tmux rename-window` per ADR-135 §D4. Idempotent: the
+ * shim only fires when a window matching the legacy form is found and
+ * the canonical (hyphenated) form does not yet exist.
+ *
+ * ADR-136 TR4: the legacy detector keys on `member` (the ID) — it's
+ * the pre-rename shape, so labels never appeared in legacy windows
+ * by construction. No `label` arg here.
+ *
+ * @deprecated v2-bump per ADR-135 — once the one-release-cycle
+ *             deprecation window closes, this helper is removed.
+ */
+export function buildWindowNameLegacy(member: string, emoji?: string): string {
   if (emoji !== undefined && emoji.length > 0) return `${emoji}${member}`;
   return member;
+}
+
+/**
+ * ADR-136 TR4: display name for a member. Returns `member.label` when
+ * set + non-empty, otherwise `member.name`. Use this for operator-
+ * facing surfaces (Discord templates, status output, brief
+ * substitutions, debug log fields the user reads). Internal lookups
+ * (kanban owner column, inbox file path, worktree path, branch name)
+ * always use `member.name` — never route through this helper.
+ *
+ * ID vs label split rationale, mirroring ADR-136 §"Hot-rename
+ * concurrency safety":
+ *
+ *   - `member.name` is the immutable ASCII identifier
+ *     (`MEMBER_NAME_REGEX = /^[a-z][a-z0-9_-]{0,30}$/`) that keys
+ *     every persistent storage class — change-tracking depends on
+ *     this stability.
+ *   - `member.label` is the mutable Unicode display field that
+ *     `atmux member rename` mutates atomically. Refine rule rejects
+ *     `:` and `.` (tmux window-name separators); `displayMemberName`
+ *     itself doesn't validate — the schema does on write.
+ *
+ * Pure: no schema parse, no I/O. Safe to call inside hot loops
+ * (per-tick whip surfacing, per-row status renderer, etc.).
+ */
+export function displayMemberName(member: { name: string; label?: string | undefined }): string {
+  return member.label !== undefined && member.label.length > 0 ? member.label : member.name;
 }
 
 /**
@@ -276,10 +355,27 @@ export function buildWindowName(member: string, emoji?: string): string {
  */
 export function isMemberWindowName(
   name: string,
-  members: ReadonlyArray<{ name: string; emoji?: string }>,
+  members: ReadonlyArray<{ name: string; emoji?: string; label?: string | undefined }>,
 ): boolean {
   if (name.startsWith("__")) return false; // pre-amend artifact / non-atmux placeholder
-  return members.some((m) => name === buildWindowName(m.name, m.emoji));
+  // ADR-135 + ADR-136 TR4: match against the canonical hyphenated form
+  // (label-aware, post-TR4) OR the legacy concatenated form (pre-
+  // ADR-135 deprecation window). Three shapes can appear during the
+  // one-release-cycle migration window:
+  //
+  //   - `<emoji>-<label ?? name>`  ← canonical post-ADR-135 + TR4
+  //   - `<emoji>-<name>`            ← canonical when label is unset
+  //   - `<emoji><name>`             ← legacy pre-ADR-135 (no separator)
+  //
+  // `buildWindowName(name, emoji, label)` produces the first two; the
+  // legacy form needs the dedicated detector. Once start.ts's
+  // migration shim renames legacy windows to canonical, the second
+  // disjunct falls off.
+  return members.some(
+    (m) =>
+      name === buildWindowName(m.name, m.emoji, m.label) ||
+      name === buildWindowNameLegacy(m.name, m.emoji),
+  );
 }
 
 // ---------- Name validation ----------

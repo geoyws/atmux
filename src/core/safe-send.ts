@@ -608,6 +608,53 @@ export function paneMatchesRegex(re: RegExp): PaneVerifier {
   return (capture: string) => re.test(capture);
 }
 
+/**
+ * ADR-138 T3b2 (option c per 2026-05-15 lead auto-mode resolution):
+ * pick a per-member verifier from `member.tui`. Verbs that route
+ * keystrokes through `sendToMember` call this BEFORE constructing
+ * `SendOpts.expectVerifier`; the result either gates the verify-and-
+ * escalate path or signals "skip verify" (null → caller passes
+ * `undefined` to keep the legacy submitAfterPaste path).
+ *
+ * Mapping rationale:
+ *
+ * - **claude** (EXPLICIT) → `composerEmpty()`. The Claude Code
+ *   TUI's compose prompt is `❯ ` at end-of-line; after Enter submits,
+ *   the line is recreated empty so the regex confirms the agent
+ *   accepted the prompt. Production `team.json` always carries an
+ *   explicit `tui: "claude"` (see `parseAddMemberArgs` default in
+ *   `src/verbs/add-member.ts`); the verify path is opt-in via the
+ *   explicit literal so test fixtures and hand-crafted team.json
+ *   files without a `tui` field stay on the legacy submitAfterPaste
+ *   path and don't write false-positive escalation log entries.
+ *
+ * - **shell / bash / zsh** → `null` (skip verify). Shell prompts use
+ *   `$ ` / `# ` / `> ` glyphs, NOT `❯`. Running `composerEmpty()`
+ *   against a shell capture writes false-positive escalation log
+ *   entries on every legitimate send-keys round-trip; per ADR-138
+ *   §Tradeoffs the verifier is opt-in, not blanket.
+ *
+ * - **everything else** (`opencode`, `kimi`, `cursor`, custom
+ *   per-team launchers) → `null` (skip verify). Conservative
+ *   default: each new TUI gets its own verifier added here ONLY
+ *   after its compose-empty regex is verified against real-pane
+ *   captures from that TUI. Adding a wrong-glyph verifier would
+ *   regress; absence stays on the legacy submitAfterPaste path
+ *   which has 2026-05-12 atmux audit-trail evidence.
+ *
+ * Pure: returns the verifier OR `null` for skip; never throws. Caller
+ * branches on `null` and passes `expectVerifier: undefined` to
+ * `sendToMember` so the legacy path runs unchanged.
+ */
+export function verifierForTui(tui: string | undefined): PaneVerifier | null {
+  switch (tui) {
+    case "claude":
+      return composerEmpty();
+    default:
+      return null;
+  }
+}
+
 // ----- Escalation log -------------------------------------------------
 
 /** MYT-formatted timestamp prefix for escalation log entries.

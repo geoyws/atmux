@@ -12,12 +12,14 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_MARTINET_CADENCE_SEC,
   DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
+  DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
   DEFAULT_WORKTREE_ROOT,
   MartinetImpl,
   Team,
   TeamFallback,
   TeamMartinetOverrides,
   TeamMember,
+  TeamOmbudsman,
   TeamWhip,
 } from "../../../src/schema/team.ts";
 
@@ -493,5 +495,126 @@ describe("Martinet per-impl default constants", () => {
 
   test("DEFAULT_MARTINET_ESCALATION_CONFIDENCE is 0.7 (ADR-132 §D5 E5)", () => {
     expect(DEFAULT_MARTINET_ESCALATION_CONFIDENCE).toBe(0.7);
+  });
+});
+
+// ---------- ADR-147 T4: TeamOmbudsman ----------
+
+describe("TeamOmbudsman — valid shape + defaults (ADR-147 §D1/§D2)", () => {
+  test("empty object parses to enabled=false default; tickIntervalMins stays undefined", () => {
+    // Empty block ≡ disabled — operators opt in explicitly via
+    // `enabled: true`. Matches sibling pattern (TeamMerger,
+    // TeamFallback). `tickIntervalMins` left undefined so call sites
+    // apply DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS at read-time (mirrors
+    // the `worktreeRoot` resolver pattern — schema default would shadow
+    // a future ADR-driven bump of the constant).
+    const o = TeamOmbudsman.parse({});
+    expect(o.enabled).toBe(false);
+    expect(o.tickIntervalMins).toBeUndefined();
+  });
+
+  test("explicit enabled=true is honored", () => {
+    const o = TeamOmbudsman.parse({ enabled: true });
+    expect(o.enabled).toBe(true);
+  });
+
+  test("tickIntervalMins accepts positive integer", () => {
+    const o = TeamOmbudsman.parse({ enabled: true, tickIntervalMins: 30 });
+    expect(o.tickIntervalMins).toBe(30);
+  });
+});
+
+describe("TeamOmbudsman — strict-mode + type validation", () => {
+  test("unknown key rejected (.strict drift detection)", () => {
+    // ADR-054 §D3 precedent — typos like `enabld` / `tickIntervalMin`
+    // (singular) surface here rather than silently falling through.
+    expect(() => TeamOmbudsman.parse({ enabld: true })).toThrow();
+    expect(() =>
+      TeamOmbudsman.parse({ enabled: true, tickIntervalMin: 15 }),
+    ).toThrow();
+  });
+
+  test("enabled rejects non-boolean", () => {
+    expect(() => TeamOmbudsman.parse({ enabled: "yes" })).toThrow();
+    expect(() => TeamOmbudsman.parse({ enabled: 1 })).toThrow();
+  });
+
+  test("tickIntervalMins rejects zero / negatives / non-integers", () => {
+    expect(() =>
+      TeamOmbudsman.parse({ enabled: true, tickIntervalMins: 0 }),
+    ).toThrow();
+    expect(() =>
+      TeamOmbudsman.parse({ enabled: true, tickIntervalMins: -5 }),
+    ).toThrow();
+    expect(() =>
+      TeamOmbudsman.parse({ enabled: true, tickIntervalMins: 1.5 }),
+    ).toThrow();
+  });
+
+  test("tickIntervalMins rejects non-number type", () => {
+    expect(() =>
+      TeamOmbudsman.parse({ enabled: true, tickIntervalMins: "15" }),
+    ).toThrow();
+  });
+});
+
+describe("Team schema integrates TeamOmbudsman cleanly (ADR-147 §D1)", () => {
+  test("Team.parse with valid ombudsman block applies enabled=false default", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      ombudsman: {},
+    });
+    expect(team.ombudsman?.enabled).toBe(false);
+    expect(team.ombudsman?.tickIntervalMins).toBeUndefined();
+  });
+
+  test("Team.parse without ombudsman block keeps ombudsman undefined (.optional)", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.ombudsman).toBeUndefined();
+  });
+
+  test("Team.parse with ombudsman.enabled=true + custom interval round-trips", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      ombudsman: { enabled: true, tickIntervalMins: 5 },
+    });
+    expect(team.ombudsman?.enabled).toBe(true);
+    expect(team.ombudsman?.tickIntervalMins).toBe(5);
+  });
+
+  test("Team.parse rejects unknown key in ombudsman sub-shape", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        ombudsman: { enabled: true, junk: "x" },
+      }),
+    ).toThrow();
+  });
+
+  test("Team.parse with member role=ombudsman parses cleanly (roster + config independent)", () => {
+    // The cron line is gated on BOTH conditions (per ADR-147 §D2 brief);
+    // the schema models them independently — a member with
+    // role=ombudsman can exist without the `ombudsman` block (cron line
+    // inert) and the block can exist without a member (cron line inert).
+    // Both shapes parse — gating is enforced by the cron renderer.
+    const team = Team.parse({
+      name: "demo",
+      members: [{ name: "ombudsman", role: "ombudsman" }],
+    });
+    expect(team.members[0]?.role).toBe("ombudsman");
+    expect(team.ombudsman).toBeUndefined();
+  });
+});
+
+describe("DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS constant (ADR-147 §D2)", () => {
+  test("default is 15 minutes per ADR-147 §D2", () => {
+    // Pin the constant — the cron renderer + tick verb read this
+    // directly (mirrors DEFAULT_WORKTREE_ROOT / DEFAULT_MERGER_STALENESS_HOURS
+    // precedent). A drift here is intentional — bump in lockstep with
+    // the ADR §D2 default narrative.
+    expect(DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS).toBe(15);
   });
 });
