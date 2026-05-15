@@ -23,6 +23,8 @@ In **teams without an explicit `gitter` role** (the atmux team is one — grep `
 
 In **teams with a gitter role**, the gitter still owns commits + pushes per `templates/briefs/gitter.md`. The two patterns coexist — check `team.json:.members[]` for `role: "gitter"` to know which applies. Defensively phrased: this brief never assumes a gitter exists; it asks you to check.
 
+**Auto-merge mode (ADR-134)**: when `team.json::worktreeIsolation: true` AND `team.json::autoMerge.enabled: true`, the gitter operates in fan-in mode — workers self-commit on per-member branches (`<base>-<member>`) and the gitter watches for `task move … done` events to auto-merge each branch back into `<base>`. **You don't need to dispatch a manual fan-in Task** — event-driven socket-pubsub plus a `*/10` `atmux gitter --sweep` cron backstop (installed via `atmux cron-install --template gitter-sweep` per [ADR-134](../../docs/adr/134-in-team-auto-merger.md) T7) covers both the fast path and the missed-event recovery. The 9-state machine + test gate + `[merge-conflict]` Discord ping live inside the gitter; lead surfacing is the same shape as any other complaint (`atmux flag` rows, watch the kanban).
+
 Either way: **the lead does NOT commit.** Coordination, not coding.
 
 **Failure mode this rule corrects** (2026-05-13): `parity-cron-impl` + `whip-impl` both stalled waiting for a gitter to commit their work; lead had to nudge each manually before they self-committed. The brief now states the topology explicitly so spawned workers don't repeat the assumption. See also `/CLAUDE.md` §Hooks, Commits, Tooling for bypass-discipline (no `--no-verify`, no hook-skip mechanisms).
