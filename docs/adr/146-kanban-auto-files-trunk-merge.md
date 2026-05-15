@@ -222,6 +222,25 @@ For T1 specifically (this commit):
 
 Wider EPIC acceptance gates T2-T3 — those are out of T1's scope.
 
+### T3 (t-51610d4e) — e2e gate landed
+
+`tests/e2e/auto-emit-trunk-merge.test.ts` walks the moveTask verb's `transactImmediate`-wrapped integration with the §D1 hook against a real SQLite state.db fixture. Eight beats:
+
+| Beat | Asserts |
+|---|---|
+| B1 | Last task done → auto-emit fires; subject + owner + body fields match §D2 / §D3 verbatim |
+| B2 | Loop prevention — auto-emit-pattern Task done does NOT re-fire |
+| B3 | Short-circuit — Story.branch unset |
+| B4 | Short-circuit — Story.branch === team.merger.baseBranch (sharedBase) |
+| B5 | Short-circuit — team.worktreeIsolation !== true |
+| B6 | Short-circuit — team.autoEmitTrunkMerge.enabled === false |
+| B7 | Atomicity (positive direction) — both done-transition + auto-emit rows commit together |
+| B8 | ADR-032 cascade observability — auto-emit row queryable by subject pattern (subscriber contract) |
+
+ADR-032 cascade FIRE-AND-SUBSCRIBE is skip-documented in the spec header: the actual pubsub dispatcher (ADR-134 T3 / `t-27b06cda`) is still todo. This e2e asserts the LEDGER side of the cascade (the auto-emit Task is present + queryable after moveTask returns); T3's e2e covers the actual fire-and-cascade. Atomicity NEGATIVE direction (mid-tx throw → both roll back) is SQLite `transactImmediate`'s contract + the kanban unit tests already exercise that throw path; the e2e covers the positive direction.
+
+Result: 8 pass / 0 fail. Typecheck green.
+
 ## Out of scope
 
 - **Test-gate-on-Story-done** — §D6 explicitly defers. Auto-emit fires at Story-done; test-gate (ADR-134 tested state) runs AFTER the merge. Separate ADR if operators want belt-and-suspenders.
