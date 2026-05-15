@@ -239,4 +239,59 @@ export const migrations: readonly Migration[] = [
       );
     },
   },
+  // ---------- v5 → v6 ----------
+  // ADR-134 §state-machine / T2 (t-b5f12ab1): branch-merge state
+  // ledger. One row per `(team, branch_key)` where `branch_key`
+  // is `<base>-<member>` (e.g. `geoyws-whip-impl`). All transitions
+  // route through `merger-state-repo::transition` which wraps a
+  // BEGIN IMMEDIATE transaction (reviewer pre-flag #1 per ADR-091
+  // audit) — concurrent dispatcher + cron-backstop fires serialize
+  // at the SQLite writer-lock level.
+  //
+  // `state` mirrors the ten-state union in `branch-merge-state.ts`
+  // (open / in_progress / ready_to_merge / rebasing / merging /
+  // tested / merged / conflict / test_failed / reverted); kept as
+  // TEXT (not INTEGER) so SQLite-cli inspection reads naturally +
+  // operator-edits don't need a literal-index lookup. CHECK
+  // constraint pins the closed set; the Zod schema is the
+  // application-layer mirror.
+  //
+  // `note` carries the operator-facing reason string (`from
+  // shouldTransitionFromInProgress.reason` or conflict SHA per
+  // ADR-134 §Conflict surface §1 "durable signal must precede
+  // fire-and-forget"). `updated_at` is set on every transition
+  // (event-driven dispatcher OR cron backstop), used by
+  // `merger-state-repo::loadAll` ordering + the auditor's
+  // staleness probe.
+  {
+    from: 5,
+    to: 6,
+    up: (db) => {
+      db.exec(`
+					CREATE TABLE merger_state (
+						team TEXT NOT NULL,
+						branch_key TEXT NOT NULL,
+						state TEXT NOT NULL CHECK(state IN (
+							'open','in_progress','ready_to_merge','rebasing',
+							'merging','tested','merged','conflict','test_failed','reverted'
+						)),
+						note TEXT,
+						updated_at INTEGER NOT NULL,
+						PRIMARY KEY (team, branch_key)
+					) STRICT;
+				`);
+      // Hot path: load by team, ordered by recency. Used by the
+      // ADR-134 dispatcher's per-tick sweep of in_progress /
+      // ready_to_merge rows.
+      db.exec(
+        "CREATE INDEX idx_merger_state_team_updated ON merger_state(team, updated_at DESC)",
+      );
+      // Open-work index: dispatchers filter to non-terminal rows
+      // every tick; partial-index keeps it small (terminal rows
+      // stay forever for audit).
+      db.exec(
+        "CREATE INDEX idx_merger_state_open ON merger_state(team, state) WHERE state NOT IN ('merged','conflict','reverted')",
+      );
+    },
+  },
 ];
