@@ -27,20 +27,27 @@ import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
 const USAGE =
-  "atmux cron-install [--quiet] [--template merge-cycle|ombudsman-tick] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
+  "atmux cron-install [--quiet] [--template merge-cycle|ombudsman-tick|lane-stall-watch] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
 
 /** Allowed `--template` values. ADR-088 W7 added `merge-cycle`;
  *  ADR-147 T3 (t-94a22bb0) added `ombudsman-tick` for the complaint-
- *  adjudicator role wake. Future templates extend this list. */
-export const CRON_INSTALL_TEMPLATES = ["merge-cycle", "ombudsman-tick"] as const;
+ *  adjudicator role wake; ADR-148 §D4 / T3 (t-e9424574) added
+ *  `lane-stall-watch` for the lane-stall fleet-wide safety net.
+ *  Future templates extend this list. */
+export const CRON_INSTALL_TEMPLATES = [
+  "merge-cycle",
+  "ombudsman-tick",
+  "lane-stall-watch",
+] as const;
 export type CronInstallTemplate = (typeof CRON_INSTALL_TEMPLATES)[number];
 
 /** Templates that accept a transient `--interval` cadence override.
- *  Both shipping templates honour it via their respective
+ *  All three shipping templates honour it via their respective
  *  `<X>IntervalOverride` field on {@link RenderCronBlockOpts}. */
 const TEMPLATES_WITH_INTERVAL: ReadonlySet<CronInstallTemplate> = new Set([
   "merge-cycle",
   "ombudsman-tick",
+  "lane-stall-watch",
 ]);
 
 export interface CronInstallArgs {
@@ -160,7 +167,10 @@ export function parseCronInstallArgs(argv: ReadonlyArray<string>): CronInstallAr
     }
     throw new UsageError({ what: `cron-install: unexpected arg: ${a}`, hint: USAGE });
   }
-  if (intervalMins !== undefined && (template === undefined || !TEMPLATES_WITH_INTERVAL.has(template))) {
+  if (
+    intervalMins !== undefined &&
+    (template === undefined || !TEMPLATES_WITH_INTERVAL.has(template))
+  ) {
     throw new UsageError({
       what: `cron-install: --interval only meaningful with --template ${[...TEMPLATES_WITH_INTERVAL].join("|")}`,
       hint: USAGE,
@@ -244,8 +254,29 @@ export async function cronInstall(
     throw new ConfigError({
       what: "cron-install --template ombudsman-tick: requires team.ombudsman.enabled = true in team.json",
       hint:
-        "set `team.ombudsman.enabled: true` (per ADR-147) AND add a member with `role: \"ombudsman\"` " +
+        'set `team.ombudsman.enabled: true` (per ADR-147) AND add a member with `role: "ombudsman"` ' +
         "before installing the ombudsman-tick cron template",
+    });
+  }
+
+  // ADR-148 §D4 / T3 (t-e9424574): when `--template lane-stall-watch` is
+  // passed, validate `team.cadence.enabled === true` AND that lane-stall
+  // hasn't been explicitly opted out. Same fail-fast pattern as
+  // ombudsman-tick / merge-cycle — render-time gating would silently
+  // produce a no-op block; this template-flag check surfaces the
+  // misconfiguration at install time so the operator sees it immediately.
+  if (
+    parsed.template === "lane-stall-watch" &&
+    ((team as Team).cadence?.enabled !== true || (team as Team).cadence?.laneStallEnabled === false)
+  ) {
+    throw new ConfigError({
+      what:
+        "cron-install --template lane-stall-watch: requires team.cadence.enabled = true AND " +
+        "team.cadence.laneStallEnabled !== false in team.json",
+      hint:
+        "set `team.cadence: { enabled: true }` (per ADR-148) — laneStallEnabled defaults to " +
+        "true once the master switch is on; only set it to false to opt out of the cron " +
+        "fallback while keeping the cadence column",
     });
   }
 
@@ -283,6 +314,8 @@ export async function cronInstall(
       opts2.mergerIntervalOverride = parsed.intervalMins;
     } else if (parsed.template === "ombudsman-tick") {
       opts2.ombudsmanIntervalOverride = parsed.intervalMins;
+    } else if (parsed.template === "lane-stall-watch") {
+      opts2.laneStallIntervalOverride = parsed.intervalMins;
     }
   }
   const next = installCronBlock(opts2);

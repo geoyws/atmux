@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 📋 Proposed — commit-cadence ground-truth health signal (ADR-148)
+
+- **New `team.cadence` config block** per [ADR-148](docs/adr/148-commit-cadence-truth-signal.md) §D7 — full schema lands in T3 (this commit, `t-e9424574`) so T2 / T5 land additively. Fields: `enabled`, `windowSec`, `thresholds` (4 verdict bands), `laneStallEnabled`, `laneStallMinAgeSec`, `exemptMembers`. Opt-in via `enabled: true`; lane-stall defaults on once master switch flips.
+- **Lane-stall fallback cron** per ADR-148 §D4 (T3, `t-e9424574`): new `atmux lane-stall-tick` verb fires every 5min by default (override via `cron-install --template lane-stall-watch --interval <N>`). Scans `lane=X todo` Tasks older than `laneStallMinAgeSec` (default 30min) against per-member cadence verdicts; when ALL lane-affinity members have verdict ∈ {idle, dormant, ship-zero-window}, fires Enter-push `atmux claim <id>` to the lane's most-recently-active member's pane. Pane-state check mandatory before send-keys per CLAUDE.md (uses `safeSendKeys` for classify + retry + refuse). On refuse, appends to `<atmuxDir>/state/lane-stall-flags.md` for operator review. Dedup via `~/.atmux/state/lane-stall-fires.json` with `(taskId, lane, firedAt)` rows; skips re-fire within `laneStallMinAgeSec / 2` (15min default).
+- **Sibling to ADR-127** lane-claim auto-pickup. ADR-127 handles the `member-idle` event (member finishes a turn → cron injects `claim --next`); ADR-148 §D4 adds the `lane-stall` event (Task waits in lane while members idle). Both paths converge on the same `atmux claim` Enter-push; lane-claim is per-member-state, lane-stall is per-Task-age.
+- **Cadence verdict source** stubbed at the verb's dep-injection layer until T5 (`src/core/cadence-classifier.ts`) lands — defaults to `"idle"` for every member (worst-case fall-through; lane-stall fires whenever the age + lane-membership gates trip). T5 swaps in the real `classifyMemberCadence` reading per-member `git log --since=<windowSec>s --format='%H %ct'`.
+- **Status: proposed** — T1 reviewer signoff landed via `t-1e9fd74e`; T2 / T5 / T6 still parallel-shipping. ADR flips to accepted once the full plan (T2-T6) lands green.
+
 ### 📋 Proposed — ombudsman role + release-notes layout (ADR-147)
 
 - **New per-team role `ombudsman`** per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1 — adjudicates open complaints (filed by medic / whip-velocity-gate / operator / CLI) and writes a durable response log to the day's release-notes file. Closes the parking-lot task `t-441d6d4c` reframed as the EPIC umbrella.

@@ -720,6 +720,91 @@ export type TeamOmbudsman = z.infer<typeof TeamOmbudsman>;
  *  precedent. */
 export const DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS = 15;
 
+/**
+ * `team.json::cadence` sub-config — ADR-148 commit-cadence ground-truth
+ * health signal. T3 (this commit, t-e9424574) ships the FULL schema
+ * shape from ADR-148 §D7 so T2 / T5 land additively without merge
+ * conflict (T2 + T5 read the same fields T3 writes).
+ *
+ * `.strict()` consistent with sibling sub-blocks (whip / merger /
+ * ombudsman) — drift detection per ADR-054 §D3.
+ *
+ * **Defaults** match ADR-148 §D7 verbatim. Cadence is **opt-in** at
+ * the master `enabled` flag (mirrors merger/ombudsman precedent) — when
+ * absent or `enabled !== true`, no cadence-driven cron lines fire and
+ * `atmux status` falls back to the legacy pane-state taxonomy (per
+ * §D3 schema-default).
+ *
+ * Sub-tasks landing alongside T3:
+ *   - T2 (t-???) reads `windowSec` + `thresholds` for the cadence column
+ *   - T3 (this) reads `laneStallEnabled` + `laneStallMinAgeSec` for
+ *     `lane-stall-watch` cron + verb
+ *   - T5 (t-???) reads `windowSec` + `thresholds` + `exemptMembers`
+ *     for `src/core/cadence-classifier.ts`
+ */
+export const TeamCadenceThresholds = z
+  .object({
+    /** Verdict `shipping` upper-bound (seconds since last commit). Default
+     *  1800 = 30min per ADR-148 §D2 verdict table. */
+    shippingMaxAgeSec: z.number().int().positive().optional(),
+    /** Verdict `idle` upper-bound. Default 7200 = 2hr per §D2. */
+    idleMaxAgeSec: z.number().int().positive().optional(),
+    /** Verdict `dormant` lower-bound. Default 21600 = 6hr per §D2. */
+    dormantMaxAgeSec: z.number().int().positive().optional(),
+    /** Verdict `ship-zero-window` lower-bound — escalation class per
+     *  ADR-132 contract. Default 7200 = 2hr per §D2. */
+    shipZeroWindowSec: z.number().int().positive().optional(),
+  })
+  .strict();
+export type TeamCadenceThresholds = z.infer<typeof TeamCadenceThresholds>;
+
+export const TeamCadence = z
+  .object({
+    /** Master switch. Default `false` (opt-in via `enabled: true`).
+     *  When false / absent: no cadence cron lines render; status verb
+     *  falls back to pane-state column. */
+    enabled: z.boolean().default(false),
+    /** Cadence classifier window (seconds). How far back `git log
+     *  --since=<windowSec>s` reaches. Default 1800 per ADR-148 §D2. */
+    windowSec: z.number().int().positive().optional(),
+    /** Verdict-classification thresholds. All optional; the classifier
+     *  applies §D7 defaults per-field. */
+    thresholds: TeamCadenceThresholds.optional(),
+    /** Lane-stall fallback enabled (per §D4 / T3). Default `true` when
+     *  the parent `enabled === true` (master switch wins). Operators
+     *  can opt out by setting `laneStallEnabled: false` while keeping
+     *  cadence column visible (the status surface stays on; only the
+     *  cron Enter-push is suppressed). */
+    laneStallEnabled: z.boolean().default(true),
+    /** Minimum task age before lane-stall fires (seconds). Default 1800
+     *  per ADR-148 §D7 — matches the half-hour "patient operator"
+     *  threshold the cron is supposed to backstop. */
+    laneStallMinAgeSec: z.number().int().positive().optional(),
+    /** Members exempt from cadence verdicts (per §D7). Designated roles
+     *  with legitimately low commit cadence (planner during multi-hour
+     *  decomp; reviewer during multi-commit audits). Exempt members
+     *  still appear in cadence column with verdict suppressed to
+     *  `(exempt)`. */
+    exemptMembers: z.array(z.string()).optional(),
+  })
+  .strict();
+export type TeamCadence = z.infer<typeof TeamCadence>;
+
+/** ADR-148 §D7 default — used by `cron.ts::renderCronLines` + the
+ *  `atmux lane-stall-tick` verb when `team.cadence.laneStallMinAgeSec`
+ *  is unset. Co-located with the schema so non-Zod call sites
+ *  (cron renderer, tick verb, decideLaneStall) share the same
+ *  constant — mirrors {@link DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS} /
+ *  {@link DEFAULT_MERGER_STALENESS_HOURS} precedent. */
+export const DEFAULT_LANE_STALL_MIN_AGE_SEC = 1800;
+
+/** ADR-148 §D4 / T3 — default cron cadence for the `lane-stall-watch`
+ *  cron line, in minutes. 5min per the task body ("Cadence runs every
+ *  5min"). Distinct from `DEFAULT_LANE_STALL_MIN_AGE_SEC` (task-age
+ *  threshold) — this is the cron interval; that one is the Task
+ *  must-be-this-old gate inside the verb. */
+export const DEFAULT_LANE_STALL_CRON_INTERVAL_MINS = 5;
+
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
  *  All fields optional; defaults applied at the call-site per ADR-142
  *  §Configuration. `.strict()` so typos (`windowMins` etc.) trip the
@@ -840,6 +925,14 @@ export const Team = z
      *  `role: "ombudsman"`. Effective tick interval resolved at
      *  read-time via {@link DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS}. */
     ombudsman: TeamOmbudsman.optional(),
+    /** ADR-148: commit-cadence ground-truth health signal config.
+     *  Opt-in via `cadence.enabled: true`. When enabled, the
+     *  `lane-stall-watch` cron line fires every
+     *  {@link DEFAULT_LANE_STALL_CRON_INTERVAL_MINS} minutes (T3) and
+     *  `atmux status` surfaces the cadence column (T2). The default
+     *  shape lands additively — T3 ships the full block so T2/T5
+     *  merge cleanly. */
+    cadence: TeamCadence.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. Setting `0` collapses the grace to a single tick but

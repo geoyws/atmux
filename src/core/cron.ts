@@ -32,6 +32,7 @@
 import type { CrontabIO } from "../abstractions/crontab.ts";
 import { ConfigError } from "../errors.ts";
 import {
+  DEFAULT_LANE_STALL_CRON_INTERVAL_MINS,
   DEFAULT_MERGER_CYCLE_INTERVAL_MINS,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
   type Team,
@@ -137,6 +138,11 @@ export interface RenderCronBlockOpts {
    *  cron-install --interval threading pattern as
    *  {@link mergerIntervalOverride}. */
   ombudsmanIntervalOverride?: number;
+  /** ADR-148 §D4 / T3 (t-e9424574) — transient override for the
+   *  `lane-stall-tick` line's cadence (minutes). When set, beats
+   *  {@link DEFAULT_LANE_STALL_CRON_INTERVAL_MINS}. Threaded via
+   *  `cron-install --template lane-stall-watch --interval <N>`. */
+  laneStallIntervalOverride?: number;
 }
 
 /**
@@ -289,17 +295,34 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   // the sentinel is empty — cron at 15min is cheap; sentinel writes
   // are what trip work. The cron just guarantees worst-case wake
   // latency ≤ tickIntervalMins.
-  const hasOmbudsman = team.members.some(
-    (m) => (m as { role?: string }).role === "ombudsman",
-  );
+  const hasOmbudsman = team.members.some((m) => (m as { role?: string }).role === "ombudsman");
   if (team.ombudsman?.enabled === true && hasOmbudsman) {
     const ombudsmanMins =
       opts.ombudsmanIntervalOverride ??
       team.ombudsman.tickIntervalMins ??
       DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS;
-    out.push(
-      `${cronEvery(ombudsmanMins)} ${baseEnv} ombudsman tick ${logTail("ombudsman")}`,
-    );
+    out.push(`${cronEvery(ombudsmanMins)} ${baseEnv} ombudsman tick ${logTail("ombudsman")}`);
+  }
+
+  // 10. ADR-148 §D4 / T3 — lane-stall-watch: fires `atmux lane-stall-tick`
+  // every N minutes (default DEFAULT_LANE_STALL_CRON_INTERVAL_MINS = 5)
+  // to scan stalled `lane=X todo age>30min members-all-idle` Tasks and
+  // Enter-push `atmux claim <id>` to the lane's most-recently-active
+  // member. Gated on `team.cadence.enabled === true` AND
+  // `team.cadence.laneStallEnabled !== false` (opt-in master switch +
+  // opt-out sub-switch — matches the merger/ombudsman gate patterns).
+  //
+  // Cadence resolution (same precedence shape as merge-cycle):
+  // (a) `opts.laneStallIntervalOverride` (transient install-time
+  //     override from `cron-install --template lane-stall-watch
+  //     --interval <N>`) wins first, then (b) the schema default. The
+  //     team config does NOT carry a `laneStallCronMins` field today —
+  //     5min is operationally sufficient for the safety-net role; a
+  //     per-team override can land via a future schema bump if a
+  //     concrete demand emerges.
+  if (team.cadence?.enabled === true && team.cadence.laneStallEnabled !== false) {
+    const laneStallMins = opts.laneStallIntervalOverride ?? DEFAULT_LANE_STALL_CRON_INTERVAL_MINS;
+    out.push(`${cronEvery(laneStallMins)} ${baseEnv} lane-stall-tick ${logTail("lane-stall")}`);
   }
 
   return out;
