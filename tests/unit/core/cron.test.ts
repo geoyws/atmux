@@ -42,8 +42,10 @@ const P = `PATH=${DEFAULT_PATH} `;
 describe("renderCronLines", () => {
   test("vanilla team renders 4-line block: whip / report / decisions / groom", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
+    // whip default schema-side is `intervalMins: 15` (src/schema/team.ts +
+    // src/core/cron.ts:185 — bumped from 5min in t-dcbff97c).
     expect(lines).toEqual([
-      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
@@ -481,8 +483,11 @@ describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
 
   test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
+    // t-dcbff97c bumped whip default 5min → 15min; "pre-ADR-079
+    // behavior unchanged" still holds — ADR-079 governs the
+    // config-driven schedule surface, not the default value itself.
     expect(lines).toEqual([
-      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,

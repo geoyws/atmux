@@ -42,8 +42,10 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    TUI, present or future.
 2. **State lives on disk in JSON / markdown.** `.atmux/` is greppable,
    diffable, survives tmux restart, replays on `atmux start`.
-3. **No daemon.** Every verb is idempotent. `whip` (5min) and `report`
-   (30min) run on cron; nothing long-lived.
+3. **No daemon.** Every verb is idempotent. `whip` (15min default per
+   `team.whip.intervalMins`, bumped from 5min in t-dcbff97c to dial back
+   the per-tick LLM burn now that the martinet path covers high-cadence
+   nudging — ADR-132) and `report` (30min) run on cron; nothing long-lived.
 
 ### 1.3 Why now
 
