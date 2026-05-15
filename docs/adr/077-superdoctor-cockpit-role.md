@@ -177,6 +177,26 @@ Deferred follow-up tasks (filed in atmux kanban under epic `t-274ec70c`):
 
   The hourly self-heal logic itself (record-attempt-with-outcome, check threshold, render-and-emit, action handler for the operator's letter reply) lives in `~/.claude/skills/superdoctor/superdoctor-prompt.md` (F1) and `~/.claude/skills/superdoctor/scripts/*` — the skill operates against the typed primitives this ADR ships in atmux.
 
+## §lead-uptime-measurement — rotation gate reads session-start.txt, NOT process etime
+
+**Annotation 2026-05-15** (t-6d950ffd, preventive for superdoctor complaint c-06dabd47).
+
+ADR-009 rotation gate ("rotate the lead at ≥60min uptime") MUST read `~/.claude/teams/<team>/lead-session-start.txt` — refreshed by **`/clear`** AND **`atmux rotate-lead`**. This is the canonical "how long since the lead's CURRENT context window started?" signal.
+
+It is NOT `ps -o etime` against the lead pane's shell PID. The shell process typically long-outlives any one Claude session — `/clear` resets the session-start marker without exiting the parent shell, and `atmux rotate-lead` reuses the same pane (and thus the same shell PID) per ADR-082. A pane whose shell has been running for 6 hours can have a freshly-`/clear`'d Claude session that's only 90 seconds old.
+
+Observers (medic / martinet / superdriver) conflating the two signals have rotated leads prematurely (incident c-06dabd47, 2026-05-15). The rotation gate MUST read `lead_session_uptime_s` (the marker-derived value); `shell_pid_etime_s` is exposed for diagnostic transparency ONLY.
+
+Surfaces:
+
+- `atmux status --json` `lead` block (t-6d950ffd) — two explicitly-named fields:
+  - `lead_session_uptime_s` — **rotation-gate source**. Derived from `lead-session-start.txt`.
+  - `shell_pid_etime_s` — diagnostic-only. Derived from `ps -o etime= -p <leadPanePid>`.
+- Whip per-tick `--lead-uptime-only` probe (per whip-prompt.md §1a) — same source: reads `lead-session-start.txt`, never `ps`.
+- Global CLAUDE.md whip-policy carries the same one-sentence clarification ("rotation gate reads session-start.txt, NOT process etime").
+
+Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47 (superdoctor complaint), [[feedback_rotation_threshold_400k]] memory (400k-ctx rotation policy that triggered the prior incident review).
+
 ## Out of scope
 
 - Multi-superdoctor (one per region, federation across cockpits) — Phase 6+.

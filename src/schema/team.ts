@@ -821,6 +821,94 @@ export const TeamModalCycling = z
   .strict();
 export type TeamModalCycling = z.infer<typeof TeamModalCycling>;
 
+/** ADR-148 §D2/§D7: cadence-classifier thresholds. All four ages are
+ *  in seconds; defaults applied at the call-site per
+ *  {@link DEFAULT_CADENCE_THRESHOLDS}. Strict-mode rejects typos so a
+ *  misspelled `shippingMaxAgesSec` trips the same drift-detection ping
+ *  as the surrounding `whip` / `gitter` sub-blocks (ADR-054 §D3). */
+export const TeamCadenceThresholds = z
+  .object({
+    /** Below this age (seconds since last commit) AND ≥1 commit in
+     *  the configured window → verdict `shipping`. Default 1800 (30min). */
+    shippingMaxAgeSec: z.number().int().positive().optional(),
+    /** Below this age AND zero commits in window → verdict `idle`
+     *  (member could resume soon). Default 7200 (2h). */
+    idleMaxAgeSec: z.number().int().positive().optional(),
+    /** At or above this age AND zero commits in window → verdict
+     *  `dormant`. Default 21600 (6h). */
+    dormantMaxAgeSec: z.number().int().positive().optional(),
+    /** Escalation flag threshold per ADR-132 §E6 contract bullet —
+     *  zero commits AND age ≥ this → verdict `ship-zero-window`.
+     *  Default 7200 (2h). Subset of `dormant` when the dormant
+     *  threshold is higher; surfacing happens regardless of
+     *  Martinet impl. */
+    shipZeroWindowSec: z.number().int().positive().optional(),
+  })
+  .strict();
+export type TeamCadenceThresholds = z.infer<typeof TeamCadenceThresholds>;
+
+/** `team.json::cadence` — ADR-148 §D7 commit-cadence config. All
+ *  fields optional; defaults applied per
+ *  {@link DEFAULT_CADENCE_CONFIG}. Absent block means the cadence
+ *  column in `atmux status` falls back to fleet defaults (still
+ *  computed; nothing opt-in required to surface). `.strict()`
+ *  consistent with surrounding sub-blocks. */
+export const TeamCadence = z
+  .object({
+    /** Master switch for cadence surfacing. Default `true` — the
+     *  cadence column is the canonical truth signal per ADR-148 §D1
+     *  and should surface by default. Disable for teams with
+     *  legitimately erratic commit cadence (e.g. demo prep cycles)
+     *  to silence the column. */
+    enabled: z.boolean().optional(),
+    /** Window-back for `commitsInWindow` count, seconds. Default
+     *  1800 (30min) per ADR-148 §D2. */
+    windowSec: z.number().int().positive().optional(),
+    /** Verdict-classification thresholds (see {@link TeamCadenceThresholds}). */
+    thresholds: TeamCadenceThresholds.optional(),
+    /** ADR-148 §D4: lane-stall fallback toggle. When `true`, a
+     *  cron-tick fires `atmux send <member>` Enter-push on
+     *  lane=X todo>30min AND every member with lane-affinity X has
+     *  cadence verdict ∈ {idle, dormant, ship-zero-window}. T2
+     *  ships the column; T3 wires the cron rule. Default `true`. */
+    laneStallEnabled: z.boolean().optional(),
+    /** ADR-148 §D4 threshold — minimum age (seconds) of a stalled
+     *  todo task before lane-stall escalates. Default 1800 (30min). */
+    laneStallMinAgeSec: z.number().int().positive().optional(),
+    /** Per-member opt-out — roles with legitimately low commit
+     *  cadence (planner during long decomp passes, reviewer during
+     *  multi-commit audit reviews). Exempt members appear in the
+     *  cadence column with verdict suppressed to `(exempt)`.
+     *  Default `[]`. */
+    exemptMembers: z.array(z.string()).optional(),
+  })
+  .strict();
+export type TeamCadence = z.infer<typeof TeamCadence>;
+
+/** ADR-148 §D2/§D7 defaults — used by `src/verbs/status.ts` cadence
+ *  column + (later) `src/core/cadence-classifier.ts` (T5) when the
+ *  team's `cadence` block is absent or fields are unset. Co-located
+ *  with the schema so non-Zod call sites share the same constants.
+ *  Matches CLAUDE.md whip §0.05 2-hour ship-zero-window threshold. */
+export const DEFAULT_CADENCE_THRESHOLDS = {
+  shippingMaxAgeSec: 1800,
+  idleMaxAgeSec: 7200,
+  dormantMaxAgeSec: 21600,
+  shipZeroWindowSec: 7200,
+} as const;
+
+/** ADR-148 §D7 defaults — wired through {@link resolveCadenceConfig}
+ *  by status.ts on every call when the team's `cadence` block is
+ *  absent. */
+export const DEFAULT_CADENCE_CONFIG = {
+  enabled: true,
+  windowSec: 1800,
+  thresholds: DEFAULT_CADENCE_THRESHOLDS,
+  laneStallEnabled: true,
+  laneStallMinAgeSec: 1800,
+  exemptMembers: [] as readonly string[],
+} as const;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -920,6 +1008,13 @@ export const Team = z
     /** ADR-142: modal-cycling detector tunables. Defaults applied per
      *  ADR-142 §Configuration when the block is absent. */
     modalCycling: TeamModalCycling.optional(),
+    /** ADR-148 §D7: commit-cadence ground-truth signal config.
+     *  Absent block uses {@link DEFAULT_CADENCE_CONFIG}; partial
+     *  blocks fill missing fields from the same defaults at the
+     *  call-site. Cadence is the canonical truth signal per
+     *  ADR-148 §D1 — `atmux status` surfaces verdict + age in the
+     *  new cadence column. */
+    cadence: TeamCadence.optional(),
     /** ADR-147 §D1/§D2: per-team complaint adjudicator config. Opt-in
      *  via `ombudsman.enabled: true` AND a roster member with
      *  `role: "ombudsman"`. Effective tick interval resolved at
