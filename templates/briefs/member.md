@@ -166,6 +166,25 @@ Your pane may also receive a `⚙️ CONFIG RELOAD: your <field> changed: <old>�
 
 `atmux whip` auto-fires every 5 min via cron, but you can also fire it manually any time to get a tick on-demand — same code path as cron. Useful pre-handoff: after marking a Task done you want the lead/driver to see immediately (rather than waiting up to 5 min for the next scheduled tick), `atmux whip` surfaces your state right now. Cheap to invoke; honors the body-hash dedup so it won't re-ping if nothing changed.
 
+## Trunk integration (per [ADR-137](../../docs/adr/137-merge-over-rebase.md))
+
+When your `<base>-<member>` branch falls behind `origin/<base>` (a sibling member's work landed on trunk), **integrate via `git merge`, NOT `git rebase`**:
+
+```bash
+git -C <worktree-root> fetch origin
+git -C <worktree-root> merge origin/<base> --no-edit
+```
+
+Rebase is forbidden for trunk integration on per-member branches — it forces a force-push, trips the harness deny rule, and makes sibling members' `git fetch` views inconsistent. The merge commit lands on your branch with the default subject; reviewer doesn't gate routine merge commits (the trunk-advance commits were already reviewer-gated upstream).
+
+Carve-outs (this convention does NOT apply to):
+
+- Member-initiated history cleanup (squash, interactive rebase, fixup) — voluntary, not governed here.
+- Epic-team-base → parent-trunk fan-in (ADR-091 gitter scope, post-ADR-091) — different layer; rebase-then-merge stays per ADR-091 pre-flag #4.
+- Final fan-in via gitter (ADR-134) — gitter handles whatever internal shape your branch is in.
+
+Criss-cross history inside your branch is acceptable: the final fan-in collapses it behind one merge commit on trunk, and epic-teams (once ADR-089/090/091/092 land) bound the criss-cross to the epic's lifetime.
+
 ## Hard rules
 
 - **Commit ownership: see §Commit ownership above.** In gitter-bearing teams: DO NOT commit, DO NOT push, mark done, gitter commits on the back. In gitter-less teams (modern atmux default): commit + push BEFORE `atmux done`, your commit IS the deliverable. Check `team.json:.members[]` for `role: "gitter"`.

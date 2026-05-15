@@ -1,0 +1,240 @@
+// ADR-091 + ADR-134 shared state machine for branch auto-merge.
+//
+// Pure transitions + types only — no I/O. Side-effecting wrappers
+// (git ops, state.db writes, conflict surfacing) live in the caller
+// modules:
+//
+//   - src/core/intra-team-merge.ts — ADR-134 intra-team scope
+//     (per-member branch → team-base), this Task's main caller.
+//   - src/core/epic-merge.ts       — ADR-091 sibling-team scope
+//     (epic-team → parent team-base), forthcoming (t-04350614).
+//
+// Path A reuse decision per Task t-b5f12ab1 body: t-04350614 (ADR-091
+// impl) is `todo` with no owner at file-time, so the recommended path
+// is to ship the shared module first and let the ADR-091 caller
+// follow the same pattern. The state set covers BOTH scopes verbatim
+// — ADR-091's 7-state machine `open → in_progress → ready_to_merge
+// → rebasing → merging → merged | conflict` plus ADR-134's 3 new
+// states `tested`, `test_failed`, `reverted` for the post-merge
+// test-gate (ADR-134 §state-machine + §revertOnFail).
+//
+// ADR-134 spec authored 2026-05-14 at commit `1b0a59a` on `geoyws`
+// trunk (not yet on whip-impl branch — this module's design is
+// pinned to that commit's spec text). When `geoyws` merges into
+// `geoyws-whip-impl`, `docs/adr/134-in-team-auto-merger.md` will
+// appear in tree; the citation comments in this file already
+// reference the canonical filename.
+
+/** Every state in the branch-merge lifecycle. The ten literals match
+ *  ADR-134 §state-machine verbatim and supersede ADR-091's smaller
+ *  set (which is a subset).
+ *
+ *  Terminal states (`merged`, `conflict`, `reverted`) only leave via
+ *  operator-driven manual reset back to `in_progress` per ADR-134
+ *  §state-machine "Terminal states ... transition back to in_progress
+ *  is manual — operator resolves, gitter re-claims on next
+ *  event/cron tick." */
+export type BranchMergeState =
+  | "open"
+  | "in_progress"
+  | "ready_to_merge"
+  | "rebasing"
+  | "merging"
+  | "tested"
+  | "merged"
+  | "conflict"
+  | "test_failed"
+  | "reverted";
+
+/** Frozen enum-shape array of every state literal. Use for runtime
+ *  validation (e.g. schema enum bounds) instead of duplicating the
+ *  literal list at each call site. */
+export const BRANCH_MERGE_STATES: readonly BranchMergeState[] = [
+  "open",
+  "in_progress",
+  "ready_to_merge",
+  "rebasing",
+  "merging",
+  "tested",
+  "merged",
+  "conflict",
+  "test_failed",
+  "reverted",
+] as const;
+
+/** ADR-134 §state-machine "Terminal states: `merged`, `conflict`,
+ *  `reverted`." `test_failed` is intermediate (auto-progresses to
+ *  `reverted` when `revertOnFail: true`, else stays for operator
+ *  inspection). */
+export const TERMINAL_STATES: ReadonlySet<BranchMergeState> = new Set([
+  "merged",
+  "conflict",
+  "reverted",
+]);
+
+/** Membership test for {@link TERMINAL_STATES}. */
+export function isTerminalState(state: BranchMergeState): boolean {
+  return TERMINAL_STATES.has(state);
+}
+
+/** Inputs to the pre-merge readiness gate — pure facts derived by
+ *  the caller (kanban repo + git probe), not computed inside the
+ *  state machine. Shape kept tight so the two callers
+ *  (intra-team-merge.ts for ADR-134, epic-merge.ts for ADR-091)
+ *  share the same plumbing. */
+export interface PreMergeGateInput {
+  /** Tasks the branch's owner (member or epic-team) still has open
+   *  (`todo` or `in-progress`). Zero is the gate-pass condition for
+   *  the `ready_to_merge` transition per ADR-134 §triggers
+   *  §event-driven primary step #2. */
+  ownerOpenTaskCount: number;
+  /** True iff the worktree is clean (`git status --porcelain` empty).
+   *  ADR-134 reviewer pre-flag #2 requires this gate before any
+   *  `worktree set-ref` realign (and by extension, before any
+   *  destructive merge that would overwrite uncommitted work). */
+  worktreeIsClean: boolean;
+  /** True iff the branch has at least one commit not yet on base
+   *  (`git rev-list <base>..<branch>` non-empty). Avoids spinning
+   *  the state machine on a branch that has nothing to fan in. */
+  isAheadOfBase: boolean;
+  /** True iff `<base>` advanced after the branch diverged
+   *  (`git merge-base --is-ancestor <branch-merge-base> <base>` →
+   *  base has commits the branch doesn't carry). Triggers the
+   *  `rebasing` detour per ADR-134 §state-machine. */
+  baseHasMoved: boolean;
+}
+
+/** Decision returned by {@link shouldTransitionFromInProgress}. The
+ *  `reason` field is operator-facing — it lands in
+ *  `state.db::merger_state.note` (per ADR-134 §Conflict surface §1
+ *  "durable signal must precede the fire-and-forget surface"). */
+export interface PreMergeGateDecision {
+  next: BranchMergeState;
+  reason: string;
+}
+
+/**
+ * Pure pre-merge readiness gate. Pure — no I/O, no Date.now(), no
+ * mutation. Both the event-driven dispatcher (ADR-134 §triggers
+ * §event-driven primary) and the cron backstop (ADR-134 §triggers
+ * §cron backstop secondary) call this with the same input shape;
+ * the BEGIN IMMEDIATE wrap on state.db transitions (ADR-134
+ * reviewer pre-flag #3) guarantees only one of them actually applies
+ * the transition when both fire concurrently.
+ *
+ * Decision tree (priority order — first matching reason wins):
+ *
+ *   1. owner has open tasks         → stay `in_progress`
+ *   2. worktree dirty               → stay `in_progress`
+ *   3. branch not ahead of base     → stay `in_progress`
+ *   4. base moved during work       → transition `rebasing`
+ *   5. otherwise                    → transition `ready_to_merge`
+ *
+ * The first three return reasons that name the blocker; operators
+ * inspecting `merger_state.note` see *why* the gate hasn't passed.
+ */
+export function shouldTransitionFromInProgress(
+  input: PreMergeGateInput,
+): PreMergeGateDecision {
+  if (input.ownerOpenTaskCount > 0) {
+    const plural = input.ownerOpenTaskCount === 1 ? "task" : "tasks";
+    return {
+      next: "in_progress",
+      reason: `${input.ownerOpenTaskCount} open ${plural} — owner still working`,
+    };
+  }
+  if (!input.worktreeIsClean) {
+    return {
+      next: "in_progress",
+      reason: "worktree dirty — member has uncommitted changes",
+    };
+  }
+  if (!input.isAheadOfBase) {
+    return {
+      next: "in_progress",
+      reason: "branch not ahead of base — nothing to merge",
+    };
+  }
+  if (input.baseHasMoved) {
+    return {
+      next: "rebasing",
+      reason: "base moved during work — rebase before merge",
+    };
+  }
+  return {
+    next: "ready_to_merge",
+    reason: "all checks pass — ready to merge",
+  };
+}
+
+/** Boolean convenience wrapper matching the signature called out in
+ *  the Task body (`shouldTransitionToReady(memberBranch, kanban,
+ *  gitState): boolean`). True iff {@link shouldTransitionFromInProgress}
+ *  recommends a transition to `ready_to_merge` (i.e. the gate passed
+ *  AND the base hasn't moved — `baseHasMoved: true` routes to
+ *  `rebasing` first and returns false here). */
+export function shouldTransitionToReady(input: PreMergeGateInput): boolean {
+  return shouldTransitionFromInProgress(input).next === "ready_to_merge";
+}
+
+/** Adjacency map for valid forward transitions per ADR-134
+ *  §state-machine. Backward transitions from terminal states
+ *  (`conflict` / `reverted`) into `in_progress` are operator-driven
+ *  manual resets — modelled separately in {@link isValidTransition}
+ *  so the data shape here stays "what the machine itself moves
+ *  between" without operator-recovery noise. */
+const FORWARD_TRANSITIONS: ReadonlyMap<
+  BranchMergeState,
+  ReadonlySet<BranchMergeState>
+> = new Map<BranchMergeState, ReadonlySet<BranchMergeState>>([
+  // `open` only transitions on a task-done event.
+  ["open", new Set<BranchMergeState>(["in_progress"])],
+  // `in_progress` re-evaluates on every event/cron tick — self-loop
+  // is intentional (the cron backstop fires repeatedly while the
+  // owner has open tasks, and each fire is a no-op transition to
+  // itself).
+  ["in_progress", new Set<BranchMergeState>(["ready_to_merge", "in_progress"])],
+  // From ready_to_merge, base-moved short-circuits to rebasing;
+  // base-stable proceeds to merging.
+  ["ready_to_merge", new Set<BranchMergeState>(["rebasing", "merging"])],
+  // Rebase either succeeds (back to ready_to_merge) or hits a
+  // conflict (terminal).
+  ["rebasing", new Set<BranchMergeState>(["ready_to_merge", "conflict"])],
+  // Merge either runs the test gate or hits a conflict.
+  ["merging", new Set<BranchMergeState>(["tested", "conflict"])],
+  // Test gate passes (merged) or fails (test_failed).
+  ["tested", new Set<BranchMergeState>(["merged", "test_failed"])],
+  // test_failed routes per team.json::autoMerge.revertOnFail. The
+  // state machine accepts BOTH terminal `reverted` (revertOnFail:
+  // true) AND a manual reset to `in_progress` (revertOnFail: false
+  // + operator manual recovery).
+  [
+    "test_failed",
+    new Set<BranchMergeState>(["reverted", "in_progress"]),
+  ],
+  // Terminal — no forward transitions from these without an operator
+  // manual reset (see {@link isValidTransition}).
+  ["merged", new Set<BranchMergeState>()],
+  ["conflict", new Set<BranchMergeState>()],
+  ["reverted", new Set<BranchMergeState>()],
+]);
+
+/** Returns true iff the state machine permits a transition from
+ *  `from` to `to`. Operator-driven manual resets from
+ *  `conflict` / `reverted` back to `in_progress` are always allowed
+ *  per ADR-134 §state-machine "transition back to in_progress is
+ *  manual"; everything else honors {@link FORWARD_TRANSITIONS}.
+ *
+ *  `merged → in_progress` is intentionally NOT permitted — once a
+ *  branch's fan-in succeeds, the next iteration starts from a fresh
+ *  `open` row after the branch is realigned to the new base (per
+ *  ADR-134 §Per-member-branch lifecycle after success). */
+export function isValidTransition(
+  from: BranchMergeState,
+  to: BranchMergeState,
+): boolean {
+  if ((from === "conflict" || from === "reverted") && to === "in_progress") {
+    return true;
+  }
+  return FORWARD_TRANSITIONS.get(from)?.has(to) ?? false;
+}

@@ -18,9 +18,11 @@
 // that when it fires this verb inline so its own success line is the
 // only one printed.
 
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import { defaultCrontabIO, type CrontabIO } from "../abstractions/crontab.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
-import { installCronBlock } from "../core/cron.ts";
+import { installCronBlock, migrateSuperdoctorToMedicCronLines } from "../core/cron.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
@@ -124,7 +126,23 @@ export async function cronInstall(
   }
 
   const tmuxTmpdir = readTmuxTmpdir(team);
-  const current = await crontab.read();
+  const rawCurrent = await crontab.read();
+
+  // ADR-133 TR6: idempotent superdoctor → medic rewrite on atmux-managed
+  // lines BEFORE the standard install pass. No-op on every current
+  // installation (no legacy `atmux superdoctor` cron lines exist today);
+  // defensive forward-compat for the deprecation window.
+  const migrated = migrateSuperdoctorToMedicCronLines(rawCurrent ?? "");
+  if (migrated.migrated > 0) {
+    await logSuperdoctorMigration({
+      atmuxDir,
+      team: team.name,
+      count: migrated.migrated,
+      stderr,
+    });
+  }
+
+  const current = migrated.body;
   const opts2: Parameters<typeof installCronBlock>[0] = {
     team,
     atmuxDir,
@@ -173,5 +191,28 @@ function readTmuxTmpdir(team: Team): string | undefined {
   const t = (team as { tmuxTmpdir?: unknown }).tmuxTmpdir;
   if (typeof t !== "string" || t === "") return undefined;
   return t;
+}
+
+/** ADR-133 TR6: best-effort append to `~/.atmux/state/cron-rename-migration.log`
+ *  when a superdoctor → medic migration fires. Non-fatal: log failures
+ *  warn to stderr but don't abort the cron install. */
+async function logSuperdoctorMigration(args: {
+  atmuxDir: string;
+  team: string;
+  count: number;
+  stderr: (s: string) => void;
+}): Promise<void> {
+  const logPath = `${args.atmuxDir}/state/cron-rename-migration.log`;
+  const stamp = new Date().toISOString();
+  const entry = `${stamp} team=${args.team} migrated=${args.count} (atmux superdoctor → atmux medic) per ADR-133 TR6\n`;
+  try {
+    await mkdir(dirname(logPath), { recursive: true });
+    await appendFile(logPath, entry, "utf-8");
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    args.stderr(
+      `cron-install: superdoctor→medic migration applied (${args.count}) but log write failed (${cause})\n`,
+    );
+  }
 }
 

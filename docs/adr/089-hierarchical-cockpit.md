@@ -1,11 +1,13 @@
 # ADR-089: Hierarchical cockpit — recursive `sessions[]` + nested tmux prefix chain
 
-**Status**: Accepted (2026-05-15, operator-batch-flip)
+**Status**: proposed
 **Date**: 2026-05-13
 **Driver-ref**: `.atmux/driver-inbox.md` 14:03 MYT 2026-05-13 §Pillar 1+2 (lines 2986-3032).
 **Parent Task**: t-e576dd43. **Authored under**: t-5e7a6631 (ADR seq 3/6, DRAFT only).
 **Numbering shift**: this ADR is the **+1 shift** of driver-inbox's §ADR-088 hierarchical-cockpit ask, bumped to avoid collision with the live **ADR-086** (atmux-pulse, already shipped). The full shift is `driver-inbox §ADR-086→087, §ADR-087→088, §ADR-088→089 (this), §ADR-089→090, §ADR-090→091, §ADR-091→092`. Future readers MUST cross-reference using the shifted IDs, not the original driver-inbox numbering.
 **Reviewer pre-flag**: `.atmux/reviewer-preflag-ADR089-091.md` (signed 2026-05-13). Adjacent-class audit: `.atmux/audits/adr-089-091-adjacent-class-2026-05-13.md` (Class 2 F-key rebinding). All 7 §Decision-anchors + 3 Class-2 recommendations folded into §Decision below.
+
+> **Rename note (2026-05-14)**: this ADR was authored 2026-05-13 referencing the cockpit self-healing role as `superdoctor`. That role was renamed `superdoctor` → `medic` per [ADR-133](./133-medic-rename.md) on 2026-05-14. Prose references below to "superdoctor" should be read as the role now called **medic**. The schema-discriminator literal `type: "superdoctor"` and the TypeScript type identifier `SuperdoctorSession` remain unchanged for the deprecation window per ADR-133 §Out of scope — schema-discriminator renames require a separate migration ADR. ADR-089 implementations landing post-2026-05-14 SHOULD prefer `type: "medic"` once that schema rename ships; until then, the literal stays `"superdoctor"` as documented here for backward-compat.
 
 ## Context
 

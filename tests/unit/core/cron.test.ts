@@ -1015,4 +1015,114 @@ describe("installCockpitCronBlock", () => {
   });
 });
 
+// ---------- ADR-133 TR6: migrateSuperdoctorToMedicCronLines ----------
+
+describe("migrateSuperdoctorToMedicCronLines", () => {
+  test("empty body → no-op", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    expect(migrateSuperdoctorToMedicCronLines("")).toEqual({ body: "", migrated: 0 });
+  });
+
+  test("body with no superdoctor refs → no-op", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/x /u/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    expect(result.body).toBe(body);
+    expect(result.migrated).toBe(0);
+  });
+
+  test("rewrites atmux superdoctor → atmux medic INSIDE per-team block", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "0 * * * * ATMUX_DIR=/x /u/atmux superdoctor --tick",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    expect(result.body).toContain("/u/atmux medic --tick");
+    expect(result.body).not.toContain("atmux superdoctor");
+    expect(result.migrated).toBe(1);
+  });
+
+  test("rewrites atmux superdoctor → atmux medic INSIDE cockpit block", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand",
+      "0 * * * * PATH=/u/bin /u/atmux superdoctor",
+      "# <<< atmux:cockpit",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    expect(result.body).toContain("/u/atmux medic");
+    expect(result.migrated).toBe(1);
+  });
+
+  test("PRESERVES operator-manual atmux superdoctor lines outside managed blocks", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# operator-manual cron entry",
+      "0 0 * * * /u/atmux superdoctor --my-custom-flag",
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "0 * * * * /u/atmux superdoctor",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    // Operator-manual line untouched.
+    expect(result.body).toContain("0 0 * * * /u/atmux superdoctor --my-custom-flag");
+    // Managed line rewritten.
+    expect(result.body).toContain("0 * * * * /u/atmux medic\n");
+    expect(result.migrated).toBe(1);
+  });
+
+  test("idempotent — re-running on already-migrated body is no-op", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "0 * * * * /u/atmux superdoctor",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const first = migrateSuperdoctorToMedicCronLines(body);
+    const second = migrateSuperdoctorToMedicCronLines(first.body);
+    expect(second.body).toBe(first.body);
+    expect(second.migrated).toBe(0);
+  });
+
+  test("rewrites multiple superdoctor lines across multiple blocks", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "0 * * * * /u/atmux superdoctor --once",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand",
+      "0 0 * * * /u/atmux superdoctor",
+      "# <<< atmux:cockpit",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    expect(result.migrated).toBe(2);
+    expect(result.body).not.toContain("atmux superdoctor");
+    expect((result.body.match(/atmux medic/g) ?? []).length).toBe(2);
+  });
+
+  test("does NOT rewrite atmux superdoctor inside a comment line in a managed block", async () => {
+    // Defensive — we still rewrite within the regex (\b boundary), and
+    // commented-out cron entries are intentionally inside the block.
+    // This documents the behavior: ALL lines inside a managed block are
+    // candidates, including commented ones.
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "# 0 * * * * /u/atmux superdoctor  (disabled)",
+      "0 * * * * /u/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    // Commented line rewritten too (within managed block).
+    expect(result.body).toContain("# 0 * * * * /u/atmux medic");
+    expect(result.migrated).toBe(1);
+  });
+});
+
 

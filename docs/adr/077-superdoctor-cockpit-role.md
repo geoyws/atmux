@@ -8,6 +8,14 @@
 > ⚠️ **RENAMED 2026-05-14**: this role is now called **medic** per [ADR-133](133-medic-rename.md).
 > Supersedes naming only — design decisions in this ADR remain canonical for the role.
 > Original term "superdoctor" retained in this file for historical accuracy.
+>
+> **2026-05-14 sibling**: ADR-132 §D2 adds a `martinet` cockpit-tier
+> sibling at window 3 (pluggable per-team whip-manager, fleet-wide
+> iterator). The medic role at window 2 (formerly named here) remains
+> the fleet self-healing / diagnosis-and-prevention loop per §D1
+> below; martinet handles per-team observation + nudge work that
+> doesn't require Opus judgment. Verb impl: T8 of ADR-132 (commit
+> t-fb5e4c1f).
 
 ## Context
 

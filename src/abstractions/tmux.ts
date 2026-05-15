@@ -251,10 +251,12 @@ export interface TmuxNamespace {
     ): Promise<{ index: number; id: string; name: string; active: boolean }[]>;
     renameWindow(target: Target, name: string): Promise<void>;
     selectWindow(target: Target): Promise<void>;
-    /** `tmux move-window -s <source> -t <target> [-k]`. ADR-077: cockpit
-     *  needs to relocate windows for superdoctor's window-2 invariant.
-     *  When `kill` is true (`-k`), an existing window at the target slot
-     *  is killed first; otherwise tmux errors if the target is occupied. */
+    /** `tmux move-window -s <source> -t <target> [-k]`. ADR-077 /
+     *  ADR-133: cockpit needs to relocate windows for medic's
+     *  window-2 invariant (medic = the role formerly named
+     *  `superdoctor`; renamed per ADR-133). When `kill` is true
+     *  (`-k`), an existing window at the target slot is killed first;
+     *  otherwise tmux errors if the target is occupied. */
     moveWindow(opts: { source: Target; target: Target; kill?: boolean }): Promise<void>;
   };
   readonly pane: {

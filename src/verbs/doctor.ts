@@ -1943,6 +1943,179 @@ function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
   return out;
 }
 
+// ---------- ADR-088 W6: merger-fan-in probe class ----------
+
+/** ADR-088 §Decision-2+3+6: `team.merger` block, mirrored locally because
+ *  this branch (geoyws-up-impl-2) implements W6 in parallel with sibling
+ *  branches that own W3 (`merge-cycle` verb) and W4 (the canonical Zod
+ *  block on `team.ts`). When the trunk merge lands, the schema-level
+ *  `team.merger` is the source of truth; `Team.passthrough()` carries
+ *  the runtime payload either way. This local type is the
+ *  literal-union sibling-branch pattern from
+ *  `feedback_test_impl_session_pattern_2026_05_14.md`. */
+interface MergerConfig {
+  enabled?: boolean;
+  baseBranch?: string;
+  stalenessHours?: number;
+}
+
+/** ADR-088 §Decision-6 default. The W4 Zod default lives at the schema
+ *  layer; this constant is the read-site fallback so the probe runs
+ *  identically pre- and post-trunk-merge. */
+const DEFAULT_MERGER_STALENESS_HOURS = 24;
+
+/** Extract `team.merger` via runtime cast — schema definition lives on
+ *  the W4 sibling branch and merges in via trunk. Until then, `Team`'s
+ *  `.passthrough()` carries the field but the static type omits it. */
+function readMergerConfig(team: Team): MergerConfig | undefined {
+  const raw = (team as unknown as { merger?: unknown }).merger;
+  if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
+  return raw as MergerConfig;
+}
+
+export interface CheckMergerFanInOpts {
+  /** Git spawn override (test injection). */
+  gitSpawn?: GitSpawn;
+  /** Wall-clock "now" in epoch seconds. Default: `Date.now() / 1000`.
+   *  Injected by tests so the staleness probe runs deterministically. */
+  nowEpochSec?: () => number;
+}
+
+/**
+ * ADR-088 §Decision-6 — surface 2 anomaly classes for the merger fan-in
+ * policy. Both are pre-emptive: they flag misconfiguration / drift before
+ * unattended fan-in silently stops working.
+ *
+ * Classes:
+ *   1. `merger-branch-stale` — `team.merger.enabled === true` AND a
+ *                              `${base}-<m>` branch has commits older
+ *                              than `merger.stalenessHours`
+ *                              (default 24h). YELLOW. Hint: run
+ *                              `atmux merge-member <m>` manually. The
+ *                              ADR-088 §Decision-6 auto-fix path (clean
+ *                              base worktree + clean fast-forward) is
+ *                              wired into `--fix` once the W3
+ *                              `merge-cycle` verb merges into trunk;
+ *                              until then the probe surfaces only.
+ *   2. `merger-disabled-but-member-present` — `team.members[]` contains
+ *                              a member with `role: "merger"` but
+ *                              `team.merger.enabled !== true`. YELLOW.
+ *                              Surface only — operator intent ambiguous
+ *                              (might be a forgotten flip, might be an
+ *                              opt-out keeping the brief for later).
+ *                              Never auto-fixable.
+ *
+ * Pure modulo IO — every IO call gated through `opts` for tests. When
+ * `team === null` (team.json failed to load), returns empty: the
+ * `checkTeam` row already surfaced the broken state.
+ */
+export async function checkMergerFanIn(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckMergerFanInOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  const merger = readMergerConfig(team);
+  const enabled = merger?.enabled === true;
+
+  // Class 2 always evaluates — independent of enabled flag (the whole
+  // point is to flag the inconsistency between role-present and
+  // feature-off).
+  const rows: DoctorRow[] = [];
+  for (const member of team.members) {
+    if (member.role !== "merger") continue;
+    if (enabled) continue;
+    rows.push({
+      status: "yellow",
+      label: `merger:disabled-but-member-present:${member.name}`,
+      detail: `member '${member.name}' declares role=merger but team.merger.enabled !== true`,
+      hint: "either flip `team.merger.enabled: true` to activate fan-in, or drop the role from team.json",
+    });
+  }
+
+  // Class 1 only evaluates when the feature is opted in — staleness is
+  // meaningless when fan-in is disabled by design.
+  if (!enabled) return rows;
+
+  const stalenessHours =
+    typeof merger?.stalenessHours === "number" && merger.stalenessHours > 0
+      ? merger.stalenessHours
+      : DEFAULT_MERGER_STALENESS_HOURS;
+  const nowSec = (opts.nowEpochSec ?? (() => Math.floor(Date.now() / 1000)))();
+  const staleCutoffSec = nowSec - stalenessHours * 3600;
+
+  const git = opts.gitSpawn ?? defaultGitSpawn;
+  const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
+
+  // Resolve base — `merger.baseBranch` wins if set; otherwise fall back
+  // to current branch in the project root (matches ADR-088 §Decision-3
+  // resolution order in `mergeMember`).
+  let baseBranch = typeof merger?.baseBranch === "string" ? merger.baseBranch : "";
+  if (baseBranch.length === 0) {
+    const baseR = await git(["-C", projectRoot, "branch", "--show-current"]);
+    baseBranch = baseR.exitCode === 0 ? baseR.stdout.trim() : "";
+  }
+  if (baseBranch.length === 0) return rows; // detached HEAD — can't probe.
+
+  const listR = await git(["-C", projectRoot, "branch", "--list", `${baseBranch}-*`]);
+  if (listR.exitCode !== 0) return rows; // degrade silently.
+
+  const prefix = `${baseBranch}-`;
+  const branchNames = listR.stdout
+    .split("\n")
+    .map((line) => line.replace(/^[\s*+]+/, "").trim())
+    .filter((line) => line.length > 0 && line.startsWith(prefix));
+
+  // For each member-suffixed branch, probe its tip-commit time and
+  // commits-ahead count. We only surface branches that are:
+  //   (a) suffixed to a current team member (not a leftover orphan —
+  //       that's already handled by class 5 of checkWorktreeIsolation),
+  //   (b) have ≥1 commit ahead of base (a no-op merge would be silent),
+  //   (c) tip-commit older than the staleness cutoff.
+  const sanitizedToMember = new Map<string, string>();
+  for (const m of team.members) {
+    sanitizedToMember.set(sanitizeBranchSegment(m.name), m.name);
+  }
+
+  for (const branchName of branchNames) {
+    const suffix = branchName.slice(prefix.length);
+    const memberName = sanitizedToMember.get(suffix);
+    if (memberName === undefined) continue; // not a current member; class 5 surfaces this.
+
+    // Commits-ahead count gate.
+    const countR = await git([
+      "-C",
+      projectRoot,
+      "rev-list",
+      "--count",
+      `${baseBranch}..${branchName}`,
+    ]);
+    if (countR.exitCode !== 0) continue;
+    const aheadRaw = countR.stdout.trim();
+    if (!/^\d+$/.test(aheadRaw)) continue;
+    const ahead = parseInt(aheadRaw, 10);
+    if (ahead === 0) continue;
+
+    // Tip-commit author/commit time.
+    const timeR = await git(["-C", projectRoot, "log", "-1", "--format=%ct", branchName]);
+    if (timeR.exitCode !== 0) continue;
+    const tipRaw = timeR.stdout.trim();
+    if (!/^\d+$/.test(tipRaw)) continue;
+    const tipSec = parseInt(tipRaw, 10);
+    if (tipSec >= staleCutoffSec) continue; // fresh — not stale.
+
+    const ageHours = Math.floor((nowSec - tipSec) / 3600);
+    rows.push({
+      status: "yellow",
+      label: `merger:branch-stale:${memberName}`,
+      detail: `${branchName} — ${ahead} commit(s) ahead of ${baseBranch}, tip is ~${ageHours}h old (threshold ${stalenessHours}h)`,
+      hint: `run \`atmux merge-member ${memberName}\` to fan in — or wait for the merger loop / cron if installed`,
+    });
+  }
+
+  return rows;
+}
+
 // ---------- Public verb entry ----------
 
 export interface DoctorOpts {
@@ -2012,6 +2185,12 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
   rows.push(...(await checkWorktreeIsolation(team, atmuxDir)));
+  // ADR-088 §Decision-6 W6: merger-fan-in anomalies — stale per-member
+  // branch + role/feature-flag mismatch. Silent when `team.merger` is
+  // unset or `merger.enabled !== true` (the staleness branch); the
+  // role-mismatch branch surfaces regardless when a `role: "merger"`
+  // member exists with the feature off.
+  rows.push(...(await checkMergerFanIn(team, atmuxDir)));
   return rows;
 }
 
@@ -2271,6 +2450,130 @@ export interface FixStarvingOpts {
   /** Poll interval inside the verify loop. Default 1_000ms — balances
    *  responsiveness with not hammering the tmux server. */
   verifyPollIntervalMs?: number;
+}
+
+// ---------- ADR-137: member-forcepush-recent probe ----------
+
+export interface CheckMemberForcePushRecentOpts {
+  /** Git spawn override (test injection). Default uses the local
+   *  `defaultGitSpawn` shared with the other doctor probes. */
+  gitSpawn?: GitSpawn;
+  /** Epoch-seconds clock override. Default `Date.now() / 1000`. Tests
+   *  pin this to make `reflog --date=unix` matching deterministic. */
+  now?: () => number;
+  /** Time window in seconds. Default 3600 (1h). Reflog entries older
+   *  than `now - windowSec` are skipped — the probe only fires on
+   *  recent force-pushes; ancient history doesn't ping.
+   *
+   *  Operators who want a wider window can override via the `--`
+   *  command-line wiring (deferred — not in this Task's scope). */
+  windowSec?: number;
+}
+
+/**
+ * ADR-137 §D3 — surface force-push events on per-member branches within
+ * the last hour as YELLOW (warn-class, not block-class). The probe is
+ * advisory: the harness force-push deny rule remains the actual gate;
+ * this probe is the post-hoc surface for cases where the operator
+ * authorized the force-push and the team-lead wants to know it
+ * happened so the team can be nudged toward the ADR-137 merge-over-
+ * rebase convention.
+ *
+ * Mechanism — for each member with a worktree under `<atmuxDir>/worktrees/`:
+ *
+ *   1. Resolve the worktree path (skipped if `worktreeIsolation !== true`
+ *      — single-trunk teams don't have per-member branches to probe).
+ *   2. Resolve the worktree's current branch via `git -C <wt>
+ *      branch --show-current`. Skip if unresolvable (detached HEAD,
+ *      missing worktree, broken git state — `checkWorktreeIsolation`
+ *      already surfaces those).
+ *   3. Read the reflog for that branch with `git -C <wt> reflog show
+ *      <branch> --date=unix --format='%gd %gs' -n 30`. Entries arrive
+ *      newest-first.
+ *   4. Parse each line for `@{<unix>}` timestamp + reflog message.
+ *      Filter: timestamp must be within `windowSec` of `now`, AND
+ *      message must match `/forced/i` (covers `update by push
+ *      (forced)`, `forced-update`, and the older `non-fast forward`
+ *      reflog wordings).
+ *   5. One YELLOW row per member with at least one matching event.
+ *      Multiple force-pushes in the window collapse to a single row
+ *      (the hint is the same regardless of count).
+ *
+ * Returns `[]` when no force-push events found or when the team's
+ * worktree-isolation isn't on. Probe failures (git missing, worktree
+ * unreadable) collapse to `[]` rather than throw — the team's own
+ * doctor surface must stay green even when this probe can't run.
+ */
+export async function checkMemberForcePushRecent(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckMemberForcePushRecentOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  if (team.worktreeIsolation !== true) return [];
+  const git = opts.gitSpawn ?? defaultGitSpawn;
+  const nowFn = opts.now ?? ((): number => Math.floor(Date.now() / 1000));
+  const windowSec = opts.windowSec ?? 3600;
+  const now = nowFn();
+  const cutoff = now - windowSec;
+
+  const rows: DoctorRow[] = [];
+  for (const member of team.members) {
+    const wt = resolveWorktreePath(team, member.name, atmuxDir);
+    let branch: string;
+    try {
+      const branchR = await git(["-C", wt, "branch", "--show-current"]);
+      if (branchR.exitCode !== 0) continue;
+      branch = branchR.stdout.trim();
+      if (branch.length === 0) continue; // detached HEAD
+    } catch {
+      continue; // worktree gone, git missing, etc. — skip silently
+    }
+
+    let reflog: string;
+    try {
+      const reflogR = await git([
+        "-C",
+        wt,
+        "reflog",
+        "show",
+        branch,
+        "--date=unix",
+        "-n",
+        "30",
+        "--format=%gd %gs",
+      ]);
+      if (reflogR.exitCode !== 0) continue;
+      reflog = reflogR.stdout;
+    } catch {
+      continue;
+    }
+
+    let matchedMsg: string | null = null;
+    for (const line of reflog.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      const m = /@\{(\d+)\}:?\s*(.*)$/.exec(trimmed);
+      if (m === null) continue;
+      const ts = Number.parseInt(m[1] ?? "", 10);
+      const msg = m[2] ?? "";
+      if (!Number.isFinite(ts) || ts < cutoff) continue;
+      if (/forced/i.test(msg)) {
+        matchedMsg = msg;
+        break;
+      }
+    }
+    if (matchedMsg !== null) {
+      const short = matchedMsg.length > 60 ? `${matchedMsg.slice(0, 60)}…` : matchedMsg;
+      rows.push({
+        status: "yellow",
+        label: `member-forcepush-recent:${member.name}`,
+        detail: `${branch} reflog within ${windowSec}s: ${short}`,
+        hint: "did you mean to merge instead of rebase? see ADR-137 §D1 — `git merge origin/<base>` keeps the branch in a consistent published state",
+      });
+    }
+  }
+  return rows;
 }
 
 /**

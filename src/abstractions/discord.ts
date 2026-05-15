@@ -138,7 +138,16 @@ export type DiscordTemplate =
   // commitGracePeriodMin. Renderer below (`renderWhipModalCycling`);
   // dedup state at `<atmuxDir>/state/modal-cycling-dedup-state.json`
   // (per-member, dedupMin window — default 30min).
-  | "whip-modal-cycling";
+  | "whip-modal-cycling"
+  // ADR-137 §D3: member-forcepush-recent post-hoc surface. Fired when
+  // the `checkMemberForcePushRecent` doctor probe surfaces a recent
+  // force-push event on a per-member branch — nudges the team toward
+  // the ADR-137 merge-over-rebase convention. Renderer below
+  // (`renderMemberForcePushWarning`); dedup state at
+  // `<atmuxDir>/state/member-forcepush-dedup-state.json` (per-team:
+  // per-branch, 30min dedup window — operator may see the same
+  // member's force-push twice in 30min only if there's a second one).
+  | "member-forcepush-warning";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -1429,6 +1438,67 @@ export function renderWhipDefunctCwd(opts: WhipDefunctCwdOpts): DiscordSendOpts 
     template: "whip-defunct-cwd",
     team: opts.team,
     category: "🛑",
+    verdict,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-137 — renderMemberForcePushWarning ----------
+
+export interface MemberForcePushWarningMember {
+  /** Member name whose per-member branch surfaced the recent
+   *  force-push reflog entry. */
+  member: string;
+  /** Branch name (typically `<base>-<member>`) carrying the
+   *  force-push event. */
+  branch: string;
+  /** Short reflog message (one line, ≤80 char — truncated upstream). */
+  reflogMsg: string;
+}
+
+export interface MemberForcePushWarningOpts {
+  team: string;
+  /** Members + branches that surfaced the doctor probe. */
+  events: ReadonlyArray<MemberForcePushWarningMember>;
+  whenMs?: number;
+}
+
+/**
+ * Build the `[member-forcepush-warning]` Discord send opts per
+ * ADR-137 §D3. Warn-class (🟡 Cool) — the harness force-push deny
+ * rule remains the actual gate; this template is the post-hoc
+ * surface for force-pushes that DID land (operator authorized via
+ * the prompt, OR the deny rule wasn't engaged because the worktree
+ * was outside its scope).
+ *
+ * Composition:
+ *   - Verdict: `🟡 **Cool** — N member(s) force-pushed in last hour`
+ *   - Bullet per affected member: `🟡 <member>: <branch> reflog: <msg>`
+ *   - Fix bullet: `🛠️ fix: use \`git merge origin/<base>\` for trunk integration (ADR-137 §D1)`
+ *
+ * Dedup state lives at `<atmuxDir>/state/member-forcepush-dedup-state.json`
+ * keyed on `<team>:<branch>` with a 30min window — the doctor probe
+ * itself is live-not-cached (re-fires every tick if reflog still
+ * matches), but the Discord ping is dedup'd so a single force-push
+ * doesn't ping every tick for 12 ticks.
+ */
+export function renderMemberForcePushWarning(
+  opts: MemberForcePushWarningOpts,
+): DiscordSendOpts {
+  const n = opts.events.length;
+  const verdict = `🟡 **Cool** — ${n} member${n === 1 ? "" : "s"} force-pushed within the last hour`;
+  const bullets: string[] = [];
+  for (const e of opts.events) {
+    const short = e.reflogMsg.length > 40 ? `${e.reflogMsg.slice(0, 40)}…` : e.reflogMsg;
+    bullets.push(`🟡 ${e.member}: ${e.branch} reflog: ${short}`);
+  }
+  bullets.push("🛠️ fix: use `git merge origin/<base>` for trunk integration (ADR-137 §D1)");
+  const out: DiscordSendOpts = {
+    template: "member-forcepush-warning",
+    team: opts.team,
+    category: "📋",
     verdict,
     bullets,
   };

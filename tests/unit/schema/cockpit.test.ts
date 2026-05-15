@@ -101,70 +101,116 @@ describe("SuperdriverSession + SuperdoctorSession — leaf shape", () => {
   });
 });
 
-// ---------- CockpitMartinet — defaults + bounds ----------
+// ---------- CockpitMartinet — discriminated union (ADR-132 §D4) ----------
+//
+// Post-merge reshape per Task t-b86fd8cb: CockpitMartinet is now a
+// discriminated union on `impl` (claude variant + cursor variant).
+// Tests below cover both variants explicitly + the discriminator gate.
 
-describe("CockpitMartinet — defaults + bounds", () => {
-  test("empty object parses to all defaults (W3 disabled by default)", () => {
-    const m = CockpitMartinet.parse({});
+describe("CockpitMartinet — discriminated union on `impl`", () => {
+  test("rejects parse with no `impl` discriminator", () => {
+    expect(() => CockpitMartinet.parse({})).toThrow();
+    expect(() => CockpitMartinet.parse({ enabled: true })).toThrow();
+  });
+
+  test("rejects unknown `impl` literal", () => {
+    expect(() =>
+      CockpitMartinet.parse({ impl: "minimax" as unknown as "claude" }),
+    ).toThrow();
+  });
+});
+
+describe("CockpitMartinet — claude variant", () => {
+  test("claude variant parses with defaults", () => {
+    const m = CockpitMartinet.parse({ impl: "claude" });
+    expect(m.impl).toBe("claude");
+    expect(m.enabled).toBe(false);
+  });
+
+  test("claude variant accepts claudeAccount + tuiOverrides + autoStart fields", () => {
+    const m = CockpitMartinet.parse({
+      impl: "claude",
+      enabled: true,
+      claudeAccount: { configDir: "/root/.claude-unum", label: "unum" },
+      tuiOverrides: { effortLevel: "xhigh" },
+      autoStart: false,
+      autoStartTimeoutSec: 60,
+    });
+    if (m.impl !== "claude") throw new Error("variant narrowing failed");
+    expect(m.claudeAccount?.configDir).toBe("/root/.claude-unum");
+    expect(m.tuiOverrides?.effortLevel).toBe("xhigh");
+    expect(m.autoStart).toBe(false);
+    expect(m.autoStartTimeoutSec).toBe(60);
+  });
+
+  test("claude variant rejects cursor-only fields (.strict drift detection)", () => {
+    expect(() =>
+      CockpitMartinet.parse({ impl: "claude", cursorBinPath: "/usr/bin/cursor" }),
+    ).toThrow();
+    expect(() =>
+      CockpitMartinet.parse({ impl: "claude", model: "composer-2" }),
+    ).toThrow();
+  });
+});
+
+describe("CockpitMartinet — cursor variant", () => {
+  test("cursor variant parses with defaults", () => {
+    const m = CockpitMartinet.parse({ impl: "cursor" });
+    expect(m.impl).toBe("cursor");
+    if (m.impl !== "cursor") throw new Error("variant narrowing failed");
     expect(m.enabled).toBe(false);
     expect(m.cursorBinPath).toBe("/usr/local/bin/cursor-agent");
     expect(m.model).toBe("composer-2-fast");
     expect(m.cageTier).toBe("tier-2");
-    expect(m.claudeAccount).toBeUndefined();
   });
 
   test("model accepts 'composer-2-fast' and 'composer-2' only", () => {
-    expect(CockpitMartinet.parse({ model: "composer-2-fast" }).model).toBe(
-      "composer-2-fast",
-    );
-    expect(CockpitMartinet.parse({ model: "composer-2" }).model).toBe(
-      "composer-2",
-    );
+    const a = CockpitMartinet.parse({ impl: "cursor", model: "composer-2-fast" });
+    const b = CockpitMartinet.parse({ impl: "cursor", model: "composer-2" });
+    if (a.impl !== "cursor" || b.impl !== "cursor") {
+      throw new Error("variant narrowing failed");
+    }
+    expect(a.model).toBe("composer-2-fast");
+    expect(b.model).toBe("composer-2");
   });
 
   test("model rejects arbitrary strings", () => {
     expect(() =>
-      CockpitMartinet.parse({ model: "composer-2-slow" }),
+      CockpitMartinet.parse({ impl: "cursor", model: "composer-2-slow" }),
     ).toThrow();
-    expect(() => CockpitMartinet.parse({ model: "gpt-4" })).toThrow();
+    expect(() => CockpitMartinet.parse({ impl: "cursor", model: "gpt-4" })).toThrow();
   });
 
   test("cageTier pinned to 'tier-2' (ADR-132 §D4)", () => {
-    expect(CockpitMartinet.parse({ cageTier: "tier-2" }).cageTier).toBe(
-      "tier-2",
-    );
-    // Future cage tiers need both ADR-132 enum bump AND new ADR
-    // approving the Linux-user-isolated cage shape — fenced here.
+    const m = CockpitMartinet.parse({ impl: "cursor", cageTier: "tier-2" });
+    if (m.impl !== "cursor") throw new Error("variant narrowing failed");
+    expect(m.cageTier).toBe("tier-2");
     expect(() =>
-      CockpitMartinet.parse({ cageTier: "tier-3" as unknown as "tier-2" }),
+      CockpitMartinet.parse({ impl: "cursor", cageTier: "tier-3" as unknown as "tier-2" }),
     ).toThrow();
     expect(() =>
-      CockpitMartinet.parse({ cageTier: "tier-1" as unknown as "tier-2" }),
+      CockpitMartinet.parse({ impl: "cursor", cageTier: "tier-1" as unknown as "tier-2" }),
     ).toThrow();
   });
 
-  test("claudeAccount accepts the existing CockpitClaudeAccount shape", () => {
-    const m = CockpitMartinet.parse({
-      claudeAccount: { configDir: "/root/.claude-unum", label: "unum" },
-    });
-    expect(m.claudeAccount?.configDir).toBe("/root/.claude-unum");
-    expect(m.claudeAccount?.label).toBe("unum");
-  });
-
-  test("claudeAccount rejects empty configDir (re-used min(1) constraint)", () => {
+  test("cursor variant rejects claude-only fields (.strict drift detection)", () => {
     expect(() =>
       CockpitMartinet.parse({
-        claudeAccount: { configDir: "", label: "x" },
+        impl: "cursor",
+        claudeAccount: { configDir: "/x", label: "y" },
       }),
+    ).toThrow();
+    expect(() =>
+      CockpitMartinet.parse({ impl: "cursor", autoStart: true }),
     ).toThrow();
   });
 
   test("unknown keys rejected (.strict drift detection)", () => {
     expect(() =>
-      CockpitMartinet.parse({ enbled: true }),
+      CockpitMartinet.parse({ impl: "cursor", enbled: true }),
     ).toThrow();
     expect(() =>
-      CockpitMartinet.parse({ cursorBin: "/usr/bin/cursor" }),
+      CockpitMartinet.parse({ impl: "cursor", cursorBin: "/usr/bin/cursor" }),
     ).toThrow();
   });
 });
@@ -405,16 +451,33 @@ describe("CockpitMedic — ADR-133 alias of CockpitSuperdoctor", () => {
 // ---------- Cockpit — top-level defaultMartinet + martinet integration ----------
 
 describe("Cockpit — top-level defaultMartinet + martinet integration", () => {
-  test("Cockpit accepts defaultMartinet + martinet block at top-level", () => {
+  test("Cockpit accepts defaultMartinet + cursor-variant martinet block at top-level", () => {
     const c = Cockpit.parse({
       teams: [],
       defaultMartinet: "cursor",
-      martinet: { enabled: true, model: "composer-2" },
+      martinet: { impl: "cursor", enabled: true, model: "composer-2" },
     });
     expect(c.defaultMartinet).toBe("cursor");
     expect(c.martinet?.enabled).toBe(true);
-    expect(c.martinet?.model).toBe("composer-2");
-    expect(c.martinet?.cursorBinPath).toBe("/usr/local/bin/cursor-agent");
+    if (c.martinet?.impl !== "cursor") {
+      throw new Error("expected cursor variant after discriminator narrowing");
+    }
+    expect(c.martinet.model).toBe("composer-2");
+    expect(c.martinet.cursorBinPath).toBe("/usr/local/bin/cursor-agent");
+  });
+
+  test("Cockpit accepts claude-variant martinet block at top-level (degenerate impl)", () => {
+    const c = Cockpit.parse({
+      teams: [],
+      defaultMartinet: "claude",
+      martinet: { impl: "claude", enabled: true, autoStart: false },
+    });
+    expect(c.defaultMartinet).toBe("claude");
+    if (c.martinet?.impl !== "claude") {
+      throw new Error("expected claude variant after discriminator narrowing");
+    }
+    expect(c.martinet.enabled).toBe(true);
+    expect(c.martinet.autoStart).toBe(false);
   });
 
   test("Cockpit without martinet fields parses (backward compat — defaults to undefined)", () => {

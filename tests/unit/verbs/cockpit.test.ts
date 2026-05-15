@@ -577,7 +577,7 @@ describe("reconcileCockpitSession", () => {
       await reconcileCockpitSession(fx.tmux, "atmux_test", teams, logger);
       const wins = await fx.tmux.window.listWindows("atmux_test");
       const names = wins.map((w) => w.name);
-      expect(names).toContain("superdriver");
+      expect(names).toContain("_superdriver");
       expect(names).toContain("alpha");
       expect(names).toContain("beta");
     } finally {
@@ -632,7 +632,7 @@ describe("reconcileCockpitSession", () => {
         true,
       );
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
-      expect(names).toContain("superdriver");
+      expect(names).toContain("_superdriver");
       expect(names).toContain("a");
       expect(names).not.toContain("b");
     } finally {
@@ -671,8 +671,11 @@ describe("reconcileCockpitSession", () => {
       // Window 1 = superdriver (created by newSession); window 2 = superdoctor;
       // teams 3..N. Indices may not literally be 1,2,3 if tmux is configured
       // with base-index != 1, but RELATIVE order is what we assert.
-      expect(byIndex[0]?.name).toBe("superdriver");
-      expect(byIndex[1]?.name).toBe("superdoctor");
+      expect(byIndex[0]?.name).toBe("_superdriver");
+      // ADR-133: window renamed superdoctor → medic. Legacy alias kept
+      //          in buildSuperdoctorCommand dep for back-compat; window
+      //          name is canonical "medic".
+      expect(byIndex[1]?.name).toBe("_medic");
       expect(
         byIndex
           .slice(2)
@@ -696,7 +699,8 @@ describe("reconcileCockpitSession", () => {
       await reconcileCockpitSession(fx.tmux, "s", teams, logger);
       await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: false });
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
-      expect(names).toEqual(["alpha", "superdriver"]);
+      // ADR-135 §D2: `_superdriver` sorts before `alpha` (`_` < lowercase ASCII).
+      expect(names).toEqual(["_superdriver", "alpha"]);
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -747,7 +751,7 @@ describe("reconcileCockpitSession", () => {
         .slice()
         .sort((a, b) => a.index - b.index)
         .map((w) => w.name);
-      expect(pre[0]).toBe("superdriver");
+      expect(pre[0]).toBe("_superdriver");
       expect(pre.slice(1).sort()).toEqual(["alpha", "beta"]);
       // Upgrade — superdoctor enabled. The move-with-kill on the
       // displaced team viewer is a destructive op; t-8b0e077e requires
@@ -756,8 +760,9 @@ describe("reconcileCockpitSession", () => {
       const post = (await fx.tmux.window.listWindows("s"))
         .slice()
         .sort((a, b) => a.index - b.index);
-      expect(post[0]?.name).toBe("superdriver");
-      expect(post[1]?.name).toBe("superdoctor");
+      expect(post[0]?.name).toBe("_superdriver");
+      // ADR-133: W2 named "medic" canonically.
+      expect(post[1]?.name).toBe("_medic");
       // Both teams must still be present (one was displaced + recreated).
       expect(
         post
@@ -785,8 +790,9 @@ describe("reconcileCockpitSession", () => {
       // a destructive op (t-8b0e077e) → thread `yes=true`.
       await reconcileCockpitSession(fx.tmux, "s", [], logger, sdDeps, sdNoAutoStart, true);
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
-      expect(names).toContain("superdriver");
-      expect(names).toContain("superdoctor");
+      expect(names).toContain("_superdriver");
+      // ADR-133: W2 canonically named "medic". Legacy "superdoctor" window is preserved by orphan-prune for back-compat, but fresh creations use "medic".
+      expect(names).toContain("_medic");
       expect(names).not.toContain("alpha");
     } finally {
       try {
@@ -1051,7 +1057,8 @@ describe("reconcileCockpitSession", () => {
       // required.
       await reconcileCockpitSession(fx.tmux, "s", teams, logger);
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
-      expect(names).toEqual(["alpha", "superdriver"]);
+      // ADR-135 §D2: `_superdriver` sorts before `alpha` (`_` < lowercase ASCII).
+      expect(names).toEqual(["_superdriver", "alpha"]);
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -1122,7 +1129,7 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
       const after = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
       expect(after).toContain("alpha"); // sibling preserved
       expect(after).toContain("unum"); // target added
-      expect(after).toContain("superdriver");
+      expect(after).toContain("_superdriver");
     } finally {
       try {
         await fx.tmux.server.killServer();

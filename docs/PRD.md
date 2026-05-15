@@ -130,6 +130,35 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Decisions / flags    | `decisions add/list/show/digest` / `flags add/list/show/resolve`          |
 | Driver self-state    | `brief-driver` / `driver note` / `reload brief-reload` / `reload config-reload` |
 | Superdriver          | `super-attach` (cross-team / fleet — ADR-025 in parent repo)              |
+| Cockpit              | `cockpit rebuild / reload` (ADR-063), `martinet tick / status` (ADR-132) |
+
+#### Cockpit topology (ADR-063 + ADR-077 + ADR-132 + ADR-133 + ADR-135)
+
+The operator cockpit session (`atmux_cockpit` by default, was
+`atmux_teams` pre-ADR-135) carries the following window order — opt-in
+surfaces (`_medic`, `_martinet`) are gated by `cockpit.json` blocks,
+per-team viewers shift down by the number of opt-in surfaces enabled.
+Cockpit-level system roles carry a single-underscore prefix (sorts
+before plain team names in `tmux list-windows`); per-team viewers stay
+plain. Member windows inside team cages use `<emoji>-<member>`
+(hyphen-separated, ADR-135 §D3).
+
+| # | Window | Role | Authorizing ADR |
+|---|--------|------|-----------------|
+| 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
+| 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
+| 3 | `_martinet` (was `martinet`) | Pluggable per-team whip-manager + fleet-wide iterator | ADR-132 §D2 + ADR-135 §D2 |
+| 4..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
+
+Backward-compat: a cockpit.json without `medic` / `martinet` blocks
+retains the pre-ADR-077 / pre-ADR-132 topology (W1 _superdriver +
+W2..N per-team viewers). Loader migrates legacy `superdoctor` keys
+to medic semantics with a deprecation warning per ADR-133 §D2.
+Cockpit rebuild detects legacy `atmux_teams` session + legacy
+non-underscored cockpit-role windows and renames them in-place
+(idempotent) per ADR-135 §D4. Member windows in legacy
+`<emoji><member>` format get the same in-place rename treatment on
+next `atmux start`.
 
 **ADR-132 §D6 (T5)** — `team.json::martinet` selects which pluggable
 cockpit-W3 whip-manager (`"claude"` degenerate baseline / `"cursor"`
@@ -177,7 +206,8 @@ Custom launch commands via `team.json:.tuiCommands` map per `README.md`
 │   ├── session.txt            # captured at `atmux start` (ADR-026 single-session default)
 │   ├── session-start.txt      # epoch seconds (whip's lead-uptime source)
 │   ├── last-report.epoch      # last `atmux report` fire
-│   └── budget-pause.json      # per ADR-049 (when paused)
+│   ├── budget-pause.json      # per ADR-049 (when paused)
+│   └── cron-rename-migration.log  # ADR-133 TR6: append-only audit of `atmux superdoctor` → `atmux medic` cron-line rewrites (no-op on installs with no legacy lines)
 ├── archive/<timestamp>/       # created on atmux stop
 └── sockets/                   # ADR-032 socket-pubsub (parent repo) when enabled
 ```

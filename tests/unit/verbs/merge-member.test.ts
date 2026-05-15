@@ -132,7 +132,7 @@ describe("merge-member verb — conflict path", () => {
       _base: string,
       wtBranch: string,
       _repoPath: string,
-      _opts: MergeMemberOpts,
+      _opts?: MergeMemberOpts,
     ): Promise<MergeMemberResult> => {
       throw new MergeConflictError({
         wtBranch,

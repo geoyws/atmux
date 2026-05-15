@@ -3,13 +3,17 @@
 **Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-13
 
+> **Naming note 2026-05-14**: the cockpit-tier hourly role this ADR compares against (named `superdoctor` in §Context "complementary at hourly LLM tier" bullet + §Cross-refs) is now called **medic** per [ADR-133](133-medic-rename.md). Supersession is naming-only — design canonical per ADR-077.
+
 ## Context
 
 The cockpit runs several liveness layers already:
 
 - **`whip`** nudges panes per team; doesn't render a cross-team verdict.
 - **`atmux watchdog`** scans per-team heartbeats per ADR-057 §D6b; per-member only.
-- **`superdoctor`** (ADR-077) runs an hourly LLM session, not a 5min deterministic loop.
+- **`medic`** (ADR-077)[^medic-rename] runs an hourly LLM session, not a 5min deterministic loop.
+
+[^medic-rename]: The cockpit self-healing role was renamed `superdoctor` → `medic` on 2026-05-14 per [ADR-133](./133-medic-rename.md). References to "medic" below originally read "superdoctor"; ADR-086 itself shipped on 2026-05-13 under the original name. Storage-layer identifiers (`superdoctor_attempts` table, `__superdoctor__` member sentinel, `src/core/superdoctor-activity.ts`) remain unchanged for the deprecation window per ADR-133 §Out of scope.
 - **`atmux doctor --json`** is single-team config health; no commit-cadence.
 - **`atmux status --json`** is a single-team kanban/member snapshot.
 
@@ -17,7 +21,7 @@ None of them answer the recurring failure mode flagged repeatedly in `CLAUDE.md`
 
 > *"Recurring failure mode George has flagged dozens of times: driver reports 'team is alive / queued / dispatched' without verified turn-execution, user re-checks N min later, nothing moved, time wasted. **'Working' is defined by commit-cadence**, not pane liveness."*
 
-George floated a 5min cockpit-level probe — check every enabled team, ping Discord if a team-lead or its members are stuck. The original framing was MiniMax-via-OpenCode for **model-diversity** (catch Claude blind spots that our same-model whip/watchdog/superdoctor loops rationalise away).
+George floated a 5min cockpit-level probe — check every enabled team, ping Discord if a team-lead or its members are stuck. The original framing was MiniMax-via-OpenCode for **model-diversity** (catch Claude blind spots that our same-model whip/watchdog/medic loops rationalise away).
 
 Direction decided in chat: **build the cheap deterministic probe first, layer MiniMax on top later.** Phase 1 validates the signal pipeline (data sources → verdict function → Discord rendering → dedup) and is shippable in isolation. Phase 2 swaps the verdict-renderer for a MiniMax-via-OpenCode call against the same input bundle — separate plan, separate ADR.
 
@@ -134,6 +138,22 @@ Manual install (for operators who don't run `cockpit rebuild`) is still document
 
 Phase 2 plan slot reserved (no number assigned yet).
 
+## Phase 1.1: dedup default revision
+
+**Date added**: 2026-05-13. **Driver-ref**: driver-inbox 18:17 MYT 2026-05-13 (pulse-spam Discord cadence).
+
+**Symptom**: `atmux` + `sopx` teams stuck at `🚨 Need you` (correct verdict) re-fired every 30min per `DEFAULT_PULSE_DEDUP_MIN = 30`. ≈4 pings/hr from pulse alone — violates CLAUDE.md §Discord "every `🚨` trains the eye".
+
+**Decision**: bump `DEFAULT_PULSE_DEDUP_MIN` 30 → 120 (Phase 1's flat-window default is too aggressive). Schema field `cockpit.pulse.dedupMins` already wired (per main body) — operators can override per-cockpit.
+
+**Consequences**:
+- Worst-case re-fire rate halves twice (30 → 120 min) for sustained-urgency teams. ≈1 ping per 2h per stuck team instead of 4/hr.
+- Verdict transitions still always fire (unchanged).
+- `🟡 Cool/Idle` re-fires unchanged (Phase 1 skipped them entirely; this section doesn't address that — see Phase 1.5).
+- **Phase 1.5 follow-up**: per-verdict dedup ladder (🚨=60min / 🔴=30min / 🟡=4h) supersedes this flat default — see next section. Until 1.5 lands, 120min flat is the operating cadence.
+
+**Reversibility**: trivial — single-line revert of the const.
+
 ## Phase 1.5: Verdict-specific dedup ladder
 
 **Date added**: 2026-05-13. **Driver-ref**: driver-inbox 18:17 MYT 2026-05-13 (pulse-spam Discord cadence). **Task**: t-c99360fb.
@@ -196,7 +216,7 @@ Medium — revert ladder const + schema field + `shouldFire` signature; restore 
 - `src/schema/cockpit.ts` — `CockpitPulse` schema.
 - `docs/RUNBOOK-pulse.md` — operator setup.
 - ADR-085 — sibling whip-approvals-watcher; partial overlap on driver-inbox + decisions.
-- ADR-077 — superdoctor; complementary at hourly LLM tier.
+- ADR-077 — medic (formerly `superdoctor`, renamed per ADR-133); complementary at hourly LLM tier.
 - ADR-057 §D6b — watchdog; complementary at per-team heartbeat tier.
 - `CLAUDE.md` §Discord — verdict vocabulary + format this ADR implements.
 
@@ -204,24 +224,24 @@ Medium — revert ladder const + schema field + `shouldFire` signature; restore 
 
 ### Context
 
-The `[pulse-verdict]` ping fires on per-team commit/doctor/inbox state. It is silent about **superdoctor's own liveness**. If superdoctor (the ADR-077 self-healing role) is saturated, wedged, or its claude process has crashed, the whip → complaints → superdoctor escalation chain silently breaks — complaints accumulate, no one acts.
+The `[pulse-verdict]` ping fires on per-team commit/doctor/inbox state. It is silent about **medic's own liveness**. If medic (the ADR-077 self-healing role) is saturated, wedged, or its claude process has crashed, the whip → complaints → medic escalation chain silently breaks — complaints accumulate, no one acts.
 
 ### Decision
 
-The same 5-min cron tick that emits `[pulse-verdict]` also probes the cockpit's aggregate superdoctor activity. Probe = walk every cockpit-enabled team's `state.db`, aggregate:
+The same 5-min cron tick that emits `[pulse-verdict]` also probes the cockpit's aggregate medic activity. Probe = walk every cockpit-enabled team's `state.db`, aggregate:
 
 - **Open complaints** — `SUM(complaints WHERE status='open')` across teams. The "is anyone unhappy" signal.
-- **Latest attempt epoch** — `MAX(superdoctor_attempts.attempted_at)` across teams (the ADR-077 §F6 table). The "is superdoctor acting at all" signal.
+- **Latest attempt epoch** — `MAX(superdoctor_attempts.attempted_at)` across teams (the ADR-077 §F6 table; storage-layer table name unchanged per ADR-133 §Out of scope). The "is medic acting at all" signal.
 
 **Dormancy gate**: `openComplaints > 0 AND (latestAttempt IS NULL OR now - latestAttempt >= 2h)`. A cold cockpit (no attempts on record) with open complaints qualifies — the cockpit never started healing.
 
 **Fire policy**: 1 page per dormancy streak. Streak ends when (a) a fresh attempt lands, or (b) all complaints clear. State row on `pulse-state.json::metaWatchdog = { paged, dormantSinceSec }`.
 
-**Discord template** `[meta-watchdog]` — verdict-first 2-button menu (A: check superdoctor pane, B: kill+respawn) with a 30-min default deadline.
+**Discord template** `[meta-watchdog]` — verdict-first 2-button menu (A: check medic pane, B: kill+respawn) with a 30-min default deadline.
 
 ### Implementation
 
-- `src/core/superdoctor-activity.ts` — `gatherSuperdoctorActivity` (probe) + `decideMetaWatchdogFire` (pure policy).
+- `src/core/superdoctor-activity.ts` — `gatherSuperdoctorActivity` (probe) + `decideMetaWatchdogFire` (pure policy). (File path + class names unchanged per ADR-133 §Out of scope — source-side rename is TR3 territory.)
 - `src/abstractions/discord.ts` — `renderMetaWatchdog` template.
 - `src/core/pulse-state.ts` — `PulseMetaWatchdogSchema` (optional field on root `PulseState`).
 - `src/verbs/pulse.ts` — gather + decide + emit, sequenced after the per-team verdict loop. Failure-isolated: probe exceptions don't crash the verdict pulse.
