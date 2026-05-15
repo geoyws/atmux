@@ -15,6 +15,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
+import type { CageState } from "../../../src/core/cage-state.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
@@ -2512,6 +2513,7 @@ describe("checkMemberCageStates — ADR-081 §D classifier", () => {
         state: "active",
         paneUptimeSec: 600,
         evidence: "tok 12.5k/200k",
+        heartbeatAgeSec: null,
       }),
     });
     expect(rows).toEqual([]);
@@ -2527,6 +2529,7 @@ describe("checkMemberCageStates — ADR-081 §D classifier", () => {
         state: "down",
         paneUptimeSec: null,
         evidence: "",
+        heartbeatAgeSec: null,
       }),
     });
     expect(rows).toHaveLength(1);
@@ -2535,16 +2538,17 @@ describe("checkMemberCageStates — ADR-081 §D classifier", () => {
     expect(rows[0]?.detail).toContain("pane down");
   });
 
-  test("starving + uptime above threshold → yellow row with banner-persistent detail", async () => {
+  test("bootstrapping + uptime above threshold → yellow 'welcome banner persistent' row (t-74273200: was 'starving')", async () => {
     const team = makeTeam([{ name: "w1" }]);
     const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
       hasSession: async () => true,
       probe: async (_t, m) => ({
         member: m.name,
         windowName: `🐝${m.name}`,
-        state: "starving",
+        state: "bootstrapping",
         paneUptimeSec: STARVING_THRESHOLD_S + 60,
         evidence: "Welcome to Claude Code",
+        heartbeatAgeSec: null,
       }),
     });
     expect(rows).toHaveLength(1);
@@ -2555,25 +2559,26 @@ describe("checkMemberCageStates — ADR-081 §D classifier", () => {
     expect(rows[0]?.hint).toContain("--fix");
   });
 
-  test("starving + uptime below threshold → silent (bootstrapping transient)", async () => {
+  test("bootstrapping + uptime below threshold → silent (transient)", async () => {
     const team = makeTeam([{ name: "w1" }]);
     const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
       hasSession: async () => true,
       probe: async (_t, m) => ({
         member: m.name,
         windowName: `🐝${m.name}`,
-        state: "starving",
+        state: "bootstrapping",
         paneUptimeSec: 10, // 10s < default 60s threshold
         evidence: "Welcome to Claude Code",
+        heartbeatAgeSec: null,
       }),
     });
     expect(rows).toEqual([]);
   });
 
-  test("starvingThresholdSec override flips bootstrapping → starving (test injection)", async () => {
+  test("starvingThresholdSec=0 flips silent → yellow (test injection)", async () => {
     // Same uptime, but with threshold lowered to 0 — the same pane is
-    // now "long enough" to be flagged starving. Confirms the threshold
-    // gate is the only thing keeping the transient state silent.
+    // now "long enough" to surface as starving-yellow. Confirms the
+    // threshold gate is the only thing keeping the transient state silent.
     const team = makeTeam([{ name: "w1" }]);
     const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
       hasSession: async () => true,
@@ -2581,39 +2586,91 @@ describe("checkMemberCageStates — ADR-081 §D classifier", () => {
       probe: async (_t, m) => ({
         member: m.name,
         windowName: `🐝${m.name}`,
-        state: "starving",
+        state: "bootstrapping",
         paneUptimeSec: 5,
         evidence: "Welcome to Claude Code",
+        heartbeatAgeSec: null,
       }),
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.detail).toContain("welcome banner persistent");
   });
 
-  test("mixed roster — surface only down + starving rows; active silent", async () => {
-    const team = makeTeam([
-      { name: "lead", role: "team-lead", emoji: "🧭" },
-      { name: "w1", emoji: "🐝" },
-      { name: "w2", emoji: "🐝" },
-    ]);
-    const states: Record<string, "down" | "starving" | "active"> = {
-      lead: "active",
-      w1: "starving",
-      w2: "down",
-    };
+  test("wedged (rate-limit) → yellow row with rate-limit hint (t-74273200 §wedged)", async () => {
+    const team = makeTeam([{ name: "w1" }]);
     const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
       hasSession: async () => true,
       probe: async (_t, m) => ({
         member: m.name,
-        windowName: `${m.emoji ?? "🐝"}${m.name}`,
-        state: states[m.name] ?? "active",
-        paneUptimeSec: 600,
-        evidence: states[m.name] === "starving" ? "Welcome to Claude Code" : "tok 12.5k/200k",
+        windowName: `🐝${m.name}`,
+        state: "wedged",
+        paneUptimeSec: 3600,
+        evidence: "You've hit your limit",
+        heartbeatAgeSec: null, // no heartbeat → rate-limit branch
       }),
     });
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("member-cage-state:w1");
+    expect(rows[0]?.detail).toContain("wedged");
+    expect(rows[0]?.detail).toContain("rate-limit");
+    expect(rows[0]?.hint).toContain("rotate");
+  });
+
+  test("wedged (heartbeat stale >2h) → yellow row citing heartbeat age", async () => {
+    const team = makeTeam([{ name: "w1" }]);
+    const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
+      hasSession: async () => true,
+      probe: async (_t, m) => ({
+        member: m.name,
+        windowName: `🐝${m.name}`,
+        state: "wedged",
+        paneUptimeSec: 10_000,
+        evidence: "tok 12.5k/200k",
+        heartbeatAgeSec: 8000, // >2h
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("wedged");
+    expect(rows[0]?.detail).toContain("heartbeat stale");
+    expect(rows[0]?.detail).toContain("133min"); // 8000s / 60 = 133
+  });
+
+  test("mixed roster — surface down + bootstrapping(>thr) + wedged rows; active silent", async () => {
+    const team = makeTeam([
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "w1", emoji: "🐝" },
+      { name: "w2", emoji: "🐝" },
+      { name: "w3", emoji: "🐝" },
+    ]);
+    type RowFixture = { state: CageState; paneUptimeSec: number | null; evidence: string };
+    const fixtures: Record<string, RowFixture> = {
+      lead: { state: "active", paneUptimeSec: 600, evidence: "tok 12.5k/200k" },
+      w1: { state: "bootstrapping", paneUptimeSec: 600, evidence: "Welcome to Claude Code" },
+      w2: { state: "down", paneUptimeSec: null, evidence: "" },
+      w3: { state: "wedged", paneUptimeSec: 3600, evidence: "hit your limit" },
+    };
+    const rows = await checkMemberCageStates(team, "/tmp/atmux-x", {
+      hasSession: async () => true,
+      probe: async (_t, m) => {
+        const f = fixtures[m.name] ?? fixtures.lead!;
+        return {
+          member: m.name,
+          windowName: `${m.emoji ?? "🐝"}${m.name}`,
+          state: f.state,
+          paneUptimeSec: f.paneUptimeSec,
+          evidence: f.evidence,
+          heartbeatAgeSec: null,
+        };
+      },
+    });
+    expect(rows).toHaveLength(3);
     const labels = rows.map((r) => r.label).sort();
-    expect(labels).toEqual(["member-cage-state:w1", "member-cage-state:w2"]);
+    expect(labels).toEqual([
+      "member-cage-state:w1",
+      "member-cage-state:w2",
+      "member-cage-state:w3",
+    ]);
   });
 });
 
