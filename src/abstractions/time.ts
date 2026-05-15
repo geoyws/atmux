@@ -25,6 +25,13 @@ const MYT_DATETIME = new Intl.DateTimeFormat("en-CA", {
   hour12: false,
 });
 
+const MYT_DATE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kuala_Lumpur",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
 // ---------- Clock (test-injectable) ----------
 
 let _now: () => number = () => Date.now();
@@ -66,6 +73,25 @@ export function formatMytFull(epochMs: number = now()): string {
 /** ISO 8601 UTC string with second precision — for internal logs only. */
 export function nowIso(epochMs: number = now()): string {
   return new Date(epochMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * "YYYY-MM-DD" anchored on MYT — for date-bucketed paths
+ * (`docs/release-notes/<Y>/<M>/<Y-M-D>.md` per ADR-147 §D4).
+ * Example: a UTC instant at 2026-05-14 19:00Z is 2026-05-15 03:00 MYT,
+ * so this returns `"2026-05-15"`.
+ */
+export function mytDate(epochMs: number = now()): {
+  year: string;
+  month: string;
+  day: string;
+  iso: string;
+} {
+  const parts = MYT_DATE.formatToParts(epochMs);
+  const year = parts.find((p) => p.type === "year")?.value ?? "";
+  const month = parts.find((p) => p.type === "month")?.value ?? "";
+  const day = parts.find((p) => p.type === "day")?.value ?? "";
+  return { year, month, day, iso: `${year}-${month}-${day}` };
 }
 
 /**
