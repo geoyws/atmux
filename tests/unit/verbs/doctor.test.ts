@@ -26,6 +26,7 @@ import {
   checkDeps,
   checkInboxMarks,
   checkMemberForcePushRecent,
+  checkMemberLabelCollision,
   checkOrphanSessions,
   checkSendKeysFailureRecent,
   checkPhantomInboxes,
@@ -3458,5 +3459,97 @@ describe("checkSendKeysFailureRecent", () => {
     // present-home branch above.
     const rows = await checkSendKeysFailureRecent({ home: "" });
     expect(rows).toEqual([]);
+  });
+});
+
+// ---------- ADR-136 TR4: checkMemberLabelCollision ----------
+
+describe("checkMemberLabelCollision", () => {
+  function team(members: ReadonlyArray<{ name: string; emoji?: string; label?: string }>): Team {
+    return { name: "demo", members } as Team;
+  }
+
+  test("team === null → empty rows", () => {
+    expect(checkMemberLabelCollision(null)).toEqual([]);
+  });
+
+  test("no collisions → empty rows (each (emoji, display) unique)", () => {
+    const t = team([
+      { name: "alice", emoji: "🦊" },
+      { name: "bob", emoji: "🐝" },
+      { name: "carol", emoji: "🦝" },
+    ]);
+    expect(checkMemberLabelCollision(t)).toEqual([]);
+  });
+
+  test("two members share emoji + label → one YELLOW row", () => {
+    const t = team([
+      { name: "worker1", emoji: "🛠️", label: "Worker" },
+      { name: "worker2", emoji: "🛠️", label: "Worker" },
+    ]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "yellow",
+      label: "member-label-collision:Worker",
+    });
+    expect(rows[0]?.detail).toContain("2 members share display '🛠️-Worker'");
+    expect(rows[0]?.detail).toContain("worker1");
+    expect(rows[0]?.detail).toContain("worker2");
+    expect(rows[0]?.hint).toContain("atmux member rename");
+  });
+
+  test("different emojis with same label → NO collision (visually distinct)", () => {
+    const t = team([
+      { name: "fox", emoji: "🦊", label: "Helper" },
+      { name: "bee", emoji: "🐝", label: "Helper" },
+    ]);
+    expect(checkMemberLabelCollision(t)).toEqual([]);
+  });
+
+  test("name-only collision (both no label, both no emoji) → YELLOW row", () => {
+    // Edge case: two members with the same name (which the schema
+    // wouldn't normally allow, but the probe is defensive). The
+    // display falls back to name; tuple key collides.
+    const t = team([{ name: "x" }, { name: "x" }]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-label-collision:x");
+  });
+
+  test("three-way collision surfaces all IDs in one row", () => {
+    const t = team([
+      { name: "a", emoji: "🛠️", label: "Worker" },
+      { name: "b", emoji: "🛠️", label: "Worker" },
+      { name: "c", emoji: "🛠️", label: "Worker" },
+    ]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("3 members share");
+    expect(rows[0]?.detail).toMatch(/a.*b.*c/);
+  });
+
+  test("mixed: one collision pair + one unique → one YELLOW row only", () => {
+    const t = team([
+      { name: "a", emoji: "🛠️", label: "Worker" },
+      { name: "b", emoji: "🛠️", label: "Worker" },
+      { name: "unique", emoji: "🦊" },
+    ]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-label-collision:Worker");
+  });
+
+  test("label-vs-name collision: one with label, other with matching name", () => {
+    // Member A has label "shipper"; member B has name "shipper" (no
+    // label). Both render display "🛠️-shipper" → collision.
+    const t = team([
+      { name: "a", emoji: "🛠️", label: "shipper" },
+      { name: "shipper", emoji: "🛠️" },
+    ]);
+    const rows = checkMemberLabelCollision(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("a");
+    expect(rows[0]?.detail).toContain("shipper");
   });
 });

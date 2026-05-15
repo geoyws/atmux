@@ -223,13 +223,19 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
   return out;
 }
 
-/** Build the single-member target string `<sessionName>:<windowName>`. */
+/** Build the single-member target string `<sessionName>:<windowName>`.
+ *  ADR-136 TR4: optional `label` arg surfaces hot-renamed display names
+ *  in the target — callers with a `TeamMember` in scope pass `m.label`
+ *  so the resolved target matches the live tmux window (which may have
+ *  been renamed via `atmux member rename`). Pre-TR4 callers omit and
+ *  get the legacy `<emoji><name>` shape unchanged. */
 export function buildMemberTarget(
   sessionName: string,
   memberName: string,
   emoji: string | undefined,
+  label?: string,
 ): string {
-  return `${sessionName}:${buildWindowName(memberName, emoji)}`;
+  return `${sessionName}:${buildWindowName(memberName, emoji, label)}`;
 }
 
 /**
@@ -296,7 +302,7 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
       hint: `run 'atmux status' to list members (or use '${MEDIC_INBOX_KEY}' / legacy '${SUPERDOCTOR_INBOX_KEY}' for the cockpit-tier medic inbox)`,
     });
   }
-  const target = buildMemberTarget(sessionName, memberEntry.name, memberEntry.emoji);
+  const target = buildMemberTarget(sessionName, memberEntry.name, memberEntry.emoji, memberEntry.label);
   const atmuxDir = await getAtmuxDir(dirOpts);
   // ADR-138 T3b2: per-TUI verifier dispatch. claude → composerEmpty();
   // shell / non-Claude → null (legacy submitAfterPaste). Resolved
@@ -336,7 +342,7 @@ async function broadcastSend(
   let anyFailed = false;
   for (const m of team.members) {
     if (!parsed.includeDriver && m.name === "driver") continue;
-    const target = buildMemberTarget(sessionName, m.name, m.emoji);
+    const target = buildMemberTarget(sessionName, m.name, m.emoji, m.label);
     // ADR-138 T3b2: per-member TUI dispatch (broadcast targets can be
     // heterogeneous — claude members get composerEmpty(), shell members
     // skip verify).

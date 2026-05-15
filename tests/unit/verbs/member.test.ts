@@ -205,7 +205,8 @@ describe("isValidLabel", () => {
 describe("memberRename — happy path", () => {
   test("renames label, mutates team.json, fires tmux rename-window, prints confirmation", async () => {
     await writeTeamJson([{ name: "lead", role: "team-lead", emoji: "🧭" }]);
-    await startLiveSession({ windowName: "🧭lead" });
+    // ADR-135 hyphen-separator form: `<emoji>-<member>`.
+    await startLiveSession({ windowName: "🧭-lead" });
 
     const result = await runRename(["lead", "--label", "Lead Coordinator", "--socket-path", env.socketPath]);
 
@@ -220,12 +221,12 @@ describe("memberRename — happy path", () => {
 
     const windows = await env.tmux.window.listWindows(`atmux-${env.team}`);
     const names = windows.map((w) => w.name);
-    expect(names).toContain("🧭Lead Coordinator");
-    expect(names).not.toContain("🧭lead");
+    expect(names).toContain("🧭-Lead Coordinator");
+    expect(names).not.toContain("🧭-lead");
 
     const out = env.stdout.join("");
     expect(out).toContain("'lead'.label = 'Lead Coordinator'");
-    expect(out).toContain("🧭lead → 🧭Lead Coordinator");
+    expect(out).toContain("🧭-lead → 🧭-Lead Coordinator");
     expect(out).toContain("branch name `geoyws-<sanitize(lead)>`");
   });
 });
@@ -339,13 +340,14 @@ describe("memberRename — team stopped (no tmux session)", () => {
 describe("memberRename — lead rename patches lead-window-name.txt", () => {
   test("when lead-window-name.txt matches old display name, both files are updated", async () => {
     await writeTeamJson([{ name: "lead", role: "team-lead", emoji: "🧭" }]);
-    await startLiveSession({ windowName: "🧭lead" });
+    // ADR-135 hyphen-separator form.
+    await startLiveSession({ windowName: "🧭-lead" });
 
-    // Seed the lead marker with the OLD display name.
+    // Seed the lead marker with the OLD display name (hyphenated per ADR-135).
     const markerDir = join(env.home, ".claude", "teams", env.team);
     await mkdir(markerDir, { recursive: true });
     const markerPath = join(markerDir, "lead-window-name.txt");
-    await writeFile(markerPath, "🧭lead\n", "utf8");
+    await writeFile(markerPath, "🧭-lead\n", "utf8");
 
     const result = await runRename([
       "lead",
@@ -360,9 +362,9 @@ describe("memberRename — lead rename patches lead-window-name.txt", () => {
     expect(result.patchedLeadMarker).toBe(true);
 
     const after = (await readFile(markerPath, "utf8")).trim();
-    expect(after).toBe("🧭Coordinator");
+    expect(after).toBe("🧭-Coordinator");
 
-    expect(env.stdout.join("")).toContain("lead-window-name.txt updated → 🧭Coordinator");
+    expect(env.stdout.join("")).toContain("lead-window-name.txt updated → 🧭-Coordinator");
   });
 
   test("when lead-window-name.txt does NOT match (different member is lead), marker is left alone", async () => {
@@ -370,14 +372,14 @@ describe("memberRename — lead rename patches lead-window-name.txt", () => {
       { name: "lead", role: "team-lead", emoji: "🧭" },
       { name: "worker", emoji: "🛠️" },
     ]);
-    await startLiveSession({ windowName: "🧭lead" });
+    await startLiveSession({ windowName: "🧭-lead" });
 
     // Lead marker pinned at the *real* lead — renaming a non-lead worker
-    // must NOT touch it.
+    // must NOT touch it. ADR-135 hyphen-separator form.
     const markerDir = join(env.home, ".claude", "teams", env.team);
     await mkdir(markerDir, { recursive: true });
     const markerPath = join(markerDir, "lead-window-name.txt");
-    await writeFile(markerPath, "🧭lead\n", "utf8");
+    await writeFile(markerPath, "🧭-lead\n", "utf8");
 
     const result = await runRename([
       "worker",
@@ -391,7 +393,7 @@ describe("memberRename — lead rename patches lead-window-name.txt", () => {
     expect(result.patchedLeadMarker).toBe(false);
 
     const after = (await readFile(markerPath, "utf8")).trim();
-    expect(after).toBe("🧭lead");
+    expect(after).toBe("🧭-lead");
   });
 });
 

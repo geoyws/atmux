@@ -2186,6 +2186,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
   rows.push(...(await checkWorktreeIsolation(team, atmuxDir)));
+  // ADR-136 TR4: member-label-collision — warn when 2+ members share
+  // the same `(emoji, label-or-name)` display tuple. Pure (no I/O);
+  // returns [] when team is null OR no collisions exist.
+  rows.push(...checkMemberLabelCollision(team));
   // ADR-088 §Decision-6 W6: merger-fan-in anomalies — stale per-member
   // branch + role/feature-flag mismatch. Silent when `team.merger` is
   // unset or `merger.enabled !== true` (the staleness branch); the
@@ -2688,6 +2692,60 @@ export async function checkSendKeysFailureRecent(
       hint: "send-keys failed N times in last hour; check ADR-138 escalation log at ~/.atmux/state/send-keys-failures.log",
     },
   ];
+}
+
+// ---------- ADR-136 TR4: member-label-collision probe ----------
+
+/**
+ * ADR-136 TR4 §"Doctor probe" — surfaces members sharing the same
+ * `(emoji, display-name)` tuple as a YELLOW row. Display-name is
+ * `label ?? name`, so a fresh team without labels has zero collisions
+ * by construction (each ID is unique); the probe only fires when
+ * `atmux member rename` has produced a colliding display-name pair.
+ *
+ * Warn-class because:
+ *   - It's an operator-misconfiguration nudge, not a state corruption.
+ *     The underlying IDs (`member.name`) remain unique, so all
+ *     persistent storage classes (worktree path, branch name, kanban
+ *     owner, inbox file) still address each member unambiguously.
+ *   - Two members showing as `🛠️ worker` in `atmux status` is a UX
+ *     hazard — the operator can't tell them apart visually — but no
+ *     execution path is wrong; the bullet recommends a rename rather
+ *     than blocking.
+ *
+ * Skipped when `team === null`. Returns one row per colliding tuple
+ * (NOT per colliding member), listing both `name` IDs in `detail` so
+ * the operator can pick which one to rename. Members with no `emoji`
+ * collide on display-name alone; that's still a valid trip.
+ */
+export function checkMemberLabelCollision(team: Team | null): DoctorRow[] {
+  if (team === null) return [];
+  // Group members by `(emoji, displayName)` tuple. Empty/undefined emoji
+  // collapses to "" so name-only collisions still group correctly.
+  const groups = new Map<string, { ids: string[]; emoji: string; display: string }>();
+  for (const m of team.members) {
+    const emoji = m.emoji ?? "";
+    const display = m.label !== undefined && m.label.length > 0 ? m.label : m.name;
+    const key = `${emoji} ${display}`;
+    const existing = groups.get(key);
+    if (existing === undefined) {
+      groups.set(key, { ids: [m.name], emoji, display });
+    } else {
+      existing.ids.push(m.name);
+    }
+  }
+  const rows: DoctorRow[] = [];
+  for (const g of groups.values()) {
+    if (g.ids.length < 2) continue;
+    const visual = g.emoji.length > 0 ? `${g.emoji}-${g.display}` : g.display;
+    rows.push({
+      status: "yellow",
+      label: `member-label-collision:${g.display}`,
+      detail: `${g.ids.length} members share display '${visual}': ${g.ids.join(", ")}`,
+      hint: "rename one via `atmux member rename <id> --label <new>` so each member is visually distinct",
+    });
+  }
+  return rows;
 }
 
 /**

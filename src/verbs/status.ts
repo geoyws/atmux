@@ -18,6 +18,8 @@ import { exists } from "../abstractions/fs.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
+  buildWindowName,
+  displayMemberName,
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
@@ -88,6 +90,11 @@ export interface MemberStatus {
   role: string;
   tui: string;
   emoji?: string;
+  /** ADR-136 TR4: mutable display label. When set + non-empty, the
+   *  text rendering uses `label` in place of `name` for the operator-
+   *  facing column. JSON consumers still get the immutable `name`
+   *  field (the ID) as the primary key. */
+  label?: string;
   paneCommand: string;
   /** Tasks owned by this member with status='todo'. Pre-ADR-076 this
    *  came from the JSON inbox `pending` bucket; post-cutover it's a
@@ -256,6 +263,7 @@ export async function gatherStatus(
       inProgressCount,
     };
     if (m.emoji !== undefined && m.emoji.length > 0) row.emoji = m.emoji;
+    if (m.label !== undefined && m.label.length > 0) row.label = m.label;
     members.push(row);
   }
 
@@ -333,14 +341,30 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       team: snap.team,
       session: snap.session,
       sessionState: snap.sessionState,
-      members: snap.members.map((m) => ({
-        name: m.name,
-        role: m.role,
-        tui: m.tui,
-        paneCommand: m.paneCommand,
-        pendingCount: m.pendingCount,
-        inProgressCount: m.inProgressCount,
-      })),
+      members: snap.members.map((m) => {
+        // ADR-136 TR4: surface `label` as an optional sibling key
+        // alongside the canonical `name`. JSON consumers gating on
+        // `name` (the immutable ID) keep working; renderers that want
+        // the operator-facing display string read `label ?? name`.
+        const row: {
+          name: string;
+          role: string;
+          tui: string;
+          paneCommand: string;
+          pendingCount: number;
+          inProgressCount: number;
+          label?: string;
+        } = {
+          name: m.name,
+          role: m.role,
+          tui: m.tui,
+          paneCommand: m.paneCommand,
+          pendingCount: m.pendingCount,
+          inProgressCount: m.inProgressCount,
+        };
+        if (m.label !== undefined && m.label.length > 0) row.label = m.label;
+        return row;
+      }),
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
       driverPane: snap.driverPane,
@@ -364,14 +388,13 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
 async function readPaneCommand(
   tmux: TmuxNamespace,
   sessionName: string,
-  member: { name: string; emoji?: string | undefined },
+  member: { name: string; emoji?: string | undefined; label?: string | undefined },
   sessionUp: boolean,
 ): Promise<string> {
   if (!sessionUp) return "(down)";
-  const winName =
-    member.emoji !== undefined && member.emoji.length > 0
-      ? `${member.emoji}${member.name}`
-      : member.name;
+  // ADR-135 + ADR-136 TR4: canonical hyphen-separator window name with
+  // label-fallback when the member has been hot-renamed.
+  const winName = buildWindowName(member.name, member.emoji, member.label);
   const target = `${sessionName}:${winName}`;
   try {
     // Bash lib/status.sh:55 reads `#{pane_current_command}` via
@@ -423,7 +446,11 @@ function renderTextStatus(snap: StatusSnapshot): void {
   process.stdout.write(`member       role          tui        pane          tasks\n`);
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
-    const name = m.name.padEnd(12);
+    // ADR-136 TR4: operator-facing text column uses label-fallback.
+    // Internal data still keys by `m.name` (the ID) for the kanban /
+    // inbox counts — `m.pendingCount` etc. were already resolved
+    // against the ID upstream.
+    const name = displayMemberName(m).padEnd(12);
     const role = m.role.padEnd(14);
     const tui = m.tui.padEnd(10);
     const pane = m.paneCommand.padEnd(14);

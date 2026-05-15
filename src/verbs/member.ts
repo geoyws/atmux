@@ -158,14 +158,11 @@ export function isValidLabel(label: string): boolean {
 }
 
 /** Compute the tmux window name from a member's current display state.
- *  Mirrors `buildWindowName(name, emoji)` but feeds it the display name
- *  (label ?? name) rather than the raw name — this is what TR4 will
- *  bake into `buildWindowName` directly; until then this verb does the
- *  override locally so the rename-window targets the correct live
- *  window even before the display-layer port lands. */
+ *  Post-TR4: `buildWindowName` handles the label-fallback natively, so
+ *  this is now a thin pass-through that the verb keeps for callsite
+ *  readability + same-commit test stability. */
 export function memberDisplayWindowName(m: TeamMember): string {
-  const display = m.label !== undefined && m.label.length > 0 ? m.label : m.name;
-  return buildWindowName(display, m.emoji);
+  return buildWindowName(m.name, m.emoji, m.label);
 }
 
 // ---------- Verb entry ----------
@@ -248,7 +245,10 @@ export async function memberRenameInternal(
   // the correct tmux window AFTER. `memberDisplayWindowName` is pure on
   // a single TeamMember snapshot — safe to call pre-mutation.
   const oldWindow = memberDisplayWindowName(memberPre);
-  const newWindow = buildWindowName(parsed.label, memberPre.emoji);
+  // The new window name reflects the post-rename display state:
+  // `<emoji><parsed.label>` (label-fallback handled by buildWindowName's
+  // 3rd arg when set + non-empty).
+  const newWindow = buildWindowName(memberPre.name, memberPre.emoji, parsed.label);
 
   // 2. Atomic JSON rewrite under flock. `updateJson` re-validates via
   //    the Zod schema on output — a malformed mutation throws
