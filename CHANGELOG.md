@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 📋 Proposed — epic-team lifecycle schema (ADR-090 T1)
+
+- **New `team.epicTeam` config block + `TeamEpic` schema** per [ADR-090](docs/adr/090-epic-team-lifecycle.md) §Schema — required fields `parent` / `parentEpicKanbanId` / `parentBase`; defaulted `mergeMode` (enum `auto` | `pr`, default `auto`); optional `prTarget.{remote,base}` + `prAuthorUser` (required-when-pr via Team-level `superRefine`). Absent block = normal team (existing topology unchanged).
+- **Three cross-field refinements on `Team`** enforce ADR-090's hard invariants at `loadTeam` time: (#3) `epicTeam` + `worktreeIsolation: true` ⇒ refuse (HARD CONFLICT carve-out vs ADR-084); (#8) `mergeMode: "pr"` ⇒ requires `prTarget.base`; (#9) `mergeMode: "pr"` ⇒ requires `prAuthorUser`. Refuse errors cite the §Decision-anchor # so operators can lookup the rationale.
+- **Kanban schema additions** (`src/schema/kanban.ts`): `KanbanTask.role` (reserves `"reviewer-trunk-signoff"` per §Decision-anchor #1); `KanbanEpic.epicTeamName` + `.epicTeamRoot` (filled by `spawn-epic`, cleared by `dissolve-epic`); `KanbanEpic.prNumber` + `.prState` + `.note` (forward-refs for ADR-091 state machine). All `.nullable().optional()` for back-compat.
+- **Roster preset** `templates/epic-rosters/default.json` — 7-member preset (lead + planner + reviewer + 2 fe-* + 2 be-*) per §Roster preset. Resolved by `spawn-epic` when no `--roster` / `--roster-file` flag passed (§Decision-anchor #4).
+- **Epic-team lead brief** `templates/briefs/epic-lead.md` — delta brief that **extends, does NOT fork** `lead.md` (reviewer pre-flag #3). New placeholders `{{PARENT}}` + `{{EPIC_ID}}`; brief renderer (`renderBrief` in `src/verbs/rotate.ts`) gains optional `parent` + `epicId` vars (back-compat: omitted vars leave placeholders inert).
+- **Out of scope this commit** (T1): `spawn-epic` / `dissolve-epic` verbs (T9 — `t-b430b185`); `start.ts` shared-worktree short-circuit (T10 — `t-7e9eed65`); ADR-091 auto-merge state machine logic (T12). Every schema field is purely additive; existing teams parse unchanged.
+- **Status: proposed** until T9 + T10 + T12 land green and the ADR-090 + ADR-091 fan-in completes via dogfood gate (`t-9d22718b`).
+
 ### 📋 Proposed — commit-cadence ground-truth health signal (ADR-148)
 
 - **New `team.cadence` config block** per [ADR-148](docs/adr/148-commit-cadence-truth-signal.md) §D7 — full schema lands in T3 (this commit, `t-e9424574`) so T2 / T5 land additively. Fields: `enabled`, `windowSec`, `thresholds` (4 verdict bands), `laneStallEnabled`, `laneStallMinAgeSec`, `exemptMembers`. Opt-in via `enabled: true`; lane-stall defaults on once master switch flips.
