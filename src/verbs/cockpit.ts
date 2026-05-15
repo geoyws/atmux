@@ -1031,47 +1031,101 @@ export async function reconcileCockpitSession(
   martinet?: CockpitMartinet,
 ): Promise<void> {
   const onlyTeam = reconcileOpts.onlyTeam;
+
+  // ADR-135 §D4 — legacy cockpit-session-name migration. When the
+  // operator's running tmux session is named `atmux_teams` (pre-ADR-135
+  // canonical) AND the target name resolves to the new canonical
+  // `atmux_cockpit` AND no session with the canonical name exists yet,
+  // rename in-place. `tmux rename-session` preserves pane PIDs,
+  // attached clients, and scroll history. Idempotent: subsequent
+  // rebuilds find the canonical name and do nothing. Operator-chosen
+  // arbitrary session names (e.g. `geoyws_cockpit`) are not touched —
+  // only the historical literal `atmux_teams` triggers the migration.
+  if (sessionName === "atmux_cockpit") {
+    const hasLegacy = await cockpitTmux.session.hasSession("atmux_teams");
+    const hasCanonical = await cockpitTmux.session.hasSession("atmux_cockpit");
+    if (hasLegacy && !hasCanonical) {
+      try {
+        await cockpitTmux.session.renameSession("atmux_teams", "atmux_cockpit");
+        logger.log(
+          `  ✓ renamed session 'atmux_teams' → 'atmux_cockpit' (ADR-135 migration; one-time per cockpit)`,
+        );
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(
+          `  ⚠ failed to rename legacy 'atmux_teams' session to 'atmux_cockpit': ${cause} — operator may rename manually with 'tmux rename-session -t atmux_teams atmux_cockpit'`,
+        );
+      }
+    } else if (hasLegacy && hasCanonical) {
+      logger.warn(
+        `  ⚠ both 'atmux_teams' and 'atmux_cockpit' sessions exist — ADR-135 migration ambiguous. Kill the legacy session manually: 'tmux kill-session -t atmux_teams' (recommended).`,
+      );
+    }
+  }
+
   const has = await cockpitTmux.session.hasSession(sessionName);
   if (!has) {
     await cockpitTmux.session.newSession({
       name: sessionName,
       detached: true,
-      windowName: "superdriver",
+      windowName: "_superdriver",
     });
-    logger.log(`  ✓ created session ${sessionName} (window 1: superdriver)`);
+    logger.log(`  ✓ created session ${sessionName} (window 1: _superdriver)`);
   }
 
   const wantMedic = medic?.enabled === true;
   const wantMartinet = martinet?.enabled === true;
 
-  // ADR-133 §D2 — legacy window-name migration. When a window named
-  // `superdoctor` exists from a pre-ADR-133 rebuild AND we want a
-  // medic window now, rename it in-place. Idempotent: subsequent
-  // rebuilds find the canonical `medic` name and do nothing.
-  if (wantMedic) {
+  // ADR-135 §D4 — legacy cockpit-role-window migration. Renames in
+  // order: `superdoctor → medic` (ADR-133 carry-over), `superdriver
+  // → _superdriver`, `medic → _medic`, `martinet → _martinet`.
+  // Each rename is idempotent (no-op when canonical name already
+  // present). Race-safe within a single rebuild: list windows once,
+  // chain renames, list again only if needed by subsequent logic.
+  //
+  // The ADR-133 `superdoctor → medic` rename runs even when wantMedic
+  // is false — a legacy `superdoctor` window left orphaned by an
+  // operator who flipped `medic.enabled: false` should still be
+  // renamed so the orphan-preserve check downstream can find it
+  // under its canonical name. (Pre-ADR-135 the rename was gated on
+  // `wantMedic`; the gate is no longer necessary because the orphan-
+  // preserve list now accepts both legacy and canonical names.)
+  {
     const windowsBefore = await cockpitTmux.window.listWindows(sessionName);
-    const hasLegacy = windowsBefore.some((w) => w.name === "superdoctor");
-    const hasCanonical = windowsBefore.some((w) => w.name === "medic");
-    if (hasLegacy && !hasCanonical) {
-      try {
-        await cockpitTmux.window.renameWindow(`${sessionName}:superdoctor`, "medic");
-        logger.log(
-          `  ✓ renamed window 'superdoctor' → 'medic' (ADR-133 migration; one-time per cockpit)`,
-        );
-      } catch (e) {
-        const cause = e instanceof Error ? e.message : String(e);
+    const renameInPlace = async (legacy: string, canonical: string): Promise<void> => {
+      const hasLegacy = windowsBefore.some((w) => w.name === legacy);
+      const hasCanonical = windowsBefore.some((w) => w.name === canonical);
+      if (hasLegacy && !hasCanonical) {
+        try {
+          await cockpitTmux.window.renameWindow(`${sessionName}:${legacy}`, canonical);
+          logger.log(
+            `  ✓ renamed window '${legacy}' → '${canonical}' (ADR-135 migration; one-time per cockpit)`,
+          );
+          // Mutate windowsBefore so chained renames (superdoctor →
+          // medic → _medic) see the post-rename state.
+          for (const w of windowsBefore) {
+            if (w.name === legacy) w.name = canonical;
+          }
+        } catch (e) {
+          const cause = e instanceof Error ? e.message : String(e);
+          logger.warn(
+            `  ⚠ failed to rename legacy '${legacy}' window to '${canonical}': ${cause} — operator may rename manually with 'tmux rename-window -t ${sessionName}:${legacy} ${canonical}'`,
+          );
+        }
+      } else if (hasLegacy && hasCanonical) {
         logger.warn(
-          `  ⚠ failed to rename legacy 'superdoctor' window to 'medic': ${cause} — operator may rename manually with 'tmux rename-window -t ${sessionName}:superdoctor medic'`,
+          `  ⚠ cockpit has BOTH '${legacy}' and '${canonical}' windows — ADR-135 migration ambiguous. Kill the legacy one: 'tmux kill-window -t ${sessionName}:${legacy}' (recommended).`,
         );
       }
-    } else if (hasLegacy && hasCanonical) {
-      // Both windows present — likely a half-finished migration or an
-      // operator-manual rename mid-cycle. Don't auto-destroy; surface a
-      // warning and let the operator decide which to keep.
-      logger.warn(
-        `  ⚠ cockpit has BOTH 'superdoctor' and 'medic' windows — ADR-133 migration ambiguous. Kill one manually: 'tmux kill-window -t ${sessionName}:superdoctor' (recommended).`,
-      );
-    }
+    };
+    // ADR-133 carry-over: superdoctor → medic. Runs first so the
+    // subsequent medic → _medic chain step finds either the renamed
+    // legacy window OR a pre-existing medic window.
+    await renameInPlace("superdoctor", "medic");
+    // ADR-135 §D2: underscore-prefix migration for cockpit-role windows.
+    await renameInPlace("superdriver", "_superdriver");
+    await renameInPlace("medic", "_medic");
+    await renameInPlace("martinet", "_martinet");
   }
 
   // t-8b0e077e: pre-pass destructive-op detection. Walk the windows
@@ -1106,22 +1160,22 @@ export async function reconcileCockpitSession(
   // `cockpit rebuild` is responsible for the relocation invariant.
   if (wantMedic) {
     let windowsBefore = await cockpitTmux.window.listWindows(sessionName);
-    const sdrv = windowsBefore.find((w) => w.name === "superdriver");
+    const sdrv = windowsBefore.find((w) => w.name === "_superdriver");
     const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
-    let md = windowsBefore.find((w) => w.name === "medic");
+    let md = windowsBefore.find((w) => w.name === "_medic");
     let mdJustCreated = false;
     if (md === undefined) {
       const builder = deps.buildMedicCommand ?? deps.buildSuperdoctorCommand ?? buildMedicWindowCommand;
       const cmd = builder(medic);
       const newId = await cockpitTmux.window.newWindow({
         sessionName,
-        name: "medic",
+        name: "_medic",
         detached: true,
         shellCommand: cmd,
       });
-      logger.log(`  ✓ added window 'medic' (idx ${newId.windowIndex})`);
+      logger.log(`  ✓ added window '_medic' (idx ${newId.windowIndex})`);
       windowsBefore = await cockpitTmux.window.listWindows(sessionName);
-      md = windowsBefore.find((w) => w.name === "medic");
+      md = windowsBefore.find((w) => w.name === "_medic");
       mdJustCreated = true;
     }
     if (onlyTeam === undefined && md !== undefined && md.index !== targetIdx) {
@@ -1134,7 +1188,7 @@ export async function reconcileCockpitSession(
         target: { sessionName, windowIndex: targetIdx },
         kill: true,
       });
-      logger.log(`  ✓ moved 'medic' to idx ${targetIdx} (was idx ${md.index})`);
+      logger.log(`  ✓ moved '_medic' to idx ${targetIdx} (was idx ${md.index})`);
     }
 
     // t-22453c1e: auto-fire `/loop /medic` (legacy `/loop /superdoctor`)
@@ -1166,34 +1220,34 @@ export async function reconcileCockpitSession(
         // construction (all branches log + return); rethrow shouldn't
         // happen but if a future bug raises one, don't wedge the rebuild.
         const cause = e instanceof Error ? e.message : String(e);
-        logger.warn(`  ⚠ medic auto-start fell through: ${cause}`);
+        logger.warn(`  ⚠ _medic auto-start fell through: ${cause}`);
       }
     }
   }
 
-  // ADR-132 §D2: provision the martinet window at index (medic ? 3 : 2).
-  // Same machinery as medic — newWindow if missing, moveWindow if at
+  // ADR-132 §D2: provision the _martinet window at index (medic ? 3 : 2).
+  // Same machinery as _medic — newWindow if missing, moveWindow if at
   // wrong slot, auto-start the loop if just created.
   if (wantMartinet) {
     let windowsBefore = await cockpitTmux.window.listWindows(sessionName);
-    const sdrv = windowsBefore.find((w) => w.name === "superdriver");
+    const sdrv = windowsBefore.find((w) => w.name === "_superdriver");
     const baseIdx = sdrv !== undefined ? sdrv.index : 1;
     // Martinet sits at base+2 when medic is enabled, base+1 when not.
     const targetIdx = baseIdx + (wantMedic ? 2 : 1);
-    let mt = windowsBefore.find((w) => w.name === "martinet");
+    let mt = windowsBefore.find((w) => w.name === "_martinet");
     let mtJustCreated = false;
     if (mt === undefined) {
       const builder = deps.buildMartinetCommand ?? buildMartinetWindowCommand;
       const cmd = builder(martinet);
       const newId = await cockpitTmux.window.newWindow({
         sessionName,
-        name: "martinet",
+        name: "_martinet",
         detached: true,
         shellCommand: cmd,
       });
-      logger.log(`  ✓ added window 'martinet' (idx ${newId.windowIndex})`);
+      logger.log(`  ✓ added window '_martinet' (idx ${newId.windowIndex})`);
       windowsBefore = await cockpitTmux.window.listWindows(sessionName);
-      mt = windowsBefore.find((w) => w.name === "martinet");
+      mt = windowsBefore.find((w) => w.name === "_martinet");
       mtJustCreated = true;
     }
     if (mt !== undefined && mt.index !== targetIdx) {
@@ -1202,7 +1256,7 @@ export async function reconcileCockpitSession(
         target: { sessionName, windowIndex: targetIdx },
         kill: true,
       });
-      logger.log(`  ✓ moved 'martinet' to idx ${targetIdx} (was idx ${mt.index})`);
+      logger.log(`  ✓ moved '_martinet' to idx ${targetIdx} (was idx ${mt.index})`);
     }
 
     // Auto-fire `/loop /martinet` on fresh creation only. Same
@@ -1235,7 +1289,7 @@ export async function reconcileCockpitSession(
         await autoStartMartinetLoop(autoStartOpts);
       } catch (e) {
         const cause = e instanceof Error ? e.message : String(e);
-        logger.warn(`  ⚠ martinet auto-start fell through: ${cause}`);
+        logger.warn(`  ⚠ _martinet auto-start fell through: ${cause}`);
       }
     }
   }
@@ -1243,9 +1297,9 @@ export async function reconcileCockpitSession(
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const present = new Set(windows.map((w) => w.name));
   const wanted = new Set([
-    "superdriver",
-    ...(wantMedic ? ["medic"] : []),
-    ...(wantMartinet ? ["martinet"] : []),
+    "_superdriver",
+    ...(wantMedic ? ["_medic"] : []),
+    ...(wantMartinet ? ["_martinet"] : []),
     ...teams.map((t) => t.name),
   ]);
 
@@ -1273,10 +1327,15 @@ export async function reconcileCockpitSession(
   }
 
   // Remove orphan viewer windows (e.g. team that was removed/disabled).
-  // superdriver + medic (when enabled) + martinet (when enabled) are
-  // always preserved. The legacy `superdoctor` window name is also
-  // preserved during the ADR-133 deprecation window so an operator who
-  // disables medic temporarily doesn't lose a running superdoctor cage.
+  // _superdriver + _medic (when enabled) + _martinet (when enabled)
+  // are always preserved (ADR-135 canonical names). The legacy names
+  // `superdriver` / `medic` / `martinet` and the pre-ADR-133 legacy
+  // `superdoctor` window are also preserved during the deprecation
+  // window so an operator running between releases doesn't lose a
+  // cage that hasn't been renamed yet. (Cage rename to canonical
+  // happens in the migration shim above; this guard is the
+  // belt-and-braces fallback when the shim is somehow skipped, e.g.
+  // a test fixture that injects pre-named windows directly.)
   //
   // Per-team mode (ADR-063 ergonomic fix): SKIP this pass entirely.
   // The single-team caller has no authority to remove sibling team
@@ -1285,10 +1344,10 @@ export async function reconcileCockpitSession(
 
   for (const w of windows) {
     if (wanted.has(w.name)) continue;
-    if (w.name === "superdriver") continue;
-    if (w.name === "medic") continue;
+    if (w.name === "_superdriver" || w.name === "superdriver") continue;
+    if (w.name === "_medic" || w.name === "medic") continue;
     if (w.name === "superdoctor") continue;
-    if (w.name === "martinet") continue;
+    if (w.name === "_martinet" || w.name === "martinet") continue;
     try {
       await cockpitTmux.window.killWindow(`${sessionName}:${w.name}`);
       logger.log(`  ✓ removed orphan window '${w.name}'`);
@@ -1442,22 +1501,30 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const planned: PlannedDestructiveOp[] = [];
 
-  const sdrv = windows.find((w) => w.name === "superdriver");
+  // ADR-135 §D2 canonical names are `_superdriver` / `_medic` /
+  // `_martinet`; the in-place rename shim (above this call) has
+  // already migrated legacy names by the time this dry-run walks the
+  // window list. Legacy names are kept in the preserved-window
+  // matchers as a belt-and-braces — test fixtures may inject
+  // pre-renamed windows directly.
+  const sdrv = windows.find((w) => w.name === "_superdriver");
   const baseIdx = sdrv !== undefined ? sdrv.index : 1;
 
-  // Case 1 — medic displacement.
+  // Case 1 — _medic displacement.
   if (wantMedic) {
     const targetIdx = baseIdx + 1;
-    const md = windows.find((w) => w.name === "medic");
-    // Only counts as destructive when medic EXISTS at a wrong index AND
-    // the target slot has someone else parked there. Fresh adds
+    const md = windows.find((w) => w.name === "_medic");
+    // Only counts as destructive when _medic EXISTS at a wrong index
+    // AND the target slot has someone else parked there. Fresh adds
     // (md === undefined) land in the empty slot non-destructively. The
-    // legacy "superdoctor" window is treated as renaming-into-medic
-    // (handled separately by the rename-window pre-pass), not destructive.
+    // legacy "superdoctor" / "medic" window is treated as
+    // renaming-into-_medic (handled separately by the rename-window
+    // pre-pass), not destructive.
     if (md !== undefined && md.index !== targetIdx) {
       const occupant = windows.find(
         (w) =>
           w.index === targetIdx &&
+          w.name !== "_medic" &&
           w.name !== "medic" &&
           w.name !== "superdoctor",
       );
@@ -1465,23 +1532,25 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
         planned.push({
           window: occupant.name,
           action: "move-with-kill",
-          reason: `target slot ${targetIdx} occupied by '${occupant.name}'; medic relocation kills it`,
+          reason: `target slot ${targetIdx} occupied by '${occupant.name}'; _medic relocation kills it`,
         });
       }
     }
   }
 
-  // Case 2 — martinet displacement.
+  // Case 2 — _martinet displacement.
   if (wantMartinet) {
     const targetIdx = baseIdx + (wantMedic ? 2 : 1);
-    const mt = windows.find((w) => w.name === "martinet");
+    const mt = windows.find((w) => w.name === "_martinet");
     if (mt !== undefined && mt.index !== targetIdx) {
-      const occupant = windows.find((w) => w.index === targetIdx && w.name !== "martinet");
+      const occupant = windows.find(
+        (w) => w.index === targetIdx && w.name !== "_martinet" && w.name !== "martinet",
+      );
       if (occupant !== undefined) {
         planned.push({
           window: occupant.name,
           action: "move-with-kill",
-          reason: `target slot ${targetIdx} occupied by '${occupant.name}'; martinet relocation kills it`,
+          reason: `target slot ${targetIdx} occupied by '${occupant.name}'; _martinet relocation kills it`,
         });
       }
     }
@@ -1490,14 +1559,16 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
   // Case 3 — orphan-prune. Compute the wanted-name set; anything else
   // that isn't an always-preserved window gets killed.
   const wanted = new Set<string>([
-    "superdriver",
-    ...(wantMedic ? ["medic"] : []),
-    ...(wantMartinet ? ["martinet"] : []),
+    "_superdriver",
+    ...(wantMedic ? ["_medic"] : []),
+    ...(wantMartinet ? ["_martinet"] : []),
     ...teams.map((t) => t.name),
   ]);
   for (const w of windows) {
     if (wanted.has(w.name)) continue;
-    if (w.name === "superdriver" || w.name === "medic" || w.name === "martinet") continue;
+    if (w.name === "_superdriver" || w.name === "superdriver") continue;
+    if (w.name === "_medic" || w.name === "medic") continue;
+    if (w.name === "_martinet" || w.name === "martinet") continue;
     // Legacy `superdoctor` window is preserved during the ADR-133
     // deprecation window — rebuild migrates it via rename-window
     // (pre-pass), not prune. If wantMedic is OFF and the legacy window

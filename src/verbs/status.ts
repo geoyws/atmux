@@ -208,7 +208,11 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
     sessionAlive = await cockpitTmux.session.hasSession(cockpit.cockpitSession);
     if (sessionAlive) {
       const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
-      windowAlive = wins.some((w) => w.name === "medic" || w.name === "superdoctor");
+      // ADR-135 canonical window name `_medic`; legacy `medic` and pre-ADR-133
+      // `superdoctor` accepted during the deprecation window.
+      windowAlive = wins.some(
+        (w) => w.name === "_medic" || w.name === "medic" || w.name === "superdoctor",
+      );
     }
   } catch {
     // tmux not running, socket unreachable, etc. — collapse to down.
