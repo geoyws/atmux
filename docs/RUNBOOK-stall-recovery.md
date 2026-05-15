@@ -460,6 +460,84 @@ After enabling v1.1.x stall-prevention on a team:
 
 ---
 
+## How to verify cadence-truth-signal (ADR-148)
+
+ADR-148 makes commit-cadence the canonical truth signal for "is this
+member shipping?" — pane-aliveness is downgraded to a secondary
+diagnostic. Verify the full chain end-to-end after a fresh deploy or
+when the operator sees `🟢 alive` while suspecting dormancy:
+
+1. **Per-member cadence column shows up in `atmux status`** (§D3):
+
+   ```bash
+   atmux status | rg '🟢 shipping|🟡 idle|🔴 dormant|🚨 ship-zero'
+   ```
+
+   At least one line per non-exempt member should match. Members on
+   `team.cadence.exemptMembers` show `(exempt)`; teams with
+   `team.cadence.enabled: false` show `—` and the column is omitted
+   from the JSON snapshot (`atmux status --json | jq '.members[].cadence'`).
+
+2. **Per-member classifier produces a verdict that matches `git log`**:
+
+   ```bash
+   # pick any non-exempt member's worktree
+   git -C .atmux/worktrees/<member>/ log --since=2h --author=<member> --format='%H %ct' | head
+   ```
+
+   No output AND the cadence column shows `🚨 ship-zero (<age>)` →
+   ADR-132 §E6 escalation gate is armed for that member. If the column
+   instead shows `🟢 shipping (Xmin)` despite an empty git log, the
+   gitLog probe is mis-targeting the worktree — `atmux doctor` should
+   surface the path-resolution error.
+
+3. **Martinet escalation fires `ship-zero-2hr`** when any per-member
+   verdict is `ship-zero-window` (§D6, wired through
+   `src/core/martinet-escalation.ts::classify` E6 path). The cockpit-W3
+   dispatcher's tick log shows the reason verbatim:
+
+   ```bash
+   tail -50 ~/.atmux/state/martinet-tick.log | rg 'ship-zero-2hr'
+   ```
+
+4. **Lane-stall fallback fires** when a `lane=X todo>30min` Task sits
+   while every member with `lane=X` is non-shipping (§D4):
+
+   ```bash
+   # synthetic-fire path — manually invoke the verb if cron isn't installed yet
+   atmux lane-stall-tick
+   # check the fire ledger
+   jq '.fires' ~/.atmux/state/lane-stall-fires.json
+   ```
+
+   Recent `(taskId, lane)` entries with `firedAt` within the last
+   `laneStallMinAgeSec / 2` window are the dedup state — the verb
+   skips re-firing the same `(taskId, lane)` within this window.
+
+5. **Lead wake-nudge** (per `templates/briefs/team-lead.md` §D5): on
+   `cadence verdict ∈ {idle, dormant, ship-zero-window}`, the lead's
+   first wake attempt is `atmux send <member> "[lead] cadence verdict
+   <X>; last commit <age>. What's the blocker?"`. If the lead reads
+   `atmux status` but no `atmux send` followups land within 15min,
+   either the brief isn't on-disk on the lead pane (check
+   `~/.claude/teams/<team>/lead-bootstrap.txt` for the brief load time)
+   OR the lead has drifted to passive-relay (rotate via `atmux team
+   rotate-lead <team>`).
+
+**E2E rehearsal:** `tests/e2e/cadence-truth-signal.test.ts` runs the
+full chain (status column → classify() E6 fire → lane-stall-tick fire
+→ wake-nudge brief shape → 2 backward-compat short-circuits) against
+synthetic gitLog fixtures + injected sendKeys. Bun runs it in <1s:
+
+```bash
+unset TMUX && bun test --timeout 30000 tests/e2e/cadence-truth-signal.test.ts
+```
+
+12 beats, 1x cold-start+walk (non-idempotent — re-runs need a fresh
+tempdir; the spec's `beforeAll`/`afterAll` handles that).
+
+---
+
 ## Reference
 
 - **ADR:** [`docs/adr/057-stall-prevention.md`](adr/057-stall-prevention.md) — full design.
@@ -470,3 +548,4 @@ After enabling v1.1.x stall-prevention on a team:
 - **Auto-push:** `src/core/auto-push.ts`. Audit log: `.atmux/logs/auto-push.jsonl`.
 - **Pane-state classifier:** `src/core/pane-state.ts::classifyPane`. Send-keys gate: `src/core/safe-send.ts::safeSendKeys`.
 - **Per-class Tasks:** R57-T1 (D1) / R57-T2 (D2) / R57-T3 (D3) / R57-T4 (D4) / R57-T5 (D5) / R57-T6 (D6) / R57-T7 (D7) / R57-T8 (this docs Task).
+- **Cadence-truth-signal (ADR-148):** `src/core/cadence-classifier.ts` (classifier) + `src/core/martinet-escalation.ts::classify` (E6 ship-zero-2hr gate) + `src/verbs/lane-stall-tick.ts` (§D4 lane-stall fallback) + `src/verbs/status.ts::formatCadenceColumn` (renderer). E2E rehearsal: `tests/e2e/cadence-truth-signal.test.ts`.
