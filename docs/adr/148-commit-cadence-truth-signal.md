@@ -1,6 +1,6 @@
 # ADR-148: Commit-cadence as ground-truth health signal — close pane-alive ≠ shipping gap
 
-**Status**: Proposed
+**Status**: Accepted (2026-05-15, reviewer-signoff t-1e9fd74e)
 **Date**: 2026-05-15
 **Author**: atmux team (planner / t-18169b18)
 **Parent EPIC**: t-18169b18
