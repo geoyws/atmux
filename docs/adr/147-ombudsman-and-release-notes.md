@@ -218,6 +218,20 @@ EPIC parent: this ADR (closes t-441d6d4c). Sub-tasks to be filed in same session
 
 T9 is the gate for `Status: proposed → accepted`; flip when atmux-team's first day-file lands cleanly + the 3 known open complaints are adjudicated by ombudsman (not operator).
 
+### T7 (t-bbc15985) — e2e gate landed
+
+`tests/e2e/ombudsman.test.ts` walks the full `complaints file` → sentinel write → `ombudsman tick` (mocked send-keys) → `ombudsman work` (epic / wontfix / already-addressed / defer) → `complaints resolve` flip → release-notes day-file write chain against a real SQLite state.db + a real release-notes file tree on disk per fixture. Three paths:
+
+| Path | Beat | Asserts |
+|---|---|---|
+| A | A1-A5 | 3 complaints filed → sentinel grows to 3 → tick wakes pane (mocked sendKeys observed with `atmux ombudsman work` + correct `<session>:<emoji>-<member>` target) → c1=epic (with `addTask`'d EPIC + related-task), c2=wontfix, c3=already-addressed → epic Task in kanban + complaint statuses flipped + `extra.resolution_note` populated + day-file skeleton present + 3 entries under `## Complaints adjudicated` matching `formatEntryLine` shape + sentinel empty |
+| B | B1-B4 | 1 complaint filed → tick wakes → defer keeps complaint open + sentinel retains id + day-file shows `**deferred**` entry → second tick wakes AGAIN (sentinel still non-empty) |
+| C | C1-C3 | `team.ombudsman.enabled=false` → 3 complaints file via DB but skip-gate suppresses sentinel write → `isSentinelEmpty` true → tick is fast no-op (mocked sendKeys NEVER called) |
+
+Tick→tmux wake is verified via mocked `capture` + `sendKeys` deps on `OmbudsmanDeps` — the real `safeSendKeysWithVerify` runs end-to-end against the rig (composer-empty regex passes on first poll), proving the ADR-138 verify path is wired. The production wake path is real `createTmux` + real socket; this e2e covers the verb→deps→safeSend chain without standing up a tmux server.
+
+Result: 3 pass / 0 fail. Typecheck green. Pre-existing flake in `tests/unit/verbs/complaints.test.ts` ("file + file concurrent" `captureStdout` monkeypatch race; passes in isolation) is unrelated and tracked separately.
+
 ## Tradeoffs + alternatives considered
 
 ### Year/month/day folders (operator's brainstorm, NOT chosen)
