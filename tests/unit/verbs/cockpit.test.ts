@@ -1,6 +1,7 @@
 // Unit tests for src/verbs/cockpit.ts — ADR-063 cockpit verb.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -255,12 +256,60 @@ interface TmuxFixture {
   socketDir: string;
 }
 
+// c-4698c603 defense — fixture-survivor registry. Every spinTmux'd
+// socket + dir is tracked here; `tearDownFixtureSurvivors` is wired into
+// `process.on('exit')` (once, lazily) plus `afterAll` at end-of-file so
+// kill-server + dir-rm fire even when an individual test's try/finally
+// is bypassed by a thrown error / unhandled rejection. The per-test
+// finally blocks remain authoritative for happy-path cleanup;
+// kill-server + rmSync are idempotent, so re-running on already-cleaned
+// state is a no-op. SIGKILL on the bun-test process is unrecoverable
+// (userland exit handlers don't fire) — CLAUDE.md's `bun test --timeout`
+// + BashTool `timeout` discipline is the operator-side mitigation.
+const activeFixtureSockets = new Set<string>();
+const activeFixtureDirs = new Set<string>();
+let fixtureExitHookRegistered = false;
+
+function tearDownFixtureSurvivors(): void {
+  for (const sock of activeFixtureSockets) {
+    try {
+      Bun.spawnSync(["tmux", "-S", sock, "kill-server"], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+    } catch {}
+  }
+  for (const dir of activeFixtureDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+  activeFixtureSockets.clear();
+  activeFixtureDirs.clear();
+}
+
+function registerFixtureExitHook(): void {
+  if (fixtureExitHookRegistered) return;
+  fixtureExitHookRegistered = true;
+  process.on("exit", tearDownFixtureSurvivors);
+}
+
 async function spinTmux(prefix: string): Promise<TmuxFixture> {
+  registerFixtureExitHook();
   const socketDir = await mkdtemp(join(tmpdir(), `atmux-cockpit-${prefix}-`));
   const socketPath = join(socketDir, "sock");
   const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  activeFixtureSockets.add(socketPath);
+  activeFixtureDirs.add(socketDir);
   return { tmux, socketPath, socketDir };
 }
+
+// c-4698c603 defense — final-sweep hook. Fires after every test in this
+// file completes; idempotent w.r.t. the per-test try/finally + the
+// process-exit hook above.
+afterAll(() => {
+  tearDownFixtureSurvivors();
+});
 
 let priorTmux: string | undefined;
 beforeEach(() => {
