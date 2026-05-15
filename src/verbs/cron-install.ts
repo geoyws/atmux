@@ -27,12 +27,21 @@ import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
 const USAGE =
-  "atmux cron-install [--quiet] [--template merge-cycle] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
+  "atmux cron-install [--quiet] [--template merge-cycle|ombudsman-tick] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
 
-/** Allowed `--template` values (ADR-088 W7: only `merge-cycle` lands
- *  in this commit; future templates would extend this list). */
-export const CRON_INSTALL_TEMPLATES = ["merge-cycle"] as const;
+/** Allowed `--template` values. ADR-088 W7 added `merge-cycle`;
+ *  ADR-147 T3 (t-94a22bb0) added `ombudsman-tick` for the complaint-
+ *  adjudicator role wake. Future templates extend this list. */
+export const CRON_INSTALL_TEMPLATES = ["merge-cycle", "ombudsman-tick"] as const;
 export type CronInstallTemplate = (typeof CRON_INSTALL_TEMPLATES)[number];
+
+/** Templates that accept a transient `--interval` cadence override.
+ *  Both shipping templates honour it via their respective
+ *  `<X>IntervalOverride` field on {@link RenderCronBlockOpts}. */
+const TEMPLATES_WITH_INTERVAL: ReadonlySet<CronInstallTemplate> = new Set([
+  "merge-cycle",
+  "ombudsman-tick",
+]);
 
 export interface CronInstallArgs {
   quiet: boolean;
@@ -44,10 +53,13 @@ export interface CronInstallArgs {
    *  "I'm installing for merge-cycle specifically" assertion (also
    *  the natural place to validate the schema). */
   template?: CronInstallTemplate;
-  /** ADR-088 W7 — transient cadence override for merge-cycle line.
-   *  Parsed from `5m` / `15m` / `1h` / `<N>m` (canonical → minutes).
-   *  Threaded into `installCronBlock` as `mergerIntervalOverride`.
-   *  Only meaningful with `--template merge-cycle`. */
+  /** ADR-088 W7 — transient cadence override for the template-named
+   *  cron line. Parsed from `5m` / `15m` / `1h` / `<N>m` (canonical →
+   *  minutes). Threaded into `installCronBlock` as the override field
+   *  matching the active template (`mergerIntervalOverride` for
+   *  `merge-cycle`, `ombudsmanIntervalOverride` for `ombudsman-tick`
+   *  per ADR-147 T3). Only meaningful with a template that opts in
+   *  via {@link TEMPLATES_WITH_INTERVAL}. */
   intervalMins?: number;
   teamDir?: string;
 }
@@ -148,9 +160,9 @@ export function parseCronInstallArgs(argv: ReadonlyArray<string>): CronInstallAr
     }
     throw new UsageError({ what: `cron-install: unexpected arg: ${a}`, hint: USAGE });
   }
-  if (intervalMins !== undefined && template !== "merge-cycle") {
+  if (intervalMins !== undefined && (template === undefined || !TEMPLATES_WITH_INTERVAL.has(template))) {
     throw new UsageError({
-      what: "cron-install: --interval only meaningful with --template merge-cycle",
+      what: `cron-install: --interval only meaningful with --template ${[...TEMPLATES_WITH_INTERVAL].join("|")}`,
       hint: USAGE,
     });
   }
@@ -219,6 +231,24 @@ export async function cronInstall(
     });
   }
 
+  // ADR-147 T3: when `--template ombudsman-tick` is passed, validate
+  // `team.ombudsman.enabled === true`. Mirrors the merge-cycle gate
+  // pattern above — fail-fast with an operator-friendly hint rather
+  // than silently rendering a no-op block (the cron line is gated on
+  // enabled + member-role in renderCronLines; this template-flag
+  // validation surfaces the enabled half at install time so the
+  // operator sees the misconfiguration immediately). The member-role
+  // half is enforced at the renderer, not here — adding/removing a
+  // member is a separate team-config step from enabling the role.
+  if (parsed.template === "ombudsman-tick" && (team as Team).ombudsman?.enabled !== true) {
+    throw new ConfigError({
+      what: "cron-install --template ombudsman-tick: requires team.ombudsman.enabled = true in team.json",
+      hint:
+        "set `team.ombudsman.enabled: true` (per ADR-147) AND add a member with `role: \"ombudsman\"` " +
+        "before installing the ombudsman-tick cron template",
+    });
+  }
+
   const tmuxTmpdir = readTmuxTmpdir(team);
   const rawCurrent = await crontab.read();
 
@@ -244,7 +274,17 @@ export async function cronInstall(
     current,
   };
   if (tmuxTmpdir !== undefined) opts2.tmuxTmpdir = tmuxTmpdir;
-  if (parsed.intervalMins !== undefined) opts2.mergerIntervalOverride = parsed.intervalMins;
+  // Route the parsed `--interval` value to the override field matching
+  // the active template. Only one of the override fields lands per
+  // install (templates are mutually exclusive at parse time); the
+  // renderer is no-op for any unset override.
+  if (parsed.intervalMins !== undefined) {
+    if (parsed.template === "merge-cycle") {
+      opts2.mergerIntervalOverride = parsed.intervalMins;
+    } else if (parsed.template === "ombudsman-tick") {
+      opts2.ombudsmanIntervalOverride = parsed.intervalMins;
+    }
+  }
   const next = installCronBlock(opts2);
 
   try {

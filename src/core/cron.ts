@@ -31,7 +31,11 @@
 
 import type { CrontabIO } from "../abstractions/crontab.ts";
 import { ConfigError } from "../errors.ts";
-import { DEFAULT_MERGER_CYCLE_INTERVAL_MINS, type Team } from "../schema/team.ts";
+import {
+  DEFAULT_MERGER_CYCLE_INTERVAL_MINS,
+  DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
+  type Team,
+} from "../schema/team.ts";
 
 /**
  * ADR-079 §A: render a "star-slash-N stars" cron expression for an
@@ -127,6 +131,12 @@ export interface RenderCronBlockOpts {
    *  cron-install --template merge-cycle --interval <N>` so the
    *  operator can pin a one-off cadence without rewriting team.json. */
   mergerIntervalOverride?: number;
+  /** ADR-147 T3 (t-94a22bb0) — transient override for the `ombudsman
+   *  tick` line's cadence (minutes). When set, beats the team
+   *  .ombudsman.tickIntervalMins config for THIS render. Same
+   *  cron-install --interval threading pattern as
+   *  {@link mergerIntervalOverride}. */
+  ombudsmanIntervalOverride?: number;
 }
 
 /**
@@ -260,6 +270,36 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
       team.merger.cycleIntervalMins ??
       DEFAULT_MERGER_CYCLE_INTERVAL_MINS;
     out.push(`${cronEvery(mergerMins)} ${baseEnv} merge-cycle --push ${logTail("merge-cycle")}`);
+  }
+
+  // 9. ADR-147 §D2 T3 — ombudsman tick: complaint adjudicator wake.
+  // Gated on BOTH `team.ombudsman.enabled === true` AND member roster
+  // containing a `role: "ombudsman"` entry (mirrors the unblocker
+  // precedent — schema doc on `TeamOmbudsman` calls out the dual
+  // gate explicitly). Absent either, the line is suppressed.
+  //
+  // Cadence resolution (same precedence shape as merge-cycle):
+  // (a) `opts.ombudsmanIntervalOverride` (transient install-time
+  //     override from `cron-install --template ombudsman-tick
+  //     --interval <N>`) wins first, then (b)
+  //     `team.ombudsman.tickIntervalMins`, then (c) the schema's
+  //     `DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS` (15 per ADR-147 §D2).
+  //
+  // The verb itself (`atmux ombudsman tick`) is a fast no-op when
+  // the sentinel is empty — cron at 15min is cheap; sentinel writes
+  // are what trip work. The cron just guarantees worst-case wake
+  // latency ≤ tickIntervalMins.
+  const hasOmbudsman = team.members.some(
+    (m) => (m as { role?: string }).role === "ombudsman",
+  );
+  if (team.ombudsman?.enabled === true && hasOmbudsman) {
+    const ombudsmanMins =
+      opts.ombudsmanIntervalOverride ??
+      team.ombudsman.tickIntervalMins ??
+      DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS;
+    out.push(
+      `${cronEvery(ombudsmanMins)} ${baseEnv} ombudsman tick ${logTail("ombudsman")}`,
+    );
   }
 
   return out;

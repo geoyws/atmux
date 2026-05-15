@@ -7,6 +7,8 @@
 **Filename note**: Task `t-63e3ddc2` body referenced `docs/adr/134-cockpit-merger.md` from the pre-reframe scope. The EPIC body (t-51d2c635) reframed the merger to live *in-team*, not at the cockpit; the filename here reflects the accepted scope. Old filename is not used.
 **Amends**: ADR-091 §scope (clarifies the ADR-091 auto-merger applies to *sibling epic-team scope*, not intra-team per-member-branch fan-in). No state-machine collision — this ADR borrows ADR-091's shape and extends it; the two run at different nesting levels.
 
+> **Implementation note (2026-05-15 — T4 / t-64e52aac)**: cron backstop sweep landed as `atmux gitter --sweep` per §triggers §cron-backstop-secondary. Verb lives at `src/verbs/gitter.ts`; pure eligibility-analysis core at `src/core/gitter-sweep.ts`. Sweep gates on `team.autoMerge.enabled === true`; consumes `MergerStateRepo` (T2 / t-b5f12ab1 prereq trunk-merged) to skip in-flight branches. `TeamAutoMerge` Zod schema lands the full §Config surface in the same commit so T6 gitter member impl + T7 cron-install template + T8 e2e read the canonical field set. The actual merge dispatcher (T3 / t-27b06cda event-driven, parallel work) is injectable — pre-T3, the verb wires a `recordingQueueMergeAttempt` stub that logs queue intent so the sweep emits useful cron-log evidence; T3 swaps the real dispatcher in. Sweep core unchanged either way. Cron line installation is T7's responsibility (t-a87a39f1).
+
 ## Context
 
 ### Substrate — per-member-branch worktrees gave us parallelism
