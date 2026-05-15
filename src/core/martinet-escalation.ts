@@ -185,8 +185,36 @@ export function classify(
     reasons.push("low-confidence-streak");
   }
 
-  // E6: ship-zero-2hr — MANDATORY floor (T2 header)
+  // E6: ship-zero-2hr — MANDATORY floor (T2 header).
+  // Two complementary paths fire E6:
+  //
+  //   (a) Team-aggregate gate (pre-ADR-148): `obs.commitCadence
+  //       .last2hr === 0` — zero commits across root + submodules
+  //       in the last 2 hours. The original `ship-zero-2hr` shape.
+  //
+  //   (b) Per-member cadence verdict (ADR-148 T5 / t-ac95b267):
+  //       ANY member's `cadence.verdict === "ship-zero-window"`
+  //       (commitsInWindow === 0 AND ageOfLastCommitSec ≥
+  //       shipZeroWindowSec; default 2hr per
+  //       DEFAULT_CADENCE_THRESHOLDS.shipZeroWindowSec). This is
+  //       the canonical ground-truth signal per ADR-148 §D1 + §D2
+  //       — a member's cadence verdict directly maps to the
+  //       escalation channel.
+  //
+  // Both paths share the `ship-zero-2hr` reason literal because the
+  // closed `EscalationReason` enum doesn't grow per-source variants
+  // (the EscalationReason set is intentionally bounded per §D5).
+  // The dispatcher's logged evidence threads the FIRST source that
+  // fires so operators can see which path tripped (status.ts surfaces
+  // both via the cadence column + the commitCadence sweep counts).
   if (obs.commitCadence.last2hr === 0) {
+    reasons.push("ship-zero-2hr");
+  } else if (
+    obs.members.some(
+      (m) =>
+        m.cadence !== undefined && m.cadence.verdict === "ship-zero-window",
+    )
+  ) {
     reasons.push("ship-zero-2hr");
   }
 
