@@ -468,6 +468,185 @@ describe("complaints verb — integration", () => {
   });
 });
 
+// ---------- ADR-147 T2: ombudsman sentinel write-through ----------
+
+describe("complaints verb — ADR-147 T2 sentinel write-through", () => {
+  async function writeOmbudsmanTeam(enabled: boolean): Promise<void> {
+    const teamJson = {
+      name: "test-team",
+      members: enabled
+        ? [{ name: "alpha" }, { name: "ombud", role: "ombudsman" }]
+        : [{ name: "alpha" }],
+      ombudsman: enabled ? { enabled: true } : undefined,
+    };
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify(teamJson));
+  }
+
+  async function readSentinelPending(): Promise<string[]> {
+    const { readSentinel } = await import("../../../src/core/ombudsman.ts");
+    return (await readSentinel(atmuxDir)).pending;
+  }
+
+  test("file with ombudsman enabled → sentinel grows by 1 with the new id", async () => {
+    await writeOmbudsmanTeam(true);
+    const before = await readSentinelPending();
+    expect(before).toEqual([]);
+    const { out } = await captureStdout(() =>
+      complaints(["file", "--summary", "incident A", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const after = await readSentinelPending();
+    expect(after).toEqual([id]);
+  });
+
+  test("file with ombudsman disabled (default) → sentinel untouched", async () => {
+    // No `ombudsman` field on team.json — the default seed in beforeEach
+    // matches this case, but write it explicitly to make the assertion
+    // intent unambiguous.
+    await writeOmbudsmanTeam(false);
+    const { sentinelPath } = await import("../../../src/core/ombudsman.ts");
+    const path = sentinelPath(atmuxDir);
+    const { exists } = await import("../../../src/abstractions/fs.ts");
+    await captureStdout(() =>
+      complaints(["file", "--summary", "incident B", "--team-dir", teamDir]),
+    );
+    // Sentinel file should NOT exist — addToSentinel was never called.
+    expect(await exists(path)).toBe(false);
+  });
+
+  test("file with explicit `ombudsman: { enabled: false }` → sentinel untouched", async () => {
+    // Operator-disabled-after-enabled path: the field is present but the
+    // master switch is off. Skip-gate must still suppress the write.
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "test-team",
+        members: [{ name: "alpha" }],
+        ombudsman: { enabled: false },
+      }),
+    );
+    const { sentinelPath } = await import("../../../src/core/ombudsman.ts");
+    const { exists } = await import("../../../src/abstractions/fs.ts");
+    await captureStdout(() =>
+      complaints(["file", "--summary", "incident C", "--team-dir", teamDir]),
+    );
+    expect(await exists(sentinelPath(atmuxDir))).toBe(false);
+  });
+
+  test("resolve with id present in sentinel → sentinel shrinks by 1", async () => {
+    await writeOmbudsmanTeam(true);
+    const { out: fileOut } = await captureStdout(() =>
+      complaints(["file", "--summary", "incident D", "--team-dir", teamDir]),
+    );
+    const id = fileOut.trim();
+    expect(await readSentinelPending()).toEqual([id]);
+    await captureStdout(() => complaints(["resolve", id, "--team-dir", teamDir]));
+    expect(await readSentinelPending()).toEqual([]);
+  });
+
+  test("resolve with id absent from sentinel → idempotent no-op (operator-manual-resolve path)", async () => {
+    // Manual-resolve scenario: a complaint was filed BEFORE ombudsman
+    // was enabled, then operator resolves AFTER enable. The sentinel
+    // never had the id; removeFromSentinel is set-semantic and must
+    // not throw.
+    await writeOmbudsmanTeam(false);
+    const { out: fileOut } = await captureStdout(() =>
+      complaints(["file", "--summary", "incident E", "--team-dir", teamDir]),
+    );
+    const id = fileOut.trim();
+    // Now flip ombudsman ON for the resolve.
+    await writeOmbudsmanTeam(true);
+    expect(await readSentinelPending()).toEqual([]); // sentinel empty
+    const exit = await captureStdout(() =>
+      complaints(["resolve", id, "--team-dir", teamDir]),
+    );
+    expect(exit.result).toBe(0);
+    expect(await readSentinelPending()).toEqual([]);
+  });
+
+  test("resolve on missing complaint id → exit 1, sentinel still empty (no spurious write)", async () => {
+    await writeOmbudsmanTeam(true);
+    let stderrBuf = "";
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string | Uint8Array) => {
+      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const exit = await complaints(["resolve", "c-deadbeef", "--team-dir", teamDir]);
+      expect(exit).toBe(1);
+      expect(stderrBuf).toContain("no such id");
+    } finally {
+      process.stderr.write = origStderr;
+    }
+    expect(await readSentinelPending()).toEqual([]);
+  });
+
+  test("concurrent file + resolve → transaction-isolated, no torn writes", async () => {
+    // File 5 complaints, then concurrently resolve them all. The DB
+    // transaction-wrap + sentinel flock+atomic-rename together
+    // guarantee the final state is consistent — sentinel is empty,
+    // every complaint is resolved. The set-semantic
+    // addToSentinel/removeFromSentinel idempotency tolerates the
+    // milliseconds-of-drift the ombudsman-loop reconcile step is
+    // designed for.
+    await writeOmbudsmanTeam(true);
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const { out } = await captureStdout(() =>
+        complaints([
+          "file",
+          "--summary",
+          `incident-${i}`,
+          "--team-dir",
+          teamDir,
+        ]),
+      );
+      ids.push(out.trim());
+    }
+    expect(await readSentinelPending()).toEqual(ids);
+    // Fire all 5 resolves in parallel. flock + atomic-rename
+    // serializes the sentinel writes; BEGIN IMMEDIATE serializes the
+    // DB writes. End-state: sentinel empty, all rows resolved.
+    await Promise.all(
+      ids.map((id) =>
+        captureStdout(() => complaints(["resolve", id, "--team-dir", teamDir])),
+      ),
+    );
+    expect(await readSentinelPending()).toEqual([]);
+    // Verify every complaint hit `status='resolved'` in the DB.
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const repo = new ComplaintsRepo(db);
+      for (const id of ids) {
+        const row = repo.getById(id);
+        expect(row?.status).toBe("resolved");
+      }
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("file + file concurrent → both ids land in sentinel (set-semantic, no torn write)", async () => {
+    await writeOmbudsmanTeam(true);
+    const [a, b] = await Promise.all([
+      captureStdout(() =>
+        complaints(["file", "--summary", "concurrent-1", "--team-dir", teamDir]),
+      ),
+      captureStdout(() =>
+        complaints(["file", "--summary", "concurrent-2", "--team-dir", teamDir]),
+      ),
+    ]);
+    const idA = a.out.trim();
+    const idB = b.out.trim();
+    expect(idA).not.toBe(idB);
+    const pending = await readSentinelPending();
+    expect(pending).toContain(idA);
+    expect(pending).toContain(idB);
+    expect(pending).toHaveLength(2);
+  });
+});
+
 // ---------- v3 provenance: parser ----------
 
 describe("parseComplaintsArgs — v3 provenance flags", () => {
