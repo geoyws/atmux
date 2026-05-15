@@ -20,17 +20,66 @@
 
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { defaultCrontabIO, type CrontabIO } from "../abstractions/crontab.ts";
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { installCronBlock, migrateSuperdoctorToMedicCronLines } from "../core/cron.ts";
-import { UsageError } from "../errors.ts";
+import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
-const USAGE = "atmux cron-install [--quiet] [--team-dir <dir>]";
+const USAGE =
+  "atmux cron-install [--quiet] [--template merge-cycle] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
+
+/** Allowed `--template` values (ADR-088 W7: only `merge-cycle` lands
+ *  in this commit; future templates would extend this list). */
+export const CRON_INSTALL_TEMPLATES = ["merge-cycle"] as const;
+export type CronInstallTemplate = (typeof CRON_INSTALL_TEMPLATES)[number];
 
 export interface CronInstallArgs {
   quiet: boolean;
+  /** ADR-088 W7 (t-2f12839e) — template validator. When `merge-cycle`,
+   *  the install path verifies `team.merger.enabled === true` and
+   *  errors out with a config hint if not. The standard install
+   *  block ALWAYS includes the merge-cycle line when merger is enabled
+   *  regardless of `--template`; this flag is the operator-facing
+   *  "I'm installing for merge-cycle specifically" assertion (also
+   *  the natural place to validate the schema). */
+  template?: CronInstallTemplate;
+  /** ADR-088 W7 — transient cadence override for merge-cycle line.
+   *  Parsed from `5m` / `15m` / `1h` / `<N>m` (canonical → minutes).
+   *  Threaded into `installCronBlock` as `mergerIntervalOverride`.
+   *  Only meaningful with `--template merge-cycle`. */
+  intervalMins?: number;
   teamDir?: string;
+}
+
+/** Parse the `--interval` suffix (`5m`, `15m`, `1h`, `<N>m`) into
+ *  minutes. Exported for unit tests + symmetric reuse if future
+ *  templates need their own interval flag. */
+export function parseIntervalToMins(raw: string): number {
+  if (raw.endsWith("m")) {
+    const n = Number.parseInt(raw.slice(0, -1), 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new UsageError({
+        what: `cron-install: --interval value '${raw}' is not a positive minutes count`,
+        hint: USAGE,
+      });
+    }
+    return n;
+  }
+  if (raw.endsWith("h")) {
+    const n = Number.parseInt(raw.slice(0, -1), 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new UsageError({
+        what: `cron-install: --interval value '${raw}' is not a positive hours count`,
+        hint: USAGE,
+      });
+    }
+    return n * 60;
+  }
+  throw new UsageError({
+    what: `cron-install: --interval value '${raw}' missing unit suffix (m for minutes, h for hours)`,
+    hint: USAGE,
+  });
 }
 
 export interface CronInstallOpts {
@@ -50,6 +99,8 @@ export interface CronInstallOpts {
 /** Pure parser. Throws `UsageError` on bad invocation. */
 export function parseCronInstallArgs(argv: ReadonlyArray<string>): CronInstallArgs {
   let quiet = false;
+  let template: CronInstallTemplate | undefined;
+  let intervalMins: number | undefined;
   let teamDir: string | undefined;
   let i = 0;
   while (i < argv.length) {
@@ -57,6 +108,30 @@ export function parseCronInstallArgs(argv: ReadonlyArray<string>): CronInstallAr
     if (a === "--quiet") {
       quiet = true;
       i += 1;
+      continue;
+    }
+    if (a === "--template") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "cron-install: --template requires a value", hint: USAGE });
+      }
+      if (!CRON_INSTALL_TEMPLATES.includes(v as never)) {
+        throw new UsageError({
+          what: `cron-install: --template must be one of ${CRON_INSTALL_TEMPLATES.join("|")} (got: ${v})`,
+          hint: USAGE,
+        });
+      }
+      template = v as CronInstallTemplate;
+      i += 2;
+      continue;
+    }
+    if (a === "--interval") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "cron-install: --interval requires a value", hint: USAGE });
+      }
+      intervalMins = parseIntervalToMins(v);
+      i += 2;
       continue;
     }
     if (a === "--team-dir") {
@@ -73,7 +148,15 @@ export function parseCronInstallArgs(argv: ReadonlyArray<string>): CronInstallAr
     }
     throw new UsageError({ what: `cron-install: unexpected arg: ${a}`, hint: USAGE });
   }
+  if (intervalMins !== undefined && template !== "merge-cycle") {
+    throw new UsageError({
+      what: "cron-install: --interval only meaningful with --template merge-cycle",
+      hint: USAGE,
+    });
+  }
   const out: CronInstallArgs = { quiet };
+  if (template !== undefined) out.template = template;
+  if (intervalMins !== undefined) out.intervalMins = intervalMins;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }
@@ -97,8 +180,7 @@ export async function cronInstall(
     return 0;
   }
 
-  const dirOpts: ResolveDirOpts =
-    parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
 
@@ -123,6 +205,18 @@ export async function cronInstall(
       "cron-install: cannot resolve atmux binary path (set ATMUX_BIN or install atmux on PATH) — skipping\n",
     );
     return 0;
+  }
+
+  // ADR-088 W7: when `--template merge-cycle` is passed, validate that
+  // the team has merger enabled in config — otherwise the install would
+  // be a no-op (the merge-cycle line is gated on team.merger.enabled in
+  // renderCronLines) and the operator silently has no effect from the
+  // flag. Fail-fast with a clear hint at install time.
+  if (parsed.template === "merge-cycle" && team.merger?.enabled !== true) {
+    throw new ConfigError({
+      what: "cron-install --template merge-cycle: requires team.merger.enabled = true in team.json",
+      hint: "set `team.merger.enabled: true` (per ADR-088) before installing the merge-cycle cron template",
+    });
   }
 
   const tmuxTmpdir = readTmuxTmpdir(team);
@@ -150,6 +244,7 @@ export async function cronInstall(
     current,
   };
   if (tmuxTmpdir !== undefined) opts2.tmuxTmpdir = tmuxTmpdir;
+  if (parsed.intervalMins !== undefined) opts2.mergerIntervalOverride = parsed.intervalMins;
   const next = installCronBlock(opts2);
 
   try {
@@ -215,4 +310,3 @@ async function logSuperdoctorMigration(args: {
     );
   }
 }
-
