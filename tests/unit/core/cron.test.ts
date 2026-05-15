@@ -43,7 +43,7 @@ describe("renderCronLines", () => {
   test("vanilla team renders 4-line block: whip / report / decisions / groom", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
     expect(lines).toEqual([
-      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
@@ -479,10 +479,10 @@ describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
     expect(() => renderCronLines(baseOpts(team))).toThrow(ConfigError);
   });
 
-  test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical)", () => {
+  test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical post-t-dcbff97c whip-default raise)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
     expect(lines).toEqual([
-      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
