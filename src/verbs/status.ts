@@ -32,6 +32,7 @@ import {
 } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { loadInbox } from "../core/inbox.ts";
+import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { UsageError } from "../errors.ts";
 import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
@@ -208,6 +209,54 @@ export interface MedicState {
  *  for importers during the one-release-cycle deprecation window. */
 export type SuperdoctorState = MedicState;
 
+/** ADR-077 §lead-uptime-measurement (t-6d950ffd / preventive for
+ *  superdoctor complaint c-06dabd47): explicit-naming snapshot for
+ *  the lead-window uptime question. Two distinct numbers, two
+ *  distinct sources — observers conflating them have rotated leads
+ *  prematurely (the original incident).
+ *
+ *  - `lead_session_uptime_s` reads `~/.claude/teams/<team>/lead-
+ *    session-start.txt` (refreshed by `/clear` AND `atmux rotate-
+ *    lead`). This is the canonical "how long since the lead's
+ *    current context window started?" — the source of truth for
+ *    the ADR-009 rotation gate.
+ *  - `shell_pid_etime_s` reads `ps -o etime= -p <leadPanePid>` —
+ *    the lead pane's SHELL process etime. The shell typically
+ *    long-outlives any one Claude session; `/clear` resets the
+ *    session-start marker without exiting the parent shell.
+ *
+ *  Rotation gate reads `lead_session_uptime_s`. The shell etime is
+ *  exposed for diagnostic transparency ONLY — it must NEVER drive
+ *  rotation decisions. */
+export interface LeadUptimeSnapshot {
+  /** True iff the team has a member with `role === "team-lead"`. */
+  configured: boolean;
+  /** Lead member's immutable id (the `name` field) — null when no
+   *  team-lead role is set. Display callers should fall back to
+   *  the rendering layer's label resolution. */
+  leadMember: string | null;
+  /** Epoch seconds when the lead's CURRENT session started (most
+   *  recent `/clear` OR `atmux rotate-lead`). Null when the marker
+   *  file is absent (lead never bootstrapped, or first tick of a
+   *  fresh team). */
+  leadSessionStartedAt: number | null;
+  /** Seconds since `leadSessionStartedAt`. Null when marker is
+   *  absent. This is the rotation-gate source per ADR-077 §lead-
+   *  uptime-measurement. */
+  lead_session_uptime_s: number | null;
+  /** OS PID of the lead window's pane (`#{pane_pid}` via tmux
+   *  list-panes). Null when session is down, lead window is
+   *  missing, or the list-panes call failed. */
+  leadPanePid: number | null;
+  /** Seconds the lead pane's SHELL process has been running per
+   *  `ps -o etime`. Typically much higher than
+   *  `lead_session_uptime_s` because `/clear` resets the session-
+   *  start marker but does NOT restart the shell. Surface this
+   *  for diagnostic transparency; NEVER drive rotation decisions
+   *  from this value (per ADR-077 §lead-uptime-measurement). */
+  shell_pid_etime_s: number | null;
+}
+
 export interface StatusSnapshot {
   team: string;
   session: string;
@@ -232,6 +281,11 @@ export interface StatusSnapshot {
    *  driver-inbox + blocked kanban. Live per ADR-068 §HC#4 — no cache;
    *  re-run every `gatherStatus` invocation. */
   needsApproval: NeedsApprovalReport;
+  /** ADR-077 §lead-uptime-measurement (t-6d950ffd): explicit-naming
+   *  lead uptime snapshot — see {@link LeadUptimeSnapshot}. Always
+   *  populated (`configured: false` for teams without a team-lead
+   *  role); renderer skips display when `configured=false`. */
+  lead: LeadUptimeSnapshot;
 }
 
 /** Test-injection seam for `gatherStatus` cockpit probe. */
@@ -261,6 +315,12 @@ export interface GatherStatusDeps {
     sinceSec: number,
     author: string,
   ) => Promise<string[]>;
+  /** ADR-077 §lead-uptime-measurement (t-6d950ffd) injection seam:
+   *  given a process PID, return its elapsed-time-since-start in
+   *  seconds. Default shells `ps -o etime= -p <pid>` and parses
+   *  the `[[DD-]HH:]MM:SS` format. Returns null when the PID is
+   *  not running OR the ps call fails. */
+  psEtime?: (pid: number) => Promise<number | null>;
 }
 
 /** Per-task t-d98b2bd6 (whip-side signal shape). Mirrors the on-disk
@@ -354,6 +414,127 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
  *  for the deprecation window so callers reaching for the legacy
  *  symbol keep working unchanged. */
 export const probeSuperdoctor = probeMedic;
+
+/** ADR-077 §lead-uptime-measurement (t-6d950ffd): parse the
+ *  `[[DD-]HH:]MM:SS` etime format that `ps -o etime=` emits into
+ *  seconds. Examples:
+ *
+ *    "12:34"      → 12*60 + 34 = 754s
+ *    "02:30:45"   → 2*3600 + 30*60 + 45 = 9045s
+ *    "1-12:30:45" → 1*86400 + 9045 = 95445s
+ *
+ *  Returns null when the string doesn't match the expected shape
+ *  (defensive — ps output drifts across BSD vs GNU; the canonical
+ *  format above is consistent on Linux + macOS). */
+export function parsePsEtime(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  // Match optional days, optional hours, mandatory mm:ss.
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(trimmed);
+  if (m === null) return null;
+  const days = m[1] !== undefined ? Number.parseInt(m[1], 10) : 0;
+  const hours = m[2] !== undefined ? Number.parseInt(m[2], 10) : 0;
+  const mins = Number.parseInt(m[3] ?? "0", 10);
+  const secs = Number.parseInt(m[4] ?? "0", 10);
+  return days * 86400 + hours * 3600 + mins * 60 + secs;
+}
+
+/** Default `psEtime` impl — shells `ps -o etime= -p <pid>` and
+ *  parses the output. Fail-soft: any non-zero exit / parse failure
+ *  returns null so the LeadUptimeSnapshot degrades gracefully. */
+async function defaultPsEtime(pid: number): Promise<number | null> {
+  try {
+    const r: SpawnResult = await runSpawn({
+      cmd: "ps",
+      argv: ["-o", "etime=", "-p", String(pid)],
+      expectExitCode: "any",
+      timeoutMs: 3000,
+    });
+    if (r.exitCode !== 0) return null;
+    return parsePsEtime(r.stdout);
+  } catch {
+    return null;
+  }
+}
+
+/** ADR-077 §lead-uptime-measurement (t-6d950ffd): build the lead
+ *  uptime snapshot. Two source-fields with deliberately distinct
+ *  names — `lead_session_uptime_s` (the rotation-gate source) and
+ *  `shell_pid_etime_s` (diagnostic-only). Every failure mode
+ *  degrades to null rather than throwing — partial snapshots are
+ *  better than no status output. */
+export async function probeLeadUptime(
+  tmux: TmuxNamespace,
+  team: Team,
+  sessionName: string,
+  sessionUp: boolean,
+  deps: {
+    home?: string;
+    now?: () => number;
+    psEtime?: (pid: number) => Promise<number | null>;
+  } = {},
+): Promise<LeadUptimeSnapshot> {
+  const leadMemberObj = team.members.find((m) => m.role === "team-lead");
+  if (leadMemberObj === undefined) {
+    return {
+      configured: false,
+      leadMember: null,
+      leadSessionStartedAt: null,
+      lead_session_uptime_s: null,
+      leadPanePid: null,
+      shell_pid_etime_s: null,
+    };
+  }
+
+  // Resolve lead-window name with the same fallback whip uses (post-
+  // ADR-082 buildWindowName, then legacy `__<team>__team-lead`).
+  const memberWin = buildWindowName(
+    leadMemberObj.name,
+    leadMemberObj.emoji,
+    leadMemberObj.label,
+  );
+  const homeOpts: { home?: string; fallback?: string } = { fallback: memberWin };
+  if (deps.home !== undefined) homeOpts.home = deps.home;
+  const leadWin = await readLeadWindowName(team.name, homeOpts);
+
+  // I-1 marker read — the canonical rotation-gate source.
+  const readOpts: { home?: string } = {};
+  if (deps.home !== undefined) readOpts.home = deps.home;
+  const startedAt = await readLeadSessionStart(team.name, readOpts);
+  const nowSec = Math.floor((deps.now ?? Date.now)() / 1000);
+  const leadSessionUptime =
+    startedAt === null ? null : Math.max(0, nowSec - startedAt);
+
+  // Shell PID + etime — diagnostic-only.
+  let leadPanePid: number | null = null;
+  let shellEtime: number | null = null;
+  if (sessionUp) {
+    const target = `${sessionName}:${leadWin}`;
+    try {
+      const panes = await tmux.pane.listPanes(target);
+      // listPanes returns [] when window missing; the first pane in
+      // the window is the lead's pane (single-pane windows are the
+      // norm).
+      const firstPane = panes[0];
+      if (firstPane !== undefined && firstPane.pid > 0) {
+        leadPanePid = firstPane.pid;
+        const psEtime = deps.psEtime ?? defaultPsEtime;
+        shellEtime = await psEtime(firstPane.pid);
+      }
+    } catch {
+      // Transient tmux error — leave the pane fields null.
+    }
+  }
+
+  return {
+    configured: true,
+    leadMember: leadMemberObj.name,
+    leadSessionStartedAt: startedAt,
+    lead_session_uptime_s: leadSessionUptime,
+    leadPanePid,
+    shell_pid_etime_s: shellEtime,
+  };
+}
 
 /**
  * Gather all status data into a structured snapshot. Pure (modulo
@@ -513,6 +694,22 @@ export async function gatherStatus(
   // rather than failing the whole status snapshot.
   const needsApproval = await scanNeedsApproval();
 
+  // ADR-077 §lead-uptime-measurement (t-6d950ffd): two-source uptime
+  // snapshot. configured=false when the team has no team-lead role;
+  // renderer skips display in that case.
+  const leadOpts: Parameters<typeof probeLeadUptime>[4] = {};
+  if (deps.home !== undefined) leadOpts.home = deps.home;
+  else if (homeDir.length > 0) leadOpts.home = homeDir;
+  if (deps.now !== undefined) leadOpts.now = deps.now;
+  if (deps.psEtime !== undefined) leadOpts.psEtime = deps.psEtime;
+  const lead = await probeLeadUptime(
+    tmux,
+    team,
+    sessionName,
+    sessionState === "up",
+    leadOpts,
+  );
+
   return {
     team: team.name,
     session: sessionName,
@@ -526,6 +723,7 @@ export async function gatherStatus(
     // so JSON consumers reading `snap.superdoctor` keep working.
     superdoctor: medic,
     needsApproval,
+    lead,
   };
 }
 
@@ -595,6 +793,10 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       medic: snap.medic,
       superdoctor: snap.superdoctor,
       needsApproval: snap.needsApproval,
+      // ADR-077 §lead-uptime-measurement (t-6d950ffd): explicit-naming
+      // uptime snapshot. Two distinct numbers, two distinct sources —
+      // see LeadUptimeSnapshot JSDoc for why they must NOT be conflated.
+      lead: snap.lead,
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     return 0;
@@ -722,6 +924,25 @@ function renderTextStatus(snap: StatusSnapshot): void {
   }
   if (snap.driverInboxOpen > 0) {
     process.stdout.write(`📬 driver-inbox  open=${snap.driverInboxOpen}\n`);
+  }
+  // ADR-077 §lead-uptime-measurement (t-6d950ffd): lead-uptime row —
+  // skip when the team has no team-lead role configured. Surfaces
+  // BOTH numbers with explicit labels so the operator reading the
+  // text view can't conflate them; the diagnostic-only shell etime
+  // is parenthesized as "(shell <Hh>)" so the rotation-gate source
+  // remains the unparenthesized primary value.
+  if (snap.lead.configured) {
+    const upStr =
+      snap.lead.lead_session_uptime_s === null
+        ? "—"
+        : formatDurationShort(snap.lead.lead_session_uptime_s);
+    const shellStr =
+      snap.lead.shell_pid_etime_s === null
+        ? "—"
+        : formatDurationShort(snap.lead.shell_pid_etime_s);
+    process.stdout.write(
+      `🧭 lead ${snap.lead.leadMember ?? "?"}  session_uptime=${upStr}  (shell_etime=${shellStr})\n`,
+    );
   }
   // ADR-077 §F5 / ADR-133: medic row — skip when no cockpit at all.
   if (snap.medic.configured) {

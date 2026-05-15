@@ -1109,6 +1109,225 @@ describe("gatherStatus — cadence column integration", () => {
   });
 });
 
+// ---------- ADR-077 §lead-uptime-measurement (t-6d950ffd) ----------
+
+import {
+  parsePsEtime,
+  probeLeadUptime,
+  type LeadUptimeSnapshot,
+} from "../../../src/verbs/status.ts";
+import { writeLeadSessionStart } from "../../../src/core/lead-marker.ts";
+
+describe("parsePsEtime — '[[DD-]HH:]MM:SS' parsing", () => {
+  test("MM:SS form", () => {
+    expect(parsePsEtime("12:34")).toBe(12 * 60 + 34);
+    expect(parsePsEtime("00:05")).toBe(5);
+  });
+
+  test("HH:MM:SS form", () => {
+    expect(parsePsEtime("02:30:45")).toBe(2 * 3600 + 30 * 60 + 45);
+  });
+
+  test("DD-HH:MM:SS form (multi-day uptime)", () => {
+    // 1 day + 12h + 30min + 45s = 86400 + 43200 + 1800 + 45
+    expect(parsePsEtime("1-12:30:45")).toBe(86400 + 43200 + 1800 + 45);
+    expect(parsePsEtime("7-00:00:00")).toBe(7 * 86400);
+  });
+
+  test("whitespace tolerated (ps pads with leading space)", () => {
+    expect(parsePsEtime("  12:34  ")).toBe(754);
+  });
+
+  test("empty / unparseable → null (defensive)", () => {
+    expect(parsePsEtime("")).toBeNull();
+    expect(parsePsEtime("garbage")).toBeNull();
+    expect(parsePsEtime("12:34:56:78")).toBeNull();
+  });
+});
+
+describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
+  let homeDir: string;
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-lead-uptime-home-"));
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  test("no team-lead role configured → configured: false, all fields null", async () => {
+    const { sessionName } = await stageTeam([{ name: "alpha" }], false);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const snap: LeadUptimeSnapshot = await probeLeadUptime(
+      tmux,
+      team,
+      sessionName,
+      false,
+      { home: homeDir },
+    );
+    expect(snap.configured).toBe(false);
+    expect(snap.leadMember).toBeNull();
+    expect(snap.lead_session_uptime_s).toBeNull();
+    expect(snap.shell_pid_etime_s).toBeNull();
+  });
+
+  test("team-lead role + lead-session-start.txt present → lead_session_uptime_s = now - marker", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      false,
+    );
+    const nowMs = 1_700_000_000_000;
+    const startedAt = Math.floor(nowMs / 1000) - 300; // 5min ago
+    await writeLeadSessionStart(teamName, startedAt, { home: homeDir });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const snap = await probeLeadUptime(tmux, team, sessionName, false, {
+      home: homeDir,
+      now: () => nowMs,
+    });
+    expect(snap.configured).toBe(true);
+    expect(snap.leadMember).toBe("lead-alpha");
+    expect(snap.leadSessionStartedAt).toBe(startedAt);
+    expect(snap.lead_session_uptime_s).toBe(300);
+    // Session down → PID/etime null.
+    expect(snap.leadPanePid).toBeNull();
+    expect(snap.shell_pid_etime_s).toBeNull();
+  });
+
+  test("marker absent → lead_session_uptime_s null even with team-lead role", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const snap = await probeLeadUptime(tmux, team, sessionName, false, {
+      home: homeDir,
+    });
+    expect(snap.configured).toBe(true);
+    expect(snap.leadSessionStartedAt).toBeNull();
+    expect(snap.lead_session_uptime_s).toBeNull();
+  });
+
+  test("session up + lead window present → leadPanePid populated, psEtime injected", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      true,
+    );
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 60, {
+      home: homeDir,
+    });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const psCalls: number[] = [];
+    const snap = await probeLeadUptime(tmux, team, sessionName, true, {
+      home: homeDir,
+      psEtime: async (pid) => {
+        psCalls.push(pid);
+        return 99999; // arbitrary fixture value
+      },
+    });
+    expect(snap.leadPanePid).toBeGreaterThan(0);
+    expect(psCalls).toEqual([snap.leadPanePid!]);
+    expect(snap.shell_pid_etime_s).toBe(99999);
+  });
+
+  test("explicit-naming: lead_session_uptime_s ≠ shell_pid_etime_s under same probe", async () => {
+    // The whole point of the field-naming: rotation gate reads
+    // lead_session_uptime_s (marker-derived, recent /clear-resettable)
+    // while shell_pid_etime_s is the diagnostic-only shell etime
+    // (long-lived). Wire both up and assert they're independent.
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      true,
+    );
+    const nowMs = 1_700_000_000_000;
+    const startedAt = Math.floor(nowMs / 1000) - 90; // marker: 90s ago
+    await writeLeadSessionStart(teamName, startedAt, { home: homeDir });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const snap = await probeLeadUptime(tmux, team, sessionName, true, {
+      home: homeDir,
+      now: () => nowMs,
+      psEtime: async () => 22 * 3600, // shell: 22h
+    });
+    expect(snap.lead_session_uptime_s).toBe(90);
+    expect(snap.shell_pid_etime_s).toBe(22 * 3600);
+    // The whole point: these MUST be independent values.
+    expect(snap.shell_pid_etime_s).not.toBe(snap.lead_session_uptime_s);
+  });
+});
+
+describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
+  let homeDir: string;
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-lead-json-home-"));
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  test("--json output includes 'lead' top-level block", async () => {
+    const { teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      false,
+    );
+    await writeLeadSessionStart(
+      teamName,
+      Math.floor(Date.now() / 1000) - 180,
+      { home: homeDir },
+    );
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+      );
+      const parsed = JSON.parse(out);
+      expect(parsed.lead).toBeDefined();
+      expect(parsed.lead.configured).toBe(true);
+      expect(parsed.lead.leadMember).toBe("lead-alpha");
+      // Both explicit field names present per ADR-077 §lead-uptime-measurement.
+      expect(parsed.lead).toHaveProperty("lead_session_uptime_s");
+      expect(parsed.lead).toHaveProperty("shell_pid_etime_s");
+      expect(typeof parsed.lead.lead_session_uptime_s).toBe("number");
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+
+  test("text mode emits '🧭 lead' row with session_uptime label", async () => {
+    const { teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      false,
+    );
+    await writeLeadSessionStart(
+      teamName,
+      Math.floor(Date.now() / 1000) - 600,
+      { home: homeDir },
+    );
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--socket", socketPath, "--team-dir", teamDir]),
+      );
+      // Explicit labels — operator reading the text view can't conflate
+      // the two values.
+      expect(out).toMatch(/🧭 lead lead-alpha/);
+      expect(out).toContain("session_uptime=");
+      expect(out).toContain("shell_etime=");
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+
+  test("team without team-lead role → no '🧭 lead' row in text output", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).not.toContain("🧭 lead");
+  });
+});
+
 describe("text mode — pane-state column rename + cadence column", () => {
   test("header row uses 'pane-state' (not 'alive' or bare 'state')", async () => {
     await stageTeam([{ name: "alpha" }], false);
