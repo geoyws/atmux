@@ -29,6 +29,7 @@ The pull model defines each role by what it *doesn't* do — narrow surfaces, no
 | `devops`    | 5      | claude      | Deploy / env / CI/CD / infra Tasks.                                                                                                                     |
 | `dba`       | 6      | claude      | Schema + migrations + SQL (optional).                                                                                                                   |
 | `member`    | 7…n    | any         | Lane workers — pull next claimable Task in their lane via `atmux claim --next`. **FE workers also own the TEST-lane capstone for UI Stories.**          |
+| `ombudsman` | (event-driven) | claude (opt) | **Per-team complaint adjudicator** per [ADR-147](adr/147-ombudsman-and-release-notes.md). Reads `atmux complaints list --status open`, picks one of {file-epic, file-task, wontfix, already-addressed, defer} per complaint, appends day-file entry to `docs/release-notes/<Y>/<M>/<Y-M-D>.md` under `## Complaints adjudicated`. Wake via sentinel `.atmux/state/ombudsman-pending.json` + 15min `atmux ombudsman tick` cron line — NOT in whip cadence (ADR-147 §D2). |
 | `whip`      | (cron) | —           | 5-min watchdog: pane state, rate-limits, stale Tasks, lead uptime. Escalates to the lead only when auto-recovery fails.                                 |
 
 ## Pull coordination
@@ -138,6 +139,39 @@ Findings are appended to `.atmux/logs/whip.log`. Non-empty findings also get pin
 - **Open driver-inbox asks**
 
 Pinged to Discord.
+
+## Release notes layout — `docs/release-notes/<Y>/<M>/<Y-M-D>.md`
+
+Per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D4, atmux ships a per-day release-notes file at `docs/release-notes/<YYYY>/<MM>/<YYYY-MM-DD>.md`. Year and month folders give navigability (`ls docs/release-notes/2026/05/` = month view); one file per day with append-only sections keeps cross-team writes conflict-free.
+
+Every day-file follows a skeleton with append-only sections, each owned by a specific agent:
+
+| Section                       | Written by                                                       |
+|-------------------------------|------------------------------------------------------------------|
+| `## Shipped (kanban→done)`    | gitter post-fan-in (or hygiene-tick backstop) per ADR-147 §D4    |
+| `## Merges (branch→trunk)`    | gitter post-trunk-merge per ADR-145 + ADR-146                    |
+| `## ADRs landed`              | hygiene-tick on detecting new `docs/adr/*.md`, or ADR author     |
+| `## Complaints adjudicated`   | ombudsman per ADR-147 §D3                                        |
+| `## Doctor regressions`       | medic on red-row escalation (optional; empty most days)          |
+| `## Notes`                    | operator-curated narrative (optional; empty most days)           |
+
+**Auto-create + idempotency**: the first writer of the day creates the file with all skeleton sections empty; subsequent writers append to their own section. No locking — section headers act as natural insertion anchors. The append-only invariant lets multiple agents write the same day-file safely (per ADR-147 §D4).
+
+**Discovery**: `docs/release-notes/README.md` is the entry-point, documenting the layout convention + browsing pattern + auto-generated 30-day TOC (ADR-147 §D4).
+
+**Cross-team monorepos** (ADR-090 epic-team scope, future): same physical file at repo root; each team writes only to its `### <team>` sub-section within `## Complaints adjudicated` to keep appends conflict-free (ADR-147 §D6).
+
+**Doctor backstop**: probe `release-note-missing` (warn-class, NOT block) fires when today has ≥1 trunk commit AND today's day-file doesn't exist — backfill cue for ombudsman or hygiene-tick (ADR-147 §D5).
+
+## Ombudsman wake — sentinel + cron (event-driven)
+
+Per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D2, the ombudsman role wakes on **events**, not whip cadence. Two writers + one reader define the protocol:
+
+- **Sentinel file** — `.atmux/state/ombudsman-pending.json`: an array of complaint IDs (`c-xxxxxxxx`) awaiting first adjudication.
+- **Write-through**: `atmux complaints file` appends the new `c-id` to the sentinel (same transaction as the DB insert, ADR-091 pre-flag #1 pattern). `atmux complaints resolve` removes the `c-id` (whether ombudsman wrote the resolution or operator manual-resolved).
+- **Cron tick**: `atmux ombudsman tick --team <team>` runs every `team.ombudsman.tickIntervalMins` (default 15min). Fast-path no-op when sentinel is empty; wakes the ombudsman pane via `safeSendKeysWithVerify` ([ADR-138](adr/138-verified-send-keys.md)) with `atmux ombudsman work` when non-empty.
+
+The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because medic + whip-velocity-gate can file 5–10 complaints in a burst; batching the wake gives ombudsman the chance to drain in one session rather than wake-process-sleep × N. This matches the `groom-pending-judgment.json` pattern from the supergroomer parking-lot task (ADR-147 §D2 tradeoff section).
 
 ## Why `tmux send-keys` and not SDK API calls?
 

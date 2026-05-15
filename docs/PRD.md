@@ -343,6 +343,7 @@ detail (lib edits in main checkout's `atmux-geoyws` branch).
 | Gitter      | 4                    | claude        | Only member allowed to commit + push |
 | Devops      | 5                    | claude        | Deploys, env, CI/CD, infra |
 | Dba         | 6                    | claude (opt)  | Schema + migrations + data integrity |
+| Ombudsman   | (event-driven)       | claude (opt)  | Per-team complaint adjudicator per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D1. Reads open complaints, triages → epic / wontfix / resolved / defer, appends day-file entry under `docs/release-notes/<Y>/<M>/<Y-M-D>.md`. **Event-driven** (sentinel `.atmux/state/ombudsman-pending.json` + 15min cron tick); NOT in whip cadence (ADR-147 §D2). |
 | Members     | 7+                   | any           | Parallel throughput per feature lane |
 
 Driver ↔ lead routing: file-based (`~/.claude/teams/<team>/driver-inbox.md`)
