@@ -15,17 +15,22 @@ import { readJson } from "../abstractions/json.ts";
 import { ConfigError } from "../errors.ts";
 import {
   Cockpit,
-  type Cockpit as CockpitShape,
+  type CockpitMartinet,
+  type CockpitMedic,
   type CockpitSessionT,
+  type Cockpit as CockpitShape,
   type CockpitSuperdoctor,
   type CockpitTeam,
   type TeamSessionT,
 } from "../schema/cockpit.ts";
 
 /** Output of `loadCockpit` — same as `Cockpit` but with the legacy
- *  back-compat fields (`teams`, `superdoctor`) narrowed: `teams` is
- *  always populated by `enrichLegacyFields`, and `superdoctor` is
- *  populated when at least one `type: "superdoctor"` entry exists. */
+ *  back-compat fields (`teams`, `superdoctor`, `medic`, `martinet`)
+ *  narrowed: `teams` is always populated by `enrichLegacyFields`;
+ *  `superdoctor` / `medic` are populated when at least one
+ *  `type: "superdoctor"` OR `type: "medic"` entry exists (the loader
+ *  coerces both to medic semantics per ADR-133); `martinet` is
+ *  populated when at least one `type: "martinet"` entry exists. */
 export type LoadedCockpit = CockpitShape & { teams: CockpitTeam[] };
 
 export interface LoadCockpitOpts {
@@ -82,17 +87,24 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   if (!(await exists(path))) {
     throw new ConfigError({
       what: `no cockpit config at ${path}`,
-      hint: `seed it with a roster like:\n  {\n    "schemaVersion": 1,\n    "cockpitSession": "atmux_teams",\n    "sessions": [\n      { "type": "team", "name": "<team>", "root": "/abs/path/to/project" }\n    ]\n  }`,
+      hint: `seed it with a roster like:\n  {\n    "schemaVersion": 1,\n    "cockpitSession": "atmux_cockpit",\n    "sessions": [\n      { "type": "team", "name": "<team>", "root": "/abs/path/to/project" }\n    ]\n  }`,
     });
   }
-  // Read raw first so the migration shim can inspect the on-disk shape
-  // before Zod validation. `z.unknown()` always succeeds; it's a typed
-  // raw read that honours the `JSON.parse`-only-in-abstractions/json.ts
-  // invariant (R3 per ADR-006).
+  // Read raw first so the migration shims can inspect the on-disk
+  // shape before Zod validation. `z.unknown()` always succeeds; it's a
+  // typed raw read that honours the `JSON.parse`-only-in-abstractions/
+  // json.ts invariant (R3 per ADR-006). Two shims run in order:
+  //   1. `migrateLegacyShape` — ADR-089 §B flat `teams[]` → recursive
+  //      `sessions[]`.
+  //   2. `migrateSuperdoctorBlockToMedic` — ADR-133 TR2 top-level
+  //      `superdoctor` key → `medic` with deprecation warning. Both
+  //      shims are idempotent on inputs that already use the new shape.
   const raw = await readJson(path, z.unknown());
   const warn = opts.warn ?? ((msg: string) => process.stderr.write(msg));
   const migrated = migrateLegacyShape(raw, path, warn);
-  const parsed = Cockpit.parse(migrated);
+  const medicShimmed = migrateSuperdoctorBlockToMedic(migrated, path, warn);
+  const sessionShimmed = migrateCockpitSessionLegacyLiteral(medicShimmed, path, warn);
+  const parsed = Cockpit.parse(sessionShimmed);
   // ADR-089 §Decision-anchor #4: validate operator-supplied prefixChain
   // (length ≥ MAX_NESTING_LEVEL + uniqueness) at load time. Failing here
   // is preferable to a runtime KeyError when resolvePrefix is called
@@ -140,25 +152,146 @@ export function migrateLegacyShape(
     if (typeof t !== "object" || t === null) continue;
     sessions.push({ ...(t as Record<string, unknown>), type: "team" });
   }
-  // Legacy singleton superdoctor lifts into sessions[] as its own
-  // discriminated entry. Operator's original `enabled: false` carries
+  // Legacy singleton superdoctor / canonical medic lift into sessions[]
+  // as their own discriminated entry. ADR-133 resolution rule: `medic`
+  // wins over `superdoctor` when both present (loader warns + ignores
+  // the deprecated key). Operator's original `enabled: false` carries
   // through; the loader's enrichLegacyFields step also re-surfaces the
-  // singleton field for callers reading `cockpit.superdoctor`.
+  // singleton field for callers reading `cockpit.medic` /
+  // `cockpit.superdoctor`.
+  const medicBlock = obj.medic;
   const sd = obj.superdoctor;
-  if (typeof sd === "object" && sd !== null) {
+  if (typeof medicBlock === "object" && medicBlock !== null) {
+    const mObj = medicBlock as Record<string, unknown>;
+    sessions.push({
+      ...mObj,
+      type: "medic",
+      name: typeof mObj.name === "string" ? mObj.name : "medic",
+    });
+    if (typeof sd === "object" && sd !== null) {
+      warn(
+        `atmux: cockpit.json at ${path} contains BOTH 'medic' and 'superdoctor' blocks — ` +
+          `using 'medic' (canonical per ADR-133); 'superdoctor' block ignored. ` +
+          `Drop the legacy 'superdoctor' key to silence this warning.\n`,
+      );
+    }
+  } else if (typeof sd === "object" && sd !== null) {
     const sdObj = sd as Record<string, unknown>;
     sessions.push({
       ...sdObj,
       type: "superdoctor",
       name: typeof sdObj.name === "string" ? sdObj.name : "superdoctor",
     });
+    warn(
+      `atmux: cockpit.json at ${path} uses deprecated 'superdoctor' block — ` +
+        `rename to 'medic' per ADR-133 (medic-rename). Legacy key continues to work ` +
+        `during the one-release-cycle deprecation window.\n`,
+    );
+  }
+  // ADR-132 §D6 — top-level `martinet` block lifts into sessions[] as
+  // its own discriminated entry.
+  const martinetBlock = obj.martinet;
+  if (typeof martinetBlock === "object" && martinetBlock !== null) {
+    const mObj = martinetBlock as Record<string, unknown>;
+    sessions.push({
+      ...mObj,
+      type: "martinet",
+      name: typeof mObj.name === "string" ? mObj.name : "martinet",
+    });
   }
   // Strip the legacy keys so the new-shape parse doesn't see them — the
   // enrichment pass adds them back from sessions[] post-validation.
-  const { teams: _t, superdoctor: _s, ...rest } = obj;
+  const {
+    teams: _t,
+    superdoctor: _s,
+    medic: _m,
+    martinet: _mt,
+    ...rest
+  } = obj;
   void _t;
   void _s;
+  void _m;
+  void _mt;
   return { ...rest, schemaVersion: 1, sessions };
+}
+
+/**
+ * ADR-133 TR2: pre-parse shim that renames the top-level `superdoctor`
+ * block to `medic`. Runs AFTER `migrateLegacyShape` so a fully-legacy
+ * config (flat `teams[]` + top-level `superdoctor`) flows through
+ * shape-migration first; this shim then only fires for configs that
+ * declared `superdoctor` at the top level alongside (or instead of) a
+ * `medic` key.
+ *
+ * Three branches:
+ *   1. `medic` set + `superdoctor` set → strip `superdoctor`, warn
+ *      operator that the deprecated key is being ignored.
+ *   2. Only `superdoctor` set → rename to `medic`, warn operator that
+ *      they should rename the key in their cockpit.json.
+ *   3. Only `medic` set OR neither set → no-op.
+ *
+ * Idempotent on already-migrated inputs (no `superdoctor` key). Does
+ * NOT auto-migrate the on-disk file — the warning is the call to
+ * action. After one release cycle, a follow-up Task flips `superdoctor`
+ * to a schema-level reject and removes this shim.
+ */
+export function migrateSuperdoctorBlockToMedic(
+  raw: unknown,
+  path: string,
+  warn: (msg: string) => void,
+): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const obj = raw as Record<string, unknown>;
+  if (obj.superdoctor === undefined) return obj;
+  if (obj.medic !== undefined) {
+    warn(
+      `atmux: cockpit.json at ${path} has BOTH deprecated top-level 'superdoctor' AND 'medic' keys ` +
+        `— 'medic' wins; remove the 'superdoctor' block per ADR-133. ` +
+        `Accepting this release; will fail next release.\n`,
+    );
+    const { superdoctor: _drop, ...rest } = obj;
+    void _drop;
+    return rest;
+  }
+  warn(
+    `atmux: cockpit.json at ${path} uses deprecated top-level 'superdoctor' key — ` +
+      `rename to 'medic' per ADR-133. ` +
+      `Accepting this release; will fail next release.\n`,
+  );
+  const { superdoctor, ...rest } = obj;
+  return { ...rest, medic: superdoctor };
+}
+
+/**
+ * ADR-135 §D5: pre-parse shim that coerces the legacy
+ * `cockpitSession: "atmux_teams"` literal to the canonical
+ * `"atmux_cockpit"` value. Runs AFTER the medic-block migration so
+ * the input has already been normalized for ADR-133. Only fires when
+ * the field is set to the historical literal — operator-chosen
+ * arbitrary names (e.g. `geoyws_cockpit`) pass through unchanged.
+ *
+ * Idempotent on already-canonical inputs. Does NOT auto-migrate the
+ * on-disk file — the warning is the call to action. The tmux-side
+ * rename of any existing `atmux_teams` session to `atmux_cockpit` is
+ * handled by `reconcileCockpitSession` (verbs/cockpit.ts) per ADR-135
+ * §D4. After one semver bump, a follow-up Task flips this shim to a
+ * schema-level reject.
+ */
+export function migrateCockpitSessionLegacyLiteral(
+  raw: unknown,
+  path: string,
+  warn: (msg: string) => void,
+): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const obj = raw as Record<string, unknown>;
+  if (obj.cockpitSession !== "atmux_teams") return obj;
+  warn(
+    `atmux: cockpit.json at ${path} uses deprecated cockpitSession literal 'atmux_teams' — ` +
+      `coercing to canonical 'atmux_cockpit' per ADR-135. ` +
+      `Update the on-disk value to silence this warning. ` +
+      `Accepting this release; will fail next release.\n`,
+  );
+  return { ...obj, cockpitSession: "atmux_cockpit" };
 }
 
 /**
@@ -167,10 +300,29 @@ export function migrateLegacyShape(
  * `superdoctor: CockpitSuperdoctor` (first type==="superdoctor" entry).
  * Existing duck-typed consumers in audit.ts / status.ts / verbs/cockpit.ts
  * read these synthesized fields unchanged.
+ *
+ * ADR-133 TR2: also populates `medic: CockpitMedic` alongside
+ * `superdoctor` from the same `type: "superdoctor"` entry. Callers
+ * reading the new field (cockpit verb's W2 provisioning, post-TR2)
+ * work for sessions[]-based configs without forcing operators to
+ * restructure. The session discriminator stays `"superdoctor"` until
+ * TR3+ ships the wider rename.
  */
 function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   const teams: CockpitTeam[] = [];
+  // ADR-133: medic is the canonical singleton. Loader resolves from
+  // either discriminator (`type: "medic"` canonical or `type: "superdoctor"`
+  // legacy) — first occurrence wins. `medic` discriminator takes precedence
+  // when both exist in the same sessions[] (matches the cockpit.json
+  // top-level resolution rule in `migrateLegacyShape`).
+  let medicResolved: CockpitMedic | undefined;
+  let martinet: CockpitMartinet | undefined;
+  // Legacy `superdoctor` synthesis bucket — populated when no canonical
+  // `medic` session entry is seen but a `superdoctor` session entry is.
+  // ADR-133 second pass coerces this into `medicResolved` if still
+  // undefined at end of walk.
   let superdoctor: CockpitSuperdoctor | undefined;
+  // First pass: look for canonical `medic` entries.
   walkSessions(cockpit.sessions ?? [], 0, (node) => {
     if (node.type === "team") {
       const t: CockpitTeam = {
@@ -181,14 +333,67 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
       if (node.claudeAccount !== undefined) t.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) t.tuiOverrides = node.tuiOverrides;
       teams.push(t);
+    } else if (node.type === "medic" && medicResolved === undefined) {
+      // ADR-133 canonical entry. Synthesize a claude-shape CockpitMedic
+      // (medic shape is structurally identical to legacy superdoctor).
+      const m: CockpitMedic = { enabled: node.enabled };
+      if (node.claudeAccount !== undefined) m.claudeAccount = node.claudeAccount;
+      if (node.tuiOverrides !== undefined) m.tuiOverrides = node.tuiOverrides;
+      medicResolved = m;
+    } else if (node.type === "martinet" && martinet === undefined) {
+      // ADR-132 §D6: synthesize a CockpitMartinet from the ADR-089
+      // sessions[] martinet discriminator. MartinetSessionT carries
+      // claude-shape fields (claudeAccount + tuiOverrides) only —
+      // session-level impl selection isn't currently modelled — so
+      // the synthesized config is always the claude variant. To
+      // declare a cursor-variant martinet, operators set the
+      // top-level `cockpit.martinet: { impl: "cursor", ... }` block
+      // directly; that path skips this session-walk synthesis.
+      const mt: CockpitMartinet = { impl: "claude", enabled: node.enabled };
+      if (node.claudeAccount !== undefined) mt.claudeAccount = node.claudeAccount;
+      if (node.tuiOverrides !== undefined) mt.tuiOverrides = node.tuiOverrides;
+      martinet = mt;
     } else if (node.type === "superdoctor" && superdoctor === undefined) {
+      // Legacy ADR-077 sessions[] entry — preserve the full claude
+      // shape (autoStart + autoStartTimeoutSec retained per trunk's
+      // shipped fields). ADR-133 second-pass below coerces this to
+      // medic semantics when no canonical `medic` was seen.
       const s: CockpitSuperdoctor = { enabled: node.enabled };
       if (node.claudeAccount !== undefined) s.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) s.tuiOverrides = node.tuiOverrides;
+      if (node.autoStart !== undefined) s.autoStart = node.autoStart;
+      if (node.autoStartTimeoutSec !== undefined) {
+        s.autoStartTimeoutSec = node.autoStartTimeoutSec;
+      }
       superdoctor = s;
     }
   });
-  return { ...cockpit, teams, ...(superdoctor !== undefined ? { superdoctor } : {}) };
+  // ADR-133 §D2 second pass: when no canonical `medic` entry was seen
+  // in sessions[] AND no top-level `cockpit.medic` block is declared,
+  // coerce the legacy `superdoctor` session entry / top-level field
+  // to medic semantics during the deprecation window. After the
+  // window closes (v2 schema bump), this fallback is removed.
+  if (medicResolved === undefined && superdoctor !== undefined) {
+    medicResolved = superdoctor;
+  }
+  // ADR-133 TR2: when the operator already declared a top-level
+  // `medic` (post-shim), it wins over any session-walk synthesis.
+  const medic: CockpitMedic | undefined = cockpit.medic ?? medicResolved;
+  // Surface BOTH `medic` (canonical) AND `superdoctor` (deprecated
+  // alias) so duck-typed consumers reading either field during the
+  // deprecation window see the same resolved shape. New code reads
+  // `cockpit.medic` directly.
+  return {
+    ...cockpit,
+    teams,
+    ...(superdoctor !== undefined
+      ? { superdoctor }
+      : medic !== undefined
+        ? { superdoctor: medic as CockpitSuperdoctor }
+        : {}),
+    ...(medic !== undefined ? { medic } : {}),
+    ...(martinet !== undefined ? { martinet } : {}),
+  };
 }
 
 /** A flattened team entry — one row per `type: "team"` or `epic-team"`
@@ -218,8 +423,9 @@ export interface FlattenedTeamEntry {
 /** Depth-first flattener — ADR-089 §F + T5 prep. Returns enabled
  *  team-shaped entries (both `type: "team"` and `type: "epic-team"`)
  *  with their nesting `level` annotated. `superdriver` /
- *  `superdoctor` entries are excluded — they're cockpit-internal
- *  singletons, not iterable "teams" in the legacy sense.
+ *  `superdoctor` / `medic` / `martinet` entries are excluded —
+ *  they're cockpit-internal singletons, not iterable "teams" in the
+ *  legacy sense.
  *
  *  Legacy callers iterating `enabledTeams(cockpit)` keep working
  *  because the returned shape exposes `.name` / `.root` / `.enabled`
@@ -460,6 +666,48 @@ export function childNestingEnv(parentLevel: number): Record<string, string> {
  *  without churning unrelated callsites. */
 export function cageSocketPath(teamName: string): string {
   return `/tmp/atmux-${teamName}/sock`;
+}
+
+/** Per-team cage socket absolute path under team-root convention:
+ *  `<teamRoot>/.atmux/tmux/tmux-<uid>/default`. Used by teams with
+ *  `team.tmuxTmpdir` set (sopx / unum / atmux dogfood). The uid suffix
+ *  matches tmux's own `default` socket naming under `TMUX_TMPDIR` — see
+ *  `core/common.ts::resolveTeamSocket` for the parallel resolver on the
+ *  team-level side. */
+export function perTeamCageSocketPath(teamRoot: string): string {
+  const uid = process.getuid?.() ?? 0;
+  return `${teamRoot}/.atmux/tmux/tmux-${uid}/default`;
+}
+
+/**
+ * ADR-063 follow-up (driver-inbox 2026-05-14): probe BOTH socket
+ * conventions used by atmux cages and return the first that exists.
+ * Order:
+ *   1. Legacy `/tmp/atmux-<team>/sock` (ADR-063 era; back-compat first).
+ *   2. Per-team `<teamRoot>/.atmux/tmux/tmux-<uid>/default` (current
+ *      convention used by teams with `team.tmuxTmpdir` set).
+ *
+ * Falls through to the legacy path when neither exists, so downstream
+ * error messages reference a canonical location. Pure modulo `exists`;
+ * tests inject `deps.exists` to drive every branch.
+ *
+ * Mirrors the same widening that landed in claude-skills `bau` socket
+ * resolver (790dc4e) — single source of truth for cockpit-side cage
+ * socket discovery so the next probe-widening lands in one place.
+ */
+export async function resolveCageSocket(
+  teamName: string,
+  teamRoot: string,
+  deps: { exists?: (p: string) => Promise<boolean> } = {},
+): Promise<string> {
+  const existsFn = deps.exists ?? exists;
+  const legacy = cageSocketPath(teamName);
+  const perTeam = perTeamCageSocketPath(teamRoot);
+  const candidates = [legacy, perTeam];
+  for (const p of candidates) {
+    if (await existsFn(p)) return p;
+  }
+  return legacy;
 }
 
 /** Cage tmux session name. Special-case: the `atmux` team itself uses a

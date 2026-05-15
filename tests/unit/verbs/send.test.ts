@@ -173,8 +173,8 @@ describe("buildMemberTarget", () => {
     expect(buildMemberTarget("atmux-foo", "alpha", undefined)).toBe("atmux-foo:alpha");
   });
 
-  test("emoji-prefixed window name → 'session:<emoji><member>'", () => {
-    expect(buildMemberTarget("atmux-foo", "alpha", "🐝")).toBe("atmux-foo:🐝alpha");
+  test("emoji-prefixed window name → 'session:<emoji>-<member>' (ADR-135 §D3 hyphen separator)", () => {
+    expect(buildMemberTarget("atmux-foo", "alpha", "🐝")).toBe("atmux-foo:🐝-alpha");
   });
 
   test("empty emoji string treated as no emoji (parity with buildWindowName)", () => {

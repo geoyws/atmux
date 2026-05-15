@@ -1,9 +1,12 @@
-// ADR-077 §F2: complaints verb family.
+// ADR-077 §F2 / ADR-133: complaints verb family.
 //
-// `atmux complaints {list,file,resolve}` — operator + superdoctor
-// surface for reading, filing, and resolving complaints. Per-team
-// storage: each team's `<root>/.atmux/state.db` `complaints` table
-// holds its own rows (per ADR-077 §Open bias toward per-team).
+// `atmux complaints {list,file,resolve}` — operator + medic (formerly
+// named `superdoctor`; renamed per ADR-133, both `--by medic` /
+// `--by superdoctor` literals accepted during the one-release-cycle
+// deprecation window) surface for reading, filing, and resolving
+// complaints. Per-team storage: each team's `<root>/.atmux/state.db`
+// `complaints` table holds its own rows (per ADR-077 §Open bias toward
+// per-team).
 //
 // Sub-verbs:
 //

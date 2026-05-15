@@ -1,9 +1,10 @@
-// ADR-077 §D5 / §F2: complaint box schema.
+// ADR-077 §D5 / §F2 / ADR-133: complaint box schema.
 //
-// One row per anomaly that superdoctor (or an operator) files against
-// a team. Schema field names match the SQL columns
-// (`src/abstractions/sqlite-migrations.ts` v2) modulo snake/camel
-// translation in the row↔domain bridge.
+// One row per anomaly that medic (formerly named `superdoctor`; renamed
+// per ADR-133, both literals accepted during the deprecation window)
+// or an operator files against a team. Schema field names match the
+// SQL columns (`src/abstractions/sqlite-migrations.ts` v2) modulo
+// snake/camel translation in the row↔domain bridge.
 //
 // `status` is intentionally a free-form string at the schema layer
 // even though the verb constrains it to `open`/`resolved`/`wontfix`
@@ -29,8 +30,15 @@ export type ComplaintStatus = (typeof COMPLAINT_STATUSES)[number];
  *  Whip-side values (`whip`, `whip-velocity-gate`) added per
  *  t-7bd53cba — cockpit-level whip cron files complaints AGAINST
  *  observed teams using these source-kinds so superdoctor can
- *  distinguish whip-driven escalations from operator/CLI filings. */
+ *  distinguish whip-driven escalations from operator/CLI filings.
+ *
+ *  ADR-133: `medic` is the canonical literal; `superdoctor` is the
+ *  deprecated alias accepted during the one-release-cycle window. Both
+ *  pass the allowlist; new rows written by atmux tooling default to
+ *  `medic`. Once the window closes, `superdoctor` is dropped from this
+ *  array (the underlying TEXT column keeps reading historic rows). */
 export const COMPLAINT_SOURCE_KINDS = [
+  "medic",
   "superdoctor",
   "member",
   "operator",
@@ -48,11 +56,12 @@ export const Complaint = z
     id: z.string().min(1),
     /** Epoch seconds when the complaint was filed. */
     openedAt: z.number().int().nonnegative(),
-    /** Free-form attribution: `superdoctor`, `<team>:<member>`, or `cli`. */
+    /** Free-form attribution: `medic` (canonical) / `superdoctor`
+     *  (deprecated alias per ADR-133), `<team>:<member>`, or `cli`. */
     openedBy: z.string().nullable().default(null),
     /** One-line summary of what happened. Required. */
     incidentSummary: z.string().min(1),
-    /** One-sentence diagnosis. Optional at the schema layer; superdoctor's
+    /** One-sentence diagnosis. Optional at the schema layer; medic's
      *  brief requires it but the verb accepts file-then-fill. */
     rootCause: z.string().nullable().default(null),
     /** Structural-fix proposal — the point of the complaint. Optional at
@@ -77,7 +86,7 @@ export const Complaint = z
     sourceId: z.string().nullable().default(null),
     /** Team this complaint is ABOUT (v3) — distinct from the team
      *  whose state.db holds the row. Enables cross-team filing
-     *  (superdoctor on team A pinging about team B's bug). */
+     *  (medic on team A pinging about team B's bug). */
     targetTeam: z.string().nullable().default(null),
     /** Forward-compat JSON bag (parsed on read; serialized on write). */
     extra: z.record(z.string(), z.unknown()).default({}),

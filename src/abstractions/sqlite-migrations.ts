@@ -113,10 +113,12 @@ export const migrations: readonly Migration[] = [
     },
   },
   // ---------- v1 → v2 ----------
-  // ADR-077 §D5 / §F2: per-team complaint box. The durable artifact of
-  // superdoctor's diagnosis loop — one row per anomaly with root cause
-  // + preventive ask. Stored per-team (each `<team>/.atmux/state.db`
-  // holds its own complaints) per ADR-077 §Open.
+  // ADR-077 §D5 / §F2 / ADR-133: per-team complaint box. The durable
+  // artifact of medic's diagnosis loop (medic = the role formerly
+  // named `superdoctor`; renamed per ADR-133) — one row per anomaly
+  // with root cause + preventive ask. Stored per-team (each
+  // `<team>/.atmux/state.db` holds its own complaints) per ADR-077
+  // §Open.
   {
     from: 1,
     to: 2,
@@ -142,11 +144,12 @@ export const migrations: readonly Migration[] = [
   },
   // ---------- v2 → v3 ----------
   // Per t-e5e5d576: structured provenance for cross-team analysis.
-  // `source_kind` (superdoctor/member/operator/cli/cron) + structured
-  // `source_id` give a queryable replacement for the free-form
-  // `opened_by` text field; `target_team` distinguishes the team a
-  // complaint is ABOUT from the team's state.db it happens to live
-  // in (needed once superdoctor files cross-team).
+  // `source_kind` (medic/superdoctor [deprecated alias per ADR-133]
+  // /member/operator/cli/cron) + structured `source_id` give a
+  // queryable replacement for the free-form `opened_by` text field;
+  // `target_team` distinguishes the team a complaint is ABOUT from
+  // the team's state.db it happens to live in (needed once medic
+  // files cross-team).
   //
   // Existing v2 rows get NULL in the three new columns — no heuristic
   // backfill from `opened_by` (the inference risk isn't worth it; the

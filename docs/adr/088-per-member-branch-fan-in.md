@@ -1,6 +1,6 @@
 # ADR-088: Per-member-branch fan-in policy — `<base>-<member>` → `<base>` merger model
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Resolves**: ADR-082 §"Out of scope" OQ3 (commit-batching / gitter-pattern policy) + ADR-084 OQ-3 (gitter-pattern alignment with per-member branches)
 **Driver-ref**: 2026-05-14 ~08:00 MYT planner brief — *"planner-decompose next highest-value worktree epic — ADR-082 OQ items + ADR-084 OQ-2 (per-member-branch fan-in deferred decision)"*. Tracked on the kanban as t-71629309 (PLANNER decompose, this commit).

@@ -25,6 +25,7 @@ import {
   checkCursorPluginCache,
   checkDeps,
   checkInboxMarks,
+  checkMemberForcePushRecent,
   checkOrphanSessions,
   checkPhantomInboxes,
   checkStateDir,
@@ -3084,5 +3085,214 @@ describe("checkMergerFanIn", () => {
     expect(gitCalls).toBe(0); // staleness probe never fires.
     expect(rows).toHaveLength(1);
     expect(rows[0]?.label).toBe("merger:disabled-but-member-present:fan");
+  });
+});
+
+// ---------- ADR-137: checkMemberForcePushRecent ----------
+
+describe("checkMemberForcePushRecent", () => {
+  type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
+  type GitSpawn = NonNullable<
+    NonNullable<Parameters<typeof checkMemberForcePushRecent>[2]>["gitSpawn"]
+  >;
+
+  function gitOk(stdout = ""): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  function gitFail(code = 128): SpawnResult {
+    return {
+      exitCode: code,
+      stdout: "",
+      stderr: "fatal: not a git repository",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  function team(
+    members: ReadonlyArray<{ name: string }>,
+    overrides: Partial<Team> = {},
+  ): Team {
+    return {
+      name: "demo",
+      worktreeIsolation: true,
+      members,
+      ...overrides,
+    } as Team;
+  }
+
+  /** Stub that responds to `branch --show-current` with `branchName`
+   *  for every member, then returns `reflogOut` for `reflog show
+   *  <branch>`. */
+  function gitStub(branchName: string, reflogOut: string): GitSpawn {
+    return async (argv) => {
+      if (argv.includes("--show-current")) return gitOk(`${branchName}\n`);
+      if (argv.includes("reflog")) return gitOk(reflogOut);
+      return gitOk("");
+    };
+  }
+
+  test("team === null → empty rows", async () => {
+    expect(await checkMemberForcePushRecent(null, "/p/.atmux")).toEqual([]);
+  });
+
+  test("worktreeIsolation !== true → empty rows (single-trunk teams skipped)", async () => {
+    const rows = await checkMemberForcePushRecent(
+      team([{ name: "alice" }], { worktreeIsolation: false }),
+      "/p/.atmux",
+    );
+    expect(rows).toEqual([]);
+  });
+
+  test("worktreeIsolation undefined → empty rows", async () => {
+    const t = { name: "demo", members: [{ name: "alice" }] } as Team;
+    expect(await checkMemberForcePushRecent(t, "/p/.atmux")).toEqual([]);
+  });
+
+  test("no force-push events in reflog → empty rows", async () => {
+    const reflog = [
+      "refs/heads/main-alice@{1700000000} commit: feat(x): land thing",
+      "refs/heads/main-alice@{1699999000} commit: docs(y): tweak readme",
+    ].join("\n");
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("recent force-push (`update by push (forced)`) → yellow row with ADR-137 hint", async () => {
+    const reflog = [
+      "refs/heads/main-alice@{1700000900} update by push (forced)",
+      "refs/heads/main-alice@{1699998000} commit: feat(x): earlier work",
+    ].join("\n");
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
+    expect(rows[0]?.hint).toContain("ADR-137");
+    expect(rows[0]?.hint).toContain("merge");
+  });
+
+  test("`forced-update` (alt reflog wording) also matched", async () => {
+    const reflog = "refs/heads/main-bob@{1700000950} forced-update";
+    const rows = await checkMemberForcePushRecent(team([{ name: "bob" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-bob", reflog),
+      now: () => 1700001000,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-forcepush-recent:bob");
+  });
+
+  test("force-push OUTSIDE the time window → empty rows (>1h ago is stale)", async () => {
+    const reflog = "refs/heads/main-alice@{1699990000} update by push (forced)";
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000, // 11000s after the force-push → outside default 3600s window
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("custom windowSec opens the time window (operator-tunable)", async () => {
+    const reflog = "refs/heads/main-alice@{1699990000} update by push (forced)";
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000,
+      windowSec: 12_000, // widen — now the force-push is in-window
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
+  });
+
+  test("multiple members — only those with recent force-push surface", async () => {
+    const aliceReflog = "refs/heads/main-alice@{1700000950} update by push (forced)";
+    const bobReflog = "refs/heads/main-bob@{1700000900} commit: docs(y): work";
+    const gitMulti: GitSpawn = async (argv) => {
+      if (argv.includes("--show-current")) {
+        // Resolve current branch from the worktree path arg (-C <wt>).
+        const cIdx = argv.indexOf("-C");
+        const wt = argv[cIdx + 1] ?? "";
+        if (wt.endsWith("/alice")) return gitOk("main-alice\n");
+        if (wt.endsWith("/bob")) return gitOk("main-bob\n");
+        return gitFail();
+      }
+      if (argv.includes("reflog")) {
+        const refIdx = argv.indexOf("show");
+        const ref = argv[refIdx + 1] ?? "";
+        if (ref === "main-alice") return gitOk(aliceReflog);
+        if (ref === "main-bob") return gitOk(bobReflog);
+        return gitOk("");
+      }
+      return gitOk("");
+    };
+    const rows = await checkMemberForcePushRecent(
+      team([{ name: "alice" }, { name: "bob" }]),
+      "/p/.atmux",
+      { gitSpawn: gitMulti, now: () => 1700001000 },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
+  });
+
+  test("detached HEAD (`branch --show-current` empty) → silently skip member", async () => {
+    const gitDetached: GitSpawn = async (argv) => {
+      if (argv.includes("--show-current")) return gitOk(""); // empty = detached
+      return gitOk("");
+    };
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitDetached,
+      now: () => 1700001000,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("git spawn throws → silently skip member (probe doesn't crash team status)", async () => {
+    const gitThrows: GitSpawn = async () => {
+      throw new Error("spawn failed");
+    };
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitThrows,
+      now: () => 1700001000,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("reflog command non-zero exit → silently skip member", async () => {
+    const gitReflogFails: GitSpawn = async (argv) => {
+      if (argv.includes("--show-current")) return gitOk("main-alice\n");
+      if (argv.includes("reflog")) return gitFail();
+      return gitOk("");
+    };
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitReflogFails,
+      now: () => 1700001000,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("multiple force-pushes for same member collapse to ONE row (same nudge)", async () => {
+    const reflog = [
+      "refs/heads/main-alice@{1700000950} update by push (forced)",
+      "refs/heads/main-alice@{1700000800} update by push (forced)",
+      "refs/heads/main-alice@{1700000600} update by push (forced)",
+    ].join("\n");
+    const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+      gitSpawn: gitStub("main-alice", reflog),
+      now: () => 1700001000,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("member-forcepush-recent:alice");
   });
 });

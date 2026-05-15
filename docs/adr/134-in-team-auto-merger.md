@@ -1,6 +1,6 @@
 # ADR-134: In-team auto-merger via expanded gitter role — per-member-branch fan-in
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **EPIC**: t-51d2c635
 **Driver-ref**: 2026-05-14 driver session — operator on the worktree caveat: *"we have to automate"*. Initial proposal placed merger at cockpit W4; operator pushed back with five locality-of-mutation arguments + an ADR-091 symmetry observation. This ADR captures the reframe.

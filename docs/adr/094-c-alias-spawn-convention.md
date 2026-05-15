@@ -1,6 +1,6 @@
 # ADR-094: c-alias spawn convention as first-class — bake defaults into `atmux::tui_claude`
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-13
 **Driver-ref**: `.atmux/driver-inbox.md` 12:59 MYT 2026-05-07 (line 649) — driver asked to make the `c-alias` shell-wrapper conventions (`CLAUDE_GUARD_AGENT=1`, `--plugin-dir`, `--permission-mode auto`, `CLAUDE_CODE_EFFORT_LEVEL=xhigh`) first-class atmux defaults instead of per-team `tuiCommands.claude` overrides.
 **Parent Task**: t-43b22e92 (c-alias chain head). **Authored under**: t-1a574d27 (Seq 1/6).

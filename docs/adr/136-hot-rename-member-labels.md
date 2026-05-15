@@ -1,6 +1,6 @@
 # ADR-136: Hot-rename member labels (Option B — id + label + emoji split)
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Driver-ref**: 2026-05-14 driver session — operator: *"can we have a hot rename feature for members? maybe we can let the emoji be the permanent identifier and the english string afterwards can be renamed to anything else after? wdyt? make sure state keeps sane?"*
 **EPIC parent**: `t-13367b7a` · **TR1**: `t-646bc535`

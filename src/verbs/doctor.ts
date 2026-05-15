@@ -46,7 +46,7 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
-import { cageSessionName, cageSocketPath } from "../core/cockpit.ts";
+import { cageSessionName } from "../core/cockpit.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import { classifyText } from "../core/pane-state.ts";
 import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
@@ -593,7 +593,7 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
  *  ADR-026 (the deprecated mode isn't the prune target). */
 async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
   try {
-    const tmux = createTmux({ socketPath: cageSocketPath(team.name) });
+    const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
     const session = cageSessionName(team.name);
     if (!(await tmux.session.hasSession(session))) return new Set();
     const windows = await tmux.window.listWindows(session);
@@ -2450,6 +2450,130 @@ export interface FixStarvingOpts {
   /** Poll interval inside the verify loop. Default 1_000ms — balances
    *  responsiveness with not hammering the tmux server. */
   verifyPollIntervalMs?: number;
+}
+
+// ---------- ADR-137: member-forcepush-recent probe ----------
+
+export interface CheckMemberForcePushRecentOpts {
+  /** Git spawn override (test injection). Default uses the local
+   *  `defaultGitSpawn` shared with the other doctor probes. */
+  gitSpawn?: GitSpawn;
+  /** Epoch-seconds clock override. Default `Date.now() / 1000`. Tests
+   *  pin this to make `reflog --date=unix` matching deterministic. */
+  now?: () => number;
+  /** Time window in seconds. Default 3600 (1h). Reflog entries older
+   *  than `now - windowSec` are skipped — the probe only fires on
+   *  recent force-pushes; ancient history doesn't ping.
+   *
+   *  Operators who want a wider window can override via the `--`
+   *  command-line wiring (deferred — not in this Task's scope). */
+  windowSec?: number;
+}
+
+/**
+ * ADR-137 §D3 — surface force-push events on per-member branches within
+ * the last hour as YELLOW (warn-class, not block-class). The probe is
+ * advisory: the harness force-push deny rule remains the actual gate;
+ * this probe is the post-hoc surface for cases where the operator
+ * authorized the force-push and the team-lead wants to know it
+ * happened so the team can be nudged toward the ADR-137 merge-over-
+ * rebase convention.
+ *
+ * Mechanism — for each member with a worktree under `<atmuxDir>/worktrees/`:
+ *
+ *   1. Resolve the worktree path (skipped if `worktreeIsolation !== true`
+ *      — single-trunk teams don't have per-member branches to probe).
+ *   2. Resolve the worktree's current branch via `git -C <wt>
+ *      branch --show-current`. Skip if unresolvable (detached HEAD,
+ *      missing worktree, broken git state — `checkWorktreeIsolation`
+ *      already surfaces those).
+ *   3. Read the reflog for that branch with `git -C <wt> reflog show
+ *      <branch> --date=unix --format='%gd %gs' -n 30`. Entries arrive
+ *      newest-first.
+ *   4. Parse each line for `@{<unix>}` timestamp + reflog message.
+ *      Filter: timestamp must be within `windowSec` of `now`, AND
+ *      message must match `/forced/i` (covers `update by push
+ *      (forced)`, `forced-update`, and the older `non-fast forward`
+ *      reflog wordings).
+ *   5. One YELLOW row per member with at least one matching event.
+ *      Multiple force-pushes in the window collapse to a single row
+ *      (the hint is the same regardless of count).
+ *
+ * Returns `[]` when no force-push events found or when the team's
+ * worktree-isolation isn't on. Probe failures (git missing, worktree
+ * unreadable) collapse to `[]` rather than throw — the team's own
+ * doctor surface must stay green even when this probe can't run.
+ */
+export async function checkMemberForcePushRecent(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckMemberForcePushRecentOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  if (team.worktreeIsolation !== true) return [];
+  const git = opts.gitSpawn ?? defaultGitSpawn;
+  const nowFn = opts.now ?? ((): number => Math.floor(Date.now() / 1000));
+  const windowSec = opts.windowSec ?? 3600;
+  const now = nowFn();
+  const cutoff = now - windowSec;
+
+  const rows: DoctorRow[] = [];
+  for (const member of team.members) {
+    const wt = resolveWorktreePath(team, member.name, atmuxDir);
+    let branch: string;
+    try {
+      const branchR = await git(["-C", wt, "branch", "--show-current"]);
+      if (branchR.exitCode !== 0) continue;
+      branch = branchR.stdout.trim();
+      if (branch.length === 0) continue; // detached HEAD
+    } catch {
+      continue; // worktree gone, git missing, etc. — skip silently
+    }
+
+    let reflog: string;
+    try {
+      const reflogR = await git([
+        "-C",
+        wt,
+        "reflog",
+        "show",
+        branch,
+        "--date=unix",
+        "-n",
+        "30",
+        "--format=%gd %gs",
+      ]);
+      if (reflogR.exitCode !== 0) continue;
+      reflog = reflogR.stdout;
+    } catch {
+      continue;
+    }
+
+    let matchedMsg: string | null = null;
+    for (const line of reflog.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      const m = /@\{(\d+)\}:?\s*(.*)$/.exec(trimmed);
+      if (m === null) continue;
+      const ts = Number.parseInt(m[1] ?? "", 10);
+      const msg = m[2] ?? "";
+      if (!Number.isFinite(ts) || ts < cutoff) continue;
+      if (/forced/i.test(msg)) {
+        matchedMsg = msg;
+        break;
+      }
+    }
+    if (matchedMsg !== null) {
+      const short = matchedMsg.length > 60 ? `${matchedMsg.slice(0, 60)}…` : matchedMsg;
+      rows.push({
+        status: "yellow",
+        label: `member-forcepush-recent:${member.name}`,
+        detail: `${branch} reflog within ${windowSec}s: ${short}`,
+        hint: "did you mean to merge instead of rebase? see ADR-137 §D1 — `git merge origin/<base>` keeps the branch in a consistent published state",
+      });
+    }
+  }
+  return rows;
 }
 
 /**

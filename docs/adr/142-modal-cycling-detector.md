@@ -1,45 +1,52 @@
-# ADR-142: modal-cycling-detector — catch lead/member modal-soup-stuck patterns whip §1c misses
+# ADR-142: Modal-cycling detector — catch lead/member modal-soup-stuck patterns whip §1c misses
 
-**Status**: Proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
+**Author**: atmux team (planner / t-6dc9a673)
+**Parent EPIC**: t-753fb165
 **Driver-ref**: 2026-05-14 driver session — operator's diagnostic question: *"why was this not surfaced to the lead? why did the lead do nothing?"* after observing whip-impl spend ~2hr cycling through push-related modal prompts (each selected option spawned a new modal asking the next question) instead of implementing t-7e7031dc.
-**EPIC parent**: kanban `t-753fb165`.
-**Sibling**: [ADR-139](139-refusal-detection.md) (refusal detection) — adjacent failure class.
-**Builds on**: [ADR-138](138-verified-send-keys.md) (verified send-keys layer), [ADR-140](140-cheap-model-first.md) (cheap-model-first principle), [ADR-077](077-superdoctor-cockpit-role.md) (medic role, post-rename per [ADR-133](133-medic-rename.md)).
+**Resolves failure class**: agent-cycling-through-modal-soup (pane-alive-with-changing-prompts-and-zero-commits) — adjacent to ADR-139 refusal class but distinct in fingerprint.
 
 ## Context
 
-### The failure mode the lead's whip §1c misses
+### The failure mode whip §1c didn't catch
 
-Lead's whip §1c "teammate-blocked-on-prompt" detection classifies a member as stuck when its pane shows the SAME prompt text across consecutive ticks. This catches **static stuck-on-same-prompt**:
+On 2026-05-14, `whip-impl` spent **~2 hours** cycling through push-related modal prompts instead of implementing its claimed task `t-7e7031dc`. Each modal selection spawned a new modal asking the next question (force-push variant → ref-style variant → unclaim-or-retry variant), so from §1c's vantage every tick saw a *new* prompt text — looked like progress. Reality: agent was loop-thrashing across a class of related prompts (push variants) without any real task progress. Zero commits attributed to `whip-impl` during the cycling window.
 
-- **T0**: pane shows `❯ 1. Force-push? 2. Pause`
-- **T0+30min**: pane STILL shows `❯ 1. Force-push? 2. Pause` (no progress; agent never picked)
-- §1c verdict: prompt text identical across ticks → STUCK → Discord ping.
+Operator's diagnostic question at session close: *"why was this not surfaced to the lead? why did the lead do nothing?"*
 
-But §1c misses **modal cycling**:
+The answer: `whip §1c teammate-blocked-on-prompt` detection only matches **STATIC stuck-on-same-prompt**. The threshold compares last-tick's prompt-hash to current-tick's prompt-hash; if they differ, the member reads as *making progress*. Modal **CYCLING** (different prompts in sequence) bypasses that threshold.
 
-- **T0**: pane shows `❯ 1. Force-push? 2. Pause`
-- **T0+5min**: agent selects 1 → harness denies → new modal `❯ 1. Variant a? 2. Variant b?`
-- **T0+10min**: agent selects 1 → still denied → new modal `❯ 1. Variant c? 2. Unclaim?`
-- **T0+15min**: still in modal soup, ~3 different modals shown
-- §1c verdict: prompt text differs each tick → looks like PROGRESS → NO ping fires.
+### Static stuck vs cycling — distinct signal fingerprints
 
-Reality: agent is loop-thrashing on a class of problems (push variants) without making real task progress. Pane is alive, the agent is responsive, but the kanban Task gets no commits.
+| | Static stuck-on-prompt | Modal cycling |
+|---|---|---|
+| T+0 pane | `❯ 1. Force-push? 2. Pause` | `❯ 1. Force-push? 2. Pause` |
+| T+5min pane | (same text) | `❯ 1. Variant a? 2. Variant b?` |
+| T+10min pane | (same text) | `❯ 1. Variant c? 2. Unclaim?` |
+| Prompt hashes | identical across ticks | distinct across ticks |
+| Per-tick freshness | stale | fresh-looking |
+| `whip §1c` verdict | STUCK (surfaces) | PROGRESS (silent) |
+| Reality | stuck | also stuck — looping over a problem-class |
 
-This is the exact "pane liveness without commit-cadence" anti-pattern CLAUDE.md global already flags ("Don't make a dormant team look like a working team"). The current §1c regex doesn't operationalize that anti-pattern for the modal-cycling species.
+The two signals share one root cause (agent not making task progress) but require different detection heuristics:
 
-### Origin incident — 2026-05-14 whip-impl 2hr push-modal cycling
+- **Static stuck** → hash-equality across ticks + freshness threshold (covered today by whip §1c).
+- **Modal cycling** → ≥N distinct hashes within a window + zero-commit cross-check.
 
-Whip-impl spent ~2hr against `t-7e7031dc` cycling through push-related modals. Lead's whip §1c never escalated because each modal had different text. Driver had to manually surface the wedge after observing zero commits in the window. Operator: "this should have triggered self-heal — why didn't it?"
+### Adjacent failure classes
+
+- **[ADR-139](139-refusal-pattern-auto-rotate.md)** — agent-output-language refusal (*"don't poke me"*, *"I refuse this role"*). Same outcome (pane-alive-but-not-progressing) but agent is *outputting refusal text*, not *navigating modals*.
+- **ADR-138** (verified send-keys, not yet shipped at file time) — KEYSTROKE refusal (pane won't accept send-keys; harness modal blocks input). Modal cycling often *follows* from failed sends that retry productively into modal-soup.
+- **`whip §1c`** static-stuck — same target (catch dormant members) but distinct heuristic.
+
+This ADR fills the gap between these three.
 
 ## Decision
 
-Extend `src/verbs/whip.ts` (or a new `src/core/modal-cycling-detector.ts` sibling) with a **modal-cycling-detector** that triggers when **N different modal prompts** appear within a sliding window AND the member's commit count toward its claimed Task is zero in that same window.
+### (D1) Modal history per member at `~/.atmux/state/modal-history-<member>.json`
 
-### (D1) Modal history per member
-
-State file at `~/.atmux/state/modal-history-<member>.json`. Schema:
+A per-member append-only state file capturing detected modal events:
 
 ```json
 [
@@ -53,47 +60,41 @@ State file at `~/.atmux/state/modal-history-<member>.json`. Schema:
 ]
 ```
 
-Append-only. Each entry records a distinct modal-class snapshot. Prune entries older than `windowMin * 2` (60min default) on each write to bound file size. **File-per-member** to avoid lock contention with parallel members.
+**Shape rules**:
 
-`paneTextHash` is SHA-256 of the *extracted modal text only*, NOT the full pane buffer — see OQ-1 below for the recommended default.
+- File per member (avoids cross-member lock contention).
+- Append-only writes; prune entries older than `windowMin * 2` (60min default) on each write.
+- `paneTextHash` is **SHA256 of the extracted modal-text region only** (per OQ-1) — NOT the full pane. Reduces false-positives from incidental status-line variation.
+- `modalText` truncated to 200 chars for compact storage; full text is hashed before truncation.
+- `modalClass` is a coarse label (`choice-prompt`, `confirm-prompt`, `enter-prompt`) — for future cross-class semantic check; v1 uses simple hash-equality (per §Out of scope LLM deferral).
 
-`modalClass` is a coarse classifier (e.g. `choice-prompt`, `confirm-y-n`, `text-input`) for human-readable Discord output; the detection logic uses `paneTextHash` for cycle equality.
+### (D2) Cycle-window check — ≥3 distinct hashes in 30min window (configurable)
 
-### (D2) Cycle-window check
-
-On each whip §1c tick, after pane-state capture for a member:
-
-1. Detect modal — match pane text against the existing `choice-prompt` regex (≥2 numbered options + "Enter to select", same regex whip §1c already uses).
-2. Compute `paneTextHash` from extracted modal text.
-3. Append new entry to `modal-history-<member>.json` IF the hash differs from the most recent entry (de-dup consecutive identical reads — those are the static-stuck case §1c already handles).
-4. Count DISTINCT hashes in the last `windowMin` (default 30min).
-5. If distinct-hash-count ≥ `cycleThreshold` (default 3), flag as MODAL-CYCLING-STUCK candidate. Proceed to (D3) commit cross-check.
-
-### (D3) Zero-commit cross-check
-
-A "MODAL-CYCLING-STUCK candidate" is only confirmed if the member has produced **zero commits** on its currently-claimed Task within the same `windowMin` window. This prevents false-positives for members who legitimately work through a modal sequence while shipping incremental commits.
-
-Implementation sketch:
+The detection function reads the member's modal-history file, filters entries within `windowMin`, counts distinct `paneTextHash` values:
 
 ```ts
-const claimedTask = await getMemberClaim(member);
-const commits = await gitCommitsForTask(claimedTask.id, {
-  author: member,
-  since: now - windowMin * 60,
-});
-if (commits.length > 0) {
-  // Productive ceremony — modals are part of legitimate workflow.
-  // Do NOT escalate; reset modal-history for this member.
-  return;
-}
-// Confirmed MODAL-CYCLING-STUCK — proceed to (D4) Discord + (D5) escalation.
+shouldFireCycleDetection(history, config):
+  recent = history.filter(detectedAt within windowMin)
+  distinct_hashes = unique(recent.map(h => h.paneTextHash))
+  if distinct_hashes.length >= cycleThreshold AND commits_in_window === 0:
+    fire = true, reason = "<N> distinct modal-classes in <windowMin>min window, 0 commits on claimed <taskId>"
 ```
 
-Configurable via `team.json.modalCycling.commitGracePeriodMin` (default 30min).
+Defaults (per §Config below): `cycleThreshold: 3`, `windowMin: 30`, `commitGracePeriodMin: 30`.
 
-### (D4) Discord `[member-modal-cycling]` template
+### (D3) Zero-commit cross-check — modals must be unproductive
 
-Fires once per cycle-detection with 30min dedup window per member. Template (per CLAUDE.md Discord rules + named-template requirement):
+Cycling through ≥3 modals is *productive ceremony* when the agent is also shipping commits — e.g. a reviewer member responding to multiple approval prompts as part of normal review flow. Cross-check eliminates the false-positive:
+
+- Query git log on the member's worktree for commits attributed to the member matching their currently-claimed task during the cycling window.
+- If `commits_in_window >= 1` within `commitGracePeriodMin`: classify as *productive ceremony* — record the history but do not fire detection.
+- If `commits_in_window === 0`: classify as MODAL-CYCLING-STUCK.
+
+`commitGracePeriodMin` matches `windowMin` by default (30min). Separate field allows tuning the commit-window independently from the modal-window for teams with different cadences.
+
+### (D4) Discord `[member-modal-cycling]` template — fires once per cycle-detection
+
+Per [CLAUDE.md global Discord rules + ADR-133 sibling pattern]. New named template in `src/abstractions/discord.ts` typed renderers (T2 ships):
 
 ```
 🔄 **[member-modal-cycling]** · `{team}` · HH:MM MYT
@@ -110,21 +111,54 @@ Fires once per cycle-detection with 30min dedup window per member. Template (per
 📍 detector fires once per 30min dedup window
 ```
 
-Dedup state lives at `~/.atmux/state/modal-cycling-discord-dedup.json` keyed by `{team, member}` → last-fired epoch. Re-fire only when `now - lastFired ≥ dedupMin` (default 30min).
+**Dedup**: if last fire on this (team, member) was <`dedupMin` ago, skip Discord re-fire. History recording continues; only the surface action is deduped. Default `dedupMin: 30` matches `windowMin`.
 
-### (D5) Auto-escalation
+**Verdict line**: `🟡 Modal-cycling` (per CLAUDE.md verdict-first vocabulary — modal cycling is **stalled-by-accident**, not **stalled-with-deliberate-pause**; 🟡 is appropriate, escalating to 🔴 / 🚨 only if post-clarifier the cycling resumes — Phase 2).
 
-Triple-fire on confirmed detection (durable-first pre-flag pattern per ADR-091):
+### (D5) Auto-escalation — clarifier dispatched + flag filed + lead escalation
 
-1. **`atmux flag add --severity high`** — kanban-visible structured complaint linking the cycling member + Task + modal-class summary. Reviewer-readable.
-2. **`atmux send <member>` clarifier** — dispatches a context-paste to the member's pane explaining the detected pattern: *"modal-cycling detected: 3 different push-related modals in 28min, 0 commits on t-7e7031dc. The Task may need a different approach (e.g. rebase first, ask lead, unclaim and pick a different Task)."* Verbatim text TBD by T2 implementation; the goal is to break the agent's modal-thrash loop with a fresh-context nudge.
-3. **Escalate to lead** via `atmux send lead` with the same summary. Per ADR-140, the lead itself may be in the same wedge — in that case the medic role (ADR-133) takes over via the medic-event path.
+On detection fire:
 
-All three writes happen DURABLE-FIRST: the state-file row records detection BEFORE any external messaging fires, so a partial-failure (Discord rate-limited / member pane gone) doesn't leave us with a notification-without-state.
+1. **Clarifier dispatch** — `atmux send <member> "[detector] modal-cycling detected — {N} prompts in {windowMin}min, 0 commits on {taskId}. Recommend: unclaim + retry from clean, or surface blocker via atmux reply if the prompt class is genuinely blocking work."` — non-destructive; agent reads + can decide.
+2. **Flag filing** — `atmux flag add --severity high --subject "modal-cycling detected on <member>" --body "<modals seen + taskId + windowMin>"` — operator sees in normal complaint review.
+3. **Lead escalation** — `atmux tell-lead "[detector] modal-cycling on {member} — see flag {fid}"` — lead may itself be stuck per ADR-140 medic-event path, in which case the flag is the durable audit trail.
 
-### (D6) Configuration
+Three surfaces (clarifier, flag, tell-lead) layered for resilience: clarifier might be ignored, tell-lead might race with stuck-lead, flag is the durable backstop. **Durable-first** per ADR-091: the modal-history state-file row records detection BEFORE any external messaging fires, so a partial failure (Discord rate-limited / member pane gone) doesn't leave us with notification-without-state.
 
-`team.json::modalCycling` block:
+## State-file format (§D1 expanded)
+
+`~/.atmux/state/modal-history-<member>.json`:
+
+```json
+[
+  {
+    "member": "whip-impl",
+    "paneTextHash": "sha256:abc123...",
+    "detectedAt": 1715688000,
+    "modalText": "❯ 1. Force-push to origin? 2. Pause...",
+    "modalClass": "choice-prompt"
+  },
+  {
+    "member": "whip-impl",
+    "paneTextHash": "sha256:def456...",
+    "detectedAt": 1715688600,
+    "modalText": "❯ 1. Use --force-with-lease? 2. Use --force?...",
+    "modalClass": "choice-prompt"
+  }
+]
+```
+
+**Retention**: prune entries older than `windowMin * 2` (60min default) on each write — covers the cycle-window analysis bound plus a small audit tail. Operator can extend by editing the file directly OR by raising the `windowMin` config.
+
+**File-per-member** rationale: avoids cross-member write-lock contention; lets a single team have N concurrent detectors writing in parallel without serialization. Trade-off: cross-member aggregation requires reading N files — fine since the detection logic is per-member-scoped.
+
+**Corrupt-file fallback**: T2 reader validates via Zod; corrupt JSON resets to `[]` and logs a recovery line. No exception thrown; detection continues from empty history.
+
+## Discord template format (§D4 verbatim — see CLAUDE.md "Discord Message Format")
+
+(Spec body above repeated verbatim — single source.) **Banned per CLAUDE.md**: prose walls, bare timestamps, SHA-dumps as bullets, "check team-log" pointers. The 🙏 Auto-action line is intentionally short — operator's normal default is "let auto-action work; check flag later"; only deviates to 🚨 / 🔴 on persistent-cycling escalation (Phase 2).
+
+## Configuration — `team.json::modalCycling`
 
 ```json
 {
@@ -139,57 +173,111 @@ All three writes happen DURABLE-FIRST: the state-file row records detection BEFO
 }
 ```
 
-- `enabled`: master switch. Default `true` post-ADR-142-ship for teams using whip §1c.
-- `cycleThreshold`: distinct modal-hashes needed to trigger. Default `3`.
-- `windowMin`: sliding window for cycle detection. Default `30` minutes.
-- `commitGracePeriodMin`: commit-zero check window. Default `30` minutes (mirrors `windowMin`).
-- `dedupMin`: Discord re-fire dedup. Default `30` minutes.
-- `exemptMembers`: roles/members that legitimately interact with modal sequences (operator-firing-ad-hoc-from-pane, interactive debug roles). Default `[]`.
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | Master switch. Set `false` to disable detection entirely for the team. |
+| `cycleThreshold` | `3` | Minimum distinct modal-hashes within window to trigger. |
+| `windowMin` | `30` | Modal-history analysis window in minutes. |
+| `commitGracePeriodMin` | `30` | Commit-search window (matches windowMin by default). Separate field for cadence-mismatched teams. |
+| `dedupMin` | `30` | Discord + clarifier dedup window. Matches windowMin by default. |
+| `exemptMembers` | `[]` | Per-member opt-out — designated roles that legitimately interact with modal sequences (operator-firing-ad-hoc-from-pane, debug-helper, etc.). History still records; detection skips. |
 
-Schema lands in `src/schema/team.ts` alongside the existing `TeamWhip` block (sibling z.object, .strict).
+Defaults applied when `modalCycling` block absent — `enabled: true` is the v1 stance (overnight-protection per CLAUDE.md "Don't make a dormant team look like a working team"). Backward-compat: existing teams without the block get default behaviour silently.
 
-## Implementation chain
+## Tradeoffs
 
-- **T1** (this ADR) — lane=docs/planner. Single commit.
-- **T2** — lane=be, deps T1. Modal-cycling-detector implementation in `src/verbs/whip.ts` §1c (or new `src/core/modal-cycling-detector.ts`) + same-commit unit tests with synthetic modal-history fixtures.
-- **T3** — lane=test, deps T2. e2e — synthetic team with member cycling through 3 modals in 25min + zero commits → assert detector fires + Discord render captured + clarifier dispatched.
+### Bounded vs unbounded — same philosophy as ADR-139 + ADR-131
 
-## Acceptance (T1)
+| Choice | Risk shape | Pick? |
+|---|---|---|
+| Auto-fire clarifier + flag + tell-lead on cycle-detection without operator round-trip | **Bounded**: occasional false-positive sends a clarifier the agent can ignore; cost = one tmux send-keys | ✅ |
+| Refuse and ask operator on every cycle hit | **Unbounded**: overnight 0-commit per [[feedback_overnight_reddit_stakes]] — exactly the failure mode this ADR exists to prevent | ❌ |
+| Static-stuck only (current §1c) — accept modal-cycling blind spot | **Unbounded** — observed 2hr blind-window on whip-impl 2026-05-14; recurring across atmux history | ❌ |
 
-- `docs/adr/142-modal-cycling-detector.md` exists with Status: Proposed.
-- All 5 architecture pieces (D1–D5) documented per `t-753fb165` body.
-- State-file schema documented with example.
-- Discord template documented per CLAUDE.md Discord-format rules.
-- `team.json::modalCycling` config block documented with defaults.
-- Cross-refs to ADR-138 / 139 / 140 / 077 + CLAUDE.md "dormant team" rule.
-- 2 OQs with recommended defaults below.
-- Single commit; reviewer-gated.
+### Misdiagnosis blast radius
 
-## Out of scope (per `t-753fb165` body)
+**False-positive cycle-fire** (productive-ceremony classified as cycling): clarifier dispatched to a member doing real work. Worst case: member ignores it (clarifier is non-destructive; non-bypassing). No commits lost, no rotation triggered. Self-corrects on next tick when commit count exceeds 0.
 
-- Detection across cage boundaries — defer (each team's cycling stays inside that team's whip).
-- LLM-classifier for "is this modal-class semantically related to past modals" — v1 uses simple hash-equality on extracted modal text; LLM-class semantic check is a v2 follow-up.
+**False-negative** (cycling missed): same blast radius as the §1c blind spot today — `whip §1c` static check still covers the stuck-but-not-cycling case; this ADR is purely additive. Worst case under false-negative is the prior status-quo.
 
-## Open questions
+**Wrong modal-classification** (legitimate-prompt classified as cycling-prompt): the regex match for `classifyPaneAsModal` (T2) tightens this — only triggers on `≥2 numbered options + "Enter to select" OR ❯ marker + numbered list pattern`. Free-form text doesn't match.
 
-**OQ-1 — Hash strategy.** Should `paneTextHash` be SHA-256 of (a) the FULL pane buffer, or (b) the extracted modal-text only (regex match)?
+### Cost — pane captures + state-file writes
 
-**Resolved default: (b) modal-text-only.** Reduces false-positives from incidental status-line variation (tok-count tickers, mtime stamps, footer indicators that change between ticks regardless of agent activity). The regex extraction is the same one whip §1c already uses for prompt detection — single source of truth, no second classifier.
+Each whip tick: classifyPaneAsModal call (regex match, ~0.5ms), one append + prune to state-file (~5ms I/O), one read for cycle-check (~5ms). At fleet scale (5 teams × 10 members × 270s cadence martinet OR 60min cadence medic) — negligible.
 
-**OQ-2 — Detector tier (lead / medic / martinet).** Where does the detector live?
-
-**Resolved default: pre-martinet-ship lives in lead's whip §1c (T2 implementation target); post-martinet-ship migrates to martinet's per-tick observer (ADR-140 forward-compat).** Single migration path; both call the same detection function from `src/core/modal-cycling-detector.ts`. The function is decoupled from its caller (lead-whip vs martinet-tick) by passing the team + member list as parameters; the caller owns the iteration loop and the Discord-fire surface.
-
-The migration is one config flip (`team.json::modalCycling.tier`) post-martinet-ship — no detector code change. ADR-140's cheap-model-first principle expects observation loops to migrate to martinet; this detector is one of them.
+Storage: ~250 bytes per modal-history entry × ~60min retention × N members. Even at peak detection rate (1 modal/min), ~15KB/member at retention boundary. Negligible.
 
 ## Cross-references
 
-- **[ADR-138](138-verified-send-keys.md)** — verified send-keys layer. Modal-cycling often follows from failed sends that don't get retried productively (`safeSendKeysWithVerify` retry exhaustion). Adjacent failure class.
-- **[ADR-139](139-refusal-detection.md)** — refusal detection. Sibling at the same observation tier: both detect "pane alive but not progressing." ADR-139 catches agent-refusal-language; ADR-142 catches modal-thrash-with-zero-commits. Different signal, same escalation chain.
-- **[ADR-140](140-cheap-model-first.md)** — cheap-model-first principle. Post-martinet-ship, modal-cycling-detector lives in the martinet per-tick observer (Cursor composer-2-fast) instead of burning Opus tokens on every lead-whip tick.
-- **[ADR-077](077-superdoctor-cockpit-role.md)** / **[ADR-133](133-medic-rename.md)** — medic role at cockpit W2. Medic-event triggers on cycling-detection per ADR-140 event-driven architecture: medic doesn't poll, it reacts to detector-fired complaints in `state.db`.
-- **CLAUDE.md global** — *"Don't make a dormant team look like a working team. 'Working' = commit-cadence, not pane liveness."* Modal-cycling is one species of pane-liveness-without-commit-cadence; this ADR operationalizes the global rule for that species.
+- **[ADR-138](138-)** (verified send-keys, not yet shipped at file time) — adjacent failure class. Modal cycling often *follows* failed sends; this ADR is the downstream detection layer when sends don't recover productively.
+- **[ADR-139](139-refusal-pattern-auto-rotate.md)** — sibling pane-content classifier. ADR-139 detects refusal *language*; ADR-142 detects modal *thrashing*. Both end in clarifier dispatch + flag + lead escalation. Both share the same auto-rotate target verb (via clarifier → if persistent, escalation chain rotates).
+- **ADR-140** (cheap-model-first, EPIC t-83dcef6b) — post-martinet-ship, this detector lives in martinet's per-tick observe pass (one call to `classifyPaneAsModal` + `shouldFireCycleDetection` per member-pane per tick). Pre-martinet-ship, lives in lead's `whip §1c`. **Single migration path**: the detection function in `src/core/modal-cycling-detector.ts` is called from both call sites; only the caller changes.
+- **[ADR-077](077-superdoctor-cockpit-role.md) / [ADR-133](133-medic-rename.md)** — medic. Medic-event triggers on cycle-detection per ADR-140 event-driven architecture (medic doesn't run the detector itself at hourly cadence; martinet's per-tick detector emits events medic reacts to).
+- **[ADR-132](132-pluggable-martinet.md)** — martinet observe pass folds in modal-history as an enriched observation field per ADR-132 §D1 Observation shape.
+- **CLAUDE.md** "Don't make a dormant team look like a working team" rule + whip §0.05 — this ADR makes the rule structurally enforced for the modal-cycling species.
+- **CLAUDE.md** Discord Message Format — `[member-modal-cycling]` template follows verdict-first / milestone-grade / ask-loudly conventions verbatim.
+- **[[feedback_overnight_reddit_stakes]]** — modal-cycling-then-auto-clarify prevents the overnight 0-commit failure mode operator has staked Reddit-receipts on.
+
+## Open questions
+
+**OQ-1 — Hash strategy: full-pane SHA256 vs modal-text-only SHA256?**
+
+- **(A)** Full-pane SHA256 — every status-line variation (token count tick, ascii-clock blink, "Tools available: N" line) changes the hash. Easy to compute; high false-positive rate (each tick reads as "new modal").
+- **(B)** Modal-text-only SHA256 — extract the modal region (between `❯` marker and next blank line OR end-of-block) and hash that. Tighter false-positive rate; matches the operator-visible signal.
+
+**Recommended default**: **(B) modal-text-only SHA256.** The detection target is "agent navigated a different prompt", not "any byte changed in the pane." Status-line variation is incidental noise. T2 implementation extracts the modal region first, hashes that.
+
+Driver override via decisions log when operational data shows modal-text-only misses legitimate cycle patterns.
+
+**OQ-2 — Detector tier: lead/medic/martinet?**
+
+Three placement options:
+
+- **(A) Lead's `whip §1c`** — pre-martinet-ship reality. Lead pane runs the detector at its own whip cadence.
+- **(B) Medic (W2 hourly)** — too slow for cycling detection; medic catches static-stuck at hourly but cycling can finish a 2hr binge before medic re-checks. Inappropriate primary; OK as backstop.
+- **(C) Martinet (W3 270s)** — post-ADR-132-ship. Per-tick cadence catches cycling much faster (90% of 30min-window cycles get 6+ ticks of detection opportunity).
+
+**Recommended default**: **start at (A) pre-martinet-ship; migrate to (C) post-martinet-ship.** The detection function in `src/core/modal-cycling-detector.ts` is the same; only the call-site changes. T2 lands the function + lead `whip §1c` wire-in; ADR-140 chain ports the call to martinet when martinet ships.
+
+Driver override via decisions log when the migration timing shifts.
+
+## Implementation plan
+
+This ADR commits the **specification only**. Implementation lands across the EPIC's three sub-tasks (per t-753fb165 §Sub-tasks):
+
+| T | ID | Sub-task | Deps | Lane |
+|---|---|---|---|---|
+| T1 | t-6dc9a673 | Draft ADR-142 (this ADR) + state-file format + Discord template + config block | — | docs / planner |
+| T2 | t-751e098e | `src/core/modal-cycling-detector.ts` + state-file caller + whip §1c wire-in + unit tests | T1 | be |
+| T3 | t-c5738732 | e2e — synthetic 3-modal-cycle scenario + assert detector + Discord + clarifier dispatch | T2 | test |
+
+Reviewer flips this ADR Proposed → Accepted in a follow-up commit per the EPIC's acceptance gate.
+
+## Acceptance gates (per t-6dc9a673 §Acceptance)
+
+For T1 specifically:
+
+- [x] `docs/adr/142-modal-cycling-detector.md` exists with `Status: Proposed`.
+- [x] All 5 architecture pieces (D1-D5) documented per t-753fb165 body.
+- [x] State-file schema documented with example.
+- [x] Discord template documented per CLAUDE.md format rules.
+- [x] `team.json::modalCycling` config block documented with defaults.
+- [x] Cross-refs to ADR-138/139/140/077/132/133 + CLAUDE.md.
+- [x] 2 OQs with recommended defaults (modal-text-only hash; lead-now → martinet-post-ship migration path).
+- [ ] Single commit; reviewer-gated.
+
+Wider EPIC acceptance gates T2-T3 — those are out of T1's scope.
+
+## Out of scope (per t-753fb165 body)
+
+- **Detection across cage boundaries** — modal cycling within one team is in scope; cycling pattern correlation across teams (e.g. "every team's `reviewer` hits modal-cycling on the same prompt class → systemic prompt bug") deferred to Phase 2 if pattern emerges.
+- **LLM-classifier for modal-class semantic similarity** — v1 uses simple hash-equality on the modal-text region. "Is modal #2 semantically *the same problem* as modal #1?" is a richer question that the LLM-classifier could answer (catches near-duplicate prompts with slight wording variation that escape hash-equality). Deferred until regex+hash false-negative rate becomes operationally meaningful.
+- **Auto-rotation on modal-cycling** — v1 escalation chain is *clarifier + flag + tell-lead*, not rotation. Modal-cycling may be a brief-content problem (wrong instructions causing the prompt loop) rather than agent-context-degradation; rotating the agent doesn't fix a wrong brief. Rotation as remediation deferred to Phase 2 (after observing whether clarifier dispatch resolves the common cases).
+- **Productive-cycling whitelist** (modal patterns that are always-productive even with zero commits, e.g. multi-step deploy approval flows) — v1 covers via `exemptMembers` per-member opt-out. Per-modal-class whitelist deferred until concrete demand emerges.
 
 ## Audit trail
 
-Origin: 2026-05-14 driver session observation — whip-impl 2hr push-modal cycling on `t-7e7031dc`. Operator diagnostic question recorded verbatim above. Modal-class sequence (push → variant-a/b → variant-c/unclaim) is the canonical fixture for T3 e2e synthesis. EPIC `t-753fb165` body lists all 5 architecture pieces verbatim; this ADR-142 is the T1 planner-decomp artifact.
+Origin: 2026-05-14 driver session observation — whip-impl 2hr push-modal cycling on `t-7e7031dc`. Operator diagnostic question recorded verbatim in frontmatter above. Modal-class sequence (push → variant-a/b → variant-c/unclaim) is the canonical fixture for T3 e2e synthesis. EPIC `t-753fb165` body lists all 5 architecture pieces verbatim; this ADR-142 is the T1 planner-decomp artifact.
+
+Merge-resolution note: this ADR was independently drafted on both `geoyws-planner` and `geoyws-up-impl` branches under the same Task `t-6dc9a673`. The trunk-side draft (more thorough — comparison table, adjacent-failure-class survey, tradeoff matrix) is preserved as the canonical body; the up-impl draft's `Driver-ref` frontmatter, durable-first reference, and this Audit-trail section have been folded in. Resolved at trunk-merge time by gitter per `t-84d73310`.

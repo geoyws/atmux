@@ -148,6 +148,10 @@ async function writeTeamJson(opts: {
  *  Tests pass args + the team-specific socket-path flag automatically.
  *  Optional `opts` lets ADR-082 W3 tests inject a `gitSpawn` mock so
  *  the worktree-provisioning path never shells out to the live repo. */
+type StartOpts = NonNullable<Parameters<typeof start>[1]>;
+type LoadCockpitFn = NonNullable<StartOpts["loadCockpitFn"]>;
+type CockpitReconcileFn = NonNullable<StartOpts["cockpitReconcileFn"]>;
+
 async function runStart(
   args: ReadonlyArray<string>,
   opts: {
@@ -156,6 +160,9 @@ async function runStart(
     briefsDir?: string;
     spawnWaitMs?: number;
     sleep?: (ms: number) => Promise<void>;
+    /** ADR-063 ergonomic fix (t-ab8df0b4): cockpit reconcile injection. */
+    loadCockpitFn?: LoadCockpitFn;
+    cockpitReconcileFn?: CockpitReconcileFn;
     /** t-dcbff97c: inject the cron-install verb so unit tests never
      *  touch the host crontab. Default = silent no-op (returns 0). */
     cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
@@ -165,10 +172,16 @@ async function runStart(
     extraEnv?: Record<string, string>;
   } = {},
 ): Promise<number> {
-  const startOpts: Parameters<typeof start>[1] = {
+  const startOpts: StartOpts = {
     env: { ...process.env, ATMUX_DIR: env.atmuxDir, ...(opts.extraEnv ?? {}) },
     cwd: env.atmuxDir,
     logger: env.logger,
+    // ADR-063 default for the test harness: skip the cockpit reconcile
+    // path UNLESS the test explicitly opts in. Without this, every
+    // existing test would try to load `~/.atmux/cockpit.json` on the
+    // dev host (varies per machine) and possibly succeed-with-noise.
+    // Opt-in tests override `loadCockpitFn` to inject a fake roster.
+    loadCockpitFn: async () => null,
     // Default the cron-install hook to a silent no-op so legacy tests
     // that don't care about cron don't shell out to the host crontab.
     // Tests that DO care override via opts.cronInstallFn.
@@ -178,6 +191,8 @@ async function runStart(
   if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
   if (opts.spawnWaitMs !== undefined) startOpts.spawnWaitMs = opts.spawnWaitMs;
   if (opts.sleep !== undefined) startOpts.sleep = opts.sleep;
+  if (opts.loadCockpitFn !== undefined) startOpts.loadCockpitFn = opts.loadCockpitFn;
+  if (opts.cockpitReconcileFn !== undefined) startOpts.cockpitReconcileFn = opts.cockpitReconcileFn;
   return await start([...args, "--socket-path", env.socketPath], startOpts);
 }
 
@@ -332,7 +347,7 @@ describe("start — happy path", () => {
     // buildWindowName(member, emoji) → `<emoji><member>` (ADR-017).
     // emojis come from defaultEmojiForRole: team-lead → 🧭, reviewer → 🔍.
     // Sort order: 🔍bob < 🧭alice (codepoint compare).
-    expect(names).toEqual(["🔍bob", "🧭alice"]);
+    expect(names).toEqual(["🔍-bob", "🧭-alice"]);
     expect(names).not.toContain(`__${env.team}__home`);
 
     // Timestamp written as integer seconds
@@ -350,7 +365,7 @@ describe("start — happy path", () => {
 
     await runStart([]);
     const windows = await env.tmux.window.listWindows(`atmux-${env.team}`);
-    expect(windows.map((w) => w.name)).toContain("🦄carol");
+    expect(windows.map((w) => w.name)).toContain("🦄-carol");
   });
 
   test("uses member.cwd override when present", async () => {
@@ -366,7 +381,7 @@ describe("start — happy path", () => {
       // running a shell-command in the pane (which would defeat the
       // empty-pane MVP).
       const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-      expect(wins.map((w) => w.name)).toContain("🐝dave");
+      expect(wins.map((w) => w.name)).toContain("🐝-dave");
     } finally {
       await rm(memberCwd, { recursive: true, force: true });
     }
@@ -444,6 +459,53 @@ describe("start — happy path", () => {
       extraEnv: { ATMUX_NO_CRON: "1", ATMUX_NESTING_LEVEL: "2" },
     });
     expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F2");
+  });
+
+  test("bug t-4d2936ac — start scrubs ANTHROPIC_API_KEY / AUTH_TOKEN / CLAUDE_CONFIG_DIR from the session env", async () => {
+    // Regression: operator-shell ANTHROPIC_API_KEY inheriting through
+    // the cage tmux session triggered the "Do you want to use this API
+    // key?" dialog on OAuth-account claude TUIs (2026-05-14 incident).
+    // start.ts now fires `tmux set-environment -u <var>` for each
+    // scrub-target var AFTER session creation; defense-in-depth for
+    // non-claude TUIs + member.command overrides that bypass tuiClaude.
+    //
+    // Empirical tmux behaviour (verified manually): `set-environment -u
+    // VAR` on a session WHERE the var was previously set drops the var
+    // from `show-environment` output. We seed the three scrub-target
+    // vars on the session post-start, run an INCREMENTAL start (which
+    // re-fires the scrub loop), and verify the seeded vars are gone.
+    await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
+    await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
+    const session = `atmux-${env.team}`;
+    // Seed the three target vars on the session.
+    for (const v of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR"]) {
+      await env.tmux.session.setEnvironment({ target: session, name: v, value: "seeded" });
+    }
+    // Sanity check: seed landed.
+    {
+      const proc = Bun.spawnSync({
+        cmd: ["tmux", "-S", env.socketPath, "show-environment", "-t", session],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const out = new TextDecoder().decode(proc.stdout);
+      expect(out).toContain("ANTHROPIC_API_KEY=seeded");
+      expect(out).toContain("ANTHROPIC_AUTH_TOKEN=seeded");
+      expect(out).toContain("CLAUDE_CONFIG_DIR=seeded");
+    }
+    // Incremental re-run — the post-newSession scrub loop fires
+    // regardless of sessionExisted (idempotent + cheap).
+    await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
+    // Seeded vars must now be gone.
+    const proc = Bun.spawnSync({
+      cmd: ["tmux", "-S", env.socketPath, "show-environment", "-t", session],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = new TextDecoder().decode(proc.stdout);
+    expect(out).not.toContain("ANTHROPIC_API_KEY=seeded");
+    expect(out).not.toContain("ANTHROPIC_AUTH_TOKEN=seeded");
+    expect(out).not.toContain("CLAUDE_CONFIG_DIR=seeded");
   });
 });
 
@@ -563,8 +625,8 @@ describe("start — incremental restart skips existing windows", () => {
 
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
     const names = wins.map((w) => w.name).sort();
-    expect(names).toContain("🧭alice");
-    expect(names).toContain("🔍bob");
+    expect(names).toContain("🧭-alice");
+    expect(names).toContain("🔍-bob");
     // Skip-existing log line for alice fired
     expect(env.logs.some((l) => l.msg.includes("alice: window exists"))).toBe(true);
   });
@@ -597,8 +659,8 @@ describe("start — ADR-044 driverSession topology", () => {
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
     // Members emoji-prefixed by role: team-lead → 🧭, member → 🐝.
-    expect(ordered[1]?.name).toBe("🧭alpha");
-    expect(ordered[2]?.name).toBe("🐝bee");
+    expect(ordered[1]?.name).toBe("🧭-alpha");
+    expect(ordered[2]?.name).toBe("🐝-bee");
     // No __home placeholder ever created.
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
 
@@ -736,7 +798,7 @@ describe("start — ADR-044 driverSession topology", () => {
 
     // Member window present — the send-keys path didn't throw.
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-    expect(wins.map((w) => w.name)).toContain("🧭alpha");
+    expect(wins.map((w) => w.name)).toContain("🧭-alpha");
   });
 
   test("non-shell tui: send-keys fires after newSession (no shell-only skip)", async () => {
@@ -787,7 +849,7 @@ describe("start — ADR-044 driverSession topology", () => {
     const wins = await env.tmux.window.listWindows(session);
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
-    expect(ordered[1]?.name).toBe("🧭alpha");
+    expect(ordered[1]?.name).toBe("🧭-alpha");
   });
 });
 
@@ -936,9 +998,9 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     // Team still spawned all 3 members despite bob's provision failure.
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
     const names = wins.map((w) => w.name).sort();
-    expect(names).toContain("🧭alice");
-    expect(names).toContain("🔍bob");
-    expect(names).toContain("🐝carol");
+    expect(names).toContain("🧭-alice");
+    expect(names).toContain("🔍-bob");
+    expect(names).toContain("🐝-carol");
     // Operator-visible warning names the failing member specifically.
     const warns = env.logs.filter((l) => l.kind === "warn");
     expect(warns.some((l) => l.msg.includes("bob") && l.msg.includes("provision failed"))).toBe(
@@ -974,7 +1036,7 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     expect(warns.some((l) => l.msg.includes("cannot detect repo root"))).toBe(true);
     // Members still spawn — pane creation is unaffected.
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-    expect(wins.map((w) => w.name).sort()).toEqual(["🔍bob", "🧭alice"]);
+    expect(wins.map((w) => w.name).sort()).toEqual(["🔍-bob", "🧭-alice"]);
   });
 
   test("detached HEAD (empty branch) → all fall back with 'detached HEAD' warning, no provisioning", async () => {
@@ -1080,7 +1142,7 @@ describe("start — ADR-081 §C brief-paste", () => {
 
       // Allow C-m + cat's echo to make it to the pane buffer.
       await new Promise<void>((res) => setTimeout(res, 200));
-      const pane = await capture(`atmux-${env.team}`, "🐝alpha");
+      const pane = await capture(`atmux-${env.team}`, "🐝-alpha");
       expect(pane).toContain("Hello alpha on team");
       expect(pane).toContain(env.team);
       expect(pane).toContain("role=member");
@@ -1126,7 +1188,7 @@ describe("start — ADR-081 §C brief-paste", () => {
           }),
       });
       await new Promise<void>((res) => setTimeout(res, 200));
-      const pane = await capture(`atmux-${env.team}`, "🧭lead1");
+      const pane = await capture(`atmux-${env.team}`, "🧭-lead1");
       expect(pane).toContain("LEAD-BRIEF-FOR-lead1");
       expect(pane).not.toContain("MEMBER-BRIEF-FOR-lead1");
     } finally {
@@ -1162,7 +1224,8 @@ describe("start — ADR-081 §C brief-paste", () => {
       });
       await new Promise<void>((res) => setTimeout(res, 200));
       // unblocker pool starts with 🔓 (common.ts:ROLE_EMOJI_POOLS).
-      const pane = await capture(`atmux-${env.team}`, "🔓u1");
+      // ADR-135 §D3: hyphen separator between emoji and member name.
+      const pane = await capture(`atmux-${env.team}`, "🔓-u1");
       expect(pane).toContain("FALLBACK-FOR-unblocker");
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
@@ -1199,7 +1262,7 @@ describe("start — ADR-081 §C brief-paste", () => {
       );
       // Pane still exists — team didn't wedge from the no-op brief path.
       const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-      expect(wins.map((w) => w.name)).toContain("🐝alpha");
+      expect(wins.map((w) => w.name)).toContain("🐝-alpha");
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
     }
@@ -1269,7 +1332,7 @@ describe("start — ADR-081 §C brief-paste", () => {
 
       // Lead's brief landed.
       await new Promise<void>((res) => setTimeout(res, 200));
-      const leadPane = await capture(`atmux-${env.team}`, "🧭alpha");
+      const leadPane = await capture(`atmux-${env.team}`, "🧭-alpha");
       expect(leadPane).toContain("LEAD-BRIEF-FOR-alpha");
 
       // Bob's brief failed → warn line.
@@ -1281,8 +1344,8 @@ describe("start — ADR-081 §C brief-paste", () => {
       // Both panes exist — team didn't half-spawn.
       const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
       const names = wins.map((w) => w.name);
-      expect(names).toContain("🧭alpha");
-      expect(names).toContain("🐝bob");
+      expect(names).toContain("🧭-alpha");
+      expect(names).toContain("🐝-bob");
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
     }
@@ -1365,6 +1428,180 @@ describe("start — ADR-081 §C brief-paste", () => {
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------- ADR-063 ergonomic fix: auto-reconcile cockpit (t-ab8df0b4) ----------
+
+describe("start — ADR-063 cockpit auto-reconcile", () => {
+  // Type aliases for the reconcile recorder.
+  type ReconcileRecord = {
+    sessionName: string;
+    teamNames: string[];
+    onlyTeam: string | undefined;
+  };
+  type Cockpit = Awaited<ReturnType<LoadCockpitFn>>;
+
+  function makeReconcileRecorder(): {
+    fn: CockpitReconcileFn;
+    calls: ReconcileRecord[];
+  } {
+    const calls: ReconcileRecord[] = [];
+    const fn: CockpitReconcileFn = async (
+      _tmux,
+      sessionName,
+      teams,
+      _logger,
+      _deps,
+      _superdoctor,
+      _yes,
+      reconcileOpts,
+    ) => {
+      calls.push({
+        sessionName,
+        teamNames: teams.map((t) => t.name),
+        onlyTeam: reconcileOpts?.onlyTeam,
+      });
+    };
+    return { fn, calls };
+  }
+
+  function fakeCockpit(opts: {
+    teams: Array<{ name: string; enabled: boolean }>;
+    cockpitSession?: string;
+  }): Cockpit {
+    return {
+      cockpitSession: opts.cockpitSession ?? "atmux_teams",
+      teams: opts.teams.map((t) => ({
+        name: t.name,
+        root: `/tmp/${t.name}-root`,
+        enabled: t.enabled,
+      })),
+    } as unknown as Cockpit;
+  }
+
+  test("(a) rostered + enabled team → reconcile called with onlyTeam scope", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: true }] });
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.onlyTeam).toBe(env.team);
+    expect(calls[0]!.teamNames).toEqual([env.team]);
+    expect(calls[0]!.sessionName).toBe("atmux_teams");
+    // ✓ log line emitted on success.
+    expect(env.logs.some((l) => l.msg.includes("cockpit window") && l.msg.includes(env.team))).toBe(
+      true,
+    );
+  });
+
+  test("(b) team NOT in roster → reconcile NOT called (silent skip)", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    // Roster has a different team name; our cwd team is un-rostered.
+    const loadCockpitFn = async () =>
+      fakeCockpit({ teams: [{ name: "some-other-team", enabled: true }] });
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    // No WARN, no cockpit log line — silent skip.
+    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
+  });
+
+  test("(c) cockpit.json missing (loader returns null) → reconcile NOT called", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const loadCockpitFn = async () => null;
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    // No WARN — missing config is silent skip per the behaviour matrix.
+    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
+  });
+
+  test("(d) team rostered but enabled:false → reconcile NOT called (silent skip)", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: false }] });
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("(e) cockpit loader throws (malformed) → reconcile NOT called, WARN logged", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const loadCockpitFn = async () => {
+      throw new Error("cockpit.json: unexpected token at line 5");
+    };
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    // WARN emitted — distinct from silent skip.
+    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("loader threw"))).toBe(true);
+  });
+
+  test("reconcile throw is non-fatal — start still returns 0 with WARN", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: true }] });
+    const cockpitReconcileFn: CockpitReconcileFn = async () => {
+      throw new Error("tmux server unreachable on default socket");
+    };
+
+    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn });
+    expect(exit).toBe(0);
+    expect(
+      env.logs.some(
+        (l) =>
+          l.kind === "warn" &&
+          l.msg.includes("cockpit reconcile failed") &&
+          l.msg.includes(env.team),
+      ),
+    ).toBe(true);
+  });
+
+  test("default loadCockpitFn (production path) — no cockpit.json on dev host → silent skip", async () => {
+    // The harness defaults loadCockpitFn to `async () => null` to keep
+    // existing tests host-independent; this test asserts the real
+    // default is host-agnostic too (no cockpit.json should mean silent
+    // skip, not a thrown error).
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    // Force ATMUX_COCKPIT_CONFIG to a non-existent path so loadCockpit
+    // hits its ConfigError branch → null.
+    const exit = await start(["--socket-path", env.socketPath], {
+      env: {
+        ...process.env,
+        ATMUX_DIR: env.atmuxDir,
+        ATMUX_COCKPIT_CONFIG: "/tmp/atmux-nonexistent-cockpit-config.json",
+      },
+      cwd: env.atmuxDir,
+      logger: env.logger,
+      cockpitReconcileFn: reconcileFn,
+    });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
   });
 });
 

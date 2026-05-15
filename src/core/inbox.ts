@@ -227,19 +227,23 @@ export async function removeFromInProgress(
   );
 }
 
-// ---------- ADR-077 §F3: inbox_messages writer/reader ----------
+// ---------- ADR-077 §F3 / ADR-133: inbox_messages writer/reader ----------
 //
 // Distinct from the tasks-table inbox view above: the `inbox_messages`
 // table is a row-per-message log used for cockpit-tier heads-up
-// signals (e.g. members → superdoctor). It was provisioned in v1 of
-// the SQLite schema but went unused after ADR-076 collapsed per-member
-// inbox semantics into the `tasks` table. Superdoctor revives it for
-// its own inbox key (`__superdoctor__`).
+// signals (e.g. members → medic — the role formerly named
+// `superdoctor`; renamed per ADR-133, both inbox keys accepted during
+// the one-release-cycle deprecation window). It was provisioned in v1
+// of the SQLite schema but went unused after ADR-076 collapsed
+// per-member inbox semantics into the `tasks` table. Medic revives it
+// for its own inbox key (`__medic__`, with `__superdoctor__` accepted
+// as the deprecated alias).
 
 /** Options for `appendInboxMessage`. */
 export interface AppendInboxMessageOpts {
-  /** Recipient inbox key — typically `SUPERDOCTOR_INBOX_KEY` for the
-   *  cockpit-tier superdoctor role, but the writer is generic. */
+  /** Recipient inbox key — typically `MEDIC_INBOX_KEY` (canonical) or
+   *  `SUPERDOCTOR_INBOX_KEY` (deprecated alias per ADR-133) for the
+   *  cockpit-tier medic role, but the writer is generic. */
   member: string;
   /** Free-form sender identifier. Convention is `<team>:<member>` or
    *  `<team>:cli` when no specific member is attributed. */
@@ -303,13 +307,14 @@ export interface InboxMessage {
 
 /** Options for `loadInboxMessages`. */
 export interface LoadInboxMessagesOpts {
-  /** Inbox key to query (e.g. `SUPERDOCTOR_INBOX_KEY`). */
+  /** Inbox key to query (e.g. `MEDIC_INBOX_KEY` canonical or
+   *  `SUPERDOCTOR_INBOX_KEY` deprecated alias per ADR-133). */
   member: string;
   /** Only return rows with `ts > sinceTs`. Used for watermark-based
-   *  pull (superdoctor's per-team inbox sweep). Default `0` (all). */
+   *  pull (medic's per-team inbox sweep). Default `0` (all). */
   sinceTs?: number;
   /** Maximum rows to return. Default `1000` (sane cap to keep
-   *  superdoctor's read cheap on long-lived teams). */
+   *  medic's read cheap on long-lived teams). */
   limit?: number;
 }
 

@@ -17,7 +17,12 @@ Usage: atmux <verb> [args]
 Setup:
   up                          Same as bare \`atmux\`: bring a team all the way up
   init [--name <team>]        Scaffold .atmux/team.json in current dir
-  start                       Create tmux session, spawn all members
+  start                       Create tmux session, spawn all members. Also
+                              auto-adds the team's cockpit viewer window if
+                              this team is rostered + enabled in
+                              ~/.atmux/cockpit.json (ADR-063 ergonomic fix —
+                              additive, sibling windows untouched; un-
+                              rostered + disabled teams silent-skip).
   stop [--force|--soft]       Kill tmux session, archive state.
                               --soft (ADR-087): graceful path — notice every
                               pane, grace window, write resume manifest at
@@ -29,6 +34,12 @@ Setup:
                               TUI auto-launch + cockpit session). Reads roster
                               from ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
+  martinet [tick|status] [--once] [--config <p>] [--state <p>]
+                              ADR-132 §D2: cockpit-tier fleet-wide whip-manager
+                              tick loop (window W3, sibling of medic at W2).
+                              'tick' iterates every enabled team; 'status'
+                              prints last-tick JSON. State persists at
+                              ~/.atmux/state/martinet-state.json.
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane

@@ -184,6 +184,101 @@ describe("renderCronLines", () => {
     expect(lines.some((l) => l.includes("unblocker tick"))).toBe(true);
     expect(lines.some((l) => l.includes("discorder progress"))).toBe(true);
   });
+
+  // ---------- ADR-062 §Decision 4: lane-tick line ----------
+
+  test("lane-tick line: ≥1 member with .lane emits `*/2 ... lane-tick` line", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const laneLines = lines.filter((l) => l.includes(" lane-tick "));
+    expect(laneLines.length).toBe(1);
+    expect(laneLines[0]).toBe(
+      `*/2 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux lane-tick >> /srv/demo/.atmux/logs/lane-tick.log 2>&1`,
+    );
+    // Placed last per "least-churn diff" — total 4 base + lane-tick = 5,
+    // and lane-tick is the final line.
+    expect(lines.length).toBe(5);
+    expect(lines.at(-1)).toContain("lane-tick");
+  });
+
+  test("lane-tick line: zero members with .lane → no line emitted", () => {
+    const team = baseTeam({
+      members: [
+        { name: "fe", role: "fe", cwd: "/x" } as never, // no .lane
+        { name: "be", role: "be", cwd: "/x" } as never, // no .lane
+      ],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(false);
+    expect(lines.length).toBe(4);
+  });
+
+  test("lane-tick line: empty-string .lane treated as no lane (no emit)", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "", cwd: "/x" } as never],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(false);
+  });
+
+  test("lane-tick line: crons.laneTickEnabled=false suppresses even with lane-tagged members", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      crons: { laneTickEnabled: false } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(false);
+  });
+
+  test("lane-tick line: crons.laneTickEnabled=true (explicit) emits when lane member present", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      crons: { laneTickEnabled: true } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(true);
+  });
+
+  test("lane-tick line: crons block undefined defaults to enabled (back-compat)", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      // crons unset — should still emit when lane-tagged member present.
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(true);
+  });
+
+  test("lane-tick line: PATH= prefix + tmuxTmpdir flow through (same envelope as other lines)", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+    });
+    const lines = renderCronLines({
+      ...baseOpts(team),
+      tmuxTmpdir: "/tmp/atmux-demo",
+    });
+    const laneLine = lines.find((l) => l.includes("lane-tick"));
+    expect(laneLine).toBeDefined();
+    expect(laneLine).toContain(`PATH=${DEFAULT_PATH} `);
+    expect(laneLine).toContain("TMUX_TMPDIR=/tmp/atmux-demo ");
+    // Ordering: PATH=…TMUX_TMPDIR=…ATMUX_DIR= (matches the other lines'
+    // env envelope).
+    expect(laneLine!.indexOf("PATH=")).toBeLessThan(laneLine!.indexOf("TMUX_TMPDIR="));
+    expect(laneLine!.indexOf("TMUX_TMPDIR=")).toBeLessThan(laneLine!.indexOf("ATMUX_DIR="));
+  });
+
+  test("lane-tick line: one lane-tagged member among several non-lane members still emits", () => {
+    const team = baseTeam({
+      members: [
+        { name: "lead", role: "lead", cwd: "/x" } as never,
+        { name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never,
+        { name: "discord", role: "discorder", cwd: "/x" } as never,
+      ],
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => l.includes("lane-tick"))).toBe(true);
+  });
 });
 
 // ADR-079 §A: cron-expression helpers.
@@ -917,6 +1012,116 @@ describe("installCockpitCronBlock", () => {
     expect(out).toContain("SHELL=/bin/bash");
     expect(out).toContain("PATH=/usr/local/sbin");
     expect(out).toContain("TERM=xterm-256color");
+  });
+});
+
+// ---------- ADR-133 TR6: migrateSuperdoctorToMedicCronLines ----------
+
+describe("migrateSuperdoctorToMedicCronLines", () => {
+  test("empty body → no-op", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    expect(migrateSuperdoctorToMedicCronLines("")).toEqual({ body: "", migrated: 0 });
+  });
+
+  test("body with no superdoctor refs → no-op", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "*/5 * * * * ATMUX_DIR=/x /u/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    expect(result.body).toBe(body);
+    expect(result.migrated).toBe(0);
+  });
+
+  test("rewrites atmux superdoctor → atmux medic INSIDE per-team block", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "0 * * * * ATMUX_DIR=/x /u/atmux superdoctor --tick",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    expect(result.body).toContain("/u/atmux medic --tick");
+    expect(result.body).not.toContain("atmux superdoctor");
+    expect(result.migrated).toBe(1);
+  });
+
+  test("rewrites atmux superdoctor → atmux medic INSIDE cockpit block", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand",
+      "0 * * * * PATH=/u/bin /u/atmux superdoctor",
+      "# <<< atmux:cockpit",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    expect(result.body).toContain("/u/atmux medic");
+    expect(result.migrated).toBe(1);
+  });
+
+  test("PRESERVES operator-manual atmux superdoctor lines outside managed blocks", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# operator-manual cron entry",
+      "0 0 * * * /u/atmux superdoctor --my-custom-flag",
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "0 * * * * /u/atmux superdoctor",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    // Operator-manual line untouched.
+    expect(result.body).toContain("0 0 * * * /u/atmux superdoctor --my-custom-flag");
+    // Managed line rewritten.
+    expect(result.body).toContain("0 * * * * /u/atmux medic\n");
+    expect(result.migrated).toBe(1);
+  });
+
+  test("idempotent — re-running on already-migrated body is no-op", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "0 * * * * /u/atmux superdoctor",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const first = migrateSuperdoctorToMedicCronLines(body);
+    const second = migrateSuperdoctorToMedicCronLines(first.body);
+    expect(second.body).toBe(first.body);
+    expect(second.migrated).toBe(0);
+  });
+
+  test("rewrites multiple superdoctor lines across multiple blocks", async () => {
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "0 * * * * /u/atmux superdoctor --once",
+      "# <<< atmux:team=alpha",
+      "# >>> atmux:cockpit — managed by atmux cockpit rebuild; do not edit by hand",
+      "0 0 * * * /u/atmux superdoctor",
+      "# <<< atmux:cockpit",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    expect(result.migrated).toBe(2);
+    expect(result.body).not.toContain("atmux superdoctor");
+    expect((result.body.match(/atmux medic/g) ?? []).length).toBe(2);
+  });
+
+  test("does NOT rewrite atmux superdoctor inside a comment line in a managed block", async () => {
+    // Defensive — we still rewrite within the regex (\b boundary), and
+    // commented-out cron entries are intentionally inside the block.
+    // This documents the behavior: ALL lines inside a managed block are
+    // candidates, including commented ones.
+    const { migrateSuperdoctorToMedicCronLines } = await import("../../../src/core/cron.ts");
+    const body = [
+      "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
+      "# 0 * * * * /u/atmux superdoctor  (disabled)",
+      "0 * * * * /u/atmux whip",
+      "# <<< atmux:team=alpha",
+    ].join("\n");
+    const result = migrateSuperdoctorToMedicCronLines(body);
+    // Commented line rewritten too (within managed block).
+    expect(result.body).toContain("# 0 * * * * /u/atmux medic");
+    expect(result.migrated).toBe(1);
   });
 });
 

@@ -1,7 +1,8 @@
 # ADR-085: Whip approvals-watcher — surface proposed-ADRs, stale driver-asks, long-blocked tasks
 
-**Status**: proposed
+**Status**: accepted (2026-05-14, all deps green — t-21c3aa64 whip §2.5 integration + Discord template, t-9281649f status NEEDS APPROVAL row, t-3516d73a tests; paperwork flip authorized by driver per Task t-968416aa queue-drain dispatch)
 **Date**: 2026-05-12
+**Accepted**: 2026-05-14
 
 ## Context
 

@@ -2,6 +2,29 @@
 
 **Status**: accepted (implementation landed 2026-05-08)
 **Date**: 2026-05-08
+
+> **2026-05-14 cockpit-topology updates** — cockpit window order
+> expanded by ADR-132 + ADR-133, then renamed by ADR-135:
+>
+> | # | Window | Authorizing ADR |
+> |---|--------|----------------|
+> | 1 | `_superdriver` (was `superdriver`) | ADR-063 (this ADR) + ADR-135 §D2 |
+> | 2 | `_medic` (was `medic` / `superdoctor`) | ADR-077 + ADR-133 + ADR-135 §D2 |
+> | 3 | `_martinet` (was `martinet`; pluggable fleet-wide whip-manager) | ADR-132 §D2 + ADR-135 §D2 |
+> | 4..N | per-team viewers (plain team names, no underscore) | ADR-063 (this ADR) |
+>
+> Backward-compat: each cockpit-level window is opt-in via
+> `cockpit.json.medic` / `cockpit.json.martinet` `enabled` flags.
+> Cockpit rosters that pre-date these changes (no `medic` / `martinet`
+> blocks) retain the original shape (W1 _superdriver + W2..N per-team
+> viewers). Loader migration coerces legacy `superdoctor` block →
+> medic semantics on read per ADR-133 §D2 deprecation window.
+> Cockpit-session and cockpit-role-window names migrate in-place
+> (`atmux_teams → atmux_cockpit`; `superdriver → _superdriver`;
+> `medic → _medic`; `martinet → _martinet`) on rebuild per ADR-135 §D4
+> — idempotent, preserves pane PIDs and attached clients. Verb
+> implementation: T8 of ADR-132 (commit t-fb5e4c1f); ADR-135 rename
+> (commit t-b3958ee6).
 **Driver-ref**: 2026-05-08 hax session — operator ran `cockpit-rebuild` to bring up sopx + atmux teams (with unum disabled via newly-added per-team enable toggle). The rebuild failed mid-cycle: atmux-bun's `start` reported a tmux session created, then immediately failed connecting to `/tmp/atmux-sopx/sock` (ENOENT). Two issues surfaced:
 1. The dotfiles script's hardcoded cage paths (`<project>/.atmux/tmux/tmux-0/default`) disagree with atmux-bun's hardcoded socket paths (`/tmp/atmux-<team>/sock` per `core/common.ts:512`). This was a bash-era assumption — atmux-bun's `start` verb doesn't honour `team.json.tmuxTmpdir` yet (`src/verbs/start.ts` file header §"Socket resolver — Phase 2 architectural decision pending").
 2. atmux-bun doesn't `mkdir -p` the socket parent before `tmux -S new-session`, so first bring-up on a fresh box fails silently.

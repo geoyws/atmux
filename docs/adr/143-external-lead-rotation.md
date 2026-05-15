@@ -1,6 +1,6 @@
 # ADR-143: External cron-fired lead-rotation enforcer (stopgap until martinet ships)
 
-**Status**: proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Driver-ref**: 2026-05-14 driver session — operator: *"why is it that we always fail to rotate the lead?"*
 **EPIC parent**: `t-a6a7afa0` (this Task — operates as informal EPIC pending planner re-decomp).
@@ -134,7 +134,7 @@ The one-tick reprieve is intentionally narrow: it covers the case where the lead
 - **[ADR-139]** refusal detection — orthogonal trigger class (refusal-pattern, not uptime). ADR-143 doesn't displace it.
 - **[ADR-140]** cheap-model-first — establishes the principle that **external observation > self-check**. ADR-143 is the concrete bash-rooted instantiation while Cursor martinet remains pending.
 - **`templates/briefs/lead.md` §Auto-rotation** — operator-facing description of `team.whip.autoRotate` (lead's own self-check). ADR-143 supplements it with the external forcing function.
-- **`docs/superdoctor.md`** — operational runbook for the medic role; ADR-143's cron-rotate is documented alongside as a sibling fleet-wide cron line.
+- **`docs/medic.md`** — operational runbook for the medic role (renamed from `docs/superdoctor.md` per ADR-133); ADR-143's cron-rotate is documented alongside as a sibling fleet-wide cron line.
 - `[[feedback_overnight_reddit_stakes]]` (memory) — operator threat on 0-commit overnights. ADR-143 protects against the failure class where the lead silently rots and downstream Tasks block.
 - `[[feedback_rotation_threshold_400k]]` (memory) — context-pct threshold. ADR-143 fires on uptime; ctx-pct trigger remains lead-self-checked (until martinet absorbs it).
 

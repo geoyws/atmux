@@ -15,7 +15,10 @@ import {
   loadCockpit,
   MAX_NESTING_LEVEL,
   migrateLegacyShape,
+  migrateSuperdoctorBlockToMedic,
+  perTeamCageSocketPath,
   readNestingLevel,
+  resolveCageSocket,
   resolveCockpitConfigPath,
   resolvePrefix,
   validatePrefixChain,
@@ -78,22 +81,58 @@ describe("resolveCockpitConfigPath", () => {
 describe("loadCockpit", () => {
   test("reads + validates a valid roster", async () => {
     await writeCockpit({
-      cockpitSession: "atmux_teams",
+      cockpitSession: "atmux_cockpit",
       teams: [
         { name: "sopx", root: "/p/sopx", enabled: true },
         { name: "atmux", root: "/p/atmux", enabled: true },
       ],
     });
-    const cockpit = await loadCockpit({ home: homeDir });
-    expect(cockpit.cockpitSession).toBe("atmux_teams");
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.cockpitSession).toBe("atmux_cockpit");
     expect(cockpit.teams).toHaveLength(2);
     expect(cockpit.teams[0]?.name).toBe("sopx");
   });
 
   test("applies cockpitSession default when omitted", async () => {
     await writeCockpit({ teams: [{ name: "x", root: "/x", enabled: true }] });
-    const cockpit = await loadCockpit({ home: homeDir });
-    expect(cockpit.cockpitSession).toBe("atmux_teams");
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    // ADR-135: default is `atmux_cockpit` (was `atmux_teams` pre-rename).
+    expect(cockpit.cockpitSession).toBe("atmux_cockpit");
+  });
+
+  test("ADR-135 §D5 — coerces legacy cockpitSession 'atmux_teams' literal → 'atmux_cockpit' with deprecation warning", async () => {
+    await writeCockpit({
+      cockpitSession: "atmux_teams",
+      teams: [{ name: "x", root: "/x", enabled: true }],
+    });
+    const warnings: string[] = [];
+    const cockpit = await loadCockpit({
+      home: homeDir,
+      warn: (m) => warnings.push(m),
+    });
+    // Coerced to canonical at parse time.
+    expect(cockpit.cockpitSession).toBe("atmux_cockpit");
+    // Deprecation warning fired.
+    const warned = warnings.some(
+      (m) => m.includes("cockpitSession literal 'atmux_teams'") && m.includes("ADR-135"),
+    );
+    expect(warned).toBe(true);
+  });
+
+  test("ADR-135 §D5 — operator-chosen arbitrary cockpitSession passes through unchanged (only legacy literal triggers shim)", async () => {
+    await writeCockpit({
+      cockpitSession: "geoyws_cockpit",
+      teams: [{ name: "x", root: "/x", enabled: true }],
+    });
+    const warnings: string[] = [];
+    const cockpit = await loadCockpit({
+      home: homeDir,
+      warn: (m) => warnings.push(m),
+    });
+    expect(cockpit.cockpitSession).toBe("geoyws_cockpit");
+    // No ADR-135 deprecation warning for arbitrary names.
+    const adr135Warned = warnings.some((m) => m.includes("ADR-135"));
+    expect(adr135Warned).toBe(false);
   });
 
   test("applies team.enabled default (true) when omitted", async () => {
@@ -162,10 +201,65 @@ describe("enabledTeams", () => {
   });
 });
 
+// HEAD's `resolveCageSocket(cockpitTeam, opts)` tests removed —
+// superseded by ADR-063 follow-up (t-31bef86e) which switched the
+// signature to `(teamName, teamRoot, deps)` with `exists`-based dual-
+// probe. The new test suite below covers the same scenarios with the
+// new contract. See merge commit body for the supersession trail.
+
 describe("cageSocketPath", () => {
   test("returns /tmp/atmux-<team>/sock", () => {
     expect(cageSocketPath("sopx")).toBe("/tmp/atmux-sopx/sock");
     expect(cageSocketPath("atmux")).toBe("/tmp/atmux-atmux/sock");
+  });
+});
+
+describe("perTeamCageSocketPath", () => {
+  test("returns <teamRoot>/.atmux/tmux/tmux-<uid>/default", () => {
+    const uid = process.getuid?.() ?? 0;
+    expect(perTeamCageSocketPath("/p/sopx")).toBe(`/p/sopx/.atmux/tmux/tmux-${uid}/default`);
+    expect(perTeamCageSocketPath("/root/work/src/atmux")).toBe(
+      `/root/work/src/atmux/.atmux/tmux/tmux-${uid}/default`,
+    );
+  });
+});
+
+describe("resolveCageSocket (ADR-063 follow-up)", () => {
+  test("returns legacy path when only legacy exists", async () => {
+    const seen: string[] = [];
+    const exists = async (p: string) => {
+      seen.push(p);
+      return p === "/tmp/atmux-x/sock";
+    };
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
+    // Probe stopped at legacy hit; per-team path never queried.
+    expect(seen).toEqual(["/tmp/atmux-x/sock"]);
+  });
+
+  test("returns per-team path when only per-team exists", async () => {
+    const perTeam = perTeamCageSocketPath("/root/x");
+    const exists = async (p: string) => p === perTeam;
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe(perTeam);
+  });
+
+  test("returns legacy first when both exist (backward-compat precedence)", async () => {
+    const exists = async () => true;
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
+  });
+
+  test("falls through to legacy when neither exists", async () => {
+    const exists = async () => false;
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
+  });
+
+  test("probe order matches helper output (legacy → per-team)", async () => {
+    const seen: string[] = [];
+    const exists = async (p: string) => {
+      seen.push(p);
+      return false;
+    };
+    await resolveCageSocket("z", "/some/root", { exists });
+    expect(seen).toEqual(["/tmp/atmux-z/sock", perTeamCageSocketPath("/some/root")]);
   });
 });
 
@@ -241,8 +335,12 @@ describe("migrateLegacyShape — flat teams[] → recursive sessions[]", () => {
 describe("loadCockpit — migration shim end-to-end", () => {
   test("legacy flat teams[] roster still loads + warns", async () => {
     const warned: string[] = [];
+    // Use canonical cockpitSession to keep this test focused on the
+    // teams[]-shape shim — the ADR-135 cockpitSession-literal shim is
+    // covered separately above and would produce an extra warning that
+    // muddies the assertion.
     await writeCockpit({
-      cockpitSession: "atmux_teams",
+      cockpitSession: "atmux_cockpit",
       teams: [
         { name: "sopx", root: "/p/sopx", enabled: true },
         { name: "atmux", root: "/p/atmux", enabled: true },
@@ -301,6 +399,208 @@ describe("loadCockpit — migration shim end-to-end", () => {
   });
 });
 
+// ---------- ADR-133 TR2: migrateSuperdoctorBlockToMedic shim ----------
+
+describe("migrateSuperdoctorBlockToMedic — top-level superdoctor → medic", () => {
+  test("only `superdoctor` set → lifts to `medic` + warns deprecated", () => {
+    const warned: string[] = [];
+    const out = migrateSuperdoctorBlockToMedic(
+      {
+        schemaVersion: 1,
+        sessions: [],
+        superdoctor: { enabled: true, autoStart: false },
+      },
+      "/fake/path.json",
+      (m) => warned.push(m),
+    ) as Record<string, unknown>;
+    expect(out.medic).toEqual({ enabled: true, autoStart: false });
+    expect(out.superdoctor).toBeUndefined();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("deprecated top-level 'superdoctor' key");
+    expect(warned[0]).toContain("rename to 'medic'");
+    expect(warned[0]).toContain("ADR-133");
+    expect(warned[0]).toContain("/fake/path.json");
+  });
+
+  test("only `medic` set → no-op, no warning", () => {
+    const warned: string[] = [];
+    const input = {
+      schemaVersion: 1,
+      sessions: [],
+      medic: { enabled: true },
+    };
+    const out = migrateSuperdoctorBlockToMedic(input, "/p.json", (m) => warned.push(m));
+    expect(out).toBe(input);
+    expect(warned).toHaveLength(0);
+  });
+
+  test("BOTH `medic` and `superdoctor` set → medic wins, superdoctor stripped, warns dual", () => {
+    const warned: string[] = [];
+    const out = migrateSuperdoctorBlockToMedic(
+      {
+        schemaVersion: 1,
+        sessions: [],
+        medic: { enabled: true },
+        superdoctor: { enabled: false }, // operator forgot to delete this
+      },
+      "/p.json",
+      (m) => warned.push(m),
+    ) as Record<string, unknown>;
+    expect(out.medic).toEqual({ enabled: true });
+    expect(out.superdoctor).toBeUndefined();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("BOTH");
+    expect(warned[0]).toContain("'medic' wins");
+    expect(warned[0]).toContain("ADR-133");
+  });
+
+  test("neither set → passes through unchanged + no warning", () => {
+    const warned: string[] = [];
+    const input = { schemaVersion: 1, sessions: [] };
+    const out = migrateSuperdoctorBlockToMedic(input, "/p.json", (m) => warned.push(m));
+    expect(out).toBe(input);
+    expect(warned).toHaveLength(0);
+  });
+
+  test("non-object input passes through unchanged", () => {
+    const warned: string[] = [];
+    expect(migrateSuperdoctorBlockToMedic(null, "/p.json", (m) => warned.push(m))).toBe(null);
+    expect(migrateSuperdoctorBlockToMedic("string", "/p.json", (m) => warned.push(m))).toBe(
+      "string",
+    );
+    expect(warned).toHaveLength(0);
+  });
+
+  test("preserves all other top-level fields when lifting", () => {
+    const warned: string[] = [];
+    const out = migrateSuperdoctorBlockToMedic(
+      {
+        schemaVersion: 1,
+        cockpitSession: "custom_session",
+        sessions: [{ type: "team", name: "x", root: "/x" }],
+        prefixChain: ["F1", "F2"],
+        superdoctor: { enabled: true },
+      },
+      "/p.json",
+      (m) => warned.push(m),
+    ) as Record<string, unknown>;
+    expect(out.schemaVersion).toBe(1);
+    expect(out.cockpitSession).toBe("custom_session");
+    expect(out.sessions).toEqual([{ type: "team", name: "x", root: "/x" }]);
+    expect(out.prefixChain).toEqual(["F1", "F2"]);
+    expect(out.medic).toEqual({ enabled: true });
+    expect(out.superdoctor).toBeUndefined();
+  });
+});
+
+describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
+  test("config with only `medic` block → cockpit.medic populated, no warning", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      medic: { enabled: true },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(warned).toHaveLength(0);
+  });
+
+  test("config with only `superdoctor` top-level block → cockpit.medic populated + deprecation warn", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      superdoctor: { enabled: true },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("deprecated top-level 'superdoctor'");
+    expect(warned[0]).toContain("ADR-133");
+  });
+
+  test("config with BOTH `medic` and `superdoctor` → medic wins + dual-key warn", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      medic: { enabled: true, autoStart: false },
+      superdoctor: { enabled: false },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.medic?.autoStart).toBe(false);
+    expect(cockpit.superdoctor).toBeUndefined();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("BOTH");
+    expect(warned[0]).toContain("'medic' wins");
+  });
+
+  test("config with neither key → defaults applied, both fields undefined", async () => {
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic).toBeUndefined();
+    expect(cockpit.superdoctor).toBeUndefined();
+    expect(warned).toHaveLength(0);
+  });
+
+  test('sessions[] `type: "superdoctor"` entry synthesizes BOTH cockpit.medic AND cockpit.superdoctor', async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        { type: "team", name: "x", root: "/x" },
+        { type: "superdoctor", name: "sd", enabled: true },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    expect(cockpit.medic?.enabled).toBe(true);
+  });
+
+  test('sessions[] `type: "medic"` entry synthesizes BOTH cockpit.medic AND cockpit.superdoctor (canonical path)', async () => {
+    // ADR-133 canonical session-walk path — operators landing on the
+    // new discriminator literal get both back-compat fields populated
+    // so duck-typed callers across the deprecation window keep working.
+    const warned: string[] = [];
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        { type: "superdriver", name: "superdriver" },
+        { type: "medic", name: "medic", enabled: true },
+        { type: "team", name: "sopx", root: "/p/sopx" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    expect(warned).toHaveLength(0);
+  });
+
+  test("legacy flat roster (teams[] + superdoctor) shape-migrates first, no top-level superdoctor remains after shim", async () => {
+    // Legacy flat case: migrateLegacyShape lifts both teams[] + the
+    // top-level superdoctor INTO sessions[]; by the time the medic
+    // shim runs, the on-disk top-level superdoctor key is already
+    // gone. Only ADR-089 §B warning fires; no ADR-133 warning fires.
+    const warned: string[] = [];
+    await writeCockpit({
+      teams: [{ name: "x", root: "/x", enabled: true }],
+      superdoctor: { enabled: true },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
+    expect(cockpit.medic?.enabled).toBe(true);
+    expect(cockpit.superdoctor?.enabled).toBe(true);
+    // Exactly one warning — the ADR-089 flat-shape one. The TR2 medic
+    // shim should NOT double-warn for this case.
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("legacy flat teams[]");
+  });
+});
+
 // ---------- ADR-089: walkSessions DFS ----------
 
 describe("walkSessions — depth-first traversal", () => {
@@ -334,9 +634,7 @@ describe("walkSessions — depth-first traversal", () => {
             name: "L1a",
             root: "/L1a",
             enabled: true,
-            sessions: [
-              { type: "team", name: "L2", root: "/L2", enabled: true, sessions: [] },
-            ],
+            sessions: [{ type: "team", name: "L2", root: "/L2", enabled: true, sessions: [] }],
           },
           { type: "team", name: "L1b", root: "/L1b", enabled: true, sessions: [] },
         ],
@@ -397,9 +695,7 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
               type: "team",
               name: "inner-a",
               root: "/p/inner-a",
-              sessions: [
-                { type: "team", name: "leaf", root: "/p/leaf" },
-              ],
+              sessions: [{ type: "team", name: "leaf", root: "/p/leaf" }],
             },
             { type: "team", name: "inner-b", root: "/p/inner-b" },
           ],

@@ -1,6 +1,6 @@
 # ADR-133: Rename superdoctor → medic (supersedes ADR-077 naming only)
 
-**Status**: Proposed
+**Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-e587104e)
 **Parent EPIC**: t-d25ff629
