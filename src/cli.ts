@@ -62,6 +62,7 @@ import { laneTick } from "./verbs/lane-tick.ts";
 import { martinet } from "./verbs/martinet.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
+import { ombudsman } from "./verbs/ombudsman.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
@@ -256,6 +257,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cockpit(argv.slice(1));
     case "martinet":
       return martinet(argv.slice(1));
+    case "ombudsman":
+      return ombudsman(argv.slice(1));
     case "complaints":
       return complaints(argv.slice(1));
     case "doctor":
