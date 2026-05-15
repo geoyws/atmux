@@ -126,6 +126,7 @@ describe("hygieneTick — integration", () => {
         status: "todo",
         owner: "fe-ghost",
         lane: "fe",
+        priority: 3,
         createdAt: 100,
       });
     } finally {
