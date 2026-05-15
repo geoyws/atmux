@@ -177,12 +177,18 @@ export const migrations: readonly Migration[] = [
   // Renumbered v2→v3 → v3→v4 at trunk-merge 2026-05-14: trunk's
   // complaints provenance migration (t-e5e5d576) claimed v3 first;
   // the migration ladder must stay monotonic so this lands on top.
+  //
+  // IF NOT EXISTS guards are defensive (ADR-147 T9 dogfood, 2026-05-15):
+  // they make the migration safe to re-run when paired with the v6→v7
+  // legacy-DB rescue below, which fires this SQL again on DBs that
+  // skipped the renumbered v3→v4 because they ran the pre-renumber
+  // hygiene-at-v3→v4 instead.
   {
     from: 3,
     to: 4,
     up: (db) => {
       db.exec(`
-				CREATE TABLE superdoctor_attempts (
+				CREATE TABLE IF NOT EXISTS superdoctor_attempts (
 					id INTEGER PRIMARY KEY AUTOINCREMENT,
 					complaint_id TEXT NOT NULL,
 					attempt_n INTEGER NOT NULL,
@@ -194,9 +200,11 @@ export const migrations: readonly Migration[] = [
 				) STRICT;
 			`);
       db.exec(
-        "CREATE INDEX idx_sd_attempts_complaint ON superdoctor_attempts(complaint_id, attempted_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_sd_attempts_complaint ON superdoctor_attempts(complaint_id, attempted_at DESC)",
       );
-      db.exec("CREATE INDEX idx_sd_attempts_outcome ON superdoctor_attempts(outcome)");
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_sd_attempts_outcome ON superdoctor_attempts(outcome)",
+      );
     },
   },
   // ---------- v4 → v5 ----------
@@ -211,12 +219,19 @@ export const migrations: readonly Migration[] = [
   // MYT): trunk's superdoctor_attempts migration (4836a7e, ADR-077 §F6)
   // claimed v3→v4 first; this hygiene table appends as v4→v5 to keep
   // the migration ladder monotonic per ADR-060 §D5.
+  //
+  // IF NOT EXISTS guards (ADR-147 T9 dogfood, 2026-05-15): without
+  // these, DBs that ran the pre-renumber v3→v4 (which was this same
+  // hygiene SQL) crash here on every open — user_version=4 + the
+  // hygiene table already physically exists, so the bare CREATE TABLE
+  // throws. The guard makes the step a no-op on those DBs while still
+  // creating the table for fresh DBs walking the ladder from v0.
   {
     from: 4,
     to: 5,
     up: (db) => {
       db.exec(`
-				CREATE TABLE superdoctor_hygiene (
+				CREATE TABLE IF NOT EXISTS superdoctor_hygiene (
 					task_id TEXT NOT NULL,
 					fingerprint_class TEXT NOT NULL,
 					severity INTEGER NOT NULL,
@@ -235,7 +250,7 @@ export const migrations: readonly Migration[] = [
       // index small (fixed rows live forever for audit but aren't
       // re-scanned).
       db.exec(
-        "CREATE INDEX idx_hygiene_unfixed ON superdoctor_hygiene(severity ASC, detected_at ASC) WHERE fix_applied_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_hygiene_unfixed ON superdoctor_hygiene(severity ASC, detected_at ASC) WHERE fix_applied_at IS NULL",
       );
     },
   },
@@ -278,6 +293,43 @@ export const migrations: readonly Migration[] = [
       db.exec("CREATE INDEX idx_merger_state_state ON merger_state(state)");
       db.exec(
         "CREATE INDEX idx_merger_state_transitioned ON merger_state(transitioned_at DESC)",
+      );
+    },
+  },
+  // ---------- v6 → v7 ----------
+  // Legacy-DB rescue (ADR-147 T9 dogfood discovery, 2026-05-15): the
+  // v3→v4 renumber on 2026-05-14 16:05 MYT swapped superdoctor_hygiene
+  // (was v3→v4) with superdoctor_attempts (now v3→v4). DBs migrated
+  // before the renumber sit at user_version=4 with the hygiene table
+  // but NO superdoctor_attempts — the new v3→v4 (attempts) never ran
+  // on them. The v4→v5 (hygiene) IF NOT EXISTS guard above lets those
+  // DBs advance, but they still need superdoctor_attempts created.
+  // This step is that backfill: re-runs the v3→v4 SQL idempotently so
+  // pre-renumber DBs end up with both tables present.
+  //
+  // For fresh DBs (walked the ladder from v0): the table already
+  // exists from v3→v4, so all CREATEs here are no-ops.
+  {
+    from: 6,
+    to: 7,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE IF NOT EXISTS superdoctor_attempts (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					complaint_id TEXT NOT NULL,
+					attempt_n INTEGER NOT NULL,
+					outcome TEXT NOT NULL CHECK(outcome IN ('resolved','partial','failed')),
+					attempted_at INTEGER NOT NULL,
+					action TEXT,
+					note TEXT,
+					extra TEXT
+				) STRICT;
+			`);
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_sd_attempts_complaint ON superdoctor_attempts(complaint_id, attempted_at DESC)",
+      );
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_sd_attempts_outcome ON superdoctor_attempts(outcome)",
       );
     },
   },
