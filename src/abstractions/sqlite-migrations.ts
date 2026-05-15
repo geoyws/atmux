@@ -239,4 +239,46 @@ export const migrations: readonly Migration[] = [
       );
     },
   },
+  // ---------- v5 → v6 ----------
+  // ADR-134 §state-machine / t-6a959e02: per-member-branch merge state.
+  // One row per `<base>-<member>` branch under the team's gitter loop;
+  // primary key is the branch name itself (operator-visible, unique
+  // within the team's state.db scope). State literals match the 10-state
+  // BranchMergeState union from `src/core/branch-merge-state.ts`; permissive
+  // TEXT typing (no CHECK constraint) matches the bash-era posture used by
+  // the rest of this ladder and lets a future state-set extension land
+  // without an ALTER TABLE.
+  //
+  // The `note` column carries the human-readable transition reason
+  // (PreMergeGateDecision.reason, conflict SHA, etc.) so operators
+  // inspecting state.db can answer "why is this branch stuck" without
+  // grepping logs. `transitioned_by` records the caller identity
+  // ('event' / 'cron' / 'operator' / <member-name>) for cross-trigger
+  // audit (ADR-134 §triggers — event-driven primary vs cron backstop).
+  //
+  // Indexes:
+  //   - `state` — cron sweep's "list all not-terminal" hot path.
+  //   - `transitioned_at DESC` — recent-activity probes (doctor, audit).
+  {
+    from: 5,
+    to: 6,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE merger_state (
+					member_branch TEXT PRIMARY KEY NOT NULL,
+					state TEXT NOT NULL,
+					note TEXT,
+					transitioned_at INTEGER NOT NULL,
+					transitioned_by TEXT,
+					base_sha TEXT,
+					conflict_sha TEXT,
+					extra TEXT
+				) STRICT;
+			`);
+      db.exec("CREATE INDEX idx_merger_state_state ON merger_state(state)");
+      db.exec(
+        "CREATE INDEX idx_merger_state_transitioned ON merger_state(transitioned_at DESC)",
+      );
+    },
+  },
 ];
