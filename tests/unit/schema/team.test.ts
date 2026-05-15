@@ -16,8 +16,10 @@ import {
   DEFAULT_MARTINET_CADENCE_SEC,
   DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
+  DEFAULT_REFUSAL_DETECTION_CONFIG,
   DEFAULT_WORKTREE_ROOT,
   MartinetImpl,
+  resolveRefusalConfig,
   Team,
   TeamAutoEmitTrunkMerge,
   TeamCadence,
@@ -26,6 +28,7 @@ import {
   TeamMartinetOverrides,
   TeamMember,
   TeamOmbudsman,
+  TeamRefusalDetection,
   TeamWhip,
 } from "../../../src/schema/team.ts";
 
@@ -834,5 +837,111 @@ describe("DEFAULT_CADENCE_THRESHOLDS / DEFAULT_CADENCE_CONFIG constants (ADR-148
     expect(DEFAULT_CADENCE_CONFIG.laneStallEnabled).toBe(true);
     expect(DEFAULT_CADENCE_CONFIG.laneStallMinAgeSec).toBe(1800);
     expect(DEFAULT_CADENCE_CONFIG.exemptMembers).toEqual([]);
+  });
+});
+
+// ---------- TeamRefusalDetection — ADR-139 §Config ----------
+
+describe("TeamRefusalDetection — valid + defaults (ADR-139 §Config)", () => {
+  test("empty block parses — every field optional", () => {
+    const c = TeamRefusalDetection.parse({});
+    expect(c.enabled).toBeUndefined();
+    expect(c.softThreshold).toBeUndefined();
+    expect(c.hardThreshold).toBeUndefined();
+    expect(c.roleThreshold).toBeUndefined();
+    expect(c.windowMin).toBeUndefined();
+    expect(c.exemptMembers).toBeUndefined();
+    expect(c.maxRotationsPerDay).toBeUndefined();
+  });
+
+  test("full block round-trips", () => {
+    const c = TeamRefusalDetection.parse({
+      enabled: true,
+      softThreshold: 5,
+      hardThreshold: 3,
+      roleThreshold: 1,
+      windowMin: 45,
+      exemptMembers: ["planner", "reviewer"],
+      maxRotationsPerDay: 5,
+    });
+    expect(c.softThreshold).toBe(5);
+    expect(c.hardThreshold).toBe(3);
+    expect(c.windowMin).toBe(45);
+    expect(c.exemptMembers).toEqual(["planner", "reviewer"]);
+    expect(c.maxRotationsPerDay).toBe(5);
+  });
+
+  test("strict-mode rejects unknown top-level keys (ADR-054 §D3 drift detection)", () => {
+    expect(() =>
+      TeamRefusalDetection.parse({ enabled: true, softTreshold: 3 }),
+    ).toThrow();
+  });
+
+  test("zero/negative thresholds rejected", () => {
+    expect(() => TeamRefusalDetection.parse({ softThreshold: 0 })).toThrow();
+    expect(() => TeamRefusalDetection.parse({ hardThreshold: -1 })).toThrow();
+    expect(() => TeamRefusalDetection.parse({ windowMin: 0 })).toThrow();
+    expect(() => TeamRefusalDetection.parse({ maxRotationsPerDay: 0 })).toThrow();
+  });
+
+  test("exemptMembers accepts empty array", () => {
+    const c = TeamRefusalDetection.parse({ exemptMembers: [] });
+    expect(c.exemptMembers).toEqual([]);
+  });
+});
+
+describe("DEFAULT_REFUSAL_DETECTION_CONFIG constant (ADR-139 §Config)", () => {
+  test("defaults mirror ADR-139 §D3 threshold table verbatim", () => {
+    expect(DEFAULT_REFUSAL_DETECTION_CONFIG.enabled).toBe(true);
+    expect(DEFAULT_REFUSAL_DETECTION_CONFIG.softThreshold).toBe(3);
+    expect(DEFAULT_REFUSAL_DETECTION_CONFIG.hardThreshold).toBe(2);
+    expect(DEFAULT_REFUSAL_DETECTION_CONFIG.roleThreshold).toBe(1);
+    expect(DEFAULT_REFUSAL_DETECTION_CONFIG.windowMin).toBe(30);
+    expect(DEFAULT_REFUSAL_DETECTION_CONFIG.exemptMembers).toEqual([]);
+    // OQ-2 resolved-default: 3 rotations/day max per member.
+    expect(DEFAULT_REFUSAL_DETECTION_CONFIG.maxRotationsPerDay).toBe(3);
+  });
+});
+
+describe("resolveRefusalConfig — defaults applier", () => {
+  test("undefined block resolves to full defaults", () => {
+    const c = resolveRefusalConfig(undefined);
+    expect(c.enabled).toBe(true);
+    expect(c.softThreshold).toBe(3);
+    expect(c.maxRotationsPerDay).toBe(3);
+  });
+
+  test("partial block fills missing fields from defaults", () => {
+    const c = resolveRefusalConfig({ softThreshold: 7 });
+    expect(c.softThreshold).toBe(7);
+    expect(c.hardThreshold).toBe(2);
+    expect(c.windowMin).toBe(30);
+  });
+
+  test("explicit enabled=false survives resolution", () => {
+    const c = resolveRefusalConfig({ enabled: false });
+    expect(c.enabled).toBe(false);
+  });
+
+  test("explicit exemptMembers list survives resolution", () => {
+    const c = resolveRefusalConfig({ exemptMembers: ["planner"] });
+    expect(c.exemptMembers).toEqual(["planner"]);
+  });
+});
+
+describe("Team schema integrates TeamRefusalDetection cleanly (ADR-139 §Config)", () => {
+  test("Team.parse accepts a `refusalDetection` block", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      refusalDetection: { enabled: true, softThreshold: 4 },
+    });
+    expect(team.refusalDetection?.enabled).toBe(true);
+    expect(team.refusalDetection?.softThreshold).toBe(4);
+  });
+
+  test("Team.parse without `refusalDetection` leaves field undefined (back-compat)", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.refusalDetection).toBeUndefined();
   });
 });

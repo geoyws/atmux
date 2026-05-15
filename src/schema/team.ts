@@ -891,6 +891,105 @@ export const DEFAULT_CADENCE_CONFIG = {
   exemptMembers: [] as readonly string[],
 } as const;
 
+/** ADR-139 §Config: `team.json::refusalDetection` block — governs the
+ *  refusal-pattern auto-rotate trigger gate. Recorded events from
+ *  ADR-139 T3 (`refusal_events` SQLite table) are read here; threshold
+ *  decision lives in `src/core/refusal-threshold.ts::shouldRotate`
+ *  (pure); the trigger glue (`src/core/refusal-trigger.ts`) reads this
+ *  config + the recent rows to decide rotation fire.
+ *
+ *  `.strict()` is intentional per ADR-054 §D3 drift detection — typos
+ *  (e.g. `softTreshold`) surface as a `team.json` load failure rather
+ *  than a silent miss in the default-applier.
+ *
+ *  Threshold defaults mirror ADR-139 §D3 verbatim. `maxRotationsPerDay`
+ *  defaults to 3 per the EPIC's OQ-2 resolved-default — beyond 3
+ *  rotations in 24h the trigger emits HARD escalation rather than
+ *  another rotate. */
+export const TeamRefusalDetection = z
+  .object({
+    /** Master switch. Default `true` — enabled by default per
+     *  ADR-139 §Config. Set `false` to suppress both medic + martinet
+     *  refusal scans for the team. */
+    enabled: z.boolean().optional(),
+    /** Soft-class events within `windowMin` to fire rotate. Default
+     *  3 per ADR-139 §D3. */
+    softThreshold: z.number().int().positive().optional(),
+    /** Hard-class events within hard-window (fixed 10min) to fire
+     *  rotate. Default 2 per ADR-139 §D3. */
+    hardThreshold: z.number().int().positive().optional(),
+    /** Role-class events to fire rotate (instant). Default 1 per
+     *  ADR-139 §D3. */
+    roleThreshold: z.number().int().positive().optional(),
+    /** Window-back for soft + role threshold lookback, minutes.
+     *  Default 30 per ADR-139 §D3. Hard-window is fixed at 10min
+     *  via `refusal-threshold.HARD_REFUSAL_WINDOW_MIN` regardless. */
+    windowMin: z.number().int().positive().optional(),
+    /** Per-member opt-out — roles with legitimately refusal-like
+     *  output (e.g. planner echoing operator directives back as part
+     *  of decomposition). Exempt members never auto-rotate; the row
+     *  still lands in `refusal_events` for audit. Default `[]`. */
+    exemptMembers: z.array(z.string()).optional(),
+    /** OQ-2 resolved default — max auto-rotations per member per
+     *  24h. Beyond this count, the trigger emits HARD escalation
+     *  to the operator instead of rotating again. Default 3. */
+    maxRotationsPerDay: z.number().int().positive().optional(),
+  })
+  .strict();
+export type TeamRefusalDetection = z.infer<typeof TeamRefusalDetection>;
+
+/** ADR-139 §Config defaults — applied by {@link resolveRefusalConfig}
+ *  when the team's `refusalDetection` block is absent or fields are
+ *  unset. Mirror of `DEFAULT_REFUSAL_THRESHOLD_CONFIG` in
+ *  `src/core/refusal-threshold.ts` extended with `enabled` +
+ *  `exemptMembers` + `maxRotationsPerDay` (the Zod-only fields). */
+export const DEFAULT_REFUSAL_DETECTION_CONFIG = {
+  enabled: true,
+  softThreshold: 3,
+  hardThreshold: 2,
+  roleThreshold: 1,
+  windowMin: 30,
+  exemptMembers: [] as readonly string[],
+  maxRotationsPerDay: 3,
+} as const;
+
+/** Resolved-default shape that the trigger module consumes. Every
+ *  field is concrete; `undefined`s from the optional Zod block are
+ *  filled from {@link DEFAULT_REFUSAL_DETECTION_CONFIG}. */
+export interface ResolvedRefusalConfig {
+  enabled: boolean;
+  softThreshold: number;
+  hardThreshold: number;
+  roleThreshold: number;
+  windowMin: number;
+  exemptMembers: readonly string[];
+  maxRotationsPerDay: number;
+}
+
+/** Apply defaults to the team's `refusalDetection` block (absent or
+ *  partial → fully resolved config). Pure — no I/O. The trigger
+ *  module + medic + martinet all call this at the top of each tick
+ *  so the threshold gate sees concrete numbers. */
+export function resolveRefusalConfig(
+  block: TeamRefusalDetection | undefined,
+): ResolvedRefusalConfig {
+  return {
+    enabled: block?.enabled ?? DEFAULT_REFUSAL_DETECTION_CONFIG.enabled,
+    softThreshold:
+      block?.softThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.softThreshold,
+    hardThreshold:
+      block?.hardThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.hardThreshold,
+    roleThreshold:
+      block?.roleThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.roleThreshold,
+    windowMin: block?.windowMin ?? DEFAULT_REFUSAL_DETECTION_CONFIG.windowMin,
+    exemptMembers:
+      block?.exemptMembers ?? DEFAULT_REFUSAL_DETECTION_CONFIG.exemptMembers,
+    maxRotationsPerDay:
+      block?.maxRotationsPerDay ??
+      DEFAULT_REFUSAL_DETECTION_CONFIG.maxRotationsPerDay,
+  };
+}
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -1027,6 +1126,11 @@ export const Team = z
      *  defaults baked into each Martinet factory. Resolver merges
      *  by-key (explicit > per-impl default). */
     martinetOverrides: TeamMartinetOverrides.optional(),
+    /** ADR-139 §Config: refusal-pattern auto-rotate config — see
+     *  {@link TeamRefusalDetection}. Absent block → defaults via
+     *  {@link resolveRefusalConfig} (enabled=true, soft=3, hard=2,
+     *  role=1, windowMin=30, cap=3/day). */
+    refusalDetection: TeamRefusalDetection.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

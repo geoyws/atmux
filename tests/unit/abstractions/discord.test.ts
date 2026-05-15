@@ -22,6 +22,7 @@ import {
   renderEternalImprovementDone,
   renderEternalImprovementProgress,
   renderEternalImprovementStart,
+  renderMemberRefusalRotate,
   renderWhipBudgetPause,
   renderWhipBudgetRefreshSoon,
   renderWhipBudgetResume,
@@ -2631,5 +2632,106 @@ describe("renderHygieneBlocker — R10 send() round-trip (recorder path)", () =>
     // surface ("owner lane ≠ task lane") which is the lane-mismatch
     // class's verdict-line root-cause clause.
     expect(log).toContain("owner lane");
+  });
+});
+
+// ---------- renderMemberRefusalRotate — ADR-139 T4 ----------
+
+describe("renderMemberRefusalRotate (ADR-139 T4)", () => {
+  test("escalation='rotate' renders 🟡 verdict + 🔄 category", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "alice",
+      severity: "soft",
+      eventCount: 3,
+      windowMin: 30,
+      rotationsToday: 1,
+      maxRotationsPerDay: 3,
+      escalation: "rotate",
+      topPhrases: ["fatigue", "tired-of"],
+      whenMs: 1_700_000_000_000,
+    });
+    expect(opts.template).toBe("member-refusal-rotate");
+    expect(opts.category).toBe("🔄");
+    expect(opts.verdict).toContain("🟡");
+    expect(opts.verdict).toContain("alice");
+    expect(opts.verdict).toContain("soft");
+    expect(opts.verdict).toContain("3 events");
+    const bullets = (opts.bullets ?? []) as string[];
+    // Trigger phrases surface as 📋 bullets — assert presence.
+    expect(bullets.some((b) => b.includes("fatigue"))).toBe(true);
+    // Footer carries rotation counter.
+    expect(bullets[bullets.length - 1]).toContain("1/3");
+  });
+
+  test("escalation='cap-hit' renders 🚨 verdict + 🚨 category", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "bob",
+      severity: "hard",
+      eventCount: 4,
+      windowMin: 30,
+      rotationsToday: 3,
+      maxRotationsPerDay: 3,
+      escalation: "cap-hit",
+      topPhrases: [],
+    });
+    expect(opts.category).toBe("🚨");
+    expect(opts.verdict).toContain("🚨");
+    expect(opts.verdict).toContain("cap-hit");
+    expect(opts.verdict).toContain("3/3");
+    const bullets = (opts.bullets ?? []) as string[];
+    // HARD path includes a 'Need from George' bullet.
+    expect(bullets.some((b) => b.includes("Need from George"))).toBe(true);
+  });
+
+  test("escalation='spawn-failed' renders 🚨 + verdict naming the failure", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "carol",
+      severity: "role",
+      eventCount: 1,
+      windowMin: 30,
+      rotationsToday: 1,
+      maxRotationsPerDay: 3,
+      escalation: "spawn-failed",
+      topPhrases: [],
+    });
+    expect(opts.category).toBe("🚨");
+    expect(opts.verdict).toContain("spawn FAILED");
+    expect(opts.verdict).toContain("role-class");
+  });
+
+  test("single-event verbiage drops the plural 's' on event count", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "dave",
+      severity: "role",
+      eventCount: 1,
+      windowMin: 30,
+      rotationsToday: 1,
+      maxRotationsPerDay: 3,
+      escalation: "rotate",
+      topPhrases: [],
+    });
+    expect(opts.verdict).toContain("1 event in");
+    expect(opts.verdict).not.toContain("1 events");
+  });
+
+  test("empty topPhrases skips the 📋 trigger bullets but keeps footer", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "eve",
+      severity: "soft",
+      eventCount: 3,
+      windowMin: 30,
+      rotationsToday: 1,
+      maxRotationsPerDay: 3,
+      escalation: "rotate",
+      topPhrases: [],
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.startsWith("📋"))).toBe(false);
+    expect(bullets[bullets.length - 1]).toContain("rotations today");
   });
 });
