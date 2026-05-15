@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — ADR-141 Claude shared skills + memories (atmux-side scripts)
+
+- **New [ADR-141](docs/adr/141-claude-shared-skills-memories.md)** — canonical layout under operator's dotfiles repo (`~/work/journals/.sb/_dotfiles/claude-shared/`) with per-account symlinks. Memory + skill workspace dirs shared across all five `~/.claude*` accounts; auth + sessions + plugin-cache + settings.json stay strictly per-account.
+- **`scripts/claude-shared-audit.sh`** — read-only audit. Walks every `~/.claude*/projects/*/memory` + `~/.claude*/skills/*` (workspace dirs only — plugin-cache symlinks skipped), reports per-project diffs / sizes / suggested winner (most-recent-mtime) / conflict flag. Pre-flight checks for canonical store presence + running `claude` processes. Safe to run any time.
+- **`scripts/claude-shared-migrate.sh`** — dry-run-by-default migration. `--apply` writes changes; refuses to run with `--apply` if any `claude` process is alive (sessions-stopped invariant per ADR-141 §D5; `--force` overrides at operator's risk). Per-project: backup losing-side content to `_archive-<DATE>/`, move winner to canonical, symlink each account's path. Idempotent re-run.
+- **Out-of-scope for this commit** — the dotfiles-repo deliverables (`_dotfiles/init-claude-shared.sh` + `_dotfiles/README-claude-shared.md`) and the actual migration execution + cross-account smoke test live in operator's dotfiles repo (`~/work/journals/.sb/_dotfiles`, sibling repo). Operator runs `scripts/claude-shared-migrate.sh --apply` with sessions stopped, then commits the canonical-store + init-script in the dotfiles repo separately.
+
 ### 🟢 Shipped — kanban auto-emit trunk-merge Task on Story-done (ADR-146 T2)
 
 - **New `KanbanStory.branch` field** per [ADR-146](docs/adr/146-kanban-auto-files-trunk-merge.md) §D4 — source branch this Story's work lives on (typically `<base>-<member>` per ADR-082+084). Rides through the `extra` JSON column on the `stories` table; zero-migration roll-out.
