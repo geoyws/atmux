@@ -447,6 +447,150 @@ describe("E6 ship-zero-2hr (mandatory)", () => {
     expect(reasons).toEqual(["ship-zero-2hr"]);
     expect(shouldEscalate(reasons)).toBe(true);
   });
+
+  // ADR-148 T5 (t-ac95b267): per-member ship-zero-window verdict
+  // fires E6 alongside the team-aggregate `last2hr === 0` path.
+  test("HIT (ADR-148 T5): member cadence verdict ship-zero-window fires E6 even with last2hr > 0", () => {
+    const obs = healthyObs({
+      members: [
+        {
+          name: "fe-1",
+          paneState: paneCls("READY"),
+          ctxTokens: 5_000,
+          lastEnterPushable: false,
+          queuedComposerText: null,
+          cadence: {
+            windowSec: 1800,
+            commitsInWindow: 0,
+            lastCommitAt: 1_700_000_000 - 10_000,
+            lastCommitSha: "abc1234",
+            ageOfLastCommitSec: 10_000,
+            verdict: "ship-zero-window",
+          },
+        },
+      ],
+      // last2hr > 0 — the team-aggregate gate does NOT fire here;
+      // the per-member verdict path is the sole trigger.
+      commitCadence: { sinceLastTick: 1, last30min: 2, last2hr: 5 },
+    });
+    expect(classify(obs, emptyHistory())).toContain("ship-zero-2hr");
+  });
+
+  test("NEAR-MISS (ADR-148 T5): member cadence verdict shipping does NOT fire E6", () => {
+    const obs = healthyObs({
+      members: [
+        {
+          name: "fe-1",
+          paneState: paneCls("READY"),
+          ctxTokens: 5_000,
+          lastEnterPushable: false,
+          queuedComposerText: null,
+          cadence: {
+            windowSec: 1800,
+            commitsInWindow: 3,
+            lastCommitAt: 1_700_000_000 - 200,
+            lastCommitSha: "def5678",
+            ageOfLastCommitSec: 200,
+            verdict: "shipping",
+          },
+        },
+      ],
+    });
+    expect(classify(obs, emptyHistory())).not.toContain("ship-zero-2hr");
+  });
+
+  test("NEAR-MISS (ADR-148 T5): member cadence verdict idle does NOT fire E6", () => {
+    const obs = healthyObs({
+      members: [
+        {
+          name: "fe-1",
+          paneState: paneCls("READY"),
+          ctxTokens: 5_000,
+          lastEnterPushable: false,
+          queuedComposerText: null,
+          cadence: {
+            windowSec: 1800,
+            commitsInWindow: 0,
+            lastCommitAt: 1_700_000_000 - 5000,
+            lastCommitSha: "ghi9abc",
+            ageOfLastCommitSec: 5000,
+            verdict: "idle",
+          },
+        },
+      ],
+    });
+    expect(classify(obs, emptyHistory())).not.toContain("ship-zero-2hr");
+  });
+
+  test("HIT (ADR-148 T5): mixed roster — one member ship-zero-window, others shipping → E6 fires", () => {
+    const obs = healthyObs({
+      members: [
+        {
+          name: "fe-1",
+          paneState: paneCls("READY"),
+          ctxTokens: 5_000,
+          lastEnterPushable: false,
+          queuedComposerText: null,
+          cadence: {
+            windowSec: 1800,
+            commitsInWindow: 3,
+            lastCommitAt: 1_700_000_000 - 200,
+            lastCommitSha: "abcd123",
+            ageOfLastCommitSec: 200,
+            verdict: "shipping",
+          },
+        },
+        {
+          name: "be-1",
+          paneState: paneCls("READY"),
+          ctxTokens: 8_000,
+          lastEnterPushable: false,
+          queuedComposerText: null,
+          cadence: {
+            windowSec: 1800,
+            commitsInWindow: 0,
+            lastCommitAt: 1_700_000_000 - 9000,
+            lastCommitSha: "efef456",
+            ageOfLastCommitSec: 9000,
+            verdict: "ship-zero-window",
+          },
+        },
+      ],
+      // last2hr still > 0 — proves the per-member path is the
+      // only trigger.
+      commitCadence: { sinceLastTick: 1, last30min: 2, last2hr: 5 },
+    });
+    expect(classify(obs, emptyHistory())).toContain("ship-zero-2hr");
+  });
+
+  test("ADR-148 T5: ship-zero-2hr reason appears EXACTLY ONCE even when both paths fire", () => {
+    // Belt-and-braces: when team-aggregate last2hr === 0 AND a member
+    // also has ship-zero-window verdict, the reason still appears
+    // once (the `else if` short-circuits the second path).
+    const obs = healthyObs({
+      members: [
+        {
+          name: "fe-1",
+          paneState: paneCls("READY"),
+          ctxTokens: 5_000,
+          lastEnterPushable: false,
+          queuedComposerText: null,
+          cadence: {
+            windowSec: 1800,
+            commitsInWindow: 0,
+            lastCommitAt: 1_700_000_000 - 10_000,
+            lastCommitSha: "abc1234",
+            ageOfLastCommitSec: 10_000,
+            verdict: "ship-zero-window",
+          },
+        },
+      ],
+      commitCadence: { sinceLastTick: 0, last30min: 0, last2hr: 0 },
+    });
+    const reasons = classify(obs, emptyHistory());
+    const shipZeroCount = reasons.filter((r) => r === "ship-zero-2hr").length;
+    expect(shipZeroCount).toBe(1);
+  });
 });
 
 // ---------- Aggregate / interaction ----------
