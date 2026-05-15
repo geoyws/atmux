@@ -332,6 +332,10 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
       };
       if (node.claudeAccount !== undefined) t.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) t.tuiOverrides = node.tuiOverrides;
+      // t-72a6b7d7: propagate operator-intent flag to the synthesized
+      // legacy roster so duck-typed consumers (medic sweep) see it
+      // without walking `sessions[]`.
+      if (node.cageMode !== undefined) t.cageMode = node.cageMode;
       teams.push(t);
     } else if (node.type === "medic" && medicResolved === undefined) {
       // ADR-133 canonical entry. Synthesize a claude-shape CockpitMedic

@@ -49,6 +49,22 @@ describe("TeamSession — leaf shape", () => {
       TeamSession.parse({ type: "team", name: "x", root: "/p", typo: "fail" }),
     ).toThrow();
   });
+  // t-72a6b7d7 / c-a99bf461 — cageMode operator-intent flag.
+  test("t-72a6b7d7: cageMode accepts 'autonomous' / 'direct' / 'paused' literals", () => {
+    for (const mode of ["autonomous", "direct", "paused"] as const) {
+      const t = TeamSession.parse({ type: "team", name: "x", root: "/p", cageMode: mode });
+      expect(t.cageMode).toBe(mode);
+    }
+  });
+  test("t-72a6b7d7: cageMode is optional (legacy configs without it parse cleanly)", () => {
+    const t = TeamSession.parse({ type: "team", name: "x", root: "/p" });
+    expect(t.cageMode).toBeUndefined();
+  });
+  test("t-72a6b7d7: cageMode rejects unknown literal values", () => {
+    expect(() =>
+      TeamSession.parse({ type: "team", name: "x", root: "/p", cageMode: "bogus" }),
+    ).toThrow();
+  });
 });
 
 describe("EpicTeamSession — leaf shape", () => {
@@ -78,6 +94,26 @@ describe("EpicTeamSession — leaf shape", () => {
         parent: "p",
         epicId: "e-1",
         typo: "fail",
+      }),
+    ).toThrow();
+  });
+  // t-72a6b7d7: epic-team carries the same cageMode taxonomy as standalone team.
+  test("t-72a6b7d7: epic-team accepts cageMode literal + rejects unknown", () => {
+    const e = EpicTeamSession.parse({
+      type: "epic-team",
+      name: "x",
+      parent: "p",
+      epicId: "e-1",
+      cageMode: "paused",
+    });
+    expect(e.cageMode).toBe("paused");
+    expect(() =>
+      EpicTeamSession.parse({
+        type: "epic-team",
+        name: "x",
+        parent: "p",
+        epicId: "e-1",
+        cageMode: "nope",
       }),
     ).toThrow();
   });
