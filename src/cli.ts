@@ -49,6 +49,7 @@ import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { epic } from "./verbs/epic.ts";
+import { gitter } from "./verbs/gitter.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
@@ -58,13 +59,13 @@ import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
 import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
+import { laneStallTick } from "./verbs/lane-stall-tick.ts";
 import { laneTick } from "./verbs/lane-tick.ts";
 import { martinet } from "./verbs/martinet.ts";
 import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
-import { gitter } from "./verbs/gitter.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { pulse } from "./verbs/pulse.ts";
@@ -230,6 +231,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return inbox(argv.slice(1));
     case "lane-tick":
       return laneTick(argv.slice(1));
+    case "lane-stall-tick":
+      return laneStallTick(argv.slice(1));
     case "lane-drift-check":
       return laneDriftCheck(argv.slice(1));
     case "merge-cycle":

@@ -720,6 +720,30 @@ export type TeamOmbudsman = z.infer<typeof TeamOmbudsman>;
  *  precedent. */
 export const DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS = 15;
 
+/** ADR-148 §D7 default — used by `cron.ts::renderCronLines` + the
+ *  `atmux lane-stall-tick` verb when `team.cadence.laneStallMinAgeSec`
+ *  is unset. Co-located with the schema so non-Zod call sites
+ *  (cron renderer, tick verb, decideLaneStall) share the same
+ *  constant — mirrors {@link DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS} /
+ *  {@link DEFAULT_MERGER_STALENESS_HOURS} precedent.
+ *
+ *  Note: the {@link TeamCadence} + {@link TeamCadenceThresholds} Zod
+ *  schemas defined further below are the canonical surfaces; an earlier
+ *  duplicate pair (T3 / t-e9424574) was removed in the trunk fan-in
+ *  cleanup so cron / lane-stall / status consumers all share one
+ *  schema. The two `DEFAULT_LANE_STALL_*` constants live here, between
+ *  the modal-cycling block and the canonical cadence schema, because
+ *  `src/verbs/lane-stall-tick.ts` and `src/core/cron.ts` consume them
+ *  without needing to import the Zod symbol. */
+export const DEFAULT_LANE_STALL_MIN_AGE_SEC = 1800;
+
+/** ADR-148 §D4 / T3 — default cron cadence for the `lane-stall-watch`
+ *  cron line, in minutes. 5min per the task body ("Cadence runs every
+ *  5min"). Distinct from `DEFAULT_LANE_STALL_MIN_AGE_SEC` (task-age
+ *  threshold) — this is the cron interval; that one is the Task
+ *  must-be-this-old gate inside the verb. */
+export const DEFAULT_LANE_STALL_CRON_INTERVAL_MINS = 5;
+
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
  *  All fields optional; defaults applied at the call-site per ADR-142
  *  §Configuration. `.strict()` so typos (`windowMins` etc.) trip the

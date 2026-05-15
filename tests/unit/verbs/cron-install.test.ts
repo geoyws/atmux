@@ -117,8 +117,13 @@ describe("parseCronInstallArgs — --template / --interval", () => {
     );
   });
 
-  test("CRON_INSTALL_TEMPLATES allowlist exports both merge-cycle + ombudsman-tick (T3 added)", () => {
-    expect(CRON_INSTALL_TEMPLATES).toEqual(["merge-cycle", "ombudsman-tick"]);
+  test("CRON_INSTALL_TEMPLATES allowlist exports merge-cycle + ombudsman-tick + lane-stall-watch + gitter-sweep (ADR-134 T7 added)", () => {
+    expect(CRON_INSTALL_TEMPLATES).toEqual([
+      "merge-cycle",
+      "ombudsman-tick",
+      "lane-stall-watch",
+      "gitter-sweep",
+    ]);
   });
 });
 
@@ -615,9 +620,7 @@ describe("cronInstall — --template ombudsman-tick integration (ADR-147 T3)", (
     expect(rc).toBe(0);
     const body = captured.writes[0] ?? "";
     // Default 15min cadence → `*/15 * * * *`
-    expect(body).toMatch(
-      /\*\/15 \* \* \* \* .*atmux ombudsman tick >> .*\/ombudsman\.log/,
-    );
+    expect(body).toMatch(/\*\/15 \* \* \* \* .*atmux ombudsman tick >> .*\/ombudsman\.log/);
   });
 
   test("--template ombudsman-tick + enabled=false → ConfigError", async () => {
@@ -677,16 +680,13 @@ describe("cronInstall — --template ombudsman-tick integration (ADR-147 T3)", (
     const teamJsonPath = join(scratch, ".atmux", "team.json");
     const before = await readFile(teamJsonPath, "utf-8");
     const { io } = makeFakeCrontab(null);
-    await cronInstall(
-      ["--template", "ombudsman-tick", "--interval", "5m", "--team-dir", scratch],
-      {
-        crontab: io,
-        resolveBin: () => "/usr/local/bin/atmux",
-        env: {},
-        stderr: () => {},
-        stdout: () => {},
-      },
-    );
+    await cronInstall(["--template", "ombudsman-tick", "--interval", "5m", "--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
     const after = await readFile(teamJsonPath, "utf-8");
     expect(after).toBe(before);
   });
@@ -791,10 +791,7 @@ describe("cronInstall — ADR-133 TR6 superdoctor→medic migration", () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-cron-install-tr6-"));
     const atmuxDir = join(scratch, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
   });
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });
@@ -884,5 +881,150 @@ describe("cronInstall — ADR-133 TR6 superdoctor→medic migration", () => {
     expect(logContent).toContain("team=demo");
     expect(logContent).toContain("migrated=1");
     expect(logContent).toContain("ADR-133 TR6");
+  });
+});
+
+// ---------- ADR-134 T7: --template gitter-sweep integration ----------
+
+describe("cronInstall — --template gitter-sweep integration (ADR-134 T7)", () => {
+  let scratch: string;
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "atmux-cron-git-"));
+    const atmuxDir = join(scratch, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  async function seedTeam(opts: {
+    autoMerge?: Record<string, unknown>;
+    withGitterMember?: boolean;
+  }): Promise<void> {
+    const members: Array<Record<string, unknown>> = [];
+    if (opts.withGitterMember === true) {
+      members.push({ name: "gitter", role: "gitter" });
+    }
+    const cfg: Record<string, unknown> = { name: "demo", members };
+    if (opts.autoMerge !== undefined) cfg.autoMerge = opts.autoMerge;
+    await writeFile(join(scratch, ".atmux", "team.json"), JSON.stringify(cfg));
+  }
+
+  test("--template gitter-sweep + enabled=true + member role=gitter → emits sweep line at 10min default", async () => {
+    await seedTeam({ autoMerge: { enabled: true }, withGitterMember: true });
+    const { io, captured } = makeFakeCrontab(null);
+    const rc = await cronInstall(["--template", "gitter-sweep", "--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    expect(rc).toBe(0);
+    const body = captured.writes[0] ?? "";
+    expect(body).toMatch(/\*\/10 \* \* \* \* .*atmux gitter --sweep >> .*\/gitter-sweep\.log/);
+  });
+
+  test("--template gitter-sweep + autoMerge.enabled=false → ConfigError", async () => {
+    await seedTeam({ autoMerge: { enabled: false }, withGitterMember: true });
+    const { io } = makeFakeCrontab(null);
+    await expect(
+      cronInstall(["--template", "gitter-sweep", "--team-dir", scratch], {
+        crontab: io,
+        resolveBin: () => "/usr/local/bin/atmux",
+        env: {},
+        stderr: () => {},
+        stdout: () => {},
+      }),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("--template gitter-sweep + absent autoMerge block → ConfigError", async () => {
+    await seedTeam({ withGitterMember: true });
+    const { io } = makeFakeCrontab(null);
+    await expect(
+      cronInstall(["--template", "gitter-sweep", "--team-dir", scratch], {
+        crontab: io,
+        resolveBin: () => "/usr/local/bin/atmux",
+        env: {},
+        stderr: () => {},
+        stdout: () => {},
+      }),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("--template gitter-sweep + autoMerge.enabled=true but NO gitter member → renders without sweep line (render-time gate)", async () => {
+    // ConfigError gate is enabled-only; the renderer enforces the role
+    // gate. Install succeeds, but the rendered block has no sweep line.
+    await seedTeam({ autoMerge: { enabled: true }, withGitterMember: false });
+    const { io, captured } = makeFakeCrontab(null);
+    const rc = await cronInstall(["--template", "gitter-sweep", "--team-dir", scratch], {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    });
+    expect(rc).toBe(0);
+    const body = captured.writes[0] ?? "";
+    expect(body.includes("gitter --sweep")).toBe(false);
+  });
+
+  test("--template gitter-sweep --interval 5m overrides 10min default", async () => {
+    await seedTeam({ autoMerge: { enabled: true }, withGitterMember: true });
+    const { io, captured } = makeFakeCrontab(null);
+    await cronInstall(
+      ["--template", "gitter-sweep", "--interval", "5m", "--team-dir", scratch],
+      {
+        crontab: io,
+        resolveBin: () => "/usr/local/bin/atmux",
+        env: {},
+        stderr: () => {},
+        stdout: () => {},
+      },
+    );
+    const body = captured.writes[0] ?? "";
+    expect(body).toMatch(/\*\/5 \* \* \* \* .*atmux gitter --sweep/);
+    expect(body.includes("*/10 * * * *")).toBe(false);
+  });
+
+  test("--template gitter-sweep --interval 1h overrides to hourly", async () => {
+    await seedTeam({ autoMerge: { enabled: true }, withGitterMember: true });
+    const { io, captured } = makeFakeCrontab(null);
+    await cronInstall(
+      ["--template", "gitter-sweep", "--interval", "1h", "--team-dir", scratch],
+      {
+        crontab: io,
+        resolveBin: () => "/usr/local/bin/atmux",
+        env: {},
+        stderr: () => {},
+        stdout: () => {},
+      },
+    );
+    const body = captured.writes[0] ?? "";
+    expect(body).toMatch(/0 \* \* \* \* .*atmux gitter --sweep/);
+  });
+
+  test("idempotent re-install: second --template gitter-sweep run is byte-equal", async () => {
+    await seedTeam({ autoMerge: { enabled: true }, withGitterMember: true });
+    let storage: string | null = null;
+    const io: CrontabIO = {
+      read: async () => storage,
+      write: async (body) => {
+        storage = body;
+      },
+      available: async () => true,
+    };
+    const opts: CronInstallOpts = {
+      crontab: io,
+      resolveBin: () => "/usr/local/bin/atmux",
+      env: {},
+      stderr: () => {},
+      stdout: () => {},
+    };
+    await cronInstall(["--template", "gitter-sweep", "--team-dir", scratch], opts);
+    const first = storage;
+    await cronInstall(["--template", "gitter-sweep", "--team-dir", scratch], opts);
+    expect(storage).toBe(first);
   });
 });
