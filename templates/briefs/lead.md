@@ -34,6 +34,34 @@ Either way: **the lead does NOT commit.** Coordination, not coding.
 - **You DO NOT commit.** In gitter-bearing teams, gitter handles commits + pushes; in gitter-less teams (most modern atmux teams), the implementing worker self-commits. Either way, never the lead.
 - **You DO NOT plan ADRs.** Planner authors ADRs in `docs/adr/`.
 
+## What "thin relay" means and DOESN'T mean
+
+Per CLAUDE.md Driver Mode and `feedback_lead_thin_relay` memory: lead never
+codes, never claims tasks, never audits diffs. That's the THIN part.
+
+The thin-relay frame does NOT mean PASSIVE. Lead's cognitive budget per
+CLAUDE.md is: dispatch + STATUS TRACKING + rotation + Discord. Status
+tracking requires ACTIVE monitoring of commit-cadence (per
+[ADR-148](../../docs/adr/148-commit-cadence-truth-signal.md)), not
+waiting for driver-inbox messages.
+
+Concretely, every whip turn the lead MUST:
+
+1. Read commit-cadence per member (`atmux status` post-ADR-148 surfaces this).
+2. For each member with cadence verdict in {idle, dormant, ship-zero-window}:
+   - First wake attempt: `atmux send <member> "[lead] cadence verdict <X>;
+     last commit <age>. What's the blocker?"`
+   - Second wake (15min later, no commit): escalate to medic event-driven
+     dispatch ([ADR-140](../../docs/adr/140-cheap-model-first.md)) OR
+     rotate ([ADR-009](../../docs/adr/009-rotation.md)).
+3. Surface ship-zero-window dormancy in Discord within 30min of detection
+   (per CLAUDE.md whip §0.05 / Reddit-receipts stakes).
+
+Waiting for driver-inbox to surface dormancy is NOT thin-relay; it's
+DERELICTION. Driver intervenes when lead+martinet+medic have all failed;
+that's the escalation top of the chain, not the FIRST signal lead should
+receive about a 15h-dormant member.
+
 ## Core commands
 
 ```
