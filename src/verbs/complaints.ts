@@ -34,9 +34,10 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
-import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { closeDatabase, openDatabase, transactImmediate } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { addToSentinel, removeFromSentinel } from "../core/ombudsman.ts";
 import { ComplaintsRepo } from "../core/repositories/complaints-repo.ts";
 import { UsageError } from "../errors.ts";
 import {
@@ -345,7 +346,23 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
       targetTeam,
       extra,
     };
-    repo.insert(c);
+    // ADR-147 T2 §D2: serialize the DB insert via BEGIN IMMEDIATE so
+    // concurrent file + resolve callers don't tear (ADR-091 pre-flag
+    // #1). The sentinel write follows the COMMIT — it's an async JSON
+    // op (flock + atomic rename via updateJson) and cannot run inside
+    // the synchronous bun:sqlite transaction callback. A crash between
+    // the DB commit and the sentinel append leaves `complaints.status
+    // = 'open'` without a matching sentinel entry; the ombudsman work
+    // loop reads BOTH and reconciles on the next tick per
+    // `src/core/ombudsman.ts` §"Concurrency" comment — worst case is
+    // one delayed adjudication, not a lost complaint.
+    transactImmediate(db, () => repo.insert(c));
+    // ADR-147 T2 skip-gate: only teams with `ombudsman.enabled: true`
+    // write the sentinel. Preserves byte-equal behavior for the
+    // existing fleet (every team currently has `ombudsman` unset).
+    if (team.ombudsman?.enabled === true) {
+      await addToSentinel(atmuxDir, id);
+    }
     process.stdout.write(`${id}\n`);
     return 0;
   } finally {
@@ -355,22 +372,38 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
 
 async function complaintsResolve(parsed: ParsedComplaintsArgs): Promise<number> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-  await requireTeam(dirOpts);
+  const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
   const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     const repo = new ComplaintsRepo(db);
-    const ok = repo.resolve({
-      id: parsed.id ?? "",
-      status: parsed.resolveStatus ?? "resolved",
-      resolvedAt: Math.floor(Date.now() / 1000),
-      resolvedBy: parsed.by ?? null,
-      note: parsed.note ?? null,
-      relatedTaskId: parsed.relatedTask ?? null,
-    });
+    // ADR-147 T2 §D2: BEGIN IMMEDIATE around the read+UPDATE so a
+    // concurrent resolve on the same id sees a serial sequence
+    // (matches the file-side BEGIN IMMEDIATE; together they
+    // guarantee the DB layer never tears). Sentinel removal follows
+    // the COMMIT — async flock + atomic rename can't run inside the
+    // synchronous transaction callback. Drift is reconciled by the
+    // ombudsman work loop (sentinel-id-with-no-open-complaint case).
+    const ok = transactImmediate(db, () =>
+      repo.resolve({
+        id: parsed.id ?? "",
+        status: parsed.resolveStatus ?? "resolved",
+        resolvedAt: Math.floor(Date.now() / 1000),
+        resolvedBy: parsed.by ?? null,
+        note: parsed.note ?? null,
+        relatedTaskId: parsed.relatedTask ?? null,
+      }),
+    );
     if (!ok) {
       process.stderr.write(`atmux: complaints resolve: no such id: ${parsed.id ?? ""}\n`);
       return 1;
+    }
+    // ADR-147 T2 skip-gate: only opt-in teams maintain the sentinel.
+    // `removeFromSentinel` is idempotent (set-semantic remove) — a
+    // missing id is a no-op, which covers the operator-manual
+    // resolve path on a complaint that was never sentinel-tracked.
+    if (team.ombudsman?.enabled === true) {
+      await removeFromSentinel(atmuxDir, parsed.id ?? "");
     }
     process.stdout.write(`${parsed.id} → ${parsed.resolveStatus ?? "resolved"}\n`);
     return 0;

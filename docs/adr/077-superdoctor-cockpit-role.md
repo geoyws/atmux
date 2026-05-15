@@ -16,6 +16,29 @@
 > below; martinet handles per-team observation + nudge work that
 > doesn't require Opus judgment. Verb impl: T8 of ADR-132 (commit
 > t-fb5e4c1f).
+>
+> **2026-05-15 §E hook — starving-bootstrap recovery moved here**
+> ([ADR-081 §E](081-bootstrap-brief-paste-bug.md)): the lead's whip
+> §4a `auto-bootstrap-starving-members` step is removed in favour
+> of supervisor-side recovery on this role. The chicken-and-egg
+> failure mode (stuck/confused lead cannot fire whip; 2026-05-12
+> 20h+ dormancy incident) is broken by relocating the rule to
+> medic's hourly cron tick. The recovery primitive is the existing
+> `atmux doctor --fix` (ADR-081 §D + commit `8248778`,
+> `fixStarvingMembers` at `src/verbs/doctor.ts:2329`) — medic
+> invokes it per enabled team in `~/.atmux/cockpit.json` when a
+> team has ≥1 starving member AND lead has been idle ≥5 min.
+> Closes medic complaints `c-7193c689` (starving-bootstrap) and
+> `c-8ecd3a61` (doctor blind spot — addressed by §D + this hook).
+> Per ADR-081 §E §"Reversibility": (E) is one-line revert
+> (re-add the whip §4a step). Per ADR-140 cheap-model-first, the
+> hourly-cron cadence becomes event-driven via martinet once
+> ADR-140 lands. Skill-side wiring (operator dotfiles —
+> `~/.claude/skills/whip/whip-prompt.md` §4a removal +
+> `~/.claude/skills/medic/medic-prompt.md` starvation-detection
+> rule) is driver-scope per CLAUDE.md "Driver MAY: edit global
+> skills"; tracked separately from the in-repo annotation here
+> (t-9f235ad5 atmux-repo work; dotfiles work routes via driver).
 
 ## Context
 
