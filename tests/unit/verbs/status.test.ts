@@ -9,7 +9,15 @@ import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.t
 import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
-import { defaultRoleEmoji, parseStatusArgs, status } from "../../../src/verbs/status.ts";
+import {
+  defaultRoleEmoji,
+  formatContextColumn,
+  gatherStatus,
+  type MemberStatus,
+  parseStatusArgs,
+  readMemberContextSignal,
+  status,
+} from "../../../src/verbs/status.ts";
 
 let socketDir: string;
 let socketPath: string;
@@ -423,14 +431,8 @@ describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
     // parent of atmuxDir (i.e., teamDir).
     const adrDir = join(teamDir, "docs", "adr");
     await mkdir(adrDir, { recursive: true });
-    await writeFile(
-      join(adrDir, "200-foo.md"),
-      "# Foo\n\n**Status**: proposed\n",
-    );
-    await writeFile(
-      join(adrDir, "201-bar.md"),
-      "# Bar\n\n**Status**: proposed\n",
-    );
+    await writeFile(join(adrDir, "200-foo.md"), "# Foo\n\n**Status**: proposed\n");
+    await writeFile(join(adrDir, "201-bar.md"), "# Bar\n\n**Status**: proposed\n");
 
     // Bucket B: 2 stale, untriaged driver-inbox headings (45 min ago,
     // past the 30-min threshold).
@@ -514,10 +516,7 @@ describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
     // One proposed ADR — minimal seed to verify the bucket-A entry shape.
     const adrDir = join(teamDir, "docs", "adr");
     await mkdir(adrDir, { recursive: true });
-    await writeFile(
-      join(adrDir, "300-x.md"),
-      "# X title\n\n**Status**: proposed\n",
-    );
+    await writeFile(join(adrDir, "300-x.md"), "# X title\n\n**Status**: proposed\n");
 
     const { out } = await captureStdout(() =>
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
@@ -533,5 +532,299 @@ describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
     });
     expect(typeof entry.path).toBe("string");
     expect(typeof entry.ageMin).toBe("number");
+  });
+});
+
+// ---------- Per-task t-d98b2bd6: member context-pressure surfacing ----------
+
+describe("formatContextColumn — pure formatter", () => {
+  test("undefined contextPct → '—' (no signal)", () => {
+    const m: MemberStatus = {
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      pendingCount: 0,
+      inProgressCount: 0,
+      cageState: null,
+    };
+    expect(formatContextColumn(m)).toBe("—");
+  });
+
+  test("fresh signal renders 'X.X%' with one decimal", () => {
+    const m: MemberStatus = {
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      pendingCount: 0,
+      inProgressCount: 0,
+      cageState: null,
+      contextPct: 8.4,
+      contextTs: 1_715_000_000,
+      contextStale: false,
+    };
+    expect(formatContextColumn(m)).toBe("8.4%");
+  });
+
+  test("threshold-tripped 75% renders 75.0%", () => {
+    const m: MemberStatus = {
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      pendingCount: 0,
+      inProgressCount: 0,
+      cageState: null,
+      contextPct: 75,
+      contextTs: 1_715_000_000,
+      contextStale: false,
+    };
+    expect(formatContextColumn(m)).toBe("75.0%");
+  });
+
+  test("stale signal → '(stale)' even when contextPct is present", () => {
+    const m: MemberStatus = {
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      pendingCount: 0,
+      inProgressCount: 0,
+      cageState: null,
+      contextPct: 42.5,
+      contextTs: 1_715_000_000,
+      contextStale: true,
+    };
+    expect(formatContextColumn(m)).toBe("(stale)");
+  });
+});
+
+describe("readMemberContextSignal — JSON read with home injection", () => {
+  let homeDir: string;
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-ctx-home-"));
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  test("returns null when JSON file is absent", async () => {
+    const got = await readMemberContextSignal(homeDir, "test-team", "alpha");
+    expect(got).toBeNull();
+  });
+
+  test("reads a valid JSON file", async () => {
+    const dir = join(homeDir, ".claude", "teams", "test-team", "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: 1_715_000_000,
+        input_kt: 12.3,
+        output_kt: 4.5,
+        context_pct: 8.4,
+        window_kt: 200,
+        in_flight_task: null,
+      }),
+    );
+    const got = await readMemberContextSignal(homeDir, "test-team", "alpha");
+    expect(got).not.toBeNull();
+    expect(got?.member).toBe("alpha");
+    expect(got?.ts).toBe(1_715_000_000);
+    expect(got?.context_pct).toBe(8.4);
+  });
+
+  test("returns null on corrupt JSON (silent recovery)", async () => {
+    const dir = join(homeDir, ".claude", "teams", "test-team", "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "alpha.json"), "{not-json");
+    const got = await readMemberContextSignal(homeDir, "test-team", "alpha");
+    expect(got).toBeNull();
+  });
+
+  test("returns null on missing required field (typed reject)", async () => {
+    const dir = join(homeDir, ".claude", "teams", "test-team", "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({ member: "alpha", ts: 1000 /* no context_pct */ }),
+    );
+    const got = await readMemberContextSignal(homeDir, "test-team", "alpha");
+    expect(got).toBeNull();
+  });
+});
+
+describe("gatherStatus — member ctx fields populated from JSON", () => {
+  let homeDir: string;
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-ctx-gather-"));
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  test("absent JSON → row omits ctx fields", async () => {
+    const { teamName, sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      home: homeDir,
+      now: () => 1_715_000_500_000,
+      whipCadenceSec: 270,
+    });
+    expect(snap.team).toBe(teamName);
+    expect(snap.members[0]?.contextPct).toBeUndefined();
+    expect(snap.members[0]?.contextTs).toBeUndefined();
+    expect(snap.members[0]?.contextStale).toBeUndefined();
+  });
+
+  test("fresh JSON → row populates ctx fields + contextStale=false", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    // Seed fresh signal (ts within 2× cadence of `now`).
+    const dir = join(homeDir, ".claude", "teams", teamName, "member-context");
+    await mkdir(dir, { recursive: true });
+    const tsSec = 1_715_000_400;
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: tsSec,
+        input_kt: 50,
+        output_kt: 10,
+        context_pct: 30,
+        window_kt: 200,
+        in_flight_task: null,
+      }),
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      home: homeDir,
+      // 1715000500000 ms - 1715000400000 ms = 100s — well under 2*270=540s stale window
+      now: () => 1_715_000_500_000,
+      whipCadenceSec: 270,
+    });
+    expect(snap.members[0]?.contextPct).toBe(30);
+    expect(snap.members[0]?.contextTs).toBe(tsSec);
+    expect(snap.members[0]?.contextStale).toBe(false);
+  });
+
+  test("stale JSON (ts older than 2× cadence) → contextStale=true", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const dir = join(homeDir, ".claude", "teams", teamName, "member-context");
+    await mkdir(dir, { recursive: true });
+    const staleTsSec = 1_715_000_000;
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: staleTsSec,
+        input_kt: 50,
+        output_kt: 10,
+        context_pct: 30,
+        window_kt: 200,
+        in_flight_task: null,
+      }),
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      home: homeDir,
+      // 1_715_001_000_000 ms - 1_715_000_000_000 ms = 1000s > 2*270=540s stale threshold
+      now: () => 1_715_001_000_000,
+      whipCadenceSec: 270,
+    });
+    expect(snap.members[0]?.contextStale).toBe(true);
+    expect(snap.members[0]?.contextPct).toBe(30);
+  });
+
+  test("JSON output surfaces contextPct/contextTs/contextStale when present", async () => {
+    const { teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const dir = join(homeDir, ".claude", "teams", teamName, "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: Math.floor(Date.now() / 1000),
+        context_pct: 42.5,
+      }),
+    );
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+      );
+      const parsed = JSON.parse(out);
+      const alpha = parsed.members.find((m: { name: string }) => m.name === "alpha");
+      expect(alpha?.contextPct).toBe(42.5);
+      expect(typeof alpha?.contextTs).toBe("number");
+      expect(alpha?.contextStale).toBe(false);
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+
+  test("text mode prints ctx % column with header and per-row value", async () => {
+    const { teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const dir = join(homeDir, ".claude", "teams", teamName, "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: Math.floor(Date.now() / 1000),
+        context_pct: 42.5,
+      }),
+    );
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--socket", socketPath, "--team-dir", teamDir]),
+      );
+      expect(out).toContain("ctx");
+      expect(out).toContain("42.5%");
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+
+  test("text mode renders '—' for members without ctx signal", async () => {
+    await stageTeam([{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }], false);
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--socket", socketPath, "--team-dir", teamDir]),
+      );
+      expect(out).toContain("—");
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
   });
 });

@@ -14,13 +14,9 @@
 
 import { join } from "node:path";
 
-import { exists } from "../abstractions/fs.ts";
+import { exists, readTextOrNull } from "../abstractions/fs.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
-import {
-  type CageHealth,
-  type CageState,
-  probeCageState,
-} from "../core/cage-state.ts";
+import { type CageHealth, type CageState, probeCageState } from "../core/cage-state.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
   buildWindowName,
@@ -118,6 +114,29 @@ export interface MemberStatus {
    *  operationally useful number ("what's this member currently
    *  working on?"). */
   inProgressCount: number;
+  /** Per-task t-d98b2bd6 (member context-pressure rotation): structured
+   *  context-token usage signal written by the whip-side
+   *  `measure-context.sh` script at every idle-hook fire to
+   *  `${HOME}/.claude/teams/${TEAM}/member-context/${MEMBER}.json`.
+   *
+   *  When the JSON file exists + is fresh (`ts` within 2× whip cadence),
+   *  fields are populated and the renderer surfaces the percentage in
+   *  the `ctx %` column. Absent file → all three undefined; renderer
+   *  shows `—` to indicate "no signal yet" (member's idle-hook hasn't
+   *  fired, or the rollout hasn't reached this team yet). Stale file
+   *  (ts older than 2× whip cadence) → `contextStale: true` so the
+   *  renderer can flag it distinct from "fresh, ≥threshold" rotation
+   *  candidates. */
+  contextPct?: number;
+  /** Epoch seconds when the member-context JSON was last written by
+   *  measure-context.sh. */
+  contextTs?: number;
+  /** True iff the on-disk signal is older than 2× the whip cadence
+   *  (default ~9 min on 270s cadence). Renderer distinguishes "stale
+   *  signal — member idle-hook isn't firing" from "fresh-but-low" so
+   *  the operator can spot crashed claude processes vs healthy
+   *  low-context members. */
+  contextStale?: boolean;
 }
 
 export interface KanbanCounts {
@@ -187,6 +206,53 @@ export interface GatherStatusDeps {
   /** Build the cockpit-side TmuxNamespace (operator's default socket).
    *  Default `createTmux({ socket: 'default' })`. */
   cockpitTmuxFactory?: (cfg: TmuxConfig) => TmuxNamespace;
+  /** Per-task t-d98b2bd6: override `$HOME` for resolving the member-
+   *  context JSON path. Default reads `env.HOME`. */
+  home?: string;
+  /** Per-task t-d98b2bd6: clock override for the staleness check.
+   *  Default `Date.now()` (epoch ms). */
+  now?: () => number;
+  /** Per-task t-d98b2bd6: whip cadence (seconds) used to compute the
+   *  staleness window (2× this value). Default 270s — matches
+   *  whip-prompt.md §1b. */
+  whipCadenceSec?: number;
+}
+
+/** Per-task t-d98b2bd6 (whip-side signal shape). Mirrors the on-disk
+ *  JSON written by `measure-context.sh`. Only the fields atmux status
+ *  surfaces today; the script writes additional fields (`input_kt`,
+ *  `output_kt`, `window_kt`, `in_flight_task`) that the lead reads
+ *  directly but atmux status does not display in v1. */
+interface MemberContextSignal {
+  member: string;
+  ts: number;
+  context_pct: number;
+}
+
+/** Per-task t-d98b2bd6: read the member-context signal written by the
+ *  whip-side `measure-context.sh` script. Returns `null` when the
+ *  file is absent (rollout hasn't reached this team yet, or the
+ *  member's idle-hook hasn't fired even once), undefined fields when
+ *  JSON parse fails (corrupt write — silent recovery, not a hard
+ *  error since the signal is best-effort). Pure read; no caching. */
+export async function readMemberContextSignal(
+  homeDir: string,
+  team: string,
+  member: string,
+): Promise<MemberContextSignal | null> {
+  const path = join(homeDir, ".claude", "teams", team, "member-context", `${member}.json`);
+  const text = await readTextOrNull(path);
+  if (text === null) return null;
+  try {
+    const parsed = JSON.parse(text) as Partial<MemberContextSignal>;
+    if (typeof parsed.member !== "string") return null;
+    if (typeof parsed.ts !== "number") return null;
+    if (typeof parsed.context_pct !== "number") return null;
+    return { member: parsed.member, ts: parsed.ts, context_pct: parsed.context_pct };
+  } catch {
+    // Corrupt write — best-effort; next idle-hook fire overwrites.
+    return null;
+  }
 }
 
 /**
@@ -259,6 +325,14 @@ export async function gatherStatus(
     ? "up"
     : "down";
 
+  // Per-task t-d98b2bd6: resolve the home + clock + cadence used by the
+  // member-context signal read. Test injection threads through `deps`.
+  const env = deps.env ?? process.env;
+  const homeDir = deps.home ?? env.HOME ?? "";
+  const nowMs = (deps.now ?? Date.now)();
+  const whipCadenceSec = deps.whipCadenceSec ?? 270;
+  const staleAfterMs = whipCadenceSec * 2 * 1000;
+
   const members: MemberStatus[] = [];
   for (const m of team.members) {
     const paneCommand = await readPaneCommand(tmux, sessionName, m, sessionState === "up");
@@ -294,6 +368,18 @@ export async function gatherStatus(
     };
     if (m.emoji !== undefined && m.emoji.length > 0) row.emoji = m.emoji;
     if (m.label !== undefined && m.label.length > 0) row.label = m.label;
+    // Per-task t-d98b2bd6: read the whip-side context signal when home
+    // is resolvable. Skip silently when $HOME is unset (atmux running
+    // under an unusual env — the row just shows no ctx data).
+    if (homeDir.length > 0) {
+      const signal = await readMemberContextSignal(homeDir, team.name, m.name);
+      if (signal !== null) {
+        row.contextPct = signal.context_pct;
+        row.contextTs = signal.ts;
+        const signalAgeMs = nowMs - signal.ts * 1000;
+        row.contextStale = signalAgeMs > staleAfterMs;
+      }
+    }
     members.push(row);
   }
 
@@ -376,6 +462,10 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
         // alongside the canonical `name`. JSON consumers gating on
         // `name` (the immutable ID) keep working; renderers that want
         // the operator-facing display string read `label ?? name`.
+        // Per-task t-d98b2bd6: surface contextPct + contextTs +
+        // contextStale when the whip-side signal exists. Omit fields
+        // entirely when the signal is absent so JSON consumers can
+        // gate on key-presence cleanly.
         const row: {
           name: string;
           role: string;
@@ -385,6 +475,9 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           pendingCount: number;
           inProgressCount: number;
           label?: string;
+          contextPct?: number;
+          contextTs?: number;
+          contextStale?: boolean;
         } = {
           name: m.name,
           role: m.role,
@@ -395,6 +488,9 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           inProgressCount: m.inProgressCount,
         };
         if (m.label !== undefined && m.label.length > 0) row.label = m.label;
+        if (m.contextPct !== undefined) row.contextPct = m.contextPct;
+        if (m.contextTs !== undefined) row.contextTs = m.contextTs;
+        if (m.contextStale !== undefined) row.contextStale = m.contextStale;
         return row;
       }),
       kanban: snap.kanban,
@@ -481,7 +577,10 @@ function renderTextStatus(snap: StatusSnapshot): void {
   // TUIs as `(down)`. The legacy paneCommand column is preserved in
   // JSON output (back-compat for consumers reading the field) but
   // dropped from the text render to keep the row narrow.
-  process.stdout.write(`member       role          tui        state         tasks\n`);
+  // Per-task t-d98b2bd6: `ctx` column added between state and tasks
+  // — reads the whip-side `member-context/*.json` signal written by
+  // measure-context.sh. Renders "—" / "(stale)" / "X.X%".
+  process.stdout.write(`member       role          tui        state         ctx      tasks\n`);
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
     // ADR-136 TR4: operator-facing text column uses label-fallback.
@@ -496,8 +595,12 @@ function renderTextStatus(snap: StatusSnapshot): void {
     // doesn't apply — non-claude TUIs don't have claude in their child
     // process tree by definition).
     const state = (m.cageState ?? m.paneCommand).padEnd(14);
+    // Per-task t-d98b2bd6: ctx % column rendered as "8.4%" /
+    // "(stale)" / "—". Width pinned to 8 chars so the trailing
+    // tasks block stays column-aligned across heterogeneous teams.
+    const ctx = formatContextColumn(m).padEnd(8);
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${state} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${state} ${ctx} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
     );
   }
   const k = snap.kanban;
@@ -531,6 +634,23 @@ function renderTextStatus(snap: StatusSnapshot): void {
     const stateEmoji = stateLabel === "alive" ? "🟢" : stateLabel === "disabled" ? "⚪" : "🔴";
     process.stdout.write(`📋 medic  ${stateEmoji} ${stateLabel}\n`);
   }
+}
+
+/** Per-task t-d98b2bd6: format the `ctx %` column for a member row.
+ *  Three states:
+ *    - No signal on disk (undefined contextPct)             → "—"
+ *    - Stale signal (contextStale=true)                     → "(stale)"
+ *    - Fresh signal — one decimal place + %                 → "8.4%"
+ *
+ *  Stale shape distinguishes "member idle-hook crashed / claude wedged"
+ *  from "no signal yet" so the operator can act differently. ≥60%
+ *  rotation decisions are made on the lead side (whip §1b) — atmux
+ *  status is purely informational; it does not flag the threshold,
+ *  only renders the percentage. */
+export function formatContextColumn(m: MemberStatus): string {
+  if (m.contextPct === undefined) return "—";
+  if (m.contextStale === true) return "(stale)";
+  return `${m.contextPct.toFixed(1)}%`;
 }
 
 /** Default role emoji per bash lib/status.sh:69-77. */
