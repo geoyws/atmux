@@ -16,8 +16,15 @@ import { join } from "node:path";
 
 import { exists } from "../abstractions/fs.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  type CageHealth,
+  type CageState,
+  probeCageState,
+} from "../core/cage-state.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
+  buildWindowName,
+  displayMemberName,
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
@@ -88,7 +95,19 @@ export interface MemberStatus {
   role: string;
   tui: string;
   emoji?: string;
+  /** ADR-136 TR4: mutable display label. When set + non-empty, the
+   *  text rendering uses `label` in place of `name` for the operator-
+   *  facing column. JSON consumers still get the immutable `name`
+   *  field (the ID) as the primary key. */
+  label?: string;
   paneCommand: string;
+  /** t-74273200 / c-8ecd3a61: canonical 4-state cage taxonomy. Shared
+   *  with `atmux doctor` (`MemberCageState` is an alias). When the
+   *  member's `tui !== "claude"`, this is `null` — the cage-state
+   *  probe is claude-specific (it checks for `claude` exec in the
+   *  pane's child tree); non-claude TUIs are read via the legacy
+   *  `paneCommand` field above. */
+  cageState: CageState | null;
   /** Tasks owned by this member with status='todo'. Pre-ADR-076 this
    *  came from the JSON inbox `pending` bucket; post-cutover it's a
    *  direct query against the tasks table via `loadInbox`. Surfaced in
@@ -243,6 +262,23 @@ export async function gatherStatus(
   const members: MemberStatus[] = [];
   for (const m of team.members) {
     const paneCommand = await readPaneCommand(tmux, sessionName, m, sessionState === "up");
+    // t-74273200 / c-8ecd3a61: cage-state probe for claude TUI members
+    // — replaces the pane_current_command proxy which mis-reported
+    // welcome-screen claude TUIs as `(down)`. Non-claude TUIs skip the
+    // probe (cage taxonomy is claude-specific) and surface state=null.
+    let cageState: CageState | null = null;
+    if (sessionState === "up" && (m.tui ?? "claude") === "claude") {
+      try {
+        const health: CageHealth = await probeCageState(team, m, atmuxDir, { tmux });
+        cageState = health.state;
+      } catch {
+        // Probe failure → leave cageState null; the legacy paneCommand
+        // proxy still gives the operator something to look at.
+        cageState = null;
+      }
+    } else if (sessionState === "down") {
+      cageState = "down";
+    }
     const { pending: pendingCount, inProgress: inProgressCount } = await readMemberCounts(
       atmuxDir,
       m.name,
@@ -252,10 +288,12 @@ export async function gatherStatus(
       role: m.role ?? "member",
       tui: m.tui ?? "claude",
       paneCommand,
+      cageState,
       pendingCount,
       inProgressCount,
     };
     if (m.emoji !== undefined && m.emoji.length > 0) row.emoji = m.emoji;
+    if (m.label !== undefined && m.label.length > 0) row.label = m.label;
     members.push(row);
   }
 
@@ -333,14 +371,32 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       team: snap.team,
       session: snap.session,
       sessionState: snap.sessionState,
-      members: snap.members.map((m) => ({
-        name: m.name,
-        role: m.role,
-        tui: m.tui,
-        paneCommand: m.paneCommand,
-        pendingCount: m.pendingCount,
-        inProgressCount: m.inProgressCount,
-      })),
+      members: snap.members.map((m) => {
+        // ADR-136 TR4: surface `label` as an optional sibling key
+        // alongside the canonical `name`. JSON consumers gating on
+        // `name` (the immutable ID) keep working; renderers that want
+        // the operator-facing display string read `label ?? name`.
+        const row: {
+          name: string;
+          role: string;
+          tui: string;
+          paneCommand: string;
+          cageState: CageState | null;
+          pendingCount: number;
+          inProgressCount: number;
+          label?: string;
+        } = {
+          name: m.name,
+          role: m.role,
+          tui: m.tui,
+          paneCommand: m.paneCommand,
+          cageState: m.cageState,
+          pendingCount: m.pendingCount,
+          inProgressCount: m.inProgressCount,
+        };
+        if (m.label !== undefined && m.label.length > 0) row.label = m.label;
+        return row;
+      }),
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
       driverPane: snap.driverPane,
@@ -364,14 +420,13 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
 async function readPaneCommand(
   tmux: TmuxNamespace,
   sessionName: string,
-  member: { name: string; emoji?: string | undefined },
+  member: { name: string; emoji?: string | undefined; label?: string | undefined },
   sessionUp: boolean,
 ): Promise<string> {
   if (!sessionUp) return "(down)";
-  const winName =
-    member.emoji !== undefined && member.emoji.length > 0
-      ? `${member.emoji}${member.name}`
-      : member.name;
+  // ADR-135 + ADR-136 TR4: canonical hyphen-separator window name with
+  // label-fallback when the member has been hot-renamed.
+  const winName = buildWindowName(member.name, member.emoji, member.label);
   const target = `${sessionName}:${winName}`;
   try {
     // Bash lib/status.sh:55 reads `#{pane_current_command}` via
@@ -420,15 +475,29 @@ function renderTextStatus(snap: StatusSnapshot): void {
     const evidence = dp.evidence.length > 60 ? `${dp.evidence.slice(0, 60)}…` : dp.evidence;
     process.stdout.write(`🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`);
   }
-  process.stdout.write(`member       role          tui        pane          tasks\n`);
+  // t-74273200: text mode now leads with `cageState` (the unified 4-
+  // state taxonomy: down/bootstrapping/active/wedged) in place of the
+  // pane_current_command proxy that mis-reported welcome-screen claude
+  // TUIs as `(down)`. The legacy paneCommand column is preserved in
+  // JSON output (back-compat for consumers reading the field) but
+  // dropped from the text render to keep the row narrow.
+  process.stdout.write(`member       role          tui        state         tasks\n`);
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
-    const name = m.name.padEnd(12);
+    // ADR-136 TR4: operator-facing text column uses label-fallback.
+    // Internal data still keys by `m.name` (the ID) for the kanban /
+    // inbox counts — `m.pendingCount` etc. were already resolved
+    // against the ID upstream.
+    const name = displayMemberName(m).padEnd(12);
     const role = m.role.padEnd(14);
     const tui = m.tui.padEnd(10);
-    const pane = m.paneCommand.padEnd(14);
+    // For claude TUIs: surface the cage state. For non-claude TUIs:
+    // fall back to the legacy pane_current_command (the cage taxonomy
+    // doesn't apply — non-claude TUIs don't have claude in their child
+    // process tree by definition).
+    const state = (m.cageState ?? m.paneCommand).padEnd(14);
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${pane} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${state} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
     );
   }
   const k = snap.kanban;

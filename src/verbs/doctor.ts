@@ -31,6 +31,7 @@ import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
+import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
@@ -46,6 +47,12 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import {
+  type CageHealth,
+  type CageState,
+  probeCageState as defaultProbeCageState,
+  STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
+} from "../core/cage-state.ts";
 import { cageSessionName } from "../core/cockpit.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import { classifyText } from "../core/pane-state.ts";
@@ -1281,44 +1288,25 @@ function truncateEvidence(s: string, n: number): string {
  *  has rendered its banner + had time to consume a same-spawn brief
  *  paste, short enough that a real starvation surfaces before the
  *  operator gives up and ssh's in. */
-export const STARVING_THRESHOLD_S = 60;
+export const STARVING_THRESHOLD_S = STARVING_THRESHOLD_S_LOCAL;
 
-/** ADR-081 §D classifier output. The four-state ladder doctor surfaces
- *  per member pane. Matches the ADR's narrative names so audits can
- *  grep for the same vocabulary. */
-export type MemberCageState =
-  /** No tmux session OR pane window absent OR no `claude` in the pane's
-   *  process tree. Yellow row — operator must `atmux start` or attach
-   *  manually. */
-  | "down"
-  /** `claude` PID alive, ctx==0, welcome banner still visible, pane
-   *  uptime > {@link STARVING_THRESHOLD_S}. Yellow row + `--fix` path
-   *  re-pastes the brief. Matches the c-8ecd3a61 incident state. */
-  | "starving"
-  /** `claude` PID alive, ctx==0 but pane uptime ≤ threshold. Transient
-   *  — silent in the doctor output (no row) so a fresh `atmux start`
-   *  doesn't paint the table yellow for 60s. */
-  | "bootstrapping"
-  /** `claude` PID alive AND ctx > 0 OR token-counter present. Green —
-   *  silent in the output to keep the human render compact (matches
-   *  driver-pane-state behaviour at lines 1051-1062). */
-  | "active";
+/** ADR-081 §D classifier output, unified with `atmux status` per
+ *  t-74273200 / c-8ecd3a61. The taxonomy is now four states
+ *  ({@link CageState}): `down`, `bootstrapping`, `active`, `wedged`.
+ *
+ *  Doctor's row-surfacing policy still distinguishes "transient
+ *  bootstrap" (silent, uptime ≤ {@link STARVING_THRESHOLD_S}) from
+ *  "starving" (yellow, uptime > threshold) — but BOTH use the shared
+ *  `bootstrapping` state label so `atmux status` + `atmux doctor`
+ *  never disagree on a pane's state vocabulary again.
+ *
+ *  Pre-unification this type included `starving` as a separate state;
+ *  that value is removed. Audits searching for "starving" should grep
+ *  for the row label `welcome banner persistent` (preserved in the
+ *  detail text) or the new shared `wedged` state. */
+export type MemberCageState = CageState;
 
-export interface MemberCageHealth {
-  /** Member name from `team.members[].name`. */
-  member: string;
-  /** Resolved `<emoji><member>` window name (post-ADR-017). */
-  windowName: string;
-  /** Classifier verdict. */
-  state: MemberCageState;
-  /** Seconds the pane process has been alive. `null` when uptime probe
-   *  failed (e.g. `ps` not on PATH) — we fall back to flagging starving
-   *  on banner-match alone to be conservative. */
-  paneUptimeSec: number | null;
-  /** Tail of the last pane capture (≤200 chars). Empty when state is
-   *  `down` (no pane to capture). */
-  evidence: string;
-}
+export interface MemberCageHealth extends CageHealth {}
 
 /** Test-side injection points for {@link checkMemberCageStates}. */
 export interface CheckMemberCageStatesOpts {
@@ -1378,19 +1366,31 @@ export async function checkMemberCageStates(
     const health = await probe(team, member, sessionName, socketPath);
     if (health === null) continue; // probe declined (e.g. window missing AND member.tui shell-only)
 
-    // `bootstrapping` is silent (transient on a fresh atmux start);
-    // `active` is silent (green, no row); only `down`/`starving`
-    // surface. Apply the uptime threshold here AFTER the probe so
-    // the probe can stay pure-classification.
-    let surfaced: MemberCageState = health.state;
-    if (surfaced === "starving" && health.paneUptimeSec !== null && health.paneUptimeSec < threshold) {
-      surfaced = "bootstrapping";
+    // t-74273200: row-surfacing policy applied AFTER the unified probe
+    // so `atmux status` + `atmux doctor` agree on the underlying state
+    // label. Doctor still distinguishes "transient bootstrap" (silent)
+    // from "starving" (yellow) via the {@link STARVING_THRESHOLD_S}
+    // uptime gate — but that's a PRESENTATION decision; the state
+    // taxonomy itself stays 4-way (down / bootstrapping / active /
+    // wedged) per the c-8ecd3a61 root cause.
+    //
+    // Row colours:
+    //   - active        → silent (no row)
+    //   - bootstrapping → silent when uptime ≤ threshold, yellow above
+    //   - down          → always yellow
+    //   - wedged        → always yellow (rate-limit / heartbeat stale)
+    if (health.state === "active") continue;
+    if (
+      health.state === "bootstrapping" &&
+      health.paneUptimeSec !== null &&
+      health.paneUptimeSec < threshold
+    ) {
+      continue;
     }
-    if (surfaced === "active" || surfaced === "bootstrapping") continue;
 
     const label = `member-cage-state:${member.name}`;
     const evidence = truncateEvidence(health.evidence, 60);
-    if (surfaced === "down") {
+    if (health.state === "down") {
       rows.push({
         status: "yellow",
         label,
@@ -1399,7 +1399,26 @@ export async function checkMemberCageStates(
       });
       continue;
     }
-    // surfaced === "starving"
+    if (health.state === "wedged") {
+      // Differentiate the two wedged sub-causes for the operator's
+      // first-look triage: rate-limit lockout (pane classifier saw
+      // "hit your limit") vs heartbeat staleness (supervisor stopped
+      // writing). The detail text reads the heartbeatAgeSec field as
+      // the disambiguator — present means heartbeat-stale, absent
+      // means rate-limit (probe order in cage-state.ts §4 vs §6).
+      const cause =
+        health.heartbeatAgeSec !== null && health.heartbeatAgeSec > 0
+          ? `no whip activity for ${Math.floor(health.heartbeatAgeSec / 60)}min (heartbeat stale)`
+          : "rate-limit / TUI hang (pane shows rate-limit banner)";
+      rows.push({
+        status: "yellow",
+        label,
+        detail: `wedged — claude alive in ${health.windowName} but ${cause}${evidence === "" ? "" : ` (${evidence})`}`,
+        hint: `attach to investigate; rate-limit waits for budget refresh, hung TUI needs \`atmux rotate ${member.name}\``,
+      });
+      continue;
+    }
+    // state === "bootstrapping" AND uptime above threshold (or unknown)
     const upMin =
       health.paneUptimeSec !== null ? `${Math.floor(health.paneUptimeSec / 60)}min` : "unknown";
     rows.push({
@@ -1413,115 +1432,35 @@ export async function checkMemberCageStates(
   return rows;
 }
 
-/** Default per-member probe. Captures the pane scrollback, reads pane
- *  pid via tmux list-panes, derives pane-pid uptime via `ps`, and
- *  classifies via the same `inspectClaudeReadiness` predicate ADR-081
- *  §C uses for `atmux start`'s post-spawn verification — the readiness
- *  module is the single source of truth for "claude alive + brief
- *  consumed."
+/** Default per-member probe. Delegates to the unified
+ *  {@link defaultProbeCageState} in `core/cage-state.ts` so `atmux
+ *  status` and `atmux doctor` never disagree on the state label (per
+ *  c-8ecd3a61 / t-74273200). The wrapper threads `atmuxDir` through
+ *  from `checkMemberCageStates`'s outer scope (where it's already
+ *  known — we don't re-derive it inside the per-member loop).
  *
- *  Exposed as a named const (not arrow inline) so tests can stub it
- *  via {@link CheckMemberCageStatesOpts.probe}. */
+ *  Exposed as a named const so tests can stub it via
+ *  {@link CheckMemberCageStatesOpts.probe}. */
 const defaultProbeMemberCage = async (
   team: Team,
   member: TeamMember,
-  sessionName: string,
-  socketPath: string,
+  _sessionName: string,
+  _socketPath: string,
 ): Promise<MemberCageHealth | null> => {
-  const tmux = createTmux({ socketPath });
-  const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
-  const windowName = `${emoji}${member.name}`;
-  const target = `${sessionName}:${windowName}`;
-
-  // Window present? listPanes throws if window missing — treat as down.
-  let panePid: number | null = null;
-  try {
-    const panes = await tmux.pane.listPanes(target);
-    panePid = panes[0]?.pid ?? null;
-  } catch {
-    return {
-      member: member.name,
-      windowName,
-      state: "down",
-      paneUptimeSec: null,
-      evidence: "",
-    };
-  }
-  if (panePid === null) {
-    return { member: member.name, windowName, state: "down", paneUptimeSec: null, evidence: "" };
-  }
-
-  // Capture last 30 lines — enough to see token-counter footer + the
-  // welcome banner near the top of the visible region. Matches the
-  // window used by inspectClaudeReadiness for the readiness probe.
-  let text = "";
-  try {
-    text = await tmux.pane.capturePane({ target, start: -30 });
-  } catch {
-    // Pane capture failed mid-flight — surface as down rather than
-    // mis-classifying as starving.
-    return {
-      member: member.name,
-      windowName,
-      state: "down",
-      paneUptimeSec: null,
-      evidence: "",
-    };
-  }
-
-  const classification = classifyText(text);
-  const verdict = inspectClaudeReadiness(text, classification, true);
-  // Map readiness verdicts to ADR-081 §D states:
-  //   - "absent" (pane SHELL — no claude TUI) → "down"
-  //   - "starving" (welcome banner persistent, no token counter) →
-  //     "starving" (the threshold step downgrades to "bootstrapping"
-  //     when uptime is below the cut-off)
-  //   - "ready" (TUI alive + token counter OR no banner) → "active"
-  //   - "pending" (UNKNOWN classification mid-flight) → treat as
-  //     "active" defensively — don't flag a pane yellow because the
-  //     scrollback didn't classify; the next tick will catch real
-  //     starvation.
-  let state: MemberCageState;
-  if (verdict === "absent") state = "down";
-  else if (verdict === "starving") state = "starving";
-  else state = "active";
-
-  const paneUptimeSec = await readPaneUptimeSec(panePid);
-
-  // Team config is read in the outer check; the member arg drives the
-  // probe. Threading `team` here is for future hooks (rotate-policy
-  // overrides). Suppress unused for now.
-  void team;
-
-  return {
-    member: member.name,
-    windowName,
-    state,
-    paneUptimeSec,
-    evidence: text.slice(-200),
-  };
+  // The shared probe re-derives sessionName + socketPath from the team
+  // config, so we don't need to pass them through. Tests inject the
+  // probe directly via opts.probe and bypass this default.
+  void _sessionName;
+  void _socketPath;
+  // `atmuxDir` is needed for heartbeat reads in the wedged ladder.
+  // checkMemberCageStates threads it in via the outer scope; the
+  // default-probe shape doesn't carry it, so we resolve it inline
+  // from common.ts. Best-effort: heartbeat absence collapses to the
+  // pane-only signal path.
+  const atmuxDir = await getAtmuxDir();
+  return defaultProbeCageState(team, member, atmuxDir);
 };
 
-/** Read the elapsed wall-time of a process via `ps -o etimes= -p <pid>`.
- *  Returns the value in seconds, or `null` when ps fails / output
- *  doesn't parse. Pure helper — exported for test directness via the
- *  module's main check. */
-async function readPaneUptimeSec(pid: number): Promise<number | null> {
-  try {
-    const r = await defaultSpawn({
-      cmd: "ps",
-      argv: ["-o", "etimes=", "-p", String(pid)],
-      expectExitCode: "any",
-      timeoutMs: 2_000,
-    });
-    if (r.exitCode !== 0) return null;
-    const n = Number.parseInt(r.stdout.trim(), 10);
-    if (!Number.isFinite(n) || n < 0) return null;
-    return n;
-  } catch {
-    return null;
-  }
-}
 
 // ---------- ADR-057 §D5c: inbox-mark verification ----------
 
@@ -2185,6 +2124,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
   rows.push(...(await checkWorktreeIsolation(team, atmuxDir)));
+  // ADR-136 TR4: member-label-collision — warn when 2+ members share
+  // the same `(emoji, label-or-name)` display tuple. Pure (no I/O);
+  // returns [] when team is null OR no collisions exist.
+  rows.push(...checkMemberLabelCollision(team));
   // ADR-088 §Decision-6 W6: merger-fan-in anomalies — stale per-member
   // branch + role/feature-flag mismatch. Silent when `team.merger` is
   // unset or `merger.enabled !== true` (the staleness branch); the
@@ -2572,6 +2515,173 @@ export async function checkMemberForcePushRecent(
         hint: "did you mean to merge instead of rebase? see ADR-137 §D1 — `git merge origin/<base>` keeps the branch in a consistent published state",
       });
     }
+  }
+  return rows;
+}
+
+// ---------- ADR-138 T3: send-keys-failure-recent probe ----------
+
+export interface CheckSendKeysFailureRecentOpts {
+  /** Override the `$HOME` used to resolve the escalation log path.
+   *  Defaults to `process.env.HOME ?? ""`. Tests pin this so the probe
+   *  reads from a sandbox directory. */
+  home?: string;
+  /** Direct override of the escalation log path. Wins over `home` when
+   *  set. */
+  logPath?: string;
+  /** Epoch-seconds clock override (test injection). Defaults to
+   *  `Date.now() / 1000`. */
+  now?: () => number;
+  /** Time window in seconds. Default 3600 (1h). Entries older than
+   *  `now - windowSec` are not counted. */
+  windowSec?: number;
+}
+
+/**
+ * ADR-138 §"Doctor probe" — surfaces send-keys verification failures
+ * (entries appended to `~/.atmux/state/send-keys-failures.log` by
+ * `safeSendKeysWithVerify`'s escalation path) within the last hour
+ * as a single YELLOW row.
+ *
+ * Warn-class because:
+ *   - The escalation log is post-hoc evidence; the calling verb has
+ *     already decided "this send-keys didn't verify" and returned its
+ *     own non-zero or `success: false`.
+ *   - The fix is operator-side (investigate stuck member, check budget,
+ *     rotate-lead, etc.); the probe's role is surfacing, not blocking.
+ *
+ * Returns `[]` when the log is absent, empty, or has zero entries
+ * within the window. Log-parse failures (corrupt file, permission
+ * error, decode error) collapse to `[]` — the team's own doctor
+ * surface must stay green even when this probe can't run. The log is
+ * append-only + operator-managed; the probe doesn't truncate or
+ * rewrite.
+ *
+ * Log entry shape (per `writeEscalationLog` in `src/core/safe-send.ts`):
+ *
+ *   [HH:MM MYT YYYY-MM-DD] target=<tgt> keys='<keys>' attempts=N timeout=Nms
+ *   preCapture: <last 5 lines>
+ *   postCapture: <last 5 lines>
+ *   ---
+ *
+ * Parser anchors on the leading `[HH:MM MYT YYYY-MM-DD]` timestamp;
+ * every other line is body and ignored. MYT is `+08:00` per global
+ * CLAUDE.md §Timezone — the timestamp is parsed as a literal
+ * `YYYY-MM-DDTHH:MM:00+08:00` ISO string.
+ */
+export async function checkSendKeysFailureRecent(
+  opts: CheckSendKeysFailureRecentOpts = {},
+): Promise<DoctorRow[]> {
+  const nowFn = opts.now ?? ((): number => Math.floor(Date.now() / 1000));
+  const windowSec = opts.windowSec ?? 3600;
+  const now = nowFn();
+  const cutoff = now - windowSec;
+
+  const logPath =
+    opts.logPath ??
+    (() => {
+      const home = opts.home ?? process.env.HOME ?? "";
+      return home === ""
+        ? DEFAULT_SEND_KEYS_FAILURES_LOG_REL
+        : `${home}/${DEFAULT_SEND_KEYS_FAILURES_LOG_REL}`;
+    })();
+
+  const text = await readTextOrNull(logPath).catch(() => null);
+  if (text === null || text.length === 0) return [];
+
+  // Anchor on `[HH:MM MYT YYYY-MM-DD]` at line start. The MYT marker
+  // disambiguates the timestamp shape from any timestamps that might
+  // appear inside the `preCapture` / `postCapture` body lines.
+  const tsRe = /^\[(\d{2}):(\d{2}) MYT (\d{4}-\d{2}-\d{2})\]/gm;
+  let recentCount = 0;
+  let mostRecentTs = 0;
+  let mostRecentTarget = "";
+  let m: RegExpExecArray | null = tsRe.exec(text);
+  while (m !== null) {
+    const [, hh, mm, ymd] = m;
+    const epoch = Math.floor(
+      Date.parse(`${ymd}T${hh}:${mm}:00+08:00`) / 1000,
+    );
+    if (Number.isFinite(epoch) && epoch >= cutoff && epoch <= now) {
+      recentCount += 1;
+      if (epoch > mostRecentTs) {
+        mostRecentTs = epoch;
+        // Pull the `target=<tgt>` from the rest of the matched line for
+        // the hint. `target` field is always present on entries written
+        // by `writeEscalationLog` — defensive null on a malformed line.
+        const lineEnd = text.indexOf("\n", m.index);
+        const rest = text.slice(m.index, lineEnd === -1 ? text.length : lineEnd);
+        const tm = /target=(\S+)/.exec(rest);
+        mostRecentTarget = tm?.[1] ?? "";
+      }
+    }
+    m = tsRe.exec(text);
+  }
+
+  if (recentCount === 0) return [];
+
+  const ageMin = Math.max(1, Math.floor((now - mostRecentTs) / 60));
+  const targetHint = mostRecentTarget.length > 0 ? ` (last: ${mostRecentTarget})` : "";
+  return [
+    {
+      status: "yellow",
+      label: "send-keys-failure-recent",
+      detail: `${recentCount} send-keys failure${recentCount === 1 ? "" : "s"} in last hour${targetHint} — most recent ${ageMin}min ago`,
+      hint: "send-keys failed N times in last hour; check ADR-138 escalation log at ~/.atmux/state/send-keys-failures.log",
+    },
+  ];
+}
+
+// ---------- ADR-136 TR4: member-label-collision probe ----------
+
+/**
+ * ADR-136 TR4 §"Doctor probe" — surfaces members sharing the same
+ * `(emoji, display-name)` tuple as a YELLOW row. Display-name is
+ * `label ?? name`, so a fresh team without labels has zero collisions
+ * by construction (each ID is unique); the probe only fires when
+ * `atmux member rename` has produced a colliding display-name pair.
+ *
+ * Warn-class because:
+ *   - It's an operator-misconfiguration nudge, not a state corruption.
+ *     The underlying IDs (`member.name`) remain unique, so all
+ *     persistent storage classes (worktree path, branch name, kanban
+ *     owner, inbox file) still address each member unambiguously.
+ *   - Two members showing as `🛠️ worker` in `atmux status` is a UX
+ *     hazard — the operator can't tell them apart visually — but no
+ *     execution path is wrong; the bullet recommends a rename rather
+ *     than blocking.
+ *
+ * Skipped when `team === null`. Returns one row per colliding tuple
+ * (NOT per colliding member), listing both `name` IDs in `detail` so
+ * the operator can pick which one to rename. Members with no `emoji`
+ * collide on display-name alone; that's still a valid trip.
+ */
+export function checkMemberLabelCollision(team: Team | null): DoctorRow[] {
+  if (team === null) return [];
+  // Group members by `(emoji, displayName)` tuple. Empty/undefined emoji
+  // collapses to "" so name-only collisions still group correctly.
+  const groups = new Map<string, { ids: string[]; emoji: string; display: string }>();
+  for (const m of team.members) {
+    const emoji = m.emoji ?? "";
+    const display = m.label !== undefined && m.label.length > 0 ? m.label : m.name;
+    const key = `${emoji} ${display}`;
+    const existing = groups.get(key);
+    if (existing === undefined) {
+      groups.set(key, { ids: [m.name], emoji, display });
+    } else {
+      existing.ids.push(m.name);
+    }
+  }
+  const rows: DoctorRow[] = [];
+  for (const g of groups.values()) {
+    if (g.ids.length < 2) continue;
+    const visual = g.emoji.length > 0 ? `${g.emoji}-${g.display}` : g.display;
+    rows.push({
+      status: "yellow",
+      label: `member-label-collision:${g.display}`,
+      detail: `${g.ids.length} members share display '${visual}': ${g.ids.join(", ")}`,
+      hint: "rename one via `atmux member rename <id> --label <new>` so each member is visually distinct",
+    });
   }
   return rows;
 }
