@@ -15,6 +15,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
+import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { CageState } from "../../../src/core/cage-state.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
@@ -47,16 +48,23 @@ import {
   type DoctorRow,
   doctor,
   findInboxTaskMarks,
+  checkCockpitOnDefaultSocket,
+  checkTmuxVersionMismatch,
+  compareTmuxVersion,
   findPhantomInboxes,
   firstBin,
   installHint,
   parseDoctorArgs,
   parseSubmoduleStatus,
+  parseTmuxVersion,
   renderHuman,
   renderJson,
   resolveMemberBin,
   runAllChecks,
   STARVING_THRESHOLD_S,
+  TMUX_MIN_VERSION,
+  TMUX_TESTED_VERSION,
+  type TmuxSpawn,
 } from "../../../src/verbs/doctor.ts";
 
 // ---------- parseDoctorArgs ----------
@@ -3773,5 +3781,284 @@ describe("checkReleaseNoteMissing", () => {
     });
     expect(rows[0]?.detail).not.toContain(repoRoot);
     expect(rows[0]?.detail).toContain("docs/release-notes/");
+  });
+});
+
+// ---------- ADR-162 §Decision-anchor #5: tmux infrastructure probes ----------
+
+describe("parseTmuxVersion", () => {
+  test("parses standard release format 'tmux 3.6a'", () => {
+    expect(parseTmuxVersion("tmux 3.6a")).toEqual({ major: 3, minor: 6, suffix: "a" });
+  });
+
+  test("parses release without suffix 'tmux 3.2'", () => {
+    expect(parseTmuxVersion("tmux 3.2")).toEqual({ major: 3, minor: 2, suffix: "" });
+  });
+
+  test("parses release with trailing whitespace", () => {
+    expect(parseTmuxVersion("tmux 3.6a\n")).toEqual({ major: 3, minor: 6, suffix: "a" });
+  });
+
+  test("returns null for pre-release output 'tmux next-3.7'", () => {
+    expect(parseTmuxVersion("tmux next-3.7")).toBe(null);
+  });
+
+  test("returns null for source-build output 'tmux master'", () => {
+    expect(parseTmuxVersion("tmux master")).toBe(null);
+  });
+
+  test("returns null for arbitrary garbage", () => {
+    expect(parseTmuxVersion("")).toBe(null);
+    expect(parseTmuxVersion("not tmux output")).toBe(null);
+  });
+});
+
+describe("compareTmuxVersion", () => {
+  test("returns 0 when versions equal", () => {
+    const v = parseTmuxVersion("tmux 3.6a") ?? { major: 0, minor: 0, suffix: "" };
+    expect(compareTmuxVersion(v, v)).toBe(0);
+  });
+
+  test("major precedence — 2.x < 3.x", () => {
+    const v2 = parseTmuxVersion("tmux 2.9") ?? { major: 0, minor: 0, suffix: "" };
+    const v3 = parseTmuxVersion("tmux 3.0") ?? { major: 0, minor: 0, suffix: "" };
+    expect(compareTmuxVersion(v2, v3)).toBe(-1);
+    expect(compareTmuxVersion(v3, v2)).toBe(1);
+  });
+
+  test("minor precedence — 3.2 < 3.6", () => {
+    const a = parseTmuxVersion("tmux 3.2") ?? { major: 0, minor: 0, suffix: "" };
+    const b = parseTmuxVersion("tmux 3.6") ?? { major: 0, minor: 0, suffix: "" };
+    expect(compareTmuxVersion(a, b)).toBe(-1);
+    expect(compareTmuxVersion(b, a)).toBe(1);
+  });
+
+  test("suffix tiebreak — 3.6 < 3.6a < 3.6b", () => {
+    const bare = parseTmuxVersion("tmux 3.6") ?? { major: 0, minor: 0, suffix: "" };
+    const a = parseTmuxVersion("tmux 3.6a") ?? { major: 0, minor: 0, suffix: "" };
+    const b = parseTmuxVersion("tmux 3.6b") ?? { major: 0, minor: 0, suffix: "" };
+    expect(compareTmuxVersion(bare, a)).toBe(-1);
+    expect(compareTmuxVersion(a, b)).toBe(-1);
+    expect(compareTmuxVersion(b, a)).toBe(1);
+  });
+});
+
+describe("checkTmuxVersionMismatch", () => {
+  function tmuxOk(stdout: string): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: ["-V"],
+      cmd: "tmux",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  test("constants are at the documented values per ADR-162 §Part C", () => {
+    expect(TMUX_MIN_VERSION).toBe("3.2");
+    expect(TMUX_TESTED_VERSION).toBe("3.6a");
+  });
+
+  test("in-range tmux 3.6a (exact tested version) → no rows", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux 3.6a"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("in-range tmux 3.2 (exact min) → no rows", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux 3.2"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("in-range tmux 3.4 (mid-range) → no rows", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux 3.4"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("below-min tmux 3.0a → yellow with 'below minimum' detail", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux 3.0a"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("tmux-version-mismatch");
+    expect(rows[0]?.detail).toContain("3.0a");
+    expect(rows[0]?.detail).toContain("below minimum");
+    expect(rows[0]?.hint).toContain("ADR-163");
+  });
+
+  test("below-min tmux 2.9 (major below) → yellow", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux 2.9"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("below minimum");
+  });
+
+  test("above-tested tmux 3.7 → yellow with 'above tested' detail", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux 3.7"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("tmux-version-mismatch");
+    expect(rows[0]?.detail).toContain("3.7");
+    expect(rows[0]?.detail).toContain("above tested");
+  });
+
+  test("above-tested tmux 3.6b (suffix bump above 3.6a) → yellow", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux 3.6b"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("above tested");
+  });
+
+  test("above-tested tmux 4.0 (major bump) → yellow", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux 4.0"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("4.0");
+  });
+
+  test("unparseable tmux -V output → yellow 'unparseable'", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => tmuxOk("tmux next-3.7"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.detail).toContain("unparseable");
+    expect(rows[0]?.hint).toContain("ADR-138");
+  });
+
+  test("tmux -V exit non-zero → yellow 'exited N'", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "permission denied",
+        argv: ["-V"],
+        cmd: "tmux",
+        signalled: null,
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.detail).toContain("exited 1");
+  });
+
+  test("spawn throws → yellow 'failed to run'", async () => {
+    const rows = await checkTmuxVersionMismatch({
+      tmux: async () => {
+        throw new Error("ENOENT");
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.detail).toContain("failed to run");
+  });
+});
+
+describe("checkCockpitOnDefaultSocket", () => {
+  function tmuxOk(stdout: string): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: ["-L", "default", "list-sessions", "-F", "#{session_name}"],
+      cmd: "tmux",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  test("default socket has no atmux_cockpit session → no rows", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => tmuxOk("personal\nwork\n"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("default socket empty → no rows", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => tmuxOk(""),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("default socket has atmux_cockpit session → yellow with migrate-socket hint", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => tmuxOk("personal\natmux_cockpit\nwork\n"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("cockpit-on-default-socket");
+    expect(rows[0]?.detail).toContain("atmux_cockpit");
+    expect(rows[0]?.hint).toContain("migrate-socket");
+    expect(rows[0]?.hint).toContain("ADR-162");
+  });
+
+  test("custom cockpitSession opt — looks for the override name", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => tmuxOk("my-cockpit\n"),
+      cockpitSession: "my-cockpit",
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("my-cockpit");
+  });
+
+  test("tmux -L default exit non-zero (no server) → silent", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "no server running on /tmp/tmux-1000/default",
+        argv: [],
+        cmd: "tmux",
+        signalled: null,
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("spawn throws → silent (deps check covers tmux-on-PATH)", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => {
+        throw new Error("ENOENT");
+      },
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("trims whitespace on session names — handles trailing newlines + spaces", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => tmuxOk("  atmux_cockpit  \n\n"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("cockpit-on-default-socket");
+  });
+
+  // Reference to TmuxSpawn type keeps the import alive (consumed via opts.tmux above).
+  test("type sanity — TmuxSpawn shape matches opts.tmux signature", () => {
+    const spawn: TmuxSpawn = async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      argv: [],
+      cmd: "tmux",
+      signalled: null,
+      durationMs: 0,
+    });
+    expect(typeof spawn).toBe("function");
   });
 });
