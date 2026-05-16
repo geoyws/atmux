@@ -125,7 +125,13 @@ describe("hygieneTick — integration", () => {
         ],
       }),
     );
-    // Seed state.db with one ghost-owned task.
+    // Seed state.db with one ghost-owned task. t-584b5f37 cluster 14
+    // fix: pin `priority: 1` so the seed doesn't ALSO trip the
+    // `prio-null` detector (ADR-131 §D2 row 5 — priority=null on a
+    // live task is its own fingerprint class). The happy-path test
+    // wants `detected === 1` and asserts ghost-owner; the missing
+    // priority was triggering a second detection (`prio-null`) that
+    // co-fired with ghost-owner and broke the count.
     const db = openDatabase(join(atmuxDir, "state.db"), migrations);
     try {
       const repo = new KanbanRepo(db);
@@ -135,6 +141,7 @@ describe("hygieneTick — integration", () => {
         status: "todo",
         owner: "fe-ghost",
         lane: "fe",
+        priority: 1,
         createdAt: 100,
       });
     } finally {

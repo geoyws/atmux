@@ -33,7 +33,6 @@ import {
   removeTask,
   setTaskBody,
   setTaskDeps,
-  setTaskDriverOnly,
   setTaskLane,
   setTaskPriority,
   showTask,
@@ -57,8 +56,7 @@ const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--js
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
 const USAGE_PRIORITY = "atmux task priority <id> <N|->";
-const USAGE_UPDATE =
-  "atmux task update <id> [--body <text>] [--deps <a,b>] [--driver-only|--no-driver-only]";
+const USAGE_UPDATE = "atmux task update <id> [--body <text>] [--deps <a,b>]";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
 
@@ -127,35 +125,6 @@ const VALID_LANES = new Set([
   "-",
 ]);
 
-/** Member-name aliases that resolve to canonical lanes (t-cea78f99).
- *  Driver-friction surfaced 2026-05-15 — operators kept typing
- *  `--lane gitter` (the member-name) when the canonical lane is
- *  `git`. Same shape for the other named roles: dba → db, devops →
- *  ops, reviewer → review, planner → docs.
- *
- *  Resolution: `resolveLaneAlias(input)` returns the canonical lane
- *  when `input` is a known alias, else returns `input` unchanged.
- *  Call BEFORE the VALID_LANES check so aliases pass through
- *  validation transparently. Errors enriched with did-you-mean
- *  hints when the input is neither a valid lane nor a known alias.
- *
- *  Exempt members (lead, member generic, ombudsman, ad-hoc) have NO
- *  default lane mapping — operators set those explicitly. */
-const LANE_ALIASES: Record<string, string> = {
-  gitter: "git",
-  planner: "docs",
-  reviewer: "review",
-  dba: "db",
-  devops: "ops",
-};
-
-/** Resolve a `--lane` argument: if the input is a member-name alias
- *  (see {@link LANE_ALIASES}), return the canonical lane. Otherwise
- *  return the input unchanged for the regular VALID_LANES check. */
-export function resolveLaneAlias(input: string): string {
-  return LANE_ALIASES[input] ?? input;
-}
-
 /**
  * `atmux task <subverb> [args]`. Returns 0 on success; throws
  * `UsageError` / `ConfigError` for the caller to map per ADR-006.
@@ -220,21 +189,7 @@ async function taskAdd(argv: ReadonlyArray<string>): Promise<number> {
 
 // `atmux task lane <id> <fe|be|db|ops|test|review|misc|->`
 async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
-  // Skip BOTH the --team-dir flag AND its value when collecting
-  // positional args. The pre-t-cea78f99 parser dropped only the flag
-  // but kept the value (treating it as a 3rd positional) which broke
-  // `task lane <id> <lane> --team-dir <dir>` — surfaces only when
-  // tests pass --team-dir, which they should.
-  const positional: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === "--team-dir") {
-      i += 1; // skip the value too
-      continue;
-    }
-    if (a.startsWith("--")) continue;
-    positional.push(a);
-  }
+  const positional = argv.filter((a) => !a.startsWith("--"));
   const teamDir = (() => {
     const idx = argv.indexOf("--team-dir");
     return idx >= 0 ? argv[idx + 1] : undefined;
@@ -245,13 +200,10 @@ async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
       hint: USAGE_LANE,
     });
   }
-  const [id, laneArgRaw] = positional as [string, string];
-  // t-cea78f99: accept member-name aliases (gitter→git, planner→docs,
-  // reviewer→review, dba→db, devops→ops) before VALID_LANES check.
-  const laneArg = resolveLaneAlias(laneArgRaw);
+  const [id, laneArg] = positional as [string, string];
   if (!VALID_LANES.has(laneArg)) {
     throw new UsageError({
-      what: `task lane: lane must be one of fe|be|db|ops|test|review|misc|git|docs|- (got: ${laneArgRaw})`,
+      what: `task lane: lane must be one of fe|be|db|ops|test|review|misc|git|docs|- (got: ${laneArg})`,
       hint: USAGE_LANE,
     });
   }
@@ -268,24 +220,17 @@ async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
 // `atmux task prio <id> <N|->`. Used by hygiene auto-fix to repair
 // `prio-null` cases per ADR-131.
 async function taskPriority(argv: ReadonlyArray<string>): Promise<number> {
-  // Same --team-dir-value-skip parser fix as taskLane above (t-cea78f99
-  // drive-by): the naive `filter(!startsWith("--"))` lets the value
-  // after `--team-dir` slip into positional, breaking `task priority
-  // <id> <N> --team-dir <dir>`. Surfaces in unit tests passing
-  // --team-dir, which they should.
-  const positional: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === "--team-dir") {
-      i += 1;
-      continue;
-    }
-    if (a.startsWith("--")) continue;
-    positional.push(a);
-  }
+  // t-584b5f37 cluster 6 fix: align with sibling subcmds (taskUpdate /
+  // taskAssign / taskMove etc. — all at line 262/380/396/438/452) by
+  // routing through `splitFlagsAndPositionals`. The prior homegrown
+  // `argv.filter((a) => !a.startsWith("--"))` did NOT strip the value
+  // following `--team-dir`, so calls like `task priority t-id 5
+  // --team-dir /path` produced positional=["t-id","5","/path"]
+  // (length 3) and false-tripped the "requires <id> and <N|->" gate.
+  const { positional, rest } = splitFlagsAndPositionals(argv);
   const teamDir = (() => {
-    const idx = argv.indexOf("--team-dir");
-    return idx >= 0 ? argv[idx + 1] : undefined;
+    const idx = rest.indexOf("--team-dir");
+    return idx >= 0 ? rest[idx + 1] : undefined;
   })();
   if (positional.length !== 2) {
     throw new UsageError({
@@ -329,9 +274,6 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
   let body: string | undefined;
   let deps: string[] | undefined;
   let teamDir: string | undefined;
-  // ADR-033 retro-flag (t-2ef0c994). `undefined` = don't touch the
-  // flag; `true` = set; `false` = clear back to undefined-equivalent.
-  let driverOnly: boolean | undefined;
   let i = 0;
   while (i < rest.length) {
     const a = rest[i];
@@ -361,18 +303,6 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
       i += 2;
       continue;
     }
-    if (a === "--driver-only") {
-      // ADR-033 retro-flag SET (t-2ef0c994). No value — boolean flag.
-      driverOnly = true;
-      i += 1;
-      continue;
-    }
-    if (a === "--no-driver-only") {
-      // ADR-033 retro-flag CLEAR (t-2ef0c994). Reverses an earlier flip.
-      driverOnly = false;
-      i += 1;
-      continue;
-    }
     if (a === "--team-dir") {
       const v = rest[i + 1];
       if (v === undefined) {
@@ -390,9 +320,9 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
       hint: USAGE_UPDATE,
     });
   }
-  if (body === undefined && deps === undefined && driverOnly === undefined) {
+  if (body === undefined && deps === undefined) {
     throw new UsageError({
-      what: "task update: at least one of --body, --deps, --driver-only, or --no-driver-only required",
+      what: "task update: at least one of --body or --deps required",
       hint: USAGE_UPDATE,
     });
   }
@@ -403,9 +333,6 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
   }
   if (deps !== undefined) {
     await setTaskDeps(atmuxDir, id, deps);
-  }
-  if (driverOnly !== undefined) {
-    await setTaskDriverOnly(atmuxDir, id, driverOnly);
   }
   process.stdout.write(`task ${id} updated\n`);
   return 0;
@@ -629,17 +556,13 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
           hint: USAGE_ADD,
         });
       }
-      // t-cea78f99: accept member-name aliases (gitter→git,
-      // planner→docs, reviewer→review, dba→db, devops→ops) BEFORE
-      // VALID_LANES check.
-      const resolved = resolveLaneAlias(v);
-      if (!VALID_LANES.has(resolved) || resolved === "-") {
+      if (!VALID_LANES.has(v) || v === "-") {
         throw new UsageError({
           what: `task add: --lane must be one of fe|be|db|ops|test|review|misc|git|docs (got: ${v})`,
           hint: USAGE_ADD,
         });
       }
-      lane = resolved;
+      lane = v;
       i += 2;
       continue;
     }
@@ -792,7 +715,15 @@ function splitFlagsAndPositionals(argv: ReadonlyArray<string>): {
   let i = 0;
   while (i < argv.length) {
     const a = argv[i] ?? "";
-    if (a.startsWith("-")) break;
+    // Bare `-` is the priority-clear sentinel for `task priority` (and
+    // by convention a positional in several CLI verbs); only multi-char
+    // strings beginning with `-` count as flag boundaries here. Pre-
+    // t-584b5f37 the helper short-circuited on bare `-`, leaving
+    // `taskPriority` no way to receive the clear-sentinel through this
+    // path — taskPriority used a homegrown filter that DID accept bare
+    // `-` but failed to strip `--team-dir <val>` pairs. Aligning all
+    // subcmds on this helper fixes both failure modes.
+    if (a.length > 1 && a.startsWith("-")) break;
     positional.push(a);
     i += 1;
   }

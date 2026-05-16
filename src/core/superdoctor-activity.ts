@@ -19,6 +19,7 @@
 // a fresh attempt OR all complaints resolved), the streak ends and the
 // next dormancy event re-pages.
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
@@ -89,6 +90,25 @@ export function gatherSuperdoctorActivity(
 
   for (const team of teams) {
     const path = resolveDbPath(team);
+    // t-584b5f37 cluster 10 fix: `openDatabase` opens with `create:true`
+    // (bun:sqlite default; sqlite.ts:33), so probing a team without an
+    // existing state.db SIDE-EFFECTS the team's `.atmux/` by creating an
+    // empty DB + applying migrations. Downstream readers of
+    // `loadKanban` then see state.db as the canonical store via
+    // `_useSqlite` and silently report empty kanban — even when the
+    // team has a populated kanban.json. Skip the probe entirely when
+    // the team has no state.db on disk; matches the meta-watchdog
+    // contract that it only reads existing complaint stores and
+    // never coerces a team's storage shape.
+    if (!existsSync(path)) {
+      // Match the legacy "skip-on-probe-failure" semantic that the
+      // existing missing-state.db test already pinned (line 161): no
+      // perTeam entry, no aggregate contribution. Cluster 10's fix
+      // changes WHEN the skip fires (existence check up front instead
+      // of openDatabase throwing on an invalid path); the no-entry
+      // outcome stays identical.
+      continue;
+    }
     let db: ReturnType<typeof openDatabase> | null = null;
     try {
       db = openDatabase(path, migrations);

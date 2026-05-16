@@ -110,7 +110,11 @@ describe("getAtmuxDir", () => {
   test("falls back to cwd/.atmux when walk-up exhausted", async () => {
     const lonely = join(dir, "lonely");
     await mkdir(lonely, { recursive: true });
-    const got = await getAtmuxDir({ env: {}, cwd: lonely });
+    // t-584b5f37: bound the walk-up to the per-test mkdtemp root so a
+    // host-resident `/tmp/.atmux` (left by another atmux invocation on
+    // the same machine) doesn't leak into the resolution. Production
+    // never sets `stopAt`; the test uses it for hermetic isolation.
+    const got = await getAtmuxDir({ env: {}, cwd: lonely, stopAt: dir });
     expect(got).toBe(join(lonely, ".atmux"));
   });
 
@@ -127,8 +131,10 @@ describe("getAtmuxDir", () => {
     const got = await getAtmuxDir({
       env: { ATMUX_DIR: "", ATMUX_TEAM_DIR: "" },
       cwd: dir,
+      // t-584b5f37: same host-leak-isolation as the sibling test above.
+      stopAt: dir,
     });
-    // No .atmux exists in tmpdir, so falls back to <dir>/.atmux
+    // No .atmux exists under <dir>, so falls back to <dir>/.atmux
     expect(got).toBe(join(dir, ".atmux"));
   });
 });
