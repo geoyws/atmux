@@ -416,8 +416,8 @@ describe("lead-marker helpers", () => {
 
   test("readLeadWindowName trims + returns marker text when present", async () => {
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "  🧭lead  \n");
-    expect(await readLeadWindowName("demo", { home: homeDir })).toBe("🧭lead");
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "  🧭-lead  \n");
+    expect(await readLeadWindowName("demo", { home: homeDir })).toBe("🧭-lead");
   });
 
   test("readLeadWindowName falls back when marker file is whitespace-only", async () => {
@@ -432,7 +432,7 @@ describe("lead-marker helpers", () => {
     // the legacy `__<team>__team-lead` default. This is what stops whip
     // from emitting false `🛑 lead: window missing` findings on freshly-
     // started teams that haven't rotated the lead yet.
-    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "🧭lead" })).toBe("🧭lead");
+    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "🧭-lead" })).toBe("🧭-lead");
   });
 
   test("readLeadWindowName: marker text wins over fallback when present", async () => {
@@ -441,9 +441,9 @@ describe("lead-marker helpers", () => {
     // marker is authoritative — a stale fallback derived from the
     // pre-rotate schema must NOT mask the rename.
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead-v2\n");
-    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "🧭lead" })).toBe(
-      "🧭lead-v2",
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead-v2\n");
+    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "🧭-lead" })).toBe(
+      "🧭-lead-v2",
     );
   });
 
@@ -570,7 +570,19 @@ const seedTeam = async (
   data: { name: string; members: unknown[]; whip?: unknown },
 ): Promise<void> => {
   await mkdir(atmuxDir, { recursive: true });
-  await writeFile(join(atmuxDir, "team.json"), JSON.stringify(data));
+  // ADR-085 §2.5 needs-approval scan walks the REAL repo's docs/adr/ via
+  // resolveProjectRoot() cwd-walk — proposed ADRs on the active branch
+  // (e.g. 087/089/137/147) fire a `whip-needs-approval` ping every tick,
+  // leaking into tests' `sent[]` assertions. Default-off here keeps the
+  // whip() verb tests focused on the slice they assert; explicit
+  // `whip.needsApprovalEnabled: true` in `data.whip` still wins (e.g.
+  // tests that DO exercise the scan path).
+  const incomingWhip = (data.whip as Record<string, unknown> | undefined) ?? {};
+  const mergedWhip = { needsApprovalEnabled: false, ...incomingWhip };
+  await writeFile(
+    join(atmuxDir, "team.json"),
+    JSON.stringify({ ...data, whip: mergedWhip }),
+  );
 };
 
 describe("whip() — public verb", () => {
@@ -780,7 +792,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "zsh", state: "", pid: 0 } },
+        panes: { "🐝-alice": { paneCmd: "zsh", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -814,23 +826,23 @@ describe("whip() — public verb", () => {
       tmux: buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🐝rl": { paneCmd: "claude", state: "you hit your limit\n", pid: 11 },
-          "🦊compact": {
+          "🐝-rl": { paneCmd: "claude", state: "you hit your limit\n", pid: 11 },
+          "🦊-compact": {
             paneCmd: "claude",
             state: "Compacting conversation...\n",
             pid: 12,
           },
-          "🦉queued": {
+          "🦉-queued": {
             paneCmd: "claude",
             state: "Press up to edit queued messages\n",
             pid: 13,
           },
-          "🐢busyq": {
+          "🐢-busyq": {
             paneCmd: "claude",
             state: "Press up to edit queued messages\n thinking with 8k tokens\n",
             pid: 14,
           },
-          "🦜soft": {
+          "🦜-soft": {
             paneCmd: "claude",
             state: "approaching usage limit (90% of window used)\n",
             pid: 15,
@@ -870,7 +882,7 @@ describe("whip() — public verb", () => {
       env: { CLAUDE_CONFIG_DIR: "/root/.claude-unum" },
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 1234 } },
       }),
       readMemberEnv: async () => ({ CLAUDE_CONFIG_DIR: "/Users/x/.claude-icloud" }),
       discordSend: async (o) => {
@@ -900,7 +912,7 @@ describe("whip() — public verb", () => {
       env: { CLAUDE_CONFIG_DIR: "/root/.claude-unum" },
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 1234 } },
       }),
       readMemberEnv: async () => ({
         CLAUDE_CONFIG_DIR: "/root/.claude-unum/agents",
@@ -928,7 +940,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 1234 } },
       }),
       readMemberEnv: async () => {
         envReadCount += 1;
@@ -958,7 +970,7 @@ describe("whip() — public verb", () => {
       env: { CLAUDE_CONFIG_DIR: "/root/.claude-unum" },
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 1234 } },
       }),
       readMemberEnv: async () => null,
       discordSend: async (o) => {
@@ -982,7 +994,7 @@ describe("whip() — public verb", () => {
       env: { CLAUDE_CONFIG_DIR: "/root/.claude-unum" },
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 1234 } },
       }),
       readMemberEnv: async () => {
         throw new Error("EACCES");
@@ -1008,7 +1020,7 @@ describe("whip() — public verb", () => {
       env: { CLAUDE_CONFIG_DIR: "/root/.claude-unum" },
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 1234 } },
       }),
       readMemberEnv: async () => ({}),
       discordSend: async (o) => {
@@ -1048,7 +1060,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1074,7 +1086,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1109,7 +1121,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1144,7 +1156,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1163,7 +1175,7 @@ describe("whip() — public verb", () => {
     await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
     // Pre-stage I-2 marker so the lead-window probe targets a known name.
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
     await whip(["--team-dir", teamDir], {
       stdout,
@@ -1173,7 +1185,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🧭-lead": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1192,7 +1204,7 @@ describe("whip() — public verb", () => {
     });
     await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
     await whip(["--team-dir", teamDir], {
       stdout,
@@ -1202,7 +1214,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🧭-lead": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1229,7 +1241,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🧭-lead": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1246,7 +1258,7 @@ describe("whip() — public verb", () => {
     });
     await writeLeadSessionStart("demo", 0, { home: homeDir });
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
     await whip(["--team-dir", teamDir], {
       stdout,
@@ -1256,7 +1268,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🧭-lead": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1274,7 +1286,7 @@ describe("whip() — public verb", () => {
     // Marker stamps 5 min IN THE FUTURE — `nowSec - startEpoch` is negative.
     await writeLeadSessionStart("demo", 1_700_000_000 + 300, { home: homeDir });
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
     await whip(["--team-dir", teamDir], {
       stdout,
@@ -1284,7 +1296,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🧭-lead": { paneCmd: "claude", state: "", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1305,7 +1317,7 @@ describe("whip() — public verb", () => {
     });
     await writeLeadSessionStart("demo", 1_700_000_000 - 60, { home: homeDir });
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
     await whip(["--team-dir", teamDir], {
       stdout,
@@ -1315,7 +1327,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "tok 67k/100", pid: 0 } },
+        panes: { "🧭-lead": { paneCmd: "claude", state: "tok 67k/100", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1339,7 +1351,7 @@ describe("whip() — public verb", () => {
     });
     await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+    await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
     await whip(["--team-dir", teamDir], {
       stdout,
@@ -1349,7 +1361,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🧭lead": { paneCmd: "claude", state: "no tok marker here", pid: 0 } },
+        panes: { "🧭-lead": { paneCmd: "claude", state: "no tok marker here", pid: 0 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1376,7 +1388,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 0 } },
         failListWindows: true,
       }),
       discordSend: async (o) => {
@@ -1401,7 +1413,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 0 } },
         failPaneProbe: true,
       }),
       discordSend: async (o) => {
@@ -1428,7 +1440,7 @@ describe("whip() — public verb", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 0 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 0 } },
         failCapturePane: true,
       }),
       discordSend: async (o) => {
@@ -1603,7 +1615,7 @@ describe("whip() — public verb", () => {
       env: { CLAUDE_CONFIG_DIR: "/root/.claude-unum" },
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: "", pid: 1 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: "", pid: 1 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -1697,15 +1709,15 @@ describe("whip() — public verb", () => {
       tmux: buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🦊ocgood": { paneCmd: "opencode", state: "", pid: 0 },
-          "🦉ocbad": { paneCmd: "zsh", state: "", pid: 0 },
-          "🐢kgood": { paneCmd: "kimi", state: "", pid: 0 },
-          "🦀kbad": { paneCmd: "bash", state: "", pid: 0 },
-          "🐙cgood": { paneCmd: "cursor-agent", state: "", pid: 0 },
-          "🦜cbad": { paneCmd: "fish", state: "", pid: 0 },
+          "🦊-ocgood": { paneCmd: "opencode", state: "", pid: 0 },
+          "🦉-ocbad": { paneCmd: "zsh", state: "", pid: 0 },
+          "🐢-kgood": { paneCmd: "kimi", state: "", pid: 0 },
+          "🦀-kbad": { paneCmd: "bash", state: "", pid: 0 },
+          "🐙-cgood": { paneCmd: "cursor-agent", state: "", pid: 0 },
+          "🦜-cbad": { paneCmd: "fish", state: "", pid: 0 },
           // Unknown tui → expectedTuiCmd returns null → pass-through (no
           // mismatch finding even when paneCmd is something else entirely).
-          "🐝exotic": { paneCmd: "fish", state: "", pid: 0 },
+          "🐝-exotic": { paneCmd: "fish", state: "", pid: 0 },
         },
       }),
       discordSend: async (o) => {
@@ -1964,7 +1976,7 @@ describe("whip() — public verb", () => {
       tmux: buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🐝alice": { paneCmd: "claude", state: "⏵⏵ don't ask on", pid: 1 },
+          "🐝-alice": { paneCmd: "claude", state: "⏵⏵ don't ask on", pid: 1 },
         },
       }),
       discordSend: async (o) => {
@@ -1992,7 +2004,7 @@ describe("whip() — public verb", () => {
       tmux: buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🐝alice": { paneCmd: "claude", state: "⏵⏵ auto mode on", pid: 1 },
+          "🐝-alice": { paneCmd: "claude", state: "⏵⏵ auto mode on", pid: 1 },
         },
       }),
       discordSend: async (o) => {
@@ -2016,7 +2028,7 @@ describe("whip() — public verb", () => {
       tmux: buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🐝alice": { paneCmd: "claude", state: "⏵⏵ accept edits on", pid: 1 },
+          "🐝-alice": { paneCmd: "claude", state: "⏵⏵ accept edits on", pid: 1 },
         },
       }),
       discordSend: async (o: DiscordSendOpts) => {
@@ -2046,7 +2058,7 @@ describe("whip() — public verb", () => {
       tmux: buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🐝alice": {
+          "🐝-alice": {
             paneCmd: "claude",
             state: "",
             pid: 1,
@@ -2079,7 +2091,7 @@ describe("whip() — public verb", () => {
       tmux: buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🐝alice": { paneCmd: "claude", state: "", pid: 1, cwd: atmuxDir },
+          "🐝-alice": { paneCmd: "claude", state: "", pid: 1, cwd: atmuxDir },
         },
       }),
       discordSend: async (o) => {
@@ -2111,7 +2123,7 @@ describe("whip() — public verb", () => {
       });
       await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
       await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
       const sent: DiscordSendOpts[] = [];
       const tickArgs = {
         stdout,
@@ -2121,7 +2133,7 @@ describe("whip() — public verb", () => {
         env: {},
         tmux: buildFakeTmux({
           sessionUp: true,
-          panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+          panes: { "🧭-lead": { paneCmd: "claude", state: "", pid: 0 } },
         }),
         discordSend: async (o: DiscordSendOpts) => {
           sent.push(o);
@@ -2151,7 +2163,7 @@ describe("whip() — public verb", () => {
       });
       await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
       await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
       const sent: DiscordSendOpts[] = [];
       const baseArgs = {
         stdout,
@@ -2160,7 +2172,7 @@ describe("whip() — public verb", () => {
         env: {},
         tmux: buildFakeTmux({
           sessionUp: true,
-          panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+          panes: { "🧭-lead": { paneCmd: "claude", state: "", pid: 0 } },
         }),
         discordSend: async (o: DiscordSendOpts) => {
           sent.push(o);
@@ -2185,7 +2197,7 @@ describe("whip() — public verb", () => {
       });
       await writeLeadSessionStart("demo", 1_700_000_000 - 60, { home: homeDir });
       await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
       const sent: DiscordSendOpts[] = [];
       const baseArgs = {
         stdout,
@@ -2196,7 +2208,7 @@ describe("whip() — public verb", () => {
         // (bullet identical → identical hash).
         tmux: buildFakeTmux({
           sessionUp: true,
-          panes: { "🧭lead": { paneCmd: "claude", state: "tok 67k/100", pid: 0 } },
+          panes: { "🧭-lead": { paneCmd: "claude", state: "tok 67k/100", pid: 0 } },
         }),
         discordSend: async (o: DiscordSendOpts) => {
           sent.push(o);
@@ -2226,7 +2238,7 @@ describe("whip() — public verb", () => {
       });
       await writeLeadSessionStart("demo", 1_700_000_000 - 300, { home: homeDir });
       await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
-      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭lead\n");
+      await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
       const sent: DiscordSendOpts[] = [];
       const tickArgs = {
         stdout,
@@ -2236,7 +2248,7 @@ describe("whip() — public verb", () => {
         env: {},
         tmux: buildFakeTmux({
           sessionUp: true,
-          panes: { "🧭lead": { paneCmd: "claude", state: "", pid: 0 } },
+          panes: { "🧭-lead": { paneCmd: "claude", state: "", pid: 0 } },
         }),
         discordSend: async (o: DiscordSendOpts) => {
           sent.push(o);
@@ -2317,7 +2329,7 @@ describe("whip() — public verb", () => {
         tmux: buildFakeTmux({
           sessionUp: true,
           panes: {
-            "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+            "🐝-alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
           },
         }),
         discordSend: async (o) => {
@@ -2363,7 +2375,7 @@ describe("whip() — public verb", () => {
       const tmuxNs = buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+          "🐝-alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
         },
       });
 
@@ -2417,7 +2429,7 @@ describe("whip() — public verb", () => {
         tmux: buildFakeTmux({
           sessionUp: true,
           panes: {
-            "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+            "🐝-alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
           },
         }),
         discordSend: async (o) => {
@@ -2454,7 +2466,7 @@ describe("whip() — public verb", () => {
         tmux: buildFakeTmux({
           sessionUp: true,
           panes: {
-            "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+            "🐝-alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
           },
         }),
         discordSend: async (o) => {
@@ -2490,7 +2502,7 @@ describe("whip() — public verb", () => {
         tmux: buildFakeTmux({
           sessionUp: true,
           panes: {
-            "🐝alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+            "🐝-alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
           },
         }),
         discordSend: async (o) => {
