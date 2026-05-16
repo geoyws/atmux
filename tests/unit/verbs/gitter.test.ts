@@ -274,6 +274,16 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
           "merge-base": () => ({ stdout: "baseTip\n" }),
           "rev-parse": () => ({ stdout: "baseTip\n" }),
           status: () => ({ stdout: "" }),
+          // mergeMember inside the production dispatcher
+          // (src/abstractions/branch-merge.ts) walks fetch → checkout
+          // → merge --no-ff after the rev-list count comes back > 0.
+          // Hermetic fixture has no origin remote + no working tree
+          // to mutate — fake each as a no-op success so the
+          // dispatcher reaches its happy path (t-d78b9b67 sibling-A;
+          // T5 sweep deferred the gitter sub-cluster).
+          fetch: () => ({ stdout: "" }),
+          checkout: () => ({ stdout: "" }),
+          merge: () => ({ stdout: "" }),
         }),
       },
     );
