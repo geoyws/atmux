@@ -59,6 +59,7 @@ describe("parseGroomArgs", () => {
       archive: false,
       aggressive: false,
       noReconcile: false,
+      zombieSweep: false,
       inboxDays: 7,
       kanbanDays: 30,
       decisionsDays: 30,

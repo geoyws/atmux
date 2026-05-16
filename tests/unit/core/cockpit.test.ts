@@ -8,10 +8,12 @@ import {
   ATMUX_NESTING_LEVEL_ENV,
   cageSessionName,
   cageSocketPath,
+  callerScopeAllowed,
   childNestingEnv,
   DEFAULT_PREFIX_CHAIN,
   defaultCockpitConfigPath,
   enabledTeams,
+  findTeamByName,
   loadCockpit,
   MAX_NESTING_LEVEL,
   migrateLegacyShape,
@@ -25,7 +27,10 @@ import {
   walkSessions,
 } from "../../../src/core/cockpit.ts";
 import { ConfigError, SchemaError } from "../../../src/errors.ts";
-import type { CockpitSessionT } from "../../../src/schema/cockpit.ts";
+import type {
+  Cockpit as CockpitShape,
+  CockpitSessionT,
+} from "../../../src/schema/cockpit.ts";
 
 let homeDir: string;
 
@@ -984,5 +989,162 @@ describe("loadCockpit — prefixChain validation (§Decision-anchor #4)", () => 
       sessions: [{ type: "team", name: "x", root: "/x" }],
     });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/duplicated/);
+  });
+});
+
+// ---------- ADR-092: findTeamByName + callerScopeAllowed ----------
+
+/** Helper — synthesize a minimal CockpitShape with a depth-3 fixture
+ *  (`alpha` team with epic-team `alpha-epic-1` child; `beta` team
+ *  standalone; `omega` epic-team under `beta`). Used by ADR-092 tests. */
+function buildFixtureCockpit(): CockpitShape {
+  return {
+    schemaVersion: 1,
+    sessions: [
+      {
+        type: "team",
+        name: "alpha",
+        enabled: true,
+        root: "/teams/alpha",
+        sessions: [
+          {
+            type: "epic-team",
+            name: "alpha-epic-1",
+            enabled: true,
+            parent: "alpha",
+            epicId: "e-alpha-1",
+            sessions: [],
+          },
+        ],
+      },
+      {
+        type: "team",
+        name: "beta",
+        enabled: true,
+        root: "/teams/beta",
+        sessions: [
+          {
+            type: "epic-team",
+            name: "beta-omega",
+            enabled: true,
+            parent: "beta",
+            epicId: "e-beta-omega",
+            sessions: [],
+          },
+        ],
+      },
+    ],
+    teams: [],
+  } as unknown as CockpitShape;
+}
+
+describe("findTeamByName (ADR-092 §D2)", () => {
+  test("matches type=team at root with own root", () => {
+    const found = findTeamByName(buildFixtureCockpit(), "alpha");
+    expect(found?.type).toBe("team");
+    expect(found?.root).toBe("/teams/alpha");
+    expect(found?.level).toBe(0);
+    expect(found?.parent).toBeUndefined();
+  });
+
+  test("matches type=epic-team nested with parent root inherited", () => {
+    const found = findTeamByName(buildFixtureCockpit(), "alpha-epic-1");
+    expect(found?.type).toBe("epic-team");
+    expect(found?.root).toBe("/teams/alpha");
+    expect(found?.parent).toBe("alpha");
+    expect(found?.level).toBe(1);
+  });
+
+  test("returns null on miss", () => {
+    expect(findTeamByName(buildFixtureCockpit(), "nonexistent")).toBeNull();
+  });
+
+  test("walks depth-3 fixture deterministically (first match wins)", () => {
+    // Add a sibling-named epic under beta with same name as alpha's
+    // child to verify FIRST match by DFS order wins (Decision-anchor
+    // #2 — name collision is operator error; lookup is deterministic).
+    const cockpit = buildFixtureCockpit();
+    (cockpit.sessions[1] as { sessions: CockpitSessionT[] }).sessions.push({
+      type: "epic-team",
+      name: "alpha-epic-1",
+      enabled: true,
+      parent: "beta",
+      epicId: "e-clash",
+      sessions: [],
+    } as never);
+    const found = findTeamByName(cockpit, "alpha-epic-1");
+    // First match is under alpha (DFS visits alpha branch before beta).
+    expect(found?.parent).toBe("alpha");
+  });
+
+  test("skips superdriver / medic / martinet leaves (only team / epic-team)", () => {
+    const cockpit: CockpitShape = {
+      schemaVersion: 1,
+      sessions: [
+        { type: "medic", name: "alpha", enabled: true },
+        { type: "superdriver", name: "alpha-driver", enabled: true },
+      ],
+      teams: [],
+    } as unknown as CockpitShape;
+    // The medic literally named "alpha" is NOT matched — only
+    // team / epic-team types qualify.
+    expect(findTeamByName(cockpit, "alpha")).toBeNull();
+  });
+});
+
+describe("callerScopeAllowed (ADR-092 §D3)", () => {
+  test("driver scope is master override", () => {
+    const cockpit = buildFixtureCockpit();
+    expect(callerScopeAllowed(cockpit, "alpha", "beta", "driver")).toBe(true);
+    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "beta-omega", "driver")).toBe(true);
+  });
+
+  test("same-team is trivially allowed", () => {
+    const cockpit = buildFixtureCockpit();
+    expect(callerScopeAllowed(cockpit, "alpha", "alpha", undefined)).toBe(true);
+  });
+
+  test("child epic-team → parent team allowed", () => {
+    const cockpit = buildFixtureCockpit();
+    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "alpha", undefined)).toBe(true);
+  });
+
+  test("parent team → child epic-team allowed", () => {
+    const cockpit = buildFixtureCockpit();
+    expect(callerScopeAllowed(cockpit, "alpha", "alpha-epic-1", undefined)).toBe(true);
+  });
+
+  test("siblings under different parents refused", () => {
+    const cockpit = buildFixtureCockpit();
+    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "beta-omega", undefined)).toBe(false);
+  });
+
+  test("siblings under SAME parent refused — must route via parent", () => {
+    const cockpit = buildFixtureCockpit();
+    // Add a sibling epic under alpha so we have two epic-teams sharing
+    // parent=alpha. Per ADR-092 §D3 reviewer pre-flag: siblings must
+    // route through the parent.
+    (cockpit.sessions[0] as { sessions: CockpitSessionT[] }).sessions.push({
+      type: "epic-team",
+      name: "alpha-epic-2",
+      enabled: true,
+      parent: "alpha",
+      epicId: "e-alpha-2",
+      sessions: [],
+    } as never);
+    expect(
+      callerScopeAllowed(cockpit, "alpha-epic-1", "alpha-epic-2", undefined),
+    ).toBe(false);
+  });
+
+  test("unrelated standalone teams refused", () => {
+    const cockpit = buildFixtureCockpit();
+    expect(callerScopeAllowed(cockpit, "alpha", "beta", undefined)).toBe(false);
+  });
+
+  test("unknown source/target falls through to refused", () => {
+    const cockpit = buildFixtureCockpit();
+    expect(callerScopeAllowed(cockpit, "ghost", "alpha", undefined)).toBe(false);
+    expect(callerScopeAllowed(cockpit, "alpha", "ghost", undefined)).toBe(false);
   });
 });

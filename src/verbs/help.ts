@@ -84,6 +84,18 @@ Automation:
 
 Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+  team spawn-epic <epicId> --from <parent> [--roster <preset>|--roster-file <p>]
+                              ADR-090: spawn an ephemeral epic-team child of
+                              <parent>. Worktree at <parentRoot>-epics/<epicId>
+                              on branch <parentBase>-epic-<epicId>; cockpit
+                              entry appended under the parent. Requires
+                              ATMUX_CALLER_SCOPE=driver.
+  team dissolve-epic <epicId> [--skip-checks] [--force-prune]
+                              ADR-090: tear down an epic-team spawned via
+                              spawn-epic. Soft-stop + prune worktree + remove
+                              cockpit entry + mark parent kanban EPIC done.
+                              --skip-checks bypasses the all-tasks-done +
+                              clean-worktree gates (lead-override).
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability

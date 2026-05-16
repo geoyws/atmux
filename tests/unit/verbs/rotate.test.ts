@@ -230,6 +230,52 @@ describe("renderBrief", () => {
       }),
     ).toBe("{{UNKNOWN}} kept; x replaced");
   });
+
+  // ---------- ADR-090: epic-team placeholder support ----------
+
+  test("ADR-090: substitutes {{PARENT}} + {{EPIC_ID}} when both provided", () => {
+    const tpl = "team={{TEAM}} parent={{PARENT}} epicId={{EPIC_ID}} member={{MEMBER}}";
+    expect(
+      renderBrief(tpl, {
+        team: "checkout-flow",
+        member: "lead",
+        role: "lead",
+        atmuxDir: "/p/.atmux",
+        parent: "sopx-geoyws",
+        epicId: "checkout-flow",
+      }),
+    ).toBe("team=checkout-flow parent=sopx-geoyws epicId=checkout-flow member=lead");
+  });
+
+  test("ADR-090: omitted parent/epicId leave the placeholders inert (no-op for non-epic-team briefs)", () => {
+    // The existing four-key call-site (T10 not yet wired) MUST keep
+    // working without breakage. Normal-team briefs don't reference
+    // {{PARENT}} / {{EPIC_ID}}; an epic-team brief loaded with the
+    // legacy signature leaves the placeholders raw — visible but
+    // structurally inert.
+    const tpl = "team={{TEAM}} parent={{PARENT}} epicId={{EPIC_ID}}";
+    expect(
+      renderBrief(tpl, {
+        team: "atmux",
+        member: "lead",
+        role: "lead",
+        atmuxDir: "/p/.atmux",
+      }),
+    ).toBe("team=atmux parent={{PARENT}} epicId={{EPIC_ID}}");
+  });
+
+  test("ADR-090: only parent provided substitutes parent but leaves epicId raw", () => {
+    const tpl = "{{PARENT}} | {{EPIC_ID}}";
+    expect(
+      renderBrief(tpl, {
+        team: "checkout-flow",
+        member: "lead",
+        role: "lead",
+        atmuxDir: "/p/.atmux",
+        parent: "sopx-geoyws",
+      }),
+    ).toBe("sopx-geoyws | {{EPIC_ID}}");
+  });
 });
 
 // ---------- defaultBriefsDir ----------
