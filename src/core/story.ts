@@ -183,7 +183,14 @@ export async function advanceStory(
     throw new ConfigError({ what: `story advance: no such story: ${id}` });
   }
   // Look up dispatch recipients up-front so the DB transaction is pure.
-  const team = await tryLoadTeam({ teamDir: atmuxDir });
+  // Per t-85846a0b (cluster 4/5 of t-2b801707 fix): use `dir: atmuxDir`
+  // not `teamDir: atmuxDir`. `teamDir` is the parent-of-.atmux (gets
+  // ".atmux" appended via getAtmuxDir); passing the .atmux/ path itself
+  // double-appends and reads `<atmuxDir>/.atmux/team.json` (wrong).
+  // The advanceStory caller already has the canonical atmuxDir; use it
+  // directly via the `dir` option which is "explicit .atmux path,
+  // overrides every other source" per ResolveDirOpts.
+  const team = await tryLoadTeam({ dir: atmuxDir });
   return await _withRepo(atmuxDir, (repo, db) => {
     const story = repo.getStory(id);
     if (story === null) {
