@@ -63,7 +63,9 @@ import {
   type GitterSweepResult,
   type QueueMergeFn,
 } from "../core/gitter-sweep.ts";
+import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
+import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
@@ -122,27 +124,21 @@ export function parseGitterArgs(argv: ReadonlyArray<string>): ParsedGitterArgs {
   return out;
 }
 
-// ---------- Default queue stub (pre-T3) ----------
+// ---------- Recording stub (test seam) ----------
 
 /**
- * Default `QueueMergeFn` factory — records queue intent to the logger
- * + returns `{queued:true}` for every eligible branch. This is the
- * pre-T3 stub: until the event-driven dispatcher ships (t-27b06cda),
- * the cron backstop's sweep work is "discover + record + emit
- * evidence to the cron log" rather than "actually merge". The verb
- * SHOULD ship its eligibility logic ahead of T3 because:
+ * Recording-only `QueueMergeFn` factory — logs the queue intent and
+ * returns `{queued:true}` without driving the state machine. Retained
+ * as an exported test seam: the T4 unit-test matrix + T9's new tests
+ * both pin behavior against this no-op dispatcher to isolate sweep-
+ * eligibility from dispatcher-driven side effects.
  *
- *   - The discovery side IS the load-bearing part — T3's dispatcher
- *     will be invoked from BOTH the event-driven path AND this
- *     sweep, so the sweep needs to be ready when T3 lands.
- *   - Operator-visible evidence ("which branches would have been
- *     merged this tick") is useful in its own right for diagnosing
- *     fan-in latency before the auto-merge is on.
- *
- * When T3 lands, the verb-layer factory swaps this stub for the real
- * dispatcher; the sweep core (`src/core/gitter-sweep.ts`) doesn't
- * change. The seam is the `queueMergeAttempt` field on
- * {@link GitterSweepDeps}.
+ * **Not the production default any longer.** T9 (t-6987392a) swapped
+ * the verb-layer default to {@link productionQueueMergeAttempt} —
+ * the cron sweep now actually fires merges via the shared
+ * `performMerge` state-machine driver. This stub stays available for
+ * tests that want to verify "the sweep picked the right branch"
+ * without committing to a merge.
  */
 export function recordingQueueMergeAttempt(logger: Logger): QueueMergeFn {
   return async ({ memberBranch, aheadCount }) => {
@@ -163,9 +159,11 @@ export interface GitterOpts {
    *  {@link defaultGitSpawn}. */
   git?: GitSpawn;
   /** Test injection — override the queue dispatcher. Defaults to
-   *  {@link recordingQueueMergeAttempt} (pre-T3 stub). When T3 lands
-   *  on this branch, the production factory wires the real
-   *  dispatcher here. */
+   *  {@link productionQueueMergeAttempt} per T9 (t-6987392a) — the
+   *  production dispatcher walks the per-branch state machine via
+   *  the shared `performMerge` driver. Tests inject
+   *  {@link recordingQueueMergeAttempt} (no-op) when they want to
+   *  isolate sweep eligibility from merge side effects. */
   queueMergeAttempt?: QueueMergeFn;
   /** Test injection — override the DB opener. Defaults to
    *  {@link openDatabase}. */
@@ -197,8 +195,6 @@ export async function gitterSweepVerb(
 ): Promise<number> {
   const logger = opts.logger ?? createLogger();
   const git = opts.git ?? defaultGitSpawn;
-  const queueMergeAttempt =
-    opts.queueMergeAttempt ?? recordingQueueMergeAttempt(logger);
   const openDb = opts.openDb ?? ((p: string) => openDatabase(p, migrations));
   const closeDb = opts.closeDb ?? closeDatabase;
 
@@ -246,6 +242,21 @@ export async function gitterSweepVerb(
   const db = openDb(join(atmuxDir, "state.db"));
   try {
     const repo = new MergerStateRepo(db);
+    // T9 (t-6987392a): default to the production dispatcher when
+    // the caller hasn't overridden. Resolved AFTER DB open + base
+    // resolution so the dispatcher has full context. The recording
+    // stub stays available as an explicit `opts.queueMergeAttempt`
+    // injection (test seam only).
+    const queueMergeAttempt =
+      opts.queueMergeAttempt ??
+      productionQueueMergeAttempt({
+        teamRoot,
+        baseBranch,
+        mergerRepo: repo,
+        kanbanRepo: new KanbanRepo(db),
+        git,
+        logger,
+      });
     const deps: GitterSweepDeps = {
       teamRoot,
       baseBranch,

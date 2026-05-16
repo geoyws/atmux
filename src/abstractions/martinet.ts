@@ -23,6 +23,7 @@
 //   T7 — fleet-wide tick verb (`src/verbs/martinet.ts`)
 //   T8 — cockpit W3 integration
 
+import type { CadenceObservation } from "../core/cadence-classifier.ts";
 import type { PaneClassification } from "../core/pane-state.ts";
 
 // ---------- Observation primitives ----------
@@ -97,6 +98,17 @@ export interface MemberObservation {
    *  ready for Enter-push when `lastEnterPushable === true`.
    *  `null` when no queued text is present. */
   queuedComposerText: string | null;
+  /** ADR-148 §D2 / T5 (t-ac95b267): per-member commit-cadence
+   *  observation. Composed by the cockpit-W3 dispatcher via
+   *  {@link classifyMemberCadence} (`src/core/cadence-classifier.ts`)
+   *  before passing the Observation to a Martinet impl's `decide()`.
+   *  When set AND `cadence.verdict === "ship-zero-window"`, the
+   *  escalation classifier ({@link classify}) fires the §D5 E6
+   *  mandatory escalation per ADR-132 §E6 contract. Optional because
+   *  the team's `team.cadence.enabled === false` path AND the
+   *  worktree-unresolvable path both legitimately suppress
+   *  the probe. */
+  cadence?: CadenceObservation;
 }
 
 /** The Martinet tick payload — one struct per (team, tick). Same
