@@ -10,8 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { addTask, claimTaskForMember } from "../../../src/core/kanban.ts";
+import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import {
   DEFAULT_SOFT_STOP_GRACE_SECONDS,
+  quiesceCron,
+  QUIESCE_TAG,
   resumeManifestPath,
   SOFT_STOP_NOTICE,
   softStop,
@@ -273,5 +276,228 @@ describe("softStop", () => {
     const stragglers = entries.filter((e) => e.startsWith("resume.json.tmp."));
     expect(stragglers).toHaveLength(0);
     expect(entries).toContain("resume.json");
+  });
+});
+
+// ---------- quiesceCron (ADR-087 §D4, t-ccabd763) ----------
+
+interface FakeCron {
+  io: CrontabIO;
+  reads: number;
+  writes: string[];
+  available: boolean;
+}
+
+function makeFakeCrontab(initial: string | null, opts: { available?: boolean } = {}): FakeCron {
+  const state = { current: initial };
+  const f: FakeCron = {
+    reads: 0,
+    writes: [],
+    available: opts.available ?? true,
+    io: {
+      read: async () => {
+        f.reads += 1;
+        return state.current;
+      },
+      write: async (body) => {
+        f.writes.push(body);
+        state.current = body;
+      },
+      available: async () => f.available,
+    },
+  };
+  return f;
+}
+
+const PINNED_NOW = 1778950000_000; // 2026-05-16 (epoch sec floor = 1778950000)
+const PINNED_TS = Math.floor(PINNED_NOW / 1000);
+
+describe("quiesceCron", () => {
+  test("comments out whip + watchdog lines scoped to this team", async () => {
+    const cron = makeFakeCrontab(
+      [
+        "# >>> atmux:team=alpha — managed by atmux start",
+        "*/15 * * * * PATH=/r/.bun/bin ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux whip >> /p/alpha/.atmux/logs/whip.log 2>&1",
+        "*/2 * * * * PATH=/r/.bun/bin ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux watchdog >> /p/alpha/.atmux/logs/watchdog.log 2>&1",
+        "0 4 * * * PATH=/r/.bun/bin ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux groom --quiet >> /p/alpha/.atmux/logs/groom.log 2>&1",
+        "# <<< atmux:team=alpha",
+        "",
+      ].join("\n"),
+    );
+
+    const r = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW,
+    });
+
+    expect(r.suspended).toBe(2);
+    expect(r.alreadySuspended).toBe(0);
+    expect(r.skippedOtherTeam).toBe(0);
+    expect(cron.writes).toHaveLength(1);
+    const written = cron.writes[0] ?? "";
+    expect(written).toContain(`${QUIESCE_TAG} ${PINNED_TS} */15 * * * *`);
+    expect(written).toContain(`${QUIESCE_TAG} ${PINNED_TS} */2 * * * *`);
+    // Groom line untouched — not a whip-class verb.
+    expect(written).toContain("atmux groom --quiet");
+    // Groom line is NOT prefixed with the quiesce tag.
+    expect(written).not.toContain(`${QUIESCE_TAG} ${PINNED_TS} 0 4 * * *`);
+  });
+
+  test("leaves other teams' whip/watchdog lines alone (different ATMUX_DIR)", async () => {
+    const cron = makeFakeCrontab(
+      [
+        "*/15 * * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux whip",
+        "*/15 * * * * ATMUX_DIR=/p/beta/.atmux /usr/local/bin/atmux whip",
+        "*/2 * * * * ATMUX_DIR=/p/beta/.atmux /usr/local/bin/atmux watchdog",
+      ].join("\n"),
+    );
+
+    const r = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW,
+    });
+
+    expect(r.suspended).toBe(1);
+    expect(r.skippedOtherTeam).toBe(2);
+    const written = cron.writes[0] ?? "";
+    // Alpha's whip is suspended.
+    expect(written).toContain(`${QUIESCE_TAG} ${PINNED_TS} */15 * * * * ATMUX_DIR=/p/alpha`);
+    // Beta's whip + watchdog are NOT tagged.
+    expect(written).toContain("*/15 * * * * ATMUX_DIR=/p/beta/.atmux /usr/local/bin/atmux whip");
+    expect(written).toContain("*/2 * * * * ATMUX_DIR=/p/beta/.atmux /usr/local/bin/atmux watchdog");
+    // Beta lines are NOT prefixed.
+    expect(written).not.toContain(`${QUIESCE_TAG} ${PINNED_TS} */15 * * * * ATMUX_DIR=/p/beta`);
+  });
+
+  test("idempotent — second run is a no-op (already-quiesced lines stay)", async () => {
+    const cron = makeFakeCrontab(
+      "*/15 * * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux whip",
+    );
+
+    const first = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW,
+    });
+    expect(first.suspended).toBe(1);
+    expect(cron.writes).toHaveLength(1);
+
+    const second = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW + 10_000,
+    });
+    expect(second.suspended).toBe(0);
+    expect(second.alreadySuspended).toBe(1);
+    // No second write — nothing changed.
+    expect(cron.writes).toHaveLength(1);
+  });
+
+  test("matches whip-resume-check (word-boundary after `whip`)", async () => {
+    const cron = makeFakeCrontab(
+      "*/1 * * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux whip-resume-check",
+    );
+
+    const r = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW,
+    });
+
+    expect(r.suspended).toBe(1);
+  });
+
+  test("dryRun reports counts but does NOT write", async () => {
+    const cron = makeFakeCrontab(
+      "*/15 * * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux whip",
+    );
+
+    const r = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      dryRun: true,
+      clock: () => PINNED_NOW,
+    });
+
+    expect(r.suspended).toBe(1);
+    expect(cron.writes).toHaveLength(0);
+  });
+
+  test("no crontab installed (read returns null) returns clean zero", async () => {
+    const cron = makeFakeCrontab(null);
+    const r = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW,
+    });
+    expect(r).toEqual({ suspended: 0, alreadySuspended: 0, skippedOtherTeam: 0 });
+    expect(cron.writes).toHaveLength(0);
+  });
+
+  test("crontab unavailable returns clean zero (no read attempted)", async () => {
+    const cron = makeFakeCrontab(null, { available: false });
+    const r = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW,
+    });
+    expect(r).toEqual({ suspended: 0, alreadySuspended: 0, skippedOtherTeam: 0 });
+    expect(cron.reads).toBe(0);
+    expect(cron.writes).toHaveLength(0);
+  });
+
+  test("does NOT match unrelated verbs (groom, report, decisions, gitter)", async () => {
+    const cron = makeFakeCrontab(
+      [
+        "0 4 * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux groom --quiet",
+        "*/30 * * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux report",
+        "0 */4 * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux decisions digest",
+        "*/10 * * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux gitter --sweep",
+      ].join("\n"),
+    );
+
+    const r = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW,
+    });
+
+    expect(r.suspended).toBe(0);
+    expect(cron.writes).toHaveLength(0);
+  });
+
+  test("preserves crontab structure (marker fence, blank lines, non-atmux lines)", async () => {
+    const initial = [
+      "MAILTO=ops@example.com",
+      "",
+      "# Operator manual line",
+      "0 */1 * * * /usr/local/bin/check-disk",
+      "",
+      "# >>> atmux:team=alpha — managed by atmux start",
+      "*/15 * * * * ATMUX_DIR=/p/alpha/.atmux /usr/local/bin/atmux whip",
+      "# <<< atmux:team=alpha",
+      "",
+    ].join("\n");
+    const cron = makeFakeCrontab(initial);
+
+    const r = await quiesceCron({
+      atmuxDir: "/p/alpha/.atmux",
+      crontab: cron.io,
+      clock: () => PINNED_NOW,
+    });
+
+    expect(r.suspended).toBe(1);
+    const written = cron.writes[0] ?? "";
+    // Non-atmux lines preserved verbatim.
+    expect(written).toContain("MAILTO=ops@example.com");
+    expect(written).toContain("# Operator manual line");
+    expect(written).toContain("/usr/local/bin/check-disk");
+    // Marker fence preserved.
+    expect(written).toContain("# >>> atmux:team=alpha — managed by atmux start");
+    expect(written).toContain("# <<< atmux:team=alpha");
+    // Line count unchanged (insertion is in-place — no added or removed lines).
+    expect(written.split("\n").length).toBe(initial.split("\n").length);
   });
 });

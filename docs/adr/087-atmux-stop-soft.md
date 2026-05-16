@@ -203,3 +203,79 @@ questions" precedent rather than blocking on `atmux decisions add`.
 - `src/verbs/stop.ts:136-206` — hard-stop pipeline (modification site)
 - `src/verbs/start.ts:660-690` — resume-hint insertion site (after step 10)
 - `src/schema/team.ts` — `softStopGraceSeconds` field (additive)
+
+---
+
+## §D4 — Cron quiescence (amendment, 2026-05-16, t-ccabd763)
+
+**Status**: Accepted (2026-05-16, operator-driven)
+
+**Source**: George 2026-05-16 — *"soft stop has to stop whips that are firing as well in the individual teams if there are whips and loops"*.
+
+### The race §D4 closes
+
+The original §Decision pipeline above defines six steps: capture → notify → grace → manifest → archive → kill-session. The team's marker-fenced cron block is stripped AFTER kill-session (per the post-§Consequences `cron-remove` invocation in `src/verbs/stop.ts`). Between steps 2 and the post-kill `cron-remove`, the whip + watchdog cron lines remain installed:
+
+- `*/15 * * * * ... ATMUX_DIR=<atmuxDir> atmux whip` (default cadence; configurable via `team.whip.intervalMins`)
+- `*/1 * * * * ... ATMUX_DIR=<atmuxDir> atmux whip-resume-check` (gated on `team.whip.claudeAccount`)
+- `*/2 * * * * ... ATMUX_DIR=<atmuxDir> atmux watchdog` (operator-installed in some teams; not part of the default block)
+
+If a tick lands inside the soft-stop window — typical 5-second grace plus archive plus kill-session latency on a sizeable kanban — the firing tick re-pokes panes that are shutting down / re-spawns dead members / fires Discord pings against a stopping team. Phantom in-progress rows, half-written resume manifests, and post-stop ghost pings accumulate.
+
+### Decision
+
+Add a `quiesceCron({ atmuxDir, crontab?, dryRun?, clock? })` helper to `src/core/soft-stop.ts`. Wire it into `src/verbs/stop.ts` BEFORE the `softStop()` invocation in the `--soft` branch — between the cage probe and the orchestration call.
+
+The helper:
+
+1. Reads the user's crontab via the existing `CrontabIO` abstraction.
+2. Walks lines; matches `\batmux\s+(whip|watchdog)\b` (regex word-boundary catches `whip` + `whip-resume-check` + `watchdog`).
+3. For each matching line that ALSO carries `ATMUX_DIR=<this-team-atmuxDir>`, prefixes it with `# ATMUX-QUIESCED <epoch> ` — making it a comment-only line cron will ignore.
+4. Writes back via the atomic `crontab <tmpfile>` swap.
+5. Idempotent: re-runs against an already-quiesced crontab are no-ops (already-tagged lines counted as `alreadySuspended`, no re-write).
+6. Non-fatal: crontab unavailable / no installed crontab returns a clean zero result; the verb surfaces a stderr warn and proceeds with soft-stop.
+
+The next `atmux start` re-installs the team's cron block via the existing `cron-install` path, which renders fresh lines without the quiesce comment — no companion `unquiesceCron` is needed for the standard in-block lifecycle.
+
+### Scope is whip + watchdog only
+
+Other team-scoped cron verbs (gitter-sweep / lane-stall-watch / ombudsman-tick / epic-merge-tick / groom / report / decisions-digest / unblocker-tick) are deliberately LEFT running through the soft-stop window. They don't poke panes — they manage trunk state / sweep state.db / fire scheduled audits — and keeping them ticking until the post-kill `cron-remove` does not interact with the panes that are winding down. This matches the Task body's explicit scope and keeps the §D4 patch minimal.
+
+### /loop processes (Claude Code self-scheduled wakeups)
+
+A `/loop` runs as a Claude `ScheduleWakeup` re-invocation: when fired it spawns inside the existing TUI process tree. The TUI dies on `tmux kill-session` (step 6 of the original §Decision pipeline); `/loop` processes die with it implicitly.
+
+A 5-second grace-window race is theoretically possible if a `/loop` interval lands inside the 5s — but the practical floor is `ScheduleWakeup`'s 60s clamp, so any realistic `/loop` cadence (60s–3600s) is >> the grace window. §D4 does NOT add explicit `C-c` pre-kill for `/loop` cancellation — see §D4-OQ1 below for the deferred option.
+
+### Test coverage
+
+`tests/unit/core/soft-stop.test.ts` adds 8 `describe("quiesceCron")` tests:
+
+- happy path (whip + watchdog suspended; unrelated lines untouched)
+- other-team isolation (lines with different ATMUX_DIR left alone)
+- idempotent re-run (already-quiesced lines stay quiesced; no second write)
+- `whip-resume-check` matched via word-boundary regex
+- dryRun reports counts without writing
+- no crontab installed / crontab unavailable → clean zero, no read attempted
+- unrelated verbs (groom / report / decisions / gitter) NOT matched
+- crontab structure preservation (marker fence + non-atmux lines + line-count invariance)
+
+### Cron-remove interaction
+
+The existing post-kill `cron-remove` strips the team's whole marker-fenced block, including any quiesced lines that were inside it. Net result with quiesce + cron-remove is identical to cron-remove alone on the in-block path. Operator-managed out-of-block whip/watchdog lines (rare; not part of `cron-install` output) stay quiesced; re-enabling them requires `crontab -e` cleanup.
+
+### Open questions
+
+1. **§D4-OQ1**: Explicit `/loop` cancellation pre-kill — should soft-stop's notify step also send `C-c` to break any in-flight `/loop` wait BEFORE the TUI gets the comment notice? Recommended default: **no, keep implicit teardown** — the 60s `ScheduleWakeup` floor makes the 5s grace-window race vanishingly small, and `C-c` is the bare-`stop` semantics §D4 is deliberately avoiding. Revisit if production logs show a `/loop`-class race post-quiesce. (reversibility: low)
+2. **§D4-OQ2**: Move the existing post-kill `cron-remove` invocation EARLIER (pre-softStop) to subsume `quiesceCron`'s scope? Recommended default: **no, keep separate** — `cron-remove` strips the whole block; `quiesceCron`'s narrow whip+watchdog scope leaves the rest of the team's cron lines (groom + gitter-sweep + ...) running through the soft-stop window. Subsuming would also disable those. The two-step shape preserves operator intent. (reversibility: low)
+
+### Refs (§D4 addendum)
+
+- Task kanban entry: t-ccabd763 (claimed 2026-05-16 by up-impl-3)
+- Complaint pointer: c-cef89cfd → adjudicated as duplicate-of t-ccabd763 (commit 2ffb9c2)
+- `src/core/soft-stop.ts::quiesceCron` — implementation
+- `src/verbs/stop.ts` — invocation site (pre-`softStop()` in the `--soft` branch)
+- `src/abstractions/crontab.ts` — `CrontabIO` DI surface (re-used)
+- ADR-053 — whip advisory locking (eases reaping if explicit `pkill` ever added)
+- ADR-076 — per-team cron isolation (scoping via `ATMUX_DIR=<dir>` env marker)
+- ADR-083 — `cron-remove` verb (companion post-kill step)

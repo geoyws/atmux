@@ -13,6 +13,7 @@
 // in around them. Tests inject `tmux` + `kanban` + `clock` + `sleep` so
 // the unit suite runs without a real tmux server.
 
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { atomicWrite } from "../abstractions/fs.ts";
 import {
   buildWindowName,
@@ -201,6 +202,144 @@ function readGraceSeconds(team: Team): number {
   const v = (team as { softStopGraceSeconds?: number }).softStopGraceSeconds;
   if (typeof v === "number" && Number.isInteger(v) && v >= 0) return v;
   return DEFAULT_SOFT_STOP_GRACE_SECONDS;
+}
+
+// ---------- ADR-087 §D4: Cron quiescence (t-ccabd763) ----------
+//
+// Race today: bare `atmux stop --soft` fires graceful pane shutdown,
+// then much later (after killSession) the cron-remove verb strips the
+// team's marker-fenced cron block. During the in-between window —
+// notice → grace → manifest write → archive → killSession — the whip
+// + watchdog cron lines are STILL installed and active. A `*/15` or
+// `*/2` tick that lands inside this window re-pokes panes that are
+// shutting down / re-spawns dead members / fires Discord pings against
+// a stopping team.
+//
+// Fix: BEFORE softStop() runs, comment out the whip/watchdog cron
+// lines scoped to THIS team's atmuxDir (via the `ATMUX_DIR=<dir>` env
+// marker the renderer bakes into every line per `src/core/cron.ts`).
+// On `atmux start` the existing `cron-install` path re-renders the
+// block fresh; the comment vanishes.
+//
+// Scope is whip + watchdog only — per Task body t-ccabd763. The
+// `\batmux\s+(whip|watchdog)\b` regex also catches `whip-resume-check`
+// (the `-` after `whip` is a word boundary). Other team-scoped cron
+// lines (gitter-sweep / lane-stall / ombudsman / epic-merge / etc.)
+// are left running through the soft-stop window — they don't poke
+// panes, they manage trunk state which keeps advancing fine while a
+// team is winding down.
+//
+// /loop processes (Claude Code self-scheduled wakeups via the
+// ScheduleWakeup tool): NOT explicitly cancelled. They die implicitly
+// when the TUI is killed at `tmux kill-session` (the verb's last
+// step). A 5s grace-window race is theoretically possible but bounded
+// — any reasonable /loop interval is >> the grace window. Open
+// question §D4-OQ1 below documents the option of explicit `C-c`
+// pre-kill if production proves the implicit teardown insufficient.
+
+/** Comment prefix marking a line as suspended by `quiesceCron`. The
+ *  trailing space + timestamp gives operators a forensic trail of
+ *  WHEN soft-stop quiesced this line; cron sees the leading `#` and
+ *  ignores the entry until a fresh `cron-install` rewrites the block. */
+export const QUIESCE_TAG = "# ATMUX-QUIESCED";
+
+/** Regex matching whip-class verb invocations. `\b` after `whip`
+ *  ensures `whip-resume-check` matches (hyphen is non-word) without
+ *  catching hypothetical `whippet` / `whipped`. */
+const WHIP_VERB_RE = /\batmux\s+(whip|watchdog)\b/;
+
+export interface QuiesceCronOpts {
+  /** This team's atmuxDir — scopes which cron lines are quiesced via
+   *  substring match against `ATMUX_DIR=<atmuxDir>` (the canonical env
+   *  marker every renderer-produced cron line carries). */
+  atmuxDir: string;
+  /** Crontab DI surface (test injection). Defaults to {@link defaultCrontabIO}. */
+  crontab?: CrontabIO;
+  /** When true, parses + reports counts but does NOT write back. */
+  dryRun?: boolean;
+  /** Clock for the quiesce-tag epoch (test injection). Defaults to {@link now}. */
+  clock?: () => number;
+}
+
+export interface QuiesceCronResult {
+  /** Lines suspended on THIS call — newly commented. */
+  suspended: number;
+  /** Lines already commented from a prior soft-stop run (idempotent
+   *  re-invocation against THIS team's atmuxDir). */
+  alreadySuspended: number;
+  /** Lines matched the whip-class regex but did NOT carry this team's
+   *  ATMUX_DIR marker — left untouched (other teams' cron lines). */
+  skippedOtherTeam: number;
+}
+
+/**
+ * Comment out THIS team's whip + watchdog cron lines BEFORE soft-stop
+ * signalling — closes the race where a star-slash-N tick fires
+ * mid-teardown.
+ *
+ * Idempotent: re-running against the same crontab + atmuxDir is a
+ * no-op (already-quiesced lines stay quiesced; nothing else changes).
+ * The next `atmux start` re-installs the cron block fresh via the
+ * existing `cron-install` path, which renders fresh lines without
+ * the comment tag.
+ *
+ * Non-fatal: crontab unavailability (no `crontab` on PATH, no user
+ * crontab) returns a clean zero result. Test injection lets unit
+ * tests run without touching the host crontab.
+ */
+export async function quiesceCron(opts: QuiesceCronOpts): Promise<QuiesceCronResult> {
+  const cron = opts.crontab ?? defaultCrontabIO();
+  const dryRun = opts.dryRun === true;
+  const clock = opts.clock ?? now;
+
+  const result: QuiesceCronResult = {
+    suspended: 0,
+    alreadySuspended: 0,
+    skippedOtherTeam: 0,
+  };
+
+  if (!(await cron.available())) return result;
+  const current = await cron.read();
+  if (current === null || current.length === 0) return result;
+
+  const atmuxDirMarker = `ATMUX_DIR=${opts.atmuxDir}`;
+  const tsTag = `${QUIESCE_TAG} ${Math.floor(clock() / 1000)}`;
+
+  // Split + rebuild line-by-line; preserve trailing newline shape so
+  // crontab round-trips byte-identical on no-op runs.
+  const lines = current.split("\n");
+  const out: string[] = [];
+  let changed = false;
+
+  for (const line of lines) {
+    if (line.startsWith(QUIESCE_TAG)) {
+      // Already-quiesced line. Count if it references THIS team's
+      // atmuxDir; other teams' quiesced lines stay invisible to us.
+      if (line.includes(atmuxDirMarker)) result.alreadySuspended += 1;
+      out.push(line);
+      continue;
+    }
+    if (!WHIP_VERB_RE.test(line)) {
+      out.push(line);
+      continue;
+    }
+    if (!line.includes(atmuxDirMarker)) {
+      // Whip/watchdog line for ANOTHER team — leave it running.
+      result.skippedOtherTeam += 1;
+      out.push(line);
+      continue;
+    }
+    // This team's whip/watchdog line — suspend it.
+    out.push(`${tsTag} ${line}`);
+    result.suspended += 1;
+    changed = true;
+  }
+
+  if (changed && !dryRun) {
+    await cron.write(out.join("\n"));
+  }
+
+  return result;
 }
 
 /** Send the notice to one member's pane. Returns `true` when the send
