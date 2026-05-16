@@ -136,6 +136,7 @@ import {
   consumedManifestPath,
   resumeManifestPath,
 } from "../core/soft-stop.ts";
+import { getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ResumeManifest } from "../schema/resume.ts";
 import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
@@ -1002,7 +1003,9 @@ async function autoReconcileCockpitForTeam(
   }
 
   const reconcile = opts.cockpitReconcileFn ?? reconcileCockpitSession;
-  const cockpitTmux = factory({ socket: "default" });
+  // ADR-162 §Decision-anchor #1: cockpit binds the dedicated
+  // `atmux-cockpit` socket (`ATMUX_COCKPIT_SOCKET` legacy escape hatch).
+  const cockpitTmux = factory({ socket: getCockpitSocketName() });
   try {
     await reconcile(
       cockpitTmux,

@@ -40,6 +40,7 @@ import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-heal
 import { loadInbox } from "../core/inbox.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { loadKanban } from "../core/kanban.ts";
+import { getCockpitSocketName } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
 import {
@@ -385,7 +386,11 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
   let sessionAlive = false;
   let windowAlive = false;
   try {
-    const cockpitTmux = factory({ socket: "default" });
+    // ADR-162 §Decision-anchor #1: cockpit lives on its dedicated
+    // socket (`atmux-cockpit` by default; `ATMUX_COCKPIT_SOCKET` legacy
+    // escape hatch). Probing the wrong socket reports a healthy cockpit
+    // as `down` post-migration.
+    const cockpitTmux = factory({ socket: getCockpitSocketName() });
     sessionAlive = await cockpitTmux.session.hasSession(cockpit.cockpitSession);
     if (sessionAlive) {
       const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
