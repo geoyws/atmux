@@ -38,6 +38,7 @@ import {
   getSessionName,
   isMedicInboxKey,
   MEDIC_INBOX_KEY,
+  resolveExistingWindowName,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
@@ -228,7 +229,13 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
  *  in the target — callers with a `TeamMember` in scope pass `m.label`
  *  so the resolved target matches the live tmux window (which may have
  *  been renamed via `atmux member rename`). Pre-TR4 callers omit and
- *  get the legacy `<emoji><name>` shape unchanged. */
+ *  get the legacy `<emoji><name>` shape unchanged.
+ *
+ *  Sync — returns the canonical (ADR-135 hyphenated) form unconditionally.
+ *  Prefer {@link resolveMemberTarget} at call sites with `tmux` in scope:
+ *  it falls back to the legacy `<emoji><name>` form when the canonical
+ *  window isn't found, which keeps `send` working against teams spawned
+ *  by a pre-ADR-135 binary during the deprecation window. */
 export function buildMemberTarget(
   sessionName: string,
   memberName: string,
@@ -236,6 +243,28 @@ export function buildMemberTarget(
   label?: string,
 ): string {
   return `${sessionName}:${buildWindowName(memberName, emoji, label)}`;
+}
+
+/** Async variant of {@link buildMemberTarget} that consults the live
+ *  tmux window list and falls back to the legacy `<emoji><member>` form
+ *  if the canonical `<emoji>-<member>` window isn't present. Used by
+ *  the send + broadcast paths to address pre-ADR-135 teams correctly
+ *  during the deprecation window. */
+export async function resolveMemberTarget(
+  tmux: TmuxNamespace,
+  sessionName: string,
+  memberName: string,
+  emoji: string | undefined,
+  label?: string,
+): Promise<string> {
+  const windowName = await resolveExistingWindowName(
+    sessionName,
+    memberName,
+    emoji,
+    label,
+    async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+  );
+  return `${sessionName}:${windowName}`;
 }
 
 /**
@@ -302,7 +331,13 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
       hint: `run 'atmux status' to list members (or use '${MEDIC_INBOX_KEY}' / legacy '${SUPERDOCTOR_INBOX_KEY}' for the cockpit-tier medic inbox)`,
     });
   }
-  const target = buildMemberTarget(sessionName, memberEntry.name, memberEntry.emoji, memberEntry.label);
+  const target = await resolveMemberTarget(
+    tmux,
+    sessionName,
+    memberEntry.name,
+    memberEntry.emoji,
+    memberEntry.label,
+  );
   const atmuxDir = await getAtmuxDir(dirOpts);
   // ADR-138 T3b2: per-TUI verifier dispatch. claude → composerEmpty();
   // shell / non-Claude → null (legacy submitAfterPaste). Resolved
@@ -342,7 +377,7 @@ async function broadcastSend(
   let anyFailed = false;
   for (const m of team.members) {
     if (!parsed.includeDriver && m.name === "driver") continue;
-    const target = buildMemberTarget(sessionName, m.name, m.emoji, m.label);
+    const target = await resolveMemberTarget(tmux, sessionName, m.name, m.emoji, m.label);
     // ADR-138 T3b2: per-member TUI dispatch (broadcast targets can be
     // heterogeneous — claude members get composerEmpty(), shell members
     // skip verify).

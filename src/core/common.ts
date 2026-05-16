@@ -319,6 +319,51 @@ export function buildWindowNameLegacy(member: string, emoji?: string): string {
 }
 
 /**
+ * Resolve a member's existing tmux window name, tolerating both the
+ * canonical ADR-135 hyphenated form (`<emoji>-<member>`) AND the legacy
+ * pre-ADR-135 concatenated form (`<emoji><member>`). Returns whichever
+ * form actually exists in the live tmux window list; if neither exists,
+ * returns the canonical form so the downstream "no tmux window for X"
+ * error message names the form the caller would have spawned.
+ *
+ * Called by addressing verbs (`tell-lead`, `send`) that need to address
+ * windows by name and would otherwise miss teams spawned under the
+ * pre-ADR-135 binary. Symmetric with {@link isMemberWindowName}, which
+ * already accepts both shapes during the deprecation window.
+ *
+ * Pure-by-injection: takes a `listWindowNames` function so tests can
+ * mock tmux without spawning. Production callers pass
+ * `(name) => tmux.window.listWindows(name).then((ws) => ws.map((w) => w.name))`.
+ *
+ * Once `start.ts`'s migration shim renames legacy windows on every
+ * fresh team-start, this helper degenerates to "return canonical" and
+ * can be removed alongside `buildWindowNameLegacy`.
+ */
+export async function resolveExistingWindowName(
+  sessionName: string,
+  member: string,
+  emoji: string | undefined,
+  label: string | undefined,
+  listWindowNames: (sessionName: string) => Promise<ReadonlyArray<string>>,
+): Promise<string> {
+  const canonical = buildWindowName(member, emoji, label);
+  const legacy = buildWindowNameLegacy(member, emoji);
+  if (canonical === legacy) return canonical;
+  let names: ReadonlyArray<string>;
+  try {
+    names = await listWindowNames(sessionName);
+  } catch {
+    // Session missing / tmux down — let downstream produce its own
+    // "no tmux window" error against the canonical form.
+    return canonical;
+  }
+  const set = new Set(names);
+  if (set.has(canonical)) return canonical;
+  if (set.has(legacy)) return legacy;
+  return canonical;
+}
+
+/**
  * ADR-136 TR4: display name for a member. Returns `member.label` when
  * set + non-empty, otherwise `member.name`. Use this for operator-
  * facing surfaces (Discord templates, status output, brief

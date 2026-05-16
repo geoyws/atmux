@@ -57,6 +57,40 @@ export const TeamMember = z
      *  When present, `atmux::tui_cmd` uses it verbatim, ignoring `team.tuiCommands`
      *  and built-in launchers. Stamped at `add-member` time via `--command <cmd>`. */
     command: z.string().optional(),
+    /** ADR-157 §D4 — explicit runtime selector for the per-member
+     *  TUI flavor. When `"cursor"`, the member runs under Cursor CLI
+     *  (martinet path per ADR-132 + ADR-140) and `goal` (below) is a
+     *  WARN-not-refuse no-op: Cursor has no `/goal` skill equivalent,
+     *  so the field is allowed for partial-migration scenarios but
+     *  doesn't drive a self-nudge loop. Default-unset → falls back
+     *  to TUI-driven runtime detection via `tui` (cursor / claude /
+     *  shell / ...). Free-form string for forward-compat with future
+     *  runtimes (per ADR-005 `tui: z.string()` precedent). */
+    runtime: z.string().optional(),
+    /** ADR-157 §D2 — per-role unsatisfiable-in-steady-state goal
+     *  injected via Claude Code v2.1.139+ `/goal` skill. Drives the
+     *  per-turn Haiku evaluator that self-nudges the member back into
+     *  the work loop with sub-second latency. Optional + additive.
+     *
+     *  Goal-phrasing rule (load-bearing per ADR-157 §Decision-anchor
+     *  #1): the predicate MUST re-satisfy when real-world state
+     *  regresses (a new commit lands, a new complaint files). Goals
+     *  that satisfy once + never fire again halt the member
+     *  permanently — opposite of intent. Reviewer pre-flag at every
+     *  goal addition.
+     *
+     *  Runtime gate (ADR-157 §D4): when `runtime === "cursor"` this
+     *  field is a WARN-not-refuse no-op — Cursor CLI has no `/goal`
+     *  equivalent. Accept the value so partial migrations don't block
+     *  schema load; runtime hooks (T3) short-circuit before injecting.
+     *
+     *  Resolution chain (ADR-157 §D2 / §OQ3): this explicit field
+     *  takes precedence over the brief-parsed `## Standing Goal`
+     *  section. See `src/core/goal-resolver.ts::resolveGoalForMember`
+     *  — single source of truth; downstream hooks must NOT
+     *  brief-parse directly. Empty string = explicit opt-out
+     *  (per goal-resolver test contract). */
+    goal: z.string().optional(),
   })
   .passthrough();
 export type TeamMember = z.infer<typeof TeamMember>;
@@ -419,9 +453,38 @@ export const TeamCrons = z
      *  threshold); the kill-switch lives here for fleet-consistent
      *  shape with `laneTickEnabled`. */
     whipVelocityGateEnabled: z.boolean().default(true),
+    /** ADR-157 §D6 — lane-tick cron cadence override (minutes). Default
+     *  5 — `/goal` (Claude Code v2.1.139+ skill) drives fast handoff
+     *  on the happy path via per-turn Haiku evaluator; lane-tick runs
+     *  at 5min as a structural backstop for failure modes /goal cannot
+     *  see (wedged panes, rate-lockouts, compaction-wipe). Lower bound
+     *  floor is /goal mean-time-to-detect-failure × 2 (~5min); ceiling
+     *  10min (cron `\*\/10`) acceptable with operator validation. Must be a divisor
+     *  of 60 — `cronEvery` refuses non-divisors (1, 2, 3, 4, 5, 6, 10,
+     *  12, 15, 20, 30, 60). Pre-ADR-157 default was 2; teams upgrading
+     *  pick up the new cadence on next `atmux start` / `atmux
+     *  cron-install`. */
+    laneTickMins: z
+      .number()
+      .int()
+      .positive()
+      .refine(
+        (n) => [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60].includes(n),
+        {
+          message:
+            "laneTickMins must be a divisor of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60) — cronEvery rejects non-divisors per ADR-062",
+        },
+      )
+      .default(5),
   })
   .strict();
 export type TeamCrons = z.infer<typeof TeamCrons>;
+
+/** ADR-157 §D6 default cadence for lane-tick — pre-T5 was 2 (cron
+ *  `\*\/2 \* \* \* \*`); T5 relaxes to 5 because /goal handles fast
+ *  handoff on the happy path. Co-located with the schema so cron
+ *  renderer + tests share the constant. */
+export const DEFAULT_LANE_TICK_CRON_MINS = 5;
 
 /**
  * `team.json::kanban` sub-config — kanban-orchestration knobs. ADR-062
