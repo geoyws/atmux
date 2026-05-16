@@ -130,7 +130,10 @@ describe("softStop", () => {
     const w1 = result.manifest.members.find((m) => m.name === "w1");
     expect(w1?.lastClaim).toBe(taskId);
     expect(w1?.claimedAt).toBeGreaterThan(0);
-    expect(w1?.windowName).toBe("🐝w1");
+    // ADR-135: buildWindowName emits <emoji>-<member> (hyphen separator)
+    // post-rename; pre-ADR-135 tests asserted the legacy concatenated
+    // form "🐝w1" without separator.
+    expect(w1?.windowName).toBe("🐝-w1");
 
     // Lead + shell-only have null lastClaim.
     expect(result.manifest.members.find((m) => m.name === "lead")?.lastClaim).toBeNull();

@@ -536,7 +536,12 @@ describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
     const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
     expect(cockpit.medic?.enabled).toBe(true);
     expect(cockpit.medic?.autoStart).toBe(false);
-    expect(cockpit.superdoctor).toBeUndefined();
+    // ADR-133 back-compat: cockpit.superdoctor is intentionally surfaced
+    // as the resolved medic shape during the deprecation window (per
+    // src/core/cockpit.ts::enrichLegacyFields synthesis comment "Surface
+    // BOTH `medic` (canonical) AND `superdoctor` (deprecated alias)").
+    // Duck-typed callers reading either field see the same shape.
+    expect(cockpit.superdoctor?.enabled).toBe(true);
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain("BOTH");
     expect(warned[0]).toContain("'medic' wins");
@@ -599,10 +604,22 @@ describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
     const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
     expect(cockpit.medic?.enabled).toBe(true);
     expect(cockpit.superdoctor?.enabled).toBe(true);
-    // Exactly one warning — the ADR-089 flat-shape one. The TR2 medic
-    // shim should NOT double-warn for this case.
-    expect(warned).toHaveLength(1);
-    expect(warned[0]).toContain("legacy flat teams[]");
+    // Two warnings legitimately fire from `migrateLegacyShape`:
+    //   (1) ADR-089 flat-shape lift warning (`legacy flat teams[]`)
+    //   (2) ADR-133 deprecated-superdoctor warning (`deprecated
+    //       'superdoctor' block — rename to 'medic'`) — fired when the
+    //       lift sees a top-level `superdoctor` without a paired
+    //       `medic` block.
+    // The TR2 medic shim (`migrateSuperdoctorBlockToMedic`) itself
+    // does NOT fire — migrateLegacyShape already stripped the
+    // top-level superdoctor during the flat-to-recursive lift, so by
+    // the time the TR2 shim runs the on-disk top-level superdoctor is
+    // gone. So the "no double-warn from the TR2 shim" intent of the
+    // original assertion is preserved; the second warning is from the
+    // ADR-089 lift, NOT the TR2 shim.
+    expect(warned).toHaveLength(2);
+    expect(warned.some((m) => m.includes("legacy flat teams[]"))).toBe(true);
+    expect(warned.some((m) => m.includes("deprecated 'superdoctor' block"))).toBe(true);
   });
 });
 

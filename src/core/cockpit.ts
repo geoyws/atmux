@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { exists } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
-import { ConfigError } from "../errors.ts";
+import { ConfigError, SchemaError } from "../errors.ts";
 import {
   Cockpit,
   type CockpitMartinet,
@@ -104,7 +104,21 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   const migrated = migrateLegacyShape(raw, path, warn);
   const medicShimmed = migrateSuperdoctorBlockToMedic(migrated, path, warn);
   const sessionShimmed = migrateCockpitSessionLegacyLiteral(medicShimmed, path, warn);
-  const parsed = Cockpit.parse(sessionShimmed);
+  // ADR-005 boundary uniformity: Zod errors at the loadCockpit boundary
+  // wrap as SchemaError so catch-by-tag callers (and the JSDoc contract
+  // above — "SchemaError on parse failure") observe the same error
+  // class as every other readJson-style boundary. Bare `Cockpit.parse`
+  // throws Zod's native error class; that bypasses the wrap and breaks
+  // both the JSDoc contract + 4+ existing tests asserting `SchemaError`.
+  const result = Cockpit.safeParse(sessionShimmed);
+  if (!result.success) {
+    throw new SchemaError({
+      file: path,
+      issues: result.error.issues,
+      cause: result.error,
+    });
+  }
+  const parsed = result.data;
   // ADR-089 §Decision-anchor #4: validate operator-supplied prefixChain
   // (length ≥ MAX_NESTING_LEVEL + uniqueness) at load time. Failing here
   // is preferable to a runtime KeyError when resolvePrefix is called

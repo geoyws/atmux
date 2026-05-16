@@ -332,7 +332,11 @@ describe("Cockpit — top-level shape + defaults", () => {
   test("empty object parses to schema defaults", () => {
     const c = Cockpit.parse({});
     expect(c.schemaVersion).toBe(1);
-    expect(c.cockpitSession).toBe("atmux_teams");
+    // ADR-135 §D1: default cockpitSession is `atmux_cockpit` (was
+    // `atmux_teams` pre-rename). Legacy literal is coerced at load
+    // time via the migrateCockpitSessionLegacyLiteral shim; the schema
+    // default itself has flipped to the canonical form.
+    expect(c.cockpitSession).toBe("atmux_cockpit");
     expect(c.sessions).toEqual([]);
   });
   test("parses a typical recursive cockpit", () => {
