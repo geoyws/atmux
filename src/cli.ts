@@ -80,6 +80,8 @@ import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { story } from "./verbs/story.ts";
 import { task } from "./verbs/task.ts";
+import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
+import { spawnEpic } from "./verbs/team/spawn-epic.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
 import { up } from "./verbs/up.ts";
@@ -331,16 +333,20 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
   const sub = argv[0];
   if (sub === undefined || sub === "") {
     throw new UsageError({
-      what: "team: subverb required (try: repair-rename)",
+      what: "team: subverb required (try: repair-rename | spawn-epic | dissolve-epic)",
       hint: "run 'atmux help' for the list of verbs",
     });
   }
   switch (sub) {
     case "repair-rename":
       return teamRepairRename(argv.slice(1));
+    case "spawn-epic":
+      return spawnEpic(argv.slice(1));
+    case "dissolve-epic":
+      return dissolveEpic(argv.slice(1));
     default:
       throw new UsageError({
-        what: `team: unknown subverb '${sub}' (try: repair-rename)`,
+        what: `team: unknown subverb '${sub}' (try: repair-rename | spawn-epic | dissolve-epic)`,
         hint: "run 'atmux help' for the list of verbs",
       });
   }
