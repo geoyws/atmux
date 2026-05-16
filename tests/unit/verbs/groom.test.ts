@@ -58,6 +58,7 @@ describe("parseGroomArgs", () => {
       quiet: false,
       archive: false,
       aggressive: false,
+      noReconcile: false,
       inboxDays: 7,
       kanbanDays: 30,
       decisionsDays: 30,

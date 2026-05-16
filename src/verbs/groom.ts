@@ -41,6 +41,10 @@ import {
   summarizeKanban,
 } from "../core/groom.ts";
 import { groomArchive, type GroomArchiveResult } from "../core/groom-archive.ts";
+import {
+  reconcileKanbanVsGit,
+  type ReconcileResult,
+} from "../core/groom-reconcile.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { LockError, LockTimeoutError, UsageError } from "../errors.ts";
@@ -76,6 +80,11 @@ export interface ParsedGroomArgs {
   /** t-8287b37d C1: when set, also archive state.db rows (tasks +
    *  inbox_messages) older than `kanbanDays` into sibling archive.db. */
   archive: boolean;
+  /** t-dc830eb0: when true, skip the kanban-vs-git reconcile sub-op.
+   *  Default false (sub-op runs every groom). Off-switch for projects
+   *  that don't follow the "commit msg references Task ID" convention,
+   *  or for one-off groom invocations during a partial-history bisect. */
+  noReconcile: boolean;
   /** When true, the verb returns 0 immediately after arg parse. Bash
    *  emits help via `_groom_usage` then `return 0`. */
   showHelp: boolean;
@@ -94,6 +103,7 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
   let showHelp = false;
   let archive = false;
   let aggressive = false;
+  let noReconcile = false;
   let inboxDays = DEFAULTS.inboxDays;
   let kanbanDays = DEFAULTS.kanbanDays;
   let decisionsDays = DEFAULTS.decisionsDays;
@@ -123,6 +133,14 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
       // `## Archive` regardless of timestamp parseability.
       aggressive = true;
       inboxDays = 0;
+      i += 1;
+      continue;
+    }
+    if (a === "--no-reconcile") {
+      // t-dc830eb0 sub-op opt-out — for projects that don't follow the
+      // "commit msg references Task ID" convention, or for a one-off
+      // groom invocation during a partial-history bisect.
+      noReconcile = true;
       i += 1;
       continue;
     }
@@ -179,6 +197,7 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     quiet,
     archive,
     aggressive,
+    noReconcile,
     inboxDays,
     kanbanDays,
     decisionsDays,
@@ -250,6 +269,8 @@ Flags:
   --archive                Also move state.db rows (done tasks + inbox
                            messages older than --kanban-days) into a
                            sibling archive.db. Idempotent. Per t-8287b37d.
+  --no-reconcile           Skip the kanban-vs-git reconcile sub-op (#7).
+                           Default: sub-op runs every groom. Per t-dc830eb0.
 
 Sub-operations (all idempotent):
   1a. driver-inbox.md / lead-outbox.md: age stale ## Open entries → ## Archive
@@ -264,7 +285,13 @@ Sub-operations (all idempotent):
      pass; auto-gated on team.json::groom.laneDriftCheck — default true when team has
      lane-tagged members, false to disable). Pairs with the every-2-min cron line for fast
      feedback + the standalone \`atmux lane-drift-check\` verb for ad-hoc invocation.
-  7. (--archive) state.db → archive.db row move (tasks + inbox_messages).
+  7. kanban-vs-git reconcile: scan \`git log --all\` for commits whose message references
+     a \`t-XXXXXXXX\` Task ID; for every open task (status ∈ {todo, in-progress}) whose ID
+     is matched, auto-flip to done with note "groomed: shipped via SHA <hash>". Single
+     bulk \`git log\` per run; idempotent + safe. Per t-dc830eb0 — closes the duplicate-ship
+     dispatch-collision pattern that fired velocity-gate 6× in 75min with 0 SHA. Skip via
+     --no-reconcile. Companion to ADR-160 candidate (Part b: post-merge done-flip in gitter).
+  8. (--archive) state.db → archive.db row move (tasks + inbox_messages).
 
 Fires daily via cron (04:00) and once on every \`atmux start\`.
 `;
@@ -283,6 +310,11 @@ export interface GroomResult {
    *  when the sub-op was skipped (no team.json / opt-out / no lane-
    *  tagged members). */
   laneDrift?: LaneDriftCheckResult;
+  /** t-dc830eb0: kanban-vs-git reconcile sub-op result. `undefined` only
+   *  when `--no-reconcile` was passed (the sub-op runs every groom by
+   *  default; failures still produce a defined result with
+   *  `skippedReason`). */
+  reconcile?: ReconcileResult;
   /** t-8287b37d C1: present only when `--archive` was passed. */
   archive?: GroomArchiveResult;
   /** Sub-ops that threw — surfaced as warnings; verb still returns 0. */
@@ -578,6 +610,51 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
     } catch (e) {
       logger.warn(`groom: lane-drift-check sub-op failed (continuing): ${errMsg(e)}`);
       result.errors.push({ op: "lane-drift-check", message: errMsg(e) });
+    }
+
+    // t-dc830eb0: kanban-vs-git reconcile sub-op. Single bulk
+    // `git log --all` per run; for every open task whose ID appears
+    // in a non-revert commit message, auto-flip to done. Closes the
+    // duplicate-ship dispatch-collision pattern (every claim was
+    // hitting `git log --all | grep <id>` pre-flight; velocity gate
+    // fired 6× in 75min with 0 SHA in lead's 10:10 MYT P0 outbox ask).
+    //
+    // Default-on; opt-out via `--no-reconcile`. Sub-op error-contained
+    // like the others. Runs AFTER lane-drift-check + summarizeKanban
+    // so the open-tasks list it scans reflects post-sweep state, and
+    // BEFORE --archive so reconciled-done tasks become eligible for
+    // the same-run state.db archive move.
+    if (!parsed.noReconcile) {
+      try {
+        const rec = await reconcileKanbanVsGit(atmuxDir, {
+          dryRun: parsed.dryRun,
+        });
+        result.reconcile = rec;
+        if (!parsed.quiet) {
+          if (rec.skippedReason !== undefined) {
+            // Soft-skip — log at debug only; not an error (cron-fire
+            // on a non-versioned project shouldn't surface as warn).
+            if (env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+              logger.log(`groom: kanban-vs-git reconcile skipped (${rec.skippedReason})`);
+            }
+          } else if (parsed.dryRun && rec.matched > 0) {
+            logger.log(
+              `groom[dry-run]: would reconcile ${rec.matched} open task(s) → done (matched commit msg in git log --all)`,
+            );
+          } else if (rec.flipped > 0) {
+            logger.ok(
+              `groom: reconciled ${rec.flipped} open task(s) → done (matched commit msg in git log --all)`,
+            );
+          } else if (rec.scanned > 0 && env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+            logger.log(
+              `groom: kanban-vs-git reconcile scanned ${rec.scanned} open task(s) — no matches`,
+            );
+          }
+        }
+      } catch (e) {
+        logger.warn(`groom: kanban-vs-git reconcile sub-op failed (continuing): ${errMsg(e)}`);
+        result.errors.push({ op: "kanban-vs-git-reconcile", message: errMsg(e) });
+      }
     }
 
     // t-8287b37d C1: state.db → archive.db row move. Opt-in via
