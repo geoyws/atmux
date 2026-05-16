@@ -51,6 +51,11 @@ import {
   performMerge,
 } from "./intra-team-merge.ts";
 import type { QueueMergeFn } from "./gitter-sweep.ts";
+import {
+  flipTasksMergedInRange,
+  type PostMergeFlipOpts,
+  type PostMergeFlipResult,
+} from "./post-merge-task-flip.ts";
 import type { KanbanRepo } from "./repositories/kanban-repo.ts";
 import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
 import type { Logger } from "./tui.ts";
@@ -99,6 +104,25 @@ export interface ProductionDispatcherDeps {
    *  rebasing detour = +2, total 6) with headroom. Tests pin this
    *  to validate the cap fires when the machine doesn't progress. */
   maxIterations?: number;
+  /** ADR-160 candidate (t-f8beb03b — Part b of t-dc830eb0): atmux dir
+   *  for the post-merge done-flip hook. Defaulted at the verb layer to
+   *  `<teamRoot>/.atmux`; tests inject the same fixture dir they seed
+   *  the kanban into. When set, after every successful
+   *  `ready_to_merge → tested` walk the dispatcher scans the merged
+   *  range (`<previousBaseSha>..<mergedSha>`) and flips every
+   *  referenced open Task to done — closes the duplicate-ship leak
+   *  at source so groom's read-side reconcile becomes a no-op. */
+  atmuxDir?: string;
+  /** ADR-160 candidate test injection. When set, called instead of
+   *  the default {@link flipTasksMergedInRange} after every successful
+   *  merge tick. Tests pin a recorder; production leaves this unset
+   *  (the default helper opens the kanban DB on its own). */
+  postMergeFlip?: (
+    atmuxDir: string,
+    fromSha: string | null,
+    toSha: string,
+    opts?: PostMergeFlipOpts,
+  ) => Promise<PostMergeFlipResult>;
 }
 
 const DEFAULT_MAX_ITERATIONS = 10;
@@ -292,6 +316,15 @@ export function productionQueueMergeAttempt(
     // re-fires on the next tick to re-evaluate.
     const gate = await resolvePreMergeGate(memberBranch, aheadCount, deps);
 
+    // ADR-160 candidate (t-f8beb03b): capture the pre-walk baseSha
+    // from the entry row so the post-merge done-flip hook can
+    // compute the merged-range `<previousBaseSha>..<mergedSha>`
+    // window. When the row is null OR baseSha is null (first-ever
+    // merge for this branch), the hook soft-skips with reason
+    // "no-range" — that's the groom kanban-vs-git reconcile's job
+    // (Part a, src/core/groom-reconcile.ts), not the per-merge hook.
+    const previousBaseSha = entryRow?.baseSha ?? null;
+
     // Walk performMerge until a stop-point. Each iteration is one
     // state-machine tick; the loop bound is `cap` iterations to
     // guard against pathological loops (e.g. concurrency-loss
@@ -300,6 +333,7 @@ export function productionQueueMergeAttempt(
     let lastReason = "no progress";
     let lastState: BranchMergeState = entryState;
     let madeProgress = false;
+    let mergedShaThisInvocation: string | null = null;
     while (iteration < cap) {
       iteration += 1;
       const ctx: IntraTeamMergeContext = {
@@ -320,6 +354,14 @@ export function productionQueueMergeAttempt(
       lastState = r.state;
       lastReason = r.reason;
       if (r.changed) madeProgress = true;
+      // ADR-160 candidate: capture the merge sha as soon as a tick
+      // produces it. `mergedSha` is set on the `ready_to_merge →
+      // tested` transition that ran the actual git merge; subsequent
+      // ticks won't re-set it (the row is now in `tested` which is
+      // caller-driven). One sha per invocation by construction.
+      if (r.mergedSha !== undefined) {
+        mergedShaThisInvocation = r.mergedSha;
+      }
       // Stop conditions: any of
       //   - terminal state (merged / conflict / reverted)
       //   - caller-driven state (tested / test_failed) — defer to
@@ -329,6 +371,43 @@ export function productionQueueMergeAttempt(
       if (isTerminalState(r.state)) break;
       if (CALLER_DRIVEN_STATES.has(r.state)) break;
       if (!r.changed) break;
+    }
+
+    // ADR-160 candidate (t-f8beb03b — Part b of t-dc830eb0):
+    // post-merge done-flip hook. Closes the duplicate-ship leak
+    // at source — for every Task ID referenced in a non-revert
+    // commit in the just-merged range, mark the open kanban entry
+    // done with note "flipped: shipped via merge SHA <hash>".
+    //
+    // Soft-skip on no-range (first-ever merge / null baseSha) or
+    // git log failure — the merge itself succeeded; kanban hygiene
+    // is best-effort and the daily groom-reconcile (Part a) catches
+    // any miss. Errors in the hook NEVER fail the dispatcher
+    // (which has already written the merger_state transition).
+    if (mergedShaThisInvocation !== null && deps.atmuxDir !== undefined) {
+      try {
+        const flipFn = deps.postMergeFlip ?? flipTasksMergedInRange;
+        const flipResult = await flipFn(
+          deps.atmuxDir,
+          previousBaseSha,
+          mergedShaThisInvocation,
+          deps.git !== undefined ? { git: deps.git } : {},
+        );
+        if (flipResult.skippedReason !== undefined) {
+          deps.logger.log(
+            `[dispatcher] ${memberBranch}: post-merge flip skipped (${flipResult.skippedReason})`,
+          );
+        } else if (flipResult.flipped > 0) {
+          deps.logger.log(
+            `[dispatcher] ${memberBranch}: post-merge flipped ${flipResult.flipped} task(s) → done (range ${(previousBaseSha ?? "").slice(0, 7)}..${mergedShaThisInvocation.slice(0, 7)})`,
+          );
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        deps.logger.log(
+          `[dispatcher] ${memberBranch}: post-merge flip threw (continuing): ${msg}`,
+        );
+      }
     }
 
     // Conflict surface — durable signal already written via

@@ -103,6 +103,24 @@ Callers migrate to `safeSendKeysWithVerify` with an appropriate verifier:
 
 Direct `tmux send-keys` calls REMAIN ONLY for cases where verification is N/A — `tmux rename-window`, layout commands, send-keys to a non-TUI shell pane. Reviewer enforces the migration at commit-review time.
 
+### T3b3 closure (t-06547e2d, 2026-05-15 P0)
+
+The lane-tick claim-injection callsite (`src/verbs/lane-tick.ts:240`) was empirically observed to drop the trailing `Enter` on member panes in the "just finished compose + ← for agents" transition state. 3rd recurrence on 2026-05-15 22:47 MYT triggered driver P0 + this migration.
+
+**Fix shape**: route the text-body payload through `pasteAndSubmit` (`src/core/paste-submit.ts`) — the bundled `loadBuffer + pasteBuffer -d + ≥500ms settle + C-m` cascade. `C-m` (literal carriage return keysym) bypasses the bracketed-paste-mode envelope that swallows the trailing `Enter`.
+
+**Carve-out preserved**: control-key keystrokes (`C-m`, `C-c`, `BTab`, single-digit modal selections) stay on the raw `tmux.pane.sendKeys` path — they don't pass through the bracketed-paste envelope and are correct as-is. The contract is enforced by `tests/unit/core/sendkeys-contract.test.ts` which grep-walks `src/` and asserts that no caller passes a text-body payload to raw `sendKeys` with `enter: true` outside the documented carve-out list (paste-submit / safe-send / launcher commands at shell prompt / `/clear`-class slash-commands / soft-stop's no-submit path).
+
+Audit findings (2026-05-15 — t-06547e2d):
+- `src/verbs/start.ts:485` + `:715` — launcher commands at SHELL prompt (pre-claude); no bracketed-paste envelope. **No migration needed.**
+- `src/verbs/rotate.ts:309` — `/clear` slash-command via raw keystroke typing (no preceding paste-buffer). **No migration needed.**
+- `src/verbs/cockpit.ts:1737` + `:1863` — `/loop /superdoctor` / `/loop /martinet` slash-commands at cockpit pane. **No migration needed.**
+- `src/core/soft-stop.ts:235` — explicit `enter: false` (queue-only, never submits). **No migration needed.**
+- `src/verbs/ombudsman.ts:297` — safe-send adapter callback; the callback's `enter` is opt-controlled by `safeSendKeys` (the caller). Adapter shape preserved; carve-out file.
+- `src/verbs/lane-tick.ts:240` — **MIGRATED** to `pasteAndSubmit` via the default `sendKeysFn` dispatch on text-body payload.
+
+The brief-paste call sites in start.ts + rotate.ts already route through `bootClaudeMember` (ADR-081 §C) which uses paste-submit internally — those were on the correct path pre-T3b3.
+
 ## Escalation log
 
 On send-keys failure (all retries exhausted), append to `~/.atmux/state/send-keys-failures.log`:

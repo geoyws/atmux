@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   PASTE_SUBMIT_SETTLE_FLOOR_MS,
+  pasteAndSubmit,
   submitAfterPaste,
 } from "../../../src/core/paste-submit.ts";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
@@ -118,6 +119,120 @@ describe("submitAfterPaste — ADR-081 §A contract", () => {
     expect(timeline).toHaveLength(2);
     expect(timeline[0]?.kind).toBe("sleep");
     expect(timeline[1]?.kind).toBe("sendKeys");
+  });
+
+  test("pasteAndSubmit composes loadBuffer + pasteBuffer + submitAfterPaste in order (ADR-138 T3b3)", async () => {
+    // Build a fuller mock that records buffer ops too. timeline order
+    // is the contract — load → paste → sleep → C-m send.
+    type BufEvent =
+      | { kind: "loadBuffer"; name: string; data: string }
+      | { kind: "pasteBuffer"; name: string; deleteAfter: boolean }
+      | Event;
+    const events: BufEvent[] = [];
+    const tmux = {
+      buffer: {
+        async loadBuffer(o: { name: string; data: string }) {
+          events.push({ kind: "loadBuffer", name: o.name, data: o.data });
+        },
+        async pasteBuffer(o: { name?: string; deleteAfter?: boolean }) {
+          events.push({
+            kind: "pasteBuffer",
+            name: o.name ?? "",
+            deleteAfter: o.deleteAfter ?? false,
+          });
+        },
+      },
+      pane: {
+        async sendKeys(o: { target: SendTarget; keys: string; enter?: boolean }) {
+          events.push({ kind: "sendKeys", keys: o.keys, enter: o.enter });
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const sleeps: number[] = [];
+    await pasteAndSubmit(tmux, TARGET, "atmux claim --next --as alpha", {
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    // Order: load, paste, send (sleep fires inside submitAfterPaste,
+    // which we override).
+    expect(events.length).toBe(3);
+    expect(events[0]?.kind).toBe("loadBuffer");
+    expect(events[1]?.kind).toBe("pasteBuffer");
+    expect(events[2]?.kind).toBe("sendKeys");
+    // Body lands in load-buffer verbatim.
+    if (events[0]?.kind === "loadBuffer") {
+      expect(events[0].data).toBe("atmux claim --next --as alpha");
+    }
+    // paste-buffer uses delete-after.
+    if (events[1]?.kind === "pasteBuffer") {
+      expect(events[1].deleteAfter).toBe(true);
+    }
+    // The trailing submit IS C-m (not Enter) — bracketed-paste mode.
+    if (events[2]?.kind === "sendKeys") {
+      expect(events[2].keys).toBe("C-m");
+      expect(events[2].enter).toBe(false);
+    }
+    // Settle delay honored (≥ floor).
+    expect(sleeps.length).toBe(1);
+    expect(sleeps[0]).toBeGreaterThanOrEqual(PASTE_SUBMIT_SETTLE_FLOOR_MS);
+  });
+
+  test("pasteAndSubmit uses the same buffer name for load + paste (no cross-buffer leak)", async () => {
+    type BufEvent =
+      | { kind: "loadBuffer"; name: string }
+      | { kind: "pasteBuffer"; name: string }
+      | Event;
+    const events: BufEvent[] = [];
+    const tmux = {
+      buffer: {
+        async loadBuffer(o: { name: string; data: string }) {
+          events.push({ kind: "loadBuffer", name: o.name });
+        },
+        async pasteBuffer(o: { name?: string }) {
+          events.push({ kind: "pasteBuffer", name: o.name ?? "" });
+        },
+      },
+      pane: {
+        async sendKeys() {},
+      },
+    } as unknown as TmuxNamespace;
+    await pasteAndSubmit(tmux, TARGET, "hello", { sleep: async () => {} });
+    const load = events.find((e) => e.kind === "loadBuffer");
+    const paste = events.find((e) => e.kind === "pasteBuffer");
+    if (load?.kind === "loadBuffer" && paste?.kind === "pasteBuffer") {
+      expect(load.name).toBe(paste.name);
+      expect(load.name.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("pasteAndSubmit honors custom bufferName + settleMs overrides", async () => {
+    const events: Array<{ kind: string; bufferName?: string | undefined; settleMs?: number }> = [];
+    const tmux = {
+      buffer: {
+        async loadBuffer(o: { name: string; data: string }) {
+          events.push({ kind: "loadBuffer", bufferName: o.name });
+        },
+        async pasteBuffer(o: { name?: string }) {
+          events.push({ kind: "pasteBuffer", bufferName: o.name });
+        },
+      },
+      pane: {
+        async sendKeys() {
+          events.push({ kind: "sendKeys" });
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const sleeps: number[] = [];
+    await pasteAndSubmit(tmux, TARGET, "x", {
+      bufferName: "custom_buf",
+      settleMs: 800,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    expect(events.find((e) => e.kind === "loadBuffer")?.bufferName).toBe("custom_buf");
+    expect(sleeps[0]).toBe(800);
   });
 
   test("uses real setTimeout when no sleep override provided (smoke)", async () => {

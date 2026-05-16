@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
   DEFAULT_MARTINET_CADENCE_SEC,
@@ -20,6 +21,7 @@ import {
   DEFAULT_WORKTREE_ROOT,
   MartinetImpl,
   Team,
+  TeamAutoEmitTrunkMerge,
   TeamCadence,
   TeamCadenceThresholds,
   TeamEpic,
@@ -744,6 +746,80 @@ describe("Team schema integrates TeamCadence cleanly (ADR-148 §D7)", () => {
         cadence: { thresholds: { shippingMaxAgeSec: -1 } },
       }),
     ).toThrow();
+  });
+});
+
+// ---------- TeamAutoEmitTrunkMerge — ADR-146 §D7 ----------
+
+describe("TeamAutoEmitTrunkMerge — valid + defaults (ADR-146 §D7)", () => {
+  test("empty block parses — all fields optional", () => {
+    const c = TeamAutoEmitTrunkMerge.parse({});
+    expect(c.enabled).toBeUndefined();
+    expect(c.fallbackAssignee).toBeUndefined();
+    expect(c.shortCircuitOnSharedBase).toBeUndefined();
+  });
+
+  test("full block round-trips", () => {
+    const c = TeamAutoEmitTrunkMerge.parse({
+      enabled: true,
+      fallbackAssignee: "manual-merger",
+      shortCircuitOnSharedBase: false,
+    });
+    expect(c.enabled).toBe(true);
+    expect(c.fallbackAssignee).toBe("manual-merger");
+    expect(c.shortCircuitOnSharedBase).toBe(false);
+  });
+
+  test("fallbackAssignee accepts null (explicit unassigned)", () => {
+    const c = TeamAutoEmitTrunkMerge.parse({ fallbackAssignee: null });
+    expect(c.fallbackAssignee).toBeNull();
+  });
+
+  test("strict-mode rejects unknown keys (drift detection — ADR-054 §D3)", () => {
+    expect(() =>
+      TeamAutoEmitTrunkMerge.parse({
+        enabled: true,
+        enabld: true, // typo
+      }),
+    ).toThrow();
+  });
+
+  test("non-boolean enabled rejected", () => {
+    expect(() => TeamAutoEmitTrunkMerge.parse({ enabled: "yes" })).toThrow();
+  });
+});
+
+describe("Team schema integrates TeamAutoEmitTrunkMerge cleanly (ADR-146 §D7)", () => {
+  test("Team.parse accepts an `autoEmitTrunkMerge` block", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      autoEmitTrunkMerge: { enabled: true },
+    });
+    expect(team.autoEmitTrunkMerge?.enabled).toBe(true);
+  });
+
+  test("Team.parse without `autoEmitTrunkMerge` block leaves field undefined", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.autoEmitTrunkMerge).toBeUndefined();
+  });
+
+  test("nested invalid value (typo) rejects through Team.parse", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        autoEmitTrunkMerge: { enableddd: true },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG constant (ADR-146 §D7)", () => {
+  test("constants match ADR-146 §D7 defaults", () => {
+    expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.enabled).toBe(true);
+    expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.fallbackAssignee).toBeNull();
+    expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.shortCircuitOnSharedBase).toBe(true);
   });
 });
 

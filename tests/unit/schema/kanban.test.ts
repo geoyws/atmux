@@ -263,6 +263,24 @@ describe("KanbanStory", () => {
     const parsed = KanbanStory.parse(withExtra) as unknown as { futureField: boolean };
     expect(parsed.futureField).toBe(true);
   });
+
+  test("ADR-146 §D4: branch field round-trips", () => {
+    const story = KanbanStory.parse({
+      id: "s-aaaaa111",
+      branch: "geoyws-whip-impl",
+    });
+    expect(story.branch).toBe("geoyws-whip-impl");
+  });
+
+  test("ADR-146 §D4: branch accepts null (Story not yet backfilled)", () => {
+    const story = KanbanStory.parse({ id: "s-aaaaa222", branch: null });
+    expect(story.branch).toBeNull();
+  });
+
+  test("ADR-146 §D4: branch is optional (existing Stories pre-backfill)", () => {
+    const story = KanbanStory.parse({ id: "s-aaaaa333" });
+    expect(story.branch).toBeUndefined();
+  });
 });
 
 // ---------- KanbanLane (write-side enum) ----------

@@ -853,6 +853,49 @@ export const TeamCadenceThresholds = z
   .strict();
 export type TeamCadenceThresholds = z.infer<typeof TeamCadenceThresholds>;
 
+/** ADR-146 §D7: per-team `autoEmitTrunkMerge` config. Strict — the
+ *  block governs whether `moveTask` auto-files a `merge t-xxx
+ *  (branch→trunk)` Task when the last leaf of a per-Story-branch
+ *  task chain lands done. Defaults applied per
+ *  {@link DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG} when the block is
+ *  absent. */
+export const TeamAutoEmitTrunkMerge = z
+  .object({
+    /** Master switch. ADR-146 §D7 narrative: default `true` when
+     *  `worktreeIsolation: true`, `false` otherwise. The resolver in
+     *  {@link resolveAutoEmitTrunkMergeConfig} reads
+     *  `team.worktreeIsolation` to compute the effective default
+     *  when this field is unset. */
+    enabled: z.boolean().optional(),
+    /** Owner for the auto-emitted Task when the team has no
+     *  `gitter` member. `null` (default) leaves the Task
+     *  unassigned for any member to claim via `atmux claim --next`. */
+    fallbackAssignee: z.string().nullable().optional(),
+    /** When `true`, skip auto-emit when `Story.branch ===
+     *  <team-base-branch>` (no fan-in needed; work already on
+     *  base). Default `true`. Disable for debug-only force-emit. */
+    shortCircuitOnSharedBase: z.boolean().optional(),
+  })
+  .strict();
+export type TeamAutoEmitTrunkMerge = z.infer<typeof TeamAutoEmitTrunkMerge>;
+
+/** ADR-146 §D7 defaults — used by the moveTask hook in
+ *  `src/core/kanban.ts` when the `autoEmitTrunkMerge` block is
+ *  absent OR individual fields are unset. Co-located with the
+ *  schema so non-Zod call sites share the same constants
+ *  (mirrors {@link DEFAULT_CADENCE_CONFIG} precedent). */
+export const DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG = {
+  /** Effective default for `enabled` when neither the block nor the
+   *  field is set. Resolver in `src/core/kanban.ts` reads
+   *  `team.worktreeIsolation` to derive the team-wide default
+   *  (`true` for isolated teams, `false` for shared-cwd teams) —
+   *  this constant is the FIELD default when the team-wide compute
+   *  result is `true`. */
+  enabled: true,
+  fallbackAssignee: null as string | null,
+  shortCircuitOnSharedBase: true,
+} as const;
+
 /** `team.json::cadence` — ADR-148 §D7 commit-cadence config. All
  *  fields optional; defaults applied per
  *  {@link DEFAULT_CADENCE_CONFIG}. Absent block means the cadence
@@ -1021,6 +1064,15 @@ export const Team = z
      *  ADR-148 §D1 — `atmux status` surfaces verdict + age in the
      *  new cadence column. */
     cadence: TeamCadence.optional(),
+    /** ADR-146 §D7: per-team `autoEmitTrunkMerge` config — governs
+     *  the `moveTask` auto-emit hook that fires a `merge t-xxx
+     *  (branch→trunk)` Task when the last leaf of a Story's task
+     *  chain transitions to `done`. Absent block uses
+     *  {@link DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG} (default
+     *  `enabled: true` for worktree-isolated teams, `false` for
+     *  shared-cwd teams per ADR-146 §D5/§D7). Partial blocks fill
+     *  missing fields from the same defaults at the call-site. */
+    autoEmitTrunkMerge: TeamAutoEmitTrunkMerge.optional(),
     /** ADR-147 §D1/§D2: per-team complaint adjudicator config. Opt-in
      *  via `ombudsman.enabled: true` AND a roster member with
      *  `role: "ombudsman"`. Effective tick interval resolved at

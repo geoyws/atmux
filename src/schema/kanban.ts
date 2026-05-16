@@ -214,6 +214,23 @@ export const KanbanStory = z
     reviewSignoff: z.boolean().optional(),
     /** Task ID created by the auto-dispatched merge step. */
     mergeTaskId: z.string().nullable().optional(),
+    /** ADR-146 §D4: source branch this Story's work lives on. Used by
+     *  ADR-146 auto-emit (T2) to populate the trunk-merge Task's
+     *  source-branch field. For per-member-branch teams
+     *  (ADR-082+084), this is typically `<base>-<member>` (e.g.
+     *  `geoyws-whip-impl`). For shared-cwd teams, this is the team's
+     *  base branch (no fan-in needed; auto-emit short-circuits per
+     *  ADR-146 §D5). Backward-compat: existing Stories without
+     *  `branch` set get the auto-emit short-circuit (no source-
+     *  branch → no auto-Task).
+     *
+     *  Storage note: rides through `extra` JSON column on the
+     *  `stories` table — `branch` is NOT in `KNOWN_STORY_FIELDS`
+     *  inside `src/core/repositories/kanban-repo.ts`, so the field
+     *  serializes to `extra` on write and re-emerges via `...extra`
+     *  spread on read. Zero-migration roll-out per ADR-146 backfill-
+     *  via-script (T2 ships `scripts/backfill-story-branch.ts`). */
+    branch: z.string().nullable().optional(),
   })
   .passthrough();
 export type KanbanStory = z.infer<typeof KanbanStory>;

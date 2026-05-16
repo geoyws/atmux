@@ -234,7 +234,12 @@ async function dispatchEpicSummary(
   repo: KanbanRepo,
   eid: string,
 ): Promise<string> {
-  const team = await tryLoadTeam({ teamDir: atmuxDir });
+  // Per t-85846a0b (cluster 5 of t-2b801707 fix): use `dir: atmuxDir`
+  // not `teamDir: atmuxDir`. `teamDir` is the parent-of-.atmux per
+  // ResolveDirOpts semantics; passing the .atmux path itself caused
+  // a double-`.atmux` lookup that always missed the test fixture's
+  // team.json. Sibling fix to story.ts:186.
+  const team = await tryLoadTeam({ dir: atmuxDir });
   const leadMember = team?.members.find((m) => m.role === "team-lead");
   if (leadMember === undefined) {
     throw new ConfigError({

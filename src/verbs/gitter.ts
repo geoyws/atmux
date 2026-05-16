@@ -256,6 +256,10 @@ export async function gitterSweepVerb(
         kanbanRepo: new KanbanRepo(db),
         git,
         logger,
+        // ADR-160 candidate (t-f8beb03b): post-merge done-flip hook
+        // wires through atmuxDir so the dispatcher's helper can open
+        // the kanban DB after every successful merge tick.
+        atmuxDir,
       });
     const deps: GitterSweepDeps = {
       teamRoot,
