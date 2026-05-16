@@ -9,7 +9,15 @@ import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.t
 import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
-import { defaultRoleEmoji, parseStatusArgs, status } from "../../../src/verbs/status.ts";
+import {
+  defaultRoleEmoji,
+  formatContextColumn,
+  gatherStatus,
+  type MemberStatus,
+  parseStatusArgs,
+  readMemberContextSignal,
+  status,
+} from "../../../src/verbs/status.ts";
 
 let socketDir: string;
 let socketPath: string;
@@ -187,7 +195,13 @@ describe("status verb — integration", () => {
     expect(parsed.session).toMatch(/^atmux-/);
     expect(parsed.sessionState).toBe("down");
     expect(parsed.members).toHaveLength(1);
-    expect(parsed.members[0]).toEqual({
+    // ADR-148 T2: members[].cadence is the new commit-cadence column.
+    // The test worktree has no .git dir, so the git log probe returns
+    // [] → classifier emits verdict='idle' with null lastCommit fields.
+    // toMatchObject lets us assert the legacy contract (cageState
+    // backcompat) while leaving the deterministic cadence shape's
+    // verdict assertable independently.
+    expect(parsed.members[0]).toMatchObject({
       name: "alpha",
       role: "reviewer",
       tui: "claude",
@@ -195,6 +209,14 @@ describe("status verb — integration", () => {
       cageState: "down",
       pendingCount: 0,
       inProgressCount: 0,
+    });
+    expect(parsed.members[0].cadence).toEqual({
+      windowSec: 1800,
+      commitsInWindow: 0,
+      lastCommitAt: null,
+      lastCommitSha: null,
+      ageOfLastCommitSec: null,
+      verdict: "idle",
     });
     expect(parsed.kanban).toEqual({ todo: 0, inProgress: 0, done: 0, blocked: 0 });
     expect(parsed.driverInboxOpen).toBe(0);
@@ -423,14 +445,8 @@ describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
     // parent of atmuxDir (i.e., teamDir).
     const adrDir = join(teamDir, "docs", "adr");
     await mkdir(adrDir, { recursive: true });
-    await writeFile(
-      join(adrDir, "200-foo.md"),
-      "# Foo\n\n**Status**: proposed\n",
-    );
-    await writeFile(
-      join(adrDir, "201-bar.md"),
-      "# Bar\n\n**Status**: proposed\n",
-    );
+    await writeFile(join(adrDir, "200-foo.md"), "# Foo\n\n**Status**: proposed\n");
+    await writeFile(join(adrDir, "201-bar.md"), "# Bar\n\n**Status**: proposed\n");
 
     // Bucket B: 2 stale, untriaged driver-inbox headings (45 min ago,
     // past the 30-min threshold).
@@ -514,10 +530,7 @@ describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
     // One proposed ADR — minimal seed to verify the bucket-A entry shape.
     const adrDir = join(teamDir, "docs", "adr");
     await mkdir(adrDir, { recursive: true });
-    await writeFile(
-      join(adrDir, "300-x.md"),
-      "# X title\n\n**Status**: proposed\n",
-    );
+    await writeFile(join(adrDir, "300-x.md"), "# X title\n\n**Status**: proposed\n");
 
     const { out } = await captureStdout(() =>
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
@@ -535,3 +548,806 @@ describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
     expect(typeof entry.ageMin).toBe("number");
   });
 });
+
+// ---------- Per-task t-d98b2bd6: member context-pressure surfacing ----------
+
+describe("formatContextColumn — pure formatter", () => {
+  test("undefined contextPct → '—' (no signal)", () => {
+    const m: MemberStatus = {
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      pendingCount: 0,
+      inProgressCount: 0,
+      cageState: null,
+    };
+    expect(formatContextColumn(m)).toBe("—");
+  });
+
+  test("fresh signal renders 'X.X%' with one decimal", () => {
+    const m: MemberStatus = {
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      pendingCount: 0,
+      inProgressCount: 0,
+      cageState: null,
+      contextPct: 8.4,
+      contextTs: 1_715_000_000,
+      contextStale: false,
+    };
+    expect(formatContextColumn(m)).toBe("8.4%");
+  });
+
+  test("threshold-tripped 75% renders 75.0%", () => {
+    const m: MemberStatus = {
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      pendingCount: 0,
+      inProgressCount: 0,
+      cageState: null,
+      contextPct: 75,
+      contextTs: 1_715_000_000,
+      contextStale: false,
+    };
+    expect(formatContextColumn(m)).toBe("75.0%");
+  });
+
+  test("stale signal → '(stale)' even when contextPct is present", () => {
+    const m: MemberStatus = {
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      pendingCount: 0,
+      inProgressCount: 0,
+      cageState: null,
+      contextPct: 42.5,
+      contextTs: 1_715_000_000,
+      contextStale: true,
+    };
+    expect(formatContextColumn(m)).toBe("(stale)");
+  });
+});
+
+describe("readMemberContextSignal — JSON read with home injection", () => {
+  let homeDir: string;
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-ctx-home-"));
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  test("returns null when JSON file is absent", async () => {
+    const got = await readMemberContextSignal(homeDir, "test-team", "alpha");
+    expect(got).toBeNull();
+  });
+
+  test("reads a valid JSON file", async () => {
+    const dir = join(homeDir, ".claude", "teams", "test-team", "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: 1_715_000_000,
+        input_kt: 12.3,
+        output_kt: 4.5,
+        context_pct: 8.4,
+        window_kt: 200,
+        in_flight_task: null,
+      }),
+    );
+    const got = await readMemberContextSignal(homeDir, "test-team", "alpha");
+    expect(got).not.toBeNull();
+    expect(got?.member).toBe("alpha");
+    expect(got?.ts).toBe(1_715_000_000);
+    expect(got?.context_pct).toBe(8.4);
+  });
+
+  test("returns null on corrupt JSON (silent recovery)", async () => {
+    const dir = join(homeDir, ".claude", "teams", "test-team", "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "alpha.json"), "{not-json");
+    const got = await readMemberContextSignal(homeDir, "test-team", "alpha");
+    expect(got).toBeNull();
+  });
+
+  test("returns null on missing required field (typed reject)", async () => {
+    const dir = join(homeDir, ".claude", "teams", "test-team", "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({ member: "alpha", ts: 1000 /* no context_pct */ }),
+    );
+    const got = await readMemberContextSignal(homeDir, "test-team", "alpha");
+    expect(got).toBeNull();
+  });
+});
+
+describe("gatherStatus — member ctx fields populated from JSON", () => {
+  let homeDir: string;
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-ctx-gather-"));
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  test("absent JSON → row omits ctx fields", async () => {
+    const { teamName, sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      home: homeDir,
+      now: () => 1_715_000_500_000,
+      whipCadenceSec: 270,
+    });
+    expect(snap.team).toBe(teamName);
+    expect(snap.members[0]?.contextPct).toBeUndefined();
+    expect(snap.members[0]?.contextTs).toBeUndefined();
+    expect(snap.members[0]?.contextStale).toBeUndefined();
+  });
+
+  test("fresh JSON → row populates ctx fields + contextStale=false", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    // Seed fresh signal (ts within 2× cadence of `now`).
+    const dir = join(homeDir, ".claude", "teams", teamName, "member-context");
+    await mkdir(dir, { recursive: true });
+    const tsSec = 1_715_000_400;
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: tsSec,
+        input_kt: 50,
+        output_kt: 10,
+        context_pct: 30,
+        window_kt: 200,
+        in_flight_task: null,
+      }),
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      home: homeDir,
+      // 1715000500000 ms - 1715000400000 ms = 100s — well under 2*270=540s stale window
+      now: () => 1_715_000_500_000,
+      whipCadenceSec: 270,
+    });
+    expect(snap.members[0]?.contextPct).toBe(30);
+    expect(snap.members[0]?.contextTs).toBe(tsSec);
+    expect(snap.members[0]?.contextStale).toBe(false);
+  });
+
+  test("stale JSON (ts older than 2× cadence) → contextStale=true", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const dir = join(homeDir, ".claude", "teams", teamName, "member-context");
+    await mkdir(dir, { recursive: true });
+    const staleTsSec = 1_715_000_000;
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: staleTsSec,
+        input_kt: 50,
+        output_kt: 10,
+        context_pct: 30,
+        window_kt: 200,
+        in_flight_task: null,
+      }),
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      home: homeDir,
+      // 1_715_001_000_000 ms - 1_715_000_000_000 ms = 1000s > 2*270=540s stale threshold
+      now: () => 1_715_001_000_000,
+      whipCadenceSec: 270,
+    });
+    expect(snap.members[0]?.contextStale).toBe(true);
+    expect(snap.members[0]?.contextPct).toBe(30);
+  });
+
+  test("JSON output surfaces contextPct/contextTs/contextStale when present", async () => {
+    const { teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const dir = join(homeDir, ".claude", "teams", teamName, "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: Math.floor(Date.now() / 1000),
+        context_pct: 42.5,
+      }),
+    );
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+      );
+      const parsed = JSON.parse(out);
+      const alpha = parsed.members.find((m: { name: string }) => m.name === "alpha");
+      expect(alpha?.contextPct).toBe(42.5);
+      expect(typeof alpha?.contextTs).toBe("number");
+      expect(alpha?.contextStale).toBe(false);
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+
+  test("text mode prints ctx % column with header and per-row value", async () => {
+    const { teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const dir = join(homeDir, ".claude", "teams", teamName, "member-context");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "alpha.json"),
+      JSON.stringify({
+        member: "alpha",
+        ts: Math.floor(Date.now() / 1000),
+        context_pct: 42.5,
+      }),
+    );
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--socket", socketPath, "--team-dir", teamDir]),
+      );
+      expect(out).toContain("ctx");
+      expect(out).toContain("42.5%");
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+
+  test("text mode renders '—' for members without ctx signal", async () => {
+    await stageTeam([{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }], false);
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--socket", socketPath, "--team-dir", teamDir]),
+      );
+      expect(out).toContain("—");
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+});
+
+// ---------- ADR-148 T2: cadence column ----------
+
+import {
+  classifyCadence,
+  type CadenceObservation,
+  formatCadenceColumn,
+  formatDurationShort,
+  resolveCadenceConfig,
+} from "../../../src/verbs/status.ts";
+import {
+  DEFAULT_CADENCE_CONFIG,
+  DEFAULT_CADENCE_THRESHOLDS,
+  type Team,
+} from "../../../src/schema/team.ts";
+
+describe("classifyCadence — verdict branches (ADR-148 §D2)", () => {
+  const T = DEFAULT_CADENCE_THRESHOLDS;
+  const now = 10_000_000;
+
+  test("≥1 commit in window AND age < shippingMaxAge → 'shipping'", () => {
+    const lines = [`abc1234 ${now - 60}`];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.verdict).toBe("shipping");
+    expect(r.commitsInWindow).toBe(1);
+    expect(r.ageOfLastCommitSec).toBe(60);
+    expect(r.lastCommitSha).toBe("abc1234");
+  });
+
+  test("0 commits AND age < idleMax → 'idle'", () => {
+    // Commit 1h ago — outside the 30min window, but inside the 2h
+    // idleMax.
+    const lines = [`abc1234 ${now - 3600}`];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.verdict).toBe("idle");
+    expect(r.commitsInWindow).toBe(0);
+    expect(r.ageOfLastCommitSec).toBe(3600);
+  });
+
+  test("0 commits AND age >= shipZeroWindowSec AND < dormantMaxAge → 'ship-zero-window'", () => {
+    // 3h since last commit — past shipZeroWindow (2h) but under
+    // dormantMaxAge (6h).
+    const lines = [`abc1234 ${now - 3 * 3600}`];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.verdict).toBe("ship-zero-window");
+  });
+
+  test("0 commits AND age >= dormantMaxAge → 'dormant'", () => {
+    // 8h since last commit — past dormantMaxAge (6h). dormant wins
+    // even though ship-zero-window also matches.
+    const lines = [`abc1234 ${now - 8 * 3600}`];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.verdict).toBe("dormant");
+  });
+
+  test("no commits ever (empty log) → 'idle' (null age)", () => {
+    const r = classifyCadence([], now, 1800, T);
+    expect(r.verdict).toBe("idle");
+    expect(r.lastCommitAt).toBeNull();
+    expect(r.lastCommitSha).toBeNull();
+    expect(r.ageOfLastCommitSec).toBeNull();
+  });
+
+  test("malformed lines tolerated (skip non-numeric ct)", () => {
+    const lines = [
+      `abc1234 ${now - 60}`,
+      "garbage line", // 1 part — skipped
+      "deadbeef notanumber", // ct non-numeric — skipped
+    ];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.commitsInWindow).toBe(1);
+    expect(r.verdict).toBe("shipping");
+  });
+
+  test("lastCommitSha is 7-char short SHA from longest log entry", () => {
+    const lines = [
+      `abc12340000000000000000000000000000000000 ${now - 60}`,
+      `def56780000000000000000000000000000000000 ${now - 120}`,
+    ];
+    const r = classifyCadence(lines, now, 1800, T);
+    expect(r.lastCommitSha).toBe("abc1234"); // most-recent
+  });
+});
+
+describe("formatDurationShort — CLAUDE.md duration convention", () => {
+  test("null → 'never'", () => {
+    expect(formatDurationShort(null)).toBe("never");
+  });
+
+  test("<60s → 'Ns'", () => {
+    expect(formatDurationShort(45)).toBe("45s");
+  });
+
+  test("<60min → 'Nmin'", () => {
+    expect(formatDurationShort(1800)).toBe("30min");
+    expect(formatDurationShort(60)).toBe("1min");
+  });
+
+  test("≥60min on the hour → 'Hh'", () => {
+    expect(formatDurationShort(7200)).toBe("2h");
+    expect(formatDurationShort(3600)).toBe("1h");
+  });
+
+  test("≥60min with minutes → 'HhMm'", () => {
+    expect(formatDurationShort(3900)).toBe("1h5m"); // 65min
+    expect(formatDurationShort(54000)).toBe("15h"); // 15h on the hour
+    expect(formatDurationShort(54000 + 600)).toBe("15h10m");
+  });
+});
+
+describe("formatCadenceColumn — verdict-to-display", () => {
+  test("undefined → '—'", () => {
+    expect(formatCadenceColumn(undefined)).toBe("—");
+  });
+
+  test("'exempt' → '(exempt)'", () => {
+    const obs: CadenceObservation = {
+      windowSec: 1800,
+      commitsInWindow: 0,
+      lastCommitAt: null,
+      lastCommitSha: null,
+      ageOfLastCommitSec: null,
+      verdict: "exempt",
+    };
+    expect(formatCadenceColumn(obs)).toBe("(exempt)");
+  });
+
+  test("each non-exempt verdict carries its emoji + age", () => {
+    const base: Omit<CadenceObservation, "verdict"> = {
+      windowSec: 1800,
+      commitsInWindow: 1,
+      lastCommitAt: 1000,
+      lastCommitSha: "abc1234",
+      ageOfLastCommitSec: 300,
+    };
+    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe(
+      "🟢 shipping (5min)",
+    );
+    expect(
+      formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" }),
+    ).toBe("🟡 idle (1h)");
+    expect(
+      formatCadenceColumn({
+        ...base,
+        ageOfLastCommitSec: 15 * 3600,
+        verdict: "dormant",
+      }),
+    ).toBe("🔴 dormant (15h)");
+    expect(
+      formatCadenceColumn({
+        ...base,
+        ageOfLastCommitSec: 3 * 3600,
+        verdict: "ship-zero-window",
+      }),
+    ).toBe("🚨 ship-zero (3h)");
+  });
+});
+
+describe("resolveCadenceConfig — defaults + per-team overrides", () => {
+  function makeTeam(overrides?: Partial<Team["cadence"]>): Team {
+    return {
+      name: "t",
+      members: [],
+      ...(overrides !== undefined ? { cadence: overrides } : {}),
+    } as Team;
+  }
+
+  test("absent cadence block → all fields from DEFAULT_CADENCE_CONFIG", () => {
+    const r = resolveCadenceConfig(makeTeam());
+    expect(r.enabled).toBe(DEFAULT_CADENCE_CONFIG.enabled);
+    expect(r.windowSec).toBe(DEFAULT_CADENCE_CONFIG.windowSec);
+    expect(r.thresholds).toEqual(DEFAULT_CADENCE_THRESHOLDS);
+    expect(r.laneStallEnabled).toBe(DEFAULT_CADENCE_CONFIG.laneStallEnabled);
+    expect(r.exemptMembers).toEqual([]);
+  });
+
+  test("partial cadence block → unset fields fall back to defaults", () => {
+    const r = resolveCadenceConfig(makeTeam({ windowSec: 600 }));
+    expect(r.windowSec).toBe(600);
+    expect(r.enabled).toBe(DEFAULT_CADENCE_CONFIG.enabled);
+    expect(r.thresholds.shippingMaxAgeSec).toBe(
+      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
+    );
+  });
+
+  test("partial thresholds → unset threshold keys fall back to defaults", () => {
+    const r = resolveCadenceConfig(
+      makeTeam({ thresholds: { dormantMaxAgeSec: 3600 } }),
+    );
+    expect(r.thresholds.dormantMaxAgeSec).toBe(3600);
+    expect(r.thresholds.shippingMaxAgeSec).toBe(
+      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
+    );
+    expect(r.thresholds.idleMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.idleMaxAgeSec);
+  });
+
+  test("exemptMembers per-team override", () => {
+    const r = resolveCadenceConfig(makeTeam({ exemptMembers: ["planner", "reviewer"] }));
+    expect(r.exemptMembers).toEqual(["planner", "reviewer"]);
+  });
+});
+
+describe("gatherStatus — cadence column integration", () => {
+  test("cadence.enabled=false → row.cadence stays undefined", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const teamRaw = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const team: Team = { ...teamRaw, cadence: { enabled: false } };
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      gitLog: async () => [],
+    });
+    expect(snap.members[0]?.cadence).toBeUndefined();
+  });
+
+  test("exempt member → verdict='exempt', commits in log NOT consulted", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const teamRaw = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const team: Team = {
+      ...teamRaw,
+      cadence: { exemptMembers: ["alpha"] },
+    };
+    let gitCalls = 0;
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      gitLog: async () => {
+        gitCalls += 1;
+        return [];
+      },
+    });
+    expect(snap.members[0]?.cadence?.verdict).toBe("exempt");
+    expect(gitCalls).toBe(0);
+  });
+
+  test("gitLog injection drives verdict — fresh commit → 'shipping'", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const nowMs = 1_700_000_000_000;
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => nowMs,
+      gitLog: async () => [`abcdef1234 ${Math.floor(nowMs / 1000) - 60}`],
+    });
+    expect(snap.members[0]?.cadence?.verdict).toBe("shipping");
+    expect(snap.members[0]?.cadence?.ageOfLastCommitSec).toBe(60);
+  });
+
+  test("gitLog injection — stale commit (8h ago) → 'dormant'", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const nowMs = 1_700_000_000_000;
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => nowMs,
+      gitLog: async () => [`abcdef1234 ${Math.floor(nowMs / 1000) - 8 * 3600}`],
+    });
+    expect(snap.members[0]?.cadence?.verdict).toBe("dormant");
+  });
+});
+
+// ---------- ADR-077 §lead-uptime-measurement (t-6d950ffd) ----------
+
+import {
+  parsePsEtime,
+  probeLeadUptime,
+  type LeadUptimeSnapshot,
+} from "../../../src/verbs/status.ts";
+import { writeLeadSessionStart } from "../../../src/core/lead-marker.ts";
+
+describe("parsePsEtime — '[[DD-]HH:]MM:SS' parsing", () => {
+  test("MM:SS form", () => {
+    expect(parsePsEtime("12:34")).toBe(12 * 60 + 34);
+    expect(parsePsEtime("00:05")).toBe(5);
+  });
+
+  test("HH:MM:SS form", () => {
+    expect(parsePsEtime("02:30:45")).toBe(2 * 3600 + 30 * 60 + 45);
+  });
+
+  test("DD-HH:MM:SS form (multi-day uptime)", () => {
+    // 1 day + 12h + 30min + 45s = 86400 + 43200 + 1800 + 45
+    expect(parsePsEtime("1-12:30:45")).toBe(86400 + 43200 + 1800 + 45);
+    expect(parsePsEtime("7-00:00:00")).toBe(7 * 86400);
+  });
+
+  test("whitespace tolerated (ps pads with leading space)", () => {
+    expect(parsePsEtime("  12:34  ")).toBe(754);
+  });
+
+  test("empty / unparseable → null (defensive)", () => {
+    expect(parsePsEtime("")).toBeNull();
+    expect(parsePsEtime("garbage")).toBeNull();
+    expect(parsePsEtime("12:34:56:78")).toBeNull();
+  });
+});
+
+describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
+  let homeDir: string;
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-lead-uptime-home-"));
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  test("no team-lead role configured → configured: false, all fields null", async () => {
+    const { sessionName } = await stageTeam([{ name: "alpha" }], false);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const snap: LeadUptimeSnapshot = await probeLeadUptime(
+      tmux,
+      team,
+      sessionName,
+      false,
+      { home: homeDir },
+    );
+    expect(snap.configured).toBe(false);
+    expect(snap.leadMember).toBeNull();
+    expect(snap.lead_session_uptime_s).toBeNull();
+    expect(snap.shell_pid_etime_s).toBeNull();
+  });
+
+  test("team-lead role + lead-session-start.txt present → lead_session_uptime_s = now - marker", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      false,
+    );
+    const nowMs = 1_700_000_000_000;
+    const startedAt = Math.floor(nowMs / 1000) - 300; // 5min ago
+    await writeLeadSessionStart(teamName, startedAt, { home: homeDir });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const snap = await probeLeadUptime(tmux, team, sessionName, false, {
+      home: homeDir,
+      now: () => nowMs,
+    });
+    expect(snap.configured).toBe(true);
+    expect(snap.leadMember).toBe("lead-alpha");
+    expect(snap.leadSessionStartedAt).toBe(startedAt);
+    expect(snap.lead_session_uptime_s).toBe(300);
+    // Session down → PID/etime null.
+    expect(snap.leadPanePid).toBeNull();
+    expect(snap.shell_pid_etime_s).toBeNull();
+  });
+
+  test("marker absent → lead_session_uptime_s null even with team-lead role", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const snap = await probeLeadUptime(tmux, team, sessionName, false, {
+      home: homeDir,
+    });
+    expect(snap.configured).toBe(true);
+    expect(snap.leadSessionStartedAt).toBeNull();
+    expect(snap.lead_session_uptime_s).toBeNull();
+  });
+
+  test("session up + lead window present → leadPanePid populated, psEtime injected", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      true,
+    );
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 60, {
+      home: homeDir,
+    });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const psCalls: number[] = [];
+    const snap = await probeLeadUptime(tmux, team, sessionName, true, {
+      home: homeDir,
+      psEtime: async (pid) => {
+        psCalls.push(pid);
+        return 99999; // arbitrary fixture value
+      },
+    });
+    expect(snap.leadPanePid).toBeGreaterThan(0);
+    expect(psCalls).toEqual([snap.leadPanePid!]);
+    expect(snap.shell_pid_etime_s).toBe(99999);
+  });
+
+  test("explicit-naming: lead_session_uptime_s ≠ shell_pid_etime_s under same probe", async () => {
+    // The whole point of the field-naming: rotation gate reads
+    // lead_session_uptime_s (marker-derived, recent /clear-resettable)
+    // while shell_pid_etime_s is the diagnostic-only shell etime
+    // (long-lived). Wire both up and assert they're independent.
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      true,
+    );
+    const nowMs = 1_700_000_000_000;
+    const startedAt = Math.floor(nowMs / 1000) - 90; // marker: 90s ago
+    await writeLeadSessionStart(teamName, startedAt, { home: homeDir });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const snap = await probeLeadUptime(tmux, team, sessionName, true, {
+      home: homeDir,
+      now: () => nowMs,
+      psEtime: async () => 22 * 3600, // shell: 22h
+    });
+    expect(snap.lead_session_uptime_s).toBe(90);
+    expect(snap.shell_pid_etime_s).toBe(22 * 3600);
+    // The whole point: these MUST be independent values.
+    expect(snap.shell_pid_etime_s).not.toBe(snap.lead_session_uptime_s);
+  });
+});
+
+describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
+  let homeDir: string;
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-lead-json-home-"));
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  test("--json output includes 'lead' top-level block", async () => {
+    const { teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      false,
+    );
+    await writeLeadSessionStart(
+      teamName,
+      Math.floor(Date.now() / 1000) - 180,
+      { home: homeDir },
+    );
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+      );
+      const parsed = JSON.parse(out);
+      expect(parsed.lead).toBeDefined();
+      expect(parsed.lead.configured).toBe(true);
+      expect(parsed.lead.leadMember).toBe("lead-alpha");
+      // Both explicit field names present per ADR-077 §lead-uptime-measurement.
+      expect(parsed.lead).toHaveProperty("lead_session_uptime_s");
+      expect(parsed.lead).toHaveProperty("shell_pid_etime_s");
+      expect(typeof parsed.lead.lead_session_uptime_s).toBe("number");
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+
+  test("text mode emits '🧭 lead' row with session_uptime label", async () => {
+    const { teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      false,
+    );
+    await writeLeadSessionStart(
+      teamName,
+      Math.floor(Date.now() / 1000) - 600,
+      { home: homeDir },
+    );
+    const priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      const { out } = await captureStdout(() =>
+        status(["--socket", socketPath, "--team-dir", teamDir]),
+      );
+      // Explicit labels — operator reading the text view can't conflate
+      // the two values.
+      expect(out).toMatch(/🧭 lead lead-alpha/);
+      expect(out).toContain("session_uptime=");
+      expect(out).toContain("shell_etime=");
+    } finally {
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+    }
+  });
+
+  test("team without team-lead role → no '🧭 lead' row in text output", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).not.toContain("🧭 lead");
+  });
+});
+
+describe("text mode — pane-state column rename + cadence column", () => {
+  test("header row uses 'pane-state' (not 'alive' or bare 'state')", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("pane-state");
+    // 'cadence' header column is the canonical truth-signal column.
+    expect(out).toContain("cadence");
+  });
+
+  test("text mode shows 'idle' cadence for tmpdir worktree (no .git)", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    // No .git in the stage's teamDir → git log probe fails → empty
+    // log → verdict='idle' with null age. formatCadenceColumn renders
+    // "🟡 idle (never)".
+    expect(out).toMatch(/🟡 idle \(never\)/);
+  });
+});
+

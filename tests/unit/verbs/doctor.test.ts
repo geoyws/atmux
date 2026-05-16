@@ -26,19 +26,20 @@ import {
   checkCursorPluginCache,
   checkDeps,
   checkInboxMarks,
+  checkMemberCageStates,
   checkMemberForcePushRecent,
   checkMemberLabelCollision,
+  checkMergerFanIn,
   checkOrphanSessions,
-  checkSendKeysFailureRecent,
   checkPhantomInboxes,
+  checkReleaseNoteMissing,
+  checkSendKeysFailureRecent,
   checkStateDir,
   checkSubmoduleIntegrity,
   checkTeam,
   checkTuiCommandsClaudeOverride,
   checkTuis,
   checkWebhook,
-  checkMemberCageStates,
-  checkMergerFanIn,
   checkWhipConfigDrift,
   checkWorktreeIsolation,
   collectSafeOrphanBranches,
@@ -2748,7 +2749,15 @@ describe("checkMergerFanIn", () => {
     };
   }
   function gitFail(stderr: string, code = 128): SpawnResult {
-    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+    return {
+      exitCode: code,
+      stdout: "",
+      stderr,
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
   }
   /** Build a Team with optional `merger` block + roster. `merger` rides
    *  the schema's `.passthrough()` so the runtime cast in
@@ -2847,7 +2856,9 @@ describe("checkMergerFanIn", () => {
       atmuxDir,
       { gitSpawn: fakeGitSpawn({ showCurrent: "geoyws\n" }), nowEpochSec: () => NOW_SEC },
     );
-    expect(rows.filter((r) => r.label.startsWith("merger:disabled-but-member-present:"))).toEqual([]);
+    expect(rows.filter((r) => r.label.startsWith("merger:disabled-but-member-present:"))).toEqual(
+      [],
+    );
   });
 
   test("multiple role=merger members + disabled → one YELLOW per offender", async () => {
@@ -2876,11 +2887,10 @@ describe("checkMergerFanIn", () => {
       revListByBranch: { "geoyws-alice": "3" },
       tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 30 * HOUR) }, // 30h old
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     const stale = rows.filter((r) => r.label.startsWith("merger:branch-stale:"));
     expect(stale).toHaveLength(1);
     expect(stale[0]?.status).toBe("yellow");
@@ -2899,11 +2909,10 @@ describe("checkMergerFanIn", () => {
       revListByBranch: { "geoyws-alice": "3" },
       tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 6 * HOUR) }, // 6h old
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
   });
 
@@ -2931,11 +2940,10 @@ describe("checkMergerFanIn", () => {
       revListByBranch: { "geoyws-alice": "0" },
       tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 30 * HOUR) },
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
   });
 
@@ -2946,11 +2954,10 @@ describe("checkMergerFanIn", () => {
       revListByBranch: { "geoyws-stale-departed": "5" },
       tipTimeByBranch: { "geoyws-stale-departed": String(NOW_SEC - 100 * HOUR) },
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
   });
 
@@ -2961,11 +2968,10 @@ describe("checkMergerFanIn", () => {
       revListByBranch: { "geoyws-up-impl": "2" },
       tipTimeByBranch: { "geoyws-up-impl": String(NOW_SEC - 30 * HOUR) },
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "up.impl" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "up.impl" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     const stale = rows.find((r) => r.label === "merger:branch-stale:up.impl");
     expect(stale).toBeDefined();
     expect(stale?.hint).toContain("atmux merge-member up.impl");
@@ -3005,11 +3011,10 @@ describe("checkMergerFanIn", () => {
       gitCalls++;
       return gitOk("");
     };
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }]),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }]), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows).toEqual([]);
     expect(gitCalls).toBe(0);
   });
@@ -3020,11 +3025,10 @@ describe("checkMergerFanIn", () => {
       branchList: "  geoyws-alice\n", // would be present if probed
       tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 50 * HOUR) },
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
   });
 
@@ -3033,11 +3037,10 @@ describe("checkMergerFanIn", () => {
       showCurrent: "geoyws\n",
       branchListFails: true,
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
   });
 
@@ -3048,11 +3051,10 @@ describe("checkMergerFanIn", () => {
       revListFailsByBranch: { "geoyws-alice": true },
       tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 100 * HOUR) },
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
   });
 
@@ -3063,11 +3065,10 @@ describe("checkMergerFanIn", () => {
       revListByBranch: { "geoyws-alice": "2" },
       tipTimeFailsByBranch: { "geoyws-alice": true },
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows.filter((r) => r.label.startsWith("merger:branch-stale:"))).toEqual([]);
   });
 
@@ -3078,11 +3079,10 @@ describe("checkMergerFanIn", () => {
       revListByBranch: { "geoyws-alice": "5" },
       tipTimeByBranch: { "geoyws-alice": String(NOW_SEC - 48 * HOUR) },
     });
-    const rows = await checkMergerFanIn(
-      team([{ name: "alice" }], { enabled: true }),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "alice" }], { enabled: true }), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(rows.find((r) => r.label === "merger:branch-stale:alice")).toBeDefined();
   });
 
@@ -3124,7 +3124,9 @@ describe("checkMergerFanIn", () => {
       atmuxDir,
       { gitSpawn, nowEpochSec: () => NOW_SEC },
     );
-    expect(rows.filter((r) => r.label.startsWith("merger:disabled-but-member-present:"))).toEqual([]);
+    expect(rows.filter((r) => r.label.startsWith("merger:disabled-but-member-present:"))).toEqual(
+      [],
+    );
     const stale = rows.filter((r) => r.label.startsWith("merger:branch-stale:"));
     expect(stale).toHaveLength(1);
     expect(stale[0]?.label).toBe("merger:branch-stale:alice");
@@ -3136,11 +3138,10 @@ describe("checkMergerFanIn", () => {
       gitCalls++;
       return gitOk("");
     };
-    const rows = await checkMergerFanIn(
-      team([{ name: "fan", role: "merger" }]),
-      atmuxDir,
-      { gitSpawn, nowEpochSec: () => NOW_SEC },
-    );
+    const rows = await checkMergerFanIn(team([{ name: "fan", role: "merger" }]), atmuxDir, {
+      gitSpawn,
+      nowEpochSec: () => NOW_SEC,
+    });
     expect(gitCalls).toBe(0); // staleness probe never fires.
     expect(rows).toHaveLength(1);
     expect(rows[0]?.label).toBe("merger:disabled-but-member-present:fan");
@@ -3177,10 +3178,7 @@ describe("checkMemberForcePushRecent", () => {
       durationMs: 0,
     };
   }
-  function team(
-    members: ReadonlyArray<{ name: string }>,
-    overrides: Partial<Team> = {},
-  ): Team {
+  function team(members: ReadonlyArray<{ name: string }>, overrides: Partial<Team> = {}): Team {
     return {
       name: "demo",
       worktreeIsolation: true,
@@ -3608,5 +3606,172 @@ describe("checkMemberLabelCollision", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.detail).toContain("a");
     expect(rows[0]?.detail).toContain("shipper");
+  });
+});
+
+// ---------- ADR-147 §D5 T6: checkReleaseNoteMissing ----------
+
+describe("checkReleaseNoteMissing", () => {
+  /** Build a SpawnResult fixture — DRYs the per-test mock shape. */
+  function gitFixture(opts: { exitCode: number; stdout: string }): {
+    cmd: string;
+    argv: ReadonlyArray<string>;
+    exitCode: number;
+    signalled: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+    durationMs: number;
+  } {
+    return {
+      cmd: "git",
+      argv: [],
+      exitCode: opts.exitCode,
+      signalled: null,
+      stdout: opts.stdout,
+      stderr: "",
+      durationMs: 0,
+    };
+  }
+
+  let repoRoot: string;
+  beforeEach(async () => {
+    repoRoot = await mkdtemp(join(tmpdir(), "atmux-release-note-probe-"));
+  });
+  afterEach(async () => {
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  test("no commits today + no day-file → silent (no rows)", async () => {
+    const epochMs = Date.UTC(2026, 4, 15, 6, 0, 0); // 14:00 MYT 2026-05-15
+    const rows = await checkReleaseNoteMissing({
+      gitSpawn: async () => gitFixture({ exitCode: 0, stdout: "" }),
+      now: () => epochMs,
+      repoRoot,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("commits today + day-file exists → silent (no rows)", async () => {
+    const epochMs = Date.UTC(2026, 4, 15, 6, 0, 0); // 14:00 MYT 2026-05-15
+    // Pre-create the day-file with skeleton so the probe sees it.
+    await mkdir(join(repoRoot, "docs", "release-notes", "2026", "05"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "docs", "release-notes", "2026", "05", "2026-05-15.md"),
+      "# 2026-05-15\n",
+    );
+    const rows = await checkReleaseNoteMissing({
+      gitSpawn: async () => gitFixture({ exitCode: 0, stdout: "abc1234deadbeef\n" }),
+      now: () => epochMs,
+      repoRoot,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("commits today + day-file missing → yellow row 'release-note-missing'", async () => {
+    const epochMs = Date.UTC(2026, 4, 15, 6, 0, 0); // 14:00 MYT 2026-05-15
+    const rows = await checkReleaseNoteMissing({
+      gitSpawn: async () => gitFixture({ exitCode: 0, stdout: "abc1234deadbeef\n" }),
+      now: () => epochMs,
+      repoRoot,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("release-note-missing");
+    expect(rows[0]?.detail).toContain("docs/release-notes/2026/05/2026-05-15.md");
+    expect(rows[0]?.detail).toContain("2026-05-15 MYT");
+    expect(rows[0]?.hint).toContain("ensureDayFile");
+  });
+
+  test("git probe exits non-zero (not a repo) → silent", async () => {
+    const epochMs = Date.UTC(2026, 4, 15, 6, 0, 0);
+    const rows = await checkReleaseNoteMissing({
+      gitSpawn: async () => gitFixture({ exitCode: 128, stdout: "" }),
+      now: () => epochMs,
+      repoRoot,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("--since flag uses MYT-anchored ISO with +08:00 offset", async () => {
+    const epochMs = Date.UTC(2026, 4, 15, 6, 0, 0); // 14:00 MYT 2026-05-15
+    let capturedArgv: ReadonlyArray<string> = [];
+    await checkReleaseNoteMissing({
+      gitSpawn: async (argv) => {
+        capturedArgv = argv;
+        return gitFixture({ exitCode: 0, stdout: "" });
+      },
+      now: () => epochMs,
+      repoRoot,
+    });
+    // argv shape: ["-C", repoRoot, "log", "--since=YYYY-MM-DDT00:00:00+08:00", "--format=%H", "-1"]
+    const sinceFlag = capturedArgv.find((a) => a.startsWith("--since="));
+    expect(sinceFlag).toBe("--since=2026-05-15T00:00:00+08:00");
+    expect(capturedArgv).toContain("-C");
+    expect(capturedArgv).toContain(repoRoot);
+    expect(capturedArgv).toContain("--format=%H");
+    expect(capturedArgv).toContain("-1");
+  });
+
+  test("MYT date boundary — 18:00 UTC = 02:00 MYT next day rolls forward", async () => {
+    // 2026-05-14 18:00 UTC = 2026-05-15 02:00 MYT. The probe must check
+    // 2026-05-15 day-file (not 2026-05-14) because we're already in the
+    // next MYT day.
+    const epochMs = Date.UTC(2026, 4, 14, 18, 0, 0);
+    let capturedSince = "";
+    const rows = await checkReleaseNoteMissing({
+      gitSpawn: async (argv) => {
+        capturedSince = argv.find((a) => a.startsWith("--since=")) ?? "";
+        return gitFixture({ exitCode: 0, stdout: "abc1234\n" });
+      },
+      now: () => epochMs,
+      repoRoot,
+    });
+    expect(capturedSince).toBe("--since=2026-05-15T00:00:00+08:00");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("2026-05-15");
+    expect(rows[0]?.detail).not.toContain("2026-05-14");
+  });
+
+  test("MYT date boundary — 15:59 UTC = 23:59 MYT same day stays on current day", async () => {
+    // 2026-05-15 15:59 UTC = 2026-05-15 23:59 MYT. The probe must check
+    // 2026-05-15 day-file (the day boundary is at 16:00 UTC for MYT).
+    const epochMs = Date.UTC(2026, 4, 15, 15, 59, 0);
+    let capturedSince = "";
+    const rows = await checkReleaseNoteMissing({
+      gitSpawn: async (argv) => {
+        capturedSince = argv.find((a) => a.startsWith("--since=")) ?? "";
+        return gitFixture({ exitCode: 0, stdout: "abc1234\n" });
+      },
+      now: () => epochMs,
+      repoRoot,
+    });
+    expect(capturedSince).toBe("--since=2026-05-15T00:00:00+08:00");
+    expect(rows[0]?.detail).toContain("2026-05-15");
+  });
+
+  test("year-roll boundary — 2026-12-31 18:00 UTC = 2027-01-01 02:00 MYT", async () => {
+    const epochMs = Date.UTC(2026, 11, 31, 18, 0, 0);
+    let capturedSince = "";
+    const rows = await checkReleaseNoteMissing({
+      gitSpawn: async (argv) => {
+        capturedSince = argv.find((a) => a.startsWith("--since=")) ?? "";
+        return gitFixture({ exitCode: 0, stdout: "abc1234\n" });
+      },
+      now: () => epochMs,
+      repoRoot,
+    });
+    expect(capturedSince).toBe("--since=2027-01-01T00:00:00+08:00");
+    expect(rows[0]?.detail).toContain("docs/release-notes/2027/01/2027-01-01.md");
+  });
+
+  test("detail line strips the repoRoot prefix from the path", async () => {
+    const epochMs = Date.UTC(2026, 4, 15, 6, 0, 0);
+    const rows = await checkReleaseNoteMissing({
+      gitSpawn: async () => gitFixture({ exitCode: 0, stdout: "abc1234\n" }),
+      now: () => epochMs,
+      repoRoot,
+    });
+    expect(rows[0]?.detail).not.toContain(repoRoot);
+    expect(rows[0]?.detail).toContain("docs/release-notes/");
   });
 });

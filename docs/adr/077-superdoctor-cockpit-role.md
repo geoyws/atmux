@@ -16,6 +16,29 @@
 > below; martinet handles per-team observation + nudge work that
 > doesn't require Opus judgment. Verb impl: T8 of ADR-132 (commit
 > t-fb5e4c1f).
+>
+> **2026-05-15 §E hook — starving-bootstrap recovery moved here**
+> ([ADR-081 §E](081-bootstrap-brief-paste-bug.md)): the lead's whip
+> §4a `auto-bootstrap-starving-members` step is removed in favour
+> of supervisor-side recovery on this role. The chicken-and-egg
+> failure mode (stuck/confused lead cannot fire whip; 2026-05-12
+> 20h+ dormancy incident) is broken by relocating the rule to
+> medic's hourly cron tick. The recovery primitive is the existing
+> `atmux doctor --fix` (ADR-081 §D + commit `8248778`,
+> `fixStarvingMembers` at `src/verbs/doctor.ts:2329`) — medic
+> invokes it per enabled team in `~/.atmux/cockpit.json` when a
+> team has ≥1 starving member AND lead has been idle ≥5 min.
+> Closes medic complaints `c-7193c689` (starving-bootstrap) and
+> `c-8ecd3a61` (doctor blind spot — addressed by §D + this hook).
+> Per ADR-081 §E §"Reversibility": (E) is one-line revert
+> (re-add the whip §4a step). Per ADR-140 cheap-model-first, the
+> hourly-cron cadence becomes event-driven via martinet once
+> ADR-140 lands. Skill-side wiring (operator dotfiles —
+> `~/.claude/skills/whip/whip-prompt.md` §4a removal +
+> `~/.claude/skills/medic/medic-prompt.md` starvation-detection
+> rule) is driver-scope per CLAUDE.md "Driver MAY: edit global
+> skills"; tracked separately from the in-repo annotation here
+> (t-9f235ad5 atmux-repo work; dotfiles work routes via driver).
 
 ## Context
 
@@ -153,6 +176,26 @@ Deferred follow-up tasks (filed in atmux kanban under epic `t-274ec70c`):
   - Dedup state lives in `state_kv` (feature `superdoctor-self-heal-escalation`, key per `complaint_id`) with a 1h re-fire window — the table is the durable attempt log, not the dedup ledger.
 
   The hourly self-heal logic itself (record-attempt-with-outcome, check threshold, render-and-emit, action handler for the operator's letter reply) lives in `~/.claude/skills/superdoctor/superdoctor-prompt.md` (F1) and `~/.claude/skills/superdoctor/scripts/*` — the skill operates against the typed primitives this ADR ships in atmux.
+
+## §lead-uptime-measurement — rotation gate reads session-start.txt, NOT process etime
+
+**Annotation 2026-05-15** (t-6d950ffd, preventive for superdoctor complaint c-06dabd47).
+
+ADR-009 rotation gate ("rotate the lead at ≥60min uptime") MUST read `~/.claude/teams/<team>/lead-session-start.txt` — refreshed by **`/clear`** AND **`atmux rotate-lead`**. This is the canonical "how long since the lead's CURRENT context window started?" signal.
+
+It is NOT `ps -o etime` against the lead pane's shell PID. The shell process typically long-outlives any one Claude session — `/clear` resets the session-start marker without exiting the parent shell, and `atmux rotate-lead` reuses the same pane (and thus the same shell PID) per ADR-082. A pane whose shell has been running for 6 hours can have a freshly-`/clear`'d Claude session that's only 90 seconds old.
+
+Observers (medic / martinet / superdriver) conflating the two signals have rotated leads prematurely (incident c-06dabd47, 2026-05-15). The rotation gate MUST read `lead_session_uptime_s` (the marker-derived value); `shell_pid_etime_s` is exposed for diagnostic transparency ONLY.
+
+Surfaces:
+
+- `atmux status --json` `lead` block (t-6d950ffd) — two explicitly-named fields:
+  - `lead_session_uptime_s` — **rotation-gate source**. Derived from `lead-session-start.txt`.
+  - `shell_pid_etime_s` — diagnostic-only. Derived from `ps -o etime= -p <leadPanePid>`.
+- Whip per-tick `--lead-uptime-only` probe (per whip-prompt.md §1a) — same source: reads `lead-session-start.txt`, never `ps`.
+- Global CLAUDE.md whip-policy carries the same one-sentence clarification ("rotation gate reads session-start.txt, NOT process etime").
+
+Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47 (superdoctor complaint), [[feedback_rotation_threshold_400k]] memory (400k-ctx rotation policy that triggered the prior incident review).
 
 ## Out of scope
 

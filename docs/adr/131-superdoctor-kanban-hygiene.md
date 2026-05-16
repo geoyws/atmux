@@ -182,3 +182,36 @@ This ADR commits the **specification only**. Implementation lands across the EPI
 - Auto-fix on cosmetic classes for `done` / `archived` tasks — only `todo` / `in-progress` are in scope (cosmetic drift on completed work is historical record, not functional drag).
 - LLM-judged reassignment (e.g. "this task body looks like fe even though lane is null") — deterministic rules only in v1; LLM-judge surface deferred until determinism-misses are observed.
 - Auto-rotation triggered by hygiene pattern (e.g. "lead has produced 5 ghost-owners this week — rotate") — kept as a complaint-box recommendation only; rotation authority stays in §D3's existing channels.
+
+## Sibling sub-op: phantom-in-progress auto-prune (t-d6fc03a7, complaint c-368c375b)
+
+A separate concern lives alongside (not inside) the §D2 5-class drain: **phantom-in-progress claims** — kanban rows where `status='in-progress'` AND `owner` is set AND the owner's tmux window is NOT present in the team's cage. Their detection shape is different from the five kanban-hygiene classes (live-pane probe + claim-age filter, not pure kanban analysis), and their sink is the `tasks` table (`status` → `blocked` with `auto-pruned at <iso> via <source>` note), not the `superdoctor_hygiene` row upsert.
+
+Module: `src/core/phantom-prune.ts`. Callers / sources:
+
+| Source | Surface | Trigger |
+|---|---|---|
+| `session-stop` | `atmux stop` runtime (`src/verbs/stop.ts::runStopPhantomPrune`) | Every team teardown, after C-c + 2s sleep — captures rows from members that didn't get to `atmux done` before kill. |
+| `doctor-fix` | `atmux doctor --fix` (`src/verbs/doctor.ts`) | Operator-driven, between sessions. Flips every detected phantom regardless of age. |
+| `hygiene-tick` | `atmux hygiene-tick` opportunistic sub-op (this Task) | Cron-fired, runs alongside the 5-class drain. Applies a default `minAgeSec = 86_400` (24h) age filter so fresh claims aren't pruned out from under a still-bootstrapping member. Opt-out via `--no-phantom-prune`. Skipped on `team.singleSession === true` per ADR-026 (no cage to probe). |
+
+The hygiene-tick sub-op closes the gap that motivated complaint **c-368c375b**: past atmux team sessions left in-progress claims in the kanban (5 stuck IDs cited — `t-add5976a` / `t-f71b5600` / `t-ac139cc6` / `t-a631e00c` / `t-221eb576`); doctor flagged them but didn't auto-fix when the operator didn't run `atmux doctor --fix`, and the stop hook only catches graceful-teardown paths. The cron-fired sub-op is the path of last resort — it eventually reaps phantoms even when neither operator nor the graceful-stop path got to them.
+
+The sub-op's JSON output sits alongside the existing drain-loop fields on `HygieneTickResult` so the agent-consumer parses both in one tick:
+
+```json
+{
+  "detected": N,
+  "unfixedAfter": N,
+  "drained": { "row": {...}, "result": {...} } | null,
+  "skipReason": "no-unfixed" | "ladder-defer" | "",
+  "phantomPrune": {
+    "detected": N,
+    "prunedIds": ["t-…"],
+    "alreadyPrunedIds": ["t-…"],
+    "skipReason": "" | "disabled" | "singleSession" | "probe-failed" | "no-candidates"
+  } | null
+}
+```
+
+The sub-op is a deliberately separate concern: kanban-hygiene drains data-shape drift (owner-not-in-roster, lane-mismatch, etc.), and phantom-prune drains process-shape drift (claim-without-runner). Keeping them parallel — both invoked from the verb, neither dispatching to the other — preserves §D2's 5-class drain semantics (one fix per tick, severity-ordered ladder) without leaking phantom rows into the `superdoctor_hygiene` table or vice versa.

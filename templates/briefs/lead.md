@@ -23,6 +23,8 @@ In **teams without an explicit `gitter` role** (the atmux team is one — grep `
 
 In **teams with a gitter role**, the gitter still owns commits + pushes per `templates/briefs/gitter.md`. The two patterns coexist — check `team.json:.members[]` for `role: "gitter"` to know which applies. Defensively phrased: this brief never assumes a gitter exists; it asks you to check.
 
+**Auto-merge mode (ADR-134)**: when `team.json::worktreeIsolation: true` AND `team.json::autoMerge.enabled: true`, the gitter operates in fan-in mode — workers self-commit on per-member branches (`<base>-<member>`) and the gitter watches for `task move … done` events to auto-merge each branch back into `<base>`. **You don't need to dispatch a manual fan-in Task** — event-driven socket-pubsub plus a `*/10` `atmux gitter --sweep` cron backstop (installed via `atmux cron-install --template gitter-sweep` per [ADR-134](../../docs/adr/134-in-team-auto-merger.md) T7) covers both the fast path and the missed-event recovery. The 9-state machine + test gate + `[merge-conflict]` Discord ping live inside the gitter; lead surfacing is the same shape as any other complaint (`atmux flag` rows, watch the kanban).
+
 Either way: **the lead does NOT commit.** Coordination, not coding.
 
 **Failure mode this rule corrects** (2026-05-13): `parity-cron-impl` + `whip-impl` both stalled waiting for a gitter to commit their work; lead had to nudge each manually before they self-committed. The brief now states the topology explicitly so spawned workers don't repeat the assumption. See also `/CLAUDE.md` §Hooks, Commits, Tooling for bypass-discipline (no `--no-verify`, no hook-skip mechanisms).
@@ -33,6 +35,34 @@ Either way: **the lead does NOT commit.** Coordination, not coding.
 - **You DO NOT dispatch per-Task.** Workers pull from the kanban via `atmux claim --next`. In gitter-bearing teams, gitter auto-dispatches the commit-Task on each `atmux task move … done`; in gitter-less teams (see §Commit ownership above), the implementing worker's commit IS the deliverable and no commit-Task fires. Manual `atmux dispatch` is reserved for *priority overrides* the driver explicitly asks for — not the default flow.
 - **You DO NOT commit.** In gitter-bearing teams, gitter handles commits + pushes; in gitter-less teams (most modern atmux teams), the implementing worker self-commits. Either way, never the lead.
 - **You DO NOT plan ADRs.** Planner authors ADRs in `docs/adr/`.
+
+## What "thin relay" means and DOESN'T mean
+
+Per CLAUDE.md Driver Mode and `feedback_lead_thin_relay` memory: lead never
+codes, never claims tasks, never audits diffs. That's the THIN part.
+
+The thin-relay frame does NOT mean PASSIVE. Lead's cognitive budget per
+CLAUDE.md is: dispatch + STATUS TRACKING + rotation + Discord. Status
+tracking requires ACTIVE monitoring of commit-cadence (per
+[ADR-148](../../docs/adr/148-commit-cadence-truth-signal.md)), not
+waiting for driver-inbox messages.
+
+Concretely, every whip turn the lead MUST:
+
+1. Read commit-cadence per member (`atmux status` post-ADR-148 surfaces this).
+2. For each member with cadence verdict in {idle, dormant, ship-zero-window}:
+   - First wake attempt: `atmux send <member> "[lead] cadence verdict <X>;
+     last commit <age>. What's the blocker?"`
+   - Second wake (15min later, no commit): escalate to medic event-driven
+     dispatch ([ADR-140](../../docs/adr/140-cheap-model-first.md)) OR
+     rotate ([ADR-009](../../docs/adr/009-rotation.md)).
+3. Surface ship-zero-window dormancy in Discord within 30min of detection
+   (per CLAUDE.md whip §0.05 / Reddit-receipts stakes).
+
+Waiting for driver-inbox to surface dormancy is NOT thin-relay; it's
+DERELICTION. Driver intervenes when lead+martinet+medic have all failed;
+that's the escalation top of the chain, not the FIRST signal lead should
+receive about a 15h-dormant member.
 
 ## Core commands
 

@@ -9,7 +9,7 @@
 //     mock assignVerb).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
@@ -90,6 +90,23 @@ describe("parseHygieneTickArgs", () => {
 
   test("unknown arg → UsageError", () => {
     expect(() => parseHygieneTickArgs(["--bogus"])).toThrow(UsageError);
+  });
+
+  test("--no-phantom-prune → phantomPrune=false (t-d6fc03a7)", () => {
+    expect(parseHygieneTickArgs(["--no-phantom-prune"]).phantomPrune).toBe(false);
+  });
+
+  test("phantomPrune defaults to true (sub-op on by default per t-d6fc03a7)", () => {
+    expect(parseHygieneTickArgs([]).phantomPrune).toBe(true);
+  });
+
+  // ADR-147 T8 release-notes auto-append sub-op.
+  test("--no-release-notes → releaseNotes=false (ADR-147 T8)", () => {
+    expect(parseHygieneTickArgs(["--no-release-notes"]).releaseNotes).toBe(false);
+  });
+
+  test("releaseNotes defaults to true (sub-op on by default per ADR-147 T8)", () => {
+    expect(parseHygieneTickArgs([]).releaseNotes).toBe(true);
   });
 });
 
@@ -178,5 +195,384 @@ describe("hygieneTick — integration", () => {
     expect(result.detected).toBe(0);
     expect(result.drained).toBeNull();
     expect(result.skipReason).toBe("no-unfixed");
+  });
+});
+
+// ---------- hygieneTick — phantom-prune sub-op (t-d6fc03a7) ----------
+
+describe("hygieneTick — phantom-prune sub-op (t-d6fc03a7)", () => {
+  /** Stage a team.json + state.db with one in-progress task
+   *  claimed by `owner` at `claimedAt` epoch seconds. */
+  async function stageInProgress(opts: {
+    owner: string;
+    claimedAt: number;
+    taskId?: string;
+    singleSession?: boolean;
+  }): Promise<string> {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "phantom-test",
+        members: [
+          { name: "fe-1", role: "member", lane: "fe" },
+          { name: opts.owner, role: "member", lane: "fe" },
+        ],
+        ...(opts.singleSession === true ? { singleSession: true } : {}),
+      }),
+    );
+    const taskId = opts.taskId ?? "t-phantom-1";
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const repo = new KanbanRepo(db);
+      repo.upsertTask({
+        id: taskId,
+        subject: "in-flight",
+        status: "in-progress",
+        owner: opts.owner,
+        lane: "fe",
+        createdAt: opts.claimedAt - 60,
+        claimedAt: opts.claimedAt,
+      });
+    } finally {
+      closeDatabase(db);
+    }
+    return taskId;
+  }
+
+  test("happy path — phantom past age window + owner dead-pane → pruned", async () => {
+    const claimedAt = 1_700_000_000;
+    const id = await stageInProgress({ owner: "ghost", claimedAt });
+    // nowSec = claimedAt + 25h (well past the 24h default window).
+    const { result, stdout } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 90_000,
+        liveMembersProbe: async () => new Set(), // every pane dead
+      }),
+    );
+    expect(result.phantomPrune).not.toBeNull();
+    const p = result.phantomPrune;
+    if (p === null) throw new Error("phantomPrune is null");
+    expect(p.detected).toBe(1);
+    expect(p.prunedIds).toEqual([id]);
+    expect(p.alreadyPrunedIds).toEqual([]);
+    expect(p.skipReason).toBe("");
+    // JSON-on-stdout carries the sub-op result.
+    const parsed = JSON.parse(stdout.trim());
+    expect(parsed.phantomPrune.prunedIds).toEqual([id]);
+  });
+
+  test("fresh claim within age window → skipped (no-candidates)", async () => {
+    const claimedAt = 1_700_000_000;
+    await stageInProgress({ owner: "ghost", claimedAt });
+    // nowSec = claimedAt + 100s (well inside the 24h window).
+    const { result } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 100,
+        liveMembersProbe: async () => new Set(),
+      }),
+    );
+    expect(result.phantomPrune).not.toBeNull();
+    const p = result.phantomPrune;
+    if (p === null) throw new Error("phantomPrune is null");
+    expect(p.detected).toBe(0);
+    expect(p.prunedIds).toEqual([]);
+    expect(p.skipReason).toBe("no-candidates");
+  });
+
+  test("--no-phantom-prune → skipReason='disabled'", async () => {
+    const claimedAt = 1_700_000_000;
+    await stageInProgress({ owner: "ghost", claimedAt });
+    const { result } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--no-phantom-prune", "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 90_000,
+        liveMembersProbe: async () => new Set(),
+      }),
+    );
+    expect(result.phantomPrune).not.toBeNull();
+    const p = result.phantomPrune;
+    if (p === null) throw new Error("phantomPrune is null");
+    expect(p.skipReason).toBe("disabled");
+    expect(p.prunedIds).toEqual([]);
+  });
+
+  test("singleSession team → skipReason='singleSession' (ADR-026 — no cage to probe)", async () => {
+    const claimedAt = 1_700_000_000;
+    await stageInProgress({ owner: "ghost", claimedAt, singleSession: true });
+    const { result } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 90_000,
+        liveMembersProbe: async () => new Set(),
+      }),
+    );
+    expect(result.phantomPrune).not.toBeNull();
+    const p = result.phantomPrune;
+    if (p === null) throw new Error("phantomPrune is null");
+    expect(p.skipReason).toBe("singleSession");
+  });
+
+  test("liveMembersProbe throws → skipReason='probe-failed' (no writes)", async () => {
+    const claimedAt = 1_700_000_000;
+    const id = await stageInProgress({ owner: "ghost", claimedAt });
+    const { result } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 90_000,
+        liveMembersProbe: async () => {
+          throw new Error("tmux down");
+        },
+      }),
+    );
+    expect(result.phantomPrune).not.toBeNull();
+    const p = result.phantomPrune;
+    if (p === null) throw new Error("phantomPrune is null");
+    expect(p.skipReason).toBe("probe-failed");
+    // The row MUST still be in-progress — probe-failed paths cannot write.
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const after = new KanbanRepo(db).getTask(id);
+      expect(after?.status).toBe("in-progress");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("second tick after prune → row no longer surfaced (steady-state idempotent)", async () => {
+    const claimedAt = 1_700_000_000;
+    const id = await stageInProgress({ owner: "ghost", claimedAt });
+    const liveMembersProbe = async () => new Set<string>();
+    // First tick — prunes the row to blocked.
+    const first = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 90_000,
+        liveMembersProbe,
+      }),
+    );
+    expect(first.result.phantomPrune?.prunedIds).toEqual([id]);
+
+    // Second tick on the same kanban state. The row is now
+    // `status=blocked`, so `findPhantomInProgressClaims`
+    // (status-scope='in-progress') doesn't surface it. Sub-op reports
+    // no-candidates — there's nothing to act on. This is the
+    // steady-state idempotent shape: once a row is auto-pruned, the
+    // in-progress sweep stops seeing it, and the underlying note
+    // stays unchanged.
+    const { result: second } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 90_000,
+        liveMembersProbe,
+      }),
+    );
+    expect(second.phantomPrune).not.toBeNull();
+    const p = second.phantomPrune;
+    if (p === null) throw new Error("phantomPrune is null");
+    expect(p.detected).toBe(0);
+    expect(p.skipReason).toBe("no-candidates");
+
+    // Verify the kanban row stayed in `blocked` with the
+    // `auto-pruned … via hygiene-tick` note from tick 1.
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const after = new KanbanRepo(db).getTask(id);
+      expect(after?.status).toBe("blocked");
+      expect(after?.note ?? "").toContain("auto-pruned");
+      expect(after?.note ?? "").toContain("hygiene-tick");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("owner with live pane → no prune even past age window", async () => {
+    const claimedAt = 1_700_000_000;
+    await stageInProgress({ owner: "ghost", claimedAt });
+    const { result } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 90_000,
+        liveMembersProbe: async () => new Set(["ghost"]), // owner alive
+      }),
+    );
+    expect(result.phantomPrune).not.toBeNull();
+    const p = result.phantomPrune;
+    if (p === null) throw new Error("phantomPrune is null");
+    expect(p.skipReason).toBe("no-candidates");
+    expect(p.prunedIds).toEqual([]);
+  });
+
+  test("phantomMinAgeSec=0 override → no age filter (any dead-pane in-progress pruned)", async () => {
+    const claimedAt = 1_700_000_000;
+    const id = await stageInProgress({ owner: "ghost", claimedAt });
+    // nowSec = claimedAt + 1s (would normally be inside any age window).
+    const { result } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 1,
+        liveMembersProbe: async () => new Set(),
+        phantomMinAgeSec: 0,
+      }),
+    );
+    const p = result.phantomPrune;
+    if (p === null) throw new Error("phantomPrune is null");
+    expect(p.prunedIds).toEqual([id]);
+  });
+
+  test("human-readable output surfaces the sub-op line", async () => {
+    const claimedAt = 1_700_000_000;
+    await stageInProgress({ owner: "ghost", claimedAt });
+    const { stdout } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--no-json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => claimedAt + 90_000,
+        liveMembersProbe: async () => new Set(),
+      }),
+    );
+    expect(stdout).toContain("phantom-prune:");
+    expect(stdout).toContain("1 detected");
+    expect(stdout).toContain("1 pruned");
+  });
+});
+
+// ---------- hygieneTick — release-notes sub-op (ADR-147 T8) ----------
+
+describe("hygieneTick — release-notes sub-op (ADR-147 T8)", () => {
+  // 2026-05-15 12:00 MYT = 04:00Z; chosen so any task with completedAt
+  // ≥ start-of-day-MYT (16:00Z 2026-05-14) appears in today's day-file.
+  const MYT_NOW = Date.UTC(2026, 4, 15, 4, 0);
+  const MYT_DAY_START_SEC = Math.floor(Date.UTC(2026, 4, 14, 16, 0) / 1000);
+
+  /** Stage a team.json + state.db with N done tasks completed today.
+   *  Returns the seeded ids so tests can assert exact append-order. */
+  async function stageDoneTasks(ids: string[]): Promise<void> {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "test-team",
+        members: [{ name: "fe-1", role: "member", lane: "fe" }],
+      }),
+    );
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const repo = new KanbanRepo(db);
+      for (const [i, id] of ids.entries()) {
+        repo.upsertTask({
+          id,
+          subject: `done task ${i}`,
+          status: "done",
+          owner: "fe-1",
+          completedAt: MYT_DAY_START_SEC + 60 + i,
+          createdAt: MYT_DAY_START_SEC - 3600,
+        });
+      }
+    } finally {
+      closeDatabase(db);
+    }
+  }
+
+  /** Stub git that returns empty for both probes — keeps the sub-op
+   *  test focused on the kanban side. */
+  function quietGit(): typeof import("../../../src/abstractions/worktree.ts").defaultGitSpawn {
+    return async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      signalled: null,
+      durationMs: 0,
+      cmd: "git",
+      argv: [],
+    });
+  }
+
+  test("happy path — done tasks appended to today's day-file ## Shipped section", async () => {
+    await stageDoneTasks(["t-aaaa", "t-bbbb"]);
+    const { result } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => 1000,
+        liveMembersProbe: async () => new Set(["fe-1"]),
+        releaseNotesGit: quietGit(),
+        releaseNotesNowMs: MYT_NOW,
+      }),
+    );
+    expect(result.releaseNotes).not.toBeNull();
+    const rn = result.releaseNotes;
+    if (rn === null) throw new Error("releaseNotes is null");
+    expect(rn.skipReason).toBe("");
+    expect(rn.shipped.appended).toEqual(["t-aaaa", "t-bbbb"]);
+
+    // Day-file landed under <teamDir>/docs/release-notes/2026/05/2026-05-15.md
+    const expected = join(teamDir, "docs/release-notes/2026/05/2026-05-15.md");
+    expect(rn.dayFilePath).toBe(expected);
+    const body = await readFile(expected, "utf8");
+    expect(body).toContain("# 2026-05-15");
+    expect(body).toContain("- t-aaaa — done task 0");
+    expect(body).toContain("- t-bbbb — done task 1");
+  });
+
+  test("idempotent re-fire — second tick is a no-op", async () => {
+    await stageDoneTasks(["t-aaaa"]);
+    const first = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => 1000,
+        liveMembersProbe: async () => new Set(["fe-1"]),
+        releaseNotesGit: quietGit(),
+        releaseNotesNowMs: MYT_NOW,
+      }),
+    );
+    expect(first.result.releaseNotes?.shipped.appended).toEqual(["t-aaaa"]);
+
+    const second = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => 1000,
+        liveMembersProbe: async () => new Set(["fe-1"]),
+        releaseNotesGit: quietGit(),
+        releaseNotesNowMs: MYT_NOW,
+      }),
+    );
+    expect(second.result.releaseNotes?.shipped.appended).toEqual([]);
+    expect(second.result.releaseNotes?.shipped.skipped).toEqual(["t-aaaa"]);
+  });
+
+  test("--no-release-notes → skipReason='disabled', no day-file written", async () => {
+    await stageDoneTasks(["t-aaaa"]);
+    const { result } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--no-release-notes", "--json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => 1000,
+        liveMembersProbe: async () => new Set(["fe-1"]),
+        releaseNotesGit: quietGit(),
+        releaseNotesNowMs: MYT_NOW,
+      }),
+    );
+    expect(result.releaseNotes).not.toBeNull();
+    const rn = result.releaseNotes;
+    if (rn === null) throw new Error("releaseNotes is null");
+    expect(rn.skipReason).toBe("disabled");
+    expect(rn.shipped.appended).toEqual([]);
+    expect(rn.shipped.skipped).toEqual([]);
+    // No day-file produced — the path is a placeholder marking the skip.
+    expect(rn.dayFilePath).toContain("<skipped>");
+  });
+
+  test("human-readable output surfaces the release-notes line", async () => {
+    await stageDoneTasks(["t-aaaa", "t-bbbb"]);
+    const { stdout } = await captureStdout(() =>
+      hygieneTick(["--team-dir", teamDir, "--no-json"], {
+        fixDeps: recorderDeps(),
+        nowSeconds: () => 1000,
+        liveMembersProbe: async () => new Set(["fe-1"]),
+        releaseNotesGit: quietGit(),
+        releaseNotesNowMs: MYT_NOW,
+      }),
+    );
+    expect(stdout).toContain("release-notes:");
+    expect(stdout).toContain("2 appended");
+    expect(stdout).toContain("2 shipped");
   });
 });

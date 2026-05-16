@@ -42,8 +42,10 @@ const P = `PATH=${DEFAULT_PATH} `;
 describe("renderCronLines", () => {
   test("vanilla team renders 4-line block: whip / report / decisions / groom", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
+    // whip default schema-side is `intervalMins: 15` (src/schema/team.ts +
+    // src/core/cron.ts:185 — bumped from 5min in t-dcbff97c).
     expect(lines).toEqual([
-      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
@@ -481,8 +483,11 @@ describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
 
   test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
+    // t-dcbff97c bumped whip default 5min → 15min; "pre-ADR-079
+    // behavior unchanged" still holds — ADR-079 governs the
+    // config-driven schedule surface, not the default value itself.
     expect(lines).toEqual([
-      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
@@ -614,19 +619,12 @@ describe("stripOrphanLines", () => {
   });
 
   test("leaves atmux lines INSIDE a marker block alone", () => {
-    const body = [
-      header("demo"),
-      "*/5 * * * * /bin/atmux whip",
-      footer("demo"),
-    ].join("\n");
+    const body = [header("demo"), "*/5 * * * * /bin/atmux whip", footer("demo")].join("\n");
     expect(stripOrphanLines(body)).toBe(body);
   });
 
   test("only matches atmux verbs from the orphan-set (whip/report/decisions/groom/discorder/unblocker)", () => {
-    const body = [
-      "* * * * * /bin/atmux unknown-verb",
-      "* * * * * /bin/atmux whip",
-    ].join("\n");
+    const body = ["* * * * * /bin/atmux unknown-verb", "* * * * * /bin/atmux whip"].join("\n");
     expect(stripOrphanLines(body)).toBe("* * * * * /bin/atmux unknown-verb");
   });
 });
@@ -743,9 +741,7 @@ describe("parseCronBlockTargets", () => {
       "*/5 * * * * PATH=/root/.bun/bin:/usr/bin ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1",
       "# <<< atmux:team=demo",
     ].join("\n");
-    expect(parseCronBlockTargets(body)).toEqual([
-      { team: "demo", atmuxDir: "/srv/demo/.atmux" },
-    ]);
+    expect(parseCronBlockTargets(body)).toEqual([{ team: "demo", atmuxDir: "/srv/demo/.atmux" }]);
   });
 
   test("two blocks → two targets", () => {
@@ -780,9 +776,7 @@ describe("parseCronBlockTargets", () => {
       "*/5 * * * * ATMUX_DIR=/second /bin/atmux report",
       "# <<< atmux:team=demo",
     ].join("\n");
-    expect(parseCronBlockTargets(body)).toEqual([
-      { team: "demo", atmuxDir: "/first" },
-    ]);
+    expect(parseCronBlockTargets(body)).toEqual([{ team: "demo", atmuxDir: "/first" }]);
   });
 
   test("header without canonical suffix → still captures team verbatim", () => {
@@ -804,9 +798,7 @@ describe("parseCronBlockTargets", () => {
       "*/5 * * * * ATMUX_DIR=/srv/demo/.atmux\tTMUX_TMPDIR=/tmp /bin/atmux whip",
       "# <<< atmux:team=demo",
     ].join("\n");
-    expect(parseCronBlockTargets(body)).toEqual([
-      { team: "demo", atmuxDir: "/srv/demo/.atmux" },
-    ]);
+    expect(parseCronBlockTargets(body)).toEqual([{ team: "demo", atmuxDir: "/srv/demo/.atmux" }]);
   });
 });
 
@@ -1125,4 +1117,117 @@ describe("migrateSuperdoctorToMedicCronLines", () => {
   });
 });
 
+// ---------- ADR-148 §D4 / T3: lane-stall-watch cron line ----------
 
+describe("renderCronLines — lane-stall-watch (ADR-148 §D4 / T3)", () => {
+  test("absent cadence block → no lane-stall-tick line", () => {
+    const lines = renderCronLines(baseOpts(baseTeam()));
+    expect(lines.find((l) => l.includes("lane-stall-tick"))).toBeUndefined();
+  });
+
+  test("cadence.enabled=false → no lane-stall-tick line", () => {
+    const team = baseTeam({
+      cadence: { enabled: false, laneStallEnabled: true },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.find((l) => l.includes("lane-stall-tick"))).toBeUndefined();
+  });
+
+  test("cadence.enabled=true + laneStallEnabled=true → renders at 5min default", () => {
+    const team = baseTeam({
+      cadence: { enabled: true, laneStallEnabled: true },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    const ll = lines.find((l) => l.includes("lane-stall-tick"));
+    expect(ll).toBeDefined();
+    expect(ll).toMatch(/^\*\/5 /);
+    expect(ll).toContain("lane-stall-tick");
+    expect(ll).toContain("/srv/demo/.atmux/logs/lane-stall.log");
+  });
+
+  test("cadence.enabled=true + laneStallEnabled=false → suppressed", () => {
+    const team = baseTeam({
+      cadence: { enabled: true, laneStallEnabled: false },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.find((l) => l.includes("lane-stall-tick"))).toBeUndefined();
+  });
+
+  test("laneStallIntervalOverride beats default 5min", () => {
+    const team = baseTeam({
+      cadence: { enabled: true, laneStallEnabled: true },
+    } as never);
+    const lines = renderCronLines({
+      ...baseOpts(team),
+      laneStallIntervalOverride: 10,
+    });
+    const ll = lines.find((l) => l.includes("lane-stall-tick"));
+    expect(ll).toMatch(/^\*\/10 /);
+  });
+});
+
+// ---------- ADR-134 T7: gitter-sweep cron line ----------
+
+describe("renderCronLines — gitter-sweep (ADR-134 T7)", () => {
+  const withGitter = (overrides: Partial<Team> = {}): Team =>
+    baseTeam({
+      members: [{ name: "gitter", role: "gitter" }] as never,
+      ...overrides,
+    });
+
+  test("absent autoMerge block → no gitter --sweep line", () => {
+    const lines = renderCronLines(baseOpts(withGitter()));
+    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+  });
+
+  test("autoMerge.enabled=false → no gitter --sweep line", () => {
+    const team = withGitter({ autoMerge: { enabled: false } } as never);
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+  });
+
+  test("autoMerge.enabled=true WITHOUT a role:gitter member → suppressed", () => {
+    const team = baseTeam({
+      autoMerge: { enabled: true } as never,
+      members: [{ name: "lead", role: "lead" }] as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+  });
+
+  test("autoMerge.enabled=true + role:gitter member → renders at 10min default", () => {
+    const team = withGitter({ autoMerge: { enabled: true } } as never);
+    const lines = renderCronLines(baseOpts(team));
+    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    expect(gl).toBeDefined();
+    expect(gl).toMatch(/^\*\/10 /);
+    expect(gl).toContain("gitter --sweep");
+    expect(gl).toContain("/srv/demo/.atmux/logs/gitter-sweep.log");
+  });
+
+  test("autoMerge.cronBackstopMin overrides the 10min default", () => {
+    const team = withGitter({
+      autoMerge: { enabled: true, cronBackstopMin: 5 },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    expect(gl).toMatch(/^\*\/5 /);
+  });
+
+  test("gitterSweepIntervalOverride beats team.autoMerge.cronBackstopMin", () => {
+    const team = withGitter({
+      autoMerge: { enabled: true, cronBackstopMin: 5 },
+    } as never);
+    const lines = renderCronLines({
+      ...baseOpts(team),
+      gitterSweepIntervalOverride: 15,
+    });
+    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    expect(gl).toMatch(/^\*\/15 /);
+  });
+
+  test("idempotence: same opts yield byte-equal lines", () => {
+    const team = withGitter({ autoMerge: { enabled: true } } as never);
+    expect(renderCronLines(baseOpts(team))).toEqual(renderCronLines(baseOpts(team)));
+  });
+});

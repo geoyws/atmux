@@ -28,13 +28,21 @@
 import { join } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
-import { readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
+import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
-import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";
+import { resolveDayFilePath } from "../abstractions/release-notes.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
+import { mytDate, now } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
+import {
+  type CageHealth,
+  type CageState,
+  probeCageState as defaultProbeCageState,
+  STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
+} from "../core/cage-state.ts";
+import { cageSessionName } from "../core/cockpit.ts";
 import {
   buildWindowName,
   defaultEmojiForRole,
@@ -47,22 +55,7 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
-import {
-  type CageHealth,
-  type CageState,
-  probeCageState as defaultProbeCageState,
-  STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
-} from "../core/cage-state.ts";
-import { cageSessionName } from "../core/cockpit.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
-import { classifyText } from "../core/pane-state.ts";
-import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
-import {
-  findPhantomInProgressClaims,
-  formatPruneIso,
-  type PhantomClaim,
-  prunePhantomInProgressClaims,
-} from "../core/phantom-prune.ts";
 import {
   type DriverInboxEntry,
   parseEntries as parseDriverInboxEntries,
@@ -73,6 +66,15 @@ import {
   probeDriverPane,
 } from "../core/driver-pane-health.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
+import { classifyText } from "../core/pane-state.ts";
+import {
+  findPhantomInProgressClaims,
+  formatPruneIso,
+  type PhantomClaim,
+  prunePhantomInProgressClaims,
+} from "../core/phantom-prune.ts";
+import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";
 import {
   composeCatastrophicDrift,
   composeDriftReport,
@@ -1461,7 +1463,6 @@ const defaultProbeMemberCage = async (
   return defaultProbeCageState(team, member, atmuxDir);
 };
 
-
 // ---------- ADR-057 §D5c: inbox-mark verification ----------
 
 /** Marker pattern emitted by lead in driver-inbox: `📤 task <id>`.
@@ -2068,6 +2069,90 @@ export interface DoctorOpts {
   fixStarvingOpts?: FixStarvingOpts;
 }
 
+// ---------- ADR-147 §D5 T6: release-note-missing probe (warn, NOT block) ----------
+
+/** Test-injection seam for {@link checkReleaseNoteMissing}. */
+export interface CheckReleaseNoteMissingOpts {
+  /** Git spawn override (test injection). Default uses `defaultGitSpawn`. */
+  gitSpawn?: GitSpawn;
+  /** Clock override (test injection). Defaults to `now()` from `time.ts`
+   *  — which itself honours `setNow()` for clock-pinned tests. */
+  now?: () => number;
+  /** Repo root override (test injection). Default `process.cwd()` —
+   *  matches the convention `defaultGitSpawn` uses (commands run from
+   *  the caller's cwd) so the day-file path lookup sees the same tree
+   *  the git probe interrogates. */
+  repoRoot?: string;
+}
+
+/**
+ * ADR-147 §D5 backstop probe — emit a yellow row when today (MYT) has
+ * ≥1 commit on the current branch AND the day's release-notes file
+ * does not exist yet. Warn class only; never blocks. The expected
+ * pattern is that gitter / hygiene-tick / ombudsman creates the file
+ * on the first event of the day; this probe surfaces missed days so
+ * the ombudsman can backfill.
+ *
+ * Failure mode tolerance — every error path degrades silently:
+ *   - `git log` exit != 0 (not in a repo, no `.git`, permission)  → []
+ *   - `git log` stdout empty (no commits today)                   → []
+ *   - day-file exists on disk                                     → []
+ *   - day-file missing despite today's commit                     → [yellow]
+ *
+ * Why silent-on-error: `atmux doctor` runs in many environments
+ * (deployed cages, CI agents, build hosts). A spurious red/yellow row
+ * because git isn't available isn't actionable for the operator;
+ * better to skip the probe and let other rows surface the real
+ * config issue.
+ *
+ * The `--since` argument is anchored on MYT midnight via the ISO-8601
+ * `+08:00` offset (`YYYY-MM-DDT00:00:00+08:00`). Git parses this
+ * directly — no need for a TZ env variable override. Date boundary
+ * tests exercise the 23:00 MYT / 15:00 UTC edge where the previous
+ * day's commit is also today's commit until 00:00 MYT.
+ */
+export async function checkReleaseNoteMissing(
+  opts: CheckReleaseNoteMissingOpts = {},
+): Promise<DoctorRow[]> {
+  const git = opts.gitSpawn ?? defaultGitSpawn;
+  const nowFn = opts.now ?? now;
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const epochMs = nowFn();
+
+  // Compute today's MYT midnight as an ISO-8601 timestamp with explicit
+  // +08:00 offset. Git's `--since` parser accepts this format directly.
+  const { iso: todayIso } = mytDate(epochMs);
+  const sinceArg = `${todayIso}T00:00:00+08:00`;
+
+  // `git log --since=<X> --format=%H -1` — exit code 0 + empty stdout
+  // means no commits since X; exit code 0 + one line means there's at
+  // least one. `-C <repoRoot>` so the probe is decoupled from the
+  // caller's actual cwd (test-injection clean).
+  const r = await git(["-C", repoRoot, "log", `--since=${sinceArg}`, "--format=%H", "-1"]);
+  if (r.exitCode !== 0) return []; // not a repo / no .git / permission
+  if (r.stdout.trim() === "") return []; // no commits today (MYT)
+
+  // Day-file path lookup. T5's `resolveDayFilePath` returns the absolute
+  // path; we check `exists()` to gate the row.
+  const dayPath = resolveDayFilePath(epochMs, { repoRoot });
+  if (await exists(dayPath)) return []; // file present — silent
+
+  // Today has commits but no day-file. Yellow row + actionable hint.
+  // Strip the repoRoot prefix from the displayed path so the detail
+  // line is short + grep-friendly.
+  const relPath = dayPath.startsWith(`${repoRoot}/`) ? dayPath.slice(repoRoot.length + 1) : dayPath;
+  return [
+    {
+      status: "yellow",
+      label: "release-note-missing",
+      detail: `${relPath} — today (${todayIso} MYT) has commits but day-file absent`,
+      hint:
+        "ombudsman / gitter / hygiene-tick should auto-create on the day's first event; " +
+        "backfill manually via `ensureDayFile(...)` from src/abstractions/release-notes.ts",
+    },
+  ];
+}
+
 /** Default chain — all in-scope checks invoked in bash main() order. */
 export async function runAllChecks(atmuxDir: string, team: Team | null): Promise<DoctorRow[]> {
   const rows: DoctorRow[] = [];
@@ -2134,6 +2219,11 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // role-mismatch branch surfaces regardless when a `role: "merger"`
   // member exists with the feature off.
   rows.push(...(await checkMergerFanIn(team, atmuxDir)));
+  // ADR-147 §D5 / T6: backstop probe for the release-notes daily
+  // log. Warn class only — never blocks; surfaces missed days so
+  // ombudsman can backfill. Silent in environments without git
+  // (CI agents probing fresh trees, non-repo cages).
+  rows.push(...(await checkReleaseNoteMissing()));
   return rows;
 }
 
@@ -2599,9 +2689,7 @@ export async function checkSendKeysFailureRecent(
   let m: RegExpExecArray | null = tsRe.exec(text);
   while (m !== null) {
     const [, hh, mm, ymd] = m;
-    const epoch = Math.floor(
-      Date.parse(`${ymd}T${hh}:${mm}:00+08:00`) / 1000,
-    );
+    const epoch = Math.floor(Date.parse(`${ymd}T${hh}:${mm}:00+08:00`) / 1000);
     if (Number.isFinite(epoch) && epoch >= cutoff && epoch <= now) {
       recentCount += 1;
       if (epoch > mostRecentTs) {

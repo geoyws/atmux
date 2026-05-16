@@ -31,7 +31,13 @@
 
 import type { CrontabIO } from "../abstractions/crontab.ts";
 import { ConfigError } from "../errors.ts";
-import { DEFAULT_MERGER_CYCLE_INTERVAL_MINS, type Team } from "../schema/team.ts";
+import {
+  DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN,
+  DEFAULT_LANE_STALL_CRON_INTERVAL_MINS,
+  DEFAULT_MERGER_CYCLE_INTERVAL_MINS,
+  DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
+  type Team,
+} from "../schema/team.ts";
 
 /**
  * ADR-079 §A: render a "star-slash-N stars" cron expression for an
@@ -127,6 +133,23 @@ export interface RenderCronBlockOpts {
    *  cron-install --template merge-cycle --interval <N>` so the
    *  operator can pin a one-off cadence without rewriting team.json. */
   mergerIntervalOverride?: number;
+  /** ADR-147 T3 (t-94a22bb0) — transient override for the `ombudsman
+   *  tick` line's cadence (minutes). When set, beats the team
+   *  .ombudsman.tickIntervalMins config for THIS render. Same
+   *  cron-install --interval threading pattern as
+   *  {@link mergerIntervalOverride}. */
+  ombudsmanIntervalOverride?: number;
+  /** ADR-148 §D4 / T3 (t-e9424574) — transient override for the
+   *  `lane-stall-tick` line's cadence (minutes). When set, beats
+   *  {@link DEFAULT_LANE_STALL_CRON_INTERVAL_MINS}. Threaded via
+   *  `cron-install --template lane-stall-watch --interval <N>`. */
+  laneStallIntervalOverride?: number;
+  /** ADR-134 T7 (t-a87a39f1) — transient override for the
+   *  `gitter --sweep` cron-backstop line's cadence (minutes). When set,
+   *  beats `team.autoMerge.cronBackstopMin` and the
+   *  {@link DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN} fallback. Threaded
+   *  via `cron-install --template gitter-sweep --interval <N>`. */
+  gitterSweepIntervalOverride?: number;
 }
 
 /**
@@ -260,6 +283,78 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
       team.merger.cycleIntervalMins ??
       DEFAULT_MERGER_CYCLE_INTERVAL_MINS;
     out.push(`${cronEvery(mergerMins)} ${baseEnv} merge-cycle --push ${logTail("merge-cycle")}`);
+  }
+
+  // 9. ADR-147 §D2 T3 — ombudsman tick: complaint adjudicator wake.
+  // Gated on BOTH `team.ombudsman.enabled === true` AND member roster
+  // containing a `role: "ombudsman"` entry (mirrors the unblocker
+  // precedent — schema doc on `TeamOmbudsman` calls out the dual
+  // gate explicitly). Absent either, the line is suppressed.
+  //
+  // Cadence resolution (same precedence shape as merge-cycle):
+  // (a) `opts.ombudsmanIntervalOverride` (transient install-time
+  //     override from `cron-install --template ombudsman-tick
+  //     --interval <N>`) wins first, then (b)
+  //     `team.ombudsman.tickIntervalMins`, then (c) the schema's
+  //     `DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS` (15 per ADR-147 §D2).
+  //
+  // The verb itself (`atmux ombudsman tick`) is a fast no-op when
+  // the sentinel is empty — cron at 15min is cheap; sentinel writes
+  // are what trip work. The cron just guarantees worst-case wake
+  // latency ≤ tickIntervalMins.
+  const hasOmbudsman = team.members.some((m) => (m as { role?: string }).role === "ombudsman");
+  if (team.ombudsman?.enabled === true && hasOmbudsman) {
+    const ombudsmanMins =
+      opts.ombudsmanIntervalOverride ??
+      team.ombudsman.tickIntervalMins ??
+      DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS;
+    out.push(`${cronEvery(ombudsmanMins)} ${baseEnv} ombudsman tick ${logTail("ombudsman")}`);
+  }
+
+  // 10. ADR-148 §D4 / T3 — lane-stall-watch: fires `atmux lane-stall-tick`
+  // every N minutes (default DEFAULT_LANE_STALL_CRON_INTERVAL_MINS = 5)
+  // to scan stalled `lane=X todo age>30min members-all-idle` Tasks and
+  // Enter-push `atmux claim <id>` to the lane's most-recently-active
+  // member. Gated on `team.cadence.enabled === true` AND
+  // `team.cadence.laneStallEnabled !== false` (opt-in master switch +
+  // opt-out sub-switch — matches the merger/ombudsman gate patterns).
+  //
+  // Cadence resolution (same precedence shape as merge-cycle):
+  // (a) `opts.laneStallIntervalOverride` (transient install-time
+  //     override from `cron-install --template lane-stall-watch
+  //     --interval <N>`) wins first, then (b) the schema default. The
+  //     team config does NOT carry a `laneStallCronMins` field today —
+  //     5min is operationally sufficient for the safety-net role; a
+  //     per-team override can land via a future schema bump if a
+  //     concrete demand emerges.
+  if (team.cadence?.enabled === true && team.cadence.laneStallEnabled !== false) {
+    const laneStallMins = opts.laneStallIntervalOverride ?? DEFAULT_LANE_STALL_CRON_INTERVAL_MINS;
+    out.push(`${cronEvery(laneStallMins)} ${baseEnv} lane-stall-tick ${logTail("lane-stall")}`);
+  }
+
+  // 11. ADR-134 T7 (t-a87a39f1) — gitter-sweep: cron backstop for the
+  // intra-team auto-merger. Walks every `<base>-<member>` branch and
+  // re-evaluates the state machine (covers events the gitter member
+  // missed while paused / rate-limited). Gated on BOTH
+  // `team.autoMerge.enabled === true` AND member roster containing a
+  // `role: "gitter"` entry — mirrors the ombudsman-tick dual-gate
+  // (line 9 above) since the sweep verb writes into the gitter's own
+  // merger-state SQLite repo and there's nothing to back-stop if the
+  // role isn't seated.
+  //
+  // Cadence resolution (same precedence shape as merge-cycle):
+  // (a) `opts.gitterSweepIntervalOverride` (transient install-time
+  //     override from `cron-install --template gitter-sweep
+  //     --interval <N>`) wins first, then (b)
+  //     `team.autoMerge.cronBackstopMin`, then (c) the schema's
+  //     `DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN` (10 per ADR-134 §Config).
+  const hasGitter = team.members.some((m) => (m as { role?: string }).role === "gitter");
+  if (team.autoMerge?.enabled === true && hasGitter) {
+    const gitterMins =
+      opts.gitterSweepIntervalOverride ??
+      team.autoMerge.cronBackstopMin ??
+      DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN;
+    out.push(`${cronEvery(gitterMins)} ${baseEnv} gitter --sweep ${logTail("gitter-sweep")}`);
   }
 
   return out;
