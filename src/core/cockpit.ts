@@ -777,6 +777,143 @@ export function perTeamCageSocketPath(teamRoot: string): string {
   return `${teamRoot}/.atmux/tmux/tmux-${uid}/default`;
 }
 
+/** ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, 2026-05-16): the epic-team
+ *  retains its own nested tmux server, but the PARENT atmux cage gains
+ *  a viewer-window that auto-attaches into the epic-team. Operators page
+ *  through the parent's window list and the epic-team appears as a
+ *  sibling node alongside other role-members at the end of the parent's
+ *  windows — same agile-tree pattern as cockpit's per-team viewer
+ *  windows but one level deeper. Mirrors {@link cageRetryLoop} in
+ *  `verbs/cockpit.ts` so the attach command form is symmetric.
+ *
+ *  Idempotent: skips if a viewer window for this epic already exists
+ *  in the parent session. Soft-fails if the parent session isn't running
+ *  (e.g. epic spawned while parent stopped) — logs a warn and exits 0;
+ *  the operator can re-invoke after starting the parent cage.
+ *
+ *  Window-name convention: `🌳-<epicId>`. The 🌳 emoji distinguishes
+ *  the viewer from regular member windows (which use member-role emojis
+ *  like 🧭/🎯/🔍 + sometimes 🐝).
+ *
+ *  Returns the index of the added window (or `null` on idempotent skip /
+ *  soft-fail). */
+export async function addEpicViewerToParentCage(opts: {
+  parentRoot: string;
+  parentName: string;
+  epicId: string;
+  epicSocket: string;
+  epicSession: string;
+  tmuxFactory: (config: { socketPath: string }) => {
+    session: { listSessions(): Promise<ReadonlyArray<{ name: string }>> };
+    window: {
+      listWindows(
+        sessionName: string,
+      ): Promise<ReadonlyArray<{ name: string; index: number }>>;
+      newWindow(args: {
+        sessionName: string;
+        name: string;
+        detached: boolean;
+        shellCommand: string;
+      }): Promise<{ windowIndex: number }>;
+    };
+  };
+  log?: (msg: string) => void;
+  warn?: (msg: string) => void;
+}): Promise<number | null> {
+  const log = opts.log ?? (() => {});
+  const warn = opts.warn ?? (() => {});
+  const parentSocket = perTeamCageSocketPath(opts.parentRoot);
+  const tmux = opts.tmuxFactory({ socketPath: parentSocket });
+  let parentAlive = false;
+  try {
+    const sessions = await tmux.session.listSessions();
+    parentAlive = sessions.some((s) => s.name === opts.parentName);
+  } catch {
+    parentAlive = false;
+  }
+  if (!parentAlive) {
+    warn(
+      `epic-viewer: parent session '${opts.parentName}' not running on ${parentSocket} — skipping viewer add (re-run after parent start)`,
+    );
+    return null;
+  }
+  const windowName = `🌳-${opts.epicId}`;
+  const windows = await tmux.window.listWindows(opts.parentName);
+  const existing = windows.find((w) => w.name === windowName);
+  if (existing !== undefined) {
+    log(`  · epic-viewer '${windowName}' already present in parent cage (idx ${existing.index})`);
+    return existing.index;
+  }
+  // Mirror cockpit's cageRetryLoop pattern: attach in a 1s-retry loop so
+  // a transient epic-cage death doesn't permanently disconnect the viewer.
+  const attachCmd =
+    `while true; do tmux -S ${opts.epicSocket} attach -t ${opts.epicSession} 2>/dev/null; sleep 1; done`;
+  const created = await tmux.window.newWindow({
+    sessionName: opts.parentName,
+    name: windowName,
+    detached: true,
+    shellCommand: attachCmd,
+  });
+  log(`  ✓ added epic-viewer '${windowName}' to parent cage (idx ${created.windowIndex})`);
+  return created.windowIndex;
+}
+
+/** Counterpart to {@link addEpicViewerToParentCage} — removes the
+ *  parent-cage viewer window when an epic-team is dissolved. Soft-fails
+ *  if the parent session isn't running or the window doesn't exist
+ *  (idempotent — re-invoking dissolve-epic without a leftover viewer
+ *  must not error). */
+export async function removeEpicViewerFromParentCage(opts: {
+  parentRoot: string;
+  parentName: string;
+  epicId: string;
+  tmuxFactory: (config: { socketPath: string }) => {
+    session: { listSessions(): Promise<ReadonlyArray<{ name: string }>> };
+    window: {
+      listWindows(
+        sessionName: string,
+      ): Promise<ReadonlyArray<{ name: string; index: number }>>;
+      killWindow(target: string): Promise<void>;
+    };
+  };
+  log?: (msg: string) => void;
+  warn?: (msg: string) => void;
+}): Promise<boolean> {
+  const log = opts.log ?? (() => {});
+  const warn = opts.warn ?? (() => {});
+  const parentSocket = perTeamCageSocketPath(opts.parentRoot);
+  const tmux = opts.tmuxFactory({ socketPath: parentSocket });
+  let parentAlive = false;
+  try {
+    const sessions = await tmux.session.listSessions();
+    parentAlive = sessions.some((s) => s.name === opts.parentName);
+  } catch {
+    parentAlive = false;
+  }
+  if (!parentAlive) {
+    warn(
+      `epic-viewer: parent session '${opts.parentName}' not running — skipping viewer remove (no-op)`,
+    );
+    return false;
+  }
+  const windowName = `🌳-${opts.epicId}`;
+  const windows = await tmux.window.listWindows(opts.parentName);
+  const existing = windows.find((w) => w.name === windowName);
+  if (existing === undefined) {
+    log(`  · epic-viewer '${windowName}' already absent from parent cage`);
+    return false;
+  }
+  try {
+    await tmux.window.killWindow(`${opts.parentName}:${windowName}`);
+    log(`  ✓ removed epic-viewer '${windowName}' from parent cage`);
+    return true;
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    warn(`epic-viewer: kill-window '${windowName}' failed (${cause}) — manual cleanup may be needed`);
+    return false;
+  }
+}
+
 /**
  * ADR-063 follow-up (driver-inbox 2026-05-14): probe BOTH socket
  * conventions used by atmux cages and return the first that exists.
