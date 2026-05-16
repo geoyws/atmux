@@ -131,6 +131,7 @@ import {
   readNestingLevel,
   resolvePrefix,
 } from "../core/cockpit.ts";
+import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import {
   consumedManifestPath,
@@ -790,6 +791,35 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
           sleep: briefSleep,
           logger,
         });
+      }
+
+      // ADR-157 T3: /goal injection AFTER brief lands (either via
+      // bootClaudeMember or pasteBriefForMember above). NO-OPs on
+      // cursor runtime (§D4) or no-goal-resolved. Best-effort — a
+      // verify-failed injection escalates to send-keys-failures.log
+      // per ADR-138 but does NOT abort the per-member bring-up. Only
+      // fires on `tui: "claude"` — other TUIs have no /goal skill.
+      if (tuiKind === "claude") {
+        const briefPath = await getBriefPath(role, briefsDir);
+        const goalOpts: Parameters<typeof injectGoalIfActive>[0] = {
+          tmux,
+          sendTarget: memberTarget,
+          paneTargetString: `${session}:${win}`,
+          member,
+          logger: {
+            log: (s) => logger.log(`  · ${s}`),
+            warn: (s) => logger.warn(`  · ${s}`),
+          },
+        };
+        if (briefPath.length > 0) goalOpts.briefPath = briefPath;
+        try {
+          await injectGoalIfActive(goalOpts);
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          logger.warn(
+            `  · ${member.name}: /goal injection threw (${reason}); lane-tick backstop applies`,
+          );
+        }
       }
     }
   }

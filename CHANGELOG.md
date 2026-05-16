@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — ADR-157 T3 `/goal` injection hooks (rotate + start)
+
+- **`/goal` injection wired into `src/verbs/rotate.ts` + `src/verbs/start.ts`** per ADR-157 T3 (`t-c89ead5f`). Both call sites delegate to a shared helper `injectGoalIfActive` in `src/core/goal-injection.ts` (Task body §2 deduplication mandate). Brief-paste ordering preserved: `/goal` fires AFTER `bootClaudeMember` / `pasteBriefForMember` completes (reviewer pre-flag #2 — no injection into a busy compose box).
+- **Per ADR-138**: injection routes through `safeSendKeysWithVerify` with `composerEmpty()` verifier — NEVER raw `tmux send-keys`. Re-uses the universal post-Enter signal (slash-command acceptance clears the composer the same way prompts do; same verifier `verifierForTui("claude")` already returns). NO new verifier added — composer-empty covers the slash-command acceptance signal without inventing a goal-specific pattern.
+- **Cursor-runtime carve-out (ADR-157 §D4)**: members with `runtime: "cursor"` short-circuit before goal resolution — no `/goal` fired, no brief read wasted. Returns `{ fired: false, reason: "runtime=cursor" }`.
+- **Goal resolution**: delegates to `resolveGoalForMember` from ADR-157 T2 (single source of truth). Resolution chain `member.goal` explicit > brief `## Standing Goal` section > null. Empty-string opt-out preserved.
+- **Idempotent re-fire**: Claude TUI overwrites the goal silently on a second `/goal` call — re-firing is harmless. Helper logs but does not skip (Task body §4 — simpler than tracking state).
+- **Failure semantics (reviewer pre-flag #3)**: verify-failed injection escalates to `send-keys-failures.log` per ADR-138 + helper returns `{ fired: false, reason: "verify-failed" }`. Rotation / cold-spawn pipeline does NOT abort — lane-tick backstop (T4) must still apply to goal-set-but-injection-failed members so the drain isn't deadlocked.
+- **Goal-text quoting**: payload is `/goal "<text>"` with embedded `"` chars escaped (`\\"`). Multi-word goals land as a single quoted argument; matches the user-facing `/goal "<text>"` form.
+- **Tests**: 7/7 pass on `tests/unit/core/goal-injection.test.ts` + 100% line coverage on `goal-injection.ts`. Full 5-cell matrix from task body (member.goal-set+claude / brief-parsed+claude / runtime=cursor SKIPPED / no-goal SKIPPED / verify-timeout escalates) + 2 edge tests (empty-string opt-out, embedded-quote escaping). Typecheck clean. 124 existing rotate+start tests still pass; 5 pre-existing failures verified unrelated via git stash.
+- **Out of scope**: lane-tick narrowing (T4 — `t-e8ad0db5`); cron cadence change (T5 — `t-e847d0ae`); e2e (T6); dogfood (T7).
+
 ### 🟢 Shipped — ADR-157 T2 schema + goalResolver helper
 
 - **`Team.members[].goal: z.string().optional()` field** + **`Team.members[].runtime: z.string().optional()`** added to `src/schema/team.ts` TeamMember per ADR-157 T2 (`t-b5b0678e`). Additive optional — back-compat verified (existing teams without these fields parse unchanged). Field JSDocs cite ADR-157 §D2 (resolution chain) + §D4 (cursor runtime carve-out) + §Decision-anchor #1 (goal-phrasing-rule).
