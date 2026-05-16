@@ -68,6 +68,7 @@ Source of truth: ADRs → docs → brief templates → source. Code is the LAST 
    | **Vocabulary** | UPPER-CASE lane tokens in prose; lowercase in JSON / args | Lowercase lane tokens in prose, or UPPER-CASE in JSON values |
    | **ADR alignment** | If an ADR was authored mid-Story, the diff matches the accepted decision | Diff contradicts ADR §Decision text, or cites the wrong ADR |
    | **`doc-update`** | Either (a) diff touches NO documented surface, OR (b) every documented-surface change carries a same-commit doc update with an explicit ADR-pointer (`per ADR-xxx`, `mirrors ADR-yyy`) | Documented-surface change with no same-commit doc + ADR-pointer update |
+   | **`paneMatchesRegex` justification** ([ADR-138](../../docs/adr/138-verified-send-keys.md) — reviewer signoff t-76bed567 §Adjacent classes) | Either (a) caller uses one of the four canonical verifiers (`composerEmpty` / `agentThinking` / `modalClosed` / `contextNonZero`), OR (b) caller uses `paneMatchesRegex` with a comment (or commit-body line) naming **why the canonical four don't fit** — what pane state the regex matches that the canonical verifiers can't classify | `paneMatchesRegex` use at a new T3 (or post-T3) caller site with no justification — drift risk; the canonical verifiers exist precisely to keep regex churn out of pane-state classification. Reviewer pushes back: name the state, or pick the verifier |
 
    **Documented surfaces** (closed-world inventory — anything in this list is a `doc-update` gate trigger):
 

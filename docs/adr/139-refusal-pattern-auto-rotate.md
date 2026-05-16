@@ -6,6 +6,8 @@
 **Parent EPIC**: t-dfbf7eb0
 **Resolves failure class**: agent-context-degradation refusal mode — pane-alive-but-output-is-refusal (one species of [[CLAUDE.md "Don't make a dormant team look like a working team"]]).
 
+> **Detection-tier consolidation (2026-05-14, late afternoon)** per [ADR-140](./140-cheap-model-first.md) §"What MOVES to martinet" (accepted 2026-05-15): §D2's two-tier scan plan ("Medic now, Martinet post-ship") is **collapsed to martinet-only** post-ADR-140. Rationale: refusal-pattern detection is pane-content classification — mechanical observation that Claude's reluctance bias **directly degrades** (the failure shape this ADR resolves IS Claude refusing to do uncomfortable work; routing the detector through Claude is structurally vulnerable). Cursor composer-2-fast doesn't carry the refusal bias; it observes + classifies + fires `atmux rotate <member>` without hedging. §D1 classifier (pure function `classifyRefusal`), §D3 thresholds (soft 3/30min, hard 2/10min, role 1, meta warn-only), §D4 `refusal_events` schema, §D5 idempotency, and the §D6 sibling-not-extension-of-`safe-send.ts` rationale are **preserved verbatim** — only the caller-tier changes. Medic loses primary-detection authority here; the §D3 trigger fires from martinet's 270s tick. Medic retains visibility via the event-driven listener (`~/.atmux/state/medic-events.log`) so code-fix-to-atmux follow-ups stay reachable when the classifier itself needs hardening. Source: ADR-140 §"What MOVES / What STAYS" + roles+responsibilities matrix + §"Authority split for rotation" — routine refusal-pattern rotation is martinet-class; only emergency code-fix-on-broken-classifier escalates to medic.
+
 ## Context
 
 ### The recurring failure shape

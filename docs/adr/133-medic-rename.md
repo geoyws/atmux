@@ -152,3 +152,25 @@ For TR1 specifically:
 - [ ] Reviewer-gated commit on the EPIC chain.
 
 The wider EPIC acceptance (codebase rename, schema shim, cron migration, smoke green) gates on TR2-TR7 landing; TR1 is the docs-anchor that authorizes them.
+
+### TR7 — integration smoke status (audit 2026-05-15 by docs / t-213cb96e)
+
+Audit found the deterministic-shim coverage TR7 §Scope Paths A/B/C asks for has **already shipped** in trunk:
+
+| TR7 §Scope path                                                    | Coverage location (in trunk)                                                                                                                                                            | Status     |
+|--------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------|
+| Path A — fresh cockpit with `medic` block only                     | [`tests/unit/core/cockpit.test.ts`](../../tests/unit/core/cockpit.test.ts) `describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end")` — `test("config with only `medic` block → cockpit.medic populated, no warning")` | ✅ shipped |
+| Path B — legacy `superdoctor` block only                           | same describe block — `test("config with only `superdoctor` top-level block → cockpit.medic populated + deprecation warn")`                                                              | ✅ shipped |
+| Path C — both `medic` + `superdoctor` set                          | same describe block — `test("config with BOTH `medic` and `superdoctor` → medic wins + dual-key warn")`                                                                                  | ✅ shipped |
+| Cron migration smoke (sub-step)                                    | [`tests/unit/verbs/cron-install.test.ts`](../../tests/unit/verbs/cron-install.test.ts) `describe("cronInstall — ADR-133 TR6 superdoctor→medic migration")` — 4 tests covering managed-block rewrite, operator-manual line preservation, no-op path, log writing | ✅ shipped via TR6 |
+
+What TR7 §Scope additionally asks for (not yet shipped at this commit):
+
+- **Tmux-spawn walk** of `atmux cockpit rebuild` — verify the actual `tmux rename-window`/`tmux send-keys` post-shim path produces the expected W2 named `medic` with the skill-loop keystroke fired. This is the **only** TR7 work that requires a real tmux server; cage-unsafe to run from inside the atmux team cage (per `feedback_pause_bun_tests` + `feedback_atmux_no_gitter_worker_commits` cage-guard).
+
+Recommended split:
+
+1. **TR7-a (deterministic-shim coverage)** — **DONE**, cite the existing test files above. No new test file needed.
+2. **TR7-b (tmux-spawn walk)** — defer to **test-impl** with an explicit consolidation onto a single `tests/e2e/cockpit-roles.test.ts` covering ADR-133 medic-rename + ADR-132 T8 martinet-W3 + (eventually) ADR-090 epic-team rebuild walks. Single tmux-spawn harness, one cold-start+walk per role surface. Surfacing the consolidation per TR7 task body §Coordination note (which explicitly flags this for lead routing).
+
+Until TR7-b lands, the deterministic coverage above is sufficient for the rename + cron-migration shim correctness; the tmux-spawn assertion is a separate kind of failure surface (rename-window race, send-keys to wrong pane index, autoStart timeout) and warrants its own focused harness, not a bolt-on to the unit suite.
