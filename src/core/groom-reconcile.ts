@@ -9,8 +9,18 @@
 //
 // This is the read-side fix (Part a of the two-part plan): one bulk
 // `git log --all` scan per groom run; for every open task whose ID
-// appears in any commit message (subject or body), auto-flip to `done`
+// appears in a commit's SUBJECT LINE (not body), auto-flip to `done`
 // with note "groomed: shipped via SHA <hash>".
+//
+// **Subject-only matching** per t-4ea69dd1 (P0 fix to t-dc830eb0's
+// initial too-greedy body-grep impl): cross-references, EPIC parent
+// refs, deps lists, follow-up filings ("filed as t-X"), CHANGELOG
+// cross-refs all live in commit BODIES, not subjects. Body-grep
+// silently flipped 21 actively-open tasks to done on 2026-05-16's
+// first live run; lead reverted all 21. Subject-only is the correct
+// signal: conventional commits subject = "feat(scope): t-XXXX — desc"
+// is the canonical ship-signal-for-X declaration, body content is
+// cross-reference scaffolding.
 //
 // Idempotent — re-running on already-done tasks is a no-op (filter is
 // status ∈ {todo, in-progress}). Safe — no commit-verb assumptions are
@@ -78,6 +88,15 @@ export interface ReconcileResult {
 /** Task ID shape per `genTaskId` in core/kanban.ts: `t-` + 8 hex chars. */
 const TASK_ID_RE = /\bt-[a-f0-9]{8}\b/g;
 
+/** Parent-ref keywords that, when they immediately precede a task ID
+ *  in a subject line, mark that ID as a parent-reference annotation
+ *  (NOT a ship signal). Per t-4ea69dd1 follow-up: subject-only matching
+ *  alone still hit 3/21 false-positives because EPIC parent IDs appear
+ *  in conventional-commits parentheticals like `(EPIC t-XXXX)` or
+ *  `(T1 of EPIC t-XXXX)`. Keywords matched case-insensitive; trailing
+ *  space is part of the pattern. */
+const PARENT_REF_KEYWORDS = ["EPIC ", "parent ", "Parent: ", "Refs: ", "Ref: "];
+
 /** Skip these commits: a revert of a shipping commit isn't a fresh ship
  *  signal, and merge commits typically restate the merged subjects (we
  *  catch the underlying ship via the merged commit itself). */
@@ -85,6 +104,21 @@ function isShipSignal(subject: string): boolean {
   if (subject.startsWith("Revert ")) return false;
   if (subject.startsWith('Revert "')) return false;
   return true;
+}
+
+/** True when `subject[matchIdx-N..matchIdx]` ends with any of the
+ *  PARENT_REF_KEYWORDS (case-insensitive). N is the longest keyword
+ *  length; we slice that window and compare. Used to filter out EPIC /
+ *  parent-ref task IDs from the ship-signal set. */
+function isParentRefAnnotation(subject: string, matchIdx: number): boolean {
+  // Longest keyword is "Parent: " (8 chars). Slice 12 chars before
+  // matchIdx for safety margin, lowercase, and check suffix match.
+  const start = Math.max(0, matchIdx - 12);
+  const preceding = subject.slice(start, matchIdx).toLowerCase();
+  for (const kw of PARENT_REF_KEYWORDS) {
+    if (preceding.endsWith(kw.toLowerCase())) return true;
+  }
+  return false;
 }
 
 // ---------- Public API ----------
@@ -138,16 +172,17 @@ export async function reconcileKanbanVsGit(
 
   const openSet = new Set(open.map((t) => t.id));
 
-  // Single bulk scan: %H<NL>%s<NL>%b<NUL>. NUL terminator survives
-  // arbitrary multi-line bodies (newlines + percent literals) without
-  // collision.
+  // Single bulk scan: %H<NL>%s<NUL>. SUBJECT-ONLY format per t-4ea69dd1
+  // P0 fix — body-grep was the bug. NUL terminator survives arbitrary
+  // subject content (no newlines in well-formed subjects, but defensive
+  // against malformed inputs).
   const git = opts.git ?? defaultGitSpawn;
   const r = await git([
     "-C",
     repoDir,
     "log",
     "--all",
-    "--format=%H%n%s%n%b%x00",
+    "--format=%H%n%s%x00",
   ]);
   if (r.exitCode !== 0) {
     // Most common: not a git repo. Soft-skip + audit reason; groom
@@ -168,15 +203,22 @@ export async function reconcileKanbanVsGit(
     const nl = trimmed.indexOf("\n");
     if (nl < 0) continue;
     const sha = trimmed.slice(0, nl);
-    const rest = trimmed.slice(nl + 1);
-    const subjEnd = rest.indexOf("\n");
-    const subject = subjEnd < 0 ? rest : rest.slice(0, subjEnd);
-    const body = subjEnd < 0 ? "" : rest.slice(subjEnd + 1);
+    const subject = trimmed.slice(nl + 1);
     if (!isShipSignal(subject)) continue;
-    const haystack = `${subject}\n${body}`;
-    const matches = haystack.match(TASK_ID_RE);
-    if (matches === null) continue;
-    for (const id of matches) {
+    // SUBJECT-ONLY match per t-4ea69dd1. Body content (cross-refs,
+    // EPIC parent refs, deps, follow-up filings, CHANGELOG mentions)
+    // is intentionally NOT scanned — those are reference scaffolding,
+    // not ship signals.
+    //
+    // Additionally, parent-ref annotations IN the subject (e.g.
+    // `(T1 of EPIC t-XXXX)`, `(t-AAAA, EPIC t-BBBB)`) are filtered
+    // out via PARENT_REF_KEYWORDS — the EPIC ID is a parent reference,
+    // not a ship signal. Use matchAll to get positional info; check
+    // each match's preceding chars against the keyword list.
+    for (const m of subject.matchAll(TASK_ID_RE)) {
+      const id = m[0];
+      const idx = m.index ?? 0;
+      if (isParentRefAnnotation(subject, idx)) continue;
       if (!openSet.has(id)) continue;
       if (!taskShipMap.has(id)) {
         taskShipMap.set(id, sha);

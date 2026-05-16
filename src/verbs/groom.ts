@@ -285,12 +285,13 @@ Sub-operations (all idempotent):
      pass; auto-gated on team.json::groom.laneDriftCheck — default true when team has
      lane-tagged members, false to disable). Pairs with the every-2-min cron line for fast
      feedback + the standalone \`atmux lane-drift-check\` verb for ad-hoc invocation.
-  7. kanban-vs-git reconcile: scan \`git log --all\` for commits whose message references
-     a \`t-XXXXXXXX\` Task ID; for every open task (status ∈ {todo, in-progress}) whose ID
-     is matched, auto-flip to done with note "groomed: shipped via SHA <hash>". Single
-     bulk \`git log\` per run; idempotent + safe. Per t-dc830eb0 — closes the duplicate-ship
-     dispatch-collision pattern that fired velocity-gate 6× in 75min with 0 SHA. Skip via
-     --no-reconcile. Companion to ADR-160 candidate (Part b: post-merge done-flip in gitter).
+  7. kanban-vs-git reconcile: scan \`git log --all\` for commits whose SUBJECT LINE
+     references a \`t-XXXXXXXX\` Task ID; for every open task (status ∈ {todo, in-progress})
+     whose ID is matched, auto-flip to done with note "groomed: shipped via SHA <hash>".
+     Single bulk \`git log\` per run; idempotent + safe. Subject-only per t-4ea69dd1 (P0
+     fix to t-dc830eb0's initial body-grep — cross-refs, EPIC parents, deps lists,
+     follow-up filings live in BODIES and are NOT ship signals). Skip via --no-reconcile.
+     Companion to ADR-160 candidate (Part b: post-merge done-flip in gitter).
   8. (--archive) state.db → archive.db row move (tasks + inbox_messages).
 
 Fires daily via cron (04:00) and once on every \`atmux start\`.
