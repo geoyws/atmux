@@ -189,7 +189,10 @@ describe("renderCronLines", () => {
 
   // ---------- ADR-062 §Decision 4: lane-tick line ----------
 
-  test("lane-tick line: ≥1 member with .lane emits `*/2 ... lane-tick` line", () => {
+  test("lane-tick line: ≥1 member with .lane emits `*/5 ... lane-tick` line (ADR-157 §D6)", () => {
+    // ADR-157 §D6 relaxed lane-tick default cadence from */2 to */5
+    // because /goal handles fast handoff on the happy path; lane-tick
+    // narrows to backstop. Per-team override via `crons.laneTickMins`.
     const team = baseTeam({
       members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
     });
@@ -197,12 +200,34 @@ describe("renderCronLines", () => {
     const laneLines = lines.filter((l) => l.includes(" lane-tick "));
     expect(laneLines.length).toBe(1);
     expect(laneLines[0]).toBe(
-      `*/2 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux lane-tick >> /srv/demo/.atmux/logs/lane-tick.log 2>&1`,
+      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux lane-tick >> /srv/demo/.atmux/logs/lane-tick.log 2>&1`,
     );
     // Placed last per "least-churn diff" — total 4 base + lane-tick = 5,
     // and lane-tick is the final line.
     expect(lines.length).toBe(5);
     expect(lines.at(-1)).toContain("lane-tick");
+  });
+
+  test("lane-tick line: ADR-157 §D6 per-team override `crons.laneTickMins=10` emits `*/10`", () => {
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      crons: { laneTickMins: 10 } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const laneLines = lines.filter((l) => l.includes(" lane-tick "));
+    expect(laneLines[0]).toContain("*/10 * * * *");
+  });
+
+  test("lane-tick line: ADR-157 §D6 per-team override `crons.laneTickMins=2` (pre-T5 cadence) emits `*/2`", () => {
+    // Backward-compat: teams that want the pre-T5 fast cadence can
+    // opt into it explicitly. Cron-renderer honors any divisor-of-60.
+    const team = baseTeam({
+      members: [{ name: "fe", role: "fe", lane: "fe", cwd: "/x" } as never],
+      crons: { laneTickMins: 2 } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const laneLines = lines.filter((l) => l.includes(" lane-tick "));
+    expect(laneLines[0]).toContain("*/2 * * * *");
   });
 
   test("lane-tick line: zero members with .lane → no line emitted", () => {

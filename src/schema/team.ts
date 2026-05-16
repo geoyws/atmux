@@ -453,9 +453,38 @@ export const TeamCrons = z
      *  threshold); the kill-switch lives here for fleet-consistent
      *  shape with `laneTickEnabled`. */
     whipVelocityGateEnabled: z.boolean().default(true),
+    /** ADR-157 §D6 — lane-tick cron cadence override (minutes). Default
+     *  5 — `/goal` (Claude Code v2.1.139+ skill) drives fast handoff
+     *  on the happy path via per-turn Haiku evaluator; lane-tick runs
+     *  at 5min as a structural backstop for failure modes /goal cannot
+     *  see (wedged panes, rate-lockouts, compaction-wipe). Lower bound
+     *  floor is /goal mean-time-to-detect-failure × 2 (~5min); ceiling
+     *  10min (cron `\*\/10`) acceptable with operator validation. Must be a divisor
+     *  of 60 — `cronEvery` refuses non-divisors (1, 2, 3, 4, 5, 6, 10,
+     *  12, 15, 20, 30, 60). Pre-ADR-157 default was 2; teams upgrading
+     *  pick up the new cadence on next `atmux start` / `atmux
+     *  cron-install`. */
+    laneTickMins: z
+      .number()
+      .int()
+      .positive()
+      .refine(
+        (n) => [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60].includes(n),
+        {
+          message:
+            "laneTickMins must be a divisor of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60) — cronEvery rejects non-divisors per ADR-062",
+        },
+      )
+      .default(5),
   })
   .strict();
 export type TeamCrons = z.infer<typeof TeamCrons>;
+
+/** ADR-157 §D6 default cadence for lane-tick — pre-T5 was 2 (cron
+ *  `\*\/2 \* \* \* \*`); T5 relaxes to 5 because /goal handles fast
+ *  handoff on the happy path. Co-located with the schema so cron
+ *  renderer + tests share the constant. */
+export const DEFAULT_LANE_TICK_CRON_MINS = 5;
 
 /**
  * `team.json::kanban` sub-config — kanban-orchestration knobs. ADR-062

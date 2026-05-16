@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — ADR-157 T5 cron cadence relaxation `*/2` → `*/5` (lane-tick)
+
+- **Cron template lane-tick cadence relaxed from `*/2 * * * *` to `*/5 * * * *`** per ADR-157 T5 (`t-e847d0ae`). Closes the EPIC's drain-mechanism shift: T3 (/goal injection) + T4 (lane-tick goal-narrow) together mean Claude members drive their own loop via the per-turn Haiku evaluator; lane-tick narrows to a structural backstop for failure modes /goal cannot see (wedged panes, rate-lockouts, compaction-wipe). Sub-2-min cadence is no longer needed.
+- **Per-team override `team.crons.laneTickMins`** (sibling to `laneTickEnabled`, mirrors the ADR-148 cadence-knob pattern). Optional; default `5` (new constant `DEFAULT_LANE_TICK_CRON_MINS`). Schema-side refinement REJECTS non-divisors of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60); `cronEvery` rejects non-divisors as a second line of defense.
+- **Lower bound floor** is /goal mean-time-to-detect-failure × 2 (~5min); **ceiling** 10min acceptable with operator validation. Teams that want the pre-T5 fast cadence can opt into it explicitly via `crons.laneTickMins: 2` — backward-compat path verified by test.
+- **Operator-facing migration**: existing atmux deployments pick up the new cadence on next `atmux start` / `atmux cron-install` — the cron-block re-install logic replaces the previous `*/2` line idempotently. No code-path semantic change; same lane-tick verb, same logic, just longer interval. T4's skip-branch is what makes the relaxed cadence safe.
+- **Tests**: 18 new tests pass — 4 in `tests/unit/core/cron.test.ts` (default `*/5` emit + `*/10` override + `*/2` backward-compat override + the existing test renamed/updated) + 8 in `tests/unit/schema/team.test.ts` (default-5 / explicit-10 / explicit-2 / non-divisor-7 rejected / non-divisor-8 rejected / zero+negative rejected / non-integer rejected / Team.parse round-trip). Full regression run: 216/216 pass on `cron.test.ts` + `team.test.ts`. Typecheck clean.
+- **Out of scope**: lane-tick goal-narrow skip-branch (T4 — shipped 33f995c, structural prereq satisfied); /goal injection (T3 — shipped 05e9b9c); e2e (T6); dogfood (T7).
+
 ### 🟢 Shipped — ADR-157 T4 lane-tick goal-narrow + 3-safety-net preservation
 
 - **`src/verbs/lane-tick.ts` goal-skip branch** per ADR-157 T4 (`t-e8ad0db5`). Claim-injection (`atmux claim --next --as <member>`) is now SKIPPED for goal-active Claude members; lane-tick narrows to a structural backstop for failure modes `/goal` cannot see (wedged panes, rate-lockouts, compaction-wipe). New `LaneTickMemberOutcome` literal `"skip-goal-active"`.

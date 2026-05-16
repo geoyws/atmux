@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
+  DEFAULT_LANE_TICK_CRON_MINS,
   DEFAULT_MARTINET_CADENCE_SEC,
   DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
@@ -20,6 +21,7 @@ import {
   Team,
   TeamCadence,
   TeamCadenceThresholds,
+  TeamCrons,
   TeamFallback,
   TeamMartinetOverrides,
   TeamMember,
@@ -758,5 +760,51 @@ describe("DEFAULT_CADENCE_THRESHOLDS / DEFAULT_CADENCE_CONFIG constants (ADR-148
     expect(DEFAULT_CADENCE_CONFIG.laneStallEnabled).toBe(true);
     expect(DEFAULT_CADENCE_CONFIG.laneStallMinAgeSec).toBe(1800);
     expect(DEFAULT_CADENCE_CONFIG.exemptMembers).toEqual([]);
+  });
+});
+
+// ---------- ADR-157 §D6: TeamCrons.laneTickMins ----------
+
+describe("TeamCrons.laneTickMins (ADR-157 §D6)", () => {
+  test("default value is 5 (T5 relaxed from pre-T5 default of 2)", () => {
+    const parsed = TeamCrons.parse({});
+    expect(parsed.laneTickMins).toBe(5);
+    expect(DEFAULT_LANE_TICK_CRON_MINS).toBe(5);
+  });
+
+  test("explicit value 10 accepted (within ceiling)", () => {
+    const parsed = TeamCrons.parse({ laneTickMins: 10 });
+    expect(parsed.laneTickMins).toBe(10);
+  });
+
+  test("explicit value 2 accepted (backward-compat / opt into pre-T5 cadence)", () => {
+    const parsed = TeamCrons.parse({ laneTickMins: 2 });
+    expect(parsed.laneTickMins).toBe(2);
+  });
+
+  test("non-divisor of 60 REJECTED — 7 fails refinement", () => {
+    expect(() => TeamCrons.parse({ laneTickMins: 7 })).toThrow(/divisor of 60/);
+  });
+
+  test("non-divisor of 60 REJECTED — 8 fails refinement", () => {
+    expect(() => TeamCrons.parse({ laneTickMins: 8 })).toThrow(/divisor of 60/);
+  });
+
+  test("zero / negative REJECTED — must be positive int", () => {
+    expect(() => TeamCrons.parse({ laneTickMins: 0 })).toThrow();
+    expect(() => TeamCrons.parse({ laneTickMins: -5 })).toThrow();
+  });
+
+  test("non-integer REJECTED", () => {
+    expect(() => TeamCrons.parse({ laneTickMins: 5.5 })).toThrow();
+  });
+
+  test("Team.parse with crons.laneTickMins=10 round-trips cleanly", () => {
+    const parsed = Team.parse({
+      name: "demo",
+      members: [],
+      crons: { laneTickMins: 10 },
+    });
+    expect(parsed.crons?.laneTickMins).toBe(10);
   });
 });
