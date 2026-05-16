@@ -2,7 +2,7 @@
 
 Operator-facing playbook for the team-of-teams (epic-team) lifecycle that atmux exercises end-to-end in `tests/e2e/team-of-teams-pre-sopx.test.ts`. Pairs ADR-089 (cockpit-walk DFS substrate) + ADR-090 (epic-team lifecycle) + ADR-091 (epic-merge state machine) + ADR-092 (cross-team tell-lead) into a single operator narrative.
 
-⚠️ **Status: phase-1 skeleton — operator-runnable surfaces (`atmux team spawn-epic` / `dissolve-epic` / `epic-merge` cron) currently live on un-merged member branches per the capstone Task t-edc93b42 phase-1 ship note. This RUNBOOK ships now to reserve the canonical structure; phase-2 (t-bc4fdb19) flips its sections from "Intended" to "Verified" once the gitter sweep fans the dependent surfaces into trunk.**
+⚠️ **Status: phase-2 partial — cross-team `tell-lead` paths (§Cross-team tell-lead) flipped to Verified per t-bc4fdb19. Lifecycle walk (§Sopx adoption) + doctor checks (§Doctor checks) remain phase-1 / t-c2e544b6 scope. Operator-runnable surfaces (`atmux team spawn-epic` / `dissolve-epic` / `epic-merge` cron) are now on the up-impl-3 branch via cherry-pick of `ba7ee3f` (ADR-092) + `a670648` (phase-1 skeleton); gitter fan-in to trunk is in flight (gitter-stuck-bug t-f4088323).**
 
 ## When to spawn an epic-team
 
@@ -64,13 +64,15 @@ If any of these go wrong in operator-runtime, the rollback path is non-destructi
 
 For phase-1 skeleton state: all of the above are **intended** behaviour; phase-2 wires assertions for each.
 
-## Cross-team tell-lead (deferred to phase-2)
+## Cross-team tell-lead (Verified — phase-2, t-bc4fdb19)
 
-`atmux tell-lead --team <other>` routes a message into another team's `driver-inbox.md` + fires a heads-up nudge to its lead pane. Three canonical paths the e2e will assert in phase-2 (t-bc4fdb19):
+`atmux tell-lead --team <other>` routes a message into another team's `driver-inbox.md` + fires a heads-up nudge to its lead pane. Three canonical paths now asserted in `tests/e2e/team-of-teams-pre-sopx.test.ts::describe("ADR-092 cross-team tell-lead (phase-2, t-bc4fdb19)")`:
 
-- **parent driver → epic-lead.** `atmux tell-lead --team <epic-name> "<msg>"` from the parent's driver pane.
-- **epic-lead → parent.** `atmux tell-lead --team <parent-name> "<msg>"` from an epic-team's lead pane.
-- **unrelated-team caller-scope refusal.** Spawn an unrelated sibling team in the same cockpit; attempt cross-team tell-lead from there; verify refusal with `EX_NOPERM=77` exit code per ADR-099.
+- **parent driver → epic-lead.** `atmux tell-lead --team <epic-name> "<msg>"` from the parent's driver pane (`ATMUX_CALLER_SCOPE=driver`). Asserted: target's `<epic-atmuxDir>/driver-inbox.md` carries the msg; source's parent inbox stays clean (routing went to target, not source).
+- **epic-lead → parent.** `atmux tell-lead --team <parent-name> "<msg>"` from an epic-team's lead pane (no scope override). Allowed natively via ADR-092 §D3 case (c) — the cockpit's `epicTeam.parent` linkage authorizes child→parent. Asserted: parent's inbox gets the msg.
+- **unrelated-team caller-scope refusal.** Stage an outsider sibling team in the same cockpit; attempt cross-team tell-lead from it → refused with `EX_NOPERM=77` exit per ADR-099. Asserted: NO inbox write on either side (refusal lands BEFORE `appendDriverInbox`).
+
+Test pattern: tmux send unavoidably fails in the test harness (no cage server backs the resolved socket path) — that's the EXPECTED terminal failure mode. The verb's `appendDriverInbox` lands before the tmux send (per ADR-029 §F6 + tell-lead.ts comment), so inbox-as-evidence is the durable assertion target.
 
 Member-to-member cross-team messaging is **out of scope** entirely — use `atmux send <member>` within a team only.
 
