@@ -236,7 +236,7 @@ describe("bootClaudeMember — readiness poll", () => {
         "✻ Welcome\n", // initial sentinel: not booted
         "✻ Welcome\n", // ready poll #1: not ready
         "❯ ", // ready poll #2: ready
-        "↑ 3k tokens", // post-boot poll #1: tokens moved
+        "↑ 3k tokens\n❯ ", // post-boot poll #1: tokens moved + composer cleared (composerEmpty matches `❯` at EOL via /m flag; tokensMoved still matches the prefix)
       ],
     });
     const r = await bootClaudeMember({
@@ -271,7 +271,7 @@ describe("bootClaudeMember — retry", () => {
         "still nothing", // post-boot poll attempt 1 (loops until timeout)
         "still nothing",
         "still nothing",
-        "↑ 1k tokens", // post-boot poll attempt 2 — first success
+        "↑ 1k tokens\n❯ ", // post-boot poll attempt 2 — first success + composer cleared
       ],
     });
     const r = await bootClaudeMember({
@@ -297,7 +297,7 @@ describe("bootClaudeMember — retry", () => {
       captures: [
         "✻ Welcome", // initial sentinel
         "❯ ", // ready
-        "still nothing", // post-boot polls — never moves
+        "still nothing\n❯ ", // composer cleared (composerEmpty matches via /m on the trailing `❯ `) but tokensMoved keeps missing → tokens-never-moved on exhaustion (t-1b45d565 verify path is happy; tokens poll is the failing leg)
       ],
     });
     const r = await bootClaudeMember({
@@ -322,6 +322,92 @@ describe("bootClaudeMember — retry", () => {
   });
 });
 
+// ---------- bootClaudeMember — submit-verify path (t-1b45d565) ----------
+
+describe("bootClaudeMember — submit-verify path (t-1b45d565)", () => {
+  test("composer stays loaded across all submitVerifyRetries — failed with submit-not-verified; tokensMoved poll skipped", async () => {
+    // capture sequence: sentinel + ready + composer-loaded (NEVER clears
+    // — the 8x bug fingerprint where the C-m is eaten). composerEmpty
+    // regex `❯\s*$/m` requires `❯` at end-of-line; a line ending with
+    // brief-text won't match. We embed a synthetic boot-prompt-loaded
+    // line: `❯ <truncated brief text>` (no EOL after `❯`, so the regex
+    // misses).
+    const { tmux } = fakeTmux({
+      captures: [
+        "✻ Welcome", // sentinel — not booted
+        "❯ ", // ready — `❯ ` IS at EOL here, but this capture is consumed by the READINESS poll, not the submit-verify poll
+        "❯ Read /tmp/atmux-brief-generic-atmux.md and your role brief", // submit-verify polls — composer still has prompt text; `❯ ` is NOT at EOL → composerEmpty miss → verify times out across all submitVerifyRetries → submit-not-verified
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      submitVerifyTimeoutMs: 200,
+      submitVerifyPollIntervalMs: 100,
+      submitVerifyRetries: 0, // 1 send-attempt per cycle to keep clock budget tight
+      // tokensMoved poll budget intentionally generous — if my code
+      // wastes time polling tokens after a verify-fail, this would
+      // exceed the fakeClock step and surface as a timeout instead
+      // of submit-not-verified.
+      postBootTimeoutMs: 99_000,
+      postBootPollIntervalMs: 1_000,
+      maxAttempts: 2,
+      sleep: noopSleep,
+      now: fakeClock({ step: 50 }),
+      // Suppress escalation-log write (test injection — no disk IO).
+      appendLog: async () => {},
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("submit-not-verified");
+    expect(r.attempts).toBe(2);
+  });
+
+  test("composer-load then auto-clear on next poll — verify succeeds, tokens move → booted in 1 attempt", async () => {
+    // Sequence: sentinel + ready + composer-loaded (verify poll #1
+    // miss) + composer-cleared (verify poll #2 hit) + tokens-moved.
+    // safeSendKeysWithVerify's internal poll loop catches the late-
+    // clearing case within one send-attempt; no outer retry needed.
+    const { tmux, getSendCallCount } = fakeTmux({
+      captures: [
+        "✻ Welcome", // sentinel
+        "❯ ", // ready
+        "❯ pre-capture for safeSend (not the verify poll)", // safeSendKeysWithVerify pre-capture
+        "❯ still-has-text", // verify poll #1: composer not yet clear
+        "❯ ", // verify poll #2: composer cleared → composerEmpty hit
+        "↑ 4k tokens\n❯ ", // tokensMoved poll #1: tokens move + composer empty
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      submitVerifyTimeoutMs: 1_000,
+      submitVerifyPollIntervalMs: 50,
+      submitVerifyRetries: 0, // single send + internal poll catches the late-clear
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 2,
+      sleep: noopSleep,
+      now: fakeClock({ step: 25 }),
+      appendLog: async () => {},
+    });
+    expect(r.status).toBe("booted");
+    expect(r.attempts).toBe(1);
+    // Exactly ONE C-m sendKeys call (safeSendKeysWithVerify single
+    // attempt; verifier picks up the clear on poll #2).
+    expect(getSendCallCount()).toBe(1);
+  });
+});
+
 // ---------- send-keys verb-failure ----------
 
 describe("bootClaudeMember — send-keys verb-failure", () => {
@@ -330,7 +416,7 @@ describe("bootClaudeMember — send-keys verb-failure", () => {
       captures: [
         "✻ Welcome", // sentinel
         "❯ ", // ready
-        "↑ 2k tokens", // tokens move (after retry send-keys lands)
+        "↑ 2k tokens\n❯ ", // tokens move (after retry send-keys lands) + composer cleared
       ],
       sendThrowOn: 1, // first send-keys throws
     });
@@ -434,5 +520,16 @@ describe("renderBootFailureNotice", () => {
       nowIso: "ts",
     });
     expect(capture).toContain("capture-pane");
+
+    // t-1b45d565: submit-not-verified label names the operator-
+    // actionable intervention (atmux send uses verified-send-keys).
+    const submitNotVerified = renderBootFailureNotice({
+      team: "t",
+      member: "m",
+      result: { status: "failed", attempts: 2, reason: "submit-not-verified" },
+      nowIso: "ts",
+    });
+    expect(submitNotVerified).toContain("C-m submit was eaten");
+    expect(submitNotVerified).toContain("verified-send-keys");
   });
 });
