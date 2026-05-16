@@ -108,6 +108,26 @@ ADR-050b (future) will fold in Tier 3 (Kimi) and Tier 4 (MiniMax). Pre-condition
 
 **Rollback path.** `team.whip.fallback.enabled=false` disables fallback per-team without uninstalling. No state migration. If Cursor proves unreliable, flip the team flag, accept the budget-pause downtime, then file ADR-050c to retire or replace.
 
+## §Acceptance gate — e2e landed (t-7c491368)
+
+`tests/e2e/fallback-cursor-cage.test.ts` walks the v1 narrowed entry-path (`shouldDispatchFallback` + `spawnFallbackCage` + `teardownFallbackCage` + `composeTier2Brief`) per the §Acceptance gate's 7-step shape:
+
+| Step | Asserts | Status |
+|---|---|---|
+| 1 | Opt-in gate — `enabled=false` → `dispatch=false` reason `'fallback-disabled'`; `enabled=true` + sustain met + tasks present → `dispatch=true` | ✅ |
+| 2 | Sustain threshold — pause `< sustainMins` → `'sustain-not-reached'`; `≥` → dispatch; `inProgressTaskCount=0` → `'no-in-progress-tasks'` | ✅ |
+| 3 | Cage spawn — `spawnFallbackCage` invokes `createCage` once with the right opts shape (team / lane=member / tier=2 / taskId / atmuxDir / projectCwd) and persists `CageHandle` to `fallback-cages-v1.json` keyed `<team>:<member>`; second spawn for the same key is idempotent (no second `createCage` call) | ✅ |
+| 4 | Brief composition — `composeTier2Brief` carries §D4 sections (Tier 2 / Cursor / composer-2 identification + Mission + Scope guardrails + Git policy + Reconciliation + operator-UID full-git posture); `spawnFallbackCage` delivers the brief through `sendBrief` when supplied | ✅ |
+| 5 | Output capture — `cageArchivePath(atmuxDir, 2, team, lane, epoch)` resolves under `<atmuxDir>/tier2-handoff/archive/<team>-<lane>-<epoch>` (ADR-058 archive layout supersedes the §Output capture's draft `<atmuxDir>/logs/fallback-cursor-<member>.log` path; cage stdout/stderr land in the archive on teardown) | ✅ |
+| 6 | Resume continuity — `composeResumeBrief` produces "while you were paused, fallback committed: <commits>" brief + paste via `safeSendKeys` gated on pane state | ⏭️ **`test.skip` — t-8ec31d4d (composeResumeBrief) not yet shipped** |
+| 7 | Idempotent teardown — second `teardownFallbackCage` on the same member is a no-op (no throw, no second `destroyCage` call); cages-file removed when the cages map empties on the delete | ✅ |
+
+**Layering note (ADR-050 ↔ ADR-058)**. ADR-050 v1 was substantially absorbed into ADR-058's multi-tier abstractions (`createFallbackCage` + `composeTier2Brief` + `cageArchivePath` in `src/abstractions/fallback-cage.ts`; multi-tier orchestration `dispatchFallbackOnPause` + `walkFallbackOnResume` in `src/core/whip-budget-fallback.ts`). The ADR-050 v1 narrowed wrappers (`spawnFallbackCage` + `teardownFallbackCage` + `shouldDispatchFallback` + `fallbackCagesPathV1`) sit on top, single-member + Tier-2-only. The sibling `tests/e2e/fallback-cage.test.ts` exercises the ADR-058 multi-tier surface with env-gated real-tmux probes; this spec is the **ADR-050 v1 acceptance gate** verbatim against the v1 wrapper API.
+
+**Step 6 carve-out**. `composeResumeBrief` lives in the unshipped `src/core/fallback-resume.ts` (referenced by `whip-budget-fallback.ts:286` as future work). When t-8ec31d4d lands, drop `.skip` from the Step 6 beat in the spec and wire the import + assertions per the inline TODO checklist in the spec body.
+
+Result: 11 pass / 1 skip / 0 fail. Typecheck green. Single commit per docs-discipline. Reviewer-gated.
+
 ## Open questions
 
 Resolved at decompose-time. Override path = driver edits inline in `.atmux/driver-inbox.md` OR replies via Discord to the ADR-050 ping.

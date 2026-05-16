@@ -9,7 +9,10 @@
 // "tests/unit/schema/team.test.ts (extend)".
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
+  DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
   DEFAULT_LANE_TICK_CRON_MINS,
@@ -19,9 +22,11 @@ import {
   DEFAULT_WORKTREE_ROOT,
   MartinetImpl,
   Team,
+  TeamAutoEmitTrunkMerge,
   TeamCadence,
   TeamCadenceThresholds,
   TeamCrons,
+  TeamEpic,
   TeamFallback,
   TeamMartinetOverrides,
   TeamMember,
@@ -746,6 +751,80 @@ describe("Team schema integrates TeamCadence cleanly (ADR-148 §D7)", () => {
   });
 });
 
+// ---------- TeamAutoEmitTrunkMerge — ADR-146 §D7 ----------
+
+describe("TeamAutoEmitTrunkMerge — valid + defaults (ADR-146 §D7)", () => {
+  test("empty block parses — all fields optional", () => {
+    const c = TeamAutoEmitTrunkMerge.parse({});
+    expect(c.enabled).toBeUndefined();
+    expect(c.fallbackAssignee).toBeUndefined();
+    expect(c.shortCircuitOnSharedBase).toBeUndefined();
+  });
+
+  test("full block round-trips", () => {
+    const c = TeamAutoEmitTrunkMerge.parse({
+      enabled: true,
+      fallbackAssignee: "manual-merger",
+      shortCircuitOnSharedBase: false,
+    });
+    expect(c.enabled).toBe(true);
+    expect(c.fallbackAssignee).toBe("manual-merger");
+    expect(c.shortCircuitOnSharedBase).toBe(false);
+  });
+
+  test("fallbackAssignee accepts null (explicit unassigned)", () => {
+    const c = TeamAutoEmitTrunkMerge.parse({ fallbackAssignee: null });
+    expect(c.fallbackAssignee).toBeNull();
+  });
+
+  test("strict-mode rejects unknown keys (drift detection — ADR-054 §D3)", () => {
+    expect(() =>
+      TeamAutoEmitTrunkMerge.parse({
+        enabled: true,
+        enabld: true, // typo
+      }),
+    ).toThrow();
+  });
+
+  test("non-boolean enabled rejected", () => {
+    expect(() => TeamAutoEmitTrunkMerge.parse({ enabled: "yes" })).toThrow();
+  });
+});
+
+describe("Team schema integrates TeamAutoEmitTrunkMerge cleanly (ADR-146 §D7)", () => {
+  test("Team.parse accepts an `autoEmitTrunkMerge` block", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      autoEmitTrunkMerge: { enabled: true },
+    });
+    expect(team.autoEmitTrunkMerge?.enabled).toBe(true);
+  });
+
+  test("Team.parse without `autoEmitTrunkMerge` block leaves field undefined", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.autoEmitTrunkMerge).toBeUndefined();
+  });
+
+  test("nested invalid value (typo) rejects through Team.parse", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        autoEmitTrunkMerge: { enableddd: true },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG constant (ADR-146 §D7)", () => {
+  test("constants match ADR-146 §D7 defaults", () => {
+    expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.enabled).toBe(true);
+    expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.fallbackAssignee).toBeNull();
+    expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.shortCircuitOnSharedBase).toBe(true);
+  });
+});
+
 describe("DEFAULT_CADENCE_THRESHOLDS / DEFAULT_CADENCE_CONFIG constants (ADR-148 §D7)", () => {
   test("threshold defaults match ADR-148 §D7 table", () => {
     expect(DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec).toBe(1800);
@@ -806,5 +885,270 @@ describe("TeamCrons.laneTickMins (ADR-157 §D6)", () => {
       crons: { laneTickMins: 10 },
     });
     expect(parsed.crons?.laneTickMins).toBe(10);
+  });
+});
+
+// ---------- TeamEpic — ADR-090 §Schema ----------
+
+describe("TeamEpic — ADR-090 §Schema valid shape + defaults", () => {
+  test("auto-mode happy path: required fields + mergeMode defaults to 'auto'", () => {
+    const e = TeamEpic.parse({
+      parent: "sopx-geoyws",
+      parentEpicKanbanId: "e-1a2b3c4d",
+      parentBase: "sopx-geoyws",
+    });
+    expect(e.parent).toBe("sopx-geoyws");
+    expect(e.parentEpicKanbanId).toBe("e-1a2b3c4d");
+    expect(e.parentBase).toBe("sopx-geoyws");
+    // §Decision-anchor #6: default to "auto"; "pr" is schema-accept-runtime-noop.
+    expect(e.mergeMode).toBe("auto");
+    expect(e.prTarget).toBeUndefined();
+    expect(e.prAuthorUser).toBeUndefined();
+  });
+
+  test("pr-mode shape with full prTarget + prAuthorUser parses cleanly", () => {
+    const e = TeamEpic.parse({
+      parent: "sopx-geoyws",
+      parentEpicKanbanId: "e-1a2b3c4d",
+      parentBase: "sopx-geoyws",
+      mergeMode: "pr",
+      prTarget: { remote: "origin", base: "main" },
+      prAuthorUser: "geoyws",
+    });
+    expect(e.mergeMode).toBe("pr");
+    expect(e.prTarget).toEqual({ remote: "origin", base: "main" });
+    expect(e.prAuthorUser).toBe("geoyws");
+  });
+
+  test("prTarget.remote defaults to 'origin' when omitted", () => {
+    const e = TeamEpic.parse({
+      parent: "p",
+      parentEpicKanbanId: "e-x",
+      parentBase: "main",
+      mergeMode: "pr",
+      prTarget: { base: "main" },
+      prAuthorUser: "geoyws",
+    });
+    // §Decision-anchor #8: remote has a default; base does not.
+    expect(e.prTarget?.remote).toBe("origin");
+    expect(e.prTarget?.base).toBe("main");
+  });
+
+  test("required string fields refuse empty + missing", () => {
+    expect(() => TeamEpic.parse({})).toThrow();
+    expect(() =>
+      TeamEpic.parse({ parent: "", parentEpicKanbanId: "e-1", parentBase: "main" }),
+    ).toThrow();
+    expect(() =>
+      TeamEpic.parse({ parent: "p", parentEpicKanbanId: "", parentBase: "main" }),
+    ).toThrow();
+    expect(() =>
+      TeamEpic.parse({ parent: "p", parentEpicKanbanId: "e-1", parentBase: "" }),
+    ).toThrow();
+  });
+
+  test("mergeMode rejects values outside the enum", () => {
+    expect(() =>
+      TeamEpic.parse({
+        parent: "p",
+        parentEpicKanbanId: "e-1",
+        parentBase: "main",
+        mergeMode: "manual",
+      }),
+    ).toThrow();
+  });
+
+  test("strict mode rejects unknown keys (drift surface)", () => {
+    expect(() =>
+      TeamEpic.parse({
+        parent: "p",
+        parentEpicKanbanId: "e-1",
+        parentBase: "main",
+        // typo: should be `prAuthorUser`. Strict rejects the unknown key
+        // rather than silently dropping it. Mirrors `whip` precedent.
+        prAuthroUser: "geoyws",
+      }),
+    ).toThrow();
+  });
+
+  test("prTarget is strict — rejects unknown keys inside the sub-object", () => {
+    expect(() =>
+      TeamEpic.parse({
+        parent: "p",
+        parentEpicKanbanId: "e-1",
+        parentBase: "main",
+        mergeMode: "pr",
+        prTarget: { remote: "origin", base: "main", branch: "main" }, // unknown `branch` key
+        prAuthorUser: "geoyws",
+      }),
+    ).toThrow();
+  });
+});
+
+// ---------- Team — ADR-090 cross-field superRefine ----------
+
+describe("Team superRefine — ADR-090 cross-field gates", () => {
+  test("auto-mode epic-team without worktreeIsolation parses cleanly", () => {
+    const team = Team.parse({
+      name: "checkout-flow",
+      members: [
+        { name: "lead", role: "lead", tui: "claude" },
+        { name: "be-1", role: "member", lane: "be", tui: "claude" },
+      ],
+      epicTeam: {
+        parent: "sopx-geoyws",
+        parentEpicKanbanId: "e-1a2b3c4d",
+        parentBase: "sopx-geoyws",
+      },
+    });
+    expect(team.epicTeam?.parent).toBe("sopx-geoyws");
+    expect(team.epicTeam?.mergeMode).toBe("auto");
+    expect(team.worktreeIsolation).toBeUndefined();
+  });
+
+  test("§Decision-anchor #3: epicTeam + worktreeIsolation=true refuses (HARD CONFLICT with ADR-084)", () => {
+    expect(() =>
+      Team.parse({
+        name: "checkout-flow",
+        members: [{ name: "lead", role: "lead" }],
+        worktreeIsolation: true,
+        epicTeam: {
+          parent: "sopx-geoyws",
+          parentEpicKanbanId: "e-1a2b3c4d",
+          parentBase: "sopx-geoyws",
+        },
+      }),
+    ).toThrow(/Decision-anchor #3|HARD CONFLICT/i);
+  });
+
+  test("§Decision-anchor #3: epicTeam with worktreeIsolation=false is allowed", () => {
+    const team = Team.parse({
+      name: "checkout-flow",
+      members: [{ name: "lead", role: "lead" }],
+      worktreeIsolation: false,
+      epicTeam: {
+        parent: "sopx-geoyws",
+        parentEpicKanbanId: "e-1a2b3c4d",
+        parentBase: "sopx-geoyws",
+      },
+    });
+    expect(team.worktreeIsolation).toBe(false);
+    expect(team.epicTeam).toBeDefined();
+  });
+
+  test("§Decision-anchor #8: pr-mode without prTarget.base refuses", () => {
+    expect(() =>
+      Team.parse({
+        name: "checkout-flow",
+        members: [{ name: "lead", role: "lead" }],
+        epicTeam: {
+          parent: "p",
+          parentEpicKanbanId: "e-1",
+          parentBase: "main",
+          mergeMode: "pr",
+          prAuthorUser: "geoyws",
+        },
+      }),
+    ).toThrow(/Decision-anchor #8|prTarget\.base/i);
+  });
+
+  test("§Decision-anchor #9: pr-mode without prAuthorUser refuses", () => {
+    expect(() =>
+      Team.parse({
+        name: "checkout-flow",
+        members: [{ name: "lead", role: "lead" }],
+        epicTeam: {
+          parent: "p",
+          parentEpicKanbanId: "e-1",
+          parentBase: "main",
+          mergeMode: "pr",
+          prTarget: { base: "main" },
+        },
+      }),
+    ).toThrow(/Decision-anchor #9|prAuthorUser/i);
+  });
+
+  test("normal team (no epicTeam, with worktreeIsolation=true) keeps parsing — additive change", () => {
+    // Existing teams MUST NOT break. epicTeam is absent → all three
+    // refinements early-exit on the `!== undefined` guard.
+    const team = Team.parse({
+      name: "atmux",
+      worktreeIsolation: true,
+      members: [{ name: "lead", role: "lead" }],
+    });
+    expect(team.worktreeIsolation).toBe(true);
+    expect(team.epicTeam).toBeUndefined();
+  });
+
+  test("normal team with no epicTeam, no worktreeIsolation — baseline parses", () => {
+    const team = Team.parse({
+      name: "atmux",
+      members: [{ name: "lead", role: "lead" }],
+    });
+    expect(team.epicTeam).toBeUndefined();
+    expect(team.worktreeIsolation).toBeUndefined();
+  });
+});
+
+// ---------- templates/epic-rosters/default.json — ADR-090 §Roster preset ----------
+
+describe("templates/epic-rosters/default.json — ADR-090 §Roster preset", () => {
+  /** Resolve the on-disk roster relative to repo root.
+   *  Test file: tests/unit/schema/team.test.ts → ../../.. → repo root. */
+  const rosterPath = resolve(
+    import.meta.dir,
+    "..",
+    "..",
+    "..",
+    "templates",
+    "epic-rosters",
+    "default.json",
+  );
+
+  test("file parses as JSON without error", () => {
+    const raw = readFileSync(rosterPath, "utf-8");
+    expect(() => JSON.parse(raw)).not.toThrow();
+  });
+
+  test("ADR-090 §Roster preset: seven members in the required role+lane shape", () => {
+    const raw = readFileSync(rosterPath, "utf-8");
+    const parsed = JSON.parse(raw) as { members?: unknown };
+    expect(Array.isArray(parsed.members)).toBe(true);
+    // Each member entry passes TeamMember validation.
+    const members = (parsed.members as unknown[]).map((m) => TeamMember.parse(m));
+    // ADR-090: lead + planner + reviewer + 2 fe + 2 be.
+    expect(members).toHaveLength(7);
+    const roles = members.map((m) => m.role);
+    expect(roles).toEqual(["lead", "planner", "reviewer", "member", "member", "member", "member"]);
+    // fe / be lanes split 2+2.
+    const lanes = members.map((m) => m.lane);
+    expect(lanes).toEqual([undefined, undefined, undefined, "fe", "fe", "be", "be"]);
+    // Every member ships with tui=claude (Opus-all-the-way per CLAUDE.md
+    // §Model Selection).
+    for (const m of members) {
+      expect(m.tui).toBe("claude");
+    }
+  });
+
+  test("roster member shape composes into a synthesised Team that passes ADR-090 cross-field gates", () => {
+    // Simulates spawn-epic's synth pass: roster.members[] + an epicTeam
+    // block + worktreeIsolation:false → loadTeam must accept.
+    const raw = readFileSync(rosterPath, "utf-8");
+    const parsed = JSON.parse(raw) as { members: unknown[] };
+    const team = Team.parse({
+      name: "checkout-flow",
+      members: parsed.members,
+      worktreeIsolation: false,
+      worktreeInitSubmodules: true,
+      epicTeam: {
+        parent: "sopx-geoyws",
+        parentEpicKanbanId: "e-1a2b3c4d",
+        parentBase: "sopx-geoyws",
+      },
+    });
+    expect(team.members).toHaveLength(7);
+    expect(team.epicTeam?.parent).toBe("sopx-geoyws");
+    expect(team.worktreeIsolation).toBe(false);
+    expect(team.worktreeInitSubmodules).toBe(true);
   });
 });

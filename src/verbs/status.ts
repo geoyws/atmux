@@ -17,6 +17,12 @@ import { join } from "node:path";
 import { exists, readTextOrNull } from "../abstractions/fs.ts";
 import { spawn as runSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  type CadenceObservation,
+  type CadenceThresholds,
+  classifyCadence,
+  defaultGitLog,
+} from "../core/cadence-classifier.ts";
 import { type CageHealth, type CageState, probeCageState } from "../core/cage-state.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
@@ -34,6 +40,7 @@ import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-heal
 import { loadInbox } from "../core/inbox.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { loadKanban } from "../core/kanban.ts";
+import { getCockpitSocketName } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
 import {
@@ -152,28 +159,13 @@ export interface MemberStatus {
   cadence?: CadenceObservation;
 }
 
-/** ADR-148 §D2: cadence-classifier output for one member. T2 ships
- *  the inline classifier in status.ts; T5 lifts it into
- *  `src/core/cadence-classifier.ts` + adds martinet wiring. The
- *  shape is the durable contract — T5 refactors location, not
- *  fields. */
-export interface CadenceObservation {
-  /** Configured window-back for the commits-in-window count. */
-  windowSec: number;
-  /** Commits authored by this member within `windowSec`. */
-  commitsInWindow: number;
-  /** Epoch seconds of the most recent commit by this member, or
-   *  null when the member has never committed in this worktree. */
-  lastCommitAt: number | null;
-  /** Short SHA of the most recent commit, or null when none. */
-  lastCommitSha: string | null;
-  /** Age (seconds) since `lastCommitAt`. Null when no commits ever. */
-  ageOfLastCommitSec: number | null;
-  /** ADR-148 §D2 verdict. `exempt` added by the renderer when the
-   *  member's name is in `team.cadence.exemptMembers`; the
-   *  classifier itself never emits `exempt`. */
-  verdict: "shipping" | "idle" | "dormant" | "ship-zero-window" | "exempt";
-}
+/** ADR-148 §D2: cadence-classifier output for one member. T5
+ *  (t-ac95b267) lifted the canonical declaration into
+ *  `src/core/cadence-classifier.ts`; this re-export preserves every
+ *  pre-T5 importer of `import { CadenceObservation } from
+ *  ".../verbs/status"`. The shape is the durable contract — T5
+ *  refactored location, not fields. */
+export type { CadenceObservation } from "../core/cadence-classifier.ts";
 
 export interface KanbanCounts {
   todo: number;
@@ -394,7 +386,11 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
   let sessionAlive = false;
   let windowAlive = false;
   try {
-    const cockpitTmux = factory({ socket: "default" });
+    // ADR-162 §Decision-anchor #1: cockpit lives on its dedicated
+    // socket (`atmux-cockpit` by default; `ATMUX_COCKPIT_SOCKET` legacy
+    // escape hatch). Probing the wrong socket reports a healthy cockpit
+    // as `down` post-migration.
+    const cockpitTmux = factory({ socket: getCockpitSocketName() });
     sessionAlive = await cockpitTmux.session.hasSession(cockpit.cockpitSession);
     if (sessionAlive) {
       const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
@@ -978,115 +974,17 @@ export function formatContextColumn(m: MemberStatus): string {
 
 // ---------- ADR-148 T2: cadence column helpers ----------
 
-/** Default `gitLog` impl — shells `git -C <path> log --since=<sec>s
- *  --author=<author> --format=%H %ct`. Tolerant of probe failures:
- *  non-zero exit (worktree missing, .git absent, malformed flags)
- *  collapses to empty result so the cadence column degrades to
- *  "no commits ever" rather than failing the whole status snapshot.
- *
- *  `--author` does substring-match in git, matching the member's
- *  name against the commit's Author line. Members typically commit
- *  as `<member> <member@example.invalid>` per atmux's setup, so the
- *  raw name (`alpha`) matches `alpha <alpha@...>`. Co-Authored-By
- *  trailers (gitter merges per ADR-145) are NOT counted by git's
- *  --author filter unless the trailer's email appears in the
- *  Author/Email field; this is intentional — cadence measures the
- *  member's own commits, not co-authored merges from gitter. */
-async function defaultGitLog(
-  worktreePath: string,
-  sinceSec: number,
-  author: string,
-): Promise<string[]> {
-  try {
-    const r: SpawnResult = await runSpawn({
-      cmd: "git",
-      argv: [
-        "-C",
-        worktreePath,
-        "log",
-        `--since=${sinceSec}s`,
-        `--author=${author}`,
-        "--format=%H %ct",
-      ],
-      expectExitCode: "any",
-      timeoutMs: 5000,
-    });
-    if (r.exitCode !== 0) return [];
-    return r.stdout
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-/** ADR-148 §D2: pure cadence classifier. Inputs are the resolved
- *  config + a list of `"<sha> <epoch-sec>"` lines from git log. The
- *  function itself does no I/O — `gitLog` is resolved by the caller
- *  and passed in here as the parsed lines list. T5 will lift this
- *  helper into `src/core/cadence-classifier.ts` verbatim. */
-/** Plain-object shape for cadence thresholds — non-`as const` so
- *  callers can build from arbitrary numbers without the literal-type
- *  exact-match constraint. */
-export interface CadenceThresholds {
-  shippingMaxAgeSec: number;
-  idleMaxAgeSec: number;
-  dormantMaxAgeSec: number;
-  shipZeroWindowSec: number;
-}
-
-export function classifyCadence(
-  logLines: ReadonlyArray<string>,
-  nowSec: number,
-  windowSec: number,
-  thresholds: CadenceThresholds,
-): CadenceObservation {
-  let commitsInWindow = 0;
-  let lastCommitAt: number | null = null;
-  let lastCommitSha: string | null = null;
-  for (const line of logLines) {
-    const parts = line.split(/\s+/);
-    if (parts.length < 2) continue;
-    const sha = parts[0]!;
-    const ctStr = parts[1]!;
-    const ct = Number(ctStr);
-    if (!Number.isFinite(ct)) continue;
-    if (nowSec - ct <= windowSec) commitsInWindow += 1;
-    if (lastCommitAt === null || ct > lastCommitAt) {
-      lastCommitAt = ct;
-      lastCommitSha = sha.slice(0, 7);
-    }
-  }
-  const ageOfLastCommitSec = lastCommitAt === null ? null : Math.max(0, nowSec - lastCommitAt);
-  let verdict: CadenceObservation["verdict"];
-  if (commitsInWindow >= 1 && ageOfLastCommitSec !== null && ageOfLastCommitSec < thresholds.shippingMaxAgeSec) {
-    verdict = "shipping";
-  } else if (
-    commitsInWindow === 0 &&
-    ageOfLastCommitSec !== null &&
-    ageOfLastCommitSec >= thresholds.shipZeroWindowSec
-  ) {
-    // ship-zero-window is the escalation flag (≥2hr by default).
-    // Subset of dormant when dormantMaxAgeSec > shipZeroWindowSec —
-    // we want callers to see the escalation classification first
-    // (per ADR-148 §D2 table — it's the explicit "must fire" verdict).
-    verdict =
-      ageOfLastCommitSec >= thresholds.dormantMaxAgeSec ? "dormant" : "ship-zero-window";
-  } else if (ageOfLastCommitSec === null || ageOfLastCommitSec < thresholds.idleMaxAgeSec) {
-    verdict = "idle";
-  } else {
-    verdict = "dormant";
-  }
-  return {
-    windowSec,
-    commitsInWindow,
-    lastCommitAt,
-    lastCommitSha,
-    ageOfLastCommitSec,
-    verdict,
-  };
-}
+// ADR-148 §D2 / T5 (t-ac95b267): `classifyCadence` + the default
+// `gitLog` probe live in `src/core/cadence-classifier.ts` post-T5 —
+// martinet observe() + medic + future doctor probes share one
+// implementation. Re-export here so pre-T5 importers
+// (`import { classifyCadence } from ".../verbs/status"`) keep
+// resolving without churn.
+export {
+  classifyCadence,
+  defaultGitLog,
+  type CadenceThresholds,
+} from "../core/cadence-classifier.ts";
 
 /** Resolve the worktree path for a member. Honors ADR-082 §2
  *  `team.worktreeIsolation` — when isolation is on, per-member

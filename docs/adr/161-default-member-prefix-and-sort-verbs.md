@@ -1,0 +1,206 @@
+# ADR-161: default-member `_-prefix` convention + window-name format split + topographic-normalization verbs
+
+**Status**: proposed
+**Date**: 2026-05-16
+**Driver-ref**: 2026-05-16 driver session — operator: apply ADR-135 D2 `_-prefix` convention from cockpit-roles (`_superdriver` / `_medic` / `_martinet`) to in-team default members. Plus ship the missing topographic-normalization verbs (sort/move/swap).
+**Parent EPIC**: t-2d8363f4 (this ADR is the umbrella; TR1-TR4 filed in same session per [[feedback_decomp_same_session_with_deps]]).
+**Cross-refs**: ADR-135 (cockpit naming convention — extends D2 `_-prefix` to team-default members; supersedes D3 uniform-hyphen-separator), ADR-136 (hot-rename label-layer split — id vs label vs emoji; this ADR's prefix change lands in the LABEL layer only), ADR-158/159/160 (concurrent role-type renames — `committer` per ADR-159 and any future poke-related default would be affected by this ADR's Part A).
+
+## Context
+
+### Why this convention now
+
+ADR-135 D2 shipped the cockpit `_-prefix` convention 2026-05-15 (`_superdriver` / `_medic` / `_martinet`). The principle: cockpit-role windows get an underscore prefix to mark them as built-in seats, distinguishable at glance from team-viewer windows that don't carry the prefix. The convention worked: operators reading the cockpit tmux list can tell which windows are atmux-managed cockpit roles vs. which are team-viewer panes from a glance.
+
+The same readability problem exists at the in-team layer. Inside any team's tmux session, the window list mixes default members (lead / planner / reviewer / committer / ombudsman — roles that come pre-rostered with the team) and user-added members (whip-impl / up-impl / parity-state-impl — operator-rostered, role=`member`). Today they all share one format (`<emoji>-<name>`), so a glance at the list can't distinguish "built-in" from "user-added."
+
+Operator's chat-time decision applies the cockpit pattern one level down: in-team default members get the `_-prefix` too. Result is the same readability win at the team layer.
+
+### Why hyphen → underscore for defaults specifically
+
+Per ADR-135 D2's reasoning: the underscore is the prefix marker AND the separator at the same time. `_superdriver` (no hyphen, no space) reads as a single token; the underscore IS what marks it. Same logic applied here: `🧭_lead` (no hyphen between emoji and underscore) reads at a glance as "default seat for lead." User-added members keep `<emoji>-<name>` (hyphen separator per ADR-135 D3), so the formats are visually distinct.
+
+The downside is a per-role format check inside `buildWindowName` (per ADR-135 D3) — small added complexity, well-bounded.
+
+### Why label-layer only — no id mutation
+
+Per [[project_member_hot_rename_adr_136]] / ADR-136: members have three layers — `id` (immutable; powers kanban owner field, branch name, worktree path, inbox keys), `label` (display name; can change), `emoji` (display prefix; can change). ADR-161's `_-prefix` change lives entirely in the LABEL layer. Kanban records keyed by `id` ("lead", "planner") are unaffected. Branch names like `<teamBase>-planner` stay verbatim. Inbox paths `.atmux/inboxes/lead.json` (legacy; or the equivalent post-ADR-076 SQLite rows) stay verbatim.
+
+Zero state migration required. The label change is purely cosmetic — pickups happen on next `atmux start` invocation when `buildWindowName` runs against the now-role-aware logic.
+
+### Why the topographic-normalization verbs are part of this ADR
+
+The `_-prefix` change is visual; it lets operators see at-a-glance which seats are default. But the actual ORDER of windows in a team's tmux session is whatever order members got added — defaults at the front (if started by template) followed by user-added in chronological order. That order isn't enforced anywhere. Two operators bootstrapping a similar team can end up with different orderings depending on which template they used or which member they added first.
+
+`atmux member sort --defaults-first` is the one-shot canonical normalize: partitions by role, sorts defaults by canonical order, keeps user-added in their existing relative order. Once shipped, operators can normalize an existing team in one verb without manually `tmux move-window`-ing each pane.
+
+`move` and `swap` are the manual escape hatches for operators who want a specific custom order. All three verbs preserve PIDs + attachments + claude-process state (mirroring `atmux rotate-lead` per ADR-135 D4) — they're `tmux move-window` orchestration, not respawn.
+
+## Decision
+
+Four §Decision-anchor lines first, then prose around each subsystem.
+
+> **§Decision-anchor #1** — **Default-member roles are: `team-lead` / `planner` / `reviewer` / `committer` / `ombudsman`.** These get the `_-prefix` (label-layer only — id unchanged per ADR-136). Any role NOT in this set is treated as user-added (`role: "member"` typically) and gets the existing hyphen separator. The set is closed-by-default — adding a new default role requires an ADR-161 amendment + reviewer signoff. Forward-ref: ADR-159 `committer` rename + any future poke-role default would be affected by this list.
+
+> **§Decision-anchor #2** — **Window-name format is role-aware**: `buildWindowName` checks `member.role` against the default set from §Decision-anchor #1; on match → `${emoji}_${label}` (no hyphen, underscore IS the separator + prefix marker); on miss → `${emoji}-${label}` (existing ADR-135 D3 format). The `_-prefix` is per-window only — the LABEL field on the member object stays without the underscore (e.g. `member.label = "lead"`, not `"_lead"`). Underscore is added at the WINDOW-NAME-rendering layer, not at the data layer.
+
+> **§Decision-anchor #3** — **New verb namespace: `atmux member`** with three sub-verbs: `move <id> --to <position>` / `swap <id-a> <id-b>` / `sort [--defaults-first]`. Mirrors the existing `atmux member rename` (per ADR-136). All three preserve PIDs + claude-process state via `tmux move-window` orchestration (no respawn). After mutation, persists the new ordering to `team.json::members[]` array so the order survives team restarts.
+
+> **§Decision-anchor #4** — **`sort --defaults-first` canonical ordering** is: `team-lead` → `planner` → `reviewer` → `committer` → `ombudsman` → (user-added in existing relative order). The canonical order matches the typical operator-mental-model "what does each role do, in order of how often I look at them." Idempotent — running on an already-sorted team is a no-op. Per-team configurable later if operator-pushback shows up; v1 is hardcoded.
+
+### §Part A — `_-prefix` convention for default members
+
+**Eligible roles** (per §Decision-anchor #1):
+
+```ts
+const DEFAULT_MEMBER_ROLES = [
+  "team-lead",
+  "planner",
+  "reviewer",
+  "committer",  // post-ADR-159 rename; legacy: "gitter"
+  "ombudsman",
+] as const;
+```
+
+This set lives in `src/abstractions/member-roles.ts` (NEW module — or extends an existing role-enumeration if one exists; locate via grep `team-lead.*planner.*reviewer` in `src/`).
+
+**Auto-prefix on existing teams**: zero migration. The next `atmux start` invocation renders windows via `buildWindowName`, which now checks role + applies `_-prefix` automatically. ADR-135 D4 in-place rename pattern preserves PIDs — windows are renamed via `tmux rename-window`, not respawned.
+
+**New teams**: template-shipped roster (e.g. `templates/team.example.json`) doesn't need changes — the role values stay verbatim; the rendering does the prefix work. Operators bootstrapping fresh teams get the convention from day one.
+
+### §Part B — window-name format split
+
+**`buildWindowName` logic** (extends ADR-135 D3):
+
+```ts
+function buildWindowName(member: Member): string {
+  const emoji = member.emoji ?? defaultEmojiForRole(member.role);
+  const label = member.label ?? member.id;
+  if (DEFAULT_MEMBER_ROLES.includes(member.role)) {
+    return `${emoji}_${label}`;       // _-prefix for defaults
+  }
+  return `${emoji}-${label}`;          // hyphen for user-added (existing ADR-135 D3)
+}
+```
+
+**Cockpit-role windows** (per ADR-135 D2) keep their existing format — `_superdriver` / `_medic` / `_martinet` are unchanged. ADR-161's change is in-team layer only; cockpit layer was already prefixed.
+
+**Operator-visible example post-convention**:
+
+```
+Cockpit (atmux-cockpit socket per ADR-162):
+  W1  _superdriver
+  W2  _medic
+  W3  _martinet
+  W4  <team1>           (team-viewer; no prefix per ADR-135)
+
+In-team session (per-team socket):
+  W1  driver            (operator's interactive REPL)
+  W2  🧭_lead            (default — post-ADR-161)
+  W3  🎯_planner         (default — post-ADR-161)
+  W4  🔍_reviewer        (default — post-ADR-161)
+  W5  📦-whip-impl       (user-added — existing hyphen format)
+  W6  🛠️-up-impl         (user-added — existing hyphen format)
+  W7  🌿_committer       (default — post-ADR-159 rename + ADR-161 prefix)
+  W8  ⚖️_ombudsman       (default — post-ADR-161)
+```
+
+### §Part C — topographic-normalization verbs
+
+**`atmux member move <id> --to <position>`** — absolute repositioning:
+- Resolve `<id>` to its current window-index.
+- `tmux move-window -s <current-idx> -t <position>` — preserves PIDs + attachments + claude-process state.
+- Other windows shift to fill the gap (tmux's standard behavior).
+- Persist the new ordering to `team.json::members[]` array (via `team-config.ts::writeTeamConfig` per t-2deb17f0 T2 — cross-EPIC dep on the team-set surface; if that hasn't landed, T3 uses the existing team.json write helper).
+- Idempotent if `<position>` matches current.
+
+**`atmux member swap <id-a> <id-b>`** — pairwise:
+- Resolve both ids to window-indices.
+- `tmux move-window -s <idx-a> -t <idx-b>` + `tmux move-window -s <idx-b> -t <idx-a>` (need a temp index to avoid clobber; use `tmux swap-window -s -t` if tmux 3.x+ supports it — locate the version-safe primitive).
+- Persist new ordering.
+
+**`atmux member sort [--defaults-first]`** — one-shot normalize:
+- Read current member list from `team.json`.
+- Partition into defaults + user-added; sort defaults by canonical order (§Decision-anchor #4); keep user-added relative order.
+- Compute target index for each member; run `tmux move-window` orchestration in order (left-to-right) — each move preserves PIDs.
+- Persist new ordering.
+- Idempotent — re-run on already-sorted team produces zero `move-window` calls.
+- `--defaults-first` is the only sort mode for v1; future modes (alphabetical, lane-grouped, custom) deferred until operator-pushback.
+
+**All three verbs**: preserve PIDs + attachments + claude-process state. The `tmux move-window` primitive operates on tmux's internal window-index, not the running processes inside the panes.
+
+**Edge cases**:
+- Window not found (id doesn't correspond to a tmux window) — refuse with hint.
+- Two windows have the same name (shouldn't happen post-ADR-135 D3 + this ADR's format split, but defensive check) — refuse with hint to run `atmux doctor` for the duplicate.
+- Driver window (W1, operator's REPL) is OUT of move/swap/sort scope — refuse if `<id>` resolves to W1.
+- Cockpit-role windows (if running in a cockpit context) are also out of scope — `atmux member` verbs operate at the team layer, not cockpit.
+
+### §EPIC-done definition (canonical for this ADR's decomp)
+
+ADR-161 completes when ALL of:
+
+1. TR1 lands — this ADR commits (greenfield-verified pre-flight).
+2. TR2 lands — `buildWindowName` role-aware; `DEFAULT_MEMBER_ROLES` enumeration in `src/abstractions/member-roles.ts`; unit tests cover the format split.
+3. TR3 lands — `atmux member move | swap | sort` verbs; e2e proves PID preservation across all three.
+4. TR4 lands — README + ARCHITECTURE + briefs templates + ADR-135 supersession pointer for D3 + memory entries.
+
+## Consequences
+
+### What this ADR enables
+
+- **At-a-glance readability**: operators reading any team's window list can immediately tell defaults from user-added members. Symmetric with ADR-135 D2's cockpit-role convention.
+- **Canonical team ordering**: `atmux member sort --defaults-first` gives operators a one-verb normalize for existing teams.
+- **Operator control over ordering**: `atmux member move` and `swap` cover the manual escape hatch.
+- **Zero state migration**: ADR-161 changes are label-layer only (per ADR-136); existing teams pick up the convention on next `atmux start`.
+
+### What this ADR does NOT cover
+
+- **Cockpit-role windows**: already `_-prefixed` per ADR-135 D2; unchanged.
+- **Team-viewer windows (cockpit-side)**: stay no-prefix per ADR-135 D3. ADR-161 doesn't touch them.
+- **Per-team custom default-role lists**: out of scope for v1. Future operator pushback could justify a `team.json::defaultRoleOverrides[]` field; not in this ADR.
+- **Alphabetical or lane-grouped sort modes**: deferred. `--defaults-first` is the only sort mode for v1.
+- **Driver window relocation**: out of scope. Driver is W1 by convention; ADR-161 verbs refuse to move it.
+- **Hot-rename to ANOTHER prefix character (e.g. `-` → `.`)**: out of scope. Underscore is the canonical prefix per ADR-135 D2.
+
+### Rollback path
+
+- Remove `_-prefix` rendering: revert `buildWindowName`'s role-check branch (a single conditional). Existing teams render the old hyphen format on next start.
+- Remove `atmux member` verbs: unregister from `help.ts`; remove verb file. No state migration (verbs only orchestrate `tmux move-window` against runtime tmux state).
+- ADR-135 D3's uniform-hyphen-separator stays the documented default in ADR-135; ADR-161's supersession of that for defaults is documented as an annotation, not an inline edit.
+
+### Reuse statement
+
+- ADR-135 D2 `_-prefix` pattern: reused verbatim, applied one level down (in-team instead of cockpit).
+- ADR-135 D4 in-place rename pattern: reused for `move` / `swap` / `sort` PID preservation.
+- ADR-136 label-layer split: reused — `_-prefix` lives at rendering layer, not data layer.
+- ADR-097 tmux abstraction: `tmux.window.moveWindow()` consumed for orchestration.
+- `team.json::members[]` array order: existing persistence path; verbs write to it.
+- NEW abstraction: `src/abstractions/member-roles.ts::DEFAULT_MEMBER_ROLES` enumeration (or extends existing role enum).
+
+### What breaks (nothing in v1)
+
+- Existing operator muscle memory: `tmux select-window -t lead` still works (tmux matches by window-name prefix). `tmux select-window -t _lead` works too. Both routes are accessible.
+- Existing scripts that grep tmux output for "lead" still match (the substring is preserved; just gains a `_` prefix in the rendered name).
+- Any external tool that depends on the EXACT window-name string `lead` (vs `_lead`) breaks. Acceptable — atmux's window-name format isn't a public contract; rename was always possible per ADR-135.
+
+## Open questions
+
+1. **Should ombudsman's `_-prefix` apply when ombudsman isn't rostered on a team?** Most teams have ombudsman optional. **Planner recommendation**: the role-check fires per-member, so absent members get no prefix at all (they don't exist). Non-issue. Reviewer can flip if they want a stricter "if ombudsman exists, it MUST be `_ombudsman`" gate.
+
+2. **Should `--defaults-first` be the default behavior of `atmux member sort` (i.e. no flag required)?** **Planner recommendation**: yes — `atmux member sort` defaults to `--defaults-first`. Flag is for future-proofing when other sort modes ship. Reviewer can flip if they want explicit-only.
+
+3. **`atmux member move` position semantics — 0-indexed or 1-indexed?** tmux's `move-window -t <target>` is 1-indexed (per `base-index 1` per ADR-162). **Planner recommendation**: 1-indexed for operator-mental-model consistency. Reviewer can flip if they want 0-indexed for parity with `members[]` array.
+
+4. **Existing teams running an older `buildWindowName` — do windows get renamed on next `atmux start`?** Per ADR-135 D4 in-place rename pattern, yes — `atmux start` reconciles tmux state against the live `buildWindowName` output. **Planner recommendation**: document the auto-rename behavior in the RUNBOOK (TR4) so operators aren't surprised. Add a `--no-rename` flag to `atmux start` if pushback shows up; not in v1.
+
+## Cross-references
+
+- [ADR-135](135-cockpit-naming-convention.md) — D2 `_-prefix` pattern (cockpit-role); D3 uniform-hyphen-separator (in-team — SUPERSEDED for defaults by this ADR). Append a §Amendment annotation citing ADR-161.
+- [ADR-136](136-hot-rename-member-labels.md) — label vs id vs emoji split; ADR-161's prefix change lives in label layer.
+- [ADR-097](097-tmux-abstraction.md) — `tmux.window.moveWindow()` consumed by Part C verbs.
+- [ADR-158](158-*.md), [ADR-159](159-*.md), [ADR-160](160-*.md) — sibling vocabulary renames (committer rename + others); cross-coordinated with this ADR's default-member list.
+- [ADR-162](162-atmux-owns-tmux-infrastructure.md) — `base-index 1` invariant referenced in §Open question #3.
+- Driver-ref: 2026-05-16 driver session — operator chat-time decision on default-member `_-prefix` + sort/move/swap verbs.
+- Memory [[project_member_hot_rename_adr_136]] — id vs label vs emoji split; ADR-161 lives in label layer.
+- Memory [[project_adr_135_naming_convention]] — D1-D6 conventions shipped 2026-05-15.
+- Project [CLAUDE.md](../../CLAUDE.md) §Docs Discipline.

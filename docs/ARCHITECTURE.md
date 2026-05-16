@@ -125,6 +125,7 @@ The lead does **not** decompose Tasks itself and does **not** `atmux dispatch` p
 2. Per-member pane: does `#{pane_current_command}` match the expected TUI binary?
 3. Per-member banners: `rate-limit`, `Compacting conversation`, `Press up to edit queued messages`.
    - **Modal cycling** (per ADR-142, module `src/core/modal-cycling-detector.ts`): ≥N distinct modal-prompts within `modalCycling.windowMin` AND 0 commits in `commitGracePeriodMin` → fires `[whip-modal-cycling]` Discord + clarifier dispatch + flag. Sits one layer above the existing static-stuck classifier (which catches *same prompt repeating*); modal-cycling catches *different prompts in rapid sequence*, the pattern §1c missed on 2026-05-14 whip-impl. State at `~/.atmux/state/modal-history-<member>.json` + `modal-cycling-dedup-state.json`.
+   - **Commit-cadence classifier** (per [ADR-148](adr/148-commit-cadence-truth-signal.md) §D2, module `src/core/cadence-classifier.ts` — landed by T5 / t-ac95b267, lifting the inline classifier T2 inlined in `src/verbs/status.ts`): pure `classifyCadence(logLines, nowSec, windowSec, thresholds)` + async wrapper `classifyMemberCadence(member, worktreePath, config, deps)` composing the canonical `git -C <path> log --since=<N>s --author=<member> --format=%H %ct` probe with classification. Emits four verdicts (`shipping` / `idle` / `dormant` / `ship-zero-window`) per ADR-148 §D2 table. Consumers: `atmux status` cadence column (T2), martinet `Observation.members[].cadence` field (T5 — escalation classifier in `src/core/martinet-escalation.ts` fires E6 on any member `ship-zero-window` verdict, alongside the pre-existing team-aggregate `commitCadence.last2hr === 0` path), Discord `[ship-zero-window]` template + medic event-driven pickup (deferred follow-up per ADR-140 chain).
 4. Per-member staleness: any `inProgress` tasks older than `ATMUX_STALE_MIN`?
 5. Lead uptime: has the lead been alive longer than `ATMUX_LEAD_MAX_MIN`? If so, recommend `atmux rotate-lead`.
 
@@ -173,6 +174,19 @@ Per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D2, the ombudsman role w
 - **Cron tick**: `atmux ombudsman tick --team <team>` runs every `team.ombudsman.tickIntervalMins` (default 15min). Fast-path no-op when sentinel is empty; wakes the ombudsman pane via `safeSendKeysWithVerify` ([ADR-138](adr/138-verified-send-keys.md)) with `atmux ombudsman work` when non-empty.
 
 The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because medic + whip-velocity-gate can file 5–10 complaints in a burst; batching the wake gives ombudsman the chance to drain in one session rather than wake-process-sleep × N. This matches the `groom-pending-judgment.json` pattern from the supergroomer parking-lot task (ADR-147 §D2 tradeoff section).
+
+## Module map (selected — health + observability)
+
+| Module | Purpose | Authoring ADR |
+|---|---|---|
+| `src/core/cage-state.ts` | Unified 4-state taxonomy (down/bootstrapping/active/wedged) for claude member panes. Replaces the `pane_current_command` proxy that mis-classified welcome-screen TUIs. | t-74273200 |
+| `src/core/cadence-classifier.ts` (T5 — pending) | Pure commit-cadence classifier consumed by status + martinet. Today's inline impl lives at `src/verbs/status.ts::classifyCadence` until T5 extracts it. | [ADR-148](adr/148-commit-cadence-truth-signal.md) |
+| `src/core/refusal-classifier.ts` | Pure pane-output refusal classifier. Four classes (soft / hard / role / meta) with regex primary + heuristic secondary. Sibling-not-extension of `safe-send.ts` (input-side refusal); ADR-139 §Grep findings audit covers the boundary. | [ADR-139](adr/139-refusal-pattern-auto-rotate.md) §D1 |
+| `src/core/refusal-threshold.ts` | Pure threshold gate over a refusal-event ledger. Decides whether accumulated detections cross the rotate threshold per ADR-139 §D3 (soft 3/30min, hard 2/10min, role 1/instant; meta never rotates). | [ADR-139](adr/139-refusal-pattern-auto-rotate.md) §D3 |
+| `src/core/fallback-brief.ts` | Pure-of-direct-IO Tier 2 fallback brief composer. Reads in-progress Task body + `templates/briefs/<role>.md` + `git log --oneline -10` + lead-outbox tail; writes assembled brief with Tier-2 guardrails preface to `<atmuxDir>/state/fallback-brief-<member>.md` for the cage spawn to pipe into `cursor-agent --print`. | [ADR-050](adr/050-fallback-chain.md) §Brief generator |
+| `src/core/lead-marker.ts` | I-1 (`lead-session-start.txt`) + I-2 (`lead-window-name.txt`) marker R/W. The rotation-gate canonical source per ADR-077 §lead-uptime-measurement — NEVER read `ps -o etime` for rotation decisions. | [ADR-077](adr/077-superdoctor-cockpit-role.md) §lead-uptime-measurement |
+| `src/core/branch-merge-state.ts` | Pure state machine for ADR-091 (epic-team) + ADR-134 (intra-team) auto-merger. 10-state lifecycle + pure transition function. | [ADR-091](adr/091-kanban-driven-auto-merge.md), [ADR-134](adr/134-in-team-auto-merger.md) |
+| `src/core/repositories/merger-state-repo.ts` | Typed CRUD over `merger_state` table; transactions wrap `BEGIN IMMEDIATE` to serialize concurrent ticks. | [ADR-134](adr/134-in-team-auto-merger.md) §state-machine |
 
 ## Why `tmux send-keys` and not SDK API calls?
 

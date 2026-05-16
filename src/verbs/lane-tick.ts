@@ -34,6 +34,7 @@ import {
 import { resolveGoalForMember } from "../core/goal-resolver.ts";
 import { listTasks, moveTask } from "../core/kanban.ts";
 import { type CaptureFn, classifyText, type PaneClassification } from "../core/pane-state.ts";
+import { pasteAndSubmit } from "../core/paste-submit.ts";
 import {
   type SafeSendOpts,
   type SafeSendResult,
@@ -180,17 +181,35 @@ export async function runLaneTick(
   const sendKeysFn: SendKeysFn =
     deps.sendKeysFn ??
     (async (target: string, keys: string, opts) => {
-      // safeSendKeys passes the same string we passed to it as `target`,
-      // which we built as `${session}:${windowName}` below. Wrap in the
-      // SendTarget discriminated union for the input-injection contract
-      // (ADR-025). The member name is recovered from the windowTarget
-      // suffix (see resolveWindowTarget); tests don't exercise this
-      // path, so no further plumbing needed.
-      await tmux.pane.sendKeys({
-        target: { kind: "member", member: parseMemberFromTarget(target), team: team.name, target },
-        keys,
-        enter: opts?.enter ?? true,
-      });
+      // ADR-138 T3b3 (t-06547e2d): when the keystroke is a TEXT BODY
+      // (the claim-injection / rotate-nudge case below — bracketed-
+      // paste-Enter-swallow bug zone), route through
+      // `pasteAndSubmit` so the bundled load-buffer + paste-buffer
+      // -d + 500ms settle + C-m cascade lands the message reliably.
+      // Raw `tmux.pane.sendKeys` is preserved for control-key /
+      // modal-dismiss cases (enter:false explicit, single-character
+      // payload) — those don't pass through the bracketed-paste
+      // envelope and are fine on the raw path.
+      const sendTarget = {
+        kind: "member" as const,
+        member: parseMemberFromTarget(target),
+        team: team.name,
+        target,
+      };
+      const wantsEnter = opts?.enter ?? true;
+      const isControlKeyOnly = !wantsEnter || /^[CM]-./.test(keys);
+      if (isControlKeyOnly) {
+        // Control-key / no-submit path — raw sendKeys is correct here.
+        await tmux.pane.sendKeys({ target: sendTarget, keys, enter: wantsEnter });
+        return;
+      }
+      // Text-body path — paste-submit cascade. P0 leak (t-06547e2d):
+      // `tmux send-keys <text> Enter` on a Claude pane in the "just
+      // finished + ← for agents" transition state silently drops the
+      // Enter, leaving the command queued in the composer. pasteAndSubmit
+      // uses `C-m` (literal CR) after the bracketed-paste envelope —
+      // empirically reliable across the leak's full failure-mode set.
+      await pasteAndSubmit(tmux, sendTarget, keys);
     });
 
   const session = await getSessionName({ dir: atmuxDir, team });

@@ -50,6 +50,7 @@ import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { epic } from "./verbs/epic.ts";
+import { epicMerge } from "./verbs/epic-merge.ts";
 import { gitter } from "./verbs/gitter.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
@@ -80,6 +81,8 @@ import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { story } from "./verbs/story.ts";
 import { task } from "./verbs/task.ts";
+import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
+import { spawnEpic } from "./verbs/team/spawn-epic.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
 import { up } from "./verbs/up.ts";
@@ -272,6 +275,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return ombudsman(argv.slice(1));
     case "gitter":
       return gitter(argv.slice(1));
+    case "epic-merge":
+      return epicMerge(argv.slice(1));
     case "complaints":
       return complaints(argv.slice(1));
     case "blockers":
@@ -331,16 +336,20 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
   const sub = argv[0];
   if (sub === undefined || sub === "") {
     throw new UsageError({
-      what: "team: subverb required (try: repair-rename)",
+      what: "team: subverb required (try: repair-rename | spawn-epic | dissolve-epic)",
       hint: "run 'atmux help' for the list of verbs",
     });
   }
   switch (sub) {
     case "repair-rename":
       return teamRepairRename(argv.slice(1));
+    case "spawn-epic":
+      return spawnEpic(argv.slice(1));
+    case "dissolve-epic":
+      return dissolveEpic(argv.slice(1));
     default:
       throw new UsageError({
-        what: `team: unknown subverb '${sub}' (try: repair-rename)`,
+        what: `team: unknown subverb '${sub}' (try: repair-rename | spawn-epic | dissolve-epic)`,
         hint: "run 'atmux help' for the list of verbs",
       });
   }

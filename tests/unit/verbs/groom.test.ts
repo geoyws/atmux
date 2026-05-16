@@ -57,12 +57,27 @@ describe("parseGroomArgs", () => {
       dryRun: false,
       quiet: false,
       archive: false,
+      aggressive: false,
+      noReconcile: false,
+      zombieSweep: false,
       inboxDays: 7,
       kanbanDays: 30,
       decisionsDays: 30,
       keepBak: 5,
       showHelp: false,
     });
+  });
+
+  test("--aggressive sets aggressive=true + inboxDays=0", () => {
+    const got = parseGroomArgs(["--aggressive"]);
+    expect(got.aggressive).toBe(true);
+    expect(got.inboxDays).toBe(0);
+  });
+
+  test("--inbox-days 0 leaves aggressive=false (synonym at sub-op layer, not parse)", () => {
+    const got = parseGroomArgs(["--inbox-days", "0"]);
+    expect(got.aggressive).toBe(false);
+    expect(got.inboxDays).toBe(0);
   });
 
   test("--dry-run + --quiet flip booleans", () => {

@@ -538,6 +538,14 @@ describe("applyRepair", () => {
       needsStateSync: true,
     };
     const stderrCalls: string[] = [];
+    // t-584b5f37 cluster 7 fix: inject a `cronInstallFn` mock so step 5
+    // (cron-block refresh) executes through a no-op stub instead of
+    // touching the host crontab. The pre-cluster-7 production left
+    // step 5 as a DEFERRED placeholder that only emitted a warn —
+    // applyRepair now actually invokes cron-install (post-ADR-083),
+    // so the test must mock the verb and update the appliedSteps
+    // expectation to include step 5.
+    const cronCalls: ReadonlyArray<string>[] = [];
     const result = await applyRepair(fixture.atmuxDir, "new", snap, flags, {
       tmux: factory("/x"),
       buildTmuxAtSocket: factory,
@@ -545,9 +553,13 @@ describe("applyRepair", () => {
         stderrCalls.push(s);
         return true;
       },
+      cronInstallFn: async (argv) => {
+        cronCalls.push(argv);
+        return 0;
+      },
     });
     expect(result.rolledBack).toBe(false);
-    expect(result.appliedSteps).toEqual([1, 2, 3, 4, 6]);
+    expect(result.appliedSteps).toEqual([1, 2, 3, 4, 5, 6]);
     // Step 1: dir moved.
     expect(await dirExists(newTmpdir)).toBe(true);
     expect(await dirExists(oldTmpdir)).toBe(false);
@@ -563,8 +575,10 @@ describe("applyRepair", () => {
     // Step 4: team.json updated.
     const updated = JSON.parse(await readFile(fixture.teamJsonPath, "utf8"));
     expect(updated.tmuxTmpdir).toBe(newTmpdir);
-    // Step 5: warn emitted to stderr.
-    expect(stderrCalls.some((s) => s.includes("DEFERRED"))).toBe(true);
+    // Step 5: cron-install verb was invoked with --quiet + --team-dir.
+    expect(cronCalls).toHaveLength(1);
+    expect(cronCalls[0]).toContain("--quiet");
+    expect(cronCalls[0]).toContain("--team-dir");
     // Step 6: state file rewritten.
     expect(await readFile(fixture.stateFile, "utf8")).toBe("new\n");
   });
@@ -592,6 +606,10 @@ describe("applyRepair", () => {
     // declarative state should converge regardless of flags — mirrors
     // bash spec line 283-287. This is "always-write" semantics.
     const stderrCalls: string[] = [];
+    // t-584b5f37 cluster 7 fix: mock cronInstallFn — step 5 runs
+    // unconditionally even when all repair flags are false (the
+    // cron-block refresh always converges per ADR-083), so the
+    // appliedSteps now includes 5.
     const result = await applyRepair(fixture.atmuxDir, "acme", snap, flags, {
       tmux: factory("/x"),
       buildTmuxAtSocket: factory,
@@ -599,9 +617,10 @@ describe("applyRepair", () => {
         stderrCalls.push(s);
         return true;
       },
+      cronInstallFn: async () => 0,
     });
     expect(result.rolledBack).toBe(false);
-    expect(result.appliedSteps).toEqual([4]);
+    expect(result.appliedSteps).toEqual([4, 5]);
   });
 
   test("step 1 refuses to clobber existing target → no rollback (pre-step-1 abort)", async () => {

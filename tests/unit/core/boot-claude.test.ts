@@ -62,12 +62,35 @@ function fakeTmux(opts: {
         return opts.captures[i] ?? "";
       },
       async sendKeys(callOpts: { keys: string; target: SendTarget }) {
+        // ADR-138 T3b3 (t-06547e2d): boot-prompt path now goes via
+        // pasteAndSubmit. The prompt text emits through
+        // buffer.loadBuffer (recorded by the buffer mock below);
+        // the C-m submit emits through THIS pane.sendKeys mock. We
+        // do NOT log C-m to `calls` — it's implementation detail.
+        // sendThrowOn still fires on the C-m send to preserve the
+        // verb-failure-injection semantics existing tests depend on
+        // (a throw at the submit step is observable as the send
+        // failing, same as raw send-keys throwing pre-T3b3).
         sendCallCount += 1;
-        calls.push({ kind: "send", payload: callOpts.keys });
         if (opts.sendThrowOn !== undefined && sendCallCount === opts.sendThrowOn) {
           throw new Error("send-keys: process exited 1");
         }
       },
+    },
+    buffer: {
+      // Buffer mock — pasteAndSubmit calls loadBuffer (with prompt
+      // as data) + pasteBuffer in sequence, then submitAfterPaste
+      // hits the pane.sendKeys mock above with the C-m keysym. The
+      // load-buffer call records the prompt content as a "send"-
+      // shaped entry on the calls timeline so tests asserting "send
+      // fired with payload=<prompt>" continue working — the
+      // payload-side semantics are identical (the text body lands
+      // in the compose box via the buffer), only the on-tmux
+      // mechanism differs (paste vs raw type).
+      async loadBuffer(callOpts: { name: string; data: string }) {
+        calls.push({ kind: "send", payload: callOpts.data });
+      },
+      async pasteBuffer(_o: { name?: string; target: SendTarget; deleteAfter?: boolean }) {},
     },
   } as unknown as TmuxNamespace;
 

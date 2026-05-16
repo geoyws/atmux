@@ -230,6 +230,52 @@ describe("renderBrief", () => {
       }),
     ).toBe("{{UNKNOWN}} kept; x replaced");
   });
+
+  // ---------- ADR-090: epic-team placeholder support ----------
+
+  test("ADR-090: substitutes {{PARENT}} + {{EPIC_ID}} when both provided", () => {
+    const tpl = "team={{TEAM}} parent={{PARENT}} epicId={{EPIC_ID}} member={{MEMBER}}";
+    expect(
+      renderBrief(tpl, {
+        team: "checkout-flow",
+        member: "lead",
+        role: "lead",
+        atmuxDir: "/p/.atmux",
+        parent: "sopx-geoyws",
+        epicId: "checkout-flow",
+      }),
+    ).toBe("team=checkout-flow parent=sopx-geoyws epicId=checkout-flow member=lead");
+  });
+
+  test("ADR-090: omitted parent/epicId leave the placeholders inert (no-op for non-epic-team briefs)", () => {
+    // The existing four-key call-site (T10 not yet wired) MUST keep
+    // working without breakage. Normal-team briefs don't reference
+    // {{PARENT}} / {{EPIC_ID}}; an epic-team brief loaded with the
+    // legacy signature leaves the placeholders raw — visible but
+    // structurally inert.
+    const tpl = "team={{TEAM}} parent={{PARENT}} epicId={{EPIC_ID}}";
+    expect(
+      renderBrief(tpl, {
+        team: "atmux",
+        member: "lead",
+        role: "lead",
+        atmuxDir: "/p/.atmux",
+      }),
+    ).toBe("team=atmux parent={{PARENT}} epicId={{EPIC_ID}}");
+  });
+
+  test("ADR-090: only parent provided substitutes parent but leaves epicId raw", () => {
+    const tpl = "{{PARENT}} | {{EPIC_ID}}";
+    expect(
+      renderBrief(tpl, {
+        team: "checkout-flow",
+        member: "lead",
+        role: "lead",
+        atmuxDir: "/p/.atmux",
+        parent: "sopx-geoyws",
+      }),
+    ).toBe("sopx-geoyws | {{EPIC_ID}}");
+  });
 });
 
 // ---------- defaultBriefsDir ----------
@@ -450,16 +496,18 @@ describe("rotate() — public verb", () => {
     ).rejects.toBeInstanceOf(ConfigError);
   });
 
-  test("ADR-081 §C: claude TUI → /clear + bootClaudeMember (boot prompt sent, no paste-buffer)", async () => {
+  test("ADR-081 §C: claude TUI → /clear + bootClaudeMember (boot prompt sent via paste-submit per ADR-138 T3b3)", async () => {
     // Post-t-94d7ad60 rotation flow: for claude TUIs, the legacy
     // paste-buffer brief-deliver path was replaced by
     // `bootClaudeMember`. The new sequence is:
     //   1. safePreflight + /clear
     //   2. bootClaudeMember: capture (sentinel) → poll-ready (capture
-    //      loop) → sendKeys(boot prompt, enter:true) → poll-tokens-moved.
-    // Paste-buffer / loadBuffer no longer fire for claude TUI; the
-    // role brief is fetched inside the spawned subagent itself via the
-    // boot prompt's "Read /tmp/atmux-brief-…" directive.
+    //      loop) → paste-submit(boot prompt) → poll-tokens-moved.
+    // ADR-138 T3b3 (t-06547e2d) migrated the boot-prompt emit from
+    // raw sendKeys → pasteAndSubmit to fix bracketed-paste-Enter-
+    // swallow. So loadBuffer + pasteBuffer DO fire now (carrying the
+    // boot-prompt text); the trailing sendKeys is the literal C-m
+    // submit (enter:false).
     process.env.ATMUX_SESSION = "atmux-t";
     await seedTeam({
       name: "t",
@@ -501,17 +549,27 @@ describe("rotate() — public verb", () => {
       keys: "/clear",
       enter: true,
     });
-    // Boot prompt landed via sendKeys with enter:true — verbatim shape
-    // from `renderBootPrompt(team, member)`.
+    // ADR-138 T3b3 (t-06547e2d): boot prompt landed via pasteAndSubmit
+    // — the prompt data rides through loadBuffer, NOT raw sendKeys.
+    // The trailing send-keys is C-m (enter:false), which submits the
+    // pasted body without re-triggering the bracketed-paste-Enter
+    // swallow.
     const bootPrompt = renderBootPrompt("t", "alice");
-    expect(calls.sendKeys).toContainEqual({
-      target: "atmux-t:alice",
-      keys: bootPrompt,
-      enter: true,
-    });
-    // No paste-buffer / loadBuffer for claude TUI.
-    expect(calls.loadBuffer).toEqual([]);
-    expect(calls.pasteBuffer).toEqual([]);
+    expect(calls.loadBuffer.length).toBeGreaterThanOrEqual(1);
+    // At least one loadBuffer carried the boot prompt as data.
+    expect(
+      calls.loadBuffer.some((l) => l.data === bootPrompt),
+    ).toBe(true);
+    // pasteBuffer fired with deleteAfter (the bracketed-paste envelope).
+    expect(calls.pasteBuffer.length).toBeGreaterThanOrEqual(1);
+    // A C-m submit followed the paste; no raw text-body sendKeys for
+    // the boot prompt remains.
+    expect(
+      calls.sendKeys.some((s) => s.keys === "C-m" && s.enter === false),
+    ).toBe(true);
+    expect(
+      calls.sendKeys.some((s) => s.keys === bootPrompt),
+    ).toBe(false);
     // capturePane fired at least 3x (sentinel + readiness poll + post-boot poll).
     expect(calls.capturePane.length).toBeGreaterThanOrEqual(3);
     // Stdout carries the boot-success line + the final rotation summary.
@@ -520,16 +578,16 @@ describe("rotate() — public verb", () => {
     expect(stderrBuf).toBe("");
   });
 
-  test("ADR-081 §C: claude TUI boot sequence pinned (capture → sendKeys(prompt) → capture, no paste-buffer)", async () => {
-    // t-4ad7fc42 rewrite of the legacy ADR-081 §A sequence pin. The
-    // paste-buffer + C-m flow was superseded for claude TUIs by
-    // bootClaudeMember (t-94d7ad60). New invariant: after /clear, the
-    // boot sequence is `capturePane (sentinel)` → `capturePane*
-    // (readiness poll)` → `sendKeys(bootPrompt, enter:true)` →
-    // `capturePane* (tokens-moved poll)`. Timeline must NOT contain
-    // any pasteBuffer / loadBuffer events for claude TUI; the brief
-    // is fetched by the spawned subagent itself per renderBootPrompt's
-    // "Read /tmp/atmux-brief-…" directive.
+  test("ADR-081 §C + ADR-138 T3b3: claude TUI boot sequence (capture → paste-submit(prompt) → capture)", async () => {
+    // t-4ad7fc42 rewrite of the legacy ADR-081 §A sequence pin,
+    // updated for ADR-138 T3b3 (t-06547e2d) paste-submit migration.
+    // Post-T3b3 invariant: after /clear, the boot sequence is
+    // `capturePane (sentinel)` → `capturePane* (readiness poll)` →
+    // `loadBuffer(prompt)` + `pasteBuffer` + `sendKeys(C-m)`
+    // (pasteAndSubmit cascade) → `capturePane* (tokens-moved poll)`.
+    // Paste-buffer is REQUIRED now (was forbidden pre-T3b3); the
+    // bracketed-paste envelope around the body + C-m submit is the
+    // empirical fix for the lane-tick Enter-swallow incident.
     process.env.ATMUX_SESSION = "atmux-t";
     await seedTeam({
       name: "t",
@@ -580,32 +638,27 @@ describe("rotate() — public verb", () => {
       bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
-    // No paste / load events for claude TUI — the brief-delivery is
-    // baked into the boot prompt itself.
-    expect(timeline.some((e) => e.kind === "loadBuffer")).toBe(false);
-    expect(timeline.some((e) => e.kind === "pasteBuffer")).toBe(false);
-    // Locate the boot-prompt sendKeys (NOT /clear) and the capture
-    // events that bracket it. The post-/clear sequence MUST be:
-    // capture (sentinel) → capture* (readiness) → sendKeys(prompt,
-    // enter:true) → capture* (post-boot poll).
-    const bootPrompt = renderBootPrompt("t", "alice");
-    const bootIdx = timeline.findIndex(
-      (e) => e.kind === "sendKeys" && e.keys === bootPrompt && e.enter === true,
-    );
-    expect(bootIdx).toBeGreaterThan(0);
-    // At least one capture preceded the boot prompt (the sentinel +
-    // readiness poll).
-    const before = timeline.slice(0, bootIdx);
+    // ADR-138 T3b3: paste-submit cascade fires (loadBuffer + pasteBuffer
+    // + C-m). The bracketed-paste envelope around the body + C-m
+    // submit is the canonical text-body injection per t-06547e2d.
+    expect(timeline.some((e) => e.kind === "loadBuffer")).toBe(true);
+    expect(timeline.some((e) => e.kind === "pasteBuffer")).toBe(true);
+    // Locate the paste-buffer event (carries the boot prompt as data
+    // via the preceding loadBuffer) and the captures that bracket it.
+    const pasteIdx = timeline.findIndex((e) => e.kind === "pasteBuffer");
+    expect(pasteIdx).toBeGreaterThan(0);
+    // At least one capture preceded the paste (sentinel + readiness poll).
+    const before = timeline.slice(0, pasteIdx);
     expect(before.some((e) => e.kind === "capture")).toBe(true);
-    // At least one capture followed the boot prompt (the tokens-moved
-    // poll observing the staged paneText flip).
-    const after = timeline.slice(bootIdx + 1);
+    // At least one capture followed the paste (the tokens-moved poll
+    // observing the staged paneText flip after the C-m submit).
+    const after = timeline.slice(pasteIdx + 1);
     expect(after.some((e) => e.kind === "capture")).toBe(true);
-    // Calls accumulator-level invariants: boot prompt is the LAST
-    // sendKeys (no trailing C-m re-submit; bracketed-paste mode is no
-    // longer relevant — single-line prompt with enter:true).
-    expect(calls.sendKeys.at(-1)?.keys).toBe(bootPrompt);
-    expect(calls.sendKeys.at(-1)?.enter).toBe(true);
+    // Calls accumulator-level invariants: last sendKeys is the C-m
+    // submit (enter:false), NOT the boot prompt text. The boot prompt
+    // landed inside loadBuffer's `data`.
+    expect(calls.sendKeys.at(-1)?.keys).toBe("C-m");
+    expect(calls.sendKeys.at(-1)?.enter).toBe(false);
   });
 
   test("safe-send: CC feedback survey is dismissed before /clear lands", async () => {

@@ -17,10 +17,16 @@
 //      (nothing to fan in; the branch is at or behind base).
 //
 //   3. Read the current state row from {@link MergerStateRepo}. If the
-//      branch is in a non-terminal mid-flight state (anything that's
-//      not `open`, `merged`, `conflict`, or `reverted`), skip the
-//      queue — another tick is already moving it through the state
-//      machine.
+//      branch is in a mid-walk state (`ready_to_merge`, `rebasing`,
+//      `merging`, `tested`, `test_failed`), skip the queue — another
+//      tick (the same-walk dispatcher iteration OR a caller-driven
+//      test gate) is moving it. `in_progress` is NOT in this skip set
+//      per t-f4088323: branches stuck in `in_progress` because the
+//      dispatcher pre-merge gate was held at first-tick (worker dirty)
+//      need every-cycle re-evaluation to advance once the worker
+//      clears. `open` + terminal states (`merged`/`conflict`/`reverted`)
+//      remain queueable too (open = initial, terminal + new tip = fresh
+//      work after the prior cycle's terminal landed).
 //
 //   4. Otherwise queue a merge attempt via the injected
 //      {@link QueueMergeFn} callback. This is the same dispatch path
@@ -54,16 +60,30 @@ import type { GitSpawn } from "../abstractions/worktree.ts";
 
 // ---------- Types ----------
 
-/** States that mean "the gitter is already moving this branch". Any
- *  one of these blocks the sweep from re-queueing. Note `open` is NOT
- *  in this set — `open` is the initial state for a branch that has
- *  never transitioned; the sweep IS allowed to queue from there.
+/** States that mean "the gitter is already moving this branch" — sweep
+ *  skips these because another tick (the same-walk dispatcher or a
+ *  caller-driven external test gate) is actively progressing them.
+ *
+ *  **`in_progress` is NOT in this set** (per t-f4088323 P1 fix). The
+ *  initial too-conservative shape included `in_progress`, which trapped
+ *  branches whose dispatcher pre-merge gate (`shouldTransitionFromInProgress`)
+ *  was held by worker dirty-state at the time of the FIRST tick: once
+ *  the state was seeded `in_progress`, sweep skipped it forever, so
+ *  the gate never re-evaluated even when the worker became task-clean.
+ *  `in_progress` is now treated like `open` from the sweep's perspective:
+ *  re-queue every cycle and let the dispatcher re-run the gate. The
+ *  dispatcher is idempotent on `in_progress → in_progress` self-loops
+ *  (BEGIN IMMEDIATE per ADR-134 §state-machine race-protection); a
+ *  gate-still-held tick returns `{queued:false, reason:"gate-held"}` so
+ *  the sweep records `queue-refused` with a meaningful note.
+ *
+ *  `open` is NOT in this set — `open` is the initial state for a branch
+ *  that has never transitioned; the sweep IS allowed to queue from there.
  *  Terminal states (`merged`, `conflict`, `reverted`) are also NOT in
  *  this set — terminal rows have completed (success or failure); the
  *  next branch-tip advance brings the branch back to the queue path
  *  via a fresh `open → in_progress` transition. */
 const IN_FLIGHT_STATES: ReadonlySet<BranchMergeState> = new Set<BranchMergeState>([
-  "in_progress",
   "ready_to_merge",
   "rebasing",
   "merging",
@@ -153,6 +173,8 @@ export interface GitterSweepDeps {
  *
  *   1. `rev-list --count <base>..<member>` === 0   → skipped-zero-ahead
  *   2. mergerState in {@link IN_FLIGHT_STATES}     → skipped-in-flight
+ *      (`ready_to_merge` / `rebasing` / `merging` /
+ *      `tested` / `test_failed` — actively moving)
  *   3. mergerState is terminal (merged/conflict/   → skipped-terminal
  *      reverted) AND ahead-of-base === 0
  *      (covered by step 1 — included here for
@@ -160,7 +182,12 @@ export interface GitterSweepDeps {
  *   4. mergerState is terminal AND ahead-of-base   → queued (fresh
  *      > 0 (member committed AFTER terminal       (next tip past
  *      state landed)                              terminal merge)
- *   5. mergerState is null / `open`                → queued (initial)
+ *   5. mergerState is null / `open` / `in_progress` → queued. `in_progress`
+ *      is queued every cycle per t-f4088323 P1 fix — re-runs the
+ *      dispatcher pre-merge gate so branches stuck on a previously-held
+ *      gate advance once the worker clears. Idempotent: a still-held
+ *      gate produces a self-loop + `{queued:false, reason:"gate-held"}`
+ *      → sweep records `queue-refused` with the note.
  *
  * The sweep does NOT transition the state row itself. That's the
  * dispatcher's job (so the same code path handles event-driven AND

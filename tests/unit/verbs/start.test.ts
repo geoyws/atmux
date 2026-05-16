@@ -1470,13 +1470,26 @@ describe("start — ADR-063 cockpit auto-reconcile", () => {
     teams: Array<{ name: string; enabled: boolean }>;
     cockpitSession?: string;
   }): Cockpit {
+    // Per ADR-089 §B the canonical cockpit shape is `sessions: [...]`
+    // (hierarchical, discriminated union). The real loader (`loadCockpit`)
+    // runs `migrateLegacyShape` to lift legacy flat `teams[]` into
+    // `sessions[]` BEFORE parsing — so post-loader cockpit objects always
+    // carry `sessions[]`. The fake bypasses the loader, so it emits
+    // `sessions[]` directly to match what consumers (e.g. `enabledTeams`
+    // via `walkSessions`) actually iterate. The legacy duck-typed `teams`
+    // field is also populated for back-compat readers that still see the
+    // post-enrichment synthesised array.
+    const teamEntries = opts.teams.map((t) => ({
+      type: "team" as const,
+      name: t.name,
+      root: `/tmp/${t.name}-root`,
+      enabled: t.enabled,
+      sessions: [] as never[],
+    }));
     return {
       cockpitSession: opts.cockpitSession ?? "atmux_teams",
-      teams: opts.teams.map((t) => ({
-        name: t.name,
-        root: `/tmp/${t.name}-root`,
-        enabled: t.enabled,
-      })),
+      sessions: teamEntries,
+      teams: teamEntries.map(({ name, root, enabled }) => ({ name, root, enabled })),
     } as unknown as Cockpit;
   }
 
@@ -1617,7 +1630,12 @@ describe("start — t-dcbff97c cron-install wiring", () => {
       cronCalls.push(argv);
       return 0;
     };
-    const exit = await runStart([], { cronInstallFn });
+    // Override the harness-default ATMUX_NO_CRON='1' (set at line 79
+    // beforeEach to keep most start tests host-crontab-safe). The cron-
+    // install wiring tests EXPECT the gate to fire — empty string falls
+    // through shouldAutoInstallCron's `noCron !== ''` check at
+    // src/verbs/start.ts:989.
+    const exit = await runStart([], { cronInstallFn, extraEnv: { ATMUX_NO_CRON: "" } });
     expect(exit).toBe(0);
     expect(cronCalls).toHaveLength(1);
     const args = cronCalls[0] ?? [];
@@ -1677,7 +1695,13 @@ describe("start — t-dcbff97c cron-install wiring", () => {
       cronCalls.push(argv);
       return 0;
     };
-    const exit = await runStart([], { gitSpawn, cronInstallFn });
+    // ATMUX_NO_CRON='' overrides the harness default (see vanilla-team
+    // sibling test for context).
+    const exit = await runStart([], {
+      gitSpawn,
+      cronInstallFn,
+      extraEnv: { ATMUX_NO_CRON: "" },
+    });
     expect(exit).toBe(0);
     expect(cronCalls).toHaveLength(1);
     expect(cronCalls[0]).toContain("--quiet");
@@ -1711,12 +1735,309 @@ describe("start — t-dcbff97c cron-install wiring", () => {
     const cronInstallFn = async (): Promise<number> => {
       throw new Error("simulated cron-install bug");
     };
-    const exit = await runStart([], { cronInstallFn });
+    // ATMUX_NO_CRON='' overrides the harness default (see vanilla-team
+    // sibling test for context).
+    const exit = await runStart([], { cronInstallFn, extraEnv: { ATMUX_NO_CRON: "" } });
     expect(exit).toBe(0);
     expect(
       env.logs.some(
         (l) => l.kind === "warn" && l.msg.includes("cron-install fell through"),
       ),
     ).toBe(true);
+  });
+});
+
+// ---------- t-eb0887fe: parallelized member spawn ----------
+
+import { resolveSpawnConcurrency, runWithConcurrency } from "../../../src/verbs/start.ts";
+
+describe("resolveSpawnConcurrency", () => {
+  test("override wins when valid", () => {
+    expect(resolveSpawnConcurrency(3, {})).toBe(3);
+    expect(resolveSpawnConcurrency(1, {})).toBe(1);
+    expect(resolveSpawnConcurrency(20, {})).toBe(20);
+  });
+
+  test("override <1 falls through to env / default", () => {
+    expect(resolveSpawnConcurrency(0, {})).toBe(6);
+    expect(resolveSpawnConcurrency(-5, {})).toBe(6);
+    expect(resolveSpawnConcurrency(Number.NaN, {})).toBe(6);
+  });
+
+  test("env override applies when no opts override", () => {
+    expect(resolveSpawnConcurrency(undefined, { ATMUX_SPAWN_CONCURRENCY: "8" })).toBe(8);
+    expect(resolveSpawnConcurrency(undefined, { ATMUX_SPAWN_CONCURRENCY: "1" })).toBe(1);
+  });
+
+  test("env override <1 / non-numeric falls through to default", () => {
+    expect(resolveSpawnConcurrency(undefined, { ATMUX_SPAWN_CONCURRENCY: "0" })).toBe(6);
+    expect(resolveSpawnConcurrency(undefined, { ATMUX_SPAWN_CONCURRENCY: "abc" })).toBe(6);
+    expect(resolveSpawnConcurrency(undefined, { ATMUX_SPAWN_CONCURRENCY: "" })).toBe(6);
+  });
+
+  test("opts override wins over env", () => {
+    expect(resolveSpawnConcurrency(2, { ATMUX_SPAWN_CONCURRENCY: "9" })).toBe(2);
+  });
+
+  test("default is 6 (operating-point in the t-eb0887fe brief)", () => {
+    expect(resolveSpawnConcurrency(undefined, {})).toBe(6);
+  });
+});
+
+describe("runWithConcurrency", () => {
+  test("empty items → no-op", async () => {
+    let calls = 0;
+    await runWithConcurrency([], 4, async () => {
+      calls += 1;
+    });
+    expect(calls).toBe(0);
+  });
+
+  test("cap=1 → strictly sequential (max in-flight === 1)", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const items = [1, 2, 3, 4, 5];
+    await runWithConcurrency(items, 1, async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Yield to event loop so concurrent calls would overlap.
+      await new Promise<void>((res) => setTimeout(res, 5));
+      inFlight -= 1;
+    });
+    expect(maxInFlight).toBe(1);
+  });
+
+  test("cap=3 over 6 items → max in-flight bounded by cap, parallelism observed", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const items = [0, 1, 2, 3, 4, 5];
+    await runWithConcurrency(items, 3, async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((res) => setTimeout(res, 10));
+      inFlight -= 1;
+    });
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeGreaterThanOrEqual(2); // parallelism proven
+  });
+
+  test("cap > items.length → effectively Promise.all, all items in flight at once", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const items = [0, 1, 2, 3];
+    await runWithConcurrency(items, 999, async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((res) => setTimeout(res, 10));
+      inFlight -= 1;
+    });
+    expect(maxInFlight).toBe(items.length);
+  });
+
+  test("every item processed exactly once + indices honoured", async () => {
+    const seen: Array<{ item: number; index: number }> = [];
+    const items = [10, 20, 30, 40, 50, 60];
+    await runWithConcurrency(items, 2, async (item, index) => {
+      seen.push({ item, index });
+    });
+    // Order may interleave under parallelism — sort by index for the equality check.
+    seen.sort((a, b) => a.index - b.index);
+    expect(seen).toEqual(items.map((item, index) => ({ item, index })));
+  });
+
+  test("errors propagate — Promise.all rejects on first failure", async () => {
+    const items = [1, 2, 3];
+    await expect(
+      runWithConcurrency(items, 2, async (item) => {
+        if (item === 2) throw new Error("boom on 2");
+      }),
+    ).rejects.toThrow(/boom on 2/);
+  });
+});
+
+describe("start — t-eb0887fe parallelized member spawn", () => {
+  test("lead spawns sequentially FIRST; teammates fan out in parallel", async () => {
+    // Wire an instrumented sleep so we can observe parallelism. The
+    // brief-paste path awaits `sleep(spawnWaitMs)` exactly once per
+    // non-shell member — we hook that to record (member, ts) at the
+    // sleep boundary AND track max in-flight via a counter that
+    // increments on entry + decrements on exit. The lead's slot
+    // must complete BEFORE any teammate's slot starts.
+    const events: Array<{ member: string; kind: "enter" | "exit"; t: number }> = [];
+    const t0 = Date.now();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const SLEEP_MS = 80;
+
+    // Pull the member name out of the `cwd` we set per-member. The
+    // brief-paste path calls sleep with the spawnWaitMs constant, not
+    // the member name — but the closure runs in member-spawn order
+    // so we trace by call-sequence + the most recent log line.
+    let nextMember = "";
+    const trace = async (ms: number): Promise<void> => {
+      // tag this sleep call with the current "in-flight" member by
+      // peeking at the latest "spawned window <emoji>-<name>" log line.
+      const latest = env.logs[env.logs.length - 1];
+      const winLine = latest?.msg.match(/spawned window 🐝-(\S+)/);
+      const member = winLine?.[1] ?? nextMember;
+      events.push({ member, kind: "enter", t: Date.now() - t0 });
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((res) => setTimeout(res, ms));
+      inFlight -= 1;
+      events.push({ member, kind: "exit", t: Date.now() - t0 });
+    };
+
+    const briefsDir = await mkdtemp(join(tmpdir(), "atmux-briefs-par-"));
+    await writeFile(join(briefsDir, "lead.md"), "lead {{MEMBER}}\n", "utf8");
+    await writeFile(join(briefsDir, "member.md"), "member {{MEMBER}}\n", "utf8");
+
+    try {
+      const body = {
+        name: env.team,
+        members: [
+          { name: "alpha", role: "team-lead", emoji: "🐝", tui: "fake-tui" },
+          { name: "beta", role: "member", emoji: "🐝", tui: "fake-tui" },
+          { name: "gamma", role: "member", emoji: "🐝", tui: "fake-tui" },
+          { name: "delta", role: "member", emoji: "🐝", tui: "fake-tui" },
+          { name: "epsilon", role: "member", emoji: "🐝", tui: "fake-tui" },
+        ],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      const exit = await runStart([], {
+        briefsDir,
+        spawnWaitMs: SLEEP_MS,
+        sleep: trace,
+      });
+      expect(exit).toBe(0);
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+
+    // Six sleep entries: one per non-shell member spawn-wait + one
+    // per post-paste settle inside submitAfterPaste (per ADR-081 §A).
+    // Just check the parallelism shape: at least 2 sleeps overlapped.
+    expect(maxInFlight).toBeGreaterThanOrEqual(2);
+
+    // Lead's spawn-wait MUST exit before the second teammate enters
+    // its spawn-wait — proves the lead-first-sequential contract.
+    const leadExit = events.find((e) => e.member === "alpha" && e.kind === "exit");
+    expect(leadExit).toBeDefined();
+    const teammateEntries = events.filter(
+      (e) => e.kind === "enter" && e.member !== "alpha" && e.member !== "",
+    );
+    // Every teammate's enter happens AT OR AFTER the lead's exit time.
+    for (const ent of teammateEntries) {
+      expect(ent.t).toBeGreaterThanOrEqual(leadExit!.t - 1); // -1ms timing slack
+    }
+  });
+
+  test("opts.spawnConcurrency=1 restores legacy sequential behaviour", async () => {
+    // Verify the cap-of-1 escape hatch via runWithConcurrency: when
+    // tests / operators need byte-equivalent legacy ordering, cap=1
+    // serializes the fan-out. We observe via the same sleep trace.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const SLEEP_MS = 40;
+
+    const briefsDir = await mkdtemp(join(tmpdir(), "atmux-briefs-seq-"));
+    await writeFile(join(briefsDir, "lead.md"), "lead\n", "utf8");
+    await writeFile(join(briefsDir, "member.md"), "member\n", "utf8");
+
+    try {
+      const body = {
+        name: env.team,
+        members: [
+          { name: "alpha", role: "team-lead", emoji: "🐝", tui: "fake-tui" },
+          { name: "beta", role: "member", emoji: "🐝", tui: "fake-tui" },
+          { name: "gamma", role: "member", emoji: "🐝", tui: "fake-tui" },
+        ],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      // Pass spawnConcurrency=1 via StartOpts. runStart wraps args
+      // but doesn't forward arbitrary opts; we mirror the wrap-path
+      // by calling start() directly with the per-test socket flag.
+      const exit = await start(["--socket-path", env.socketPath], {
+        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+        cwd: env.atmuxDir,
+        logger: env.logger,
+        loadCockpitFn: async () => null,
+        cronInstallFn: async () => 0,
+        briefsDir,
+        spawnWaitMs: SLEEP_MS,
+        spawnConcurrency: 1,
+        sleep: async (ms) => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise<void>((res) => setTimeout(res, ms));
+          inFlight -= 1;
+        },
+      });
+      expect(exit).toBe(0);
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+    // Under cap=1 the teammate fan-out collapses back to one-at-a-
+    // time; combined with the always-sequential lead phase, max
+    // in-flight stays at 1 across the entire spawn loop.
+    expect(maxInFlight).toBe(1);
+  });
+
+  test("lead-less team → all members fan out from the start", async () => {
+    // No `team-lead` role anywhere — the `leadMember = ...find(...)`
+    // returns undefined, the sequential prelude is skipped, and the
+    // entire roster spawns through `runWithConcurrency`.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const SLEEP_MS = 50;
+
+    const briefsDir = await mkdtemp(join(tmpdir(), "atmux-briefs-leadless-"));
+    await writeFile(join(briefsDir, "member.md"), "member\n", "utf8");
+
+    try {
+      const body = {
+        name: env.team,
+        members: [
+          { name: "alpha", role: "member", emoji: "🐝", tui: "fake-tui" },
+          { name: "beta", role: "member", emoji: "🐝", tui: "fake-tui" },
+          { name: "gamma", role: "member", emoji: "🐝", tui: "fake-tui" },
+          { name: "delta", role: "member", emoji: "🐝", tui: "fake-tui" },
+        ],
+        tuiCommands: { "fake-tui": "cat" },
+      };
+      await writeFile(
+        join(env.atmuxDir, "team.json"),
+        `${JSON.stringify(body, null, 2)}\n`,
+        "utf8",
+      );
+
+      const exit = await runStart([], {
+        briefsDir,
+        spawnWaitMs: SLEEP_MS,
+        sleep: async (ms) => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise<void>((res) => setTimeout(res, ms));
+          inFlight -= 1;
+        },
+      });
+      expect(exit).toBe(0);
+    } finally {
+      await rm(briefsDir, { recursive: true, force: true });
+    }
+    // Default cap is 6; all 4 members fit and fan out together.
+    expect(maxInFlight).toBeGreaterThanOrEqual(2);
   });
 });

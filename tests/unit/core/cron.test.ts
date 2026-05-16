@@ -506,7 +506,7 @@ describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
     expect(() => renderCronLines(baseOpts(team))).toThrow(ConfigError);
   });
 
-  test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical)", () => {
+  test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical post-t-dcbff97c whip-default raise)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
     // t-dcbff97c bumped whip default 5min → 15min; "pre-ADR-079
     // behavior unchanged" still holds — ADR-079 governs the

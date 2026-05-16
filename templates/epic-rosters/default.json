@@ -1,0 +1,12 @@
+{
+  "_comment": "ADR-090 §Roster preset — default seven-member epic-team. Resolved by `spawn-epic` when no --roster / --roster-file flag is passed (§Decision-anchor #4). Operators ship custom presets by dropping <name>.json files into templates/epic-rosters/ and referencing them via --roster <name>. The roster array MERGES into a synthesised Team object at spawn time (name + tmuxTmpdir + epicTeam block + worktreeInitSubmodules:true + worktreeIsolation:false are filled in by the verb); loadTeam validates the synthesised object before disk write.",
+  "members": [
+    { "name": "lead",     "role": "lead",     "tui": "claude" },
+    { "name": "planner",  "role": "planner",  "tui": "claude" },
+    { "name": "reviewer", "role": "reviewer", "tui": "claude" },
+    { "name": "fe-1",     "role": "member",   "lane": "fe", "tui": "claude" },
+    { "name": "fe-2",     "role": "member",   "lane": "fe", "tui": "claude" },
+    { "name": "be-1",     "role": "member",   "lane": "be", "tui": "claude" },
+    { "name": "be-2",     "role": "member",   "lane": "be", "tui": "claude" }
+  ]
+}

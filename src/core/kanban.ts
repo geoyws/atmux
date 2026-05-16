@@ -47,12 +47,27 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
-import { closeDatabase, type Database, openDatabase, transact } from "../abstractions/sqlite.ts";
+import {
+  closeDatabase,
+  type Database,
+  openDatabase,
+  transact,
+  transactImmediate,
+} from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { type Kanban, Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
-import { type CallerScope, kanbanJsonPath } from "./common.ts";
+import {
+  type Kanban,
+  Kanban as KanbanSchema,
+  type KanbanStory,
+  type KanbanTask,
+} from "../schema/kanban.ts";
+import {
+  DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
+  type Team,
+} from "../schema/team.ts";
+import { type CallerScope, kanbanJsonPath, tryLoadTeam } from "./common.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 // ---------- Storage routing (ADR-060) ----------
@@ -279,9 +294,20 @@ export async function moveTask(
   // bookkeeping moves stay allowed regardless of scope.
   const statusGated = DRIVER_ONLY_MOVE_BLOCKED_STATUSES.includes(status);
   const refuseMsg = `task move: ${id} is a driver-only Task — only the driver scope can move it to '${status}'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
+  // ADR-146 T2: pre-load team config when this is a done-transition.
+  // The auto-emit hook fires only on `done` and only when a Story
+  // branch is set; loading the team out-of-band keeps file I/O off
+  // the write-lock-held transaction body. tryLoadTeam returns null
+  // on absent team.json (JSON-only kanbans / tests that don't stage
+  // a team) — auto-emit silently skips in that case.
+  const team: Team | null = status === "done" ? await tryLoadTeam({ dir: atmuxDir }) : null;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      transact(db, () => {
+      // ADR-146 §Atomic: BEGIN IMMEDIATE so the upsert + the auto-
+      // emit addTask either both land or both roll back. The
+      // immediate lock acquisition also serializes concurrent
+      // ticks that could otherwise race the sibling-count read.
+      transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
         if (statusGated && isDriverOnlyBlocked(cur, opts.callerScope)) {
@@ -290,6 +316,12 @@ export async function moveTask(
         const next: KanbanTask = { ...cur, status };
         if (completedAt !== undefined) next.completedAt = completedAt;
         repo.upsertTask(next);
+        // ADR-146 §D1 hook: post-transition auto-emit. Same-tx so
+        // gitter's task-done cascade (ADR-032) wakes only after
+        // both rows commit — no false-positive idle nudge.
+        if (status === "done" && team !== null) {
+          tryAutoEmitTrunkMerge(repo, next, team);
+        }
       });
     });
     return;
@@ -302,6 +334,157 @@ export async function moveTask(
     if (completedAt !== undefined) next.completedAt = completedAt;
     return next;
   });
+}
+
+// ---------- ADR-146 T2: trunk-merge auto-emit hook ----------
+
+/** Resolve the effective `team.autoEmitTrunkMerge` config — fills
+ *  missing keys from {@link DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG}
+ *  and computes the team-wide `enabled` default from
+ *  `team.worktreeIsolation` per ADR-146 §D7 ("default `true` when
+ *  `worktreeIsolation: true`, `false` otherwise"). */
+export function resolveAutoEmitTrunkMergeConfig(team: Team): {
+  enabled: boolean;
+  fallbackAssignee: string | null;
+  shortCircuitOnSharedBase: boolean;
+} {
+  const block = team.autoEmitTrunkMerge;
+  // Default `enabled` flips per worktreeIsolation per ADR-146 §D7.
+  const defaultEnabled = team.worktreeIsolation === true;
+  return {
+    enabled: block?.enabled ?? defaultEnabled,
+    fallbackAssignee:
+      block?.fallbackAssignee ?? DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.fallbackAssignee,
+    shortCircuitOnSharedBase:
+      block?.shortCircuitOnSharedBase ??
+      DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.shortCircuitOnSharedBase,
+  };
+}
+
+/** Resolve the auto-Task's owner per ADR-146 §D3: prefer a member
+ *  with `role === "gitter"` (or `name === "gitter"` for the legacy
+ *  no-role-set case), else fall back to
+ *  `autoEmitTrunkMerge.fallbackAssignee` (null = unassigned). */
+function resolveAutoEmitOwner(team: Team, fallbackAssignee: string | null): string | null {
+  const gitter = team.members.find(
+    (m) => m.role === "gitter" || m.name === "gitter",
+  );
+  if (gitter !== undefined) return gitter.name;
+  return fallbackAssignee;
+}
+
+/** ADR-146 §D2 subject pattern. Loop-prevention §D5 matches against
+ *  this exact shape so an auto-emit Task doesn't re-trigger itself
+ *  if its own status flips. */
+const AUTO_EMIT_SUBJECT_RE = /^merge t-[0-9a-f]+ \(branch→trunk\):/;
+
+/** ADR-146 §D5 + §D1 + §D2: emit a `merge t-xxx (branch→trunk)`
+ *  Task when ALL of these hold for the just-done Task:
+ *
+ *    1. The done Task has a parent Story (`task.story` set)
+ *    2. The parent Story has a `branch` field set (per ADR-146 §D4)
+ *    3. Team `autoEmitTrunkMerge.enabled` resolves true
+ *    4. Team has `worktreeIsolation: true` (§D5 row)
+ *    5. The Story's branch is NOT the team's base branch when
+ *       `shortCircuitOnSharedBase` is on
+ *    6. Zero remaining non-done sibling Tasks under the same Story
+ *    7. The done Task itself isn't an auto-emit merge Task
+ *       (loop-prevention §D5 last row)
+ *
+ *  Returns the new auto-emit Task's id when fired, null on any
+ *  short-circuit. All work happens inside the caller's
+ *  transactImmediate wrap — no separate transaction needed. */
+export function tryAutoEmitTrunkMerge(
+  repo: KanbanRepo,
+  doneTask: KanbanTask,
+  team: Team,
+): string | null {
+  // (1) Storyless Tasks never emit. One-off branches / hot-fixes
+  //     remain manual per ADR-146 §"Storyless trunk-merges".
+  if (doneTask.story === undefined || doneTask.story === null) return null;
+  // (7) Loop-prevention: an auto-emit Task transitioning to done
+  //     would otherwise re-trigger emission against the same Story.
+  //     Subject-pattern check matches §D5 last row.
+  if (doneTask.subject !== undefined && AUTO_EMIT_SUBJECT_RE.test(doneTask.subject)) {
+    return null;
+  }
+
+  const cfg = resolveAutoEmitTrunkMergeConfig(team);
+  // (3) Master switch.
+  if (!cfg.enabled) return null;
+  // (4) Worktree-isolation gate per ADR-146 §D5 row 3. Shared-cwd
+  //     teams don't fan-in.
+  if (team.worktreeIsolation !== true) return null;
+
+  // (2) Parent Story must exist + carry a branch field.
+  const story = repo.getStory(doneTask.story);
+  if (story === null) return null;
+  // The `branch` field rides through `extra` JSON on the
+  // KanbanStory row (no DB column added). storyFromRow spreads
+  // `extra` last so `story.branch` is populated when present.
+  const sourceBranch = (story as KanbanStory).branch;
+  if (
+    sourceBranch === undefined ||
+    sourceBranch === null ||
+    sourceBranch.length === 0
+  ) {
+    return null;
+  }
+
+  // (5) Shared-base short-circuit per §D5 row 2. Compare against
+  //     the team's `merger.baseBranch` (when set) — see ADR-088.
+  //     The resolver in `src/core/merger-config.ts` is the strict
+  //     resolver, but the kanban hook intentionally stays config-
+  //     local to avoid pulling in the merger resolver's git-probe
+  //     side-effects.
+  if (cfg.shortCircuitOnSharedBase) {
+    const baseBranch = team.merger?.baseBranch;
+    if (baseBranch !== undefined && baseBranch.length > 0 && sourceBranch === baseBranch) {
+      return null;
+    }
+  }
+
+  // (6) Zero remaining non-done siblings.
+  const siblings = repo.listTasks({ story: doneTask.story });
+  for (const s of siblings) {
+    if (s.id === doneTask.id) continue;
+    if (s.status !== "done") return null;
+  }
+
+  // All gates passed — build + insert the auto-emit Task per
+  // ADR-146 §D2 shape verbatim. Body is YAML-flavored markdown
+  // so gitter's brief (subject-pattern + body grep) parses the
+  // source-branch + target identically to a manually-filed Task.
+  const owner = resolveAutoEmitOwner(team, cfg.fallbackAssignee);
+  const emittedAt = nowEpoch();
+  const autoId = genTaskId();
+  // Owning-lane derive per §D2: read the done Task's lane (proxy
+  // for "Story's task chain primary lane"). Fall back to "misc"
+  // when the done Task is laneless.
+  const owningLane = doneTask.lane ?? "misc";
+  const body =
+    `source-branch: ${sourceBranch}\n` +
+    `target: trunk\n` +
+    `owning-lane: ${owningLane}\n` +
+    "conflict-hint: \n" +
+    `parent-story: ${story.id}\n` +
+    "auto-emitted: true\n" +
+    `emitted-at: ${emittedAt}\n`;
+  const autoTask: KanbanTask = {
+    id: autoId,
+    subject: `merge ${autoId} (branch→trunk): ${sourceBranch} → trunk`,
+    body,
+    status: "todo",
+    owner,
+    deps: [],
+    priority: null,
+    lane: "misc",
+    createdAt: emittedAt,
+    claimedAt: null,
+    completedAt: null,
+  };
+  repo.addTask(autoTask);
+  return autoId;
 }
 
 /** Per t-af159454: flip a task to `blocked` with an audit note in a
@@ -424,6 +607,51 @@ export async function setTaskDeps(
     return;
   }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, deps: [...deps] }));
+}
+
+/** ADR-033 retro-flag setter — flip an existing task's `driverOnly`
+ *  flag. Per t-2ef0c994: `task add --driver-only` was the only entry
+ *  point; this closes the "I forgot at filing time" / "decided to park
+ *  it after filing" gap so operators can promote any todo or blocked
+ *  task into the driver-only refuse-gate without going through SQL.
+ *
+ *  Passing `true` sets the flag; `false` clears it (back to undefined-
+ *  equivalent). Idempotent — re-setting the same value is a no-op
+ *  upsert. */
+export async function setTaskDriverOnly(
+  atmuxDir: string,
+  id: string,
+  driverOnly: boolean,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        // Setting false collapses to omitted (consistent with task add's
+        // "only stamp when explicitly true" pattern at line 208) — the
+        // schema treats `undefined` and `false` as equivalent for the
+        // refuse-gate semantics, so we normalize on write.
+        const next = { ...cur };
+        if (driverOnly) {
+          next.driverOnly = true;
+        } else {
+          delete (next as { driverOnly?: boolean }).driverOnly;
+        }
+        repo.upsertTask(next);
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
+    const next = { ...t };
+    if (driverOnly) {
+      next.driverOnly = true;
+    } else {
+      delete (next as { driverOnly?: boolean }).driverOnly;
+    }
+    return next;
+  });
 }
 
 /** Update a task's owner. Throws `ConfigError` on miss. */
