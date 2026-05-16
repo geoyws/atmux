@@ -37,7 +37,8 @@
 // the brief-content responsibility to claude's own file IO.
 
 import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
-import { pasteAndSubmit } from "./paste-submit.ts";
+import { PASTE_SUBMIT_SETTLE_FLOOR_MS } from "./paste-submit.ts";
+import { type AppendLogFn, composerEmpty, safeSendKeysWithVerify } from "./safe-send.ts";
 
 // ---------- Tuning constants ----------
 
@@ -66,6 +67,20 @@ export const POST_BOOT_TIMEOUT_MS = 30_000;
 /** Maximum boot attempts (initial + N retries). Default 2 = one
  *  initial send + one retry on the same pane. */
 export const MAX_ATTEMPTS = 2;
+
+/** Default safeSendKeysWithVerify timeout per C-m submit attempt
+ *  (t-1b45d565). 3s matches the safe-send.ts default — claude's
+ *  composer clears in <500ms post-Enter on a healthy pane; 3s gives
+ *  headroom for capture-pane latency without burning the outer
+ *  tokens-moved budget. */
+export const DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS = 3_000;
+
+/** Default safeSendKeysWithVerify retries per C-m submit cycle. 1 =
+ *  two C-m sends per paste before declaring submit-not-verified.
+ *  Higher retries here add wall-clock cost without changing the
+ *  diagnostic; the outer maxAttempts loop handles whole-cycle
+ *  retries. */
+export const DEFAULT_SUBMIT_VERIFY_RETRIES = 1;
 
 // ---------- Boot prompt + readiness regex ----------
 
@@ -126,7 +141,7 @@ export interface BootResult {
    *  retry-fail. */
   attempts: number;
   /** Populated on `failed` to name the failure mode. */
-  reason?: "tui-not-ready" | "tokens-never-moved" | "capture-error";
+  reason?: "tui-not-ready" | "tokens-never-moved" | "capture-error" | "submit-not-verified";
 }
 
 export interface BootClaudeOpts {
@@ -154,6 +169,24 @@ export interface BootClaudeOpts {
   sleep?: (ms: number) => Promise<void>;
   /** Clock injection (tests fast-forward). Returns ms. */
   now?: () => number;
+  // --- safeSendKeysWithVerify plumbing (t-1b45d565 — verify the C-m
+  //     submit actually cleared the composer; retries on no-op + early-
+  //     returns `submit-not-verified` if every attempt's C-m got eaten). ---
+  /** Submit-verify timeout per attempt. Default
+   *  {@link DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS} (3s). */
+  submitVerifyTimeoutMs?: number;
+  /** Submit-verify retries-per-boot-attempt (the outer maxAttempts
+   *  loop multiplies this). Default
+   *  {@link DEFAULT_SUBMIT_VERIFY_RETRIES} (1 — i.e. 2 C-m sends per
+   *  paste). */
+  submitVerifyRetries?: number;
+  /** Submit-verify poll interval. Default 250ms. */
+  submitVerifyPollIntervalMs?: number;
+  /** Escalation-log append (test injection — production wires
+   *  `appendFile`). Default fires the safe-send.ts built-in. */
+  appendLog?: AppendLogFn;
+  /** `$HOME` override for escalation-log path resolution (test injection). */
+  home?: string;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
@@ -240,6 +273,9 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
   const postBootInterval = opts.postBootPollIntervalMs ?? POST_BOOT_POLL_INTERVAL_MS;
   const postBootTimeout = opts.postBootTimeoutMs ?? POST_BOOT_TIMEOUT_MS;
   const maxAttempts = opts.maxAttempts ?? MAX_ATTEMPTS;
+  const submitVerifyTimeoutMs = opts.submitVerifyTimeoutMs ?? DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS;
+  const submitVerifyRetries = opts.submitVerifyRetries ?? DEFAULT_SUBMIT_VERIFY_RETRIES;
+  const submitVerifyPollIntervalMs = opts.submitVerifyPollIntervalMs ?? 250;
 
   // (1) Already-booted sentinel: tokens already moving at entry.
   // Captures the "rotation re-entry mid-turn" + "double-call
@@ -280,25 +316,95 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
   let attempts = 0;
   while (attempts < maxAttempts) {
     attempts += 1;
+    // t-1b45d565: split pasteAndSubmit into its three steps so the
+    // C-m submit can be wrapped in safeSendKeysWithVerify
+    // (composerEmpty). Previously the bundled pasteAndSubmit fired
+    // C-m fire-and-forget; on the 8 occurrences observed
+    // 2026-05-16 the C-m got eaten by a bracketed-paste-Enter
+    // swallow OR a modal-state composer (operator-visible
+    // fingerprint: "compose box pre-loaded with brief text +
+    // cursor"). Verified-send-keys' verifier+retry catches this:
+    // it detects composer-still-has-text post-C-m and re-fires the
+    // C-m up to submitVerifyRetries times. Empirically reliable
+    // per [[feedback_atmux_send_for_queued_panes]] — `atmux send`
+    // (which already uses safeSendKeysWithVerify) unwedged the 11
+    // queued panes a raw Enter could not.
+    const bufferName = `atmux_boot_${process.pid}_${Math.floor(Math.random() * 1_000_000).toString(36)}`;
     try {
-      // ADR-138 T3b3 (t-06547e2d): route the bootstrap brief through
-      // the paste-submit cascade. The brief is a multi-line text
-      // body that lands in the compose box; raw `tmux send-keys
-      // <text> Enter` hits the bracketed-paste-Enter-swallow bug
-      // empirically observed on 2026-05-15 lane-tick recurrences.
-      // pasteAndSubmit's `load-buffer + paste-buffer -d + ≥500ms
-      // settle + C-m` cascade is the reliable shape.
-      await pasteAndSubmit(opts.tmux, opts.sendTarget, prompt);
+      await opts.tmux.buffer.loadBuffer({ name: bufferName, data: prompt });
+      await opts.tmux.buffer.pasteBuffer({
+        name: bufferName,
+        target: opts.sendTarget,
+        deleteAfter: true,
+      });
     } catch {
-      // send-keys failure on attempt N: try once more if we have
-      // budget; otherwise surface.
+      // paste-buffer failure on attempt N: try once more if we have
+      // budget; otherwise surface as capture-error (the only existing
+      // bucket for a tmux-side IO fault).
       if (attempts >= maxAttempts) {
         return { status: "failed", attempts, reason: "capture-error" };
       }
       continue;
     }
 
-    // Post-send: watch tokens.
+    // ADR-081 §A: settle ≥500ms before C-m so bracketed-paste mode
+    // has fully digested the paste-buffer envelope. Without this,
+    // the C-m races the paste and gets interpreted as "newline
+    // inside pasted body" rather than "submit composer".
+    await sleep(PASTE_SUBMIT_SETTLE_FLOOR_MS);
+
+    // ADR-138 verified-send-keys: confirm the C-m actually cleared
+    // the composer (composerEmpty matches `❯ ` at end-of-line). On
+    // verify failure within submitVerifyTimeoutMs, re-fire C-m up
+    // to submitVerifyRetries times. After exhaustion, return
+    // submit-not-verified — skip the (otherwise wasted) tokensMoved
+    // poll since the prompt never made it past the composer.
+    const submitVerifyOpts: Parameters<typeof safeSendKeysWithVerify>[0] = {
+      target: opts.paneTargetString,
+      keys: "C-m",
+      capture: (t) => opts.tmux.pane.capturePane({ target: t, start: -40 }),
+      sendKeys: async (_t, keys) => {
+        await opts.tmux.pane.sendKeys({ target: opts.sendTarget, keys, enter: false });
+      },
+      expectVerifier: composerEmpty(),
+      timeoutMs: submitVerifyTimeoutMs,
+      retries: submitVerifyRetries,
+      pollIntervalMs: submitVerifyPollIntervalMs,
+      onFail: "escalate",
+      sleep,
+      now,
+    };
+    if (opts.appendLog !== undefined) submitVerifyOpts.appendLog = opts.appendLog;
+    if (opts.home !== undefined) submitVerifyOpts.home = opts.home;
+    let submitVerify: Awaited<ReturnType<typeof safeSendKeysWithVerify>>;
+    try {
+      submitVerify = await safeSendKeysWithVerify(submitVerifyOpts);
+    } catch {
+      // safeSendKeysWithVerify throws only on onFail:"throw"; we
+      // pass "escalate" so this branch is defensive against future
+      // shape changes. Treat as capture-error (tmux-side IO fault).
+      if (attempts >= maxAttempts) {
+        return { status: "failed", attempts, reason: "capture-error" };
+      }
+      continue;
+    }
+    if (!submitVerify.success) {
+      // C-m never cleared the composer across all
+      // safeSendKeysWithVerify retries — escalation log already
+      // written by safe-send.ts. Don't burn the 30s tokensMoved
+      // window; surface the distinct reason so renderBootFailureNotice
+      // can guide the operator to the right intervention (atmux send
+      // — which uses verified-send-keys — vs another atmux rotate
+      // pass).
+      if (attempts >= maxAttempts) {
+        return { status: "failed", attempts, reason: "submit-not-verified" };
+      }
+      continue;
+    }
+
+    // Post-send: watch tokens. C-m verified to have cleared the
+    // composer at this point; tokensMoved confirms claude actually
+    // started a turn (vs. composer-cleared-but-then-stuck).
     const moved = await pollUntil(tokensMoved, {
       tmux: opts.tmux,
       target: opts.paneTargetString,
@@ -310,7 +416,9 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
     if (moved.found) {
       return { status: "booted", attempts };
     }
-    // Not moved within window → loop iteration retries the send.
+    // Not moved within window → loop iteration retries the whole
+    // paste+submit+poll cycle (composer-cleared but claude went
+    // catatonic — rare; whole-cycle retry handles it).
   }
 
   return { status: "failed", attempts, reason: "tokens-never-moved" };
@@ -339,7 +447,9 @@ export function renderBootFailureNotice(args: {
         ? "boot prompt sent but tokens never moved"
         : args.result.reason === "capture-error"
           ? "tmux capture-pane / send-keys error"
-          : "unknown failure";
+          : args.result.reason === "submit-not-verified"
+            ? "boot prompt pasted but C-m submit was eaten (composer still loaded) — try `atmux send` (uses verified-send-keys) before another rotate"
+            : "unknown failure";
   return (
     `## 🚨 [boot-failure] · \`${args.team}\` · \`${args.member}\` · ${args.nowIso}\n\n` +
     `**🔴 Stalled** — member pane undead after ${args.result.attempts} boot attempts: ${reasonLabel}.\n\n` +
