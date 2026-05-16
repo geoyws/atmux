@@ -126,8 +126,11 @@ describe("drainTick — happy path", () => {
         { name: "fe-2", role: "member", lane: "fe" },
       ],
     };
+    // priority: 1 prevents the prio-null detector from double-firing on
+    // the same row (t-5251b666 sibling-E). Applies to every fixture
+    // below that's meant to trip ONLY the targeted detector class.
     const kanban: KanbanTask[] = [
-      task({ id: "t-001", owner: "fe-ghost", lane: "fe", status: "todo" }),
+      task({ id: "t-001", owner: "fe-ghost", lane: "fe", status: "todo", priority: 1 }),
     ];
     const deps = recorderDeps();
     const r = await drainTick({ team, kanban, repo, deps, now: 1000 });
@@ -152,11 +155,11 @@ describe("drainTick — one-fix-per-tick", () => {
       members: [{ name: "fe-1", role: "member", lane: "fe" }],
     };
     const kanban: KanbanTask[] = [
-      task({ id: "t-001", owner: "fe-ghost", lane: "fe" }), // ghost P0
-      task({ id: "t-002", owner: "fe-ghost-2", lane: "fe" }), // ghost P0
-      task({ id: "t-003", priority: null }), // prio P3
-      task({ id: "t-004", priority: null }), // prio P3
-      task({ id: "t-005", priority: null }), // prio P3
+      task({ id: "t-001", owner: "fe-ghost", lane: "fe", priority: 1 }), // ghost P0
+      task({ id: "t-002", owner: "fe-ghost-2", lane: "fe", priority: 1 }), // ghost P0
+      task({ id: "t-003", lane: "fe", priority: null }), // prio P3
+      task({ id: "t-004", lane: "fe", priority: null }), // prio P3
+      task({ id: "t-005", lane: "fe", priority: null }), // prio P3
     ];
     const r = await drainTick({
       team,
@@ -183,8 +186,8 @@ describe("drainTick — severity ordering", () => {
       members: [{ name: "fe-1", role: "member", lane: "fe" }],
     };
     const kanban: KanbanTask[] = [
-      task({ id: "t-prio-first", priority: null }), // P3
-      task({ id: "t-ghost", owner: "fe-ghost", lane: "fe" }), // P0
+      task({ id: "t-prio-first", lane: "fe", priority: null }), // P3
+      task({ id: "t-ghost", owner: "fe-ghost", lane: "fe", priority: 1 }), // P0
     ];
     const r = await drainTick({
       team,
@@ -205,8 +208,8 @@ describe("drainTick — severity ordering", () => {
       ],
     };
     const kanban: KanbanTask[] = [
-      task({ id: "t-prio", priority: null }), // P3
-      task({ id: "t-role", owner: "planner", lane: "fe" }), // P1
+      task({ id: "t-prio", lane: "fe", priority: null }), // P3
+      task({ id: "t-role", owner: "planner", lane: "fe", priority: 1 }), // P1
     ];
     const r = await drainTick({
       team,
@@ -228,7 +231,9 @@ describe("drainTick — confidence ladder", () => {
     const team: TeamState = {
       members: [{ name: "fe-1", role: "member", lane: "fe" }],
     };
-    const kanban: KanbanTask[] = [task({ id: "t-001", owner: "fe-ghost", lane: "fe" })];
+    const kanban: KanbanTask[] = [
+      task({ id: "t-001", owner: "fe-ghost", lane: "fe", priority: 1 }),
+    ];
     const r = await drainTick({
       team,
       kanban,
@@ -245,7 +250,14 @@ describe("drainTick — confidence ladder", () => {
       members: [{ name: "fe-1", role: "member", lane: "fe" }],
     };
     const kanban: KanbanTask[] = [
-      task({ id: "t-001", owner: "fe-1", lane: "be", claimedAt: null, status: "todo" }),
+      task({
+        id: "t-001",
+        owner: "fe-1",
+        lane: "be",
+        claimedAt: null,
+        status: "todo",
+        priority: 1,
+      }),
     ];
     // Tick 1: detected, last_seen_at = detected_at = 1000 → ladder defers
     const r1 = await drainTick({
@@ -282,8 +294,8 @@ describe("drainTick — confidence ladder", () => {
       ],
     };
     const kanban: KanbanTask[] = [
-      task({ id: "t-ghost", owner: "fe-ghost", lane: "fe" }), // P0/high
-      task({ id: "t-prio", priority: null }), // P3/low
+      task({ id: "t-ghost", owner: "fe-ghost", lane: "fe", priority: 1 }), // P0/high
+      task({ id: "t-prio", lane: "fe", priority: null }), // P3/low
     ];
     // Tick 1: P0 ghost picked; P3 prio sat
     const r1 = await drainTick({
@@ -297,7 +309,7 @@ describe("drainTick — confidence ladder", () => {
 
     // Tick 2: kanban now has the ghost reassigned (synthesise: drop it from kanban),
     // leaving only the prio. With no blocking, low becomes eligible.
-    const kanban2: KanbanTask[] = [task({ id: "t-prio", priority: null })];
+    const kanban2: KanbanTask[] = [task({ id: "t-prio", lane: "fe", priority: null })];
     const r2 = await drainTick({
       team,
       kanban: kanban2,
@@ -314,7 +326,7 @@ describe("drainTick — confidence ladder", () => {
       members: [{ name: "fe-1", role: "member", lane: "fe" }],
     };
     const kanban: KanbanTask[] = [
-      task({ id: "t-001", owner: "fe-1", lane: "be", claimedAt: null }),
+      task({ id: "t-001", owner: "fe-1", lane: "be", claimedAt: null, priority: 1 }),
     ];
     const r = await drainTick({
       team,
@@ -335,7 +347,9 @@ describe("drainTick — fix failure", () => {
     const team: TeamState = {
       members: [{ name: "fe-1", role: "member", lane: "fe" }],
     };
-    const kanban: KanbanTask[] = [task({ id: "t-001", owner: "fe-ghost", lane: "fe" })];
+    const kanban: KanbanTask[] = [
+      task({ id: "t-001", owner: "fe-ghost", lane: "fe", priority: 1 }),
+    ];
     const r = await drainTick({
       team,
       kanban,

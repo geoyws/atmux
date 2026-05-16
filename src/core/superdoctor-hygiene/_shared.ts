@@ -202,7 +202,12 @@ export const NON_EXECUTION_ROLES: ReadonlyArray<string> = [
 export const EXECUTION_LANES: ReadonlyArray<string> = ["fe", "be", "ops", "test"];
 
 /** ADR-131 §D2 role-mismatch detector — regex matching execution-class
- *  body verbs. Anchored at word boundaries so "feat:" matches but
- *  "non-feature" doesn't; case-insensitive for the "fix:" prefix
- *  variants (`Fix:`, `FIX:`). */
-export const EXECUTION_BODY_RE = /\b(implement|feat:|fix:)\b/i;
+ *  body verbs. Each alternative carries its own trailing anchor:
+ *  `implement\b` requires a word→non-word boundary (rejects
+ *  "implementation"); `feat:` / `fix:` self-terminate at the colon
+ *  (rejects "non-feature"). A trailing `\b` after the colon never
+ *  matches — `\b` needs a word/non-word transition and `:` is
+ *  non-word, so `:`-followed-by-non-word has no boundary. The earlier
+ *  shape `(implement|feat:|fix:)\b` silently rejected every `feat:` /
+ *  `fix:` body — t-5251b666 sibling-E (EPIC t-2b801707). */
+export const EXECUTION_BODY_RE = /\b(implement\b|feat:|fix:)/i;
