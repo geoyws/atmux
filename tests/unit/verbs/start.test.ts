@@ -1470,13 +1470,26 @@ describe("start — ADR-063 cockpit auto-reconcile", () => {
     teams: Array<{ name: string; enabled: boolean }>;
     cockpitSession?: string;
   }): Cockpit {
+    // Per ADR-089 §B the canonical cockpit shape is `sessions: [...]`
+    // (hierarchical, discriminated union). The real loader (`loadCockpit`)
+    // runs `migrateLegacyShape` to lift legacy flat `teams[]` into
+    // `sessions[]` BEFORE parsing — so post-loader cockpit objects always
+    // carry `sessions[]`. The fake bypasses the loader, so it emits
+    // `sessions[]` directly to match what consumers (e.g. `enabledTeams`
+    // via `walkSessions`) actually iterate. The legacy duck-typed `teams`
+    // field is also populated for back-compat readers that still see the
+    // post-enrichment synthesised array.
+    const teamEntries = opts.teams.map((t) => ({
+      type: "team" as const,
+      name: t.name,
+      root: `/tmp/${t.name}-root`,
+      enabled: t.enabled,
+      sessions: [] as never[],
+    }));
     return {
       cockpitSession: opts.cockpitSession ?? "atmux_teams",
-      teams: opts.teams.map((t) => ({
-        name: t.name,
-        root: `/tmp/${t.name}-root`,
-        enabled: t.enabled,
-      })),
+      sessions: teamEntries,
+      teams: teamEntries.map(({ name, root, enabled }) => ({ name, root, enabled })),
     } as unknown as Cockpit;
   }
 
@@ -1617,7 +1630,12 @@ describe("start — t-dcbff97c cron-install wiring", () => {
       cronCalls.push(argv);
       return 0;
     };
-    const exit = await runStart([], { cronInstallFn });
+    // Override the harness-default ATMUX_NO_CRON='1' (set at line 79
+    // beforeEach to keep most start tests host-crontab-safe). The cron-
+    // install wiring tests EXPECT the gate to fire — empty string falls
+    // through shouldAutoInstallCron's `noCron !== ''` check at
+    // src/verbs/start.ts:989.
+    const exit = await runStart([], { cronInstallFn, extraEnv: { ATMUX_NO_CRON: "" } });
     expect(exit).toBe(0);
     expect(cronCalls).toHaveLength(1);
     const args = cronCalls[0] ?? [];
@@ -1677,7 +1695,13 @@ describe("start — t-dcbff97c cron-install wiring", () => {
       cronCalls.push(argv);
       return 0;
     };
-    const exit = await runStart([], { gitSpawn, cronInstallFn });
+    // ATMUX_NO_CRON='' overrides the harness default (see vanilla-team
+    // sibling test for context).
+    const exit = await runStart([], {
+      gitSpawn,
+      cronInstallFn,
+      extraEnv: { ATMUX_NO_CRON: "" },
+    });
     expect(exit).toBe(0);
     expect(cronCalls).toHaveLength(1);
     expect(cronCalls[0]).toContain("--quiet");
@@ -1711,7 +1735,9 @@ describe("start — t-dcbff97c cron-install wiring", () => {
     const cronInstallFn = async (): Promise<number> => {
       throw new Error("simulated cron-install bug");
     };
-    const exit = await runStart([], { cronInstallFn });
+    // ATMUX_NO_CRON='' overrides the harness default (see vanilla-team
+    // sibling test for context).
+    const exit = await runStart([], { cronInstallFn, extraEnv: { ATMUX_NO_CRON: "" } });
     expect(exit).toBe(0);
     expect(
       env.logs.some(
