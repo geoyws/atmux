@@ -45,11 +45,17 @@ afterEach(async () => {
 // ---------- migration v6 schema shape ----------
 
 describe("migration v6 — merger_state table", () => {
-  test("user_version reaches 6 after openDatabase", () => {
+  test("user_version reaches the current head after openDatabase", () => {
+    // The merger_state table is introduced at v5→v6 (this describe
+    // block's scope); v6→v7 is the renumber-redux idempotent backfill
+    // (sqlite-migrations.ts:299-304). When the ladder grows, the
+    // PRAGMA tracks the head rather than the merger-introducing step.
+    // t-475f9571 sibling-F bumped from 6→7 (head moved with v7
+    // landing at the renumber redux).
     const v = db
       .query("PRAGMA user_version")
       .get() as { user_version: number } | null;
-    expect(v?.user_version).toBe(6);
+    expect(v?.user_version).toBe(7);
   });
 
   test("table exists with the right columns + types", () => {

@@ -305,6 +305,8 @@ export const ALLOWED_BULLET_PREFIX = new Set<string>([
   "💓",
   "🚀",
   "⏳",
+  // ADR-148 §modal-cycling: 🔄 (modal-cycling finding — whip.ts:1819).
+  "🔄",
 ]);
 
 const GRAPHEME_SEG = new Intl.Segmenter("en", { granularity: "grapheme" });

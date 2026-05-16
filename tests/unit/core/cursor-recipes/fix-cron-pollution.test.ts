@@ -159,7 +159,11 @@ ${CLEAN_BLOCK(TEAM, PROJECT_CWD)}`;
     const recipe = makeRecipe(cron);
     const ctx = (await recipe.detect(whipCtx())) as CronPollutionContext | null;
     expect(ctx?.canonicalBlock).toContain("# >>> atmux:team=atmux");
-    expect(ctx?.canonicalBlock).toContain("*/5 * * * *");
+    // Whip canonical cadence widened from */5 → */15 (per the
+    // observed canonical template emitted by atmux cron-install).
+    // t-475f9571 sibling-F: test assertion realigned to the
+    // current production default.
+    expect(ctx?.canonicalBlock).toContain("*/15 * * * *");
     expect(ctx?.canonicalBlock).toContain("# <<< atmux:team=atmux");
   });
 
