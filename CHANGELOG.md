@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — ADR-157 T4 lane-tick goal-narrow + 3-safety-net preservation
+
+- **`src/verbs/lane-tick.ts` goal-skip branch** per ADR-157 T4 (`t-e8ad0db5`). Claim-injection (`atmux claim --next --as <member>`) is now SKIPPED for goal-active Claude members; lane-tick narrows to a structural backstop for failure modes `/goal` cannot see (wedged panes, rate-lockouts, compaction-wipe). New `LaneTickMemberOutcome` literal `"skip-goal-active"`.
+- **Goal-skip ordering (reviewer pre-flag #1)**: skip-branch lands AFTER the READY classification + AFTER the lead-ctx-rotate override. Wedged goal-active members surface as `skip-not-ready` (the pane-health signal), NOT `skip-goal-active` — operators see dead-pane issues even when /goal is set. Goal-active leads still receive `/team rotate-lead` nudge when ctx ≥ threshold (lead can't self-rotate via /goal).
+- **Cursor carve-out (ADR-157 §D4)**: members with `runtime: "cursor"` short-circuit BEFORE goal resolution — claim-injection continues unchanged. Cursor CLI has no /goal equivalent so the cron-driven nudge stays the only drain for those panes.
+- **Three safety nets PRESERVED verbatim per ADR-157 §D5**:
+  - **#1 auto-done sweep** (`runAutoDoneScan`) — fires AFTER per-member loop for ALL members regardless of goal-state.
+  - **#2 lead-ctx-rotate nudge** — fires ABOVE the goal-skip branch for ALL leads regardless of goal-state. Verified: `isRotateNudge: true` bypasses the goal-active early-exit.
+  - **#3 dead-pane / rate-limit detection** — fires ABOVE via `skip-not-ready` classification. Wedged goal-active members surface as pane-health issues, not masked as goal-skipped.
+- **Operator-debuggable skip log (Task body §3)**: `[lane-tick] skip claim-inject for <member>: goal-active (resolved-via=team.json|brief)`. Source attribution (team.json explicit vs brief Standing Goal) makes goal-phrasing bugs easy to trace.
+- **Goal-resolver failure fallback**: if `resolveGoalForMember` throws (corrupt brief, permission denied), the helper falls through to existing claim-injection path with a WARN log. Conservative — drain stays healthy; operator sees the warn rather than a silently-skipped member.
+- **Summary log line extended**: `lane-tick: visited=N ... skip-goal-active=M` for cron-log grep.
+- **Tests**: 9/9 pass on `tests/unit/verbs/lane-tick-goal-narrow.test.ts`. Full 5-cell matrix per task body (goal-active+claude SKIPPED / goal-active+cursor RAN / goal-active+dead-pane → skip-not-ready / goal-inactive RAN / goal-inactive+dead-pane → skip-not-ready) + 3 safety-net assertions (lead-ctx-rotate over goal-skip / auto-done independence / dead-pane priority) + goal-resolver failure fallback. Typecheck clean. 28/28 existing lane-tick tests still pass.
+- **Out of scope**: cron cadence change (T5 — `t-e847d0ae`, structural prereq satisfied by this commit); /goal injection (T3 — shipped 05e9b9c); e2e (T6).
+
 ### 🟢 Shipped — ADR-157 T3 `/goal` injection hooks (rotate + start)
 
 - **`/goal` injection wired into `src/verbs/rotate.ts` + `src/verbs/start.ts`** per ADR-157 T3 (`t-c89ead5f`). Both call sites delegate to a shared helper `injectGoalIfActive` in `src/core/goal-injection.ts` (Task body §2 deduplication mandate). Brief-paste ordering preserved: `/goal` fires AFTER `bootClaudeMember` / `pasteBriefForMember` completes (reviewer pre-flag #2 — no injection into a busy compose box).
