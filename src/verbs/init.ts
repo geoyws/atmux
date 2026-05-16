@@ -270,24 +270,30 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const templatesDir = opts.templatesDir ?? defaultTemplatesDir(env);
   const templatePath = join(templatesDir, "team.example.json");
   const team = await readJson(templatePath, Team);
-  // t-3866c5b1 / ADR-094: when --claude-account <suffix> is set AND
-  // != "default", stamp every member entry with `claudeAccount: <suffix>`
-  // so the spawn-time tuiClaude resolver picks up the CLAUDE_CONFIG_DIR
-  // prefix on every pane. "default" (the schema-default value) results
-  // in NO field on disk per ADR-094 — schema-default applies, no extra
-  // env clutter. Operators run `atmux reconfigure` post-init to override
-  // per-member.
+  // t-3866c5b1 / ADR-094: --claude-account triages into three branches.
+  // Unset (undefined) → preserve template's field verbatim (the
+  // template's lead entry carries demonstration `claudeAccount:
+  // "personal"`). Explicit "default" → STRIP any inherited field so
+  // schema-default applies (operator opted into the default tier; no
+  // disk litter). Non-default suffix → stamp every member with the
+  // suffix (CLAUDE_CONFIG_DIR prefix at spawn time). Operators run
+  // `atmux reconfigure` post-init to override per-member.
+  const explicit = parsed.claudeAccount;
   const stampAccount =
-    parsed.claudeAccount !== undefined &&
-    parsed.claudeAccount.length > 0 &&
-    parsed.claudeAccount !== "default";
+    explicit !== undefined && explicit.length > 0 && explicit !== "default";
+  const stripAccount = explicit === "default";
   const rendered: TeamShape = {
     ...team,
     name: teamName,
     tmuxTmpdir: `/tmp/atmux-tmux_${teamName}`,
-    members: team.members.map((m) =>
-      stampAccount ? { ...m, cwd, claudeAccount: parsed.claudeAccount } : { ...m, cwd },
-    ),
+    members: team.members.map((m) => {
+      if (stampAccount) return { ...m, cwd, claudeAccount: explicit };
+      if (stripAccount) {
+        const { claudeAccount: _stripped, ...rest } = m;
+        return { ...rest, cwd };
+      }
+      return { ...m, cwd };
+    }),
   };
   // Compact serialization to keep team.json human-readable + match the
   // shape jq emits (2-space indent + trailing newline). The parity
