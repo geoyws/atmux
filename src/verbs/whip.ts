@@ -1560,7 +1560,7 @@ async function checkMember(
   // to that form (memory feedback_window_naming_no_prefix).
   const role = (member.role ?? "member").toString();
   // ADR-135 + ADR-136 TR4: canonical `<emoji>-<label ?? name>` form.
-  const memberWindowName = buildWindowName(member.name, member.emoji, member.label);
+  const memberWindowName = buildWindowName(member.name, member.emoji, member.label, member.role);
   // ADR-136 TR4: operator-facing display string. Used in bullet text +
   // any Discord-rendered struct fields; internal storage / lookup
   // paths continue to key on `member.name`.

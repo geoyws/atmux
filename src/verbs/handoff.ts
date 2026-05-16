@@ -415,14 +415,14 @@ export async function handoff(
   await mkdir(handoffDir, { recursive: true });
   const handoffFile = join(handoffDir, `${parsed.from}-to-${parsed.to}-${ts}.md`);
 
-  const fromTarget = `${sessionName}:${buildWindowName(fromMember.name, fromMember.emoji, fromMember.label)}`;
-  const toTarget = `${sessionName}:${buildWindowName(toMember.name, toMember.emoji, toMember.label)}`;
+  const fromTarget = `${sessionName}:${buildWindowName(fromMember.name, fromMember.emoji, fromMember.label, fromMember.role)}`;
+  const toTarget = `${sessionName}:${buildWindowName(toMember.name, toMember.emoji, toMember.label, toMember.role)}`;
 
   // Step 1: native ask (best-effort).
   let nativeOk = false;
   if (
     parsed.native &&
-    (await windowExists(tmux, sessionName, buildWindowName(fromMember.name, fromMember.emoji, fromMember.label)))
+    (await windowExists(tmux, sessionName, buildWindowName(fromMember.name, fromMember.emoji, fromMember.label, fromMember.role)))
   ) {
     const ask = buildHandoffNoteAsk(handoffFile);
     try {
@@ -448,7 +448,7 @@ export async function handoff(
   if (!nativeOk) {
     stderr(`  native handoff did not produce ${handoffFile} — falling back to screen capture\n`);
     const lines = resolveCaptureLines(opts);
-    const fromWindow = buildWindowName(fromMember.name, fromMember.emoji, fromMember.label);
+    const fromWindow = buildWindowName(fromMember.name, fromMember.emoji, fromMember.label, fromMember.role);
     const sourceUp = await windowExists(tmux, sessionName, fromWindow);
     if (sourceUp) {
       let capture = "";
@@ -491,7 +491,7 @@ export async function handoff(
     handoffFile,
     nMigrating: migrated.length,
   });
-  if (await windowExists(tmux, sessionName, buildWindowName(toMember.name, toMember.emoji, toMember.label))) {
+  if (await windowExists(tmux, sessionName, buildWindowName(toMember.name, toMember.emoji, toMember.label, toMember.role))) {
     try {
       await sendToMember(
         tmux,

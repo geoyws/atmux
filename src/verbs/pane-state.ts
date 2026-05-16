@@ -113,7 +113,7 @@ export async function resolveMemberWindowTarget(
   homeOpts: SkillsTeamPathsOpts = {},
 ): Promise<string> {
   const role = (member.role ?? "member").toString();
-  const memberWindowName = buildWindowName(member.name, member.emoji, member.label);
+  const memberWindowName = buildWindowName(member.name, member.emoji, member.label, member.role);
   let windowName: string;
   if (role === "team-lead") {
     const opts: SkillsTeamPathsOpts & { fallback?: string } = { fallback: memberWindowName };

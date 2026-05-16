@@ -162,7 +162,7 @@ export function isValidLabel(label: string): boolean {
  *  this is now a thin pass-through that the verb keeps for callsite
  *  readability + same-commit test stability. */
 export function memberDisplayWindowName(m: TeamMember): string {
-  return buildWindowName(m.name, m.emoji, m.label);
+  return buildWindowName(m.name, m.emoji, m.label, m.role);
 }
 
 // ---------- Verb entry ----------
@@ -248,7 +248,7 @@ export async function memberRenameInternal(
   // The new window name reflects the post-rename display state:
   // `<emoji><parsed.label>` (label-fallback handled by buildWindowName's
   // 3rd arg when set + non-empty).
-  const newWindow = buildWindowName(memberPre.name, memberPre.emoji, parsed.label);
+  const newWindow = buildWindowName(memberPre.name, memberPre.emoji, parsed.label, memberPre.role);
 
   // 2. Atomic JSON rewrite under flock. `updateJson` re-validates via
   //    the Zod schema on output — a malformed mutation throws

@@ -609,7 +609,10 @@ async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
     const liveNames = new Set(windows.map((w) => w.name));
     const live = new Set<string>();
     for (const m of team.members) {
-      const expected = buildWindowName(m.name, m.emoji);
+      // ADR-161 TR2: thread member.role so the expected name picks up
+      // `_-prefix` for default members (team-lead / planner / reviewer
+      // / ombudsman).
+      const expected = buildWindowName(m.name, m.emoji, m.label, m.role);
       if (liveNames.has(expected)) live.add(m.name);
     }
     return live;

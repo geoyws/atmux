@@ -672,7 +672,9 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       (member as { emoji?: string }).emoji = emoji;
       stampedEmoji = true;
     }
-    const win = buildWindowName(member.name, emoji);
+    // ADR-161 TR2: pass member.role so default-role members render
+    // `_-prefix`; user-added (role = "member") keep hyphen.
+    const win = buildWindowName(member.name, emoji, member.label, member.role);
     if (existingNames.has(win)) {
       logger.log(`  · ${member.name}: window exists, skipping (use --force to reset)`);
       return;
@@ -685,7 +687,28 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     // `tmux rename-window` (preserves pane PID + scroll history).
     // Idempotent: re-running start after the rename is a no-op
     // because `existingNames.has(win)` short-circuits above.
+    // ADR-161 TR2: pre-`_-prefix` teams have default-role windows
+    // named `<emoji>-<label>` (hyphen). Detect via buildWindowName
+    // with `role: undefined` (hyphen path) and rename to the new
+    // `_-prefix` shape.
+    const winHyphen = buildWindowName(member.name, emoji, member.label);
     const winLegacy = buildWindowNameLegacy(member.name, emoji);
+    if (winHyphen !== win && existingNames.has(winHyphen)) {
+      try {
+        await tmux.window.renameWindow(`${session}:${winHyphen}`, win);
+        logger.log(
+          `  · ${member.name}: renamed legacy window '${winHyphen}' → '${win}' (ADR-161 _-prefix migration)`,
+        );
+        existingNames.add(win);
+        existingNames.delete(winHyphen);
+        return;
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(
+          `  · ${member.name}: rename '${winHyphen}' → '${win}' failed (${cause}); continuing — manual fix via 'tmux rename-window'`,
+        );
+      }
+    }
     if (winLegacy !== win && existingNames.has(winLegacy)) {
       try {
         await tmux.window.renameWindow(`${session}:${winLegacy}`, win);

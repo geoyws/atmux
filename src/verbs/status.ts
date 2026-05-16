@@ -493,6 +493,7 @@ export async function probeLeadUptime(
     leadMemberObj.name,
     leadMemberObj.emoji,
     leadMemberObj.label,
+    leadMemberObj.role,
   );
   const homeOpts: { home?: string; fallback?: string } = { fallback: memberWin };
   if (deps.home !== undefined) homeOpts.home = deps.home;
@@ -812,13 +813,19 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
 async function readPaneCommand(
   tmux: TmuxNamespace,
   sessionName: string,
-  member: { name: string; emoji?: string | undefined; label?: string | undefined },
+  member: {
+    name: string;
+    emoji?: string | undefined;
+    label?: string | undefined;
+    role?: string | undefined;
+  },
   sessionUp: boolean,
 ): Promise<string> {
   if (!sessionUp) return "(down)";
   // ADR-135 + ADR-136 TR4: canonical hyphen-separator window name with
   // label-fallback when the member has been hot-renamed.
-  const winName = buildWindowName(member.name, member.emoji, member.label);
+  // ADR-161 TR2: role-aware — default-role members render `_-prefix`.
+  const winName = buildWindowName(member.name, member.emoji, member.label, member.role);
   const target = `${sessionName}:${winName}`;
   try {
     // Bash lib/status.sh:55 reads `#{pane_current_command}` via

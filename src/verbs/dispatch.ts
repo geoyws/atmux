@@ -208,7 +208,7 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       team: team.name,
       sessionName,
       member: memberEntry.name,
-      windowName: buildWindowName(memberEntry.name, memberEntry.emoji, memberEntry.label),
+      windowName: buildWindowName(memberEntry.name, memberEntry.emoji, memberEntry.label, memberEntry.role),
       tmux,
     });
     const body = typeof post.body === "string" ? post.body : "";

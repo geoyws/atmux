@@ -478,7 +478,8 @@ async function defaultLiveMembersProbe(
     const liveNames = new Set(windows.map((w) => w.name));
     const live = new Set<string>();
     for (const m of team.members) {
-      const expected = buildWindowName(m.name, m.emoji);
+      // ADR-161 TR2: role-aware expected name (defaults → `_-prefix`).
+      const expected = buildWindowName(m.name, m.emoji, m.label, m.role);
       if (liveNames.has(expected)) live.add(m.name);
     }
     return live;
