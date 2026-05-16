@@ -27,30 +27,35 @@ import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
 const USAGE =
-  "atmux cron-install [--quiet] [--template merge-cycle|ombudsman-tick|lane-stall-watch|gitter-sweep] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
+  "atmux cron-install [--quiet] [--template merge-cycle|ombudsman-tick|lane-stall-watch|gitter-sweep|epic-merge] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
 
 /** Allowed `--template` values. ADR-088 W7 added `merge-cycle`;
  *  ADR-147 T3 (t-94a22bb0) added `ombudsman-tick` for the complaint-
  *  adjudicator role wake; ADR-148 §D4 / T3 (t-e9424574) added
  *  `lane-stall-watch` for the lane-stall fleet-wide safety net;
  *  ADR-134 T7 (t-a87a39f1) added `gitter-sweep` for the intra-team
- *  auto-merger's cron backstop. Future templates extend this list. */
+ *  auto-merger's cron backstop; ADR-091 §State machine added
+ *  `epic-merge` for the epic-team auto-merge cron (gated on
+ *  `team.epicTeam !== undefined`, only meaningful inside an
+ *  epic-team child cage). Future templates extend this list. */
 export const CRON_INSTALL_TEMPLATES = [
   "merge-cycle",
   "ombudsman-tick",
   "lane-stall-watch",
   "gitter-sweep",
+  "epic-merge",
 ] as const;
 export type CronInstallTemplate = (typeof CRON_INSTALL_TEMPLATES)[number];
 
 /** Templates that accept a transient `--interval` cadence override.
- *  All four shipping templates honour it via their respective
+ *  All shipping templates honour it via their respective
  *  `<X>IntervalOverride` field on {@link RenderCronBlockOpts}. */
 const TEMPLATES_WITH_INTERVAL: ReadonlySet<CronInstallTemplate> = new Set([
   "merge-cycle",
   "ombudsman-tick",
   "lane-stall-watch",
   "gitter-sweep",
+  "epic-merge",
 ]);
 
 export interface CronInstallArgs {
@@ -299,6 +304,21 @@ export async function cronInstall(
     });
   }
 
+  // ADR-091 §State machine: epic-merge template is only meaningful in an
+  // epic-team child cage (the verb fires `atmux epic-merge tick` which
+  // walks parent → epic-team auto-merge transitions). Gate on
+  // `team.epicTeam !== undefined`; parent teams installing this template
+  // would render a no-op cron line (the renderer in core/cron.ts is
+  // already gated on the same field, so this is install-time clarity).
+  if (parsed.template === "epic-merge" && (team as Team).epicTeam === undefined) {
+    throw new ConfigError({
+      what: "cron-install --template epic-merge: requires team.epicTeam (only meaningful inside an epic-team child)",
+      hint:
+        "the epic-merge cron line auto-fans the child epic-branch back to the parent trunk on " +
+        "reviewer-trunk-signoff; install from the epic-team's .atmux dir (spawned via `atmux team spawn-epic`)",
+    });
+  }
+
   const tmuxTmpdir = readTmuxTmpdir(team);
   const rawCurrent = await crontab.read();
 
@@ -337,6 +357,8 @@ export async function cronInstall(
       opts2.laneStallIntervalOverride = parsed.intervalMins;
     } else if (parsed.template === "gitter-sweep") {
       opts2.gitterSweepIntervalOverride = parsed.intervalMins;
+    } else if (parsed.template === "epic-merge") {
+      opts2.epicMergeIntervalOverride = parsed.intervalMins;
     }
   }
   const next = installCronBlock(opts2);

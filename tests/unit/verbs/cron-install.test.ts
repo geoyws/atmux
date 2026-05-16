@@ -117,12 +117,13 @@ describe("parseCronInstallArgs — --template / --interval", () => {
     );
   });
 
-  test("CRON_INSTALL_TEMPLATES allowlist exports merge-cycle + ombudsman-tick + lane-stall-watch + gitter-sweep (ADR-134 T7 added)", () => {
+  test("CRON_INSTALL_TEMPLATES allowlist exports merge-cycle + ombudsman-tick + lane-stall-watch + gitter-sweep + epic-merge (ADR-091 §State machine added)", () => {
     expect(CRON_INSTALL_TEMPLATES).toEqual([
       "merge-cycle",
       "ombudsman-tick",
       "lane-stall-watch",
       "gitter-sweep",
+      "epic-merge",
     ]);
   });
 });
