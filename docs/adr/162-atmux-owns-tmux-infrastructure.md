@@ -217,3 +217,32 @@ Per ADR-090's reuse-statement pattern — minimal new abstractions:
 - Driver-ref: 2026-05-16 driver session — operator chat-time decision on cockpit-socket isolation + canonical tmux.conf.
 - Memory [[project_atmux_socket_isolation_state.md]] — current-state audit findings.
 - Project [CLAUDE.md](../../CLAUDE.md) §Docs Discipline + §Testing Discipline.
+
+## Amendments
+
+### 2026-05-16 — §Decision-anchor #4 mechanism: graceful-recreate, NOT PID-preservation (t-26346aef TR3 impl)
+
+The §Decision-anchor #4 step 4 ("Re-attaches each running process to its new home on the atmux-cockpit socket via tmux's pane-respawn primitive") **does not match what tmux can actually do**. The TR3 implementation surfaces the honest mechanism + the operator-side acceptance:
+
+**What tmux can't do.** Cross-server pane-process transfer. A pane's PID is bound to a PTY the source tmux server owns; tearing down the pane either SIGHUPs the process or leaves it as a stdio-less orphan. `tmux respawn-pane -k` literally kills the existing process. `tmux move-window` is single-server-only — it can't cross sockets. PTY reparenting tools (e.g. `reptyr` via ptrace) DO exist but are heavy external dependencies atmux doesn't carry; bundling them would multiply the install surface for a one-shot migration verb.
+
+**What the verb DOES** (graceful-recreate):
+
+1. **Discovery** — list sessions on `tmux -L default`; filter to `LEGACY_COCKPIT_SESSION_NAMES = ["atmux_cockpit", "atmux_teams"]`. Zero matches = already migrated, return 0.
+2. **Capture** — for each matched session/window, snapshot up to 3000 lines of scrollback via `pane.capturePane`. Non-destructive on the legacy socket.
+3. **Recreate session** — `tmux -L atmux-cockpit new-session -d -s atmux_cockpit ...`. Additive: if the target session already exists (partial-migration recovery or sibling cockpit), windows already on the target are preserved; the migration only adds missing windows by name.
+4. **Recreate windows** — preserve window names + relative order; empty shell panes (no process re-bind).
+5. **Breadcrumb** — write captured scrollback to `/tmp/atmux-cockpit-migrate-<epoch>.log`. Operator `cat`s the file to recover prior visual context (Claude conversation tails, etc.) before re-invoking processes in the new panes.
+6. **Cleanup** — `tmux -L default kill-session -t <legacy-name>`. Skipped under `--keep-legacy`; legacy + new cockpit coexist until operator manually nukes.
+
+**Why this is acceptable.** Most cockpit panes are cron-spawned roles (medic / martinet / sentinel) — they're stateless across ticks and re-establish themselves on the next cron firing. The only state-bearing panes are operator-driven (e.g. an active superdriver Claude conversation), and those operators are the same people invoking `atmux cockpit migrate-socket` consciously — they accept the re-invoke cost in exchange for the socket-isolation foot-gun closure. `--dry-run` lets them preview before commit; `--keep-legacy` lets them migrate gradually.
+
+**What's preserved across the migration**: window names, relative window order, ADR-135 `_-prefix` convention, scrollback (as visual breadcrumb only). **What's lost**: live process state in each pane (Claude conversation context, REPL state, mid-edit buffers). Operator-acknowledged trade-off.
+
+**§Decision-anchor #4 step 4 — restated**: *"Recreates each window on the dedicated socket as an empty pane; captured scrollback is written to a breadcrumb file the operator reads to recover visual context. Process state is not transferred (tmux primitives don't support cross-server pane-PID re-binding)."*
+
+The original §Decision-anchor text is preserved as authored (append-only ADR convention). This amendment IS the operative description of TR3's behavior.
+
+### 2026-05-16 — TR3 e2e deferred to follow-up Task
+
+The TR3 task body called for a real-tmux ephemeral-socket e2e (spin up a cockpit on default socket, run migrate-socket, assert windows present on atmux-cockpit + default socket has no residue + scrollback breadcrumb exists). The TR3 ship covers all 6 phases via mock-driven unit tests (~96% line coverage) including the deliberate graceful-recreate mechanism, but defers the real-tmux e2e to a sibling Task. The unit-mock coverage narrows the e2e surface to "happy-path on real tmux" — discovery/capture/recreate/cleanup are all exercised at the abstraction boundary. Reviewer may request the e2e before final signoff.

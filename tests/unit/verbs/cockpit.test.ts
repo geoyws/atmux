@@ -13,10 +13,15 @@ import type { Team } from "../../../src/schema/team.ts";
 import {
   applyCagePrefix,
   autolaunchTeam,
+  buildMigrationBreadcrumb,
   buildTeamWindowCommand,
   cageAlive,
+  type CapturedCockpitWindow,
+  cockpitMigrateSocket,
   cockpitRebuild,
+  LEGACY_COCKPIT_SESSION_NAMES,
   normaliseTeamJson,
+  type ParsedCockpitArgs,
   parseCockpitArgs,
   type ResolveTeamWindowDeps,
   reconcileCockpitSession,
@@ -41,6 +46,8 @@ describe("parseCockpitArgs", () => {
       ackDangerous: false,
       noLaunch: false,
       yes: false,
+      dryRun: false,
+      keepLegacy: false,
     });
   });
   test("each flag parses individually", () => {
@@ -101,6 +108,8 @@ describe("parseCockpitArgs", () => {
       ackDangerous: false,
       noLaunch: true,
       yes: false,
+      dryRun: false,
+      keepLegacy: false,
     });
   });
 
@@ -2318,5 +2327,499 @@ describe("cockpitRebuild", () => {
       } catch {}
       await rm(fx.socketDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------- ADR-162 TR3: parseCockpitArgs migrate-socket arms ----------
+
+describe("parseCockpitArgs — migrate-socket subverb (ADR-162 TR3)", () => {
+  test("bare migrate-socket parses with dryRun + keepLegacy false", () => {
+    const p = parseCockpitArgs(["migrate-socket"]);
+    expect(p.subverb).toBe("migrate-socket");
+    expect(p.dryRun).toBe(false);
+    expect(p.keepLegacy).toBe(false);
+  });
+
+  test("--dry-run parses true on migrate-socket", () => {
+    const p = parseCockpitArgs(["migrate-socket", "--dry-run"]);
+    expect(p.dryRun).toBe(true);
+  });
+
+  test("--keep-legacy parses true on migrate-socket", () => {
+    const p = parseCockpitArgs(["migrate-socket", "--keep-legacy"]);
+    expect(p.keepLegacy).toBe(true);
+  });
+
+  test("--dry-run + --keep-legacy compose", () => {
+    const p = parseCockpitArgs(["migrate-socket", "--dry-run", "--keep-legacy"]);
+    expect(p.dryRun).toBe(true);
+    expect(p.keepLegacy).toBe(true);
+  });
+
+  test("--dry-run rejected on rebuild (subverb-scoped flag)", () => {
+    expect(() => parseCockpitArgs(["rebuild", "--dry-run"])).toThrow(UsageError);
+  });
+
+  test("--keep-legacy rejected on reload (subverb-scoped flag)", () => {
+    expect(() => parseCockpitArgs(["reload", "--keep-legacy"])).toThrow(UsageError);
+  });
+
+  test("unknown sub-verb error names the valid set including migrate-socket", () => {
+    try {
+      parseCockpitArgs(["unknown-verb"]);
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(UsageError);
+      expect(String(e)).toContain("migrate-socket");
+    }
+  });
+});
+
+// ---------- ADR-162 TR3: buildMigrationBreadcrumb ----------
+
+describe("buildMigrationBreadcrumb (ADR-162 TR3 — Phase 5)", () => {
+  test("returns header + per-window separators with scrollback inline", () => {
+    const captured: CapturedCockpitWindow[] = [
+      { sessionName: "atmux_cockpit", index: 1, name: "_superdriver", scrollback: "line A\nline B" },
+      { sessionName: "atmux_cockpit", index: 2, name: "_medic", scrollback: "medic tail" },
+    ];
+    const out = buildMigrationBreadcrumb(captured, "atmux_cockpit", "atmux-cockpit");
+    expect(out).toContain("atmux cockpit migrate-socket breadcrumb");
+    expect(out).toContain("tmux -L atmux-cockpit attach -t atmux_cockpit");
+    expect(out).toContain("## atmux_cockpit:1 '_superdriver'");
+    expect(out).toContain("line A\nline B");
+    expect(out).toContain("## atmux_cockpit:2 '_medic'");
+    expect(out).toContain("medic tail");
+    expect(out).toContain("re-invoke any in-pane Claude/script process");
+  });
+
+  test("empty scrollback surfaces placeholder line, not blank", () => {
+    const captured: CapturedCockpitWindow[] = [
+      { sessionName: "atmux_teams", index: 1, name: "_superdriver", scrollback: "" },
+    ];
+    const out = buildMigrationBreadcrumb(captured, "atmux_cockpit", "atmux-cockpit");
+    expect(out).toContain("(scrollback empty or capture failed)");
+  });
+
+  test("empty captured list still emits header (zero-window edge)", () => {
+    const out = buildMigrationBreadcrumb([], "atmux_cockpit", "atmux-cockpit");
+    expect(out).toContain("Captured 0 window(s)");
+  });
+});
+
+// ---------- ADR-162 TR3: cockpitMigrateSocket — mock-driven flow ----------
+
+interface MockTmuxState {
+  /** Sessions on this socket. */
+  sessions: Map<string, { windows: { index: number; name: string }[]; createdAt: number }>;
+  /** Pane-capture seed keyed by `<session>:<index>`. */
+  scrollback: Map<string, string>;
+  /** Operations log — every call appended in order for assertion. */
+  ops: string[];
+}
+
+/** Build a TmuxNamespace stub backed by `MockTmuxState`. Tags every op
+ *  with `<socketTag>:` so a multi-socket flow can be asserted with a
+ *  single shared ops array per state. */
+function makeMockTmux(socketTag: string, state: MockTmuxState): TmuxNamespace {
+  const ns: Partial<TmuxNamespace> = {
+    session: {
+      async listSessions() {
+        state.ops.push(`${socketTag}:listSessions`);
+        return Array.from(state.sessions.entries()).map(([name, s]) => ({
+          name,
+          windows: s.windows.length,
+          created: s.createdAt,
+        }));
+      },
+      async hasSession(name) {
+        state.ops.push(`${socketTag}:hasSession(${name})`);
+        return state.sessions.has(name);
+      },
+      async newSession(opts) {
+        state.ops.push(`${socketTag}:newSession(${opts.name},${opts.windowName ?? ""})`);
+        state.sessions.set(opts.name, {
+          windows: [{ index: 1, name: opts.windowName ?? "shell" }],
+          createdAt: Date.now(),
+        });
+      },
+      async killSession(name) {
+        state.ops.push(`${socketTag}:killSession(${name})`);
+        state.sessions.delete(name);
+      },
+      async renameSession() {
+        throw new Error("not used by migrate-socket");
+      },
+      async setEnvironment() {
+        throw new Error("not used by migrate-socket");
+      },
+    },
+    window: {
+      async listWindows(sessionName) {
+        state.ops.push(`${socketTag}:listWindows(${sessionName})`);
+        const sess = state.sessions.get(sessionName);
+        return (sess?.windows ?? []).map((w) => ({
+          index: w.index,
+          id: `@${w.index}`,
+          name: w.name,
+          active: w.index === 1,
+        }));
+      },
+      async newWindow(opts) {
+        state.ops.push(`${socketTag}:newWindow(${opts.sessionName},${opts.name ?? ""})`);
+        const sess = state.sessions.get(opts.sessionName);
+        let nextIdx = 1;
+        if (sess !== undefined) {
+          nextIdx = (sess.windows.at(-1)?.index ?? 0) + 1;
+          sess.windows.push({ index: nextIdx, name: opts.name ?? `window-${nextIdx}` });
+        }
+        return { sessionName: opts.sessionName, windowIndex: nextIdx };
+      },
+      async killWindow() {
+        throw new Error("not used by migrate-socket");
+      },
+      async renameWindow() {
+        throw new Error("not used by migrate-socket");
+      },
+      async selectWindow() {
+        throw new Error("not used by migrate-socket");
+      },
+      async moveWindow() {
+        throw new Error("not used by migrate-socket");
+      },
+    },
+    pane: {
+      async capturePane(opts) {
+        state.ops.push(`${socketTag}:capturePane(${opts.target})`);
+        return state.scrollback.get(String(opts.target)) ?? "";
+      },
+    } as TmuxNamespace["pane"],
+  };
+  return ns as TmuxNamespace;
+}
+
+function migrateOpts(overrides: Partial<ParsedCockpitArgs> = {}): ParsedCockpitArgs {
+  return {
+    subverb: "migrate-socket",
+    noCycle: false,
+    forceCycle: false,
+    ackDangerous: false,
+    noLaunch: false,
+    yes: false,
+    dryRun: false,
+    keepLegacy: false,
+    ...overrides,
+  };
+}
+
+describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
+  test("LEGACY_COCKPIT_SESSION_NAMES covers both ADR-135 canonical + pre-135 legacy", () => {
+    expect(LEGACY_COCKPIT_SESSION_NAMES).toEqual(["atmux_cockpit", "atmux_teams"]);
+  });
+
+  test("Phase 1 short-circuit — no tmux server on default socket returns 0", async () => {
+    const { logger, logs } = makeLogger();
+    const code = await cockpitMigrateSocket(migrateOpts(), {
+      env: {},
+      logger,
+      tmuxFactory: () =>
+        ({
+          session: {
+            listSessions: async () => {
+              throw new Error("no server running");
+            },
+          },
+        }) as unknown as TmuxNamespace,
+    });
+    expect(code).toBe(0);
+    expect(logs.join("\n")).toContain("no tmux server on default socket");
+  });
+
+  test("Phase 1 — no legacy cockpit sessions on default socket returns 0", async () => {
+    const defaultState: MockTmuxState = {
+      sessions: new Map([
+        ["operator_personal", { windows: [{ index: 1, name: "shell" }], createdAt: 0 }],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger, logs } = makeLogger();
+    const code = await cockpitMigrateSocket(migrateOpts(), {
+      env: {},
+      logger,
+      tmuxFactory: () => makeMockTmux("default", defaultState),
+    });
+    expect(code).toBe(0);
+    expect(logs.join("\n")).toContain("already migrated");
+  });
+
+  test("Phase 1 — ATMUX_COCKPIT_SOCKET=default refuses (legacy = target)", async () => {
+    const defaultState: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atmux_cockpit",
+          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
+        ],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger, logs } = makeLogger();
+    const code = await cockpitMigrateSocket(migrateOpts(), {
+      env: { ATMUX_COCKPIT_SOCKET: "default" },
+      logger,
+      tmuxFactory: () => makeMockTmux("default", defaultState),
+    });
+    expect(code).toBe(0);
+    expect(logs.join("\n")).toContain("ATMUX_COCKPIT_SOCKET=default in effect");
+  });
+
+  test("Happy path — migrates atmux_cockpit + atmux_teams sessions, kills legacy", async () => {
+    const defaultState: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atmux_cockpit",
+          {
+            windows: [
+              { index: 1, name: "_superdriver" },
+              { index: 2, name: "_medic" },
+            ],
+            createdAt: 0,
+          },
+        ],
+        [
+          "atmux_teams",
+          { windows: [{ index: 1, name: "viewer-x" }], createdAt: 0 },
+        ],
+      ]),
+      scrollback: new Map([
+        ["atmux_cockpit:1", "superdriver tail"],
+        ["atmux_cockpit:2", "medic tail"],
+        ["atmux_teams:1", "viewer tail"],
+      ]),
+      ops: [],
+    };
+    const cockpitState: MockTmuxState = {
+      sessions: new Map(),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger, logs } = makeLogger();
+    const code = await cockpitMigrateSocket(migrateOpts(), {
+      env: {},
+      logger,
+      tmuxFactory: (cfg) => {
+        if ("socket" in cfg && cfg.socket === "default") {
+          return makeMockTmux("default", defaultState);
+        }
+        return makeMockTmux("cockpit", cockpitState);
+      },
+    });
+    expect(code).toBe(0);
+    // Phase 6 — both legacy sessions killed
+    expect(defaultState.ops).toContain("default:killSession(atmux_cockpit)");
+    expect(defaultState.ops).toContain("default:killSession(atmux_teams)");
+    // Phase 3 — target session created on cockpit socket
+    expect(cockpitState.sessions.has("atmux_cockpit")).toBe(true);
+    // Phase 4 — windows recreated by name (relative order preserved)
+    const newWins = cockpitState.sessions.get("atmux_cockpit")?.windows ?? [];
+    const names = newWins.map((w) => w.name);
+    expect(names).toContain("_superdriver");
+    expect(names).toContain("_medic");
+    expect(names).toContain("viewer-x");
+    // Phase 5 — breadcrumb logged
+    expect(logs.join("\n")).toContain("scrollback breadcrumb → /tmp/atmux-cockpit-migrate-");
+  });
+
+  test("--dry-run — no mutations on either socket", async () => {
+    const defaultState: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atmux_cockpit",
+          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
+        ],
+      ]),
+      scrollback: new Map([["atmux_cockpit:1", "tail"]]),
+      ops: [],
+    };
+    const cockpitState: MockTmuxState = {
+      sessions: new Map(),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger, logs } = makeLogger();
+    const code = await cockpitMigrateSocket(migrateOpts({ dryRun: true }), {
+      env: {},
+      logger,
+      tmuxFactory: (cfg) =>
+        "socket" in cfg && cfg.socket === "default"
+          ? makeMockTmux("default", defaultState)
+          : makeMockTmux("cockpit", cockpitState),
+    });
+    expect(code).toBe(0);
+    // Legacy session preserved
+    expect(defaultState.sessions.has("atmux_cockpit")).toBe(true);
+    expect(defaultState.ops).not.toContain("default:killSession(atmux_cockpit)");
+    // Cockpit socket never touched
+    expect(cockpitState.sessions.size).toBe(0);
+    expect(cockpitState.ops).toEqual([]);
+    // Logger surfaces the preview
+    expect(logs.join("\n")).toContain("[dry-run] would migrate window");
+    expect(logs.join("\n")).toContain("no mutations applied");
+  });
+
+  test("--keep-legacy — Phase 6 cleanup skipped; recreate still runs", async () => {
+    const defaultState: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atmux_cockpit",
+          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
+        ],
+      ]),
+      scrollback: new Map([["atmux_cockpit:1", "tail"]]),
+      ops: [],
+    };
+    const cockpitState: MockTmuxState = {
+      sessions: new Map(),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger, logs } = makeLogger();
+    const code = await cockpitMigrateSocket(migrateOpts({ keepLegacy: true }), {
+      env: {},
+      logger,
+      tmuxFactory: (cfg) =>
+        "socket" in cfg && cfg.socket === "default"
+          ? makeMockTmux("default", defaultState)
+          : makeMockTmux("cockpit", cockpitState),
+    });
+    expect(code).toBe(0);
+    expect(defaultState.sessions.has("atmux_cockpit")).toBe(true); // legacy preserved
+    expect(defaultState.ops).not.toContain("default:killSession(atmux_cockpit)");
+    expect(cockpitState.sessions.has("atmux_cockpit")).toBe(true); // new still created
+    expect(logs.join("\n")).toContain("--keep-legacy set");
+  });
+
+  test("Idempotent — additive merge when target session already exists", async () => {
+    const defaultState: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atmux_cockpit",
+          { windows: [{ index: 1, name: "_superdriver" }, { index: 2, name: "_medic" }], createdAt: 0 },
+        ],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    // Pre-existing target session has _superdriver but not _medic
+    const cockpitState: MockTmuxState = {
+      sessions: new Map([
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger, logs } = makeLogger();
+    const code = await cockpitMigrateSocket(migrateOpts({ keepLegacy: true }), {
+      env: {},
+      logger,
+      tmuxFactory: (cfg) =>
+        "socket" in cfg && cfg.socket === "default"
+          ? makeMockTmux("default", defaultState)
+          : makeMockTmux("cockpit", cockpitState),
+    });
+    expect(code).toBe(0);
+    const names =
+      cockpitState.sessions.get("atmux_cockpit")?.windows.map((w) => w.name) ?? [];
+    // _superdriver kept (already there), _medic added
+    expect(names).toContain("_superdriver");
+    expect(names).toContain("_medic");
+    expect(logs.join("\n")).toContain("already present on target");
+    expect(logs.join("\n")).toContain("1 window(s) created, 1 skipped");
+  });
+
+  test("Phase 6 kill-session failure warns + continues, doesn't throw", async () => {
+    const defaultState: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atmux_cockpit",
+          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
+        ],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const cockpitState: MockTmuxState = {
+      sessions: new Map(),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger, logs } = makeLogger();
+    // Override killSession on the default mock to throw
+    const code = await cockpitMigrateSocket(migrateOpts(), {
+      env: {},
+      logger,
+      tmuxFactory: (cfg) => {
+        if ("socket" in cfg && cfg.socket === "default") {
+          const base = makeMockTmux("default", defaultState);
+          return {
+            ...base,
+            session: {
+              ...base.session,
+              killSession: async (name: string) => {
+                defaultState.ops.push(`default:killSession-THROW(${name})`);
+                throw new Error("simulated tmux failure");
+              },
+            },
+          };
+        }
+        return makeMockTmux("cockpit", cockpitState);
+      },
+    });
+    expect(code).toBe(0);
+    expect(defaultState.ops).toContain("default:killSession-THROW(atmux_cockpit)");
+    expect(logs.join("\n")).toContain("kill-session 'atmux_cockpit' on default socket failed");
+    expect(logs.join("\n")).toContain("manually clean up with: tmux kill-session");
+  });
+
+  test("Phase 2 capturePane failure surfaces warn but continues to Phase 3+", async () => {
+    const defaultState: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atmux_cockpit",
+          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
+        ],
+      ]),
+      scrollback: new Map(), // No seed → capturePane returns "" via stub
+      ops: [],
+    };
+    const cockpitState: MockTmuxState = {
+      sessions: new Map(),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger } = makeLogger();
+    const code = await cockpitMigrateSocket(migrateOpts(), {
+      env: {},
+      logger,
+      tmuxFactory: (cfg) => {
+        if ("socket" in cfg && cfg.socket === "default") {
+          const base = makeMockTmux("default", defaultState);
+          return {
+            ...base,
+            pane: {
+              ...base.pane,
+              capturePane: async () => {
+                throw new Error("pane gone");
+              },
+            },
+          };
+        }
+        return makeMockTmux("cockpit", cockpitState);
+      },
+    });
+    // Migration completes despite capture failure
+    expect(code).toBe(0);
+    expect(cockpitState.sessions.has("atmux_cockpit")).toBe(true);
   });
 });

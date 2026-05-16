@@ -272,12 +272,30 @@ export interface ParsedCockpitArgs {
   /** sub-verb. `reload` is a hot-reload alias for `rebuild --no-cycle
    *  --no-launch` — applies cockpit.json topology changes (window
    *  add/remove/move) without touching live cages or relaunching
-   *  TUIs. ADR-077 §D6 follow-on. */
-  subverb: "rebuild" | "reload";
+   *  TUIs. ADR-077 §D6 follow-on. `migrate-socket` is the ADR-162 TR3
+   *  one-shot verb that moves the cockpit session from the operator's
+   *  default tmux socket to the dedicated `atmux-cockpit` named socket
+   *  (per §Decision-anchor #1 + #4). */
+  subverb: "rebuild" | "reload" | "migrate-socket";
   /** Skip the cage cycle phase (only normalise team.json + reconcile cockpit). */
   noCycle: boolean;
   /** Cycle every cage even if claude procs are running (DESTRUCTIVE — kills in-flight work). */
   forceCycle: boolean;
+  /** ADR-162 TR3 `migrate-socket`: preview the planned migration without
+   *  executing. Reports legacy sessions/windows discovered + the cleanup
+   *  intent; no socket mutation, no scrollback capture, no window
+   *  recreate. Operator runs `--dry-run` first; commits without when
+   *  satisfied. Inert on other subverbs. Optional for backward-compat
+   *  with test fixtures constructed before TR3 added the flag. */
+  dryRun?: boolean;
+  /** ADR-162 TR3 `migrate-socket`: skip the legacy-session cleanup
+   *  (Phase 6). Old default-socket cockpit and new atmux-cockpit
+   *  cockpit coexist. Safety-conscious option for the first migration
+   *  on a production cockpit — operator decides when to nuke the
+   *  legacy via `tmux kill-session -t atmux_cockpit` (or
+   *  `atmux_teams`). Inert on other subverbs. Optional for backward-
+   *  compat with test fixtures constructed before TR3 added the flag. */
+  keepLegacy?: boolean;
   /** Operator-supplied acknowledgement that `--force-cycle` will tear down
    *  live claude TUI contexts across EVERY enabled team and that this is
    *  intentional. Required whenever `forceCycle` is true; the parser
@@ -314,16 +332,18 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     throw new UsageError({
       what: "cockpit: missing sub-verb",
       hint:
-        "usage: atmux cockpit {rebuild | reload} " +
+        "usage: atmux cockpit {rebuild | reload | migrate-socket} " +
         "[--no-cycle | --force-cycle --acknowledge-dangerous-bau-interruption] " +
-        "[--no-launch] [--config <path>]",
+        "[--no-launch] [--config <path>] [--dry-run] [--keep-legacy]",
     });
   }
   const sub = args[0];
-  if (sub !== "rebuild" && sub !== "reload") {
+  if (sub !== "rebuild" && sub !== "reload" && sub !== "migrate-socket") {
     throw new UsageError({
       what: `cockpit: unknown sub-verb: ${sub}`,
-      hint: "supported: 'rebuild' (full) or 'reload' (hot-reload alias)",
+      hint:
+        "supported: 'rebuild' (full), 'reload' (hot-reload alias), " +
+        "or 'migrate-socket' (ADR-162 TR3: move legacy cockpit-on-default-socket → atmux-cockpit)",
     });
   }
 
@@ -337,6 +357,8 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   let noLaunch = sub === "reload";
   let yes = false;
   let configPath: string | undefined;
+  let dryRun = false;
+  let keepLegacy = false;
 
   let i = 1;
   while (i < args.length) {
@@ -393,9 +415,29 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
         i += 2;
         break;
       }
+      case "--dry-run":
+        if (sub !== "migrate-socket") {
+          throw new UsageError({
+            what: `cockpit ${sub}: --dry-run only applies to 'migrate-socket'`,
+            hint: "use 'atmux cockpit migrate-socket --dry-run' to preview ADR-162 TR3 migration",
+          });
+        }
+        dryRun = true;
+        i += 1;
+        break;
+      case "--keep-legacy":
+        if (sub !== "migrate-socket") {
+          throw new UsageError({
+            what: `cockpit ${sub}: --keep-legacy only applies to 'migrate-socket'`,
+            hint: "use 'atmux cockpit migrate-socket --keep-legacy' to preserve the legacy default-socket cockpit",
+          });
+        }
+        keepLegacy = true;
+        i += 1;
+        break;
       default:
         throw new UsageError({
-          what: `cockpit rebuild: unknown arg: ${a}`,
+          what: `cockpit ${sub}: unknown arg: ${a}`,
           hint: "see 'atmux cockpit --help'",
         });
     }
@@ -441,12 +483,14 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   }
 
   const out: ParsedCockpitArgs = {
-    subverb: sub as "rebuild" | "reload",
+    subverb: sub as "rebuild" | "reload" | "migrate-socket",
     noCycle,
     forceCycle,
     ackDangerous,
     noLaunch,
     yes,
+    dryRun,
+    keepLegacy,
   };
   if (configPath !== undefined) out.configPath = configPath;
   return out;
@@ -491,6 +535,12 @@ export async function cockpit(
       // (team.json normalise — idempotent), Phase 3 (cage prefix —
       // idempotent), and Phase 5 (cockpit window reconcile) run.
       return await cockpitRebuild(parsed, opts);
+    case "migrate-socket":
+      // ADR-162 TR3: one-shot move of the cockpit session from the
+      // operator's default tmux socket to the dedicated atmux-cockpit
+      // named socket (per §Decision-anchor #1 + #4). Idempotent — re-
+      // running on an already-migrated cockpit reports "nothing to do".
+      return await cockpitMigrateSocket(parsed, opts);
   }
 }
 
@@ -627,6 +677,320 @@ export async function cockpitRebuild(
     );
   }
   return 0;
+}
+
+// ---------- ADR-162 TR3: cockpit migrate-socket ----------
+
+/** Legacy session-name shapes the migration verb discovers on the
+ *  operator's default tmux socket. `atmux_cockpit` is the canonical
+ *  ADR-135 name; `atmux_teams` is the pre-ADR-135 legacy that the
+ *  cockpit.json migration shim (src/core/cockpit.ts) coerces on read.
+ *  We surface both — the migration is socket-tier, separate from the
+ *  ADR-135 session-name-tier rename.
+ *
+ *  Exported for unit-test access. */
+export const LEGACY_COCKPIT_SESSION_NAMES = ["atmux_cockpit", "atmux_teams"] as const;
+
+/** Per-window context captured from the legacy default-socket cockpit
+ *  before recreation on the dedicated atmux-cockpit socket. The
+ *  scrollback string is presented to the operator as a breadcrumb
+ *  (Phase 5) — atmux can't transfer running PIDs across tmux servers
+ *  via stock tmux primitives, so the operator re-invokes any in-pane
+ *  process (Claude conversations, manual scripts) with the prior
+ *  scroll context preserved in the breadcrumb file.
+ *
+ *  Exported for unit-test typing. */
+export interface CapturedCockpitWindow {
+  readonly sessionName: string;
+  readonly index: number;
+  readonly name: string;
+  readonly scrollback: string;
+}
+
+/** ADR-162 TR3 — `atmux cockpit migrate-socket` one-shot verb.
+ *
+ * Moves the cockpit session from the operator's default tmux socket
+ * (legacy state, pre-ADR-162) to the dedicated `atmux-cockpit` named
+ * socket (per §Decision-anchor #1 + #4). Six phases:
+ *
+ *   1. **Discovery** — list sessions on `tmux -L default`; filter to
+ *      `LEGACY_COCKPIT_SESSION_NAMES`. Zero matches = already
+ *      migrated; return 0.
+ *   2. **Capture** — for each matched session/window, snapshot the
+ *      last 3000 lines of scrollback (`pane.capturePane`). The
+ *      capture is non-destructive on the legacy socket — if Phase 6
+ *      cleanup fails or `--keep-legacy` is set the legacy session
+ *      survives untouched.
+ *   3. **Recreate session** — `tmux -L atmux-cockpit new-session -d
+ *      -s atmux_cockpit ...` on the dedicated socket. Additive: if
+ *      the target session already exists (partial-migration recovery
+ *      or sibling cockpit), windows already on the target are
+ *      preserved + the migration only adds missing windows by name.
+ *   4. **Recreate windows** — preserve window names + relative order.
+ *      Empty shell panes (no process re-bind — see §Process-
+ *      preservation below).
+ *   5. **Breadcrumb** — write captured scrollback to
+ *      `/tmp/atmux-cockpit-migrate-<epoch>.log`. Operator reads it
+ *      to recover visual context (prior Claude conversation lines,
+ *      etc.) before re-invoking processes in the new panes.
+ *   6. **Cleanup** — `tmux -L default kill-session -t <legacy-name>`.
+ *      Skipped when `--keep-legacy` is set; legacy + new cockpit
+ *      coexist until the operator manually nukes the legacy via
+ *      `tmux kill-session`.
+ *
+ * **Process-preservation — honest answer (§Decision-anchor #4
+ * amendment).** tmux can't transfer a running pane process between
+ * servers (sockets) — the PID is bound to a PTY the source tmux
+ * server owns; severing that PTY either SIGHUPs the process or
+ * leaves it as a stdio-less orphan. ptrace-based PTY reparenting
+ * tools exist (e.g. `reptyr`) but atmux doesn't depend on them
+ * (heavy external dep + platform-specific). The realistic
+ * mechanism is **graceful-recreate**: scrollback is preserved as
+ * visual context; the operator re-invokes any in-pane work in the
+ * new panes. Cron-spawned cockpit roles (medic, martinet,
+ * sentinel) re-establish themselves on the next cron tick without
+ * operator action — they're not state-bearing across ticks.
+ *
+ * Idempotent — re-running on an already-migrated cockpit returns 0
+ * with the "no legacy cockpit on default socket" log. `--dry-run`
+ * previews the discovered legacy state without mutating either
+ * socket. `--keep-legacy` skips Phase 6 cleanup. Both flags are
+ * inert when there's nothing to migrate.
+ */
+export async function cockpitMigrateSocket(
+  parsed: ParsedCockpitArgs,
+  opts: CockpitOpts = {},
+): Promise<number> {
+  const env = opts.env ?? process.env;
+  const logger = opts.logger ?? createLogger();
+  const factory = opts.tmuxFactory ?? createTmux;
+  const dryRun = parsed.dryRun ?? false;
+  const keepLegacy = parsed.keepLegacy ?? false;
+
+  // Phase 1 — discovery on the operator's default tmux socket.
+  const legacyTmux = factory({ socket: "default" });
+  let sessions: { name: string; windows: number; created: number }[];
+  try {
+    sessions = await legacyTmux.session.listSessions();
+  } catch (e) {
+    // No tmux server on default socket = nothing to migrate. This is
+    // the steady-state for fresh installs + post-migration cockpits.
+    logger.log(
+      `✅ no tmux server on default socket — nothing to migrate (${
+        e instanceof Error ? e.message : String(e)
+      })`,
+    );
+    return 0;
+  }
+  const legacyCockpitSessions = sessions.filter((s) =>
+    (LEGACY_COCKPIT_SESSION_NAMES as readonly string[]).includes(s.name),
+  );
+  if (legacyCockpitSessions.length === 0) {
+    logger.log(
+      "✅ no legacy cockpit session on default socket — already migrated (or fresh install)",
+    );
+    return 0;
+  }
+
+  const cockpitSocketName = getCockpitSocketName(env);
+  if (cockpitSocketName === "default") {
+    // Operator has explicitly opted back into the legacy default-socket
+    // cockpit via the ATMUX_COCKPIT_SOCKET=default escape hatch. Migrating
+    // would just move windows from default → default — a no-op that risks
+    // double-creating sessions. Refuse with a clear hint.
+    logger.warn(
+      "ATMUX_COCKPIT_SOCKET=default in effect — migration target equals legacy source.",
+    );
+    logger.warn(
+      "Unset ATMUX_COCKPIT_SOCKET (or set it to 'atmux-cockpit') to proceed with migration.",
+    );
+    return 0;
+  }
+
+  logger.log(
+    `▸ migrate-socket: ${legacyCockpitSessions.length} legacy cockpit session(s) on default socket → ${cockpitSocketName}`,
+  );
+
+  // Phase 2 — capture per-window scrollback (read-only on legacy).
+  const captured: CapturedCockpitWindow[] = [];
+  for (const sess of legacyCockpitSessions) {
+    const windows = await legacyTmux.window.listWindows(sess.name);
+    logger.log(`  · session '${sess.name}': ${windows.length} window(s)`);
+    for (const w of windows) {
+      if (dryRun) {
+        logger.log(`    [dry-run] would migrate window ${w.index} '${w.name}'`);
+        captured.push({ sessionName: sess.name, index: w.index, name: w.name, scrollback: "" });
+        continue;
+      }
+      let scrollback = "";
+      try {
+        scrollback = await legacyTmux.pane.capturePane({
+          target: `${sess.name}:${w.index}`,
+          start: -3000,
+        });
+      } catch (e) {
+        logger.warn(
+          `    ⚠ scrollback capture failed on ${sess.name}:${w.index}: ${
+            e instanceof Error ? e.message : String(e)
+          } — proceeding without breadcrumb`,
+        );
+      }
+      captured.push({ sessionName: sess.name, index: w.index, name: w.name, scrollback });
+    }
+  }
+
+  if (dryRun) {
+    logger.log(
+      `[dry-run] would ${keepLegacy ? "PRESERVE" : "kill"} legacy session(s) on default socket: ${
+        legacyCockpitSessions.map((s) => s.name).join(", ")
+      }`,
+    );
+    logger.log("[dry-run] no mutations applied — re-run without --dry-run to migrate");
+    return 0;
+  }
+
+  // Phase 3 — recreate session(s) on the dedicated socket. Always
+  // canonicalises legacy 'atmux_teams' → 'atmux_cockpit' (per ADR-135 §D4)
+  // so the migrated cockpit lands on the current canonical name.
+  const newTmux = factory({
+    socket: cockpitSocketName,
+    configFile: getAtmuxTmuxConfPath(env),
+  });
+  const targetSessionName = "atmux_cockpit";
+  const hasTarget = await newTmux.session.hasSession(targetSessionName);
+  if (!hasTarget) {
+    const first = captured[0];
+    const initialWindowName = first?.name ?? "_superdriver";
+    await newTmux.session.newSession({
+      name: targetSessionName,
+      detached: true,
+      windowName: initialWindowName,
+    });
+    logger.log(
+      `  ✓ created session '${targetSessionName}' on ${cockpitSocketName} (window 1: ${initialWindowName})`,
+    );
+  } else {
+    logger.log(
+      `  · session '${targetSessionName}' already exists on ${cockpitSocketName} — additive merge`,
+    );
+  }
+
+  // Phase 4 — recreate windows on the target socket. Existing window
+  // names on the target are preserved (additive merge). Empty shell
+  // panes; operator re-invokes any in-pane process (see Phase 5).
+  const targetWindows = await newTmux.window.listWindows(targetSessionName);
+  const targetWindowNames = new Set(targetWindows.map((w) => w.name));
+  let createdCount = 0;
+  let skippedExistingCount = 0;
+  for (let i = 0; i < captured.length; i++) {
+    const c = captured[i];
+    if (c === undefined) continue; // unreachable; appease TS noUncheckedIndexedAccess
+    // The session was just bootstrapped with the first captured window
+    // when !hasTarget; don't double-create it.
+    if (!hasTarget && i === 0) {
+      logger.log(`    ✓ window '${c.name}' (created with session)`);
+      targetWindowNames.add(c.name);
+      continue;
+    }
+    if (targetWindowNames.has(c.name)) {
+      logger.log(`    · window '${c.name}' already present on target — skip`);
+      skippedExistingCount += 1;
+      continue;
+    }
+    await newTmux.window.newWindow({
+      sessionName: targetSessionName,
+      name: c.name,
+      detached: true,
+    });
+    targetWindowNames.add(c.name);
+    createdCount += 1;
+    logger.log(`    ✓ window '${c.name}' created`);
+  }
+  logger.log(
+    `  · ${createdCount} window(s) created, ${skippedExistingCount} skipped (already present)`,
+  );
+
+  // Phase 5 — scrollback breadcrumb. Operator reads it to recover prior
+  // visual context (Claude conversation tails, etc.) before re-invoking
+  // processes in the new panes. We don't attempt PID transfer (see
+  // §Process-preservation in the function docstring).
+  const breadcrumbPath = `/tmp/atmux-cockpit-migrate-${Date.now()}.log`;
+  const breadcrumb = buildMigrationBreadcrumb(captured, targetSessionName, cockpitSocketName);
+  try {
+    await Bun.write(breadcrumbPath, breadcrumb);
+    logger.log(`  📋 scrollback breadcrumb → ${breadcrumbPath}`);
+    logger.log(`     (cat the file to recover prior pane contents)`);
+  } catch (e) {
+    logger.warn(
+      `  ⚠ breadcrumb write failed (${
+        e instanceof Error ? e.message : String(e)
+      }) — migration continues; no scrollback record`,
+    );
+  }
+
+  // Phase 6 — cleanup legacy session(s) on default socket. Skipped
+  // when --keep-legacy is set.
+  if (keepLegacy) {
+    logger.log(
+      `  · --keep-legacy set: legacy session(s) left intact on default socket (${
+        legacyCockpitSessions.map((s) => s.name).join(", ")
+      })`,
+    );
+    logger.log(
+      `    manually clean up with: tmux kill-session -t ${legacyCockpitSessions[0]?.name ?? "atmux_cockpit"}`,
+    );
+  } else {
+    for (const sess of legacyCockpitSessions) {
+      try {
+        await legacyTmux.session.killSession(sess.name);
+        logger.log(`  ✓ killed legacy session '${sess.name}' on default socket`);
+      } catch (e) {
+        logger.warn(
+          `  ⚠ kill-session '${sess.name}' on default socket failed: ${
+            e instanceof Error ? e.message : String(e)
+          } — manually clean up with: tmux kill-session -t ${sess.name}`,
+        );
+      }
+    }
+  }
+
+  logger.ok(
+    `cockpit migrated. attach: tmux -L ${cockpitSocketName} attach -t ${targetSessionName}`,
+  );
+  return 0;
+}
+
+/** Format the captured scrollback into a single breadcrumb file the
+ *  operator can `cat` to recover visual context for each migrated
+ *  pane. Exported for unit-test access. */
+export function buildMigrationBreadcrumb(
+  captured: ReadonlyArray<CapturedCockpitWindow>,
+  targetSessionName: string,
+  cockpitSocketName: string,
+): string {
+  const header = [
+    `# atmux cockpit migrate-socket breadcrumb`,
+    `# Generated: ${new Date().toISOString()}`,
+    `# Migrated → tmux -L ${cockpitSocketName} attach -t ${targetSessionName}`,
+    `# Captured ${captured.length} window(s) from the legacy default-socket cockpit.`,
+    `# Process state was NOT transferred (tmux primitives can't re-bind PIDs across`,
+    `# servers); re-invoke any in-pane Claude/script process in the new panes.`,
+    `# Cron-spawned roles (medic/martinet/sentinel) re-establish on the next tick.`,
+    "",
+  ].join("\n");
+  const body = captured
+    .map((c) => {
+      const sep = "─".repeat(78);
+      return [
+        sep,
+        `## ${c.sessionName}:${c.index} '${c.name}'`,
+        sep,
+        c.scrollback.length > 0 ? c.scrollback : "(scrollback empty or capture failed)",
+        "",
+      ].join("\n");
+    })
+    .join("\n");
+  return `${header}\n${body}`;
 }
 
 // ---------- Phase 6 helper (ADR-086) ----------
