@@ -59,11 +59,12 @@
 // against this verb in parallel; the TS verb name + arg shape (`init
 // [--name <team>] [--force|-f]`) is the contract.
 
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
+import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -170,16 +171,14 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
  *   ATMUX_ROOT="$(cd "$ATMUX_BIN_DIR/.." && pwd)"
  *   export ATMUX_TEMPLATES_DIR="$ATMUX_ROOT/templates"
  *
- * The TS shim at `bin/atmux-bun` doesn't set these env vars — instead
- * the verb resolves the template via the source tree at runtime. Tests
- * inject `templatesDir` via `InitOptions` so they can run from any cwd
- * without needing the worktree to be the parent dir.
+ * Delegates to {@link resolveTemplatesDir} for the dev / installed
+ * dual-path resolution (closes c-003a2a4c — compiled binary's
+ * `import.meta.dir` walks bun's internal $bunfs to `/templates` which
+ * doesn't exist on disk; the shared resolver probes the dev path
+ * first, then falls back to `<process.execPath>/../templates`).
  */
 function defaultTemplatesDir(env: NodeJS.ProcessEnv): string {
-  const override = env.ATMUX_TEMPLATES_DIR;
-  if (override !== undefined && override.length > 0) return override;
-  // src/verbs/init.ts → repo root is two dirs up.
-  return resolve(import.meta.dir, "..", "..", "templates");
+  return resolveTemplatesDir(env);
 }
 
 // ---------- Verb entry ----------
