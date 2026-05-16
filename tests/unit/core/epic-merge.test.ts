@@ -20,13 +20,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitSpawn } from "../../../src/abstractions/branch-merge.ts";
-import {
-  closeDatabase,
-  type Database,
-  openDatabase,
-} from "../../../src/abstractions/sqlite.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import { closeDatabase, type Database, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { PreMergeGateInput } from "../../../src/core/branch-merge-state.ts";
 import {
   type EpicMergeContext,
@@ -130,9 +126,7 @@ const EPIC_BRANCH = "sopx-geoyws-epic-checkout-flow";
 const PARENT_BASE = "sopx-geoyws";
 const EPIC_ID = "e-aabb0001";
 
-function baseCtx(
-  overrides: Partial<EpicMergeContext> = {},
-): EpicMergeContext {
+function baseCtx(overrides: Partial<EpicMergeContext> = {}): EpicMergeContext {
   return {
     epicBranch: EPIC_BRANCH,
     parentBase: PARENT_BASE,
@@ -171,19 +165,13 @@ describe("shouldEpicTransitionFromInProgress — pure refinement", () => {
   });
 
   test("owner has open tasks → stay in_progress (shared gate wins)", () => {
-    const r = shouldEpicTransitionFromInProgress(
-      gate({ ownerOpenTaskCount: 3 }),
-      true,
-    );
+    const r = shouldEpicTransitionFromInProgress(gate({ ownerOpenTaskCount: 3 }), true);
     expect(r.next).toBe("in_progress");
     expect(r.reason).toContain("3 open tasks");
   });
 
   test("dirty worktree → stay in_progress (shared gate wins; signoff irrelevant)", () => {
-    const r = shouldEpicTransitionFromInProgress(
-      gate({ worktreeIsClean: false }),
-      false,
-    );
+    const r = shouldEpicTransitionFromInProgress(gate({ worktreeIsClean: false }), false);
     expect(r.next).toBe("in_progress");
     expect(r.reason).toMatch(/worktree dirty/);
   });
@@ -196,20 +184,14 @@ describe("shouldEpicTransitionFromInProgress — pure refinement", () => {
   });
 
   test("base moved + signoff present → rebasing (shared gate's recommendation)", () => {
-    const r = shouldEpicTransitionFromInProgress(
-      gate({ baseHasMoved: true }),
-      true,
-    );
+    const r = shouldEpicTransitionFromInProgress(gate({ baseHasMoved: true }), true);
     expect(r.next).toBe("rebasing");
   });
 
   test("missing signoff PRECEDES base-moved decision (signoff is harder gate)", () => {
     // Signoff missing AND base moved — the signoff veto wins so the
     // operator sees the trunk-signoff blocker before rebase prep.
-    const r = shouldEpicTransitionFromInProgress(
-      gate({ baseHasMoved: true }),
-      false,
-    );
+    const r = shouldEpicTransitionFromInProgress(gate({ baseHasMoved: true }), false);
     expect(r.next).toBe("in_progress");
     expect(r.reason).toContain("reviewer-trunk-signoff");
   });
@@ -255,26 +237,20 @@ describe("performEpicMerge — in_progress (epic gate decisions)", () => {
   });
 
   test("gate clear but signoff missing → stay in_progress", async () => {
-    const r = await performEpicMerge(
-      baseCtx({ hasReviewerTrunkSignoff: false }),
-    );
+    const r = await performEpicMerge(baseCtx({ hasReviewerTrunkSignoff: false }));
     expect(r.state).toBe("in_progress");
     expect(r.changed).toBe(true);
     expect(r.reason).toContain("reviewer-trunk-signoff");
   });
 
   test("owner open tasks > 0 → stay in_progress", async () => {
-    const r = await performEpicMerge(
-      baseCtx({ gate: gate({ ownerOpenTaskCount: 2 }) }),
-    );
+    const r = await performEpicMerge(baseCtx({ gate: gate({ ownerOpenTaskCount: 2 }) }));
     expect(r.state).toBe("in_progress");
     expect(r.reason).toContain("2 open tasks");
   });
 
   test("base moved + signoff present → rebasing", async () => {
-    const r = await performEpicMerge(
-      baseCtx({ gate: gate({ baseHasMoved: true }) }),
-    );
+    const r = await performEpicMerge(baseCtx({ gate: gate({ baseHasMoved: true }) }));
     expect(r.state).toBe("rebasing");
   });
 });
@@ -286,24 +262,22 @@ describe("performEpicMerge — ready_to_merge auto-mode", () => {
     seedState("ready_to_merge", 300, "all checks pass");
   });
 
-  test("successful merge → terminal `merged` with sha + dissolve attempt", async () => {
-    const r = await performEpicMerge(
-      baseCtx({ git: makeGitStub("success") }),
-    );
+  test("successful merge → terminal `merged` with sha + dissolve attempt (no hook → false)", async () => {
+    const r = await performEpicMerge(baseCtx({ git: makeGitStub("success") }));
     expect(r.state).toBe("merged");
     expect(r.changed).toBe(true);
     expect(r.mergedSha).toBe("epicMergedSha");
-    // Dissolve dispatch returns false in v1 (T9 t-b430b185 verb not
-    // yet shipped — stderr-logged TODO instead).
+    // No dispatchDissolve hook passed → falls back to the no-hook TODO
+    // log + returns false. Production callers (cron tick verb) always
+    // wire the hook — the `dispatchDissolve hook wired` test below
+    // covers that path.
     expect(r.dissolveDispatched).toBe(false);
     expect(r.reason).toContain("epicMergedSha");
     expect(r.reason).toContain(PARENT_BASE);
   });
 
   test("no-op merge (epic had nothing to fan in) → terminal `merged` with no-op note", async () => {
-    const r = await performEpicMerge(
-      baseCtx({ git: makeGitStub("no-op") }),
-    );
+    const r = await performEpicMerge(baseCtx({ git: makeGitStub("no-op") }));
     expect(r.state).toBe("merged");
     expect(r.changed).toBe(true);
     expect(r.mergedSha).toBeUndefined();
@@ -312,9 +286,7 @@ describe("performEpicMerge — ready_to_merge auto-mode", () => {
   });
 
   test("conflict path → terminal `conflict` with conflict paths in note", async () => {
-    const r = await performEpicMerge(
-      baseCtx({ git: makeGitStub("conflict") }),
-    );
+    const r = await performEpicMerge(baseCtx({ git: makeGitStub("conflict") }));
     expect(r.state).toBe("conflict");
     expect(r.changed).toBe(true);
     expect(r.reason).toContain("conflict on");
@@ -327,6 +299,86 @@ describe("performEpicMerge — ready_to_merge auto-mode", () => {
     expect(repo.getState(EPIC_BRANCH)?.state).toBe("conflict");
     // Note carries operator-actionable detail.
     expect(repo.getState(EPIC_BRANCH)?.note).toContain("file1.ts");
+  });
+});
+
+// ---------- ADR-090↔ADR-091 dispatch-hook wire-up (t-9a8b0e4e) ----------
+
+describe("performEpicMerge — dispatchDissolve hook (t-9a8b0e4e)", () => {
+  beforeEach(() => {
+    seedState("ready_to_merge", 300, "all checks pass");
+  });
+
+  test("hook returning true → dissolveDispatched=true with hook called once with (epicId, by)", async () => {
+    const calls: Array<{ epicId: string; by: string }> = [];
+    const hook = async (epicId: string, by: string): Promise<boolean> => {
+      calls.push({ epicId, by });
+      return true;
+    };
+    const r = await performEpicMerge(
+      baseCtx({
+        git: makeGitStub("success"),
+        dispatchDissolve: hook,
+        by: "epic-cron",
+      }),
+    );
+    expect(r.state).toBe("merged");
+    expect(r.dissolveDispatched).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.epicId).toBe(EPIC_ID);
+    expect(calls[0]?.by).toBe("epic-cron");
+  });
+
+  test("hook returning false → dissolveDispatched=false (hook DID fire, just failed gracefully)", async () => {
+    const hook = async (): Promise<boolean> => false;
+    const r = await performEpicMerge(
+      baseCtx({
+        git: makeGitStub("success"),
+        dispatchDissolve: hook,
+      }),
+    );
+    expect(r.state).toBe("merged");
+    expect(r.dissolveDispatched).toBe(false);
+  });
+
+  test("hook throwing → dissolveDispatched=false WITHOUT re-throwing (merge already terminal)", async () => {
+    // The merge already succeeded; a throw inside the dispatch hook
+    // must NOT propagate — operator-recoverable via manual dissolve-
+    // epic. tryDispatchDissolve's catch swallows + logs to stderr.
+    const hook = async (): Promise<boolean> => {
+      throw new Error("simulated cockpit-entry missing");
+    };
+    const r = await performEpicMerge(
+      baseCtx({
+        git: makeGitStub("success"),
+        dispatchDissolve: hook,
+      }),
+    );
+    expect(r.state).toBe("merged");
+    expect(r.dissolveDispatched).toBe(false);
+    // Merge SHA still surfaces — the dispatch failure didn't kill the
+    // merge result.
+    expect(r.mergedSha).toBe("epicMergedSha");
+  });
+
+  test("no-op merge (HEAD already at parentBase) still fires the hook", async () => {
+    // Per ADR-090 §dissolve-epic step 5 — dissolve still runs even on
+    // an empty-merge tick. Wire-up regression: the no-op branch in
+    // performEpicMerge calls tryDispatchDissolve as well.
+    const calls: string[] = [];
+    const hook = async (epicId: string): Promise<boolean> => {
+      calls.push(epicId);
+      return true;
+    };
+    const r = await performEpicMerge(
+      baseCtx({
+        git: makeGitStub("no-op"),
+        dispatchDissolve: hook,
+      }),
+    );
+    expect(r.state).toBe("merged");
+    expect(r.dissolveDispatched).toBe(true);
+    expect(calls).toEqual([EPIC_ID]);
   });
 });
 

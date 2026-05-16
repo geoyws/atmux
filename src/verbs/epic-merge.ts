@@ -26,30 +26,20 @@
 // the verb.
 
 import { join } from "node:path";
-import {
-  closeDatabase,
-  type Database,
-  openDatabase,
-} from "../abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
-import {
-  defaultGitSpawn,
-  type GitSpawn,
-} from "../abstractions/worktree.ts";
-import {
-  getAtmuxDir,
-  type ResolveDirOpts,
-  requireTeam,
-} from "../core/common.ts";
+import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
+import type { PreMergeGateInput } from "../core/branch-merge-state.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import {
   type EpicMergeContext,
   type PerformEpicMergeResult,
   performEpicMerge,
 } from "../core/epic-merge.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
-import type { PreMergeGateInput } from "../core/branch-merge-state.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
+import { dissolveEpic } from "./team/dissolve-epic.ts";
 
 const USAGE = "atmux epic-merge tick [--team-dir <path>]";
 
@@ -66,9 +56,7 @@ export interface ParsedEpicMergeArgs {
 }
 
 /** Pure parser. Throws `UsageError` on bad invocation. */
-export function parseEpicMergeArgs(
-  argv: ReadonlyArray<string>,
-): ParsedEpicMergeArgs {
+export function parseEpicMergeArgs(argv: ReadonlyArray<string>): ParsedEpicMergeArgs {
   let subverb: "tick" | undefined;
   let teamDir: string | undefined;
   let i = 0;
@@ -167,11 +155,9 @@ export async function epicMergeTickVerb(
   const openDb = opts.openDb ?? ((p: string) => openDatabase(p, migrations));
   const closeDb = opts.closeDb ?? closeDatabase;
   const resolveGate = opts.resolveGate ?? defaultResolveGate;
-  const resolveParentRepo =
-    opts.resolveParentRepo ?? defaultResolveParentRepo;
+  const resolveParentRepo = opts.resolveParentRepo ?? defaultResolveParentRepo;
 
-  const dirOpts: ResolveDirOpts =
-    parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
 
@@ -179,9 +165,7 @@ export async function epicMergeTickVerb(
   // normal team is a fast no-op + log + exit 0 (matches gitter
   // --sweep's `autoMerge.enabled !== true` posture).
   if (team.epicTeam === undefined) {
-    logger.log(
-      `epic-merge tick: team '${team.name}' has no epicTeam block — no-op`,
-    );
+    logger.log(`epic-merge tick: team '${team.name}' has no epicTeam block — no-op`);
     return 0;
   }
   const epicTeam = team.epicTeam;
@@ -228,6 +212,15 @@ export async function epicMergeTickVerb(
       repo,
       git,
       by: "epic-cron",
+      // ADR-090↔ADR-091 wire-up (t-9a8b0e4e): on `merging → merged`
+      // success, invoke the dissolve-epic verb directly. The cron-fired
+      // auto-merger IS the legitimate dispatcher per ADR-091 state
+      // machine, so `callerScope: "driver"` is injected at the call-
+      // site rather than relying on the cron's ATMUX_CALLER_SCOPE env.
+      // Production default per t-9a8b0e4e Task body — operator can
+      // still dissolve manually if this fails (the merger_state.note
+      // carries the merge SHA + epicId for traceability).
+      dispatchDissolve: defaultDispatchDissolve,
     };
     const result = await performEpicMerge(ctx);
     logTickResult(result, logger, team.name, epicTeam.parentBase);
@@ -278,14 +271,8 @@ async function defaultResolveGate(deps: {
   // lands; an unclean parent would refuse the merge regardless of
   // the epic-team's own cleanliness. GitSpawn is cwd-less; use
   // `-C <path>` argv form to scope.
-  const cleanResult = await deps.git([
-    "-C",
-    deps.parentRepoPath,
-    "status",
-    "--porcelain",
-  ]);
-  const worktreeIsClean =
-    cleanResult.exitCode === 0 && cleanResult.stdout.trim() === "";
+  const cleanResult = await deps.git(["-C", deps.parentRepoPath, "status", "--porcelain"]);
+  const worktreeIsClean = cleanResult.exitCode === 0 && cleanResult.stdout.trim() === "";
 
   // 4. isAheadOfBase — does the epic-team's worktree have commits
   // not yet on parentBase? Run on epic-team's worktree (where the
@@ -298,25 +285,13 @@ async function defaultResolveGate(deps: {
     `${deps.parentBase}..HEAD`,
   ]);
   const aheadCount = parseInt(aheadResult.stdout.trim(), 10);
-  const isAheadOfBase =
-    aheadResult.exitCode === 0 && Number.isFinite(aheadCount) && aheadCount > 0;
+  const isAheadOfBase = aheadResult.exitCode === 0 && Number.isFinite(aheadCount) && aheadCount > 0;
 
   // 5. baseHasMoved — has parentBase advanced past the merge-base?
   // `git merge-base parentBase HEAD` returns the divergence point;
   // if that's NOT the same as parentBase's tip, parentBase moved.
-  const mbResult = await deps.git([
-    "-C",
-    deps.epicRepoPath,
-    "merge-base",
-    deps.parentBase,
-    "HEAD",
-  ]);
-  const baseTipResult = await deps.git([
-    "-C",
-    deps.epicRepoPath,
-    "rev-parse",
-    deps.parentBase,
-  ]);
+  const mbResult = await deps.git(["-C", deps.epicRepoPath, "merge-base", deps.parentBase, "HEAD"]);
+  const baseTipResult = await deps.git(["-C", deps.epicRepoPath, "rev-parse", deps.parentBase]);
   const mbSha = mbResult.stdout.trim();
   const baseTipSha = baseTipResult.stdout.trim();
   const baseHasMoved =
@@ -378,10 +353,7 @@ function defaultResolveParentRepo(epicRepoPath: string): string {
 
 // ---------- Default current-branch resolver ----------
 
-async function currentBranch(
-  repoPath: string,
-  git: GitSpawn,
-): Promise<string> {
+async function currentBranch(repoPath: string, git: GitSpawn): Promise<string> {
   const r = await git(["-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD"]);
   if (r.exitCode !== 0) {
     throw new Error(
@@ -389,6 +361,35 @@ async function currentBranch(
     );
   }
   return r.stdout.trim();
+}
+
+// ---------- ADR-090↔ADR-091 dispatch hook (t-9a8b0e4e) ----------
+
+/** Production default for {@link EpicMergeContext.dispatchDissolve}.
+ *  Invokes the dissolve-epic verb directly with `callerScope: "driver"`
+ *  injected — the cron-fired auto-merger IS the legitimate dispatcher
+ *  per ADR-091's state machine, so the ATMUX_CALLER_SCOPE env is
+ *  bypassed at the call-site.
+ *
+ *  Wraps the call in try/catch so any throw from dissolveEpic (caller-
+ *  scope refusal, missing cockpit entry, dirty-worktree refuse) returns
+ *  `false` rather than propagating — the merge ALREADY succeeded; the
+ *  dissolve gap is operator-recoverable. The error reason is surfaced
+ *  via stderr (cron log capture) by {@link tryDispatchDissolve}'s
+ *  catch block, so the failure stays visible without aborting the
+ *  cron tick. */
+async function defaultDispatchDissolve(epicId: string, by: string): Promise<boolean> {
+  const rc = await dissolveEpic([epicId], {
+    callerScope: () => "driver",
+    // Default logger writes to process.stderr — fits the cron log
+    // capture path. The verb's success log ("epic-team dissolved: …")
+    // joins the same stream as the tick result line.
+    logger: {
+      log: (m: string) => process.stderr.write(`${m}\n`),
+      warn: (m: string) => process.stderr.write(`epic-merge[${by}] dissolve-epic warn: ${m}\n`),
+    },
+  });
+  return rc === 0;
 }
 
 // ---------- Result logging ----------

@@ -44,11 +44,7 @@
 // + merge + dissolve-dispatch; this module is the pure-of-cron core.
 
 import type { GitSpawn } from "../abstractions/branch-merge.ts";
-import {
-  defaultGitSpawn,
-  MergeConflictError,
-  mergeMember,
-} from "../abstractions/branch-merge.ts";
+import { defaultGitSpawn, MergeConflictError, mergeMember } from "../abstractions/branch-merge.ts";
 import {
   type BranchMergeState,
   isTerminalState,
@@ -125,6 +121,19 @@ export interface EpicMergeContext {
    *  before merge. Default `true`. Tests pass `false` for local-only
    *  git fixtures. */
   fetch?: boolean;
+  /** ADR-090↔ADR-091 wire-up hook (t-9a8b0e4e). When provided, fires
+   *  on `merging → merged` success to dispatch the dissolve-epic verb
+   *  per ADR-090 §dissolve-epic step 3. Production default lives in
+   *  `verbs/epic-merge.ts::defaultDispatchDissolve` — it imports +
+   *  invokes `dissolveEpic` directly with `callerScope: "driver"`
+   *  injected (the cron-fired auto-merger IS the legitimate dispatcher
+   *  per ADR-091 state machine). Tests stub a no-op or capture-args
+   *  variant; core unit tests that don't care about the dispatch path
+   *  leave it `undefined`, in which case {@link tryDispatchDissolve}
+   *  logs the TODO + returns `false` (pre-wire-up behavior). Keeps
+   *  `src/core/*` free of `src/verbs/*` imports — layering stays
+   *  clean. */
+  dispatchDissolve?: (epicId: string, by: string) => Promise<boolean>;
 }
 
 /** Result of one `performEpicMerge` tick. Same shape as
@@ -295,9 +304,7 @@ export function shouldEpicTransitionFromInProgress(
  * scoped advisory lock (not this row-level guard) — out of scope
  * for v1 since pr-mode is runtime-noop.
  */
-export async function performEpicMerge(
-  ctx: EpicMergeContext,
-): Promise<PerformEpicMergeResult> {
+export async function performEpicMerge(ctx: EpicMergeContext): Promise<PerformEpicMergeResult> {
   const now = ctx.now ?? (() => Math.floor(Date.now() / 1000));
   const by = ctx.by ?? "epic-cron";
   const t = now();
@@ -343,10 +350,7 @@ export async function performEpicMerge(
   // in_progress → epic-aware gate decision (refines shared gate with
   // reviewer-trunk-signoff per §Decision-anchor #5).
   if (currentState === "in_progress") {
-    const decision = shouldEpicTransitionFromInProgress(
-      ctx.gate,
-      ctx.hasReviewerTrunkSignoff,
-    );
+    const decision = shouldEpicTransitionFromInProgress(ctx.gate, ctx.hasReviewerTrunkSignoff);
     const r = guardedTransition(ctx.repo, {
       epicBranch: ctx.epicBranch,
       fromState: "in_progress",
@@ -443,12 +447,7 @@ async function runAutoMerge(
   else opts.git = ctx.git ?? defaultGitSpawn;
 
   try {
-    const mr = await mergeMember(
-      ctx.parentBase,
-      ctx.epicBranch,
-      ctx.parentRepoPath,
-      opts,
-    );
+    const mr = await mergeMember(ctx.parentBase, ctx.epicBranch, ctx.parentRepoPath, opts);
     const t2 = now();
 
     if (mr.status === "no-op") {
@@ -465,9 +464,7 @@ async function runAutoMerge(
         by,
         now: t2,
       });
-      const dispatched = r.applied
-        ? await tryDispatchDissolve(ctx.epicId, by)
-        : false;
+      const dispatched = r.applied ? await tryDispatchDissolve(ctx, by) : false;
       return {
         state: r.applied ? "merged" : r.observedFrom,
         changed: r.applied,
@@ -488,9 +485,7 @@ async function runAutoMerge(
       now: t2,
       baseSha: mr.sha,
     });
-    const dispatched = r.applied
-      ? await tryDispatchDissolve(ctx.epicId, by)
-      : false;
+    const dispatched = r.applied ? await tryDispatchDissolve(ctx, by) : false;
     const result: PerformEpicMergeResult = {
       state: r.applied ? "merged" : r.observedFrom,
       changed: r.applied,
@@ -530,30 +525,51 @@ async function runAutoMerge(
 
 // ---------- Internal — dissolve-epic dispatch (ADR-090 §dissolve-epic) ----------
 
-/** Attempts to fire `atmux team dissolve-epic --auto <epicId>` after a
- *  successful merge. ADR-090 §dissolve-epic step 3 names the `--auto`
- *  flag as the post-merge cleanup path. Until T9 (`t-b430b185`,
- *  spawn-epic / dissolve-epic verbs) lands, the dispatch is a logged
- *  TODO and operator dissolves manually; the post-T9 wiring will
- *  spawn a child `atmux team dissolve-epic --auto <epicId>` process
- *  here. Returns `true` iff the dispatch succeeded; `false` on any
- *  failure path (verb missing, spawn error, exit non-zero). Failure
- *  is surfaced via the {@link PerformEpicMergeResult.reason} on the
- *  outer call site, not thrown — the merge ALREADY succeeded; the
- *  dissolve gap is operator-recoverable via manual `atmux team
- *  dissolve-epic` invocation later. */
-async function tryDispatchDissolve(
-  epicId: string,
-  by: string,
-): Promise<boolean> {
-  // T9 (`t-b430b185`) ships the actual dissolve-epic verb. Until
-  // then, this is a logged TODO — emit to stderr so the cron log
-  // captures the gap. The merger_state row's `note` already names
-  // the merge SHA; the operator can `atmux team dissolve-epic`
-  // manually using that SHA + epicId until T9 wires the auto-path.
+/** Attempts to fire the dissolve-epic verb after a successful merge.
+ *  ADR-090 §dissolve-epic step 3 names this as the cron-fired post-
+ *  merge cleanup path. The actual dispatch lives behind
+ *  {@link EpicMergeContext.dispatchDissolve} — a hook the verb layer
+ *  wires to `dissolveEpic(...)` from `verbs/team/dissolve-epic.ts`
+ *  with `callerScope: "driver"` injected (the cron-fired auto-merger
+ *  IS the legitimate dispatcher per ADR-091's state machine).
+ *
+ *  The hook indirection keeps `src/core/*` free of `src/verbs/*`
+ *  imports — clean layering. When the hook is absent (test fixtures
+ *  that don't exercise the dissolve path, or a future ad-hoc caller
+ *  that wants to log-only), this falls back to the pre-T9 TODO line
+ *  so cron logs still surface the unfired dispatch.
+ *
+ *  Returns `true` iff the dispatch succeeded; `false` on any failure
+ *  path (hook absent, hook throws, verb returns non-zero internally).
+ *  Failure is NOT thrown — the merge ALREADY succeeded; the dissolve
+ *  gap is operator-recoverable via a manual `atmux team dissolve-epic`
+ *  invocation later, and the `merger_state.note` carries the merge SHA
+ *  so the operator has the receipt regardless. */
+async function tryDispatchDissolve(ctx: EpicMergeContext, by: string): Promise<boolean> {
+  if (ctx.dispatchDissolve !== undefined) {
+    try {
+      return await ctx.dispatchDissolve(ctx.epicId, by);
+    } catch (e) {
+      // Surface the failure on stderr (cron log capture) without
+      // throwing — the merge state row is already terminal `merged`
+      // by the time we reach this hook, and re-throwing would leave
+      // the caller no path to fix anything that isn't operator-
+      // recoverable manually.
+      process.stderr.write(
+        `epic-merge[${by}]: dissolve-epic dispatch for ${ctx.epicId} failed — ${
+          e instanceof Error ? e.message : String(e)
+        } (operator can retry with \`atmux team dissolve-epic ${ctx.epicId}\`)\n`,
+      );
+      return false;
+    }
+  }
+  // No hook wired — log the TODO so cron tails surface the gap.
+  // Production callers (cron tick, operator-driven verb) always pass
+  // `dispatchDissolve`; this branch only fires for ad-hoc core invocations
+  // (e.g. unit tests that don't care about the dissolve path).
   process.stderr.write(
-    `epic-merge[${by}]: TODO — auto-dispatch \`atmux team dissolve-epic --auto ${epicId}\` ` +
-      `(T9 t-b430b185 not yet shipped; operator dissolves manually for now)\n`,
+    `epic-merge[${by}]: no dispatchDissolve hook wired — skipping auto-dissolve for ${ctx.epicId} ` +
+      `(operator can dissolve manually: \`atmux team dissolve-epic ${ctx.epicId}\`)\n`,
   );
   return false;
 }
