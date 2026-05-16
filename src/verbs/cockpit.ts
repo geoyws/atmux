@@ -50,7 +50,7 @@ import {
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
-import { getCockpitSocketName } from "../core/tmux-paths.ts";
+import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import {
   awaitClaudePaneReady,
   formatReadinessWarning,
@@ -572,7 +572,10 @@ export async function cockpitRebuild(
 
   // Phase 5: cockpit session on its dedicated socket (ADR-162
   // §Decision-anchor #1 — `tmux -L atmux-cockpit`). Resolver honours
-  // `ATMUX_COCKPIT_SOCKET` legacy escape hatch.
+  // `ATMUX_COCKPIT_SOCKET` legacy escape hatch. §Decision-anchor #2:
+  // canonical atmux.conf threaded via `-f` so window-naming +
+  // key-rebinds match ADR-135's contract irrespective of the
+  // operator's personal config.
   // ADR-133 TR2: read the resolved `medic` block (post-shim canonical
   // name). For sessions[]-based configs `enrichLegacyFields` synthesizes
   // both `superdoctor` and `medic` from the same `type: "superdoctor"`
@@ -580,7 +583,10 @@ export async function cockpitRebuild(
   // `superdoctor` → `medic` with a deprecation warning. The downstream
   // reconcile + window-name convention stays "superdoctor" until TR3
   // ships the verb / window / skill renames.
-  const cockpitTmux = factory({ socket: getCockpitSocketName() });
+  const cockpitTmux = factory({
+    socket: getCockpitSocketName(),
+    configFile: getAtmuxTmuxConfPath(),
+  });
   // ADR-133: loader populates `cockpit.medic` from the canonical block
   // OR coerces from a legacy `superdoctor` block. Pass `medic` directly;
   // the reconcile names the window canonically and migrates any legacy
