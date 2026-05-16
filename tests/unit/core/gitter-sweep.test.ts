@@ -245,7 +245,6 @@ describe("gitterSweep — ahead-of-base check", () => {
 
 describe("gitterSweep — in-flight state recognition", () => {
   test.each([
-    "in_progress",
     "ready_to_merge",
     "rebasing",
     "merging",
@@ -273,6 +272,47 @@ describe("gitterSweep — in-flight state recognition", () => {
     const result = await gitterSweep(deps);
     expect(result.queued).toBe(1);
     expect(result.entries[0]?.action).toBe("queued");
+  });
+
+  test("state=in_progress with commits ahead → queued (re-eval gate per t-f4088323 P1 fix)", async () => {
+    // Pre-fix: `in_progress` was in IN_FLIGHT_STATES → branches got
+    // trapped because the dispatcher pre-merge gate (held at first-
+    // tick when worker was dirty) never re-evaluated when the worker
+    // became task-clean. Post-fix: in_progress is queued every cycle
+    // so the dispatcher re-runs the gate. Dispatcher idempotence is
+    // guaranteed by BEGIN IMMEDIATE in MergerStateRepo.transition.
+    seedRepoRow("geoyws-fe-1", "in_progress");
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+    });
+    const result = await gitterSweep(deps);
+    expect(result.queued).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.entries[0]?.action).toBe("queued");
+    expect(result.entries[0]?.observedState).toBe("in_progress");
+  });
+
+  test("state=in_progress + dispatcher refuses (gate-held) → queue-refused with reason", async () => {
+    // Worker still dirty → dispatcher walks `in_progress → in_progress`
+    // (self-loop, no progress), returns `{queued:false, reason:"gate-held: ..."}`.
+    // Sweep records `queue-refused` so operators can see WHY the branch
+    // didn't advance this tick.
+    seedRepoRow("geoyws-fe-1", "in_progress");
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+      queue: async () => ({
+        queued: false,
+        reason: "gate-held: worker has 2 in-progress tasks",
+      }),
+    });
+    const result = await gitterSweep(deps);
+    expect(result.queued).toBe(0);
+    expect(result.refused).toBe(1);
+    expect(result.entries[0]?.action).toBe("queue-refused");
+    expect(result.entries[0]?.note).toContain("gate-held");
+    expect(result.entries[0]?.observedState).toBe("in_progress");
   });
 });
 
@@ -374,8 +414,46 @@ describe("gitterSweep — multi-branch aggregate", () => {
 // ---------- Idempotence ----------
 
 describe("gitterSweep — idempotence", () => {
-  test("second sweep after dispatcher records in-flight transitions skips the branch", async () => {
-    // First sweep — branch fresh, dispatcher records the transition.
+  test("second sweep after dispatcher records merging transition skips the branch", async () => {
+    // First sweep — branch fresh, dispatcher records a deep-mid-walk
+    // transition (`merging` is genuinely active — the actual git merge
+    // is mid-walk). Post-t-f4088323 fix, `in_progress` no longer
+    // qualifies (sweep re-queues to re-eval gate); a `merging` row
+    // exercises the same idempotent-no-op path the original test
+    // intended.
+    const deps1 = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+      queue: async ({ memberBranch }) => {
+        repo.transition({
+          memberBranch,
+          next: "merging",
+          transitionedAt: 1_700_000_000,
+          by: "cron",
+        });
+        return { queued: true };
+      },
+    });
+    const first = await gitterSweep(deps1);
+    expect(first.queued).toBe(1);
+
+    // Second sweep — same git output, but state.db now has the
+    // mid-walk row → must skip.
+    const deps2 = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+    });
+    const second = await gitterSweep(deps2);
+    expect(second.queued).toBe(0);
+    expect(second.entries[0]?.action).toBe("skipped-in-flight");
+    expect(second.entries[0]?.observedState).toBe("merging");
+  });
+
+  test("post-fix: second sweep on `in_progress` re-queues (gate re-eval, not skip)", async () => {
+    // Companion to the above — explicitly pins the t-f4088323 fix:
+    // back-to-back sweeps on `in_progress` MUST re-queue every cycle
+    // (the dispatcher is responsible for idempotence on gate-held
+    // self-loops).
     const deps1 = buildDeps({
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 2 },
@@ -392,15 +470,16 @@ describe("gitterSweep — idempotence", () => {
     const first = await gitterSweep(deps1);
     expect(first.queued).toBe(1);
 
-    // Second sweep — same git output, but state.db now has the
-    // in-flight row → must skip.
     const deps2 = buildDeps({
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 2 },
     });
     const second = await gitterSweep(deps2);
-    expect(second.queued).toBe(0);
-    expect(second.entries[0]?.action).toBe("skipped-in-flight");
+    // Pre-fix this would have been skipped-in-flight; post-fix it's
+    // re-queued (the dispatcher will run the gate again).
+    expect(second.queued).toBe(1);
+    expect(second.entries[0]?.action).toBe("queued");
+    expect(second.entries[0]?.observedState).toBe("in_progress");
   });
 
   test("all-branches-merged + 0 ahead → fully no-op", async () => {
