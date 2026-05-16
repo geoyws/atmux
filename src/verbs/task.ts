@@ -33,6 +33,7 @@ import {
   removeTask,
   setTaskBody,
   setTaskDeps,
+  setTaskDriverOnly,
   setTaskLane,
   setTaskPriority,
   showTask,
@@ -56,7 +57,8 @@ const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--js
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
 const USAGE_PRIORITY = "atmux task priority <id> <N|->";
-const USAGE_UPDATE = "atmux task update <id> [--body <text>] [--deps <a,b>]";
+const USAGE_UPDATE =
+  "atmux task update <id> [--body <text>] [--deps <a,b>] [--driver-only|--no-driver-only]";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
 
@@ -327,6 +329,9 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
   let body: string | undefined;
   let deps: string[] | undefined;
   let teamDir: string | undefined;
+  // ADR-033 retro-flag (t-2ef0c994). `undefined` = don't touch the
+  // flag; `true` = set; `false` = clear back to undefined-equivalent.
+  let driverOnly: boolean | undefined;
   let i = 0;
   while (i < rest.length) {
     const a = rest[i];
@@ -356,6 +361,18 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
       i += 2;
       continue;
     }
+    if (a === "--driver-only") {
+      // ADR-033 retro-flag SET (t-2ef0c994). No value — boolean flag.
+      driverOnly = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--no-driver-only") {
+      // ADR-033 retro-flag CLEAR (t-2ef0c994). Reverses an earlier flip.
+      driverOnly = false;
+      i += 1;
+      continue;
+    }
     if (a === "--team-dir") {
       const v = rest[i + 1];
       if (v === undefined) {
@@ -373,9 +390,9 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
       hint: USAGE_UPDATE,
     });
   }
-  if (body === undefined && deps === undefined) {
+  if (body === undefined && deps === undefined && driverOnly === undefined) {
     throw new UsageError({
-      what: "task update: at least one of --body or --deps required",
+      what: "task update: at least one of --body, --deps, --driver-only, or --no-driver-only required",
       hint: USAGE_UPDATE,
     });
   }
@@ -386,6 +403,9 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
   }
   if (deps !== undefined) {
     await setTaskDeps(atmuxDir, id, deps);
+  }
+  if (driverOnly !== undefined) {
+    await setTaskDriverOnly(atmuxDir, id, driverOnly);
   }
   process.stdout.write(`task ${id} updated\n`);
   return 0;

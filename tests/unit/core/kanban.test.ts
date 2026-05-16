@@ -29,6 +29,7 @@ import {
   removeTask,
   setTaskBody,
   setTaskDeps,
+  setTaskDriverOnly,
   showTask,
   unresolvedDeps,
 } from "../../../src/core/kanban.ts";
@@ -357,6 +358,38 @@ describe("setTaskDeps", () => {
 
   test("missing id → ConfigError", async () => {
     await expect(setTaskDeps(atmuxDir, "t-missing0", ["t-a"])).rejects.toThrow(ConfigError);
+  });
+});
+
+describe("setTaskDriverOnly", () => {
+  test("sets driverOnly=true on a task that didn't have the flag", async () => {
+    const id = await addTask(atmuxDir, { subject: "park me" });
+    await setTaskDriverOnly(atmuxDir, id, true);
+    const task = await showTask(atmuxDir, id);
+    expect(task?.driverOnly).toBe(true);
+  });
+
+  test("clearing back to false normalizes to undefined (omitted)", async () => {
+    const id = await addTask(atmuxDir, { subject: "park then unpark", driverOnly: true });
+    await setTaskDriverOnly(atmuxDir, id, false);
+    const task = await showTask(atmuxDir, id);
+    // Schema treats undefined/false as equivalent for the refuse-gate;
+    // we normalize on write to keep the on-disk shape clean.
+    expect(task?.driverOnly).toBeUndefined();
+  });
+
+  test("idempotent: re-setting true is a no-op (re-stamp tolerated)", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", driverOnly: true });
+    await setTaskDriverOnly(atmuxDir, id, true);
+    await setTaskDriverOnly(atmuxDir, id, true);
+    const task = await showTask(atmuxDir, id);
+    expect(task?.driverOnly).toBe(true);
+  });
+
+  test("missing id → ConfigError", async () => {
+    await expect(setTaskDriverOnly(atmuxDir, "t-missing0", true)).rejects.toThrow(
+      ConfigError,
+    );
   });
 });
 

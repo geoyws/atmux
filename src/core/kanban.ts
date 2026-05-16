@@ -609,6 +609,51 @@ export async function setTaskDeps(
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, deps: [...deps] }));
 }
 
+/** ADR-033 retro-flag setter — flip an existing task's `driverOnly`
+ *  flag. Per t-2ef0c994: `task add --driver-only` was the only entry
+ *  point; this closes the "I forgot at filing time" / "decided to park
+ *  it after filing" gap so operators can promote any todo or blocked
+ *  task into the driver-only refuse-gate without going through SQL.
+ *
+ *  Passing `true` sets the flag; `false` clears it (back to undefined-
+ *  equivalent). Idempotent — re-setting the same value is a no-op
+ *  upsert. */
+export async function setTaskDriverOnly(
+  atmuxDir: string,
+  id: string,
+  driverOnly: boolean,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        // Setting false collapses to omitted (consistent with task add's
+        // "only stamp when explicitly true" pattern at line 208) — the
+        // schema treats `undefined` and `false` as equivalent for the
+        // refuse-gate semantics, so we normalize on write.
+        const next = { ...cur };
+        if (driverOnly) {
+          next.driverOnly = true;
+        } else {
+          delete (next as { driverOnly?: boolean }).driverOnly;
+        }
+        repo.upsertTask(next);
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
+    const next = { ...t };
+    if (driverOnly) {
+      next.driverOnly = true;
+    } else {
+      delete (next as { driverOnly?: boolean }).driverOnly;
+    }
+    return next;
+  });
+}
+
 /** Update a task's owner. Throws `ConfigError` on miss. */
 export async function assignTask(atmuxDir: string, id: string, owner: string): Promise<void> {
   if (await _useSqlite(atmuxDir)) {
