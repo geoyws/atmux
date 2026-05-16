@@ -1775,7 +1775,7 @@ async function checkMember(
   // History recording is unconditional (within enabled + non-exempt
   // members); only the SURFACE actions (Discord + clarifier + flag)
   // are dedup'd in the tick aggregator. Per ADR-142 §OQ-2: this is the
-  // pre-martinet-ship call-site (lead's whip §1c); martinet's per-tick
+  // pre-sentinel-ship call-site (lead's whip §1c); sentinel's per-tick
   // observer ports the same function post-ADR-140-ship.
   const cyc = ctx.modalCyclingConfig;
   if (cyc.enabled && !cyc.exemptMembers.has(member.name)) {

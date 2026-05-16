@@ -1,5 +1,5 @@
-// ADR-132 §D4 / T3 (t-e96d286a): CursorMartinet — production-default
-// pluggable Martinet impl backed by `cursor-agent --print --model
+// ADR-132 §D4 / T3 (t-e96d286a): CursorSentinel — production-default
+// pluggable Sentinel impl backed by `cursor-agent --print --model
 // composer-2-fast --force`.
 //
 // Per ADR-140 cheap-model-first principle: the Claude lead is reserved
@@ -10,17 +10,17 @@
 // §Decision simplification).
 //
 // Cage posture: this impl is cage-AGNOSTIC by design. The cockpit-W3
-// dispatcher (T8 / `src/verbs/cockpit.ts::buildMartinetWindowCommand`
-// + `src/verbs/martinet.ts::buildMartinet`) injects the
+// dispatcher (T8 / `src/verbs/cockpit.ts::buildSentinelWindowCommand`
+// + `src/verbs/sentinel.ts::buildSentinel`) injects the
 // `runCursorAgent` dep that owns spawn-time cage policy (operator UID,
 // full git, the cockpit session itself is the Tier-2 cage per ADR-058
-// §D1 trust posture — no separate per-team cage; martinet is
+// §D1 trust posture — no separate per-team cage; sentinel is
 // fleet-wide singleton). Tests inject a synthetic `runCursorAgent`
 // fake that returns a canned envelope so the impl's parser /
 // validator path is exercised without burning real tokens.
 //
 // Escalation gate: the §D5 six-trigger floor lives in
-// `src/core/martinet-escalation.ts` (T6 / t-a6a1c9ab). This impl
+// `src/core/sentinel-escalation.ts` (T6 / t-a6a1c9ab). This impl
 // composes the `classify()` + `shouldEscalate()` pair with an empty
 // `ObservationHistory` default so unit tests that only carry the
 // current-tick Observation can exercise the E6 mandatory floor (E6 is
@@ -32,7 +32,7 @@
 //   - enter-push           → 1:1 (interface kind)
 //   - claim-next           → 1:1 (interface kind)
 //   - rotate-routine       → emit `rotate` with reason="routine" per
-//                            ADR-140 amendment (martinet handles
+//                            ADR-140 amendment (sentinel handles
 //                            routine rotation; non-routine rotation
 //                            stays on the Claude lead via escalate).
 //   - modal-release        → emit `enter-push` with reason="modal-
@@ -55,13 +55,13 @@ import {
   classify,
   type ObservationHistory,
   shouldEscalate,
-} from "../../core/martinet-escalation.ts";
+} from "../../core/sentinel-escalation.ts";
 import type {
   ApplyResult,
-  Martinet,
+  Sentinel,
   NudgeAction,
   Observation,
-} from "../martinet.ts";
+} from "../sentinel.ts";
 
 // ---------- Construct-time deps ----------
 
@@ -90,7 +90,7 @@ export type CursorRunFn = (args: string[]) => Promise<string>;
  *  fallback to assert the E6 mandatory floor in isolation. */
 export type CursorHistoryFn = () => ObservationHistory;
 
-export interface CursorMartinetDeps {
+export interface CursorSentinelDeps {
   /** Per-tick observation provider. Cockpit dispatcher composes the
    *  real Observation; tests pass a fixture. */
   observeFn: (team: string) => Promise<Observation>;
@@ -166,7 +166,7 @@ const NudgeActionFromCursor = z.discriminatedUnion("kind", [
 // ---------- Constants ----------
 
 /** Default cursor-agent model — composer-2-fast per ADR-132 §D4 +
- *  ADR-140 cheap-model-first. The schema (CockpitMartinetCursor)
+ *  ADR-140 cheap-model-first. The schema (CockpitSentinelCursor)
  *  accepts `composer-2` as the alternative; constructor's `model`
  *  override picks per-team when the cockpit roster wires it through. */
 const DEFAULT_CURSOR_MODEL = "composer-2-fast" as const;
@@ -188,7 +188,7 @@ const EMPTY_HISTORY: ObservationHistory = {
  *  cursor agent reading the prompt has the same vocabulary the
  *  Claude lead reads when reviewing escalations. */
 export const CURSOR_SYSTEM_PROMPT = [
-  "You are Cursor composer-2-fast acting as the atmux team martinet —",
+  "You are Cursor composer-2-fast acting as the atmux team sentinel —",
   "the cockpit-tier whip-manager that owns mechanical observation and",
   "routine nudges per ADR-132 §D5 + ADR-140 cheap-model-first.",
   "",
@@ -234,20 +234,20 @@ export const CURSOR_SYSTEM_PROMPT = [
 
 // ---------- Impl ----------
 
-export class CursorMartinet implements Martinet {
+export class CursorSentinel implements Sentinel {
   readonly name = "cursor" as const;
-  private readonly deps: CursorMartinetDeps;
+  private readonly deps: CursorSentinelDeps;
   private readonly model: "composer-2-fast" | "composer-2";
 
-  constructor(deps: CursorMartinetDeps) {
+  constructor(deps: CursorSentinelDeps) {
     this.deps = deps;
     this.model = deps.model ?? DEFAULT_CURSOR_MODEL;
   }
 
-  /** Pass-through to the injected observer. CursorMartinet adds no
+  /** Pass-through to the injected observer. CursorSentinel adds no
    *  observation logic of its own — the cockpit-W3 dispatcher composes
    *  the canonical Observation and passes it through. Same shape the
-   *  ClaudeMartinet (T2) consumes so impls are interchangeable behind
+   *  ClaudeSentinel (T2) consumes so impls are interchangeable behind
    *  the cockpit dispatcher. */
   async observe(team: string): Promise<Observation> {
     return this.deps.observeFn(team);
@@ -378,11 +378,11 @@ export class CursorMartinet implements Martinet {
   /** Apply ONE non-escalation NudgeAction. Per T2 interface contract
    *  the dispatcher MUST filter `escalate-to-claude-lead` out before
    *  invoking apply(); this impl throws on misuse rather than silently
-   *  no-op-ing (matches ClaudeMartinet's posture). */
+   *  no-op-ing (matches ClaudeSentinel's posture). */
   async apply(action: NudgeAction): Promise<ApplyResult> {
     if (action.kind === "escalate-to-claude-lead") {
       throw new Error(
-        `CursorMartinet.apply() unreachable for escalate-to-claude-lead — ` +
+        `CursorSentinel.apply() unreachable for escalate-to-claude-lead — ` +
           `dispatcher must filter that branch before invoking apply() ` +
           `(escalation is terminal at the dispatcher boundary per ADR-132 §D1).`,
       );
@@ -393,7 +393,7 @@ export class CursorMartinet implements Martinet {
       return {
         success: false,
         evidence:
-          `CursorMartinet.apply(${action.kind}) for member='${action.member}': ` +
+          `CursorSentinel.apply(${action.kind}) for member='${action.member}': ` +
           `no sendKeys dep injected — dispatcher wiring incomplete. Action ` +
           `discarded; reason='${action.reason}'.`,
       };
@@ -424,11 +424,11 @@ export class CursorMartinet implements Martinet {
         };
       }
       case "rotate": {
-        // ADR-140 amendment — martinet handles ROUTINE rotation only
+        // ADR-140 amendment — sentinel handles ROUTINE rotation only
         // (60min uptime / context-rot detection). Non-routine rotation
         // stays on the Claude lead via escalate. Here we record the
         // rotation intent as evidence; the dispatcher (T8 follow-up)
-        // reads martinet-state.json + fires the actual `atmux rotate
+        // reads sentinel-state.json + fires the actual `atmux rotate
         // <member>` shell-out — keeping the impl pure (no destructive
         // git / atmux verb invocation directly).
         return {

@@ -62,7 +62,7 @@ import { init } from "./verbs/init.ts";
 import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
 import { laneStallTick } from "./verbs/lane-stall-tick.ts";
 import { laneTick } from "./verbs/lane-tick.ts";
-import { martinet } from "./verbs/martinet.ts";
+import { sentinel } from "./verbs/sentinel.ts";
 import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
@@ -268,8 +268,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cronOrphans(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
-    case "martinet":
-      return martinet(argv.slice(1));
+    case "sentinel":
+      return sentinel(argv.slice(1));
     case "ombudsman":
       return ombudsman(argv.slice(1));
     case "gitter":

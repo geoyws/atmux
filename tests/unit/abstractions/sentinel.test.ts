@@ -1,8 +1,8 @@
-// Unit tests for src/abstractions/martinet.ts + src/abstractions/martinets/claude.ts
+// Unit tests for src/abstractions/sentinel.ts + src/abstractions/sentinels/claude.ts
 // (ADR-132 T2 / t-2791cf60).
 //
 // Coverage:
-//   - ClaudeMartinet.name literal — "claude"
+//   - ClaudeSentinel.name literal — "claude"
 //   - observe() — delegates to injected observeFn verbatim
 //   - decide() — always emits exactly one escalate-to-claude-lead
 //     carrying the same Observation passed in
@@ -13,13 +13,13 @@
 
 import { describe, expect, test } from "bun:test";
 import type { PaneClassification } from "../../../src/core/pane-state.ts";
-import { ClaudeMartinet } from "../../../src/abstractions/martinets/claude.ts";
+import { ClaudeSentinel } from "../../../src/abstractions/sentinels/claude.ts";
 import type {
   EscalationReason,
-  Martinet,
+  Sentinel,
   NudgeAction,
   Observation,
-} from "../../../src/abstractions/martinet.ts";
+} from "../../../src/abstractions/sentinel.ts";
 
 // ---------- Helpers ----------
 
@@ -64,11 +64,11 @@ function fixtureObservation(team = "atmux"): Observation {
   };
 }
 
-// ---------- ClaudeMartinet ----------
+// ---------- ClaudeSentinel ----------
 
-describe("ClaudeMartinet", () => {
+describe("ClaudeSentinel", () => {
   test("name is 'claude' literal (constrained per ADR-132 §D simplified set)", () => {
-    const m = new ClaudeMartinet({
+    const m = new ClaudeSentinel({
       observeFn: async () => fixtureObservation(),
     });
     expect(m.name).toBe("claude");
@@ -77,7 +77,7 @@ describe("ClaudeMartinet", () => {
   test("observe() delegates to injected observeFn — returns its result verbatim", async () => {
     const fixture = fixtureObservation("test-team");
     const captured: string[] = [];
-    const m = new ClaudeMartinet({
+    const m = new ClaudeSentinel({
       observeFn: async (team) => {
         captured.push(team);
         return fixture;
@@ -90,20 +90,20 @@ describe("ClaudeMartinet", () => {
 
   test("decide() emits exactly one escalate-to-claude-lead carrying the observation", async () => {
     const fixture = fixtureObservation("a");
-    const m = new ClaudeMartinet({ observeFn: async () => fixture });
+    const m = new ClaudeSentinel({ observeFn: async () => fixture });
     const actions = await m.decide(fixture);
     expect(actions).toHaveLength(1);
     const action = actions[0]!;
     expect(action.kind).toBe("escalate-to-claude-lead");
     if (action.kind === "escalate-to-claude-lead") {
       expect(action.observation).toBe(fixture);
-      expect(action.reason).toContain("claude martinet");
+      expect(action.reason).toContain("claude sentinel");
       expect(action.reason).toContain("degenerate");
     }
   });
 
   test("decide() never emits autonomous-action kinds (enter-push / claim-next / rotate)", async () => {
-    const m = new ClaudeMartinet({ observeFn: async () => fixtureObservation() });
+    const m = new ClaudeSentinel({ observeFn: async () => fixtureObservation() });
     // Run across multiple fixture shapes — degenerate impl must
     // emit zero autonomous actions in every case.
     for (const variant of [
@@ -129,7 +129,7 @@ describe("ClaudeMartinet", () => {
   });
 
   test("apply() throws — unreachable for degenerate impl", async () => {
-    const m = new ClaudeMartinet({ observeFn: async () => fixtureObservation() });
+    const m = new ClaudeSentinel({ observeFn: async () => fixtureObservation() });
     const someAction: NudgeAction = {
       kind: "enter-push",
       member: "fe-1",
@@ -140,7 +140,7 @@ describe("ClaudeMartinet", () => {
   });
 
   test("apply() error message names the kind that was incorrectly dispatched", async () => {
-    const m = new ClaudeMartinet({ observeFn: async () => fixtureObservation() });
+    const m = new ClaudeSentinel({ observeFn: async () => fixtureObservation() });
     await expect(
       m.apply({ kind: "claim-next", member: "be-1", reason: "x" }),
     ).rejects.toThrow(/claim-next/);
@@ -150,7 +150,7 @@ describe("ClaudeMartinet", () => {
   });
 
   test("shouldEscalateToClaudeLead is unconditionally true", () => {
-    const m = new ClaudeMartinet({ observeFn: async () => fixtureObservation() });
+    const m = new ClaudeSentinel({ observeFn: async () => fixtureObservation() });
     expect(m.shouldEscalateToClaudeLead(fixtureObservation())).toBe(true);
     // Edge: even with `wedgedClaims` empty + `last2hr` healthy
     // (no E-trigger conditions), the degenerate impl still escalates.
@@ -167,11 +167,11 @@ describe("ClaudeMartinet", () => {
     ).toBe(true);
   });
 
-  test("structural conformance: implements Martinet interface", () => {
+  test("structural conformance: implements Sentinel interface", () => {
     // TS structural-type assertion — instance assignable to the
     // interface var. Compile-time only; runtime asserts presence
     // of the four method names.
-    const m: Martinet = new ClaudeMartinet({
+    const m: Sentinel = new ClaudeSentinel({
       observeFn: async () => fixtureObservation(),
     });
     expect(typeof m.observe).toBe("function");
@@ -184,7 +184,7 @@ describe("ClaudeMartinet", () => {
 
 // ---------- Type-level sanity ----------
 
-describe("Martinet types", () => {
+describe("Sentinel types", () => {
   test("NudgeAction discriminated union narrows on `kind`", () => {
     // Compile-time assertion via switch-exhaustiveness. If a
     // future commit adds a new kind without updating this
@@ -249,7 +249,7 @@ describe("Martinet types", () => {
     }
   });
 
-  test("Martinet.name literal is the simplified two-impl set", () => {
+  test("Sentinel.name literal is the simplified two-impl set", () => {
     // Documentation test: compile-time fence ensures `name`
     // stays constrained to claude|cursor per the 2026-05-14
     // 12:53 MYT driver simplification.
@@ -257,7 +257,7 @@ describe("Martinet types", () => {
     const claude: ExpectedNames = "claude";
     const cursor: ExpectedNames = "cursor";
     expect([claude, cursor]).toEqual(["claude", "cursor"]);
-    // The Martinet interface's `name` field must accept exactly
+    // The Sentinel interface's `name` field must accept exactly
     // these two strings — a future "minimax" reintroduction
     // would need to update both the interface AND this test.
   });

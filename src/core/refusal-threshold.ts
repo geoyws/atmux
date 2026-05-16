@@ -14,7 +14,7 @@
 // logged for audit but never auto-rotates per ADR-139 §D3.
 //
 // The shouldRotate function is a pure decision over an EVENT
-// LEDGER — the caller (medic / martinet observer in T3) feeds the
+// LEDGER — the caller (medic / sentinel observer in T3) feeds the
 // recent events (typically read from the `refusal_events` SQLite
 // table per ADR-139 §D2). Pure separation keeps the threshold
 // logic unit-testable without touching SQLite.

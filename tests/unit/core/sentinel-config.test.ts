@@ -1,5 +1,5 @@
 // ADR-132 §D6 / T5 (t-f3e9ac2a): tests for the precedence resolver
-// + override merge in src/core/martinet-config.ts.
+// + override merge in src/core/sentinel-config.ts.
 //
 // Coverage matrix:
 //   - Precedence: team > cockpit > hardcoded "claude"
@@ -10,77 +10,77 @@
 //     stub required
 
 import { describe, expect, test } from "bun:test";
-import { resolveMartinet } from "../../../src/core/martinet-config.ts";
+import { resolveSentinel } from "../../../src/core/sentinel-config.ts";
 import {
-  DEFAULT_MARTINET_CADENCE_SEC,
-  DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
+  DEFAULT_SENTINEL_CADENCE_SEC,
+  DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
   Team,
 } from "../../../src/schema/team.ts";
 import { Cockpit } from "../../../src/schema/cockpit.ts";
 
 // ---------- Precedence resolution ----------
 
-describe("resolveMartinet — precedence: team > cockpit > hardcoded", () => {
+describe("resolveSentinel — precedence: team > cockpit > hardcoded", () => {
   test("hardcoded 'claude' when both team + cockpit unset", () => {
     const team = Team.parse({ name: "demo", members: [] });
-    const r = resolveMartinet(team);
+    const r = resolveSentinel(team);
     expect(r.impl).toBe("claude");
   });
 
   test("hardcoded 'claude' when both team + cockpit explicitly omit field", () => {
     const team = Team.parse({ name: "demo", members: [] });
     const cockpit = Cockpit.parse({ teams: [] });
-    const r = resolveMartinet(team, cockpit);
+    const r = resolveSentinel(team, cockpit);
     expect(r.impl).toBe("claude");
   });
 
-  test("cockpit.defaultMartinet beats hardcoded when team unset", () => {
+  test("cockpit.defaultSentinel beats hardcoded when team unset", () => {
     const team = Team.parse({ name: "demo", members: [] });
-    const cockpit = Cockpit.parse({ teams: [], defaultMartinet: "cursor" });
-    expect(resolveMartinet(team, cockpit).impl).toBe("cursor");
+    const cockpit = Cockpit.parse({ teams: [], defaultSentinel: "cursor" });
+    expect(resolveSentinel(team, cockpit).impl).toBe("cursor");
   });
 
-  test("team.martinet beats cockpit.defaultMartinet", () => {
+  test("team.sentinel beats cockpit.defaultSentinel", () => {
     const team = Team.parse({
       name: "demo",
       members: [],
-      martinet: "claude",
+      sentinel: "claude",
     });
-    const cockpit = Cockpit.parse({ teams: [], defaultMartinet: "cursor" });
+    const cockpit = Cockpit.parse({ teams: [], defaultSentinel: "cursor" });
     // Team's explicit `claude` wins, even though cockpit recommends cursor.
-    expect(resolveMartinet(team, cockpit).impl).toBe("claude");
+    expect(resolveSentinel(team, cockpit).impl).toBe("claude");
   });
 
-  test("team.martinet beats hardcoded when cockpit unset", () => {
+  test("team.sentinel beats hardcoded when cockpit unset", () => {
     const team = Team.parse({
       name: "demo",
       members: [],
-      martinet: "cursor",
+      sentinel: "cursor",
     });
-    expect(resolveMartinet(team).impl).toBe("cursor");
+    expect(resolveSentinel(team).impl).toBe("cursor");
   });
 
   test("undefined cockpit arg short-circuits to team > hardcoded", () => {
     const team = Team.parse({
       name: "demo",
       members: [],
-      martinet: "cursor",
+      sentinel: "cursor",
     });
-    // Explicit-undefined second arg — `resolveMartinet` accepts both
+    // Explicit-undefined second arg — `resolveSentinel` accepts both
     // omitted and explicit-undefined.
-    expect(resolveMartinet(team, undefined).impl).toBe("cursor");
+    expect(resolveSentinel(team, undefined).impl).toBe("cursor");
   });
 });
 
 // ---------- Override merge ----------
 
-describe("resolveMartinet — overrides merge per-impl defaults", () => {
+describe("resolveSentinel — overrides merge per-impl defaults", () => {
   test("no overrides → per-impl defaults applied", () => {
     const team = Team.parse({ name: "demo", members: [] });
-    const r = resolveMartinet(team);
-    expect(r.cadenceSec).toBe(DEFAULT_MARTINET_CADENCE_SEC);
+    const r = resolveSentinel(team);
+    expect(r.cadenceSec).toBe(DEFAULT_SENTINEL_CADENCE_SEC);
     expect(r.escalationConfidenceThreshold).toBe(
-      DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
+      DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
     );
   });
 
@@ -88,14 +88,14 @@ describe("resolveMartinet — overrides merge per-impl defaults", () => {
     const team = Team.parse({
       name: "demo",
       members: [],
-      martinet: "cursor",
-      martinetOverrides: { cadenceSec: 180 },
+      sentinel: "cursor",
+      sentinelOverrides: { cadenceSec: 180 },
     });
-    const r = resolveMartinet(team);
+    const r = resolveSentinel(team);
     expect(r.cadenceSec).toBe(180);
     // Unspecified field inherits default — explicit > per-impl default.
     expect(r.escalationConfidenceThreshold).toBe(
-      DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
+      DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
     );
   });
 
@@ -103,10 +103,10 @@ describe("resolveMartinet — overrides merge per-impl defaults", () => {
     const team = Team.parse({
       name: "demo",
       members: [],
-      martinet: "cursor",
-      martinetOverrides: { cadenceSec: 90, escalationConfidenceThreshold: 0.9 },
+      sentinel: "cursor",
+      sentinelOverrides: { cadenceSec: 90, escalationConfidenceThreshold: 0.9 },
     });
-    const r = resolveMartinet(team);
+    const r = resolveSentinel(team);
     expect(r.cadenceSec).toBe(90);
     expect(r.escalationConfidenceThreshold).toBe(0.9);
   });
@@ -117,18 +117,18 @@ describe("resolveMartinet — overrides merge per-impl defaults", () => {
     const team = Team.parse({
       name: "demo",
       members: [],
-      martinetOverrides: { escalationConfidenceThreshold: 0 },
+      sentinelOverrides: { escalationConfidenceThreshold: 0 },
     });
-    expect(resolveMartinet(team).escalationConfidenceThreshold).toBe(0);
+    expect(resolveSentinel(team).escalationConfidenceThreshold).toBe(0);
   });
 
   test("escalationConfidenceThreshold=1 (boundary) honored", () => {
     const team = Team.parse({
       name: "demo",
       members: [],
-      martinetOverrides: { escalationConfidenceThreshold: 1 },
+      sentinelOverrides: { escalationConfidenceThreshold: 1 },
     });
-    expect(resolveMartinet(team).escalationConfidenceThreshold).toBe(1);
+    expect(resolveSentinel(team).escalationConfidenceThreshold).toBe(1);
   });
 
   test("overrides apply regardless of resolved impl (uniform v1 default)", () => {
@@ -138,16 +138,16 @@ describe("resolveMartinet — overrides merge per-impl defaults", () => {
     const teamClaude = Team.parse({
       name: "demo",
       members: [],
-      martinet: "claude",
-      martinetOverrides: { cadenceSec: 600 },
+      sentinel: "claude",
+      sentinelOverrides: { cadenceSec: 600 },
     });
     const teamCursor = Team.parse({
       name: "demo",
       members: [],
-      martinet: "cursor",
-      martinetOverrides: { cadenceSec: 600 },
+      sentinel: "cursor",
+      sentinelOverrides: { cadenceSec: 600 },
     });
-    expect(resolveMartinet(teamClaude).cadenceSec).toBe(600);
-    expect(resolveMartinet(teamCursor).cadenceSec).toBe(600);
+    expect(resolveSentinel(teamClaude).cadenceSec).toBe(600);
+    expect(resolveSentinel(teamCursor).cadenceSec).toBe(600);
   });
 });

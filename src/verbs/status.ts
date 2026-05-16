@@ -971,7 +971,7 @@ export function formatContextColumn(m: MemberStatus): string {
 
 // ADR-148 §D2 / T5 (t-ac95b267): `classifyCadence` + the default
 // `gitLog` probe live in `src/core/cadence-classifier.ts` post-T5 —
-// martinet observe() + medic + future doctor probes share one
+// sentinel observe() + medic + future doctor probes share one
 // implementation. Re-export here so pre-T5 importers
 // (`import { classifyCadence } from ".../verbs/status"`) keep
 // resolving without churn.

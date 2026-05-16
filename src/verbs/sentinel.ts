@@ -1,17 +1,17 @@
-// ADR-132 §D3 / T8: martinet verb — cockpit-level fleet-wide tick loop.
+// ADR-132 §D3 / T8: sentinel verb — cockpit-level fleet-wide tick loop.
 //
 // Runs in cockpit W3 (sibling of medic at W2 per ADR-132 §D2). Iterates
 // every enabled team in cockpit.json::sessions[type=team] per tick;
-// resolves the per-team Martinet impl from `team.json::martinet` (or
-// `cockpit.defaultMartinet`, or hard-coded `"claude"`); calls
+// resolves the per-team Sentinel impl from `team.json::sentinel` (or
+// `cockpit.defaultSentinel`, or hard-coded `"claude"`); calls
 // `observe → decide → apply` per ADR-132 §D1 interface.
 //
 // Sub-verbs:
-//   - `atmux martinet tick`    — one fleet-wide iteration (cron + /loop driver)
-//   - `atmux martinet status`  — last-tick snapshot per team (JSON to stdout)
-//   - `atmux martinet --once`  — single tick + exit (test / smoke harness)
+//   - `atmux sentinel tick`    — one fleet-wide iteration (cron + /loop driver)
+//   - `atmux sentinel status`  — last-tick snapshot per team (JSON to stdout)
+//   - `atmux sentinel --once`  — single tick + exit (test / smoke harness)
 //
-// State snapshot at `~/.atmux/state/martinet-state.json`:
+// State snapshot at `~/.atmux/state/sentinel-state.json`:
 //   {
 //     "lastTickAt": <epoch-ms>,
 //     "teams": {
@@ -25,31 +25,31 @@
 //     }
 //   }
 //
-// V1 wires the degenerate ClaudeMartinet impl only (T2). Subsequent
-// sub-tasks (T3 CursorMartinet, T6 escalation classifier) compose by
-// adding to `resolveMartinetImpl` + folding §D5 gates into the apply
+// V1 wires the degenerate ClaudeSentinel impl only (T2). Subsequent
+// sub-tasks (T3 CursorSentinel, T6 escalation classifier) compose by
+// adding to `resolveSentinelImpl` + folding §D5 gates into the apply
 // path.
 
 import { join } from "node:path";
 import { ensureDir, exists } from "../abstractions/fs.ts";
 import { readJson, writeJson } from "../abstractions/json.ts";
 import { z } from "zod";
-import type { Martinet, Observation } from "../abstractions/martinet.ts";
-import { ClaudeMartinet } from "../abstractions/martinets/claude.ts";
+import type { Sentinel, Observation } from "../abstractions/sentinel.ts";
+import { ClaudeSentinel } from "../abstractions/sentinels/claude.ts";
 import {
   type CursorRunFn,
   type CursorSendKeysFn,
-  CursorMartinet,
-} from "../abstractions/martinets/cursor.ts";
+  CursorSentinel,
+} from "../abstractions/sentinels/cursor.ts";
 import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
-import type { Cockpit, CockpitDefaultMartinet } from "../schema/cockpit.ts";
+import type { Cockpit, CockpitDefaultSentinel } from "../schema/cockpit.ts";
 
 // ---------- Arg parsing ----------
 
-export interface ParsedMartinetArgs {
+export interface ParsedSentinelArgs {
   /** Sub-verb. `tick` = one fleet-wide iteration; `status` = print JSON
    *  snapshot; `--once` is a synonym for `tick` reserved for the test
    *  harness (kept distinct so future evolution can layer flags onto
@@ -58,13 +58,13 @@ export interface ParsedMartinetArgs {
   /** Test injection — override the cockpit config path. */
   configPath?: string;
   /** Override the state-file path. Used by tests + by operators who
-   *  want martinet state on a different disk (e.g. a tmpfs cage). */
+   *  want sentinel state on a different disk (e.g. a tmpfs cage). */
   statePath?: string;
 }
 
-export function parseMartinetArgs(args: ReadonlyArray<string>): ParsedMartinetArgs {
+export function parseSentinelArgs(args: ReadonlyArray<string>): ParsedSentinelArgs {
   // Default to `tick` when no sub-verb is given (the cron + /loop drivers
-  // typically invoke `atmux martinet` bare; explicit `tick` works too).
+  // typically invoke `atmux sentinel` bare; explicit `tick` works too).
   let subverb: "tick" | "status" = "tick";
   let configPath: string | undefined;
   let statePath: string | undefined;
@@ -76,7 +76,7 @@ export function parseMartinetArgs(args: ReadonlyArray<string>): ParsedMartinetAr
       i = 1;
     } else {
       throw new UsageError({
-        what: `martinet: unknown sub-verb: ${sub}`,
+        what: `sentinel: unknown sub-verb: ${sub}`,
         hint: "supported: 'tick' (default) or 'status'. `--once` is a flag on `tick`.",
       });
     }
@@ -94,8 +94,8 @@ export function parseMartinetArgs(args: ReadonlyArray<string>): ParsedMartinetAr
         const val = args[i + 1];
         if (val === undefined || val.length === 0) {
           throw new UsageError({
-            what: "martinet: --config requires a value",
-            hint: "usage: atmux martinet [tick|status] [--config <path>] [--state <path>]",
+            what: "sentinel: --config requires a value",
+            hint: "usage: atmux sentinel [tick|status] [--config <path>] [--state <path>]",
           });
         }
         configPath = val;
@@ -106,8 +106,8 @@ export function parseMartinetArgs(args: ReadonlyArray<string>): ParsedMartinetAr
         const val = args[i + 1];
         if (val === undefined || val.length === 0) {
           throw new UsageError({
-            what: "martinet: --state requires a value",
-            hint: "usage: atmux martinet [tick|status] [--config <path>] [--state <path>]",
+            what: "sentinel: --state requires a value",
+            hint: "usage: atmux sentinel [tick|status] [--config <path>] [--state <path>]",
           });
         }
         statePath = val;
@@ -116,12 +116,12 @@ export function parseMartinetArgs(args: ReadonlyArray<string>): ParsedMartinetAr
       }
       default:
         throw new UsageError({
-          what: `martinet: unknown arg: ${a}`,
-          hint: "see 'atmux martinet --help'",
+          what: `sentinel: unknown arg: ${a}`,
+          hint: "see 'atmux sentinel --help'",
         });
     }
   }
-  const out: ParsedMartinetArgs = { subverb };
+  const out: ParsedSentinelArgs = { subverb };
   if (configPath !== undefined) out.configPath = configPath;
   if (statePath !== undefined) out.statePath = statePath;
   return out;
@@ -129,27 +129,27 @@ export function parseMartinetArgs(args: ReadonlyArray<string>): ParsedMartinetAr
 
 // ---------- State snapshot ----------
 
-/** Per-team martinet tick outcome — populated by `martinetTick` for
+/** Per-team sentinel tick outcome — populated by `sentinelTick` for
  *  every enabled team it iterated. Operators consume via
- *  `atmux martinet status` (JSON dump) + the cockpit W3 prompt. */
+ *  `atmux sentinel status` (JSON dump) + the cockpit W3 prompt. */
 // Type alias for per-team state declared below the schema (Zod-inferred).
-// See MartinetTeamState near the bottom of the schema region.
+// See SentinelTeamState near the bottom of the schema region.
 
-/** Fleet-wide snapshot — one per `martinet tick`. Operators read via
- *  `atmux martinet status` to debug the loop. */
-/** Per-team martinet tick outcome — populated by `martinetTick` for
+/** Fleet-wide snapshot — one per `sentinel tick`. Operators read via
+ *  `atmux sentinel status` to debug the loop. */
+/** Per-team sentinel tick outcome — populated by `sentinelTick` for
  *  every enabled team it iterated. Operators consume via
- *  `atmux martinet status` (JSON dump) + the cockpit W3 prompt. */
-export type MartinetTeamState = z.infer<typeof MartinetStateSchema>["teams"][string];
+ *  `atmux sentinel status` (JSON dump) + the cockpit W3 prompt. */
+export type SentinelTeamState = z.infer<typeof SentinelStateSchema>["teams"][string];
 
-/** Fleet-wide snapshot — one per `martinet tick`. Operators read via
- *  `atmux martinet status` to debug the loop. */
-export type MartinetState = z.infer<typeof MartinetStateSchema>;
+/** Fleet-wide snapshot — one per `sentinel tick`. Operators read via
+ *  `atmux sentinel status` to debug the loop. */
+export type SentinelState = z.infer<typeof SentinelStateSchema>;
 
 /** Zod schema for the state file — used by `readJson` to validate
  *  on disk so a corrupted state.json surfaces a clear error rather
  *  than silent type drift. */
-export const MartinetStateSchema = z.object({
+export const SentinelStateSchema = z.object({
   lastTickAt: z.number(),
   teams: z.record(
     z.string(),
@@ -163,54 +163,54 @@ export const MartinetStateSchema = z.object({
   ),
 });
 
-/** Default state snapshot path: `<home>/.atmux/state/martinet-state.json`. */
-export function defaultMartinetStatePath(home: string): string {
-  return join(home, ".atmux", "state", "martinet-state.json");
+/** Default state snapshot path: `<home>/.atmux/state/sentinel-state.json`. */
+export function defaultSentinelStatePath(home: string): string {
+  return join(home, ".atmux", "state", "sentinel-state.json");
 }
 
 // ---------- Impl resolution (ADR-132 §D6) ----------
 
-/** Resolve which Martinet impl serves a given team. Precedence per
- *  ADR-132 §D6: per-team `team.json::martinet` beats cockpit-level
- *  `cockpit.defaultMartinet` beats hard-coded `"claude"`.
+/** Resolve which Sentinel impl serves a given team. Precedence per
+ *  ADR-132 §D6: per-team `team.json::sentinel` beats cockpit-level
+ *  `cockpit.defaultSentinel` beats hard-coded `"claude"`.
  *
- *  T8 ships the degenerate ClaudeMartinet only — CursorMartinet
+ *  T8 ships the degenerate ClaudeSentinel only — CursorSentinel
  *  ships in T3. When a config selects `"cursor"` on this version,
  *  the resolver falls back to `"claude"` with a warn so the cluster
  *  keeps moving rather than failing closed. T3 deletes the fallback
  *  and adds the real cursor impl. */
-export function resolveMartinetImplName(opts: {
-  team: { martinet?: CockpitDefaultMartinet | undefined };
-  cockpit: { defaultMartinet?: CockpitDefaultMartinet | undefined };
+export function resolveSentinelImplName(opts: {
+  team: { sentinel?: CockpitDefaultSentinel | undefined };
+  cockpit: { defaultSentinel?: CockpitDefaultSentinel | undefined };
   logger: Logger;
-}): CockpitDefaultMartinet {
-  const teamPick = opts.team.martinet;
+}): CockpitDefaultSentinel {
+  const teamPick = opts.team.sentinel;
   if (teamPick !== undefined) return teamPick;
-  const cockpitPick = opts.cockpit.defaultMartinet;
+  const cockpitPick = opts.cockpit.defaultSentinel;
   if (cockpitPick !== undefined) return cockpitPick;
   return "claude";
 }
 
-/** Construct a Martinet instance for a given impl name. T3 (t-e96d286a)
- *  added the CursorMartinet branch — when impl=cursor, the verb wires
+/** Construct a Sentinel instance for a given impl name. T3 (t-e96d286a)
+ *  added the CursorSentinel branch — when impl=cursor, the verb wires
  *  the default `cursor-agent --print --output-format json` shell-out
  *  via the `defaultRunCursorAgent` factory below. The factory closes
- *  over `cockpit.martinet.cursorBinPath` (when present) so per-cockpit
- *  binary overrides land without restructuring `buildMartinet`'s
+ *  over `cockpit.sentinel.cursorBinPath` (when present) so per-cockpit
+ *  binary overrides land without restructuring `buildSentinel`'s
  *  signature.
  *
  *  Send-keys for cursor's apply() is left UNWIRED at this verb-layer
  *  (defaults to absent — apply() returns success=false with diagnostic
  *  evidence). The cockpit-W3 dispatcher (T8 follow-up) wires a real
  *  tmux send-keys closure once it owns the per-team window-target
- *  resolution; for the verb's bare `martinet tick` invocation the
+ *  resolution; for the verb's bare `sentinel tick` invocation the
  *  observation+escalation path is the load-bearing surface. */
-export function buildMartinet(
-  implName: CockpitDefaultMartinet,
+export function buildSentinel(
+  implName: CockpitDefaultSentinel,
   deps: {
     observeFn: (team: string) => Promise<Observation>;
     logger: Logger;
-    /** Optional cockpit config — when present and `cockpit.martinet.impl
+    /** Optional cockpit config — when present and `cockpit.sentinel.impl
      *  === "cursor"`, the cursor binary path + model are sourced from
      *  the resolved discriminated-union variant. Omit for tests + the
      *  hardcoded-default path. */
@@ -222,23 +222,23 @@ export function buildMartinet(
      *  apply() side-effect. */
     sendKeys?: CursorSendKeysFn;
   },
-): Martinet {
+): Sentinel {
   if (implName === "claude") {
-    return new ClaudeMartinet({ observeFn: deps.observeFn });
+    return new ClaudeSentinel({ observeFn: deps.observeFn });
   }
   if (implName === "cursor") {
     const cursorCfg =
-      deps.cockpit?.martinet?.impl === "cursor" ? deps.cockpit.martinet : undefined;
+      deps.cockpit?.sentinel?.impl === "cursor" ? deps.cockpit.sentinel : undefined;
     const binPath = cursorCfg?.cursorBinPath ?? "/usr/local/bin/cursor-agent";
     const model = cursorCfg?.model ?? "composer-2-fast";
     const runCursorAgent = deps.runCursorAgent ?? defaultRunCursorAgent(binPath);
-    const ctorDeps: ConstructorParameters<typeof CursorMartinet>[0] = {
+    const ctorDeps: ConstructorParameters<typeof CursorSentinel>[0] = {
       observeFn: deps.observeFn,
       runCursorAgent,
       model,
     };
     if (deps.sendKeys !== undefined) ctorDeps.sendKeys = deps.sendKeys;
-    return new CursorMartinet(ctorDeps);
+    return new CursorSentinel(ctorDeps);
   }
   // Unknown impl literal — TS narrows this to `never` once `claude` and
   // `cursor` are handled, but keep an exhaustive branch for forward-
@@ -246,19 +246,19 @@ export function buildMartinet(
   // `as string` cast surfaces the mistake at the warn site rather than
   // crashing the fleet tick).
   deps.logger.warn(
-    `martinet: impl "${implName as string}" not recognised on this version; falling back to "claude" (degenerate).`,
+    `sentinel: impl "${implName as string}" not recognised on this version; falling back to "claude" (degenerate).`,
   );
-  return new ClaudeMartinet({ observeFn: deps.observeFn });
+  return new ClaudeSentinel({ observeFn: deps.observeFn });
 }
 
 /** Default `runCursorAgent` factory — shells out to `cursor-agent
  *  --print --output-format json --model <model> --force <prompt>` via
  *  the shared `spawn()` abstraction. Returns the raw stdout string for
- *  CursorMartinet's envelope parser to consume.
+ *  CursorSentinel's envelope parser to consume.
  *
  *  60s timeout — composer-2-fast averages ~6s on a small prompt;
  *  belt-and-braces vs network flap. Non-zero exit codes are surfaced
- *  as a thrown SpawnError; CursorMartinet.decide()'s catch path
+ *  as a thrown SpawnError; CursorSentinel.decide()'s catch path
  *  re-routes to escalate-to-claude-lead so the broken-binary case
  *  stays observable. */
 export function defaultRunCursorAgent(binPath: string): CursorRunFn {
@@ -267,7 +267,7 @@ export function defaultRunCursorAgent(binPath: string): CursorRunFn {
       cmd: binPath,
       argv: args,
       timeoutMs: 60_000,
-      // Cursor exits non-zero on any error; let CursorMartinet's
+      // Cursor exits non-zero on any error; let CursorSentinel's
       // envelope parser route via the is_error / unparseable paths
       // instead of throwing here (which would short-circuit the
       // fail-loud escalation path inside decide()).
@@ -281,7 +281,7 @@ export function defaultRunCursorAgent(binPath: string): CursorRunFn {
 
 /** Degenerate Observation producer — T8 ships a minimal shape that
  *  carries through the `team` name + a `lastTickAt` timestamp.
- *  ClaudeMartinet wraps this verbatim into its escalate-to-claude-lead
+ *  ClaudeSentinel wraps this verbatim into its escalate-to-claude-lead
  *  payload; the Claude lead's whip-prompt §1a continues to do all the
  *  real observation work in the degenerate config.
  *
@@ -312,7 +312,7 @@ function buildStubObservationSync(team: string): Observation {
 
 // ---------- Verb entry ----------
 
-export interface MartinetOpts {
+export interface SentinelOpts {
   /** Override `process.env`. Tests pass a curated subset. */
   env?: NodeJS.ProcessEnv;
   /** Logger sink override (default: `createLogger()`, stderr). */
@@ -321,23 +321,23 @@ export interface MartinetOpts {
    *  `buildStubObservation` (degenerate v1). T7's full wiring
    *  injects a real producer. */
   observeFn?: (team: string) => Promise<Observation>;
-  /** Test seam: override `buildMartinet` for impl-construction
-   *  customisation. Lets tests pass synthetic Martinet instances
+  /** Test seam: override `buildSentinel` for impl-construction
+   *  customisation. Lets tests pass synthetic Sentinel instances
    *  asserting specific decide()/apply() behaviours. */
-  buildMartinet?: typeof buildMartinet;
+  buildSentinel?: typeof buildSentinel;
 }
 
-/** Top-level dispatch for `atmux martinet <subverb>`. */
-export async function martinet(
+/** Top-level dispatch for `atmux sentinel <subverb>`. */
+export async function sentinel(
   args: ReadonlyArray<string>,
-  opts: MartinetOpts = {},
+  opts: SentinelOpts = {},
 ): Promise<number> {
-  const parsed = parseMartinetArgs(args);
+  const parsed = parseSentinelArgs(args);
   switch (parsed.subverb) {
     case "tick":
-      return await martinetTick(parsed, opts);
+      return await sentinelTick(parsed, opts);
     case "status":
-      return await martinetStatus(parsed, opts);
+      return await sentinelStatus(parsed, opts);
   }
 }
 
@@ -345,27 +345,27 @@ export async function martinet(
  *  loaded cockpit roster, resolves the per-team impl, runs
  *  observe → decide → apply (per-team try/catch so one team's failure
  *  doesn't wedge the fleet pass), persists the state snapshot. */
-export async function martinetTick(
-  parsed: ParsedMartinetArgs,
-  opts: MartinetOpts = {},
+export async function sentinelTick(
+  parsed: ParsedSentinelArgs,
+  opts: SentinelOpts = {},
 ): Promise<number> {
   const env = opts.env ?? process.env;
   const logger = opts.logger ?? createLogger();
   const observe = opts.observeFn ?? buildStubObservation;
-  const build = opts.buildMartinet ?? buildMartinet;
+  const build = opts.buildSentinel ?? buildSentinel;
 
   const loadOpts: LoadCockpitOpts = { env };
   if (parsed.configPath !== undefined) loadOpts.path = parsed.configPath;
   const cockpit = await loadCockpit(loadOpts);
 
   // Only iterate top-level enabled teams. Nested epic-teams + cockpit-
-  // internal singletons (superdriver / medic / martinet itself) are
-  // excluded — the martinet observes work-doing teams, not its
-  // cockpit-tier siblings (ADR-132 §"Out of scope" — Martinet does NOT
+  // internal singletons (superdriver / medic / sentinel itself) are
+  // excluded — the sentinel observes work-doing teams, not its
+  // cockpit-tier siblings (ADR-132 §"Out of scope" — Sentinel does NOT
   // observe cockpit-tier surfaces).
   const teams = (cockpit.teams ?? []).filter((t) => t.enabled);
   if (teams.length === 0) {
-    logger.warn("martinet: no enabled teams in cockpit.json — tick is a no-op");
+    logger.warn("sentinel: no enabled teams in cockpit.json — tick is a no-op");
     // Still persist the lastTickAt so `status` is honest about when the
     // loop ran (vs "never started").
     await persistState(
@@ -376,16 +376,16 @@ export async function martinetTick(
     return 0;
   }
 
-  const teamStates: Record<string, MartinetTeamState> = {};
+  const teamStates: Record<string, SentinelTeamState> = {};
   const tickStarted = Date.now();
   for (const team of teams) {
-    const implName = resolveMartinetImplName({
-      // The team's `team.json::martinet` field is resolved at impl-side
+    const implName = resolveSentinelImplName({
+      // The team's `team.json::sentinel` field is resolved at impl-side
       // via `loadTeam` per ADR-132 §D6, but T8 ships fleet-default-only
       // resolution to keep the dep graph minimal. T3 wires per-team
       // override read. For now, treat per-team field as undefined.
-      team: { martinet: undefined },
-      cockpit: { defaultMartinet: cockpit.defaultMartinet },
+      team: { sentinel: undefined },
+      cockpit: { defaultSentinel: cockpit.defaultSentinel },
       logger,
     });
     const m = build(implName, { observeFn: observe, logger, cockpit });
@@ -407,20 +407,20 @@ export async function martinetTick(
           const result = await m.apply(action);
           if (!result.success) {
             logger.warn(
-              `martinet: ${team.name}: apply(${action.kind}) returned success=false — ${result.evidence}`,
+              `sentinel: ${team.name}: apply(${action.kind}) returned success=false — ${result.evidence}`,
             );
           }
         } catch (e) {
           const cause = e instanceof Error ? e.message : String(e);
-          logger.warn(`martinet: ${team.name}: apply(${action.kind}) threw — ${cause}`);
+          logger.warn(`sentinel: ${team.name}: apply(${action.kind}) threw — ${cause}`);
         }
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
-      logger.warn(`martinet: ${team.name}: tick failed — ${error}`);
+      logger.warn(`sentinel: ${team.name}: tick failed — ${error}`);
     }
 
-    const state: MartinetTeamState = {
+    const state: SentinelTeamState = {
       impl: implName,
       tickedAt: Date.now(),
       actions,
@@ -436,7 +436,7 @@ export async function martinetTick(
     parsed.statePath,
   );
   logger.log(
-    `martinet: tick completed (${teams.length} team${teams.length === 1 ? "" : "s"}, ${Date.now() - tickStarted}ms)`,
+    `sentinel: tick completed (${teams.length} team${teams.length === 1 ? "" : "s"}, ${Date.now() - tickStarted}ms)`,
   );
   return 0;
 }
@@ -444,9 +444,9 @@ export async function martinetTick(
 /** Print the last-tick state snapshot to stdout as JSON. Exit 0 even
  *  when no state file exists — `status` is a read; absence is one of
  *  the answers ("never run"). */
-export async function martinetStatus(
-  parsed: ParsedMartinetArgs,
-  opts: MartinetOpts = {},
+export async function sentinelStatus(
+  parsed: ParsedSentinelArgs,
+  opts: SentinelOpts = {},
 ): Promise<number> {
   const env = opts.env ?? process.env;
   const path = resolveStatePath(env, parsed.statePath);
@@ -456,7 +456,7 @@ export async function martinetStatus(
     process.stdout.write(`${JSON.stringify({ lastTickAt: 0, teams: {} }, null, 2)}\n`);
     return 0;
   }
-  const state = await readJson(path, MartinetStateSchema);
+  const state = await readJson(path, SentinelStateSchema);
   process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
   return 0;
 }
@@ -465,23 +465,23 @@ export async function martinetStatus(
 
 function resolveStatePath(env: NodeJS.ProcessEnv, override: string | undefined): string {
   if (override !== undefined && override.length > 0) return override;
-  const fromEnv = env.ATMUX_MARTINET_STATE;
+  const fromEnv = env.ATMUX_SENTINEL_STATE;
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
   const home = env.HOME;
   if (home === undefined || home.length === 0) {
     // Fall back to /tmp so the verb doesn't crash on $HOME-less environments
     // (e.g. some CI runners, container init shells).
-    return "/tmp/atmux-martinet-state.json";
+    return "/tmp/atmux-sentinel-state.json";
   }
-  return defaultMartinetStatePath(home);
+  return defaultSentinelStatePath(home);
 }
 
 async function persistState(
-  state: MartinetState,
+  state: SentinelState,
   env: NodeJS.ProcessEnv,
   override: string | undefined,
 ): Promise<void> {
   const path = resolveStatePath(env, override);
   await ensureDir(join(path, ".."));
-  await writeJson(path, MartinetStateSchema, state);
+  await writeJson(path, SentinelStateSchema, state);
 }

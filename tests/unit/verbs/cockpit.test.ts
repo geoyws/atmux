@@ -1327,12 +1327,12 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
   });
 });
 
-// ---------- ADR-132 §D2: buildMartinetWindowCommand ----------
+// ---------- ADR-132 §D2: buildSentinelWindowCommand ----------
 
-describe("buildMartinetWindowCommand (ADR-132 §D2)", () => {
+describe("buildSentinelWindowCommand (ADR-132 §D2)", () => {
   test("claude variant emits standard claude TUI invocation", async () => {
-    const { buildMartinetWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildMartinetWindowCommand({
+    const { buildSentinelWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+    const cmd = buildSentinelWindowCommand({
       impl: "claude",
       enabled: true,
     });
@@ -1342,8 +1342,8 @@ describe("buildMartinetWindowCommand (ADR-132 §D2)", () => {
   });
 
   test("claude variant honours tuiOverrides + claudeAccount", async () => {
-    const { buildMartinetWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildMartinetWindowCommand({
+    const { buildSentinelWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+    const cmd = buildSentinelWindowCommand({
       impl: "claude",
       enabled: true,
       claudeAccount: { configDir: "/root/.claude-mart", label: "mart" },
@@ -1353,9 +1353,9 @@ describe("buildMartinetWindowCommand (ADR-132 §D2)", () => {
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
   });
 
-  test("cursor variant emits 'while true; do atmux martinet tick; sleep N; done' loop (T3)", async () => {
-    const { buildMartinetWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildMartinetWindowCommand({
+  test("cursor variant emits 'while true; do atmux sentinel tick; sleep N; done' loop (T3)", async () => {
+    const { buildSentinelWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+    const cmd = buildSentinelWindowCommand({
       impl: "cursor",
       enabled: true,
       cursorBinPath: "/usr/local/bin/cursor-agent",
@@ -1363,7 +1363,7 @@ describe("buildMartinetWindowCommand (ADR-132 §D2)", () => {
       cageTier: "tier-2",
     });
     expect(cmd).toContain("while true");
-    expect(cmd).toContain("atmux martinet tick");
+    expect(cmd).toContain("atmux sentinel tick");
     expect(cmd).toContain("sleep");
     // Cursor variant must NOT spawn a Claude TUI — it shells out to
     // cursor-agent per tick from inside the verb.

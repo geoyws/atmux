@@ -3,9 +3,9 @@
 // cycling is ≥N distinct hashes within a window + zero commits).
 //
 // Pure module — no I/O. Detection function is the seam shared by:
-//   - lead's whip §1c (pre-martinet-ship, per ADR-142 §OQ-2 default A)
-//   - martinet's per-tick observer (post-ADR-140-ship, OQ-2 (C))
-// Only the call-site changes when martinet ports the check; the detection
+//   - lead's whip §1c (pre-sentinel-ship, per ADR-142 §OQ-2 default A)
+//   - sentinel's per-tick observer (post-ADR-140-ship, OQ-2 (C))
+// Only the call-site changes when sentinel ports the check; the detection
 // function stays put.
 //
 // State-file I/O lives in `./modal-cycling-state.ts` so this module is

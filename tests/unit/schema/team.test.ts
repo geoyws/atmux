@@ -15,18 +15,18 @@ import {
   DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
-  DEFAULT_MARTINET_CADENCE_SEC,
-  DEFAULT_MARTINET_ESCALATION_CONFIDENCE,
+  DEFAULT_SENTINEL_CADENCE_SEC,
+  DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
   DEFAULT_WORKTREE_ROOT,
-  MartinetImpl,
+  SentinelImpl,
   Team,
   TeamAutoEmitTrunkMerge,
   TeamCadence,
   TeamCadenceThresholds,
   TeamEpic,
   TeamFallback,
-  TeamMartinetOverrides,
+  TeamSentinelOverrides,
   TeamMember,
   TeamOmbudsman,
   TeamWhip,
@@ -391,12 +391,12 @@ describe("TeamMember — label field (ADR-136 Option B)", () => {
   });
 });
 
-// ---------- ADR-132 §D6: MartinetImpl + TeamMartinetOverrides ----------
+// ---------- ADR-132 §D6: SentinelImpl + TeamSentinelOverrides ----------
 
-describe("MartinetImpl — 2026-05-14 two-impl enum", () => {
+describe("SentinelImpl — 2026-05-14 two-impl enum", () => {
   test("accepts 'claude' and 'cursor' literals", () => {
-    expect(MartinetImpl.parse("claude")).toBe("claude");
-    expect(MartinetImpl.parse("cursor")).toBe("cursor");
+    expect(SentinelImpl.parse("claude")).toBe("claude");
+    expect(SentinelImpl.parse("cursor")).toBe("cursor");
   });
 
   test("rejects dropped backends 'minimax' and 'kimi'", () => {
@@ -404,106 +404,106 @@ describe("MartinetImpl — 2026-05-14 two-impl enum", () => {
     // Kimi were dropped pre-implementation ("unreliable and not
     // smart enough"). The schema is the canonical fence — re-
     // introducing either requires both this enum AND the
-    // `Martinet["name"]` literal in src/abstractions/martinet.ts
+    // `Sentinel["name"]` literal in src/abstractions/sentinel.ts
     // to be updated in lockstep.
-    expect(() => MartinetImpl.parse("minimax")).toThrow();
-    expect(() => MartinetImpl.parse("kimi")).toThrow();
+    expect(() => SentinelImpl.parse("minimax")).toThrow();
+    expect(() => SentinelImpl.parse("kimi")).toThrow();
   });
 
   test("rejects arbitrary strings", () => {
-    expect(() => MartinetImpl.parse("gpt5")).toThrow();
-    expect(() => MartinetImpl.parse("")).toThrow();
-    expect(() => MartinetImpl.parse("CLAUDE")).toThrow(); // case-sensitive
+    expect(() => SentinelImpl.parse("gpt5")).toThrow();
+    expect(() => SentinelImpl.parse("")).toThrow();
+    expect(() => SentinelImpl.parse("CLAUDE")).toThrow(); // case-sensitive
   });
 });
 
-describe("TeamMartinetOverrides — defaults + bounds", () => {
+describe("TeamSentinelOverrides — defaults + bounds", () => {
   test("empty object parses cleanly — both fields are opt-in", () => {
-    const o = TeamMartinetOverrides.parse({});
+    const o = TeamSentinelOverrides.parse({});
     expect(o.cadenceSec).toBeUndefined();
     expect(o.escalationConfidenceThreshold).toBeUndefined();
   });
 
   test("cadenceSec accepts positive integers", () => {
-    const o = TeamMartinetOverrides.parse({ cadenceSec: 300 });
+    const o = TeamSentinelOverrides.parse({ cadenceSec: 300 });
     expect(o.cadenceSec).toBe(300);
   });
 
   test("cadenceSec rejects zero / negatives / non-integers", () => {
-    expect(() => TeamMartinetOverrides.parse({ cadenceSec: 0 })).toThrow();
-    expect(() => TeamMartinetOverrides.parse({ cadenceSec: -30 })).toThrow();
-    expect(() => TeamMartinetOverrides.parse({ cadenceSec: 1.5 })).toThrow();
+    expect(() => TeamSentinelOverrides.parse({ cadenceSec: 0 })).toThrow();
+    expect(() => TeamSentinelOverrides.parse({ cadenceSec: -30 })).toThrow();
+    expect(() => TeamSentinelOverrides.parse({ cadenceSec: 1.5 })).toThrow();
   });
 
   test("escalationConfidenceThreshold accepts 0.0-1.0 bounds inclusive", () => {
     expect(
-      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: 0 })
+      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 0 })
         .escalationConfidenceThreshold,
     ).toBe(0);
     expect(
-      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: 1 })
+      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 1 })
         .escalationConfidenceThreshold,
     ).toBe(1);
     expect(
-      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: 0.7 })
+      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 0.7 })
         .escalationConfidenceThreshold,
     ).toBe(0.7);
   });
 
   test("escalationConfidenceThreshold rejects out-of-range values", () => {
     expect(() =>
-      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: -0.01 }),
+      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: -0.01 }),
     ).toThrow();
     expect(() =>
-      TeamMartinetOverrides.parse({ escalationConfidenceThreshold: 1.01 }),
+      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 1.01 }),
     ).toThrow();
   });
 
   test("unknown keys rejected (.strict drift detection)", () => {
     expect(() =>
-      TeamMartinetOverrides.parse({ cadenceSecondz: 270 }),
+      TeamSentinelOverrides.parse({ cadenceSecondz: 270 }),
     ).toThrow();
   });
 
-  test("Team accepts martinet + martinetOverrides at top-level", () => {
+  test("Team accepts sentinel + sentinelOverrides at top-level", () => {
     const team = Team.parse({
       name: "demo",
       members: [],
-      martinet: "cursor",
-      martinetOverrides: { cadenceSec: 180, escalationConfidenceThreshold: 0.8 },
+      sentinel: "cursor",
+      sentinelOverrides: { cadenceSec: 180, escalationConfidenceThreshold: 0.8 },
     });
-    expect(team.martinet).toBe("cursor");
-    expect(team.martinetOverrides?.cadenceSec).toBe(180);
-    expect(team.martinetOverrides?.escalationConfidenceThreshold).toBe(0.8);
+    expect(team.sentinel).toBe("cursor");
+    expect(team.sentinelOverrides?.cadenceSec).toBe(180);
+    expect(team.sentinelOverrides?.escalationConfidenceThreshold).toBe(0.8);
   });
 
-  test("Team without martinet field parses (backward compat — defaults to undefined)", () => {
+  test("Team without sentinel field parses (backward compat — defaults to undefined)", () => {
     const team = Team.parse({ name: "demo", members: [] });
-    expect(team.martinet).toBeUndefined();
-    expect(team.martinetOverrides).toBeUndefined();
+    expect(team.sentinel).toBeUndefined();
+    expect(team.sentinelOverrides).toBeUndefined();
   });
 
-  test("Team.martinet rejects dropped 'minimax' value at the top-level too", () => {
+  test("Team.sentinel rejects dropped 'minimax' value at the top-level too", () => {
     expect(() =>
       Team.parse({
         name: "demo",
         members: [],
-        martinet: "minimax" as unknown as MartinetImpl,
+        sentinel: "minimax" as unknown as SentinelImpl,
       }),
     ).toThrow();
   });
 });
 
-describe("Martinet per-impl default constants", () => {
-  test("DEFAULT_MARTINET_CADENCE_SEC is 270s (ADR-132 §D3)", () => {
+describe("Sentinel per-impl default constants", () => {
+  test("DEFAULT_SENTINEL_CADENCE_SEC is 270s (ADR-132 §D3)", () => {
     // Both shipping impls (claude + cursor) default to 270s — pin
     // the constant so a drift here surfaces in the resolver test
     // alongside this one.
-    expect(DEFAULT_MARTINET_CADENCE_SEC).toBe(270);
+    expect(DEFAULT_SENTINEL_CADENCE_SEC).toBe(270);
   });
 
-  test("DEFAULT_MARTINET_ESCALATION_CONFIDENCE is 0.7 (ADR-132 §D5 E5)", () => {
-    expect(DEFAULT_MARTINET_ESCALATION_CONFIDENCE).toBe(0.7);
+  test("DEFAULT_SENTINEL_ESCALATION_CONFIDENCE is 0.7 (ADR-132 §D5 E5)", () => {
+    expect(DEFAULT_SENTINEL_ESCALATION_CONFIDENCE).toBe(0.7);
   });
 });
 

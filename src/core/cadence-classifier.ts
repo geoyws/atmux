@@ -3,7 +3,7 @@
 // The load-bearing truth signal for "is this member shipping?". T2
 // (t-1d370b04) inlined `classifyCadence` + `CadenceObservation` inside
 // `src/verbs/status.ts`; this module lifts them into a shared core
-// module so the martinet observe() wiring (T5 §3 of task body) +
+// module so the sentinel observe() wiring (T5 §3 of task body) +
 // future consumers (medic event-driven pickup, doctor probes) all
 // consume the same contract.
 //
@@ -189,12 +189,12 @@ export function classifyCadence(
   };
 }
 
-// ---------- Async wrapper (T5 surface for martinet observe()) ----------
+// ---------- Async wrapper (T5 surface for sentinel observe()) ----------
 
 /**
  * Per-task-body `classifyMemberCadence(member, worktreePath, config,
  * deps)` async surface. Composes {@link GitLogFn} probe + the pure
- * {@link classifyCadence} step so martinet observe() impls + medic
+ * {@link classifyCadence} step so sentinel observe() impls + medic
  * + future doctor probes call ONE function for the cadence
  * snapshot.
  *
@@ -232,7 +232,7 @@ export async function classifyMemberCadence(
  * Default `GitLogFn` impl — shells `git -C <path> log --since=<sec>s
  * --author=<author> --format=%H %ct`. Fail-soft on any error
  * (non-zero exit, spawn failure) → returns `[]`. This is the
- * production probe; status.ts's gather loop and martinet observe()
+ * production probe; status.ts's gather loop and sentinel observe()
  * compositions both wire through here.
  *
  * Lifted from status.ts's local `defaultGitLog` so the T2 + T5

@@ -1094,7 +1094,7 @@ describe("findTeamByName (ADR-092 §D2)", () => {
     expect(found?.parent).toBe("alpha");
   });
 
-  test("skips superdriver / medic / martinet leaves (only team / epic-team)", () => {
+  test("skips superdriver / medic / sentinel leaves (only team / epic-team)", () => {
     const cockpit: CockpitShape = {
       schemaVersion: 1,
       sessions: [

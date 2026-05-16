@@ -1,4 +1,4 @@
-// Unit tests for src/core/martinet-escalation.ts (ADR-132 T6
+// Unit tests for src/core/sentinel-escalation.ts (ADR-132 T6
 // / t-a6a1c9ab).
 //
 // Coverage strategy (per task body):
@@ -24,8 +24,8 @@ import {
   classify,
   shouldEscalate,
   type ObservationHistory,
-} from "../../../src/core/martinet-escalation.ts";
-import type { Observation } from "../../../src/abstractions/martinet.ts";
+} from "../../../src/core/sentinel-escalation.ts";
+import type { Observation } from "../../../src/abstractions/sentinel.ts";
 
 // ---------- Fixtures ----------
 
