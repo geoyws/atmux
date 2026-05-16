@@ -32,6 +32,12 @@ export interface ResolveDirOpts {
   cwd?: string;
   /** Environment hash. Defaults to `process.env`. Test injection point. */
   env?: NodeJS.ProcessEnv;
+  /** t-584b5f37 cluster 11: stop the walk-up at this ancestor (inclusive
+   *  scan, but do NOT cross above it). Used by tests whose temp dirs
+   *  live under `/tmp/` to isolate the walk-up from any pre-existing
+   *  `/tmp/.atmux` left by other atmux invocations on the host. Production
+   *  callers never set this — the walk-up reaches `/` as before. */
+  stopAt?: string;
 }
 
 /**
@@ -59,10 +65,12 @@ export async function getAtmuxDir(opts: ResolveDirOpts = {}): Promise<string> {
     return join(stripTrailingSlash(envTeamDir), ".atmux");
   }
   const start = resolve(opts.cwd ?? process.cwd());
+  const stopAt = opts.stopAt !== undefined ? resolve(opts.stopAt) : undefined;
   let cur = start;
   while (true) {
     const candidate = join(cur, ".atmux");
     if (await exists(candidate)) return candidate;
+    if (stopAt !== undefined && cur === stopAt) break; // test-side floor
     const parent = dirname(cur);
     if (parent === cur) break; // hit / (or volume root) — stop
     cur = parent;

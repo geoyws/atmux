@@ -220,10 +220,17 @@ async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
 // `atmux task prio <id> <N|->`. Used by hygiene auto-fix to repair
 // `prio-null` cases per ADR-131.
 async function taskPriority(argv: ReadonlyArray<string>): Promise<number> {
-  const positional = argv.filter((a) => !a.startsWith("--"));
+  // t-584b5f37 cluster 6 fix: align with sibling subcmds (taskUpdate /
+  // taskAssign / taskMove etc. — all at line 262/380/396/438/452) by
+  // routing through `splitFlagsAndPositionals`. The prior homegrown
+  // `argv.filter((a) => !a.startsWith("--"))` did NOT strip the value
+  // following `--team-dir`, so calls like `task priority t-id 5
+  // --team-dir /path` produced positional=["t-id","5","/path"]
+  // (length 3) and false-tripped the "requires <id> and <N|->" gate.
+  const { positional, rest } = splitFlagsAndPositionals(argv);
   const teamDir = (() => {
-    const idx = argv.indexOf("--team-dir");
-    return idx >= 0 ? argv[idx + 1] : undefined;
+    const idx = rest.indexOf("--team-dir");
+    return idx >= 0 ? rest[idx + 1] : undefined;
   })();
   if (positional.length !== 2) {
     throw new UsageError({
@@ -708,7 +715,15 @@ function splitFlagsAndPositionals(argv: ReadonlyArray<string>): {
   let i = 0;
   while (i < argv.length) {
     const a = argv[i] ?? "";
-    if (a.startsWith("-")) break;
+    // Bare `-` is the priority-clear sentinel for `task priority` (and
+    // by convention a positional in several CLI verbs); only multi-char
+    // strings beginning with `-` count as flag boundaries here. Pre-
+    // t-584b5f37 the helper short-circuited on bare `-`, leaving
+    // `taskPriority` no way to receive the clear-sentinel through this
+    // path — taskPriority used a homegrown filter that DID accept bare
+    // `-` but failed to strip `--team-dir <val>` pairs. Aligning all
+    // subcmds on this helper fixes both failure modes.
+    if (a.length > 1 && a.startsWith("-")) break;
     positional.push(a);
     i += 1;
   }

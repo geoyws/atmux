@@ -234,7 +234,18 @@ async function dispatchEpicSummary(
   repo: KanbanRepo,
   eid: string,
 ): Promise<string> {
-  const team = await tryLoadTeam({ teamDir: atmuxDir });
+  // t-584b5f37 cluster 15 fix: `atmuxDir` is the resolved `.atmux/`
+  // path itself; passing it as `teamDir` would route through the
+  // `teamDir + "/.atmux"` join and read `<atmuxDir>/.atmux/team.json`
+  // (one level too deep). The canonical opt for "this IS the .atmux
+  // dir" is `dir:` per ResolveDirOpts §1. Mirrors src/cli.ts:154 +
+  // src/verbs/doctor.ts:244/567 which already use `{ dir: atmuxDir }`.
+  // Bug since the initial port (6d91dcb); the team-lead lookup failed
+  // silently in production callers because the surrounding flow
+  // wraps the missing-lead case in a ConfigError that bubbles into
+  // the operator's "epic dispatch-summary: no member with role=
+  // team-lead in team.json" surface.
+  const team = await tryLoadTeam({ dir: atmuxDir });
   const leadMember = team?.members.find((m) => m.role === "team-lead");
   if (leadMember === undefined) {
     throw new ConfigError({

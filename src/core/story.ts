@@ -183,7 +183,10 @@ export async function advanceStory(
     throw new ConfigError({ what: `story advance: no such story: ${id}` });
   }
   // Look up dispatch recipients up-front so the DB transaction is pure.
-  const team = await tryLoadTeam({ teamDir: atmuxDir });
+  // t-584b5f37 cluster 15 sibling: same `teamDir` → `dir` fix as
+  // src/core/epic.ts:237. Passing the .atmux path as `teamDir` would
+  // resolve to `<atmuxDir>/.atmux/team.json` (one level too deep).
+  const team = await tryLoadTeam({ dir: atmuxDir });
   return await _withRepo(atmuxDir, (repo, db) => {
     const story = repo.getStory(id);
     if (story === null) {
