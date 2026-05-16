@@ -267,7 +267,7 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = (opts.buildTmux ?? defaultBuildTmux)(socketPath);
 
-  const windowName = buildWindowName(target.name, target.emoji);
+  const windowName = buildWindowName(target.name, target.emoji, target.label, target.role);
   if (!(await windowExists(tmux, sessionName, windowName))) {
     throw new ConfigError({ what: `no tmux window for ${target.name}` });
   }

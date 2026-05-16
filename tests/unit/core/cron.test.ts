@@ -40,38 +40,39 @@ const DEFAULT_PATH = "/root/.bun/bin:/usr/local/bin:/usr/bin:/bin";
 const P = `PATH=${DEFAULT_PATH} `;
 
 describe("renderCronLines", () => {
-  test("vanilla team renders 4-line block: whip / report / decisions / groom", () => {
+  test("vanilla team renders 4-line block: poke / report / decisions / groom (ADR-160)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
-    // whip default schema-side is `intervalMins: 15` (src/schema/team.ts +
-    // src/core/cron.ts:185 — bumped from 5min in t-dcbff97c).
+    // poke default schema-side is `intervalMins: 15` (src/schema/team.ts +
+    // src/core/cron.ts:185 — bumped from 5min in t-dcbff97c). ADR-160:
+    // verb emission renamed whip → poke; team.whip config field stays.
     expect(lines).toEqual([
-      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux poke >> /srv/demo/.atmux/logs/poke.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
     ]);
   });
 
-  test("team.whip.claudeAccount adds the */1 whip-resume-check line", () => {
+  test("team.whip.claudeAccount adds the */1 poke-resume-check line (ADR-160)", () => {
     const team = baseTeam({ whip: { claudeAccount: "icloud" } as never });
     const lines = renderCronLines(baseOpts(team));
     expect(lines).toContain(
-      `*/1 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip-resume-check >> /srv/demo/.atmux/logs/whip-resume-check.log 2>&1`,
+      `*/1 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux poke-resume-check >> /srv/demo/.atmux/logs/poke-resume-check.log 2>&1`,
     );
     // Total now 5 lines.
     expect(lines.length).toBe(5);
   });
 
-  test("empty claudeAccount string does NOT add the whip-resume-check line", () => {
+  test("empty claudeAccount string does NOT add the poke-resume-check line", () => {
     const team = baseTeam({ whip: { claudeAccount: "" } as never });
     const lines = renderCronLines(baseOpts(team));
     expect(lines.length).toBe(4);
-    expect(lines.some((l) => l.includes("whip-resume-check"))).toBe(false);
+    expect(lines.some((l) => l.includes("poke-resume-check"))).toBe(false);
   });
 
-  test("undefined whip block → no whip-resume-check line", () => {
+  test("undefined whip block → no poke-resume-check line", () => {
     const lines = renderCronLines(baseOpts(baseTeam({ whip: undefined as never })));
-    expect(lines.some((l) => l.includes("whip-resume-check"))).toBe(false);
+    expect(lines.some((l) => l.includes("poke-resume-check"))).toBe(false);
   });
 
   test("idempotent: same opts produce byte-identical lines", () => {
@@ -135,10 +136,10 @@ describe("renderCronLines", () => {
     }
   });
 
-  test("conditional whip-resume-check line also gets PATH= prefix", () => {
+  test("conditional poke-resume-check line also gets PATH= prefix (ADR-160)", () => {
     const team = baseTeam({ whip: { claudeAccount: "icloud" } as never });
     const lines = renderCronLines(baseOpts(team));
-    const resumeLines = lines.filter((l) => l.includes("whip-resume-check"));
+    const resumeLines = lines.filter((l) => l.includes("poke-resume-check"));
     expect(resumeLines.length).toBe(1);
     for (const l of resumeLines) {
       expect(l).toContain(`PATH=${DEFAULT_PATH} `);
@@ -179,10 +180,10 @@ describe("renderCronLines", () => {
       ...baseOpts(team),
       tmuxTmpdir: "/tmp/atmux-demo",
     });
-    // whip + 2 discorder + decisions + groom + whip-resume-check + unblocker = 7
+    // poke + 2 discorder + decisions + groom + poke-resume-check + unblocker = 7 (ADR-160)
     expect(lines.length).toBe(7);
     expect(lines.every((l) => l.includes("TMUX_TMPDIR=/tmp/atmux-demo "))).toBe(true);
-    expect(lines.some((l) => l.includes("whip-resume-check"))).toBe(true);
+    expect(lines.some((l) => l.includes("poke-resume-check"))).toBe(true);
     expect(lines.some((l) => l.includes("unblocker tick"))).toBe(true);
     expect(lines.some((l) => l.includes("discorder progress"))).toBe(true);
   });
@@ -403,12 +404,12 @@ describe("cronAtHour", () => {
 
 // ADR-079 §A: integration — cron schedules read from team config.
 describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
-  test("team.whip.intervalMins=10 → whip line uses */10", () => {
+  test("team.whip.intervalMins=10 → poke line uses */10 (ADR-160: config field stays, verb is poke)", () => {
     const team = baseTeam({ whip: { intervalMins: 10 } as never });
     const lines = renderCronLines(baseOpts(team));
-    const whip = lines.find((l) => / whip /.test(l) && !l.includes("whip-resume"));
-    expect(whip).toBeDefined();
-    expect(whip).toMatch(/^\*\/10 \* \* \* \* /);
+    const poke = lines.find((l) => / poke /.test(l) && !l.includes("poke-resume"));
+    expect(poke).toBeDefined();
+    expect(poke).toMatch(/^\*\/10 \* \* \* \* /);
   });
 
   test("team.report.intervalMins=60 → report line uses `0 * * * *`", () => {
@@ -474,14 +475,14 @@ describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
     expect(u).toMatch(/^\*\/5 \* \* \* \* /);
   });
 
-  test("whip-resume-check stays hardcoded at */1 even when other intervals change", () => {
+  test("poke-resume-check stays hardcoded at */1 even when other intervals change (ADR-160)", () => {
     // Per ADR-079 §A: sub-1-min cadence isn't a tunable, it's the
     // ADR-053 §D4 post-pause latency floor.
     const team = baseTeam({
       whip: { intervalMins: 30, claudeAccount: "icloud" } as never,
     });
     const lines = renderCronLines(baseOpts(team));
-    const resume = lines.find((l) => l.includes("whip-resume-check"));
+    const resume = lines.find((l) => l.includes("poke-resume-check"));
     expect(resume).toBeDefined();
     expect(resume).toMatch(/^\*\/1 \* \* \* \* /);
   });
@@ -506,13 +507,15 @@ describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
     expect(() => renderCronLines(baseOpts(team))).toThrow(ConfigError);
   });
 
-  test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical post-t-dcbff97c whip-default raise)", () => {
+  test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical post-ADR-160 whip→poke rename)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
-    // t-dcbff97c bumped whip default 5min → 15min; "pre-ADR-079
-    // behavior unchanged" still holds — ADR-079 governs the
-    // config-driven schedule surface, not the default value itself.
+    // t-dcbff97c bumped whip default 5min → 15min; ADR-160 renamed the
+    // emitted verb whip → poke (config field team.whip is unchanged).
+    // "Behavior unchanged at the schedule + path layer" still holds —
+    // ADR-079 governs the config-driven schedule surface, not the verb
+    // name.
     expect(lines).toEqual([
-      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux whip >> /srv/demo/.atmux/logs/whip.log 2>&1`,
+      `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux poke >> /srv/demo/.atmux/logs/poke.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
@@ -714,20 +717,28 @@ describe("installCronBlock", () => {
     expect(out.includes(header("demo"))).toBe(true);
   });
 
-  test("scrubs pre-marker bare atmux lines before install", () => {
+  test("scrubs pre-marker bare atmux lines before install (ADR-160: matches both whip+poke)", () => {
+    // ORPHAN_VERB_RE now matches both `atmux whip` (legacy from pre-
+    // ADR-160 installs) AND `atmux poke` (canonical) so legacy + new
+    // bare lines both get scrubbed. The new canonical block emits
+    // `atmux poke` only.
     const polluted = "*/5 * * * * /bin/atmux whip\n0 4 * * * /bin/atmux groom --quiet\n";
     const out = installCronBlock(opts({ current: polluted }));
     // Pre-marker bare lines should be gone.
     expect(out.includes("*/5 * * * * /bin/atmux whip\n0 4")).toBe(false);
     // New canonical block should be present.
     expect(out.includes(header("demo"))).toBe(true);
-    // The polluted lines should not appear outside the new block — confirm
-    // by counting `atmux whip` mentions on cron lines (start with `*/N`
-    // or `N`): exactly one, inside the new block.
+    // Old legacy `atmux whip` should not appear anywhere now (scrubbed +
+    // not re-emitted — the new block emits `atmux poke`).
     const cronWhipLines = out
       .split("\n")
       .filter((l) => /^\s*[\d*/, -]+\s+/.test(l) && /atmux whip(\s|$)/.test(l));
-    expect(cronWhipLines.length).toBe(1);
+    expect(cronWhipLines.length).toBe(0);
+    // The new block contains exactly one canonical `atmux poke` line.
+    const cronPokeLines = out
+      .split("\n")
+      .filter((l) => /^\s*[\d*/, -]+\s+/.test(l) && /atmux poke(\s|$)/.test(l));
+    expect(cronPokeLines.length).toBe(1);
   });
 
   test("install on crontab with unrelated user content → preserves user content + injects preamble", () => {

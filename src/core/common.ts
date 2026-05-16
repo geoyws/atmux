@@ -18,6 +18,7 @@
 import { dirname, join, resolve } from "node:path";
 import { ensureDir, exists, readTextOrNull } from "../abstractions/fs.ts";
 import { readJson, tryReadJson } from "../abstractions/json.ts";
+import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
 
@@ -279,7 +280,12 @@ export async function getSessionName(opts: SessionNameOpts = {}): Promise<string
  * 5 deferral" governs the cross-language drift while the prefixed form
  * stays live in production bash).
  */
-export function buildWindowName(member: string, emoji?: string, label?: string): string {
+export function buildWindowName(
+  member: string,
+  emoji?: string,
+  label?: string,
+  role?: string,
+): string {
   // ADR-136 TR4: optional `label` overrides `member` (the ID) for the
   // display segment only. Window name still couples emoji + display
   // string; the underlying tmux window is keyed by name (mutable) but
@@ -293,9 +299,18 @@ export function buildWindowName(member: string, emoji?: string, label?: string):
   // `<emoji>-<member>`. The label-fallback happens here so per-callsite
   // migrations can pass `member.label` without each callsite
   // re-implementing `label ?? name`.
+  //
+  // ADR-161 §Decision-anchor #2 role-aware format split: when `role`
+  // matches one of `DEFAULT_MEMBER_ROLES` (team-lead, planner,
+  // reviewer, ombudsman), render `_-prefix` (`${emoji}_${display}`).
+  // Otherwise — user-added members (role = "member") AND callsites
+  // that don't pass a role — keep the existing ADR-135 hyphen form.
+  // Backward-compatible: existing two/three-arg callers default to
+  // `role: undefined` → hyphen path.
   const display = label !== undefined && label.length > 0 ? label : member;
-  if (emoji !== undefined && emoji.length > 0) return `${emoji}-${display}`;
-  return display;
+  if (emoji === undefined || emoji.length === 0) return display;
+  if (isDefaultMemberRole(role)) return `${emoji}_${display}`;
+  return `${emoji}-${display}`;
 }
 
 /**
@@ -345,10 +360,17 @@ export async function resolveExistingWindowName(
   emoji: string | undefined,
   label: string | undefined,
   listWindowNames: (sessionName: string) => Promise<ReadonlyArray<string>>,
+  role?: string,
 ): Promise<string> {
-  const canonical = buildWindowName(member, emoji, label);
+  // ADR-161 TR2 interaction: default members canonical = `<emoji>_<member>`,
+  // ADR-135 hyphen form `<emoji>-<member>` is the deprecation step BEFORE
+  // current canonical (and before pre-ADR-135 `<emoji><member>` legacy).
+  // For default-member roles we accept all three live forms; for user-added
+  // members the hyphen form IS canonical so the tier collapses to two.
+  const canonical = buildWindowName(member, emoji, label, role);
+  const adr135Hyphen = buildWindowName(member, emoji, label);
   const legacy = buildWindowNameLegacy(member, emoji);
-  if (canonical === legacy) return canonical;
+  if (canonical === legacy && canonical === adr135Hyphen) return canonical;
   let names: ReadonlyArray<string>;
   try {
     names = await listWindowNames(sessionName);
@@ -359,6 +381,7 @@ export async function resolveExistingWindowName(
   }
   const set = new Set(names);
   if (set.has(canonical)) return canonical;
+  if (set.has(adr135Hyphen)) return adr135Hyphen;
   if (set.has(legacy)) return legacy;
   return canonical;
 }
@@ -408,7 +431,12 @@ export function displayMemberName(member: { name: string; label?: string | undef
  */
 export function isMemberWindowName(
   name: string,
-  members: ReadonlyArray<{ name: string; emoji?: string; label?: string | undefined }>,
+  members: ReadonlyArray<{
+    name: string;
+    emoji?: string;
+    label?: string | undefined;
+    role?: string | undefined;
+  }>,
 ): boolean {
   if (name.startsWith("__")) return false; // pre-amend artifact / non-atmux placeholder
   // ADR-135 + ADR-136 TR4: match against the canonical hyphenated form
@@ -426,6 +454,10 @@ export function isMemberWindowName(
   // disjunct falls off.
   return members.some(
     (m) =>
+      // ADR-161 TR2: role-aware canonical form; defaults render `_-prefix`.
+      name === buildWindowName(m.name, m.emoji, m.label, m.role) ||
+      // ADR-135 hyphen-form — pre-ADR-161 legacy for default members
+      // that haven't been migrated yet.
       name === buildWindowName(m.name, m.emoji, m.label) ||
       name === buildWindowNameLegacy(m.name, m.emoji),
   );

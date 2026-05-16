@@ -52,7 +52,7 @@ import { status as statusVerb } from "../../src/verbs/status.ts";
 import { stop as stopVerb } from "../../src/verbs/stop.ts";
 import { task as taskVerb } from "../../src/verbs/task.ts";
 import { tellLead as tellLeadVerb } from "../../src/verbs/tell-lead.ts";
-import { whip as whipVerb } from "../../src/verbs/whip.ts";
+import { poke as whipVerb } from "../../src/verbs/poke.ts";
 
 // Beat 8's bare `stop` (no --force) sends C-c + sleeps 2s before
 // archive/kill. Bun's 5s default trips on machines under load — give the

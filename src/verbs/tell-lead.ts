@@ -215,18 +215,22 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   // 2026-05-13 failures.
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
-  // ADR-135 deprecation-window legacy fallback: resolve to whichever
-  // form (`<emoji>-<name>` canonical OR `<emoji><name>` legacy) the live
-  // tmux window list actually contains. Pre-ADR-135 teams spawned under
-  // the older binary still have legacy windows; the canonical-only
-  // build silently broke tell-lead for those teams ("no tmux window for
-  // lead (is the team running?)" even when the team was clearly up).
+  // ADR-135 deprecation-window legacy fallback (extended ADR-161 TR2):
+  // resolve to whichever form (`<emoji>_<name>` default-member canonical,
+  // `<emoji>-<name>` ADR-135 hyphen, OR `<emoji><name>` pre-ADR-135
+  // legacy) the live tmux window list actually contains. Pre-ADR-135
+  // teams spawned under the older binary still have legacy windows; the
+  // canonical-only build silently broke tell-lead for those teams ("no
+  // tmux window for lead (is the team running?)" even when the team was
+  // clearly up). The `lead.role` arg threads through so the resolver
+  // generates the ADR-161 TR2 default-member canonical when applicable.
   const windowName = await resolveExistingWindowName(
     sessionName,
     lead.name,
     lead.emoji,
     lead.label,
     async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+    lead.role,
   );
   const target = `${sessionName}:${windowName}`;
   // Bash heads-up (lib/tell.sh:43): "📬 driver-inbox has a new ask: <msg≤80>…"

@@ -274,7 +274,7 @@ export async function runLaneDriftCheck(
     (async (memberName: string): Promise<PaneClassification | null> => {
       const memberEntry = team.members.find((m) => m.name === memberName);
       if (memberEntry === undefined || tmux === undefined) return null;
-      const windowName = buildWindowName(memberEntry.name, memberEntry.emoji, memberEntry.label);
+      const windowName = buildWindowName(memberEntry.name, memberEntry.emoji, memberEntry.label, memberEntry.role);
       const target = `${sessionName}:${windowName}`;
       try {
         const text = await tmux.pane.capturePane({ target, start: -30 });

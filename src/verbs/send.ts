@@ -241,8 +241,9 @@ export function buildMemberTarget(
   memberName: string,
   emoji: string | undefined,
   label?: string,
+  role?: string,
 ): string {
-  return `${sessionName}:${buildWindowName(memberName, emoji, label)}`;
+  return `${sessionName}:${buildWindowName(memberName, emoji, label, role)}`;
 }
 
 /** Async variant of {@link buildMemberTarget} that consults the live
@@ -256,6 +257,7 @@ export async function resolveMemberTarget(
   memberName: string,
   emoji: string | undefined,
   label?: string,
+  role?: string,
 ): Promise<string> {
   const windowName = await resolveExistingWindowName(
     sessionName,
@@ -263,6 +265,7 @@ export async function resolveMemberTarget(
     emoji,
     label,
     async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+    role,
   );
   return `${sessionName}:${windowName}`;
 }
@@ -337,6 +340,7 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
     memberEntry.name,
     memberEntry.emoji,
     memberEntry.label,
+    memberEntry.role,
   );
   const atmuxDir = await getAtmuxDir(dirOpts);
   // ADR-138 T3b2: per-TUI verifier dispatch. claude → composerEmpty();
@@ -377,7 +381,7 @@ async function broadcastSend(
   let anyFailed = false;
   for (const m of team.members) {
     if (!parsed.includeDriver && m.name === "driver") continue;
-    const target = await resolveMemberTarget(tmux, sessionName, m.name, m.emoji, m.label);
+    const target = await resolveMemberTarget(tmux, sessionName, m.name, m.emoji, m.label, m.role);
     // ADR-138 T3b2: per-member TUI dispatch (broadcast targets can be
     // heterogeneous — claude members get composerEmpty(), shell members
     // skip verify).

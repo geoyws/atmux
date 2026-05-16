@@ -344,10 +344,10 @@ describe("start — happy path", () => {
     // windows dropped the prefix per ADR-017.)
     const windows = await env.tmux.window.listWindows(session);
     const names = windows.map((w) => w.name).sort();
-    // buildWindowName(member, emoji) → `<emoji><member>` (ADR-017).
-    // emojis come from defaultEmojiForRole: team-lead → 🧭, reviewer → 🔍.
-    // Sort order: 🔍bob < 🧭alice (codepoint compare).
-    expect(names).toEqual(["🔍-bob", "🧭-alice"]);
+    // buildWindowName(member, emoji, label, role) → ADR-161 TR2:
+    // default roles render `_-prefix`. emojis from defaultEmojiForRole:
+    // team-lead → 🧭, reviewer → 🔍. Sort order: 🔍_bob < 🧭_alice.
+    expect(names).toEqual(["🔍_bob", "🧭_alice"]);
     expect(names).not.toContain(`__${env.team}__home`);
 
     // Timestamp written as integer seconds
@@ -625,8 +625,8 @@ describe("start — incremental restart skips existing windows", () => {
 
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
     const names = wins.map((w) => w.name).sort();
-    expect(names).toContain("🧭-alice");
-    expect(names).toContain("🔍-bob");
+    expect(names).toContain("🧭_alice");
+    expect(names).toContain("🔍_bob");
     // Skip-existing log line for alice fired
     expect(env.logs.some((l) => l.msg.includes("alice: window exists"))).toBe(true);
   });
@@ -659,7 +659,7 @@ describe("start — ADR-044 driverSession topology", () => {
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
     // Members emoji-prefixed by role: team-lead → 🧭, member → 🐝.
-    expect(ordered[1]?.name).toBe("🧭-alpha");
+    expect(ordered[1]?.name).toBe("🧭_alpha");
     expect(ordered[2]?.name).toBe("🐝-bee");
     // No __home placeholder ever created.
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
@@ -798,7 +798,7 @@ describe("start — ADR-044 driverSession topology", () => {
 
     // Member window present — the send-keys path didn't throw.
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-    expect(wins.map((w) => w.name)).toContain("🧭-alpha");
+    expect(wins.map((w) => w.name)).toContain("🧭_alpha");
   });
 
   test("non-shell tui: send-keys fires after newSession (no shell-only skip)", async () => {
@@ -849,7 +849,7 @@ describe("start — ADR-044 driverSession topology", () => {
     const wins = await env.tmux.window.listWindows(session);
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
-    expect(ordered[1]?.name).toBe("🧭-alpha");
+    expect(ordered[1]?.name).toBe("🧭_alpha");
   });
 });
 
@@ -998,8 +998,8 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     // Team still spawned all 3 members despite bob's provision failure.
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
     const names = wins.map((w) => w.name).sort();
-    expect(names).toContain("🧭-alice");
-    expect(names).toContain("🔍-bob");
+    expect(names).toContain("🧭_alice");
+    expect(names).toContain("🔍_bob");
     expect(names).toContain("🐝-carol");
     // Operator-visible warning names the failing member specifically.
     const warns = env.logs.filter((l) => l.kind === "warn");
@@ -1036,7 +1036,7 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     expect(warns.some((l) => l.msg.includes("cannot detect repo root"))).toBe(true);
     // Members still spawn — pane creation is unaffected.
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-    expect(wins.map((w) => w.name).sort()).toEqual(["🔍-bob", "🧭-alice"]);
+    expect(wins.map((w) => w.name).sort()).toEqual(["🔍_bob", "🧭_alice"]);
   });
 
   test("detached HEAD (empty branch) → all fall back with 'detached HEAD' warning, no provisioning", async () => {
@@ -1188,7 +1188,7 @@ describe("start — ADR-081 §C brief-paste", () => {
           }),
       });
       await new Promise<void>((res) => setTimeout(res, 200));
-      const pane = await capture(`atmux-${env.team}`, "🧭-lead1");
+      const pane = await capture(`atmux-${env.team}`, "🧭_lead1");
       expect(pane).toContain("LEAD-BRIEF-FOR-lead1");
       expect(pane).not.toContain("MEMBER-BRIEF-FOR-lead1");
     } finally {
@@ -1332,7 +1332,7 @@ describe("start — ADR-081 §C brief-paste", () => {
 
       // Lead's brief landed.
       await new Promise<void>((res) => setTimeout(res, 200));
-      const leadPane = await capture(`atmux-${env.team}`, "🧭-alpha");
+      const leadPane = await capture(`atmux-${env.team}`, "🧭_alpha");
       expect(leadPane).toContain("LEAD-BRIEF-FOR-alpha");
 
       // Bob's brief failed → warn line.
@@ -1344,7 +1344,7 @@ describe("start — ADR-081 §C brief-paste", () => {
       // Both panes exist — team didn't half-spawn.
       const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
       const names = wins.map((w) => w.name);
-      expect(names).toContain("🧭-alpha");
+      expect(names).toContain("🧭_alpha");
       expect(names).toContain("🐝-bob");
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
@@ -1878,7 +1878,9 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
       // tag this sleep call with the current "in-flight" member by
       // peeking at the latest "spawned window <emoji>-<name>" log line.
       const latest = env.logs[env.logs.length - 1];
-      const winLine = latest?.msg.match(/spawned window 🐝-(\S+)/);
+      // ADR-161 TR2: default-role members render `_-prefix`; user-added
+      // members keep hyphen. Match either separator.
+      const winLine = latest?.msg.match(/spawned window 🐝[-_](\S+)/);
       const member = winLine?.[1] ?? nextMember;
       events.push({ member, kind: "enter", t: Date.now() - t0 });
       inFlight += 1;

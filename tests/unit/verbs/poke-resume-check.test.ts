@@ -2,7 +2,7 @@
 //
 // Coverage strategy
 // -----------------
-// Pure helpers (parseWhipResumeCheckArgs, shouldResume, resolveProbeAccounts)
+// Pure helpers (parsePokeResumeCheckArgs, shouldResume, resolveProbeAccounts)
 // tested directly. Public verb driven against fixture .atmux/ + injected
 // probe/resumeMember/discordSend/clock — covering: claudeAccount missing →
 // no-op, no pause state → no-op, pause-active + gate-not-met → no resume,
@@ -24,40 +24,40 @@ import {
 } from "../../../src/core/budget-pause.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../../../src/errors.ts";
 import {
-  parseWhipResumeCheckArgs,
+  parsePokeResumeCheckArgs,
   resolveProbeAccounts,
   shouldResume,
-  whipResumeCheck,
-} from "../../../src/verbs/whip-resume-check.ts";
+  pokeResumeCheck,
+} from "../../../src/verbs/poke-resume-check.ts";
 
-// ---------- parseWhipResumeCheckArgs ----------
+// ---------- parsePokeResumeCheckArgs ----------
 
-describe("parseWhipResumeCheckArgs", () => {
+describe("parsePokeResumeCheckArgs", () => {
   test("default — pushDiscord=true, no teamDir", () => {
-    expect(parseWhipResumeCheckArgs([])).toEqual({ pushDiscord: true });
+    expect(parsePokeResumeCheckArgs([])).toEqual({ pushDiscord: true });
   });
 
   test("--no-discord flips pushDiscord", () => {
-    expect(parseWhipResumeCheckArgs(["--no-discord"]).pushDiscord).toBe(false);
+    expect(parsePokeResumeCheckArgs(["--no-discord"]).pushDiscord).toBe(false);
   });
 
   test("--team-dir captured", () => {
-    expect(parseWhipResumeCheckArgs(["--team-dir", "/x"]).teamDir).toBe("/x");
+    expect(parsePokeResumeCheckArgs(["--team-dir", "/x"]).teamDir).toBe("/x");
   });
 
   test("--team-dir without value → UsageError", () => {
-    expect(() => parseWhipResumeCheckArgs(["--team-dir"])).toThrow(UsageError);
+    expect(() => parsePokeResumeCheckArgs(["--team-dir"])).toThrow(UsageError);
   });
 
   test("unknown arg → UsageError", () => {
-    expect(() => parseWhipResumeCheckArgs(["--bogus"])).toThrow(UsageError);
+    expect(() => parsePokeResumeCheckArgs(["--bogus"])).toThrow(UsageError);
   });
 
   test("undefined arg slot → UsageError mentions empty", () => {
     // Defense-in-depth: if argv contains a sparse slot the parser still surfaces
     // a UsageError rather than silently accepting.
     const sparse = [undefined as unknown as string];
-    expect(() => parseWhipResumeCheckArgs(sparse)).toThrow(UsageError);
+    expect(() => parsePokeResumeCheckArgs(sparse)).toThrow(UsageError);
   });
 });
 
@@ -244,7 +244,7 @@ describe("resolveProbeAccounts", () => {
   });
 });
 
-// ---------- whipResumeCheck() — public verb ----------
+// ---------- pokeResumeCheck() — public verb ----------
 
 interface ProbeRecorder {
   calls: Array<{ account: string; opts?: ProbeBudgetOpts }>;
@@ -295,7 +295,7 @@ const seedTeam = async (
   await writeFile(join(atmuxDir, "team.json"), JSON.stringify(data));
 };
 
-describe("whipResumeCheck() — public verb", () => {
+describe("pokeResumeCheck() — public verb", () => {
   let teamDir: string;
   let atmuxDir: string;
   let stdoutBuf: string;
@@ -319,7 +319,7 @@ describe("whipResumeCheck() — public verb", () => {
   });
 
   test("UsageError on unknown arg", async () => {
-    await expect(whipResumeCheck(["--bogus"])).rejects.toBeInstanceOf(UsageError);
+    await expect(pokeResumeCheck(["--bogus"])).rejects.toBeInstanceOf(UsageError);
   });
 
   test("no claudeAccount → no-op short-circuit", async () => {
@@ -328,7 +328,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [] };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -357,7 +357,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [] };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir, "--no-discord"], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -392,7 +392,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [] };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -429,7 +429,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [] };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -480,7 +480,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [] };
 
-    await whipResumeCheck(["--team-dir", teamDir, "--no-discord"], {
+    await pokeResumeCheck(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -509,7 +509,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [], throwOn: "config" };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -541,7 +541,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [], throwOn: "other" };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -567,7 +567,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [] };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -598,7 +598,7 @@ describe("whipResumeCheck() — public verb", () => {
     const discordRec: DiscordRecorder = { pings: [] };
 
     await expect(
-      whipResumeCheck(["--team-dir", teamDir], {
+      pokeResumeCheck(["--team-dir", teamDir], {
         stdout,
         stderr,
         probe: buildProbe(probeRec),
@@ -631,7 +631,7 @@ describe("whipResumeCheck() — public verb", () => {
       if (m === "alice") throw new Error("alice resume boom");
     };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir, "--no-discord"], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -670,7 +670,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [] };
 
-    await whipResumeCheck(["--team-dir", teamDir, "--no-discord"], {
+    await pokeResumeCheck(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_000_000,
@@ -699,7 +699,7 @@ describe("whipResumeCheck() — public verb", () => {
     const resumeRec: ResumeRecorder = { members: [] };
     const discordRec: DiscordRecorder = { pings: [] };
 
-    const code = await whipResumeCheck(["--team-dir", teamDir, "--no-discord"], {
+    const code = await pokeResumeCheck(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       probe: buildProbe(probeRec),
@@ -714,7 +714,7 @@ describe("whipResumeCheck() — public verb", () => {
     // We don't actually chdir — instead set ATMUX_DIR via no flag and
     // verify the verb fails with the appropriate config error when cwd
     // doesn't have a .atmux. This covers the default-resolveDirOpts branch.
-    await expect(whipResumeCheck(["--team-dir", "/no/such/dir"])).rejects.toThrow();
+    await expect(pokeResumeCheck(["--team-dir", "/no/such/dir"])).rejects.toThrow();
   });
 
   test("default Discord send branch (no opts.discordSend) — no ConfigError thrown", async () => {
@@ -739,7 +739,7 @@ describe("whipResumeCheck() — public verb", () => {
     const oldWebhook = process.env.ATMUX_DISCORD_WEBHOOK;
     delete process.env.ATMUX_DISCORD_WEBHOOK;
     try {
-      const code = await whipResumeCheck(["--team-dir", teamDir], {
+      const code = await pokeResumeCheck(["--team-dir", teamDir], {
         stdout,
         stderr,
         now: () => 1_000_000,

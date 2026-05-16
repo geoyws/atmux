@@ -1,10 +1,12 @@
 // ADR-010 + ADR-022: CLI dispatcher — `whip` verb (V-25).
 // Bash spec: lib/whip.sh @ HEAD 2aadc3f (1324 LOC) — IN-SCOPE SUBSET only.
 //
-// 5-min watchdog intended for cron:
+// 5-min watchdog intended for cron (ADR-160: verb renamed `whip` →
+// `poke`; legacy `atmux whip` cron lines still route here via the
+// cli.ts alias for one release cycle):
 //
-//   */5 * * * * cd /path/to/project && /usr/local/bin/atmux whip \
-//                                       >> .atmux/logs/whip.log 2>&1
+//   */5 * * * * cd /path/to/project && /usr/local/bin/atmux poke \
+//                                       >> .atmux/logs/poke.log 2>&1
 //
 // Checks performed each tick (per ADR-022 in-scope table):
 //   1. tmux session liveness, with a 2-tick session-DOWN gate to suppress
@@ -160,21 +162,21 @@ import {
 } from "../lib/needs-approval.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
 
-const USAGE = "atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]";
+const USAGE = "atmux poke [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]";
 
 // ---------- Args ----------
 
-export interface WhipArgs {
+export interface PokeArgs {
   pushDiscord: boolean;
   initLeadMarker: boolean;
-  /** Force-emit a 💓 [whip-heartbeat] this tick even when findings are
+  /** Force-emit a 💓 [poke-heartbeat] this tick even when findings are
    *  empty AND the team's heartbeat is suppressed. Useful for smoke-
    *  testing the cron line wired into Discord. */
   forceHeartbeat: boolean;
   teamDir?: string;
 }
 
-export function parseWhipArgs(argv: ReadonlyArray<string>): WhipArgs {
+export function parsePokeArgs(argv: ReadonlyArray<string>): PokeArgs {
   let pushDiscord = true;
   let initLeadMarker = false;
   let forceHeartbeat = false;
@@ -208,7 +210,7 @@ export function parseWhipArgs(argv: ReadonlyArray<string>): WhipArgs {
     }
     throw new UsageError({ what: `whip: unknown arg: ${a ?? ""}`, hint: USAGE });
   }
-  const out: WhipArgs = { pushDiscord, initLeadMarker, forceHeartbeat };
+  const out: PokeArgs = { pushDiscord, initLeadMarker, forceHeartbeat };
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }
@@ -229,7 +231,7 @@ export interface WhipConfig {
   /** Number of consecutive DOWN ticks before reporting (false-alert
    *  dampener). Default 2 per bash E6/S1. */
   downConfirmTicks: number;
-  /** When `false`, suppress 💓 [whip-heartbeat] on clean ticks. */
+  /** When `false`, suppress 💓 [poke-heartbeat] on clean ticks. */
   heartbeat: boolean;
   /** Recommend-only vs auto-execute. V-25 only recommends; auto-rotate
    *  execution is V-26-deferred per ADR-021. Read here so the recommend
@@ -351,7 +353,7 @@ export function resolveModalCycling(team: Team): ModalCyclingResolved {
 //
 // `makeDefault*` factories return the production-default DI seam used by
 // runWhip when callers don't inject. Tests inject recorders directly via
-// the `WhipOpts.*` fields; the factories themselves stay simple +
+// the `PokeOpts.*` fields; the factories themselves stay simple +
 // best-effort (failure swallowed; tick continues).
 
 interface CommitCountFactoryArgs {
@@ -785,15 +787,15 @@ export interface Finding {
   bullet: string;
   /** ADR-057 §D4a: optional perm-mode-drift payload. When present, the
    *  tick aggregates these per-member findings into a single
-   *  [whip-perm-mode-drift] Discord ping (24h per-member dedup). */
+   *  [poke-perm-mode-drift] Discord ping (24h per-member dedup). */
   permModeDrift?: { member: string; mode: string };
   /** ADR-057 §D4c: optional defunct-cwd payload. When present, the
    *  tick aggregates these per-member findings into a single
-   *  [whip-defunct-cwd] Discord ping (no dedup — fires every tick
+   *  [poke-defunct-cwd] Discord ping (no dedup — fires every tick
    *  until the operator restores the path). */
   defunctCwd?: { member: string; cwd: string };
   /** ADR-142 §D4-D5: optional modal-cycling payload. When present, the
-   *  tick fires `[whip-modal-cycling]` Discord (per-member dedup via
+   *  tick fires `[poke-modal-cycling]` Discord (per-member dedup via
    *  modalCycling.dedupMin) PLUS best-effort `atmux send` clarifier +
    *  `atmux flags add` flag. Surface dispatch happens at tick-aggregate
    *  time so the dedup state writes once even when a single tick fires
@@ -808,7 +810,7 @@ export interface Finding {
 
 // ---------- Public entrypoint ----------
 
-export interface WhipOpts {
+export interface PokeOpts {
   stdout?: Writer;
   stderr?: Writer;
   /** Clock — defaults to `Date.now`. */
@@ -851,9 +853,15 @@ export interface WhipOpts {
   fileModalCyclingFlag?: (subject: string, body: string) => Promise<void>;
 }
 
-/** `atmux whip [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]`. */
-export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Promise<number> {
-  const parsed = parseWhipArgs(argv);
+/** `atmux poke [--no-discord] [--init-lead-marker] [--heartbeat] [--team-dir <dir>]`.
+ *
+ * ADR-160 rename: this verb was previously named `whip`. The `atmux whip`
+ * surface still routes here via a cli.ts deprecation alias for one
+ * release cycle. The `team.whip` config field (TeamWhip schema) is
+ * unchanged — config-compat preservation per ADR-160 (the source rename
+ * is atmux-internal scope only; config field rename is out of scope). */
+export async function poke(argv: ReadonlyArray<string>, opts: PokeOpts = {}): Promise<number> {
+  const parsed = parsePokeArgs(argv);
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);
 
@@ -869,7 +877,7 @@ export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Pr
   const nowSec = Math.floor(nowMs / 1000);
 
   // ADR-054 §D2 — per-tick team.json validation with safe-defaults
-  // fallback. On schema/JSON failure we fire a [whip-config-drift]
+  // fallback. On schema/JSON failure we fire a [poke-config-drift]
   // Discord ping (dedup'd via hash + 24h re-fire window) and
   // continue the tick with a parseable shape rather than crashing.
   // requireTeam used to be the team load; it stays as the absent-file
@@ -880,7 +888,7 @@ export async function whip(argv: ReadonlyArray<string>, opts: WhipOpts = {}): Pr
   }
 
   // I-1 init mode short-circuit. Cron / setup invokes
-  // `atmux whip --init-lead-marker` once on lead-spawn or rotate-lead so
+  // `atmux poke --init-lead-marker` once on lead-spawn or rotate-lead so
   // the next regular whip tick reads a real epoch.
   if (parsed.initLeadMarker) {
     const writeOpts = home !== undefined ? { home } : {};
@@ -978,7 +986,7 @@ interface TickCtx {
   fileModalCyclingFlag?: (subject: string, body: string) => Promise<void>;
 }
 
-async function runTick(parsed: WhipArgs, ctx: TickCtx): Promise<number> {
+async function runTick(parsed: PokeArgs, ctx: TickCtx): Promise<number> {
   const { team, atmuxDir, env, stdout, nowSec } = ctx;
   const config = readWhipConfig(team, env);
   const session = await getSessionName({ dir: atmuxDir, team });
@@ -1560,7 +1568,7 @@ async function checkMember(
   // to that form (memory feedback_window_naming_no_prefix).
   const role = (member.role ?? "member").toString();
   // ADR-135 + ADR-136 TR4: canonical `<emoji>-<label ?? name>` form.
-  const memberWindowName = buildWindowName(member.name, member.emoji, member.label);
+  const memberWindowName = buildWindowName(member.name, member.emoji, member.label, member.role);
   // ADR-136 TR4: operator-facing display string. Used in bullet text +
   // any Discord-rendered struct fields; internal storage / lookup
   // paths continue to key on `member.name`.
@@ -1954,7 +1962,7 @@ async function checkLeadUptime(
 // ---------- Findings → Discord push ----------
 
 async function emitFindings(
-  parsed: WhipArgs,
+  parsed: PokeArgs,
   ctx: TickCtx,
   config: WhipConfig,
   findings: Finding[],
@@ -1990,7 +1998,7 @@ async function emitFindings(
   const informational = findings.filter((f) => f.category === "informational");
 
   // Per ADR-022 §"Rendering": one named template per finding class.
-  // 0 findings → 💓 [whip-heartbeat] iff config.heartbeat (suppressible)
+  // 0 findings → 💓 [poke-heartbeat] iff config.heartbeat (suppressible)
   // OR --heartbeat flag.
   if (findings.length === 0) {
     if (!config.heartbeat && !parsed.forceHeartbeat) return;
@@ -2049,7 +2057,7 @@ async function emitFindings(
       nextState = recordFindingFire(nextState, "whip-overdue", hash, nowSec);
     }
   }
-  // Always compute a [whip-progress] digest summarising counts so the
+  // Always compute a [poke-progress] digest summarising counts so the
   // operator's standing channel has a single bullet to grep on for
   // "tick happened". Soft / informational signals ride here. Same
   // dedup gate — counts are the body, so identical counts + identical
@@ -2269,7 +2277,7 @@ async function loadTeamWithDrift(
 }
 
 /**
- * Maybe fire the [whip-config-drift] Discord ping. Skipped if the
+ * Maybe fire the [poke-config-drift] Discord ping. Skipped if the
  * dedup state file shows the same hash within the 24h re-fire window.
  * Records the fire epoch on success so the next tick can dedup.
  */

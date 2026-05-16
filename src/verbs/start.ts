@@ -139,7 +139,7 @@ import {
   consumedManifestPath,
   resumeManifestPath,
 } from "../core/soft-stop.ts";
-import { getCockpitSocketName } from "../core/tmux-paths.ts";
+import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ResumeManifest } from "../schema/resume.ts";
 import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
@@ -379,7 +379,10 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //    a team declaring tmuxTmpdir must get its socket created under that
   //    path so subsequent status/doctor reads find the same socket).
   const tmuxConfig: TmuxConfig = resolveTmuxConfig(team, parsed);
-  const tmux = factory(tmuxConfig);
+  // ADR-162 §Decision-anchor #2: thread the canonical atmux.conf so
+  // every `tmux ...` invocation runs with `-f <path>`. Operator's
+  // ~/.tmux.conf is NEVER inherited; override via ATMUX_TMUX_CONF.
+  const tmux = factory({ ...tmuxConfig, configFile: getAtmuxTmuxConfPath() });
 
   // 4a. tmux's `-S <abspath>/sock new-session` does NOT auto-create the
   //     parent directory — it prints `error creating <path>` to stderr
@@ -672,7 +675,9 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       (member as { emoji?: string }).emoji = emoji;
       stampedEmoji = true;
     }
-    const win = buildWindowName(member.name, emoji);
+    // ADR-161 TR2: pass member.role so default-role members render
+    // `_-prefix`; user-added (role = "member") keep hyphen.
+    const win = buildWindowName(member.name, emoji, member.label, member.role);
     if (existingNames.has(win)) {
       logger.log(`  · ${member.name}: window exists, skipping (use --force to reset)`);
       return;
@@ -685,7 +690,28 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     // `tmux rename-window` (preserves pane PID + scroll history).
     // Idempotent: re-running start after the rename is a no-op
     // because `existingNames.has(win)` short-circuits above.
+    // ADR-161 TR2: pre-`_-prefix` teams have default-role windows
+    // named `<emoji>-<label>` (hyphen). Detect via buildWindowName
+    // with `role: undefined` (hyphen path) and rename to the new
+    // `_-prefix` shape.
+    const winHyphen = buildWindowName(member.name, emoji, member.label);
     const winLegacy = buildWindowNameLegacy(member.name, emoji);
+    if (winHyphen !== win && existingNames.has(winHyphen)) {
+      try {
+        await tmux.window.renameWindow(`${session}:${winHyphen}`, win);
+        logger.log(
+          `  · ${member.name}: renamed legacy window '${winHyphen}' → '${win}' (ADR-161 _-prefix migration)`,
+        );
+        existingNames.add(win);
+        existingNames.delete(winHyphen);
+        return;
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(
+          `  · ${member.name}: rename '${winHyphen}' → '${win}' failed (${cause}); continuing — manual fix via 'tmux rename-window'`,
+        );
+      }
+    }
     if (winLegacy !== win && existingNames.has(winLegacy)) {
       try {
         await tmux.window.renameWindow(`${session}:${winLegacy}`, win);
@@ -1078,7 +1104,13 @@ async function autoReconcileCockpitForTeam(
   const reconcile = opts.cockpitReconcileFn ?? reconcileCockpitSession;
   // ADR-162 §Decision-anchor #1: cockpit binds the dedicated
   // `atmux-cockpit` socket (`ATMUX_COCKPIT_SOCKET` legacy escape hatch).
-  const cockpitTmux = factory({ socket: getCockpitSocketName() });
+  // §Decision-anchor #2: thread the canonical atmux.conf via `-f` so
+  // window-naming + key-rebinds match ADR-135's contract regardless of
+  // the operator's personal config.
+  const cockpitTmux = factory({
+    socket: getCockpitSocketName(),
+    configFile: getAtmuxTmuxConfPath(),
+  });
   try {
     await reconcile(
       cockpitTmux,

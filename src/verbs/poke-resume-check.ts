@@ -55,7 +55,7 @@ import { resumeMember as defaultResumeMember } from "../core/pause.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import type { Team, TeamWhip } from "../schema/team.ts";
 
-const USAGE = "atmux whip-resume-check [--no-discord] [--team-dir <dir>]";
+const USAGE = "atmux poke-resume-check [--no-discord] [--team-dir <dir>]";
 
 // Default timing knobs — picked to match `whip.ts`. Long enough for any
 // transient FS hiccup; short enough that a wedged peer doesn't drag the
@@ -65,12 +65,12 @@ const LOCK_RETRY_DELAY_MS = 25;
 
 // ---------- Args ----------
 
-export interface WhipResumeCheckArgs {
+export interface PokeResumeCheckArgs {
   pushDiscord: boolean;
   teamDir?: string;
 }
 
-export function parseWhipResumeCheckArgs(argv: ReadonlyArray<string>): WhipResumeCheckArgs {
+export function parsePokeResumeCheckArgs(argv: ReadonlyArray<string>): PokeResumeCheckArgs {
   let pushDiscord = true;
   let teamDir: string | undefined;
   let i = 0;
@@ -98,7 +98,7 @@ export function parseWhipResumeCheckArgs(argv: ReadonlyArray<string>): WhipResum
       hint: USAGE,
     });
   }
-  const out: WhipResumeCheckArgs = { pushDiscord };
+  const out: PokeResumeCheckArgs = { pushDiscord };
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }
@@ -160,7 +160,7 @@ export function resolveProbeAccounts(whip: TeamWhip | undefined): string[] {
 
 // ---------- Public entrypoint ----------
 
-export interface WhipResumeCheckOpts {
+export interface PokeResumeCheckOpts {
   stdout?: Writer;
   stderr?: Writer;
   /** Clock — defaults to `time.now()` (epoch ms). */
@@ -177,12 +177,16 @@ export interface WhipResumeCheckOpts {
   lockAcquire?: (path: string) => Promise<LockHandle>;
 }
 
-/** `atmux whip-resume-check [--no-discord] [--team-dir <dir>]`. */
-export async function whipResumeCheck(
+/** `atmux poke-resume-check [--no-discord] [--team-dir <dir>]`.
+ *
+ * ADR-160 rename: this verb was previously named `whipResumeCheck`. The
+ * `atmux whip-resume-check` cli surface still routes here via a
+ * deprecation alias for one release cycle. */
+export async function pokeResumeCheck(
   argv: ReadonlyArray<string>,
-  opts: WhipResumeCheckOpts = {},
+  opts: PokeResumeCheckOpts = {},
 ): Promise<number> {
-  const parsed = parseWhipResumeCheckArgs(argv);
+  const parsed = parsePokeResumeCheckArgs(argv);
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);
 
@@ -247,7 +251,7 @@ interface TickCtx {
   webhookOverride?: string;
 }
 
-async function runCheck(parsed: WhipResumeCheckArgs, ctx: TickCtx): Promise<number> {
+async function runCheck(parsed: PokeResumeCheckArgs, ctx: TickCtx): Promise<number> {
   const { team, atmuxDir, stdout } = ctx;
   const whip = team.whip;
   const accounts = resolveProbeAccounts(whip);
@@ -313,7 +317,7 @@ async function runCheck(parsed: WhipResumeCheckArgs, ctx: TickCtx): Promise<numb
 
 async function executeResume(
   ctx: TickCtx,
-  parsed: WhipResumeCheckArgs,
+  parsed: PokeResumeCheckArgs,
   pauseState: BudgetPauseState,
   probes: ReadonlyArray<BudgetProbeResult>,
 ): Promise<void> {

@@ -190,7 +190,7 @@ function buildResumeMember(
     name: member.name,
     lastClaim: task?.id ?? null,
     claimedAt: task?.claimedAt ?? null,
-    windowName: emoji.length > 0 ? buildWindowName(member.name, emoji) : null,
+    windowName: emoji.length > 0 ? buildWindowName(member.name, emoji, member.label, member.role) : null,
   };
 }
 
@@ -359,7 +359,7 @@ async function notifyMember(
   }
   const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
   if (emoji.length === 0) return false;
-  const win = buildWindowName(member.name, emoji);
+  const win = buildWindowName(member.name, emoji, member.label, member.role);
   const role = typeof member.role === "string" ? member.role : "member";
   const sendTarget: SendTarget =
     role === "team-lead"

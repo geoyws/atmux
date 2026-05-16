@@ -88,8 +88,8 @@ import { tellLead } from "./verbs/tell-lead.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
 import { watchdog } from "./verbs/watchdog.ts";
-import { whip } from "./verbs/whip.ts";
-import { whipResumeCheck } from "./verbs/whip-resume-check.ts";
+import { poke } from "./verbs/poke.ts";
+import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
 
 /**
  * Entry point — process argv (sliced past binary + script name) and
@@ -297,10 +297,25 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return health(argv.slice(1));
     case "driver-inbox":
       return driverInbox(argv.slice(1));
+    case "poke":
+      return poke(argv.slice(1));
+    case "poke-resume-check":
+      return pokeResumeCheck(argv.slice(1));
+    // ADR-160: legacy `whip` + `whip-resume-check` surfaces retained for
+    // one release cycle with stderr deprecation-warn. Operator cron lines
+    // continue invoking the canonical `poke` handler via this alias;
+    // post-cycle the alias is removed and stale cron entries get a
+    // refusal hint citing ADR-160.
     case "whip":
-      return whip(argv.slice(1));
+      process.stderr.write(
+        "atmux: 'atmux whip' is deprecated and renamed to 'atmux poke' per ADR-160; routing to canonical handler. Update cron lines + scripts before the next release.\n",
+      );
+      return poke(argv.slice(1));
     case "whip-resume-check":
-      return whipResumeCheck(argv.slice(1));
+      process.stderr.write(
+        "atmux: 'atmux whip-resume-check' is deprecated and renamed to 'atmux poke-resume-check' per ADR-160; routing to canonical handler. Update cron lines + scripts before the next release.\n",
+      );
+      return pokeResumeCheck(argv.slice(1));
     case "watchdog":
       return watchdog(argv.slice(1));
     case "pulse":

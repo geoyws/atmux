@@ -97,10 +97,13 @@ describe("structural lint — no bare [whip] template literal in src/", () => {
   test("audit covers known callers (regression coverage anchor)", async () => {
     // Sanity: confirm the walker reaches the named files. If the walker
     // breaks, this catches it before a silent zero-violation pass masks
-    // the regression.
+    // the regression. ADR-160: whip.ts → poke.ts; anchor follows the
+    // rename. Lint itself still searches for bare `template: "whip"`
+    // literals (the historical noise template); see follow-up task to
+    // rename the lint + named-template union (poke-progress / etc.).
     const files = await walkTsFiles(SRC_ROOT);
     const names = files.map((f) => f.split("/").pop());
-    expect(names).toContain("whip.ts");
+    expect(names).toContain("poke.ts");
     expect(names).toContain("discorder.ts");
     expect(names).toContain("discord.ts");
   });

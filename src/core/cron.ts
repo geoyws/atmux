@@ -5,19 +5,25 @@
 // bun-port `src/verbs/cron.ts` install verb will render against — see
 // the Phase-2 deferral note at `src/verbs/start.ts:63-64`).
 //
-// Block shape (marker-fenced, idempotent re-install via fence-replace):
+// Block shape (marker-fenced, idempotent re-install via fence-replace).
+// ADR-160 rename: emitted verbs are `poke` + `poke-resume-check`;
+// legacy `whip` + `whip-resume-check` cron lines from pre-rename
+// installs still route here via the cli.ts deprecation alias for one
+// release cycle.
 //
 //     # >>> atmux:team=<n> — managed by atmux start; do not edit by hand
-//     */15 * * * * <atmuxDir prefix> atmux whip                 >> .../whip.log 2>&1
+//     */15 * * * * <atmuxDir prefix> atmux poke                 >> .../poke.log 2>&1
 //     */30 * * * * <prefix> atmux report                         >> .../report.log 2>&1
 //     0 */4 * * * <prefix> atmux decisions digest                >> .../decisions-digest.log 2>&1
 //     0 4 * * * <prefix> atmux groom --quiet                     >> .../groom.log 2>&1
-//     */1 * * * * <prefix> atmux whip-resume-check               >> .../whip-resume-check.log 2>&1   ← ADR-053 §D4
+//     */1 * * * * <prefix> atmux poke-resume-check               >> .../poke-resume-check.log 2>&1   ← ADR-053 §D4
 //     # <<< atmux:team=<n>
 //
 // Conditional lines (omitted when the gating condition is false):
-//   - `whip-resume-check` (1-min): only when `team.whip.claudeAccount`
+//   - `poke-resume-check` (1-min): only when `team.whip.claudeAccount`
 //     is set. Teams without budget observability skip the noise.
+//     The `team.whip.*` config field name is unchanged (ADR-160
+//     §Decision-anchor #1 — config-compat preservation).
 //   - `discorder progress` + `discorder heartbeat`: when team has a
 //     `role: "discorder"` member; replaces the regular `report` line.
 //   - `unblocker tick` (2-min): when team has a `role: "unblocker"`
@@ -220,8 +226,14 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   const groomHour = team.groom?.atHour ?? 4;
   const unblockerMins = team.unblocker?.intervalMins ?? 2;
 
-  // 1. whip — full sweep on team.whip.intervalMins (default 15).
-  out.push(`${cronEvery(whipMins)} ${baseEnv} whip ${logTail("whip")}`);
+  // 1. poke — full sweep on team.whip.intervalMins (default 15).
+  // ADR-160 rename: the verb is `atmux poke` going forward. The
+  // `team.whip.intervalMins` CONFIG field stays (config-compat
+  // preservation per ADR-160 §Decision-anchor #1 — source rename is
+  // atmux-internal-source scope only). Legacy `atmux whip` cron lines
+  // continue to route here via the cli.ts deprecation alias for one
+  // release cycle; emit canonical `atmux poke` on every cron-install.
+  out.push(`${cronEvery(whipMins)} ${baseEnv} poke ${logTail("poke")}`);
 
   // 2. report or discorder pair (mutually exclusive per ADR-022 OQ-D4).
   const hasDiscorder = team.members.some((m) => (m as { role?: string }).role === "discorder");
@@ -244,14 +256,16 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   // 4. groom — daily at team.groom.atHour (default 4 = quietest window).
   out.push(`${cronAtHour(groomHour)} ${baseEnv} groom --quiet ${logTail("groom")}`);
 
-  // 5. whip-resume-check — every 1 minute, gated on claudeAccount.
+  // 5. poke-resume-check — every 1 minute, gated on claudeAccount.
   // ADR-053 §D4 (Option B): isolated cheap path so post-pause auto-
   // resume latency drops from up-to-5min to up-to-1min without bumping
-  // full whip's intervalMins cadence (which would amplify any whip-side
+  // full poke's intervalMins cadence (which would amplify any poke-side
   // bug). Hardcoded 1-min — sub-1-min cadence isn't a tunable, it's the
-  // deliberate post-pause latency floor (per ADR-079 §A).
+  // deliberate post-pause latency floor (per ADR-079 §A). ADR-160
+  // rename: emits canonical `atmux poke-resume-check`; legacy
+  // `whip-resume-check` cron lines route here via cli.ts alias.
   if (team.whip?.claudeAccount !== undefined && team.whip.claudeAccount !== "") {
-    out.push(`*/1 * * * * ${baseEnv} whip-resume-check ${logTail("whip-resume-check")}`);
+    out.push(`*/1 * * * * ${baseEnv} poke-resume-check ${logTail("poke-resume-check")}`);
   }
 
   // 6. unblocker tick — every team.unblocker.intervalMins (default 2),
@@ -433,8 +447,11 @@ const ENV_PREAMBLE = [
 ].join("\n");
 
 /** Atmux verb names that appeared as bare cron lines in pre-marker
- *  installs. Used to scrub pre-marker orphans during install. */
-const ORPHAN_VERB_RE = /\batmux\s+(whip|report|decisions|groom|discorder|unblocker)([\s]|$)/;
+ *  installs. Used to scrub pre-marker orphans during install. ADR-160:
+ *  both `whip` (legacy alias) and `poke` (canonical) match — legacy
+ *  cron lines from pre-rename installs still get scrubbed even after
+ *  the alias cycle ends. */
+const ORPHAN_VERB_RE = /\batmux\s+(whip|poke|report|decisions|groom|discorder|unblocker)([\s]|$)/;
 
 export interface InstallCronBlockOpts extends RenderCronBlockOpts {
   /** Current crontab contents (from `CrontabIO.read()`) — `null` /

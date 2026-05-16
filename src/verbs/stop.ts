@@ -328,7 +328,8 @@ async function runStopPhantomPrune(
         const liveNames = new Set(windows.map((w) => w.name));
         const live = new Set<string>();
         for (const m of team.members) {
-          const expected = buildWindowName(m.name, m.emoji);
+          // ADR-161 TR2: role-aware expected name.
+          const expected = buildWindowName(m.name, m.emoji, m.label, m.role);
           if (liveNames.has(expected)) live.add(m.name);
         }
         return live;
@@ -486,7 +487,8 @@ async function sendCancelToMembers(
   // the roster), so the discriminated union's type-system gate is
   // automatic here.
   for (const m of team.members) {
-    const win = buildWindowName(m.name, m.emoji);
+    // ADR-161 TR2: role-aware window name (defaults → `_-prefix`).
+    const win = buildWindowName(m.name, m.emoji, m.label, m.role);
     const tmuxTarget = `${sessionName}:${win}`;
     const role = typeof m.role === "string" ? m.role : "member";
     const sendTarget: SendTarget =

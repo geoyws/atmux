@@ -217,7 +217,7 @@ describe("cronInstall — happy path", () => {
     expect(body.includes("# >>> atmux:team=demo")).toBe(true);
     expect(body.includes("TERM=xterm-256color")).toBe(true);
     expect(body.includes("ATMUX_DIR=")).toBe(true);
-    expect(body.includes("/usr/local/bin/atmux whip")).toBe(true);
+    expect(body.includes("/usr/local/bin/atmux poke")).toBe(true);
     expect(stdoutBuf.join("").includes("installed cron block for team 'demo'")).toBe(true);
     expect(stderrBuf.join("")).toBe("");
   });

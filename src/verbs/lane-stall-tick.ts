@@ -256,7 +256,7 @@ export async function runLaneStallTick(
       flagged += 1;
       continue;
     }
-    const windowName = buildWindowName(targetMember.name, targetMember.emoji);
+    const windowName = buildWindowName(targetMember.name, targetMember.emoji, targetMember.label, targetMember.role);
     const windowTarget = `${session}:${windowName}`;
     const sendOpts: SafeSendOpts = {
       capture,

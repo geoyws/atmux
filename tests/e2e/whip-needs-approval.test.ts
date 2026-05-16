@@ -32,7 +32,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscordSendOpts } from "../../src/abstractions/discord.ts";
 import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
-import { whip } from "../../src/verbs/whip.ts";
+import { poke as whip } from "../../src/verbs/poke.ts";
 
 // ---------- Fixture builders ----------
 

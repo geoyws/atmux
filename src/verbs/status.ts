@@ -40,7 +40,7 @@ import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-heal
 import { loadInbox } from "../core/inbox.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { loadKanban } from "../core/kanban.ts";
-import { getCockpitSocketName } from "../core/tmux-paths.ts";
+import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
 import {
@@ -389,8 +389,13 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
     // ADR-162 §Decision-anchor #1: cockpit lives on its dedicated
     // socket (`atmux-cockpit` by default; `ATMUX_COCKPIT_SOCKET` legacy
     // escape hatch). Probing the wrong socket reports a healthy cockpit
-    // as `down` post-migration.
-    const cockpitTmux = factory({ socket: getCockpitSocketName() });
+    // as `down` post-migration. §Decision-anchor #2: canonical
+    // atmux.conf via `-f` keeps the probe consistent with the cockpit's
+    // owning factory in cockpit.ts.
+    const cockpitTmux = factory({
+      socket: getCockpitSocketName(),
+      configFile: getAtmuxTmuxConfPath(),
+    });
     sessionAlive = await cockpitTmux.session.hasSession(cockpit.cockpitSession);
     if (sessionAlive) {
       const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
@@ -488,6 +493,7 @@ export async function probeLeadUptime(
     leadMemberObj.name,
     leadMemberObj.emoji,
     leadMemberObj.label,
+    leadMemberObj.role,
   );
   const homeOpts: { home?: string; fallback?: string } = { fallback: memberWin };
   if (deps.home !== undefined) homeOpts.home = deps.home;
@@ -807,13 +813,19 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
 async function readPaneCommand(
   tmux: TmuxNamespace,
   sessionName: string,
-  member: { name: string; emoji?: string | undefined; label?: string | undefined },
+  member: {
+    name: string;
+    emoji?: string | undefined;
+    label?: string | undefined;
+    role?: string | undefined;
+  },
   sessionUp: boolean,
 ): Promise<string> {
   if (!sessionUp) return "(down)";
   // ADR-135 + ADR-136 TR4: canonical hyphen-separator window name with
   // label-fallback when the member has been hot-renamed.
-  const winName = buildWindowName(member.name, member.emoji, member.label);
+  // ADR-161 TR2: role-aware — default-role members render `_-prefix`.
+  const winName = buildWindowName(member.name, member.emoji, member.label, member.role);
   const target = `${sessionName}:${winName}`;
   try {
     // Bash lib/status.sh:55 reads `#{pane_current_command}` via

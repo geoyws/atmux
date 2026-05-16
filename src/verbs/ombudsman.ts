@@ -281,7 +281,7 @@ async function ombudsmanTick(parsed: ParsedOmbudsmanArgs, deps: OmbudsmanDeps): 
   }
 
   const session = await getSessionName({ ...dirOpts, team });
-  const windowTarget = `${session}:${buildWindowName(member.name, member.emoji)}`;
+  const windowTarget = `${session}:${buildWindowName(member.name, member.emoji, member.label, member.role)}`;
 
   // Resolve tmux + send-keys deps. Test injection bypasses the real
   // tmux entirely; production wires the real socket-pinned namespace.

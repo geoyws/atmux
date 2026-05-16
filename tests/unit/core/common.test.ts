@@ -398,6 +398,65 @@ describe("buildWindowName / isMemberWindowName", () => {
     const members = [{ name: "alice", emoji: "🦊", label: undefined }];
     expect(isMemberWindowName("🦊-alice", members)).toBe(true);
   });
+
+  // ---------- ADR-161 TR2: role-aware `_-prefix` for default members ----------
+
+  test("buildWindowName: default role 'team-lead' renders `_-prefix`", () => {
+    expect(buildWindowName("lead", "🧭", undefined, "team-lead")).toBe("🧭_lead");
+  });
+
+  test("buildWindowName: default role 'planner' renders `_-prefix`", () => {
+    expect(buildWindowName("planner", "🎯", undefined, "planner")).toBe("🎯_planner");
+  });
+
+  test("buildWindowName: default role 'reviewer' renders `_-prefix`", () => {
+    expect(buildWindowName("reviewer", "🔍", undefined, "reviewer")).toBe("🔍_reviewer");
+  });
+
+  test("buildWindowName: default role 'ombudsman' renders `_-prefix`", () => {
+    expect(buildWindowName("ombuds", "⚖️", undefined, "ombudsman")).toBe("⚖️_ombuds");
+  });
+
+  test("buildWindowName: user-added role 'member' keeps hyphen", () => {
+    expect(buildWindowName("up-impl-2", "🦊", undefined, "member")).toBe("🦊-up-impl-2");
+  });
+
+  test("buildWindowName: legacy 'gitter' role keeps hyphen (pending ADR-159 rename)", () => {
+    expect(buildWindowName("gitter", "🌳", undefined, "gitter")).toBe("🌳-gitter");
+  });
+
+  test("buildWindowName: default role + label renders `_-prefix` with label", () => {
+    expect(buildWindowName("lead", "🧭", "Chief", "team-lead")).toBe("🧭_Chief");
+  });
+
+  test("buildWindowName: role omitted falls through to existing hyphen form (backcompat)", () => {
+    expect(buildWindowName("alice", "🦊")).toBe("🦊-alice");
+    expect(buildWindowName("alice", "🦊", "Alice")).toBe("🦊-Alice");
+  });
+
+  test("buildWindowName: default role without emoji renders bare display (no prefix)", () => {
+    expect(buildWindowName("lead", undefined, undefined, "team-lead")).toBe("lead");
+    expect(buildWindowName("lead", "", undefined, "team-lead")).toBe("lead");
+  });
+
+  test("isMemberWindowName: matches default-role `_-prefix` form", () => {
+    const members = [{ name: "lead", emoji: "🧭", label: undefined, role: "team-lead" }];
+    expect(isMemberWindowName("🧭_lead", members)).toBe(true);
+  });
+
+  test("isMemberWindowName: matches legacy hyphen form for default-role member (migration window)", () => {
+    const members = [{ name: "lead", emoji: "🧭", label: undefined, role: "team-lead" }];
+    // Pre-ADR-161 teams have default members on hyphen; the matcher
+    // must accept both shapes during the deprecation window so
+    // already-spawned panes route correctly until reconcile renames.
+    expect(isMemberWindowName("🧭-lead", members)).toBe(true);
+  });
+
+  test("isMemberWindowName: matches user-added member with hyphen form", () => {
+    const members = [{ name: "alice", emoji: "🦊", label: undefined, role: "member" }];
+    expect(isMemberWindowName("🦊-alice", members)).toBe(true);
+    expect(isMemberWindowName("🦊_alice", members)).toBe(false);
+  });
 });
 
 // ---------- ADR-136 TR4: displayMemberName ----------

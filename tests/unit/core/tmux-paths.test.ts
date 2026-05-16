@@ -9,7 +9,9 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  ATMUX_TMUX_CONF_RELPATH,
   COCKPIT_SOCKET_DEFAULT,
+  getAtmuxTmuxConfPath,
   getCockpitSocketName,
 } from "../../../src/core/tmux-paths.ts";
 
@@ -48,5 +50,45 @@ describe("getCockpitSocketName", () => {
 describe("COCKPIT_SOCKET_DEFAULT constant", () => {
   test("equals 'atmux-cockpit' per ADR-162 §Decision-anchor #1", () => {
     expect(COCKPIT_SOCKET_DEFAULT).toBe("atmux-cockpit");
+  });
+});
+
+describe("ATMUX_TMUX_CONF_RELPATH constant", () => {
+  test("equals 'tmux/atmux.conf' per ADR-162 §Decision-anchor #2", () => {
+    expect(ATMUX_TMUX_CONF_RELPATH).toBe("tmux/atmux.conf");
+  });
+});
+
+describe("getAtmuxTmuxConfPath", () => {
+  test("env override (ATMUX_TMUX_CONF) honoured verbatim when set", () => {
+    expect(getAtmuxTmuxConfPath({ ATMUX_TMUX_CONF: "/custom/path/atmux.conf" })).toBe(
+      "/custom/path/atmux.conf",
+    );
+  });
+
+  test("env override honoured even when path doesn't exist (resolver doesn't probe)", () => {
+    expect(getAtmuxTmuxConfPath({ ATMUX_TMUX_CONF: "/dev/null" })).toBe("/dev/null");
+  });
+
+  test("undefined env override falls through to templates-dir resolver", () => {
+    const r = getAtmuxTmuxConfPath({});
+    expect(r.endsWith("/templates/tmux/atmux.conf")).toBe(true);
+    expect(r.startsWith("/")).toBe(true);
+  });
+
+  test("empty-string env override falls through to templates-dir resolver", () => {
+    const r = getAtmuxTmuxConfPath({ ATMUX_TMUX_CONF: "" });
+    expect(r.endsWith("/templates/tmux/atmux.conf")).toBe(true);
+  });
+
+  test("ATMUX_TEMPLATES_DIR threads through into the default-path computation", () => {
+    const r = getAtmuxTmuxConfPath({ ATMUX_TEMPLATES_DIR: "/x/templates" });
+    expect(r).toBe("/x/templates/tmux/atmux.conf");
+  });
+
+  test("default parameter falls through to process.env (smoke)", () => {
+    const r = getAtmuxTmuxConfPath();
+    expect(typeof r).toBe("string");
+    expect(r.length).toBeGreaterThan(0);
   });
 });

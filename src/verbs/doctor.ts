@@ -609,7 +609,10 @@ async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
     const liveNames = new Set(windows.map((w) => w.name));
     const live = new Set<string>();
     for (const m of team.members) {
-      const expected = buildWindowName(m.name, m.emoji);
+      // ADR-161 TR2: thread member.role so the expected name picks up
+      // `_-prefix` for default members (team-lead / planner / reviewer
+      // / ombudsman).
+      const expected = buildWindowName(m.name, m.emoji, m.label, m.role);
       if (liveNames.has(expected)) live.add(m.name);
     }
     return live;
@@ -677,9 +680,9 @@ export async function checkWhipConfigDrift(atmuxDir: string): Promise<DoctorRow[
   return [
     {
       status: "yellow",
-      label: "whip-config-drift",
+      label: "poke-config-drift",
       detail: driftReport.catastrophic
-        ? `team.json malformed — whip will use full safe defaults${firstSummary}`
+        ? `team.json malformed — poke will use full safe defaults${firstSummary}`
         : `team.json::whip validation failed — ${issuesCount} issue(s)${firstSummary}`,
       hint: "edit team.json + re-run atmux doctor (per ADR-054)",
     },
@@ -2153,6 +2156,215 @@ export async function checkReleaseNoteMissing(
   ];
 }
 
+// ---------- ADR-162 §Decision-anchor #5: tmux infrastructure probes ----------
+
+/** Lowest tmux version atmux is tested against. Below → yellow.
+ *  Per ADR-162 §Part C. */
+export const TMUX_MIN_VERSION = "3.2";
+
+/** Highest tmux version atmux is tested against. Above → yellow.
+ *  Per ADR-162 §Part C. ADR-138's send-keys verifier contract is
+ *  validated against this version on hax. */
+export const TMUX_TESTED_VERSION = "3.6a";
+
+/** Parsed tmux version. `suffix` is the optional trailing alphabetic
+ *  letter (e.g. `"a"` in `tmux 3.6a`); empty string when absent. */
+export interface ParsedTmuxVersion {
+  major: number;
+  minor: number;
+  suffix: string;
+}
+
+/**
+ * Parse `tmux -V` stdout into a structured version. tmux prints lines
+ * like `tmux 3.6a` (release) or `tmux next-3.7` (pre-release); also
+ * `tmux master` for source builds. Returns `null` when the line can't
+ * be parsed — caller treats that as a "warn-unknown" finding.
+ */
+export function parseTmuxVersion(stdout: string): ParsedTmuxVersion | null {
+  const trimmed = stdout.trim();
+  // Strict: `tmux <major>.<minor>[<suffix>]` on a single line. Skips
+  // pre-release / source-build outputs so we surface them as
+  // unparseable rather than guess.
+  const m = trimmed.match(/^tmux (\d+)\.(\d+)([a-z]?)$/);
+  if (m === null) return null;
+  const major = Number.parseInt(m[1] ?? "", 10);
+  const minor = Number.parseInt(m[2] ?? "", 10);
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return null;
+  return { major, minor, suffix: m[3] ?? "" };
+}
+
+/** Compare two `ParsedTmuxVersion`s. Returns -1 / 0 / +1 with
+ *  major → minor → suffix precedence. Suffix is compared
+ *  lexicographically (`"" < "a" < "b" < …`). */
+export function compareTmuxVersion(a: ParsedTmuxVersion, b: ParsedTmuxVersion): number {
+  if (a.major !== b.major) return a.major < b.major ? -1 : 1;
+  if (a.minor !== b.minor) return a.minor < b.minor ? -1 : 1;
+  if (a.suffix === b.suffix) return 0;
+  return a.suffix < b.suffix ? -1 : 1;
+}
+
+/** Spawn override for the tmux probes. Test-injection point. */
+export type TmuxSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
+
+const defaultTmuxSpawn: TmuxSpawn = (argv) =>
+  defaultSpawn({ cmd: "tmux", argv, expectExitCode: "any", timeoutMs: 5_000 });
+
+export interface CheckTmuxVersionOpts {
+  /** tmux spawn override. */
+  tmux?: TmuxSpawn;
+}
+
+/**
+ * ADR-162 §Decision-anchor #5 probe 1 — `tmux-version-mismatch`. Runs
+ * `tmux -V`, parses output, and surfaces a yellow row when the host
+ * tmux falls below {@link TMUX_MIN_VERSION} or above
+ * {@link TMUX_TESTED_VERSION}. Both bounds are warn-class (non-
+ * blocking); the canary surface motivates ADR-163's bundled-binary
+ * v2 promotion.
+ *
+ * Unparseable output (`tmux next-3.7`, `tmux master`, missing tmux)
+ * collapses to a yellow row with `actual: "unknown"` so the operator
+ * still sees something instead of silent skip.
+ */
+export async function checkTmuxVersionMismatch(
+  opts: CheckTmuxVersionOpts = {},
+): Promise<DoctorRow[]> {
+  const tmux = opts.tmux ?? defaultTmuxSpawn;
+  const min = parseTmuxVersion(`tmux ${TMUX_MIN_VERSION}`);
+  const tested = parseTmuxVersion(`tmux ${TMUX_TESTED_VERSION}`);
+  if (min === null || tested === null) {
+    // Defensive — the embedded constants must parse. If a maintainer
+    // sets a malformed constant the probe surfaces it on every doctor
+    // run rather than failing silently.
+    return [
+      {
+        status: "yellow",
+        label: "tmux-version-mismatch",
+        detail: "internal — TMUX_MIN_VERSION / TMUX_TESTED_VERSION constant unparseable",
+        hint: "report a bug; ADR-162 §Decision-anchor #5",
+      },
+    ];
+  }
+  let result: SpawnResult;
+  try {
+    result = await tmux(["-V"]);
+  } catch {
+    // Spawn miss / timeout — collapse to unknown. `checkDeps` already
+    // covers the missing-binary case with a red row, so this branch is
+    // largely defensive (PATH munged mid-run, etc.).
+    return [
+      {
+        status: "yellow",
+        label: "tmux-version-mismatch",
+        detail: "tmux -V failed to run",
+        hint:
+          `host tmux not invokable; min ${TMUX_MIN_VERSION}, tested ${TMUX_TESTED_VERSION}. ` +
+          "bundled tmux available via ADR-163.",
+      },
+    ];
+  }
+  if (result.exitCode !== 0) {
+    return [
+      {
+        status: "yellow",
+        label: "tmux-version-mismatch",
+        detail: `tmux -V exited ${result.exitCode}`,
+        hint:
+          `host tmux not responding; min ${TMUX_MIN_VERSION}, tested ${TMUX_TESTED_VERSION}. ` +
+          "bundled tmux available via ADR-163.",
+      },
+    ];
+  }
+  const parsed = parseTmuxVersion(result.stdout);
+  if (parsed === null) {
+    return [
+      {
+        status: "yellow",
+        label: "tmux-version-mismatch",
+        detail: `tmux -V output unparseable: ${result.stdout.trim().slice(0, 80)}`,
+        hint:
+          `ADR-138 verifier contract assumes 'tmux X.Y[a]' format; min ${TMUX_MIN_VERSION}, ` +
+          `tested ${TMUX_TESTED_VERSION}. Report regressions to atmux issues.`,
+      },
+    ];
+  }
+  const actual = `${parsed.major}.${parsed.minor}${parsed.suffix}`;
+  if (compareTmuxVersion(parsed, min) < 0) {
+    return [
+      {
+        status: "yellow",
+        label: "tmux-version-mismatch",
+        detail: `host tmux ${actual} below minimum ${TMUX_MIN_VERSION}`,
+        hint:
+          "ADR-138 send-keys verifier may break; bundled tmux available via ADR-163.",
+      },
+    ];
+  }
+  if (compareTmuxVersion(parsed, tested) > 0) {
+    return [
+      {
+        status: "yellow",
+        label: "tmux-version-mismatch",
+        detail: `host tmux ${actual} above tested ${TMUX_TESTED_VERSION}`,
+        hint:
+          "untested version; report regressions to atmux issues. Pin via ADR-163 bundled binary.",
+      },
+    ];
+  }
+  return [];
+}
+
+export interface CheckCockpitOnDefaultSocketOpts {
+  /** tmux spawn override. */
+  tmux?: TmuxSpawn;
+  /** Cockpit session name to look for on the legacy default socket.
+   *  Defaults to ADR-135's `"atmux_cockpit"`. */
+  cockpitSession?: string;
+}
+
+/**
+ * ADR-162 §Decision-anchor #5 probe 2 — `cockpit-on-default-socket`.
+ * Lists sessions on the legacy `default` socket and emits a yellow row
+ * when the `atmux_cockpit` session is found there. Self-clearing post-
+ * migration (operator runs `atmux cockpit migrate-socket`; subsequent
+ * doctor runs return no row).
+ *
+ * Silent when:
+ * - the default socket has no server (tmux `-L default` exits non-zero
+ *   with "no server running"),
+ * - the default socket runs sessions but none match `atmux_cockpit`.
+ */
+export async function checkCockpitOnDefaultSocket(
+  opts: CheckCockpitOnDefaultSocketOpts = {},
+): Promise<DoctorRow[]> {
+  const tmux = opts.tmux ?? defaultTmuxSpawn;
+  const cockpitSession = opts.cockpitSession ?? "atmux_cockpit";
+  let result: SpawnResult;
+  try {
+    result = await tmux(["-L", "default", "list-sessions", "-F", "#{session_name}"]);
+  } catch {
+    // Spawn miss → silent (deps check covers tmux-on-PATH).
+    return [];
+  }
+  if (result.exitCode !== 0) return []; // no server / no permission — silent
+  const sessions = result.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (!sessions.includes(cockpitSession)) return [];
+  return [
+    {
+      status: "yellow",
+      label: "cockpit-on-default-socket",
+      detail: `legacy '${cockpitSession}' session detected on default socket`,
+      hint:
+        "run 'atmux cockpit migrate-socket' to move it to the dedicated " +
+        "atmux-cockpit socket (ADR-162 §Decision-anchor #4).",
+    },
+  ];
+}
+
 /** Default chain — all in-scope checks invoked in bash main() order. */
 export async function runAllChecks(atmuxDir: string, team: Team | null): Promise<DoctorRow[]> {
   const rows: DoctorRow[] = [];
@@ -2224,6 +2436,12 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // ombudsman can backfill. Silent in environments without git
   // (CI agents probing fresh trees, non-repo cages).
   rows.push(...(await checkReleaseNoteMissing()));
+  // ADR-162 §Decision-anchor #5: warn-class tmux infrastructure
+  // probes. Both surface only when the host tmux drifts (version) or
+  // when a legacy cockpit lingers on the default socket. Self-clearing
+  // post-migration. Never blocks.
+  rows.push(...(await checkTmuxVersionMismatch()));
+  rows.push(...(await checkCockpitOnDefaultSocket()));
   return rows;
 }
 

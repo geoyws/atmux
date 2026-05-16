@@ -28,7 +28,7 @@ import {
   tier3WorkDir,
 } from "../../../src/abstractions/fallback-cage.ts";
 import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
-import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 
 describe("TIER_AGENT mapping", () => {
   test("Tier 2 → operator", () => {
@@ -391,10 +391,14 @@ interface FakeTmuxState {
   newSessionCalls: { name: string; cwd?: string; windowName?: string }[];
   killSessionCalls: string[];
   killSessionShouldThrow: boolean;
+  /** Records every TmuxConfig the fake was constructed with — used by
+   *  ADR-162 TR4 follow-up tests to assert `-f` threading. */
+  factoryConfigs: TmuxConfig[];
 }
 
-function makeFakeTmuxFactory(state: FakeTmuxState): () => TmuxNamespace {
-  return (): TmuxNamespace => {
+function makeFakeTmuxFactory(state: FakeTmuxState): (config: TmuxConfig) => TmuxNamespace {
+  return (config: TmuxConfig): TmuxNamespace => {
+    state.factoryConfigs.push(config);
     return {
       session: {
         async newSession(opts: {
@@ -438,6 +442,7 @@ describe("Lifecycle — createFallbackCage Tier 2 (Cursor)", () => {
       newSessionCalls: [],
       killSessionCalls: [],
       killSessionShouldThrow: false,
+      factoryConfigs: [],
     };
     const handle = await createFallbackCage({
       team: "alpha",
@@ -466,6 +471,7 @@ describe("Lifecycle — createFallbackCage Tier 2 (Cursor)", () => {
       newSessionCalls: [],
       killSessionCalls: [],
       killSessionShouldThrow: false,
+      factoryConfigs: [],
     };
     await createFallbackCage({
       team: "alpha",
@@ -483,12 +489,67 @@ describe("Lifecycle — createFallbackCage Tier 2 (Cursor)", () => {
     expect(spawn.calls.some((c) => c.cmd === "sudo")).toBe(false);
   });
 
+  test("ADR-162 TR4: Tier 2 threads canonical atmux.conf via configFile", async () => {
+    const spawn = makeSpawnRecorder();
+    const tmuxState: FakeTmuxState = {
+      newSessionCalls: [],
+      killSessionCalls: [],
+      killSessionShouldThrow: false,
+      factoryConfigs: [],
+    };
+    await createFallbackCage({
+      team: "alpha",
+      lane: "fe",
+      tier: 2,
+      taskId: "t-x",
+      atmuxDir: "/p/.atmux",
+      projectCwd: "/p",
+      spawnFn: spawn.fn,
+      tmuxFactory: makeFakeTmuxFactory(tmuxState),
+    });
+    expect(tmuxState.factoryConfigs.length).toBe(1);
+    const cfg = tmuxState.factoryConfigs[0];
+    expect(cfg?.configFile).toBeDefined();
+    expect(cfg?.configFile?.endsWith("/templates/tmux/atmux.conf")).toBe(true);
+    // Socket flag still set alongside configFile (TmuxConfig discriminator).
+    expect(cfg?.socket).toBe("fallback_alpha_fe");
+  });
+
+  test("ADR-162 TR4: ATMUX_TMUX_CONF env override propagates to factory", async () => {
+    const originalEnv = process.env.ATMUX_TMUX_CONF;
+    process.env.ATMUX_TMUX_CONF = "/etc/atmux/custom.conf";
+    try {
+      const spawn = makeSpawnRecorder();
+      const tmuxState: FakeTmuxState = {
+        newSessionCalls: [],
+        killSessionCalls: [],
+        killSessionShouldThrow: false,
+        factoryConfigs: [],
+      };
+      await createFallbackCage({
+        team: "alpha",
+        lane: "fe",
+        tier: 2,
+        taskId: "t-x",
+        atmuxDir: "/p/.atmux",
+        projectCwd: "/p",
+        spawnFn: spawn.fn,
+        tmuxFactory: makeFakeTmuxFactory(tmuxState),
+      });
+      expect(tmuxState.factoryConfigs[0]?.configFile).toBe("/etc/atmux/custom.conf");
+    } finally {
+      if (originalEnv === undefined) delete process.env.ATMUX_TMUX_CONF;
+      else process.env.ATMUX_TMUX_CONF = originalEnv;
+    }
+  });
+
   test("Tier 2 mkdir's the cage TMUX_TMPDIR", async () => {
     const spawn = makeSpawnRecorder();
     const tmuxState: FakeTmuxState = {
       newSessionCalls: [],
       killSessionCalls: [],
       killSessionShouldThrow: false,
+      factoryConfigs: [],
     };
     await createFallbackCage({
       team: "alpha",
@@ -522,6 +583,7 @@ describe("Lifecycle — createFallbackCage Tier 3+ refused (ADR-050 v1)", () => 
       newSessionCalls: [],
       killSessionCalls: [],
       killSessionShouldThrow: false,
+      factoryConfigs: [],
     };
     let caught: unknown = null;
     try {
@@ -560,6 +622,7 @@ describe("Lifecycle — createFallbackCage Tier 3+ refused (ADR-050 v1)", () => 
         newSessionCalls: [],
         killSessionCalls: [],
         killSessionShouldThrow: false,
+        factoryConfigs: [],
       };
       let caught: unknown = null;
       try {
@@ -594,6 +657,7 @@ describe("Lifecycle — createFallbackCage Tier 3+ refused (ADR-050 v1)", () => 
         newSessionCalls: [],
         killSessionCalls: [],
         killSessionShouldThrow: false,
+        factoryConfigs: [],
       };
       let caught: unknown = null;
       try {
@@ -658,6 +722,7 @@ describe("Lifecycle — destroyFallbackCage Tier 2", () => {
       newSessionCalls: [],
       killSessionCalls: [],
       killSessionShouldThrow: false,
+      factoryConfigs: [],
     };
     const handle: CageHandle = {
       tier: 2,
@@ -695,6 +760,7 @@ describe("Lifecycle — destroyFallbackCage Tier 2", () => {
       newSessionCalls: [],
       killSessionCalls: [],
       killSessionShouldThrow: true,
+      factoryConfigs: [],
     };
     const handle: CageHandle = {
       tier: 2,
@@ -725,6 +791,7 @@ describe("Lifecycle — destroyFallbackCage Tier 3", () => {
       newSessionCalls: [],
       killSessionCalls: [],
       killSessionShouldThrow: false,
+      factoryConfigs: [],
     };
     const handle: CageHandle = {
       tier: 3,

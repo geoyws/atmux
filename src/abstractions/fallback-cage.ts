@@ -32,6 +32,7 @@
 // moot for new cages — Tier 3+ creation is blocked — but retained as
 // a doc-rule for the dead-code teardown path.)
 
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { spawn as defaultSpawn, type SpawnOpts, type SpawnResult } from "./spawn.ts";
 import type { TmuxConfig, TmuxNamespace } from "./tmux.ts";
 import { createTmux as defaultCreateTmux } from "./tmux.ts";
@@ -543,7 +544,11 @@ export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<
 
   // Spawn the cage tmux server. The factory captures the socket flag in
   // a closure so all subsequent invocations reach this server only.
-  const tmux = tmuxFactory({ socket: tmuxSocket });
+  // ADR-162 §Decision-anchor #2: thread the canonical atmux.conf via
+  // `-f` so the Tier-2 cage's tmux server runs with the same baseline
+  // as cockpit + per-team sessions. Operator override via
+  // `ATMUX_TMUX_CONF`.
+  const tmux = tmuxFactory({ socket: tmuxSocket, configFile: getAtmuxTmuxConfPath() });
 
   // Ensure TMUX_TMPDIR env is honoured by the actual session creation.
   // createTmux's session.newSession spawns through spawn() which inherits
