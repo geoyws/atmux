@@ -1,6 +1,7 @@
 // Unit tests for src/verbs/complaints.ts (ADR-077 §F2).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,19 +28,35 @@ afterEach(async () => {
   await rm(teamDir, { recursive: true, force: true });
 });
 
-async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; result: T }> {
-  let out = "";
+// AsyncLocalStorage-based capture: each captureStdout call gets an
+// isolated buffer routed via async-context propagation, so concurrent
+// callers under Promise.all don't trample each other's stdout (the
+// prior monkey-patch-restore version observed an ~33% flake at the
+// `file + file concurrent` sentinel test — t-5d04bddb root cause).
+// The install is idempotent and global; when no captureStorage scope
+// is active, writes fall through to the real stdout (so non-captured
+// test output still surfaces).
+const captureStorage = new AsyncLocalStorage<{ chunks: string[] }>();
+let capturePatched = false;
+function installStdoutCapture(): void {
+  if (capturePatched) return;
+  capturePatched = true;
   const orig = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((s: string | Uint8Array) => {
-    out += typeof s === "string" ? s : new TextDecoder().decode(s);
-    return true;
+  process.stdout.write = ((s: string | Uint8Array, ...rest: unknown[]) => {
+    const store = captureStorage.getStore();
+    if (store !== undefined) {
+      store.chunks.push(typeof s === "string" ? s : new TextDecoder().decode(s));
+      return true;
+    }
+    return (orig as (...args: unknown[]) => boolean)(s, ...rest);
   }) as typeof process.stdout.write;
-  try {
-    const result = await fn();
-    return { out, result };
-  } finally {
-    process.stdout.write = orig;
-  }
+}
+
+async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; result: T }> {
+  installStdoutCapture();
+  const store = { chunks: [] as string[] };
+  const result = await captureStorage.run(store, fn);
+  return { out: store.chunks.join(""), result };
 }
 
 // ---------- parseComplaintsArgs ----------
