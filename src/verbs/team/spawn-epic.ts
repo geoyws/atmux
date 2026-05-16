@@ -68,7 +68,7 @@ import {
   provisionWorktree,
   pruneWorktree,
 } from "../../abstractions/worktree.ts";
-import { defaultCockpitConfigPath } from "../../core/cockpit.ts";
+import { defaultCockpitConfigPath, migrateLegacyShape } from "../../core/cockpit.ts";
 import { resolveCallerScope } from "../../core/common.ts";
 import { ConfigError, UsageError } from "../../errors.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
@@ -275,10 +275,20 @@ export async function spawnEpic(
   }
 
   // 2. Resolve parent via cockpit walk (raw read so we can mutate +
-  //    write back later in step 8).
+  //    write back later in step 8). Pre-ADR-089 cockpits carry flat
+  //    `teams[]` instead of `sessions[]`; run the migrateLegacyShape
+  //    shim so the verb works against either shape. The migrated
+  //    object is what we mutate + write back in step 8, so post-spawn
+  //    the on-disk cockpit.json lands fully on the new sessions[]
+  //    shape (operators get a free migration as a side effect).
   const cockpitRaw = await readJson(cockpitPath, RawCockpitForMutation);
+  const cockpitMigrated = migrateLegacyShape(
+    cockpitRaw,
+    cockpitPath,
+    logger.warn,
+  ) as typeof cockpitRaw;
   const parentEntry = findTeamSession(
-    (cockpitRaw.sessions as SessionEntry[] | undefined) ?? [],
+    (cockpitMigrated.sessions as SessionEntry[] | undefined) ?? [],
     parsed.parentTeam,
   );
   if (parentEntry === null) {
@@ -354,9 +364,13 @@ export async function spawnEpic(
     const db = openDb(join(childAtmuxDir, "state.db"));
     closeDb(db);
 
-    // 8. Register child in parent's cockpit sessions[].
+    // 8. Register child in parent's cockpit sessions[]. Write the
+    //    MIGRATED object back (not the raw read) so pre-ADR-089
+    //    cockpits land on the new sessions[] shape post-spawn —
+    //    `parentEntry` is a ref into `cockpitMigrated.sessions[]`
+    //    so the mutation is visible through either handle.
     appendChildToSessions(parentEntry, parsed);
-    await writeText(cockpitPath, `${JSON.stringify(cockpitRaw, null, 2)}\n`);
+    await writeText(cockpitPath, `${JSON.stringify(cockpitMigrated, null, 2)}\n`);
 
     // 9. Success log + next-step hint.
     logger.log(
