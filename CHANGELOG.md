@@ -16,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
-<<<<<<< HEAD
 ### 🟢 Shipped — atmux 0.8.1 install — templates-dir fix (t-17d413b1, resolves c-003a2a4c, 2026-05-16)
 
 - **Root cause** (verified via `/usr/local/bin/atmux init` repro in `/tmp/atmux-init-test/`): the previous `defaultTemplatesDir()` / `defaultBriefsDir()` resolvers used `resolve(import.meta.dir, "..", "..", "templates"[, "briefs"])` which broke in compiled-bun mode. `bun --compile` produces an ELF where `import.meta.dir` returns a path inside bun's internal $bunfs (rooted at `/`), so the resolve walked to `/templates` (filesystem root). Repro: `atmux init` errored with `fs read failed on /templates/team.example.json`. Same break would hit every brief read from `src/verbs/rotate.ts` + `src/verbs/start.ts` (the `defaultBriefsDir()` consumers) — bug surfaced first on `init` because that's the operator's first call against a fresh install.
