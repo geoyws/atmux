@@ -2,7 +2,8 @@
 //
 // The production factory for {@link QueueMergeFn} — drives the per-
 // branch state machine forward when the cron backstop sweep
-// (`src/core/gitter-sweep.ts`, T4) finds an eligible branch.
+// (`src/core/committer-sweep.ts`, T4 — renamed from `gitter-sweep`
+// per ADR-159) finds an eligible branch.
 // Replaces the {@link recordingQueueMergeAttempt} stub that shipped
 // with T4.
 //
@@ -50,7 +51,7 @@ import {
   type IntraTeamMergeContext,
   performMerge,
 } from "./intra-team-merge.ts";
-import type { QueueMergeFn } from "./gitter-sweep.ts";
+import type { QueueMergeFn } from "./committer-sweep.ts";
 import {
   flipTasksMergedInRange,
   type PostMergeFlipOpts,
@@ -68,11 +69,11 @@ import type { Logger } from "./tui.ts";
  *  touching git or SQLite. */
 export interface ProductionDispatcherDeps {
   /** Absolute path to the team's git working tree. Same shape as
-   *  {@link GitterSweepDeps.teamRoot}; threaded into `performMerge`
+   *  {@link CommitterSweepDeps.teamRoot}; threaded into `performMerge`
    *  via `IntraTeamMergeContext.repoPath`. */
   teamRoot: string;
   /** Base branch the dispatcher fans branches into. Same shape as
-   *  {@link GitterSweepDeps.baseBranch}; threaded into
+   *  {@link CommitterSweepDeps.baseBranch}; threaded into
    *  `performMerge` via `IntraTeamMergeContext.base`. */
   baseBranch: string;
   /** Repo handle for `merger_state` reads + transitions. The

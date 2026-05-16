@@ -1,4 +1,4 @@
-// Unit tests for src/core/gitter-sweep.ts (ADR-134 T4 / t-64e52aac).
+// Unit tests for src/core/committer-sweep.ts (ADR-134 T4 / t-64e52aac).
 //
 // Coverage matrix (per CLAUDE.md "100% coverage with narrowed
 // denominator"):
@@ -29,10 +29,10 @@ import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
 import type { BranchMergeState } from "../../../src/core/branch-merge-state.ts";
 import {
-  type GitterSweepDeps,
+  type CommitterSweepDeps,
   type QueueMergeFn,
-  gitterSweep,
-} from "../../../src/core/gitter-sweep.ts";
+  committerSweep,
+} from "../../../src/core/committer-sweep.ts";
 import { MergerStateRepo } from "../../../src/core/repositories/merger-state-repo.ts";
 
 // ---------- Fixture helpers ----------
@@ -85,7 +85,7 @@ let db: Database;
 let repo: MergerStateRepo;
 
 beforeEach(async () => {
-  scratch = await mkdtemp(join(tmpdir(), "atmux-gitter-sweep-"));
+  scratch = await mkdtemp(join(tmpdir(), "atmux-committer-sweep-"));
   db = openDatabase(join(scratch, "state.db"), migrations);
   repo = new MergerStateRepo(db);
 });
@@ -114,7 +114,7 @@ function buildDeps(opts: {
   queue?: QueueMergeFn;
   calls?: GitCall[];
   gitOverrides?: Partial<Parameters<typeof makeGitSpawn>[0]>;
-}): GitterSweepDeps {
+}): CommitterSweepDeps {
   const branchesStdout = opts.branches.join("\n") + (opts.branches.length > 0 ? "\n" : "");
   const calls = opts.calls ?? [];
   const responders: Parameters<typeof makeGitSpawn>[0] = {
@@ -141,10 +141,10 @@ function buildDeps(opts: {
 
 // ---------- listMemberBranches ----------
 
-describe("gitterSweep — branch enumeration", () => {
+describe("committerSweep — branch enumeration", () => {
   test("empty branch list → 0 candidates, 0 queued", async () => {
     const deps = buildDeps({ branches: [], aheadBy: {} });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.checked).toBe(0);
     expect(result.queued).toBe(0);
     expect(result.entries).toEqual([]);
@@ -157,7 +157,7 @@ describe("gitterSweep — branch enumeration", () => {
       aheadBy: { "geoyws-fe-1": 2 },
       calls,
     });
-    await gitterSweep(deps);
+    await committerSweep(deps);
     const branchCall = calls.find((c) => c.argv[2] === "branch");
     expect(branchCall).toBeDefined();
     expect(branchCall?.argv).toContain("--list");
@@ -168,7 +168,7 @@ describe("gitterSweep — branch enumeration", () => {
   });
 
   test("git branch failure → empty candidate set (graceful, not crash)", async () => {
-    const deps: GitterSweepDeps = {
+    const deps: CommitterSweepDeps = {
       teamRoot: TEAM_ROOT,
       baseBranch: BASE_BRANCH,
       mergerStateRepo: repo,
@@ -177,7 +177,7 @@ describe("gitterSweep — branch enumeration", () => {
         branch: () => ({ stdout: "", exitCode: 1 }),
       }),
     };
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.checked).toBe(0);
     expect(result.entries).toEqual([]);
   });
@@ -185,13 +185,13 @@ describe("gitterSweep — branch enumeration", () => {
 
 // ---------- countAhead + zero-ahead skip ----------
 
-describe("gitterSweep — ahead-of-base check", () => {
+describe("committerSweep — ahead-of-base check", () => {
   test("branch with 0 commits ahead → skipped-zero-ahead", async () => {
     const deps = buildDeps({
       branches: ["geoyws-stable"],
       aheadBy: { "geoyws-stable": 0 },
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.checked).toBe(1);
     expect(result.queued).toBe(0);
     expect(result.skipped).toBe(1);
@@ -199,7 +199,7 @@ describe("gitterSweep — ahead-of-base check", () => {
   });
 
   test("rev-list returning non-numeric → treats as 0 ahead", async () => {
-    const deps: GitterSweepDeps = {
+    const deps: CommitterSweepDeps = {
       teamRoot: TEAM_ROOT,
       baseBranch: BASE_BRANCH,
       mergerStateRepo: repo,
@@ -209,12 +209,12 @@ describe("gitterSweep — ahead-of-base check", () => {
         "rev-list": () => ({ stdout: "garbage\n" }),
       }),
     };
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.entries[0]?.action).toBe("skipped-zero-ahead");
   });
 
   test("rev-list non-zero exit → treats as 0 ahead (skip)", async () => {
-    const deps: GitterSweepDeps = {
+    const deps: CommitterSweepDeps = {
       teamRoot: TEAM_ROOT,
       baseBranch: BASE_BRANCH,
       mergerStateRepo: repo,
@@ -224,7 +224,7 @@ describe("gitterSweep — ahead-of-base check", () => {
         "rev-list": () => ({ stdout: "", exitCode: 128 }),
       }),
     };
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.entries[0]?.action).toBe("skipped-zero-ahead");
   });
 
@@ -233,7 +233,7 @@ describe("gitterSweep — ahead-of-base check", () => {
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 3 },
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.queued).toBe(1);
     expect(result.entries[0]?.action).toBe("queued");
     expect(result.entries[0]?.aheadCount).toBe(3);
@@ -243,7 +243,7 @@ describe("gitterSweep — ahead-of-base check", () => {
 
 // ---------- In-flight state skip ----------
 
-describe("gitterSweep — in-flight state recognition", () => {
+describe("committerSweep — in-flight state recognition", () => {
   test.each([
     "ready_to_merge",
     "rebasing",
@@ -256,7 +256,7 @@ describe("gitterSweep — in-flight state recognition", () => {
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 2 },
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.queued).toBe(0);
     expect(result.skipped).toBe(1);
     expect(result.entries[0]?.action).toBe("skipped-in-flight");
@@ -269,7 +269,7 @@ describe("gitterSweep — in-flight state recognition", () => {
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 1 },
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.queued).toBe(1);
     expect(result.entries[0]?.action).toBe("queued");
   });
@@ -286,7 +286,7 @@ describe("gitterSweep — in-flight state recognition", () => {
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 2 },
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.queued).toBe(1);
     expect(result.skipped).toBe(0);
     expect(result.entries[0]?.action).toBe("queued");
@@ -307,7 +307,7 @@ describe("gitterSweep — in-flight state recognition", () => {
         reason: "gate-held: worker has 2 in-progress tasks",
       }),
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.queued).toBe(0);
     expect(result.refused).toBe(1);
     expect(result.entries[0]?.action).toBe("queue-refused");
@@ -318,7 +318,7 @@ describe("gitterSweep — in-flight state recognition", () => {
 
 // ---------- Terminal-state + new commits ----------
 
-describe("gitterSweep — terminal state with fresh tip", () => {
+describe("committerSweep — terminal state with fresh tip", () => {
   test.each(["merged", "conflict", "reverted"] as const)(
     "state=%s + commits ahead → queued (fresh work after terminal)",
     async (state) => {
@@ -327,7 +327,7 @@ describe("gitterSweep — terminal state with fresh tip", () => {
         branches: ["geoyws-fe-1"],
         aheadBy: { "geoyws-fe-1": 5 },
       });
-      const result = await gitterSweep(deps);
+      const result = await committerSweep(deps);
       expect(result.queued).toBe(1);
       expect(result.entries[0]?.action).toBe("queued");
       expect(result.entries[0]?.observedState).toBe(state);
@@ -340,7 +340,7 @@ describe("gitterSweep — terminal state with fresh tip", () => {
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 0 },
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.queued).toBe(0);
     expect(result.entries[0]?.action).toBe("skipped-zero-ahead");
   });
@@ -348,14 +348,14 @@ describe("gitterSweep — terminal state with fresh tip", () => {
 
 // ---------- Dispatcher refusal ----------
 
-describe("gitterSweep — dispatcher refusal", () => {
+describe("committerSweep — dispatcher refusal", () => {
   test("queue returns {queued:false, reason} → queue-refused with note", async () => {
     const deps = buildDeps({
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 2 },
       queue: async () => ({ queued: false, reason: "rate-limit cap reached" }),
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.queued).toBe(0);
     expect(result.refused).toBe(1);
     expect(result.entries[0]?.action).toBe("queue-refused");
@@ -368,7 +368,7 @@ describe("gitterSweep — dispatcher refusal", () => {
       aheadBy: { "geoyws-fe-1": 2 },
       queue: async () => ({ queued: false }),
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.refused).toBe(1);
     expect(result.entries[0]?.action).toBe("queue-refused");
     expect(result.entries[0]?.note).toBeUndefined();
@@ -377,7 +377,7 @@ describe("gitterSweep — dispatcher refusal", () => {
 
 // ---------- Multi-branch aggregate behaviour (task body acceptance) ----------
 
-describe("gitterSweep — multi-branch aggregate", () => {
+describe("committerSweep — multi-branch aggregate", () => {
   test("3 branches: 2 ahead (1 in-flight, 1 fresh), 1 zero-ahead → 1 queued, 2 skipped", async () => {
     // Mirrors the task body acceptance: "synthetic 3-member team, 2
     // branches ahead, 1 already merging → assert sweep queues
@@ -393,7 +393,7 @@ describe("gitterSweep — multi-branch aggregate", () => {
         "geoyws-fresh": 4,
       },
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.checked).toBe(3);
     expect(result.queued).toBe(1);
     expect(result.skipped).toBe(2);
@@ -413,7 +413,7 @@ describe("gitterSweep — multi-branch aggregate", () => {
 
 // ---------- Idempotence ----------
 
-describe("gitterSweep — idempotence", () => {
+describe("committerSweep — idempotence", () => {
   test("second sweep after dispatcher records merging transition skips the branch", async () => {
     // First sweep — branch fresh, dispatcher records a deep-mid-walk
     // transition (`merging` is genuinely active — the actual git merge
@@ -434,7 +434,7 @@ describe("gitterSweep — idempotence", () => {
         return { queued: true };
       },
     });
-    const first = await gitterSweep(deps1);
+    const first = await committerSweep(deps1);
     expect(first.queued).toBe(1);
 
     // Second sweep — same git output, but state.db now has the
@@ -443,7 +443,7 @@ describe("gitterSweep — idempotence", () => {
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 2 },
     });
-    const second = await gitterSweep(deps2);
+    const second = await committerSweep(deps2);
     expect(second.queued).toBe(0);
     expect(second.entries[0]?.action).toBe("skipped-in-flight");
     expect(second.entries[0]?.observedState).toBe("merging");
@@ -467,14 +467,14 @@ describe("gitterSweep — idempotence", () => {
         return { queued: true };
       },
     });
-    const first = await gitterSweep(deps1);
+    const first = await committerSweep(deps1);
     expect(first.queued).toBe(1);
 
     const deps2 = buildDeps({
       branches: ["geoyws-fe-1"],
       aheadBy: { "geoyws-fe-1": 2 },
     });
-    const second = await gitterSweep(deps2);
+    const second = await committerSweep(deps2);
     // Pre-fix this would have been skipped-in-flight; post-fix it's
     // re-queued (the dispatcher will run the gate again).
     expect(second.queued).toBe(1);
@@ -489,7 +489,7 @@ describe("gitterSweep — idempotence", () => {
       branches: ["geoyws-a", "geoyws-b"],
       aheadBy: { "geoyws-a": 0, "geoyws-b": 0 },
     });
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     expect(result.checked).toBe(2);
     expect(result.queued).toBe(0);
     expect(result.skipped).toBe(2);

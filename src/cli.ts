@@ -50,7 +50,7 @@ import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { epic } from "./verbs/epic.ts";
 import { epicMerge } from "./verbs/epic-merge.ts";
-import { gitter } from "./verbs/gitter.ts";
+import { committer } from "./verbs/committer.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
@@ -272,8 +272,18 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return sentinel(argv.slice(1));
     case "ombudsman":
       return ombudsman(argv.slice(1));
+    case "committer":
+      return committer(argv.slice(1));
     case "gitter":
-      return gitter(argv.slice(1));
+      // ADR-159 TR2 legacy alias — `atmux gitter` retained for one
+      // release cycle; emit a deprecation-warn so cron + operator
+      // scripts surface the rename ask. TR3+ amendment removes the
+      // alias.
+      process.stderr.write(
+        "atmux: 'gitter' verb is deprecated — use 'committer' per ADR-159. " +
+          "Accepting this release; will fail next release.\n",
+      );
+      return committer(argv.slice(1));
     case "epic-merge":
       return epicMerge(argv.slice(1));
     case "complaints":
