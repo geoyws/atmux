@@ -22,7 +22,8 @@
 // can pin the clock; archive month-stamps default to UTC formatting to
 // match bash's cron-on-hax (TZ=UTC) behaviour byte-for-byte.
 
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendText,
@@ -36,6 +37,7 @@ import {
 } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import { now as nowMs } from "../abstractions/time.ts";
+import { createTmux } from "../abstractions/tmux.ts";
 import { Kanban } from "../schema/kanban.ts";
 import { kanbanJsonPath, archiveDir as resolveArchiveDir } from "./common.ts";
 
@@ -598,4 +600,172 @@ async function sumDirBytes(dir: string): Promise<{ bytes: number; files: number 
     }
   }
   return { bytes, files };
+}
+
+// ---------- Sub-op 6: zombie tmux socket sweep ----------
+//
+// Closes the SIGKILL-bypass arm (b) of complaint c-4698c603.
+// t-88b60ca7 shipped arm (a) — module-level fixture registry +
+// `process.on('exit')` + `afterAll` sweep in
+// `tests/unit/verbs/cockpit.test.ts`. That defense covers
+// throw / unhandled-rejection escape paths inside bun-test's own
+// process lifecycle. It does NOT cover SIGKILL on the bun-test
+// process itself (e.g. BashTool wrapper timeout per CLAUDE.md §`bun
+// test` orphan rule) — no userland exit hook fires under SIGKILL,
+// so the fixture's mkdtemp'd tmux socket dir + tmux server leak.
+//
+// This sub-op is the housekeeping defense-in-depth: walk
+// `os.tmpdir()` for fixture-shape `atmux-*-…` directories older than
+// `minAgeMs` (default 6h), kill any tmux server bound to a socket
+// inside, then `rm -rf` the directory.
+//
+// Naming pattern: `^atmux-(cockpit-)?[^/]+-` per Task body
+// t-0027eec3. The mandatory trailing `-…` filters out production
+// cage dirs (e.g. `/tmp/atmux-atmux/sock`) which lack the mkdtemp
+// random suffix; only test fixture dirs (e.g.
+// `/tmp/atmux-cockpit-cockpit-reb-sd-XXXXXX/`) match.
+//
+// Idempotent — re-running on the same set is a no-op (already-cleaned
+// dirs are absent on the second walk; `tmux kill-server` against a
+// non-existent socket returns non-zero but is harmless and tolerated).
+//
+// Opt-in via `--zombie-sweep` flag on the groom verb. Default-OFF on
+// the cron path for v1 (safer); follow-up Task can flip to
+// default-on once N weeks of opt-in production confirm no
+// false-positive deletes.
+
+/** Sweep result — counts + per-dir error log. */
+export interface ZombieSweepResult {
+  /** Candidate fixture dirs that matched the regex AND were old
+   *  enough (>= minAgeMs). Excludes those skipped by the dryRun flag. */
+  scanned: number;
+  /** Subset of `scanned` where at least one `tmux kill-server` was
+   *  attempted against a discovered socket. Idempotent re-runs may
+   *  bump this by 0 (sockets already absent). */
+  killed: number;
+  /** Subset of `scanned` where the parent dir was successfully
+   *  removed. */
+  removed: number;
+  /** Per-dir errors that did NOT abort the sweep. */
+  errors: { path: string; message: string }[];
+}
+
+export interface SweepZombieSocketsOpts {
+  /** Override `os.tmpdir()`. Test injection point. */
+  tmpDir?: string;
+  /** Min age before a dir is considered zombie. Default 6h. */
+  minAgeMs?: number;
+  /** Clock override (test injection). Defaults to `time.now()`. */
+  nowMs?: number;
+  /** When true, scans + reports counts but does NOT kill or remove. */
+  dryRun?: boolean;
+  /** Test injection — replace the tmux kill-server call. Production
+   *  uses `createTmux({ socketPath }).server.killServer()`. */
+  killServer?: (socketPath: string) => Promise<void>;
+}
+
+/** Fixture-shape regex: trailing `-…` is the mkdtemp random suffix
+ *  that production cage dirs (e.g. `/tmp/atmux-atmux`) lack. The
+ *  `(cockpit-)?` group covers `atmux-cockpit-<name>-…` test patterns
+ *  per the c-4698c603 (b) arm proposal. */
+const ZOMBIE_FIXTURE_PATTERN = /^atmux-(cockpit-)?[^/]+-[^/]+$/;
+
+/** 6h default — short enough to drain typical CI rounds, long enough
+ *  that a stale-looking fixture dir at minute 5h59 of an actively-
+ *  running spec doesn't get nuked mid-test. */
+const DEFAULT_ZOMBIE_MIN_AGE_MS = 6 * 60 * 60 * 1000;
+
+export async function sweepZombieTmuxSockets(
+  opts: SweepZombieSocketsOpts = {},
+): Promise<ZombieSweepResult> {
+  const dirRoot = opts.tmpDir ?? tmpdir();
+  const minAgeMs = opts.minAgeMs ?? DEFAULT_ZOMBIE_MIN_AGE_MS;
+  const now = opts.nowMs ?? nowMs();
+  const dryRun = opts.dryRun === true;
+  const killServer = opts.killServer ?? defaultKillServer;
+
+  const result: ZombieSweepResult = { scanned: 0, killed: 0, removed: 0, errors: [] };
+
+  const entries = await readdir(dirRoot, { withFileTypes: true }).catch(() => null);
+  if (entries === null) return result;
+
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    if (!ZOMBIE_FIXTURE_PATTERN.test(ent.name)) continue;
+
+    const full = join(dirRoot, ent.name);
+    const st = await statOrNull(full);
+    if (st === null) continue;
+    if (now - st.mtimeMs < minAgeMs) continue;
+
+    result.scanned += 1;
+
+    // Find sockets inside this dir. Two canonical shapes:
+    //   - `<full>/sock`            (atmux default cage convention per
+    //                               getDefaultSocket — `/tmp/atmux-<team>/sock`)
+    //   - `<full>/tmux-<uid>/default` (resolveTeamSocket with explicit
+    //                               team.tmuxTmpdir — `<tmpdir>/tmux-<uid>/default`)
+    const sockets: string[] = [];
+    const directSock = join(full, "sock");
+    if ((await statOrNull(directSock)) !== null) sockets.push(directSock);
+    const sub = await readdir(full, { withFileTypes: true }).catch(() => []);
+    for (const s of sub) {
+      if (s.isDirectory() && s.name.startsWith("tmux-")) {
+        const def = join(full, s.name, "default");
+        if ((await statOrNull(def)) !== null) sockets.push(def);
+      }
+    }
+
+    if (dryRun) continue;
+
+    let attemptedKill = false;
+    for (const sock of sockets) {
+      try {
+        await killServer(sock);
+        attemptedKill = true;
+      } catch (e) {
+        // tmux kill-server against a non-existent server returns
+        // non-zero; tolerated. Surface only unexpected errors.
+        if (!isExpectedKillError(e)) {
+          result.errors.push({ path: sock, message: errMsg(e) });
+        }
+      }
+    }
+    if (attemptedKill) result.killed += 1;
+
+    try {
+      await rm(full, { recursive: true, force: true });
+      result.removed += 1;
+    } catch (e) {
+      result.errors.push({ path: full, message: errMsg(e) });
+    }
+  }
+
+  return result;
+}
+
+/** Production kill-server: spawn `tmux -S <sock> kill-server` via
+ *  the canonical tmux abstraction. Failures bubble up; the caller
+ *  filters expected "no server" errors via `isExpectedKillError`. */
+async function defaultKillServer(socketPath: string): Promise<void> {
+  const tmux = createTmux({ socketPath });
+  await tmux.server.killServer();
+}
+
+/** True for the "no server running at socket" failure shape that's
+ *  the EXPECTED idempotent-re-run case. Other errors (permissions,
+ *  garbled socket) surface to the result. */
+function isExpectedKillError(e: unknown): boolean {
+  const msg = errMsg(e).toLowerCase();
+  return (
+    msg.includes("no server running") ||
+    msg.includes("server not found") ||
+    msg.includes("no such file") ||
+    msg.includes("connection refused")
+  );
+}
+
+function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return String(e);
 }

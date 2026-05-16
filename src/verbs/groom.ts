@@ -37,6 +37,8 @@ import {
   type InboxOutboxFlushResult,
   type KanbanSummarizeResult,
   summarizeKanban,
+  sweepZombieTmuxSockets,
+  type ZombieSweepResult,
 } from "../core/groom.ts";
 import { groomArchive, type GroomArchiveResult } from "../core/groom-archive.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
@@ -64,6 +66,10 @@ export interface ParsedGroomArgs {
   /** t-8287b37d C1: when set, also archive state.db rows (tasks +
    *  inbox_messages) older than `kanbanDays` into sibling archive.db. */
   archive: boolean;
+  /** t-0027eec3 (c-4698c603 arm b): when set, also sweep stale
+   *  fixture tmux sockets in `os.tmpdir()`. Opt-in (default OFF) for
+   *  v1 — cron path skips unless operator explicitly enables. */
+  zombieSweep: boolean;
   /** When true, the verb returns 0 immediately after arg parse. Bash
    *  emits help via `_groom_usage` then `return 0`. */
   showHelp: boolean;
@@ -81,6 +87,7 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
   let quiet = false;
   let showHelp = false;
   let archive = false;
+  let zombieSweep = false;
   let inboxDays = DEFAULTS.inboxDays;
   let kanbanDays = DEFAULTS.kanbanDays;
   let decisionsDays = DEFAULTS.decisionsDays;
@@ -101,6 +108,11 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     }
     if (a === "--archive") {
       archive = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--zombie-sweep") {
+      zombieSweep = true;
       i += 1;
       continue;
     }
@@ -152,7 +164,17 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     });
   }
 
-  return { dryRun, quiet, archive, inboxDays, kanbanDays, decisionsDays, keepBak, showHelp };
+  return {
+    dryRun,
+    quiet,
+    archive,
+    zombieSweep,
+    inboxDays,
+    kanbanDays,
+    decisionsDays,
+    keepBak,
+    showHelp,
+  };
 }
 
 // ---------- ATMUX_NO_GROOM kill-switch ----------
@@ -212,6 +234,11 @@ Flags:
   --archive                Also move state.db rows (done tasks + inbox
                            messages older than --kanban-days) into a
                            sibling archive.db. Idempotent. Per t-8287b37d.
+  --zombie-sweep           Also walk os.tmpdir() for stale fixture tmux
+                           socket dirs (atmux-*-XXXXXX/) older than 6h;
+                           kill any tmux server inside + rm -rf the dir.
+                           Idempotent. Defense-in-depth for SIGKILL-bypass
+                           per c-4698c603 (b) / t-0027eec3. Opt-in only.
 
 Sub-operations (all idempotent):
   1. driver-inbox.md / lead-outbox.md: flush \`## Archive\` body into dated archive.
@@ -240,6 +267,8 @@ export interface GroomResult {
   laneDrift?: LaneDriftCheckResult;
   /** t-8287b37d C1: present only when `--archive` was passed. */
   archive?: GroomArchiveResult;
+  /** t-0027eec3: present only when `--zombie-sweep` was passed. */
+  zombieSweep?: ZombieSweepResult;
   /** Sub-ops that threw — surfaced as warnings; verb still returns 0. */
   errors: { op: string; message: string }[];
   skippedReason?: "no-groom-env" | "lock-held";
@@ -520,6 +549,35 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
       } catch (e) {
         logger.warn(`groom: archive sub-op failed (continuing): ${errMsg(e)}`);
         result.errors.push({ op: "archive", message: errMsg(e) });
+      }
+    }
+
+    // t-0027eec3 (c-4698c603 arm b): stale fixture tmux socket sweep.
+    // Opt-in via --zombie-sweep — defense-in-depth for SIGKILL'd
+    // bun-test orphans that bypass the (a) primary defense
+    // (afterAll + process.on('exit') hooks). Runs last; touches only
+    // os.tmpdir(), not atmuxDir, so an earlier sub-op failure doesn't
+    // interact. Failures (e.g. permission-denied on someone else's
+    // tmpdir entry) surface as warn + continue per groom convention.
+    if (parsed.zombieSweep) {
+      try {
+        const zr = await sweepZombieTmuxSockets({
+          dryRun: parsed.dryRun,
+          ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+        });
+        result.zombieSweep = zr;
+        if (!parsed.quiet && zr.scanned > 0) {
+          const verb = parsed.dryRun ? "would clean" : "cleaned";
+          logger.ok(
+            `groom: ${verb} ${zr.removed}/${zr.scanned} zombie fixture dir(s); killed ${zr.killed} tmux server(s)`,
+          );
+        }
+        for (const err of zr.errors) {
+          logger.warn(`groom: zombie-sweep — ${err.path}: ${err.message}`);
+        }
+      } catch (e) {
+        logger.warn(`groom: zombie-sweep sub-op failed (continuing): ${errMsg(e)}`);
+        result.errors.push({ op: "zombie-sweep", message: errMsg(e) });
       }
     }
   } finally {
