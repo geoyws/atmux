@@ -53,7 +53,8 @@ import {
   isWorktreeDirty,
   pruneWorktree,
 } from "../../abstractions/worktree.ts";
-import { defaultCockpitConfigPath } from "../../core/cockpit.ts";
+import { defaultCockpitConfigPath, removeEpicViewerFromParentCage } from "../../core/cockpit.ts";
+import { createTmux } from "../../abstractions/tmux.ts";
 import { resolveCallerScope } from "../../core/common.ts";
 import { ConfigError, UsageError } from "../../errors.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
@@ -229,6 +230,24 @@ export async function dissolveEpic(
         `dissolve-epic: soft-stop failed for '${parsed.epicId}' — continuing with prune (${e instanceof Error ? e.message : String(e)})`,
       );
     }
+  }
+
+  // 5a. ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9): remove the parent-cage
+  //     viewer-window that bridges into this epic-team. Mirrors the
+  //     symmetric add in `atmux start`. Soft-fails if the parent cage
+  //     isn't running OR the window doesn't exist (idempotent).
+  try {
+    await removeEpicViewerFromParentCage({
+      parentRoot,
+      parentName: parentEntry.name ?? "",
+      epicId: parsed.epicId,
+      tmuxFactory: createTmux as Parameters<typeof removeEpicViewerFromParentCage>[0]["tmuxFactory"],
+      log: (m) => logger.log(`  ${m.replace(/^\s+/, "")}`),
+      warn: (m) => logger.warn(m),
+    });
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`dissolve-epic: epic-viewer remove failed — continuing (${cause})`);
   }
 
   // 6. Prune the worktree.

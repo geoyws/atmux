@@ -327,6 +327,17 @@ export async function spawnEpic(
   const templatesDir = opts.templatesDir ?? defaultTemplatesDir();
   const rosterMembers = await resolveRosterMembers(parsed, templatesDir, cockpitPath);
 
+  // 4a. Inherit `claudeAccount` from the parent team's per-member entries
+  //     when the roster preset doesn't specify one. Fixes the 401 'Please
+  //     run /login' regression caught by the 2026-05-16 dogfood — the
+  //     default roster preset (`templates/epic-rosters/default.json`) ships
+  //     without `claudeAccount`, so spawned cage members hit unauthenticated
+  //     CLAUDE_CONFIG_DIR. Inheritance rule: per-member name match wins, then
+  //     fall back to the parent's first-member account as the team-default.
+  //     Roster entries that explicitly carry `claudeAccount` are NOT
+  //     overwritten — operators retain per-roster override control.
+  const rosterMembersWithAccount = await inheritClaudeAccount(rosterMembers, parentRoot);
+
   // 5. provisionWorktree. Side-effect tracker for rollback.
   await mkdir(epicsDir, { recursive: true });
   const provision = await provisionWorktree(parentRoot, parentBase, epicBranch, epicRoot, {
@@ -340,7 +351,7 @@ export async function spawnEpic(
     // 6. Synthesize + write child team.json. Validate BEFORE write.
     const childTeam: TeamShape = Team.parse({
       name: parsed.epicId,
-      members: rosterMembers,
+      members: rosterMembersWithAccount,
       worktreeIsolation: false,
       worktreeInitSubmodules: parsed.initSubmodules,
       // Per ADR-089 §Pillar 1: child tmpdir nests under parent's
@@ -479,6 +490,60 @@ async function resolveRosterMembers(
   // Cast through unknown — the Team schema validates each member
   // shape downstream when the full team object is parsed.
   return raw.members as TeamShape["members"];
+}
+
+/** Inherit `claudeAccount` from the parent team's per-member entries onto
+ *  roster members that don't already specify one. Per-member name match
+ *  wins; falls back to the parent's first-member account as the team-
+ *  default. Roster entries that already carry `claudeAccount` are NOT
+ *  overwritten. Returns members untouched when parent team.json is
+ *  unreadable or has no claudeAccount anywhere (downstream schema validation
+ *  surfaces the misconfig more clearly than a synthetic error here).
+ *
+ *  Fixes 2026-05-16 dogfood regression: default roster preset shipped
+ *  without `claudeAccount`, so all spawned cage members hit
+ *  "Please run /login · API Error: 401" on first bootstrap. */
+async function inheritClaudeAccount(
+  rosterMembers: TeamShape["members"],
+  parentRoot: string,
+): Promise<TeamShape["members"]> {
+  const parentTeamPath = join(parentRoot, ".atmux", "team.json");
+  if (!(await exists(parentTeamPath))) return rosterMembers;
+  type ParentMember = { name?: unknown; claudeAccount?: unknown };
+  const ParentShape = z
+    .object({ members: z.array(z.unknown()) })
+    .passthrough();
+  let parentParsed: { members: unknown[] };
+  try {
+    parentParsed = await readJson(parentTeamPath, ParentShape);
+  } catch {
+    return rosterMembers;
+  }
+  const parentMembers = parentParsed.members as ParentMember[];
+  const byName = new Map<string, unknown>();
+  let teamDefault: unknown;
+  for (const m of parentMembers) {
+    if (
+      m !== null &&
+      typeof m === "object" &&
+      m.claudeAccount !== undefined &&
+      typeof m.name === "string"
+    ) {
+      byName.set(m.name, m.claudeAccount);
+      if (teamDefault === undefined) teamDefault = m.claudeAccount;
+    }
+  }
+  if (teamDefault === undefined && byName.size === 0) return rosterMembers;
+  return rosterMembers.map((m) => {
+    const member = m as { name?: unknown; claudeAccount?: unknown };
+    if (member.claudeAccount !== undefined) return m;
+    const inherited =
+      typeof member.name === "string" && byName.has(member.name)
+        ? byName.get(member.name)
+        : teamDefault;
+    if (inherited === undefined) return m;
+    return { ...member, claudeAccount: inherited } as TeamShape["members"][number];
+  });
 }
 
 function defaultTemplatesDir(): string {
