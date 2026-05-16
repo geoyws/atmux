@@ -557,15 +557,19 @@ describe("sliceOpenArchive", () => {
 
 describe("parseEntryTimestamp", () => {
   test("parses `- [HH:MM MYT YYYY-MM-DD]` to MYT epoch seconds", () => {
-    // 2026-05-08 12:00 MYT = 2026-05-08 04:00 UTC = epoch 1778299200
+    // 2026-05-08 12:00 MYT = 2026-05-08 04:00 UTC = epoch 1778212800.
+    // (Prior literal 1778299200 was 1 day off — 2026-05-09 12:00 MYT.
+    // Production has always been correct; the test was miscomputed.
+    // t-9ebb6432 sibling-C.)
     const got = parseEntryTimestamp("- [12:00 MYT 2026-05-08] hi", RUN_MS);
-    expect(got).toBe(1778299200);
+    expect(got).toBe(1778212800);
   });
 
   test("today-implicit form uses nowMs MYT date", () => {
     const got = parseEntryTimestamp("- [12:00 MYT] hi", RUN_MS);
-    // Same as above — RUN_MS is 2026-05-08 22:55 MYT, so today = 2026-05-08.
-    expect(got).toBe(1778299200);
+    // RUN_MS is 2026-05-08 22:55 MYT (Date.UTC(2026, 4, 8, 14, 55) =
+    // 14:55 UTC = 22:55 MYT), so today-implicit = 2026-05-08 12:00 MYT.
+    expect(got).toBe(1778212800);
   });
 
   test("returns null on shape mismatch", () => {
@@ -576,7 +580,7 @@ describe("parseEntryTimestamp", () => {
 
   test("tolerates trailing `**member**:` suffix (lead-outbox shape)", () => {
     const got = parseEntryTimestamp("- [12:00 MYT] **whip-impl**: hi", RUN_MS);
-    expect(got).toBe(1778299200);
+    expect(got).toBe(1778212800);
   });
 });
 
