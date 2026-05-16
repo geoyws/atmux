@@ -1080,7 +1080,8 @@ export function defaultRoleEmoji(role: string): string {
       return "🗺️ ";
     case "reviewer":
       return "🔍";
-    case "gitter":
+    case "committer":
+    case "gitter": // ADR-159 TR3 legacy alias (grace cycle)
       return "🌿";
     case "devops":
       return "⚙️ ";

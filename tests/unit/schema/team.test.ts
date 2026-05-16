@@ -391,6 +391,36 @@ describe("TeamMember — label field (ADR-136 Option B)", () => {
   });
 });
 
+// ---------- ADR-159 TR3: TeamMember.role gitter → committer shim ----------
+
+describe("TeamMember — role gitter→committer accept-both shim (ADR-159 TR3)", () => {
+  test("legacy `role: \"gitter\"` value coerces to canonical `\"committer\"` on parse", () => {
+    const m = TeamMember.parse({ name: "g", role: "gitter" });
+    expect(m.role).toBe("committer");
+  });
+
+  test("canonical `role: \"committer\"` parses unchanged (idempotent)", () => {
+    const m = TeamMember.parse({ name: "c", role: "committer" });
+    expect(m.role).toBe("committer");
+  });
+
+  test("other role values pass through unchanged (open-string shim — does NOT tighten enum)", () => {
+    // Current rosters use a wide variety of roles (docs / devops / dba /
+    // unblocker / discorder). Closing the enum here would break them;
+    // the shim coerces ONLY the gitter→committer value, leaves
+    // everything else alone.
+    for (const role of ["team-lead", "planner", "reviewer", "ombudsman", "docs", "devops", "dba", "unblocker", "discorder", "member", "lead"]) {
+      const m = TeamMember.parse({ name: "x", role });
+      expect(m.role).toBe(role);
+    }
+  });
+
+  test("missing role parses successfully (optional field) — backward compat", () => {
+    const m = TeamMember.parse({ name: "no-role" });
+    expect(m.role).toBeUndefined();
+  });
+});
+
 // ---------- ADR-132 §D6: SentinelImpl + TeamSentinelOverrides ----------
 
 describe("SentinelImpl — 2026-05-14 two-impl enum", () => {

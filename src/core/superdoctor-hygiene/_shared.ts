@@ -191,7 +191,8 @@ export const NON_EXECUTION_ROLES: ReadonlyArray<string> = [
   "lead",
   "team-lead",
   "reviewer",
-  "gitter",
+  "committer", // ADR-159 TR3 canonical
+  "gitter", // ADR-159 TR3 legacy alias (grace cycle)
   "devops-encore",
 ];
 

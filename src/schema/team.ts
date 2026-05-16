@@ -47,7 +47,23 @@ export const TeamMember = z
         message: "label cannot contain ':' or '.' (tmux separator chars)",
       })
       .optional(),
-    role: z.string().optional(),
+    /** ADR-159 TR3 (2026-05-16): role-value shim — `"gitter"` is the
+     *  legacy alias for the new canonical `"committer"`. At Zod parse
+     *  time the transform coerces the legacy value to canonical so
+     *  downstream consumers see one shape regardless of which value the
+     *  operator's team.json declared. The shim is intentionally
+     *  open-string (does NOT tighten to a closed enum) — current rosters
+     *  use a wide variety of role values (docs / devops / dba / discorder
+     *  / unblocker / etc.); tightening to enum here would break working
+     *  teams. The role-enum closure is deferred to a follow-up ADR.
+     *  Legacy `gitter` parse triggers no in-schema warn — the doctor
+     *  probe `team-legacy-gitter-role` (registered separately) surfaces
+     *  the deprecation. Removal: one release cycle per ADR-159 §Removal
+     *  timeline. */
+    role: z
+      .string()
+      .transform((value) => (value === "gitter" ? "committer" : value))
+      .optional(),
     lane: z.string().optional(),
     tui: TuiKind.optional(),
     model: z.string().optional(),

@@ -362,12 +362,15 @@ export function resolveAutoEmitTrunkMergeConfig(team: Team): {
 }
 
 /** Resolve the auto-Task's owner per ADR-146 §D3: prefer a member
- *  with `role === "gitter"` (or `name === "gitter"` for the legacy
- *  no-role-set case), else fall back to
+ *  with `role === "committer"` (canonical post-ADR-159 TR3; legacy
+ *  `role === "gitter"` still accepted during grace cycle — schema
+ *  transforms to canonical, but Zod-bypassed in-memory objects may
+ *  carry the legacy value), or `name === "gitter"` for the legacy
+ *  no-role-set case, else fall back to
  *  `autoEmitTrunkMerge.fallbackAssignee` (null = unassigned). */
 function resolveAutoEmitOwner(team: Team, fallbackAssignee: string | null): string | null {
   const gitter = team.members.find(
-    (m) => m.role === "gitter" || m.name === "gitter",
+    (m) => m.role === "committer" || m.role === "gitter" || m.name === "gitter",
   );
   if (gitter !== undefined) return gitter.name;
   return fallbackAssignee;

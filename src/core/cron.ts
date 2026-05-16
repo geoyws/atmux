@@ -355,7 +355,13 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   //     --interval <N>`) wins first, then (b)
   //     `team.autoMerge.cronBackstopMin`, then (c) the schema's
   //     `DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN` (10 per ADR-134 §Config).
-  const hasGitter = team.members.some((m) => (m as { role?: string }).role === "gitter");
+  // ADR-159 TR3: schema transforms "gitter" → "committer" at parse, but
+  // in-memory Team objects from test fixtures (Zod-bypassed) may still
+  // carry the legacy value. Accept both during the grace cycle.
+  const hasGitter = team.members.some((m) => {
+    const role = (m as { role?: string }).role;
+    return role === "committer" || role === "gitter";
+  });
   if (team.autoMerge?.enabled === true && hasGitter) {
     const gitterMins =
       opts.gitterSweepIntervalOverride ??
