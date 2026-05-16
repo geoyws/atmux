@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — ADR-157 T2 schema + goalResolver helper
+
+- **`Team.members[].goal: z.string().optional()` field** + **`Team.members[].runtime: z.string().optional()`** added to `src/schema/team.ts` TeamMember per ADR-157 T2 (`t-b5b0678e`). Additive optional — back-compat verified (existing teams without these fields parse unchanged). Field JSDocs cite ADR-157 §D2 (resolution chain) + §D4 (cursor runtime carve-out) + §Decision-anchor #1 (goal-phrasing-rule).
+- **New `src/core/goal-resolver.ts` module** — single source of truth for "what is this member's standing goal?" Consumed by T3 `/goal` injection hooks + T4 lane-tick narrowing (both forthcoming). Exports:
+  - `resolveGoalForMember(member, briefPath?): Promise<string | null>` — resolution chain per ADR-157 §D2 / §OQ3: `member.goal` explicit > `templates/briefs/<role>.md ## Standing Goal` section > `null`. Empty-string member.goal = explicit opt-out (returns null without consulting brief).
+  - `parseStandingGoalFromBrief(briefText): string | null` — case-sensitive anchored regex `## Standing Goal` (no trailing colon) per T2 reviewer pre-flag. Multi-line capture until next markdown heading or EOF.
+  - `validateGoalRuntime(member): string | null` — WARN-not-refuse helper. Returns one-line WARN string when `runtime === "cursor"` AND `goal` set non-empty (partial-migration no-op case); null otherwise. Zod doesn't have a first-class WARN severity; loader-side warning surface uses the return value.
+- **Tests**: 19/19 pass + 100% line coverage on `goal-resolver.ts`. 5-cell resolution matrix per task body (explicit-wins / brief-parsed / brief-missing-section / graceful-degrade / empty-string-opt-out) + runtime-gate WARN matrix + schema back-compat smoke (existing TeamMember without goal/runtime parses unchanged).
+- **Out of scope**: `/goal` injection hooks (T3 — `t-c89ead5f`); lane-tick edits (T4 — `t-e8ad0db5`); cron cadence change (T5 — `t-e847d0ae`); e2e (T6); dogfood (T7).
+
 ### 🟢 Shipped — cross-team `atmux tell-lead --team <name>` (ADR-092)
 
 - **New `--team <name>` flag on `atmux tell-lead`** per ADR-092 T1 (`t-5f20ba85`). Driver / parent-team / child-epic-team can now route a `tell-lead` ask into another team's inbox in the cockpit tree without `cd`-ing into the target's worktree. Closes the ADR-091 epic-merge conflict-surface gap (T12 migration deferred to its own commit per ADR-092 §Out-of-scope).

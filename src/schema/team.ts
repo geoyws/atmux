@@ -57,6 +57,40 @@ export const TeamMember = z
      *  When present, `atmux::tui_cmd` uses it verbatim, ignoring `team.tuiCommands`
      *  and built-in launchers. Stamped at `add-member` time via `--command <cmd>`. */
     command: z.string().optional(),
+    /** ADR-157 §D4 — explicit runtime selector for the per-member
+     *  TUI flavor. When `"cursor"`, the member runs under Cursor CLI
+     *  (martinet path per ADR-132 + ADR-140) and `goal` (below) is a
+     *  WARN-not-refuse no-op: Cursor has no `/goal` skill equivalent,
+     *  so the field is allowed for partial-migration scenarios but
+     *  doesn't drive a self-nudge loop. Default-unset → falls back
+     *  to TUI-driven runtime detection via `tui` (cursor / claude /
+     *  shell / ...). Free-form string for forward-compat with future
+     *  runtimes (per ADR-005 `tui: z.string()` precedent). */
+    runtime: z.string().optional(),
+    /** ADR-157 §D2 — per-role unsatisfiable-in-steady-state goal
+     *  injected via Claude Code v2.1.139+ `/goal` skill. Drives the
+     *  per-turn Haiku evaluator that self-nudges the member back into
+     *  the work loop with sub-second latency. Optional + additive.
+     *
+     *  Goal-phrasing rule (load-bearing per ADR-157 §Decision-anchor
+     *  #1): the predicate MUST re-satisfy when real-world state
+     *  regresses (a new commit lands, a new complaint files). Goals
+     *  that satisfy once + never fire again halt the member
+     *  permanently — opposite of intent. Reviewer pre-flag at every
+     *  goal addition.
+     *
+     *  Runtime gate (ADR-157 §D4): when `runtime === "cursor"` this
+     *  field is a WARN-not-refuse no-op — Cursor CLI has no `/goal`
+     *  equivalent. Accept the value so partial migrations don't block
+     *  schema load; runtime hooks (T3) short-circuit before injecting.
+     *
+     *  Resolution chain (ADR-157 §D2 / §OQ3): this explicit field
+     *  takes precedence over the brief-parsed `## Standing Goal`
+     *  section. See `src/core/goal-resolver.ts::resolveGoalForMember`
+     *  — single source of truth; downstream hooks must NOT
+     *  brief-parse directly. Empty string = explicit opt-out
+     *  (per goal-resolver test contract). */
+    goal: z.string().optional(),
   })
   .passthrough();
 export type TeamMember = z.infer<typeof TeamMember>;
