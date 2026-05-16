@@ -28,6 +28,7 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
+import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { writeLeadHandoff } from "../core/lead-handoff.ts";
 import { writeLeadSessionStart } from "../core/lead-marker.ts";
@@ -435,6 +436,43 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
       // pre-existing rotate-specific settle (rotation runs once per
       // teammate; the extra 500ms over the §A floor isn't latency-sensitive).
       await submitAfterPaste(tmux, sendTarget, { settleMs: 1_000, sleep });
+    }
+  }
+
+  // 2c. ADR-157 T3: /goal injection (post-brief). Fires AFTER step 2's
+  //     boot/brief-paste so the slash command lands in a clean compose
+  //     box (reviewer pre-flag #2 — brief-paste-ordering). NO-OP cleanly
+  //     when `member.runtime === "cursor"` (ADR-157 §D4) or when neither
+  //     `member.goal` nor brief `## Standing Goal` resolves (T2
+  //     resolution chain). Best-effort: a verify-failed injection is
+  //     escalated to send-keys-failures.log per ADR-138 but does NOT
+  //     abort rotation — the lane-tick backstop (T4) must still apply to
+  //     goal-set-but-injection-failed members so the drain isn't
+  //     deadlocked (reviewer pre-flag #3).
+  if (tui === "claude") {
+    const briefsDir = opts.briefsDir ?? defaultBriefsDir();
+    const briefPath = await getBriefPath(role, briefsDir);
+    const goalOpts: Parameters<typeof injectGoalIfActive>[0] = {
+      tmux,
+      sendTarget,
+      paneTargetString: tmuxTarget,
+      member: target,
+      logger: {
+        log: (s) => stdout(`rotate: ${s}\n`),
+        warn: (s) => stderr(`rotate: ${s}\n`),
+      },
+    };
+    if (briefPath.length > 0) goalOpts.briefPath = briefPath;
+    if (opts.sleep !== undefined) goalOpts.sleep = opts.sleep;
+    try {
+      await injectGoalIfActive(goalOpts);
+    } catch (e) {
+      // injectGoalIfActive itself doesn't throw — but if a future
+      // dep does, swallow + warn rather than aborting the rotation.
+      const reason = e instanceof Error ? e.message : String(e);
+      stderr(
+        `rotate: ${target.name}: /goal injection threw (${reason}); rotation continues — lane-tick backstop applies\n`,
+      );
     }
   }
 

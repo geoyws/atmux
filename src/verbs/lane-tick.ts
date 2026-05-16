@@ -31,6 +31,7 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { resolveGoalForMember } from "../core/goal-resolver.ts";
 import { listTasks, moveTask } from "../core/kanban.ts";
 import { type CaptureFn, classifyText, type PaneClassification } from "../core/pane-state.ts";
 import { pasteAndSubmit } from "../core/paste-submit.ts";
@@ -42,6 +43,7 @@ import {
 } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
+import { defaultBriefsDir, getBriefPath } from "./rotate.ts";
 import { parseLeadCtxPct } from "./whip.ts";
 
 // ---------- Public types (test-injectable deps) ----------
@@ -74,6 +76,17 @@ export interface LaneTickDeps {
   /** ADR-080 §B2: git spawn override for the auto-done scan. Tests
    *  inject a fixture so the scan exercises without a real git repo. */
   git?: GitSpawn;
+  /** ADR-157 T4: briefs-dir override (default `defaultBriefsDir()`
+   *  from rotate.ts). The goal-narrow branch resolves
+   *  `<briefsDir>/<role>.md` and parses `## Standing Goal`; tests
+   *  inject a temp dir so the matrix runs without real briefs. */
+  briefsDir?: string;
+  /** ADR-157 T4: override the brief-text resolver. Defaults to
+   *  `resolveGoalForMember(member, briefPath)`. Tests inject a fixture
+   *  so the goal-skip path runs deterministically without staging a
+   *  real brief file. Return value: resolved goal text OR `null` when
+   *  no goal is active. */
+  resolveGoal?: (member: TeamMember) => Promise<string | null>;
 }
 
 export interface LaneTickResult {
@@ -97,7 +110,15 @@ export type LaneTickMemberOutcome =
   | "injected-rotate-nudge"
   | "skip-not-ready"
   | "skip-capture-error"
-  | "skip-send-refused";
+  | "skip-send-refused"
+  /** ADR-157 T4: claim-injection skipped because the member is
+   *  goal-driven (Claude `/goal` skill running). The three safety nets
+   *  preserved verbatim — auto-done scan + lead-ctx-rotate nudge +
+   *  dead-pane / rate-limit-lockout detection — fire INDEPENDENTLY of
+   *  this outcome. Lane-tick narrows to backstop for failure modes
+   *  `/goal` cannot see; the per-turn Haiku evaluator drives the
+   *  drain on the happy path. */
+  | "skip-goal-active";
 
 // ---------- Verb entrypoint ----------
 
@@ -138,7 +159,8 @@ export async function laneTick(
       `auto-done-resolved=${result.autoDoneResolved} ` +
       `skip-not-ready=${count(result.outcomes, "skip-not-ready")} ` +
       `skip-capture-error=${count(result.outcomes, "skip-capture-error")} ` +
-      `skip-send-refused=${count(result.outcomes, "skip-send-refused")}`,
+      `skip-send-refused=${count(result.outcomes, "skip-send-refused")} ` +
+      `skip-goal-active=${count(result.outcomes, "skip-goal-active")}`,
   );
   return 0;
 }
@@ -191,6 +213,21 @@ export async function runLaneTick(
     });
 
   const session = await getSessionName({ dir: atmuxDir, team });
+
+  // ADR-157 T4 goal-narrow plumbing — resolve the briefs-dir + the
+  // goal-resolver once per tick. Default goal resolver reads each
+  // member's role brief at `<briefsDir>/<role>.md` and falls through
+  // resolveGoalForMember's chain (member.goal explicit > brief
+  // `## Standing Goal` > null). Tests inject `deps.resolveGoal` to
+  // bypass file IO + run the matrix deterministically.
+  const briefsDir = deps.briefsDir ?? defaultBriefsDir();
+  const resolveGoal: (member: TeamMember) => Promise<string | null> =
+    deps.resolveGoal ??
+    (async (member) => {
+      const role = typeof member.role === "string" ? member.role : "member";
+      const briefPath = await getBriefPath(role, briefsDir);
+      return resolveGoalForMember(member, briefPath);
+    });
 
   const lanedMembers = team.members.filter((m) => m.lane !== undefined && m.lane.length > 0);
 
@@ -253,6 +290,68 @@ export async function runLaneTick(
         );
         claimText = "/team rotate-lead";
         isRotateNudge = true;
+      }
+    }
+
+    // ADR-157 T4 — goal-active SKIP branch.
+    //
+    // Ordering (reviewer pre-flag #1 — MUST land after the dead-pane
+    // check above AND after the lead-ctx-rotate override): READY-check
+    // already passed; lead-ctx-rotate nudge takes priority over the
+    // goal-skip (lead can't self-rotate via /goal — that safety net
+    // per §D5 #2 MUST fire even for goal-active leads). Goal-skip only
+    // applies to the plain `claim --next` injection path.
+    //
+    // Cursor carve-out (ADR-157 §D4): `runtime === "cursor"` keeps
+    // the existing claim-injection path — Cursor CLI has no /goal
+    // equivalent, so the cron-driven nudge is the only drain. Goal-
+    // field is structurally allowed under cursor runtime (T2
+    // WARN-not-refuse) but is a no-op at runtime.
+    //
+    // Three safety nets PRESERVED (per ADR-157 §D5):
+    //   1. Auto-done sweep — fires AFTER this loop for ALL members
+    //      regardless of goal-state (see `runAutoDoneScan` below).
+    //   2. Lead-ctx-rotate nudge — fires ABOVE for ALL leads
+    //      regardless of goal-state (the override happened before
+    //      this skip-branch — `isRotateNudge: true` bypasses the
+    //      goal-active early-exit).
+    //   3. Dead-pane / rate-limit detection — fires ABOVE via the
+    //      READY classification (skip-not-ready outcome). A wedged
+    //      goal-active member returns to skip-not-ready, NOT to
+    //      skip-goal-active, so the operator sees the pane health
+    //      problem.
+    if (
+      !isRotateNudge &&
+      member.runtime !== "cursor"
+    ) {
+      let goalText: string | null = null;
+      try {
+        goalText = await resolveGoal(member);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Conservative: a goal-resolver failure (corrupt brief,
+        // permission denied) MUST NOT silently skip claim-injection
+        // — fall through to the existing injection path. Operator
+        // sees the warn + drain stays healthy.
+        log(
+          `lane-tick: ${member.name}: goal-resolve error (${msg}) — ` +
+            `falling through to claim --next`,
+        );
+      }
+      if (goalText !== null) {
+        // Operator-debuggable log per Task body §3 — cite the
+        // resolved-via source so goal-phrasing bugs are easy to
+        // trace. team.json wins when member.goal is set + non-empty;
+        // brief otherwise.
+        const explicit =
+          typeof member.goal === "string" && member.goal.length > 0;
+        const resolvedVia = explicit ? "team.json" : "brief";
+        log(
+          `[lane-tick] skip claim-inject for ${member.name}: ` +
+            `goal-active (resolved-via=${resolvedVia})`,
+        );
+        outcomes[member.name] = "skip-goal-active";
+        continue;
       }
     }
 

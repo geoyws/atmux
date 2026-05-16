@@ -125,6 +125,23 @@ const VALID_LANES = new Set([
   "-",
 ]);
 
+// Member-name → canonical-lane aliases (t-cea78f99). Operators kept
+// typing `--lane gitter` for the member-name; canonical lane is `git`.
+// Resolved BEFORE the VALID_LANES check; input-side only by design
+// (kanban stores canonical form; `task list --lane` filters against
+// stored values, not aliases).
+const LANE_ALIASES: Record<string, string> = {
+  gitter: "git",
+  planner: "docs",
+  reviewer: "review",
+  dba: "db",
+  devops: "ops",
+};
+
+export function resolveLaneAlias(input: string): string {
+  return LANE_ALIASES[input] ?? input;
+}
+
 /**
  * `atmux task <subverb> [args]`. Returns 0 on success; throws
  * `UsageError` / `ConfigError` for the caller to map per ADR-006.
@@ -189,10 +206,10 @@ async function taskAdd(argv: ReadonlyArray<string>): Promise<number> {
 
 // `atmux task lane <id> <fe|be|db|ops|test|review|misc|->`
 async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
-  const positional = argv.filter((a) => !a.startsWith("--"));
+  const { positional, rest } = splitFlagsAndPositionals(argv);
   const teamDir = (() => {
-    const idx = argv.indexOf("--team-dir");
-    return idx >= 0 ? argv[idx + 1] : undefined;
+    const idx = rest.indexOf("--team-dir");
+    return idx >= 0 ? rest[idx + 1] : undefined;
   })();
   if (positional.length !== 2) {
     throw new UsageError({
@@ -200,10 +217,11 @@ async function taskLane(argv: ReadonlyArray<string>): Promise<number> {
       hint: USAGE_LANE,
     });
   }
-  const [id, laneArg] = positional as [string, string];
+  const [id, laneArgRaw] = positional as [string, string];
+  const laneArg = resolveLaneAlias(laneArgRaw);
   if (!VALID_LANES.has(laneArg)) {
     throw new UsageError({
-      what: `task lane: lane must be one of fe|be|db|ops|test|review|misc|git|docs|- (got: ${laneArg})`,
+      what: `task lane: lane must be one of fe|be|db|ops|test|review|misc|git|docs|- (got: ${laneArgRaw})`,
       hint: USAGE_LANE,
     });
   }
@@ -556,13 +574,14 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
           hint: USAGE_ADD,
         });
       }
-      if (!VALID_LANES.has(v) || v === "-") {
+      const resolved = resolveLaneAlias(v);
+      if (!VALID_LANES.has(resolved) || resolved === "-") {
         throw new UsageError({
           what: `task add: --lane must be one of fe|be|db|ops|test|review|misc|git|docs (got: ${v})`,
           hint: USAGE_ADD,
         });
       }
-      lane = v;
+      lane = resolved;
       i += 2;
       continue;
     }

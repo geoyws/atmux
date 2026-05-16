@@ -34,6 +34,7 @@ import { ConfigError } from "../errors.ts";
 import {
   DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN,
   DEFAULT_LANE_STALL_CRON_INTERVAL_MINS,
+  DEFAULT_LANE_TICK_CRON_MINS,
   DEFAULT_MERGER_CYCLE_INTERVAL_MINS,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
   type Team,
@@ -260,9 +261,18 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
     out.push(`${cronEvery(unblockerMins)} ${baseEnv} unblocker tick ${logTail("unblocker")}`);
   }
 
-  // 7. lane-tick — ADR-062 §Decision 4. Hardcoded `*/2 * * * *` (the
-  // ADR fixes this cadence; sub-2-min would amplify any classifier bug,
-  // longer would dull the auto-claim chain). Gated by BOTH:
+  // 7. lane-tick — ADR-062 §Decision 4 + ADR-157 §D6 cadence relaxation.
+  // Default cadence relaxed from `*/2` to `*/5` (DEFAULT_LANE_TICK_CRON_MINS)
+  // because /goal (Claude Code v2.1.139+ skill) drives fast handoff on
+  // the happy path via per-turn Haiku evaluator; lane-tick runs at 5min
+  // as a structural backstop for failure modes /goal cannot see (wedged
+  // panes, rate-lockouts, compaction-wipe). Per-team override via
+  // `team.crons.laneTickMins` — divisor of 60 validated by schema-side
+  // refinement; `cronEvery` rejects non-divisors as a second line of
+  // defense. Lower bound floor is /goal mean-time-to-detect-failure × 2
+  // (~5min); ceiling `*/10` acceptable with operator validation.
+  //
+  // Gated by BOTH:
   //   (a) ≥1 member has a non-empty `.lane` field (no lanes ⇒ nothing
   //       for lane-tick to do; emitting the line would just spin a
   //       no-op cron call), AND
@@ -275,7 +285,8 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   });
   const laneTickEnabled = team.crons?.laneTickEnabled !== false;
   if (hasLaneMember && laneTickEnabled) {
-    out.push(`*/2 * * * * ${baseEnv} lane-tick ${logTail("lane-tick")}`);
+    const laneTickMins = team.crons?.laneTickMins ?? DEFAULT_LANE_TICK_CRON_MINS;
+    out.push(`${cronEvery(laneTickMins)} ${baseEnv} lane-tick ${logTail("lane-tick")}`);
   }
 
   // 8. ADR-088 §Decision-5 W7 — merge-cycle: bulk per-member-branch

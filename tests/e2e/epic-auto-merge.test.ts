@@ -84,10 +84,19 @@ interface Fixture {
   capturedLogs: string[];
 }
 
+/** Shape of the seeded cockpit.json — `sessions` is the ADR-089 canonical
+ *  shape; `legacy-teams` writes the pre-ADR-089 flat `teams[]` form so the
+ *  spawn-epic verb's migrateLegacyShape pre-flight is exercised end-to-end
+ *  (t-e6e3afd4 regression coverage). */
+type CockpitShape = "sessions" | "legacy-teams";
+
 /** Cold-start a parent-team fixture: bare remote + working repo +
  *  initial commit on `main` + atmux state.db + cockpit.json with the
  *  parent registered. */
-async function makeFixture(): Promise<Fixture> {
+async function makeFixture(
+  opts: { cockpitShape?: CockpitShape } = {},
+): Promise<Fixture> {
+  const cockpitShape = opts.cockpitShape ?? "sessions";
   const tmpRoot = await mkdtemp(join(tmpdir(), "atmux-e2e-epic-merge-"));
   const bareRemotePath = join(tmpRoot, "origin.git");
   const parentRoot = join(tmpRoot, "parent-team");
@@ -148,20 +157,30 @@ async function makeFixture(): Promise<Fixture> {
       ],
     }),
   );
-  await writeFile(
-    cockpitPath,
-    JSON.stringify({
-      schemaVersion: 1,
-      sessions: [
-        {
-          type: "team",
-          name: "parent-team",
-          enabled: true,
-          root: parentRoot,
-        },
-      ],
-    }),
-  );
+  const parentTeamEntry = {
+    name: "parent-team",
+    enabled: true,
+    root: parentRoot,
+  };
+  if (cockpitShape === "legacy-teams") {
+    // Pre-ADR-089 shape: no schemaVersion, no `type` discriminator,
+    // top-level `teams[]` instead of `sessions[]`. Exercises the
+    // migrateLegacyShape pre-flight inside spawn-epic.
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        teams: [parentTeamEntry],
+      }),
+    );
+  } else {
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        sessions: [{ type: "team", ...parentTeamEntry }],
+      }),
+    );
+  }
 
   return {
     tmpRoot,
@@ -475,6 +494,72 @@ describe("e2e epic-auto-merge conflict path (ADR-091 / t-9d22718b)", () => {
         .then(() => true)
         .catch(() => false);
       expect(epicRootExists).toBe(true);
+    },
+    30_000,
+  );
+});
+
+// ---------- Pre-ADR-089 cockpit shape regression (t-e6e3afd4) ----------
+
+describe("e2e spawn-epic against pre-ADR-089 cockpit (t-e6e3afd4 P0 hot-fix)", () => {
+  test(
+    "legacy top-level teams[] cockpit.json — spawn-epic auto-migrates to sessions[] in-place + warns + appends epic-team child",
+    async () => {
+      // Override the default fixture with the legacy `teams[]` shape.
+      await rm(fix.tmpRoot, { recursive: true, force: true });
+      fix = await makeFixture({ cockpitShape: "legacy-teams" });
+
+      // Pre-condition: on-disk file has top-level teams[] and no
+      // sessions[].
+      const beforeRaw = JSON.parse(await Bun.file(fix.cockpitPath).text());
+      expect(Array.isArray(beforeRaw.teams)).toBe(true);
+      expect(beforeRaw.sessions).toBeUndefined();
+
+      // Run spawn-epic — must succeed (regression: prior to the
+      // migrateLegacyShape pre-flight this threw ConfigError
+      // "parent team 'parent-team' not found in cockpit").
+      const { epicRoot, epicBranch } = await spawnEpicForFixture(
+        fix,
+        "legacy-shape-flow",
+      );
+      const worktreeBranch = await git(epicRoot, [
+        "rev-parse",
+        "--abbrev-ref",
+        "HEAD",
+      ]);
+      expect(worktreeBranch).toBe(epicBranch);
+
+      // Post-spawn the on-disk cockpit.json should be fully on the
+      // new sessions[] shape — legacy teams[] stripped, schemaVersion
+      // set to 1 by migrateLegacyShape.
+      const afterRaw = JSON.parse(await Bun.file(fix.cockpitPath).text());
+      expect(afterRaw.teams).toBeUndefined();
+      expect(Array.isArray(afterRaw.sessions)).toBe(true);
+      expect(afterRaw.schemaVersion).toBe(1);
+
+      // The parent session entry is now under sessions[] with
+      // type='team' lifted by the shim.
+      const parentSession = afterRaw.sessions.find(
+        (s: { type?: string; name?: string }) =>
+          s.type === "team" && s.name === "parent-team",
+      );
+      expect(parentSession).toBeDefined();
+
+      // The new epic-team child should be nested under the parent's
+      // sessions[] (appendChildToSessions mutates that array).
+      expect(Array.isArray(parentSession.sessions)).toBe(true);
+      const epicChild = parentSession.sessions.find(
+        (s: { type?: string; name?: string }) =>
+          s.type === "epic-team" && s.name === "legacy-shape-flow",
+      );
+      expect(epicChild).toBeDefined();
+
+      // The migrateLegacyShape warning fired through logger.warn —
+      // captured via the test logger.
+      const warned = fix.capturedLogs.some((l) =>
+        /uses legacy flat teams\[\] — auto-lifting/.test(l),
+      );
+      expect(warned).toBe(true);
     },
     30_000,
   );
