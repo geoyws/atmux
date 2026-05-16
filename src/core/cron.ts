@@ -143,6 +143,13 @@ export interface RenderCronBlockOpts {
    *  {@link DEFAULT_LANE_STALL_CRON_INTERVAL_MINS}. Threaded via
    *  `cron-install --template lane-stall-watch --interval <N>`. */
   laneStallIntervalOverride?: number;
+  /** ADR-091 §State machine (t-04350614) — transient override for the
+   *  `epic-merge tick` line's cadence (minutes). When set, beats
+   *  {@link DEFAULT_EPIC_MERGE_CRON_INTERVAL_MINS}. Threaded via
+   *  `cron-install --template epic-merge --interval <N>`. The line
+   *  is gated on `team.epicTeam !== undefined` (only epic-teams get
+   *  the cron line) — normal teams skip the gate-test entirely. */
+  epicMergeIntervalOverride?: number;
 }
 
 /**
@@ -325,8 +332,42 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
     out.push(`${cronEvery(laneStallMins)} ${baseEnv} lane-stall-tick ${logTail("lane-stall")}`);
   }
 
+  // 11. ADR-091 §State machine — epic-merge-tick: fires `atmux epic-
+  // merge tick` every N minutes (default
+  // DEFAULT_EPIC_MERGE_CRON_INTERVAL_MINS = 5) when the team is an
+  // epic-team (`team.epicTeam !== undefined` per ADR-090 §Schema).
+  // The verb itself runs the state-machine + gate + auto-merge +
+  // dissolve-dispatch (`src/core/epic-merge.ts::performEpicMerge`);
+  // this line is the sole cron-side wiring. Normal teams (no
+  // epicTeam block) skip — the line is purely additive.
+  //
+  // Cadence resolution (same precedence shape as merger / ombudsman /
+  // lane-stall): (a) `opts.epicMergeIntervalOverride` (transient
+  // install-time override from `cron-install --template epic-merge
+  // --interval <N>`) wins first, then (b) the schema default. The
+  // team config does NOT carry a `epicMergeCronMins` field today —
+  // 5min matches the operator-default cadence for stall-detection
+  // primitives elsewhere in atmux; a per-team override can land via
+  // a future schema bump if a concrete demand emerges.
+  if (team.epicTeam !== undefined) {
+    const epicMergeMins =
+      opts.epicMergeIntervalOverride ?? DEFAULT_EPIC_MERGE_CRON_INTERVAL_MINS;
+    out.push(
+      `${cronEvery(epicMergeMins)} ${baseEnv} epic-merge tick ${logTail("epic-merge")}`,
+    );
+  }
+
   return out;
 }
+
+/** ADR-091 §State machine default cron cadence — used by
+ *  `renderCronLines` when `opts.epicMergeIntervalOverride` is unset.
+ *  5 minutes matches the operator-default for fan-in stall detection
+ *  (mirrors {@link DEFAULT_LANE_STALL_CRON_INTERVAL_MINS}); epic-team
+ *  fan-in is not latency-critical (the `reviewer-trunk-signoff` Task
+ *  gate already throttles velocity), so a 5min cadence keeps cron
+ *  load light without blocking ready-to-merge transitions. */
+export const DEFAULT_EPIC_MERGE_CRON_INTERVAL_MINS = 5;
 
 // ---------- ADR-083: install transform ----------
 

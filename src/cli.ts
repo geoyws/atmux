@@ -49,6 +49,7 @@ import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { epic } from "./verbs/epic.ts";
+import { epicMerge } from "./verbs/epic-merge.ts";
 import { gitter } from "./verbs/gitter.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
@@ -271,6 +272,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return ombudsman(argv.slice(1));
     case "gitter":
       return gitter(argv.slice(1));
+    case "epic-merge":
+      return epicMerge(argv.slice(1));
     case "complaints":
       return complaints(argv.slice(1));
     case "doctor":
