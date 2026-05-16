@@ -144,3 +144,15 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 - **Operator dotfiles cockpit-skill rename surfaces** — ADR-133 TR8 (`~/.claude/skills/superdoctor/ → medic/`) is the precedent; if a parallel cockpit-skill exists for `cockpit-session` it gets a sibling driver-only TR. Out of repo scope per ADR-133 §D3.
 - **Hot-rename of arbitrary member names** — ADR-136 covers the id-vs-label split for live-team member renames. ADR-135 only touches the *format* of `<emoji><member>` window names, not member identity.
 - **Window-order changes** — D2 only renames; window indices stay (W1=_superdriver, W2=_medic, W3=_martinet, W4..N=team viewers). Order changes belong to a follow-up ADR if needed.
+
+## Amendments
+
+### 2026-05-16 — Socket isolation added (ADR-162)
+
+[ADR-162](162-atmux-owns-tmux-infrastructure.md) extends the cockpit naming convention from **session-name isolation** to **socket isolation**. The cockpit moves from the operator's default tmux socket (`tmux ...`) to a dedicated named socket (`tmux -L atmux-cockpit ...`). The `cockpitSession: "atmux_cockpit"` session name (this ADR's §Decision) is unchanged — `atmux-cockpit` becomes the SOCKET name AND `atmux_cockpit` stays the SESSION name on that socket.
+
+Per-team sockets remain on the existing cage-tier `-S <team-root>/.atmux/tmux/tmux-0/default` path per [ADR-058](058-cage-tier-isolation.md) — unaffected by ADR-162. The `_-prefix` window-name format from this ADR's §D2 / §D3 is preserved verbatim on the new socket; ADR-162 §Decision-anchor #3's `automatic-rename off` in `templates/tmux/atmux.conf` is what protects the `_-prefix` contract from tmux's auto-rename stomping.
+
+The migration verb `atmux cockpit migrate-socket` (ADR-162 TR3) handles existing operators: it discovers legacy `atmux_cockpit` (or pre-this-ADR `atmux_teams`) sessions on the default socket and recreates them on the dedicated socket. Process state is NOT transferred (tmux primitives can't re-bind PIDs across servers — documented in [ADR-162 §Amendment 2026-05-16](162-atmux-owns-tmux-infrastructure.md#2026-05-16--decision-anchor-4-mechanism-graceful-recreate-not-pid-preservation-t-26346aef-tr3-impl)); scrollback is preserved as a breadcrumb file. Cron-spawned cockpit roles re-establish on the next tick. See [`docs/RUNBOOK-cockpit.md`](../RUNBOOK-cockpit.md) §2 for the operator-facing flow.
+
+This ADR-135 file remains unmodified above the `## Amendments` header (append-only convention). The decisions documented in §D2 (`_-prefix` window names) and §D3 (`<emoji>-<member>` hyphen format) are still operative — ADR-162 layers socket isolation underneath without superseding the naming format.

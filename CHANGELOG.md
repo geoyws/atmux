@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 📐 Proposed — ADR-162 atmux owns its tmux infrastructure (cockpit-socket isolation + canonical `atmux.conf` + version probes)
+
+- **[`docs/adr/162-atmux-owns-tmux-infrastructure.md`](docs/adr/162-atmux-owns-tmux-infrastructure.md)** (Status: proposed) — closes the operator-side foot-gun captured in [[project_atmux_socket_isolation_state.md]]: cockpit windows used to land in the operator's own default-socket tmux server; a stray `tmux kill-server` from the operator wiped atmux + personal state together. ADR §Decision-anchor #1-5 specify dedicated `atmux-cockpit` named socket + canonical `templates/tmux/atmux.conf` loaded via `-f` + two new doctor probes. Implementation spans TR1-TR6 (filed in same session per [[feedback_decomp_same_session_with_deps]]); TR2-TR5 already shipped, TR3 + TR6 land in 2026-05-16. See **🟢 Shipped** entries below for per-TR landings.
+- **`atmux cockpit migrate-socket`** (TR3, shipped — see entry below) — one-shot migration verb preserving window topology + scrollback as breadcrumb (PID preservation impossible via tmux primitives — documented in ADR-162 §Amendment 2026-05-16).
+- **`templates/tmux/atmux.conf`** (TR4, shipped) — canonical 8-option baseline; loaded via `-f` on every cockpit + per-team session.
+- **Doctor probes** (TR5, shipped) — `tmux-version-mismatch` + `cockpit-on-default-socket` (warn-class).
+- **`docs/RUNBOOK-cockpit.md`** (TR6 same-commit doc sweep, 2026-05-16) — new 5-section operator runbook covering socket isolation, migration verb, canonical `atmux.conf`, doctor probes, and `ATMUX_COCKPIT_SOCKET` escape hatch. ARCHITECTURE.md gains a §Tmux topology section + new Principles bullet 5.
+
 ### 🟢 Shipped — `atmux cockpit migrate-socket` one-shot verb (ADR-162 TR3, t-26346aef, 2026-05-16)
 
 - **New sub-verb** `atmux cockpit migrate-socket` migrates a legacy cockpit session from the operator's default tmux socket to the dedicated `atmux-cockpit` named socket per ADR-162 §Decision-anchor #1 + #4. Idempotent — re-running on an already-migrated cockpit is a no-op. Filed in same session as the TR2/TR4/TR5 implementation per [[feedback_decomp_same_session_with_deps]].
