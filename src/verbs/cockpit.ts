@@ -1329,6 +1329,46 @@ export async function reconcileCockpitSession(
     logger.log(`  ✓ added window '${t.name}' (${mode})`);
   }
 
+  // ADR-135 §D2 §Amendment (t-34fa0132): epic-team viewer windows MUST sit
+  // immediately after their parent's viewer in cockpit window order. The
+  // `teams` array from enabledTeams() is already in DFS pre-order
+  // (parent → child → next sibling), so the desired layout is:
+  //   [_superdriver, _medic?, _martinet?, ...teams in DFS order]
+  // Skip this pass in per-team mode — single-team callers have no authority
+  // to reorder sibling team viewers.
+  if (onlyTeam === undefined) {
+    // Compute the base index where team windows should start, derived from
+    // the cockpit-role windows that precede them (per ADR-135 §D2).
+    const windowsForOrder = await cockpitTmux.window.listWindows(sessionName);
+    const sdrv = windowsForOrder.find((w) => w.name === "_superdriver");
+    let cursor = sdrv !== undefined ? sdrv.index + 1 : 1;
+    if (wantMedic) cursor += 1;
+    if (wantMartinet) cursor += 1;
+    for (const t of teams) {
+      // Re-list each iteration — moveWindow shifts other windows' indices,
+      // so a fixed snapshot would go stale. Tmux indices are sparse and
+      // permitted to skip values; the moveWindow target collapses the
+      // window into the requested slot.
+      const current = await cockpitTmux.window.listWindows(sessionName);
+      const w = current.find((x) => x.name === t.name);
+      if (w === undefined) continue;
+      if (w.index !== cursor) {
+        try {
+          await cockpitTmux.window.moveWindow({
+            source: { sessionName, windowIndex: w.index },
+            target: { sessionName, windowIndex: cursor },
+            kill: true,
+          });
+          logger.log(`  ✓ moved '${t.name}' to idx ${cursor} (was idx ${w.index})`);
+        } catch (e) {
+          const cause = e instanceof Error ? e.message : String(e);
+          logger.warn(`  ⚠ reorder of '${t.name}' to idx ${cursor} failed: ${cause}`);
+        }
+      }
+      cursor += 1;
+    }
+  }
+
   // Remove orphan viewer windows (e.g. team that was removed/disabled).
   // _superdriver + _medic (when enabled) + _martinet (when enabled)
   // are always preserved (ADR-135 canonical names). The legacy names
