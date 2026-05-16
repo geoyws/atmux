@@ -145,8 +145,17 @@ describe("ClaudeSentinel", () => {
       m.apply({ kind: "claim-next", member: "be-1", reason: "x" }),
     ).rejects.toThrow(/claim-next/);
     await expect(
-      m.apply({ kind: "rotate", member: "fe-1", reason: "x" }),
-    ).rejects.toThrow(/rotate/);
+      m.apply({ kind: "rotate-routine", member: "fe-1", reason: "x" }),
+    ).rejects.toThrow(/rotate-routine/);
+    await expect(
+      m.apply({ kind: "rotate-emergency", member: "fe-1", reason: "x" }),
+    ).rejects.toThrow(/rotate-emergency/);
+    await expect(
+      m.apply({ kind: "modal-release", member: "fe-1", reason: "x" }),
+    ).rejects.toThrow(/modal-release/);
+    await expect(
+      m.apply({ kind: "force-push-approved", member: "fe-1", reason: "x" }),
+    ).rejects.toThrow(/force-push-approved/);
   });
 
   test("shouldEscalateToClaudeLead is unconditionally true", () => {
@@ -195,15 +204,32 @@ describe("Sentinel types", () => {
           return `enter-push:${a.member}`;
         case "claim-next":
           return `claim-next:${a.member}`;
-        case "rotate":
-          return `rotate:${a.member}`;
+        case "modal-release":
+          return `modal-release:${a.member}`;
+        case "force-push-approved":
+          return `force-push-approved:${a.member}`;
+        case "rotate-routine":
+          return `rotate-routine:${a.member}`;
+        case "rotate-emergency":
+          return `rotate-emergency:${a.member}`;
         case "escalate-to-claude-lead":
           return `escalate:${a.observation.team}`;
       }
     }
     expect(evidence({ kind: "enter-push", member: "fe-1", reason: "r" })).toBe("enter-push:fe-1");
     expect(evidence({ kind: "claim-next", member: "be-1", reason: "r" })).toBe("claim-next:be-1");
-    expect(evidence({ kind: "rotate", member: "reviewer", reason: "r" })).toBe("rotate:reviewer");
+    expect(evidence({ kind: "modal-release", member: "fe-1", reason: "r" })).toBe(
+      "modal-release:fe-1",
+    );
+    expect(evidence({ kind: "force-push-approved", member: "fe-1", reason: "r" })).toBe(
+      "force-push-approved:fe-1",
+    );
+    expect(evidence({ kind: "rotate-routine", member: "reviewer", reason: "r" })).toBe(
+      "rotate-routine:reviewer",
+    );
+    expect(evidence({ kind: "rotate-emergency", member: "reviewer", reason: "r" })).toBe(
+      "rotate-emergency:reviewer",
+    );
     expect(
       evidence({
         kind: "escalate-to-claude-lead",

@@ -153,7 +153,22 @@ const NudgeActionFromCursor = z.discriminatedUnion("kind", [
     reason: z.string().min(1),
   }),
   z.object({
-    kind: z.literal("rotate"),
+    kind: z.literal("modal-release"),
+    member: z.string().min(1),
+    reason: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("force-push-approved"),
+    member: z.string().min(1),
+    reason: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("rotate-routine"),
+    member: z.string().min(1),
+    reason: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("rotate-emergency"),
     member: z.string().min(1),
     reason: z.string().min(1),
   }),
@@ -200,12 +215,19 @@ export const CURSOR_SYSTEM_PROMPT = [
   "",
   "Return ONLY a JSON array (no prose, no markdown fences). The array",
   "contains zero or more NudgeAction objects. Each NudgeAction must be",
-  "ONE OF the following four discriminated kinds:",
+  "ONE OF the following discriminated kinds (ADR-140 T4 expanded set):",
   "",
   '  {"kind":"enter-push","member":"<name>","reason":"<why>"}',
   '  {"kind":"claim-next","member":"<name>","reason":"<why>"}',
-  '  {"kind":"rotate","member":"<name>","reason":"<why>"}',
+  '  {"kind":"modal-release","member":"<name>","reason":"<why>"}',
+  '  {"kind":"force-push-approved","member":"<name>","reason":"<why>"}',
+  '  {"kind":"rotate-routine","member":"<name>","reason":"<why>"}',
   '  {"kind":"escalate-to-claude-lead","reason":"<why>"}',
+  "",
+  "  NOTE: `rotate-emergency` is reserved for medic-class kill+respawn",
+  "  intervention. As the sentinel you NEVER emit `rotate-emergency` —",
+  "  emit `escalate-to-claude-lead` if you believe a kill+respawn is",
+  "  needed and let the medic event log + lead route it.",
   "",
   "Empty array `[]` is valid and represents a no-op tick (all-green",
   "sweep — no member needs nudging).",
@@ -423,20 +445,62 @@ export class CursorSentinel implements Sentinel {
             `— reason='${action.reason}'`,
         };
       }
-      case "rotate": {
-        // ADR-140 amendment — sentinel handles ROUTINE rotation only
-        // (60min uptime / context-rot detection). Non-routine rotation
-        // stays on the Claude lead via escalate. Here we record the
-        // rotation intent as evidence; the dispatcher (T8 follow-up)
-        // reads sentinel-state.json + fires the actual `atmux rotate
-        // <member>` shell-out — keeping the impl pure (no destructive
-        // git / atmux verb invocation directly).
+      case "modal-release": {
+        // ADR-140 T4: sentinel escapes routine choice-prompts. Same
+        // wire shape as enter-push (synthetic Enter / accept-prompt
+        // keystroke); dispatcher decides which key sequence ships
+        // based on the captured modal text. Pure intent here.
         return {
           success: true,
           evidence:
-            `rotate intent recorded for ${action.member}: ` +
+            `modal-release intent recorded for ${action.member}: ` +
+            `dispatcher to fire accept-prompt keystroke ` +
+            `— reason='${action.reason}'`,
+        };
+      }
+      case "force-push-approved": {
+        // ADR-140 T4: sentinel signals force-push intent. Policy gate
+        // (non-staging branch check per project CLAUDE.md push policy)
+        // is the dispatcher's responsibility; this impl never invokes
+        // git directly. Intent recorded → dispatcher (T8) reads + acts.
+        return {
+          success: true,
+          evidence:
+            `force-push-approved intent recorded for ${action.member}: ` +
+            `dispatcher to verify non-staging target + fire ` +
+            `'git push --force-with-lease' — reason='${action.reason}'`,
+        };
+      }
+      case "rotate-routine": {
+        // ADR-140 T4: sentinel-class ROUTINE rotation only (60min
+        // uptime / ADR-139 refusal-threshold / context-rot detection).
+        // Emergency rotation (kill+respawn) is medic-class via
+        // `rotate-emergency` — the dispatcher's authority split keeps
+        // sentinel out of destructive medic paths. Here we record the
+        // routine-rotation intent; dispatcher (T8) reads
+        // sentinel-state.json + fires `atmux rotate <member>`.
+        return {
+          success: true,
+          evidence:
+            `rotate-routine intent recorded for ${action.member}: ` +
             `dispatcher to fire 'atmux rotate ${action.member}' on next sweep ` +
             `— reason='${action.reason}'`,
+        };
+      }
+      case "rotate-emergency": {
+        // ADR-140 T4: medic-class kill+respawn. The sentinel impl
+        // never EMITS this kind (the system-prompt + Zod validator
+        // omits it from the cursor-agent's output contract), but the
+        // discriminated-union exhaustiveness gate requires a branch.
+        // Defensive: if a misdirected dispatcher routes here, fail
+        // loudly rather than silently rotating outside medic
+        // authority.
+        return {
+          success: false,
+          evidence:
+            `rotate-emergency refused on sentinel: this kind is medic-` +
+            `class (ADR-140 authority split). Misroute on ` +
+            `${action.member} — reason='${action.reason}'`,
         };
       }
     }

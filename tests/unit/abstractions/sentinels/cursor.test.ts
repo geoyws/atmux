@@ -485,7 +485,7 @@ describe("CursorSentinel — apply()", () => {
     expect(result.success).toBe(false);
   });
 
-  test("rotate: records intent, success=true (dispatcher fires actual atmux rotate)", async () => {
+  test("rotate-routine: records intent, success=true (dispatcher fires actual atmux rotate)", async () => {
     const calls: { window: string; keys: string }[] = [];
     const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
@@ -496,16 +496,71 @@ describe("CursorSentinel — apply()", () => {
       },
     });
     const result = await inst.apply({
-      kind: "rotate",
+      kind: "rotate-routine",
       member: "fe-1",
       reason: "60min uptime",
     });
     expect(result.success).toBe(true);
-    expect(result.evidence).toContain("rotate intent recorded for fe-1");
+    expect(result.evidence).toContain("rotate-routine intent recorded for fe-1");
     expect(result.evidence).toContain("atmux rotate fe-1");
     expect(result.evidence).toContain("60min uptime");
-    // rotate is dispatcher-mediated — does NOT shell out via sendKeys.
+    // rotate-routine is dispatcher-mediated — does NOT shell out via sendKeys.
     expect(calls).toEqual([]);
+  });
+
+  test("modal-release: records intent, success=true (dispatcher fires accept-prompt)", async () => {
+    const inst = new CursorSentinel({
+      observeFn: async () => fixtureObservation(),
+      runCursorAgent: async () => okEnvelope(),
+      sendKeys: async () => ({ success: true }),
+    });
+    const result = await inst.apply({
+      kind: "modal-release",
+      member: "fe-1",
+      reason: "known-safe Y/n prompt",
+    });
+    expect(result.success).toBe(true);
+    expect(result.evidence).toContain("modal-release intent recorded for fe-1");
+    expect(result.evidence).toContain("accept-prompt keystroke");
+    expect(result.evidence).toContain("known-safe Y/n prompt");
+  });
+
+  test("force-push-approved: records intent, success=true (dispatcher gates non-staging policy)", async () => {
+    const inst = new CursorSentinel({
+      observeFn: async () => fixtureObservation(),
+      runCursorAgent: async () => okEnvelope(),
+      sendKeys: async () => ({ success: true }),
+    });
+    const result = await inst.apply({
+      kind: "force-push-approved",
+      member: "fe-1",
+      reason: "operator-authorized rebase",
+    });
+    expect(result.success).toBe(true);
+    expect(result.evidence).toContain("force-push-approved intent recorded for fe-1");
+    expect(result.evidence).toContain("non-staging");
+    expect(result.evidence).toContain("--force-with-lease");
+    expect(result.evidence).toContain("operator-authorized rebase");
+  });
+
+  test("rotate-emergency: refused at sentinel layer (medic-class authority gate)", async () => {
+    const inst = new CursorSentinel({
+      observeFn: async () => fixtureObservation(),
+      runCursorAgent: async () => okEnvelope(),
+      sendKeys: async () => ({ success: true }),
+    });
+    const result = await inst.apply({
+      kind: "rotate-emergency",
+      member: "fe-1",
+      reason: "wedged",
+    });
+    // ADR-140 authority split: sentinel never executes kill+respawn.
+    // Refusal is the defensive behavior — fail loudly rather than
+    // silently rotating outside medic scope.
+    expect(result.success).toBe(false);
+    expect(result.evidence).toContain("rotate-emergency refused on sentinel");
+    expect(result.evidence).toContain("medic-class");
+    expect(result.evidence).toContain("ADR-140");
   });
 
   test("sendKeys missing → success=false with diagnostic evidence", async () => {

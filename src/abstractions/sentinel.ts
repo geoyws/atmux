@@ -168,7 +168,41 @@ export type NudgeAction =
       reason: string;
     }
   | {
-      kind: "rotate";
+      // ADR-140 T4: sentinel escapes routine choice-prompts when the
+      // operator-directive is unambiguous (e.g., a modal asking the
+      // member to confirm a known-safe action). Sentinel-class
+      // nudge — no medic escalation needed.
+      kind: "modal-release";
+      member: string;
+      reason: string;
+    }
+  | {
+      // ADR-140 T4: sentinel fires force-push when operator-authorized
+      // AND target branch is non-staging per project CLAUDE.md push
+      // policy. The dispatcher (T8 follow-up) is responsible for the
+      // policy gate; this enum entry signals the approved intent.
+      kind: "force-push-approved";
+      member: string;
+      reason: string;
+    }
+  | {
+      // ADR-140 T4: sentinel-class routine rotation per ADR-139
+      // refusal-pattern thresholds + ADR-138 uptime/context-rot
+      // detection. Routine rotations fire from sentinel; emergency
+      // rotations (kill+respawn) are medic-escalated via
+      // rotate-emergency below.
+      kind: "rotate-routine";
+      member: string;
+      reason: string;
+    }
+  | {
+      // ADR-140 T4: medic-class emergency rotation — fired only when
+      // medic escalates kill+respawn (cage-tier intervention). Was
+      // `rotate` pre-ADR-140 amendment; rename surfaces the
+      // authority split between sentinel (routine) and medic
+      // (emergency) at the type level so a misdirected dispatcher
+      // can't quietly swap classes.
+      kind: "rotate-emergency";
       member: string;
       reason: string;
     }
