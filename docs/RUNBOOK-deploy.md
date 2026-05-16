@@ -29,8 +29,9 @@ Old versions preserved under `/opt/atmux/<version>/` for one-line rollback (see 
    1. `bun build:compile` → `dist/atmux` (bun ELF, ~100MB)
    2. `sudo install -d -m 755 /opt/atmux/<V>/bin`
    3. `sudo install -m 755 dist/atmux /opt/atmux/<V>/bin/atmux`
-   4. `sudo ln -sfn /opt/atmux/<V> /opt/atmux/current` ← atomic flip
-   5. `sudo ln -sfn /opt/atmux/current/bin/atmux /usr/local/bin/atmux`
+   4. `sudo rm -rf /opt/atmux/<V>/templates && sudo cp -r templates /opt/atmux/<V>/templates` ← static-assets ship (added per c-003a2a4c / t-17d413b1: compiled bun's `import.meta.dir` walks $bunfs to `/templates` so `atmux init` + brief reads need on-disk templates alongside the binary; the resolver at `src/core/templates-dir.ts` probes `<execPath>/../templates` as the installed-mode fallback after the dev-mode probe misses)
+   5. `sudo ln -sfn /opt/atmux/<V> /opt/atmux/current` ← atomic flip
+   6. `sudo ln -sfn /opt/atmux/current/bin/atmux /usr/local/bin/atmux`
 
 5. **Push trunk**. `git push origin geoyws` — surfaces the version bump to other members' `git fetch` views.
 

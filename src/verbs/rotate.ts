@@ -33,6 +33,7 @@ import { writeLeadHandoff } from "../core/lead-handoff.ts";
 import { writeLeadSessionStart } from "../core/lead-marker.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { safePreflight } from "../core/safe-send.ts";
+import { resolveBriefsDir } from "../core/templates-dir.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
@@ -166,10 +167,15 @@ export function renderBrief(
   return out;
 }
 
-/** Default briefs directory: `<repo-root>/templates/briefs/`. Mirrors
- *  bash `$ATMUX_ROOT/templates/briefs/`. Tests inject via opts. */
+/** Default briefs directory: `<repo-root>/templates/briefs/` in dev mode
+ *  or `/opt/atmux/<v>/templates/briefs/` in installed mode. Delegates to
+ *  the shared {@link resolveBriefsDir} resolver (closes c-003a2a4c —
+ *  the previous `resolve(import.meta.dir, "..", "..", "templates",
+ *  "briefs")` form broke in compiled bun where `import.meta.dir` walks
+ *  bun's internal $bunfs to `/templates/briefs` which doesn't exist on
+ *  disk). Tests inject via opts. */
 export function defaultBriefsDir(): string {
-  return resolve(import.meta.dir, "..", "..", "templates", "briefs");
+  return resolveBriefsDir();
 }
 
 // ---------- Tmux side-effect helpers ----------
