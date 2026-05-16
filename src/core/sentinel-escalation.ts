@@ -1,15 +1,15 @@
 // ADR-132 §D5 / T6 (t-a6a1c9ab): the load-bearing escalation gate.
 //
-// Sole authority on whether a Martinet impl's (Observation,
+// Sole authority on whether a Sentinel impl's (Observation,
 // ObservationHistory) pair warrants waking the Claude lead. This
-// classifier sits BETWEEN every Martinet impl and the cockpit-W3
+// classifier sits BETWEEN every Sentinel impl and the cockpit-W3
 // dispatcher — without it, non-Claude impls could under-escalate
 // judgment-class scenarios (the "0 commits overnight while panes
 // stay green" failure mode pinned in global CLAUDE.md "Don't make
 // a dormant team look like a working team" + whip §0.05).
 //
 // Six §D5 triggers — file-scope canonical mapping kept in sync
-// with `EscalationReason` in src/abstractions/martinet.ts:
+// with `EscalationReason` in src/abstractions/sentinel.ts:
 //   E1 wedged-after-nudge      — member queued-text >15min after
 //                                an enter-push attempt
 //   E2 hygiene-blocker-p0      — P0 ADR-131 fingerprint (ghost-
@@ -32,13 +32,13 @@
 //     (whip §0.05). Detector defaults err on the over-fire side.
 //
 // `ObservationHistory` is intentionally exported here, not in
-// martinet.ts, because it is a *dispatcher-owned* contract — the
+// sentinel.ts, because it is a *dispatcher-owned* contract — the
 // cockpit-W3 tick loop maintains the history across calls. Each
-// Martinet impl is stateless within its own observe()/decide()
+// Sentinel impl is stateless within its own observe()/decide()
 // pair; the dispatcher threads history in alongside the per-tick
-// Observation. This keeps `Martinet` cage-portable and serialisable.
+// Observation. This keeps `Sentinel` cage-portable and serialisable.
 
-import type { EscalationReason, Observation } from "../abstractions/martinet.ts";
+import type { EscalationReason, Observation } from "../abstractions/sentinel.ts";
 
 // ---------- Thresholds (file-scope so tests can pin against the
 // SAME numbers the implementation enforces) ----------
@@ -109,7 +109,7 @@ export interface ObservationHistory {
    *  effect, no longer wedged). Drives E1. */
   readonly enterPushedAt: Readonly<Record<string, number>>;
   /** Consecutive trailing-tick count of "low-confidence" decide()
-   *  emissions from the active Martinet impl. Reset to 0 on any
+   *  emissions from the active Sentinel impl. Reset to 0 on any
    *  high-confidence tick. Drives E5. The dispatcher determines
    *  the low-confidence flag from the impl's `NudgeAction.reason`
    *  text or out-of-band signal — the classifier just consumes
@@ -223,7 +223,7 @@ export function classify(
 
 /** Aggregate the classify() output into the boolean the dispatcher
  *  branches on. Returns true iff at least one §D5 trigger fired.
- *  Sole authority on the pre-empt-and-escalate path — Martinet
+ *  Sole authority on the pre-empt-and-escalate path — Sentinel
  *  impls MUST funnel their escalation decisions through this
  *  function (the impl's own `shouldEscalateToClaudeLead` may
  *  escalate ABOVE this floor but never below). */

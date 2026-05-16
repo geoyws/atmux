@@ -1,4 +1,4 @@
-// Unit tests for src/abstractions/martinets/cursor.ts (ADR-132 T3 /
+// Unit tests for src/abstractions/sentinels/cursor.ts (ADR-132 T3 /
 // t-e96d286a).
 //
 // Coverage targets (per CLAUDE.md testing discipline §"unit tests
@@ -31,14 +31,14 @@ import { describe, expect, test } from "bun:test";
 import {
   CURSOR_SYSTEM_PROMPT,
   CursorEnvelopeSchema,
-  CursorMartinet,
-} from "../../../../src/abstractions/martinets/cursor.ts";
+  CursorSentinel,
+} from "../../../../src/abstractions/sentinels/cursor.ts";
 import type {
-  Martinet,
+  Sentinel,
   NudgeAction,
   Observation,
-} from "../../../../src/abstractions/martinet.ts";
-import type { ObservationHistory } from "../../../../src/core/martinet-escalation.ts";
+} from "../../../../src/abstractions/sentinel.ts";
+import type { ObservationHistory } from "../../../../src/core/sentinel-escalation.ts";
 import type { PaneClassification } from "../../../../src/core/pane-state.ts";
 
 // ---------- Helpers ----------
@@ -110,9 +110,9 @@ const okEnvelope = (actions: NudgeAction[] = []): string =>
 
 // ---------- Constructor ----------
 
-describe("CursorMartinet — constructor", () => {
+describe("CursorSentinel — constructor", () => {
   test("name literal === 'cursor'", () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
     });
@@ -121,7 +121,7 @@ describe("CursorMartinet — constructor", () => {
 
   test("default model is 'composer-2-fast'", async () => {
     const seenArgs: string[][] = [];
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async (args) => {
         seenArgs.push(args);
@@ -138,7 +138,7 @@ describe("CursorMartinet — constructor", () => {
 
   test("override model is honored", async () => {
     const seenArgs: string[][] = [];
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async (args) => {
         seenArgs.push(args);
@@ -152,8 +152,8 @@ describe("CursorMartinet — constructor", () => {
     expect(args[args.indexOf("--model") + 1]).toBe("composer-2");
   });
 
-  test("instance satisfies Martinet interface", () => {
-    const inst: Martinet = new CursorMartinet({
+  test("instance satisfies Sentinel interface", () => {
+    const inst: Sentinel = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
     });
@@ -166,11 +166,11 @@ describe("CursorMartinet — constructor", () => {
 
 // ---------- observe() ----------
 
-describe("CursorMartinet — observe()", () => {
+describe("CursorSentinel — observe()", () => {
   test("delegates to injected observeFn verbatim", async () => {
     const obs = fixtureObservation({ team: "delegated" });
     const seenTeams: string[] = [];
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async (team) => {
         seenTeams.push(team);
         return obs;
@@ -185,10 +185,10 @@ describe("CursorMartinet — observe()", () => {
 
 // ---------- decide() — happy path ----------
 
-describe("CursorMartinet — decide() happy path", () => {
+describe("CursorSentinel — decide() happy path", () => {
   test("emits canonical CLI args (--print --output-format json --model --force <prompt>)", async () => {
     const seenArgs: string[][] = [];
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async (args) => {
         seenArgs.push(args);
@@ -213,7 +213,7 @@ describe("CursorMartinet — decide() happy path", () => {
   });
 
   test("parses NudgeAction[] from envelope.result", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         envelope({
@@ -231,7 +231,7 @@ describe("CursorMartinet — decide() happy path", () => {
 
   test("re-attaches observation to escalate-to-claude-lead emissions", async () => {
     const obs = fixtureObservation();
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => obs,
       runCursorAgent: async () =>
         envelope({
@@ -251,7 +251,7 @@ describe("CursorMartinet — decide() happy path", () => {
   });
 
   test("multi-line stream-json envelope — takes LAST { line", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         [
@@ -268,10 +268,10 @@ describe("CursorMartinet — decide() happy path", () => {
 
 // ---------- decide() — fail-loud paths ----------
 
-describe("CursorMartinet — decide() fail-loud paths", () => {
+describe("CursorSentinel — decide() fail-loud paths", () => {
   test("runCursorAgent throw → escalate-to-claude-lead with cause", async () => {
     const obs = fixtureObservation();
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => obs,
       runCursorAgent: async () => {
         throw new Error("ENOENT cursor-agent");
@@ -288,7 +288,7 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
 
   test("runCursorAgent rejection (non-Error) → escalate with String(cause)", async () => {
     const obs = fixtureObservation();
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => obs,
       runCursorAgent: async () => {
         throw "scalar-rejection";
@@ -302,7 +302,7 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
   });
 
   test("unparseable envelope → escalate", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => "not-json-at-all",
     });
@@ -315,7 +315,7 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
   });
 
   test("envelope failing schema → escalate", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => '{"foo":"bar"}',
     });
@@ -328,7 +328,7 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
   });
 
   test("cursor reports is_error → escalate with snippet", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         envelope({ result: "rate-limit hit", isError: true, subtype: "error" }),
@@ -342,7 +342,7 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
   });
 
   test("envelope.subtype='error' without is_error flag → still escalate", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         envelope({ result: "soft fail", isError: false, subtype: "error" }),
@@ -352,7 +352,7 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
   });
 
   test("result not JSON → empty array (no-op tick, defer to next tick)", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         envelope({ result: "I cannot help with that." }),
@@ -362,7 +362,7 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
   });
 
   test("NudgeAction shape invalid → escalate with field hint", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         envelope({
@@ -380,7 +380,7 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
   });
 
   test("NudgeAction missing required field → escalate", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         envelope({
@@ -396,9 +396,9 @@ describe("CursorMartinet — decide() fail-loud paths", () => {
 
 // ---------- apply() ----------
 
-describe("CursorMartinet — apply()", () => {
+describe("CursorSentinel — apply()", () => {
   test("escalate-to-claude-lead → throws (unreachable per dispatcher contract)", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
     });
@@ -414,7 +414,7 @@ describe("CursorMartinet — apply()", () => {
 
   test("enter-push: sends Enter to member window", async () => {
     const calls: { window: string; keys: string }[] = [];
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
       sendKeys: async (window, keys) => {
@@ -434,7 +434,7 @@ describe("CursorMartinet — apply()", () => {
   });
 
   test("enter-push: send-keys returning success=false propagates", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
       sendKeys: async () => ({ success: false }),
@@ -450,7 +450,7 @@ describe("CursorMartinet — apply()", () => {
 
   test("claim-next: sends canonical claim cmd", async () => {
     const calls: { window: string; keys: string }[] = [];
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
       sendKeys: async (window, keys) => {
@@ -472,7 +472,7 @@ describe("CursorMartinet — apply()", () => {
   });
 
   test("claim-next: send-keys failure propagates", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
       sendKeys: async () => ({ success: false }),
@@ -485,9 +485,9 @@ describe("CursorMartinet — apply()", () => {
     expect(result.success).toBe(false);
   });
 
-  test("rotate: records intent, success=true (dispatcher fires actual atmux rotate)", async () => {
+  test("rotate-routine: records intent, success=true (dispatcher fires actual atmux rotate)", async () => {
     const calls: { window: string; keys: string }[] = [];
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
       sendKeys: async (window, keys) => {
@@ -496,20 +496,75 @@ describe("CursorMartinet — apply()", () => {
       },
     });
     const result = await inst.apply({
-      kind: "rotate",
+      kind: "rotate-routine",
       member: "fe-1",
       reason: "60min uptime",
     });
     expect(result.success).toBe(true);
-    expect(result.evidence).toContain("rotate intent recorded for fe-1");
+    expect(result.evidence).toContain("rotate-routine intent recorded for fe-1");
     expect(result.evidence).toContain("atmux rotate fe-1");
     expect(result.evidence).toContain("60min uptime");
-    // rotate is dispatcher-mediated — does NOT shell out via sendKeys.
+    // rotate-routine is dispatcher-mediated — does NOT shell out via sendKeys.
     expect(calls).toEqual([]);
   });
 
+  test("modal-release: records intent, success=true (dispatcher fires accept-prompt)", async () => {
+    const inst = new CursorSentinel({
+      observeFn: async () => fixtureObservation(),
+      runCursorAgent: async () => okEnvelope(),
+      sendKeys: async () => ({ success: true }),
+    });
+    const result = await inst.apply({
+      kind: "modal-release",
+      member: "fe-1",
+      reason: "known-safe Y/n prompt",
+    });
+    expect(result.success).toBe(true);
+    expect(result.evidence).toContain("modal-release intent recorded for fe-1");
+    expect(result.evidence).toContain("accept-prompt keystroke");
+    expect(result.evidence).toContain("known-safe Y/n prompt");
+  });
+
+  test("force-push-approved: records intent, success=true (dispatcher gates non-staging policy)", async () => {
+    const inst = new CursorSentinel({
+      observeFn: async () => fixtureObservation(),
+      runCursorAgent: async () => okEnvelope(),
+      sendKeys: async () => ({ success: true }),
+    });
+    const result = await inst.apply({
+      kind: "force-push-approved",
+      member: "fe-1",
+      reason: "operator-authorized rebase",
+    });
+    expect(result.success).toBe(true);
+    expect(result.evidence).toContain("force-push-approved intent recorded for fe-1");
+    expect(result.evidence).toContain("non-staging");
+    expect(result.evidence).toContain("--force-with-lease");
+    expect(result.evidence).toContain("operator-authorized rebase");
+  });
+
+  test("rotate-emergency: refused at sentinel layer (medic-class authority gate)", async () => {
+    const inst = new CursorSentinel({
+      observeFn: async () => fixtureObservation(),
+      runCursorAgent: async () => okEnvelope(),
+      sendKeys: async () => ({ success: true }),
+    });
+    const result = await inst.apply({
+      kind: "rotate-emergency",
+      member: "fe-1",
+      reason: "wedged",
+    });
+    // ADR-140 authority split: sentinel never executes kill+respawn.
+    // Refusal is the defensive behavior — fail loudly rather than
+    // silently rotating outside medic scope.
+    expect(result.success).toBe(false);
+    expect(result.evidence).toContain("rotate-emergency refused on sentinel");
+    expect(result.evidence).toContain("medic-class");
+    expect(result.evidence).toContain("ADR-140");
+  });
+
   test("sendKeys missing → success=false with diagnostic evidence", async () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
     });
@@ -526,9 +581,9 @@ describe("CursorMartinet — apply()", () => {
 
 // ---------- shouldEscalateToClaudeLead() ----------
 
-describe("CursorMartinet — shouldEscalateToClaudeLead() (§D5 gate)", () => {
+describe("CursorSentinel — shouldEscalateToClaudeLead() (§D5 gate)", () => {
   test("E6 mandatory: last2hr=0 → true regardless of other state", () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
     });
@@ -538,7 +593,7 @@ describe("CursorMartinet — shouldEscalateToClaudeLead() (§D5 gate)", () => {
   });
 
   test("clean state: no triggers → false", () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
     });
@@ -550,7 +605,7 @@ describe("CursorMartinet — shouldEscalateToClaudeLead() (§D5 gate)", () => {
   });
 
   test("E2 P0 hygiene wedge ≥240min → escalate", () => {
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
     });
@@ -571,7 +626,7 @@ describe("CursorMartinet — shouldEscalateToClaudeLead() (§D5 gate)", () => {
       inboxEntries: [],
       pendingGitDenials: [],
     };
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => obs,
       runCursorAgent: async () => okEnvelope(),
       historyFn: () => wedgedHistory,
@@ -581,7 +636,7 @@ describe("CursorMartinet — shouldEscalateToClaudeLead() (§D5 gate)", () => {
 
   test("empty-history fallback: temporal gates stay quiet, only E2/E6 fire", () => {
     const obs = fixtureObservation({ last2hrCommits: 10, enterPushable: true });
-    const inst = new CursorMartinet({
+    const inst = new CursorSentinel({
       observeFn: async () => obs,
       runCursorAgent: async () => okEnvelope(),
       // No historyFn → defaults to EMPTY_HISTORY → E1 doesn't fire even

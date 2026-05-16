@@ -44,7 +44,7 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    diffable, survives tmux restart, replays on `atmux start`.
 3. **No daemon.** Every verb is idempotent. `whip` (15min default per
    `team.whip.intervalMins`, bumped from 5min in t-dcbff97c to dial back
-   the per-tick LLM burn now that the martinet path covers high-cadence
+   the per-tick LLM burn now that the sentinel path covers high-cadence
    nudging — ADR-132) and `report` (30min) run on cron; nothing long-lived.
 
 ### 1.3 Why now
@@ -132,13 +132,13 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Decisions / flags    | `decisions add/list/show/digest` / `flags add/list/show/resolve`          |
 | Driver self-state    | `brief-driver` / `driver note` / `reload brief-reload` / `reload config-reload` |
 | Superdriver          | `super-attach` (cross-team / fleet — ADR-025 in parent repo)              |
-| Cockpit              | `cockpit rebuild / reload` (ADR-063), `martinet tick / status` (ADR-132) |
+| Cockpit              | `cockpit rebuild / reload` (ADR-063), `sentinel tick / status` (ADR-132; renamed from `martinet` per ADR-158) |
 
-#### Cockpit topology (ADR-063 + ADR-077 + ADR-132 + ADR-133 + ADR-135)
+#### Cockpit topology (ADR-063 + ADR-077 + ADR-132 + ADR-133 + ADR-135 + ADR-158)
 
 The operator cockpit session (`atmux_cockpit` by default, was
 `atmux_teams` pre-ADR-135) carries the following window order — opt-in
-surfaces (`_medic`, `_martinet`) are gated by `cockpit.json` blocks,
+surfaces (`_medic`, `_sentinel`) are gated by `cockpit.json` blocks,
 per-team viewers shift down by the number of opt-in surfaces enabled.
 Cockpit-level system roles carry a single-underscore prefix (sorts
 before plain team names in `tmux list-windows`); per-team viewers stay
@@ -149,29 +149,33 @@ plain. Member windows inside team cages use `<emoji>-<member>`
 |---|--------|------|-----------------|
 | 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
 | 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
-| 3 | `_martinet` (was `martinet`) | Pluggable per-team whip-manager + fleet-wide iterator | ADR-132 §D2 + ADR-135 §D2 |
+| 3 | `_sentinel` (was `_martinet` / `martinet`) | Pluggable per-team whip-manager + fleet-wide iterator | ADR-132 §D2 + ADR-135 §D2 + ADR-158 §Part C |
 | 4..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
 
-Backward-compat: a cockpit.json without `medic` / `martinet` blocks
+Backward-compat: a cockpit.json without `medic` / `sentinel` blocks
 retains the pre-ADR-077 / pre-ADR-132 topology (W1 _superdriver +
 W2..N per-team viewers). Loader migrates legacy `superdoctor` keys
 to medic semantics with a deprecation warning per ADR-133 §D2.
+Loader also migrates legacy `martinet` keys to `sentinel` semantics
+with a deprecation warning per ADR-158 §Part B (one-release grace).
 Cockpit rebuild detects legacy `atmux_teams` session + legacy
 non-underscored cockpit-role windows and renames them in-place
-(idempotent) per ADR-135 §D4. Member windows in legacy
+(idempotent) per ADR-135 §D4 — including `_martinet` → `_sentinel`
+per ADR-158 §Part C. Member windows in legacy
 `<emoji><member>` format get the same in-place rename treatment on
 next `atmux start`.
 
-**ADR-132 §D6 (T5)** — `team.json::martinet` selects which pluggable
-cockpit-W3 whip-manager (`"claude"` degenerate baseline / `"cursor"`
-composer-2-fast production default) observes + nudges this team.
-Resolution: `team.martinet` > `cockpit.defaultMartinet` > hardcoded
-`"claude"`. Existing rosters without the field keep the per-team
-whip codepath unchanged. Companion `team.martinetOverrides` tunes
-`cadenceSec` (default 270s) and `escalationConfidenceThreshold`
+**ADR-132 §D6 (T5)** — `team.json::sentinel` (was `martinet` pre-ADR-158)
+selects which pluggable cockpit-W3 whip-manager (`"claude"` degenerate
+baseline / `"cursor"` composer-2-fast production default) observes +
+nudges this team. Resolution: `team.sentinel` > `cockpit.defaultSentinel`
+> hardcoded `"claude"`. Existing rosters without the field keep the
+per-team whip codepath unchanged. Companion `team.sentinelOverrides`
+tunes `cadenceSec` (default 270s) and `escalationConfidenceThreshold`
 (default 0.7). Cockpit-level provisioning lives in `cockpit.json::
-martinet` — see ADR-132 §D6 for the W3 cage / `cursor-agent` path /
-cage-tier shape.
+sentinel` — see ADR-132 §D6 for the W3 cage / `cursor-agent` path /
+cage-tier shape. Legacy `martinet` / `defaultMartinet` / `martinetOverrides`
+keys still parse during the ADR-158 grace cycle with a deprecation warn.
 
 ### 3.2 TUI matrix
 

@@ -7,8 +7,8 @@
 // not repeatable smokes." The walk asserts the FULL CHAIN composes:
 //
 //   git-log probe → cadence-classifier → atmux status column
-//                                      → martinet observe() per-member
-//                                      → martinet-escalation classify()
+//                                      → sentinel observe() per-member
+//                                      → sentinel-escalation classify()
 //                                          → ship-zero-2hr reason
 //                                      → lane-stall-tick verb
 //                                          → safeSendKeys('atmux claim t-xxx')
@@ -46,8 +46,8 @@
 //   B1. Member-1 5min commit  → 🟢 shipping  (D2/D3)
 //   B2. Member-2 1h commit    → 🟡 idle      (D2/D3)
 //   B3. Member-3 3h commit    → 🚨 ship-zero (D2/D3)
-//   B4. martinet-escalation classify() → ship-zero-2hr fires (D6)
-//   B5. martinet-escalation classify() → all-shipping → no fire
+//   B4. sentinel-escalation classify() → ship-zero-2hr fires (D6)
+//   B5. sentinel-escalation classify() → all-shipping → no fire
 //   B6. Discord [ship-zero-window] template SHAPE (D6 / WHEN_RENDERER_LANDS)
 //   B7. lane-stall-tick → fire + send-keys + dedup write (D4)
 //   B8. lead wake-nudge brief shape per T4 (D5)
@@ -59,7 +59,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
-import type { MemberObservation, Observation } from "../../src/abstractions/martinet.ts";
+import type { MemberObservation, Observation } from "../../src/abstractions/sentinel.ts";
 import {
   classifyCadence,
   classifyMemberCadence,
@@ -70,7 +70,7 @@ import {
   classify as classifyEscalation,
   type ObservationHistory,
   shouldEscalate,
-} from "../../src/core/martinet-escalation.ts";
+} from "../../src/core/sentinel-escalation.ts";
 import { decideLaneStall, type LaneStallMemberInput } from "../../src/core/lane-stall.ts";
 import { runLaneStallTick } from "../../src/verbs/lane-stall-tick.ts";
 import { formatCadenceColumn, gatherStatus } from "../../src/verbs/status.ts";
@@ -245,7 +245,7 @@ const fixtureGitLog = async (
 };
 
 /** Build a synthetic MemberObservation row keyed off a CadenceObservation
- *  — used to compose the Observation passed to martinet-escalation
+ *  — used to compose the Observation passed to sentinel-escalation
  *  classify(). The non-cadence fields are filled with READY-pane
  *  defaults so the classifier's E1-E5 gates stay inert and the
  *  assertion is scoped to the E6 ship-zero-2hr path. */
@@ -345,10 +345,10 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     expect(byName["gitter"]?.verdict).toBe("shipping");
   });
 
-  test("B4. martinet-escalation classify() → ship-zero-2hr fires on Member-3", async () => {
+  test("B4. sentinel-escalation classify() → ship-zero-2hr fires on Member-3", async () => {
     // Per-member observations carrying Member-3's ship-zero-window
     // verdict — exactly the input the cockpit-W3 dispatcher composes
-    // before passing to a Martinet impl's decide().
+    // before passing to a Sentinel impl's decide().
     const members: MemberObservation[] = [
       buildMemberObservation(
         "member-1",
@@ -395,7 +395,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     });
   });
 
-  test("B5. martinet-escalation classify() → all-shipping → no escalation (D6 negative)", async () => {
+  test("B5. sentinel-escalation classify() → all-shipping → no escalation (D6 negative)", async () => {
     const allShipping: MemberObservation[] = team.members.map((m) =>
       buildMemberObservation(
         m.name,

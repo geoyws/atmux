@@ -1,32 +1,32 @@
-// ADR-132 §D4 / T2 (t-2791cf60): ClaudeMartinet — degenerate
+// ADR-132 §D4 / T2 (t-2791cf60): ClaudeSentinel — degenerate
 // baseline impl + fallback when non-Claude managers fail.
 //
 // Behaviour: this impl IS the existing whip §1a loop wrapped in
-// the Martinet interface contract. observe() returns the
+// the Sentinel interface contract. observe() returns the
 // canonical Observation shape so T3+ impls have a baseline to
 // compose against. decide() always emits a single
 // `escalate-to-claude-lead` — the Claude lead's whip-prompt.md
 // §1a continues to do ALL the mechanical work in the
 // `name === "claude"` configuration (this is the "degenerate"
 // part — no behaviour change for teams running on the default
-// martinet). apply() is unreachable for this impl (decide() only
+// sentinel). apply() is unreachable for this impl (decide() only
 // emits the escalation terminal). shouldEscalateToClaudeLead()
 // is unconditionally true.
 //
 // The cost-saving promise of ADR-132 lands when teams flip to
-// `martinet: "cursor"` (T3); ClaudeMartinet preserves zero-
+// `sentinel: "cursor"` (T3); ClaudeSentinel preserves zero-
 // regression for the legacy default config.
 
 import type {
   ApplyResult,
-  Martinet,
+  Sentinel,
   NudgeAction,
   Observation,
-} from "../martinet.ts";
+} from "../sentinel.ts";
 
 /** Construct-time dependencies. Test suites inject fakes; the
  *  T7 cockpit tick verb (sibling Task) wires the real impls. */
-export interface ClaudeMartinetDeps {
+export interface ClaudeSentinelDeps {
   /** Observation provider — called per-team per-tick. The
    *  degenerate impl delegates entirely to whatever the
    *  dispatcher passes in; the dispatcher in turn reads pane
@@ -39,15 +39,15 @@ export interface ClaudeMartinetDeps {
   observeFn: (team: string) => Promise<Observation>;
 }
 
-export class ClaudeMartinet implements Martinet {
+export class ClaudeSentinel implements Sentinel {
   readonly name = "claude" as const;
-  private readonly deps: ClaudeMartinetDeps;
+  private readonly deps: ClaudeSentinelDeps;
 
-  constructor(deps: ClaudeMartinetDeps) {
+  constructor(deps: ClaudeSentinelDeps) {
     this.deps = deps;
   }
 
-  /** Pass-through to the injected observer. ClaudeMartinet adds
+  /** Pass-through to the injected observer. ClaudeSentinel adds
    *  no observation logic of its own — the existing whip-prompt
    *  §1a loop already runs in the Claude lead's pane and reads
    *  the same surfaces. Returning the dispatcher's Observation
@@ -58,7 +58,7 @@ export class ClaudeMartinet implements Martinet {
 
   /** Degenerate decision: escalate-to-claude-lead, always. The
    *  Claude lead's whip-prompt.md §1a takes the actual action
-   *  set; the Martinet just hands the observation across.
+   *  set; the Sentinel just hands the observation across.
    *
    *  The emitted action carries the full observation in its
    *  payload so the cockpit dispatcher can route it into the
@@ -68,12 +68,12 @@ export class ClaudeMartinet implements Martinet {
       {
         kind: "escalate-to-claude-lead",
         observation: obs,
-        reason: "claude martinet — degenerate impl, all judgment defers to lead",
+        reason: "claude sentinel — degenerate impl, all judgment defers to lead",
       },
     ];
   }
 
-  /** Unreachable for ClaudeMartinet. decide() only emits the
+  /** Unreachable for ClaudeSentinel. decide() only emits the
    *  escalate-to-claude-lead terminal — the cockpit dispatcher
    *  filters that branch out before invoking apply(). Throwing
    *  surfaces the misuse loudly rather than silently no-op-ing,
@@ -82,14 +82,14 @@ export class ClaudeMartinet implements Martinet {
    *  defensive paths). */
   async apply(action: NudgeAction): Promise<ApplyResult> {
     throw new Error(
-      `ClaudeMartinet.apply() is unreachable — decide() only emits 'escalate-to-claude-lead'; ` +
+      `ClaudeSentinel.apply() is unreachable — decide() only emits 'escalate-to-claude-lead'; ` +
         `dispatcher must not invoke apply() for this impl. Received: ${action.kind}`,
     );
   }
 
   /** Unconditionally true. The degenerate impl escalates every
    *  tick — there's no autonomous-action surface to gate. T3's
-   *  CursorMartinet will override this with the real §D5
+   *  CursorSentinel will override this with the real §D5
    *  six-trigger gate. */
   shouldEscalateToClaudeLead(_obs: Observation): boolean {
     return true;

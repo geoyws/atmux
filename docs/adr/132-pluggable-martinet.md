@@ -296,3 +296,11 @@ Reviewer flips this ADR Proposed → Accepted in a follow-up commit per the EPIC
 - **Martinet observation of cockpit-tier surfaces** (medic own loop, superdriver) — out of v1 scope; medic is its own loop tier (ADR-077). Martinet observes *teams*; medic observes *the cluster including teams*.
 - **Custom Martinet impls beyond the initial 2** (claude + cursor post-2026-05-14 simplification) — operator-provided plug-ins via a registry of impl files. Defer to a follow-up ADR if a third impl surfaces (e.g. Anthropic Haiku-as-martinet when a different cost/latency tradeoff materialises, or reinstatement of MiniMax/Kimi if their capability bar materially improves).
 - **Discord channel routing per Martinet** — all Martinet surfacing routes through the existing `src/abstractions/discord.ts` typed renderers (per CLAUDE.md "All whip / watchdog / team / discorder / improve sends route through…"). No per-backend Discord channel.
+
+
+## Amendments
+
+### 2026-05-16 — Role-type identifier renamed `martinet` → `sentinel` (ADR-158)
+
+The role type identified as "martinet" throughout this ADR is renamed to "sentinel" per [ADR-158](158-martinet-to-sentinel-rename.md) — SV/Reddit-eng register sweep, supersedes nomenclature only. Design preserved verbatim. Cockpit window `_martinet` → `_sentinel` via ADR-135 §D4 in-place rename (preserves PID + claude-process state). Schema JSON-shim in `src/core/cockpit.ts::migrateMartinetBlockToSentinel` accepts both `martinet:` and `sentinel:` keys for one release cycle (deprecation-warn on the legacy key). Source identifiers renamed in TR2: `src/abstractions/martinet.ts` → `src/abstractions/sentinel.ts`, `src/verbs/martinet.ts` → `src/verbs/sentinel.ts`, `src/core/martinet-escalation.ts` → `src/core/sentinel-escalation.ts`. See ADR-158 for the rename mechanic + rationale; the §Decision section of this ADR remains the canonical pluggable-impl design (now under the new name).
+

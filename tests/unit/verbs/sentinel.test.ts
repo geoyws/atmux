@@ -1,101 +1,101 @@
-// Unit tests for src/verbs/martinet.ts (ADR-132 §D3 / T8).
+// Unit tests for src/verbs/sentinel.ts (ADR-132 §D3 / T8).
 //
 // Covers:
-//   - parseMartinetArgs — default sub-verb, --once flag, --config, --state
-//   - resolveMartinetImplName — per-team > cockpit.defaultMartinet > "claude" fallback
-//   - buildMartinet — claude + cursor impl construction (T3 / t-e96d286a wires CursorMartinet)
-//   - martinetTick — fleet-wide iteration writes state snapshot; per-team try/catch isolates failures
-//   - martinetStatus — prints JSON snapshot or empty shape when state absent
+//   - parseSentinelArgs — default sub-verb, --once flag, --config, --state
+//   - resolveSentinelImplName — per-team > cockpit.defaultSentinel > "claude" fallback
+//   - buildSentinel — claude + cursor impl construction (T3 / t-e96d286a wires CursorSentinel)
+//   - sentinelTick — fleet-wide iteration writes state snapshot; per-team try/catch isolates failures
+//   - sentinelStatus — prints JSON snapshot or empty shape when state absent
 //   - resolveStatePath — env / --state / default precedence
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ClaudeMartinet } from "../../../src/abstractions/martinets/claude.ts";
-import { CursorMartinet } from "../../../src/abstractions/martinets/cursor.ts";
-import type { Observation } from "../../../src/abstractions/martinet.ts";
+import { ClaudeSentinel } from "../../../src/abstractions/sentinels/claude.ts";
+import { CursorSentinel } from "../../../src/abstractions/sentinels/cursor.ts";
+import type { Observation } from "../../../src/abstractions/sentinel.ts";
 import { createLogger } from "../../../src/core/tui.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
-  buildMartinet,
+  buildSentinel,
   buildStubObservation,
-  defaultMartinetStatePath,
-  martinet,
-  martinetTick,
-  parseMartinetArgs,
-  resolveMartinetImplName,
-} from "../../../src/verbs/martinet.ts";
+  defaultSentinelStatePath,
+  sentinel,
+  sentinelTick,
+  parseSentinelArgs,
+  resolveSentinelImplName,
+} from "../../../src/verbs/sentinel.ts";
 
-// ---------- parseMartinetArgs ----------
+// ---------- parseSentinelArgs ----------
 
-describe("parseMartinetArgs", () => {
+describe("parseSentinelArgs", () => {
   test("bare invocation defaults to 'tick'", () => {
-    expect(parseMartinetArgs([])).toEqual({ subverb: "tick" });
+    expect(parseSentinelArgs([])).toEqual({ subverb: "tick" });
   });
   test("explicit 'tick' parses", () => {
-    expect(parseMartinetArgs(["tick"])).toEqual({ subverb: "tick" });
+    expect(parseSentinelArgs(["tick"])).toEqual({ subverb: "tick" });
   });
   test("explicit 'status' parses", () => {
-    expect(parseMartinetArgs(["status"])).toEqual({ subverb: "status" });
+    expect(parseSentinelArgs(["status"])).toEqual({ subverb: "status" });
   });
   test("unknown sub-verb throws UsageError", () => {
-    expect(() => parseMartinetArgs(["frobnicate"])).toThrow(UsageError);
+    expect(() => parseSentinelArgs(["frobnicate"])).toThrow(UsageError);
   });
   test("--once flag is accepted as synonym for tick", () => {
-    expect(parseMartinetArgs(["tick", "--once"])).toEqual({ subverb: "tick" });
+    expect(parseSentinelArgs(["tick", "--once"])).toEqual({ subverb: "tick" });
   });
   test("--once on bare invocation parses (still defaults to tick)", () => {
-    expect(parseMartinetArgs(["--once"])).toEqual({ subverb: "tick" });
+    expect(parseSentinelArgs(["--once"])).toEqual({ subverb: "tick" });
   });
   test("--config <path> threads configPath", () => {
-    expect(parseMartinetArgs(["tick", "--config", "/tmp/x.json"])).toEqual({
+    expect(parseSentinelArgs(["tick", "--config", "/tmp/x.json"])).toEqual({
       subverb: "tick",
       configPath: "/tmp/x.json",
     });
   });
   test("--state <path> threads statePath", () => {
-    expect(parseMartinetArgs(["tick", "--state", "/tmp/s.json"])).toEqual({
+    expect(parseSentinelArgs(["tick", "--state", "/tmp/s.json"])).toEqual({
       subverb: "tick",
       statePath: "/tmp/s.json",
     });
   });
   test("--config without value throws", () => {
-    expect(() => parseMartinetArgs(["tick", "--config"])).toThrow(UsageError);
+    expect(() => parseSentinelArgs(["tick", "--config"])).toThrow(UsageError);
   });
   test("--state without value throws", () => {
-    expect(() => parseMartinetArgs(["tick", "--state"])).toThrow(UsageError);
+    expect(() => parseSentinelArgs(["tick", "--state"])).toThrow(UsageError);
   });
   test("unknown arg throws", () => {
-    expect(() => parseMartinetArgs(["tick", "--frobnicate"])).toThrow(UsageError);
+    expect(() => parseSentinelArgs(["tick", "--frobnicate"])).toThrow(UsageError);
   });
 });
 
-// ---------- resolveMartinetImplName ----------
+// ---------- resolveSentinelImplName ----------
 
-describe("resolveMartinetImplName", () => {
+describe("resolveSentinelImplName", () => {
   const logger = createLogger();
   test("per-team override wins over fleet default", () => {
     expect(
-      resolveMartinetImplName({
-        team: { martinet: "cursor" },
-        cockpit: { defaultMartinet: "claude" },
+      resolveSentinelImplName({
+        team: { sentinel: "cursor" },
+        cockpit: { defaultSentinel: "claude" },
         logger,
       }),
     ).toBe("cursor");
   });
   test("fleet default applies when per-team unset", () => {
     expect(
-      resolveMartinetImplName({
+      resolveSentinelImplName({
         team: {},
-        cockpit: { defaultMartinet: "cursor" },
+        cockpit: { defaultSentinel: "cursor" },
         logger,
       }),
     ).toBe("cursor");
   });
   test("hard-coded 'claude' fallback when both unset", () => {
     expect(
-      resolveMartinetImplName({
+      resolveSentinelImplName({
         team: {},
         cockpit: {},
         logger,
@@ -104,16 +104,16 @@ describe("resolveMartinetImplName", () => {
   });
 });
 
-// ---------- buildMartinet ----------
+// ---------- buildSentinel ----------
 
-describe("buildMartinet", () => {
-  test("'claude' constructs ClaudeMartinet", () => {
+describe("buildSentinel", () => {
+  test("'claude' constructs ClaudeSentinel", () => {
     const observeFn = (_t: string) => buildStubObservation("x");
-    const m = buildMartinet("claude", { observeFn, logger: createLogger() });
-    expect(m).toBeInstanceOf(ClaudeMartinet);
+    const m = buildSentinel("claude", { observeFn, logger: createLogger() });
+    expect(m).toBeInstanceOf(ClaudeSentinel);
     expect(m.name).toBe("claude");
   });
-  test("'cursor' constructs CursorMartinet (T3 / t-e96d286a)", () => {
+  test("'cursor' constructs CursorSentinel (T3 / t-e96d286a)", () => {
     const warns: string[] = [];
     const logger = {
       log: () => {},
@@ -124,24 +124,24 @@ describe("buildMartinet", () => {
       err: () => {},
     };
     const observeFn = (_t: string) => buildStubObservation("x");
-    const m = buildMartinet("cursor", { observeFn, logger });
-    expect(m).toBeInstanceOf(CursorMartinet);
+    const m = buildSentinel("cursor", { observeFn, logger });
+    expect(m).toBeInstanceOf(CursorSentinel);
     expect(m.name).toBe("cursor");
     // No warn — cursor is now production-default per ADR-140.
     expect(warns).toEqual([]);
   });
 
-  test("'cursor' honors cockpit.martinet override of binPath + model", async () => {
+  test("'cursor' honors cockpit.sentinel override of binPath + model", async () => {
     const observeFn = (_t: string) => buildStubObservation("x");
     const seenArgs: string[][] = [];
-    const m = buildMartinet("cursor", {
+    const m = buildSentinel("cursor", {
       observeFn,
       logger: createLogger(),
       cockpit: {
         schemaVersion: 1,
         cockpitSession: "atmux_cockpit",
         sessions: [],
-        martinet: {
+        sentinel: {
           impl: "cursor",
           enabled: true,
           cursorBinPath: "/opt/cursor-agent",
@@ -161,7 +161,7 @@ describe("buildMartinet", () => {
         });
       },
     });
-    expect(m).toBeInstanceOf(CursorMartinet);
+    expect(m).toBeInstanceOf(CursorSentinel);
     await m.decide(await buildStubObservation("x"));
     const args = seenArgs[0];
     expect(args).toBeDefined();
@@ -169,7 +169,7 @@ describe("buildMartinet", () => {
     expect(args[args.indexOf("--model") + 1]).toBe("composer-2");
   });
 
-  test("buildMartinet exhaustive fallback — unknown impl literal warns + falls back to claude", () => {
+  test("buildSentinel exhaustive fallback — unknown impl literal warns + falls back to claude", () => {
     const warns: string[] = [];
     const logger = {
       log: () => {},
@@ -183,26 +183,26 @@ describe("buildMartinet", () => {
     // Cast to bypass the literal-union narrowing — the fallback branch
     // is reachable via a deliberate forward-compat literal that lands
     // in cockpit.json from a future version.
-    const m = buildMartinet("future-impl" as "claude" | "cursor", {
+    const m = buildSentinel("future-impl" as "claude" | "cursor", {
       observeFn,
       logger,
     });
-    expect(m).toBeInstanceOf(ClaudeMartinet);
+    expect(m).toBeInstanceOf(ClaudeSentinel);
     expect(warns.length).toBeGreaterThanOrEqual(1);
     expect(warns[0]).toContain("future-impl");
     expect(warns[0]).toContain("not recognised");
   });
 });
 
-// ---------- martinetTick — fleet iteration ----------
+// ---------- sentinelTick — fleet iteration ----------
 
-describe("martinetTick", () => {
+describe("sentinelTick", () => {
   let tmpDir: string;
   let cockpitPath: string;
   let statePath: string;
 
   beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), "atmux-martinet-test-"));
+    tmpDir = await mkdtemp(join(tmpdir(), "atmux-sentinel-test-"));
     cockpitPath = join(tmpDir, "cockpit.json");
     statePath = join(tmpDir, "state.json");
   });
@@ -219,7 +219,7 @@ describe("martinetTick", () => {
         sessions: [],
       }),
     );
-    const rc = await martinetTick(
+    const rc = await sentinelTick(
       { subverb: "tick", configPath: cockpitPath, statePath },
       { env: { HOME: tmpDir }, logger: createLogger() },
     );
@@ -241,14 +241,14 @@ describe("martinetTick", () => {
         ],
       }),
     );
-    const rc = await martinetTick(
+    const rc = await sentinelTick(
       { subverb: "tick", configPath: cockpitPath, statePath },
       { env: { HOME: tmpDir }, logger: createLogger() },
     );
     expect(rc).toBe(0);
     const state = JSON.parse(await readFile(statePath, "utf-8"));
     expect(Object.keys(state.teams).sort()).toEqual(["alpha", "beta"]);
-    // ClaudeMartinet always emits one escalate-to-claude-lead action.
+    // ClaudeSentinel always emits one escalate-to-claude-lead action.
     expect(state.teams.alpha.actions).toEqual(["escalate-to-claude-lead"]);
     expect(state.teams.alpha.escalated).toBe(true);
     expect(state.teams.alpha.impl).toBe("claude");
@@ -266,7 +266,7 @@ describe("martinetTick", () => {
         ],
       }),
     );
-    await martinetTick(
+    await sentinelTick(
       { subverb: "tick", configPath: cockpitPath, statePath },
       { env: { HOME: tmpDir }, logger: createLogger() },
     );
@@ -294,7 +294,7 @@ describe("martinetTick", () => {
       }
       return buildStubObservation(team);
     };
-    await martinetTick(
+    await sentinelTick(
       { subverb: "tick", configPath: cockpitPath, statePath },
       {
         env: { HOME: tmpDir },
@@ -319,7 +319,7 @@ describe("martinetTick", () => {
       }),
     );
     const override = join(tmpDir, "custom-state.json");
-    await martinetTick(
+    await sentinelTick(
       { subverb: "tick", configPath: cockpitPath, statePath: override },
       { env: { HOME: tmpDir }, logger: createLogger() },
     );
@@ -327,37 +327,37 @@ describe("martinetTick", () => {
     expect(state.teams.alpha).toBeDefined();
   });
 
-  test("respects cockpit.defaultMartinet (impl resolution surfaces in snapshot)", async () => {
+  test("respects cockpit.defaultSentinel (impl resolution surfaces in snapshot)", async () => {
     await writeFile(
       cockpitPath,
       JSON.stringify({
         schemaVersion: 1,
         cockpitSession: "atmux_teams",
-        defaultMartinet: "cursor",
+        defaultSentinel: "cursor",
         sessions: [{ type: "team", name: "alpha", root: "/a", enabled: true }],
       }),
     );
-    await martinetTick(
+    await sentinelTick(
       { subverb: "tick", configPath: cockpitPath, statePath },
       { env: { HOME: tmpDir }, logger: createLogger() },
     );
     const state = JSON.parse(await readFile(statePath, "utf-8"));
-    // v1 only ships ClaudeMartinet — cursor falls back to claude. Snapshot
+    // v1 only ships ClaudeSentinel — cursor falls back to claude. Snapshot
     // records the RESOLVED impl name (`cursor` per cockpit config) even
-    // though the actual instance is ClaudeMartinet under the hood.
+    // though the actual instance is ClaudeSentinel under the hood.
     expect(state.teams.alpha.impl).toBe("cursor");
   });
 });
 
-// ---------- martinet top-level dispatch + status ----------
+// ---------- sentinel top-level dispatch + status ----------
 
-describe("martinet", () => {
+describe("sentinel", () => {
   let tmpDir: string;
   let cockpitPath: string;
   let statePath: string;
 
   beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), "atmux-martinet-disp-"));
+    tmpDir = await mkdtemp(join(tmpdir(), "atmux-sentinel-disp-"));
     cockpitPath = join(tmpDir, "cockpit.json");
     statePath = join(tmpDir, "state.json");
   });
@@ -374,7 +374,7 @@ describe("martinet", () => {
       return true;
     }) as typeof process.stdout.write;
     try {
-      const rc = await martinet(["status", "--state", statePath], {
+      const rc = await sentinel(["status", "--state", statePath], {
         env: { HOME: tmpDir },
         logger: createLogger(),
       });
@@ -397,7 +397,7 @@ describe("martinet", () => {
       }),
     );
     // First: run a tick to populate the state file.
-    await martinet(["tick", "--config", cockpitPath, "--state", statePath], {
+    await sentinel(["tick", "--config", cockpitPath, "--state", statePath], {
       env: { HOME: tmpDir },
       logger: createLogger(),
     });
@@ -409,7 +409,7 @@ describe("martinet", () => {
       return true;
     }) as typeof process.stdout.write;
     try {
-      const rc = await martinet(["status", "--state", statePath], {
+      const rc = await sentinel(["status", "--state", statePath], {
         env: { HOME: tmpDir },
         logger: createLogger(),
       });
@@ -432,7 +432,7 @@ describe("martinet", () => {
       }),
     );
     expect(
-      await martinet(["tick", "--config", cockpitPath, "--state", statePath], {
+      await sentinel(["tick", "--config", cockpitPath, "--state", statePath], {
         env: { HOME: tmpDir },
         logger: createLogger(),
       }),
@@ -440,12 +440,12 @@ describe("martinet", () => {
   });
 });
 
-// ---------- defaultMartinetStatePath ----------
+// ---------- defaultSentinelStatePath ----------
 
-describe("defaultMartinetStatePath", () => {
-  test("composes <home>/.atmux/state/martinet-state.json", () => {
-    expect(defaultMartinetStatePath("/Users/alice")).toBe(
-      "/Users/alice/.atmux/state/martinet-state.json",
+describe("defaultSentinelStatePath", () => {
+  test("composes <home>/.atmux/state/sentinel-state.json", () => {
+    expect(defaultSentinelStatePath("/Users/alice")).toBe(
+      "/Users/alice/.atmux/state/sentinel-state.json",
     );
   });
 });

@@ -205,7 +205,12 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     expect(tj.members.filter((m) => m.role === "team-lead").length).toBe(1);
     expect(tj.members.filter((m) => m.role === "planner").length).toBe(1);
     expect(tj.members.filter((m) => m.role === "reviewer").length).toBe(1);
-    expect(tj.members.filter((m) => m.role === "gitter").length).toBe(1);
+    // ADR-159 TR3: template's legacy `role: "gitter"` is coerced to
+    // canonical `"committer"` at init time via the TeamMember schema
+    // transform. New init runs always carry the canonical value on-
+    // disk; legacy team.json files with role: "gitter" parse to
+    // "committer" on next load.
+    expect(tj.members.filter((m) => m.role === "committer").length).toBe(1);
     expect(tj.members.filter((m) => m.role === "dba").length).toBe(1);
     expect(tj.members.find((m) => m.name === "fe-auth")).toBeDefined();
   });

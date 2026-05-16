@@ -193,9 +193,10 @@ CLAUDE.md ReviewDiscipline.
 **Source:** whip §1c modal-cycling detector. Fires when ≥3 distinct
 modal-prompts land on a member's pane within
 `modalCycling.windowMin` (default 30 min) AND `git log --since=<window>`
-returns zero commits matching the member's claimed task. Pre-martinet-
+returns zero commits matching the member's claimed task. Pre-sentinel-
 ship runs here; ADR-140 forward-compat ports the same detection
-function to martinet's per-tick observer.
+function to the sentinel's per-tick observer (renamed from "martinet"
+per ADR-158; legacy keys still parse during grace cycle).
 
 **What it usually means:** member is thrashing across a class of related
 prompts (push variants, approval variants, retry variants) without
@@ -491,13 +492,14 @@ when the operator sees `🟢 alive` while suspecting dormancy:
    gitLog probe is mis-targeting the worktree — `atmux doctor` should
    surface the path-resolution error.
 
-3. **Martinet escalation fires `ship-zero-2hr`** when any per-member
-   verdict is `ship-zero-window` (§D6, wired through
-   `src/core/martinet-escalation.ts::classify` E6 path). The cockpit-W3
-   dispatcher's tick log shows the reason verbatim:
+3. **Sentinel escalation fires `ship-zero-2hr`** (renamed from "martinet"
+   per ADR-158; legacy state-log path still tail-readable during grace
+   cycle) when any per-member verdict is `ship-zero-window` (§D6, wired
+   through `src/core/sentinel-escalation.ts::classify` E6 path). The
+   cockpit-W3 dispatcher's tick log shows the reason verbatim:
 
    ```bash
-   tail -50 ~/.atmux/state/martinet-tick.log | rg 'ship-zero-2hr'
+   tail -50 ~/.atmux/state/sentinel-tick.log | rg 'ship-zero-2hr'
    ```
 
 4. **Lane-stall fallback fires** when a `lane=X todo>30min` Task sits
@@ -548,4 +550,4 @@ tempdir; the spec's `beforeAll`/`afterAll` handles that).
 - **Auto-push:** `src/core/auto-push.ts`. Audit log: `.atmux/logs/auto-push.jsonl`.
 - **Pane-state classifier:** `src/core/pane-state.ts::classifyPane`. Send-keys gate: `src/core/safe-send.ts::safeSendKeys`.
 - **Per-class Tasks:** R57-T1 (D1) / R57-T2 (D2) / R57-T3 (D3) / R57-T4 (D4) / R57-T5 (D5) / R57-T6 (D6) / R57-T7 (D7) / R57-T8 (this docs Task).
-- **Cadence-truth-signal (ADR-148):** `src/core/cadence-classifier.ts` (classifier) + `src/core/martinet-escalation.ts::classify` (E6 ship-zero-2hr gate) + `src/verbs/lane-stall-tick.ts` (§D4 lane-stall fallback) + `src/verbs/status.ts::formatCadenceColumn` (renderer). E2E rehearsal: `tests/e2e/cadence-truth-signal.test.ts`.
+- **Cadence-truth-signal (ADR-148):** `src/core/cadence-classifier.ts` (classifier) + `src/core/sentinel-escalation.ts::classify` (E6 ship-zero-2hr gate; renamed from `martinet-escalation` per ADR-158) + `src/verbs/lane-stall-tick.ts` (§D4 lane-stall fallback) + `src/verbs/status.ts::formatCadenceColumn` (renderer). E2E rehearsal: `tests/e2e/cadence-truth-signal.test.ts`.

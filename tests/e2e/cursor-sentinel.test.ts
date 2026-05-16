@@ -1,4 +1,4 @@
-// E2E ADR-132 T7 — CursorMartinet (composer-2-fast) walk + token-burn
+// E2E ADR-132 T7 — CursorSentinel (composer-2-fast) walk + token-burn
 // budget assertion.
 //
 // **Stateful 1x cold-start+walk e2e — sequenced beats consume a real
@@ -6,11 +6,11 @@
 // the deterministic case. Don't streak; don't run-of-N.** Per CLAUDE.md
 // testing discipline §"Stateful e2e specs are not repeatable smokes."
 //
-// Walks the CursorMartinet impl across:
+// Walks the CursorSentinel impl across:
 //
-//   1. Module-load smoke — `src/abstractions/martinets/cursor.ts`
-//      exports a class named CursorMartinet whose instances satisfy the
-//      ADR-132 §D1 Martinet interface (name === "cursor", observe +
+//   1. Module-load smoke — `src/abstractions/sentinels/cursor.ts`
+//      exports a class named CursorSentinel whose instances satisfy the
+//      ADR-132 §D1 Sentinel interface (name === "cursor", observe +
 //      decide + apply + shouldEscalateToClaudeLead present).
 //   2. Synthetic decide() — observe → decide round-trip on a fixture
 //      Observation. Assert composer-2-fast is the model flag passed to
@@ -38,7 +38,7 @@
 //      when run by an operator with the cage provisioned.
 //
 // Skip-gates (module-load time):
-//   - HAS_CURSOR_IMPL    — `src/abstractions/martinets/cursor.ts`
+//   - HAS_CURSOR_IMPL    — `src/abstractions/sentinels/cursor.ts`
 //                          present (T3 has shipped). When false, every
 //                          case skips with the same hint pointing at
 //                          the T3 task ID (t-e96d286a).
@@ -51,10 +51,10 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import type {
   ApplyResult,
-  Martinet,
+  Sentinel,
   NudgeAction,
   Observation,
-} from "../../src/abstractions/martinet.ts";
+} from "../../src/abstractions/sentinel.ts";
 import type { PaneClassification } from "../../src/core/pane-state.ts";
 
 // ---------- Env probes (module-load time) ----------
@@ -69,7 +69,7 @@ function probeBin(cmd: string[]): boolean {
 }
 
 const CURSOR_IMPL_URL = new URL(
-  "../../src/abstractions/martinets/cursor.ts",
+  "../../src/abstractions/sentinels/cursor.ts",
   import.meta.url,
 );
 const HAS_CURSOR_IMPL = existsSync(CURSOR_IMPL_URL.pathname);
@@ -78,13 +78,13 @@ const RUN_REAL_CURSOR = Bun.env.RUN_REAL_CURSOR === "1";
 
 // ---------- Static import (post-T3 / t-e96d286a) ----------
 //
-// CursorMartinet shipped with ADR-132 T3 (commit landing this comment).
+// CursorSentinel shipped with ADR-132 T3 (commit landing this comment).
 // Pre-T3 this funnel was a dynamic import + `@ts-expect-error`
 // directive so the suite typechecked before cursor.ts existed; with
 // the impl in place the static import gives proper type narrowing
 // for every call site below.
 
-import { CursorMartinet } from "../../src/abstractions/martinets/cursor.ts";
+import { CursorSentinel } from "../../src/abstractions/sentinels/cursor.ts";
 
 // ---------- Token-burn ceilings ----------
 //
@@ -112,7 +112,7 @@ function paneCls(state: PaneClassification["state"] = "READY"): PaneClassificati
  *  composer-2-fast input. Mirrors the §Context "N pane captures +
  *  status-indicator parsing + kanban delta + dispatch composition"
  *  shape so the token-burn assertion measures the realistic prompt
- *  size the production CursorMartinet emits. */
+ *  size the production CursorSentinel emits. */
 function fixtureObservation(opts: {
   team?: string;
   last2hrCommits?: number;
@@ -208,29 +208,29 @@ function mockCursorEnvelope(
 if (!HAS_CURSOR_IMPL) {
   // eslint-disable-next-line no-console
   console.warn(
-    "[cursor-martinet.e2e] SKIPPED — src/abstractions/martinets/cursor.ts " +
+    "[cursor-sentinel.e2e] SKIPPED — src/abstractions/sentinels/cursor.ts " +
       "absent. Lands with ADR-132 T3 (t-e96d286a). Re-run after T3 ships.",
   );
 }
 if (!RUN_REAL_CURSOR) {
   // eslint-disable-next-line no-console
   console.warn(
-    "[cursor-martinet.e2e] Case 6 (real cursor-agent invocation) SKIPPED — " +
+    "[cursor-sentinel.e2e] Case 6 (real cursor-agent invocation) SKIPPED — " +
       "set RUN_REAL_CURSOR=1 to enable. CI default off to preserve quota.",
   );
 }
 
 // ---------- Case 1: module-load smoke ----------
 
-describe.skipIf(!HAS_CURSOR_IMPL)("CursorMartinet — module-load smoke", () => {
-  test("imports + instantiates + satisfies Martinet interface", async () => {
-    expect(CursorMartinet).toBeDefined();
-    expect(typeof CursorMartinet).toBe("function");
+describe.skipIf(!HAS_CURSOR_IMPL)("CursorSentinel — module-load smoke", () => {
+  test("imports + instantiates + satisfies Sentinel interface", async () => {
+    expect(CursorSentinel).toBeDefined();
+    expect(typeof CursorSentinel).toBe("function");
 
     // Instantiation deps shape — `runCursorAgent` is the injectable
     // spawn-fn the impl uses. Mock returns the canonical envelope so
     // construction round-trips without a real cursor-agent.
-    const inst: Martinet = new CursorMartinet({
+    const inst: Sentinel = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
@@ -247,12 +247,12 @@ describe.skipIf(!HAS_CURSOR_IMPL)("CursorMartinet — module-load smoke", () => 
 // ---------- Case 2: synthetic decide() — composer-2-fast model flag ----------
 
 describe.skipIf(!HAS_CURSOR_IMPL)(
-  "CursorMartinet — decide() invokes composer-2-fast",
+  "CursorSentinel — decide() invokes composer-2-fast",
   () => {
     test("model flag is 'composer-2-fast' when cursor-agent is spawned", async () => {
 
       const seenArgs: string[][] = [];
-      const inst: Martinet = new CursorMartinet({
+      const inst: Sentinel = new CursorSentinel({
         observeFn: async () => fixtureObservation(),
         runCursorAgent: async (args: string[]) => {
           seenArgs.push(args);
@@ -287,11 +287,11 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
 // ---------- Case 3: §D5 E6 ship-zero mandatory escalation ----------
 
 describe.skipIf(!HAS_CURSOR_IMPL)(
-  "CursorMartinet — §D5 E6 ship-zero mandatory escalation",
+  "CursorSentinel — §D5 E6 ship-zero mandatory escalation",
   () => {
     test("shouldEscalateToClaudeLead returns true when last2hr === 0", async () => {
 
-      const inst: Martinet = new CursorMartinet({
+      const inst: Sentinel = new CursorSentinel({
         observeFn: async () => fixtureObservation({ last2hrCommits: 0 }),
         runCursorAgent: async () =>
           JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
@@ -303,7 +303,7 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
 
     test("shouldEscalateToClaudeLead returns false when last2hr > 0 AND no other E1-E5 trigger", async () => {
 
-      const inst: Martinet = new CursorMartinet({
+      const inst: Sentinel = new CursorSentinel({
         observeFn: async () => fixtureObservation({ last2hrCommits: 10 }),
         runCursorAgent: async () =>
           JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
@@ -317,7 +317,7 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
 // ---------- Case 4: observe → decide → apply round-trip ----------
 
 describe.skipIf(!HAS_CURSOR_IMPL)(
-  "CursorMartinet — observe → decide → apply round-trip",
+  "CursorSentinel — observe → decide → apply round-trip",
   () => {
     test("apply() returns success on a non-escalation NudgeAction", async () => {
 
@@ -326,7 +326,7 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
       // has an observable side-effect.
       const tmuxSent: { window: string; keys: string }[] = [];
 
-      const inst: Martinet = new CursorMartinet({
+      const inst: Sentinel = new CursorSentinel({
         observeFn: async () => fixtureObservation(),
         runCursorAgent: async () =>
           JSON.stringify(
@@ -372,13 +372,13 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
 // ---------- Case 5: token-burn assertion (deterministic) ----------
 
 describe.skipIf(!HAS_CURSOR_IMPL)(
-  "CursorMartinet — token-burn (deterministic, mocked envelope)",
+  "CursorSentinel — token-burn (deterministic, mocked envelope)",
   () => {
     test("input + output tokens fit within budget envelope vs Claude baseline", async () => {
 
 
       let observedUsage: CursorAgentJsonEnvelope["usage"] | null = null;
-      const inst: Martinet = new CursorMartinet({
+      const inst: Sentinel = new CursorSentinel({
         observeFn: async () => fixtureObservation(),
         runCursorAgent: async () => {
           // Realistic-but-bounded composer-2-fast usage from a single
@@ -402,7 +402,7 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
 
       if (observedUsage === null) {
         throw new Error(
-          "CursorMartinet.decide() did not invoke runCursorAgent — " +
+          "CursorSentinel.decide() did not invoke runCursorAgent — " +
             "impl must spawn cursor-agent at least once per tick to be " +
             "measurable. If the impl genuinely fast-paths without spawning " +
             "(e.g. pure-Claude E6 floor), the assertion is N/A — but the " +
@@ -419,14 +419,14 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
 // ---------- Case 6: token-burn assertion (real cursor-agent) ----------
 
 describe.skipIf(!HAS_CURSOR_IMPL || !HAS_CURSOR_AGENT || !RUN_REAL_CURSOR)(
-  "CursorMartinet — token-burn (real cursor-agent, env-gated)",
+  "CursorSentinel — token-burn (real cursor-agent, env-gated)",
   () => {
     test(
       "real composer-2-fast call on canonical observation prompt stays under ceilings",
       async () => {
         // Canonical observation summary prompt — small, deterministic,
         // exercises the same parse path the impl wraps. We invoke
-        // cursor-agent directly (not via the CursorMartinet wrapper)
+        // cursor-agent directly (not via the CursorSentinel wrapper)
         // because the wrapper's exact CLI invocation is a T3 detail;
         // this case verifies the BUDGET assumption against the
         // production binary regardless of wrapper shape.

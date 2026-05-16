@@ -60,7 +60,7 @@ import type { GitSpawn } from "../abstractions/worktree.ts";
 
 // ---------- Types ----------
 
-/** States that mean "the gitter is already moving this branch" — sweep
+/** States that mean "the committer is already moving this branch" — sweep
  *  skips these because another tick (the same-walk dispatcher or a
  *  caller-driven external test gate) is actively progressing them.
  *
@@ -105,7 +105,7 @@ export type QueueMergeFn = (input: {
 
 /** Result row in the sweep summary — one entry per candidate branch
  *  the sweep considered (regardless of action). */
-export interface GitterSweepEntry {
+export interface CommitterSweepEntry {
   memberBranch: string;
   aheadCount: number;
   /** What the sweep DID with this branch on this tick. */
@@ -120,8 +120,8 @@ export interface GitterSweepEntry {
   note?: string;
 }
 
-/** Aggregate output of one `gitterSweep` call. */
-export interface GitterSweepResult {
+/** Aggregate output of one `committerSweep` call. */
+export interface CommitterSweepResult {
   /** Candidate branches examined this tick. */
   checked: number;
   /** Branches the sweep queued via {@link QueueMergeFn}. */
@@ -136,13 +136,13 @@ export interface GitterSweepResult {
   refused: number;
   /** Per-branch detail, in candidate-discovery order. Empty when no
    *  branches matched the `<base>-*` glob. */
-  entries: GitterSweepEntry[];
+  entries: CommitterSweepEntry[];
 }
 
 /** Construct-time deps for the sweep. All side-effecting fields are
  *  injectable so unit tests can drive the sweep through every branch
  *  of the decision tree without touching git or SQLite. */
-export interface GitterSweepDeps {
+export interface CommitterSweepDeps {
   /** Absolute path to the team's git working tree — the repo whose
    *  branches the sweep walks. Threaded into every `git -C` call. */
   teamRoot: string;
@@ -193,11 +193,11 @@ export interface GitterSweepDeps {
  * dispatcher's job (so the same code path handles event-driven AND
  * cron-backstop entry). The sweep is pure eligibility analysis.
  */
-export async function gitterSweep(
-  deps: GitterSweepDeps,
-): Promise<GitterSweepResult> {
+export async function committerSweep(
+  deps: CommitterSweepDeps,
+): Promise<CommitterSweepResult> {
   const candidates = await listMemberBranches(deps);
-  const entries: GitterSweepEntry[] = [];
+  const entries: CommitterSweepEntry[] = [];
   let queued = 0;
   let refused = 0;
   let skipped = 0;
@@ -246,7 +246,7 @@ export async function gitterSweep(
       });
       queued += 1;
     } else {
-      const entry: GitterSweepEntry = {
+      const entry: CommitterSweepEntry = {
         memberBranch,
         aheadCount,
         action: "queue-refused",
@@ -275,7 +275,7 @@ export async function gitterSweep(
  *  fragment (the `-` suffix is the discriminator). The output is the
  *  set of `<base>-<member>` strings stripped of the leading `* ` /
  *  `  ` markers `git branch` prepends. */
-async function listMemberBranches(deps: GitterSweepDeps): Promise<string[]> {
+async function listMemberBranches(deps: CommitterSweepDeps): Promise<string[]> {
   const pattern = `${deps.baseBranch}-*`;
   const r = await deps.git([
     "-C",
@@ -303,7 +303,7 @@ async function listMemberBranches(deps: GitterSweepDeps): Promise<string[]> {
  *  the sweep skips the branch instead of crashing the tick). */
 async function countAhead(
   memberBranch: string,
-  deps: GitterSweepDeps,
+  deps: CommitterSweepDeps,
 ): Promise<number> {
   const r = await deps.git([
     "-C",

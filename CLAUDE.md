@@ -68,6 +68,61 @@ git -C <worktree-root> rebase origin/<base>
 
 Carve-outs: voluntary history cleanup (squash, fixup), epic-team-base → parent-trunk fan-in (ADR-091 gitter, rebase-then-merge per its pre-flag #4), and final fan-in via gitter (ADR-134, works on any internal shape). See ADR-137 for the full table.
 
+## Spawn pattern (manual Claude launches inside atmux)
+
+Always `--permission-mode auto`. Other modes stop on every tool call.
+
+```bash
+case "${CLAUDE_CONFIG_DIR:-$(realpath ~/.claude 2>/dev/null)}" in
+  */.claude-unum*)    DRIVER_WRAPPER="c-u" ;;
+  */.claude-icloud*)  DRIVER_WRAPPER="c-ic" ;;
+  *)                  DRIVER_WRAPPER="claude" ;;
+esac
+CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode auto --model claude-opus-4-7
+```
+
+Wrong mode after spawn: cycle via `tmux send-keys -t <window> BTab`, don't kill+respawn. Verify `⏵⏵ auto mode on` bottom row.
+
+## Model selection (per role)
+
+- **Team members** (`claude --agent-id …`): default Opus (`claude-opus-4-7`) + `CLAUDE_CODE_EFFORT_LEVEL=xhigh`. Never Sonnet.
+- **Subagents reading only** (Explore, general-purpose): Sonnet fine.
+- **Subagents writing code**: Opus.
+- **Driver / lead**: Opus always.
+
+## Tmux & pane discipline
+
+For any tmux-mediated agent control (driver → lead/member panes, lead → member panes, watchdog probes).
+
+**Read pane state BEFORE `tmux send-keys`.** `tmux capture-pane -p -t <w> -S -30 | tail -20`. Check `thinking with` / `Compacting` / `Press up to edit queued` / `Now using extra usage` / rate-limit banners / permission prompts / queued compose text. "Text at prompt" ≠ "ready to accept input."
+
+**Rate-limit decisions: check API headers, not pane footers.** Footers (`5h X% ↻Yh`, `wk X%`) FREEZE during active turns. Curl Anthropic Messages API for `anthropic-ratelimit-*` headers. **Never invoke destructive recovery (rotate, kill+respawn, /clear) on footer numbers alone** — require BOTH (a) stale-looking budget AND (b) zero turn-execution markers (`✽` / `✻`) in last 60s of pane capture.
+
+**Ping before touching shared live stack.** Walks / runs / e2e / live-URL probes / bootstrap → quick-ping "about to fire X, any HOLDs?" + 10–15s pause. Local-only work is autonomous.
+
+**Watch-filter regex aligns with observability memory.** Grep memory for routine/noise markers before arming a watcher. Prefer enumerate-anomalous over exclude-noise. Pair with a known-green smoke-probe — if >0 anomalies under no load, the filter is wrong.
+
+## Reviewer vs auditor
+
+Two distinct roles; no overlap.
+
+- **Reviewer** = per-commit auto-gate, narrow + deep on the diff (schema, GraphQL, authz, secrets, coverage, doc-update column). Blocks code-without-tests and code-without-doc-update on documented surfaces — fail-state, not advisory.
+- **Auditor** = driver-dispatched, system-wide, broad + deep on a requested topic. Read-only. Flags findings via team-lead.
+
+**Structural honesty over demo narrative.** Push back on stub-scaffolds requested purely for demo when a real implementation already works elsewhere. Propose a signoff carve-out naming the real mechanism + ADR.
+
+## Test-finding report shape
+
+Five elements: (1) state-snapshot per step, (2) containment analysis (got through vs blocked), (3) fix sketch (file:line + siblings), (4) residue inventory (leaked rows, test docNos), (5) severity with context.
+
+**Pair runbook beats with e2e step labels.** Runbook beat name = `test.step()` label verbatim. Button labels via `getByRole('button', { name: /.../ })`. Customer names / docNos / tenants = same constants both sides reference. Drift surfaces as a failing rehearsal, not demo-morning surprise.
+
+## Session lifecycle
+
+**Preclear after every completed phase.** A phase = "I just shipped X end-to-end" (committed + pushed + smoked/typechecked/deployed green). Don't pile phases. Memory + handoff + task-list land while context is fresh.
+
+Driver itself = no-op preclear (no coordination state). Lead in dedicated window preclears at phase boundaries.
+
 ## Related global rules
 
-Agents spawned by atmux also read the user's global `CLAUDE.md` (typically under `~/.claude/`). The global rules cover machine layout, timezone discipline, push policy, model selection, and the broader Driver Mode conventions. This project-local `CLAUDE.md` complements those rules — it does not override them, and where they apply (commit conventions, hook-bypass policy, etc.), the global rule wins for cross-project consistency.
+Agents spawned by atmux also read the user's global `CLAUDE.md` (typically under `~/.claude/`). The global rules cover machine layout, timezone discipline, push policy, and cross-project engineering discipline. This project-local `CLAUDE.md` complements those rules — it does not override them, and where they apply (commit conventions, hook-bypass policy, etc.), the global rule wins for cross-project consistency.

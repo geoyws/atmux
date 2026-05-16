@@ -318,10 +318,16 @@ export async function advanceStory(
         repo.addTask(task);
         dispatchedTaskId = tid;
       } else if (resolved === "merging") {
-        const gitter = team?.members.find((m) => m.role === "gitter" || m.name === "gitter");
+        // ADR-159 TR3: accept `committer` (canonical) AND `gitter`
+        // (legacy alias) during the grace cycle. Schema transforms
+        // `gitter → committer` at parse; Zod-bypassed in-memory
+        // fixtures may still carry the legacy value.
+        const gitter = team?.members.find(
+          (m) => m.role === "committer" || m.role === "gitter" || m.name === "gitter",
+        );
         if (gitter === undefined) {
           throw new ConfigError({
-            what: "story advance: no member with role=gitter (or name=gitter) in team.json",
+            what: "story advance: no member with role=committer (or legacy role=gitter / name=gitter) in team.json",
           });
         }
         const tid = `t-${randomBytes(4).toString("hex")}`;

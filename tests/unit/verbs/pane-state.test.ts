@@ -121,16 +121,18 @@ describe("resolveMemberWindowTarget", () => {
     ],
   } as Team;
 
-  test("regular member → `<session>:<emoji><name>`", async () => {
+  test("regular member → `<session>:<emoji>-<name>`", async () => {
+    // ADR-135 D3: buildWindowName uses `<emoji>-<member>` (hyphen
+    // separator), not bare concatenation. t-475f9571 sibling-F.
     const member = team.members[0] as TeamMember;
     const t = await resolveMemberWindowTarget(team, "atmux-demo", member, { home: homeDir });
-    expect(t).toBe("atmux-demo:🐝alpha");
+    expect(t).toBe("atmux-demo:🐝-alpha");
   });
 
-  test("lead with no I-2 marker → falls back to `<emoji><name>` from schema", async () => {
+  test("lead with no I-2 marker → falls back to `<emoji>-<name>` from schema", async () => {
     const member = team.members[1] as TeamMember;
     const t = await resolveMemberWindowTarget(team, "atmux-demo", member, { home: homeDir });
-    expect(t).toBe("atmux-demo:🧭lead");
+    expect(t).toBe("atmux-demo:🧭-lead");
   });
 
   test("lead with I-2 marker → uses marker text", async () => {

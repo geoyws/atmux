@@ -160,11 +160,16 @@ describe("cageArchivePath", () => {
 });
 
 describe("Tier4NotAvailableError", () => {
-  test("error message references ADR-058 §OQ6", () => {
+  test("error message references the ADR-050 v1 scope reduction", () => {
+    // Class is @deprecated post-ADR-050 v1 + Task t-706655ee
+    // (2026-05-14): Tier 4 (MiniMax) is permanently dropped, not
+    // "not GA". Message rewritten to cite the dropping ADR; the
+    // older ADR-058 §OQ6 reference no longer applies. t-475f9571
+    // sibling-F.
     const e = new Tier4NotAvailableError();
     expect(e.message).toContain("Tier 4 (MiniMax)");
-    expect(e.message).toContain("ADR-058");
-    expect(e.message).toContain("OQ6");
+    expect(e.message).toContain("ADR-050");
+    expect(e.message).toContain("permanently dropped");
   });
 
   test("name property is 'Tier4NotAvailableError'", () => {

@@ -1,7 +1,9 @@
-// ADR-134 T4 (t-64e52aac): gitter CLI verb — cron-fired sweep entry-
-// point.
+// ADR-134 T4 (t-64e52aac): committer CLI verb — cron-fired sweep
+// entry-point. Renamed from `gitter` per ADR-159 (TR2); legacy verb
+// name `atmux gitter` retained as alias for one release cycle at
+// the dispatcher layer (src/cli.ts).
 //
-// Hosts the `atmux gitter --sweep` sub-verb that the per-team cron
+// Hosts the `atmux committer --sweep` sub-verb that the per-team cron
 // backstop fires (per ADR-134 §triggers §cron-backstop-secondary). The
 // sweep walks per-member branches, consults the merger_state table,
 // and queues merge attempts for branches that have commits-ahead-of-
@@ -9,18 +11,18 @@
 //
 // Sub-verb shape:
 //
-//   atmux gitter --sweep [--team-dir <path>]
-//   atmux gitter sweep   [--team-dir <path>]   (same — flag/sub-verb
+//   atmux committer --sweep [--team-dir <path>]
+//   atmux committer sweep   [--team-dir <path>]   (same — flag/sub-verb
 //                                                forms both accepted
 //                                                for cron-line
 //                                                ergonomics)
 //
-// **T6 (in-progress, t-93ad8eff) layering note**: the broader gitter
-// member impl — `atmux gitter` running as the per-team gitter pane's
+// **T6 (in-progress, t-93ad8eff) layering note**: the broader committer
+// member impl — `atmux committer` running as the per-team committer pane's
 // claim+commit loop — is T6 territory. T4 owns ONLY the `--sweep`
 // CLI entry-point. Both forms can coexist behind a single verb file:
-// T6's per-pane loop will likely add a bare `atmux gitter` (no
-// sub-verb) entry that this file's `parseGitterArgs` rejects today —
+// T6's per-pane loop will likely add a bare `atmux committer` (no
+// sub-verb) entry that this file's `parseCommitterArgs` rejects today —
 // T6 extends the parser when it lands. The dispatch boundary stays
 // stable.
 //
@@ -33,8 +35,8 @@
 // useful evidence without crashing. T3 swaps the real dispatcher in.
 //
 // Cron line shape (installed by T7, t-a87a39f1 — not in this commit):
-//   */N * * * * <env> atmux gitter --sweep >> <atmuxDir>/logs/
-//   gitter-cron.log 2>&1
+//   */N * * * * <env> atmux committer --sweep >> <atmuxDir>/logs/
+//   committer-cron.log 2>&1
 //
 // where N comes from `team.autoMerge.cronBackstopMin` (default 10 per
 // ADR-134 §Config + {@link DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN}).
@@ -58,11 +60,11 @@ import {
   requireTeam,
 } from "../core/common.ts";
 import {
-  gitterSweep,
-  type GitterSweepDeps,
-  type GitterSweepResult,
+  committerSweep,
+  type CommitterSweepDeps,
+  type CommitterSweepResult,
   type QueueMergeFn,
-} from "../core/gitter-sweep.ts";
+} from "../core/committer-sweep.ts";
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
@@ -70,11 +72,11 @@ import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
 
-const USAGE = "atmux gitter --sweep [--team-dir <path>]";
+const USAGE = "atmux committer --sweep [--team-dir <path>]";
 
 // ---------- Arg parsing ----------
 
-export interface ParsedGitterArgs {
+export interface ParsedCommitterArgs {
   /** `sweep` is the only sub-verb shipping in T4. T6 may add others
    *  (member-pane main loop entry) when it lands. */
   subverb: "sweep";
@@ -85,7 +87,7 @@ export interface ParsedGitterArgs {
 
 /** Pure parser. Throws `UsageError` on bad invocation; the verb-level
  *  wrapper catches and surfaces via the standard CLI dispatcher. */
-export function parseGitterArgs(argv: ReadonlyArray<string>): ParsedGitterArgs {
+export function parseCommitterArgs(argv: ReadonlyArray<string>): ParsedCommitterArgs {
   let subverb: "sweep" | undefined;
   let teamDir: string | undefined;
   let i = 0;
@@ -100,7 +102,7 @@ export function parseGitterArgs(argv: ReadonlyArray<string>): ParsedGitterArgs {
       const v = argv[i + 1];
       if (v === undefined || v === "") {
         throw new UsageError({
-          what: "gitter: --team-dir requires a value",
+          what: "committer: --team-dir requires a value",
           hint: USAGE,
         });
       }
@@ -109,17 +111,17 @@ export function parseGitterArgs(argv: ReadonlyArray<string>): ParsedGitterArgs {
       continue;
     }
     if (a?.startsWith("-") === true) {
-      throw new UsageError({ what: `gitter: unknown flag: ${a}`, hint: USAGE });
+      throw new UsageError({ what: `committer: unknown flag: ${a}`, hint: USAGE });
     }
-    throw new UsageError({ what: `gitter: unexpected arg: ${a}`, hint: USAGE });
+    throw new UsageError({ what: `committer: unexpected arg: ${a}`, hint: USAGE });
   }
   if (subverb === undefined) {
     throw new UsageError({
-      what: "gitter: no sub-verb specified",
+      what: "committer: no sub-verb specified",
       hint: USAGE,
     });
   }
-  const out: ParsedGitterArgs = { subverb };
+  const out: ParsedCommitterArgs = { subverb };
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }
@@ -143,7 +145,7 @@ export function parseGitterArgs(argv: ReadonlyArray<string>): ParsedGitterArgs {
 export function recordingQueueMergeAttempt(logger: Logger): QueueMergeFn {
   return async ({ memberBranch, aheadCount }) => {
     logger.log(
-      `gitter --sweep: would queue merge of '${memberBranch}' (+${aheadCount} commits) — ` +
+      `committer --sweep: would queue merge of '${memberBranch}' (+${aheadCount} commits) — ` +
         "T3 dispatcher pending (t-27b06cda); recording intent only",
     );
     return { queued: true };
@@ -152,7 +154,7 @@ export function recordingQueueMergeAttempt(logger: Logger): QueueMergeFn {
 
 // ---------- Verb entry ----------
 
-export interface GitterOpts {
+export interface CommitterOpts {
   /** Logger sink override (default: `createLogger()`, stderr). */
   logger?: Logger;
   /** Test injection — override the git spawn-fn. Defaults to
@@ -172,15 +174,15 @@ export interface GitterOpts {
   closeDb?: (db: Database) => void;
 }
 
-/** Top-level dispatch for `atmux gitter <subverb>`. */
-export async function gitter(
+/** Top-level dispatch for `atmux committer <subverb>`. */
+export async function committer(
   argv: ReadonlyArray<string>,
-  opts: GitterOpts = {},
+  opts: CommitterOpts = {},
 ): Promise<number> {
-  const parsed = parseGitterArgs(argv);
+  const parsed = parseCommitterArgs(argv);
   switch (parsed.subverb) {
     case "sweep":
-      return await gitterSweepVerb(parsed, opts);
+      return await committerSweepVerb(parsed, opts);
   }
 }
 
@@ -189,9 +191,9 @@ export async function gitter(
  *  there are no candidates); non-zero only on hard errors
  *  (USAGE / config-load failures propagate via thrown errors per the
  *  standard verb contract). */
-export async function gitterSweepVerb(
-  parsed: ParsedGitterArgs,
-  opts: GitterOpts = {},
+export async function committerSweepVerb(
+  parsed: ParsedCommitterArgs,
+  opts: CommitterOpts = {},
 ): Promise<number> {
   const logger = opts.logger ?? createLogger();
   const git = opts.git ?? defaultGitSpawn;
@@ -210,7 +212,7 @@ export async function gitterSweepVerb(
   // `whip-resume-check` posture (cheap no-op when not opted in).
   if (team.autoMerge?.enabled !== true) {
     logger.log(
-      `gitter --sweep: team '${team.name}' has autoMerge.enabled !== true — no-op`,
+      `committer --sweep: team '${team.name}' has autoMerge.enabled !== true — no-op`,
     );
     return 0;
   }
@@ -227,7 +229,7 @@ export async function gitterSweepVerb(
   //
   // Worktree path — the team root is the parent worktree (i.e. the
   // path containing `.atmux/team.json`). Per ADR-134 §Decision the
-  // gitter runs against the team's primary worktree, not a per-
+  // committer runs against the team's primary worktree, not a per-
   // member sub-worktree; that's the "scoped to one team's git repo"
   // locality argument.
   const teamRoot = atmuxDir.endsWith("/.atmux")
@@ -261,14 +263,14 @@ export async function gitterSweepVerb(
         // the kanban DB after every successful merge tick.
         atmuxDir,
       });
-    const deps: GitterSweepDeps = {
+    const deps: CommitterSweepDeps = {
       teamRoot,
       baseBranch,
       mergerStateRepo: repo,
       queueMergeAttempt,
       git,
     };
-    const result = await gitterSweep(deps);
+    const result = await committerSweep(deps);
     logSweepResult(result, logger, team.name, baseBranch);
     return 0;
   } finally {
@@ -284,13 +286,13 @@ export async function gitterSweepVerb(
  *  branch + action are enough to grep for; the `observedState` +
  *  `note` are bonus diagnostic. */
 function logSweepResult(
-  result: GitterSweepResult,
+  result: CommitterSweepResult,
   logger: Logger,
   teamName: string,
   baseBranch: string,
 ): void {
   logger.log(
-    `gitter --sweep: team='${teamName}' base='${baseBranch}' ` +
+    `committer --sweep: team='${teamName}' base='${baseBranch}' ` +
       `checked=${result.checked} queued=${result.queued} ` +
       `refused=${result.refused} skipped=${result.skipped}`,
   );

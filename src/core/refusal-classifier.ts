@@ -11,8 +11,8 @@
 // merged class set would muddy the input-vs-output distinction.
 //
 // Consumer surfaces:
-// - Medic hourly scan (D2 — primary detector NOW, pre-martinet-ship)
-// - Martinet 270s scan (D2 — primary detector POST-martinet-ship)
+// - Medic hourly scan (D2 — primary detector NOW, pre-sentinel-ship)
+// - Sentinel 270s scan (D2 — primary detector POST-sentinel-ship)
 // Both call this function on every member-pane capture, store
 // detections in `refusal_events` (per-team state.db), and let
 // `refusal-threshold.ts::shouldRotate` decide whether the

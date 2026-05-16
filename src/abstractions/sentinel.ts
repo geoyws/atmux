@@ -1,4 +1,4 @@
-// ADR-132 §D1 / T2 (t-2791cf60): pluggable Martinet abstraction.
+// ADR-132 §D1 / T2 (t-2791cf60): pluggable Sentinel abstraction.
 //
 // One swappable contract for cockpit-level pane-capture + nudging,
 // offloading mechanical observation+action work from the Claude
@@ -15,12 +15,12 @@
 //
 // Sub-task chain (per EPIC t-b9529ea9):
 //   T1 — ADR-132 spec (done, t-0a889489)
-//   T2 — this commit: interface + ClaudeMartinet degenerate impl
-//   T3 — CursorMartinet impl (was MinimaxMartinet pre-simplification)
-//   T4 — DEPRECATED no-op (was KimiMartinet)
-//   T5 — Zod schema fields (team.martinet, cockpit.defaultMartinet)
-//   T6 — escalation classifier (`src/core/martinet-escalation.ts`)
-//   T7 — fleet-wide tick verb (`src/verbs/martinet.ts`)
+//   T2 — this commit: interface + ClaudeSentinel degenerate impl
+//   T3 — CursorSentinel impl (was MinimaxSentinel pre-simplification)
+//   T4 — DEPRECATED no-op (was KimiSentinel)
+//   T5 — Zod schema fields (team.sentinel, cockpit.defaultSentinel)
+//   T6 — escalation classifier (`src/core/sentinel-escalation.ts`)
+//   T7 — fleet-wide tick verb (`src/verbs/sentinel.ts`)
 //   T8 — cockpit W3 integration
 
 import type { CadenceObservation } from "../core/cadence-classifier.ts";
@@ -44,15 +44,15 @@ export interface ClaimEvent {
  *  full KanbanTask shape when only the identity matters. */
 export interface TaskRef {
   taskId: string;
-  /** Optional subject line for log readability — Martinet impls
+  /** Optional subject line for log readability — Sentinel impls
    *  may populate to keep escalation diagnoses self-describing. */
   subject?: string;
 }
 
-/** A kanban hygiene fingerprint flagged as `wedged` for Martinet's
+/** A kanban hygiene fingerprint flagged as `wedged` for Sentinel's
  *  observe(). Composes on ADR-131's `HygieneFingerprintClass` set
  *  (ghost-owner, lane-mismatch, role-mismatch, lane-null-orphan,
- *  prio-null) — the Martinet observation surfaces wedges the medic
+ *  prio-null) — the Sentinel observation surfaces wedges the medic
  *  (formerly `superdoctor`; renamed per ADR-133) hygiene drain
  *  hasn't auto-fixed yet so the Claude lead can intervene via the
  *  E2 escalation channel (§D5). */
@@ -60,7 +60,7 @@ export interface WedgeFingerprint {
   taskId: string;
   /** Free-form fingerprint class — typically maps 1:1 to
    *  ADR-131's `HygieneFingerprintClass`, but accepts unknown
-   *  classes for forward-compat with Martinet-side observations
+   *  classes for forward-compat with Sentinel-side observations
    *  that aren't kanban-hygiene-rooted. */
   class: string;
   /** Minutes the fingerprint has been observed in the wedged
@@ -70,13 +70,13 @@ export interface WedgeFingerprint {
 }
 
 /** Per-member observation row. One per `team.members[]` entry on
- *  every Martinet tick. */
+ *  every Sentinel tick. */
 export interface MemberObservation {
   /** Member name (matches `team.members[].name`). */
   name: string;
   /** Pane classification at observation time (PaneClassification
    *  is the shared shape from `src/core/pane-state.ts` — re-used
-   *  to keep Martinet impls aligned with the existing
+   *  to keep Sentinel impls aligned with the existing
    *  whip/watchdog/doctor classifier set rather than splitting a
    *  parallel state language). */
   paneState: PaneClassification;
@@ -101,7 +101,7 @@ export interface MemberObservation {
   /** ADR-148 §D2 / T5 (t-ac95b267): per-member commit-cadence
    *  observation. Composed by the cockpit-W3 dispatcher via
    *  {@link classifyMemberCadence} (`src/core/cadence-classifier.ts`)
-   *  before passing the Observation to a Martinet impl's `decide()`.
+   *  before passing the Observation to a Sentinel impl's `decide()`.
    *  When set AND `cadence.verdict === "ship-zero-window"`, the
    *  escalation classifier ({@link classify}) fires the §D5 E6
    *  mandatory escalation per ADR-132 §E6 contract. Optional because
@@ -111,8 +111,8 @@ export interface MemberObservation {
   cadence?: CadenceObservation;
 }
 
-/** The Martinet tick payload — one struct per (team, tick). Same
- *  shape across every Martinet impl so the cockpit-level T7 fleet
+/** The Sentinel tick payload — one struct per (team, tick). Same
+ *  shape across every Sentinel impl so the cockpit-level T7 fleet
  *  iterator doesn't need impl-specific scaffolding. */
 export interface Observation {
   team: string;
@@ -124,7 +124,7 @@ export interface Observation {
     completedSinceLastTick: ReadonlyArray<TaskRef>;
     /** Active hygiene wedges (ADR-131 fingerprints not yet
      *  auto-fixed by medic's drain — renamed from `superdoctor` per
-     *  ADR-133). Composes E2 escalation evidence directly — Martinet
+     *  ADR-133). Composes E2 escalation evidence directly — Sentinel
      *  shouldn't re-implement detection; just observe whatever's in
      *  the medic-hygiene table where `fix_applied_at IS NULL` (the
      *  table name lands with the ADR-131 schema migration). */
@@ -140,7 +140,7 @@ export interface Observation {
     /** Commits across root + submodules in the last 30 minutes. */
     last30min: number;
     /** Commits across root + submodules in the last 2 hours.
-     *  `0` here triggers E6 escalation regardless of Martinet
+     *  `0` here triggers E6 escalation regardless of Sentinel
      *  impl. */
     last2hr: number;
   };
@@ -151,7 +151,7 @@ export interface Observation {
 
 // ---------- Nudge actions ----------
 
-/** Discriminated union over every action a Martinet may emit.
+/** Discriminated union over every action a Sentinel may emit.
  *  Per ADR-132 §D5: `rotate` is escalation-only at the classifier
  *  layer (T6 hard-codes the rewrite); listing it here keeps the
  *  shape complete for impls that legitimately surface a rotation
@@ -168,7 +168,41 @@ export type NudgeAction =
       reason: string;
     }
   | {
-      kind: "rotate";
+      // ADR-140 T4: sentinel escapes routine choice-prompts when the
+      // operator-directive is unambiguous (e.g., a modal asking the
+      // member to confirm a known-safe action). Sentinel-class
+      // nudge — no medic escalation needed.
+      kind: "modal-release";
+      member: string;
+      reason: string;
+    }
+  | {
+      // ADR-140 T4: sentinel fires force-push when operator-authorized
+      // AND target branch is non-staging per project CLAUDE.md push
+      // policy. The dispatcher (T8 follow-up) is responsible for the
+      // policy gate; this enum entry signals the approved intent.
+      kind: "force-push-approved";
+      member: string;
+      reason: string;
+    }
+  | {
+      // ADR-140 T4: sentinel-class routine rotation per ADR-139
+      // refusal-pattern thresholds + ADR-138 uptime/context-rot
+      // detection. Routine rotations fire from sentinel; emergency
+      // rotations (kill+respawn) are medic-escalated via
+      // rotate-emergency below.
+      kind: "rotate-routine";
+      member: string;
+      reason: string;
+    }
+  | {
+      // ADR-140 T4: medic-class emergency rotation — fired only when
+      // medic escalates kill+respawn (cage-tier intervention). Was
+      // `rotate` pre-ADR-140 amendment; rename surfaces the
+      // authority split between sentinel (routine) and medic
+      // (emergency) at the type level so a misdirected dispatcher
+      // can't quietly swap classes.
+      kind: "rotate-emergency";
       member: string;
       reason: string;
     }
@@ -202,18 +236,18 @@ export interface ApplyResult {
   evidence: string;
 }
 
-// ---------- The Martinet interface ----------
+// ---------- The Sentinel interface ----------
 
 /**
  * Pluggable cockpit-level whip-manager. Every impl is wired by
- * `src/abstractions/martinets/<name>.ts`; the fleet-wide tick
+ * `src/abstractions/sentinels/<name>.ts`; the fleet-wide tick
  * (T7) iterates `cockpit.json::teams` and dispatches on
- * `team.json::martinet`.
+ * `team.json::sentinel`.
  *
  * Lifecycle expectations:
  *
  *   - `observe(team)` is called every tick (per-team cadence
- *     from `martinetOverrides.cadenceSec`). Pure read — no
+ *     from `sentinelOverrides.cadenceSec`). Pure read — no
  *     mutations to atmux state.
  *   - `decide(obs)` consumes the observation and emits zero-or-
  *     more `NudgeAction`s. The escalation classifier (T6) may
@@ -231,12 +265,12 @@ export interface ApplyResult {
  * Per ADR-132 §D2 the dispatcher lives in cockpit W3 (sibling of
  * medic at W2 — formerly named `superdoctor`; renamed per ADR-133).
  * The impl itself does NOT manage its own cage — the cockpit rebuild
- * step provisions cages per the resolved variant of `cockpit.martinet`
+ * step provisions cages per the resolved variant of `cockpit.sentinel`
  * (claude variant: `{claudeAccount, tuiOverrides}`; cursor variant:
  * `{cursorBinPath, model, cageTier}` — ADR-132 §D4 discriminated
  * union; sibling of ADR-077 §D2's superdoctor pattern).
  */
-export interface Martinet {
+export interface Sentinel {
   /** Impl identifier. Constrained to `claude` (degenerate
    *  baseline) + `cursor` (production default, composer-2-fast).
    *  See header comment for the 2026-05-14 simplification trail

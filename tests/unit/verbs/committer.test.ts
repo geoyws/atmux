@@ -1,9 +1,9 @@
-// Unit tests for src/verbs/gitter.ts (ADR-134 T4 / t-64e52aac).
+// Unit tests for src/verbs/committer.ts (ADR-134 T4 / t-64e52aac).
 //
 // Coverage:
-//   - parseGitterArgs — --sweep / sweep / --team-dir / errors
+//   - parseCommitterArgs — --sweep / sweep / --team-dir / errors
 //   - recordingQueueMergeAttempt — logs + always returns queued
-//   - gitterSweepVerb — autoMerge.enabled gate, team.json load,
+//   - committerSweepVerb — autoMerge.enabled gate, team.json load,
 //     state.db open + close, baseBranch resolution via merger-config,
 //     sweep dispatch, logger summary line.
 
@@ -13,46 +13,46 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
-import type { QueueMergeFn } from "../../../src/core/gitter-sweep.ts";
+import type { QueueMergeFn } from "../../../src/core/committer-sweep.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
-  parseGitterArgs,
-  gitter,
-  gitterSweepVerb,
+  parseCommitterArgs,
+  committer,
+  committerSweepVerb,
   recordingQueueMergeAttempt,
-} from "../../../src/verbs/gitter.ts";
+} from "../../../src/verbs/committer.ts";
 
-// ---------- parseGitterArgs ----------
+// ---------- parseCommitterArgs ----------
 
-describe("parseGitterArgs", () => {
+describe("parseCommitterArgs", () => {
   test("--sweep parses as sweep sub-verb", () => {
-    expect(parseGitterArgs(["--sweep"])).toEqual({ subverb: "sweep" });
+    expect(parseCommitterArgs(["--sweep"])).toEqual({ subverb: "sweep" });
   });
 
   test("'sweep' bare sub-verb form parses the same as --sweep", () => {
-    expect(parseGitterArgs(["sweep"])).toEqual({ subverb: "sweep" });
+    expect(parseCommitterArgs(["sweep"])).toEqual({ subverb: "sweep" });
   });
 
   test("--team-dir captures path", () => {
-    const out = parseGitterArgs(["--sweep", "--team-dir", "/srv/demo"]);
+    const out = parseCommitterArgs(["--sweep", "--team-dir", "/srv/demo"]);
     expect(out).toEqual({ subverb: "sweep", teamDir: "/srv/demo" });
   });
 
   test("--team-dir without value throws UsageError", () => {
-    expect(() => parseGitterArgs(["--sweep", "--team-dir"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--sweep", "--team-dir"])).toThrow(UsageError);
   });
 
   test("no sub-verb throws UsageError", () => {
-    expect(() => parseGitterArgs([])).toThrow(UsageError);
-    expect(() => parseGitterArgs(["--team-dir", "/x"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs([])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--team-dir", "/x"])).toThrow(UsageError);
   });
 
   test("unknown flag throws UsageError", () => {
-    expect(() => parseGitterArgs(["--frobnicate"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--frobnicate"])).toThrow(UsageError);
   });
 
   test("unexpected positional arg throws UsageError", () => {
-    expect(() => parseGitterArgs(["--sweep", "extra"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--sweep", "extra"])).toThrow(UsageError);
   });
 });
 
@@ -77,7 +77,7 @@ describe("recordingQueueMergeAttempt", () => {
   });
 });
 
-// ---------- gitterSweepVerb integration ----------
+// ---------- committerSweepVerb integration ----------
 
 interface VerbFixture {
   scratch: string;
@@ -128,10 +128,10 @@ function makeGitSpawn(
   };
 }
 
-describe("gitterSweepVerb — integration with team.json + state.db", () => {
+describe("committerSweepVerb — integration with team.json + state.db", () => {
   let fixture: VerbFixture;
   beforeEach(async () => {
-    const scratch = await mkdtemp(join(tmpdir(), "atmux-gitter-verb-"));
+    const scratch = await mkdtemp(join(tmpdir(), "atmux-committer-verb-"));
     fixture = {
       scratch,
       atmuxDir: join(scratch, ".atmux"),
@@ -155,7 +155,7 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
       warn: () => {},
       err: () => {},
     };
-    const rc = await gitterSweepVerb(
+    const rc = await committerSweepVerb(
       { subverb: "sweep", teamDir: fixture.scratch },
       {
         logger,
@@ -179,7 +179,7 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
       warn: () => {},
       err: () => {},
     };
-    const rc = await gitterSweepVerb(
+    const rc = await committerSweepVerb(
       { subverb: "sweep", teamDir: fixture.scratch },
       {
         logger,
@@ -210,7 +210,7 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
       warn: () => {},
       err: () => {},
     };
-    const rc = await gitterSweepVerb(
+    const rc = await committerSweepVerb(
       { subverb: "sweep", teamDir: fixture.scratch },
       {
         logger,
@@ -255,7 +255,7 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
     };
     // No queueMergeAttempt override — should use the production
     // dispatcher (T9 swap; see src/core/intra-team-merge-dispatcher.ts).
-    const rc = await gitterSweepVerb(
+    const rc = await committerSweepVerb(
       { subverb: "sweep", teamDir: fixture.scratch },
       {
         logger,
@@ -280,7 +280,7 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
           // Hermetic fixture has no origin remote + no working tree
           // to mutate — fake each as a no-op success so the
           // dispatcher reaches its happy path (t-d78b9b67 sibling-A;
-          // T5 sweep deferred the gitter sub-cluster).
+          // T5 sweep deferred the committer sub-cluster).
           fetch: () => ({ stdout: "" }),
           checkout: () => ({ stdout: "" }),
           merge: () => ({ stdout: "" }),
@@ -294,11 +294,11 @@ describe("gitterSweepVerb — integration with team.json + state.db", () => {
   });
 });
 
-// ---------- top-level gitter() dispatch ----------
+// ---------- top-level committer() dispatch ----------
 
-describe("gitter() top-level dispatch", () => {
-  test("--sweep dispatches to gitterSweepVerb", async () => {
-    const scratch = await mkdtemp(join(tmpdir(), "atmux-gitter-disp-"));
+describe("committer() top-level dispatch", () => {
+  test("--sweep dispatches to committerSweepVerb", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "atmux-committer-disp-"));
     try {
       await mkdir(join(scratch, ".atmux"), { recursive: true });
       await writeFile(
@@ -312,7 +312,7 @@ describe("gitter() top-level dispatch", () => {
         warn: () => {},
         err: () => {},
       };
-      const rc = await gitter(["--sweep", "--team-dir", scratch], {
+      const rc = await committer(["--sweep", "--team-dir", scratch], {
         logger,
         git: async () => fakeSpawnResult("", 0),
         queueMergeAttempt: async () => ({ queued: true }),
@@ -326,6 +326,6 @@ describe("gitter() top-level dispatch", () => {
   });
 
   test("missing sub-verb → UsageError propagates", async () => {
-    await expect(gitter([])).rejects.toThrow(UsageError);
+    await expect(committer([])).rejects.toThrow(UsageError);
   });
 });

@@ -61,7 +61,7 @@ const CARVE_OUT_FILES = new Set([
   // a paste sequence (rotate.ts:309).
   "verbs/rotate.ts",
   // /loop slash-commands at cockpit shell — pre-superdoctor /
-  // pre-martinet boot (cockpit.ts:1737 + 1863).
+  // pre-sentinel boot (cockpit.ts:1737 + 1863).
   "verbs/cockpit.ts",
   // Ombudsman safe-send adapter — composes safeSendKeys' callback
   // signature; the callback's `enter` is opt-controlled by safe-

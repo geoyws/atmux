@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔤 Vocabulary refresh — SV register sweep
+
+- **ADR-158 (proposed)** — `martinet` → `sentinel` rename (cockpit W3 role + schema key + source identifiers). Cockpit role-type identifier change; design preserved verbatim per ADR-132. JSON-shim in `src/core/cockpit.ts::migrateMartinetBlockToSentinel` accepts legacy `martinet:` key for one release cycle with deprecation-warn (mirrors ADR-133 `migrateSuperdoctorBlockToMedic` precedent). Source identifiers renamed via TR2 (`src/abstractions/sentinel.ts`, `src/verbs/sentinel.ts`, `src/core/sentinel-escalation.ts`); same-commit docs sweep via TR4 (this entry).
+
 > **Post-0.6.0 follow-ups** (catchup sweep 2026-05-13 per t-a1cc07bc).
 > `0.5.0` and `0.6.0` shipped without their own CHANGELOG sections — the
 > Epic 1 (pull-model kanban), Epic 2 (whip enrichment), Epic 3 (hot reload),
