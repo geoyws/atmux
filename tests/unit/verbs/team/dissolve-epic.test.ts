@@ -10,18 +10,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  dissolveEpic,
-  type DissolveEpicOpts,
-  parseDissolveEpicArgs,
-} from "../../../../src/verbs/team/dissolve-epic.ts";
 import type { GitSpawn } from "../../../../src/abstractions/branch-merge.ts";
 import type { SpawnResult } from "../../../../src/abstractions/spawn.ts";
-import {
-  closeDatabase,
-  openDatabase,
-} from "../../../../src/abstractions/sqlite.ts";
+import { closeDatabase, openDatabase } from "../../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../../src/abstractions/sqlite-migrations.ts";
+import {
+  type DissolveEpicOpts,
+  dissolveEpic,
+  parseDissolveEpicArgs,
+} from "../../../../src/verbs/team/dissolve-epic.ts";
 
 let scratch: string;
 let cockpitPath: string;
@@ -29,10 +26,7 @@ let parentRoot: string;
 let epicRoot: string;
 
 beforeEach(async () => {
-  scratch = join(
-    tmpdir(),
-    `atmux-dissolve-epic-${Date.now()}-${Math.random()}`,
-  );
+  scratch = join(tmpdir(), `atmux-dissolve-epic-${Date.now()}-${Math.random()}`);
   await mkdir(scratch, { recursive: true });
   cockpitPath = join(scratch, "cockpit.json");
   parentRoot = join(scratch, "parent-team");
@@ -84,18 +78,12 @@ beforeEach(async () => {
   );
 
   // Child state.db — seed via openDatabase so migrations apply.
-  const childDb = openDatabase(
-    join(epicRoot, ".atmux", "state.db"),
-    migrations,
-  );
+  const childDb = openDatabase(join(epicRoot, ".atmux", "state.db"), migrations);
   closeDatabase(childDb);
 
   // Parent state.db with an EPIC row matching parentEpicKanbanId so
   // dissolve-epic step 8 has something to mark done.
-  const parentDb = openDatabase(
-    join(parentRoot, ".atmux", "state.db"),
-    migrations,
-  );
+  const parentDb = openDatabase(join(parentRoot, ".atmux", "state.db"), migrations);
   parentDb
     .query(
       `INSERT INTO epics (id, title, status, created_at)
@@ -125,11 +113,7 @@ describe("parseDissolveEpicArgs", () => {
   });
 
   test("--skip-checks + --force-prune both honored", () => {
-    const r = parseDissolveEpicArgs([
-      "e-1",
-      "--skip-checks",
-      "--force-prune",
-    ]);
+    const r = parseDissolveEpicArgs(["e-1", "--skip-checks", "--force-prune"]);
     expect(r.skipChecks).toBe(true);
     expect(r.forcePrune).toBe(true);
   });
@@ -139,9 +123,7 @@ describe("parseDissolveEpicArgs", () => {
   });
 
   test("unknown flag refuses", () => {
-    expect(() => parseDissolveEpicArgs(["e-1", "--bogus"])).toThrow(
-      /unknown flag/,
-    );
+    expect(() => parseDissolveEpicArgs(["e-1", "--bogus"])).toThrow(/unknown flag/);
   });
 });
 
@@ -165,10 +147,7 @@ describe("dissolveEpic — caller-scope gate", () => {
 describe("dissolveEpic — pre-flight gates", () => {
   test("refuses when child kanban has open tasks (clean worktree)", async () => {
     // Insert one open task into the child kanban.
-    const childDb = openDatabase(
-      join(epicRoot, ".atmux", "state.db"),
-      migrations,
-    );
+    const childDb = openDatabase(join(epicRoot, ".atmux", "state.db"), migrations);
     childDb
       .query(
         `INSERT INTO tasks (id, status, created_at)
@@ -183,9 +162,7 @@ describe("dissolveEpic — pre-flight gates", () => {
       git: cleanGitStub(),
       logger: { log: () => undefined, warn: () => undefined },
     };
-    await expect(dissolveEpic(["e-1"], opts)).rejects.toThrow(
-      /epic-team has 1 open task/,
-    );
+    await expect(dissolveEpic(["e-1"], opts)).rejects.toThrow(/epic-team has 1 open task/);
   });
 
   test("refuses when worktree is dirty (no open tasks)", async () => {
@@ -195,17 +172,12 @@ describe("dissolveEpic — pre-flight gates", () => {
       git: dirtyGitStub(),
       logger: { log: () => undefined, warn: () => undefined },
     };
-    await expect(dissolveEpic(["e-1"], opts)).rejects.toThrow(
-      /worktree.*has uncommitted/,
-    );
+    await expect(dissolveEpic(["e-1"], opts)).rejects.toThrow(/worktree.*has uncommitted/);
   });
 
   test("--skip-checks bypasses both gates", async () => {
     // Seed an open task + dirty worktree.
-    const childDb = openDatabase(
-      join(epicRoot, ".atmux", "state.db"),
-      migrations,
-    );
+    const childDb = openDatabase(join(epicRoot, ".atmux", "state.db"), migrations);
     childDb
       .query(
         `INSERT INTO tasks (id, status, created_at)
@@ -253,10 +225,7 @@ describe("dissolveEpic — happy path", () => {
     }
 
     // Parent EPIC row flipped to done.
-    const parentDb = openDatabase(
-      join(parentRoot, ".atmux", "state.db"),
-      migrations,
-    );
+    const parentDb = openDatabase(join(parentRoot, ".atmux", "state.db"), migrations);
     const row = parentDb
       .query<{ status: string; completed_at: number | null }, []>(
         `SELECT status, completed_at FROM epics WHERE id = 'e-aabb0001'`,
@@ -296,9 +265,7 @@ describe("dissolveEpic — refusal paths", () => {
       callerScope: () => "driver",
       git: cleanGitStub(),
     };
-    await expect(dissolveEpic(["no-such-epic"], opts)).rejects.toThrow(
-      /not found in cockpit/,
-    );
+    await expect(dissolveEpic(["no-such-epic"], opts)).rejects.toThrow(/not found in cockpit/);
   });
 });
 

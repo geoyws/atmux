@@ -13,13 +13,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  parseSpawnEpicArgs,
-  spawnEpic,
-  type SpawnEpicOpts,
-} from "../../../../src/verbs/team/spawn-epic.ts";
 import type { GitSpawn } from "../../../../src/abstractions/branch-merge.ts";
 import type { SpawnResult } from "../../../../src/abstractions/spawn.ts";
+import {
+  parseSpawnEpicArgs,
+  type SpawnEpicOpts,
+  spawnEpic,
+} from "../../../../src/verbs/team/spawn-epic.ts";
 
 let scratch: string;
 let cockpitPath: string;
@@ -29,9 +29,7 @@ let parentRoot: string;
 beforeEach(async () => {
   scratch = await mkdir(join(tmpdir(), `atmux-spawn-epic-${Date.now()}-${Math.random()}`), {
     recursive: true,
-  }).then(() =>
-    join(tmpdir(), `atmux-spawn-epic-${Date.now()}-${Math.random()}`),
-  );
+  }).then(() => join(tmpdir(), `atmux-spawn-epic-${Date.now()}-${Math.random()}`));
   // The double-mkdir above intentionally returns a fresh path; we
   // create it again here to ensure exists.
   await mkdir(scratch, { recursive: true });
@@ -84,30 +82,19 @@ describe("parseSpawnEpicArgs", () => {
   });
 
   test("--no-init-submodules flips initSubmodules", () => {
-    const r = parseSpawnEpicArgs([
-      "e-1",
-      "--from",
-      "p",
-      "--no-init-submodules",
-    ]);
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--no-init-submodules"]);
     expect(r.initSubmodules).toBe(false);
   });
 
   test("--merge-mode pr accepted", () => {
-    const r = parseSpawnEpicArgs([
-      "e-1",
-      "--from",
-      "p",
-      "--merge-mode",
-      "pr",
-    ]);
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--merge-mode", "pr"]);
     expect(r.mergeMode).toBe("pr");
   });
 
   test("--merge-mode bogus refuses", () => {
-    expect(() =>
-      parseSpawnEpicArgs(["e-1", "--from", "p", "--merge-mode", "force"]),
-    ).toThrow(/must be 'auto' or 'pr'/);
+    expect(() => parseSpawnEpicArgs(["e-1", "--from", "p", "--merge-mode", "force"])).toThrow(
+      /must be 'auto' or 'pr'/,
+    );
   });
 
   test("--roster + --roster-file mutually exclusive (§Decision-anchor #4)", () => {
@@ -125,9 +112,7 @@ describe("parseSpawnEpicArgs", () => {
   });
 
   test("missing epicId refuses", () => {
-    expect(() => parseSpawnEpicArgs(["--from", "p"])).toThrow(
-      /<epicId> required/,
-    );
+    expect(() => parseSpawnEpicArgs(["--from", "p"])).toThrow(/<epicId> required/);
   });
 
   test("missing --from refuses", () => {
@@ -135,9 +120,7 @@ describe("parseSpawnEpicArgs", () => {
   });
 
   test("unknown flag refuses", () => {
-    expect(() =>
-      parseSpawnEpicArgs(["e-1", "--from", "p", "--bogus"]),
-    ).toThrow(/unknown flag/);
+    expect(() => parseSpawnEpicArgs(["e-1", "--from", "p", "--bogus"])).toThrow(/unknown flag/);
   });
 });
 
@@ -151,9 +134,9 @@ describe("spawnEpic — caller-scope gate (ADR-033)", () => {
       callerScope: () => "member",
       git: makeGitStub({ initialBranch: "main" }),
     };
-    await expect(
-      spawnEpic(["e-1", "--from", "parent-team"], opts),
-    ).rejects.toThrow(/refused.*caller scope is not 'driver'/);
+    await expect(spawnEpic(["e-1", "--from", "parent-team"], opts)).rejects.toThrow(
+      /refused.*caller scope is not 'driver'/,
+    );
   });
 });
 
@@ -168,10 +151,7 @@ describe("spawnEpic — happy path", () => {
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
-    const rc = await spawnEpic(
-      ["e-aabb0001", "--from", "parent-team"],
-      opts,
-    );
+    const rc = await spawnEpic(["e-aabb0001", "--from", "parent-team"], opts);
     expect(rc).toBe(0);
 
     // Child team.json exists + carries epicTeam block.
@@ -192,7 +172,9 @@ describe("spawnEpic — happy path", () => {
     // Child state.db file exists.
     const stateDbStat = await readFile(
       join(scratch, "parent-team-epics", "e-aabb0001", ".atmux", "state.db"),
-    ).then(() => true).catch(() => false);
+    )
+      .then(() => true)
+      .catch(() => false);
     expect(stateDbStat).toBe(true);
 
     // Cockpit.json gained the epic-team session under the parent.
@@ -212,15 +194,9 @@ describe("spawnEpic — happy path", () => {
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
-    await spawnEpic(
-      ["e-1", "--from", "parent-team", "--parent-base", "geoyws"],
-      opts,
-    );
+    await spawnEpic(["e-1", "--from", "parent-team", "--parent-base", "geoyws"], opts);
     const childTeam = JSON.parse(
-      await readFile(
-        join(scratch, "parent-team-epics", "e-1", ".atmux", "team.json"),
-        "utf8",
-      ),
+      await readFile(join(scratch, "parent-team-epics", "e-1", ".atmux", "team.json"), "utf8"),
     );
     expect(childTeam.epicTeam.parentBase).toBe("geoyws");
   });
@@ -234,20 +210,11 @@ describe("spawnEpic — happy path", () => {
       logger: { log: () => undefined, warn: () => undefined },
     };
     await spawnEpic(
-      [
-        "e-1",
-        "--from",
-        "parent-team",
-        "--parent-epic-kanban-id",
-        "e-deadbeef",
-      ],
+      ["e-1", "--from", "parent-team", "--parent-epic-kanban-id", "e-deadbeef"],
       opts,
     );
     const childTeam = JSON.parse(
-      await readFile(
-        join(scratch, "parent-team-epics", "e-1", ".atmux", "team.json"),
-        "utf8",
-      ),
+      await readFile(join(scratch, "parent-team-epics", "e-1", ".atmux", "team.json"), "utf8"),
     );
     expect(childTeam.epicTeam.parentEpicKanbanId).toBe("e-deadbeef");
   });
@@ -263,9 +230,9 @@ describe("spawnEpic — refusal paths", () => {
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
     };
-    await expect(
-      spawnEpic(["e-1", "--from", "no-such-team"], opts),
-    ).rejects.toThrow(/parent team 'no-such-team' not found/);
+    await expect(spawnEpic(["e-1", "--from", "no-such-team"], opts)).rejects.toThrow(
+      /parent team 'no-such-team' not found/,
+    );
   });
 
   test("refuses when epic-team root already exists", async () => {
@@ -278,9 +245,9 @@ describe("spawnEpic — refusal paths", () => {
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
     };
-    await expect(
-      spawnEpic(["e-1", "--from", "parent-team"], opts),
-    ).rejects.toThrow(/already exists/);
+    await expect(spawnEpic(["e-1", "--from", "parent-team"], opts)).rejects.toThrow(
+      /already exists/,
+    );
   });
 
   test("refuses when roster preset not found", async () => {
@@ -291,10 +258,7 @@ describe("spawnEpic — refusal paths", () => {
       git: makeGitStub({ initialBranch: "main" }),
     };
     await expect(
-      spawnEpic(
-        ["e-1", "--from", "parent-team", "--roster", "non-existent"],
-        opts,
-      ),
+      spawnEpic(["e-1", "--from", "parent-team", "--roster", "non-existent"], opts),
     ).rejects.toThrow(/roster file not found/);
   });
 });
@@ -309,11 +273,7 @@ function makeGitStub(stubOpts: GitStubOpts): GitSpawn {
   return async (argv: ReadonlyArray<string>): Promise<SpawnResult> => {
     const argv_ = [...argv];
     // git -C <path> rev-parse --abbrev-ref HEAD → return stubbed branch
-    if (
-      argv_.includes("rev-parse") &&
-      argv_.includes("--abbrev-ref") &&
-      argv_.includes("HEAD")
-    ) {
+    if (argv_.includes("rev-parse") && argv_.includes("--abbrev-ref") && argv_.includes("HEAD")) {
       return ok(`${stubOpts.initialBranch}\n`);
     }
     // git -C <path> worktree list --porcelain → empty (no existing worktrees)

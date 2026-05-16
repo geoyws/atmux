@@ -55,16 +55,12 @@
 // refuses pr-mode without prTarget.base + prAuthorUser, which
 // catches the misconfiguration at schema layer instead).
 
-import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 import { exists, writeText } from "../../abstractions/fs.ts";
 import { readJson } from "../../abstractions/json.ts";
-import {
-  closeDatabase,
-  type Database,
-  openDatabase,
-} from "../../abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase } from "../../abstractions/sqlite.ts";
 import { migrations } from "../../abstractions/sqlite-migrations.ts";
 import {
   defaultGitSpawn,
@@ -96,9 +92,7 @@ export interface ParsedSpawnEpicArgs {
   initSubmodules: boolean;
 }
 
-export function parseSpawnEpicArgs(
-  argv: ReadonlyArray<string>,
-): ParsedSpawnEpicArgs {
+export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpicArgs {
   let epicId: string | undefined;
   let parentTeam: string | undefined;
   let roster: string | undefined;
@@ -185,8 +179,7 @@ export function parseSpawnEpicArgs(
   // misconfig before any disk mutation.
   if (roster !== undefined && rosterFile !== undefined) {
     throw new UsageError({
-      what:
-        "spawn-epic: --roster and --roster-file are mutually exclusive (ADR-090 §Decision-anchor #4)",
+      what: "spawn-epic: --roster and --roster-file are mutually exclusive (ADR-090 §Decision-anchor #4)",
       hint: USAGE,
     });
   }
@@ -198,17 +191,12 @@ export function parseSpawnEpicArgs(
   if (roster !== undefined) out.roster = roster;
   if (rosterFile !== undefined) out.rosterFile = rosterFile;
   if (parentBase !== undefined) out.parentBase = parentBase;
-  if (parentEpicKanbanId !== undefined)
-    out.parentEpicKanbanId = parentEpicKanbanId;
+  if (parentEpicKanbanId !== undefined) out.parentEpicKanbanId = parentEpicKanbanId;
   if (mergeMode !== undefined) out.mergeMode = mergeMode;
   return out;
 }
 
-function requireValue(
-  argv: ReadonlyArray<string>,
-  i: number,
-  flag: string,
-): string {
+function requireValue(argv: ReadonlyArray<string>, i: number, flag: string): string {
   const v = argv[i + 1];
   if (v === undefined || v === "") {
     throw new UsageError({
@@ -281,8 +269,7 @@ export async function spawnEpic(
   //    epic-teams — they'd race with the parent lead's coordination.
   if (callerScope() !== "driver") {
     throw new ConfigError({
-      what:
-        "spawn-epic: refused — caller scope is not 'driver'. Set ATMUX_CALLER_SCOPE=driver in the calling shell (ADR-033 §Caller-scope gate).",
+      what: "spawn-epic: refused — caller scope is not 'driver'. Set ATMUX_CALLER_SCOPE=driver in the calling shell (ADR-033 §Caller-scope gate).",
       hint: "from a driver pane: ATMUX_CALLER_SCOPE=driver atmux team spawn-epic ...",
     });
   }
@@ -314,8 +301,7 @@ export async function spawnEpic(
   // ADR-090 §Disk layout: branch = `<parentBase>-epic-<epicId>`.
   // The parent's current HEAD is the operator-declared default base;
   // --parent-base lets the operator pin a different one.
-  const parentBase =
-    parsed.parentBase ?? (await currentBranch(parentRoot, git));
+  const parentBase = parsed.parentBase ?? (await currentBranch(parentRoot, git));
   const epicBranch = `${parentBase}-epic-${parsed.epicId}`;
 
   // Refuse if the epic-team is already spawned (the worktree exists).
@@ -329,21 +315,15 @@ export async function spawnEpic(
 
   // 4. Resolve roster.
   const templatesDir = opts.templatesDir ?? defaultTemplatesDir();
-  const rosterMembers = await resolveRosterMembers(
-    parsed,
-    templatesDir,
-    cockpitPath,
-  );
+  const rosterMembers = await resolveRosterMembers(parsed, templatesDir, cockpitPath);
 
   // 5. provisionWorktree. Side-effect tracker for rollback.
   await mkdir(epicsDir, { recursive: true });
-  const provision = await provisionWorktree(
-    parentRoot,
-    parentBase,
-    epicBranch,
-    epicRoot,
-    { git, initSubmodules: parsed.initSubmodules, warn: logger.warn },
-  );
+  const provision = await provisionWorktree(parentRoot, parentBase, epicBranch, epicRoot, {
+    git,
+    initSubmodules: parsed.initSubmodules,
+    warn: logger.warn,
+  });
   let needsRollback = provision.created;
 
   try {
@@ -361,18 +341,14 @@ export async function spawnEpic(
       tmuxTmpdir: `/tmp/atmux-${parsed.parentTeam}/epics/${parsed.epicId}`,
       epicTeam: {
         parent: parsed.parentTeam,
-        parentEpicKanbanId:
-          parsed.parentEpicKanbanId ?? `e-${parsed.epicId}`,
+        parentEpicKanbanId: parsed.parentEpicKanbanId ?? `e-${parsed.epicId}`,
         parentBase,
         mergeMode: parsed.mergeMode ?? "auto",
       },
     });
     const childAtmuxDir = join(epicRoot, ".atmux");
     await mkdir(childAtmuxDir, { recursive: true });
-    await writeText(
-      join(childAtmuxDir, "team.json"),
-      `${JSON.stringify(childTeam, null, 2)}\n`,
-    );
+    await writeText(join(childAtmuxDir, "team.json"), `${JSON.stringify(childTeam, null, 2)}\n`);
 
     // 7. Init child state.db (creates file + runs migrations).
     const db = openDb(join(childAtmuxDir, "state.db"));
@@ -380,17 +356,14 @@ export async function spawnEpic(
 
     // 8. Register child in parent's cockpit sessions[].
     appendChildToSessions(parentEntry, parsed);
-    await writeText(
-      cockpitPath,
-      `${JSON.stringify(cockpitRaw, null, 2)}\n`,
-    );
+    await writeText(cockpitPath, `${JSON.stringify(cockpitRaw, null, 2)}\n`);
 
     // 9. Success log + next-step hint.
     logger.log(
       `epic-team spawned: ${parsed.epicId} at ${epicRoot} (parent=${parsed.parentTeam}, branch=${epicBranch})`,
     );
     logger.log(
-      "next: \`atmux cockpit rebuild\` to spawn the child cage (v1 — auto-spawn lands in a follow-up Task)",
+      "next: `atmux cockpit rebuild` to spawn the child cage (v1 — auto-spawn lands in a follow-up Task)",
     );
     needsRollback = false;
     return 0;
@@ -405,9 +378,7 @@ export async function spawnEpic(
           git,
           dirty: "force",
         });
-        logger.warn(
-          `spawn-epic: rolled back worktree at ${epicRoot} after a mid-pipeline failure`,
-        );
+        logger.warn(`spawn-epic: rolled back worktree at ${epicRoot} after a mid-pipeline failure`);
       } catch (e) {
         logger.warn(
           `spawn-epic: rollback failed for ${epicRoot}: ${e instanceof Error ? e.message : String(e)}`,
@@ -419,10 +390,7 @@ export async function spawnEpic(
 
 // ---------- Helpers ----------
 
-function findTeamSession(
-  sessions: ReadonlyArray<SessionEntry>,
-  name: string,
-): SessionEntry | null {
+function findTeamSession(sessions: ReadonlyArray<SessionEntry>, name: string): SessionEntry | null {
   for (const s of sessions) {
     if (s.type === "team" && s.name === name) return s;
     if (Array.isArray(s.sessions)) {
@@ -433,10 +401,7 @@ function findTeamSession(
   return null;
 }
 
-function appendChildToSessions(
-  parentEntry: SessionEntry,
-  parsed: ParsedSpawnEpicArgs,
-): void {
+function appendChildToSessions(parentEntry: SessionEntry, parsed: ParsedSpawnEpicArgs): void {
   const child: SessionEntry = {
     type: "epic-team",
     name: parsed.epicId,

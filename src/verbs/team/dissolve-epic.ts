@@ -40,18 +40,13 @@
 // (cockpit rebuild handles tmpdir reconciliation); cross-team
 // tell-lead surfacing (ADR-092).
 
-import { join } from "node:path";
 import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
-import { exists } from "../../abstractions/fs.ts";
+import { exists, writeText } from "../../abstractions/fs.ts";
 import { readJson } from "../../abstractions/json.ts";
-import {
-  closeDatabase,
-  type Database,
-  openDatabase,
-} from "../../abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase } from "../../abstractions/sqlite.ts";
 import { migrations } from "../../abstractions/sqlite-migrations.ts";
-import { writeText } from "../../abstractions/fs.ts";
 import {
   defaultGitSpawn,
   type GitSpawn,
@@ -63,8 +58,7 @@ import { resolveCallerScope } from "../../core/common.ts";
 import { ConfigError, UsageError } from "../../errors.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
 
-const USAGE =
-  "atmux team dissolve-epic <epicId> [--skip-checks] [--force-prune]";
+const USAGE = "atmux team dissolve-epic <epicId> [--skip-checks] [--force-prune]";
 
 // ---------- Arg parsing ----------
 
@@ -74,9 +68,7 @@ export interface ParsedDissolveEpicArgs {
   forcePrune: boolean;
 }
 
-export function parseDissolveEpicArgs(
-  argv: ReadonlyArray<string>,
-): ParsedDissolveEpicArgs {
+export function parseDissolveEpicArgs(argv: ReadonlyArray<string>): ParsedDissolveEpicArgs {
   let epicId: string | undefined;
   let skipChecks = false;
   let forcePrune = false;
@@ -174,8 +166,7 @@ export async function dissolveEpic(
   // 1. Caller-scope gate.
   if (callerScope() !== "driver") {
     throw new ConfigError({
-      what:
-        "dissolve-epic: refused — caller scope is not 'driver'. Set ATMUX_CALLER_SCOPE=driver in the calling shell (ADR-033 §Caller-scope gate).",
+      what: "dissolve-epic: refused — caller scope is not 'driver'. Set ATMUX_CALLER_SCOPE=driver in the calling shell (ADR-033 §Caller-scope gate).",
       hint: "from a driver pane: ATMUX_CALLER_SCOPE=driver atmux team dissolve-epic ...",
     });
   }
@@ -242,8 +233,7 @@ export async function dissolveEpic(
 
   // 6. Prune the worktree.
   if (await exists(epicRoot)) {
-    const dirtyMode: "skip" | "force" =
-      parsed.forcePrune || parsed.skipChecks ? "force" : "skip";
+    const dirtyMode: "skip" | "force" = parsed.forcePrune || parsed.skipChecks ? "force" : "skip";
     const result = await pruneWorktree(parentRoot, epicRoot, {
       git,
       dirty: dirtyMode,
@@ -259,9 +249,7 @@ export async function dissolveEpic(
         });
       }
       // 'missing' — worktree was already gone. Idempotent path.
-      logger.warn(
-        `dissolve-epic: worktree at ${epicRoot} already absent — continuing cleanup`,
-      );
+      logger.warn(`dissolve-epic: worktree at ${epicRoot} already absent — continuing cleanup`);
     }
     // Best-effort: rm the epicsDir if it's now empty (cleanup the
     // sibling parent-dir artifact). Failure is non-fatal.
@@ -279,10 +267,7 @@ export async function dissolveEpic(
     );
     if (parentEntry.sessions.length === 0) delete parentEntry.sessions;
   }
-  await writeText(
-    cockpitPath,
-    `${JSON.stringify(cockpitRaw, null, 2)}\n`,
-  );
+  await writeText(cockpitPath, `${JSON.stringify(cockpitRaw, null, 2)}\n`);
 
   // 8. Mark parent's kanban EPIC row done (best-effort — may already
   //    be done, may be missing, both fine).
@@ -301,9 +286,7 @@ export async function dissolveEpic(
   // destructure makes the find() shape readable.
   void epicEntry;
 
-  logger.log(
-    `epic-team dissolved: ${parsed.epicId} (parent=${parentEntry.name ?? "<unnamed>"})`,
-  );
+  logger.log(`epic-team dissolved: ${parsed.epicId} (parent=${parentEntry.name ?? "<unnamed>"})`);
   return 0;
 }
 
@@ -391,9 +374,7 @@ async function markParentEpicDone(
         `dissolve-epic: parent EPIC row ${parentEpicKanbanId} not found or already done — no kanban update`,
       );
     } else {
-      logger.log(
-        `dissolve-epic: marked parent EPIC ${parentEpicKanbanId} done`,
-      );
+      logger.log(`dissolve-epic: marked parent EPIC ${parentEpicKanbanId} done`);
     }
   } finally {
     closeDb(db);
