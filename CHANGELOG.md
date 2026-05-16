@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > for traceability). The remaining post-0.6.0 work is grouped below under
 > **post-0.6.0 follow-ups** until the next release cut.
 
+### 🟢 Shipped — ADR-157 T6 e2e goal-primary-drain + failure-injection matrix
+
+- **New e2e** at `tests/e2e/goal-primary-drain.test.ts` per ADR-157 T6 (`t-869a0226`). Deps T3 (`05e9b9c`) + T4 (`33f995c`) + T5 (`675600b`) all shipped this session. Validates the full /goal-primary-drain wiring end-to-end across the lane-tick + goal-injection + cron-cadence stack via the `LaneTickDeps` dependency-injection seams (no real tmux / no real Anthropic API for the CI default path).
+- **Mock-default + ATMUX_E2E_LIVE=1 opt-in** per task body. Live mode is a placeholder pending real Claude Code pane availability with `/goal` skill (v2.1.139+); CI runs the mock matrix sub-second.
+- **Cell 1 — Latency benchmark (structural proxy)**: 5-tick treatment vs baseline. Treatment (goal-active claude) → 5/5 `skip-goal-active` outcomes, ZERO send-keys fired (drain handled by /goal evaluator). Baseline (goal-inactive claude) → 5/5 `injected` outcomes (cron-driven claim-injection). Ratio assertion 0:5 proves the wiring is correct — real wall-clock latency is sub-second in treatment (when wired to a live Haiku evaluator) and ~150s mean in baseline at the */5 cron cadence T5 ships.
+- **Cell 2 — Failure-injection backstop (3 cases)**:
+  1. Rate-limit pane → `skip-not-ready` (NOT `skip-goal-active`) — pane-health signal preserved per T4 reviewer pre-flag #1 ordering.
+  2. Dead-pane / shell prompt → `skip-not-ready` — lane-tick is the external observer.
+  3. Compaction-wipe simulation → `skip-not-ready` — DOCUMENTED as **Branch A-prime** in the spec header: neither "still skip claim-injection" (A) nor "fall back to claim" (B), but "skip via pane-health, defer to operator-driven `atmux rotate` recovery." If operator experience reveals this is too operator-heavy (auto-rotation desired), file an ADR-157 amendment to wire a rotate-on-compaction-detected hook.
+- **Cross-check** — Cursor carve-out (§D4) cross-check at e2e level: `runtime: "cursor"` + `goal` set → claim-injection RUNS (cursor has no /goal skill; cron is the only drain). Confirms T4's runtime-gate honors §D4 contract under e2e wiring, not just at unit level.
+- **Spec header docstring documents non-idempotence** per CLAUDE.md §Testing Discipline ("Stateful e2e specs are not repeatable smokes"). Each cell stages a fresh tmpdir + tmpdir-scoped `team.json` + `state/session.txt`. No live `~/.atmux/cockpit.json` reads, no live `~/.atmux/state/*` writes — reviewer pre-flag honored.
+- **`setDefaultTimeout(120_000)`** per CLAUDE.md bun-test integration rule. Mock mode actually runs sub-second; the headroom is for the cell-scaffold tmpdir creation.
+- **Tests**: 7/7 pass + 1 skip (live mode placeholder). Typecheck clean.
+- **ADR-157 EPIC code-path scope COMPLETE this session**: T1 draft (`fa5d9c7`) → T2 schema/resolver (`8bbf28c`) → T3 injection (`05e9b9c`) → T4 lane-tick narrow (`33f995c`) → T5 cadence relax (`675600b`) → T6 e2e (this commit). T7 (dogfood, gated on ADR-151 unblocker landing) is the only remaining sub-task.
+- **Out of scope**: dogfood on atmux team (T7 — `t-6f8d27e8`, gated on ADR-151 unblocker `t-fba73bf8`); cross-team /goal coordination (not in v1); Cursor-side /goal equivalent (no upstream skill); ATMUX_E2E_LIVE wired against real Claude Code pane (deferred — operator validation gate).
+
 ### 🟢 Shipped — ADR-157 T5 cron cadence relaxation `*/2` → `*/5` (lane-tick)
 
 - **Cron template lane-tick cadence relaxed from `*/2 * * * *` to `*/5 * * * *`** per ADR-157 T5 (`t-e847d0ae`). Closes the EPIC's drain-mechanism shift: T3 (/goal injection) + T4 (lane-tick goal-narrow) together mean Claude members drive their own loop via the per-turn Haiku evaluator; lane-tick narrows to a structural backstop for failure modes /goal cannot see (wedged panes, rate-lockouts, compaction-wipe). Sub-2-min cadence is no longer needed.
