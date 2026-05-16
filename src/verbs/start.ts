@@ -306,6 +306,12 @@ export interface StartOpts {
    *  shelling out to a real tmux server. Default = real
    *  `reconcileCockpitSession`. */
   cockpitReconcileFn?: typeof reconcileCockpitSession;
+  /** t-eb0887fe: cap on concurrent non-lead member spawns. Lead is
+   *  always spawned sequentially first; teammates fan out via
+   *  `Promise.all` honouring this cap (default 6, env override via
+   *  `ATMUX_SPAWN_CONCURRENCY`). Tests pass `1` to force the legacy
+   *  serial behaviour or a larger value to exercise N-in-flight. */
+  spawnConcurrency?: number;
 }
 
 /**
@@ -623,6 +629,17 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   // 8. Spawn each member as a window (lib/start.sh:272-283 +
   //    _atmux_spawn_member lib/start.sh:400-440 — minus deferred
   //    TUI launch + brief paste).
+  //
+  // t-eb0887fe (2026-05-16): the lead is spawned sequentially FIRST so
+  // the handshake (window create + claude launch + bootClaudeMember
+  // readiness poll + brief paste) completes before any teammate starts
+  // — the lead's brief sets the team contract that teammates' briefs
+  // reference. Teammates then fan out via {@link runWithConcurrency}
+  // with a {@link resolveSpawnConcurrency} cap (default 6 in flight).
+  // 20-member teams previously cost ~5min wall-clock spawning serially
+  // through `bootClaudeMember`'s readiness probe (~15s per claude TUI);
+  // with the fan-out the wall-clock collapses to lead-handshake plus
+  // teammate-handshake-max, target <60s.
   const existing = await tmux.window.listWindows(session);
   const existingNames = new Set(existing.map((w) => w.name));
   let spawned = 0;
@@ -633,7 +650,15 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   // persistence, start spawns 🐝w1 while send looks for w1") names the
   // exact bug this persistence closes for default-scaffold teams.
   let stampedEmoji = false;
-  for (const member of team.members) {
+
+  // Per-member spawn closure. Iterates EVERY closure-state field via
+  // direct read; mutations are scoped to fields each member touches
+  // uniquely (`win` names are unique-per-member so the `existingNames`
+  // Set's reads/writes never contend, and `stampedEmoji` is
+  // write-only-to-true). The function body is byte-equivalent to the
+  // prior inline loop body for reviewer-diff readability — only the
+  // `for (const member of team.members) {` wrapper was replaced.
+  const spawnOneMember = async (member: typeof team.members[number]): Promise<void> => {
     const role = member.role ?? "member";
     const emoji = member.emoji ?? defaultEmojiForRole(role);
     if (member.emoji === undefined || member.emoji.length === 0) {
@@ -646,7 +671,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     const win = buildWindowName(member.name, emoji);
     if (existingNames.has(win)) {
       logger.log(`  · ${member.name}: window exists, skipping (use --force to reset)`);
-      continue;
+      return;
     }
     // ADR-135 §D4 — legacy member-window migration. Pre-ADR-135
     // teams have windows named `<emoji><member>` (no separator);
@@ -665,7 +690,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         );
         existingNames.add(win);
         existingNames.delete(winLegacy);
-        continue;
+        return;
       } catch (e) {
         const cause = e instanceof Error ? e.message : String(e);
         logger.warn(
@@ -792,7 +817,22 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         });
       }
     }
+  };
+
+  // t-eb0887fe: lead-first sequential, then teammates fan out. The
+  // lead's brief sets the team-wide contract that teammates' briefs
+  // reference (per `templates/briefs/team-lead.md` D5 + ADR-044), so we
+  // do NOT race the lead handshake with teammate spawns. After the
+  // lead's `bootClaudeMember` returns (booted | already-booted |
+  // failed), the remaining members spawn in parallel up to the
+  // configured concurrency cap.
+  const leadMember = team.members.find((m) => m.role === "team-lead");
+  const teammates = team.members.filter((m) => m !== leadMember);
+  if (leadMember !== undefined) {
+    await spawnOneMember(leadMember);
   }
+  const spawnCap = resolveSpawnConcurrency(opts.spawnConcurrency, env);
+  await runWithConcurrency(teammates, spawnCap, spawnOneMember);
 
   // 9. Close the `__<team>__home` placeholder if any members spawned
   //    AND non-placeholder windows now exist (lib/start.sh:288-294).
@@ -1014,6 +1054,59 @@ export function resolveTmuxConfig(
   if (parsed.socketPath !== undefined) return { socketPath: parsed.socketPath };
   if (parsed.socket !== undefined) return { socket: parsed.socket };
   return { socketPath: resolveTeamSocket(team) };
+}
+
+/** t-eb0887fe: resolve the cap on concurrent non-lead member spawns.
+ *  Precedence: explicit `opts.spawnConcurrency` > `ATMUX_SPAWN_CONCURRENCY`
+ *  env > 6 (default).
+ *
+ *  6 is the operating point in the brief's "5-8 in-flight, tune
+ *  empirically" sketch — high enough that 20-member teams complete
+ *  inside one bootClaude readiness-window (~15s) instead of cascading
+ *  20 × 15s = 5min, low enough that tmux's per-session window-create
+ *  serialisation doesn't bottleneck (we observe one new-window per
+ *  cap-slot, not 20 in-flight). Cap of 0 or negative falls through to
+ *  the default — never silently disables parallelism. Cap of 1
+ *  legitimately restores the sequential pre-t-eb0887fe behaviour and
+ *  is used by tests that assert ordering. */
+export function resolveSpawnConcurrency(
+  override: number | undefined,
+  env: NodeJS.ProcessEnv,
+): number {
+  if (override !== undefined && Number.isFinite(override) && override >= 1) {
+    return Math.floor(override);
+  }
+  const raw = env.ATMUX_SPAWN_CONCURRENCY;
+  if (raw !== undefined && raw.length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 1) return Math.floor(parsed);
+  }
+  return 6;
+}
+
+/** t-eb0887fe: bounded-concurrency Promise.all. Runs `fn(item)` for
+ *  each `items[i]` with at most `cap` in flight at any moment. Errors
+ *  propagate (a member spawn failure aborts the team — matching the
+ *  pre-t-eb0887fe behaviour where any `await` in the for-loop would
+ *  throw out of `start`). Cap is clamped to `[1, items.length]` so a
+ *  cap higher than the roster degenerates to plain `Promise.all`. */
+export async function runWithConcurrency<T>(
+  items: ReadonlyArray<T>,
+  cap: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  const effectiveCap = Math.max(1, Math.min(cap, items.length));
+  if (effectiveCap === 0) return;
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      await fn(items[i] as T, i);
+    }
+  };
+  await Promise.all(Array.from({ length: effectiveCap }, () => worker()));
 }
 
 /** ADR-081 §C: resolve the spawn-wait window between TUI launch and

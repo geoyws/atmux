@@ -295,7 +295,15 @@ atmux doctor --quiet       # no output, exit 0 on green / 1 on red (used by star
 atmux start --doctor       # verbose preflight before starting
 atmux start --no-doctor    # skip preflight entirely
 ATMUX_DOCTOR_ON_START=1    # env equivalent of --doctor (for cron)
+ATMUX_SPAWN_CONCURRENCY=6  # cap on concurrent teammate spawns (t-eb0887fe; default 6, lead always sequential first)
 ```
+
+`atmux start` spawns the lead member sequentially first (so the lead's brief
+lands before any teammate references the team contract), then fans the
+remaining members out concurrently up to `ATMUX_SPAWN_CONCURRENCY` (default 6
+in-flight). 20-member teams previously took ~5min wall-clock; the fan-out
+brings that to <60s. Set the env to `1` to restore the legacy strictly-serial
+behaviour (useful when debugging spawn-time race conditions).
 
 ## Troubleshooting
 
@@ -304,3 +312,4 @@ ATMUX_DOCTOR_ON_START=1    # env equivalent of --doctor (for cron)
 - **`atmux start` says "pane is `zsh` not `claude`"** — the TUI didn't launch. Check that `claude`/`opencode`/`kimi`/`cursor-agent` is on PATH for that member's cwd. Retry with `atmux start --force`.
 - **Messages go to a void** — the TUI is on its welcome screen. Give it `ATMUX_SPAWN_WAIT=10 atmux start` a longer runway.
 - **Lead keeps compacting** — run `atmux rotate-lead` to `/clear` + re-brief, or lower `ATMUX_LEAD_MAX_MIN`.
+- **Spawning a large team is slow** — `atmux start` now fans teammates out concurrently (default cap 6); set `ATMUX_SPAWN_CONCURRENCY=8` for very large rosters, or `=1` to bisect a spawn-time race.
