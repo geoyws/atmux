@@ -1912,10 +1912,12 @@ describe("cockpitRebuild", () => {
       // Nudge fires from the new canonical `cockpit.medic` read.
       expect(joined).toContain("/loop /superdoctor");
       expect(joined).toContain("medic");
-      // TR2 keeps window name as "superdoctor" (per task body — TR3
-      // ships the cascade rename).
+      // ADR-133 TR2 ships canonical "medic" window name; ADR-135 §D2
+      // adds the `_` prefix on cockpit-role windows. The post-rename
+      // canonical is `_medic`. (Pre-TR2 / pre-ADR-135 form was bare
+      // `"superdoctor"`.)
       const wins = await fx.tmux.window.listWindows("test_cockpit_medic_nudge");
-      expect(wins.map((w) => w.name)).toContain("superdoctor");
+      expect(wins.map((w) => w.name)).toContain("_medic");
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -1962,9 +1964,10 @@ describe("cockpitRebuild", () => {
       expect(joined).toContain("/loop /superdoctor");
       // Deprecation warning surfaces via stderr (default warn sink) —
       // not captured by `logs[]` since logger isn't passed to
-      // loadCockpit's warn. The W2 window still provisions.
+      // loadCockpit's warn. The W2 window still provisions, named
+      // canonically as `_medic` post-ADR-133 + ADR-135 §D2 `_` prefix.
       const wins = await fx.tmux.window.listWindows("test_cockpit_sd_depr");
-      expect(wins.map((w) => w.name)).toContain("superdoctor");
+      expect(wins.map((w) => w.name)).toContain("_medic");
     } finally {
       try {
         await fx.tmux.server.killServer();

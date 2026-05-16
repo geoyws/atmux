@@ -47,7 +47,7 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
-import { softStop } from "../core/soft-stop.ts";
+import { quiesceCron, softStop } from "../core/soft-stop.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import {
@@ -210,6 +210,26 @@ export async function stop(
   // semantics; the mutual-exclusion gate in parseStopArgs prevents
   // `--force --soft` ambiguity.
   if (parsed.soft) {
+    // ADR-087 §D4 (t-ccabd763): quiesce this team's whip + watchdog
+    // cron lines BEFORE softStop() runs. Closes the race where a
+    // mid-teardown cron tick re-pokes panes / re-spawns members /
+    // fires Discord pings against a stopping team. Non-fatal — a
+    // crontab swap failure here surfaces as a warn + soft-stop
+    // proceeds (the in-flight race risk degrades to today's bare
+    // soft-stop, not worse).
+    try {
+      const q = await quiesceCron({ atmuxDir });
+      if (q.suspended > 0 || q.alreadySuspended > 0) {
+        process.stdout.write(
+          `cron-quiesce: suspended ${q.suspended} new line(s)` +
+            (q.alreadySuspended > 0 ? `, ${q.alreadySuspended} already suspended` : "") +
+            "\n",
+        );
+      }
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`atmux: warn: cron-quiesce fell through: ${cause}\n`);
+    }
     const result = await softStop({
       team,
       atmuxDir,
