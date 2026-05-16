@@ -1557,7 +1557,7 @@ describe("checkWhipConfigDrift", () => {
     const rows = await checkWhipConfigDrift(atmuxDir);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("yellow");
-    expect(rows[0]?.label).toBe("whip-config-drift");
+    expect(rows[0]?.label).toBe("poke-config-drift");
     expect(rows[0]?.detail).toContain("validation failed");
     expect(rows[0]?.hint).toContain("edit team.json");
   });

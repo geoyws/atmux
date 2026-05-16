@@ -44,7 +44,7 @@ import {
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 import { defaultBriefsDir, getBriefPath } from "./rotate.ts";
-import { parseLeadCtxPct } from "./whip.ts";
+import { parseLeadCtxPct } from "./poke.ts";
 
 // ---------- Public types (test-injectable deps) ----------
 

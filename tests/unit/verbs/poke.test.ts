@@ -3,7 +3,7 @@
 //
 // Coverage strategy
 // -----------------
-// Pure helpers (parseWhipArgs, readWhipConfig, classifySessionState,
+// Pure helpers (parsePokeArgs, readWhipConfig, classifySessionState,
 // staleAnchor, selectStaleTasks, accountFromConfigDir, parseEnviron,
 // bullet80, lead-marker path helpers) tested directly. Side-effect
 // helpers (writeLeadSessionStart / ensureLeadSessionStart /
@@ -39,43 +39,43 @@ import {
   leadWindowNamePath,
   parseEnviron,
   parseLeadCtxPct,
-  parseWhipArgs,
+  parsePokeArgs,
   readLeadSessionStart,
   readLeadWindowName,
   readWhipConfig,
   selectStaleTasks,
   staleAnchor,
-  whip,
+  poke,
   writeLeadSessionStart,
-} from "../../../src/verbs/whip.ts";
+} from "../../../src/verbs/poke.ts";
 
-// ---------- parseWhipArgs ----------
+// ---------- parsePokeArgs ----------
 
-describe("parseWhipArgs", () => {
+describe("parsePokeArgs", () => {
   test("default — pushDiscord=true, no init/heartbeat/teamDir", () => {
-    expect(parseWhipArgs([])).toEqual({
+    expect(parsePokeArgs([])).toEqual({
       pushDiscord: true,
       initLeadMarker: false,
       forceHeartbeat: false,
     });
   });
   test("--no-discord flips pushDiscord", () => {
-    expect(parseWhipArgs(["--no-discord"]).pushDiscord).toBe(false);
+    expect(parsePokeArgs(["--no-discord"]).pushDiscord).toBe(false);
   });
   test("--init-lead-marker captured", () => {
-    expect(parseWhipArgs(["--init-lead-marker"]).initLeadMarker).toBe(true);
+    expect(parsePokeArgs(["--init-lead-marker"]).initLeadMarker).toBe(true);
   });
   test("--heartbeat captured", () => {
-    expect(parseWhipArgs(["--heartbeat"]).forceHeartbeat).toBe(true);
+    expect(parsePokeArgs(["--heartbeat"]).forceHeartbeat).toBe(true);
   });
   test("--team-dir captured", () => {
-    expect(parseWhipArgs(["--team-dir", "/x"]).teamDir).toBe("/x");
+    expect(parsePokeArgs(["--team-dir", "/x"]).teamDir).toBe("/x");
   });
   test("--team-dir without value → UsageError", () => {
-    expect(() => parseWhipArgs(["--team-dir"])).toThrow(UsageError);
+    expect(() => parsePokeArgs(["--team-dir"])).toThrow(UsageError);
   });
   test("unknown arg → UsageError", () => {
-    expect(() => parseWhipArgs(["--bogus"])).toThrow(UsageError);
+    expect(() => parsePokeArgs(["--bogus"])).toThrow(UsageError);
   });
 });
 
@@ -585,7 +585,7 @@ const seedTeam = async (
   );
 };
 
-describe("whip() — public verb", () => {
+describe("poke() — public verb", () => {
   let teamDir: string;
   let atmuxDir: string;
   let homeDir: string;
@@ -612,16 +612,16 @@ describe("whip() — public verb", () => {
   });
 
   test("UsageError on unknown arg", async () => {
-    await expect(whip(["--bogus"])).rejects.toBeInstanceOf(UsageError);
+    await expect(poke(["--bogus"])).rejects.toBeInstanceOf(UsageError);
   });
 
   test("ConfigError when team.json missing", async () => {
-    await expect(whip(["--team-dir", teamDir])).rejects.toBeInstanceOf(ConfigError);
+    await expect(poke(["--team-dir", teamDir])).rejects.toBeInstanceOf(ConfigError);
   });
 
   test("--init-lead-marker writes the I-1 marker + early-returns 0", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
-    const exit = await whip(["--team-dir", teamDir, "--init-lead-marker"], {
+    const exit = await poke(["--team-dir", teamDir, "--init-lead-marker"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -635,7 +635,7 @@ describe("whip() — public verb", () => {
   test("session UP, no members → all clean → heartbeat (default config.heartbeat=true)", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
     const sent: DiscordSendOpts[] = [];
-    const exit = await whip(["--team-dir", teamDir], {
+    const exit = await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -663,7 +663,7 @@ describe("whip() — public verb", () => {
       whip: { heartbeat: false },
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -684,7 +684,7 @@ describe("whip() — public verb", () => {
       whip: { heartbeat: false },
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir, "--heartbeat"], {
+    await poke(["--team-dir", teamDir, "--heartbeat"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -701,7 +701,7 @@ describe("whip() — public verb", () => {
   test("--no-discord skips every Discord send", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
     let called = false;
-    await whip(["--team-dir", teamDir, "--no-discord"], {
+    await poke(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -720,7 +720,7 @@ describe("whip() — public verb", () => {
     const tmux = buildFakeTmux({ sessionUp: false, panes: {} });
 
     // Tick 1: suppress (count=1 < threshold 2)
-    let exit = await whip(["--team-dir", teamDir, "--no-discord"], {
+    let exit = await poke(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -736,7 +736,7 @@ describe("whip() — public verb", () => {
     // Tick 2: count=2 ≥ 2 → report. Run with discord pings to verify
     // a 🛑 [whip-blocker] is dispatched + a 📊 [whip-progress] digest.
     const sent: DiscordSendOpts[] = [];
-    exit = await whip(["--team-dir", teamDir], {
+    exit = await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_300_000,
@@ -760,7 +760,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", role: "member", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -784,7 +784,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -817,7 +817,7 @@ describe("whip() — public verb", () => {
       ],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -874,7 +874,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -904,7 +904,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -932,7 +932,7 @@ describe("whip() — public verb", () => {
     });
     const sent: DiscordSendOpts[] = [];
     let envReadCount = 0;
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -962,7 +962,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -986,7 +986,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1012,7 +1012,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1052,7 +1052,7 @@ describe("whip() — public verb", () => {
       }),
     );
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1078,7 +1078,7 @@ describe("whip() — public verb", () => {
       whip: { staleMin: 1 },
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1113,7 +1113,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(atmuxDir, "state"), { recursive: true });
     await writeFile(join(atmuxDir, "state", "alice-rotated.epoch"), `${1_700_000_000 - 10}\n`);
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1148,7 +1148,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(atmuxDir, "state"), { recursive: true });
     await writeFile(join(atmuxDir, "state", "alice-rotated.epoch"), "not-a-number\n");
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1177,7 +1177,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
     await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1206,7 +1206,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
     await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1233,7 +1233,7 @@ describe("whip() — public verb", () => {
     });
     // Marker absent — auto-init will stamp nowSec, so uptime computes as 0.
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1260,7 +1260,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
     await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1288,7 +1288,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
     await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1319,7 +1319,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
     await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1353,7 +1353,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(homeDir, ".claude", "teams", "demo"), { recursive: true });
     await writeFile(leadWindowNamePath("demo", { home: homeDir }), "🧭-lead\n");
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1380,7 +1380,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1405,7 +1405,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1432,7 +1432,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1452,7 +1452,7 @@ describe("whip() — public verb", () => {
 
   test("ConfigError discordSend → soft-swallow (no stderr warn)", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1468,7 +1468,7 @@ describe("whip() — public verb", () => {
 
   test("non-Config discord error → stderr warn, still exit 0", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
-    const exit = await whip(["--team-dir", teamDir], {
+    const exit = await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1486,7 +1486,7 @@ describe("whip() — public verb", () => {
 
   test("non-Error rejection routes through String(e) fallback", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1504,7 +1504,7 @@ describe("whip() — public verb", () => {
   test("webhookOverride forwarded to discordSend opts", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1525,7 +1525,7 @@ describe("whip() — public verb", () => {
     const prior = process.env.ATMUX_DISCORD_RECORDER;
     process.env.ATMUX_DISCORD_RECORDER = recorder;
     try {
-      const exit = await whip(["--team-dir", teamDir], {
+      const exit = await poke(["--team-dir", teamDir], {
         stdout,
         stderr,
         now: () => 1_700_000_000_000,
@@ -1552,7 +1552,7 @@ describe("whip() — public verb", () => {
       return true;
     }) as typeof process.stdout.write;
     try {
-      await whip(["--team-dir", teamDir, "--no-discord"], {
+      await poke(["--team-dir", teamDir, "--no-discord"], {
         now: () => 1_700_000_000_000,
         home: homeDir,
         env: {},
@@ -1566,7 +1566,7 @@ describe("whip() — public verb", () => {
 
   test("default clock engaged when `now` omitted", async () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
-    const exit = await whip(["--team-dir", teamDir, "--no-discord"], {
+    const exit = await poke(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       home: homeDir,
@@ -1584,7 +1584,7 @@ describe("whip() — public verb", () => {
     // tick. Just asserting the call completes without hitting the
     // defaultReadMemberEnv branch is enough — that path is covered by
     // the next test.
-    const exit = await whip(["--team-dir", teamDir, "--no-discord"], {
+    const exit = await poke(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1607,7 +1607,7 @@ describe("whip() — public verb", () => {
     // We don't assert on the env contents (depends on host); we just
     // assert that the read path was exercised without crashing.
     const sent: DiscordSendOpts[] = [];
-    const exit = await whip(["--team-dir", teamDir], {
+    const exit = await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1629,7 +1629,7 @@ describe("whip() — public verb", () => {
     await mkdir(join(atmuxDir, "state"), { recursive: true });
     // Write an invalid-JSON state file so readSessionState's catch fires.
     await writeFile(join(atmuxDir, "state", "whip-session-state.json"), "{not valid json");
-    const exit = await whip(["--team-dir", teamDir, "--no-discord"], {
+    const exit = await poke(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1655,7 +1655,7 @@ describe("whip() — public verb", () => {
     for (const c of cases) {
       await writeFile(join(atmuxDir, "state", "whip-session-state.json"), c);
       stdoutBuf = "";
-      const exit = await whip(["--team-dir", teamDir, "--no-discord"], {
+      const exit = await poke(["--team-dir", teamDir, "--no-discord"], {
         stdout,
         stderr,
         now: () => 1_700_000_000_000,
@@ -1672,7 +1672,7 @@ describe("whip() — public verb", () => {
     await seedTeam(atmuxDir, { name: "demo", members: [] });
     const explosion = new Error("flock library missing");
     await expect(
-      whip(["--team-dir", teamDir, "--no-discord"], {
+      poke(["--team-dir", teamDir, "--no-discord"], {
         stdout,
         stderr,
         now: () => 1_700_000_000_000,
@@ -1700,7 +1700,7 @@ describe("whip() — public verb", () => {
       ],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1744,7 +1744,7 @@ describe("whip() — public verb", () => {
       whip: { staleMin: 60, leadMaxMin: 45 }, // valid sub-shape
     });
     const sent: DiscordSendOpts[] = [];
-    const exit = await whip(["--team-dir", teamDir, "--heartbeat"], {
+    const exit = await poke(["--team-dir", teamDir, "--heartbeat"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1767,7 +1767,7 @@ describe("whip() — public verb", () => {
       whip: { unknownTypoKey: 1, staleMin: 60 },
     });
     const sent: DiscordSendOpts[] = [];
-    const exit = await whip(["--team-dir", teamDir, "--heartbeat"], {
+    const exit = await poke(["--team-dir", teamDir, "--heartbeat"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1793,7 +1793,7 @@ describe("whip() — public verb", () => {
       whip: { budgetPauseThreshold: "ninety" },
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir, "--heartbeat"], {
+    await poke(["--team-dir", teamDir, "--heartbeat"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1818,7 +1818,7 @@ describe("whip() — public verb", () => {
     await mkdir(atmuxDir, { recursive: true });
     await writeFile(join(atmuxDir, "team.json"), "{not valid json");
     const sent: DiscordSendOpts[] = [];
-    const exit = await whip(["--team-dir", teamDir, "--heartbeat"], {
+    const exit = await poke(["--team-dir", teamDir, "--heartbeat"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1855,8 +1855,8 @@ describe("whip() — public verb", () => {
         sent.push(o);
       },
     };
-    await whip(["--team-dir", teamDir, "--heartbeat"], sharedOpts);
-    await whip(["--team-dir", teamDir, "--heartbeat"], sharedOpts);
+    await poke(["--team-dir", teamDir, "--heartbeat"], sharedOpts);
+    await poke(["--team-dir", teamDir, "--heartbeat"], sharedOpts);
     const driftPings = sent.filter((s) => s.template === "whip-config-drift");
     // Only 1 drift ping despite 2 ticks with the same drift.
     expect(driftPings).toHaveLength(1);
@@ -1869,7 +1869,7 @@ describe("whip() — public verb", () => {
       whip: { unknownTypoKey: 1 },
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir, "--no-discord"], {
+    await poke(["--team-dir", teamDir, "--no-discord"], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1911,8 +1911,8 @@ describe("whip() — public verb", () => {
       discordSend: slowSend(150),
     } as const;
     const [r1, r2] = await Promise.all([
-      whip(["--team-dir", teamDir, "--heartbeat"], opts1),
-      whip(["--team-dir", teamDir, "--heartbeat"], opts2),
+      poke(["--team-dir", teamDir, "--heartbeat"], opts1),
+      poke(["--team-dir", teamDir, "--heartbeat"], opts2),
     ]);
     expect(r1).toBe(0);
     expect(r2).toBe(0);
@@ -1941,7 +1941,7 @@ describe("whip() — public verb", () => {
     );
 
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => nowMs,
@@ -1967,7 +1967,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -1995,7 +1995,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -2036,9 +2036,9 @@ describe("whip() — public verb", () => {
       },
     });
     const sent1: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], tickOpts(sent1));
+    await poke(["--team-dir", teamDir], tickOpts(sent1));
     const sent2: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], tickOpts(sent2));
+    await poke(["--team-dir", teamDir], tickOpts(sent2));
     expect(sent1.filter((s) => s.template === "whip-perm-mode-drift")).toHaveLength(1);
     expect(sent2.filter((s) => s.template === "whip-perm-mode-drift")).toHaveLength(0);
   });
@@ -2049,7 +2049,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -2082,7 +2082,7 @@ describe("whip() — public verb", () => {
       members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
     });
     const sent: DiscordSendOpts[] = [];
-    await whip(["--team-dir", teamDir], {
+    await poke(["--team-dir", teamDir], {
       stdout,
       stderr,
       now: () => 1_700_000_000_000,
@@ -2141,14 +2141,14 @@ describe("whip() — public verb", () => {
       };
 
       // Tick 1: emit (transition from no-state).
-      await whip(["--team-dir", teamDir], tickArgs);
+      await poke(["--team-dir", teamDir], tickArgs);
       const tick1Overdue = sent.filter((s) => s.template === "whip-overdue").length;
       const tick1Progress = sent.filter((s) => s.template === "whip-progress").length;
       expect(tick1Overdue).toBe(1);
       expect(tick1Progress).toBe(1);
 
       // Tick 2 (same clock → identical bullet): SUPPRESS.
-      await whip(["--team-dir", teamDir], tickArgs);
+      await poke(["--team-dir", teamDir], tickArgs);
       const tick2Overdue = sent.filter((s) => s.template === "whip-overdue").length;
       const tick2Progress = sent.filter((s) => s.template === "whip-progress").length;
       expect(tick2Overdue).toBe(1); // unchanged from tick 1
@@ -2180,11 +2180,11 @@ describe("whip() — public verb", () => {
       };
 
       // Tick 1 at uptime=5min.
-      await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_000_000 });
+      await poke(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_000_000 });
       expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(1);
 
       // Tick 2 at uptime=10min (different bullet → different hash → emit).
-      await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_300_000 });
+      await poke(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_300_000 });
       expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(2);
     });
 
@@ -2216,11 +2216,11 @@ describe("whip() — public verb", () => {
       };
 
       // Tick 1.
-      await whip(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_000_000 });
+      await poke(["--team-dir", teamDir], { ...baseArgs, now: () => 1_700_000_000_000 });
       expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(1);
 
       // Tick 2 at +65min (past 60min heartbeat window): re-emit.
-      await whip(["--team-dir", teamDir], {
+      await poke(["--team-dir", teamDir], {
         ...baseArgs,
         now: () => 1_700_000_000_000 + 65 * 60_000,
       });
@@ -2256,7 +2256,7 @@ describe("whip() — public verb", () => {
       };
 
       for (let i = 0; i < 12; i++) {
-        await whip(["--team-dir", teamDir], tickArgs);
+        await poke(["--team-dir", teamDir], tickArgs);
       }
 
       // Exactly 1 emit per gated template (tick 1 transitions; ticks 2-12
@@ -2320,7 +2320,7 @@ describe("whip() — public verb", () => {
       const clarifierCalls: Array<{ member: string; message: string }> = [];
       const flagCalls: Array<{ subject: string; body: string }> = [];
 
-      await whip(["--team-dir", teamDir], {
+      await poke(["--team-dir", teamDir], {
         stdout,
         stderr,
         now: () => NOW_MS,
@@ -2401,9 +2401,9 @@ describe("whip() — public verb", () => {
       };
 
       // Tick 1 — fires.
-      await whip(["--team-dir", teamDir], { ...baseOpts, now: () => NOW_MS });
+      await poke(["--team-dir", teamDir], { ...baseOpts, now: () => NOW_MS });
       // Tick 2 — 5 min later, within 30min dedup window → must NOT re-fire.
-      await whip(["--team-dir", teamDir], { ...baseOpts, now: () => NOW_MS + 5 * 60 * 1000 });
+      await poke(["--team-dir", teamDir], { ...baseOpts, now: () => NOW_MS + 5 * 60 * 1000 });
 
       expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(1);
       expect(clarifierCalls).toHaveLength(1);
@@ -2420,7 +2420,7 @@ describe("whip() — public verb", () => {
       const sent: DiscordSendOpts[] = [];
       const clarifierCalls: string[] = [];
 
-      await whip(["--team-dir", teamDir], {
+      await poke(["--team-dir", teamDir], {
         stdout,
         stderr,
         now: () => NOW_MS,
@@ -2457,7 +2457,7 @@ describe("whip() — public verb", () => {
       const sent: DiscordSendOpts[] = [];
       const clarifierCalls: string[] = [];
 
-      await whip(["--team-dir", teamDir], {
+      await poke(["--team-dir", teamDir], {
         stdout,
         stderr,
         now: () => NOW_MS,
@@ -2493,7 +2493,7 @@ describe("whip() — public verb", () => {
 
       const sent: DiscordSendOpts[] = [];
 
-      await whip(["--team-dir", teamDir], {
+      await poke(["--team-dir", teamDir], {
         stdout,
         stderr,
         now: () => NOW_MS,

@@ -680,9 +680,9 @@ export async function checkWhipConfigDrift(atmuxDir: string): Promise<DoctorRow[
   return [
     {
       status: "yellow",
-      label: "whip-config-drift",
+      label: "poke-config-drift",
       detail: driftReport.catastrophic
-        ? `team.json malformed — whip will use full safe defaults${firstSummary}`
+        ? `team.json malformed — poke will use full safe defaults${firstSummary}`
         : `team.json::whip validation failed — ${issuesCount} issue(s)${firstSummary}`,
       hint: "edit team.json + re-run atmux doctor (per ADR-054)",
     },
