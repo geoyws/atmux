@@ -124,6 +124,20 @@ describe("parseTellLeadArgs", () => {
   test("unknown -* flag → UsageError", () => {
     expect(() => parseTellLeadArgs(["--bogus", "msg"])).toThrow(UsageError);
   });
+
+  test("ADR-092: --team <name> populates targetTeam", () => {
+    const a = parseTellLeadArgs(["--team", "alpha", "msg"]);
+    expect(a.targetTeam).toBe("alpha");
+    expect(a.msg).toBe("msg");
+  });
+
+  test("ADR-092: --team without value → UsageError", () => {
+    expect(() => parseTellLeadArgs(["--team"])).toThrow(UsageError);
+  });
+
+  test("ADR-092: --team is default-unset on bare invocation (fast-path preserved)", () => {
+    expect(parseTellLeadArgs(["msg"]).targetTeam).toBeUndefined();
+  });
 });
 
 // ---------- Pure: findLead ----------

@@ -17,10 +17,16 @@ import { statOrNull, writeText } from "../abstractions/fs.ts";
 import { formatMyt } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import {
+  callerScopeAllowed,
+  findTeamByName,
+  loadCockpit,
+} from "../core/cockpit.ts";
+import {
   buildWindowName,
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
+  getTeamName,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
@@ -30,7 +36,7 @@ import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
-const USAGE = "atmux tell-lead <msg...>";
+const USAGE = "atmux tell-lead [--team <name>] [--socket <p>] [--team-dir <d>] <msg...>";
 
 const DRIVER_INBOX_HEADER = `# Driver Inbox — driver asks for the lead
 
@@ -42,16 +48,22 @@ Keep entries bulleted, terse, and timestamped. Move >24h entries to "## Archive"
 ## Open
 `;
 
-/** Parsed `tell-lead` argv. */
+/** Parsed `tell-lead` argv. `targetTeam` (ADR-092 §D1) populates from
+ *  `--team <name>`; when set the verb routes through cockpit-walk +
+ *  scope-gate to address a different team's lead. When unset, falls
+ *  back to the existing cwd-derived single-team path (byte-identical
+ *  per Decision-anchor #1). */
 export interface TellLeadArgs {
   msg: string;
   socketPath?: string;
   teamDir?: string;
+  targetTeam?: string;
 }
 
 export function parseTellLeadArgs(argv: ReadonlyArray<string>): TellLeadArgs {
   let socketPath: string | undefined;
   let teamDir: string | undefined;
+  let targetTeam: string | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -73,6 +85,15 @@ export function parseTellLeadArgs(argv: ReadonlyArray<string>): TellLeadArgs {
       i += 2;
       continue;
     }
+    if (a === "--team") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "tell-lead: --team requires a team name", hint: USAGE });
+      }
+      targetTeam = v;
+      i += 2;
+      continue;
+    }
     if (a === "--") {
       i += 1;
       break;
@@ -89,6 +110,7 @@ export function parseTellLeadArgs(argv: ReadonlyArray<string>): TellLeadArgs {
   const out: TellLeadArgs = { msg };
   if (socketPath !== undefined) out.socketPath = socketPath;
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (targetTeam !== undefined) out.targetTeam = targetTeam;
   return out;
 }
 
@@ -104,10 +126,53 @@ export function findLead(members: ReadonlyArray<TeamMember>): TeamMember | undef
   return members.find((m) => m.name === "lead");
 }
 
-/** `atmux tell-lead <msg...>`. Returns 0 on success. */
+/** `atmux tell-lead [--team <name>] <msg...>`. Returns 0 on success.
+ *
+ *  Default (no `--team`): cwd-derived single-team path — byte-identical
+ *  to pre-ADR-092 behavior (Decision-anchor #1 — no regression on the
+ *  hot path).
+ *
+ *  `--team <name>`: ADR-092 cross-team routing. Resolves target via
+ *  cockpit-walk ({@link findTeamByName}), applies caller-scope gate
+ *  ({@link callerScopeAllowed}), then routes through the existing
+ *  same-team send-path against the *target* team's `team.json` +
+ *  cage socket. */
 export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   const parsed = parseTellLeadArgs(argv);
-  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  let dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+
+  // ADR-092 §D1 — cross-team resolution. Same-team default skips this
+  // block entirely (fast-path preserved per Decision-anchor #1).
+  if (parsed.targetTeam !== undefined) {
+    const cockpit = await loadCockpit();
+    const target = findTeamByName(cockpit, parsed.targetTeam);
+    if (target === null) {
+      throw new ConfigError({
+        what: `tell-lead --team: no team \`${parsed.targetTeam}\` in cockpit tree`,
+        hint: "check ~/.atmux/cockpit.json (or ATMUX_COCKPIT_CONFIG); team name must match a `type: \"team\"` or `type: \"epic-team\"` node",
+      });
+    }
+    // ADR-092 §D3 caller-scope gate. Source team is the cwd-derived
+    // team (when running from inside a cage) OR `driver` (cockpit pane
+    // sets ATMUX_CALLER_SCOPE=driver). Per Decision-anchor #4 the env
+    // var name is exact-match — no shorthand.
+    const callerScope = process.env.ATMUX_CALLER_SCOPE;
+    const sourceName = await resolveSourceTeamName(dirOpts);
+    if (!callerScopeAllowed(cockpit, sourceName, parsed.targetTeam, callerScope)) {
+      // ADR-092 §D3 + Decision-anchor #5 — refusal text names both
+      // ends so the operator can triage the policy violation.
+      throw new ConfigError({
+        what: `cross-team tell-lead refused: ${sourceName} → ${parsed.targetTeam} not allowed (driver / parent / parent-of-target only)`,
+        hint: "set ATMUX_CALLER_SCOPE=driver in the cockpit pane to override, or route via the parent team's lead",
+      });
+    }
+    // Re-anchor dirOpts to the target team's root so getAtmuxDir +
+    // requireTeam resolve against the *target* `.atmux/team.json`. The
+    // rest of the function is unchanged — same send path, just pointed
+    // at a different cage socket + atmuxDir.
+    dirOpts = { teamDir: target.root };
+  }
+
   const team: Team = await requireTeam(dirOpts);
 
   const lead = findLead(team.members);
@@ -214,6 +279,18 @@ export function buildHeadsUp(msg: string): string {
   const truncated = msg.slice(0, 80);
   const ellipsis = msg.length > 80 ? "…" : "";
   return `📬 driver-inbox has a new ask: ${truncated}${ellipsis}`;
+}
+
+/** ADR-092 §D3 helper — resolve the *source* team name for the caller-scope
+ *  gate. Tries the cwd-derived team.json first; falls back to the literal
+ *  `"<unknown>"` when no team.json is reachable (cockpit-driver case where
+ *  the gate is bypassed via `ATMUX_CALLER_SCOPE=driver` anyway). */
+async function resolveSourceTeamName(dirOpts: ResolveDirOpts): Promise<string> {
+  try {
+    return await getTeamName(dirOpts);
+  } catch {
+    return "<unknown>";
+  }
 }
 
 async function appendDriverInbox(atmuxDir: string, msg: string): Promise<void> {

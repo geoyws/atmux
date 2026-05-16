@@ -489,6 +489,86 @@ export function walkSessions(
   }
 }
 
+// ---------- ADR-092: cross-team tell-lead lookup + caller-scope gate ----------
+
+/** Result of `findTeamByName` — narrowed view of the matched cockpit
+ *  node. Only `team` / `epic-team` nodes match (other session types
+ *  don't host a backing team cage). `root` resolves to the node's own
+ *  root for `type: "team"` and to the nearest ancestor `team.root` for
+ *  `type: "epic-team"` (epic-teams share parent's worktree per ADR-089
+ *  §F). Per ADR-092 §D2 Decision-anchor #2 — first match wins on name
+ *  collision; cockpit-validation flags dupes at load time. */
+export interface CockpitTeamLookup {
+  type: "team" | "epic-team";
+  name: string;
+  root: string;
+  level: number;
+  /** Populated for `type: "epic-team"` — references the parent team
+   *  name; consumers (caller-scope gate) join on this to drive the
+   *  parent ↔ child policy table. */
+  parent?: string;
+}
+
+/** ADR-092 §D2 — depth-first match on `node.name` across `cockpit.sessions[]`.
+ *  Returns the first matching `team` / `epic-team` node, or `null` when
+ *  no match. Pure (no IO); reuses {@link walkSessions} for the DFS walk
+ *  so traversal-order matches every other cockpit consumer (`enabledTeams`
+ *  / synthesis paths). */
+export function findTeamByName(
+  cockpit: CockpitShape,
+  name: string,
+): CockpitTeamLookup | null {
+  let found: CockpitTeamLookup | null = null;
+  walkSessions(cockpit.sessions ?? [], 0, (node, level, parentRoot) => {
+    if (found !== null) return;
+    if (node.type !== "team" && node.type !== "epic-team") return;
+    if (node.name !== name) return;
+    const out: CockpitTeamLookup = {
+      type: node.type,
+      name: node.name,
+      root: node.type === "team" ? node.root : (parentRoot ?? ""),
+      level,
+    };
+    if (node.type === "epic-team") out.parent = node.parent;
+    found = out;
+  });
+  return found;
+}
+
+/** ADR-092 §D3 — symmetric caller-scope gate. Allowed transitions:
+ *
+ *   1. `ATMUX_CALLER_SCOPE === "driver"` — master override (cockpit
+ *      driver pane). Always allowed.
+ *   2. `sourceName === targetName` — degenerate same-team case; allowed
+ *      (no cross-team boundary crossed).
+ *   3. Source is `epic-team` with `parent === targetName` — child → parent.
+ *   4. Target is `epic-team` with `parent === sourceName` — parent → child.
+ *
+ *  Everything else (siblings, unrelated teams) refuses. Refusal in
+ *  caller responsibility — this function returns the boolean; the
+ *  verb wraps refusal in a ConfigError with both names per D6
+ *  Decision-anchor #5.
+ *
+ *  Pure (no IO). Unknown source/target names (not present in cockpit)
+ *  fall through to `false` — the caller's lookup will fail first with
+ *  a clearer message, but the gate's conservative posture is
+ *  refuse-on-unknown rather than allow-by-default. */
+export function callerScopeAllowed(
+  cockpit: CockpitShape,
+  sourceName: string,
+  targetName: string,
+  callerScope: string | undefined,
+): boolean {
+  if (callerScope === "driver") return true;
+  if (sourceName === targetName) return true;
+  const src = findTeamByName(cockpit, sourceName);
+  const tgt = findTeamByName(cockpit, targetName);
+  if (src === null || tgt === null) return false;
+  if (src.type === "epic-team" && src.parent === tgt.name) return true;
+  if (tgt.type === "epic-team" && tgt.parent === src.name) return true;
+  return false;
+}
+
 // ---------- ADR-089 §C: F-key prefix chain + ATMUX_NESTING_LEVEL ----------
 
 /** Default F-key prefix chain. Twelve entries (F1..F12) cover every
