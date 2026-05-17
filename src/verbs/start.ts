@@ -115,7 +115,6 @@ import {
   addEpicViewerToParentCage,
   enabledTeams,
   loadCockpit,
-  perTeamCageSocketPath,
   readNestingLevel,
   resolvePrefix,
 } from "../core/cockpit.ts";
@@ -958,11 +957,18 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
           `epic-viewer: parent team '${parentName}' not found in cockpit roster — skipping viewer add (run cockpit reload + atmux start again)`,
         );
       } else {
+        // Honour the epic team.json's `tmuxTmpdir` (ADR-089 §Pillar 1
+        // nests epic cages under `<parent-tmpdir>/epics/<epicId>`, NOT
+        // under the epic's project root — so `perTeamCageSocketPath`
+        // would target the wrong path). `resolveTeamSocket` falls back
+        // to the legacy `/tmp/atmux-<name>/sock` when tmuxTmpdir is
+        // null, matching `addEpicViewerToParentCage`'s parent-side
+        // resolution via `resolveCageSocket`.
         await addEpicViewerToParentCage({
           parentRoot: parentEntry.root,
           parentName,
           epicId: team.name,
-          epicSocket: perTeamCageSocketPath(dir.replace(/\/\.atmux\/?$/, "")),
+          epicSocket: resolveTeamSocket(team),
           epicSession: team.name.startsWith("atmux-") ? team.name : `atmux-${team.name}`,
           tmuxFactory: factory as Parameters<typeof addEpicViewerToParentCage>[0]["tmuxFactory"],
           log: (m) => logger.log(`  ${m.replace(/^\s+/, "")}`),
