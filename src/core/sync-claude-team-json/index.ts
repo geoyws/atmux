@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { readTextOrNull } from "../../abstractions/fs.ts";
 import type { ResolveDirOpts } from "../common.ts";
 import { tryLoadTeam } from "../common.ts";
-import { mapRoster } from "./mapping.ts";
+import { mapRoster, mergeBriefs } from "./mapping.ts";
 import type {
   ClaudeTeam,
   ClaudeTeamMember,
@@ -26,6 +26,10 @@ export interface ComputeOpts extends ResolveDirOpts {
   /** Override the directory used to locate `.claude/team.json` +
    *  `.claude/team-colors.json`. Defaults to `<cwd>/.claude`. */
   claudeDir?: string;
+  /** Brief-preservation override per ADR-164 §"Behavior" step 6 + §OQ-4.
+   *  Default false → preserve non-empty Claude-side `role` text. True →
+   *  replace every member's `role` with the atmux-side role-enum. */
+  overwriteBriefs?: boolean;
 }
 
 export interface ComputeResult {
@@ -76,7 +80,10 @@ export async function computeMappedTeam(
   const sidecar = await readLooseJson<ColorSidecar>(
     join(dir, "team-colors.json"),
   );
-  const members = mapRoster(team.members, sidecar);
+  const mapped = mapRoster(team.members, sidecar);
+  const members = mergeBriefs(prior, mapped, team.members, {
+    overwriteBriefs: opts.overwriteBriefs ?? false,
+  });
   return {
     prior,
     computed: {

@@ -39,10 +39,45 @@ export async function dispatchSyncSubverb(argv: ReadonlyArray<string>): Promise<
   }
 }
 
-// T2 stub — T3 (t-312fe824) replaces with the real core mapping call
-// against src/core/sync-claude-team-json/*. The stub-shape preserves
-// the dispatcher contract (Promise<number>) so the wiring + flag-parse
-// surface can ship in parallel with the core mapping work.
-async function syncClaudeTeamJson(_argv: ReadonlyArray<string>): Promise<number> {
-  throw new Error("atmux sync claude-team-json: not yet implemented — see T3-T6 (ADR-164)");
+// Flag-parse contract for `atmux sync claude-team-json`. T4 (t-87e81c8e)
+// lands `--overwrite-briefs` so unknown-flag refusal is in place ahead of
+// T6's full dispatcher wiring. T5 adds `--force` (drift override); T6
+// adds `--dry-run` + threads the parsed flags into computeMappedTeam +
+// the write path.
+interface SyncClaudeTeamJsonFlags {
+  overwriteBriefs: boolean;
+}
+
+function parseSyncClaudeTeamJsonFlags(
+  argv: ReadonlyArray<string>,
+): SyncClaudeTeamJsonFlags {
+  const flags: SyncClaudeTeamJsonFlags = { overwriteBriefs: false };
+  for (const a of argv) {
+    if (a === "--overwrite-briefs") {
+      flags.overwriteBriefs = true;
+      continue;
+    }
+    if (a.startsWith("-")) {
+      throw new UsageError({
+        what: `sync claude-team-json: unknown flag: ${a}`,
+        hint: "known flags: --overwrite-briefs",
+      });
+    }
+    throw new UsageError({
+      what: `sync claude-team-json: unexpected positional arg: ${a}`,
+      hint: "this subverb takes no positional args; try --overwrite-briefs",
+    });
+  }
+  return flags;
+}
+
+// T2 stub — T6 (ADR-164) replaces with the real core mapping call against
+// src/core/sync-claude-team-json/*. Flag-parsing surface lands in T4
+// (this file) so unknown-flag refusal predates the write/dry-run wiring.
+async function syncClaudeTeamJson(argv: ReadonlyArray<string>): Promise<number> {
+  // Parse-and-discard for now — surfaces typos like `--overwrite-brief`
+  // (missing 's') ahead of T6. The parsed flags will thread into
+  // computeMappedTeam({ overwriteBriefs }) once T6 wires the write path.
+  parseSyncClaudeTeamJsonFlags(argv);
+  throw new Error("atmux sync claude-team-json: not yet implemented — see T5-T6 (ADR-164)");
 }
