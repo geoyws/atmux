@@ -47,9 +47,11 @@ import type { GitSpawn } from "../abstractions/branch-merge.ts";
 import { defaultGitSpawn, MergeConflictError, mergeMember } from "../abstractions/branch-merge.ts";
 import {
   type BranchMergeState,
+  canEnterMerging,
   isTerminalState,
   type PreMergeGateInput,
   shouldTransitionFromInProgress,
+  type TestOutcome,
 } from "./branch-merge-state.ts";
 import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
 
@@ -134,6 +136,36 @@ export interface EpicMergeContext {
    *  `src/core/*` free of `src/verbs/*` imports — layering stays
    *  clean. */
   dispatchDissolve?: (epicId: string, by: string) => Promise<boolean>;
+  /** ADR-144 §Two test-isolation modes (T3 + T4). Default `"skip"`
+   *  preserves the pre-ADR-144 direct `ready_to_merge → merging` flow
+   *  (back-compat for epic-teams created before T3 lands). `"cage"`
+   *  routes through {@link runTestGate} with the cage-mode runner;
+   *  `"deployed"` routes through the deployed-mode runner (T4). The
+   *  caller (verbs/epic-merge.ts) resolves this from
+   *  `team.epicTeam.testGateMode`. */
+  testGateMode?: "skip" | "cage" | "deployed";
+  /** ADR-144 §Cage mode / §Deployed mode test-runner hook. When
+   *  `testGateMode !== "skip"` and the state machine reaches
+   *  `ready_to_merge`, the wrapper transitions `ready_to_merge →
+   *  tested` and then invokes this callback to get the actual test
+   *  outcome. The hook returns `"pass"` / `"fail"`; the wrapper
+   *  records it via `merger_state.test_outcome` and then advances
+   *  either `tested → merging` (PASS) or `tested → test_failed`
+   *  (FAIL).
+   *
+   *  Production hook (cage mode): wraps `runCageTestGate` from
+   *  `src/core/epic-test-cage.ts` — provision + bun test + teardown.
+   *  Production hook (deployed mode): T4 — deploy branch-staging URL
+   *  + `pnpm e2e` against E2E_BASE_URL + teardown.
+   *
+   *  The hook is async and surfaces a `note` string the wrapper folds
+   *  into `merger_state.note` (e.g. "cage tests passed in 2.3min" /
+   *  "test failed: foo.test.ts on attempt 2/2"). Layering note: the
+   *  hook indirection keeps `src/core/epic-merge.ts` free of cage-
+   *  runner imports — verbs/epic-merge.ts wires the production
+   *  default; unit tests stub a sync `{ outcome: "pass", note: "..."
+   *  }`. */
+  testGate?: (ctx: EpicMergeContext) => Promise<{ outcome: TestOutcome; note: string }>;
 }
 
 /** Result of one `performEpicMerge` tick. Same shape as
@@ -174,6 +206,14 @@ function guardedTransition(
     now: number;
     baseSha?: string | null;
     conflictSha?: string | null;
+    /** ADR-144 T2/T3: optional test-outcome to persist through the
+     *  transition. The repo's UPSERT semantics are "complete snapshot"
+     *  per the v8→v9 column comment — callers who want to preserve a
+     *  sticky outcome across non-test transitions must re-pass the
+     *  observed outcome here. {@link runMergeFromTested} does this so
+     *  the audit trail shows `test_outcome="pass"` on the final
+     *  `merged` row. */
+    testOutcome?: TestOutcome | null;
   },
 ): { applied: boolean; observedFrom: BranchMergeState } {
   const current = repo.getState(args.epicBranch);
@@ -192,6 +232,7 @@ function guardedTransition(
   };
   if (args.baseSha !== undefined) tx.baseSha = args.baseSha;
   if (args.conflictSha !== undefined) tx.conflictSha = args.conflictSha;
+  if (args.testOutcome !== undefined) tx.testOutcome = args.testOutcome;
   repo.transition(tx);
   return { applied: true, observedFrom: observed };
 }
@@ -386,23 +427,321 @@ export async function performEpicMerge(ctx: EpicMergeContext): Promise<PerformEp
         dissolveDispatched: false,
       };
     }
-    // mergeMode === "auto" — proceed with the merge.
+    // ADR-144 §Two test-isolation modes (T3 t-8cba0705): when the
+    // team configures a test-gate, route through `tested` BEFORE the
+    // merge step. Default `"skip"` preserves the pre-ADR-144 direct
+    // `ready_to_merge → merging` path; cage/deployed modes invoke the
+    // test-runner hook and gate on its outcome. Misconfiguration
+    // (mode != "skip" + hook undefined) is refused inside runTestGate
+    // so the parent-trunk integrity gate can't accidentally degrade
+    // to silent-skip.
+    const gateMode = ctx.testGateMode ?? "skip";
+    if (gateMode !== "skip") {
+      return await runTestGate(ctx, t, by, now);
+    }
+    // mergeMode === "auto" + testGateMode === "skip" — proceed with
+    // the merge directly (pre-ADR-144 behavior).
     return await runAutoMerge(ctx, t, by, now);
   }
 
-  // rebasing / merging / tested / test_failed — observed mid-flight
-  // states. ADR-091 epic-team scope does NOT use the `tested`
-  // intermediate (the trunk-signoff Task is the test-coverage gate
-  // per §Decision-anchor #5, applied at the in_progress→
-  // ready_to_merge boundary instead of post-merge). `rebasing` and a
-  // mid-flight `merging` (e.g. crash-mid-merge) are no-op observed
-  // states; operator manual reset + the next cron tick re-evaluate.
+  // tested — caller may have left the row here mid-flight (the test
+  // runner crashed before recording the outcome). Re-evaluate: if the
+  // row already carries a `test_outcome` (e.g. operator wrote
+  // "bypass" via `atmux epic-merge advance --to merging`), advance to
+  // merging on PASS/bypass. Otherwise stay in `tested` for operator
+  // inspection.
+  if (currentState === "tested") {
+    return await resumeFromTested(ctx, t, by, now, row?.testOutcome ?? null);
+  }
+
+  // rebasing / merging / test_failed — observed mid-flight states.
+  // `rebasing` and a mid-flight `merging` (e.g. crash-mid-merge) are
+  // no-op observed states; operator manual reset + the next cron tick
+  // re-evaluate. `test_failed` waits on operator `atmux epic-merge
+  // advance --to in-progress` to retry per ADR-144 §test_failed
+  // recovery.
   return {
     state: currentState,
     changed: false,
     reason: `state '${currentState}' is mid-flight or operator-resolution-required — waiting on outer wiring`,
     dissolveDispatched: false,
   };
+}
+
+// ---------- Internal — ADR-144 test-gate runner ----------
+
+/** Composes the `ready_to_merge → tested → (merging | test_failed)`
+ *  sequence for ADR-144 cage / deployed test gates. The actual test
+ *  execution lives behind {@link EpicMergeContext.testGate} — this
+ *  function owns the state-machine progression + outcome recording.
+ *
+ *  Lifecycle:
+ *
+ *    1. Optimistic transition `ready_to_merge → tested` (durable
+ *       signal before invoking the hook — mirrors the merging-first
+ *       pattern in {@link runAutoMerge}). `test_outcome` written
+ *       as `null` initially so a crash mid-test leaves a clearly-
+ *       "tests-in-flight" row for operator inspection.
+ *    2. Invoke `ctx.testGate(ctx)` → resolves with `{ outcome, note }`.
+ *    3. On PASS: update row with `test_outcome="pass"` + proceed
+ *       into the actual merge via {@link runAutoMerge}-style flow
+ *       (tested → merging → merged|conflict → dissolve).
+ *    4. On FAIL: update row with `test_outcome="fail"` + transition
+ *       `tested → test_failed`. Operator unblocks via `atmux
+ *       epic-merge advance --to in-progress` per ADR-144.
+ *    5. On BYPASS: caller doesn't fire this path — operator bypasses
+ *       go through `atmux epic-merge advance --to merging
+ *       --skip-test-gate` which writes `test_outcome="bypass"` and
+ *       sets state directly to merging. */
+async function runTestGate(
+  ctx: EpicMergeContext,
+  t: number,
+  by: string,
+  now: () => number,
+): Promise<PerformEpicMergeResult> {
+  if (ctx.testGate === undefined) {
+    throw new Error("runTestGate: invariant — testGate hook required when testGateMode !== 'skip'");
+  }
+  // Optimistic transition to `tested` — durable signal before
+  // invoking the (potentially long-running) test command.
+  const enter = guardedTransition(ctx.repo, {
+    epicBranch: ctx.epicBranch,
+    fromState: "ready_to_merge",
+    toState: "tested",
+    note: `${ctx.testGateMode}-mode test gate running`,
+    by,
+    now: t,
+  });
+  if (!enter.applied) {
+    return {
+      state: enter.observedFrom,
+      changed: false,
+      reason: `concurrency lost entering tested: row was '${enter.observedFrom}'`,
+      dissolveDispatched: false,
+    };
+  }
+
+  // Invoke the test-runner hook. The hook handles its own try/finally
+  // teardown; any throw propagates here and we leave the row in
+  // `tested` for operator inspection.
+  let gateResult: { outcome: TestOutcome; note: string };
+  try {
+    gateResult = await ctx.testGate(ctx);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      state: "tested",
+      changed: true,
+      reason: `${ctx.testGateMode}-mode test gate threw — row left in 'tested' for inspection: ${msg}`,
+      dissolveDispatched: false,
+    };
+  }
+
+  const t2 = now();
+  if (gateResult.outcome === "fail") {
+    // Record fail outcome + transition to terminal-but-recoverable
+    // `test_failed`. The repo.transition() carries the outcome
+    // through the UPSERT.
+    ctx.repo.transition({
+      memberBranch: ctx.epicBranch,
+      next: "test_failed",
+      note: gateResult.note,
+      by,
+      testOutcome: "fail",
+      transitionedAt: t2,
+    });
+    return {
+      state: "test_failed",
+      changed: true,
+      reason: gateResult.note,
+      dissolveDispatched: false,
+    };
+  }
+
+  // outcome === "pass" — record PASS outcome on the `tested` row,
+  // then fall through to the merge step.
+  ctx.repo.transition({
+    memberBranch: ctx.epicBranch,
+    next: "tested",
+    note: gateResult.note,
+    by,
+    testOutcome: "pass",
+    transitionedAt: t2,
+  });
+  // Now run the merge step: tested → merging → merged|conflict.
+  return await runMergeFromTested(ctx, t2, by, now, "pass");
+}
+
+/** Resume from a `tested` row observed at tick-start. Used when the
+ *  row was left in `tested` by a prior tick — e.g. the test-gate
+ *  hook crashed before transitioning to merging or test_failed, OR
+ *  the operator wrote `test_outcome="bypass"` via `atmux epic-merge
+ *  advance` and we now need to advance into merging.
+ *
+ *  Branches on the row's `test_outcome`:
+ *
+ *    - `null` — no outcome recorded; stay in `tested` and surface a
+ *      reason ("test runner crashed — re-run via advance --to
+ *      ready_to_merge" — actually we go via `--to in_progress`).
+ *    - `"pass"` or `"bypass"` — advance into the merge step.
+ *    - `"fail"` — transition to `test_failed`. Shouldn't normally
+ *      happen here (runTestGate already terminals on fail) but
+ *      handles the case where the row was manually set to `tested` +
+ *      `fail` outcome. */
+async function resumeFromTested(
+  ctx: EpicMergeContext,
+  t: number,
+  by: string,
+  now: () => number,
+  outcome: TestOutcome | null,
+): Promise<PerformEpicMergeResult> {
+  if (outcome === null) {
+    return {
+      state: "tested",
+      changed: false,
+      reason:
+        "row in 'tested' with no test_outcome recorded — test runner crashed or in-flight; operator can advance via `atmux epic-merge advance --to in-progress` to retry",
+      dissolveDispatched: false,
+    };
+  }
+  if (outcome === "fail") {
+    // Convert to test_failed — the row was probably written by a
+    // half-completed runTestGate that crashed mid-transition. Roll
+    // forward to the terminal.
+    ctx.repo.transition({
+      memberBranch: ctx.epicBranch,
+      next: "test_failed",
+      note: "outcome=fail observed on resume; advancing to test_failed",
+      by,
+      testOutcome: "fail",
+      transitionedAt: t,
+    });
+    return {
+      state: "test_failed",
+      changed: true,
+      reason: "outcome=fail observed on resume; advancing to test_failed",
+      dissolveDispatched: false,
+    };
+  }
+  // pass or bypass — gate is permitting the merge per canEnterMerging.
+  if (!canEnterMerging("tested", "merging", outcome)) {
+    // Defensive — should never trigger given the branches above, but
+    // surfaces the gate contract explicitly.
+    return {
+      state: "tested",
+      changed: false,
+      reason: `unexpected test_outcome='${outcome}' on resume — gate refused`,
+      dissolveDispatched: false,
+    };
+  }
+  return await runMergeFromTested(ctx, t, by, now, outcome);
+}
+
+/** Shared `tested → merging → merged | conflict` runner. Composes the
+ *  merge step + dispatchDissolve hook identically to
+ *  {@link runAutoMerge} — extracted so the ADR-144 test-gate path and
+ *  the resume-from-tested path share one implementation.
+ *
+ *  Pre-condition: caller has already verified `canEnterMerging` and
+ *  `currentOutcome` is `"pass"` or `"bypass"`. The outcome is
+ *  re-passed through every subsequent transition so audit trail
+ *  preserves it on the row (UPSERT contract — see merger-state-repo
+ *  v8→v9 comment). */
+async function runMergeFromTested(
+  ctx: EpicMergeContext,
+  t: number,
+  by: string,
+  now: () => number,
+  currentOutcome: TestOutcome,
+): Promise<PerformEpicMergeResult> {
+  // Optimistic transition tested → merging.
+  const enter = guardedTransition(ctx.repo, {
+    epicBranch: ctx.epicBranch,
+    fromState: "tested",
+    toState: "merging",
+    note: `running git merge --no-ff ${ctx.epicBranch} on parent ${ctx.parentBase}`,
+    by,
+    now: t,
+    testOutcome: currentOutcome,
+  });
+  if (!enter.applied) {
+    return {
+      state: enter.observedFrom,
+      changed: false,
+      reason: `concurrency lost entering merging from tested: row was '${enter.observedFrom}'`,
+      dissolveDispatched: false,
+    };
+  }
+
+  const opts: { git?: GitSpawn; fetch?: boolean } = {};
+  if (ctx.git !== undefined) opts.git = ctx.git;
+  if (ctx.fetch !== undefined) opts.fetch = ctx.fetch;
+  else opts.git = ctx.git ?? defaultGitSpawn;
+
+  try {
+    const mr = await mergeMember(ctx.parentBase, ctx.epicBranch, ctx.parentRepoPath, opts);
+    const t2 = now();
+    if (mr.status === "no-op") {
+      const reason = `no-op (no commits ahead of ${ctx.parentBase}) — dissolve still pending`;
+      const r = guardedTransition(ctx.repo, {
+        epicBranch: ctx.epicBranch,
+        fromState: "merging",
+        toState: "merged",
+        note: reason,
+        by,
+        now: t2,
+        testOutcome: currentOutcome,
+      });
+      const dispatched = r.applied ? await tryDispatchDissolve(ctx, by) : false;
+      return {
+        state: r.applied ? "merged" : r.observedFrom,
+        changed: r.applied,
+        reason,
+        dissolveDispatched: dispatched,
+      };
+    }
+    const reason = `merge sha ${mr.sha} on ${ctx.parentBase} — dissolve dispatching`;
+    const r = guardedTransition(ctx.repo, {
+      epicBranch: ctx.epicBranch,
+      fromState: "merging",
+      toState: "merged",
+      note: reason,
+      by,
+      now: t2,
+      baseSha: mr.sha,
+      testOutcome: currentOutcome,
+    });
+    const dispatched = r.applied ? await tryDispatchDissolve(ctx, by) : false;
+    const result: PerformEpicMergeResult = {
+      state: r.applied ? "merged" : r.observedFrom,
+      changed: r.applied,
+      reason,
+      dissolveDispatched: dispatched,
+    };
+    if (r.applied) result.mergedSha = mr.sha;
+    return result;
+  } catch (e) {
+    if (e instanceof MergeConflictError) {
+      const paths = e.conflictPaths.slice(0, 5).join(", ");
+      const reason = `conflict on ${e.wtBranch}: ${paths}`;
+      const t2 = now();
+      ctx.repo.transition({
+        memberBranch: ctx.epicBranch,
+        next: "conflict",
+        note: reason,
+        by,
+        transitionedAt: t2,
+        testOutcome: currentOutcome,
+      });
+      return {
+        state: "conflict",
+        changed: true,
+        reason,
+        dissolveDispatched: false,
+      };
+    }
+    throw e;
+  }
 }
 
 // ---------- Internal — auto-mode merge runner ----------

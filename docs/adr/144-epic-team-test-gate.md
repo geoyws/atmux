@@ -163,10 +163,42 @@ Per Task t-49bd4fe1 the state-machine + repo-layer + operator bypass surfaces la
 - `tests/unit/verbs/epic-merge-advance.test.ts` — parser + driver-scope gate + transition validity + test-gate refusal + bypass log emission + recovery transitions.
 
 **Deferred to T3/T4/T5:**
-- T3 cage-mode test runner — invokes `bun test` inside `/tmp/atmux_${team}_${epic}_test_cage/` then transitions `ready_to_merge → tested` with the resulting `testOutcome`.
+- T3 cage-mode test runner — invokes `bun test` inside `/tmp/atmux_${team}_${epic}_test_cage/` then transitions `ready_to_merge → tested` with the resulting `testOutcome`. **Shipped 2026-05-17 — see §Amendment T3 below.**
 - T4 deployed-mode branch-staging — same shape via `scripts/deploy.sh` + `E2E_BASE_URL`.
 - T5 Discord templates `[epic-test-pass]` / `[epic-test-fail]` / `[test-gate-bypass]` + e2e synthetic-epic-team walks for both modes + ADR-144 status flip to `accepted`.
-- Wiring of the `runAutoMerge` flow in `src/core/epic-merge.ts` to route through `ready_to_merge → tested` (vs. today's direct `ready_to_merge → merging`) when `team.epicTeam.testGateMode !== "skip"`. Today's direct path is preserved as the `skip` mode fallback per the table in §Decision; T3/T4 swap in the real test runner that decides which transition to fire.
+- Wiring of the `runAutoMerge` flow in `src/core/epic-merge.ts` to route through `ready_to_merge → tested` (vs. today's direct `ready_to_merge → merging`) when `team.epicTeam.testGateMode !== "skip"`. **Shipped 2026-05-17 as part of T3.** Today's direct path is preserved as the `skip` mode fallback per the table in §Decision; T3/T4 swap in the real test runner that decides which transition to fire.
+
+## §Amendment T3 2026-05-17 (t-8cba0705)
+
+Per Task t-8cba0705 the cage-mode test runner + epic-merge wiring landed. T4 (be-1, deployed-mode) consumes the schema fields added here; T5 ships Discord templates + e2e + ADR status flip.
+
+**Shipped (epic-branch `geoyws-epic-e-03919b3b`):**
+
+- **Schema** (`src/schema/team.ts::TeamEpic`): added ADR-144 config fields with defaults — `testGateMode` (default `"skip"` for back-compat), `testCommand` (default `"bun test --timeout 30000"`), `retryOnFlake` (default `1`), `cageTmpdir` (default `/tmp/atmux_${team}_${epic}_test_cage`, nullable for deployed mode), `testTimeoutMin` (default `30`), `requiredPasses` (default `1`), `stagingUrlTemplate` (default `null`, set by T4 deployed-mode).
+- **Cage runner module** (`src/core/epic-test-cage.ts`):
+  - `expandCagePath(template, team, epic)` — `${team}` + `${epic}` placeholder expansion.
+  - `tokenizeTestCommand(cmd)` — shell-ish argv splitter with quote handling; no `$VAR` / backtick interpretation.
+  - `provisionCage(cagePath)` — `mkdir -p`, idempotent.
+  - `teardownCage(cagePath)` — `rm -rf`, idempotent.
+  - `runCageTestOnce(...)` — single-attempt test execution wrapping the command in `env -u TMUX TMUX_TMPDIR=<cagePath> <cmd>` per [[feedback_pause_bun_tests]] — the `env -u TMUX` is the no-shell equivalent of `unset TMUX &&` that prevents the bun-test orphan-survival path from killing the parent cage.
+  - `runCageTest(opts)` — retry loop with PASS-wins-immediately semantics per §retryOnFlake; honors `retryOnFlake: 0` to disable retry; clamps negative retryOnFlake to 0.
+  - `runCageTestGate(opts)` — full lifecycle (`provision → run → teardown`); teardown fires in `finally` so a wedged bun process can't leak cage tmpdirs. Teardown failures are swallowed so they don't mask a successful test outcome.
+- **State machine wiring** (`src/core/epic-merge.ts`):
+  - New `EpicMergeContext.testGateMode` (`"skip" | "cage" | "deployed"`) + `testGate?(ctx): Promise<{ outcome, note }>` hook field. Hook indirection keeps `src/core/*` free of cage-runner imports; verbs/epic-merge.ts wires the production cage default; tests stub a sync hook.
+  - `runTestGate(ctx, t, by, now)` — composes the `ready_to_merge → tested → (merging | test_failed)` sequence. Optimistic transition to `tested` BEFORE invoking the hook (durable signal — a crash mid-test leaves an operator-visible row).
+  - `resumeFromTested(ctx, t, by, now, outcome)` — handles ticks that observe a `tested` row at start (crash recovery, operator-written bypass outcome). Branches on the recorded `test_outcome` (`null` → stay, `fail` → terminal `test_failed`, `pass`/`bypass` → advance to merge).
+  - `runMergeFromTested(ctx, ...)` — shared `tested → merging → merged | conflict` runner. Re-passes the row's `test_outcome` through every subsequent transition so the audit trail shows the gate evidence on the final `merged` / `conflict` row.
+  - `guardedTransition` helper extended to accept an optional `testOutcome` field for preserving the gate evidence across transitions.
+  - Mis-config refusal: `testGateMode !== "skip"` AND `testGate` hook undefined throws an invariant violation rather than silently degrading to skip — the parent-trunk gate must not bypass by accident.
+- **Production verb wiring** (`src/verbs/epic-merge.ts`): the cron tick verb wires the cage hook when `epicTeam.testGateMode === "cage"` and `cageTmpdir` is non-null. The hook expands the cage path with the team name + parentEpicKanbanId, runs `runCageTestGate` with the team's `testCommand` + `retryOnFlake` + `testTimeoutMin`, and folds the result's attempts + exitCode + durationMs into the `merger_state.note`.
+
+**Coverage**: 100% func / 99.20% line on `epic-test-cage.ts`; 93.33% func / 88.11% line on `epic-merge.ts` (uncovered lines are existing pre-T3 helper paths not exercised by the new ADR-144 tests). 27 new cage tests + 12 new ADR-144 state-machine routing tests.
+
+**Test files added:**
+- `tests/unit/core/epic-test-cage.test.ts` — 27 tests covering path expansion, tokeniser, provision/teardown, single-attempt run, retry loop with PASS/FAIL/flake-then-pass scenarios, full lifecycle teardown-on-throw.
+- `tests/unit/core/epic-merge.test.ts` extended with 12 ADR-144 tests — cage mode PASS/FAIL/hook-throws, skip mode (default + explicit), invariant violation on missing hook, resume-from-tested with all four outcome states, conflict-during-merge preserves outcome.
+
+**Layering note:** `src/core/*` imports `src/abstractions/*` only; cage runner sits in core, production verb wires it together. No verb-layer imports from core (already-established direction).
 
 ## Cross-refs
 

@@ -47,6 +47,7 @@ import {
   type PerformEpicMergeResult,
   performEpicMerge,
 } from "../core/epic-merge.ts";
+import { expandCagePath, runCageTestGate } from "../core/epic-test-cage.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { logTestGateBypass } from "../core/test-gate-bypass.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -300,6 +301,13 @@ export async function epicMergeTickVerb(
       parentBase: epicTeam.parentBase,
       git,
     });
+    // ADR-144 §Cage mode (T3 t-8cba0705): when the team configures
+    // `testGateMode: "cage"`, wire the production cage runner hook.
+    // The hook expands the cage tmpdir template, runs the test command
+    // with `env -u TMUX TMUX_TMPDIR=<cage>` per [[feedback_pause_bun_tests]],
+    // retries on flake per `retryOnFlake`, and returns the outcome.
+    // T4 wires the deployed-mode runner in a sibling closure.
+    const testGateMode = epicTeam.testGateMode ?? "skip";
     const ctx: EpicMergeContext = {
       epicBranch,
       parentBase: epicTeam.parentBase,
@@ -320,7 +328,27 @@ export async function epicMergeTickVerb(
       // still dissolve manually if this fails (the merger_state.note
       // carries the merge SHA + epicId for traceability).
       dispatchDissolve: defaultDispatchDissolve,
+      testGateMode,
     };
+    if (testGateMode === "cage" && epicTeam.cageTmpdir !== null) {
+      const cageTmpdir = epicTeam.cageTmpdir;
+      const testCommand = epicTeam.testCommand;
+      const retryOnFlake = epicTeam.retryOnFlake;
+      const testTimeoutMin = epicTeam.testTimeoutMin;
+      ctx.testGate = async () => {
+        const cagePath = expandCagePath(cageTmpdir, team.name, epicTeam.parentEpicKanbanId);
+        const result = await runCageTestGate({
+          cagePath,
+          testCommand,
+          cwd: epicRepoPath,
+          timeoutMs: testTimeoutMin * 60_000,
+          retryOnFlake,
+        });
+        const passSpec = result.outcome === "pass" ? "passed" : "failed";
+        const note = `cage tests ${passSpec} (attempts=${result.attempts}, exit=${result.last.exitCode}, durationMs=${result.totalDurationMs})`;
+        return { outcome: result.outcome, note };
+      };
+    }
     const result = await performEpicMerge(ctx);
     logTickResult(result, logger, team.name, epicTeam.parentBase);
     return 0;
