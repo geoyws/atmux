@@ -23,6 +23,7 @@
 //                         spawn-epic / dissolve-epic per ADR-033)
 
 import { join } from "node:path";
+import { resolveClaudeWrapper } from "../abstractions/claude-account-wrapper.ts";
 import {
   type CockpitRotateRefusedOpts,
   type DiscordSendOpts,
@@ -31,11 +32,41 @@ import {
 } from "../abstractions/discord.ts";
 import { appendText as appendTextDefault, statOrNull } from "../abstractions/fs.ts";
 import { now as nowMsDefault } from "../abstractions/time.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  type SendTarget,
+  type Target,
+  type TmuxConfig,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
+import {
+  type LoadCockpitOpts,
+  type LoadedCockpit,
+  loadCockpit as loadCockpitDefault,
+} from "../core/cockpit.ts";
 import { resolveCallerScope } from "../core/common.ts";
-import { classifyText, type PaneState } from "../core/pane-state.ts";
+import { type CaptureFn, classifyText, type PaneState } from "../core/pane-state.ts";
+import {
+  type PaneVerifier,
+  type SendKeysFn,
+  safeSendKeysWithVerify as safeSendKeysWithVerifyDefault,
+} from "../core/safe-send.ts";
 import { getCockpitSocketName } from "../core/tmux-paths.ts";
+import type { Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type {
+  CockpitClaudeAccount,
+  CockpitMedic,
+  CockpitSentinel,
+  CockpitTeam,
+  CockpitTuiOverrides,
+} from "../schema/cockpit.ts";
+import {
+  autoStartSentinelLoop as autoStartSentinelLoopDefault,
+  autoStartSuperdoctorLoop as autoStartSuperdoctorLoopDefault,
+  buildSentinelWindowCommand,
+  buildTeamWindowCommand,
+} from "./cockpit.ts";
 
 /** Parsed shape for `atmux cockpit rotate` argv. */
 export interface ParsedCockpitRotateArgs {
@@ -278,6 +309,38 @@ export interface CockpitRotateOpts {
   /** Override the team identifier in Discord refusal pings. Default
    *  `"atmux"` — cockpit rotation is cockpit-scoped, not per-team. */
   discordTeam?: string;
+  /** Cockpit-config loader seam (T4 t-a245bbc8). Default reads + parses
+   *  `~/.atmux/cockpit.json` via `core/cockpit.loadCockpit`. Tests
+   *  inject a synthesized `LoadedCockpit` to assert per-role
+   *  claudeAccount + tuiOverrides flow without touching disk. */
+  loadCockpit?: (opts?: LoadCockpitOpts) => Promise<LoadedCockpit>;
+  /** Verified send-keys seam (T4 t-a245bbc8). Used to fire Ctrl-C at
+   *  the target pane with a verifier that the claude TUI exited. Default
+   *  delegates to `src/core/safe-send.ts::safeSendKeysWithVerify` with
+   *  tmux capture / sendKeys adapters around the cockpit socket. */
+  safeSendKeysWithVerify?: typeof safeSendKeysWithVerifyDefault;
+  /** Medic cadence re-arm seam (T4 t-a245bbc8). Default delegates to
+   *  `autoStartSuperdoctorLoop` (mirrors cockpit rebuild's auto-start).
+   *  Returns void; errors are swallowed inside the default impl (non-
+   *  fatal — operator falls back to manual `/loop /medic` if the marker
+   *  isn't detected within the timeout). */
+  autoStartMedicLoop?: typeof autoStartSuperdoctorLoopDefault;
+  /** Sentinel cadence re-arm seam (T4 t-a245bbc8). Same shape + posture
+   *  as `autoStartMedicLoop`. Skipped at the call site for cursor-impl
+   *  sentinels (per ADR-132 §D4 — no claude TUI to re-arm). */
+  autoStartSentinelLoop?: typeof autoStartSentinelLoopDefault;
+  /** Logger seam for the re-arm helpers (T4 t-a245bbc8). Default
+   *  forwards via stderr; tests inject a recorder to assert the post-
+   *  spawn cadence sequence. The autoStart helpers tag every log line
+   *  themselves; this seam is a passthrough. Full `Logger` interface
+   *  (log/ok/warn/err) per src/core/tui.ts so the autoStart helpers
+   *  can call any method without type widening at the call site. */
+  cadenceLogger?: Logger;
+  /** Auto-start settle timeout (ms) for the re-arm helpers. Default
+   *  30_000 — matches cockpit rebuild's `autoStartTimeoutSec=30`. Tests
+   *  pass `0` so the helper bails immediately after pane readiness
+   *  check. */
+  autoStartTimeoutMs?: number;
 }
 
 interface ResolvedDeps {
@@ -293,15 +356,22 @@ interface ResolvedDeps {
   appendText: (path: string, content: string) => Promise<void>;
   discordSend: (opts: DiscordSendOpts) => Promise<void>;
   discordTeam: string;
+  loadCockpit: (opts?: LoadCockpitOpts) => Promise<LoadedCockpit>;
+  safeSendKeysWithVerify: typeof safeSendKeysWithVerifyDefault;
+  autoStartMedicLoop: typeof autoStartSuperdoctorLoopDefault;
+  autoStartSentinelLoop: typeof autoStartSentinelLoopDefault;
+  cadenceLogger: Logger;
+  autoStartTimeoutMs: number;
 }
 
 function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
   const env = opts.env ?? process.env;
   const homeDir = opts.homeDir ?? env.HOME ?? "/root";
+  const stderr = opts.stderr ?? ((msg: string) => process.stderr.write(msg));
   return {
     env,
     callerScope: opts.callerScope ?? (() => resolveCallerScope({ env })),
-    stderr: opts.stderr ?? ((msg: string) => process.stderr.write(msg)),
+    stderr,
     nowMs: opts.nowMs ?? nowMsDefault,
     homeDir,
     cockpitSessionName: opts.cockpitSessionName ?? COCKPIT_SESSION_DEFAULT,
@@ -311,6 +381,17 @@ function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
     appendText: opts.appendText ?? appendTextDefault,
     discordSend: opts.discordSend ?? discordSendDefault,
     discordTeam: opts.discordTeam ?? "atmux",
+    loadCockpit: opts.loadCockpit ?? loadCockpitDefault,
+    safeSendKeysWithVerify: opts.safeSendKeysWithVerify ?? safeSendKeysWithVerifyDefault,
+    autoStartMedicLoop: opts.autoStartMedicLoop ?? autoStartSuperdoctorLoopDefault,
+    autoStartSentinelLoop: opts.autoStartSentinelLoop ?? autoStartSentinelLoopDefault,
+    cadenceLogger: opts.cadenceLogger ?? {
+      log: (msg: string) => stderr(`${msg}\n`),
+      ok: (msg: string) => stderr(`${msg}\n`),
+      warn: (msg: string) => stderr(`${msg}\n`),
+      err: (msg: string) => stderr(`${msg}\n`),
+    },
+    autoStartTimeoutMs: opts.autoStartTimeoutMs ?? 30_000,
   };
 }
 
@@ -379,6 +460,352 @@ async function emitRefusal(
   } catch {
     // Discord is best-effort — never block the verb on the webhook.
   }
+}
+
+// ---------- T4: respawn-path helpers ----------
+
+/** Pane-state verifier used after Ctrl-C: returns true when the claude
+ *  TUI is no longer visible (no `❯` compose prompt, no `✻`/`✽` thinking
+ *  spinners, no `Compacting conversation` banner). Slot into the safe-
+ *  send retry loop via {@link sendCtrlCWithVerify}; exported for direct
+ *  unit testing of the regex contract. */
+export const claudeUiGoneVerifier: PaneVerifier = (text: string) =>
+  !/❯|Cooked|Schlepping|Honking|Compacting/.test(text);
+
+/** Build the claude-respawn shell command for medic + sentinel-claude.
+ *  Invokes the c-alias wrapper by name (per ADR-167 §Decision wrapper
+ *  resolver) so the wrapper's shell init exports the canonical c-alias
+ *  env (CLAUDE_CONFIG_DIR + CLAUDECODE + CLAUDE_CODE_EFFORT_LEVEL +
+ *  CLAUDE_GUARD_AGENT) before exec'ing claude. Unknown configDir
+ *  throws ConfigError (refused upstream of any pane mutation).
+ *
+ *  Differs from cockpit rebuild's `buildClaudeWindowCommand` (which
+ *  uses an inline env-set + bare `claude` binary): rotate respawn
+ *  honors the literal ADR-167 spec text + lets fe-2's T7 hermetic
+ *  fixtures exercise the resolver by stubbing the wrapper name on
+ *  PATH (Plan A per the T6/T7 design handoff). */
+export function buildClaudeRespawnCommand(
+  account: CockpitClaudeAccount | undefined,
+  tuiOverrides: CockpitTuiOverrides | undefined,
+): string {
+  const configDir = account?.configDir ?? "/root/.claude";
+  const wrapper = resolveClaudeWrapper(configDir);
+  const permission = tuiOverrides?.permissionMode ?? "auto";
+  const pluginFlag =
+    tuiOverrides?.pluginDir !== undefined ? ` --plugin-dir=${tuiOverrides.pluginDir}` : "";
+  // CLAUDE_GUARD_AGENT explicit on the line (the wrapper exports it
+  // too, but belt-and-suspenders matches global CLAUDE.md §Spawn
+  // Pattern verbatim).
+  return `CLAUDE_GUARD_AGENT=1 ${wrapper}${pluginFlag} --permission-mode ${permission} --model claude-opus-4-7`;
+}
+
+/** Emit a success-outcome audit row. Mirrors `emitRefusal` but without
+ *  the Discord ping — success is quiet (Discord noise budget is
+ *  reserved for refusals + p0-class incidents). The audit row is the
+ *  source of truth for post-incident "when did medic last rotate?"
+ *  forensics. */
+async function emitSuccess(
+  deps: ResolvedDeps,
+  args: {
+    role: RoleId;
+    sessionName: string;
+    durationMs: number;
+    handoffPath?: string;
+  },
+): Promise<void> {
+  const tsIso = new Date(deps.nowMs()).toISOString();
+  const callerScope = deps.callerScope() === "driver" ? "driver" : "member";
+  const row: CockpitRotateAuditRow = {
+    ts: tsIso,
+    role: args.role,
+    sessionName: args.sessionName,
+    outcome: "success",
+    durationMs: args.durationMs,
+    callerScope,
+  };
+  if (args.handoffPath !== undefined) row.handoffPath = args.handoffPath;
+  try {
+    await deps.appendText(auditLogPath(deps.homeDir), serializeAuditRow(row));
+  } catch {
+    // Observability is non-fatal — respawn already succeeded. Operator
+    // can re-grep tmux server state to verify the new pane.
+  }
+}
+
+/** Emit a respawn-failure audit row (NDJSON). No Discord — respawn
+ *  failures are surfaced via stderr + exit 70; the audit row carries
+ *  forensic detail for post-incident analysis. */
+async function emitRespawnFailure(
+  deps: ResolvedDeps,
+  args: {
+    role: RoleId;
+    sessionName: string;
+    durationMs: number;
+    error: string;
+  },
+): Promise<void> {
+  const tsIso = new Date(deps.nowMs()).toISOString();
+  const callerScope = deps.callerScope() === "driver" ? "driver" : "member";
+  const row: CockpitRotateAuditRow = {
+    ts: tsIso,
+    role: args.role,
+    sessionName: args.sessionName,
+    outcome: "respawn-failed",
+    durationMs: args.durationMs,
+    callerScope,
+    error: args.error,
+  };
+  try {
+    await deps.appendText(auditLogPath(deps.homeDir), serializeAuditRow(row));
+  } catch {
+    // Observability is non-fatal — exit code + stderr already surface
+    // the failure to the operator.
+  }
+}
+
+/** Send Ctrl-C to the target pane with the claude-UI-gone verifier
+ *  (3s grace per ADR-167 §Per-role respawn matrix step 3). The HUP
+ *  fallback in ADR-167 is implicit in the subsequent `killWindow` call
+ *  — tmux delivers SIGHUP to the pane's process group on kill, so a
+ *  C-c-resistant claude process gets HUP'd anyway. The verifier
+ *  outcome is logged but not gating (we kill the pane regardless to
+ *  reach the desired end-state). */
+async function sendCtrlCWithVerify(
+  deps: ResolvedDeps,
+  windowName: string,
+  role: RoleId,
+): Promise<{ success: boolean; attempts: number }> {
+  const tmux = deps.tmuxFactory({ socket: deps.cockpitSocketName });
+  const paneTarget: Target = `${deps.cockpitSessionName}:${windowName}`;
+  const sendTarget: SendTarget = {
+    kind: "member",
+    member: role,
+    team: deps.cockpitSessionName,
+    target: paneTarget,
+  };
+  const captureFn: CaptureFn = (t: string) => tmux.pane.capturePane({ target: t });
+  const sendKeysFn: SendKeysFn = async (_t: string, text: string) => {
+    await tmux.pane.sendKeys({
+      target: sendTarget,
+      keys: text,
+      enter: false,
+    });
+  };
+  const result = await deps.safeSendKeysWithVerify({
+    target: paneTarget as string,
+    keys: "C-c",
+    expectVerifier: claudeUiGoneVerifier,
+    timeoutMs: 3000,
+    retries: 0,
+    onFail: "escalate",
+    capture: captureFn,
+    sendKeys: sendKeysFn,
+  });
+  return { success: result.success, attempts: result.attempts };
+}
+
+/** Resolve the cockpit's per-role config block (claudeAccount +
+ *  tuiOverrides) for medic / sentinel from `LoadedCockpit`. Returns
+ *  null when the block isn't declared — the caller defaults to the
+ *  bare-`claude` wrapper resolution (`/root/.claude` → `claude`). */
+function readMedicConfig(cockpit: LoadedCockpit): CockpitMedic | null {
+  return cockpit.medic ?? null;
+}
+function readSentinelConfig(cockpit: LoadedCockpit): CockpitSentinel | null {
+  return cockpit.sentinel ?? null;
+}
+function readTeamConfig(cockpit: LoadedCockpit, teamName: string): CockpitTeam | null {
+  return cockpit.teams.find((t) => t.name === teamName) ?? null;
+}
+
+/** Per-role respawn flow: kill the target window, build the per-role
+ *  command, new-window, re-arm cadence, emit success audit row.
+ *  Returns the verb's exit code. */
+async function performRespawn(
+  deps: ResolvedDeps,
+  role: RoleId,
+  parsed: ParsedCockpitRotateArgs,
+  startMs: number,
+): Promise<number> {
+  // TODO(T5 t-fe3464df): assemble role-specific handoff payload +
+  //   atomic-write to ~/.claude/teams/__cockpit__/<role>/handoff.md
+  //   per ADR-167 §Ordering invariant (handoff write lands BEFORE
+  //   Ctrl-C so the rotation is re-traceable if a later step crashes).
+  //   T4 leaves the placeholder here; T5 wires the real payload.
+
+  const windowName = targetWindowForRole(role, parsed.sessionName);
+  let cmd: string;
+  let cockpit: LoadedCockpit;
+  try {
+    cockpit = await deps.loadCockpit({ home: deps.homeDir });
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    deps.stderr(
+      `cockpit rotate: loadCockpit failed (${cause}); cannot resolve claudeAccount for respawn\n`,
+    );
+    await emitRespawnFailure(deps, {
+      role,
+      sessionName: parsed.sessionName,
+      durationMs: deps.nowMs() - startMs,
+      error: `loadCockpit: ${cause}`,
+    });
+    return EX_SOFTWARE;
+  }
+
+  // Build the respawn command. resolveClaudeWrapper throws ConfigError
+  // on unknown configDir — caught here + converted to a respawn-failed
+  // audit row so the operator sees a single failure mode (exit 70 +
+  // structured stderr + audit row) instead of a raw stack trace.
+  try {
+    switch (role) {
+      case "medic": {
+        const m = readMedicConfig(cockpit);
+        cmd = buildClaudeRespawnCommand(m?.claudeAccount, m?.tuiOverrides);
+        break;
+      }
+      case "sentinel": {
+        const s = readSentinelConfig(cockpit);
+        // Cursor-impl sentinel: spawn line is the sentinel verb's bash
+        // loop (no claude TUI, no wrapper resolution needed). Reuses
+        // cockpit's existing builder for byte-equivalence with rebuild.
+        if (s !== null && s.impl === "cursor") {
+          cmd = buildSentinelWindowCommand(s);
+        } else {
+          // Claude-impl sentinel (or undeclared → default to claude
+          // wrapper): build the c-alias respawn line.
+          const acc = s !== null && s.impl === "claude" ? s.claudeAccount : undefined;
+          const ov = s !== null && s.impl === "claude" ? s.tuiOverrides : undefined;
+          cmd = buildClaudeRespawnCommand(acc, ov);
+        }
+        break;
+      }
+      case "team-driver": {
+        const t = readTeamConfig(cockpit, parsed.sessionName);
+        if (t === null) {
+          const err = `team '${parsed.sessionName}' not found in cockpit.json`;
+          deps.stderr(`cockpit rotate: ${err}\n`);
+          await emitRespawnFailure(deps, {
+            role,
+            sessionName: parsed.sessionName,
+            durationMs: deps.nowMs() - startMs,
+            error: err,
+          });
+          return EX_SOFTWARE;
+        }
+        // Team-driver cockpit window is the cage-attach retry loop (per
+        // ADR-162); it does NOT spawn a claude TUI. The c-alias wrapper
+        // resolver is therefore skipped at this branch — the wrapper
+        // table doesn't apply to the cageRetryLoop bash. The team's
+        // claudeAccount field rides through cockpit.json for other
+        // consumers (cockpit rebuild's lead-pane spawn inside the
+        // cage) and is intentionally untouched here.
+        cmd = buildTeamWindowCommand(t, "attach");
+        break;
+      }
+    }
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    deps.stderr(`cockpit rotate: respawn command build failed (${cause})\n`);
+    await emitRespawnFailure(deps, {
+      role,
+      sessionName: parsed.sessionName,
+      durationMs: deps.nowMs() - startMs,
+      error: cause,
+    });
+    return EX_SOFTWARE;
+  }
+
+  // Send Ctrl-C to give claude (or the bash loop) a chance to flush
+  // state before kill. Verifier outcome is informational; kill-window
+  // is the destructive primitive that guarantees the pane is gone.
+  await sendCtrlCWithVerify(deps, windowName, role);
+
+  const tmux = deps.tmuxFactory({ socket: deps.cockpitSocketName });
+  try {
+    await tmux.window.killWindow(`${deps.cockpitSessionName}:${windowName}`);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    deps.stderr(`cockpit rotate: kill-window failed (${cause})\n`);
+    await emitRespawnFailure(deps, {
+      role,
+      sessionName: parsed.sessionName,
+      durationMs: deps.nowMs() - startMs,
+      error: `killWindow: ${cause}`,
+    });
+    return EX_SOFTWARE;
+  }
+
+  let windowIndex: number;
+  try {
+    const winId = await tmux.window.newWindow({
+      sessionName: deps.cockpitSessionName,
+      name: windowName,
+      detached: true,
+      shellCommand: cmd,
+    });
+    windowIndex = winId.windowIndex;
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    deps.stderr(`cockpit rotate: new-window failed (${cause})\n`);
+    await emitRespawnFailure(deps, {
+      role,
+      sessionName: parsed.sessionName,
+      durationMs: deps.nowMs() - startMs,
+      error: `newWindow: ${cause}`,
+    });
+    return EX_SOFTWARE;
+  }
+
+  // Re-arm role-specific cadence. Non-fatal — the auto-start helpers
+  // log + return on failure (the operator falls back to manual
+  // `/loop /medic` or `/loop /sentinel`). Team-driver respawn has no
+  // cadence to re-arm (cageRetryLoop runs in the shell itself).
+  switch (role) {
+    case "medic":
+      try {
+        await deps.autoStartMedicLoop({
+          tmux,
+          sessionName: deps.cockpitSessionName,
+          windowIndex,
+          timeoutMs: deps.autoStartTimeoutMs,
+          logger: deps.cadenceLogger,
+        });
+      } catch {
+        // autoStart is non-fatal by construction; defensive catch in
+        // case a future refactor raises.
+      }
+      break;
+    case "sentinel": {
+      const s = readSentinelConfig(cockpit);
+      // ADR-132 §D4 discriminated narrowing: only the claude variant
+      // gets the post-spawn /loop /sentinel injection. The cursor
+      // variant's bash loop is self-starting (the verb IS the loop).
+      if (s === null || s.impl === "claude") {
+        try {
+          await deps.autoStartSentinelLoop({
+            tmux,
+            sessionName: deps.cockpitSessionName,
+            windowIndex,
+            timeoutMs: deps.autoStartTimeoutMs,
+            logger: deps.cadenceLogger,
+          });
+        } catch {
+          // Non-fatal — see medic branch.
+        }
+      }
+      break;
+    }
+    case "team-driver":
+      // No cadence re-arm — cageRetryLoop is the loop itself.
+      break;
+  }
+
+  await emitSuccess(deps, {
+    role,
+    sessionName: parsed.sessionName,
+    durationMs: deps.nowMs() - startMs,
+  });
+  return EX_OK;
 }
 
 /** Top-level entry. Returns numeric exit code per ADR-167. Ordering:
@@ -492,48 +919,16 @@ export async function cockpitRotate(
   }
 
   // Per-role respawn matrix (T4 t-a245bbc8). Each path:
-  //   1. Assemble role-specific handoff payload (T5 t-fe3464df).
-  //   2. Atomic-write handoff to ~/.claude/teams/__cockpit__/<role>/
-  //      handoff.md (flock per ADR-005).
-  //   3. safeSendKeysWithVerify Ctrl-C (ADR-138); 3s grace; HUP fallback.
-  //   4. tmux kill-pane -t <cockpit_session>:<window>.
-  //   5. Resolve claudeAccount wrapper (ADR-094 c-alias convention).
-  //   6. Respawn via tmux new-window / respawn-window.
-  //   7. Re-arm role-specific cadence (per-role inline, per OQ-4).
-  //   8. Append success audit row to ~/.atmux/state/cockpit-rotate-audit
-  //      .log. Audit row writes AFTER respawn so `outcome` reflects
-  //      ground truth (per ADR-167 §Ordering invariant).
-  switch (role) {
-    case "medic":
-      // TODO(T4 t-a245bbc8): medic respawn path. Handoff inputs (T5
-      //   t-fe3464df): in-flight diagnosis state from src/verbs/medic.ts
-      //   runtime + recent medic-source complaints (state.db
-      //   complaints WHERE source_kind='medic' last N) + recent
-      //   rotation calls (cockpit-rotate-audit.log WHERE role='medic'
-      //   tail N).
-      deps.stderr(`cockpit rotate: medic respawn — NOT IMPLEMENTED (T4 t-a245bbc8)\n`);
-      return EX_SOFTWARE;
-    case "sentinel":
-      // TODO(T4 t-a245bbc8): sentinel respawn path. Handoff inputs (T5
-      //   t-fe3464df): whip-classifier state snapshot + NudgeAction
-      //   history (per-team sentinel logs tail N) + recent escalations
-      //   (audit log filtered to sentinel-escalated rows).
-      deps.stderr(`cockpit rotate: sentinel respawn — NOT IMPLEMENTED (T4 t-a245bbc8)\n`);
-      return EX_SOFTWARE;
-    case "team-driver":
-      // TODO(T4 t-a245bbc8): team-driver respawn path. Handoff inputs
-      //   (T5 t-fe3464df): recent tell-lead history (.atmux/lead-outbox
-      //   .md or tells SQLite table tail N) + outbox state snapshot at
-      //   rotation time. `parsed.sessionName` is the team-name; locate
-      //   the W4+ cockpit window of that name.
-      deps.stderr(
-        `cockpit rotate: team-driver respawn for '${parsed.sessionName}' ` +
-          `— NOT IMPLEMENTED (T4 t-a245bbc8)\n`,
-      );
-      return EX_SOFTWARE;
-  }
-
-  // Unreachable — classifyRole returns one of three literals; the
-  // switch above is exhaustive. Replaced by a real success path in T4.
-  return EX_OK;
+  //   1. (T5 t-fe3464df placeholder): assemble + atomic-write handoff.
+  //   2. safeSendKeysWithVerify Ctrl-C (ADR-138); 3s grace; HUP-via-
+  //      killWindow fallback.
+  //   3. tmux kill-window -t <cockpit_session>:<window>.
+  //   4. Resolve claudeAccount wrapper (ADR-094 c-alias convention) +
+  //      build per-role respawn command.
+  //   5. tmux new-window with the respawn command.
+  //   6. Re-arm role-specific cadence (per-role inline, per OQ-4).
+  //   7. Append success audit row. Audit row writes AFTER respawn so
+  //      `outcome` reflects ground truth (per ADR-167 §Ordering
+  //      invariant).
+  return performRespawn(deps, role, parsed, startMs);
 }

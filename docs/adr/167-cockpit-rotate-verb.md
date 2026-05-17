@@ -156,6 +156,19 @@ Per [ADR-033](033-caller-scope-gate.md): verb refuses non-driver callers. Cockpi
    - **Default**: defer to follow-up. V1 ships append-only with no rotation; v2 adds size-cap rotation if growth proves problematic.
    - **Rationale**: rotation is operator-fired; growth is bounded. Premature rotation policy is over-engineering.
 
+## Amendment 2026-05-17 (T4 ship — be-2 / t-a245bbc8)
+
+Clarifies the wrapper-resolver semantics surfaced during T4 implementation. The §Per-role respawn matrix listed `claudeAccount` wrapper resolution under all three roles — but team-driver cockpit windows are the cage-attach retry loop (per ADR-162), NOT a claude TUI. The wrapper resolution does not apply there.
+
+**Resolved**:
+- **medic / sentinel-claude**: wrapper resolver is **load-bearing** in the spawn line. Respawn command is `CLAUDE_GUARD_AGENT=1 <wrapper> [--plugin-dir=…] --permission-mode <mode> --model claude-opus-4-7`, where `<wrapper>` is the c-alias name (`claude` / `c-u` / `c-ic` / `c-i`) resolved from `claudeAccount.configDir`. Differs from cockpit-rebuild's `buildClaudeWindowCommand` (which uses inline `CLAUDE_CONFIG_DIR=…` env + bare `claude` literal); rotate honors the literal §Decision text + lets hermetic T7 fixtures (Plan A) exercise the resolver by stubbing the wrapper name on PATH.
+- **sentinel-cursor**: wrapper resolver is **skipped** (no claude process to invoke); reuses cockpit-rebuild's `buildSentinelWindowCommand` for the bash `while true; do atmux sentinel tick; sleep 270; done` loop. ADR-132 §D4 already excludes the cursor variant from `/loop /sentinel` auto-injection; this amendment makes the symmetric exclusion explicit for the wrapper-resolver step.
+- **team-driver**: wrapper resolver is **skipped**. The cockpit team-window is the `cageRetryLoop` (per `src/verbs/cockpit.ts::buildTeamWindowCommand` mode=`attach`) — `while true; do tmux attach || tmux attach; sleep 1; done` — which does not invoke claude. The team's `claudeAccount.configDir` field rides through cockpit.json for other consumers (cockpit-rebuild's lead-pane spawn inside the cage) and is intentionally untouched at rotate time.
+
+**Unknown configDir handling**: when medic / sentinel-claude points at an unregistered configDir, `resolveClaudeWrapper` throws `ConfigError`. The verb catches this at `performRespawn` boundary, emits a `respawn-failed` audit row (with the configDir in the `error` field), prints a structured stderr line, and exits `70 (EX_SOFTWARE)` — **before** any pane is touched. Operator's two recovery paths are (a) register the wrapper alias in their shell init + retry, or (b) edit `cockpit.json` to point at a registered configDir.
+
+**Test seam shape** (consumed by T6 / fe-1 + T7 / fe-2 fixtures): `CockpitRotateOpts` exposes injection points for `safeSendKeysWithVerify`, `loadCockpit`, `autoStartMedicLoop`, `autoStartSentinelLoop`, `cadenceLogger`, `autoStartTimeoutMs`. The wrapper resolver itself stays pure — fe-2's hermetic T7 plan (stub wrapper-alias scripts on PATH) exercises the real `buildClaudeRespawnCommand` end-to-end without the seam.
+
 ## Related
 
 - [ADR-006](006-error-class-and-exit-code.md) — error class → exit code mapping (65 EX_DATAERR for gate refusals).
