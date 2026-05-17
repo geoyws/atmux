@@ -1055,7 +1055,7 @@ export const DEFAULT_CADENCE_CONFIG = {
 export const TeamRefusalDetection = z
   .object({
     /** Master switch. Default `true` — enabled by default per
-     *  ADR-139 §Config. Set `false` to suppress both medic + martinet
+     *  ADR-139 §Config. Set `false` to suppress both medic + sentinel
      *  refusal scans for the team. */
     enabled: z.boolean().optional(),
     /** Soft-class events within `windowMin` to fire rotate. Default
@@ -1114,7 +1114,7 @@ export interface ResolvedRefusalConfig {
 
 /** Apply defaults to the team's `refusalDetection` block (absent or
  *  partial → fully resolved config). Pure — no I/O. The trigger
- *  module + medic + martinet all call this at the top of each tick
+ *  module + medic + sentinel all call this at the top of each tick
  *  so the threshold gate sees concrete numbers. */
 export function resolveRefusalConfig(
   block: TeamRefusalDetection | undefined,

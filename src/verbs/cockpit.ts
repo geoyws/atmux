@@ -1713,7 +1713,7 @@ export async function reconcileCockpitSession(
     const sdrv = windowsForOrder.find((w) => w.name === "_superdriver");
     let cursor = sdrv !== undefined ? sdrv.index + 1 : 1;
     if (wantMedic) cursor += 1;
-    if (wantMartinet) cursor += 1;
+    if (wantSentinel) cursor += 1;
     for (const t of teams) {
       // Re-list each iteration — moveWindow shifts other windows' indices,
       // so a fixed snapshot would go stale. Tmux indices are sparse and
