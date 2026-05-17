@@ -34,6 +34,15 @@ Setup:
                               TUI auto-launch + cockpit session). Reads roster
                               from ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
+  cockpit rotate <session-name> [--force]
+                              ADR-167 Rung C: canonical rotation of a cockpit-
+                              level role pane — \`medic\` (W2), \`sentinel\` (W3),
+                              or \`<team-name>\` (W4+ driver pane). Refuses
+                              \`superdriver\` unconditionally; four pre-flight
+                              gates (user-not-typing / pane-idle / uptime /
+                              never-rotate-superdriver) protect against
+                              accidental rotation. Driver-only via
+                              ATMUX_CALLER_SCOPE=driver.
   sentinel [tick|status] [--once] [--config <p>] [--state <p>]
                               ADR-132 §D2: cockpit-tier fleet-wide whip-manager
                               tick loop (window W3, sibling of medic at W2).
