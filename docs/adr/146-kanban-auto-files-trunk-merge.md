@@ -248,3 +248,10 @@ Result: 8 pass / 0 fail. Typecheck green.
 - **Cross-team auto-emit** — ADR-146 fires only on the local team's kanban writer. Cross-team Story-done cascading is the epic-team domain (ADR-091).
 - **Auto-emit retry on transient failures** — if the atomic transaction fails, the move-to-done ALSO fails (atomic rollback per §Tradeoffs). Caller retries the `atmux task move` and the auto-emit re-fires with it. No separate retry plumbing.
 - **PR-mode auto-emit** — ADR-091 pre-flag #8 PR-mode is schema-accept-but-runtime-noop. ADR-146 auto-emit also short-circuits PR-mode for v1; revisit if PR-mode ships.
+
+
+## Amendments
+
+### 2026-05-17 — Role-type identifier renamed `gitter` → `committer` (ADR-159)
+
+The role type identified as "gitter" throughout this ADR is renamed to "committer" per [ADR-159](159-gitter-to-committer-rename.md) — SV/Reddit-eng register sweep + OSS-canon vocabulary alignment, supersedes nomenclature only. Design preserved verbatim — the kanban-driven trunk-merge Task auto-emit on Story-done (§Decision atomic-transaction shape, `reviewer-trunk-signoff` marker, kanban-as-source-of-truth invariant) stays canonical. The downstream consumer that picks up the auto-emitted trunk-merge Task is now `committer` (post-rename) instead of `gitter`. ADR-091 §Decision references (epic-merge state machine + auto-merge cron) and §Out of scope deferrals likewise re-point to the new role-type name via cascading interpretation; ADR-091 carries its own ADR-159 §Amendments when authored. See ADR-159 for rename mechanic + rationale.

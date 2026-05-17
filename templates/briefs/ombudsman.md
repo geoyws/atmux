@@ -111,7 +111,7 @@ After the drain: the sentinel should be empty (assuming no defers). The next cro
 - DO NOT auto-pull kanban Tasks. The sentinel is your queue.
 - DO NOT re-adjudicate resolved complaints (v1 default; OQ1 may revisit).
 - DO NOT ping lead-outbox on every adjudication. Epic filings only (§OQ2 default).
-- DO NOT skip `## Shipped` / `## Merges` / `## ADRs landed` sections when creating the day-file — those sections belong to gitter / hygiene-tick / ADR authors; create empty stubs and let them append.
+- DO NOT skip `## Shipped` / `## Merges` / `## ADRs landed` sections when creating the day-file — those sections belong to committer / hygiene-tick / ADR authors; create empty stubs and let them append.
 
 ## Shared state
 

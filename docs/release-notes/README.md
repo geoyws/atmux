@@ -27,11 +27,11 @@ Every day-file follows the same skeleton (auto-created by the first writer of th
 
 ## Shipped (kanban→done)
 
-(appended by gitter post-fan-in, or hygiene-tick backstop)
+(appended by committer post-fan-in, or hygiene-tick backstop)
 
 ## Merges (branch→trunk)
 
-(appended by gitter post-trunk-merge per ADR-145 + ADR-146)
+(appended by committer post-trunk-merge per ADR-145 + ADR-146)
 
 ## ADRs landed
 
@@ -56,8 +56,8 @@ Each section is owned by a specific agent — multiple agents append to the same
 
 | Section                       | Owner                  | When appended                                                        |
 |-------------------------------|------------------------|----------------------------------------------------------------------|
-| `## Shipped (kanban→done)`    | gitter                 | post-fan-in (ADR-147 §D4); hygiene-tick is the backstop              |
-| `## Merges (branch→trunk)`    | gitter                 | post-trunk-merge per ADR-145 + ADR-146                               |
+| `## Shipped (kanban→done)`    | committer                 | post-fan-in (ADR-147 §D4); hygiene-tick is the backstop              |
+| `## Merges (branch→trunk)`    | committer                 | post-trunk-merge per ADR-145 + ADR-146                               |
 | `## ADRs landed`              | hygiene-tick / author  | hygiene-tick on detecting new `docs/adr/*.md`; ADR author on commit  |
 | `## Complaints adjudicated`   | ombudsman              | per adjudication (ADR-147 §D3)                                       |
 | `## Doctor regressions`       | medic                  | on red-row escalation (optional; empty most days)                    |
@@ -85,7 +85,7 @@ A doctor probe `release-note-missing` (warn-class, NOT block) per ADR-147 §D5 f
 - Today's date has ≥1 commit on trunk (verified by `git log --since "today 00:00 MYT"`), AND
 - `docs/release-notes/<Y>/<M>/<Y-M-D>.md` does not exist.
 
-This is a backstop for missed days. The expected pattern is gitter (or hygiene-tick) auto-creates the file on the first event of the day. The probe surfaces missed days for ombudsman or hygiene-tick to backfill.
+This is a backstop for missed days. The expected pattern is committer (or hygiene-tick) auto-creates the file on the first event of the day. The probe surfaces missed days for ombudsman or hygiene-tick to backfill.
 
 ## Doc-discipline interaction
 
@@ -96,5 +96,5 @@ Ombudsman appending entries to existing sections is NOT subject to same-commit d
 ## References
 
 - [ADR-147](../adr/147-ombudsman-and-release-notes.md) — the ADR establishing the layout, ownership, and ombudsman wake mechanism.
-- [ADR-145](../adr/) (gitter-does-merges) + [ADR-146](../adr/) (kanban auto-files trunk-merge Task) — the sibling event-driven patterns that emit into the `## Merges` and `## Shipped` sections.
+- [ADR-145](../adr/) (committer-does-merges) + [ADR-146](../adr/) (kanban auto-files trunk-merge Task) — the sibling event-driven patterns that emit into the `## Merges` and `## Shipped` sections.
 - [ADR-077](../adr/077-superdoctor-cockpit-role.md) / [ADR-133](../adr/133-medic-rename.md) — medic role, the filer of complaints that ombudsman adjudicates.

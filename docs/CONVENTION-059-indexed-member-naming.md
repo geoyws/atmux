@@ -22,7 +22,7 @@ named role), use the pattern:
 **Not examples**: `fe-1` (hyphenated, 1-indexed), `eng-mobile` (domain-named),
 `frontend1` (un-abbreviated), `feA` (non-numeric index).
 
-Named roles (`lead`, `planner`, `reviewer`, `gitter`, `auditor`, `dba`,
+Named roles (`lead`, `planner`, `reviewer`, `committer`, `auditor`, `dba`,
 `devops`, `discorder`, `enforcer`, `unblocker`) are **out of scope** for
 this convention — they keep their canonical names.
 
@@ -78,7 +78,7 @@ all valid CONVENTION-059 names — no schema break needed.
 **Use a named role when**:
 
 - The member is a singular role with team-wide responsibility: `lead`,
-  `planner`, `reviewer`, `gitter`, `auditor`, `dba`, `devops`,
+  `planner`, `reviewer`, `committer`, `auditor`, `dba`, `devops`,
   `discorder`, `enforcer`, `unblocker`. These are named in the
   reserved-roles list in `templates/briefs/`.
 - The member's work is genuinely specialized to a stack the team will

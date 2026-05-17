@@ -49,7 +49,7 @@ The wizard (invoked on first run) asks:
 
 - **Team name** (default: directory name)
 - **Preset** (`perf` / `default` / `eco` / `custom`) — governs TUI assignment per member.
-- **Staff toggles**: include `planner` (default yes), `reviewer`, `gitter`, `devops`, `dba` — each `[y/n]`.
+- **Staff toggles**: include `planner` (default yes), `reviewer`, `committer`, `devops`, `dba` — each `[y/n]`.
 - **Number of `member` workers** (default: 3)
 - **Per-worker TUI** (only if preset=custom) and name. Suggested names: feature-lane form like `fe-auth`, `be-invoice`, `db-orders`.
 - **Emoji mode** (`static` / `random` / `ai`) — governs how each member's emoji is assigned.
@@ -138,7 +138,7 @@ The planner doesn't dispatch; the Tasks just sit on the kanban tagged with lanes
 [test-*] atmux claim --next           → no work yet (TEST deps unmet)
 ```
 
-When BE finishes its first Task and `atmux done <id> --note "feat(be): /healthz handler scaffold"`s, gitter auto-receives a commit-Task and lands a commit. The next BE Task unblocks; once both BE Tasks are `done`, FE + TEST become claimable. The kanban routes itself.
+When BE finishes its first Task and `atmux done <id> --note "feat(be): /healthz handler scaffold"`s, committer auto-receives a commit-Task and lands a commit. The next BE Task unblocks; once both BE Tasks are `done`, FE + TEST become claimable. The kanban routes itself.
 
 ### Step 5 — Driver: observe, don't intervene
 
@@ -175,7 +175,7 @@ atmux outbox                         # the lead's Epic summary lands here
 git log --oneline | head             # one commit per Task, in order
 ```
 
-Example `git log` post-Epic (one commit per Task, gitter-authored):
+Example `git log` post-Epic (one commit per Task, committer-authored):
 
 ```
 4f8a1c2  feat(test): e2e healthz coverage

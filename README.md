@@ -16,7 +16,7 @@
 
 A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
 
-**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, gitter, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; gitter commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
+**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, committer, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; committer commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
 
 ## Agile vocabulary
 
@@ -26,9 +26,9 @@ atmux's kanban speaks Epic / Story / Task. The pull model only works when you ke
 
 - **Story** — a coherent slice of an Epic with explicit acceptance criteria. State machine: `planning → ready → in-progress → testing → review → merging → done`. **Stories are OPTIONAL.** Small Epics with ≤3 Tasks skip them. Use Stories when there are multiple distinct acceptance surfaces (schema vs. UI vs. e2e). Reviewer signoff happens at the Story level on the cumulative diff — empty `acceptanceCriteria` is an automatic REJECT.
 
-- **Task** — an atomic unit of work on the kanban with a lane (FE / BE / DB / OPS / TEST / REVIEW / MISC), optional `--epic` / `--story` tags, optional `--deliverable`, and explicit `--deps`. Workers **pull** the next claimable Task in their lane via `atmux claim --next`; selection prefers their lane, falls back across lanes when `crossLaneClaim=true` (default). Each Task with `.epic` set auto-dispatches a commit-Task to gitter on `move done`; one commit per Task, no batching.
+- **Task** — an atomic unit of work on the kanban with a lane (FE / BE / DB / OPS / TEST / REVIEW / MISC), optional `--epic` / `--story` tags, optional `--deliverable`, and explicit `--deps`. Workers **pull** the next claimable Task in their lane via `atmux claim --next`; selection prefers their lane, falls back across lanes when `crossLaneClaim=true` (default). Each Task with `.epic` set auto-dispatches a commit-Task to committer on `move done`; one commit per Task, no batching.
 
-The **lead never decomposes and never dispatches per-Task** — that's the planner's and the kanban's job. The lead routes Epics to the planner, watches state, surfaces blockers, and composes Epic summaries. The **gitter never reviews** and never pushes by default. The **reviewer never commits** and never decomposes. Each role has a narrow surface; the kanban orchestrates.
+The **lead never decomposes and never dispatches per-Task** — that's the planner's and the kanban's job. The lead routes Epics to the planner, watches state, surfaces blockers, and composes Epic summaries. The **committer never reviews** and never pushes by default. The **reviewer never commits** and never decomposes. Each role has a narrow surface; the kanban orchestrates.
 
 See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR + state-machine spec, and the implementation plan at `~/.claude/plans/pure-pondering-crane.md` for the rollout sequence.
 
@@ -49,7 +49,7 @@ See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR 
 │                                                                    │
 │  🧭 STAFF                                                          │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
-│  │ 🧭 lead    │  │ 🗺️  planner │  │ 🔍 reviewer│  │ 🌿 gitter  │   │
+│  │ 🧭 lead    │  │ 🗺️  planner │  │ 🔍 reviewer│  │ 🌿 committer  │   │
 │  │ ROUTES     │  │ DECOMPOSES │  │ STORY GATE │  │ COMMITS    │   │
 │  └──┬─────────┘  └─────┬──────┘  └──────┬─────┘  └────┬───────┘   │
 │     │ atmux send       │ atmux           │ atmux        │ on every  │
@@ -226,7 +226,7 @@ atmux start
 **Known gaps (post-MVP):**
 
 - **Submodules currently shared.** sopx has 5+ submodules; per-member submodule worktrees would 5× the disk + provisioning cost. MVP keeps submodules shared, so cross-member edits *inside* a submodule can still race. File a follow-up ADR if demo prep exposes need (ADR-082 OQ4).
-- **Gitter alignment is operator-defined.** The gitter role can either commit on its own `<base>-gitter` worktree (default — symmetric with other members), or commit on the parent repo's `<base>` directly (legacy pattern — keeps the gitter outside the per-member namespace). ADR-084 OQ-3 leaves this to the operator; both work.
+- **Committer alignment is operator-defined.** The committer role can either commit on its own `<base>-committer` worktree (default — symmetric with other members), or commit on the parent repo's `<base>` directly (legacy pattern — keeps the committer outside the per-member namespace). ADR-084 OQ-3 leaves this to the operator; both work.
 
 The init wizard does not prompt for this field — opt-in is a manual `team.json` edit, since the field is for sopx-class (≥10 member) setups. See [docs/adr/082-worktree-isolation-per-member.md](docs/adr/082-worktree-isolation-per-member.md) (provision / prune / probe shapes + the original MVP rationale) and [docs/adr/084-worktree-per-member-branch-model.md](docs/adr/084-worktree-per-member-branch-model.md) (per-member branch model amending OQ6).
 
@@ -531,7 +531,7 @@ proposed defaults.
 ### 🧑‍✈️ Non-Claude lead
 
 Nothing forces Claude to be the lead. Example — OpenCode as `team-lead` to
-keep coordination turns cheap, Claude only for reviewer / gitter:
+keep coordination turns cheap, Claude only for reviewer / committer:
 
 ```bash
 cp examples/opencode-lead-team.json .atmux/team.json
@@ -547,7 +547,7 @@ Default role→TUI mapping:
 | `team-lead`       | `claude`    | Routes asks + dispatches; never plans itself  |
 | `planner`         | `claude`    | Decomposition + ADRs — owns the cognitive load the lead used to carry |
 | `reviewer`        | `claude`    | Quality gate — needs Opus                     |
-| `gitter`          | `claude`    | Commit msg + hooks discipline                 |
+| `committer`          | `claude`    | Commit msg + hooks discipline                 |
 | `devops`          | `claude`    | Infra judgment calls                          |
 | `dba`             | `claude`    | Schema + migrations + data integrity (optional) |
 | `member`          | any         | Parallel throughput per feature lane — pick cheapest that works |
@@ -571,7 +571,7 @@ Per-role assignment for an atmux team (per
 | `lead` | Opus | coordination + dispatch |
 | `planner` | Opus | decomposition + ADRs |
 | `be-kanban` / `fe-kanban` / `test-kanban` | Opus | writes code |
-| `gitter` | Opus | commit composition + lint-staged-trap + scope-check |
+| `committer` | Opus | commit composition + lint-staged-trap + scope-check |
 | `reviewer` | Opus | audit-bar judgment on others' work (exhaustive grep + negative-space + class-widening) |
 | `unblocker` | Opus | `/team clear` blast-radius + classify-and-route on others' work |
 | `auditor` | Opus | exhaustive-grep + verdict pattern on already-committed code |
@@ -654,7 +654,7 @@ atmux task add <subject> [--body <txt>] [--epic <eid>] [--story <sid>] \
                          [--deliverable <text>] [--assignee <m>] [--deps <id,id>] [--priority <n>]
 atmux task list [--status …] [--assignee <m>] [--json]
 atmux task show <id>
-atmux task move <id> <todo|in-progress|done|blocked>   # done auto-dispatches commit-Task to gitter
+atmux task move <id> <todo|in-progress|done|blocked>   # done auto-dispatches commit-Task to committer
 atmux task assign <id> <member>
 atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->     # `-` clears lane
 atmux task priority <id> <N|->                                       # `-` clears priority (treated as default 99)

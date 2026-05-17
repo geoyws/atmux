@@ -18,7 +18,7 @@ Old versions preserved under `/opt/atmux/<version>/` for one-line rollback (see 
 
 1. **Bump version**. Edit `package.json::version` (e.g. `0.7.2 → 0.8.0`). Semver call:
    - **MAJOR** — any removed verb / breaking schema / breaking config-block deprecation removal.
-   - **MINOR** — new verb (`gitter`, `ombudsman`, …) / new cron-install template / new schema field / new ADR-named surface; all backward-compat.
+   - **MINOR** — new verb (`committer`, `ombudsman`, …) / new cron-install template / new schema field / new ADR-named surface; all backward-compat.
    - **PATCH** — bug fix / no surface change.
 
 2. **Roll CHANGELOG**. Add a `### 🟢 Shipped — atmux <V> install (<task-id>, <YYYY-MM-DD>)` row at the top of `[Unreleased]`. Include semver rationale + rollback path. Formal `## [V] — <date>` named-section cut can defer to release-housekeeping follow-up (per-section glyphs encode shipped-vs-pending in place).
@@ -68,11 +68,11 @@ TMUX_TMPDIR=/root/work/src/atmux/.atmux/tmux \
 ATMUX_DIR=/root/work/src/atmux/.atmux \
 /usr/local/bin/atmux ombudsman tick
 
-# gitter --sweep — expect "team='<t>' base='<b>' checked=N queued=… refused=… skipped=…"
+# committer --sweep — expect "team='<t>' base='<b>' checked=N queued=… refused=… skipped=…"
 PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin \
 TMUX_TMPDIR=/root/work/src/atmux/.atmux/tmux \
 ATMUX_DIR=/root/work/src/atmux/.atmux \
-/usr/local/bin/atmux gitter --sweep
+/usr/local/bin/atmux committer --sweep
 ```
 
 ### C. Cron-log tail proof (pre-install vs post-install)
@@ -115,6 +115,6 @@ When a new verb / cron template lands in a future release, the recommended patte
 ## Cross-refs
 
 - [ADR-047](adr/047-canonical-install-topology.md) — canonical install topology + `/opt/atmux-stable/` optional fallback tier.
-- [ADR-134](adr/134-in-team-auto-merger.md) §T7 — `cron-install --template gitter-sweep` shape.
+- [ADR-134](adr/134-in-team-auto-merger.md) §T7 — `cron-install --template committer-sweep` shape.
 - [ADR-147](adr/147-ombudsman-and-release-notes.md) — ombudsman role + release-notes + the release-event trigger pattern.
 - [ADR-135](adr/135-cockpit-naming-convention.md) — hyphenated-window-name resolver (smoke target above).
