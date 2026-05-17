@@ -129,10 +129,16 @@ describe("resolveMemberWindowTarget", () => {
     expect(t).toBe("atmux-demo:🐝-alpha");
   });
 
-  test("lead with no I-2 marker → falls back to `<emoji>-<name>` from schema", async () => {
+  test("lead with no I-2 marker → falls back to `<emoji>_<name>` from schema", async () => {
+    // ADR-161 §Decision-anchor #2: buildWindowName is role-aware —
+    // default-member roles (team-lead, planner, reviewer, ombudsman)
+    // render `_-prefix` (`${emoji}_${display}`); user-added members keep
+    // the ADR-135 hyphen form. The lead-fallback path here resolves
+    // through `memberWindowName = buildWindowName(..., member.role)`,
+    // so the lead role yields underscore separator.
     const member = team.members[1] as TeamMember;
     const t = await resolveMemberWindowTarget(team, "atmux-demo", member, { home: homeDir });
-    expect(t).toBe("atmux-demo:🧭-lead");
+    expect(t).toBe("atmux-demo:🧭_lead");
   });
 
   test("lead with I-2 marker → uses marker text", async () => {
