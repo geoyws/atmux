@@ -9,11 +9,14 @@ import {
   assertValidMemberName,
   assertValidTeamName,
   buildWindowName,
+  CONVENTION_059_LANE_PREFIXES,
+  checkIndexedMemberName,
   checkMemberName,
   checkTeamName,
   classifyPaneState,
   defaultEmojiForRole,
   detectRateLimit,
+  displayMemberName,
   driverInboxPath,
   emojiPoolForRole,
   ensureAtmuxDirs,
@@ -38,6 +41,7 @@ import {
   normalizeMemberName,
   paneIsBusy,
   requireTeam,
+  resolveCallerScope,
   resolveTeamSocket,
   sessionAnchorPath,
   stateDir,
@@ -106,7 +110,11 @@ describe("getAtmuxDir", () => {
   test("falls back to cwd/.atmux when walk-up exhausted", async () => {
     const lonely = join(dir, "lonely");
     await mkdir(lonely, { recursive: true });
-    const got = await getAtmuxDir({ env: {}, cwd: lonely });
+    // t-584b5f37: bound the walk-up to the per-test mkdtemp root so a
+    // host-resident `/tmp/.atmux` (left by another atmux invocation on
+    // the same machine) doesn't leak into the resolution. Production
+    // never sets `stopAt`; the test uses it for hermetic isolation.
+    const got = await getAtmuxDir({ env: {}, cwd: lonely, stopAt: dir });
     expect(got).toBe(join(lonely, ".atmux"));
   });
 
@@ -123,8 +131,10 @@ describe("getAtmuxDir", () => {
     const got = await getAtmuxDir({
       env: { ATMUX_DIR: "", ATMUX_TEAM_DIR: "" },
       cwd: dir,
+      // t-584b5f37: same host-leak-isolation as the sibling test above.
+      stopAt: dir,
     });
-    // No .atmux exists in tmpdir, so falls back to <dir>/.atmux
+    // No .atmux exists under <dir>, so falls back to <dir>/.atmux
     expect(got).toBe(join(dir, ".atmux"));
   });
 });
@@ -308,10 +318,11 @@ describe("getSessionName", () => {
 
 describe("buildWindowName / isMemberWindowName", () => {
   // ADR-017 / operator decision 2026-05-05: drop the `__<team>__` prefix.
-  // New form: `<emoji><member>` when emoji is set, `<member>` when not.
+  // ADR-135 §D3: add hyphen separator between emoji and member name.
+  // Canonical form: `<emoji>-<member>` when emoji is set, `<member>` when not.
 
-  test("with emoji: <emoji><member>", () => {
-    expect(buildWindowName("alice", "🦊")).toBe("🦊alice");
+  test("with emoji: <emoji>-<member> (ADR-135 hyphen separator)", () => {
+    expect(buildWindowName("alice", "🦊")).toBe("🦊-alice");
   });
 
   test("without emoji: <member>", () => {
@@ -323,10 +334,15 @@ describe("buildWindowName / isMemberWindowName", () => {
   });
 
   test("multi-byte emoji characters preserved (e.g. compound 🗺️)", () => {
-    expect(buildWindowName("lead", "🗺️")).toBe("🗺️lead");
+    expect(buildWindowName("lead", "🗺️")).toBe("🗺️-lead");
   });
 
-  test("isMemberWindowName: roster match (with emoji)", () => {
+  test("isMemberWindowName: roster match (canonical hyphenated form)", () => {
+    const members = [{ name: "alice", emoji: "🦊" }];
+    expect(isMemberWindowName("🦊-alice", members)).toBe(true);
+  });
+
+  test("ADR-135 deprecation window — isMemberWindowName: roster match (legacy concatenated form)", () => {
     const members = [{ name: "alice", emoji: "🦊" }];
     expect(isMemberWindowName("🦊alice", members)).toBe(true);
   });
@@ -353,6 +369,114 @@ describe("buildWindowName / isMemberWindowName", () => {
 
   test("isMemberWindowName: empty roster → always false", () => {
     expect(isMemberWindowName("anything", [])).toBe(false);
+  });
+
+  // ---------- ADR-136 TR4: label-aware variants ----------
+
+  test("buildWindowName(name, emoji, label): label overrides name for display", () => {
+    expect(buildWindowName("alice", "🦊", "Alice the Fox")).toBe("🦊-Alice the Fox");
+  });
+
+  test("buildWindowName: undefined / empty label falls back to name", () => {
+    expect(buildWindowName("alice", "🦊", undefined)).toBe("🦊-alice");
+    expect(buildWindowName("alice", "🦊", "")).toBe("🦊-alice");
+  });
+
+  test("buildWindowName: label without emoji renders bare display string", () => {
+    expect(buildWindowName("alice", undefined, "Alice")).toBe("Alice");
+  });
+
+  test("isMemberWindowName: roster match against renamed member's label", () => {
+    const members = [{ name: "alice", emoji: "🦊", label: "Alice Renamed" }];
+    expect(isMemberWindowName("🦊-Alice Renamed", members)).toBe(true);
+    // Pre-rename ID form no longer matches (the live tmux window
+    // carries the new label-derived name).
+    expect(isMemberWindowName("🦊-alice", members)).toBe(false);
+  });
+
+  test("isMemberWindowName: roster member with label undefined still matches name", () => {
+    const members = [{ name: "alice", emoji: "🦊", label: undefined }];
+    expect(isMemberWindowName("🦊-alice", members)).toBe(true);
+  });
+
+  // ---------- ADR-161 TR2: role-aware `_-prefix` for default members ----------
+
+  test("buildWindowName: default role 'team-lead' renders `_-prefix`", () => {
+    expect(buildWindowName("lead", "🧭", undefined, "team-lead")).toBe("🧭_lead");
+  });
+
+  test("buildWindowName: default role 'planner' renders `_-prefix`", () => {
+    expect(buildWindowName("planner", "🎯", undefined, "planner")).toBe("🎯_planner");
+  });
+
+  test("buildWindowName: default role 'reviewer' renders `_-prefix`", () => {
+    expect(buildWindowName("reviewer", "🔍", undefined, "reviewer")).toBe("🔍_reviewer");
+  });
+
+  test("buildWindowName: default role 'ombudsman' renders `_-prefix`", () => {
+    expect(buildWindowName("ombuds", "⚖️", undefined, "ombudsman")).toBe("⚖️_ombuds");
+  });
+
+  test("buildWindowName: user-added role 'member' keeps hyphen", () => {
+    expect(buildWindowName("up-impl-2", "🦊", undefined, "member")).toBe("🦊-up-impl-2");
+  });
+
+  test("buildWindowName: legacy 'gitter' role keeps hyphen (pending ADR-159 rename)", () => {
+    expect(buildWindowName("gitter", "🌳", undefined, "gitter")).toBe("🌳-gitter");
+  });
+
+  test("buildWindowName: default role + label renders `_-prefix` with label", () => {
+    expect(buildWindowName("lead", "🧭", "Chief", "team-lead")).toBe("🧭_Chief");
+  });
+
+  test("buildWindowName: role omitted falls through to existing hyphen form (backcompat)", () => {
+    expect(buildWindowName("alice", "🦊")).toBe("🦊-alice");
+    expect(buildWindowName("alice", "🦊", "Alice")).toBe("🦊-Alice");
+  });
+
+  test("buildWindowName: default role without emoji renders bare display (no prefix)", () => {
+    expect(buildWindowName("lead", undefined, undefined, "team-lead")).toBe("lead");
+    expect(buildWindowName("lead", "", undefined, "team-lead")).toBe("lead");
+  });
+
+  test("isMemberWindowName: matches default-role `_-prefix` form", () => {
+    const members = [{ name: "lead", emoji: "🧭", label: undefined, role: "team-lead" }];
+    expect(isMemberWindowName("🧭_lead", members)).toBe(true);
+  });
+
+  test("isMemberWindowName: matches legacy hyphen form for default-role member (migration window)", () => {
+    const members = [{ name: "lead", emoji: "🧭", label: undefined, role: "team-lead" }];
+    // Pre-ADR-161 teams have default members on hyphen; the matcher
+    // must accept both shapes during the deprecation window so
+    // already-spawned panes route correctly until reconcile renames.
+    expect(isMemberWindowName("🧭-lead", members)).toBe(true);
+  });
+
+  test("isMemberWindowName: matches user-added member with hyphen form", () => {
+    const members = [{ name: "alice", emoji: "🦊", label: undefined, role: "member" }];
+    expect(isMemberWindowName("🦊-alice", members)).toBe(true);
+    expect(isMemberWindowName("🦊_alice", members)).toBe(false);
+  });
+});
+
+// ---------- ADR-136 TR4: displayMemberName ----------
+
+describe("displayMemberName", () => {
+  test("returns label when set + non-empty", () => {
+    expect(displayMemberName({ name: "alice", label: "Alice Renamed" })).toBe("Alice Renamed");
+  });
+
+  test("falls back to name when label undefined", () => {
+    expect(displayMemberName({ name: "alice" })).toBe("alice");
+  });
+
+  test("falls back to name when label is empty string", () => {
+    expect(displayMemberName({ name: "alice", label: "" })).toBe("alice");
+  });
+
+  test("accepts free-form Unicode in label (the schema does the validation)", () => {
+    expect(displayMemberName({ name: "alice", label: "アリス" })).toBe("アリス");
+    expect(displayMemberName({ name: "alice", label: "Alice the 🦊" })).toBe("Alice the 🦊");
   });
 });
 
@@ -706,5 +830,102 @@ describe("resolveTeamSocket (t-add5976a — read-side tmuxTmpdir honour)", () =>
     expect(resolveTeamSocket({ name: "t", tmuxTmpdir: "/tmp/atmux_tmux_a" }, { uid: 1000 })).toBe(
       "/tmp/atmux_tmux_a/tmux-1000/default",
     );
+  });
+});
+
+describe("resolveCallerScope (ADR-033 driver-only refuse-gate)", () => {
+  test("ATMUX_CALLER_SCOPE=driver → driver", () => {
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "driver" } })).toBe("driver");
+  });
+
+  test("ATMUX_CALLER_SCOPE unset → member (fail-secure default)", () => {
+    expect(resolveCallerScope({ env: {} })).toBe("member");
+  });
+
+  test("ATMUX_CALLER_SCOPE=member → member", () => {
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "member" } })).toBe("member");
+  });
+
+  test("ATMUX_CALLER_SCOPE=garbage → member (anything not 'driver' is rejected)", () => {
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "DRIVER" } })).toBe("member");
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "driver " } })).toBe("member");
+    expect(resolveCallerScope({ env: { ATMUX_CALLER_SCOPE: "" } })).toBe("member");
+  });
+
+  test("no opts → reads live process.env", () => {
+    const prior = process.env.ATMUX_CALLER_SCOPE;
+    try {
+      delete process.env.ATMUX_CALLER_SCOPE;
+      expect(resolveCallerScope()).toBe("member");
+      process.env.ATMUX_CALLER_SCOPE = "driver";
+      expect(resolveCallerScope()).toBe("driver");
+    } finally {
+      if (prior === undefined) {
+        delete process.env.ATMUX_CALLER_SCOPE;
+      } else {
+        process.env.ATMUX_CALLER_SCOPE = prior;
+      }
+    }
+  });
+});
+
+// ---------- CONVENTION-059 — checkIndexedMemberName ----------
+
+describe("checkIndexedMemberName (CONVENTION-059)", () => {
+  test("accepts every canonical lane prefix + zero-indexed integer", () => {
+    for (const lane of CONVENTION_059_LANE_PREFIXES) {
+      expect(checkIndexedMemberName(`${lane}0`)).toBeNull();
+      expect(checkIndexedMemberName(`${lane}1`)).toBeNull();
+      expect(checkIndexedMemberName(`${lane}10`)).toBeNull();
+    }
+  });
+
+  test("rejects hyphenated indexed forms (`fe-1` is legacy, not CONVENTION-059)", () => {
+    expect(checkIndexedMemberName("fe-1")).not.toBeNull();
+    expect(checkIndexedMemberName("be-2")).not.toBeNull();
+  });
+
+  test("rejects domain-named members (`eng-mobile`, `whip-impl`)", () => {
+    expect(checkIndexedMemberName("eng-mobile")).not.toBeNull();
+    expect(checkIndexedMemberName("whip-impl")).not.toBeNull();
+    expect(checkIndexedMemberName("parity-cron-impl")).not.toBeNull();
+  });
+
+  test("rejects named roles (`lead`, `planner`, `reviewer`, `gitter`)", () => {
+    expect(checkIndexedMemberName("lead")).not.toBeNull();
+    expect(checkIndexedMemberName("planner")).not.toBeNull();
+    expect(checkIndexedMemberName("reviewer")).not.toBeNull();
+    expect(checkIndexedMemberName("gitter")).not.toBeNull();
+  });
+
+  test("rejects unknown lane prefixes", () => {
+    expect(checkIndexedMemberName("frontend0")).not.toBeNull();
+    expect(checkIndexedMemberName("backend0")).not.toBeNull();
+    expect(checkIndexedMemberName("dev0")).not.toBeNull();
+  });
+
+  test("rejects non-numeric index (`feA`, `feX`)", () => {
+    expect(checkIndexedMemberName("feA")).not.toBeNull();
+    expect(checkIndexedMemberName("feX")).not.toBeNull();
+  });
+
+  test("rejection reason mentions the regex shape so callers can echo it", () => {
+    const reason = checkIndexedMemberName("fe-1");
+    expect(reason).not.toBeNull();
+    if (reason === null) return;
+    expect(reason).toContain("fe-1");
+    expect(reason).toContain("CONVENTION-059");
+  });
+
+  test("CONVENTION_059_LANE_PREFIXES is the canonical list (regression: don't silently grow)", () => {
+    expect([...CONVENTION_059_LANE_PREFIXES]).toEqual([
+      "fe",
+      "be",
+      "ops",
+      "test",
+      "review",
+      "db",
+      "misc",
+    ]);
   });
 });

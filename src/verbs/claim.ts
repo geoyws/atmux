@@ -21,7 +21,12 @@
 // $id"; TS prints to stdout for byte-parity at the verb layer.
 
 import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
-import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import {
+  getAtmuxDir,
+  type ResolveDirOpts,
+  requireTeam,
+  resolveCallerScope,
+} from "../core/common.ts";
 import {
   appendDispatched,
   loadInbox,
@@ -30,6 +35,7 @@ import {
 } from "../core/inbox.ts";
 import {
   claimTask,
+  claimTaskForMember,
   listTasks,
   markTaskDone,
   nowEpoch,
@@ -167,13 +173,16 @@ export async function claim(argv: ReadonlyArray<string>): Promise<number> {
   const { who, dirOpts, atmuxDir } = await resolveContext(parsed, "claim");
 
   const claimedAt = nowEpoch();
-  // claimTask enforces deps + writes the kanban side. Returns BOTH
-  // pre-mutation + post-mutation snapshots per ADR-029 §F1 — bash
-  // lib/claim.sh:35 captures `task` BEFORE the jq_update at line 53,
-  // so the inbox-move at line 58 carries the ORIGINAL task shape +
-  // only `claimedAt`, not the post-mutation owner/status/claimedAt
-  // triple. Use `pre` for the inbox-mirror write.
-  const { pre } = await claimTask(atmuxDir, parsed.id, who);
+  // claimTaskForMember enforces deps + ADR-033 driver-only refuse-gate
+  // + the 2026-05-12 race-condition gate (refuses claim of an in-progress
+  // task owned by a different member). Returns BOTH pre-mutation +
+  // post-mutation snapshots per ADR-029 §F1 — bash lib/claim.sh:35
+  // captures `task` BEFORE the jq_update at line 53, so the inbox-move
+  // at line 58 carries the ORIGINAL task shape + only `claimedAt`, not
+  // the post-mutation owner/status/claimedAt triple. Use `pre` for the
+  // inbox-mirror write.
+  const callerScope = resolveCallerScope();
+  const { pre } = await claimTaskForMember(atmuxDir, parsed.id, who, { callerScope });
   await movePendingToInProgress(atmuxDir, who, pre, claimedAt);
 
   process.stdout.write(`${who} claimed ${parsed.id}\n`);
@@ -216,7 +225,13 @@ async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
   const crossLaneClaim = readCrossLaneClaim(team);
 
   const tasks = await listTasks(atmuxDir);
-  const candidate = selectNextClaimable(tasks, { callerLane, crossLaneClaim, caller: who });
+  const callerScope = resolveCallerScope();
+  const candidate = selectNextClaimable(tasks, {
+    callerLane,
+    crossLaneClaim,
+    caller: who,
+    callerScope,
+  });
 
   if (candidate === null) {
     if (callerLane !== null && !crossLaneClaim) {
@@ -230,7 +245,10 @@ async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
   }
 
   const claimedAt = nowEpoch();
-  const { pre } = await claimTask(atmuxDir, candidate.id, who);
+  // claim --next is also member-initiated; route through the gated
+  // wrapper so a concurrent member who claimed this candidate between
+  // selectNextClaimable + claim still loses the race cleanly.
+  const { pre } = await claimTaskForMember(atmuxDir, candidate.id, who);
   await movePendingToInProgress(atmuxDir, who, pre, claimedAt);
 
   process.stdout.write(`${who} claimed ${candidate.id}\n`);
@@ -262,7 +280,10 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
   }
 
   const completedAt = nowEpoch();
-  await markTaskDone(atmuxDir, parsed.id, parsed.note);
+  // ADR-033 driver-only refuse-gate. markTaskDone enforces the same
+  // predicate as taskMove `done` transitions inside its transaction.
+  const callerScope = resolveCallerScope();
+  await markTaskDone(atmuxDir, parsed.id, parsed.note, { callerScope });
 
   // Inbox mirror: bash does this only if the task is already in the
   // member's inbox.inProgress; if missing, it's a no-op-on-pending +

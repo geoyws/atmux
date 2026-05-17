@@ -49,7 +49,7 @@ The wizard (invoked on first run) asks:
 
 - **Team name** (default: directory name)
 - **Preset** (`perf` / `default` / `eco` / `custom`) — governs TUI assignment per member.
-- **Staff toggles**: include `planner` (default yes), `reviewer`, `gitter`, `devops`, `dba` — each `[y/n]`.
+- **Staff toggles**: include `planner` (default yes), `reviewer`, `committer`, `devops`, `dba` — each `[y/n]`.
 - **Number of `member` workers** (default: 3)
 - **Per-worker TUI** (only if preset=custom) and name. Suggested names: feature-lane form like `fe-auth`, `be-invoice`, `db-orders`.
 - **Emoji mode** (`static` / `random` / `ai`) — governs how each member's emoji is assigned.
@@ -138,7 +138,7 @@ The planner doesn't dispatch; the Tasks just sit on the kanban tagged with lanes
 [test-*] atmux claim --next           → no work yet (TEST deps unmet)
 ```
 
-When BE finishes its first Task and `atmux done <id> --note "feat(be): /healthz handler scaffold"`s, gitter auto-receives a commit-Task and lands a commit. The next BE Task unblocks; once both BE Tasks are `done`, FE + TEST become claimable. The kanban routes itself.
+When BE finishes its first Task and `atmux done <id> --note "feat(be): /healthz handler scaffold"`s, committer auto-receives a commit-Task and lands a commit. The next BE Task unblocks; once both BE Tasks are `done`, FE + TEST become claimable. The kanban routes itself.
 
 ### Step 5 — Driver: observe, don't intervene
 
@@ -175,7 +175,7 @@ atmux outbox                         # the lead's Epic summary lands here
 git log --oneline | head             # one commit per Task, in order
 ```
 
-Example `git log` post-Epic (one commit per Task, gitter-authored):
+Example `git log` post-Epic (one commit per Task, committer-authored):
 
 ```
 4f8a1c2  feat(test): e2e healthz coverage
@@ -295,7 +295,15 @@ atmux doctor --quiet       # no output, exit 0 on green / 1 on red (used by star
 atmux start --doctor       # verbose preflight before starting
 atmux start --no-doctor    # skip preflight entirely
 ATMUX_DOCTOR_ON_START=1    # env equivalent of --doctor (for cron)
+ATMUX_SPAWN_CONCURRENCY=6  # cap on concurrent teammate spawns (t-eb0887fe; default 6, lead always sequential first)
 ```
+
+`atmux start` spawns the lead member sequentially first (so the lead's brief
+lands before any teammate references the team contract), then fans the
+remaining members out concurrently up to `ATMUX_SPAWN_CONCURRENCY` (default 6
+in-flight). 20-member teams previously took ~5min wall-clock; the fan-out
+brings that to <60s. Set the env to `1` to restore the legacy strictly-serial
+behaviour (useful when debugging spawn-time race conditions).
 
 ## Troubleshooting
 
@@ -304,3 +312,4 @@ ATMUX_DOCTOR_ON_START=1    # env equivalent of --doctor (for cron)
 - **`atmux start` says "pane is `zsh` not `claude`"** — the TUI didn't launch. Check that `claude`/`opencode`/`kimi`/`cursor-agent` is on PATH for that member's cwd. Retry with `atmux start --force`.
 - **Messages go to a void** — the TUI is on its welcome screen. Give it `ATMUX_SPAWN_WAIT=10 atmux start` a longer runway.
 - **Lead keeps compacting** — run `atmux rotate-lead` to `/clear` + re-brief, or lower `ATMUX_LEAD_MAX_MIN`.
+- **Spawning a large team is slow** — `atmux start` now fans teammates out concurrently (default cap 6); set `ATMUX_SPAWN_CONCURRENCY=8` for very large rosters, or `=1` to bisect a spawn-time race.

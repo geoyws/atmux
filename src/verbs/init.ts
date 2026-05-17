@@ -59,12 +59,13 @@
 // against this verb in parallel; the TS verb name + arg shape (`init
 // [--name <team>] [--force|-f]`) is the contract.
 
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
@@ -78,6 +79,13 @@ export interface ParsedInitArgs {
   force: boolean;
   /** --wizard / -w — interactive setup (NOT yet implemented in port). */
   wizard: boolean;
+  /** t-3866c5b1 / ADR-094: non-interactive equivalent of the wizard's
+   *  team-wide claudeAccount prompt. When set + != "default", every
+   *  member entry in the rendered team.json is stamped with
+   *  `claudeAccount: <value>`. "default" (or absent) leaves the field
+   *  unset (schema-default applies). Operators run `atmux reconfigure`
+   *  to override per-member after init. */
+  claudeAccount?: string;
 }
 
 /**
@@ -94,6 +102,7 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
   let name: string | undefined;
   let force = false;
   let wizard = false;
+  let claudeAccount: string | undefined;
 
   let i = 0;
   while (i < args.length) {
@@ -104,7 +113,7 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
         if (val === undefined) {
           throw new UsageError({
             what: "init: --name requires a value",
-            hint: "usage: atmux init [--name <team>] [--force|-f]",
+            hint: "usage: atmux init [--name <team>] [--force|-f] [--claude-account <suffix>]",
           });
         }
         name = val;
@@ -121,17 +130,37 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
         wizard = true;
         i += 1;
         break;
+      case "--claude-account": {
+        // t-3866c5b1 / ADR-094: non-interactive twin of the wizard's
+        // team-wide claudeAccount prompt. Validation is value-shape
+        // only — refuse empty + non-finite (any operator-defined
+        // suffix is otherwise acceptable; the corresponding
+        // `$HOME/.claude-<suffix>` dir is operator-maintained).
+        const val = args[i + 1];
+        if (val === undefined || val.length === 0) {
+          throw new UsageError({
+            what: "init: --claude-account requires a value",
+            hint: "valid: default | personal | icloud | ifca | unum | <custom-suffix>",
+          });
+        }
+        claudeAccount = val;
+        i += 2;
+        break;
+      }
       default:
         throw new UsageError({
           what: `init: unknown arg: ${a}`,
-          hint: "usage: atmux init [--name <team>] [--force|-f]",
+          hint: "usage: atmux init [--name <team>] [--force|-f] [--claude-account <suffix>]",
         });
     }
   }
-  // exactOptionalPropertyTypes: only set the `name` key when defined
-  // (an explicit `name: undefined` is not the same as an absent key under
-  // the strict tsconfig).
-  return name === undefined ? { force, wizard } : { name, force, wizard };
+  // exactOptionalPropertyTypes: only set keys when defined (an explicit
+  // `name: undefined` is not the same as an absent key under the strict
+  // tsconfig). Build the shape conditionally.
+  const out: ParsedInitArgs = { force, wizard };
+  if (name !== undefined) out.name = name;
+  if (claudeAccount !== undefined) out.claudeAccount = claudeAccount;
+  return out;
 }
 
 // ---------- Template path resolution ----------
@@ -142,16 +171,14 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
  *   ATMUX_ROOT="$(cd "$ATMUX_BIN_DIR/.." && pwd)"
  *   export ATMUX_TEMPLATES_DIR="$ATMUX_ROOT/templates"
  *
- * The TS shim at `bin/atmux-bun` doesn't set these env vars — instead
- * the verb resolves the template via the source tree at runtime. Tests
- * inject `templatesDir` via `InitOptions` so they can run from any cwd
- * without needing the worktree to be the parent dir.
+ * Delegates to {@link resolveTemplatesDir} for the dev / installed
+ * dual-path resolution (closes c-003a2a4c — compiled binary's
+ * `import.meta.dir` walks bun's internal $bunfs to `/templates` which
+ * doesn't exist on disk; the shared resolver probes the dev path
+ * first, then falls back to `<process.execPath>/../templates`).
  */
 function defaultTemplatesDir(env: NodeJS.ProcessEnv): string {
-  const override = env.ATMUX_TEMPLATES_DIR;
-  if (override !== undefined && override.length > 0) return override;
-  // src/verbs/init.ts → repo root is two dirs up.
-  return resolve(import.meta.dir, "..", "..", "templates");
+  return resolveTemplatesDir(env);
 }
 
 // ---------- Verb entry ----------
@@ -243,11 +270,29 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const templatesDir = opts.templatesDir ?? defaultTemplatesDir(env);
   const templatePath = join(templatesDir, "team.example.json");
   const team = await readJson(templatePath, Team);
+  // t-3866c5b1 / ADR-094: --claude-account triages into three branches.
+  // Unset (undefined) → preserve template's field verbatim (the
+  // template's lead entry carries demonstration `claudeAccount:
+  // "personal"`). Explicit "default" → STRIP any inherited field so
+  // schema-default applies (operator opted into the default tier; no
+  // disk litter). Non-default suffix → stamp every member with the
+  // suffix (CLAUDE_CONFIG_DIR prefix at spawn time). Operators run
+  // `atmux reconfigure` post-init to override per-member.
+  const explicit = parsed.claudeAccount;
+  const stampAccount = explicit !== undefined && explicit.length > 0 && explicit !== "default";
+  const stripAccount = explicit === "default";
   const rendered: TeamShape = {
     ...team,
     name: teamName,
     tmuxTmpdir: `/tmp/atmux-tmux_${teamName}`,
-    members: team.members.map((m) => ({ ...m, cwd })),
+    members: team.members.map((m) => {
+      if (stampAccount) return { ...m, cwd, claudeAccount: explicit };
+      if (stripAccount) {
+        const { claudeAccount: _stripped, ...rest } = m;
+        return { ...rest, cwd };
+      }
+      return { ...m, cwd };
+    }),
   };
   // Compact serialization to keep team.json human-readable + match the
   // shape jq emits (2-space indent + trailing newline). The parity

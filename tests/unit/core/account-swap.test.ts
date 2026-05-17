@@ -1066,5 +1066,58 @@ describe("runSwapPass — pass-complete side effects", () => {
   });
 });
 
+// ---------- ADR-078: refreshOnNearExpiry contract ----------
+//
+// account-swap is a one-shot probe context — it does NOT own the
+// credentials lifecycle. Pin the call-site contract so a future change
+// can't silently flip account-swap into refresh-on-near-expiry mode and
+// resurrect the cockpit-rebuild TUI race.
+
+describe("runAccountSwapCheck — ADR-078 refreshOnNearExpiry contract", () => {
+  test("injected probeBudget is NEVER called with refreshOnNearExpiry: true", async () => {
+    const probeOptsCalls: Array<{
+      account: string;
+      opts: { force?: boolean; refreshOnNearExpiry?: boolean } | undefined;
+    }> = [];
+    const probes: Record<string, BudgetProbeResult> = {
+      icloud: probeAllowed("icloud", 76, 23), // trigger
+      ifca: probeAllowed("ifca", 8, 12), // viable fallback
+    };
+    const probeFn = async (
+      account: string,
+      opts?: { force?: boolean; refreshOnNearExpiry?: boolean },
+    ): Promise<BudgetProbeResult> => {
+      probeOptsCalls.push({ account, opts });
+      const r = probes[account];
+      if (r === undefined) throw new Error(`unexpected probe call for ${account}`);
+      return r;
+    };
+
+    const verdict = await runAccountSwapCheck(
+      {
+        atmuxDir,
+        nowSec: 1_700_000_000,
+        members: [
+          { name: "alpha", role: "worker", claudeAccount: "icloud" },
+          { name: "beta", role: "worker", claudeAccount: "icloud" },
+        ],
+        config: baseConfig,
+      },
+      { probeBudget: probeFn },
+    );
+    expect(verdict).toBe("pass-entered");
+
+    // At least one probe call must have happened (trigger detect + fallback).
+    expect(probeOptsCalls.length).toBeGreaterThan(0);
+
+    // The contract: every call site leaves refreshOnNearExpiry unset
+    // (undefined) or false. A future change setting it true would
+    // resurrect the ADR-078 OAuth-rotation race.
+    for (const c of probeOptsCalls) {
+      expect(c.opts?.refreshOnNearExpiry === true).toBe(false);
+    }
+  });
+});
+
 // Suppress unused-var warning for the imported type alias.
 void undefined as DiscordSendOpts | undefined;

@@ -15,7 +15,7 @@ ping fires.
 
 **Pre-reads:**
 
-- [`docs/adr-bun/057-stall-prevention.md`](adr-bun/057-stall-prevention.md) — full Decision rationale (D1-D7) + open questions.
+- [`docs/adr/057-stall-prevention.md`](adr/057-stall-prevention.md) — full Decision rationale (D1-D7) + open questions.
 - [`HANDOFF.md` §🛡️ v1.1.x stall-prevention](../HANDOFF.md) — operator-facing usage notes per Decision.
 - [`docs/RUNBOOK-cron-migration.md` §v1.1.x cron-block migration](RUNBOOK-cron-migration.md#v11x-cron-block-migration--watchdog-line-adr-057-d6b) — installing the `*/2 atmux watchdog` cron line.
 
@@ -187,6 +187,127 @@ notification only.
 **If you ARE the reviewer:** `git fetch origin && git log --oneline
 origin/<branch> -5` to see what landed. Per-commit reviewer cycle per
 CLAUDE.md ReviewDiscipline.
+
+### `[whip-modal-cycling] <member>` (ADR-142)
+
+**Source:** whip §1c modal-cycling detector. Fires when ≥3 distinct
+modal-prompts land on a member's pane within
+`modalCycling.windowMin` (default 30 min) AND `git log --since=<window>`
+returns zero commits matching the member's claimed task. Pre-sentinel-
+ship runs here; ADR-140 forward-compat ports the same detection
+function to the sentinel's per-tick observer (renamed from "martinet"
+per ADR-158; legacy keys still parse during grace cycle).
+
+**What it usually means:** member is thrashing across a class of related
+prompts (push variants, approval variants, retry variants) without
+making real task progress. Distinct from `whip §1c teammate-blocked-
+on-prompt` static-stuck (which catches *same prompt repeating*) —
+modal-cycling catches *different prompts in rapid sequence*.
+
+**Auto-recovery (happens before you see the ping):**
+
+- Clarifier dispatched to member's pane: `[detector] modal-cycling
+  detected — N prompts in <window>, 0 commits on <taskId>. Recommend:
+  unclaim + retry from clean, or surface blocker via atmux reply if
+  the prompt class is genuinely blocking work.`
+- `atmux flags add` filed with severity=high + the modal class
+  sequence in the body.
+- Discord template fires once per `modalCycling.dedupMin` (default
+  30 min) — recording continues every tick, only the surface action
+  dedup'd.
+
+**Manual escalation — if the cycling resumes after the clarifier:**
+
+1. Read the modal-history file:
+   `cat ~/.atmux/state/modal-history-<member>.json | jq '.[]
+   | .modalText'` — see the prompt classes the agent's stuck in.
+2. If a brief-content problem (wrong instructions causing the prompt
+   loop): edit the member's brief, then `atmux clear <member>` to
+   force a fresh session pick up the new brief.
+3. If a genuine blocker (modal-cycling is the AGENT'S signal that
+   the work is mis-specified): `atmux unclaim <taskId>` and re-route
+   to planner via `atmux tell-lead`.
+
+**Per-team opt-out / tuning:**
+
+```json
+// team.json
+{
+  "modalCycling": {
+    "enabled": true,          // false to disable detection entirely
+    "cycleThreshold": 3,      // distinct hashes in window to trigger
+    "windowMin": 30,
+    "commitGracePeriodMin": 30, // commits in this window suppresses fire
+    "dedupMin": 30,             // surface-action dedup
+    "exemptMembers": []         // designated roles that legitimately
+                                // navigate modal sequences
+  }
+}
+```
+
+**Testing the detection (operator-side rehearsal):**
+
+```bash
+# Run the focused unit + e2e specs against your changes.
+unset TMUX && bun test --timeout 30000 \
+  tests/unit/core/modal-cycling-detector.test.ts \
+  tests/unit/core/modal-cycling-state.test.ts \
+  tests/e2e/modal-cycling-detector.test.ts
+```
+
+Each spec is a 1x cold-start walk per CLAUDE.md "stateful e2e specs
+are not repeatable smokes" — don't streak; re-run with a fresh tmpdir
+between invocations.
+
+### `[member-refusal-rotate] <member>` (ADR-139)
+
+**Source:** medic hourly tick (W2 per [ADR-077](adr/077-superdoctor-cockpit-role.md)) + martinet 270s tick (W3 per [ADR-132](adr/132-pluggable-martinet.md)), both invoking `atmux refusal-scan` per team. Threshold-trigger lives at `src/core/refusal-trigger.ts::runRefusalTriggerForTeam` per [ADR-139](adr/139-refusal-pattern-auto-rotate.md). Fires when a member's `refusal_events` ledger crosses one of the §D3 thresholds within `windowMin` (default 30) — soft=3, hard=2 (in fixed 10min sub-window), role=1 (instant).
+
+**What it usually means:** the agent at this member is producing refusal language ("don't poke me" / "I refuse to claim" / "rotate me already"). Context degradation, brief mismatch, or saturated patience. The trigger fires `atmux rotate <member>` to clear + re-bootstrap the pane.
+
+**Auto-recovery (happens before you see the ping):**
+
+- `atmux rotate <member>` spawn — pane gets `/clear` + role brief paste.
+- `<atmuxDir>/state/refusal-rotations.log` gains one tab-separated row (timestamp, UTC-day-key, team, member, severity, reason).
+- Discord `[member-refusal-rotate]` template fires with verdict 🟡 on green path, 🚨 on `cap-hit` or `spawn-failed` HARD paths.
+- On `cap-hit` (3 rotations already today for this member): complaint filed via `fileDedupedComplaint`, NO further rotation that day. Operator must intervene.
+
+**Manual escalation — if rotation doesn't help:**
+
+1. Inspect recent refusal events: `sqlite3 .atmux/state.db "SELECT * FROM refusal_events WHERE member='<m>' ORDER BY detected_at DESC LIMIT 10"` — see the phrases the classifier matched.
+2. If a brief-content problem (role-class refusal: agent thinks it's been miscast): edit `templates/briefs/<role>.md` + `atmux rotate <member>` manually with the corrected brief in place.
+3. If member is fundamentally saturated for the day: `atmux pause <member>` until the next session; `atmux resume <member>` clears the pause.
+4. To grant a planner / reviewer / similar "designated thinker" role a pass on the detector (legitimate echoing of operator directives): add the member to `team.json::refusalDetection.exemptMembers`.
+
+**Per-team opt-out / tuning:**
+
+```json
+// team.json
+{
+  "refusalDetection": {
+    "enabled": true,            // false to disable detection entirely
+    "softThreshold": 3,         // soft-class events in windowMin to fire
+    "hardThreshold": 2,         // hard-class events in fixed 10min window
+    "roleThreshold": 1,         // role-class events (instant)
+    "windowMin": 30,            // soft + role lookback in minutes
+    "exemptMembers": [],        // never auto-rotate these members
+    "maxRotationsPerDay": 3     // beyond N/day → HARD escalation
+  }
+}
+```
+
+**Testing the detection (operator-side rehearsal):**
+
+```bash
+# Run the focused unit + e2e specs against your changes.
+unset TMUX && bun test --timeout 30000 \
+  tests/unit/core/refusal-scan.test.ts \
+  tests/unit/core/refusal-trigger.test.ts \
+  tests/unit/abstractions/sqlite-migrations.test.ts \
+  tests/e2e/refusal-pattern-auto-rotate.test.ts
+```
+
+The e2e walks six scenarios (threshold trip per class, cap exhaustion, exempt member, backward-compat defaults) on a fresh in-memory state.db per `test()`. Per CLAUDE.md "stateful e2e specs are not repeatable smokes" — don't streak; re-run with a fresh tmpdir between invocations.
 
 ---
 
@@ -390,9 +511,88 @@ After enabling v1.1.x stall-prevention on a team:
 
 ---
 
+## How to verify cadence-truth-signal (ADR-148)
+
+ADR-148 makes commit-cadence the canonical truth signal for "is this
+member shipping?" — pane-aliveness is downgraded to a secondary
+diagnostic. Verify the full chain end-to-end after a fresh deploy or
+when the operator sees `🟢 alive` while suspecting dormancy:
+
+1. **Per-member cadence column shows up in `atmux status`** (§D3):
+
+   ```bash
+   atmux status | rg '🟢 shipping|🟡 idle|🔴 dormant|🚨 ship-zero'
+   ```
+
+   At least one line per non-exempt member should match. Members on
+   `team.cadence.exemptMembers` show `(exempt)`; teams with
+   `team.cadence.enabled: false` show `—` and the column is omitted
+   from the JSON snapshot (`atmux status --json | jq '.members[].cadence'`).
+
+2. **Per-member classifier produces a verdict that matches `git log`**:
+
+   ```bash
+   # pick any non-exempt member's worktree
+   git -C .atmux/worktrees/<member>/ log --since=2h --author=<member> --format='%H %ct' | head
+   ```
+
+   No output AND the cadence column shows `🚨 ship-zero (<age>)` →
+   ADR-132 §E6 escalation gate is armed for that member. If the column
+   instead shows `🟢 shipping (Xmin)` despite an empty git log, the
+   gitLog probe is mis-targeting the worktree — `atmux doctor` should
+   surface the path-resolution error.
+
+3. **Sentinel escalation fires `ship-zero-2hr`** (renamed from "martinet"
+   per ADR-158; legacy state-log path still tail-readable during grace
+   cycle) when any per-member verdict is `ship-zero-window` (§D6, wired
+   through `src/core/sentinel-escalation.ts::classify` E6 path). The
+   cockpit-W3 dispatcher's tick log shows the reason verbatim:
+
+   ```bash
+   tail -50 ~/.atmux/state/sentinel-tick.log | rg 'ship-zero-2hr'
+   ```
+
+4. **Lane-stall fallback fires** when a `lane=X todo>30min` Task sits
+   while every member with `lane=X` is non-shipping (§D4):
+
+   ```bash
+   # synthetic-fire path — manually invoke the verb if cron isn't installed yet
+   atmux lane-stall-tick
+   # check the fire ledger
+   jq '.fires' ~/.atmux/state/lane-stall-fires.json
+   ```
+
+   Recent `(taskId, lane)` entries with `firedAt` within the last
+   `laneStallMinAgeSec / 2` window are the dedup state — the verb
+   skips re-firing the same `(taskId, lane)` within this window.
+
+5. **Lead wake-nudge** (per `templates/briefs/team-lead.md` §D5): on
+   `cadence verdict ∈ {idle, dormant, ship-zero-window}`, the lead's
+   first wake attempt is `atmux send <member> "[lead] cadence verdict
+   <X>; last commit <age>. What's the blocker?"`. If the lead reads
+   `atmux status` but no `atmux send` followups land within 15min,
+   either the brief isn't on-disk on the lead pane (check
+   `~/.claude/teams/<team>/lead-bootstrap.txt` for the brief load time)
+   OR the lead has drifted to passive-relay (rotate via `atmux team
+   rotate-lead <team>`).
+
+**E2E rehearsal:** `tests/e2e/cadence-truth-signal.test.ts` runs the
+full chain (status column → classify() E6 fire → lane-stall-tick fire
+→ wake-nudge brief shape → 2 backward-compat short-circuits) against
+synthetic gitLog fixtures + injected sendKeys. Bun runs it in <1s:
+
+```bash
+unset TMUX && bun test --timeout 30000 tests/e2e/cadence-truth-signal.test.ts
+```
+
+12 beats, 1x cold-start+walk (non-idempotent — re-runs need a fresh
+tempdir; the spec's `beforeAll`/`afterAll` handles that).
+
+---
+
 ## Reference
 
-- **ADR:** [`docs/adr-bun/057-stall-prevention.md`](adr-bun/057-stall-prevention.md) — full design.
+- **ADR:** [`docs/adr/057-stall-prevention.md`](adr/057-stall-prevention.md) — full design.
 - **HANDOFF section:** [`HANDOFF.md` §🛡️ v1.1.x stall-prevention (ADR-057)](../HANDOFF.md).
 - **Cron migration:** [`RUNBOOK-cron-migration.md` §v1.1.x cron-block migration](RUNBOOK-cron-migration.md#v11x-cron-block-migration--watchdog-line-adr-057-d6b).
 - **Watchdog verb:** `src/verbs/watchdog.ts`. Heartbeat reader: `src/core/heartbeat.ts::readHeartbeatAges`.
@@ -400,3 +600,4 @@ After enabling v1.1.x stall-prevention on a team:
 - **Auto-push:** `src/core/auto-push.ts`. Audit log: `.atmux/logs/auto-push.jsonl`.
 - **Pane-state classifier:** `src/core/pane-state.ts::classifyPane`. Send-keys gate: `src/core/safe-send.ts::safeSendKeys`.
 - **Per-class Tasks:** R57-T1 (D1) / R57-T2 (D2) / R57-T3 (D3) / R57-T4 (D4) / R57-T5 (D5) / R57-T6 (D6) / R57-T7 (D7) / R57-T8 (this docs Task).
+- **Cadence-truth-signal (ADR-148):** `src/core/cadence-classifier.ts` (classifier) + `src/core/sentinel-escalation.ts::classify` (E6 ship-zero-2hr gate; renamed from `martinet-escalation` per ADR-158) + `src/verbs/lane-stall-tick.ts` (§D4 lane-stall fallback) + `src/verbs/status.ts::formatCadenceColumn` (renderer). E2E rehearsal: `tests/e2e/cadence-truth-signal.test.ts`.

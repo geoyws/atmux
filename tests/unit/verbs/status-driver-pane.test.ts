@@ -103,7 +103,7 @@ describe("gatherStatus — driverPane field populated", () => {
     };
     const tmux = buildFakeTmux({
       windowsBySession: { "test-sess": ["driver", "lead"] },
-      paneCaptures: { "test-sess:driver": "│ > \n123 tokens · esc to interrupt\n" },
+      paneCaptures: { "test-sess:driver": "│ > \ntok 67k/100  ⏵⏵ auto mode\n" },
     });
     const snap = await gatherStatus(tmux, team, "test-sess", atmuxDir);
     expect(snap.driverPane.configured).toBe(true);

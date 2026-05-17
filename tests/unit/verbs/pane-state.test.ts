@@ -121,16 +121,24 @@ describe("resolveMemberWindowTarget", () => {
     ],
   } as Team;
 
-  test("regular member → `<session>:<emoji><name>`", async () => {
+  test("regular member → `<session>:<emoji>-<name>`", async () => {
+    // ADR-135 D3: buildWindowName uses `<emoji>-<member>` (hyphen
+    // separator), not bare concatenation. t-475f9571 sibling-F.
     const member = team.members[0] as TeamMember;
     const t = await resolveMemberWindowTarget(team, "atmux-demo", member, { home: homeDir });
-    expect(t).toBe("atmux-demo:🐝alpha");
+    expect(t).toBe("atmux-demo:🐝-alpha");
   });
 
-  test("lead with no I-2 marker → falls back to `<emoji><name>` from schema", async () => {
+  test("lead with no I-2 marker → falls back to `<emoji>_<name>` from schema", async () => {
+    // ADR-161 §Decision-anchor #2: buildWindowName is role-aware —
+    // default-member roles (team-lead, planner, reviewer, ombudsman)
+    // render `_-prefix` (`${emoji}_${display}`); user-added members keep
+    // the ADR-135 hyphen form. The lead-fallback path here resolves
+    // through `memberWindowName = buildWindowName(..., member.role)`,
+    // so the lead role yields underscore separator.
     const member = team.members[1] as TeamMember;
     const t = await resolveMemberWindowTarget(team, "atmux-demo", member, { home: homeDir });
-    expect(t).toBe("atmux-demo:🧭lead");
+    expect(t).toBe("atmux-demo:🧭_lead");
   });
 
   test("lead with I-2 marker → uses marker text", async () => {
@@ -166,10 +174,13 @@ describe("paneStateWithTmux — every PaneState round-trips via fixture captures
     expect(r.state).toBe("READY");
   });
 
-  test("READY — tokens-with-esc footer", async () => {
+  test("BUSY — tokens-with-esc footer (post-ADR-080 §C)", async () => {
+    // Pre-§C this phrase marked READY; the audit found it only ever
+    // renders during an active turn, so it now classifies BUSY via
+    // pane-state.ts:97 `/esc to interrupt/i`.
     const tmux = stubTmuxWithCapture("3.4k tokens · esc to interrupt");
     const r = await paneStateWithTmux(tmux, TEAM_ONE, "atmux-demo", ALPHA, { home: homeDir });
-    expect(r.state).toBe("READY");
+    expect(r.state).toBe("BUSY");
   });
 
   test("TYPING — queued message indicator", async () => {

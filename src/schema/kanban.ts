@@ -115,6 +115,17 @@ export const KanbanTask = z
       .optional(),
     /** Closing note from `done <id> --note <text>` per `claim.sh`. */
     note: z.string().nullable().optional(),
+    /** ADR-090 §Decision-anchor #1: canonical marker for the EPIC-done
+     *  trunk-signoff gate consumed by ADR-091's auto-merge state machine.
+     *  The reserved value `"reviewer-trunk-signoff"` names the Task that
+     *  reviewer files AFTER verifying every code-shipping child Task has
+     *  paired tests (per project CLAUDE.md §Testing Discipline) AND the
+     *  commit-cadence gate (ADR-148) shows the epic-team shipping. The
+     *  field is `nullable().optional()` because legacy Tasks pre-ADR-090
+     *  don't carry it; only ADR-091's state-machine reads it. Schema-
+     *  permissive `z.string()` so future role-markers land additively
+     *  without schema churn. */
+    role: z.string().nullable().optional(),
   })
   .passthrough();
 export type KanbanTask = z.infer<typeof KanbanTask>;
@@ -146,6 +157,32 @@ export const KanbanEpic = z
     /** Lazy-init array of child story IDs (//= [] on first append per
      *  `lib/story.sh:23`). Source of truth is top-level `stories[]`. */
     stories: z.array(z.string()).optional(),
+    /** ADR-090 §Schema: name of the child epic-team this Epic row was
+     *  spawned into (filled by `spawn-epic` step 9, cleared by
+     *  `dissolve-epic` step 7). Lets the parent identify which child
+     *  cage owns the EPIC's execution + read the child's `state.db` for
+     *  cross-team progress rendering. `null` for normal Epics that did
+     *  NOT spawn an epic-team (the legacy / shared-team path). */
+    epicTeamName: z.string().nullable().optional(),
+    /** ADR-090 §Schema: absolute path to the child epic-team's project
+     *  root (`<projectRoot>-epics/<epicId>/` per §Decision-anchor #2).
+     *  Paired with `epicTeamName`; both move together on
+     *  spawn-epic / dissolve-epic. `null` when no epic-team is attached. */
+    epicTeamRoot: z.string().nullable().optional(),
+    /** ADR-090 §Decision-anchor #6 forward-ref: pr-mode runtime number.
+     *  Schema-reserved for future pr-mode impl (deferred). `null` in
+     *  v1 — auto-mode never sets it; pr-mode runtime ships in a future
+     *  ADR. */
+    prNumber: z.number().int().nullable().optional(),
+    /** ADR-090 §Decision-anchor #6 forward-ref: pr-mode runtime state
+     *  (e.g. `"open"`, `"merged"`, `"closed"`). Schema-reserved; pr-mode
+     *  runtime ships in a future ADR. `null` in v1. */
+    prState: z.string().nullable().optional(),
+    /** ADR-090 §Schema: free-form annotation. ADR-091's auto-merge state
+     *  machine writes `"conflict at <SHA>"` here on `merging → conflict`
+     *  transitions; operators tail this field via `atmux status` to
+     *  triage stuck epics. `null` for clean / not-yet-merged Epics. */
+    note: z.string().nullable().optional(),
   })
   .passthrough();
 export type KanbanEpic = z.infer<typeof KanbanEpic>;
@@ -177,6 +214,23 @@ export const KanbanStory = z
     reviewSignoff: z.boolean().optional(),
     /** Task ID created by the auto-dispatched merge step. */
     mergeTaskId: z.string().nullable().optional(),
+    /** ADR-146 §D4: source branch this Story's work lives on. Used by
+     *  ADR-146 auto-emit (T2) to populate the trunk-merge Task's
+     *  source-branch field. For per-member-branch teams
+     *  (ADR-082+084), this is typically `<base>-<member>` (e.g.
+     *  `geoyws-whip-impl`). For shared-cwd teams, this is the team's
+     *  base branch (no fan-in needed; auto-emit short-circuits per
+     *  ADR-146 §D5). Backward-compat: existing Stories without
+     *  `branch` set get the auto-emit short-circuit (no source-
+     *  branch → no auto-Task).
+     *
+     *  Storage note: rides through `extra` JSON column on the
+     *  `stories` table — `branch` is NOT in `KNOWN_STORY_FIELDS`
+     *  inside `src/core/repositories/kanban-repo.ts`, so the field
+     *  serializes to `extra` on write and re-emerges via `...extra`
+     *  spread on read. Zero-migration roll-out per ADR-146 backfill-
+     *  via-script (T2 ships `scripts/backfill-story-branch.ts`). */
+    branch: z.string().nullable().optional(),
   })
   .passthrough();
 export type KanbanStory = z.infer<typeof KanbanStory>;

@@ -510,3 +510,518 @@ describe("walkFallbackOnResume — best-effort failures", () => {
     expect(destroyed).toBe(true);
   });
 });
+
+// ============================================================
+// ADR-050 v1 wrappers — spawnFallbackCage / teardownFallbackCage /
+// shouldDispatchFallback
+// ============================================================
+
+import {
+  cageKeyV1,
+  DEFAULT_CURSOR_MODEL,
+  DEFAULT_FALLBACK_SUSTAIN_MIN,
+  type FallbackCagesFileV1,
+  fallbackCagesPathV1,
+  MIN_FALLBACK_SUSTAIN_MIN,
+  readCagesFileV1,
+  SUPPORTED_FALLBACK_TIER,
+  shouldDispatchFallback,
+  spawnFallbackCage,
+  Tier3PlusNotSupportedError,
+  teardownFallbackCage,
+} from "../../../src/core/whip-budget-fallback.ts";
+import type { Team } from "../../../src/schema/team.ts";
+
+function makeTeam(over: Partial<Team> = {}): Team {
+  return {
+    name: "atmux",
+    members: [],
+    ...over,
+  } as Team;
+}
+
+function teamWithFallback(
+  fb: Partial<{
+    enabled: boolean;
+    sustainMins: number;
+    tier: number;
+    cursorModel: string;
+  }>,
+): Team {
+  return {
+    name: "atmux",
+    members: [],
+    whip: {
+      fallback: {
+        enabled: false,
+        sustainMins: DEFAULT_FALLBACK_SUSTAIN_MIN,
+        tier: SUPPORTED_FALLBACK_TIER,
+        cursorModel: DEFAULT_CURSOR_MODEL,
+        ...fb,
+      },
+    },
+  } as unknown as Team;
+}
+
+// ---------- shouldDispatchFallback ----------
+
+describe("shouldDispatchFallback — ADR-050 §Trigger semantics", () => {
+  test("all 3 conditions met → dispatch=true", () => {
+    const team = teamWithFallback({ enabled: true });
+    const got = shouldDispatchFallback({
+      team,
+      pauseSustainedMin: 30,
+      inProgressTaskCount: 1,
+    });
+    expect(got).toEqual({ dispatch: true });
+  });
+
+  test("fallback disabled → dispatch=false (reason fallback-disabled)", () => {
+    const team = teamWithFallback({ enabled: false });
+    const got = shouldDispatchFallback({
+      team,
+      pauseSustainedMin: 60,
+      inProgressTaskCount: 3,
+    });
+    expect(got.dispatch).toBe(false);
+    expect(got.reason).toBe("fallback-disabled");
+  });
+
+  test("sustain not reached → dispatch=false (reason sustain-not-reached)", () => {
+    const team = teamWithFallback({ enabled: true, sustainMins: 30 });
+    const got = shouldDispatchFallback({
+      team,
+      pauseSustainedMin: 15,
+      inProgressTaskCount: 2,
+    });
+    expect(got.dispatch).toBe(false);
+    expect(got.reason).toBe("sustain-not-reached");
+  });
+
+  test("sustain exact equality → dispatch=true (>=, not strict >)", () => {
+    const team = teamWithFallback({ enabled: true, sustainMins: 30 });
+    const got = shouldDispatchFallback({
+      team,
+      pauseSustainedMin: 30,
+      inProgressTaskCount: 1,
+    });
+    expect(got.dispatch).toBe(true);
+  });
+
+  test("zero in-progress tasks → dispatch=false (reason no-in-progress-tasks)", () => {
+    const team = teamWithFallback({ enabled: true });
+    const got = shouldDispatchFallback({
+      team,
+      pauseSustainedMin: 30,
+      inProgressTaskCount: 0,
+    });
+    expect(got.dispatch).toBe(false);
+    expect(got.reason).toBe("no-in-progress-tasks");
+  });
+
+  test("tier !== 2 → dispatch=false (reason tier-not-supported, evaluated FIRST)", () => {
+    // Bypass schema (force a non-2 tier via cast).
+    const team = {
+      name: "atmux",
+      members: [],
+      whip: {
+        fallback: { enabled: true, sustainMins: 30, tier: 3, cursorModel: "x" },
+      },
+    } as unknown as Team;
+    const got = shouldDispatchFallback({
+      team,
+      pauseSustainedMin: 60,
+      inProgressTaskCount: 1,
+    });
+    expect(got.dispatch).toBe(false);
+    expect(got.reason).toBe("tier-not-supported");
+  });
+
+  test("undefined whip.fallback → dispatch=false (default enabled=false → fallback-disabled)", () => {
+    const team = makeTeam();
+    const got = shouldDispatchFallback({
+      team,
+      pauseSustainedMin: 999,
+      inProgressTaskCount: 5,
+    });
+    expect(got.dispatch).toBe(false);
+    expect(got.reason).toBe("fallback-disabled");
+  });
+});
+
+// ---------- spawnFallbackCage ----------
+
+describe("spawnFallbackCage — ADR-050 v1 wrapper", () => {
+  test("happy path: creates cage + persists handle to v1 file", async () => {
+    const team = teamWithFallback({ enabled: true });
+    let createCalls = 0;
+    const handle = await spawnFallbackCage(
+      {
+        team,
+        atmuxDir,
+        projectCwd,
+        member: "fe",
+        taskId: "t-spawn1",
+      },
+      {
+        createCage: async (opts) => {
+          createCalls += 1;
+          expect(opts.tier).toBe(2);
+          expect(opts.team).toBe("atmux");
+          expect(opts.lane).toBe("fe");
+          expect(opts.taskId).toBe("t-spawn1");
+          return fakeHandle({ tier: 2, taskId: "t-spawn1", team: "atmux", lane: "fe" });
+        },
+      },
+    );
+    expect(createCalls).toBe(1);
+    expect(handle.tier).toBe(2);
+
+    // Persisted to v1 file.
+    const fileContent = await readFile(fallbackCagesPathV1(atmuxDir), "utf8");
+    const parsed = JSON.parse(fileContent) as FallbackCagesFileV1;
+    expect(parsed.schemaVersion).toBe(1);
+    expect(parsed.cages[cageKeyV1("atmux", "fe")]).toBeDefined();
+  });
+
+  test("idempotence: second call returns existing handle without re-spawning", async () => {
+    const team = teamWithFallback({ enabled: true });
+    let createCalls = 0;
+    const sharedDeps = {
+      createCage: async () => {
+        createCalls += 1;
+        return fakeHandle({ tier: 2, taskId: "t-idem1", team: "atmux", lane: "fe" });
+      },
+    };
+    const h1 = await spawnFallbackCage(
+      { team, atmuxDir, projectCwd, member: "fe", taskId: "t-idem1" },
+      sharedDeps,
+    );
+    const h2 = await spawnFallbackCage(
+      { team, atmuxDir, projectCwd, member: "fe", taskId: "t-idem1" },
+      sharedDeps,
+    );
+    expect(createCalls).toBe(1);
+    expect(h2).toEqual(h1);
+  });
+
+  test("refuses tier !== 2 at call-site (defense-in-depth)", async () => {
+    const team = {
+      name: "atmux",
+      members: [],
+      whip: {
+        fallback: { enabled: true, sustainMins: 30, tier: 3, cursorModel: "x" },
+      },
+    } as unknown as Team;
+    await expect(
+      spawnFallbackCage({
+        team,
+        atmuxDir,
+        projectCwd,
+        member: "fe",
+        taskId: "t-tier3",
+      }),
+    ).rejects.toThrow(Tier3PlusNotSupportedError);
+  });
+
+  test("optional brief: sendBrief dep invoked when both brief + dep supplied", async () => {
+    const team = teamWithFallback({ enabled: true });
+    const sendCalls: Array<{ handle: CageHandle; body: string }> = [];
+    await spawnFallbackCage(
+      {
+        team,
+        atmuxDir,
+        projectCwd,
+        member: "fe",
+        taskId: "t-brief1",
+        brief: "hello world",
+      },
+      {
+        createCage: async () =>
+          fakeHandle({ tier: 2, taskId: "t-brief1", team: "atmux", lane: "fe" }),
+        sendBrief: async (handle, body) => {
+          sendCalls.push({ handle, body });
+        },
+      },
+    );
+    expect(sendCalls).toHaveLength(1);
+    expect(sendCalls[0]!.body).toBe("hello world");
+  });
+
+  test("brief supplied + sendBrief absent → no throw, no send (logged + deferred)", async () => {
+    const team = teamWithFallback({ enabled: true });
+    const handle = await spawnFallbackCage(
+      {
+        team,
+        atmuxDir,
+        projectCwd,
+        member: "fe",
+        taskId: "t-deferred",
+        brief: "deferred brief body",
+      },
+      {
+        createCage: async () =>
+          fakeHandle({ tier: 2, taskId: "t-deferred", team: "atmux", lane: "fe" }),
+      },
+    );
+    expect(handle.tier).toBe(2);
+  });
+
+  test("sendBrief throw is best-effort (cage still created + persisted)", async () => {
+    const team = teamWithFallback({ enabled: true });
+    const handle = await spawnFallbackCage(
+      {
+        team,
+        atmuxDir,
+        projectCwd,
+        member: "fe",
+        taskId: "t-throw",
+        brief: "x",
+      },
+      {
+        createCage: async () =>
+          fakeHandle({ tier: 2, taskId: "t-throw", team: "atmux", lane: "fe" }),
+        sendBrief: async () => {
+          throw new Error("tmux unreachable");
+        },
+      },
+    );
+    expect(handle.tier).toBe(2);
+    const parsed = JSON.parse(await readFile(fallbackCagesPathV1(atmuxDir), "utf8"));
+    expect(parsed.cages[cageKeyV1("atmux", "fe")]).toBeDefined();
+  });
+
+  test("distinct members create distinct v1 cage entries", async () => {
+    const team = teamWithFallback({ enabled: true });
+    await spawnFallbackCage(
+      { team, atmuxDir, projectCwd, member: "fe", taskId: "t-A" },
+      {
+        createCage: async () => fakeHandle({ tier: 2, taskId: "t-A", team: "atmux", lane: "fe" }),
+      },
+    );
+    await spawnFallbackCage(
+      { team, atmuxDir, projectCwd, member: "be", taskId: "t-B" },
+      {
+        createCage: async () => fakeHandle({ tier: 2, taskId: "t-B", team: "atmux", lane: "be" }),
+      },
+    );
+    const file = await readCagesFileV1(atmuxDir);
+    expect(Object.keys(file.cages)).toHaveLength(2);
+    expect(file.cages[cageKeyV1("atmux", "fe")]).toBeDefined();
+    expect(file.cages[cageKeyV1("atmux", "be")]).toBeDefined();
+  });
+});
+
+// ---------- teardownFallbackCage ----------
+
+describe("teardownFallbackCage — ADR-050 v1 wrapper", () => {
+  test("idempotence: teardown when no handle in file → no-op (no throw)", async () => {
+    const team = teamWithFallback({ enabled: true });
+    let destroyCalls = 0;
+    await teardownFallbackCage(
+      { team, atmuxDir, member: "fe" },
+      {
+        destroyCage: async () => {
+          destroyCalls += 1;
+        },
+      },
+    );
+    expect(destroyCalls).toBe(0);
+  });
+
+  test("happy path: spawn → teardown → file cleaned up", async () => {
+    const team = teamWithFallback({ enabled: true });
+    await spawnFallbackCage(
+      { team, atmuxDir, projectCwd, member: "fe", taskId: "t-X" },
+      {
+        createCage: async () => fakeHandle({ tier: 2, taskId: "t-X", team: "atmux", lane: "fe" }),
+      },
+    );
+    let destroyCalls = 0;
+    await teardownFallbackCage(
+      { team, atmuxDir, member: "fe" },
+      {
+        destroyCage: async () => {
+          destroyCalls += 1;
+        },
+      },
+    );
+    expect(destroyCalls).toBe(1);
+    await expect(stat(fallbackCagesPathV1(atmuxDir))).rejects.toThrow();
+  });
+
+  test("teardown one of two cages preserves the other", async () => {
+    const team = teamWithFallback({ enabled: true });
+    await spawnFallbackCage(
+      { team, atmuxDir, projectCwd, member: "fe", taskId: "t-A" },
+      {
+        createCage: async () => fakeHandle({ tier: 2, taskId: "t-A", team: "atmux", lane: "fe" }),
+      },
+    );
+    await spawnFallbackCage(
+      { team, atmuxDir, projectCwd, member: "be", taskId: "t-B" },
+      {
+        createCage: async () => fakeHandle({ tier: 2, taskId: "t-B", team: "atmux", lane: "be" }),
+      },
+    );
+    await teardownFallbackCage({ team, atmuxDir, member: "fe" }, { destroyCage: async () => {} });
+    const file = await readCagesFileV1(atmuxDir);
+    expect(Object.keys(file.cages)).toEqual([cageKeyV1("atmux", "be")]);
+  });
+
+  test("destroyCage throw still removes the stale entry from the file", async () => {
+    const team = teamWithFallback({ enabled: true });
+    await spawnFallbackCage(
+      { team, atmuxDir, projectCwd, member: "fe", taskId: "t-X" },
+      {
+        createCage: async () => fakeHandle({ tier: 2, taskId: "t-X", team: "atmux", lane: "fe" }),
+      },
+    );
+    await teardownFallbackCage(
+      { team, atmuxDir, member: "fe" },
+      {
+        destroyCage: async () => {
+          throw new Error("kill-server unreachable");
+        },
+      },
+    );
+    // File should be cleaned up — stale entries don't block the next
+    // teardown attempt.
+    await expect(stat(fallbackCagesPathV1(atmuxDir))).rejects.toThrow();
+  });
+
+  test("refuses tier !== 2 handle on teardown (defense-in-depth)", async () => {
+    const team = teamWithFallback({ enabled: true });
+    // Manually seed a Tier 3 handle (bypass spawn's tier check).
+    const file: FallbackCagesFileV1 = {
+      schemaVersion: 1,
+      cages: {
+        [cageKeyV1("atmux", "fe")]: fakeHandle({
+          tier: 3,
+          taskId: "t-T3",
+          team: "atmux",
+          lane: "fe",
+        }),
+      },
+    };
+    await writeFile(fallbackCagesPathV1(atmuxDir), JSON.stringify(file));
+    await expect(teardownFallbackCage({ team, atmuxDir, member: "fe" })).rejects.toThrow(
+      Tier3PlusNotSupportedError,
+    );
+  });
+});
+
+// ---------- v1 cages-file IO + path helpers ----------
+
+describe("v1 cages-file IO + path helpers", () => {
+  test("fallbackCagesPathV1 returns <atmuxDir>/state/fallback-cages-v1.json", () => {
+    expect(fallbackCagesPathV1("/x/.atmux")).toBe("/x/.atmux/state/fallback-cages-v1.json");
+  });
+
+  test("cageKeyV1 builds <team>:<member>", () => {
+    expect(cageKeyV1("atmux", "fe")).toBe("atmux:fe");
+    expect(cageKeyV1("sopx", "lane-1")).toBe("sopx:lane-1");
+  });
+
+  test("readCagesFileV1: missing file → empty file shape (no throw)", async () => {
+    const file = await readCagesFileV1(atmuxDir);
+    expect(file).toEqual({ schemaVersion: 1, cages: {} });
+  });
+
+  test("readCagesFileV1: malformed JSON → empty file shape (graceful degrade)", async () => {
+    await writeFile(fallbackCagesPathV1(atmuxDir), "{not json");
+    const file = await readCagesFileV1(atmuxDir);
+    expect(file).toEqual({ schemaVersion: 1, cages: {} });
+  });
+
+  test("readCagesFileV1: array shape (legacy v0) → empty (reject)", async () => {
+    // Distinct from ADR-058's epoch-suffixed file which uses array.
+    // V1 only accepts object-keyed `cages`.
+    await writeFile(fallbackCagesPathV1(atmuxDir), JSON.stringify({ schemaVersion: 1, cages: [] }));
+    const file = await readCagesFileV1(atmuxDir);
+    expect(file.cages).toEqual({});
+  });
+
+  test("default constants exposed and consistent", () => {
+    expect(DEFAULT_FALLBACK_SUSTAIN_MIN).toBe(30);
+    expect(MIN_FALLBACK_SUSTAIN_MIN).toBe(5);
+    expect(DEFAULT_CURSOR_MODEL).toBe("composer-2");
+    expect(SUPPORTED_FALLBACK_TIER).toBe(2);
+    expect(MIN_FALLBACK_SUSTAIN_MIN).toBeLessThan(DEFAULT_FALLBACK_SUSTAIN_MIN);
+  });
+});
+
+// ---------- ADR-050 schema-load refuse (defense-in-depth gate 1) ----------
+
+describe("schema-load refuse on tier !== 2 (ADR-050 §Decision §Tier ordering)", () => {
+  test("z.literal(2) refuses tier: 3 at parse time", async () => {
+    const { Team } = await import("../../../src/schema/team.ts");
+    expect(() =>
+      Team.parse({
+        name: "atmux",
+        members: [],
+        whip: {
+          fallback: { enabled: true, sustainMins: 30, tier: 3, cursorModel: "x" },
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("z.literal(2) refuses tier: 1 at parse time", async () => {
+    const { Team } = await import("../../../src/schema/team.ts");
+    expect(() =>
+      Team.parse({
+        name: "atmux",
+        members: [],
+        whip: {
+          fallback: { tier: 1 },
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("sustainMins < 5 refused (min boundary)", async () => {
+    const { Team } = await import("../../../src/schema/team.ts");
+    expect(() =>
+      Team.parse({
+        name: "atmux",
+        members: [],
+        whip: {
+          fallback: { sustainMins: 4 },
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("sustainMins === 5 accepted (min boundary)", async () => {
+    const { Team } = await import("../../../src/schema/team.ts");
+    expect(() =>
+      Team.parse({
+        name: "atmux",
+        members: [],
+        whip: {
+          fallback: { sustainMins: 5 },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("omitting whip.fallback entirely is accepted (back-compat)", async () => {
+    const { Team } = await import("../../../src/schema/team.ts");
+    expect(() => Team.parse({ name: "atmux", members: [] })).not.toThrow();
+  });
+
+  test("explicit tier: 2 + defaults applied", async () => {
+    const { Team } = await import("../../../src/schema/team.ts");
+    const parsed = Team.parse({
+      name: "atmux",
+      members: [],
+      whip: { fallback: { enabled: true } },
+    });
+    const fb = (parsed.whip as { fallback?: unknown }).fallback as Record<string, unknown>;
+    expect(fb.tier).toBe(2);
+    expect(fb.sustainMins).toBe(30);
+    expect(fb.cursorModel).toBe("composer-2");
+    expect(fb.enabled).toBe(true);
+  });
+});

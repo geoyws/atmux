@@ -1,0 +1,446 @@
+// Unit tests for src/verbs/story.ts + src/core/story.ts (ADR-007 + ADR-010).
+// Bash spec: lib/story.sh @ worktree-frozen.
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { addEpic, advanceEpic, listEpics } from "../../../src/core/epic.ts";
+import { addTask, moveTask } from "../../../src/core/kanban.ts";
+import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
+import {
+  addStory,
+  advanceStory,
+  listStories,
+  showStory,
+  storyLegalTransition,
+  storyNextState,
+} from "../../../src/core/story.ts";
+import { ConfigError, UsageError } from "../../../src/errors.ts";
+import { parseAddArgs, parseListArgs, story } from "../../../src/verbs/story.ts";
+
+let teamDir: string;
+let atmuxDir: string;
+
+async function seedTeam(): Promise<void> {
+  await writeFile(
+    join(atmuxDir, "team.json"),
+    JSON.stringify({
+      name: "team",
+      members: [
+        { name: "lead", role: "team-lead" },
+        { name: "reviewer", role: "reviewer" },
+        { name: "gitter", role: "gitter" },
+        { name: "alpha", role: "member" },
+      ],
+    }),
+  );
+  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  closeDatabase(db);
+}
+
+beforeEach(async () => {
+  teamDir = await mkdtemp(join(tmpdir(), "atmux-story-verb-"));
+  atmuxDir = join(teamDir, ".atmux");
+  await mkdir(atmuxDir, { recursive: true });
+  await seedTeam();
+});
+
+afterEach(async () => {
+  await rm(teamDir, { recursive: true, force: true });
+});
+
+async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; result: T }> {
+  let out = "";
+  const orig = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((s: string | Uint8Array) => {
+    out += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    const result = await fn();
+    return { out, result };
+  } finally {
+    process.stdout.write = orig;
+  }
+}
+
+/** Link a task to a story (and optionally lane=test) by direct repo upsert. */
+function linkTaskToStory(taskId: string, sid: string, lane?: string): void {
+  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  const repo = new KanbanRepo(db);
+  const t = repo.getTask(taskId);
+  if (t !== null) {
+    const upd = { ...t, story: sid };
+    if (lane !== undefined) upd.lane = lane;
+    repo.upsertTask(upd);
+  }
+  closeDatabase(db);
+}
+
+// ---------- Pure: parseAddArgs ----------
+
+describe("story parseAddArgs", () => {
+  test("requires title + --epic", () => {
+    expect(() => parseAddArgs([])).toThrow(UsageError);
+    expect(() => parseAddArgs(["t"])).toThrow(UsageError); // missing --epic
+    const a = parseAddArgs(["title", "--epic", "e-1"]);
+    expect(a.title).toBe("title");
+    expect(a.epic).toBe("e-1");
+  });
+
+  test("--body / --ac captured", () => {
+    const a = parseAddArgs(["t", "--epic", "e-1", "--body", "B", "--ac", "user can X"]);
+    expect(a.body).toBe("B");
+    expect(a.ac).toBe("user can X");
+  });
+
+  test("`--` collects rest as title", () => {
+    const a = parseAddArgs(["--epic", "e-1", "--", "title", "with", "dashes"]);
+    expect(a.title).toBe("title with dashes");
+  });
+});
+
+// ---------- Pure: parseListArgs ----------
+
+describe("story parseListArgs", () => {
+  test("--epic required", () => {
+    expect(() => parseListArgs([])).toThrow(UsageError);
+  });
+
+  test("--epic + --json", () => {
+    const a = parseListArgs(["--epic", "e-1", "--json"]);
+    expect(a.epic).toBe("e-1");
+    expect(a.json).toBe(true);
+  });
+
+  test("--status", () => {
+    expect(parseListArgs(["--epic", "e-1", "--status", "ready"]).status).toBe("ready");
+  });
+});
+
+// ---------- Pure: state machine ----------
+
+describe("storyNextState + storyLegalTransition", () => {
+  test("full forward chain", () => {
+    expect(storyNextState("planning")).toBe("ready");
+    expect(storyNextState("ready")).toBe("in-progress");
+    expect(storyNextState("in-progress")).toBe("testing");
+    expect(storyNextState("testing")).toBe("review");
+    expect(storyNextState("review")).toBe("merging");
+    expect(storyNextState("merging")).toBe("done");
+    expect(storyNextState("done")).toBe(null);
+  });
+
+  test("same-state idempotent", () => {
+    expect(storyLegalTransition("ready", "ready")).toBe(true);
+  });
+
+  test("forward two steps illegal", () => {
+    expect(storyLegalTransition("planning", "in-progress")).toBe(false);
+  });
+});
+
+// ---------- IO: addStory ----------
+
+describe("addStory", () => {
+  test("creates a story under existing epic", async () => {
+    const eid = await addEpic(atmuxDir, { title: "Big" });
+    const sid = await addStory(atmuxDir, { title: "Slice 1", epic: eid });
+    expect(sid).toMatch(/^s-[0-9a-f]{8}$/);
+    const stories = await listStories(atmuxDir, { epic: eid });
+    expect(stories.map((s) => s.id)).toEqual([sid]);
+    expect(stories[0]?.status).toBe("planning");
+  });
+
+  test("appends to parent epic's stories[] array", async () => {
+    const eid = await addEpic(atmuxDir, { title: "Big" });
+    const sid = await addStory(atmuxDir, { title: "Slice 1", epic: eid });
+    const epicRow = (await listEpics(atmuxDir)).find((e) => e.id === eid);
+    expect(epicRow?.stories).toContain(sid);
+  });
+
+  test("body + acceptanceCriteria captured", async () => {
+    const eid = await addEpic(atmuxDir, { title: "Big" });
+    const sid = await addStory(atmuxDir, {
+      title: "Slice",
+      epic: eid,
+      body: "details",
+      acceptanceCriteria: "user can X",
+    });
+    const story = (await listStories(atmuxDir, { epic: eid })).find((s) => s.id === sid);
+    expect(story?.body).toBe("details");
+    expect(story?.acceptanceCriteria).toBe("user can X");
+  });
+
+  test("unknown epic → ConfigError", async () => {
+    await expect(addStory(atmuxDir, { title: "t", epic: "e-bogus" })).rejects.toThrow(ConfigError);
+  });
+
+  test("empty title → UsageError", async () => {
+    const eid = await addEpic(atmuxDir, { title: "X" });
+    await expect(addStory(atmuxDir, { title: "  ", epic: eid })).rejects.toThrow(UsageError);
+  });
+
+  test("empty epic → UsageError", async () => {
+    await expect(addStory(atmuxDir, { title: "t", epic: "" })).rejects.toThrow(UsageError);
+  });
+});
+
+describe("listStories filtering", () => {
+  test("by status", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const a = await addStory(atmuxDir, { title: "A", epic: eid });
+    await addStory(atmuxDir, { title: "B", epic: eid });
+    await advanceStory(atmuxDir, a, "ready");
+    const ready = await listStories(atmuxDir, { epic: eid, status: "ready" });
+    expect(ready.map((s) => s.id)).toEqual([a]);
+  });
+
+  test("empty list when no stories", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    expect(await listStories(atmuxDir, { epic: eid })).toEqual([]);
+  });
+});
+
+describe("showStory", () => {
+  test("joins task children", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    const tid = await addTask(atmuxDir, { subject: "child task" });
+    linkTaskToStory(tid, sid);
+    const s = await showStory(atmuxDir, sid);
+    expect(s?.tasks.map((t) => t.id)).toEqual([tid]);
+  });
+
+  test("missing → null", async () => {
+    expect(await showStory(atmuxDir, "s-deadbeef")).toBe(null);
+  });
+});
+
+// ---------- IO: advanceStory state machine + gates ----------
+
+describe("advanceStory", () => {
+  test("planning → ready default step", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    const r = await advanceStory(atmuxDir, sid);
+    expect(r.from).toBe("planning");
+    expect(r.to).toBe("ready");
+  });
+
+  test("ready → in-progress auto-flips parent epic ready → in-progress", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    await advanceEpic(atmuxDir, eid, "ready"); // epic ready
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    const r = await advanceStory(atmuxDir, sid, "in-progress");
+    expect(r.parentEpicFlipped).toBe(true);
+    const epicRow = (await listEpics(atmuxDir)).find((e) => e.id === eid);
+    expect(epicRow?.status).toBe("in-progress");
+  });
+
+  test("ready → in-progress does NOT re-flip when epic is past ready", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    await advanceEpic(atmuxDir, eid, "ready");
+    await advanceEpic(atmuxDir, eid, "in-progress");
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    const r = await advanceStory(atmuxDir, sid, "in-progress");
+    expect(r.parentEpicFlipped).toBe(false);
+  });
+
+  test("in-progress → testing blocked by non-test-lane tasks", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    const tid = await addTask(atmuxDir, { subject: "be work", lane: "be" });
+    linkTaskToStory(tid, sid, "be");
+    await expect(advanceStory(atmuxDir, sid, "testing")).rejects.toThrow(
+      /non-test-lane tasks still open/,
+    );
+    // Close it → can advance.
+    await moveTask(atmuxDir, tid, "done");
+    const r = await advanceStory(atmuxDir, sid, "testing");
+    expect(r.to).toBe("testing");
+  });
+
+  test("testing → review blocked by open test-lane tasks", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    const tid = await addTask(atmuxDir, { subject: "e2e", lane: "test" });
+    linkTaskToStory(tid, sid, "test");
+    await expect(advanceStory(atmuxDir, sid, "review")).rejects.toThrow(
+      /test-lane tasks still open/,
+    );
+    await moveTask(atmuxDir, tid, "done");
+    const r = await advanceStory(atmuxDir, sid, "review");
+    expect(r.to).toBe("review");
+    expect(r.dispatchedTaskId).not.toBe(null);
+  });
+
+  test("review entry auto-dispatches review task to reviewer", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    const r = await advanceStory(atmuxDir, sid, "review");
+    expect(r.dispatchedTaskId).not.toBe(null);
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    const repo = new KanbanRepo(db);
+    const t = repo.getTask(r.dispatchedTaskId as string);
+    closeDatabase(db);
+    expect(t?.owner).toBe("reviewer");
+    expect(t?.lane).toBe("review");
+    expect(t?.subject).toBe(`review ${sid}`);
+  });
+
+  test("review → merging blocked without reviewSignoff", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await expect(advanceStory(atmuxDir, sid, "merging")).rejects.toThrow(/reviewer signoff/);
+  });
+
+  test("review → merging dispatches merge task to gitter after signoff", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    // Stamp signoff via direct repo update (reviewer-side action).
+    {
+      const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+      const repo = new KanbanRepo(db);
+      const s = repo.getStory(sid);
+      if (s !== null) repo.upsertStory({ ...s, reviewSignoff: true });
+      closeDatabase(db);
+    }
+    const r = await advanceStory(atmuxDir, sid, "merging");
+    expect(r.to).toBe("merging");
+    expect(r.dispatchedTaskId).not.toBe(null);
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    const repo = new KanbanRepo(db);
+    const t = repo.getTask(r.dispatchedTaskId as string);
+    const s = repo.getStory(sid);
+    closeDatabase(db);
+    expect(t?.owner).toBe("gitter");
+    expect(t?.subject).toBe(`merge ${sid}`);
+    // Story.mergeTaskId stamped.
+    expect(s?.mergeTaskId).toBe(r.dispatchedTaskId);
+  });
+
+  test("merging → done blocked until merge task done", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    {
+      const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+      const repo = new KanbanRepo(db);
+      const s = repo.getStory(sid);
+      if (s !== null) repo.upsertStory({ ...s, reviewSignoff: true });
+      closeDatabase(db);
+    }
+    const m = await advanceStory(atmuxDir, sid, "merging");
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(/gitter has not completed/);
+    // Close the merge task → done unblocks.
+    await moveTask(atmuxDir, m.dispatchedTaskId as string, "done");
+    const r = await advanceStory(atmuxDir, sid, "done");
+    expect(r.to).toBe("done");
+  });
+
+  test("idempotent same-state no-op", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    const r = await advanceStory(atmuxDir, sid, "planning");
+    expect(r.noop).toBe(true);
+  });
+
+  test("illegal jump rejected", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(UsageError);
+  });
+
+  test("missing story → ConfigError", async () => {
+    await expect(advanceStory(atmuxDir, "s-deadbeef")).rejects.toThrow(ConfigError);
+  });
+});
+
+// ---------- Verb integration ----------
+
+describe("story verb — dispatch", () => {
+  test("missing subverb → UsageError", async () => {
+    await expect(story(["--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("story add prints id", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const { out } = await captureStdout(() =>
+      story(["add", "--epic", eid, "--team-dir", teamDir, "Some", "title"]),
+    );
+    expect(out).toMatch(/^s-[0-9a-f]{8}$/m);
+  });
+
+  test("story list (none) prints '(no stories for <eid>)'", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const { out } = await captureStdout(() =>
+      story(["list", "--epic", eid, "--team-dir", teamDir]),
+    );
+    expect(out).toContain(`(no stories for ${eid})`);
+  });
+
+  test("story list --json", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    await addStory(atmuxDir, { title: "S", epic: eid });
+    const { out } = await captureStdout(() =>
+      story(["list", "--epic", eid, "--json", "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].title).toBe("S");
+  });
+
+  test("story show --json returns story + tasks", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    const { out } = await captureStdout(() =>
+      story(["show", sid, "--json", "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.id).toBe(sid);
+    expect(parsed.tasks).toEqual([]);
+  });
+
+  test("story show missing id → ConfigError", async () => {
+    await expect(story(["show", "s-bogus", "--team-dir", teamDir])).rejects.toThrow(ConfigError);
+  });
+
+  test("story advance --to specific state", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await captureStdout(() => story(["advance", sid, "--to", "ready", "--team-dir", teamDir]));
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.status).toBe("ready");
+  });
+
+  test("story alias ls works", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const { out } = await captureStdout(() => story(["ls", "--epic", eid, "--team-dir", teamDir]));
+    expect(out).toContain("(no stories for");
+  });
+});

@@ -6,9 +6,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendDispatched, loadInbox } from "../../../src/core/inbox.ts";
-import { addTask, assignTask, loadKanban, moveTask } from "../../../src/core/kanban.ts";
+import { addTask, assignTask, loadKanban, moveTask, showTask } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import { parseAddArgs, parseListArgs, task } from "../../../src/verbs/task.ts";
+import {
+  closestStatus,
+  parseAddArgs,
+  parseListArgs,
+  resolveLaneAlias,
+  task,
+} from "../../../src/verbs/task.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -117,6 +123,15 @@ describe("parseAddArgs", () => {
   test("unknown -* flag → UsageError", () => {
     expect(() => parseAddArgs(["--bogus"])).toThrow(UsageError);
   });
+
+  test("ADR-033: --driver-only sets driverOnly=true (boolean, no value)", () => {
+    const a = parseAddArgs(["subj", "--driver-only"]);
+    expect(a.driverOnly).toBe(true);
+  });
+
+  test("ADR-033: --driver-only absent → driverOnly undefined (preserves legacy default)", () => {
+    expect(parseAddArgs(["subj"]).driverOnly).toBeUndefined();
+  });
 });
 
 // ---------- Pure: parseListArgs ----------
@@ -152,6 +167,93 @@ describe("parseListArgs", () => {
   test("unknown arg → UsageError", () => {
     expect(() => parseListArgs(["bogus"])).toThrow(UsageError);
   });
+
+  // ---------- ADR-080 §D — --status normalize + did-you-mean ----------
+
+  test("ADR-080§D: --status in_progress (snake_case) → normalized to in-progress", () => {
+    const a = parseListArgs(["--status", "in_progress"]);
+    expect(a.status).toBe("in-progress");
+  });
+
+  test("ADR-080§D: --status in-progress (canonical) → unchanged", () => {
+    const a = parseListArgs(["--status", "in-progress"]);
+    expect(a.status).toBe("in-progress");
+  });
+
+  test("ADR-080§D: --status to_do → normalized to to-do BUT to-do isn't valid → UsageError + did-you-mean 'todo'", () => {
+    let err: unknown;
+    try {
+      parseListArgs(["--status", "to_do"]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    expect(((err as UsageError).context as { what: string }).what).toContain('"to_do"');
+    expect(((err as UsageError).context as { what: string }).what).toContain('"todo"');
+  });
+
+  test("ADR-080§D: --status nonsense (no near match) → UsageError, no did-you-mean", () => {
+    let err: unknown;
+    try {
+      parseListArgs(["--status", "nonsense"]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    const what = ((err as UsageError).context as { what: string }).what;
+    expect(what).toContain('"nonsense"');
+    expect(what).not.toContain("did you mean");
+  });
+
+  test("ADR-080§D: --status (no value) → UsageError 'requires a value' (regression-pin)", () => {
+    let err: unknown;
+    try {
+      parseListArgs(["--status"]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    expect(((err as UsageError).context as { what: string }).what).toContain("requires a value");
+  });
+
+  test("ADR-080§D: --status blokced (typo) → did-you-mean 'blocked'", () => {
+    let err: unknown;
+    try {
+      parseListArgs(["--status", "blokced"]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    expect(((err as UsageError).context as { what: string }).what).toContain('"blocked"');
+  });
+});
+
+// ---------- closestStatus helper ----------
+
+describe("closestStatus", () => {
+  test("exact match → returns input", () => {
+    expect(closestStatus("todo")).toBe("todo");
+  });
+
+  test("distance-1 typo → suggests valid status", () => {
+    expect(closestStatus("dond")).toBe("done");
+  });
+
+  test("distance-2 typo → suggests valid status", () => {
+    expect(closestStatus("dnoe")).toBe("done");
+  });
+
+  test("distance > 2 → null (no suggestion)", () => {
+    expect(closestStatus("nonsense")).toBeNull();
+  });
+
+  test("empty string → null (no near valid status)", () => {
+    expect(closestStatus("")).toBeNull();
+  });
+
+  test("post-normalize 'to-do' → suggests 'todo'", () => {
+    expect(closestStatus("to-do")).toBe("todo");
+  });
 });
 
 // ---------- Integration: subverb dispatch ----------
@@ -174,6 +276,34 @@ describe("task verb — dispatch", () => {
     expect(k.tasks[0]?.subject).toBe("first task");
   });
 
+  test("ADR-033: 'add --driver-only' stamps driverOnly=true on the new Task", async () => {
+    await captureStdout(() =>
+      task(["add", "--team-dir", teamDir, "--driver-only", "fires-only-by-driver"]),
+    );
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks).toHaveLength(1);
+    expect(k.tasks[0]?.driverOnly).toBe(true);
+  });
+
+  test("ADR-033: 'add' without --driver-only leaves driverOnly absent (legacy default)", async () => {
+    await captureStdout(() => task(["add", "--team-dir", teamDir, "regular-task"]));
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.driverOnly).toBeUndefined();
+  });
+
+  test("ADR-033: 'list' surfaces D marker on driverOnly Tasks (blank otherwise)", async () => {
+    await addTask(atmuxDir, { subject: "regular", priority: 1 });
+    await addTask(atmuxDir, { subject: "fires-by-driver", priority: 1, driverOnly: true });
+    const { out } = await captureStdout(() => task(["list", "--team-dir", teamDir]));
+    expect(out).toContain(" F  SUBJECT");
+    const lines = out.split("\n");
+    const regularLine = lines.find((l) => l.includes("regular")) ?? "";
+    const driverLine = lines.find((l) => l.includes("fires-by-driver")) ?? "";
+    // The flag column comes right before SUBJECT, padded to width 2.
+    expect(driverLine).toMatch(/\sD\s+fires-by-driver$/);
+    expect(regularLine).toMatch(/\s\s\s+regular$/);
+  });
+
   test("'list' prints header + sorted rows by priority", async () => {
     await addTask(atmuxDir, { subject: "low-prio", priority: 5 });
     await addTask(atmuxDir, { subject: "high-prio", priority: 1 });
@@ -194,6 +324,40 @@ describe("task verb — dispatch", () => {
     const parsed = JSON.parse(out);
     expect(parsed).toHaveLength(1);
     expect(parsed[0].subject).toBe("first");
+  });
+
+  test("ADR-080§E: 'list --json' round-trips adversarial body (backticks/newlines/quotes/$)", async () => {
+    // Forward trip-wire per ADR-080 §E investigation: sopx-driver
+    // observed `atmux task list --json | jq` parse-errors on bodies
+    // containing backticks/newlines/quotes. Bun-side `task.ts` emits via
+    // `JSON.stringify(tasks, null, 2)` (standard library, properly
+    // escapes); the suspected bug is bash-sopx-side. This fixture
+    // documents the bun-side guarantee so a future regression — e.g.
+    // someone replacing `JSON.stringify` with a hand-rolled formatter,
+    // or `core/kanban.ts::listTasks` returning a string field that's
+    // already JSON-encoded-once — gets caught at PR time. See
+    // `docs/INVESTIGATION-bash-task-list-json.md`.
+    // Fixture purposely embeds a literal `${world}` substring (the
+    // adversarial body) — backticks + dollar-brace are escaped within
+    // the template literal so neither template-substitution nor a
+    // future biome auto-fix can accidentally interpolate `world`.
+    const ADVERSARIAL_BODY = `\`\`\`ts\nconst x = \`hello \${world}\`;\nconst y = 'a' + "b";\nconst z = $1 + $foo;\n\`\`\``;
+    await addTask(atmuxDir, { subject: "adversarial", body: ADVERSARIAL_BODY });
+    const { out } = await captureStdout(() => task(["list", "--json", "--team-dir", teamDir]));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(out);
+    } catch (e) {
+      throw new Error(
+        `bun task.ts --json emit produced un-parseable output (ADR-080§E regression):\n` +
+          `  parse error: ${(e as Error).message}\n` +
+          `  raw stdout (first 200): ${out.slice(0, 200)}\n`,
+      );
+    }
+    expect(Array.isArray(parsed)).toBe(true);
+    expect((parsed as Array<{ subject: string; body?: string }>).length).toBe(1);
+    expect((parsed as Array<{ subject: string }>)[0]?.subject).toBe("adversarial");
+    expect((parsed as Array<{ body?: string }>)[0]?.body).toBe(ADVERSARIAL_BODY);
   });
 
   test("'list --status todo' filters", async () => {
@@ -264,6 +428,109 @@ describe("task verb — dispatch", () => {
     await expect(task(["move", id, "bogus", "--team-dir", teamDir])).rejects.toThrow(UsageError);
   });
 
+  // ADR-033 task move refuse-gate (t-a90c80b0). `in-progress` and
+  // `done` transitions on driverOnly Tasks refuse for non-driver scope;
+  // `todo` and `blocked` bookkeeping moves remain allowed per ADR-033
+  // §Refuse-gate site #2 carve-out.
+  describe("ADR-033 driver-only refuse-gate", () => {
+    const priorScope = (): string | undefined => process.env.ATMUX_CALLER_SCOPE;
+    const restoreScope = (v: string | undefined): void => {
+      if (v === undefined) delete process.env.ATMUX_CALLER_SCOPE;
+      else process.env.ATMUX_CALLER_SCOPE = v;
+    };
+
+    test("driverOnly + member scope: move → in-progress refused", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await expect(task(["move", id, "in-progress", "--team-dir", teamDir])).rejects.toThrow(
+          /task move:.*driver-only Task/,
+        );
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("todo");
+    });
+
+    test("driverOnly + member scope: move → done refused", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await expect(task(["move", id, "done", "--team-dir", teamDir])).rejects.toThrow(
+          /task move:.*driver-only Task/,
+        );
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("todo");
+    });
+
+    test("driverOnly + driver scope: move → in-progress succeeds", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      process.env.ATMUX_CALLER_SCOPE = "driver";
+      try {
+        await captureStdout(() => task(["move", id, "in-progress", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("in-progress");
+    });
+
+    test("driverOnly + member scope: move → todo ALLOWED (bookkeeping carve-out)", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      // Get it to in-progress first via driver path so we have somewhere
+      // to move from.
+      const saved = priorScope();
+      process.env.ATMUX_CALLER_SCOPE = "driver";
+      try {
+        await captureStdout(() => task(["move", id, "in-progress", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      // Now back to todo as member — must be allowed.
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await captureStdout(() => task(["move", id, "todo", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("todo");
+    });
+
+    test("driverOnly + member scope: move → blocked ALLOWED (bookkeeping carve-out)", async () => {
+      const id = await addTask(atmuxDir, { subject: "driver-fires", driverOnly: true });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await captureStdout(() => task(["move", id, "blocked", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("blocked");
+    });
+
+    test("driverOnly absent (legacy): move → done allowed for any scope", async () => {
+      const id = await addTask(atmuxDir, { subject: "regular" });
+      const saved = priorScope();
+      delete process.env.ATMUX_CALLER_SCOPE;
+      try {
+        await captureStdout(() => task(["move", id, "done", "--team-dir", teamDir]));
+      } finally {
+        restoreScope(saved);
+      }
+      const k = await loadKanban(atmuxDir);
+      expect(k.tasks[0]?.status).toBe("done");
+    });
+  });
+
   test("'assign' updates owner", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
     const { exit, out } = await captureStdout(() =>
@@ -277,6 +544,45 @@ describe("task verb — dispatch", () => {
 
   test("'assign' missing args → UsageError", async () => {
     await expect(task(["assign", "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  // ---------- ADR-131 T4: 'task priority' ----------
+
+  test("'priority' sets the integer priority on an existing task", async () => {
+    const id = await addTask(atmuxDir, { subject: "p task" });
+    const { exit } = await captureStdout(() => task(["priority", id, "5", "--team-dir", teamDir]));
+    expect(exit).toBe(0);
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.priority).toBe(5);
+  });
+
+  test("'prio' alias works", async () => {
+    const id = await addTask(atmuxDir, { subject: "p task" });
+    await captureStdout(() => task(["prio", id, "2", "--team-dir", teamDir]));
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.priority).toBe(2);
+  });
+
+  test("'priority -' clears the priority (sets null)", async () => {
+    const id = await addTask(atmuxDir, { subject: "p task", priority: 3 });
+    await captureStdout(() => task(["priority", id, "-", "--team-dir", teamDir]));
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.priority).toBeNull();
+  });
+
+  test("'priority' rejects non-integer value", async () => {
+    const id = await addTask(atmuxDir, { subject: "p task" });
+    await expect(task(["priority", id, "high", "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("'priority' missing args → UsageError", async () => {
+    await expect(task(["priority", "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("'priority' on missing id → ConfigError", async () => {
+    await expect(task(["priority", "t-deadbeef", "1", "--team-dir", teamDir])).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("'rm' removes task", async () => {
@@ -299,6 +605,60 @@ describe("task verb — dispatch", () => {
     await expect(task(["rm", "--team-dir", teamDir])).rejects.toThrow(UsageError);
   });
 
+  test("'update' rewrites body in place", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", body: "old" });
+    const { exit, out } = await captureStdout(() =>
+      task(["update", id, "--body", "rewritten gates 2+3", "--team-dir", teamDir]),
+    );
+    expect(exit).toBe(0);
+    expect(out).toContain(`task ${id} updated`);
+    const after = await showTask(atmuxDir, id);
+    expect(after?.body).toBe("rewritten gates 2+3");
+  });
+
+  test("'update' rewrites deps list", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", deps: ["t-old01010"] });
+    await captureStdout(() =>
+      task(["update", id, "--deps", "t-new01010,t-new20202", "--team-dir", teamDir]),
+    );
+    const after = await showTask(atmuxDir, id);
+    expect(after?.deps).toEqual(["t-new01010", "t-new20202"]);
+  });
+
+  test("'update' --body and --deps together", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", body: "old", deps: ["t-old01010"] });
+    await captureStdout(() =>
+      task(["update", id, "--body", "new", "--deps", "t-fresh0001", "--team-dir", teamDir]),
+    );
+    const after = await showTask(atmuxDir, id);
+    expect(after?.body).toBe("new");
+    expect(after?.deps).toEqual(["t-fresh0001"]);
+  });
+
+  test("'update' --deps '' clears the deps list", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", deps: ["t-a0000001", "t-b0000001"] });
+    await captureStdout(() => task(["update", id, "--deps", "", "--team-dir", teamDir]));
+    const after = await showTask(atmuxDir, id);
+    expect(after?.deps).toEqual([]);
+  });
+
+  test("'update' with no flags → UsageError", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    await expect(task(["update", id, "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("'update' missing id → UsageError", async () => {
+    await expect(task(["update", "--body", "x", "--team-dir", teamDir])).rejects.toThrow(
+      UsageError,
+    );
+  });
+
+  test("'update' on missing id → ConfigError", async () => {
+    await expect(
+      task(["update", "t-missing0", "--body", "x", "--team-dir", teamDir]),
+    ).rejects.toThrow(/no such task/);
+  });
+
   test("unknown subverb → UsageError", async () => {
     await expect(task(["bogus", "--team-dir", teamDir])).rejects.toThrow(UsageError);
   });
@@ -309,6 +669,85 @@ describe("task verb — dispatch", () => {
 
   test("subverb --team-dir without value → UsageError", async () => {
     await expect(task(["show", "t-aaaaaaaa", "--team-dir"])).rejects.toThrow(UsageError);
+  });
+});
+
+// ---------- ADR t-cea78f99: --lane member-name aliases ----------
+
+describe("task --lane member-name aliases (t-cea78f99)", () => {
+  test("`task add --lane gitter` resolves to lane=git", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "test-gitter-alias", "--lane", "gitter", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    const created = k.tasks.find((t) => t.id === id);
+    expect(created?.lane).toBe("git");
+  });
+
+  test("`task lane <id> planner` resolves to lane=docs", async () => {
+    const id = await addTask(atmuxDir, { subject: "lane-alias-target" });
+    await captureStdout(() => task(["lane", id, "planner", "--team-dir", teamDir]));
+    const k = await loadKanban(atmuxDir);
+    const t = k.tasks.find((tt) => tt.id === id);
+    expect(t?.lane).toBe("docs");
+  });
+
+  test("`task add --lane reviewer` resolves to lane=review", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "reviewer-alias", "--lane", "reviewer", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks.find((t) => t.id === id)?.lane).toBe("review");
+  });
+
+  test("`task add --lane dba` resolves to lane=db", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "dba-alias", "--lane", "dba", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks.find((t) => t.id === id)?.lane).toBe("db");
+  });
+
+  test("`task add --lane devops` resolves to lane=ops", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "devops-alias", "--lane", "devops", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks.find((t) => t.id === id)?.lane).toBe("ops");
+  });
+
+  test("unknown lane STILL rejects (no alias match falls through)", async () => {
+    await expect(
+      captureStdout(() => task(["add", "bogus-lane", "--lane", "frontend", "--team-dir", teamDir])),
+    ).rejects.toBeInstanceOf(UsageError);
+  });
+
+  test("canonical lanes pass through unchanged", async () => {
+    const { out } = await captureStdout(() =>
+      task(["add", "canonical-be", "--lane", "be", "--team-dir", teamDir]),
+    );
+    const id = out.trim();
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks.find((t) => t.id === id)?.lane).toBe("be");
+  });
+
+  test("resolveLaneAlias pure function: every known alias", () => {
+    expect(resolveLaneAlias("gitter")).toBe("git");
+    expect(resolveLaneAlias("planner")).toBe("docs");
+    expect(resolveLaneAlias("reviewer")).toBe("review");
+    expect(resolveLaneAlias("dba")).toBe("db");
+    expect(resolveLaneAlias("devops")).toBe("ops");
+  });
+
+  test("resolveLaneAlias pure function: unknown input passes through", () => {
+    expect(resolveLaneAlias("be")).toBe("be");
+    expect(resolveLaneAlias("frontend")).toBe("frontend");
+    expect(resolveLaneAlias("")).toBe("");
+    expect(resolveLaneAlias("-")).toBe("-");
   });
 });
 

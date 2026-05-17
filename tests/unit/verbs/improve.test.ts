@@ -392,6 +392,69 @@ describe("improve — Discord ping gate", () => {
   });
 });
 
+// ---------- Discord soft-degrade (regression — t-bf6aeb39 / t-263fd3b5) ----------
+//
+// HTTP 429 rate-limits from concurrent test runs (or production webhook
+// outages) used to leak out of `firePingStart` and exit `atmux improve`
+// non-zero. The `safeFireDiscord` wrapper swallows ANY send error
+// (ConfigError, DiscordWebhookError, network) + warns on stderr instead.
+// Lock the property: a throwing discordSend stub → verb still exit 0 + a
+// single WARN line on stderr.
+
+describe("improve — Discord soft-degrade on send failure (t-bf6aeb39)", () => {
+  test("discordSend throws ConfigError (missing webhook) → exit 0 + stderr WARN", async () => {
+    const stderrChunks: string[] = [];
+    const throwingDiscord = async () => {
+      throw new Error("no Discord webhook resolved (hint: set ATMUX_DISCORD_WEBHOOK)");
+    };
+    const exit = await improve(["--budget", "1000000", "--team-dir", teamDir], {
+      discordSend: throwingDiscord as never,
+      stderr: (s) => {
+        stderrChunks.push(s);
+        return true;
+      },
+    });
+    expect(exit).toBe(0);
+    expect(stderrChunks.join("")).toContain("discord ping eternal-improvement-start skipped");
+    expect(stderrChunks.join("")).toContain("no Discord webhook resolved");
+  });
+
+  test("discordSend throws DiscordWebhookError-shaped (HTTP 429) → exit 0 + stderr WARN", async () => {
+    const stderrChunks: string[] = [];
+    const throwingDiscord = async () => {
+      throw new Error(
+        "discord webhook eternal-improvement-start failed (HTTP 429): direct-fetch non-2xx",
+      );
+    };
+    const exit = await improve(["--budget", "1000000", "--team-dir", teamDir], {
+      discordSend: throwingDiscord as never,
+      stderr: (s) => {
+        stderrChunks.push(s);
+        return true;
+      },
+    });
+    expect(exit).toBe(0);
+    expect(stderrChunks.join("")).toContain("discord ping eternal-improvement-start skipped");
+    expect(stderrChunks.join("")).toContain("HTTP 429");
+  });
+
+  test("non-Error throw (string) → swallowed + WARN includes the string", async () => {
+    const stderrChunks: string[] = [];
+    const throwingDiscord = async () => {
+      throw "plain string failure";
+    };
+    const exit = await improve(["--budget", "1000000", "--team-dir", teamDir], {
+      discordSend: throwingDiscord as never,
+      stderr: (s) => {
+        stderrChunks.push(s);
+        return true;
+      },
+    });
+    expect(exit).toBe(0);
+    expect(stderrChunks.join("")).toContain("plain string failure");
+  });
+});
+
 // ---------- --tick (ADR-052 T7) ----------
 
 describe("improve --tick", () => {

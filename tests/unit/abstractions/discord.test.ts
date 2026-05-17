@@ -1,4 +1,4 @@
-// Unit tests for src/abstractions/discord.ts (ADR-008).
+// Unit tests for src/abstractions/discord.ts (ADR-101).
 //
 // Covers:
 //   - Validation (R-rules: bullet length, emoji prefix, empty body)
@@ -22,11 +22,14 @@ import {
   renderEternalImprovementDone,
   renderEternalImprovementProgress,
   renderEternalImprovementStart,
+  renderHygieneBlocker,
+  renderMemberRefusalRotate,
   renderWhipBudgetPause,
   renderWhipBudgetRefreshSoon,
   renderWhipBudgetResume,
   renderWhipBudgetWarning,
   renderWhipConfigDrift,
+  renderWhipNeedsApproval,
   resolveWebhookUrl,
   send,
 } from "../../../src/abstractions/discord.ts";
@@ -389,7 +392,7 @@ describe("routing — recorder", () => {
 });
 
 // (Removed: spawn ping-discord.sh delegation tests. The spawn route was
-// dropped in favour of bun-native fetch — see ADR-008 §"Routing".)
+// dropped in favour of bun-native fetch — see ADR-101 §"Routing".)
 
 // ---------- Routing: direct-fetch ----------
 
@@ -668,6 +671,9 @@ describe("renderEternalImprovementStart", () => {
       [
         "🌱 **[eternal-improvement-start]** · `atmux` · 11:44 MYT",
         "",
+        // Verdict-first shape (CLAUDE.md §Discord, 2026-05-13).
+        "🟢 **Shipping** — eternal-improvement run starting on 1.5M tokens (user-invoked)",
+        "",
         "🌱 budget: 30%-wk = 1.5M tokens",
         "🎯 mode: user-invoked",
         "📍 runId: ei-a3f2c814",
@@ -878,14 +884,14 @@ describe("renderWhipConfigDrift", () => {
     expect(out.template).toBe("whip-config-drift");
     expect(out.team).toBe("atmux");
     expect(out.category).toBe("🛠️");
+    // Verdict-first shape: headline lives in `verdict`, body has issues/fix/hash.
+    expect(out.verdict).toContain("validation failed");
+    expect(out.verdict).toContain("safe defaults");
     const bullets = out.bullets ?? [];
-    // First bullet — headline.
-    expect(bullets[0]).toContain("validation failed");
-    expect(bullets[0]).toContain("safe defaults");
-    // Issues count + by-code summary.
-    expect(bullets[1]).toContain("issues: 2");
-    expect(bullets[1]).toContain("invalid_type");
-    expect(bullets[1]).toContain("unrecognized_keys");
+    // Issues count + by-code summary — now bullets[0].
+    expect(bullets[0]).toContain("issues: 2");
+    expect(bullets[0]).toContain("invalid_type");
+    expect(bullets[0]).toContain("unrecognized_keys");
     // First-issue surfacing.
     expect(bullets.some((b) => b.includes("whip.budgetPauseTreshold"))).toBe(true);
     // Fix hint.
@@ -894,7 +900,7 @@ describe("renderWhipConfigDrift", () => {
     expect(bullets.some((b) => b.includes("a3f2c814"))).toBe(true);
   });
 
-  test("catastrophic flag flips the headline to malformed-JSON variant", () => {
+  test("catastrophic flag flips the verdict to malformed-JSON variant", () => {
     const out = renderWhipConfigDrift({
       team: "atmux",
       driftHash: "deadbeef00000000",
@@ -907,11 +913,11 @@ describe("renderWhipConfigDrift", () => {
       ],
       catastrophic: true,
     });
-    expect(out.bullets?.[0]).toContain("malformed");
-    expect(out.bullets?.[0]).toContain("full safe defaults");
+    expect(out.verdict).toContain("malformed");
+    expect(out.verdict).toContain("full safe defaults");
   });
 
-  test("zero-issues input still renders headline + fix bullet", () => {
+  test("zero-issues input still renders verdict + fix bullet", () => {
     const out = renderWhipConfigDrift({
       team: "atmux",
       driftHash: "00000000",
@@ -919,7 +925,10 @@ describe("renderWhipConfigDrift", () => {
       catastrophic: false,
     });
     const bullets = out.bullets ?? [];
-    expect(bullets[1]).toContain("issues: 0");
+    // Verdict carries the headline.
+    expect(out.verdict).toContain("validation failed");
+    // Body opens with the issues count.
+    expect(bullets[0]).toContain("issues: 0");
     // No "first:" bullet when issues empty.
     expect(bullets.some((b) => b.startsWith("🔍 first:"))).toBe(false);
   });
@@ -962,8 +971,10 @@ describe("renderWhipBudgetPause", () => {
     expect(out.template).toBe("whip-budget-pause");
     expect(out.team).toBe("atmux");
     expect(out.category).toBe("🛑");
+    // Verdict-first shape per CLAUDE.md §Discord (2026-05-13 rewrite) —
+    // headline lives in `verdict`, body lists per-member detail + ops bullets.
+    expect(out.verdict).toBe("🔴 **Stalled** — team paused on rate-limit, 2 at-risk members");
     expect(out.bullets).toEqual([
-      "🪫 team paused — 2 at-risk member(s)",
       "🪫 alpha — 5h 95% / wk 80%",
       "🪫 beta — 5h 88% / wk 92%",
       "🛑 no new dispatches until refresh",
@@ -1295,22 +1306,24 @@ describe("renderWhipWatchdog", () => {
     expect(out.template).toBe("whip-watchdog");
     expect(out.team).toBe("atmux");
     expect(out.category).toBe("🛑");
+    // Verdict-first shape: headline lives in `verdict`, per-member bullets remain.
+    expect(out.verdict).toContain("🔴 **Stalled**");
+    expect(out.verdict).toContain("2 members silent");
+    expect(out.verdict).toContain("5min"); // formatDuration(300_000)
     const bullets = out.bullets ?? [];
-    expect(bullets[0]).toContain("2 member(s) stalled");
-    expect(bullets[0]).toContain("5min"); // formatDuration(300_000)
     expect(bullets.some((b) => b.includes("alice:") && b.includes("10min"))).toBe(true);
     expect(bullets.some((b) => b.includes("bob: never stale"))).toBe(true);
     expect(bullets.some((b) => b.includes("fix:"))).toBe(true);
   });
 
-  test("zero stale → headline says 0 member(s) (degenerate but rendered)", async () => {
+  test("zero stale → verdict says 0 members (degenerate but rendered)", async () => {
     const { renderWhipWatchdog } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipWatchdog({
       team: "atmux",
       stale: [],
       staleSec: 300,
     });
-    expect(out.bullets?.[0]).toContain("0 member(s) stalled");
+    expect(out.verdict).toContain("0 members silent");
   });
 
   test("whenMs override propagates", async () => {
@@ -1562,7 +1575,7 @@ describe("renderWhipSelfHealResult", () => {
 // ---------- ADR-057 §D4 — perm-mode-drift + defunct-cwd renderers ----------
 
 describe("renderWhipPermModeDrift", () => {
-  test("single drifted member produces 3 bullets in canonical order", async () => {
+  test("single drifted member produces verdict + 2 bullets", async () => {
     const { renderWhipPermModeDrift } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipPermModeDrift({
       team: "atmux",
@@ -1571,8 +1584,9 @@ describe("renderWhipPermModeDrift", () => {
     expect(out.template).toBe("whip-perm-mode-drift");
     expect(out.category).toBe("📋");
     expect(out.team).toBe("atmux");
+    // Verdict-first shape: headline lives in `verdict`, per-member + fix bullets remain.
+    expect(out.verdict).toBe("🟡 **Cool** — 1 member drifted off auto-mode, fixable via BTab");
     expect(out.bullets).toEqual([
-      "📍 1 member(s) drifted off auto mode",
       "🟡 alpha: pane in 'dont-ask' mode (expected 'auto')",
       "🛠️ fix: BTab cycle to auto on each drifted pane",
     ]);
@@ -1587,10 +1601,10 @@ describe("renderWhipPermModeDrift", () => {
         { member: "bravo", mode: "accept-edits" },
       ],
     });
-    expect(out.bullets).toHaveLength(4);
-    expect((out.bullets ?? [])[0]).toBe("📍 2 member(s) drifted off auto mode");
-    expect((out.bullets ?? [])[1]).toContain("alpha");
-    expect((out.bullets ?? [])[2]).toContain("bravo");
+    expect(out.verdict).toContain("2 members drifted off auto-mode");
+    expect(out.bullets).toHaveLength(3); // 2 per-member + 1 fix
+    expect((out.bullets ?? [])[0]).toContain("alpha");
+    expect((out.bullets ?? [])[1]).toContain("bravo");
   });
 
   test("whenMs override is propagated", async () => {
@@ -1620,7 +1634,7 @@ describe("renderWhipPermModeDrift", () => {
 });
 
 describe("renderWhipDefunctCwd", () => {
-  test("single defunct member produces 3 bullets in canonical order", async () => {
+  test("single defunct member produces verdict + 2 bullets", async () => {
     const { renderWhipDefunctCwd } = await import("../../../src/abstractions/discord.ts");
     const out = renderWhipDefunctCwd({
       team: "atmux",
@@ -1629,8 +1643,9 @@ describe("renderWhipDefunctCwd", () => {
     expect(out.template).toBe("whip-defunct-cwd");
     expect(out.category).toBe("🛑");
     expect(out.team).toBe("atmux");
+    // Verdict-first shape: headline lives in `verdict`, per-member + fix bullets remain.
+    expect(out.verdict).toBe("🚨 **Need you** — 1 member on defunct cwd, dispatch broken");
     expect(out.bullets).toEqual([
-      "🛑 1 member(s) on defunct cwd — pane_current_path missing on disk",
       "📍 alpha: cwd /tmp/dead-worktree does not exist",
       "🛠️ fix: re-spawn member or restore worktree path",
     ]);
@@ -1645,7 +1660,8 @@ describe("renderWhipDefunctCwd", () => {
         { member: "bravo", cwd: "/tmp/b" },
       ],
     });
-    expect(out.bullets).toHaveLength(4);
+    expect(out.verdict).toContain("2 members on defunct cwd");
+    expect(out.bullets).toHaveLength(3); // 2 per-member + 1 fix
   });
 
   test("whenMs override is propagated", async () => {
@@ -1671,5 +1687,1018 @@ describe("renderWhipDefunctCwd", () => {
     const written = await readFile(recorder, "utf8");
     expect(written).toContain("[whip-defunct-cwd]");
     expect(written).toContain("/tmp/x");
+  });
+});
+
+// ---------- ADR-137 — renderMemberForcePushWarning ----------
+
+describe("renderMemberForcePushWarning", () => {
+  test("single member force-push produces verdict + 2 bullets (member + fix)", async () => {
+    const { renderMemberForcePushWarning } = await import("../../../src/abstractions/discord.ts");
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [
+        {
+          member: "alice",
+          branch: "geoyws-alice",
+          reflogMsg: "update by push (forced)",
+        },
+      ],
+    });
+    expect(out.template).toBe("member-forcepush-warning");
+    expect(out.category).toBe("📋");
+    expect(out.team).toBe("atmux");
+    // Verdict is warn-class (🟡 Cool) per ADR-137 §D3 — not Need-you.
+    expect(out.verdict).toBe("🟡 **Cool** — 1 member force-pushed within the last hour");
+    expect(out.bullets).toHaveLength(2);
+    expect(out.bullets?.[0]).toBe("🟡 alice: geoyws-alice reflog: update by push (forced)");
+    expect(out.bullets?.[1]).toContain("git merge origin/<base>");
+    expect(out.bullets?.[1]).toContain("ADR-137");
+  });
+
+  test("multiple members surfaced as separate bullets + plural verdict", async () => {
+    const { renderMemberForcePushWarning } = await import("../../../src/abstractions/discord.ts");
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [
+        { member: "alice", branch: "geoyws-alice", reflogMsg: "forced-update" },
+        { member: "bob", branch: "geoyws-bob", reflogMsg: "update by push (forced)" },
+      ],
+    });
+    expect(out.verdict).toContain("2 members force-pushed");
+    expect(out.bullets).toHaveLength(3); // 2 per-member + 1 fix
+  });
+
+  test("long reflog message truncated with ellipsis at 40 chars", async () => {
+    const { renderMemberForcePushWarning } = await import("../../../src/abstractions/discord.ts");
+    const longMsg = "update by push (forced) — bumped past trunk after rebase against geoyws";
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: longMsg }],
+    });
+    const bullet = out.bullets?.[0] ?? "";
+    expect(bullet).toContain("…");
+    // Bullet format: "🟡 alice: geoyws-alice reflog: <truncated>…"
+    // Truncation is on the message body alone (40 chars + ellipsis).
+    const reflogPart = bullet.split("reflog: ")[1] ?? "";
+    // 40 chars of message + 1 ellipsis = 41 total.
+    expect(reflogPart.length).toBe(41);
+  });
+
+  test("whenMs override is propagated", async () => {
+    const { renderMemberForcePushWarning } = await import("../../../src/abstractions/discord.ts");
+    const out = renderMemberForcePushWarning({
+      team: "atmux",
+      events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: "forced-update" }],
+      whenMs: 7777,
+    });
+    expect(out.whenMs).toBe(7777);
+  });
+
+  test("send-time validation passes (full template wiring works end-to-end)", async () => {
+    const { renderMemberForcePushWarning, send } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const recorder = join(tmpRoot, "member-forcepush-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderMemberForcePushWarning({
+        team: "atmux",
+        events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: "update by push (forced)" }],
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[member-forcepush-warning]");
+    expect(written).toContain("geoyws-alice");
+    expect(written).toContain("ADR-137");
+  });
+});
+
+// ---------- ADR-138 — renderSendKeysFailureWarning ----------
+
+describe("renderSendKeysFailureWarning", () => {
+  test("single failure: verdict singular + target bullet + fix bullet", async () => {
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 1,
+      mostRecentTarget: "atmux-demo:🛠️worker1",
+      mostRecentAgeMin: 7,
+    });
+    expect(out.template).toBe("send-keys-failure");
+    expect(out.category).toBe("📋");
+    expect(out.team).toBe("atmux");
+    expect(out.verdict).toBe("🟡 **Cool** — 1 send-keys failure within the last hour");
+    expect(out.bullets).toHaveLength(2);
+    expect(out.bullets?.[0]).toBe("🟡 last: atmux-demo:🛠️worker1 (7min ago)");
+    expect(out.bullets?.[1]).toContain("ADR-138");
+    expect(out.bullets?.[1]).toContain("send-keys-failures.log");
+  });
+
+  test("plural verdict when failureCount > 1", async () => {
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 4,
+      mostRecentTarget: "atmux-demo:lead",
+      mostRecentAgeMin: 15,
+    });
+    expect(out.verdict).toContain("4 send-keys failures");
+  });
+
+  test("omitted target → bullet shape collapses (no target row, fix bullet only)", async () => {
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 2,
+    });
+    expect(out.bullets).toHaveLength(1);
+    expect(out.bullets?.[0]).toContain("send-keys-failures.log");
+  });
+
+  test("target without age suffix → bullet omits the (Nmin ago) tail", async () => {
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 1,
+      mostRecentTarget: "atmux-demo:lead",
+    });
+    expect(out.bullets?.[0]).toBe("🟡 last: atmux-demo:lead");
+  });
+
+  test("whenMs override is propagated", async () => {
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
+    const out = renderSendKeysFailureWarning({
+      team: "atmux",
+      failureCount: 1,
+      whenMs: 8888,
+    });
+    expect(out.whenMs).toBe(8888);
+  });
+
+  test("send-time validation passes (full template wiring works end-to-end)", async () => {
+    const { renderSendKeysFailureWarning, send } = await import(
+      "../../../src/abstractions/discord.ts"
+    );
+    const recorder = join(tmpRoot, "send-keys-failure-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderSendKeysFailureWarning({
+        team: "atmux",
+        failureCount: 2,
+        mostRecentTarget: "atmux-demo:worker1",
+        mostRecentAgeMin: 10,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[send-keys-failure]");
+    expect(written).toContain("ADR-138");
+  });
+});
+
+// ---------- ADR-086 — renderPulseVerdict ----------
+
+describe("renderPulseVerdict", () => {
+  test("🟢 Shipping → 💓 category, body verbatim, footer includes commits + window", async () => {
+    const { renderPulseVerdict } = await import("../../../src/abstractions/discord.ts");
+    const out = renderPulseVerdict({
+      team: "atmux",
+      verdict: "🟢 Shipping",
+      body: "🟢 **Shipping** — 3 commits in 30min, doctor green",
+      commitCount: 3,
+      inProgressCount: 2,
+      driverInboxOpen: 0,
+      fireReason: "transition",
+      windowMin: 30,
+    });
+    expect(out.template).toBe("pulse-verdict");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("💓");
+    expect(out.verdict).toContain("🟢 **Shipping**");
+    expect(out.footer).toContain("3 commits in 30min");
+    expect(out.footer).toContain("2 inProgress");
+    expect(out.footer).toContain("fire: transition");
+    // No driver-inbox surfacing when count is 0.
+    expect(out.footer ?? "").not.toContain("inbox");
+  });
+
+  test("🟡 Cool → 📊 category", async () => {
+    const { renderPulseVerdict } = await import("../../../src/abstractions/discord.ts");
+    const out = renderPulseVerdict({
+      team: "atmux",
+      verdict: "🟡 Cool",
+      body: "🟡 **Cool** — quiet on purpose",
+      commitCount: 0,
+      inProgressCount: 0,
+      driverInboxOpen: 0,
+      fireReason: "first-observation",
+      windowMin: 30,
+    });
+    expect(out.category).toBe("📊");
+    expect(out.footer).toContain("0 commits in 30min");
+  });
+
+  test("🟡 Idle → 📊 category (shared with Cool)", async () => {
+    const { renderPulseVerdict } = await import("../../../src/abstractions/discord.ts");
+    const out = renderPulseVerdict({
+      team: "atmux",
+      verdict: "🟡 Idle",
+      body: "🟡 **Idle** — 4 task(s) queued, 0 commits in 30min",
+      commitCount: 0,
+      inProgressCount: 1,
+      driverInboxOpen: 0,
+      fireReason: "transition",
+      windowMin: 30,
+    });
+    expect(out.category).toBe("📊");
+  });
+
+  test("🔴 Stalled → 🛑 category", async () => {
+    const { renderPulseVerdict } = await import("../../../src/abstractions/discord.ts");
+    const out = renderPulseVerdict({
+      team: "atmux",
+      verdict: "🔴 Stalled",
+      body: "🔴 **Stalled** — 2 in-progress, 0 commits in 30min",
+      commitCount: 0,
+      inProgressCount: 2,
+      driverInboxOpen: 0,
+      fireReason: "sustained-urgency",
+      windowMin: 30,
+    });
+    expect(out.category).toBe("🛑");
+    expect(out.footer).toContain("fire: sustained-urgency");
+  });
+
+  test("🚨 Need you → 🚨 category, inbox count surfaced", async () => {
+    const { renderPulseVerdict } = await import("../../../src/abstractions/discord.ts");
+    const out = renderPulseVerdict({
+      team: "atmux",
+      verdict: "🚨 Need you",
+      body: "🚨 **Need you** — 2 stale driver-ask(s)",
+      commitCount: 0,
+      inProgressCount: 0,
+      driverInboxOpen: 3,
+      fireReason: "transition",
+      windowMin: 30,
+    });
+    expect(out.category).toBe("🚨");
+    expect(out.footer).toContain("3 inbox");
+  });
+
+  test("whenMs override propagates", async () => {
+    const { renderPulseVerdict } = await import("../../../src/abstractions/discord.ts");
+    const out = renderPulseVerdict({
+      team: "atmux",
+      verdict: "🟢 Shipping",
+      body: "🟢 **Shipping** — 1 commit in 30min, doctor green",
+      commitCount: 1,
+      inProgressCount: 0,
+      driverInboxOpen: 0,
+      fireReason: "first-observation",
+      windowMin: 30,
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+
+  test("send-time validation passes", async () => {
+    const { renderPulseVerdict, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "pulse-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderPulseVerdict({
+        team: "atmux",
+        verdict: "🟢 Shipping",
+        body: "🟢 **Shipping** — 3 commits in 30min, doctor green",
+        commitCount: 3,
+        inProgressCount: 1,
+        driverInboxOpen: 0,
+        fireReason: "transition",
+        windowMin: 30,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[pulse-verdict]");
+    expect(written).toContain("3 commits in 30min");
+  });
+});
+
+// ---------- ADR-085 §Three surfaces #2 — renderWhipNeedsApproval ----------
+
+describe("renderWhipNeedsApproval", () => {
+  function adrEntry(
+    id: string,
+    subject: string,
+    ageMin = 60,
+  ): {
+    id: string;
+    subject: string;
+    ageMin: number;
+  } {
+    return { id, subject, ageMin };
+  }
+
+  test("renders all three bucket sections when each has entries", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [adrEntry("085-foo", "ADR-085 needs-approval", 120)],
+      inbox: [adrEntry("planner-question", "planner needs answer", 45)],
+      kanban: [adrEntry("t-aaaa1111", "long-blocked task", 240)],
+    });
+    expect(out.template).toBe("whip-needs-approval");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("📋");
+    expect(out.verdict).toContain("3 items awaiting triage");
+    const labels = (out.sections ?? []).map((s) => s.label);
+    expect(labels).toEqual([
+      "📋 **Proposed ADRs (1)**",
+      "⏳ **Untriaged asks (1)**",
+      "🛑 **Blocked tasks (1)**",
+    ]);
+  });
+
+  test("singular `1 item` verdict copy when total=1", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [adrEntry("a", "x", 1)],
+      inbox: [],
+      kanban: [],
+    });
+    expect(out.verdict).toContain("1 item awaiting triage");
+    expect(out.verdict).not.toContain("1 items");
+  });
+
+  test("empty buckets are dropped entirely (no `(0)` waste)", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [adrEntry("a", "x", 1)],
+      inbox: [],
+      kanban: [],
+    });
+    const labels = (out.sections ?? []).map((s) => s.label);
+    expect(labels).toEqual(["📋 **Proposed ADRs (1)**"]);
+  });
+
+  test("OQ2 hard-cap: 5 per bucket + `+N more` tail", () => {
+    const six = Array.from({ length: 6 }, (_, i) => adrEntry(`adr-${i}`, `subject ${i}`, 10 + i));
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: six,
+      inbox: [],
+      kanban: [],
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets.length).toBe(6); // 5 visible + 1 overflow
+    expect(bullets[5]).toBe("📍 +1 more");
+  });
+
+  test("exactly 5 entries → no `+0 more` tail", () => {
+    const five = Array.from({ length: 5 }, (_, i) => adrEntry(`adr-${i}`, `subject ${i}`, 10));
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: five,
+      inbox: [],
+      kanban: [],
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets.length).toBe(5);
+    for (const b of bullets) {
+      expect(b).not.toContain("+0 more");
+    }
+  });
+
+  test("ageMin compact-duration grammar: <60min → Nmin; ≥60 → HhMm", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [
+        adrEntry("a", "fresh", 47),
+        adrEntry("b", "two-hour", 120),
+        adrEntry("c", "mixed", 125),
+      ],
+      inbox: [],
+      kanban: [],
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets[0]).toContain("47min");
+    expect(bullets[1]).toContain("2h ");
+    expect(bullets[2]).toContain("2h5m");
+  });
+
+  test("zero total still produces a valid payload (caller gates emission)", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [],
+      inbox: [],
+      kanban: [],
+    });
+    expect(out.template).toBe("whip-needs-approval");
+    expect(out.verdict).toContain("0 items");
+    expect(out.sections).toEqual([]);
+  });
+
+  test("whenMs threaded through for test injection", () => {
+    const out = renderWhipNeedsApproval({
+      team: "atmux",
+      adr: [adrEntry("a", "x", 1)],
+      inbox: [],
+      kanban: [],
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+});
+
+// ---------- ADR-077 §F6 — renderSelfHealFailed ----------
+
+describe("renderSelfHealFailed", () => {
+  test("renders self-heal-failed template with ABC menu + default deadline", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    // Mon 2026-05-04 03:44 UTC → 11:44 MYT. Default at +30min → 12:14 MYT.
+    const whenMs = Date.UTC(2026, 4, 4, 3, 44, 0);
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "rotate-lead swallowed under auto-mode",
+      attempts: 3,
+      members: 12,
+      fromAccount: "personal",
+      toAccount: "icloud",
+      complaintsOpen: 7,
+      whipStrikes: 4,
+      whenMs,
+    });
+    expect(out.template).toBe("self-heal-failed");
+    expect(out.team).toBe("atmux");
+    expect(out.category).toBe("🚨");
+    expect(out.whenMs).toBe(whenMs);
+    const bullets = out.bullets ?? [];
+    expect(bullets).toHaveLength(7);
+    expect(bullets[0]).toContain("rotate-lead swallowed under auto-mode");
+    expect(bullets[0]).toContain("N=3 attempts");
+    expect(bullets[1]).toContain("reply A/B/C");
+    expect(bullets[2]).toContain("A) /team stop + start atmux");
+    expect(bullets[2]).toContain("12 member(s)");
+    expect(bullets[3]).toBe("🔁 B) swap account personal → icloud — wk budget reset");
+    expect(bullets[4]).toContain("C) park atmux for the night");
+    expect(bullets[5]).toContain("default at 12:14 MYT: A");
+    expect(bullets[6]).toBe("📍 7 open · 4 strikes");
+  });
+
+  test("nullable account labels collapse to a generic swap line", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "members idle 3h after rebuild",
+      attempts: 3,
+      members: 8,
+      fromAccount: null,
+      toAccount: null,
+      complaintsOpen: 2,
+      whipStrikes: 1,
+      whenMs: Date.UTC(2026, 4, 4, 3, 44, 0),
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[3]).toBe("🔁 B) swap account — wk budget reset");
+  });
+
+  test("whenMs defaults to now() when omitted", async () => {
+    const { renderSelfHealFailed } = await import("../../../src/abstractions/discord.ts");
+    const before = Date.now();
+    const out = renderSelfHealFailed({
+      team: "atmux",
+      symptom: "test",
+      attempts: 4,
+      members: 1,
+      fromAccount: "a",
+      toAccount: "b",
+      complaintsOpen: 0,
+      whipStrikes: 0,
+    });
+    const after = Date.now();
+    expect(out.whenMs).toBeGreaterThanOrEqual(before);
+    expect(out.whenMs as number).toBeLessThanOrEqual(after);
+  });
+
+  test("send-time validation passes — bullets carry allowed prefixes", async () => {
+    const { renderSelfHealFailed, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "self-heal-failed-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderSelfHealFailed({
+        team: "atmux",
+        symptom: "kill+respawn welcome-screen-gates",
+        attempts: 3,
+        members: 5,
+        fromAccount: "personal",
+        toAccount: "icloud",
+        complaintsOpen: 1,
+        whipStrikes: 2,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[self-heal-failed]");
+    expect(written).toContain("kill+respawn welcome-screen-gates");
+  });
+});
+
+// ---------- t-351318dc — renderMetaWatchdog ----------
+
+describe("renderMetaWatchdog", () => {
+  test("renders meta-watchdog template with A/B menu + dormancy summary", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    // 2026-05-04 03:44 UTC → 11:44 MYT. Default at +30min → 12:14 MYT.
+    const whenMs = Date.UTC(2026, 4, 4, 3, 44, 0);
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 4,
+      dormantSec: 3 * 60 * 60, // 3h
+      oldestComplaintSummary: "cage cycled itself",
+      oldestComplaintTeam: "sopx",
+      oldestComplaintAgeSec: 5 * 60 * 60, // 5h
+      whenMs,
+    });
+    expect(out.template).toBe("meta-watchdog");
+    expect(out.team).toBe("atmux_teams");
+    expect(out.category).toBe("🚨");
+    expect(out.whenMs).toBe(whenMs);
+    const bullets = out.bullets ?? [];
+    expect(bullets).toHaveLength(6);
+    expect(bullets[0]).toContain("superdoctor dormant");
+    expect(bullets[0]).toContain("4 open complaints");
+    expect(bullets[0]).toContain("3h");
+    expect(bullets[1]).toContain("reply A/B");
+    expect(bullets[2]).toContain("A) check superdoctor pane");
+    expect(bullets[3]).toContain("B) restart superdoctor");
+    expect(bullets[4]).toContain("default at 12:14 MYT: A");
+    expect(bullets[5]).toContain("oldest: sopx");
+    expect(bullets[5]).toContain("cage cycled itself");
+    expect(bullets[5]).toContain("5h");
+  });
+
+  test("cold cockpit (dormantSec=null) reads as 'no attempts on record'", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 1,
+      dormantSec: null,
+      oldestComplaintSummary: "initial complaint",
+      oldestComplaintTeam: "atmux",
+      oldestComplaintAgeSec: 60 * 60,
+      whenMs: Date.UTC(2026, 4, 4, 3, 44, 0),
+    });
+    const bullets = out.bullets ?? [];
+    expect(bullets[0]).toContain("no attempts on record");
+  });
+
+  test("whenMs defaults to now() when omitted", async () => {
+    const { renderMetaWatchdog } = await import("../../../src/abstractions/discord.ts");
+    const before = Date.now();
+    const out = renderMetaWatchdog({
+      cockpit: "atmux_teams",
+      openComplaints: 1,
+      dormantSec: 7200,
+      oldestComplaintSummary: "test",
+      oldestComplaintTeam: "test-team",
+      oldestComplaintAgeSec: 7200,
+    });
+    const after = Date.now();
+    expect(out.whenMs).toBeGreaterThanOrEqual(before);
+    expect(out.whenMs as number).toBeLessThanOrEqual(after);
+  });
+
+  test("send-time validation passes — every bullet carries an allowed prefix", async () => {
+    const { renderMetaWatchdog, send } = await import("../../../src/abstractions/discord.ts");
+    const recorder = join(tmpRoot, "meta-watchdog-record.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorder;
+    await send(
+      renderMetaWatchdog({
+        cockpit: "atmux_teams",
+        openComplaints: 2,
+        dormantSec: 4 * 60 * 60,
+        oldestComplaintSummary: "stale cage",
+        oldestComplaintTeam: "sopx",
+        oldestComplaintAgeSec: 6 * 60 * 60,
+      }),
+    );
+    const written = await readFile(recorder, "utf8");
+    expect(written).toContain("[meta-watchdog]");
+    expect(written).toContain("superdoctor dormant");
+  });
+});
+
+// ---------- ADR-131 §D5 T5 — renderHygieneBlocker ----------
+
+describe("renderHygieneBlocker — base shape", () => {
+  test("emits header (🔧 category) + template literal", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign t-aaaa1111 to fe-1 (lowest-load fe member)",
+      superdoctorTick: 42,
+      fixesThisTick: 3,
+      complaintsFiled: 1,
+    });
+    expect(out.template).toBe("hygiene-blocker");
+    expect(out.team).toBe("sopx");
+    expect(out.category).toBe("🔧");
+  });
+
+  test("verdict line carries 🔴 Stalled + taskId + duration + class label", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.verdict).toContain("🔴 **Stalled**");
+    expect(out.verdict).toContain("`t-aaaa1111`");
+    // 240min = 4h exactly per formatDuration.
+    expect(out.verdict).toContain("4h");
+    expect(out.verdict).toContain("owner not in roster");
+  });
+
+  test("whatsNew carries the proposedFix as a single prose-grade bullet", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign t-aaaa1111 to fe-1 (lowest-load fe member)",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.whatsNew).toEqual(["Reassign t-aaaa1111 to fe-1 (lowest-load fe member)"]);
+  });
+
+  test("footer carries tick number + fixes + complaints counters", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 42,
+      fixesThisTick: 3,
+      complaintsFiled: 1,
+    });
+    expect(out.footer).toBe("superdoctor tick #42 · 3 fixes applied · 1 complaints");
+  });
+
+  test("no needFromGeorge → no sections (pure-blocker shape)", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.sections).toBeUndefined();
+  });
+
+  test("whenMs threaded through for test injection", () => {
+    const out = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+      whenMs: 1_700_000_000_000,
+    });
+    expect(out.whenMs).toBe(1_700_000_000_000);
+  });
+});
+
+describe("renderHygieneBlocker — fingerprint-class labels", () => {
+  test("every fingerprint class has a distinct human-readable label", () => {
+    const labels = new Map<string, string>();
+    const classes = [
+      "ghost-owner",
+      "lane-mismatch",
+      "role-mismatch",
+      "lane-null-orphan",
+      "prio-null",
+    ] as const;
+    for (const fc of classes) {
+      const out = renderHygieneBlocker({
+        team: "atmux",
+        taskId: "t-x",
+        fingerprintClass: fc,
+        wedgedMin: 240,
+        proposedFix: "x",
+        superdoctorTick: 1,
+        fixesThisTick: 0,
+        complaintsFiled: 0,
+      });
+      // Strip the leading verdict + duration to get just the label.
+      const m = out.verdict?.match(/wedged \S+, (.+)$/);
+      expect(m).not.toBeNull();
+      const label = m?.[1] ?? "";
+      labels.set(fc, label);
+    }
+    expect(labels.size).toBe(5);
+    expect(new Set(labels.values()).size).toBe(5); // all distinct
+  });
+});
+
+describe("renderHygieneBlocker — wedge-duration formatting", () => {
+  test("240min → 4h exact", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.verdict).toContain("wedged 4h,");
+  });
+
+  test("47min → `47min` shape", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 47,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.verdict).toContain("wedged 47min,");
+  });
+
+  test("125min → `2h5m` shape", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 125,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    expect(out.verdict).toContain("wedged 2h5m,");
+  });
+});
+
+describe("renderHygieneBlocker — Need-from-George section", () => {
+  test("present needFromGeorge → 🙏 section with question + default-line", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+      needFromGeorge: {
+        question: "no exec-class members on the lane — pick one",
+        default: "A) reassign to fe-1 anyway",
+        deadline: "16:42 MYT",
+      },
+    });
+    expect(out.sections).toHaveLength(1);
+    const sec = out.sections?.[0];
+    expect(sec?.label).toBe("🙏 **Need from George** (zero deterministic candidates)");
+    expect(sec?.bullets[0]).toBe("🙏 no exec-class members on the lane — pick one");
+    expect(sec?.bullets[sec.bullets.length - 1]).toContain(
+      "**Default at 16:42 MYT if silent:** A) reassign to fe-1 anyway",
+    );
+  });
+
+  test("lettered options render as 📍-prefixed bullets between question + default", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+      needFromGeorge: {
+        question: "pick one",
+        options: ["A) reassign to fe-1", "B) leave wedged"],
+        default: "A) reassign to fe-1",
+        deadline: "16:42 MYT",
+      },
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets).toHaveLength(4); // question + 2 options + default-line
+    expect(bullets[1]).toBe("📍 A) reassign to fe-1");
+    expect(bullets[2]).toBe("📍 B) leave wedged");
+  });
+
+  test("no options → only question + default-line render (2 bullets total)", () => {
+    const out = renderHygieneBlocker({
+      team: "atmux",
+      taskId: "t-x",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "x",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+      needFromGeorge: {
+        question: "no exec-class members on the lane",
+        default: "leave wedged for now",
+        deadline: "16:42 MYT",
+      },
+    });
+    const bullets = out.sections?.[0]?.bullets ?? [];
+    expect(bullets).toHaveLength(2);
+  });
+});
+
+// ---------- R10 named-template enforcement ----------
+//
+// Per CLAUDE.md §Discord: every Discord send is a named template; the
+// renderer is the single source of truth for the template literal +
+// emoji-prefix vocabulary. These tests assert the contract end-to-end
+// against the `validateOpts` validator at send() entry — proving a
+// caller can route the renderer's output through send() without a
+// validation rejection (mock-recorded, no real webhook).
+
+describe("renderHygieneBlocker — R10 send() round-trip (recorder path)", () => {
+  let recorderPath: string;
+  let recorderDir: string;
+
+  beforeEach(async () => {
+    recorderDir = await mkdtemp(join(tmpdir(), "atmux-hygiene-recorder-"));
+    recorderPath = join(recorderDir, "discord.jsonl");
+    process.env.ATMUX_DISCORD_RECORDER = recorderPath;
+    // Webhook URL is required by send() even on the recorder path.
+    process.env.ATMUX_DISCORD_WEBHOOK = "https://recorder.invalid/x";
+  });
+
+  afterEach(async () => {
+    delete process.env.ATMUX_DISCORD_RECORDER;
+    delete process.env.ATMUX_DISCORD_WEBHOOK;
+    await rm(recorderDir, { recursive: true, force: true });
+  });
+
+  test("renderer output passes validateOpts via send() → recorder receives JSONL", async () => {
+    const opts = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-aaaa1111",
+      fingerprintClass: "ghost-owner",
+      wedgedMin: 240,
+      proposedFix: "Reassign t-aaaa1111 to fe-1 (lowest-load)",
+      superdoctorTick: 42,
+      fixesThisTick: 3,
+      complaintsFiled: 1,
+      needFromGeorge: {
+        question: "no exec-class members on lane — pick one",
+        options: ["A) reassign to fe-1", "B) leave wedged"],
+        default: "A) reassign to fe-1",
+        deadline: "16:42 MYT",
+      },
+      whenMs: 1_700_000_000_000,
+    });
+    await send(opts);
+    const log = await readFile(recorderPath, "utf8");
+    // Recorder captures the rendered chunk content (header + body),
+    // not the structured template metadata — assert against the
+    // header's `[hygiene-blocker]` literal + team + verdict-line
+    // root-cause label.
+    expect(log).toContain("[hygiene-blocker]");
+    expect(log).toContain("sopx");
+    expect(log).toContain("owner not in roster");
+  });
+
+  test("renderer output without needFromGeorge passes validateOpts (whatsNew satisfies non-empty body)", async () => {
+    const opts = renderHygieneBlocker({
+      team: "sopx",
+      taskId: "t-x",
+      fingerprintClass: "lane-mismatch",
+      wedgedMin: 300,
+      proposedFix: "set task lane = test (owner's natural lane)",
+      superdoctorTick: 1,
+      fixesThisTick: 0,
+      complaintsFiled: 0,
+    });
+    await send(opts);
+    const log = await readFile(recorderPath, "utf8");
+    // Recorder captures rendered content — assert against label
+    // surface ("owner lane ≠ task lane") which is the lane-mismatch
+    // class's verdict-line root-cause clause.
+    expect(log).toContain("owner lane");
+  });
+});
+
+// ---------- renderMemberRefusalRotate — ADR-139 T4 ----------
+
+describe("renderMemberRefusalRotate (ADR-139 T4)", () => {
+  test("escalation='rotate' renders 🟡 verdict + 🔄 category", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "alice",
+      severity: "soft",
+      eventCount: 3,
+      windowMin: 30,
+      rotationsToday: 1,
+      maxRotationsPerDay: 3,
+      escalation: "rotate",
+      topPhrases: ["fatigue", "tired-of"],
+      whenMs: 1_700_000_000_000,
+    });
+    expect(opts.template).toBe("member-refusal-rotate");
+    expect(opts.category).toBe("🔄");
+    expect(opts.verdict).toContain("🟡");
+    expect(opts.verdict).toContain("alice");
+    expect(opts.verdict).toContain("soft");
+    expect(opts.verdict).toContain("3 events");
+    const bullets = (opts.bullets ?? []) as string[];
+    // Trigger phrases surface as 📋 bullets — assert presence.
+    expect(bullets.some((b) => b.includes("fatigue"))).toBe(true);
+    // Footer carries rotation counter.
+    expect(bullets[bullets.length - 1]).toContain("1/3");
+  });
+
+  test("escalation='cap-hit' renders 🚨 verdict + 🚨 category", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "bob",
+      severity: "hard",
+      eventCount: 4,
+      windowMin: 30,
+      rotationsToday: 3,
+      maxRotationsPerDay: 3,
+      escalation: "cap-hit",
+      topPhrases: [],
+    });
+    expect(opts.category).toBe("🚨");
+    expect(opts.verdict).toContain("🚨");
+    expect(opts.verdict).toContain("cap-hit");
+    expect(opts.verdict).toContain("3/3");
+    const bullets = (opts.bullets ?? []) as string[];
+    // HARD path includes a 'Need from George' bullet.
+    expect(bullets.some((b) => b.includes("Need from George"))).toBe(true);
+  });
+
+  test("escalation='spawn-failed' renders 🚨 + verdict naming the failure", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "carol",
+      severity: "role",
+      eventCount: 1,
+      windowMin: 30,
+      rotationsToday: 1,
+      maxRotationsPerDay: 3,
+      escalation: "spawn-failed",
+      topPhrases: [],
+    });
+    expect(opts.category).toBe("🚨");
+    expect(opts.verdict).toContain("spawn FAILED");
+    expect(opts.verdict).toContain("role-class");
+  });
+
+  test("single-event verbiage drops the plural 's' on event count", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "dave",
+      severity: "role",
+      eventCount: 1,
+      windowMin: 30,
+      rotationsToday: 1,
+      maxRotationsPerDay: 3,
+      escalation: "rotate",
+      topPhrases: [],
+    });
+    expect(opts.verdict).toContain("1 event in");
+    expect(opts.verdict).not.toContain("1 events");
+  });
+
+  test("empty topPhrases skips the 📋 trigger bullets but keeps footer", () => {
+    const opts = renderMemberRefusalRotate({
+      team: "demo",
+      member: "eve",
+      severity: "soft",
+      eventCount: 3,
+      windowMin: 30,
+      rotationsToday: 1,
+      maxRotationsPerDay: 3,
+      escalation: "rotate",
+      topPhrases: [],
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.startsWith("📋"))).toBe(false);
+    expect(bullets[bullets.length - 1]).toContain("rotations today");
   });
 });

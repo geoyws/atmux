@@ -31,15 +31,16 @@ import {
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { appendDispatched, removeFromInProgress } from "../core/inbox.ts";
 import { claimTask, showTask } from "../core/kanban.ts";
 import { isPaused } from "../core/pause.ts";
-import { sendToMember } from "../core/send.ts";
+import { verifierForTui } from "../core/safe-send.ts";
+import { type SendOpts, sendToMember } from "../core/send.ts";
 import { resolveTarget } from "../core/window-id.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
-import { defaultSocketPath } from "./start.ts";
 
 const USAGE = "atmux dispatch <member> <task-id> [--no-ping]";
 
@@ -188,7 +189,14 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
 
   if (!parsed.noPing) {
     const sessionName = await getSessionName({ ...dirOpts, team });
-    const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
+    // t-f786031f: honour team.tmuxTmpdir for the cage socket. Pre-fix
+    // pinned `/tmp/atmux-<team>/sock` unconditionally; with that path
+    // empty under project-local-tmpdir teams the dispatch-ping keystroke
+    // silently failed (or worse, landed on a stale legacy socket if one
+    // happened to exist), leaving members with queued-but-never-Enter'd
+    // text in their compose box — the original 2026-05-08 t-f786031f
+    // symptom of "4 members stuck at compose for 4h20m".
+    const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
     const tmux = createTmux({ socketPath });
     // ADR-057 §D5b: address the member by immutable @N window ID when
     // possible; falls back to `<session>:<windowName>` on cache miss
@@ -200,20 +208,31 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       team: team.name,
       sessionName,
       member: memberEntry.name,
-      windowName: buildWindowName(memberEntry.name, memberEntry.emoji),
+      windowName: buildWindowName(
+        memberEntry.name,
+        memberEntry.emoji,
+        memberEntry.label,
+        memberEntry.role,
+      ),
       tmux,
     });
     const body = typeof post.body === "string" ? post.body : "";
     const subject = typeof post.subject === "string" ? post.subject : "";
     const ping = buildDispatchPing({ id: parsed.id, subject, body });
+    // ADR-138 T3b2: per-TUI verifier dispatch. claude → composerEmpty()
+    // confirms the agent accepted the inbox-message ping; non-Claude
+    // TUIs (shell/cursor/etc.) skip verify to avoid false-positive
+    // escalation entries. Bash passes `0 0` (no-submit=0, verify=0).
+    const verifier = verifierForTui(memberEntry.tui);
+    const dispatchOpts: SendOpts = { verify: false };
+    if (verifier !== null) dispatchOpts.expectVerifier = verifier;
     try {
       await sendToMember(
         tmux,
         atmuxDir,
         { target, member: parsed.member, team: team.name },
         ping,
-        // Bash passes `0 0` (no-submit=0, verify=0) — submit + skip-verify.
-        { verify: false },
+        dispatchOpts,
       );
     } catch (e) {
       // Bash logs `atmux::warn "dispatch: ping to $member failed"` and

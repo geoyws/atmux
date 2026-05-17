@@ -18,6 +18,7 @@
 import { dirname, join, resolve } from "node:path";
 import { ensureDir, exists, readTextOrNull } from "../abstractions/fs.ts";
 import { readJson, tryReadJson } from "../abstractions/json.ts";
+import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
 
@@ -32,6 +33,12 @@ export interface ResolveDirOpts {
   cwd?: string;
   /** Environment hash. Defaults to `process.env`. Test injection point. */
   env?: NodeJS.ProcessEnv;
+  /** t-584b5f37 cluster 11: stop the walk-up at this ancestor (inclusive
+   *  scan, but do NOT cross above it). Used by tests whose temp dirs
+   *  live under `/tmp/` to isolate the walk-up from any pre-existing
+   *  `/tmp/.atmux` left by other atmux invocations on the host. Production
+   *  callers never set this — the walk-up reaches `/` as before. */
+  stopAt?: string;
 }
 
 /**
@@ -59,10 +66,12 @@ export async function getAtmuxDir(opts: ResolveDirOpts = {}): Promise<string> {
     return join(stripTrailingSlash(envTeamDir), ".atmux");
   }
   const start = resolve(opts.cwd ?? process.cwd());
+  const stopAt = opts.stopAt !== undefined ? resolve(opts.stopAt) : undefined;
   let cur = start;
   while (true) {
     const candidate = join(cur, ".atmux");
     if (await exists(candidate)) return candidate;
+    if (stopAt !== undefined && cur === stopAt) break; // test-side floor
     const parent = dirname(cur);
     if (parent === cur) break; // hit / (or volume root) — stop
     cur = parent;
@@ -91,12 +100,28 @@ export function inboxPathFor(atmuxDir: string, member: string): string {
   return join(atmuxDir, "inboxes", `${member}.json`);
 }
 
-/** ADR-077 §D4 / §F3: reserved inbox key for the cockpit-tier
- *  superdoctor role. Not a member of any team.json — `atmux send`
+/** ADR-077 §D4 / §F3 / ADR-133: reserved inbox key for the cockpit-tier
+ *  medic role (canonical name). Not a member of any team.json — `atmux send`
  *  recognises it as a special target and writes to the team's
  *  `inbox_messages` table instead of attempting tmux pane delivery.
- *  Superdoctor reads matching rows on its hourly whip turn. */
+ *  Medic reads matching rows on its hourly whip turn. */
+export const MEDIC_INBOX_KEY = "__medic__";
+
+/** ADR-133 deprecated alias for {@link MEDIC_INBOX_KEY}. Accepted as an
+ *  inbox target during the one-release-cycle deprecation window so
+ *  in-flight scripts + skill briefs continue routing while operators
+ *  migrate. New callers should reference `MEDIC_INBOX_KEY`; this alias
+ *  is dropped once the deprecation closes. */
 export const SUPERDOCTOR_INBOX_KEY = "__superdoctor__";
+
+/** ADR-133: returns true when `member` matches the canonical medic
+ *  inbox key OR its deprecated `__superdoctor__` alias. Use this in
+ *  place of bare `=== SUPERDOCTOR_INBOX_KEY` checks so the routing
+ *  path stays single-source-of-truth on which keys reach the medic
+ *  inbox writer. */
+export function isMedicInboxKey(member: string | undefined): boolean {
+  return member === MEDIC_INBOX_KEY || member === SUPERDOCTOR_INBOX_KEY;
+}
 
 export function logsDir(atmuxDir: string): string {
   return join(atmuxDir, "logs");
@@ -116,6 +141,13 @@ export function driverInboxPath(atmuxDir: string): string {
 
 export function leadOutboxPath(atmuxDir: string): string {
   return join(atmuxDir, "lead-outbox.md");
+}
+
+/** ADR-008 §S8 D13 — team-scoped decisions log. Append-only markdown
+ *  written by `atmux decisions add` (bash today; bun port pending).
+ *  Whip-tick watcher reads this to surface new entries to Discord. */
+export function decisionsLogPath(atmuxDir: string): string {
+  return join(atmuxDir, "decisions.md");
 }
 
 export function sessionAnchorPath(atmuxDir: string): string {
@@ -219,10 +251,28 @@ export async function getSessionName(opts: SessionNameOpts = {}): Promise<string
  * pre-amend `__<team>__<emoji><member>` prefix to maximize horizontal
  * space in tmux's window-list UI.
  *
- * **New form** — `<emoji><member>` when emoji is set, `<member>` when not.
- * Concrete examples (5-char team `atmux`):
+ * **ADR-135 form** — `<emoji>-<member>` (hyphen-separated) when
+ * emoji is set, `<member>` when not. Concrete examples (5-char team
+ * `atmux`):
  *   pre-amend:  `__atmux__🗺️lead`     (12 chars + emoji)
  *   post-amend: `🗺️lead`              (4 chars + emoji)
+ *   post-ADR-135: `🗺️-lead`           (4 chars + emoji + hyphen)
+ *
+ * Why the hyphen (ADR-135 §D3):
+ *   - Shell-quoting safety: `tmux send-keys -t atmux:🗺️-lead` works
+ *     without quoting; the no-separator form is byte-glued and can
+ *     trip variation-selector emoji (🛠️ = U+1F6E0+U+FE0F) on some
+ *     terminal/escape paths.
+ *   - Regex/tab-completion friendly: matchers like `^.<emoji>-<name>$`
+ *     stay simple; tab-completion engines tokenise on hyphens
+ *     cleanly.
+ *   - Symmetric with existing hyphenated member names
+ *     (`whip-impl`, `parity-cron-impl`, `up-impl-2`).
+ *
+ * Legacy detection helper: {@link buildWindowNameLegacy} produces the
+ * pre-ADR-135 no-separator form — used by `start.ts` to detect
+ * legacy windows that need in-place renaming on first reboot under
+ * the new convention (ADR-135 §D4 migration shim).
  *
  * The bash side at HEAD 2aadc3f still uses the prefixed form
  * (`lib/common.sh::atmux::window_name`); port-back is non-urgent and
@@ -230,9 +280,137 @@ export async function getSessionName(opts: SessionNameOpts = {}): Promise<string
  * 5 deferral" governs the cross-language drift while the prefixed form
  * stays live in production bash).
  */
-export function buildWindowName(member: string, emoji?: string): string {
+export function buildWindowName(
+  member: string,
+  emoji?: string,
+  label?: string,
+  role?: string,
+): string {
+  // ADR-136 TR4: optional `label` overrides `member` (the ID) for the
+  // display segment only. Window name still couples emoji + display
+  // string; the underlying tmux window is keyed by name (mutable) but
+  // members are addressed by name (the immutable ID) via the
+  // worktree / branch / kanban / inbox storage classes — all of which
+  // continue to use `member` regardless of label.
+  //
+  // ADR-135 separator: `<emoji>-<display>` (hyphen-separated) when
+  // emoji is set. Two-arg callers (pre-TR4) pass `label === undefined`
+  // implicitly → display falls back to `member` (the ID), shape stays
+  // `<emoji>-<member>`. The label-fallback happens here so per-callsite
+  // migrations can pass `member.label` without each callsite
+  // re-implementing `label ?? name`.
+  //
+  // ADR-161 §Decision-anchor #2 role-aware format split: when `role`
+  // matches one of `DEFAULT_MEMBER_ROLES` (team-lead, planner,
+  // reviewer, ombudsman), render `_-prefix` (`${emoji}_${display}`).
+  // Otherwise — user-added members (role = "member") AND callsites
+  // that don't pass a role — keep the existing ADR-135 hyphen form.
+  // Backward-compatible: existing two/three-arg callers default to
+  // `role: undefined` → hyphen path.
+  const display = label !== undefined && label.length > 0 ? label : member;
+  if (emoji === undefined || emoji.length === 0) return display;
+  if (isDefaultMemberRole(role)) return `${emoji}_${display}`;
+  return `${emoji}-${display}`;
+}
+
+/**
+ * Legacy pre-ADR-135 form of {@link buildWindowName} — `<emoji><member>`
+ * (no separator) when emoji is set, `<member>` when not. Used by
+ * `start.ts` to detect existing legacy windows that need in-place
+ * renaming via `tmux rename-window` per ADR-135 §D4. Idempotent: the
+ * shim only fires when a window matching the legacy form is found and
+ * the canonical (hyphenated) form does not yet exist.
+ *
+ * ADR-136 TR4: the legacy detector keys on `member` (the ID) — it's
+ * the pre-rename shape, so labels never appeared in legacy windows
+ * by construction. No `label` arg here.
+ *
+ * @deprecated v2-bump per ADR-135 — once the one-release-cycle
+ *             deprecation window closes, this helper is removed.
+ */
+export function buildWindowNameLegacy(member: string, emoji?: string): string {
   if (emoji !== undefined && emoji.length > 0) return `${emoji}${member}`;
   return member;
+}
+
+/**
+ * Resolve a member's existing tmux window name, tolerating both the
+ * canonical ADR-135 hyphenated form (`<emoji>-<member>`) AND the legacy
+ * pre-ADR-135 concatenated form (`<emoji><member>`). Returns whichever
+ * form actually exists in the live tmux window list; if neither exists,
+ * returns the canonical form so the downstream "no tmux window for X"
+ * error message names the form the caller would have spawned.
+ *
+ * Called by addressing verbs (`tell-lead`, `send`) that need to address
+ * windows by name and would otherwise miss teams spawned under the
+ * pre-ADR-135 binary. Symmetric with {@link isMemberWindowName}, which
+ * already accepts both shapes during the deprecation window.
+ *
+ * Pure-by-injection: takes a `listWindowNames` function so tests can
+ * mock tmux without spawning. Production callers pass
+ * `(name) => tmux.window.listWindows(name).then((ws) => ws.map((w) => w.name))`.
+ *
+ * Once `start.ts`'s migration shim renames legacy windows on every
+ * fresh team-start, this helper degenerates to "return canonical" and
+ * can be removed alongside `buildWindowNameLegacy`.
+ */
+export async function resolveExistingWindowName(
+  sessionName: string,
+  member: string,
+  emoji: string | undefined,
+  label: string | undefined,
+  listWindowNames: (sessionName: string) => Promise<ReadonlyArray<string>>,
+  role?: string,
+): Promise<string> {
+  // ADR-161 TR2 interaction: default members canonical = `<emoji>_<member>`,
+  // ADR-135 hyphen form `<emoji>-<member>` is the deprecation step BEFORE
+  // current canonical (and before pre-ADR-135 `<emoji><member>` legacy).
+  // For default-member roles we accept all three live forms; for user-added
+  // members the hyphen form IS canonical so the tier collapses to two.
+  const canonical = buildWindowName(member, emoji, label, role);
+  const adr135Hyphen = buildWindowName(member, emoji, label);
+  const legacy = buildWindowNameLegacy(member, emoji);
+  if (canonical === legacy && canonical === adr135Hyphen) return canonical;
+  let names: ReadonlyArray<string>;
+  try {
+    names = await listWindowNames(sessionName);
+  } catch {
+    // Session missing / tmux down — let downstream produce its own
+    // "no tmux window" error against the canonical form.
+    return canonical;
+  }
+  const set = new Set(names);
+  if (set.has(canonical)) return canonical;
+  if (set.has(adr135Hyphen)) return adr135Hyphen;
+  if (set.has(legacy)) return legacy;
+  return canonical;
+}
+
+/**
+ * ADR-136 TR4: display name for a member. Returns `member.label` when
+ * set + non-empty, otherwise `member.name`. Use this for operator-
+ * facing surfaces (Discord templates, status output, brief
+ * substitutions, debug log fields the user reads). Internal lookups
+ * (kanban owner column, inbox file path, worktree path, branch name)
+ * always use `member.name` — never route through this helper.
+ *
+ * ID vs label split rationale, mirroring ADR-136 §"Hot-rename
+ * concurrency safety":
+ *
+ *   - `member.name` is the immutable ASCII identifier
+ *     (`MEMBER_NAME_REGEX = /^[a-z][a-z0-9_-]{0,30}$/`) that keys
+ *     every persistent storage class — change-tracking depends on
+ *     this stability.
+ *   - `member.label` is the mutable Unicode display field that
+ *     `atmux member rename` mutates atomically. Refine rule rejects
+ *     `:` and `.` (tmux window-name separators); `displayMemberName`
+ *     itself doesn't validate — the schema does on write.
+ *
+ * Pure: no schema parse, no I/O. Safe to call inside hot loops
+ * (per-tick whip surfacing, per-row status renderer, etc.).
+ */
+export function displayMemberName(member: { name: string; label?: string | undefined }): string {
+  return member.label !== undefined && member.label.length > 0 ? member.label : member.name;
 }
 
 /**
@@ -253,10 +431,36 @@ export function buildWindowName(member: string, emoji?: string): string {
  */
 export function isMemberWindowName(
   name: string,
-  members: ReadonlyArray<{ name: string; emoji?: string }>,
+  members: ReadonlyArray<{
+    name: string;
+    emoji?: string;
+    label?: string | undefined;
+    role?: string | undefined;
+  }>,
 ): boolean {
   if (name.startsWith("__")) return false; // pre-amend artifact / non-atmux placeholder
-  return members.some((m) => name === buildWindowName(m.name, m.emoji));
+  // ADR-135 + ADR-136 TR4: match against the canonical hyphenated form
+  // (label-aware, post-TR4) OR the legacy concatenated form (pre-
+  // ADR-135 deprecation window). Three shapes can appear during the
+  // one-release-cycle migration window:
+  //
+  //   - `<emoji>-<label ?? name>`  ← canonical post-ADR-135 + TR4
+  //   - `<emoji>-<name>`            ← canonical when label is unset
+  //   - `<emoji><name>`             ← legacy pre-ADR-135 (no separator)
+  //
+  // `buildWindowName(name, emoji, label)` produces the first two; the
+  // legacy form needs the dedicated detector. Once start.ts's
+  // migration shim renames legacy windows to canonical, the second
+  // disjunct falls off.
+  return members.some(
+    (m) =>
+      // ADR-161 TR2: role-aware canonical form; defaults render `_-prefix`.
+      name === buildWindowName(m.name, m.emoji, m.label, m.role) ||
+      // ADR-135 hyphen-form — pre-ADR-161 legacy for default members
+      // that haven't been migrated yet.
+      name === buildWindowName(m.name, m.emoji, m.label) ||
+      name === buildWindowNameLegacy(m.name, m.emoji),
+  );
 }
 
 // ---------- Name validation ----------
@@ -326,6 +530,39 @@ export function assertValidMemberName(name: string): void {
       hint: "names must be lowercase alphanumeric, may include - and _",
     });
   }
+}
+
+/** CONVENTION-059: canonical lane prefixes for indexed member names.
+ *  Mirrors the lane slugs used in `team.json :: members[].lane` and the
+ *  superdoctor / watchdog templates. Adding a lane prefix here is the
+ *  intentional friction CLAUDE.md asks for — keeps the convention from
+ *  drifting. */
+export const CONVENTION_059_LANE_PREFIXES = [
+  "fe",
+  "be",
+  "ops",
+  "test",
+  "review",
+  "db",
+  "misc",
+] as const;
+export type Convention059LanePrefix = (typeof CONVENTION_059_LANE_PREFIXES)[number];
+
+/** `^(fe|be|ops|test|review|db|misc)\d+$` — zero-indexed, no separator. */
+const INDEXED_MEMBER_NAME_REGEX = new RegExp(`^(${CONVENTION_059_LANE_PREFIXES.join("|")})\\d+$`);
+
+/** CONVENTION-059 soft validator. Returns `null` on a name that matches
+ *  the indexed-member shape (`fe0` / `be1` / `ops0` / ...), or a
+ *  human-readable reason string otherwise. Advisory-only — never thrown
+ *  from. Existing names that don't match (e.g. `whip-impl` on atmux,
+ *  `eng-mobile` on unum) are still valid wire names per
+ *  `checkMemberName`; this helper captures the *target* shape for new
+ *  fungible-slot members + migration-time guidance. */
+export function checkIndexedMemberName(name: string): string | null {
+  if (!INDEXED_MEMBER_NAME_REGEX.test(name)) {
+    return `name '${name}' does not match CONVENTION-059 indexed shape: ${INDEXED_MEMBER_NAME_REGEX.source}`;
+  }
+  return null;
 }
 
 /**
@@ -541,8 +778,15 @@ export interface ResolveTeamSocketOpts {
  * tmpdir; canonical fallback is wrong when the team was started under
  * bash or a tmpdir-honoring start path).
  *
- * Read-only sites (status, doctor orphan-session probe) MUST use this
- * resolver to reach the actual live socket.
+ * All sites (read AND write) MUST use this resolver to reach the actual
+ * live socket. The pre-2026-05-13 carve-out for write verbs (send /
+ * dispatch / tell-lead / stop) was the root cause of t-f786031f: pinning
+ * `/tmp/atmux-<team>/sock` unconditionally meant cage rebuilds on
+ * project-local-tmpdir teams routed keystrokes at a non-existent socket,
+ * surfacing as "no tmux window for lead" (tell-lead) or queued-but-
+ * never-Enter'd compose-box text (send / dispatch). All four verbs were
+ * migrated to `resolveTeamSocket(team)` in the same commit — keep the
+ * invariant uniform across verbs to avoid the next regression.
  */
 export function resolveTeamSocket(
   team: Pick<TeamShape, "name" | "tmuxTmpdir">,
@@ -554,4 +798,39 @@ export function resolveTeamSocket(
     return join(tmpdir, `tmux-${uid}`, "default");
   }
   return getDefaultSocket(team.name);
+}
+
+/** Caller-scope verdict — `driver` or `member`. Default is `member`
+ *  (fail-secure per ADR-033 §"Caller scope detection"): only an
+ *  explicit `ATMUX_CALLER_SCOPE=driver` env var lets a caller pass the
+ *  driver-only refuse-gate. Member panes outnumber driver panes; a
+ *  default of `member` ensures auto-claim cron ticks can never bypass
+ *  the gate by accident. */
+export type CallerScope = "driver" | "member";
+
+/** Test-injection seam for `resolveCallerScope`. */
+export interface ResolveCallerScopeOpts {
+  /** Override `process.env`. Default: live process env. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Resolve the current caller's scope per ADR-033 §"Caller scope
+ * detection". Interim env-only gate — `ATMUX_CALLER_SCOPE=driver`
+ * returns `"driver"`; anything else (unset, empty, "member", garbage)
+ * returns `"member"`.
+ *
+ * The bash port (`lib/common.sh::atmux::resolve_caller_scope`) layered
+ * a window-name defense-in-depth check on top of the env read so
+ * members couldn't bypass by `export`ing the var themselves. That
+ * check keyed on the deprecated `__<team>__*` window prefix (per ADR-
+ * 017 atmux teams now use bare `<emoji><member>` names) and is moot
+ * post-rename; the TS port re-establishes the prefix-free defense via
+ * the team-roster check in a future Task, not this minimal port. The
+ * env-only gate still covers the common case: drivers `export
+ * ATMUX_CALLER_SCOPE=driver` in their session, members don't.
+ */
+export function resolveCallerScope(opts: ResolveCallerScopeOpts = {}): CallerScope {
+  const env = opts.env ?? process.env;
+  return env.ATMUX_CALLER_SCOPE === "driver" ? "driver" : "member";
 }

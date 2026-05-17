@@ -10,12 +10,16 @@ import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ageInboxOpenToArchive,
   archiveDecisions,
   archiveSizeCheck,
   cullBakFiles,
   flushInboxOutboxArchive,
   groomRunStampUtc,
   parseDecisionsMd,
+  parseEntryTimestamp,
+  parseOpenEntries,
+  sliceOpenArchive,
   summarizeKanban,
   ymdStampUtc,
   ymStampUtc,
@@ -516,5 +520,218 @@ describe("archiveSizeCheck", () => {
     expect(got).toHaveLength(1);
     expect(got[0]?.scope).toBe("kanban-log");
     expect(got[0]?.fileCount).toBe(2);
+  });
+});
+
+// ---------- ageInboxOpenToArchive (t-82b6aed9 / c-7a308f7f) ----------
+//
+// Helper fixtures for the inbox-aging sub-op. RUN_MS = 2026-05-08
+// 14:55 UTC = 2026-05-08 22:55 MYT. 7-day cutoff: 2026-05-01 22:55
+// MYT (entries older are aged, newer are kept).
+
+describe("sliceOpenArchive", () => {
+  test("returns null when no `## Open` header present", () => {
+    const text = "# title\n\nsome preamble\n\n## Archive\n- old\n";
+    expect(sliceOpenArchive(text)).toBeNull();
+  });
+
+  test("slices HEAD + OPEN + ARCHIVE on canonical file", () => {
+    const text = "# title\n\n## Open\n- [00:01 MYT 2026-05-08] fresh\n## Archive\n- aged\n";
+    const got = sliceOpenArchive(text);
+    expect(got).not.toBeNull();
+    expect(got?.head).toBe("# title\n\n");
+    expect(got?.openHeader).toBe("## Open\n");
+    expect(got?.openBody).toBe("- [00:01 MYT 2026-05-08] fresh\n");
+    expect(got?.archiveHeader).toBe("## Archive\n");
+    expect(got?.archiveBody).toBe("- aged\n");
+  });
+
+  test("synthesizes archive section when missing", () => {
+    const text = "## Open\n- [00:01 MYT] fresh\n";
+    const got = sliceOpenArchive(text);
+    expect(got).not.toBeNull();
+    expect(got?.archiveHeader).toBeNull();
+    expect(got?.archiveBody).toBe("");
+  });
+});
+
+describe("parseEntryTimestamp", () => {
+  test("parses `- [HH:MM MYT YYYY-MM-DD]` to MYT epoch seconds", () => {
+    // 2026-05-08 12:00 MYT = 2026-05-08 04:00 UTC = epoch 1778212800.
+    // (Prior literal 1778299200 was 1 day off — 2026-05-09 12:00 MYT.
+    // Production has always been correct; the test was miscomputed.
+    // t-9ebb6432 sibling-C.)
+    const got = parseEntryTimestamp("- [12:00 MYT 2026-05-08] hi", RUN_MS);
+    expect(got).toBe(1778212800);
+  });
+
+  test("today-implicit form uses nowMs MYT date", () => {
+    const got = parseEntryTimestamp("- [12:00 MYT] hi", RUN_MS);
+    // RUN_MS is 2026-05-08 22:55 MYT (Date.UTC(2026, 4, 8, 14, 55) =
+    // 14:55 UTC = 22:55 MYT), so today-implicit = 2026-05-08 12:00 MYT.
+    expect(got).toBe(1778212800);
+  });
+
+  test("returns null on shape mismatch", () => {
+    expect(parseEntryTimestamp("just plain text", RUN_MS)).toBeNull();
+    expect(parseEntryTimestamp("- [bogus] hi", RUN_MS)).toBeNull();
+    expect(parseEntryTimestamp("- [25:99 MYT] hi", RUN_MS)).toBeNull();
+  });
+
+  test("tolerates trailing `**member**:` suffix (lead-outbox shape)", () => {
+    const got = parseEntryTimestamp("- [12:00 MYT] **whip-impl**: hi", RUN_MS);
+    expect(got).toBe(1778212800);
+  });
+});
+
+describe("parseOpenEntries", () => {
+  test("returns [] on empty body", () => {
+    expect(parseOpenEntries("", RUN_MS)).toEqual([]);
+  });
+
+  test("splits on entry-start prefix; continuation lines attach", () => {
+    const body =
+      "- [12:00 MYT 2026-05-08] first\n" +
+      "continuation line of first\n" +
+      "- [13:00 MYT 2026-05-08] second\n";
+    const got = parseOpenEntries(body, RUN_MS);
+    expect(got).toHaveLength(2);
+    expect(got[0]?.text).toBe("- [12:00 MYT 2026-05-08] first\ncontinuation line of first\n");
+    expect(got[1]?.text).toBe("- [13:00 MYT 2026-05-08] second\n");
+  });
+
+  test("entry-start without parseable timestamp records null epochSec", () => {
+    const body = "- [malformed] hi\n- [12:00 MYT] ok\n";
+    const got = parseOpenEntries(body, RUN_MS);
+    expect(got).toHaveLength(2);
+    expect(got[0]?.epochSec).toBeNull();
+    expect(got[1]?.epochSec).not.toBeNull();
+  });
+});
+
+describe("ageInboxOpenToArchive", () => {
+  test("no files present → empty result", async () => {
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
+    expect(got).toEqual([]);
+  });
+
+  test("file without `## Open` is skipped (no entry returned)", async () => {
+    await writeFile(join(env.atmuxDir, "driver-inbox.md"), "# title\n\nfree-form preamble\n");
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
+    expect(got).toEqual([]);
+  });
+
+  // Fixture A: all-fresh — every entry stays in ## Open; no writes.
+  test("all-fresh fixture: no aging, file unchanged", async () => {
+    const src = join(env.atmuxDir, "driver-inbox.md");
+    const original =
+      "# driver-inbox\n\n## Open\n" +
+      "- [22:00 MYT 2026-05-08] fresh-A\n" +
+      "- [10:00 MYT 2026-05-08] fresh-B\n" +
+      "## Archive\n" +
+      "- [00:00 MYT 2026-01-01] old-archive-row\n";
+    await writeFile(src, original);
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
+    expect(got).toHaveLength(1);
+    expect(got[0]?.file).toBe("driver-inbox.md");
+    expect(got[0]?.agedCount).toBe(0);
+    expect(got[0]?.remainingOpen).toBe(2);
+    // No aged entries → no write triggered.
+    expect(await readFile(src, "utf8")).toBe(original);
+  });
+
+  // Fixture B: all-stale — every entry ages.
+  test("all-stale fixture: every entry → ## Archive (newest-at-top)", async () => {
+    const src = join(env.atmuxDir, "lead-outbox.md");
+    await writeFile(
+      src,
+      "# lead-outbox\n\n## Open\n" +
+        "- [09:00 MYT 2026-04-01] **whip-impl**: stale-A\n" +
+        "- [10:00 MYT 2026-04-02] **lead**: stale-B\n" +
+        "## Archive\n" +
+        "- [12:00 MYT 2026-03-01] **gitter**: existing-archive\n",
+    );
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
+    expect(got[0]?.agedCount).toBe(2);
+    expect(got[0]?.remainingOpen).toBe(0);
+    const after = await readFile(src, "utf8");
+    expect(after).toContain("## Open\n## Archive\n");
+    // Aged entries prepended to existing archive content; OPEN ordering preserved.
+    expect(after.indexOf("stale-A")).toBeLessThan(after.indexOf("stale-B"));
+    expect(after.indexOf("stale-B")).toBeLessThan(after.indexOf("existing-archive"));
+  });
+
+  // Fixture C: mixed + entries-without-timestamps.
+  test("mixed fixture: only stale-with-timestamp ages; unparseable kept", async () => {
+    const src = join(env.atmuxDir, "driver-inbox.md");
+    await writeFile(
+      src,
+      "## Open\n" +
+        "- [22:00 MYT 2026-05-08] fresh\n" +
+        "- [09:00 MYT 2026-04-01] stale\n" +
+        "- no-timestamp-prefix\n" +
+        "- [malformed] also-no-timestamp\n" +
+        "## Archive\n",
+    );
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
+    // 4 entry-start matches by the `- [` prefix parser; only 1 has stale timestamp.
+    // "- no-timestamp-prefix" does NOT start with `- [` so it's treated as
+    // a continuation of the preceding entry (the stale one), not its own row.
+    expect(got[0]?.agedCount).toBe(1);
+    const after = await readFile(src, "utf8");
+    expect(after).toContain("fresh");
+    expect(after.indexOf("stale")).toBeGreaterThan(after.indexOf("## Archive"));
+    // Unparseable-timestamp row stays in ## Open (conservative rule).
+    expect(after.indexOf("- [malformed]")).toBeLessThan(after.indexOf("## Archive"));
+  });
+
+  // Fixture D: aggressive (--inbox-days 0).
+  test("aggressive (days=0) ages everything in ## Open regardless of timestamp", async () => {
+    const src = join(env.atmuxDir, "driver-inbox.md");
+    await writeFile(
+      src,
+      "## Open\n" + "- [22:00 MYT 2026-05-08] today\n" + "- [malformed] no-time\n" + "## Archive\n",
+    );
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 0, { nowMs: RUN_MS });
+    expect(got[0]?.agedCount).toBe(2);
+    expect(got[0]?.remainingOpen).toBe(0);
+    const after = await readFile(src, "utf8");
+    expect(after).toContain("## Open\n## Archive\n");
+    expect(after.indexOf("today")).toBeGreaterThan(after.indexOf("## Archive"));
+    expect(after.indexOf("no-time")).toBeGreaterThan(after.indexOf("## Archive"));
+  });
+
+  test("aggressive option flag matches days=0 behaviour", async () => {
+    const src = join(env.atmuxDir, "lead-outbox.md");
+    await writeFile(src, "## Open\n- [22:00 MYT 2026-05-08] **lead**: today\n## Archive\n");
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, {
+      aggressive: true,
+      nowMs: RUN_MS,
+    });
+    expect(got[0]?.agedCount).toBe(1);
+    const after = await readFile(src, "utf8");
+    expect(after.indexOf("today")).toBeGreaterThan(after.indexOf("## Archive"));
+  });
+
+  test("dryRun does not mutate file", async () => {
+    const src = join(env.atmuxDir, "driver-inbox.md");
+    const original = "## Open\n- [09:00 MYT 2026-04-01] stale\n## Archive\n";
+    await writeFile(src, original);
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, {
+      dryRun: true,
+      nowMs: RUN_MS,
+    });
+    expect(got[0]?.agedCount).toBe(1);
+    expect(await readFile(src, "utf8")).toBe(original);
+  });
+
+  test("synthesizes `## Archive` header when missing", async () => {
+    const src = join(env.atmuxDir, "driver-inbox.md");
+    await writeFile(src, "## Open\n- [09:00 MYT 2026-04-01] stale\n");
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
+    expect(got[0]?.agedCount).toBe(1);
+    const after = await readFile(src, "utf8");
+    expect(after).toContain("## Archive\n");
+    expect(after.indexOf("stale")).toBeGreaterThan(after.indexOf("## Archive"));
   });
 });

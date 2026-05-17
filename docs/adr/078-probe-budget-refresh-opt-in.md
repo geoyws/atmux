@@ -1,6 +1,6 @@
 # ADR-078: probeBudget read-only by default — refreshOnNearExpiry opt-in
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-09
 **Driver-ref**: 2026-05-09 hax cockpit rebuild — operator (cockpit-superdriver) flagged P0 OAuth race after `atmux cockpit rebuild` left the unum driver pane stuck at "Login or use API key". Lead dispatched planner via `/root/.claude/teams/atmux/dispatch-p0-oauth-race.md`. Recommendation #2 (this ADR) flagged as preferred upstream.
 

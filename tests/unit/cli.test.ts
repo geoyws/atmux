@@ -22,6 +22,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { reportError } from "../../src/cli.ts";
 import { ConfigError, FsError, HttpTimeoutError, UsageError } from "../../src/errors.ts";
+import { ATMUX_VERSION } from "../../src/verbs/version.ts";
 import { captureMain } from "../helpers/capture.ts";
 
 /** Capture only stderr around a synchronous `reportError` call. */
@@ -43,24 +44,24 @@ function captureReport(err: unknown): { exit: number; stderr: string } {
 // ---------- Dispatch — happy paths (bash-parity aliases) ----------
 
 describe("cli.main — version verb (3-form parity with bash)", () => {
-  test("'version' → exit 0, prints 'atmux 0.6.0'", async () => {
+  test(`'version' → exit 0, prints 'atmux ${ATMUX_VERSION}'`, async () => {
     const { exit, stdout, stderr } = await captureMain(["version"]);
     expect(exit).toBe(0);
-    expect(stdout).toBe("atmux 0.6.0\n");
+    expect(stdout).toBe(`atmux ${ATMUX_VERSION}\n`);
     expect(stderr).toBe("");
   });
 
-  test("'--version' alias → exit 0, prints 'atmux 0.6.0' (bash parity)", async () => {
+  test(`'--version' alias → exit 0, prints 'atmux ${ATMUX_VERSION}' (bash parity)`, async () => {
     const { exit, stdout, stderr } = await captureMain(["--version"]);
     expect(exit).toBe(0);
-    expect(stdout).toBe("atmux 0.6.0\n");
+    expect(stdout).toBe(`atmux ${ATMUX_VERSION}\n`);
     expect(stderr).toBe("");
   });
 
-  test("'-V' alias → exit 0, prints 'atmux 0.6.0' (bash parity)", async () => {
+  test(`'-V' alias → exit 0, prints 'atmux ${ATMUX_VERSION}' (bash parity)`, async () => {
     const { exit, stdout, stderr } = await captureMain(["-V"]);
     expect(exit).toBe(0);
-    expect(stdout).toBe("atmux 0.6.0\n");
+    expect(stdout).toBe(`atmux ${ATMUX_VERSION}\n`);
     expect(stderr).toBe("");
   });
 });
@@ -288,6 +289,56 @@ describe("cli.main — attach verb dispatch", () => {
       if (SAVED_DIR === undefined) delete process.env.ATMUX_DIR;
       else process.env.ATMUX_DIR = SAVED_DIR;
     }
+  });
+});
+
+// ---------- Dispatch — team sub-verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/team-repair-rename.test.ts) ----------
+
+describe("cli.main — team sub-verb dispatch", () => {
+  test("'team' with no sub-verb → UsageError exit 64", async () => {
+    const { exit, stderr } = await captureMain(["team"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+    expect(stderr).toContain("subverb required");
+  });
+
+  test("'team unknown-sub' → UsageError exit 64 with hint", async () => {
+    const { exit, stderr } = await captureMain(["team", "nope"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+    expect(stderr).toContain("unknown subverb");
+  });
+
+  test("'team repair-rename' (no team arg) → UsageError from sub-verb parser", async () => {
+    const { exit, stderr } = await captureMain(["team", "repair-rename"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
+// ---------- Dispatch — member sub-verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/member.test.ts) ----------
+
+describe("cli.main — member sub-verb dispatch", () => {
+  test("'member' with no sub-verb → UsageError exit 64", async () => {
+    const { exit, stderr } = await captureMain(["member"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+    expect(stderr).toContain("subverb required");
+  });
+
+  test("'member unknown-sub' → UsageError exit 64 with hint", async () => {
+    const { exit, stderr } = await captureMain(["member", "nope"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+    expect(stderr).toContain("unknown subverb");
+  });
+
+  test("'member rename' (no member-id) → UsageError from sub-verb parser", async () => {
+    const { exit, stderr } = await captureMain(["member", "rename"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
   });
 });
 
@@ -574,7 +625,7 @@ describe("cli — bin/atmux-bun entrypoint integration", () => {
   // regressions (wrong argv slicing, exit-code dropping at process.exit).
   const REPO_ROOT = import.meta.dir.replace(/\/tests\/unit$/, "");
 
-  test("`bin/atmux-bun version` exits 0 + prints 'atmux 0.6.0'", async () => {
+  test(`\`bin/atmux-bun version\` exits 0 + prints 'atmux ${ATMUX_VERSION}'`, async () => {
     const proc = Bun.spawn({
       cmd: ["bun", "run", "bin/atmux-bun", "version"],
       cwd: REPO_ROOT,
@@ -587,7 +638,7 @@ describe("cli — bin/atmux-bun entrypoint integration", () => {
       proc.exited,
     ]);
     expect(exit).toBe(0);
-    expect(stdout).toBe("atmux 0.6.0\n");
+    expect(stdout).toBe(`atmux ${ATMUX_VERSION}\n`);
     expect(stderr).toBe("");
   });
 
@@ -606,5 +657,185 @@ describe("cli — bin/atmux-bun entrypoint integration", () => {
     expect(exit).toBe(64);
     expect(stdout).toBe("");
     expect(stderr).toBe("atmux: unknown verb: bogus\n  run 'atmux help' for the list of verbs\n");
+  });
+});
+
+// ---------- logVerbEvent — events-log envelope (t-91cd050f) ----------
+//
+// Direct coverage for the helper exported from cli.ts. The smoke tests
+// above exercise the happy path indirectly; these pin the edge branches:
+//   - skip on `--version` / `-V` / `--help` / `-h` (zero-noise aliases)
+//   - skip when atmuxDir does not exist (no team yet, first-run case)
+//   - happy path when team.json exists → event lands in
+//     <atmuxDir>/logs/<YYYY>/<MM>/events.jsonl with the right shape
+//   - team.json absent → event lands with team="" (schema-tolerant)
+
+describe("logVerbEvent — events-log envelope", () => {
+  let workDir: string;
+  let atmuxDir: string;
+  let savedEnvDir: string | undefined;
+  let savedTeamDir: string | undefined;
+
+  beforeEach(async () => {
+    const { mkdtemp, mkdir } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    workDir = await mkdtemp(join(tmpdir(), "atmux-cli-eventslog-"));
+    atmuxDir = join(workDir, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+    savedEnvDir = process.env.ATMUX_DIR;
+    savedTeamDir = process.env.ATMUX_TEAM_DIR;
+    process.env.ATMUX_DIR = atmuxDir;
+    delete process.env.ATMUX_TEAM_DIR;
+  });
+
+  afterEach(async () => {
+    const { rm } = await import("node:fs/promises");
+    await rm(workDir, { recursive: true, force: true });
+    if (savedEnvDir === undefined) delete process.env.ATMUX_DIR;
+    else process.env.ATMUX_DIR = savedEnvDir;
+    if (savedTeamDir === undefined) delete process.env.ATMUX_TEAM_DIR;
+    else process.env.ATMUX_TEAM_DIR = savedTeamDir;
+  });
+
+  test.each([
+    ["--version"],
+    ["-V"],
+    ["--help"],
+    ["-h"],
+  ])("skips event-log entirely for `%s` alias", async (verb) => {
+    const { logVerbEvent } = await import("../../src/cli.ts");
+    await logVerbEvent({
+      verb,
+      args: [],
+      startMs: Date.now() - 5,
+      exit: 0,
+      outcome: "ok",
+    });
+    // No events.jsonl created anywhere under <atmuxDir>/logs/
+    const { readdir } = await import("node:fs/promises");
+    const logsExists = await readdir(atmuxDir).then(
+      (d) => d.includes("logs"),
+      () => false,
+    );
+    expect(logsExists).toBe(false);
+  });
+
+  test("skips when atmuxDir does not exist (first-run, no team)", async () => {
+    // Point ATMUX_DIR at a path that does NOT exist on disk.
+    const { join } = await import("node:path");
+    process.env.ATMUX_DIR = join(workDir, "no-such-dir");
+    const { logVerbEvent } = await import("../../src/cli.ts");
+    await logVerbEvent({
+      verb: "status",
+      args: [],
+      startMs: Date.now() - 5,
+      exit: 0,
+      outcome: "ok",
+    });
+    // No files created at the bogus path.
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(process.env.ATMUX_DIR ?? "")).toBe(false);
+  });
+
+  test("happy path — writes event with team name from team.json", async () => {
+    const { writeFile, readFile, readdir } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "acme", members: [] }));
+    const { logVerbEvent } = await import("../../src/cli.ts");
+    await logVerbEvent({
+      verb: "dispatch",
+      args: ["alpha", "t-123"],
+      startMs: Date.now() - 25,
+      exit: 0,
+      outcome: "ok",
+    });
+    // Find the monthly events.jsonl file under logs/<YYYY>/<MM>/.
+    const logsRoot = join(atmuxDir, "logs");
+    const years = await readdir(logsRoot);
+    expect(years.length).toBe(1);
+    const year = years[0] ?? "";
+    const months = await readdir(join(logsRoot, year));
+    expect(months.length).toBe(1);
+    const eventsPath = join(logsRoot, year, months[0] ?? "", "events.jsonl");
+    const body = await readFile(eventsPath, "utf8");
+    const parsed = JSON.parse(body.trim());
+    expect(parsed.verb).toBe("dispatch");
+    expect(parsed.args).toEqual(["alpha", "t-123"]);
+    expect(parsed.outcome).toBe("ok");
+    expect(parsed.exit).toBe(0);
+    expect(parsed.team).toBe("acme");
+    expect(typeof parsed.ts).toBe("number");
+    expect(typeof parsed.duration_ms).toBe("number");
+    expect(parsed.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  test("team.json absent → event still logs with team=''", async () => {
+    // atmuxDir exists (beforeEach mkdir) but no team.json inside it.
+    const { logVerbEvent } = await import("../../src/cli.ts");
+    await logVerbEvent({
+      verb: "init",
+      args: ["--name", "alpha"],
+      startMs: Date.now() - 5,
+      exit: 0,
+      outcome: "ok",
+    });
+    const { readdir, readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const logsRoot = join(atmuxDir, "logs");
+    const years = await readdir(logsRoot);
+    const year = years[0] ?? "";
+    const months = await readdir(join(logsRoot, year));
+    const body = await readFile(join(logsRoot, year, months[0] ?? "", "events.jsonl"), "utf8");
+    const parsed = JSON.parse(body.trim());
+    expect(parsed.team).toBe("");
+    expect(parsed.verb).toBe("init");
+  });
+
+  test("malformed team.json → event still logs with team='' (catch path)", async () => {
+    const { writeFile, readdir, readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    // team.json present but unparseable as Team schema — tryLoadTeam
+    // throws SchemaError; the helper's catch branch handles it + falls
+    // through with team="" rather than blowing up the events log.
+    await writeFile(join(atmuxDir, "team.json"), "{ broken json [");
+    const { logVerbEvent } = await import("../../src/cli.ts");
+    await logVerbEvent({
+      verb: "doctor",
+      args: [],
+      startMs: Date.now() - 1,
+      exit: 0,
+      outcome: "ok",
+    });
+    const logsRoot = join(atmuxDir, "logs");
+    const years = await readdir(logsRoot);
+    const year = years[0] ?? "";
+    const months = await readdir(join(logsRoot, year));
+    const body = await readFile(join(logsRoot, year, months[0] ?? "", "events.jsonl"), "utf8");
+    const parsed = JSON.parse(body.trim());
+    expect(parsed.team).toBe("");
+    expect(parsed.verb).toBe("doctor");
+  });
+
+  test("non-zero exit (no throw) → outcome='warn'", async () => {
+    const { writeFile, readdir, readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "acme", members: [] }));
+    const { logVerbEvent } = await import("../../src/cli.ts");
+    await logVerbEvent({
+      verb: "task",
+      args: ["nope"],
+      startMs: Date.now() - 5,
+      exit: 64,
+      outcome: "warn",
+    });
+    const logsRoot = join(atmuxDir, "logs");
+    const years = await readdir(logsRoot);
+    const year = years[0] ?? "";
+    const months = await readdir(join(logsRoot, year));
+    const body = await readFile(join(logsRoot, year, months[0] ?? "", "events.jsonl"), "utf8");
+    const parsed = JSON.parse(body.trim());
+    expect(parsed.outcome).toBe("warn");
+    expect(parsed.exit).toBe(64);
   });
 });

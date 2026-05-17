@@ -54,9 +54,9 @@ function firstGrapheme(s: string): string {
  * raw token at the start of the template literal — we then take its
  * first grapheme to pick the emoji.
  *
- * Why multi-line — `whip.ts:1280` wraps `bullet80(` and the backtick
- * onto separate lines (long bullet body); a single-line regex misses
- * those calls.
+ * Why multi-line — `poke.ts` (formerly `whip.ts` pre-ADR-160 TR2)
+ * wraps `bullet80(` and the backtick onto separate lines (long
+ * bullet body); a single-line regex misses those calls.
  */
 const BULLET80_EMOJI_RE = /bullet80\s*\(\s*`([^\s`]+)/g;
 
@@ -111,11 +111,12 @@ describe("bullet80(`<emoji>` audit — every emitted emoji is allowlisted", () =
 
   test("audit covers known callers (regression coverage anchor)", async () => {
     // Sanity: confirm the audit walks at least the named files from the
-    // dispatch (whip, discorder). If the walker breaks, this catches it
+    // dispatch (poke, discorder). If the walker breaks, this catches it
     // before a silent zero-violation pass masks the regression.
+    // `poke.ts` was `whip.ts` pre-ADR-160 TR2 (refactor: whip→poke rename).
     const files = await walkTsFiles(SRC_ROOT);
     const names = files.map((f) => f.split("/").pop());
-    expect(names).toContain("whip.ts");
+    expect(names).toContain("poke.ts");
     expect(names).toContain("discorder.ts");
     expect(names).toContain("discord.ts");
   });
@@ -147,9 +148,10 @@ describe("synthetic regression — audit MUST detect a bad emoji", () => {
     expect(violations[0]?.emoji).toBe("💎");
   });
 
-  test("multi-line bullet80 call (whip.ts pattern) is captured by the audit", () => {
-    // Mirrors src/verbs/whip.ts:1280–1282 where `bullet80(` and the
-    // backtick are on separate lines for long-bullet readability.
+  test("multi-line bullet80 call (poke.ts pattern) is captured by the audit", () => {
+    // Mirrors src/verbs/poke.ts (formerly whip.ts pre-ADR-160 TR2) where
+    // `bullet80(` and the backtick are on separate lines for long-bullet
+    // readability.
     const fixture = `
       findings.push({
         bullet: bullet80(

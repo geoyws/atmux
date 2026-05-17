@@ -45,6 +45,7 @@ import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import { done as doneVerb } from "../../src/verbs/claim.ts";
 import { dispatch as dispatchVerb } from "../../src/verbs/dispatch.ts";
+import { poke as whipVerb } from "../../src/verbs/poke.ts";
 import { report as reportVerb } from "../../src/verbs/report.ts";
 import { send as sendVerb } from "../../src/verbs/send.ts";
 import { start as startVerb } from "../../src/verbs/start.ts";
@@ -52,7 +53,6 @@ import { status as statusVerb } from "../../src/verbs/status.ts";
 import { stop as stopVerb } from "../../src/verbs/stop.ts";
 import { task as taskVerb } from "../../src/verbs/task.ts";
 import { tellLead as tellLeadVerb } from "../../src/verbs/tell-lead.ts";
-import { whip as whipVerb } from "../../src/verbs/whip.ts";
 
 // Beat 8's bare `stop` (no --force) sends C-c + sleeps 2s before
 // archive/kill. Bun's 5s default trips on machines under load — give the
@@ -135,11 +135,17 @@ beforeAll(async () => {
 
   // Pin envs so verbs resolve to OUR atmux dir + don't think they're
   // already inside tmux (which would short-circuit attach paths).
-  for (const k of ["ATMUX_DIR", "ATMUX_TEAM_DIR", "ATMUX_SESSION", "TMUX"]) {
+  // t-e1247699: ATMUX_NO_CRON=1 pinned alongside the resolve envs — start()
+  // auto-installs cron (start.ts §11), and `afterAll`'s rm-rf only reaps
+  // the on-disk fixture, leaving 4 cron lines per run pointing at the now-
+  // deleted /tmp/atmux-lifecycle-XXXXXX/. Mirrors stop.test.ts:35-36 +
+  // tests/helpers/setup.bash:47 (bash sandbox parity).
+  for (const k of ["ATMUX_DIR", "ATMUX_TEAM_DIR", "ATMUX_SESSION", "TMUX", "ATMUX_NO_CRON"]) {
     priorEnv[k] = process.env[k];
   }
   process.env.ATMUX_DIR = atmuxDir;
   process.env.ATMUX_TEAM_DIR = teamDir;
+  process.env.ATMUX_NO_CRON = "1";
   delete process.env.ATMUX_SESSION;
   delete process.env.TMUX;
 

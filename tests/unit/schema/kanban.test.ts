@@ -263,6 +263,24 @@ describe("KanbanStory", () => {
     const parsed = KanbanStory.parse(withExtra) as unknown as { futureField: boolean };
     expect(parsed.futureField).toBe(true);
   });
+
+  test("ADR-146 §D4: branch field round-trips", () => {
+    const story = KanbanStory.parse({
+      id: "s-aaaaa111",
+      branch: "geoyws-whip-impl",
+    });
+    expect(story.branch).toBe("geoyws-whip-impl");
+  });
+
+  test("ADR-146 §D4: branch accepts null (Story not yet backfilled)", () => {
+    const story = KanbanStory.parse({ id: "s-aaaaa222", branch: null });
+    expect(story.branch).toBeNull();
+  });
+
+  test("ADR-146 §D4: branch is optional (existing Stories pre-backfill)", () => {
+    const story = KanbanStory.parse({ id: "s-aaaaa333" });
+    expect(story.branch).toBeUndefined();
+  });
 });
 
 // ---------- KanbanLane (write-side enum) ----------
@@ -357,5 +375,103 @@ describe("realistic kanban.json (parity-style integration)", () => {
     // Both tasks parsed: one done with note, one fresh todo with nulls.
     expect(parsed.tasks[0]?.status).toBe("done");
     expect(parsed.tasks[1]?.owner).toBeNull();
+  });
+});
+
+// ---------- ADR-090 §Schema additions ----------
+
+describe("KanbanTask.role — ADR-090 §Decision-anchor #1", () => {
+  test("reviewer-trunk-signoff marker parses on a Task", () => {
+    const t = KanbanTask.parse({
+      id: "t-abcd0001",
+      subject: "trunk signoff: checkout-flow epic",
+      role: "reviewer-trunk-signoff",
+      status: "done",
+    });
+    expect(t.role).toBe("reviewer-trunk-signoff");
+  });
+
+  test("role accepts arbitrary strings (forward-compat for future markers)", () => {
+    // §Decision-anchor #1 reserves `reviewer-trunk-signoff` as the v1
+    // marker. Schema-permissive z.string() so future role-markers land
+    // without schema churn.
+    const t = KanbanTask.parse({
+      id: "t-abcd0002",
+      role: "epic-ship-gate",
+    });
+    expect(t.role).toBe("epic-ship-gate");
+  });
+
+  test("role is nullable + optional (legacy Tasks pre-ADR-090)", () => {
+    // Legacy Tasks (no role field) AND nullable-explicit (role:null) both
+    // parse — ADR-091's state-machine treats absent + null identically
+    // (neither matches the reviewer-trunk-signoff predicate).
+    const tLegacy = KanbanTask.parse({ id: "t-abcd0003" });
+    expect(tLegacy.role).toBeUndefined();
+    const tNull = KanbanTask.parse({ id: "t-abcd0004", role: null });
+    expect(tNull.role).toBeNull();
+  });
+});
+
+describe("KanbanEpic — ADR-090 §Schema additions (epicTeamName/Root/prNumber/prState/note)", () => {
+  test("epic-team-attached Epic carries epicTeamName + epicTeamRoot", () => {
+    const e = KanbanEpic.parse({
+      id: "e-1a2b3c4d",
+      title: "Checkout flow rewrite",
+      status: "in-progress",
+      epicTeamName: "checkout-flow",
+      epicTeamRoot: "/root/work/ifca/src/sopx-epics/checkout-flow",
+    });
+    expect(e.epicTeamName).toBe("checkout-flow");
+    expect(e.epicTeamRoot).toBe("/root/work/ifca/src/sopx-epics/checkout-flow");
+  });
+
+  test("legacy / shared-team Epic (no epicTeam attached) parses with the new fields null/absent", () => {
+    const eLegacy = KanbanEpic.parse({ id: "e-legacy01", status: "in-progress" });
+    expect(eLegacy.epicTeamName).toBeUndefined();
+    expect(eLegacy.epicTeamRoot).toBeUndefined();
+
+    const eNull = KanbanEpic.parse({
+      id: "e-legacy02",
+      epicTeamName: null,
+      epicTeamRoot: null,
+    });
+    expect(eNull.epicTeamName).toBeNull();
+    expect(eNull.epicTeamRoot).toBeNull();
+  });
+
+  test("forward-ref pr-mode fields parse (deferred runtime)", () => {
+    // §Decision-anchor #6: schema-accept-runtime-noop. Tests pin the
+    // schema shape so ADR-091's pr-mode runtime can land without
+    // changing the schema.
+    const e = KanbanEpic.parse({
+      id: "e-pr0001",
+      epicTeamName: "checkout-flow",
+      epicTeamRoot: "/p",
+      prNumber: 1234,
+      prState: "open",
+    });
+    expect(e.prNumber).toBe(1234);
+    expect(e.prState).toBe("open");
+  });
+
+  test("note field captures merge-state annotations (e.g. conflict at <SHA>)", () => {
+    const e = KanbanEpic.parse({
+      id: "e-conflict01",
+      epicTeamName: "checkout-flow",
+      epicTeamRoot: "/p",
+      note: "conflict at 12345abc",
+    });
+    expect(e.note).toBe("conflict at 12345abc");
+  });
+
+  test("KanbanEpic.passthrough() preserves forward-compat with unknown keys", () => {
+    // Pin the .passthrough() posture — adding a new bash-side field
+    // must NOT break the TS parser before TS catches up.
+    const e = KanbanEpic.parse({
+      id: "e-future01",
+      futureField: "should-passthrough",
+    });
+    expect((e as unknown as Record<string, unknown>).futureField).toBe("should-passthrough");
   });
 });

@@ -29,10 +29,10 @@ import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   getAtmuxDir,
-  getDefaultSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import {
   aggregateHeartbeat,
@@ -331,7 +331,7 @@ async function runHeartbeat(
   if (team === null) return 0;
 
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const tmux = opts.tmux ?? createTmux({ socketPath: getDefaultSocket(team.name) });
+  const tmux = opts.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
 
   const snap = await aggregateHeartbeat(team, atmuxDir, sessionName, tmux, {
     ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),

@@ -10,7 +10,7 @@
 >
 > **State storage (atmux-bun, post-merge 2026-05-08).** Kanban + inboxes +
 > per-feature state moved to **`.atmux/state.db`** (SQLite, WAL) per
-> [ADR-060](adr-bun/060-sqlite-state-store.md). References to `kanban.json`
+> [ADR-060](adr/126-sqlite-state-store.md). References to `kanban.json`
 > below describe the legacy JSON path; the bun port is dual-path with
 > `state.db` as source of truth when present.
 
@@ -42,8 +42,10 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    TUI, present or future.
 2. **State lives on disk in JSON / markdown.** `.atmux/` is greppable,
    diffable, survives tmux restart, replays on `atmux start`.
-3. **No daemon.** Every verb is idempotent. `whip` (5min) and `report`
-   (30min) run on cron; nothing long-lived.
+3. **No daemon.** Every verb is idempotent. `whip` (15min default per
+   `team.whip.intervalMins`, bumped from 5min in t-dcbff97c to dial back
+   the per-tick LLM burn now that the sentinel path covers high-cadence
+   nudging — ADR-132) and `report` (30min) run on cron; nothing long-lived.
 
 ### 1.3 Why now
 
@@ -51,7 +53,7 @@ The multi-TUI agent ecosystem has crossed the threshold where parallel,
 mixed-capability worker fleets beat any single-model approach for
 throughput-per-dollar:
 
-- Claude Opus 4.7 anchors the staff (lead / planner / reviewer / gitter
+- Claude Opus 4.7 anchors the staff (lead / planner / reviewer / committer
   / devops / dba) — reasoning + judgment + ADR authorship.
 - Cursor Composer 2 + OpenCode (MiniMax) + Kimi handle parallel worker
   lanes at a fraction of Opus tokens per output line of code.
@@ -120,9 +122,9 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 |----------------------|---------------------------------------------------------------------------|
 | Lifecycle            | `up` / `init` / `start` / `stop` / `attach` / `status`                    |
 | Messaging            | `send` / `broadcast` / `tell-lead` / `reply` / `outbox`                   |
-| Task board           | `task add/list/show/move/assign/rm`                                       |
+| Task board           | `task add/list/show/move/assign/lane/priority/update/rm`                  |
 | Pull kanban          | `epic` / `story` / `claim` / `done` / `dispatch` / `inbox`                |
-| Cron-fired           | `whip` / `report` / `decisions digest` / `groom` / `whip-resume-check` (1-min, ADR-053 §D4) |
+| Cron-fired           | `whip` / `report` / `decisions digest` / `groom` / `whip-resume-check` (1-min, ADR-053 §D4) / `watchdog` (2-min, ADR-057 §D6b) / `pulse` (5-min, cockpit-wide, ADR-086) / `check-lead-rotate` (5-min, cockpit-wide, ADR-143) |
 | Eternal-improvement  | `improve` (Mode A user-invoked / Mode B idle-fallback) — ADR-052          |
 | R1 wave (budget + self-heal) | `whip-resume-check` (ADR-053) — auto-resume; budget-pause + drift surfaced via `whip` (ADR-053/054); cursor self-heal opt-in via `team.json::whip.selfHealEnabled` (ADR-055); account-swap opt-in via `team.json::whip.accountFallback` (ADR-056) |
 | Cost + budget        | `cost` / `pause` / `resume`                                               |
@@ -130,6 +132,50 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Decisions / flags    | `decisions add/list/show/digest` / `flags add/list/show/resolve`          |
 | Driver self-state    | `brief-driver` / `driver note` / `reload brief-reload` / `reload config-reload` |
 | Superdriver          | `super-attach` (cross-team / fleet — ADR-025 in parent repo)              |
+| Cockpit              | `cockpit rebuild / reload` (ADR-063), `sentinel tick / status` (ADR-132; renamed from `martinet` per ADR-158) |
+
+#### Cockpit topology (ADR-063 + ADR-077 + ADR-132 + ADR-133 + ADR-135 + ADR-158)
+
+The operator cockpit session (`atmux_cockpit` by default, was
+`atmux_teams` pre-ADR-135) carries the following window order — opt-in
+surfaces (`_medic`, `_sentinel`) are gated by `cockpit.json` blocks,
+per-team viewers shift down by the number of opt-in surfaces enabled.
+Cockpit-level system roles carry a single-underscore prefix (sorts
+before plain team names in `tmux list-windows`); per-team viewers stay
+plain. Member windows inside team cages use `<emoji>-<member>`
+(hyphen-separated, ADR-135 §D3).
+
+| # | Window | Role | Authorizing ADR |
+|---|--------|------|-----------------|
+| 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
+| 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
+| 3 | `_sentinel` (was `_martinet` / `martinet`) | Pluggable per-team whip-manager + fleet-wide iterator | ADR-132 §D2 + ADR-135 §D2 + ADR-158 §Part C |
+| 4..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
+
+Backward-compat: a cockpit.json without `medic` / `sentinel` blocks
+retains the pre-ADR-077 / pre-ADR-132 topology (W1 _superdriver +
+W2..N per-team viewers). Loader migrates legacy `superdoctor` keys
+to medic semantics with a deprecation warning per ADR-133 §D2.
+Loader also migrates legacy `martinet` keys to `sentinel` semantics
+with a deprecation warning per ADR-158 §Part B (one-release grace).
+Cockpit rebuild detects legacy `atmux_teams` session + legacy
+non-underscored cockpit-role windows and renames them in-place
+(idempotent) per ADR-135 §D4 — including `_martinet` → `_sentinel`
+per ADR-158 §Part C. Member windows in legacy
+`<emoji><member>` format get the same in-place rename treatment on
+next `atmux start`.
+
+**ADR-132 §D6 (T5)** — `team.json::sentinel` (was `martinet` pre-ADR-158)
+selects which pluggable cockpit-W3 whip-manager (`"claude"` degenerate
+baseline / `"cursor"` composer-2-fast production default) observes +
+nudges this team. Resolution: `team.sentinel` > `cockpit.defaultSentinel`
+> hardcoded `"claude"`. Existing rosters without the field keep the
+per-team whip codepath unchanged. Companion `team.sentinelOverrides`
+tunes `cadenceSec` (default 270s) and `escalationConfidenceThreshold`
+(default 0.7). Cockpit-level provisioning lives in `cockpit.json::
+sentinel` — see ADR-132 §D6 for the W3 cage / `cursor-agent` path /
+cage-tier shape. Legacy `martinet` / `defaultMartinet` / `martinetOverrides`
+keys still parse during the ADR-158 grace cycle with a deprecation warn.
 
 ### 3.2 TUI matrix
 
@@ -150,19 +196,24 @@ Custom launch commands via `team.json:.tuiCommands` map per `README.md`
 ```
 .atmux/
 ├── team.json                  # source of truth (members, roles, TUIs, models)
-├── kanban.json                # shared task board (pull-kanban — ADR-007 in parent repo)
-├── driver-inbox.md            # driver → lead asks (markdown, greppable)
-├── lead-outbox.md             # lead → driver async replies
+├── state.db                   # SQLite canonical store (ADR-060 + ADR-076):
+│                              #   tasks (Epics + Stories + Tasks), inbox_messages
+│                              #   (per-member), complaints, handoff state.
+├── kanban.json                # legacy deprecation stub on post-cutover teams;
+│                              #   pre-cutover teams still read here.
+├── driver-inbox.md            # legacy stub; use `atmux tell-lead`
+├── lead-outbox.md             # lead/member → driver async replies
 ├── lead-queue.md              # lead's mid-turn deferrals
-├── decisions.json             # pending decisions cursor (ADR-008 in parent repo)
+├── decisions.md               # auto-mode resolutions (markdown, append-only)
 ├── flags.md                   # operator escalations
-├── inboxes/<member>.json      # {pending, inProgress, done}
+├── inboxes/<member>.json      # legacy — writes no-op on SQL-canonical teams
 ├── logs/                      # send-<member>.log / whip.log / report.log / etc
 ├── state/
 │   ├── session.txt            # captured at `atmux start` (ADR-026 single-session default)
 │   ├── session-start.txt      # epoch seconds (whip's lead-uptime source)
 │   ├── last-report.epoch      # last `atmux report` fire
-│   └── budget-pause.json      # per ADR-049 (when paused)
+│   ├── budget-pause.json      # per ADR-049 (when paused)
+│   └── cron-rename-migration.log  # ADR-133 TR6: append-only audit of `atmux superdoctor` → `atmux medic` cron-line rewrites (no-op on installs with no legacy lines)
 ├── archive/<timestamp>/       # created on atmux stop
 └── sockets/                   # ADR-032 socket-pubsub (parent repo) when enabled
 ```
@@ -194,7 +245,7 @@ Per `PLAN.md` §2 "Scope (frozen at the worktree's checked-in `lib/**`)":
   socat / nc / ss / lsof / pgrep / pkill / setsid / nohup / gh / wget.
 - **6 ADRs** (parent repo `docs/adr/001`–`006`); 50 ADRs total in parent
   including the WIP-bash decisions; 32 ADRs in worktree-local
-  `docs/adr-bun/` for the Bun port.
+  `docs/adr/` for the Bun port.
 
 ### 4.2 In-flight WIP (not yet at HEAD; Phase 5 catch-up scope)
 
@@ -239,11 +290,11 @@ gates all:
 
 | Lane | Owner | Scope ADR (worktree-local) | Verbs / scenarios |
 |------|-------|---------------------------|-------------------|
-| Cron-fired | parity-cron-impl | `docs/adr-bun/028` | `whip` / `report` / `decisions digest` / `groom` × prod-team state shapes |
-| State-mutating | parity-state-impl | `docs/adr-bun/029` | `dispatch` / `inbox-update` / `done` / `claim` / `reply` / `tell-lead` / `handoff` (× INSERT/UPDATE/DELETE classes) |
-| Read-only | parity-read-impl | `docs/adr-bun/030` | `status` / `doctor` / `dashboard` / `inbox-read` / `cost` |
-| Lifecycle | up-impl | `docs/adr-bun/031` | `up` / `start` / `stop` / `pause` / `resume` / `attach` / `rotate` / `reconfigure` |
-| Error-class | whip-impl | `docs/adr-bun/032` | Extends ADR-027 masks across all error paths |
+| Cron-fired | parity-cron-impl | `docs/adr/121` | `whip` / `report` / `decisions digest` / `groom` × prod-team state shapes |
+| State-mutating | parity-state-impl | `docs/adr/122` | `dispatch` / `inbox-update` / `done` / `claim` / `reply` / `tell-lead` / `handoff` (× INSERT/UPDATE/DELETE classes) |
+| Read-only | parity-read-impl | `docs/adr/123` | `status` / `doctor` / `dashboard` / `inbox-read` / `cost` |
+| Lifecycle | up-impl | `docs/adr/124` | `up` / `start` / `stop` / `pause` / `resume` / `attach` / `rotate` / `reconfigure` |
+| Error-class | whip-impl | `docs/adr/125` | Extends ADR-027 masks across all error paths |
 
 PLAN.md §14 acceptance: zero divergence on stdout / exit / state /
 discord webhook calls. Functional gate, not row-count. Lanes optimize
@@ -294,7 +345,7 @@ porter; not docs-lane.
 
 ## 6. Multi-tier resilience contracts
 
-### 6.1 LLM judge cascade (ADR-023, worktree-local)
+### 6.1 LLM judge cascade (ADR-116, worktree-local)
 
 Sonnet → Haiku → deterministic fallback. Resilience contract for the
 SOFT classifier (whip's rate-limit triage) and future judge call sites
@@ -335,9 +386,10 @@ detail (lib edits in main checkout's `atmux-geoyws` branch).
 | Team-lead   | 1                    | claude        | Routes asks + dispatches; never plans itself |
 | Planner     | 2                    | claude        | Decomposes asks into kanban tasks + writes ADRs |
 | Reviewer    | 3                    | claude        | Reviews diffs, approves commits |
-| Gitter      | 4                    | claude        | Only member allowed to commit + push |
+| Committer      | 4                    | claude        | **Two modes (auto-detected from `team.json`)**: (a) **single-trunk mode** when `worktreeIsolation: false` OR `autoMerge.enabled: false` — only member allowed to commit + push (per pull-model brief); (b) **auto-merge mode** when `worktreeIsolation: true` AND `autoMerge.enabled: true` per [ADR-134](adr/134-in-team-auto-merger.md) — watches `<base>-<member>` branches, auto-merges to base on task-done events via socket-pubsub + 10min cron backstop (`atmux cron-install --template committer-sweep` per ADR-134 T7), runs the 9-state machine (`open → in_progress → ready_to_merge → rebasing? → merging → tested → merged|test_failed → reverted`) with BEGIN IMMEDIATE transactions, 3-way conflict surface (state.db → atmux flag → Discord `[merge-conflict]`), and post-merge test gate via `team.json::autoMerge.testCommand` (default `bun test`). Workers self-commit on their own branches in auto-merge mode; committer owns only the merge layer. |
 | Devops      | 5                    | claude        | Deploys, env, CI/CD, infra |
 | Dba         | 6                    | claude (opt)  | Schema + migrations + data integrity |
+| Ombudsman   | (event-driven)       | claude (opt)  | Per-team complaint adjudicator per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D1. Reads open complaints, triages → epic / wontfix / resolved / defer, appends day-file entry under `docs/release-notes/<Y>/<M>/<Y-M-D>.md`. **Event-driven** (sentinel `.atmux/state/ombudsman-pending.json` + 15min cron tick); NOT in whip cadence (ADR-147 §D2). |
 | Members     | 7+                   | any           | Parallel throughput per feature lane |
 
 Driver ↔ lead routing: file-based (`~/.claude/teams/<team>/driver-inbox.md`)
@@ -393,20 +445,20 @@ Narrowed denominator: domain verb handlers, abstraction modules
 validators, error helpers. Excluded: generated types, fixture data,
 barrel re-exports, CLI dispatcher boilerplate (e2e covers).
 
-### 8.3 Parity harness (ADR-026 / 027, worktree-local)
+### 8.3 Parity harness (ADR-119 / 027, worktree-local)
 
 Per verb: bash + TS run against identical fixture state; semantic diff
 on stdout / exit / `.atmux/` state / Discord webhook calls.
-Channel-mask config (ADR-027) handles stylistic divergence
+Channel-mask config (ADR-120) handles stylistic divergence
 (error-rendering, state-after non-determinism); semantic divergence
 gated.
 
 Phase 3 lane scope ADRs:
-- `docs/adr-bun/028` — cron-fired (whip / report / decisions-digest / groom)
-- `docs/adr-bun/029` — state-mutating (dispatch / inbox-update / done / claim / reply / tell-lead / handoff)
-- `docs/adr-bun/030` — read-only (status / doctor / dashboard / inbox-read / cost)
-- `docs/adr-bun/031` — lifecycle (up / start / stop / pause / resume / attach / rotate / reconfigure)
-- `docs/adr-bun/032` — error-class expansion across all verbs
+- `docs/adr/121` — cron-fired (whip / report / decisions-digest / groom)
+- `docs/adr/122` — state-mutating (dispatch / inbox-update / done / claim / reply / tell-lead / handoff)
+- `docs/adr/123` — read-only (status / doctor / dashboard / inbox-read / cost)
+- `docs/adr/124` — lifecycle (up / start / stop / pause / resume / attach / rotate / reconfigure)
+- `docs/adr/125` — error-class expansion across all verbs
 
 ### 8.4 Stateful e2e specs (CLAUDE.md test discipline)
 
@@ -492,17 +544,17 @@ Critical ADRs with active behavior:
 - **ADR-048** — Bare window names (live in atmux-bun + ifca_aux).
 - **ADR-049** — Claude Max budget watcher (with 2026-05-06 LIVE ADDENDUM).
 
-### Worktree-local atmux-bun (`docs/adr-bun/`, 001–032)
+### Worktree-local atmux-bun (`docs/adr/`, 001–032)
 
-- **ADR-001** — Why TypeScript on Bun (vs Go, Zig, staying in bash).
-- **ADR-022** — `whip` verb (V-25) port scope — in-scope subset + deferred bash-only checks.
-- **ADR-026** — Parity matrix iter-1 scope.
-- **ADR-027** — Parity channel-mask contract.
-- **ADR-028** — Phase 4a parity cron-fired lane scope (refs ADR-026, ADR-027). **F2-corrected 2026-05-06: bash `groom` + `decisions digest` exist; only TS port absent.**
-- **ADR-029** — Phase 3 state-mutating lane scope.
-- **ADR-030** — Phase 3 read-only lane scope.
-- **ADR-031** — Phase 3 lifecycle lane scope.
-- **ADR-032** — (worktree-local — distinct from parent ADR-032) error-class lane scope.
+- **ADR-095** — Why TypeScript on Bun (vs Go, Zig, staying in bash).
+- **ADR-115** — `whip` verb (V-25) port scope — in-scope subset + deferred bash-only checks.
+- **ADR-119** — Parity matrix iter-1 scope.
+- **ADR-120** — Parity channel-mask contract.
+- **ADR-121** — Phase 4a parity cron-fired lane scope (refs ADR-119, ADR-120). **F2-corrected 2026-05-06: bash `groom` + `decisions digest` exist; only TS port absent.**
+- **ADR-122** — Phase 3 state-mutating lane scope.
+- **ADR-123** — Phase 3 read-only lane scope.
+- **ADR-124** — Phase 3 lifecycle lane scope.
+- **ADR-125** — (worktree-local — distinct from parent ADR-125) error-class lane scope.
 - **ADR-052** — Eternal-improvement (kanban-empty fallback to autonomous self-improvement loop). Status: proposed; gated on OQ-1 / OQ-2 / reviewer signoff. T1–T7 landed (T8 e2e + T9 cross-cage announcement blocked).
 - **ADR-053** — Budget observability (probe port + Fix C OAuth refresh + warning bands + refresh-soon + `whip-resume-check` 1-min cron + history.jsonl). R1-T1/T5/T6/T7 landed (`ffad610` / `65c16f3` / `65bdcda` / `09b8091` / `df3a08c` / `8160d71` / `f9ad15b` / `9c50354`).
 - **ADR-054** — Zod whip-config (TeamWhip schema + per-tick drift detection + `[whip-config-drift]` ping). R1-T3/T4 landed (`4e93746` / `9751f7a`).
@@ -513,6 +565,7 @@ Critical ADRs with active behavior:
 
 - **ADR-050** — Multi-tier fallback chain (per kanban `t-706655ee`).
 - **ADR-057** — Stall-prevention (R1-T13 follow-up; v1.1.x territory per planner intent).
+- **ADR-086** — `atmux pulse` (cockpit-wide deterministic verdict probe, Phase 1 of MiniMax observer). New cron-fired verb; ships verdict-first Discord template `pulse-verdict` + per-cockpit dedup state at `~/.atmux/state/pulse-state.json`. Phase 2 layers an LLM observer onto the same input bundle.
 
 ---
 

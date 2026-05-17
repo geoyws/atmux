@@ -22,12 +22,14 @@
 //               [--decisions-days N]  # default 30
 //               [--keep-bak N]        # default 5
 
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ensureDir } from "../abstractions/fs.ts";
 import { acquireWithTTL } from "../abstractions/lock.ts";
-import { getAtmuxDir, stateDir } from "../core/common.ts";
+import { getAtmuxDir, stateDir, tryLoadTeam } from "../core/common.ts";
 import {
+  type AgeInboxResult,
   type ArchiveSizeWarning,
+  ageInboxOpenToArchive,
   archiveDecisions,
   archiveSizeCheck,
   type BakCullResult,
@@ -37,21 +39,50 @@ import {
   type InboxOutboxFlushResult,
   type KanbanSummarizeResult,
   summarizeKanban,
+  sweepZombieTmuxSockets,
+  type ZombieSweepResult,
 } from "../core/groom.ts";
+import { type GroomArchiveResult, groomArchive } from "../core/groom-archive.ts";
+import { type ReconcileResult, reconcileKanbanVsGit } from "../core/groom-reconcile.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { DEFAULT_CLAIMED_AT_THRESHOLD_MIN } from "../core/lane-drift.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { LockError, LockTimeoutError, UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
+import { type LaneDriftCheckResult, runLaneDriftCheck } from "./lane-drift-check.ts";
 
 // ---------- Args ----------
 
 export interface ParsedGroomArgs {
   dryRun: boolean;
   quiet: boolean;
-  /** Reserved per bash flag set; not yet consumed by any sub-op. */
+  /** Days threshold for per-entry inbox aging (driver-inbox.md /
+   *  lead-outbox.md `## Open` → `## Archive`). Default 7. Entries
+   *  with parseable timestamps older than `now - inboxDays*86400s`
+   *  migrate; unparseable-timestamp entries stay (conservative).
+   *  `--inbox-days 0` OR `--aggressive` overrides both rules and
+   *  ages every entry in `## Open` regardless. */
   inboxDays: number;
+  /** When true (or when `inboxDays === 0`), the inbox-aging sub-op
+   *  ages EVERY entry in `## Open` regardless of timestamp shape.
+   *  One-shot historical-bloat clear (per t-82b6aed9 §Scope 4 —
+   *  sopx 10668-line outbox). */
+  aggressive: boolean;
   kanbanDays: number;
   decisionsDays: number;
   keepBak: number;
+  /** t-8287b37d C1: when set, also archive state.db rows (tasks +
+   *  inbox_messages) older than `kanbanDays` into sibling archive.db. */
+  archive: boolean;
+  /** t-dc830eb0: when true, skip the kanban-vs-git reconcile sub-op.
+   *  Default false (sub-op runs every groom). Off-switch for projects
+   *  that don't follow the "commit msg references Task ID" convention,
+   *  or for one-off groom invocations during a partial-history bisect. */
+  noReconcile: boolean;
+  /** t-0027eec3 (c-4698c603 arm b): when set, also sweep stale
+   *  fixture tmux sockets in `os.tmpdir()`. Opt-in (default OFF) for
+   *  v1 — cron path skips unless operator explicitly enables. */
+  zombieSweep: boolean;
   /** When true, the verb returns 0 immediately after arg parse. Bash
    *  emits help via `_groom_usage` then `return 0`. */
   showHelp: boolean;
@@ -68,6 +99,10 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
   let dryRun = false;
   let quiet = false;
   let showHelp = false;
+  let archive = false;
+  let aggressive = false;
+  let noReconcile = false;
+  let zombieSweep = false;
   let inboxDays = DEFAULTS.inboxDays;
   let kanbanDays = DEFAULTS.kanbanDays;
   let decisionsDays = DEFAULTS.decisionsDays;
@@ -83,6 +118,33 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     }
     if (a === "--quiet") {
       quiet = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--archive") {
+      archive = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--aggressive") {
+      // Synonym for `--inbox-days 0`. Per t-82b6aed9 §Scope 4 — one-shot
+      // historical-bloat clear that moves every `## Open` entry to
+      // `## Archive` regardless of timestamp parseability.
+      aggressive = true;
+      inboxDays = 0;
+      i += 1;
+      continue;
+    }
+    if (a === "--no-reconcile") {
+      // t-dc830eb0 sub-op opt-out — for projects that don't follow the
+      // "commit msg references Task ID" convention, or for a one-off
+      // groom invocation during a partial-history bisect.
+      noReconcile = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--zombie-sweep") {
+      zombieSweep = true;
       i += 1;
       continue;
     }
@@ -134,7 +196,19 @@ export function parseGroomArgs(args: ReadonlyArray<string>): ParsedGroomArgs {
     });
   }
 
-  return { dryRun, quiet, inboxDays, kanbanDays, decisionsDays, keepBak, showHelp };
+  return {
+    dryRun,
+    quiet,
+    archive,
+    aggressive,
+    noReconcile,
+    zombieSweep,
+    inboxDays,
+    kanbanDays,
+    decisionsDays,
+    keepBak,
+    showHelp,
+  };
 }
 
 // ---------- ATMUX_NO_GROOM kill-switch ----------
@@ -168,6 +242,14 @@ export interface GroomOptions {
   atmuxDir?: string;
   /** Test injection — clock. Defaults to time.now(). */
   nowMs?: number;
+  /** ADR-062 §5 follow-up: test injection — pre-loaded team. Skips the
+   *  internal `tryLoadTeam` call; useful for tests that don't seed a
+   *  `team.json` file. Production callers leave this unset. */
+  team?: Team;
+  /** ADR-062 §5 follow-up: test injection — substitute for
+   *  `runLaneDriftCheck`. Lets tests assert invocation + skip without
+   *  loading the real implementation's `git log` / tmux probes. */
+  runLaneDriftCheckFn?: typeof runLaneDriftCheck;
 }
 
 const USAGE_TEXT = `\
@@ -178,31 +260,101 @@ Usage: atmux groom [flags]
 Flags:
   --dry-run                Show what would change; touch nothing.
   --quiet                  Suppress per-step ok/log lines (cron-friendly).
-  --inbox-days N           Reserved for future per-entry inbox parsing
-                           (currently flushes whole \`## Archive\` section).
+  --inbox-days N           Days threshold for per-entry inbox aging (default 7).
+                           Entries in driver-inbox.md / lead-outbox.md ## Open
+                           with parseable timestamps older than now-N*86400s
+                           migrate to the same file's ## Archive section.
+                           N=0 ages everything in ## Open (synonym for --aggressive).
+  --aggressive             One-shot historical-bloat clear: age every ## Open
+                           entry to ## Archive regardless of timestamp shape.
+                           Equivalent to --inbox-days 0.
   --kanban-days N          Threshold for done/cancelled card summary (default 30).
   --decisions-days N       Threshold for decisions.md entry archival (default 30).
   --keep-bak N             Keep newest N of each .bak.* family (default 5).
+  --archive                Also move state.db rows (done tasks + inbox
+                           messages older than --kanban-days) into a
+                           sibling archive.db. Idempotent. Per t-8287b37d.
+  --no-reconcile           Skip the kanban-vs-git reconcile sub-op (#7).
+                           Default: sub-op runs every groom. Per t-dc830eb0.
+  --zombie-sweep           Also walk os.tmpdir() for stale fixture tmux
+                           socket dirs (atmux-*-XXXXXX/) older than 6h;
+                           kill any tmux server inside + rm -rf the dir.
+                           Idempotent. Defense-in-depth for SIGKILL-bypass
+                           per c-4698c603 (b) / t-0027eec3. Opt-in only.
 
 Sub-operations (all idempotent):
-  1. driver-inbox.md / lead-outbox.md: flush \`## Archive\` body into dated archive.
+  1a. driver-inbox.md / lead-outbox.md: age stale ## Open entries → ## Archive
+      section per --inbox-days (per-entry aging; runs before 1b so the just-
+      aged entries get swept in the same pass).
+  1b. driver-inbox.md / lead-outbox.md: flush ## Archive body into dated archive.
   2. decisions.md: move entries older than --decisions-days to dated archive.
   3. kanban.json: summarize + remove done/cancelled cards older than --kanban-days.
   4. .bak.* files: keep newest --keep-bak per family.
   5. archive/ size guard: warn if growth exceeds threshold.
+  6. lane-drift-check: revert stuck in-progress claims (ADR-062 §5 catch-the-stragglers
+     pass; auto-gated on team.json::groom.laneDriftCheck — default true when team has
+     lane-tagged members, false to disable). Pairs with the every-2-min cron line for fast
+     feedback + the standalone \`atmux lane-drift-check\` verb for ad-hoc invocation.
+  7. kanban-vs-git reconcile: scan \`git log --all\` for commits whose SUBJECT LINE
+     references a \`t-XXXXXXXX\` Task ID; for every open task (status ∈ {todo, in-progress})
+     whose ID is matched, auto-flip to done with note "groomed: shipped via SHA <hash>".
+     Single bulk \`git log\` per run; idempotent + safe. Subject-only per t-4ea69dd1 (P0
+     fix to t-dc830eb0's initial body-grep — cross-refs, EPIC parents, deps lists,
+     follow-up filings live in BODIES and are NOT ship signals). Skip via --no-reconcile.
+     Companion to ADR-160 candidate (Part b: post-merge done-flip in gitter).
+  8. (--archive) state.db → archive.db row move (tasks + inbox_messages).
 
 Fires daily via cron (04:00) and once on every \`atmux start\`.
 `;
 
 export interface GroomResult {
+  /** t-82b6aed9: per-entry inbox aging (## Open → ## Archive within
+   *  driver-inbox.md / lead-outbox.md). Runs BEFORE inboxOutbox so the
+   *  just-aged entries get swept to the monthly archive in the same pass. */
+  inboxAge: AgeInboxResult[];
   inboxOutbox: InboxOutboxFlushResult[];
   decisions: DecisionsArchiveResult;
   kanban: KanbanSummarizeResult;
   bakCull: BakCullResult[];
   sizeWarnings: ArchiveSizeWarning[];
+  /** ADR-062 §5 follow-up: lane-drift-check sub-op result. `undefined`
+   *  when the sub-op was skipped (no team.json / opt-out / no lane-
+   *  tagged members). */
+  laneDrift?: LaneDriftCheckResult;
+  /** t-dc830eb0: kanban-vs-git reconcile sub-op result. `undefined` only
+   *  when `--no-reconcile` was passed (the sub-op runs every groom by
+   *  default; failures still produce a defined result with
+   *  `skippedReason`). */
+  reconcile?: ReconcileResult;
+  /** t-8287b37d C1: present only when `--archive` was passed. */
+  archive?: GroomArchiveResult;
+  /** t-0027eec3: present only when `--zombie-sweep` was passed. */
+  zombieSweep?: ZombieSweepResult;
   /** Sub-ops that threw — surfaced as warnings; verb still returns 0. */
   errors: { op: string; message: string }[];
   skippedReason?: "no-groom-env" | "lock-held";
+}
+
+/** ADR-062 §5 follow-up. Resolution order for the groom→lane-drift-
+ *  check gate:
+ *
+ *  1. `team.groom.laneDriftCheck === false` → never run.
+ *  2. `team.groom.laneDriftCheck === true`  → always run.
+ *  3. unset                                  → run iff ≥1 member has a
+ *     non-empty `.lane` field.
+ *
+ *  Matches the auto-shape of `crons.laneTickEnabled` (the every-2-min
+ *  cron line — t-727f1f42 sibling): both default-enable on lane presence,
+ *  both let operators force-disable without removing `.lane`
+ *  annotations from `team.members[]`. */
+export function shouldRunLaneDriftCheck(team: Team): boolean {
+  const explicit = team.groom?.laneDriftCheck;
+  if (explicit === false) return false;
+  if (explicit === true) return true;
+  return team.members.some((m) => {
+    const lane = (m as { lane?: string }).lane;
+    return typeof lane === "string" && lane.length > 0;
+  });
 }
 
 export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}): Promise<number> {
@@ -231,6 +383,7 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
     }));
 
   const result: GroomResult = {
+    inboxAge: [],
     inboxOutbox: [],
     decisions: { staleBlocks: 0, destPaths: [] },
     kanban: { removed: 0, destPaths: [] },
@@ -267,6 +420,41 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
   try {
     // Each sub-op is wrapped — failures surface as warnings; the
     // remaining steps still run. Mirrors bash `|| atmux::warn ...`.
+
+    // t-82b6aed9 / c-7a308f7f: age stale ## Open entries into ## Archive
+    // BEFORE the existing flushInboxOutboxArchive sub-op so the
+    // just-aged entries get swept to the monthly archive file in the
+    // SAME groom pass. Without this ordering, aging would land in
+    // ## Archive but require a SECOND groom tick to reach the monthly
+    // file — leaving inbox bloat on the demo path for 24h.
+    try {
+      result.inboxAge = await ageInboxOpenToArchive(atmuxDir, parsed.inboxDays, {
+        dryRun: parsed.dryRun,
+        aggressive: parsed.aggressive,
+        ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+      });
+      if (!parsed.quiet) {
+        for (const r of result.inboxAge) {
+          if (r.agedCount === 0) continue;
+          const note = parsed.aggressive
+            ? "aggressive: all entries"
+            : `older than ${parsed.inboxDays}d`;
+          if (parsed.dryRun) {
+            logger.log(
+              `groom[dry-run]: would age ${r.agedCount} ${r.file} ## Open entries → ## Archive (${note}; ${r.remainingOpen} entries kept)`,
+            );
+          } else {
+            logger.ok(
+              `groom: aged ${r.agedCount} ${r.file} ## Open entries → ## Archive (${note}; ${r.remainingOpen} entries kept)`,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn(`groom: inbox-age sub-op failed (continuing): ${errMsg(e)}`);
+      result.errors.push({ op: "inbox-age", message: errMsg(e) });
+    }
+
     try {
       result.inboxOutbox = await flushInboxOutboxArchive(atmuxDir, {
         dryRun: parsed.dryRun,
@@ -369,6 +557,170 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
     } catch (e) {
       logger.warn(`groom: size-check sub-op failed (continuing): ${errMsg(e)}`);
       result.errors.push({ op: "size-check", message: errMsg(e) });
+    }
+
+    // ADR-062 §5 follow-up: lane-drift-check sub-op (catch-the-stragglers
+    // pass). Cron's `*/2` lane-tick line gives real-time drift feedback;
+    // this daily groom pass catches drift the cron missed (e.g. host
+    // suspended overnight, cron disabled, pane classifier wedged for a
+    // window). Sweep before the `--archive` sub-op (which depends on
+    // kanban state being finalized) per Task body — drift-check is the
+    // slowest piece (one git log + per-task pane probe), so sweep
+    // late so partial-run still benefits the cheap flushes above.
+    //
+    // Sub-op error-contained like the others. Loads team.json via the
+    // tryLoadTeam null-on-missing form: missing team.json is treated as
+    // "no team config to drive drift-check from" → silent skip, not a
+    // crash (groom is cron-fired; a host transient that nukes team.json
+    // shouldn't kill the rest of the sweep).
+    try {
+      const team = opts.team ?? (await tryLoadTeam({ teamDir: dirname(atmuxDir) }));
+      if (team === null) {
+        if (env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+          logger.log("groom: lane-drift-check skipped (no team.json at expected path)");
+        }
+      } else if (!shouldRunLaneDriftCheck(team)) {
+        if (env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+          logger.log(
+            "groom: lane-drift-check skipped (groom.laneDriftCheck=false or no lane-tagged members)",
+          );
+        }
+      } else {
+        const driftFn = opts.runLaneDriftCheckFn ?? runLaneDriftCheck;
+        const driftResult = await driftFn(
+          atmuxDir,
+          team,
+          {
+            thresholdMin: DEFAULT_CLAIMED_AT_THRESHOLD_MIN,
+            commits: 30,
+            // Map groom's --dry-run to drift's dry-run; otherwise run
+            // in reset-mode (mutate kanban + raise flags). Cron's daily
+            // 04:00 invocation never passes --dry-run, so the default
+            // production path resets stale claims.
+            reset: !parsed.dryRun,
+            dryRun: parsed.dryRun,
+          },
+          {},
+        );
+        result.laneDrift = driftResult;
+        if (!parsed.quiet) {
+          if (parsed.dryRun) {
+            logger.log(
+              `groom[dry-run]: would lane-drift-check ${driftResult.scanned} in-progress task(s) — ` +
+                `${driftResult.decisions.filter((d) => d.action === "revert").length} revert candidate(s)`,
+            );
+          } else if (driftResult.reverted > 0 || driftResult.flagsRaised > 0) {
+            logger.ok(
+              `groom: lane-drift-check reverted ${driftResult.reverted} stuck claim(s), raised ${driftResult.flagsRaised} flag(s)`,
+            );
+          } else if (driftResult.scanned > 0) {
+            logger.ok(
+              `groom: lane-drift-check scanned ${driftResult.scanned} in-progress task(s) — no drift`,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn(`groom: lane-drift-check sub-op failed (continuing): ${errMsg(e)}`);
+      result.errors.push({ op: "lane-drift-check", message: errMsg(e) });
+    }
+
+    // t-dc830eb0: kanban-vs-git reconcile sub-op. Single bulk
+    // `git log --all` per run; for every open task whose ID appears
+    // in a non-revert commit message, auto-flip to done. Closes the
+    // duplicate-ship dispatch-collision pattern (every claim was
+    // hitting `git log --all | grep <id>` pre-flight; velocity gate
+    // fired 6× in 75min with 0 SHA in lead's 10:10 MYT P0 outbox ask).
+    //
+    // Default-on; opt-out via `--no-reconcile`. Sub-op error-contained
+    // like the others. Runs AFTER lane-drift-check + summarizeKanban
+    // so the open-tasks list it scans reflects post-sweep state, and
+    // BEFORE --archive so reconciled-done tasks become eligible for
+    // the same-run state.db archive move.
+    if (!parsed.noReconcile) {
+      try {
+        const rec = await reconcileKanbanVsGit(atmuxDir, {
+          dryRun: parsed.dryRun,
+        });
+        result.reconcile = rec;
+        if (!parsed.quiet) {
+          if (rec.skippedReason !== undefined) {
+            // Soft-skip — log at debug only; not an error (cron-fire
+            // on a non-versioned project shouldn't surface as warn).
+            if (env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+              logger.log(`groom: kanban-vs-git reconcile skipped (${rec.skippedReason})`);
+            }
+          } else if (parsed.dryRun && rec.matched > 0) {
+            logger.log(
+              `groom[dry-run]: would reconcile ${rec.matched} open task(s) → done (matched commit msg in git log --all)`,
+            );
+          } else if (rec.flipped > 0) {
+            logger.ok(
+              `groom: reconciled ${rec.flipped} open task(s) → done (matched commit msg in git log --all)`,
+            );
+          } else if (rec.scanned > 0 && env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+            logger.log(
+              `groom: kanban-vs-git reconcile scanned ${rec.scanned} open task(s) — no matches`,
+            );
+          }
+        }
+      } catch (e) {
+        logger.warn(`groom: kanban-vs-git reconcile sub-op failed (continuing): ${errMsg(e)}`);
+        result.errors.push({ op: "kanban-vs-git-reconcile", message: errMsg(e) });
+      }
+    }
+
+    // t-8287b37d C1: state.db → archive.db row move. Opt-in via
+    // --archive; runs last so any earlier sub-op failures (which
+    // surfaced as warnings, not aborts) don't pollute the archive
+    // with rows that should have been rewritten by an earlier step.
+    if (parsed.archive) {
+      try {
+        const ar = await groomArchive(atmuxDir, {
+          days: parsed.kanbanDays,
+          dryRun: parsed.dryRun,
+          ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+        });
+        result.archive = ar;
+        if (!parsed.quiet && (ar.tasksArchived > 0 || ar.inboxArchived > 0)) {
+          const verb = parsed.dryRun ? "would archive" : "archived";
+          logger.ok(
+            `groom: ${verb} ${ar.tasksArchived} task(s) + ${ar.inboxArchived} inbox row(s) (state.db → archive.db, cutoff=${parsed.kanbanDays}d)`,
+          );
+        }
+      } catch (e) {
+        logger.warn(`groom: archive sub-op failed (continuing): ${errMsg(e)}`);
+        result.errors.push({ op: "archive", message: errMsg(e) });
+      }
+    }
+
+    // t-0027eec3 (c-4698c603 arm b): stale fixture tmux socket sweep.
+    // Opt-in via --zombie-sweep — defense-in-depth for SIGKILL'd
+    // bun-test orphans that bypass the (a) primary defense
+    // (afterAll + process.on('exit') hooks). Runs last; touches only
+    // os.tmpdir(), not atmuxDir, so an earlier sub-op failure doesn't
+    // interact. Failures (e.g. permission-denied on someone else's
+    // tmpdir entry) surface as warn + continue per groom convention.
+    if (parsed.zombieSweep) {
+      try {
+        const zr = await sweepZombieTmuxSockets({
+          dryRun: parsed.dryRun,
+          ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+        });
+        result.zombieSweep = zr;
+        if (!parsed.quiet && zr.scanned > 0) {
+          const verb = parsed.dryRun ? "would clean" : "cleaned";
+          logger.ok(
+            `groom: ${verb} ${zr.removed}/${zr.scanned} zombie fixture dir(s); killed ${zr.killed} tmux server(s)`,
+          );
+        }
+        for (const err of zr.errors) {
+          logger.warn(`groom: zombie-sweep — ${err.path}: ${err.message}`);
+        }
+      } catch (e) {
+        logger.warn(`groom: zombie-sweep sub-op failed (continuing): ${errMsg(e)}`);
+        result.errors.push({ op: "zombie-sweep", message: errMsg(e) });
+      }
     }
   } finally {
     if (handle !== null) await handle.release();

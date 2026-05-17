@@ -28,6 +28,7 @@ import {
   moveTask,
   removeTask,
   setTaskLane,
+  setTaskPriority,
   showTask,
 } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -189,6 +190,101 @@ describe("kanban (SQLite mode)", () => {
     await expect(claimTask(env.atmuxDir, "t-deadbeef", "fe0")).rejects.toThrow(ConfigError);
   });
 
+  // 2026-05-12 incident regression — gate lives on `claimTaskForMember`,
+  // not bare `claimTask` (so lead-initiated `dispatch` still reassigns).
+  // Two members both running `atmux claim <task-id>` raced to set their
+  // own owner on an already-claimed in-progress task; the gate refuses
+  // the second claimant with a clear message naming the existing owner.
+  test("claimTaskForMember: refuses claim when task already in-progress under different owner", async () => {
+    const { claimTaskForMember } = await import("../../../src/core/kanban.ts");
+    const id = await addTask(env.atmuxDir, { subject: "race candidate" });
+    await claimTaskForMember(env.atmuxDir, id, "fe0");
+    await expect(claimTaskForMember(env.atmuxDir, id, "be0")).rejects.toThrow(
+      /already in-progress under 'fe0'/,
+    );
+    // Original owner can re-claim (idempotent for re-entrancy).
+    const { post } = await claimTaskForMember(env.atmuxDir, id, "fe0");
+    expect(post.owner).toBe("fe0");
+    expect(post.status).toBe("in-progress");
+  });
+
+  test("claimTaskForMember: refuse message mentions un-claim path", async () => {
+    const { claimTaskForMember } = await import("../../../src/core/kanban.ts");
+    const id = await addTask(env.atmuxDir, { subject: "stalled candidate" });
+    await claimTaskForMember(env.atmuxDir, id, "fe0");
+    try {
+      await claimTaskForMember(env.atmuxDir, id, "be0");
+      throw new Error("expected throw");
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain("task move");
+      expect(msg).toContain("un-claim");
+    }
+  });
+
+  // Bare claimTask MUST still allow reassignment — that's the dispatch path.
+  test("claimTask (NOT claimTaskForMember): bare claimTask still allows owner override", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "dispatch target" });
+    await claimTask(env.atmuxDir, id, "fe0");
+    // Lead-initiated dispatch routes through bare claimTask — must succeed.
+    const { post } = await claimTask(env.atmuxDir, id, "be0");
+    expect(post.owner).toBe("be0");
+  });
+
+  // t-381a6ea0: done-state refuse-gate (SQLite path). The gate fires
+  // INSIDE the BEGIN IMMEDIATE block via repo.getTask + status check
+  // before repo.upsertTask. Reviewer pre-flag: a concurrent done-flip
+  // can't slip between check and mutation because both run under the
+  // same SQLite transaction lock. Origin: docs auditor surfaced an
+  // anomaly 2026-05-13 — `atmux claim t-0c4e6397` against a done Task
+  // silently flipped done → in-progress (the 2026-05-12 in-progress
+  // gate's docstring explicitly allowed this as "idempotent"; that
+  // tolerance was the bug).
+  test("claimTask (SQLite path): refuses done-state Task with clear error", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "shipped already" });
+    await claimTask(env.atmuxDir, id, "fe0");
+    await markTaskDone(env.atmuxDir, id, "shipped");
+    await expect(claimTask(env.atmuxDir, id, "be0")).rejects.toThrow(/already done.*claim refused/);
+  });
+
+  test("claimTask (SQLite path): refused done-state claim does NOT mutate state", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "shipped already" });
+    await claimTask(env.atmuxDir, id, "fe0");
+    await markTaskDone(env.atmuxDir, id, "shipped");
+    const before = await showTask(env.atmuxDir, id);
+    await expect(claimTask(env.atmuxDir, id, "be0")).rejects.toThrow(ConfigError);
+    const after = await showTask(env.atmuxDir, id);
+    expect(after?.status).toBe("done");
+    expect(after?.owner).toBe(before?.owner ?? null);
+    expect(after?.claimedAt).toBe(before?.claimedAt ?? null);
+    expect(after?.completedAt).toBe(before?.completedAt ?? null);
+  });
+
+  test("claimTask (SQLite path): refuse message cites task move recovery path", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "shipped already" });
+    await claimTask(env.atmuxDir, id, "fe0");
+    await markTaskDone(env.atmuxDir, id, "shipped");
+    try {
+      await claimTask(env.atmuxDir, id, "be0");
+      throw new Error("should have thrown");
+    } catch (e) {
+      const msg = (e as ConfigError).message;
+      expect(msg).toContain(`atmux task move ${id} todo`);
+      expect(msg).toContain("owner=fe0");
+    }
+  });
+
+  test("claimTask (SQLite path): in-progress unowned claim still succeeds — gate is done-only", async () => {
+    // Move to in-progress manually (no owner). The done-gate must ONLY
+    // refuse status='done'; in-progress unowned remains claimable per
+    // the existing "re-claim by SAME owner / unowned" path.
+    const id = await addTask(env.atmuxDir, { subject: "manually-set" });
+    await moveTask(env.atmuxDir, id, "in-progress");
+    const { post } = await claimTask(env.atmuxDir, id, "fe0");
+    expect(post.status).toBe("in-progress");
+    expect(post.owner).toBe("fe0");
+  });
+
   test("markTaskDone: stamps completedAt + optional note", async () => {
     const id = await addTask(env.atmuxDir, { subject: "x" });
     const done = await markTaskDone(env.atmuxDir, id, "shipped via PR #42");
@@ -247,6 +343,24 @@ describe("kanban (SQLite mode)", () => {
 
   test("setTaskLane: missing id throws ConfigError", async () => {
     await expect(setTaskLane(env.atmuxDir, "t-deadbeef", "fe")).rejects.toThrow(ConfigError);
+  });
+
+  test("setTaskPriority: set integer; null clears (ADR-131)", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "no-prio task" });
+    let t = await showTask(env.atmuxDir, id);
+    expect(t?.priority).toBeNull();
+
+    await setTaskPriority(env.atmuxDir, id, 3);
+    t = await showTask(env.atmuxDir, id);
+    expect(t?.priority).toBe(3);
+
+    await setTaskPriority(env.atmuxDir, id, null);
+    t = await showTask(env.atmuxDir, id);
+    expect(t?.priority).toBeNull();
+  });
+
+  test("setTaskPriority: missing id throws ConfigError", async () => {
+    await expect(setTaskPriority(env.atmuxDir, "t-deadbeef", 1)).rejects.toThrow(ConfigError);
   });
 
   test("loadKanban: returns full snapshot in SQLite mode", async () => {

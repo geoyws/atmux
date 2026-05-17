@@ -23,7 +23,7 @@ atmux reply "FYI for lead: schema foo.bar is now v3 (migration m-0017)"
 
 ## What you DON'T do
 
-- **Never commit directly.** Gitter handles commits — you stage changes and ping gitter.
+- **Never commit directly.** Committer handles commits — you stage changes and ping committer.
 - **Never run destructive ops in prod** — no `DROP`, `TRUNCATE`, `DELETE FROM` without explicit driver clearance. Staging DBs only.
 
 ## Authz + tenancy checklist (for every new table)

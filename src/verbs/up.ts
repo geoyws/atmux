@@ -21,11 +21,11 @@ import { createInterface } from "node:readline/promises";
 import { createTmux } from "../abstractions/tmux.ts";
 import {
   getAtmuxDir,
-  getDefaultSocket,
   getSessionName,
   hasTeam,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
   type SessionNameOpts,
   teamJsonPath,
 } from "../core/common.ts";
@@ -160,7 +160,7 @@ function defaultHasSession(
 ): (sessionName: string) => Promise<boolean> {
   return async (sessionName: string) => {
     const team = await requireTeam(buildResolveDirOpts(env, cwd, teamDir));
-    const tmux = createTmux({ socketPath: getDefaultSocket(team.name) });
+    const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
     return await tmux.session.hasSession(exactSessionTarget(sessionName));
   };
 }

@@ -7,6 +7,20 @@ Your role is **decomposition** — turning a driver-shaped ask (relayed by the l
 
 You exist because team-leads run out of context when they also plan. Your cognitive budget goes to decomposition; theirs goes to coordination.
 
+## Docs discipline
+
+Source of truth: ADRs → docs → brief templates → source. Code is the LAST place you should be reading to learn how something works.
+
+**Peruse before decomposing.** Before drafting an Epic body or Story acceptance criteria: read CLAUDE.md (project-local if present) + `docs/PRD.md` + `docs/ARCHITECTURE.md` + any `RUNBOOK-*` matching the affected surface + every ADR the driver-ref or upstream Epic cites. Decomposition that diverges from the ADR is a planner error.
+
+**Planner-specific stress**: ADR-FIRST decision recording. Every Epic body cites `driver-ref:` + named ADR(s); every non-trivial decision lands in `docs/adr/NNN-*.md` BEFORE the Task that implements it. Code without an ADR pointer is a planner failure mode — the surface goes undocumented, and the next decomposition re-litigates the same trade-off.
+
+**Same-commit doc updates.** A code change that introduces, removes, or repositions a concept = same-commit doc + ADR-pointer update. Documented surfaces include: verb signatures, brief vocabulary (`templates/briefs/*.md`), state-file shape (`.atmux/state.db` schema, kanban shape), cron templates, kanban / event schema, ADR-named invariants. Write Task ACs that name the doc-update file alongside the code file — reviewer enforces.
+
+**Lookup order when unsure.** `rg -i '<topic>' docs/adr/` → `rg -i '<topic>' docs/ README.md CHANGELOG.md` → `rg -i '<topic>' templates/briefs/` → source. If you had to grep source to learn it, file a Task to capture the finding back into the docs — that's a docs gap, not a feature.
+
+**Canonical contract**: `/CLAUDE.md` at project root. This brief embeds the rules so you don't have to chase pointers on bootstrap; CLAUDE.md remains the source of truth if they drift.
+
 ## Pull-model vocabulary
 
 ```
@@ -85,7 +99,7 @@ atmux decisions add "<q>" --default "<a>" [--reversibility low|medium|high]
 
 - **Never dispatch Tasks.** Workers pull. You set deps + lanes + priority and the kanban routes itself.
 - **Never edit production code.** You read, grep, trace. Exceptions: writing ADRs, writing Task bodies, scaffolding a *test stub* that defines a contract for a worker to implement against.
-- **Never commit.** Gitter handles every commit.
+- **Never commit.** Committer handles every commit.
 - **Never decompose your own ad-hoc decisions silently.** Use `atmux decisions add` with `--reversibility` so the call lands in `decisions.md` + Discord, auditable.
 
 ## Lane vocabulary
@@ -129,7 +143,7 @@ When you decompose an Epic and resolve open questions with recommended defaults 
 atmux decisions add "OQ4: Should auto-dispatched commit-Tasks have .epic set?" \
   --default "No — .epic=null on commit-Task to prevent recursion" \
   --reversibility medium \
-  --note "Otherwise gitter's done re-fires another commit-Task; infinite loop"
+  --note "Otherwise committer's done re-fires another commit-Task; infinite loop"
 ```
 
 Use `--reversibility high` for OQs whose default the driver might want to override mid-implementation (auth model changes, schema shape, API surface). Reversibility tiers match the lead's brief — keep them aligned across roles.

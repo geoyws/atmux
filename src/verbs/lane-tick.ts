@@ -21,15 +21,20 @@
 // (T4); this verb writes structured single-line records to stderr per
 // member, suitable for grep-able log archeology.
 
+import { dirname } from "node:path";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { findCommitForTask, type GitSpawn } from "../core/auto-done.ts";
 import {
   getAtmuxDir,
-  getDefaultSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
+import { resolveGoalForMember } from "../core/goal-resolver.ts";
+import { listTasks, moveTask } from "../core/kanban.ts";
 import { type CaptureFn, classifyText, type PaneClassification } from "../core/pane-state.ts";
+import { pasteAndSubmit } from "../core/paste-submit.ts";
 import {
   type SafeSendOpts,
   type SafeSendResult,
@@ -38,6 +43,8 @@ import {
 } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
+import { parseLeadCtxPct } from "./poke.ts";
+import { defaultBriefsDir, getBriefPath } from "./rotate.ts";
 
 // ---------- Public types (test-injectable deps) ----------
 
@@ -66,6 +73,20 @@ export interface LaneTickDeps {
   /** Logger; defaults to stderr. Single-line records keyed on member
    *  name + outcome. */
   log?: (msg: string) => void;
+  /** ADR-080 §B2: git spawn override for the auto-done scan. Tests
+   *  inject a fixture so the scan exercises without a real git repo. */
+  git?: GitSpawn;
+  /** ADR-157 T4: briefs-dir override (default `defaultBriefsDir()`
+   *  from rotate.ts). The goal-narrow branch resolves
+   *  `<briefsDir>/<role>.md` and parses `## Standing Goal`; tests
+   *  inject a temp dir so the matrix runs without real briefs. */
+  briefsDir?: string;
+  /** ADR-157 T4: override the brief-text resolver. Defaults to
+   *  `resolveGoalForMember(member, briefPath)`. Tests inject a fixture
+   *  so the goal-skip path runs deterministically without staging a
+   *  real brief file. Return value: resolved goal text OR `null` when
+   *  no goal is active. */
+  resolveGoal?: (member: TeamMember) => Promise<string | null>;
 }
 
 export interface LaneTickResult {
@@ -73,13 +94,31 @@ export interface LaneTickResult {
   visited: number;
   /** Per-member outcome — keyed on member name. */
   outcomes: Record<string, LaneTickMemberOutcome>;
+  /** ADR-080 §B2: count of in-progress `commit t-X` tasks the auto-done
+   *  scan resolved (commit found in repo log → kanban moved to done).
+   *  0 on idempotent re-runs and on teams without a gitter pattern. */
+  autoDoneResolved: number;
 }
 
 export type LaneTickMemberOutcome =
   | "injected"
+  /** ADR-080 §A2: lead pane at ctx-pct ≥ leadCtxRotateThreshold — instead
+   *  of injecting `claim --next` (which would deepen ctx pressure), the
+   *  rotation nudge `/team rotate-lead` is sent so the lead can hand off
+   *  before mid-think drift sets in. Operator-visible outcome distinct
+   *  from `injected` so the post-tick summary distinguishes the cause. */
+  | "injected-rotate-nudge"
   | "skip-not-ready"
   | "skip-capture-error"
-  | "skip-send-refused";
+  | "skip-send-refused"
+  /** ADR-157 T4: claim-injection skipped because the member is
+   *  goal-driven (Claude `/goal` skill running). The three safety nets
+   *  preserved verbatim — auto-done scan + lead-ctx-rotate nudge +
+   *  dead-pane / rate-limit-lockout detection — fire INDEPENDENTLY of
+   *  this outcome. Lane-tick narrows to backstop for failure modes
+   *  `/goal` cannot see; the per-turn Haiku evaluator drives the
+   *  drain on the happy path. */
+  | "skip-goal-active";
 
 // ---------- Verb entrypoint ----------
 
@@ -97,16 +136,31 @@ export async function laneTick(
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
+  const log = deps.log ?? defaultLog;
+
+  // ADR-080 §B2: --backfill-done is the operator's one-shot recovery
+  // path. Skip the per-tick claim-injection loop entirely (the operator
+  // is cleaning up legacy stale state, not driving live work) and run
+  // ONLY the auto-done scan over all of git history (`backfill=true`).
+  if (parsed.backfillDone === true) {
+    const scanOpts: AutoDoneScanOpts = { backfill: true, log };
+    if (deps.git !== undefined) scanOpts.git = deps.git;
+    const resolved = await runAutoDoneScan(atmuxDir, team, scanOpts);
+    log(`lane-tick: --backfill-done resolved=${resolved}`);
+    return 0;
+  }
 
   const result = await runLaneTick(atmuxDir, team, deps);
   // Surface a one-line summary on stderr for cron-log grep.
-  const log = deps.log ?? defaultLog;
   log(
     `lane-tick: visited=${result.visited} ` +
       `injected=${count(result.outcomes, "injected")} ` +
+      `injected-rotate-nudge=${count(result.outcomes, "injected-rotate-nudge")} ` +
+      `auto-done-resolved=${result.autoDoneResolved} ` +
       `skip-not-ready=${count(result.outcomes, "skip-not-ready")} ` +
       `skip-capture-error=${count(result.outcomes, "skip-capture-error")} ` +
-      `skip-send-refused=${count(result.outcomes, "skip-send-refused")}`,
+      `skip-send-refused=${count(result.outcomes, "skip-send-refused")} ` +
+      `skip-goal-active=${count(result.outcomes, "skip-goal-active")}`,
   );
   return 0;
 }
@@ -120,29 +174,70 @@ export async function runLaneTick(
   deps: LaneTickDeps = {},
 ): Promise<LaneTickResult> {
   const log = deps.log ?? defaultLog;
-  const tmux = deps.tmux ?? createTmux({ socketPath: getDefaultSocket(team.name) });
+  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
   const sendFn = deps.sendFn ?? safeSendKeys;
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
   const sendKeysFn: SendKeysFn =
     deps.sendKeysFn ??
     (async (target: string, keys: string, opts) => {
-      // safeSendKeys passes the same string we passed to it as `target`,
-      // which we built as `${session}:${windowName}` below. Wrap in the
-      // SendTarget discriminated union for the input-injection contract
-      // (ADR-025). The member name is recovered from the windowTarget
-      // suffix (see resolveWindowTarget); tests don't exercise this
-      // path, so no further plumbing needed.
-      await tmux.pane.sendKeys({
-        target: { kind: "member", member: parseMemberFromTarget(target), team: team.name, target },
-        keys,
-        enter: opts?.enter ?? true,
-      });
+      // ADR-138 T3b3 (t-06547e2d): when the keystroke is a TEXT BODY
+      // (the claim-injection / rotate-nudge case below — bracketed-
+      // paste-Enter-swallow bug zone), route through
+      // `pasteAndSubmit` so the bundled load-buffer + paste-buffer
+      // -d + 500ms settle + C-m cascade lands the message reliably.
+      // Raw `tmux.pane.sendKeys` is preserved for control-key /
+      // modal-dismiss cases (enter:false explicit, single-character
+      // payload) — those don't pass through the bracketed-paste
+      // envelope and are fine on the raw path.
+      const sendTarget = {
+        kind: "member" as const,
+        member: parseMemberFromTarget(target),
+        team: team.name,
+        target,
+      };
+      const wantsEnter = opts?.enter ?? true;
+      const isControlKeyOnly = !wantsEnter || /^[CM]-./.test(keys);
+      if (isControlKeyOnly) {
+        // Control-key / no-submit path — raw sendKeys is correct here.
+        await tmux.pane.sendKeys({ target: sendTarget, keys, enter: wantsEnter });
+        return;
+      }
+      // Text-body path — paste-submit cascade. P0 leak (t-06547e2d):
+      // `tmux send-keys <text> Enter` on a Claude pane in the "just
+      // finished + ← for agents" transition state silently drops the
+      // Enter, leaving the command queued in the composer. pasteAndSubmit
+      // uses `C-m` (literal CR) after the bracketed-paste envelope —
+      // empirically reliable across the leak's full failure-mode set.
+      await pasteAndSubmit(tmux, sendTarget, keys);
     });
 
   const session = await getSessionName({ dir: atmuxDir, team });
 
+  // ADR-157 T4 goal-narrow plumbing — resolve the briefs-dir + the
+  // goal-resolver once per tick. Default goal resolver reads each
+  // member's role brief at `<briefsDir>/<role>.md` and falls through
+  // resolveGoalForMember's chain (member.goal explicit > brief
+  // `## Standing Goal` > null). Tests inject `deps.resolveGoal` to
+  // bypass file IO + run the matrix deterministically.
+  const briefsDir = deps.briefsDir ?? defaultBriefsDir();
+  const resolveGoal: (member: TeamMember) => Promise<string | null> =
+    deps.resolveGoal ??
+    (async (member) => {
+      const role = typeof member.role === "string" ? member.role : "member";
+      const briefPath = await getBriefPath(role, briefsDir);
+      return resolveGoalForMember(member, briefPath);
+    });
+
   const lanedMembers = team.members.filter((m) => m.lane !== undefined && m.lane.length > 0);
+
+  // ADR-080 §A2: lookup the lead member name + the team's ctx-rotate
+  // threshold once per tick; the lead-only refusal gate inside the loop
+  // consumes both. Threshold default `70` mirrors `whip.leadCtxRotateThreshold`'s
+  // schema default — when team.whip is omitted, the lead refusal still
+  // fires at the same threshold whip uses for its rotate-recommendation.
+  const leadName = team.members.find((m) => m.role === "team-lead")?.name;
+  const leadCtxRotateThreshold = team.whip?.leadCtxRotateThreshold ?? 70;
 
   const outcomes: Record<string, LaneTickMemberOutcome> = {};
 
@@ -150,9 +245,10 @@ export async function runLaneTick(
     const windowTarget = resolveWindowTarget(session, member);
 
     let classification: PaneClassification;
+    let paneText = "";
     try {
-      const text = await capture(windowTarget);
-      classification = classifyText(text);
+      paneText = await capture(windowTarget);
+      classification = classifyText(paneText);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log(`lane-tick: ${member.name}: capture error (${msg}) — skip`);
@@ -174,11 +270,96 @@ export async function runLaneTick(
       sendKeys: sendKeysFn,
       log,
     };
-    const claimText = `atmux claim --next --as ${member.name}`;
+
+    // ADR-080 §A2: when this member is the team lead AND the pane
+    // ctx-pct is at-or-above `leadCtxRotateThreshold`, swap the
+    // injected text from `claim --next` to a `/team rotate-lead`
+    // nudge. Rationale: a high-ctx lead that picks up another claim
+    // is the exact "67% ctx + queued claim defeats rotation" scenario
+    // the operator flagged on 2026-05-09 07:25 MYT (sopx-driver bundle).
+    // Re-using §A1's `parseLeadCtxPct` keeps the parser surface unified.
+    let claimText = `atmux claim --next --as ${member.name}`;
+    let isRotateNudge = false;
+    if (leadName !== undefined && member.name === leadName) {
+      const ctxPct = parseLeadCtxPct(paneText);
+      if (ctxPct !== null && ctxPct >= leadCtxRotateThreshold) {
+        log(
+          `lane-tick: ${member.name}: lead ctx=${ctxPct}% ≥ ` +
+            `${leadCtxRotateThreshold}% — sending /team rotate-lead nudge ` +
+            `instead of claim --next`,
+        );
+        claimText = "/team rotate-lead";
+        isRotateNudge = true;
+      }
+    }
+
+    // ADR-157 T4 — goal-active SKIP branch.
+    //
+    // Ordering (reviewer pre-flag #1 — MUST land after the dead-pane
+    // check above AND after the lead-ctx-rotate override): READY-check
+    // already passed; lead-ctx-rotate nudge takes priority over the
+    // goal-skip (lead can't self-rotate via /goal — that safety net
+    // per §D5 #2 MUST fire even for goal-active leads). Goal-skip only
+    // applies to the plain `claim --next` injection path.
+    //
+    // Cursor carve-out (ADR-157 §D4): `runtime === "cursor"` keeps
+    // the existing claim-injection path — Cursor CLI has no /goal
+    // equivalent, so the cron-driven nudge is the only drain. Goal-
+    // field is structurally allowed under cursor runtime (T2
+    // WARN-not-refuse) but is a no-op at runtime.
+    //
+    // Three safety nets PRESERVED (per ADR-157 §D5):
+    //   1. Auto-done sweep — fires AFTER this loop for ALL members
+    //      regardless of goal-state (see `runAutoDoneScan` below).
+    //   2. Lead-ctx-rotate nudge — fires ABOVE for ALL leads
+    //      regardless of goal-state (the override happened before
+    //      this skip-branch — `isRotateNudge: true` bypasses the
+    //      goal-active early-exit).
+    //   3. Dead-pane / rate-limit detection — fires ABOVE via the
+    //      READY classification (skip-not-ready outcome). A wedged
+    //      goal-active member returns to skip-not-ready, NOT to
+    //      skip-goal-active, so the operator sees the pane health
+    //      problem.
+    if (!isRotateNudge && member.runtime !== "cursor") {
+      let goalText: string | null = null;
+      try {
+        goalText = await resolveGoal(member);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Conservative: a goal-resolver failure (corrupt brief,
+        // permission denied) MUST NOT silently skip claim-injection
+        // — fall through to the existing injection path. Operator
+        // sees the warn + drain stays healthy.
+        log(
+          `lane-tick: ${member.name}: goal-resolve error (${msg}) — ` +
+            `falling through to claim --next`,
+        );
+      }
+      if (goalText !== null) {
+        // Operator-debuggable log per Task body §3 — cite the
+        // resolved-via source so goal-phrasing bugs are easy to
+        // trace. team.json wins when member.goal is set + non-empty;
+        // brief otherwise.
+        const explicit = typeof member.goal === "string" && member.goal.length > 0;
+        const resolvedVia = explicit ? "team.json" : "brief";
+        log(
+          `[lane-tick] skip claim-inject for ${member.name}: ` +
+            `goal-active (resolved-via=${resolvedVia})`,
+        );
+        outcomes[member.name] = "skip-goal-active";
+        continue;
+      }
+    }
+
     const result = await sendFn(windowTarget, claimText, sendOpts);
     if (result.outcome === "sent") {
-      log(`lane-tick: ${member.name}: injected claim --next (state=READY)`);
-      outcomes[member.name] = "injected";
+      if (isRotateNudge) {
+        log(`lane-tick: ${member.name}: injected /team rotate-lead (state=READY)`);
+        outcomes[member.name] = "injected-rotate-nudge";
+      } else {
+        log(`lane-tick: ${member.name}: injected claim --next (state=READY)`);
+        outcomes[member.name] = "injected";
+      }
     } else {
       log(
         `lane-tick: ${member.name}: send refused (outcome=${result.outcome}, ` +
@@ -188,19 +369,127 @@ export async function runLaneTick(
     }
   }
 
-  return { visited: lanedMembers.length, outcomes };
+  // ADR-080 §B2: auto-done scan — back-fill `atmux done` for in-progress
+  // `commit t-X` tasks whose commit landed in the gitter repo but whose
+  // kanban entry was never closed. Runs after the claim-injection loop
+  // (the loop is the hot path; the scan is best-effort per-tick polish).
+  // Best-effort: any failure logs and continues — the per-member loop
+  // already returned its outcomes; we don't want a kanban / git fault
+  // to mask successful injections.
+  let autoDoneResolved = 0;
+  try {
+    const scanOpts: AutoDoneScanOpts = { backfill: false, log };
+    if (deps.git !== undefined) scanOpts.git = deps.git;
+    autoDoneResolved = await runAutoDoneScan(atmuxDir, team, scanOpts);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log(`lane-tick: auto-done scan error (${msg}) — skip`);
+  }
+
+  return { visited: lanedMembers.length, outcomes, autoDoneResolved };
+}
+
+// ---------- ADR-080 §B2: auto-done scan ----------
+
+/** Options for `runAutoDoneScan`. Exported for direct unit-testing. */
+export interface AutoDoneScanOpts {
+  /** When true, scan ignores `task.createdAt` and looks at all of git
+   *  history (`sinceMs = 0`). Used by `atmux lane-tick --backfill-done`
+   *  for the operator's one-shot recovery of legacy stale tasks (the
+   *  29-task sopx case). Default false (per-tick polling uses the
+   *  task's own `createdAt` as the lower bound). */
+  backfill?: boolean;
+  /** Git spawn override for tests. */
+  git?: GitSpawn;
+  /** Logger; defaults to stderr via the caller's chain. */
+  log?: (msg: string) => void;
+}
+
+/** Subject pattern for a gitter "commit task" — `commit t-XXXXXXXX` or
+ *  `commit <something containing t-XXXXXXXX>`. The check is "subject
+ *  starts with `commit `" — captures both the operator-observed sopx
+ *  shape (`commit t-X`) and longer variants (`commit t-X — fix foo`).
+ *  Per ADR-080 §B2: "in-progress `commit t-X` tasks owned by gitter
+ *  (or any member with a `commit` task pattern in their subject)". */
+const COMMIT_TASK_SUBJECT_RE = /^commit\b/i;
+
+/**
+ * Scan kanban for in-progress `commit ...` tasks and back-fill `atmux
+ * done` when a matching commit is found in the gitter repo. Returns the
+ * count of tasks resolved this scan (i.e. moved to done). Idempotent:
+ * tasks already done are absent from the in-progress filter, so a
+ * re-run with no new commits is a no-op.
+ *
+ * Repo path resolution:
+ *   1. `team.gitter.repoPath` if set.
+ *   2. `dirname(atmuxDir)` (atmux-dir's parent — the project root that
+ *      contains `.atmux/`). Per OQ-B1 default.
+ *
+ * Best-effort per-task: a single git failure logs evidence and skips
+ * THAT task without breaking the scan loop. The scan is always-safe to
+ * re-run — kanban writes happen only on confirmed-match per task.
+ */
+export async function runAutoDoneScan(
+  atmuxDir: string,
+  team: Team,
+  opts: AutoDoneScanOpts = {},
+): Promise<number> {
+  const log = opts.log ?? defaultLog;
+  const backfill = opts.backfill ?? false;
+  const repoPath = team.gitter?.repoPath ?? dirname(atmuxDir);
+
+  const tasks = await listTasks(atmuxDir, { status: "in-progress" });
+  const commitTasks = tasks.filter((t) =>
+    typeof t.subject === "string" ? COMMIT_TASK_SUBJECT_RE.test(t.subject) : false,
+  );
+  if (commitTasks.length === 0) return 0;
+
+  let resolved = 0;
+  for (const t of commitTasks) {
+    const sinceMs = backfill
+      ? 0
+      : typeof t.createdAt === "number" && t.createdAt > 0
+        ? t.createdAt * 1000 // kanban createdAt is epoch seconds
+        : 0;
+    let sha: string | null = null;
+    try {
+      const findOpts = opts.git !== undefined ? { git: opts.git } : {};
+      sha = await findCommitForTask(repoPath, t.id, sinceMs, findOpts);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`lane-tick: auto-done ${t.id}: findCommit error (${msg}) — skip`);
+      continue;
+    }
+    if (sha === null) continue;
+    try {
+      await moveTask(atmuxDir, t.id, "done");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`lane-tick: auto-done ${t.id}: moveTask error (${msg}) — skip`);
+      continue;
+    }
+    log(`lane-tick: auto-done ${t.id} via ${sha.slice(0, 8)}`);
+    resolved += 1;
+  }
+  return resolved;
 }
 
 // ---------- Parser ----------
 
 interface ParsedArgs {
   teamDir?: string;
+  /** ADR-080 §B2: one-shot back-fill mode — auto-done scan ignores
+   *  `task.createdAt` and looks at all of git history. Skips the
+   *  per-member claim-injection loop (operator runs this once after
+   *  §B2 lands to recover the 29-stale legacy state). */
+  backfillDone?: boolean;
 }
 
-const USAGE = "atmux lane-tick [--team-dir <dir>]";
+const USAGE = "atmux lane-tick [--team-dir <dir>] [--backfill-done]";
 
 export function parseLaneTickArgs(argv: ReadonlyArray<string>): ParsedArgs {
   let teamDir: string | undefined;
+  let backfillDone = false;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -213,10 +502,16 @@ export function parseLaneTickArgs(argv: ReadonlyArray<string>): ParsedArgs {
       i += 2;
       continue;
     }
+    if (a === "--backfill-done") {
+      backfillDone = true;
+      i += 1;
+      continue;
+    }
     throw new UsageError({ what: `lane-tick: unknown flag: ${a}`, hint: USAGE });
   }
   const out: ParsedArgs = {};
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (backfillDone) out.backfillDone = true;
   return out;
 }
 

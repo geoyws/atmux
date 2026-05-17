@@ -24,7 +24,7 @@
 
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import type { Team } from "../schema/team.ts";
-import { getDefaultSocket, getSessionName } from "./common.ts";
+import { getSessionName, resolveTeamSocket } from "./common.ts";
 import { type CaptureFn, classifyPane, type PaneState } from "./pane-state.ts";
 
 /** Snapshot of the driver pane's health at probe time. */
@@ -82,7 +82,7 @@ export async function probeDriverPane(
     return { configured: false, windowExists: false, state: null, evidence: "" };
   }
 
-  const tmux = deps.tmux ?? createTmux({ socketPath: getDefaultSocket(team.name) });
+  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
   const session = await getSessionName({ dir: atmuxDir, team });
 
   const listWindowNames =

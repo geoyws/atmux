@@ -1,8 +1,57 @@
 # ADR-077: superdoctor — self-healing cockpit role
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-08
+**Date-accepted**: 2026-05-13 — shipped via 0.6.0 release commit `1ade34c` (D1 cockpit topology + D4 inbox/messaging). D5 (complaint box) + D6 (skill + bootstrap brief) remain deferred as marked in their section headers; tracked under epic t-274ec70c.
 **Driver-ref**: 2026-05-08 hax session — operator asked "can the whip ask a superdoctor (sitting beside the superdriver) whether everything seems normal in atmuxland, and if not fix it, find out why, and make sure it doesn't happen again?" Existing surface (ADR-019 `atmux doctor` verb, ADR-040 whip watchdog) handles **detection**; nothing today owns the **diagnosis → systemic-fix** loop. atmux teams have died from causes that recur (e.g. a member running e2e tests inside the team's own tmux cage instead of an isolated cage and trampling the live stack) and the recurrence is the bug, not the death.
+
+> ⚠️ **RENAMED 2026-05-14**: this role is now called **medic** per [ADR-133](133-medic-rename.md).
+> Supersedes naming only — design decisions in this ADR remain canonical for the role.
+> Original term "superdoctor" retained in this file for historical accuracy.
+>
+> **2026-05-14 sibling**: ADR-132 §D2 adds a `martinet` cockpit-tier
+> sibling at window 3 (pluggable per-team whip-manager, fleet-wide
+> iterator). The medic role at window 2 (formerly named here) remains
+> the fleet self-healing / diagnosis-and-prevention loop per §D1
+> below; martinet handles per-team observation + nudge work that
+> doesn't require Opus judgment. Verb impl: T8 of ADR-132 (commit
+> t-fb5e4c1f).
+>
+> **2026-05-15 §E hook — starving-bootstrap recovery moved here**
+> ([ADR-081 §E](081-bootstrap-brief-paste-bug.md)): the lead's whip
+> §4a `auto-bootstrap-starving-members` step is removed in favour
+> of supervisor-side recovery on this role. The chicken-and-egg
+> failure mode (stuck/confused lead cannot fire whip; 2026-05-12
+> 20h+ dormancy incident) is broken by relocating the rule to
+> medic's hourly cron tick. The recovery primitive is the existing
+> `atmux doctor --fix` (ADR-081 §D + commit `8248778`,
+> `fixStarvingMembers` at `src/verbs/doctor.ts:2329`) — medic
+> invokes it per enabled team in `~/.atmux/cockpit.json` when a
+> team has ≥1 starving member AND lead has been idle ≥5 min.
+> Closes medic complaints `c-7193c689` (starving-bootstrap) and
+> `c-8ecd3a61` (doctor blind spot — addressed by §D + this hook).
+> Per ADR-081 §E §"Reversibility": (E) is one-line revert
+> (re-add the whip §4a step). Per ADR-140 cheap-model-first, the
+> hourly-cron cadence becomes event-driven via martinet once
+> ADR-140 lands. Skill-side wiring (operator dotfiles —
+> `~/.claude/skills/whip/whip-prompt.md` §4a removal +
+> `~/.claude/skills/medic/medic-prompt.md` starvation-detection
+> rule) is driver-scope per CLAUDE.md "Driver MAY: edit global
+> skills"; tracked separately from the in-repo annotation here
+> (t-9f235ad5 atmux-repo work; dotfiles work routes via driver).
+>
+> **2026-05-14 cadence + authority narrowing** per [ADR-140](140-cheap-model-first.md)
+> (cheap-model-first principle, accepted 2026-05-15): §D3's "hourly cadence" is
+> **deprecated**; medic moves to **event-driven** (no idle hourly tick), listening
+> on `~/.atmux/state/medic-events.log` written by martinet. The scan-loop primitives
+> in §D2 (`atmux doctor --json` per team, complaint filing) are preserved but fire
+> only on event-arrival, not on a timer. §D3's "full action authority" is preserved
+> for **code-fix-to-atmux** + cage-cycle authority; **routine** rotation authority
+> (context-token >400k, refusal-pattern, dormancy-window per [[feedback_rotation_threshold_400k]])
+> moves to martinet (Cursor composer-2-fast) per ADR-140 §Decision. Medic retains
+> **emergency** rotation authority for code-fix scenarios where a member's claude
+> proc is genuinely broken and needs kill+respawn. Source: ADR-140 §"What MOVES /
+> What STAYS" + roles+responsibilities matrix.
 
 ## Context
 
@@ -133,6 +182,51 @@ Deferred follow-up tasks (filed in atmux kanban under epic `t-274ec70c`):
 - F2: per-team complaint box SQLite schema + verb family (`atmux complaints …`).
 - F3: `atmux send` / `atmux receive` recognise `__superdoctor__` as a valid inbox member at the cockpit tier.
 - F4: P0 send-keys escalation runbook (when superdoctor is allowed to bypass the SQL inbox and write directly to a teammate's pane).
+- **F6**: superdoctor self-escalation when its own structural fixes fail. Without this, superdoctor silently loops while the team stays broken (rotate-lead swallowed under auto-mode, kill+respawn welcome-screen-gates, all members idle 3h after rebuild). Primitives shipped in atmux:
+  - Migration v2→v3 (`src/abstractions/sqlite-migrations.ts`) materialises `superdoctor_attempts(id, complaint_id, attempt_n, outcome ∈ {resolved, partial, failed}, attempted_at, action, note, extra)` per-team. One row per structural-fix attempt the skill takes; CHECK constraint on `outcome`.
+  - Typed CRUD via `SuperdoctorAttemptsRepo` (`src/core/repositories/superdoctor-attempts-repo.ts`) — `insert` / `listForComplaint` / `countByOutcomeFor` / `latestFor`. The load-bearing query is `countByOutcomeFor(complaintId, 'failed')`; reaching 3 triggers the escalation.
+  - Discord template `self-heal-failed` + renderer `renderSelfHealFailed` (`src/abstractions/discord.ts`) — verdict-first ABC menu (`A` /team stop+start, `B` swap account, `C` park for the night) with a 30min-default deadline keyed off `whenMs`. Operator replies one letter from a phone.
+  - Dedup state lives in `state_kv` (feature `superdoctor-self-heal-escalation`, key per `complaint_id`) with a 1h re-fire window — the table is the durable attempt log, not the dedup ledger.
+
+  The hourly self-heal logic itself (record-attempt-with-outcome, check threshold, render-and-emit, action handler for the operator's letter reply) lives in `~/.claude/skills/superdoctor/superdoctor-prompt.md` (F1) and `~/.claude/skills/superdoctor/scripts/*` — the skill operates against the typed primitives this ADR ships in atmux.
+
+## §F7 — refusal-pattern scan + record (ADR-139 T3 hook)
+
+**Annotation 2026-05-16** (t-841049e4, ADR-139 §D2 medic integration).
+
+Medic gains an hourly **refusal-pattern scan** pass over each enabled team's members. The scan invokes the existing classifier from ADR-139 T2 (`src/core/refusal-classifier.ts`) on every member-pane capture and records positive results to the per-team `refusal_events` SQLite table (migration v6→v7 in `src/abstractions/sqlite-migrations.ts`).
+
+**Primitive surface (this commit ships)**:
+
+- `atmux refusal-scan [--team-dir <path>] [--json]` — verb at `src/verbs/refusal-scan.ts`. For each member: capture pane via tmux, classify via `classifyRefusal`, write positive results to `refusal_events` with idempotent `INSERT OR IGNORE` keyed on `(member, minute_bucket, severity)`. Emits a JSON summary to stdout; one log line per outcome to stderr.
+- `scanTeamForRefusals(team, atmuxDir, deps)` — pure-of-direct-IO core at `src/core/refusal-scan.ts`. Every external collaborator (pane capture, classifier, DB factory, clock) is dep-injectable so the medic prompt can wire its own pane-capture if it pre-captures for other diagnostic passes.
+- `refusal_events` schema: `(id TEXT PK, member TEXT, team TEXT, phrases TEXT JSON, severity TEXT, confidence REAL, detected_at INTEGER, minute_bucket INTEGER)` + `UNIQUE(member, minute_bucket, severity)`. Idempotency contract per ADR-139 §D2.
+
+**Medic invocation contract** (skill side, in `~/.claude/skills/superdoctor/superdoctor-prompt.md` aka medic per ADR-133): after the existing per-team complaints sweep, fire `atmux refusal-scan --team-dir <path>` once per enabled team. The verb is a record-only no-op when no detections land — safe to run every tick.
+
+**T3 is SCAN + RECORD only**. Threshold-trigger logic (read accumulated `refusal_events` rows + decide rotation) ships in ADR-139 T4 via `refusal-threshold.ts::shouldRotate` against the same table. Until T4 lands, the rows sit as durable observability — operators can inspect them via direct SQL (`SELECT * FROM refusal_events WHERE detected_at > ? ORDER BY detected_at DESC`).
+
+**Martinet sibling** — same verb, faster cadence (270s per tick vs medic's hourly). Wired forward-compat per ADR-132 §D1 cross-ref + `templates/briefs/martinet.md` scaffold. Once martinet's skill prompt lands (post-ADR-133 T8), it invokes the same `atmux refusal-scan` verb per-tick; medic stays as the hourly backstop.
+
+## §lead-uptime-measurement — rotation gate reads session-start.txt, NOT process etime
+
+**Annotation 2026-05-15** (t-6d950ffd, preventive for superdoctor complaint c-06dabd47).
+
+ADR-009 rotation gate ("rotate the lead at ≥60min uptime") MUST read `~/.claude/teams/<team>/lead-session-start.txt` — refreshed by **`/clear`** AND **`atmux rotate-lead`**. This is the canonical "how long since the lead's CURRENT context window started?" signal.
+
+It is NOT `ps -o etime` against the lead pane's shell PID. The shell process typically long-outlives any one Claude session — `/clear` resets the session-start marker without exiting the parent shell, and `atmux rotate-lead` reuses the same pane (and thus the same shell PID) per ADR-082. A pane whose shell has been running for 6 hours can have a freshly-`/clear`'d Claude session that's only 90 seconds old.
+
+Observers (medic / martinet / superdriver) conflating the two signals have rotated leads prematurely (incident c-06dabd47, 2026-05-15). The rotation gate MUST read `lead_session_uptime_s` (the marker-derived value); `shell_pid_etime_s` is exposed for diagnostic transparency ONLY.
+
+Surfaces:
+
+- `atmux status --json` `lead` block (t-6d950ffd) — two explicitly-named fields:
+  - `lead_session_uptime_s` — **rotation-gate source**. Derived from `lead-session-start.txt`.
+  - `shell_pid_etime_s` — diagnostic-only. Derived from `ps -o etime= -p <leadPanePid>`.
+- Whip per-tick `--lead-uptime-only` probe (per whip-prompt.md §1a) — same source: reads `lead-session-start.txt`, never `ps`.
+- Global CLAUDE.md whip-policy carries the same one-sentence clarification ("rotation gate reads session-start.txt, NOT process etime").
+
+Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47 (superdoctor complaint), [[feedback_rotation_threshold_400k]] memory (400k-ctx rotation policy that triggered the prior incident review).
 
 ## Out of scope
 

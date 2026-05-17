@@ -17,8 +17,16 @@ Usage: atmux <verb> [args]
 Setup:
   up                          Same as bare \`atmux\`: bring a team all the way up
   init [--name <team>]        Scaffold .atmux/team.json in current dir
-  start                       Create tmux session, spawn all members
-  stop [--force]              Kill tmux session, archive state
+  start                       Create tmux session, spawn all members. Also
+                              auto-adds the team's cockpit viewer window if
+                              this team is rostered + enabled in
+                              ~/.atmux/cockpit.json (ADR-063 ergonomic fix —
+                              additive, sibling windows untouched; un-
+                              rostered + disabled teams silent-skip).
+  stop [--force|--soft]       Kill tmux session, archive state.
+                              --soft (ADR-087): graceful path — notice every
+                              pane, grace window, write resume manifest at
+                              state/resume.json, NO worktree prune.
   attach                      tmux attach to the team session
   status                      Powerline team overview
   cockpit rebuild [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
@@ -26,6 +34,12 @@ Setup:
                               TUI auto-launch + cockpit session). Reads roster
                               from ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
+  sentinel [tick|status] [--once] [--config <p>] [--state <p>]
+                              ADR-132 §D2: cockpit-tier fleet-wide whip-manager
+                              tick loop (window W3, sibling of medic at W2).
+                              'tick' iterates every enabled team; 'status'
+                              prints last-tick JSON. State persists at
+                              ~/.atmux/state/sentinel-state.json.
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
@@ -35,10 +49,21 @@ Messaging:
   outbox [--ack] [--json]     Driver: read lead-outbox.md (--ack archives)
 
 Task board (kanban):
-  task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>]
+  task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>] [--driver-only]
   task list [--status todo|in-progress|done|blocked] [--assignee <member>]
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
+  task update <id> [--body <text>] [--deps <id,id>]
+
+Hierarchy (ADR-007):
+  epic add <title> [--body <text>] [--driver-ref <ref>]
+  epic list [--status <s>] [--json]
+  epic show <id> [--json]
+  epic advance <id> [--to <state>]    States: planning→ready→in-progress→review→done
+  story add <title> --epic <eid> [--ac <criteria>] [--body <text>]
+  story list --epic <eid> [--status <s>] [--json]
+  story show <id> [--json]
+  story advance <id> [--to <state>]   States: planning→ready→in-progress→testing→review→merging→done
 
 Dispatch + work:
   dispatch <member> <task-id> Push task to member's inbox + ping them
@@ -59,9 +84,25 @@ Automation:
 
 Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+  team spawn-epic <epicId> --from <parent> [--roster <preset>|--roster-file <p>]
+                              ADR-090: spawn an ephemeral epic-team child of
+                              <parent>. Worktree at <parentRoot>-epics/<epicId>
+                              on branch <parentBase>-epic-<epicId>; cockpit
+                              entry appended under the parent. Requires
+                              ATMUX_CALLER_SCOPE=driver.
+  team dissolve-epic <epicId> [--skip-checks] [--force-prune]
+                              ADR-090: tear down an epic-team spawned via
+                              spawn-epic. Soft-stop + prune worktree + remove
+                              cockpit entry + mark parent kanban EPIC done.
+                              --skip-checks bypasses the all-tasks-done +
+                              clean-worktree gates (lead-override).
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
+  health [--json|--text] [--budget] [--stale-sec <N>]
+                              SPEC-066: composed read-only diagnostic snapshot —
+                              status + inbox + task + heartbeat (+ optional budget).
+                              JSON-first, foundational for fleet dashboards.
   groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
                               Daily 04:00 cron sweep — flush archive sections, age
                               out done/cancelled cards, cull stale .bak files.

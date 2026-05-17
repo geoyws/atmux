@@ -25,10 +25,10 @@ import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
-  getDefaultSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { readLeadWindowName, type SkillsTeamPathsOpts } from "../core/lead-marker.ts";
 import { classifyText, type PaneClassification } from "../core/pane-state.ts";
@@ -113,7 +113,7 @@ export async function resolveMemberWindowTarget(
   homeOpts: SkillsTeamPathsOpts = {},
 ): Promise<string> {
   const role = (member.role ?? "member").toString();
-  const memberWindowName = buildWindowName(member.name, member.emoji);
+  const memberWindowName = buildWindowName(member.name, member.emoji, member.label, member.role);
   let windowName: string;
   if (role === "team-lead") {
     const opts: SkillsTeamPathsOpts & { fallback?: string } = { fallback: memberWindowName };
@@ -175,7 +175,7 @@ export async function paneState(argv: ReadonlyArray<string>): Promise<number> {
     });
   }
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const socketPath = parsed.socketPath ?? getDefaultSocket(team.name);
+  const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
   const cls = await paneStateWithTmux(tmux, team, sessionName, memberEntry);
   if (parsed.json) {

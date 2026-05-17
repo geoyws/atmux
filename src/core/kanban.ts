@@ -47,12 +47,24 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
-import { closeDatabase, type Database, openDatabase, transact } from "../abstractions/sqlite.ts";
+import {
+  closeDatabase,
+  type Database,
+  openDatabase,
+  transact,
+  transactImmediate,
+} from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { type Kanban, Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
-import { kanbanJsonPath } from "./common.ts";
+import {
+  type Kanban,
+  Kanban as KanbanSchema,
+  type KanbanStory,
+  type KanbanTask,
+} from "../schema/kanban.ts";
+import { DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG, type Team } from "../schema/team.ts";
+import { type CallerScope, kanbanJsonPath, tryLoadTeam } from "./common.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 // ---------- Storage routing (ADR-060) ----------
@@ -110,6 +122,10 @@ export interface AddTaskOpts {
   /** Optional lane (`fe`/`be`/`db`/`ops`/`test`/`review`/`misc`). When set,
    *  enables future lane-claim cron pickup (ADR-062). */
   lane?: string;
+  /** ADR-033 driver-only refuse-gate flag. When `true`, auto-pickup
+   *  (`claim --next` / lane-tick cron) skips this Task unless the
+   *  caller's scope is `driver` (env `ATMUX_CALLER_SCOPE=driver`). */
+  driverOnly?: boolean;
 }
 
 export interface ListTasksFilter {
@@ -183,6 +199,10 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     claimedAt: null,
     completedAt: null,
   };
+  // ADR-033: stamp driverOnly when explicitly set. Default omitted (the
+  // schema treats `undefined` as not-driver-only via the optional field
+  // shape) so legacy Tasks parse unchanged.
+  if (opts.driverOnly === true) task.driverOnly = true;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (_db, repo) => {
       repo.addTask(task);
@@ -254,25 +274,252 @@ export async function showTask(atmuxDir: string, id: string): Promise<KanbanTask
  *
  * Throws `ConfigError` if no such id is found.
  */
-export async function moveTask(atmuxDir: string, id: string, status: string): Promise<void> {
+/** Statuses to which a driverOnly Task may NOT be moved unless the
+ *  caller scope is `driver`. ADR-033 §Refuse-gate site #2 explicit
+ *  carve-out: transitions to `todo` and `blocked` remain allowed for
+ *  bookkeeping (e.g. a member parking a stalled task). */
+const DRIVER_ONLY_MOVE_BLOCKED_STATUSES: ReadonlyArray<string> = ["in-progress", "done"];
+
+export async function moveTask(
+  atmuxDir: string,
+  id: string,
+  status: string,
+  opts: { callerScope?: CallerScope } = {},
+): Promise<void> {
   const completedAt = status === "done" ? nowEpoch() : undefined;
+  // ADR-033: only `in-progress` and `done` are gated; `todo` / `blocked`
+  // bookkeeping moves stay allowed regardless of scope.
+  const statusGated = DRIVER_ONLY_MOVE_BLOCKED_STATUSES.includes(status);
+  const refuseMsg = `task move: ${id} is a driver-only Task — only the driver scope can move it to '${status}'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
+  // ADR-146 T2: pre-load team config when this is a done-transition.
+  // The auto-emit hook fires only on `done` and only when a Story
+  // branch is set; loading the team out-of-band keeps file I/O off
+  // the write-lock-held transaction body. tryLoadTeam returns null
+  // on absent team.json (JSON-only kanbans / tests that don't stage
+  // a team) — auto-emit silently skips in that case.
+  const team: Team | null = status === "done" ? await tryLoadTeam({ dir: atmuxDir }) : null;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      transact(db, () => {
+      // ADR-146 §Atomic: BEGIN IMMEDIATE so the upsert + the auto-
+      // emit addTask either both land or both roll back. The
+      // immediate lock acquisition also serializes concurrent
+      // ticks that could otherwise race the sibling-count read.
+      transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        if (statusGated && isDriverOnlyBlocked(cur, opts.callerScope)) {
+          throw new ConfigError({ what: refuseMsg });
+        }
         const next: KanbanTask = { ...cur, status };
         if (completedAt !== undefined) next.completedAt = completedAt;
         repo.upsertTask(next);
+        // ADR-146 §D1 hook: post-transition auto-emit. Same-tx so
+        // gitter's task-done cascade (ADR-032) wakes only after
+        // both rows commit — no false-positive idle nudge.
+        if (status === "done" && team !== null) {
+          tryAutoEmitTrunkMerge(repo, next, team);
+        }
       });
     });
     return;
   }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
+    if (statusGated && isDriverOnlyBlocked(t, opts.callerScope)) {
+      throw new ConfigError({ what: refuseMsg });
+    }
     const next: KanbanTask = { ...t, status };
     if (completedAt !== undefined) next.completedAt = completedAt;
     return next;
   });
+}
+
+// ---------- ADR-146 T2: trunk-merge auto-emit hook ----------
+
+/** Resolve the effective `team.autoEmitTrunkMerge` config — fills
+ *  missing keys from {@link DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG}
+ *  and computes the team-wide `enabled` default from
+ *  `team.worktreeIsolation` per ADR-146 §D7 ("default `true` when
+ *  `worktreeIsolation: true`, `false` otherwise"). */
+export function resolveAutoEmitTrunkMergeConfig(team: Team): {
+  enabled: boolean;
+  fallbackAssignee: string | null;
+  shortCircuitOnSharedBase: boolean;
+} {
+  const block = team.autoEmitTrunkMerge;
+  // Default `enabled` flips per worktreeIsolation per ADR-146 §D7.
+  const defaultEnabled = team.worktreeIsolation === true;
+  return {
+    enabled: block?.enabled ?? defaultEnabled,
+    fallbackAssignee:
+      block?.fallbackAssignee ?? DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.fallbackAssignee,
+    shortCircuitOnSharedBase:
+      block?.shortCircuitOnSharedBase ??
+      DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.shortCircuitOnSharedBase,
+  };
+}
+
+/** Resolve the auto-Task's owner per ADR-146 §D3: prefer a member
+ *  with `role === "committer"` (canonical post-ADR-159 TR3; legacy
+ *  `role === "gitter"` still accepted during grace cycle — schema
+ *  transforms to canonical, but Zod-bypassed in-memory objects may
+ *  carry the legacy value), or `name === "gitter"` for the legacy
+ *  no-role-set case, else fall back to
+ *  `autoEmitTrunkMerge.fallbackAssignee` (null = unassigned). */
+function resolveAutoEmitOwner(team: Team, fallbackAssignee: string | null): string | null {
+  const gitter = team.members.find(
+    (m) => m.role === "committer" || m.role === "gitter" || m.name === "gitter",
+  );
+  if (gitter !== undefined) return gitter.name;
+  return fallbackAssignee;
+}
+
+/** ADR-146 §D2 subject pattern. Loop-prevention §D5 matches against
+ *  this exact shape so an auto-emit Task doesn't re-trigger itself
+ *  if its own status flips. */
+const AUTO_EMIT_SUBJECT_RE = /^merge t-[0-9a-f]+ \(branch→trunk\):/;
+
+/** ADR-146 §D5 + §D1 + §D2: emit a `merge t-xxx (branch→trunk)`
+ *  Task when ALL of these hold for the just-done Task:
+ *
+ *    1. The done Task has a parent Story (`task.story` set)
+ *    2. The parent Story has a `branch` field set (per ADR-146 §D4)
+ *    3. Team `autoEmitTrunkMerge.enabled` resolves true
+ *    4. Team has `worktreeIsolation: true` (§D5 row)
+ *    5. The Story's branch is NOT the team's base branch when
+ *       `shortCircuitOnSharedBase` is on
+ *    6. Zero remaining non-done sibling Tasks under the same Story
+ *    7. The done Task itself isn't an auto-emit merge Task
+ *       (loop-prevention §D5 last row)
+ *
+ *  Returns the new auto-emit Task's id when fired, null on any
+ *  short-circuit. All work happens inside the caller's
+ *  transactImmediate wrap — no separate transaction needed. */
+export function tryAutoEmitTrunkMerge(
+  repo: KanbanRepo,
+  doneTask: KanbanTask,
+  team: Team,
+): string | null {
+  // (1) Storyless Tasks never emit. One-off branches / hot-fixes
+  //     remain manual per ADR-146 §"Storyless trunk-merges".
+  if (doneTask.story === undefined || doneTask.story === null) return null;
+  // (7) Loop-prevention: an auto-emit Task transitioning to done
+  //     would otherwise re-trigger emission against the same Story.
+  //     Subject-pattern check matches §D5 last row.
+  if (doneTask.subject !== undefined && AUTO_EMIT_SUBJECT_RE.test(doneTask.subject)) {
+    return null;
+  }
+
+  const cfg = resolveAutoEmitTrunkMergeConfig(team);
+  // (3) Master switch.
+  if (!cfg.enabled) return null;
+  // (4) Worktree-isolation gate per ADR-146 §D5 row 3. Shared-cwd
+  //     teams don't fan-in.
+  if (team.worktreeIsolation !== true) return null;
+
+  // (2) Parent Story must exist + carry a branch field.
+  const story = repo.getStory(doneTask.story);
+  if (story === null) return null;
+  // The `branch` field rides through `extra` JSON on the
+  // KanbanStory row (no DB column added). storyFromRow spreads
+  // `extra` last so `story.branch` is populated when present.
+  const sourceBranch = (story as KanbanStory).branch;
+  if (sourceBranch === undefined || sourceBranch === null || sourceBranch.length === 0) {
+    return null;
+  }
+
+  // (5) Shared-base short-circuit per §D5 row 2. Compare against
+  //     the team's `merger.baseBranch` (when set) — see ADR-088.
+  //     The resolver in `src/core/merger-config.ts` is the strict
+  //     resolver, but the kanban hook intentionally stays config-
+  //     local to avoid pulling in the merger resolver's git-probe
+  //     side-effects.
+  if (cfg.shortCircuitOnSharedBase) {
+    const baseBranch = team.merger?.baseBranch;
+    if (baseBranch !== undefined && baseBranch.length > 0 && sourceBranch === baseBranch) {
+      return null;
+    }
+  }
+
+  // (6) Zero remaining non-done siblings.
+  const siblings = repo.listTasks({ story: doneTask.story });
+  for (const s of siblings) {
+    if (s.id === doneTask.id) continue;
+    if (s.status !== "done") return null;
+  }
+
+  // All gates passed — build + insert the auto-emit Task per
+  // ADR-146 §D2 shape verbatim. Body is YAML-flavored markdown
+  // so gitter's brief (subject-pattern + body grep) parses the
+  // source-branch + target identically to a manually-filed Task.
+  const owner = resolveAutoEmitOwner(team, cfg.fallbackAssignee);
+  const emittedAt = nowEpoch();
+  const autoId = genTaskId();
+  // Owning-lane derive per §D2: read the done Task's lane (proxy
+  // for "Story's task chain primary lane"). Fall back to "misc"
+  // when the done Task is laneless.
+  const owningLane = doneTask.lane ?? "misc";
+  const body =
+    `source-branch: ${sourceBranch}\n` +
+    `target: trunk\n` +
+    `owning-lane: ${owningLane}\n` +
+    "conflict-hint: \n" +
+    `parent-story: ${story.id}\n` +
+    "auto-emitted: true\n" +
+    `emitted-at: ${emittedAt}\n`;
+  const autoTask: KanbanTask = {
+    id: autoId,
+    subject: `merge ${autoId} (branch→trunk): ${sourceBranch} → trunk`,
+    body,
+    status: "todo",
+    owner,
+    deps: [],
+    priority: null,
+    lane: "misc",
+    createdAt: emittedAt,
+    claimedAt: null,
+    completedAt: null,
+  };
+  repo.addTask(autoTask);
+  return autoId;
+}
+
+/** Per t-af159454: flip a task to `blocked` with an audit note in a
+ *  single transaction. Used by `phantom-prune` (doctor --fix + atmux
+ *  stop teardown) to surface auto-prune provenance in `task.note`
+ *  without losing the source-of-truth status flip.
+ *
+ *  Idempotent — if the task is already `blocked` AND the existing
+ *  note already starts with `auto-pruned`, this is a no-op (returns
+ *  `false`). Useful for repeated `--fix` runs.
+ *
+ *  Throws `ConfigError` when the id is unknown. */
+export async function markTaskBlockedWithNote(
+  atmuxDir: string,
+  id: string,
+  note: string,
+): Promise<boolean> {
+  if (await _useSqlite(atmuxDir)) {
+    return await _withDb(atmuxDir, (db, repo) => {
+      return transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        if (cur.status === "blocked" && (cur.note ?? "").startsWith("auto-pruned")) {
+          return false;
+        }
+        repo.upsertTask({ ...cur, status: "blocked", note });
+        return true;
+      });
+    });
+  }
+  let mutated = false;
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
+    if (t.status === "blocked" && (t.note ?? "").startsWith("auto-pruned")) {
+      return t;
+    }
+    mutated = true;
+    return { ...t, status: "blocked", note };
+  });
+  return mutated;
 }
 
 /** Update a task's lane (`fe`/`be`/`db`/`ops`/`test`/`review`/`misc`).
@@ -293,6 +540,114 @@ export async function setTaskLane(
     return;
   }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, lane }));
+}
+
+/** Update a task's priority (integer; lower = higher priority in
+ *  bash list-sort). Throws `ConfigError` on miss. `null` clears the
+ *  priority (treated as default 99 in selection / list ordering, per
+ *  bash `lib/kanban.sh:91` `sort_by(.priority // 99)`). */
+export async function setTaskPriority(
+  atmuxDir: string,
+  id: string,
+  priority: number | null,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, priority });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, priority }));
+}
+
+/** Update a task's body (multi-line prose stored in `tasks.body`). Throws
+ *  `ConfigError` on miss. `null` / empty-string both clear the body. */
+export async function setTaskBody(
+  atmuxDir: string,
+  id: string,
+  body: string | null,
+): Promise<void> {
+  const normalized = body === "" ? null : body;
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, body: normalized });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, body: normalized }));
+}
+
+/** Update a task's deps list. Throws `ConfigError` on miss. Empty array
+ *  clears the deps (no upstream blocker). */
+export async function setTaskDeps(
+  atmuxDir: string,
+  id: string,
+  deps: ReadonlyArray<string>,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, deps: [...deps] });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, deps: [...deps] }));
+}
+
+/** ADR-033 retro-flag setter — flip an existing task's `driverOnly`
+ *  flag. Per t-2ef0c994: `task add --driver-only` was the only entry
+ *  point; this closes the "I forgot at filing time" / "decided to park
+ *  it after filing" gap so operators can promote any todo or blocked
+ *  task into the driver-only refuse-gate without going through SQL.
+ *
+ *  Passing `true` sets the flag; `false` clears it (back to undefined-
+ *  equivalent). Idempotent — re-setting the same value is a no-op
+ *  upsert. */
+export async function setTaskDriverOnly(
+  atmuxDir: string,
+  id: string,
+  driverOnly: boolean,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transact(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        // Setting false collapses to omitted (consistent with task add's
+        // "only stamp when explicitly true" pattern at line 208) — the
+        // schema treats `undefined` and `false` as equivalent for the
+        // refuse-gate semantics, so we normalize on write.
+        const next = { ...cur };
+        if (driverOnly) {
+          next.driverOnly = true;
+        } else {
+          delete (next as { driverOnly?: boolean }).driverOnly;
+        }
+        repo.upsertTask(next);
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => {
+    const next = { ...t };
+    if (driverOnly) {
+      next.driverOnly = true;
+    } else {
+      delete (next as { driverOnly?: boolean }).driverOnly;
+    }
+    return next;
+  });
 }
 
 /** Update a task's owner. Throws `ConfigError` on miss. */
@@ -355,14 +710,24 @@ export async function claimTask(
   atmuxDir: string,
   id: string,
   who: string,
+  opts: { callerScope?: CallerScope } = {},
 ): Promise<{ pre: KanbanTask; post: KanbanTask }> {
   const claimedAt = nowEpoch();
+  // ADR-033 driver-only refuse message — quoted verbatim so the bash
+  // and TS surfaces print the same string (audit + grep parity).
+  const driverOnlyRefuse = `claim: ${id} is a driver-only Task — only the driver scope can claim it. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (db, repo) =>
       transact(db, () => {
         const task = repo.getTask(id);
         if (task === null) {
           throw new ConfigError({ what: `no such task: ${id}` });
+        }
+        if (task.status === "done") {
+          throw new ConfigError({ what: doneRefuseMessage(task) });
+        }
+        if (isDriverOnlyBlocked(task, opts.callerScope)) {
+          throw new ConfigError({ what: driverOnlyRefuse });
         }
         const allTasks = repo.listTasks();
         const unresolved = unresolvedDeps(allTasks, task);
@@ -388,6 +753,12 @@ export async function claimTask(
       if (task === undefined) {
         throw new ConfigError({ what: `no such task: ${id}` });
       }
+      if (task.status === "done") {
+        throw new ConfigError({ what: doneRefuseMessage(task) });
+      }
+      if (isDriverOnlyBlocked(task, opts.callerScope)) {
+        throw new ConfigError({ what: driverOnlyRefuse });
+      }
       const unresolved = unresolvedDeps(k.tasks, task);
       if (unresolved.length > 0) {
         throw new ConfigError({
@@ -412,6 +783,77 @@ export async function claimTask(
 }
 
 /**
+ * t-381a6ea0: Build the refuse-message for a done-state claim attempt.
+ * The completedAt is rendered ISO-8601 + the owner inlined so the
+ * operator can correlate against `atmux task show <id>` audit fields
+ * without a second lookup. Recovery path explicitly cites
+ * `atmux task move <id> todo` per Task body — discoverability matters
+ * because re-opening a done Task is rare and the workflow shouldn't
+ * have to be hunted in docs.
+ *
+ * Exported for direct unit-testing — keeps the message format stable
+ * (operator + lead may grep for "already done" in audit trails).
+ */
+export function doneRefuseMessage(task: KanbanTask): string {
+  const completedIso =
+    task.completedAt !== null && task.completedAt !== undefined && task.completedAt > 0
+      ? new Date(task.completedAt * 1000).toISOString()
+      : "unknown";
+  const owner =
+    task.owner !== null && task.owner !== undefined && task.owner.length > 0
+      ? task.owner
+      : "unknown";
+  return (
+    `claim: task ${task.id} already done (completedAt=${completedIso}, owner=${owner}) — claim refused. ` +
+    `To re-open, use \`atmux task move ${task.id} todo\` first.`
+  );
+}
+
+/**
+ * 2026-05-12 race-condition gate — refuse a member-initiated claim when
+ * the task is already in-progress under a DIFFERENT owner.
+ *
+ * This is the THIN wrapper used by the `claim` verb (member-initiated
+ * pull), NOT by `dispatch` (lead-initiated reassignment). Dispatch needs
+ * to override the assignee freely; claim should refuse because two members
+ * silently claiming the same in-progress task is the documented
+ * duplication failure mode (see ADR-085, t-eee0a7f6-followup).
+ *
+ * The gate fires only for `in-progress` tasks under a different owner;
+ * re-claiming a `done` / `blocked` / `cancelled` task or re-claiming
+ * your own in-progress task is allowed (idempotent + recovery paths).
+ *
+ * Implementation routes through `claimTask` after the precheck, so the
+ * deps + driver-only gates still fire in their normal order.
+ */
+export async function claimTaskForMember(
+  atmuxDir: string,
+  id: string,
+  who: string,
+  opts: { callerScope?: CallerScope } = {},
+): Promise<{ pre: KanbanTask; post: KanbanTask }> {
+  const existing = await showTask(atmuxDir, id);
+  if (
+    existing !== null &&
+    existing.status === "in-progress" &&
+    existing.owner !== null &&
+    existing.owner !== undefined &&
+    existing.owner !== who
+  ) {
+    throw new ConfigError({
+      what:
+        `claim: ${id} already in-progress under '${existing.owner}'; refuse — ` +
+        `pick a different task or coordinate with lead to reassign. ` +
+        `If '${existing.owner}' has stalled, lead can ` +
+        `\`atmux task move ${id} todo\` (un-claim) and you can re-claim cleanly. ` +
+        `Force-override is intentionally unavailable; the silent duplication ` +
+        `this gate prevents costs more than a one-line lead nudge.`,
+    });
+  }
+  return claimTask(atmuxDir, id, who, opts);
+}
+
+/**
  * Mark a task done: status="done", completedAt stamped, optional note.
  * No deps check (parity with bash claim.sh:61-69).
  *
@@ -421,14 +863,22 @@ export async function markTaskDone(
   atmuxDir: string,
   id: string,
   note?: string,
+  opts: { callerScope?: CallerScope } = {},
 ): Promise<KanbanTask> {
   const completedAt = nowEpoch();
+  // ADR-033 driver-only refuse-gate. `done` is just `task move ... done`
+  // with implicit assignee, so the message matches taskMove's `done`
+  // path verbatim.
+  const refuseMsg = `done: ${id} is a driver-only Task — only the driver scope can move it to 'done'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (db, repo) =>
       transact(db, () => {
         const task = repo.getTask(id);
         if (task === null) {
           throw new ConfigError({ what: `no such task: ${id}` });
+        }
+        if (isDriverOnlyBlocked(task, opts.callerScope)) {
+          throw new ConfigError({ what: refuseMsg });
         }
         const next: KanbanTask = { ...task, status: "done", completedAt };
         if (note !== undefined) {
@@ -447,6 +897,9 @@ export async function markTaskDone(
       const task = k.tasks.find((t) => t.id === id);
       if (task === undefined) {
         throw new ConfigError({ what: `no such task: ${id}` });
+      }
+      if (isDriverOnlyBlocked(task, opts.callerScope)) {
+        throw new ConfigError({ what: refuseMsg });
       }
       const next: KanbanTask = {
         ...task,
@@ -468,6 +921,25 @@ export async function markTaskDone(
   return done;
 }
 
+/**
+ * ADR-033 driver-only refuse-gate predicate. Returns `true` when the
+ * given Task carries `driverOnly === true` AND the caller's resolved
+ * scope is not `driver` — i.e., the action (claim / move) must be
+ * refused. Returns `false` for legacy Tasks (driverOnly undefined) and
+ * for driver-scope callers.
+ *
+ * Centralizes the predicate so the three refuse-gate sites
+ * (selectNextClaimable, claimTask, markTaskDone) share the same shape;
+ * a future change to scope semantics (e.g. team-roster sniff once the
+ * defense-in-depth check returns post-ADR-017) lands in one place.
+ */
+export function isDriverOnlyBlocked(
+  task: Pick<KanbanTask, "driverOnly">,
+  scope: CallerScope | undefined,
+): boolean {
+  return task.driverOnly === true && scope !== "driver";
+}
+
 /** Options for `selectNextClaimable` — ADR-062 §1 lane-aware pull. */
 export interface SelectNextOpts {
   /** Caller's lane from `team.members[].lane`. `null` → no lane preference;
@@ -480,6 +952,11 @@ export interface SelectNextOpts {
    *  remain claimable; pre-assigned-to-other are skipped (bash
    *  d-515de5ce relax). */
   caller: string;
+  /** ADR-033 caller-scope verdict. Tasks with `driverOnly: true` are
+   *  invisible to the selection when this is `"member"` (the auto-
+   *  pickup default). Tests / explicit driver callers pass `"driver"`
+   *  to bypass the filter. Default at call sites: `"member"`. */
+  callerScope?: CallerScope;
 }
 
 /**
@@ -502,8 +979,14 @@ export function selectNextClaimable(
 ): KanbanTask | null {
   const ownerOk = (t: KanbanTask): boolean =>
     t.owner === null || t.owner === undefined || t.owner === opts.caller;
+  // ADR-033 driver-only refuse-gate: skip Tasks where `driverOnly:true`
+  // unless the caller's resolved scope is `driver`. Auto-pickup
+  // (`claim --next` / lane-tick cron) MUST set `callerScope` for this
+  // to fire; default `undefined`/`"member"` is fail-secure.
+  const driverOnlyOk = (t: KanbanTask): boolean => !isDriverOnlyBlocked(t, opts.callerScope);
   const baseEligible = tasks.filter(
-    (t) => t.status === "todo" && ownerOk(t) && unresolvedDeps(tasks, t).length === 0,
+    (t) =>
+      t.status === "todo" && ownerOk(t) && driverOnlyOk(t) && unresolvedDeps(tasks, t).length === 0,
   );
   const tiebreak = (a: KanbanTask, b: KanbanTask): number => {
     const pa = a.priority ?? 999;

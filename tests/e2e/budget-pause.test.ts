@@ -36,7 +36,7 @@ import { join } from "node:path";
 import type { BudgetProbeResult, BudgetProbeStatus } from "../../src/abstractions/budget-probe.ts";
 import type { DiscordSendOpts, DiscordTemplate } from "../../src/abstractions/discord.ts";
 import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
-import { whip } from "../../src/verbs/whip.ts";
+import { poke as whip } from "../../src/verbs/poke.ts";
 
 // ---------- Fixture builders ----------
 
@@ -52,6 +52,7 @@ function buildFakeTmux(opts: { sessionUp: boolean; panes: Record<string, string>
       killSession: async () => {},
       listSessions: async () => [],
       renameSession: async () => {},
+      setEnvironment: async () => {},
     },
     window: {
       listWindows: async () =>

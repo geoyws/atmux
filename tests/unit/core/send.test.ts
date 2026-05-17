@@ -249,9 +249,13 @@ describe("sendToMember — safe-send preflight (t-06e7209d)", () => {
     const { target } = await spinCatSession(`${sessionPrefix}_pf_ok`);
     // Get the cat pane to a Claude-like ready state by feeding the
     // ready-banner. Capture-pane sees the line + classifies READY.
+    // Pre-ADR-080 §C this fixture was "3.4k tokens · esc to interrupt"
+    // — that phrase now classifies BUSY (only renders during an active
+    // turn). The canonical post-§C READY footer is the tok-counter +
+    // auto-mode indicator.
     await tmux.pane.sendKeys({
       target: { kind: "member", member: "x", team: "t", target },
-      keys: "3.4k tokens · esc to interrupt",
+      keys: "tok 67k/100  ⏵⏵ auto mode on",
       enter: true,
     });
     await new Promise((r) => setTimeout(r, 200));
@@ -407,5 +411,131 @@ describe("isPreSendWarn — pure classifier", () => {
 
   test("false on contextCleared alone (NOT in bash warn-list)", () => {
     expect(isPreSendWarn(classifyPaneState("Context cleared. Ready for input\n"))).toBe(false);
+  });
+});
+
+// ---------- ADR-138 T3b: expectVerifier path (compose) ----------
+
+describe("sendToMember — expectVerifier (T3b compose path)", () => {
+  test("verifier matches captured pane → verifyResult.success=true; outcome ok", async () => {
+    const { target } = await spinCatSession(`${sessionPrefix}_v_ok`);
+    // cat echoes the pasted body. A verifier that matches the body
+    // confirms the post-send pane reaches the expected state. Using
+    // `paneMatchesRegex` would also work; inline closure keeps the
+    // dependency narrow.
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "verifier-ok", team: "test-team" },
+      "verifier-ok-msg",
+      {
+        sleep: NO_SLEEP,
+        verify: false,
+        expectVerifier: (cap) => cap.includes("verifier-ok-msg"),
+        verifyTimeoutMs: 2000,
+      },
+    );
+    expect(out.kind).toBe("ok");
+    expect(out.verifyResult).toBeDefined();
+    expect(out.verifyResult?.success).toBe(true);
+    expect(out.verifyResult?.attempts).toBe(1);
+  });
+
+  test("verifier never matches → success=false; escalation log written", async () => {
+    const { target } = await spinCatSession(`${sessionPrefix}_v_fail`);
+    const escDir = await mkdtemp(join(tmpdir(), "atmux-send-esc-"));
+    const escLog = join(escDir, "send-keys-failures.log");
+    try {
+      const out = await sendToMember(
+        tmux,
+        atmuxDir,
+        { target, member: "verifier-fail", team: "test-team" },
+        "any-body",
+        {
+          sleep: NO_SLEEP,
+          verify: false,
+          // A verifier that never matches — forces the timeout path.
+          expectVerifier: () => false,
+          verifyTimeoutMs: 100, // short for test speed
+          escalationLogPath: escLog,
+        },
+      );
+      expect(out.kind).toBe("ok");
+      expect(out.verifyResult?.success).toBe(false);
+      // Escalation log written by the safeSendKeysWithVerify path.
+      const logText = await readFile(escLog, "utf8");
+      expect(logText).toContain("target=");
+      expect(logText).toContain("attempts=1");
+    } finally {
+      await rm(escDir, { recursive: true, force: true });
+    }
+  });
+
+  test("retries pinned to 0 → exactly 1 send-keys attempt (no double-submit)", async () => {
+    // Inject a custom appendLog to capture the escalation entry; assert
+    // attempts=1 surfaces in the verifyResult. ADR-138 §"Why not
+    // blanket-3x Enter" — double-submit on non-empty composer is the
+    // exact failure mode this pin protects against.
+    const { target } = await spinCatSession(`${sessionPrefix}_v_no_retry`);
+    const captured: string[] = [];
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "verifier-no-retry", team: "test-team" },
+      "msg",
+      {
+        sleep: NO_SLEEP,
+        verify: false,
+        expectVerifier: () => false,
+        verifyTimeoutMs: 50,
+        escalationLogPath: "/tmp/atmux-send-no-retry-log.log",
+        appendLog: async (path, content) => {
+          captured.push(`${path}::${content.slice(0, 64)}`);
+        },
+      },
+    );
+    expect(out.verifyResult?.attempts).toBe(1);
+    // Exactly one escalation log entry (retries=0 pin).
+    expect(captured).toHaveLength(1);
+  });
+
+  test("verifier omitted → legacy submitAfterPaste path (no verifyResult)", async () => {
+    const { target } = await spinCatSession(`${sessionPrefix}_v_legacy`);
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "legacy", team: "test-team" },
+      "legacy-msg",
+      { sleep: NO_SLEEP, verify: false },
+    );
+    expect(out.kind).toBe("ok");
+    // Behavior identical to pre-T3b: no verifyResult on the outcome.
+    expect(out.verifyResult).toBeUndefined();
+  });
+
+  test("home override resolves $HOME/.atmux/state/send-keys-failures.log", async () => {
+    const { target } = await spinCatSession(`${sessionPrefix}_v_home`);
+    const home = await mkdtemp(join(tmpdir(), "atmux-send-home-"));
+    try {
+      const out = await sendToMember(
+        tmux,
+        atmuxDir,
+        { target, member: "home-route", team: "test-team" },
+        "msg",
+        {
+          sleep: NO_SLEEP,
+          verify: false,
+          expectVerifier: () => false,
+          verifyTimeoutMs: 50,
+          home,
+        },
+      );
+      expect(out.verifyResult?.success).toBe(false);
+      const logPath = join(home, ".atmux", "state", "send-keys-failures.log");
+      const logText = await readFile(logPath, "utf8");
+      expect(logText).toContain("target=");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

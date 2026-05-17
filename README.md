@@ -4,15 +4,19 @@
 
 > 🎮 **Driver** (you) → 🧭 **Team Lead** → 🐝 **Team Members** — coordinated through tmux, not an API.
 
-> **State storage (atmux-bun).** Per [ADR-060](docs/adr-bun/060-sqlite-state-store.md),
-> kanban + inboxes + per-feature state moved to **`.atmux/state.db`** (SQLite, WAL).
-> Diagrams + prose below referencing `kanban.json` describe the legacy JSON model still
-> used on bash atmux and on teams not yet migrated. Code paths are dual-path: source of
-> truth is `state.db` when present, else `kanban.json`.
+> **State storage.** Per [ADR-126](docs/adr/126-sqlite-state-store.md) +
+> ADR-076 (inbox JSON elimination — file pending; see commits `27d80ee` →
+> `5c16432`), kanban + inboxes + per-feature state live in **`.atmux/state.db`**
+> (SQLite, WAL). The bash dispatcher was retired in the bun cutover —
+> `bin/atmux` is now a TS shim into `src/cli.ts`. Diagrams + prose below that
+> still reference `kanban.json` describe legacy teams not yet migrated;
+> readers are dual-path (SQL-canonical when `state.db` exists, else JSON).
+> Operators upgrading run `atmux migrate-state` once per team root — see
+> §State layout for the migration runbook.
 
 A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
 
-**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, gitter, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; gitter commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
+**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, committer, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; committer commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
 
 ## Agile vocabulary
 
@@ -22,9 +26,9 @@ atmux's kanban speaks Epic / Story / Task. The pull model only works when you ke
 
 - **Story** — a coherent slice of an Epic with explicit acceptance criteria. State machine: `planning → ready → in-progress → testing → review → merging → done`. **Stories are OPTIONAL.** Small Epics with ≤3 Tasks skip them. Use Stories when there are multiple distinct acceptance surfaces (schema vs. UI vs. e2e). Reviewer signoff happens at the Story level on the cumulative diff — empty `acceptanceCriteria` is an automatic REJECT.
 
-- **Task** — an atomic unit of work on the kanban with a lane (FE / BE / DB / OPS / TEST / REVIEW / MISC), optional `--epic` / `--story` tags, optional `--deliverable`, and explicit `--deps`. Workers **pull** the next claimable Task in their lane via `atmux claim --next`; selection prefers their lane, falls back across lanes when `crossLaneClaim=true` (default). Each Task with `.epic` set auto-dispatches a commit-Task to gitter on `move done`; one commit per Task, no batching.
+- **Task** — an atomic unit of work on the kanban with a lane (FE / BE / DB / OPS / TEST / REVIEW / MISC), optional `--epic` / `--story` tags, optional `--deliverable`, and explicit `--deps`. Workers **pull** the next claimable Task in their lane via `atmux claim --next`; selection prefers their lane, falls back across lanes when `crossLaneClaim=true` (default). Each Task with `.epic` set auto-dispatches a commit-Task to committer on `move done`; one commit per Task, no batching.
 
-The **lead never decomposes and never dispatches per-Task** — that's the planner's and the kanban's job. The lead routes Epics to the planner, watches state, surfaces blockers, and composes Epic summaries. The **gitter never reviews** and never pushes by default. The **reviewer never commits** and never decomposes. Each role has a narrow surface; the kanban orchestrates.
+The **lead never decomposes and never dispatches per-Task** — that's the planner's and the kanban's job. The lead routes Epics to the planner, watches state, surfaces blockers, and composes Epic summaries. The **committer never reviews** and never pushes by default. The **reviewer never commits** and never decomposes. Each role has a narrow surface; the kanban orchestrates.
 
 See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR + state-machine spec, and the implementation plan at `~/.claude/plans/pure-pondering-crane.md` for the rollout sequence.
 
@@ -45,7 +49,7 @@ See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR 
 │                                                                    │
 │  🧭 STAFF                                                          │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
-│  │ 🧭 lead    │  │ 🗺️  planner │  │ 🔍 reviewer│  │ 🌿 gitter  │   │
+│  │ 🧭 lead    │  │ 🗺️  planner │  │ 🔍 reviewer│  │ 🌿 committer  │   │
 │  │ ROUTES     │  │ DECOMPOSES │  │ STORY GATE │  │ COMMITS    │   │
 │  └──┬─────────┘  └─────┬──────┘  └──────┬─────┘  └────┬───────┘   │
 │     │ atmux send       │ atmux           │ atmux        │ on every  │
@@ -55,7 +59,7 @@ See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR 
 │     │                  │  --epic --lane  │              │           │
 │     ▼                  ▼                 ▼              │           │
 │  ┌────────────────────────────────────────┐              │           │
-│  │ 📋 kanban.json (Epics + Stories + Tasks) │ ◄────────────┘           │
+│  │ 📋 state.db (Epics + Stories + Tasks)  │ ◄────────────┘           │
 │  └─────────┬──────────────────────────────┘                          │
 │            │ atmux claim --next  (lane-prefer; deps-aware)            │
 │            ▼                                                          │
@@ -70,7 +74,7 @@ See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR 
 │  └────────────┘ └────────────┘ └────────────┘                        │
 │                                                                       │
 │  Final Task done → epic auto-flips → "draft Epic summary" → 🧭 lead   │
-│  shared state: .atmux/{team.json,kanban.json,decisions.md,inboxes/}   │
+│  shared state: .atmux/{team.json,state.db,decisions.md,lead-outbox.md}│
 └───────────────────────────────────────────────────────────────────────┘
                │ every 5 min                     every 30 min
                ▼                                 ▼
@@ -97,7 +101,7 @@ atmux attach                  # tmux attach to watch
 
 # 3. Drive the team:
 atmux tell-lead "build a /healthz endpoint with 100% test coverage"
-atmux status                  # team pulse
+atmux status                  # team pulse + commit-cadence column (ADR-148)
 atmux outbox                  # read lead's async replies
 
 # 4. Automation is wired for you.
@@ -171,6 +175,60 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 **Caveat.** Orthogonal to the single-session default (ADR-026): every team is single-session today, so `tmuxTmpdir` simply moves the driver's *shared* session onto the team's isolated socket. If you've used the `singleSession=false` escape hatch, the dedicated `atmux-<team>` session lives on the isolated socket instead. Either combination is supported.
 
 The init wizard does not prompt for this field — opt-in is a manual `team.json` edit, since the field is for advanced/dogfooding setups. See [docs/adr/018-per-team-tmux-socket-isolation.md](docs/adr/018-per-team-tmux-socket-isolation.md) for the full design + risk register.
+
+### Per-member worktree isolation (opt-in)
+
+By default every member in an atmux team shares one working tree — `team.json` writes the same `cwd` for all members, and `atmux start` spawns each member's TUI against that single directory. At 10+ concurrent members this fails in three observed ways (see ADR-082 §Context for the full incident log):
+
+1. **`lint-staged` + submodule-`m`-state silently absorbs unrelated content.** Husky's stash/unstash dance during one member's commit can sweep up another member's untracked-or-unstaged edits into the index. The 2026-05-08 SOPX session lost a `docs/adr/` draft this way.
+2. **`git stash push` for hook-bypass or branch-switch sweeps other members' WIP** into the stash entry. Recovering requires `git stash show -p` archaeology.
+3. **Concurrent `git add -A` races bundle other members' staged files into the wrong commit.** Observed three times in the 2026-05-12 atmux session — commit `99e4879` is the live example, bundling SPEC-063 work alongside ADR-082 W1 (see [ADR-082 §Bundle history](docs/adr/082-worktree-isolation-per-member.md#bundle-history)).
+
+**Per-member worktree isolation** moves each member into their own `git worktree` at `<atmuxDir>/worktrees/<member>/` on their own branch `<base>-<member>` (e.g. `geoyws-up-impl`). The `.git` directory stays shared (git's worktree mechanism hardlinks objects, so disk cost is workdir-only); the working trees + indexes are isolated, so a sibling's `git add -A` cannot reach another teammate's staged files.
+
+**When to pick it.** ≥10 concurrent members — atmux-team itself at 11+, sopx-guild at 19+, cockpit-aggregated teams approaching 30. Most ≤3-member teams do NOT need this — leave the field unset.
+
+```json
+{
+  "worktreeIsolation": true
+}
+```
+
+`worktreeRoot` is a relative path resolved against `atmuxDir`; defaults to `.atmux/worktrees` and rarely needs override.
+
+**What changes when set:**
+
+- `atmux start` provisions one worktree per member via `git worktree add -b <base>-<member> <wtPath> <base>` BEFORE spawning each member's TUI. The base branch is whatever the parent worktree currently has checked out; per-member branches are idempotent (existing `<base>-<member>` branches re-used on re-provision).
+- Each member's `tmux new-window` `cwd` is overridden to their isolated path — they only see their own `git status`, their own staged files. The on-disk `team.json` `cwd` is unchanged.
+- `atmux stop --force` calls `git worktree remove` for each *clean* worktree; **dirty worktrees are skipped** with a warning (never silently destroy uncommitted work). The `<base>-<member>` branch is left behind by default; add `--prune-branch` (requires `--force`) to also delete each pruned worktree's branch via safe `git branch -d` (unmerged branches refuse the delete and are surfaced as a warning — operator escalates to `git branch -D` manually).
+- `atmux stop` (no `--force`) does NOT prune. Worktrees survive normal stop+start cycles.
+- `atmux doctor` adds four worktree probe classes:
+  - `worktree-missing` — isolation on but no worktree dir for a member (auto-fixable: re-provision via `--fix`).
+  - `worktree-orphan` — worktree dir for an unknown-member name (auto-fixable via `--fix`).
+  - `worktree-wrong-branch` — worktree on a branch other than `<base>-<member>` (surface-only; operator decides).
+  - `worktree-disabled-but-present` — isolation off but worktrees exist on disk (surface-only).
+
+**Trade-offs:**
+
+- **Wins.** Stash-eat collisions structurally impossible. The husky/lint-staged submodule-`m`-state absorption (CLAUDE.md global rule on "Hooks, Commits, Tooling") becomes a non-issue at the worktree boundary. The parallel `git add -A` race that bundled W1 + SPEC-063 cannot happen — each member's index is separate.
+- **Costs.** Push conflicts become **visible** where they were silently stash-eaten before; two members editing the same file on `<base>-A` vs `<base>-B` discover the conflict at merge-back time. Net-positive for ops visibility; net-negative for "everything just merges" muscle memory. Disk: N members × working-tree size (atmux ≈ 50MB/member, sopx-guild ≈ 1.2GB/member); `.git` objects hardlinked so growth is workdir-only.
+
+**Rollback** — one-line revert:
+
+```bash
+jq '.worktreeIsolation = false' .atmux/team.json | sponge .atmux/team.json
+atmux stop --force --prune-branch                          # prunes clean worktrees + safe-deletes merged branches
+atmux start
+```
+
+`--prune-branch` is opt-in (requires `--force`) and only deletes branches whose worktrees were successfully pruned. Unmerged branches refuse the delete (no `-D` escalation); those + dirty-worktree branches stay for the operator to handle, per the "destructive git ops need explicit auth" rule.
+
+**Known gaps (post-MVP):**
+
+- **Submodules currently shared.** sopx has 5+ submodules; per-member submodule worktrees would 5× the disk + provisioning cost. MVP keeps submodules shared, so cross-member edits *inside* a submodule can still race. File a follow-up ADR if demo prep exposes need (ADR-082 OQ4).
+- **Committer alignment is operator-defined.** The committer role can either commit on its own `<base>-committer` worktree (default — symmetric with other members), or commit on the parent repo's `<base>` directly (legacy pattern — keeps the committer outside the per-member namespace). ADR-084 OQ-3 leaves this to the operator; both work.
+
+The init wizard does not prompt for this field — opt-in is a manual `team.json` edit, since the field is for sopx-class (≥10 member) setups. See [docs/adr/082-worktree-isolation-per-member.md](docs/adr/082-worktree-isolation-per-member.md) (provision / prune / probe shapes + the original MVP rationale) and [docs/adr/084-worktree-per-member-branch-model.md](docs/adr/084-worktree-per-member-branch-model.md) (per-member branch model amending OQ6).
 
 ### Renaming a team
 
@@ -299,7 +357,7 @@ The unblocker is the *detector*; the lead remains the urgent-Discord *voice*. (W
 
 Optional dedicated narrative-composition member, spawned at `role=discorder, lane=misc`. Owns the team's **scheduled** Discord pings — 30-min `whip-progress` digest + 60-min `whip-heartbeat` — while the team-lead keeps the **urgent** voice (`whip-blocker`, `whip-decisions`, `whip-critical`). Read-only on kanban / git-log / decisions; never claims, never plans, never sends urgent pings.
 
-**What it does.** Per [ADR-022](docs/adr/022-discorder-role.md): on a scheduled cron tick, snapshots `kanban.json` + recent commit log + new entries since the last decisions cursor, composes a `whip-progress` digest body matching the canonical `~/.claude/CLAUDE.md` Discord-format rule (header + bulleted body + per-bullet emoji), and routes via `~/.claude/skills/whip/scripts/ping-discord.sh`. Hourly the same loop fires a `whip-heartbeat` — single bullet, "team alive, last commit Nm ago, kanban: todo=X / in-progress=Y." See `templates/briefs/discorder.md` for the per-tick loop, the section discipline, and the one-line escalation rule (anything that needs judgment-on-correctness routes to lead via `atmux send lead`).
+**What it does.** Per [ADR-022](docs/adr/022-discorder-role.md): on a scheduled cron tick, snapshots the kanban (SQLite `state.db` post-ADR-076) + recent commit log + new entries since the last decisions cursor, composes a `whip-progress` digest body matching the canonical `~/.claude/CLAUDE.md` Discord-format rule (header + bulleted body + per-bullet emoji), and routes via `~/.claude/skills/whip/scripts/ping-discord.sh`. Hourly the same loop fires a `whip-heartbeat` — single bullet, "team alive, last commit Nm ago, kanban: todo=X / in-progress=Y." See `templates/briefs/discorder.md` for the per-tick loop, the section discipline, and the one-line escalation rule (anything that needs judgment-on-correctness routes to lead via `atmux send lead`).
 
 **Ownership split.** The lead retains every event-driven ping; the discorder owns the routine narrative:
 
@@ -330,6 +388,26 @@ For `role=discorder` the model is **Sonnet** (`claude-sonnet-4-6`) per [ADR-024]
 The legacy `atmux report` cron line — pre-discorder, lead-composed report — is **auto-suppressed** when a discorder member exists (cron-rewrite skips that block on next `atmux start`). Manual `atmux report` still works for one-off invocations from any context, regardless of discorder presence; only the cron auto-fire is suppressed to avoid duplicate routine pings into the channel.
 
 **See also**: [ADR-022](docs/adr/022-discorder-role.md) (role rationale + ownership split + open questions); `templates/briefs/discorder.md` (canonical brief loaded at spawn time); [ADR-024](docs/adr/024-per-member-model-selection.md) (per-member model + the discorder Sonnet carve-out).
+
+### Ombudsman role
+
+Optional per-team complaint-adjudicator member, spawned at `role=ombudsman, lane=misc` (emoji `⚖️`). Per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1, reads open complaints (filed by medic / whip-velocity-gate / operator / CLI), triages each into one of five outcomes (file epic / file task / wontfix / already-addressed / defer), and writes its adjudication entry to the day's release-notes file. Surface-only on the code side — never claims code Tasks, never plans, only writes kanban + complaint resolutions.
+
+**Why**: the complaint *filing* side has named owners (medic per ADR-077, whip per ADR-087), but the *adjudicating* side has none — open complaints linger indefinitely until the operator triages them by hand. Ombudsman closes that loop per ADR-147 §Context.
+
+**Wake mechanism** (per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D2): **event-driven, NOT whip-polled**. A sentinel file `.atmux/state/ombudsman-pending.json` is written-through by `atmux complaints file|resolve`; a cron line `atmux ombudsman tick` (default 15min via `team.ombudsman.tickIntervalMins`) fast-paths no-op when the sentinel is empty and wakes the ombudsman pane via verified send-keys ([ADR-138](docs/adr/138-verified-send-keys.md)) when non-empty. Lane-tick MUST NOT inject `atmux claim --next --as ombudsman` — the role is outside the pull-model cadence.
+
+**Adjudication authority** (per ADR-147 §D3): for each open complaint, file an epic (`atmux task add --epic`), file a single task, mark `wontfix` (with rationale), mark `resolved` (citing the SHA/ADR that already addressed it), or defer (leaves sentinel entry for next tick). Every action also appends a one-line entry to the day's release-notes file `docs/release-notes/<Y>/<M>/<Y-M-D>.md` under `## Complaints adjudicated`. See ADR-147 §D4 for the day-file layout.
+
+**When to add it.** Once a team has accumulated ≥3 open complaints + the operator finds themselves triaging them manually each session. Skip for teams with no medic / no velocity gate (complaint volume too low to warrant the role).
+
+**How to add it.** No config edit needed; `atmux add-member` does the team.json mutation + spawn:
+
+```bash
+atmux add-member ombudsman --role ombudsman --tui claude --lane misc --cwd "$PWD"
+```
+
+**See also**: [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) (role rationale + release-notes layout + sub-task decomposition); `templates/briefs/ombudsman.md` (canonical brief, ships with ADR-147 T4); `docs/release-notes/README.md` (the layout convention this role writes to per ADR-147 §D4 Discovery).
 
 ### Enforcer role
 
@@ -453,7 +531,7 @@ proposed defaults.
 ### 🧑‍✈️ Non-Claude lead
 
 Nothing forces Claude to be the lead. Example — OpenCode as `team-lead` to
-keep coordination turns cheap, Claude only for reviewer / gitter:
+keep coordination turns cheap, Claude only for reviewer / committer:
 
 ```bash
 cp examples/opencode-lead-team.json .atmux/team.json
@@ -469,7 +547,7 @@ Default role→TUI mapping:
 | `team-lead`       | `claude`    | Routes asks + dispatches; never plans itself  |
 | `planner`         | `claude`    | Decomposition + ADRs — owns the cognitive load the lead used to carry |
 | `reviewer`        | `claude`    | Quality gate — needs Opus                     |
-| `gitter`          | `claude`    | Commit msg + hooks discipline                 |
+| `committer`          | `claude`    | Commit msg + hooks discipline                 |
 | `devops`          | `claude`    | Infra judgment calls                          |
 | `dba`             | `claude`    | Schema + migrations + data integrity (optional) |
 | `member`          | any         | Parallel throughput per feature lane — pick cheapest that works |
@@ -493,7 +571,7 @@ Per-role assignment for an atmux team (per
 | `lead` | Opus | coordination + dispatch |
 | `planner` | Opus | decomposition + ADRs |
 | `be-kanban` / `fe-kanban` / `test-kanban` | Opus | writes code |
-| `gitter` | Opus | commit composition + lint-staged-trap + scope-check |
+| `committer` | Opus | commit composition + lint-staged-trap + scope-check |
 | `reviewer` | Opus | audit-bar judgment on others' work (exhaustive grep + negative-space + class-widening) |
 | `unblocker` | Opus | `/team clear` blast-radius + classify-and-route on others' work |
 | `auditor` | Opus | exhaustive-grep + verdict pattern on already-committed code |
@@ -543,13 +621,15 @@ Resolution: `claudeAccount: "<suffix>"` → spawn cmd prepends `CLAUDE_CONFIG_DI
 
 **Override path interaction.** `member.command` (full override) and `team.tuiCommands[<tui>]` (custom prefix) paths bypass this auto-application — those are operator-owned envelopes; if you want the env var there, write it into the prefix/override yourself. The auto-apply is on the built-in claude path only.
 
+**Operator-shell env scrub.** `atmux start` strips `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CONFIG_DIR` from the cage tmux session's environment after `new-session`. This is defense-in-depth for member.command / tuiCommands paths that bypass tuiClaude's own `env -u` prefix (bug t-4d2936ac, 2026-05-14 incident): without the scrub, an operator running `atmux start` from a shell with `ANTHROPIC_API_KEY` exported would have every claude pane fall into env-key bearer mode + hit the "Do you want to use this API key?" dialog every spawn. The scrub is unconditional + idempotent — no operator action needed before invoking `atmux start`.
+
 ## Commands
 
 ```
 🏁 Setup
 atmux init [--wizard] [--force] [--name <team>]
 atmux start [--force]
-atmux stop [--force] [--no-archive]
+atmux stop [--force] [--no-archive] [--prune-branch]
 atmux attach
 atmux status [--json]
 
@@ -574,8 +654,10 @@ atmux task add <subject> [--body <txt>] [--epic <eid>] [--story <sid>] \
                          [--deliverable <text>] [--assignee <m>] [--deps <id,id>] [--priority <n>]
 atmux task list [--status …] [--assignee <m>] [--json]
 atmux task show <id>
-atmux task move <id> <todo|in-progress|done|blocked>   # done auto-dispatches commit-Task to gitter
+atmux task move <id> <todo|in-progress|done|blocked>   # done auto-dispatches commit-Task to committer
 atmux task assign <id> <member>
+atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->     # `-` clears lane
+atmux task priority <id> <N|->                                       # `-` clears priority (treated as default 99)
 atmux task rm <id>
 
 📨 Dispatch / work
@@ -605,6 +687,9 @@ atmux whip-resume-check [--no-discord]       # 1-min auto-resume cron precision 
               [--team-dir <dir>]
 atmux watchdog [--no-discord]                # 2-min heartbeat staleness detector (ADR-057 §D6b)
               [--team-dir <dir>]
+atmux pulse [--json] [--ping] [--config <p>] # 5-min cockpit-wide verdict probe (ADR-086)
+atmux hygiene-tick [--team-dir <d>]          # superdoctor kanban-hygiene pass (ADR-131)
+              [--no-json]                    #   one auto-fix per tick via severity/confidence ladder
 
 🔧 Maintenance
 atmux rotate <member>
@@ -615,9 +700,46 @@ atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
 ```
 
+## 📡 Commit-cadence column (ADR-148)
+
+`atmux status` surfaces a per-member **cadence** column — the canonical truth-signal for "is this member shipping?" per [ADR-148](docs/adr/148-commit-cadence-truth-signal.md). The column reads the member's worktree git log directly (`git -C <worktree> log --since=<windowSec>s --author=<name>`) and renders one of four verdicts:
+
+| Verdict | Trigger | Display |
+|---|---|---|
+| `shipping` | ≥1 commit in window AND last commit `< shippingMaxAgeSec` (default 30 min) | `🟢 shipping (5min)` |
+| `idle` | 0 commits in window AND last commit `< idleMaxAgeSec` (default 2h) — could resume soon | `🟡 idle (1h2m)` |
+| `ship-zero-window` | 0 commits in window AND age `≥ shipZeroWindowSec` (default 2h) — escalation flag per ADR-132 §E6 | `🚨 ship-zero (3h)` |
+| `dormant` | 0 commits in window AND age `≥ dormantMaxAgeSec` (default 6h) | `🔴 dormant (15h)` |
+
+Per-member exemption (planners during long decomp passes, reviewers during multi-commit audit reviews) lands in `team.json::cadence.exemptMembers`; those rows render `(exempt)`.
+
+Cadence is the truth signal — **pane-state is the proxy.** The companion `pane-state` column (formerly `state`) shows the cage-state taxonomy (`active`/`wedged`/`bootstrapping`/`down`); use it for "is the process running?" diagnostics, NOT for "is work happening?" verdicts.
+
+Config under `team.json::cadence` — all fields optional, defaults applied per ADR-148 §D7:
+
+```jsonc
+{
+  "cadence": {
+    "enabled": true,
+    "windowSec": 1800,
+    "thresholds": {
+      "shippingMaxAgeSec": 1800,
+      "idleMaxAgeSec":     7200,
+      "dormantMaxAgeSec":  21600,
+      "shipZeroWindowSec": 7200
+    },
+    "laneStallEnabled":   true,
+    "laneStallMinAgeSec": 1800,
+    "exemptMembers":      []
+  }
+}
+```
+
+JSON output (`atmux status --json`) gains `members[].cadence` with the full observation shape: `windowSec`, `commitsInWindow`, `lastCommitAt`, `lastCommitSha`, `ageOfLastCommitSec`, `verdict`.
+
 ## 🌱 Eternal-improvement (ADR-052)
 
-`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr-bun/052-eternal-improvement.md`](docs/adr-bun/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
+`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement.md`](docs/adr/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
 
 ## State layout
 
@@ -626,21 +748,34 @@ Everything lives in `.atmux/` at the project root (or wherever `ATMUX_DIR` point
 ```
 .atmux/
 ├── team.json              # source of truth: members, roles, TUIs, models
-├── kanban.json            # shared task board
-├── driver-inbox.md        # driver → lead asks (markdown, greppable)
-├── inboxes/
-│   ├── lead.json
-│   ├── reviewer.json
-│   └── …                  # {pending, inProgress, done}
+├── state.db               # SQLite canonical store: Epics + Stories + Tasks +
+│                          #   per-member inbox messages + complaints + handoff
+│                          #   state (ADR-060 + ADR-076)
+├── decisions.md           # append-only auto-mode-resolution log (markdown)
+├── flags.md               # member → lead structured issues (markdown)
+├── lead-outbox.md         # member → driver (`atmux reply` writes; markdown)
+├── driver-inbox.md        # legacy stub; use `atmux tell-lead` (markdown)
+├── inboxes/               # legacy JSON files — writer no-ops post-ADR-076,
+│                          #   state.db is canonical. Old teams keep these
+│                          #   alongside until `atmux migrate-state` lands them.
 ├── logs/
 │   ├── send-<member>.log
 │   ├── whip.log
 │   └── report.log
 ├── state/
-│   ├── session-start.txt  # epoch seconds; used by whip for lead uptime
-│   └── last-report.epoch
+│   ├── session.txt        # tmux session name captured at start (ADR-026)
+│   ├── lead-session-start.txt # epoch seconds; whip uses for lead uptime
+│   └── …                  # per-feature anchor files (rotated.epoch, etc.)
 └── archive/<timestamp>/   # created on atmux stop
 ```
+
+> **JSON → SQLite cutover (ADR-076).** Pre-0.5.0 atmux kept the kanban + per-
+> member inboxes as JSON files. Phases 1–5 (released in 0.5.0) collapsed both
+> into `state.db`. Operators upgrading existing teams: run `atmux migrate-state
+> --target=tasks --target=inboxes` once on each team root to backfill the
+> SQLite store from the legacy JSON, then `atmux start` thereafter reads SQL-
+> canonical. Legacy `kanban.json` is left in place as a deprecation stub; the
+> per-file `inboxes/*.json` writes become no-ops on SQL-canonical teams.
 
 ## Conventions
 
@@ -648,7 +783,7 @@ Two rules govern how atmux verbs emit state to agents. Both target the same prob
 
 ### Agents see slices, never full state files
 
-Every `lib/*.sh` callsite that reads `.atmux/kanban.json` (or `decisions.md`, `flags.md`, `lead-outbox.md`, `driver-inbox.md`) for **agent-facing output** uses an explicit `jq` slice — by status, lane, member, story, epic, or recency window — before emitting. Whole-file emit is reserved for tooling-internal callsites (`atmux groom`, `atmux doctor`, `atmux audit`).
+Every callsite (in `src/` post-bun cutover; historically `lib/*.sh`) that reads from `.atmux/state.db` (or the legacy `kanban.json`, `decisions.md`, `flags.md`, `lead-outbox.md`, `driver-inbox.md`) for **agent-facing output** narrows to an explicit slice — by status, lane, member, story, epic, or recency window — before emitting. Whole-state emit is reserved for tooling-internal callsites (`atmux groom`, `atmux doctor`, `atmux audit`).
 
 Concrete defaults:
 
@@ -657,12 +792,12 @@ Concrete defaults:
 - `atmux inbox <member>`, `atmux status` emit per-member-and-current-state slices.
 - `atmux super-status` emits a per-team summary, never per-team kanban contents.
 
-Token math (informal — atmux dogfood team, ~1.2 MB kanban):
+Token math (informal — atmux dogfood team, ~1.2 MB historical kanban):
 
-| Read shape          | Tokens     | When                                  |
-|---------------------|------------|---------------------------------------|
-| Whole `kanban.json` | ~300K      | groom / doctor / audit (admin tools)  |
-| Per-purpose slice   | ~500–2K    | every claim, every inbox, every tick  |
+| Read shape                | Tokens     | When                                  |
+|---------------------------|------------|---------------------------------------|
+| Whole kanban (`state.db`) | ~300K      | groom / doctor / audit (admin tools)  |
+| Per-purpose slice (SQL)   | ~500–2K    | every claim, every inbox, every tick  |
 
 Per-tick win: ~99% of kanban-read budget on long-running teams. See [ADR-041](docs/adr/041-token-savings-kanban-slicing.md) for the per-callsite audit table + slice helper inventory.
 
@@ -681,7 +816,7 @@ Member briefs (`templates/briefs/*.md`) are paste-targets for every spawned pane
 
 1. **Top — stable preamble.** Role identity, channels matrix, ADR cross-refs, lane vocabulary. Cached across the whole session.
 2. **Middle — semi-stable rules.** Per-loop cadence, what-you-do / what-you-don't, hard rules.
-3. **Bottom — pointers to churning state.** `kanban.json`, `inboxes/<member>.json`, `lead-outbox.md`. The pointers are stable; the *files they point at* churn faster than the cache TTL, so the references go LAST so the cached preamble survives every tick.
+3. **Bottom — pointers to churning state.** `state.db` (tasks / inbox rows), `lead-outbox.md`, `flags.md`. The pointers are stable; the *stores they point at* churn faster than the cache TTL, so the references go LAST so the cached preamble survives every tick.
 
 See [ADR-041 §Prompt-cache discipline](docs/adr/041-token-savings-kanban-slicing.md) for the full rationale + claim-reply / `task list` / whip-prelude levers. Roll-out is incremental (per ADR-041 OQ D2 resolution): each brief touched in normal evolution gets reordered if needed; reviewer flags ordering on changes. Mass restructure was rejected — cache-discipline wins are cumulative.
 
@@ -908,16 +1043,16 @@ Cross-link: [`docs/adr/025-superdriver-phase-1.md`](docs/adr/025-superdriver-pha
 
 ### Architectural posture
 
-- **Registry-as-file** at `~/.claude/teams/registry.json` — single source of truth for "what teams exist." flock-guarded writes mirror the `kanban.json.lock` pattern (bare `jq + mv` writes are a documented foot-gun and intentionally not used).
-- **Read-only on cross-team state.** `super-status` reads any registered team's `kanban.json` / `lead-outbox.md` / git state but never writes. The only sanctioned cross-team writes are `super-tell` (which goes through each team's `tell-lead` chain) and `super-status --prune` (operator-explicit registry cleanup).
+- **Registry-as-file** at `~/.claude/teams/registry.json` — single source of truth for "what teams exist." Atomic writes (`jq | mv` with a sidecar lock) mirror the per-team kanban writer pattern; bare `jq > file` is a documented foot-gun and intentionally not used.
+- **Read-only on cross-team state.** `super-status` reads any registered team's `state.db` / `lead-outbox.md` / git state but never writes. The only sanctioned cross-team writes are `super-tell` (which goes through each team's `tell-lead` chain) and `super-status --prune` (operator-explicit registry cleanup).
 - **NO bypass of `tell-lead`.** Every cross-team write routes through the target team's existing durability layer — no separate cross-team kanban, no shadow audit trail.
 
 ### Phase 2 deferral
 
 These verbs / behaviors are **explicitly deferred to Phase 2** and DO NOT exist in Phase 1:
 
-- Cross-team Task pushing (writing directly into another team's `kanban.json`).
-- Cross-team Epics that span multiple teams' kanban files.
+- Cross-team Task pushing (writing directly into another team's `state.db`).
+- Cross-team Epics that span multiple teams' kanban stores.
 - Cross-team conflict arbitration that edits both teams' state.
 - Superdriver whip-cycle (recurring 5-min/30-min digest from the superdriver pane).
 
