@@ -21,8 +21,8 @@
 //   - scanTeamForRefusals memberFilter excludes members cleanly
 //   - guard: recordRefusalEvent rejects when `detected === false`
 
-import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { RefusalDetectionResult } from "../../../src/core/refusal-classifier.ts";
@@ -343,8 +343,7 @@ describe("scanTeamForRefusals", () => {
     try {
       const team = makeTeam(["alice", "bob"]);
       const result = await scanTeamForRefusals(team, "/tmp/x", {
-        classify: () =>
-          detection("hard", 0.8, [{ phrase: "x", class: "hard" }]),
+        classify: () => detection("hard", 0.8, [{ phrase: "x", class: "hard" }]),
         paneCapture: async () => "REFUSE",
         openDb: () => ({ db, close: () => {} }),
         nowSec: () => 1000,

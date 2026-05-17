@@ -15,8 +15,8 @@ import {
   KNOWN_MODAL_SETTLE_MS,
   MAX_KNOWN_MODAL_DISMISSALS,
   modalClosed,
-  paneMatchesRegex,
   type PaneVerifier,
+  paneMatchesRegex,
   SafeSendKeysError,
   type SafeSendKeysWithVerifyOpts,
   type SafeSendOpts,
@@ -153,10 +153,7 @@ describe("safeSendKeys — COMPACTING retries", () => {
 
 describe("safeSendKeys — BUSY retries", () => {
   test("BUSY → READY on second attempt (turn completed)", async () => {
-    const { fixture, opts } = buildFixture([
-      "✻ Cooked for 12s",
-      "\ntok 67k/100  ⏵⏵ auto mode\n",
-    ]);
+    const { fixture, opts } = buildFixture(["✻ Cooked for 12s", "\ntok 67k/100  ⏵⏵ auto mode\n"]);
     const result = await safeSendKeys("x", "y", opts);
     expect(result.outcome).toBe("sent");
     expect(fixture.sleeps).toEqual([5_000]);
@@ -193,10 +190,7 @@ describe("safeSendKeys — MODAL refusal", () => {
 
 describe("safeSendKeys — known-modal auto-dismiss", () => {
   test("feedback-survey MODAL → dismissed with '0' (no Enter) → READY → sent", async () => {
-    const { fixture, opts } = buildFixture([
-      FEEDBACK_SURVEY_PANE,
-      "\ntok 67k/100  ⏵⏵ auto mode\n",
-    ]);
+    const { fixture, opts } = buildFixture([FEEDBACK_SURVEY_PANE, "\ntok 67k/100  ⏵⏵ auto mode\n"]);
     const result = await safeSendKeys("atmux:1.0", "real payload", opts);
     expect(result.outcome).toBe("sent");
     expect(result.dismissals).toBe(1);
@@ -246,10 +240,7 @@ describe("safeSendKeys — known-modal auto-dismiss", () => {
   test("feedback-survey clears after 1 dismiss → no flag fired", async () => {
     // Sanity: the happy-path dismissal must not raise a flag (the
     // recovery is silent; the survey is expected friction).
-    const { fixture, opts } = buildFixture([
-      FEEDBACK_SURVEY_PANE,
-      "\ntok 67k/100  ⏵⏵ auto mode\n",
-    ]);
+    const { fixture, opts } = buildFixture([FEEDBACK_SURVEY_PANE, "\ntok 67k/100  ⏵⏵ auto mode\n"]);
     await safeSendKeys("x", "y", opts);
     expect(fixture.flags).toHaveLength(0);
   });
@@ -517,10 +508,7 @@ function buildVerifyFixture(captures: string[]): {
     clockMs: 0,
   };
   let captureIdx = 0;
-  const baseOpts: Omit<
-    SafeSendKeysWithVerifyOpts,
-    "target" | "keys" | "expectVerifier"
-  > = {
+  const baseOpts: Omit<SafeSendKeysWithVerifyOpts, "target" | "keys" | "expectVerifier"> = {
     capture: async () => {
       const i = Math.min(captureIdx, fixture.captures.length - 1);
       captureIdx += 1;
@@ -559,9 +547,7 @@ describe("safeSendKeysWithVerify default constants", () => {
     expect(DEFAULT_VERIFY_POLL_MS).toBe(250);
   });
   test("DEFAULT_SEND_KEYS_FAILURES_LOG_REL matches ADR-138 §Escalation", () => {
-    expect(DEFAULT_SEND_KEYS_FAILURES_LOG_REL).toBe(
-      ".atmux/state/send-keys-failures.log",
-    );
+    expect(DEFAULT_SEND_KEYS_FAILURES_LOG_REL).toBe(".atmux/state/send-keys-failures.log");
   });
 });
 
@@ -684,9 +670,7 @@ describe("safeSendKeysWithVerify — escalation path", () => {
       retries: 0,
     });
     expect(result.success).toBe(false);
-    expect(fixture.logs[0]?.path).toBe(
-      `/tmp/fakehome/${DEFAULT_SEND_KEYS_FAILURES_LOG_REL}`,
-    );
+    expect(fixture.logs[0]?.path).toBe(`/tmp/fakehome/${DEFAULT_SEND_KEYS_FAILURES_LOG_REL}`);
   });
 
   test("escalation log path honors explicit override", async () => {
@@ -766,8 +750,7 @@ describe("safeSendKeysWithVerify — throw path", () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(SafeSendKeysError);
-    if (!(thrown instanceof SafeSendKeysError))
-      throw new Error("unreachable");
+    if (!(thrown instanceof SafeSendKeysError)) throw new Error("unreachable");
     expect(thrown.target).toBe("atmux:m");
     expect(thrown.keys).toBe("y");
     expect(thrown.attempts).toBe(2);
@@ -946,9 +929,7 @@ describe("safeSendKeysWithVerify — default nowFormatted adapter", () => {
     const fs = await import("node:fs/promises");
     const os = await import("node:os");
     const path = await import("node:path");
-    const tmpDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), "atmux-safesend-test-"),
-    );
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "atmux-safesend-test-"));
     const logPath = path.join(tmpDir, "nested", "send-keys-failures.log");
     try {
       let clock = 0;

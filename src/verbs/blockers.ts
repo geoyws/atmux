@@ -24,10 +24,7 @@
 // row shape per `BlockerRow`.
 
 import { join } from "node:path";
-import {
-  closeDatabase,
-  openDatabase,
-} from "../abstractions/sqlite.ts";
+import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import {
   type BlockerClass,
@@ -44,8 +41,7 @@ function stateDbPath(atmuxDir: string): string {
   return join(atmuxDir, "state.db");
 }
 
-const USAGE =
-  "atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]";
+const USAGE = "atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]";
 
 export interface ParsedBlockersArgs {
   subverb: "list";
@@ -78,9 +74,7 @@ export function parseDurationToSec(raw: string): number | null {
   return null;
 }
 
-export function parseBlockersArgs(
-  argv: ReadonlyArray<string>,
-): ParsedBlockersArgs {
+export function parseBlockersArgs(argv: ReadonlyArray<string>): ParsedBlockersArgs {
   const sub = argv[0];
   if (!sub) {
     throw new UsageError({ what: "blockers: missing sub-verb", hint: USAGE });
@@ -183,9 +177,7 @@ export function formatAge(sec: number): string {
 export function renderTable(rows: ReadonlyArray<BlockerRow>): string {
   if (rows.length === 0) return "(no blockers)\n";
   const lines: string[] = [];
-  lines.push(
-    `${"ID".padEnd(40)} ${"CLASS".padEnd(18)} ${"AGE".padEnd(8)} SUMMARY`,
-  );
+  lines.push(`${"ID".padEnd(40)} ${"CLASS".padEnd(18)} ${"AGE".padEnd(8)} SUMMARY`);
   for (const r of rows) {
     lines.push(
       `${r.id.padEnd(40)} ${r.blocker_class.padEnd(18)} ${formatAge(r.age_sec).padEnd(8)} ${r.summary}`,

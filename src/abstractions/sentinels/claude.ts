@@ -17,12 +17,7 @@
 // `sentinel: "cursor"` (T3); ClaudeSentinel preserves zero-
 // regression for the legacy default config.
 
-import type {
-  ApplyResult,
-  Sentinel,
-  NudgeAction,
-  Observation,
-} from "../sentinel.ts";
+import type { ApplyResult, NudgeAction, Observation, Sentinel } from "../sentinel.ts";
 
 /** Construct-time dependencies. Test suites inject fakes; the
  *  T7 cockpit tick verb (sibling Task) wires the real impls. */

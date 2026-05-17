@@ -107,8 +107,7 @@ const LIVE_MODE = process.env.ATMUX_E2E_LIVE === "1";
  *  on a dedicated line (canonical READY pattern). */
 const FIXTURE_READY = "│ > \ntok 67k/100  ⏵⏵ auto mode on\n";
 /** Rate-limit pane — `You've hit your limit` banner. */
-const FIXTURE_RATE_LIMIT =
-  "You've hit your limit. Try again in 3h 22m.\n│ > \n";
+const FIXTURE_RATE_LIMIT = "You've hit your limit. Try again in 3h 22m.\n│ > \n";
 /** Dead-pane / shell prompt — no `❯` glyph; classified as non-READY. */
 const FIXTURE_DEAD_SHELL = "user@host:~/work$ \n";
 /** Compaction-wipe simulation — `Compacting conversation` banner. */
@@ -262,9 +261,7 @@ describe("ADR-157 T6 Cell 2 — failure-injection backstop recovery (mock mode)"
   test("(1) RATE-LIMIT injection — goal-active member with rate-limit banner → skip-not-ready (NOT skip-goal-active); pane-health signal preserved", async () => {
     const { atmuxDir } = await stageTeam({
       baseDir,
-      members: [
-        { name: "gitter", lane: "be", runtime: "claude", goal: "test-goal" },
-      ],
+      members: [{ name: "gitter", lane: "be", runtime: "claude", goal: "test-goal" }],
     });
     const team = await loadTeam({ teamDir: baseDir });
     const t = "e2e-sess:gitter";
@@ -284,17 +281,13 @@ describe("ADR-157 T6 Cell 2 — failure-injection backstop recovery (mock mode)"
     // issues, NOT masked as goal-skipped.
     expect(result.outcomes["gitter"]).toBe("skip-not-ready");
     expect(calls).toEqual([]); // no claim-injection on non-READY
-    expect(logs.some((l) => l.includes("gitter:") && l.includes("skip"))).toBe(
-      true,
-    );
+    expect(logs.some((l) => l.includes("gitter:") && l.includes("skip"))).toBe(true);
   });
 
   test("(2) DEAD-PANE injection — claude PID dead, shell prompt visible → skip-not-ready; lane-tick detects dead pane", async () => {
     const { atmuxDir } = await stageTeam({
       baseDir,
-      members: [
-        { name: "gitter", lane: "be", runtime: "claude", goal: "test-goal" },
-      ],
+      members: [{ name: "gitter", lane: "be", runtime: "claude", goal: "test-goal" }],
     });
     const team = await loadTeam({ teamDir: baseDir });
     const t = "e2e-sess:gitter";
@@ -313,17 +306,13 @@ describe("ADR-157 T6 Cell 2 — failure-injection backstop recovery (mock mode)"
     // process; lane-tick is the external observer that surfaces this.
     expect(result.outcomes["gitter"]).toBe("skip-not-ready");
     expect(calls).toEqual([]);
-    expect(logs.some((l) => l.includes("gitter:") && l.includes("skip"))).toBe(
-      true,
-    );
+    expect(logs.some((l) => l.includes("gitter:") && l.includes("skip"))).toBe(true);
   });
 
   test("(3) COMPACTION-WIPE simulation — Compacting banner pattern → skip-not-ready; operator-driven rotation recovery path documented", async () => {
     const { atmuxDir } = await stageTeam({
       baseDir,
-      members: [
-        { name: "gitter", lane: "be", runtime: "claude", goal: "test-goal" },
-      ],
+      members: [{ name: "gitter", lane: "be", runtime: "claude", goal: "test-goal" }],
     });
     const team = await loadTeam({ teamDir: baseDir });
     const t = "e2e-sess:gitter";
@@ -348,9 +337,7 @@ describe("ADR-157 T6 Cell 2 — failure-injection backstop recovery (mock mode)"
     // Branch A-prime is the documented behavior.
     expect(result.outcomes["gitter"]).toBe("skip-not-ready");
     expect(calls).toEqual([]); // no auto-fire of rotate-member
-    expect(logs.some((l) => l.includes("gitter:") && l.includes("skip"))).toBe(
-      true,
-    );
+    expect(logs.some((l) => l.includes("gitter:") && l.includes("skip"))).toBe(true);
   });
 });
 

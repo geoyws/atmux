@@ -15,8 +15,8 @@ import {
   autolaunchTeam,
   buildMigrationBreadcrumb,
   buildTeamWindowCommand,
-  cageAlive,
   type CapturedCockpitWindow,
+  cageAlive,
   cockpitMigrateSocket,
   cockpitRebuild,
   LEGACY_COCKPIT_SESSION_NAMES,
@@ -1207,9 +1207,7 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
         [{ name: "unum", root: "/u", enabled: true } as CockpitTeam],
         logger,
       );
-      const before = (await fx.tmux.window.listWindows("s")).map(
-        (w) => `${w.index}:${w.name}`,
-      );
+      const before = (await fx.tmux.window.listWindows("s")).map((w) => `${w.index}:${w.name}`);
 
       // Re-run with onlyTeam — no-op.
       await reconcileCockpitSession(
@@ -1222,9 +1220,7 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
         false,
         { onlyTeam: "unum" },
       );
-      const after = (await fx.tmux.window.listWindows("s")).map(
-        (w) => `${w.index}:${w.name}`,
-      );
+      const after = (await fx.tmux.window.listWindows("s")).map((w) => `${w.index}:${w.name}`);
       expect(after).toEqual(before);
     } finally {
       try {
@@ -2380,7 +2376,12 @@ describe("parseCockpitArgs — migrate-socket subverb (ADR-162 TR3)", () => {
 describe("buildMigrationBreadcrumb (ADR-162 TR3 — Phase 5)", () => {
   test("returns header + per-window separators with scrollback inline", () => {
     const captured: CapturedCockpitWindow[] = [
-      { sessionName: "atmux_cockpit", index: 1, name: "_superdriver", scrollback: "line A\nline B" },
+      {
+        sessionName: "atmux_cockpit",
+        index: 1,
+        name: "_superdriver",
+        scrollback: "line A\nline B",
+      },
       { sessionName: "atmux_cockpit", index: 2, name: "_medic", scrollback: "medic tail" },
     ];
     const out = buildMigrationBreadcrumb(captured, "atmux_cockpit", "atmux-cockpit");
@@ -2556,10 +2557,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("Phase 1 — ATMUX_COCKPIT_SOCKET=default refuses (legacy = target)", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        [
-          "atmux_cockpit",
-          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
-        ],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
       ]),
       scrollback: new Map(),
       ops: [],
@@ -2587,10 +2585,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
             createdAt: 0,
           },
         ],
-        [
-          "atmux_teams",
-          { windows: [{ index: 1, name: "viewer-x" }], createdAt: 0 },
-        ],
+        ["atmux_teams", { windows: [{ index: 1, name: "viewer-x" }], createdAt: 0 }],
       ]),
       scrollback: new Map([
         ["atmux_cockpit:1", "superdriver tail"],
@@ -2634,10 +2629,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("--dry-run — no mutations on either socket", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        [
-          "atmux_cockpit",
-          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
-        ],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
       ]),
       scrollback: new Map([["atmux_cockpit:1", "tail"]]),
       ops: [],
@@ -2671,10 +2663,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("--keep-legacy — Phase 6 cleanup skipped; recreate still runs", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        [
-          "atmux_cockpit",
-          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
-        ],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
       ]),
       scrollback: new Map([["atmux_cockpit:1", "tail"]]),
       ops: [],
@@ -2705,7 +2694,13 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
       sessions: new Map([
         [
           "atmux_cockpit",
-          { windows: [{ index: 1, name: "_superdriver" }, { index: 2, name: "_medic" }], createdAt: 0 },
+          {
+            windows: [
+              { index: 1, name: "_superdriver" },
+              { index: 2, name: "_medic" },
+            ],
+            createdAt: 0,
+          },
         ],
       ]),
       scrollback: new Map(),
@@ -2729,8 +2724,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
           : makeMockTmux("cockpit", cockpitState),
     });
     expect(code).toBe(0);
-    const names =
-      cockpitState.sessions.get("atmux_cockpit")?.windows.map((w) => w.name) ?? [];
+    const names = cockpitState.sessions.get("atmux_cockpit")?.windows.map((w) => w.name) ?? [];
     // _superdriver kept (already there), _medic added
     expect(names).toContain("_superdriver");
     expect(names).toContain("_medic");
@@ -2741,10 +2735,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("Phase 6 kill-session failure warns + continues, doesn't throw", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        [
-          "atmux_cockpit",
-          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
-        ],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
       ]),
       scrollback: new Map(),
       ops: [],
@@ -2785,10 +2776,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("Phase 2 capturePane failure surfaces warn but continues to Phase 3+", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        [
-          "atmux_cockpit",
-          { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 },
-        ],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
       ]),
       scrollback: new Map(), // No seed → capturePane returns "" via stub
       ops: [],

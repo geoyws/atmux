@@ -21,8 +21,8 @@ import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
-  audit,
   type AuditArgs,
+  audit,
   buildTmuxConfig,
   defaultHasLiveSocket,
   defaultListDir,
@@ -313,11 +313,7 @@ describe("detectClassD", () => {
   test("multiple windows with residue → multiple findings", () => {
     const r = detectClassD({
       team: "atmux",
-      windows: [
-        { name: "__atmux__a-" },
-        { name: "__atmux__b__" },
-        { name: "__atmux__c" },
-      ],
+      windows: [{ name: "__atmux__a-" }, { name: "__atmux__b__" }, { name: "__atmux__c" }],
     });
     expect(r.length).toBe(2);
   });
@@ -592,10 +588,7 @@ describe("renderJson", () => {
 
 // ---------- runAllChecks (driver) ----------
 
-async function makeFixtureTeam(opts: {
-  name: string;
-  tmuxTmpdir?: string;
-}): Promise<string> {
+async function makeFixtureTeam(opts: { name: string; tmuxTmpdir?: string }): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "audit-fixture-"));
   const dir = join(root, ".atmux");
   await mkdir(dir, { recursive: true });
@@ -679,7 +672,11 @@ describe("runAllChecks (driver)", () => {
     const findings = await runAllChecks(args, {
       tmux: STUB_TMUX,
       loadCockpitFn: NOOP_LOADER,
-      classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+      classEDeps: {
+        tmpRoot: "/fake-tmp",
+        listDir: async () => [],
+        hasLiveSocket: async () => false,
+      },
     });
     expect(findings).toEqual([]);
   });
@@ -689,7 +686,11 @@ describe("runAllChecks (driver)", () => {
     const findings = await runAllChecks(args, {
       tmux: STUB_TMUX_DRIFTED,
       loadCockpitFn: NOOP_LOADER,
-      classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+      classEDeps: {
+        tmpRoot: "/fake-tmp",
+        listDir: async () => [],
+        hasLiveSocket: async () => false,
+      },
     });
     const classes = findings.map((f) => f.class).sort();
     expect(classes).toContain("A");
@@ -716,7 +717,11 @@ describe("runAllChecks (driver)", () => {
       const findings = await runAllChecks(args, {
         tmux: stub,
         loadCockpitFn: NOOP_LOADER,
-        classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+        classEDeps: {
+          tmpRoot: "/fake-tmp",
+          listDir: async () => [],
+          hasLiveSocket: async () => false,
+        },
       });
       const bs = findings.filter((f) => f.class === "B");
       expect(bs.length).toBe(1);
@@ -741,7 +746,11 @@ describe("runAllChecks (driver)", () => {
       const findings = await runAllChecks(args, {
         tmux: STUB_TMUX_DRIFTED,
         loadCockpitFn: NOOP_LOADER,
-        classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+        classEDeps: {
+          tmpRoot: "/fake-tmp",
+          listDir: async () => [],
+          hasLiveSocket: async () => false,
+        },
       });
       expect(findings.every((f) => f.class === "B")).toBe(true);
       expect(findings.length).toBe(1);
@@ -788,7 +797,11 @@ describe("runAllChecks (driver)", () => {
     const findings = await runAllChecks(args, {
       tmux: stub,
       loadCockpitFn: NOOP_LOADER,
-      classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+      classEDeps: {
+        tmpRoot: "/fake-tmp",
+        listDir: async () => [],
+        hasLiveSocket: async () => false,
+      },
     });
     // Class B still runs (it's tmpdir-based, not session-based); A/C/D
     // are gated on sessionExists — skipped silently.
@@ -807,7 +820,11 @@ describe("runAllChecks (driver)", () => {
     const findings = await runAllChecks(args, {
       tmux: stub,
       loadCockpitFn: NOOP_LOADER,
-      classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+      classEDeps: {
+        tmpRoot: "/fake-tmp",
+        listDir: async () => [],
+        hasLiveSocket: async () => false,
+      },
     });
     expect(findings.every((f) => f.class !== "A")).toBe(true);
     expect(findings.every((f) => f.class !== "C")).toBe(true);
@@ -855,7 +872,11 @@ describe("audit (verb entry)", () => {
     const code = await audit(["--quiet", "--team-dir", teamDir], {
       tmux: STUB_TMUX,
       loadCockpitFn: NOOP_LOADER,
-      classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+      classEDeps: {
+        tmpRoot: "/fake-tmp",
+        listDir: async () => [],
+        hasLiveSocket: async () => false,
+      },
       stdout: (s) => writes.push(s),
     });
     expect(code).toBe(0);
@@ -867,7 +888,11 @@ describe("audit (verb entry)", () => {
     const code = await audit(["--quiet", "--team-dir", teamDir], {
       tmux: STUB_TMUX_DRIFTED,
       loadCockpitFn: NOOP_LOADER,
-      classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+      classEDeps: {
+        tmpRoot: "/fake-tmp",
+        listDir: async () => [],
+        hasLiveSocket: async () => false,
+      },
       stdout: (s) => writes.push(s),
     });
     expect(code).toBe(1);
@@ -879,7 +904,11 @@ describe("audit (verb entry)", () => {
     const code = await audit(["--json", "--team-dir", teamDir], {
       tmux: STUB_TMUX,
       loadCockpitFn: NOOP_LOADER,
-      classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+      classEDeps: {
+        tmpRoot: "/fake-tmp",
+        listDir: async () => [],
+        hasLiveSocket: async () => false,
+      },
       stdout: (s) => writes.push(s),
     });
     expect(code).toBe(0);
@@ -891,7 +920,11 @@ describe("audit (verb entry)", () => {
     const code = await audit(["--team-dir", teamDir], {
       tmux: STUB_TMUX,
       loadCockpitFn: NOOP_LOADER,
-      classEDeps: { tmpRoot: "/fake-tmp", listDir: async () => [], hasLiveSocket: async () => false },
+      classEDeps: {
+        tmpRoot: "/fake-tmp",
+        listDir: async () => [],
+        hasLiveSocket: async () => false,
+      },
       stdout: (s) => writes.push(s),
     });
     expect(code).toBe(0);

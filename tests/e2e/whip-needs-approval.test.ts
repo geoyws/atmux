@@ -250,9 +250,7 @@ describe("e2e whip §2.5 needs-approval (ADR-085, t-3516d73a)", () => {
     expect(exit).toBe(0);
 
     // Exactly one `whip-needs-approval` ping fired this tick.
-    const needsApprovalPings = discordSent.filter(
-      (d) => d.template === "whip-needs-approval",
-    );
+    const needsApprovalPings = discordSent.filter((d) => d.template === "whip-needs-approval");
     expect(needsApprovalPings.length).toBe(1);
     // Verdict line follows the ADR-085 grammar: "📋 3 items awaiting triage".
     expect(needsApprovalPings[0]?.verdict).toContain("3 items awaiting triage");

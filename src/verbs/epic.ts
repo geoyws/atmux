@@ -11,8 +11,8 @@
 //   atmux epic advance <id> [--to S]
 //   atmux epic adv     ↔ advance
 
-import { addEpic, advanceEpic, listEpics, showEpic } from "../core/epic.ts";
 import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
+import { addEpic, advanceEpic, listEpics, showEpic } from "../core/epic.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
 const USAGE_HINT_ROOT = "atmux epic <add|list|show|advance> [args]";
@@ -79,9 +79,7 @@ async function epicList(argv: ReadonlyArray<string>): Promise<number> {
     process.stdout.write("(no epics)\n");
     return 0;
   }
-  process.stdout.write(
-    `${"ID".padEnd(12)} ${"STATUS".padEnd(12)} ${"CREATED".padEnd(12)} TITLE\n`,
-  );
+  process.stdout.write(`${"ID".padEnd(12)} ${"STATUS".padEnd(12)} ${"CREATED".padEnd(12)} TITLE\n`);
   for (const e of epics) {
     const id = (e.id ?? "").padEnd(12);
     const status = (e.status ?? "").padEnd(12);

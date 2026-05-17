@@ -28,18 +28,14 @@
 //     historyFn injection composes temporal gates.
 
 import { describe, expect, test } from "bun:test";
+import type { NudgeAction, Observation, Sentinel } from "../../../../src/abstractions/sentinel.ts";
 import {
   CURSOR_SYSTEM_PROMPT,
   CursorEnvelopeSchema,
   CursorSentinel,
 } from "../../../../src/abstractions/sentinels/cursor.ts";
-import type {
-  Sentinel,
-  NudgeAction,
-  Observation,
-} from "../../../../src/abstractions/sentinel.ts";
-import type { ObservationHistory } from "../../../../src/core/sentinel-escalation.ts";
 import type { PaneClassification } from "../../../../src/core/pane-state.ts";
+import type { ObservationHistory } from "../../../../src/core/sentinel-escalation.ts";
 
 // ---------- Helpers ----------
 
@@ -47,12 +43,14 @@ function paneCls(state: PaneClassification["state"] = "READY"): PaneClassificati
   return { state, evidence: "", capturedAt: 0 };
 }
 
-function fixtureObservation(opts: {
-  team?: string;
-  last2hrCommits?: number;
-  wedgedCount?: number;
-  enterPushable?: boolean;
-} = {}): Observation {
+function fixtureObservation(
+  opts: {
+    team?: string;
+    last2hrCommits?: number;
+    wedgedCount?: number;
+    enterPushable?: boolean;
+  } = {},
+): Observation {
   const enterPushable = opts.enterPushable ?? true;
   return {
     team: opts.team ?? "atmux",
@@ -235,9 +233,7 @@ describe("CursorSentinel — decide() happy path", () => {
       observeFn: async () => obs,
       runCursorAgent: async () =>
         envelope({
-          result: JSON.stringify([
-            { kind: "escalate-to-claude-lead", reason: "wedged" },
-          ]),
+          result: JSON.stringify([{ kind: "escalate-to-claude-lead", reason: "wedged" }]),
         }),
     });
     const out = await inst.decide(obs);
@@ -354,8 +350,7 @@ describe("CursorSentinel — decide() fail-loud paths", () => {
   test("result not JSON → empty array (no-op tick, defer to next tick)", async () => {
     const inst = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
-      runCursorAgent: async () =>
-        envelope({ result: "I cannot help with that." }),
+      runCursorAgent: async () => envelope({ result: "I cannot help with that." }),
     });
     const out = await inst.decide(fixtureObservation());
     expect(out).toHaveLength(0);
@@ -366,9 +361,7 @@ describe("CursorSentinel — decide() fail-loud paths", () => {
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () =>
         envelope({
-          result: JSON.stringify([
-            { kind: "unknown-kind", member: "fe-1" },
-          ]),
+          result: JSON.stringify([{ kind: "unknown-kind", member: "fe-1" }]),
         }),
     });
     const out = await inst.decide(fixtureObservation());
@@ -464,9 +457,7 @@ describe("CursorSentinel — apply()", () => {
       reason: "idle",
     });
     expect(result.success).toBe(true);
-    expect(calls).toEqual([
-      { window: "be-1", keys: "atmux claim --next --as be-1" },
-    ]);
+    expect(calls).toEqual([{ window: "be-1", keys: "atmux claim --next --as be-1" }]);
     expect(result.evidence).toContain("claim-next be-1");
     expect(result.evidence).toContain("atmux claim --next --as be-1");
   });
@@ -587,9 +578,7 @@ describe("CursorSentinel — shouldEscalateToClaudeLead() (§D5 gate)", () => {
       observeFn: async () => fixtureObservation(),
       runCursorAgent: async () => okEnvelope(),
     });
-    expect(
-      inst.shouldEscalateToClaudeLead(fixtureObservation({ last2hrCommits: 0 })),
-    ).toBe(true);
+    expect(inst.shouldEscalateToClaudeLead(fixtureObservation({ last2hrCommits: 0 }))).toBe(true);
   });
 
   test("clean state: no triggers → false", () => {
@@ -610,9 +599,7 @@ describe("CursorSentinel — shouldEscalateToClaudeLead() (§D5 gate)", () => {
       runCursorAgent: async () => okEnvelope(),
     });
     const obs = fixtureObservation({ last2hrCommits: 10, enterPushable: false });
-    obs.kanbanDelta.wedgedClaims = [
-      { taskId: "t-x", class: "ghost-owner", wedgedMin: 250 },
-    ];
+    obs.kanbanDelta.wedgedClaims = [{ taskId: "t-x", class: "ghost-owner", wedgedMin: 250 }];
     expect(inst.shouldEscalateToClaudeLead(obs)).toBe(true);
   });
 

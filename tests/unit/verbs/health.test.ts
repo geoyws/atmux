@@ -295,10 +295,7 @@ describe("gatherHealth", () => {
   });
 
   test("emoji passes through when present on the roster member", async () => {
-    const { teamName, sessionName } = await stageTeam(
-      [{ name: "alpha", emoji: "🐝" }],
-      false,
-    );
+    const { teamName, sessionName } = await stageTeam([{ name: "alpha", emoji: "🐝" }], false);
     const team: Team = {
       name: teamName,
       members: [{ name: "alpha", emoji: "🐝" }],
@@ -451,13 +448,10 @@ describe("gatherHealth", () => {
   test("default nowSec branch runs (no injection)", async () => {
     const { teamName, sessionName } = await stageTeam([{ name: "alpha" }], false);
     const team: Team = { name: teamName, members: [{ name: "alpha" }] };
-    const snap = await gatherHealth(
-      tmux,
-      team,
-      sessionName,
-      atmuxDir,
-      { includeBudget: false, staleSec: 300 },
-    );
+    const snap = await gatherHealth(tmux, team, sessionName, atmuxDir, {
+      includeBudget: false,
+      staleSec: 300,
+    });
     expect(snap.generatedAt).toBeGreaterThan(0);
   });
 });
@@ -498,10 +492,7 @@ describe("health verb — integration", () => {
   });
 
   test("--budget injects probe results into JSON", async () => {
-    await stageTeam(
-      [{ name: "alpha", claudeAccount: "personal" }],
-      false,
-    );
+    await stageTeam([{ name: "alpha", claudeAccount: "personal" }], false);
     const fakeProbe = async (account: string): Promise<BudgetProbeResult> => ({
       account,
       h5_pct_used: 17,

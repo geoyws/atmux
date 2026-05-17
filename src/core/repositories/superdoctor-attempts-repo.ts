@@ -81,9 +81,7 @@ export class SuperdoctorAttemptsRepo {
   /** All attempts for a complaint, newest first. */
   listForComplaint(complaintId: string): SuperdoctorAttempt[] {
     const rows = this.db
-      .query(
-        "SELECT * FROM superdoctor_attempts WHERE complaint_id = ? ORDER BY attempted_at DESC",
-      )
+      .query("SELECT * FROM superdoctor_attempts WHERE complaint_id = ? ORDER BY attempted_at DESC")
       .all(complaintId) as AttemptRow[];
     return rows.map(attemptFromRow);
   }
@@ -115,9 +113,9 @@ export class SuperdoctorAttemptsRepo {
    *  aggregate caller takes MAX across every cockpit-enabled team's
    *  state.db to get the global latest activity. */
   latestAttemptedAt(): number | null {
-    const r = this.db
-      .query("SELECT MAX(attempted_at) AS max FROM superdoctor_attempts")
-      .get() as { max: number | null } | null;
+    const r = this.db.query("SELECT MAX(attempted_at) AS max FROM superdoctor_attempts").get() as {
+      max: number | null;
+    } | null;
     return r?.max ?? null;
   }
 }

@@ -11,10 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  initSubmodules,
-  provisionWorktree,
-} from "../../src/abstractions/worktree.ts";
+import { initSubmodules, provisionWorktree } from "../../src/abstractions/worktree.ts";
 
 let root: string;
 let parent: string;
@@ -35,9 +32,7 @@ function git(args: string[], cwd: string): void {
     encoding: "utf8",
   });
   if (r.status !== 0) {
-    throw new Error(
-      `git ${args.join(" ")} failed in ${cwd} (rc=${r.status}): ${r.stderr}`,
-    );
+    throw new Error(`git ${args.join(" ")} failed in ${cwd} (rc=${r.status}): ${r.stderr}`);
   }
 }
 

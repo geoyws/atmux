@@ -167,8 +167,7 @@ describe("flipTasksMergedInRange", () => {
       {
         sha: "shipsha01",
         subject: "feat(scope): t-aaaaaaa1 — ship the legit thing",
-        body:
-          "EPIC parent: t-bbbbbbb2.\nDeps: t-bbbbbbb2.\nFollow-up filed as t-bbbbbbb2.",
+        body: "EPIC parent: t-bbbbbbb2.\nDeps: t-bbbbbbb2.\nFollow-up filed as t-bbbbbbb2.",
       },
     ]);
     const md = makeMarkDone();
@@ -282,9 +281,7 @@ describe("flipTasksMergedInRange", () => {
 
   test("skip-not-open when task isn't in open set (already done)", async () => {
     const open: OpenTask[] = []; // no open tasks
-    const { spawn } = fakeGit([
-      { sha: "shasha01", subject: "feat: t-aaaaaaa9 — ship" },
-    ]);
+    const { spawn } = fakeGit([{ sha: "shasha01", subject: "feat: t-aaaaaaa9 — ship" }]);
     const md = makeMarkDone();
     const r = await flipTasksMergedInRange(atmuxDir, "old", "new", {
       repoDir,
@@ -302,9 +299,7 @@ describe("flipTasksMergedInRange", () => {
 
   test("dry-run: decisions recorded, markDone NOT called", async () => {
     const open: OpenTask[] = [{ id: "t-aaaaaaa8", status: "todo" }];
-    const { spawn } = fakeGit([
-      { sha: "shadry001", subject: "feat: t-aaaaaaa8 — ship" },
-    ]);
+    const { spawn } = fakeGit([{ sha: "shadry001", subject: "feat: t-aaaaaaa8 — ship" }]);
     const md = makeMarkDone();
     const r = await flipTasksMergedInRange(atmuxDir, "old", "new", {
       dryRun: true,

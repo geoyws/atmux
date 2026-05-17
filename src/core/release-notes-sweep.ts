@@ -31,14 +31,14 @@
 // (substring match within section bounds) so operator-curated
 // reformatting of existing entries doesn't trip the dedup gate.
 
-import type { GitSpawn } from "../abstractions/worktree.ts";
+import { readTextOrNull } from "../abstractions/fs.ts";
 import {
   appendSection,
   type ReleaseNotesSection,
   resolveDayFilePath,
 } from "../abstractions/release-notes.ts";
-import { readTextOrNull } from "../abstractions/fs.ts";
 import { mytDate, now } from "../abstractions/time.ts";
+import type { GitSpawn } from "../abstractions/worktree.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 
 // ---------- Section-scan idempotency helper ----------
@@ -112,10 +112,7 @@ export function renderShippedEntry(task: KanbanTask): string {
 
 /** Render a `## Merges (branch→trunk)` entry from a `git log --merges`
  *  parsed row. Stable id = the merge commit's short SHA. */
-export function renderMergeEntry(merge: {
-  sha: string;
-  subject: string;
-}): string {
+export function renderMergeEntry(merge: { sha: string; subject: string }): string {
   return `- ${merge.sha} — ${merge.subject}`;
 }
 

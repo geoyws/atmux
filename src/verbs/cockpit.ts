@@ -50,18 +50,18 @@ import {
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
-import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import {
   awaitClaudePaneReady,
   formatReadinessWarning,
   type PaneReadinessResult,
 } from "../core/pane-readiness.ts";
+import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 import type {
-  CockpitSentinel,
   CockpitMedic,
+  CockpitSentinel,
   CockpitSuperdoctor,
   CockpitTeam,
 } from "../schema/cockpit.ts";
@@ -798,9 +798,7 @@ export async function cockpitMigrateSocket(
     // cockpit via the ATMUX_COCKPIT_SOCKET=default escape hatch. Migrating
     // would just move windows from default → default — a no-op that risks
     // double-creating sessions. Refuse with a clear hint.
-    logger.warn(
-      "ATMUX_COCKPIT_SOCKET=default in effect — migration target equals legacy source.",
-    );
+    logger.warn("ATMUX_COCKPIT_SOCKET=default in effect — migration target equals legacy source.");
     logger.warn(
       "Unset ATMUX_COCKPIT_SOCKET (or set it to 'atmux-cockpit') to proceed with migration.",
     );
@@ -841,9 +839,9 @@ export async function cockpitMigrateSocket(
 
   if (dryRun) {
     logger.log(
-      `[dry-run] would ${keepLegacy ? "PRESERVE" : "kill"} legacy session(s) on default socket: ${
-        legacyCockpitSessions.map((s) => s.name).join(", ")
-      }`,
+      `[dry-run] would ${keepLegacy ? "PRESERVE" : "kill"} legacy session(s) on default socket: ${legacyCockpitSessions
+        .map((s) => s.name)
+        .join(", ")}`,
     );
     logger.log("[dry-run] no mutations applied — re-run without --dry-run to migrate");
     return 0;
@@ -932,9 +930,9 @@ export async function cockpitMigrateSocket(
   // when --keep-legacy is set.
   if (keepLegacy) {
     logger.log(
-      `  · --keep-legacy set: legacy session(s) left intact on default socket (${
-        legacyCockpitSessions.map((s) => s.name).join(", ")
-      })`,
+      `  · --keep-legacy set: legacy session(s) left intact on default socket (${legacyCockpitSessions
+        .map((s) => s.name)
+        .join(", ")})`,
     );
     logger.log(
       `    manually clean up with: tmux kill-session -t ${legacyCockpitSessions[0]?.name ?? "atmux_cockpit"}`,
@@ -1538,7 +1536,8 @@ export async function reconcileCockpitSession(
     let md = windowsBefore.find((w) => w.name === "_medic");
     let mdJustCreated = false;
     if (md === undefined) {
-      const builder = deps.buildMedicCommand ?? deps.buildSuperdoctorCommand ?? buildMedicWindowCommand;
+      const builder =
+        deps.buildMedicCommand ?? deps.buildSuperdoctorCommand ?? buildMedicWindowCommand;
       const cmd = builder(medic);
       const newId = await cockpitTmux.window.newWindow({
         sessionName,
@@ -1679,8 +1678,7 @@ export async function reconcileCockpitSession(
   // Per-team mode: filter teams to JUST the named one before the add
   // pass — defensive against callers passing the full roster but
   // wanting only one window touched.
-  const teamsToAdd =
-    onlyTeam !== undefined ? teams.filter((t) => t.name === onlyTeam) : teams;
+  const teamsToAdd = onlyTeam !== undefined ? teams.filter((t) => t.name === onlyTeam) : teams;
 
   // Add missing viewer windows.
   for (const t of teamsToAdd) {
@@ -1711,9 +1709,8 @@ export async function reconcileCockpitSession(
     // the cockpit-role windows that precede them (per ADR-135 §D2).
     const windowsForOrder = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = windowsForOrder.find((w) => w.name === "_superdriver");
-    const cursorBase = (sdrv !== undefined ? sdrv.index + 1 : 1)
-      + (wantMedic ? 1 : 0)
-      + (wantSentinel ? 1 : 0);
+    const cursorBase =
+      (sdrv !== undefined ? sdrv.index + 1 : 1) + (wantMedic ? 1 : 0) + (wantSentinel ? 1 : 0);
     const desired = teams.map((t, i) => ({ name: t.name, finalIdx: cursorBase + i }));
 
     // Park-then-place to avoid sibling-team collisions.
@@ -1868,12 +1865,7 @@ export function buildSentinelWindowCommand(m: CockpitSentinel): string {
   // override via `sentinelOverrides.cadenceSec` is honored by the
   // verb's per-team resolver — this loop's cadence is the FLOOR; the
   // verb may exit early if internal timing dictates.
-  return [
-    "while true; do",
-    "  atmux sentinel tick",
-    "  sleep 270",
-    "done",
-  ].join(" ");
+  return ["while true; do", "  atmux sentinel tick", "  sleep 270", "done"].join(" ");
 }
 
 /** Shared body for the medic / sentinel window-command builders.

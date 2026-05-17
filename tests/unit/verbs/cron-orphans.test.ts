@@ -6,15 +6,12 @@ import { describe, expect, test } from "bun:test";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
-  cronOrphans,
   type CronOrphansOpts,
+  cronOrphans,
   parseCronOrphansArgs,
 } from "../../../src/verbs/cron-orphans.ts";
 
-const fakeIO = (
-  body: string | null,
-  opts: { available?: boolean } = {},
-): CrontabIO => ({
+const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
   read: async () => body,
   write: async () => {
     /* not invoked by this verb */

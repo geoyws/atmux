@@ -234,16 +234,13 @@ describe("ADR-052 T8 — eternal-improvement 1x cold-start+walk e2e", () => {
   test("Mode B (idle-fallback) — done ping carries modeB:true on termination", async () => {
     // ----- Beat 1: arm with --idle-fallback to set mode='idle-fallback' -----
     const sent: Array<Record<string, unknown>> = [];
-    const armExit = await improve(
-      ["--budget", "5000", "--idle-fallback", "--team-dir", teamDir],
-      {
-        discordSend: (async (opts: Record<string, unknown>) => {
-          sent.push(opts);
-        }) as never,
-        nowMs: () => 1_800_000_000_000,
-        runIdFactory: () => "ei-e2e-modeb",
-      },
-    );
+    const armExit = await improve(["--budget", "5000", "--idle-fallback", "--team-dir", teamDir], {
+      discordSend: (async (opts: Record<string, unknown>) => {
+        sent.push(opts);
+      }) as never,
+      nowMs: () => 1_800_000_000_000,
+      runIdFactory: () => "ei-e2e-modeb",
+    });
     expect(armExit).toBe(0);
     const armed = JSON.parse(await readFile(statePath, "utf8"));
     expect(armed.mode).toBe("idle-fallback");

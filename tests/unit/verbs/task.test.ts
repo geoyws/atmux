@@ -6,15 +6,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendDispatched, loadInbox } from "../../../src/core/inbox.ts";
-import {
-  addTask,
-  assignTask,
-  loadKanban,
-  moveTask,
-  showTask,
-} from "../../../src/core/kanban.ts";
+import { addTask, assignTask, loadKanban, moveTask, showTask } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import { closestStatus, parseAddArgs, parseListArgs, resolveLaneAlias, task } from "../../../src/verbs/task.ts";
+import {
+  closestStatus,
+  parseAddArgs,
+  parseListArgs,
+  resolveLaneAlias,
+  task,
+} from "../../../src/verbs/task.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -444,9 +444,9 @@ describe("task verb — dispatch", () => {
       const saved = priorScope();
       delete process.env.ATMUX_CALLER_SCOPE;
       try {
-        await expect(
-          task(["move", id, "in-progress", "--team-dir", teamDir]),
-        ).rejects.toThrow(/task move:.*driver-only Task/);
+        await expect(task(["move", id, "in-progress", "--team-dir", teamDir])).rejects.toThrow(
+          /task move:.*driver-only Task/,
+        );
       } finally {
         restoreScope(saved);
       }
@@ -459,9 +459,9 @@ describe("task verb — dispatch", () => {
       const saved = priorScope();
       delete process.env.ATMUX_CALLER_SCOPE;
       try {
-        await expect(
-          task(["move", id, "done", "--team-dir", teamDir]),
-        ).rejects.toThrow(/task move:.*driver-only Task/);
+        await expect(task(["move", id, "done", "--team-dir", teamDir])).rejects.toThrow(
+          /task move:.*driver-only Task/,
+        );
       } finally {
         restoreScope(saved);
       }
@@ -550,9 +550,7 @@ describe("task verb — dispatch", () => {
 
   test("'priority' sets the integer priority on an existing task", async () => {
     const id = await addTask(atmuxDir, { subject: "p task" });
-    const { exit } = await captureStdout(() =>
-      task(["priority", id, "5", "--team-dir", teamDir]),
-    );
+    const { exit } = await captureStdout(() => task(["priority", id, "5", "--team-dir", teamDir]));
     expect(exit).toBe(0);
     const k = await loadKanban(atmuxDir);
     expect(k.tasks[0]?.priority).toBe(5);
@@ -574,9 +572,7 @@ describe("task verb — dispatch", () => {
 
   test("'priority' rejects non-integer value", async () => {
     const id = await addTask(atmuxDir, { subject: "p task" });
-    await expect(
-      task(["priority", id, "high", "--team-dir", teamDir]),
-    ).rejects.toThrow(UsageError);
+    await expect(task(["priority", id, "high", "--team-dir", teamDir])).rejects.toThrow(UsageError);
   });
 
   test("'priority' missing args → UsageError", async () => {
@@ -584,9 +580,9 @@ describe("task verb — dispatch", () => {
   });
 
   test("'priority' on missing id → ConfigError", async () => {
-    await expect(
-      task(["priority", "t-deadbeef", "1", "--team-dir", teamDir]),
-    ).rejects.toThrow(ConfigError);
+    await expect(task(["priority", "t-deadbeef", "1", "--team-dir", teamDir])).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("'rm' removes task", async () => {
@@ -632,16 +628,7 @@ describe("task verb — dispatch", () => {
   test("'update' --body and --deps together", async () => {
     const id = await addTask(atmuxDir, { subject: "x", body: "old", deps: ["t-old01010"] });
     await captureStdout(() =>
-      task([
-        "update",
-        id,
-        "--body",
-        "new",
-        "--deps",
-        "t-fresh0001",
-        "--team-dir",
-        teamDir,
-      ]),
+      task(["update", id, "--body", "new", "--deps", "t-fresh0001", "--team-dir", teamDir]),
     );
     const after = await showTask(atmuxDir, id);
     expect(after?.body).toBe("new");
@@ -700,9 +687,7 @@ describe("task --lane member-name aliases (t-cea78f99)", () => {
 
   test("`task lane <id> planner` resolves to lane=docs", async () => {
     const id = await addTask(atmuxDir, { subject: "lane-alias-target" });
-    await captureStdout(() =>
-      task(["lane", id, "planner", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => task(["lane", id, "planner", "--team-dir", teamDir]));
     const k = await loadKanban(atmuxDir);
     const t = k.tasks.find((tt) => tt.id === id);
     expect(t?.lane).toBe("docs");
@@ -737,9 +722,7 @@ describe("task --lane member-name aliases (t-cea78f99)", () => {
 
   test("unknown lane STILL rejects (no alias match falls through)", async () => {
     await expect(
-      captureStdout(() =>
-        task(["add", "bogus-lane", "--lane", "frontend", "--team-dir", teamDir]),
-      ),
+      captureStdout(() => task(["add", "bogus-lane", "--lane", "frontend", "--team-dir", teamDir])),
     ).rejects.toBeInstanceOf(UsageError);
   });
 

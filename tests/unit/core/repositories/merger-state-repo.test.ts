@@ -17,11 +17,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ZodError } from "zod";
-import {
-  closeDatabase,
-  openDatabase,
-  type Database,
-} from "../../../../src/abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase } from "../../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../../src/abstractions/sqlite-migrations.ts";
 import {
   MergerStateRepo,
@@ -62,9 +58,7 @@ describe("migration v6 — merger_state table", () => {
     // reaches the last entry's `to` field.
     const expectedHead = migrations[migrations.length - 1]?.to;
     expect(expectedHead).toBeGreaterThanOrEqual(6); // sanity: ladder must at least include the v5→v6 introducing this table
-    const v = db
-      .query("PRAGMA user_version")
-      .get() as { user_version: number } | null;
+    const v = db.query("PRAGMA user_version").get() as { user_version: number } | null;
     expect(v?.user_version).toBe(expectedHead);
   });
 
@@ -91,9 +85,7 @@ describe("migration v6 — merger_state table", () => {
   });
 
   test("indexes exist on state + transitioned_at DESC", () => {
-    const idx = db
-      .query("PRAGMA index_list(merger_state)")
-      .all() as Array<{ name: string }>;
+    const idx = db.query("PRAGMA index_list(merger_state)").all() as Array<{ name: string }>;
     const names = new Set(idx.map((i) => i.name));
     expect(names.has("idx_merger_state_state")).toBe(true);
     expect(names.has("idx_merger_state_transitioned")).toBe(true);

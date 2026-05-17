@@ -29,10 +29,10 @@ import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   getAtmuxDir,
-  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import {
   aggregateHeartbeat,

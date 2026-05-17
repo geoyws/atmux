@@ -2,15 +2,12 @@
 // (ADR-131 §D2 detector #4 / t-e75ba5aa).
 
 import { describe, expect, test } from "bun:test";
-import {
-  detect,
-  fix,
-} from "../../../../src/core/superdoctor-hygiene/lane-null-orphan.ts";
 import type {
   FixDeps,
   HygieneIssue,
   TeamState,
 } from "../../../../src/core/superdoctor-hygiene/_shared.ts";
+import { detect, fix } from "../../../../src/core/superdoctor-hygiene/lane-null-orphan.ts";
 import type { KanbanTask } from "../../../../src/schema/kanban.ts";
 
 function task(o: Partial<KanbanTask>): KanbanTask {
@@ -56,9 +53,7 @@ describe("lane-null-orphan detect", () => {
 
   test("MISS: status=done → out of scope", () => {
     const t = team([{ name: "fe-1", lane: "fe" }]);
-    const issues = detect(t, [
-      task({ id: "t-001", lane: null, owner: null, status: "done" }),
-    ]);
+    const issues = detect(t, [task({ id: "t-001", lane: null, owner: null, status: "done" })]);
     expect(issues).toHaveLength(0);
   });
 

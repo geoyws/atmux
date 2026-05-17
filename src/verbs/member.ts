@@ -49,13 +49,9 @@
 // Operators who reach for this verb often assume "rename" implies the
 // branch + worktree rename too; the note pre-empts the misconception.
 
-import { updateJson } from "../abstractions/json.ts";
-import {
-  createTmux,
-  type TmuxConfig,
-  type TmuxNamespace,
-} from "../abstractions/tmux.ts";
 import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
+import { updateJson } from "../abstractions/json.ts";
+import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
   getAtmuxDir,
@@ -65,8 +61,8 @@ import {
   resolveTeamSocket,
   teamJsonPath,
 } from "../core/common.ts";
-import { leadWindowNamePath } from "../core/lead-marker.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { leadWindowNamePath } from "../core/lead-marker.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
 
@@ -233,7 +229,9 @@ export async function memberRenameInternal(
   const teamPre = await loadTeam(dirOpts);
   const memberPre = teamPre.members.find((m) => m.name === parsed.memberId);
   if (memberPre === undefined) {
-    throw new ConfigError({ what: `member rename: member '${parsed.memberId}' not found in team.json` });
+    throw new ConfigError({
+      what: `member rename: member '${parsed.memberId}' not found in team.json`,
+    });
   }
   const currentLabel = memberPre.label;
   if (currentLabel === parsed.label) {
@@ -306,9 +304,7 @@ export async function memberRenameInternal(
       );
     }
   } else {
-    stderr(
-      "member rename: no live team session — window rename applies on next 'atmux start'\n",
-    );
+    stderr("member rename: no live team session — window rename applies on next 'atmux start'\n");
   }
 
   // 4. Lead-window-name.txt patch — content-based detection. The marker
@@ -318,7 +314,10 @@ export async function memberRenameInternal(
   //    lead — patch the marker atomically. Avoids a second "is lead?"
   //    probe (whip-side rotation marker + status output) that would
   //    couple this verb to the rotation invariants.
-  const markerPath = leadWindowNamePath(teamPre.name, opts.home !== undefined ? { home: opts.home } : {});
+  const markerPath = leadWindowNamePath(
+    teamPre.name,
+    opts.home !== undefined ? { home: opts.home } : {},
+  );
   const existing = (await readTextOrNull(markerPath))?.trim() ?? null;
   if (existing !== null && existing === oldWindow) {
     // Same atomic-write convention as `writeLeadSessionStart` — `${name}\n`

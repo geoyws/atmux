@@ -7,14 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_HEARTBEAT_SEC,
-  hashFindingBullets,
   HASH_HEX_LEN,
+  hashFindingBullets,
   loadWhipFindingState,
   recordFindingFire,
   saveWhipFindingState,
   shouldFireFinding,
-  whipFindingStatePath,
   type WhipFindingState,
+  whipFindingStatePath,
 } from "../../../src/core/whip-finding-state.ts";
 
 let atmuxDir: string;

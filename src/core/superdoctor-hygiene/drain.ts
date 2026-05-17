@@ -18,11 +18,7 @@
 // to the chain.
 
 import type { KanbanTask } from "../../schema/kanban.ts";
-import * as ghostOwner from "./ghost-owner.ts";
-import * as laneMismatch from "./lane-mismatch.ts";
-import * as laneNullOrphan from "./lane-null-orphan.ts";
-import * as prioNull from "./prio-null.ts";
-import * as roleMismatch from "./role-mismatch.ts";
+import type { HygieneRepo, HygieneRow } from "../repositories/hygiene-repo.ts";
 import type {
   FixDeps,
   FixResult,
@@ -30,15 +26,16 @@ import type {
   HygieneIssue,
   TeamState,
 } from "./_shared.ts";
-import type { HygieneRepo, HygieneRow } from "../repositories/hygiene-repo.ts";
+import * as ghostOwner from "./ghost-owner.ts";
+import * as laneMismatch from "./lane-mismatch.ts";
+import * as laneNullOrphan from "./lane-null-orphan.ts";
+import * as prioNull from "./prio-null.ts";
+import * as roleMismatch from "./role-mismatch.ts";
 
 /** Aggregate detector output across all 5 classes. Exposed for tests
  *  + future external consumers (e.g. an `atmux doctor` summary table
  *  that wants to see hygiene fingerprints without running the drain). */
-export function detectAll(
-  team: TeamState,
-  kanban: ReadonlyArray<KanbanTask>,
-): HygieneIssue[] {
+export function detectAll(team: TeamState, kanban: ReadonlyArray<KanbanTask>): HygieneIssue[] {
   return [
     ...ghostOwner.detect(team, kanban),
     ...laneMismatch.detect(team, kanban),
@@ -162,9 +159,7 @@ export async function drainTick(opts: {
     return result;
   }
 
-  const hasBlocking = unfixed.some(
-    (r) => r.severity === "P0" || r.severity === "P1",
-  );
+  const hasBlocking = unfixed.some((r) => r.severity === "P0" || r.severity === "P1");
   const eligible = unfixed.filter((r) => eligibleByLadder(r, hasBlocking));
 
   if (eligible.length === 0) {

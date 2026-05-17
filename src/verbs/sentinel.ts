@@ -31,10 +31,10 @@
 // path.
 
 import { join } from "node:path";
+import { z } from "zod";
 import { ensureDir, exists } from "../abstractions/fs.ts";
 import { readJson, writeJson } from "../abstractions/json.ts";
-import { z } from "zod";
-import type { Sentinel, Observation } from "../abstractions/sentinel.ts";
+import type { Observation, Sentinel } from "../abstractions/sentinel.ts";
 import { ClaudeSentinel } from "../abstractions/sentinels/claude.ts";
 import {
   type CursorRunFn,
@@ -227,8 +227,7 @@ export function buildSentinel(
     return new ClaudeSentinel({ observeFn: deps.observeFn });
   }
   if (implName === "cursor") {
-    const cursorCfg =
-      deps.cockpit?.sentinel?.impl === "cursor" ? deps.cockpit.sentinel : undefined;
+    const cursorCfg = deps.cockpit?.sentinel?.impl === "cursor" ? deps.cockpit.sentinel : undefined;
     const binPath = cursorCfg?.cursorBinPath ?? "/usr/local/bin/cursor-agent";
     const model = cursorCfg?.model ?? "composer-2-fast";
     const runCursorAgent = deps.runCursorAgent ?? defaultRunCursorAgent(binPath);
@@ -368,11 +367,7 @@ export async function sentinelTick(
     logger.warn("sentinel: no enabled teams in cockpit.json — tick is a no-op");
     // Still persist the lastTickAt so `status` is honest about when the
     // loop ran (vs "never started").
-    await persistState(
-      { lastTickAt: Date.now(), teams: {} },
-      env,
-      parsed.statePath,
-    );
+    await persistState({ lastTickAt: Date.now(), teams: {} }, env, parsed.statePath);
     return 0;
   }
 
@@ -396,7 +391,8 @@ export async function sentinelTick(
     try {
       const obs = await m.observe(team.name);
       const decided = await m.decide(obs);
-      escalated = m.shouldEscalateToClaudeLead(obs) ||
+      escalated =
+        m.shouldEscalateToClaudeLead(obs) ||
         decided.some((a) => a.kind === "escalate-to-claude-lead");
       for (const action of decided) {
         actions.push(action.kind);
@@ -430,11 +426,7 @@ export async function sentinelTick(
     teamStates[team.name] = state;
   }
 
-  await persistState(
-    { lastTickAt: tickStarted, teams: teamStates },
-    env,
-    parsed.statePath,
-  );
+  await persistState({ lastTickAt: tickStarted, teams: teamStates }, env, parsed.statePath);
   logger.log(
     `sentinel: tick completed (${teams.length} team${teams.length === 1 ? "" : "s"}, ${Date.now() - tickStarted}ms)`,
   );

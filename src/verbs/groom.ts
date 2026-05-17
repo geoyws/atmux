@@ -28,8 +28,8 @@ import { acquireWithTTL } from "../abstractions/lock.ts";
 import { getAtmuxDir, stateDir, tryLoadTeam } from "../core/common.ts";
 import {
   type AgeInboxResult,
-  ageInboxOpenToArchive,
   type ArchiveSizeWarning,
+  ageInboxOpenToArchive,
   archiveDecisions,
   archiveSizeCheck,
   type BakCullResult,
@@ -42,22 +42,14 @@ import {
   sweepZombieTmuxSockets,
   type ZombieSweepResult,
 } from "../core/groom.ts";
-import { groomArchive, type GroomArchiveResult } from "../core/groom-archive.ts";
-import {
-  reconcileKanbanVsGit,
-  type ReconcileResult,
-} from "../core/groom-reconcile.ts";
+import { type GroomArchiveResult, groomArchive } from "../core/groom-archive.ts";
+import { type ReconcileResult, reconcileKanbanVsGit } from "../core/groom-reconcile.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { DEFAULT_CLAIMED_AT_THRESHOLD_MIN } from "../core/lane-drift.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { LockError, LockTimeoutError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
-import {
-  DEFAULT_CLAIMED_AT_THRESHOLD_MIN,
-} from "../core/lane-drift.ts";
-import {
-  type LaneDriftCheckResult,
-  runLaneDriftCheck,
-} from "./lane-drift-check.ts";
+import { type LaneDriftCheckResult, runLaneDriftCheck } from "./lane-drift-check.ts";
 
 // ---------- Args ----------
 

@@ -12,19 +12,19 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Observation } from "../../../src/abstractions/sentinel.ts";
 import { ClaudeSentinel } from "../../../src/abstractions/sentinels/claude.ts";
 import { CursorSentinel } from "../../../src/abstractions/sentinels/cursor.ts";
-import type { Observation } from "../../../src/abstractions/sentinel.ts";
 import { createLogger } from "../../../src/core/tui.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
   buildSentinel,
   buildStubObservation,
   defaultSentinelStatePath,
-  sentinel,
-  sentinelTick,
   parseSentinelArgs,
   resolveSentinelImplName,
+  sentinel,
+  sentinelTick,
 } from "../../../src/verbs/sentinel.ts";
 
 // ---------- parseSentinelArgs ----------

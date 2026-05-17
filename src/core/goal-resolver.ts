@@ -35,8 +35,7 @@ import type { TeamMember } from "../schema/team.ts";
  *  trailing colon. Matches the literal MD convention added to briefs
  *  in T1's same-commit doc-update. Captures the goal text (multi-line
  *  until the next markdown heading or EOF). */
-const STANDING_GOAL_RE =
-  /^## Standing Goal\n+([^\n]+(?:\n[^\n#][^\n]*)*)/m;
+const STANDING_GOAL_RE = /^## Standing Goal\n+([^\n]+(?:\n[^\n#][^\n]*)*)/m;
 
 /** Public for direct unit testing — exercises the regex without
  *  needing to stage a brief on disk. */

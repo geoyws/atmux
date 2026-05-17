@@ -30,40 +30,37 @@
 // surfaces both passes in one tick. Caller-injectable `liveMembers`
 // probe + `nowSec` + `minAgeSec` keep tests deterministic.
 
+import { join } from "node:path";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { createTmux } from "../abstractions/tmux.ts";
-import {
-  defaultGitSpawn,
-  type GitSpawn,
-} from "../abstractions/worktree.ts";
+import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import {
   buildWindowName,
+  getAtmuxDir,
   getSessionName,
   type ResolveDirOpts,
-  getAtmuxDir,
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
+import { resolveMergerConfig } from "../core/merger-config.ts";
 import {
   findPhantomInProgressClaims,
   formatPruneIso,
   type LiveMembersProbe,
-  prunePhantomInProgressClaims,
   type PruneResult,
+  prunePhantomInProgressClaims,
 } from "../core/phantom-prune.ts";
 import {
-  runReleaseNotesAutoAppend,
   type ReleaseNotesSweepResult,
+  runReleaseNotesAutoAppend,
 } from "../core/release-notes-sweep.ts";
-import { resolveMergerConfig } from "../core/merger-config.ts";
 import { HygieneRepo } from "../core/repositories/hygiene-repo.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
-import { type DrainTickResult, drainTick } from "../core/superdoctor-hygiene/drain.ts";
 import type { FixDeps, TeamState } from "../core/superdoctor-hygiene/_shared.ts";
+import { type DrainTickResult, drainTick } from "../core/superdoctor-hygiene/drain.ts";
 import { UsageError } from "../errors.ts";
-import { join } from "node:path";
 
 /** Default minimum age (seconds) before a phantom is opportunistically
  *  pruned by hygiene-tick. 24h matches t-d6fc03a7's spec — spares fresh
@@ -494,9 +491,7 @@ function formatHuman(result: HygieneTickResult): string {
   if (result.drained !== null) {
     const r = result.drained;
     const fix = r.result.applied ? "applied" : `skipped (${r.result.reason ?? "?"})`;
-    lines.push(
-      `  drained: ${r.row.taskId} [${r.row.fingerprintClass}/${r.row.severity}] → ${fix}`,
-    );
+    lines.push(`  drained: ${r.row.taskId} [${r.row.fingerprintClass}/${r.row.severity}] → ${fix}`);
   } else if (result.skipReason !== "") {
     lines.push(`  drain skipped: ${result.skipReason}`);
   }

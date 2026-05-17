@@ -574,9 +574,7 @@ describe("complaints verb — ADR-147 T2 sentinel write-through", () => {
     // Now flip ombudsman ON for the resolve.
     await writeOmbudsmanTeam(true);
     expect(await readSentinelPending()).toEqual([]); // sentinel empty
-    const exit = await captureStdout(() =>
-      complaints(["resolve", id, "--team-dir", teamDir]),
-    );
+    const exit = await captureStdout(() => complaints(["resolve", id, "--team-dir", teamDir]));
     expect(exit.result).toBe(0);
     expect(await readSentinelPending()).toEqual([]);
   });
@@ -611,13 +609,7 @@ describe("complaints verb — ADR-147 T2 sentinel write-through", () => {
     const ids: string[] = [];
     for (let i = 0; i < 5; i++) {
       const { out } = await captureStdout(() =>
-        complaints([
-          "file",
-          "--summary",
-          `incident-${i}`,
-          "--team-dir",
-          teamDir,
-        ]),
+        complaints(["file", "--summary", `incident-${i}`, "--team-dir", teamDir]),
       );
       ids.push(out.trim());
     }
@@ -626,9 +618,7 @@ describe("complaints verb — ADR-147 T2 sentinel write-through", () => {
     // serializes the sentinel writes; BEGIN IMMEDIATE serializes the
     // DB writes. End-state: sentinel empty, all rows resolved.
     await Promise.all(
-      ids.map((id) =>
-        captureStdout(() => complaints(["resolve", id, "--team-dir", teamDir])),
-      ),
+      ids.map((id) => captureStdout(() => complaints(["resolve", id, "--team-dir", teamDir]))),
     );
     expect(await readSentinelPending()).toEqual([]);
     // Verify every complaint hit `status='resolved'` in the DB.
@@ -647,12 +637,8 @@ describe("complaints verb — ADR-147 T2 sentinel write-through", () => {
   test("file + file concurrent → both ids land in sentinel (set-semantic, no torn write)", async () => {
     await writeOmbudsmanTeam(true);
     const [a, b] = await Promise.all([
-      captureStdout(() =>
-        complaints(["file", "--summary", "concurrent-1", "--team-dir", teamDir]),
-      ),
-      captureStdout(() =>
-        complaints(["file", "--summary", "concurrent-2", "--team-dir", teamDir]),
-      ),
+      captureStdout(() => complaints(["file", "--summary", "concurrent-1", "--team-dir", teamDir])),
+      captureStdout(() => complaints(["file", "--summary", "concurrent-2", "--team-dir", teamDir])),
     ]);
     const idA = a.out.trim();
     const idB = b.out.trim();

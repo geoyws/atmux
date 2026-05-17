@@ -31,8 +31,7 @@ afterEach(async () => {
 
 const FIXTURE_READY = "│ > \ntok 67k/100  ⏵⏵ auto mode on\n";
 const FIXTURE_COMPACTING = "Compacting conversation (15%)…\n";
-const FIXTURE_LEAD_HIGH_CTX =
-  "│ > \ntok 80k/100  ⏵⏵ auto mode on  ctx 75%\n";
+const FIXTURE_LEAD_HIGH_CTX = "│ > \ntok 80k/100  ⏵⏵ auto mode on  ctx 75%\n";
 
 interface SendRecord {
   target: string;
@@ -63,10 +62,7 @@ function buildFixtureCapture(perTarget: Record<string, string>): CaptureFn {
 }
 
 async function seedTeamWithMembers(members: TeamMember[]): Promise<void> {
-  await writeFile(
-    join(atmuxDir, "team.json"),
-    JSON.stringify({ name: "team", members }, null, 2),
-  );
+  await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "team", members }, null, 2));
 }
 
 // ---------- ADR-157 T4 — 5-cell goal-narrow matrix ----------
@@ -155,15 +151,11 @@ describe("runLaneTick — ADR-157 T4 goal-narrow (5-cell matrix)", () => {
     // so wedged goal-active members surface as pane-health issues,
     // NOT as goal-skipped (which would mask the dead pane).
     expect(result.outcomes["alice"]).toBe("skip-not-ready");
-    expect(
-      logs.some((l) => l.includes("alice:") && l.includes("skip")),
-    ).toBe(true);
+    expect(logs.some((l) => l.includes("alice:") && l.includes("skip"))).toBe(true);
   });
 
   test("(4) goal-inactive claude → claim-injection RAN (existing behavior preserved)", async () => {
-    await seedTeamWithMembers([
-      { name: "alice", lane: "be", runtime: "claude" },
-    ]);
+    await seedTeamWithMembers([{ name: "alice", lane: "be", runtime: "claude" }]);
     const team = await loadTeam({ teamDir });
     const t = "test-sess:alice";
     const { sendFn, calls } = buildMockSendFn();
@@ -181,9 +173,7 @@ describe("runLaneTick — ADR-157 T4 goal-narrow (5-cell matrix)", () => {
   });
 
   test("(5) goal-inactive claude + dead-pane → skip-not-ready (existing rate-limit / dead-pane branch preserved)", async () => {
-    await seedTeamWithMembers([
-      { name: "alice", lane: "be", runtime: "claude" },
-    ]);
+    await seedTeamWithMembers([{ name: "alice", lane: "be", runtime: "claude" }]);
     const team = await loadTeam({ teamDir });
     const t = "test-sess:alice";
     const { sendFn, calls } = buildMockSendFn();
@@ -251,9 +241,7 @@ describe("runLaneTick — ADR-157 §D5 safety-net preservation", () => {
   });
 
   test("safety net #1 (auto-done sweep) runs INDEPENDENT of goal-state — verified via autoDoneResolved field reachable", async () => {
-    await seedTeamWithMembers([
-      { name: "alice", lane: "be", runtime: "claude", goal: "x" },
-    ]);
+    await seedTeamWithMembers([{ name: "alice", lane: "be", runtime: "claude", goal: "x" }]);
     const team = await loadTeam({ teamDir });
     const t = "test-sess:alice";
 
@@ -287,9 +275,7 @@ describe("runLaneTick — ADR-157 §D5 safety-net preservation", () => {
 
 describe("runLaneTick — goal-resolver failure mode", () => {
   test("resolveGoal throws → falls through to claim --next (conservative)", async () => {
-    await seedTeamWithMembers([
-      { name: "alice", lane: "be", runtime: "claude" },
-    ]);
+    await seedTeamWithMembers([{ name: "alice", lane: "be", runtime: "claude" }]);
     const team = await loadTeam({ teamDir });
     const t = "test-sess:alice";
     const logs: string[] = [];
@@ -309,8 +295,6 @@ describe("runLaneTick — goal-resolver failure mode", () => {
     expect(calls.length).toBe(1);
     expect(calls[0]?.text).toBe("atmux claim --next --as alice");
     expect(result.outcomes["alice"]).toBe("injected");
-    expect(
-      logs.some((l) => l.includes("goal-resolve error") && l.includes("alice")),
-    ).toBe(true);
+    expect(logs.some((l) => l.includes("goal-resolve error") && l.includes("alice"))).toBe(true);
   });
 });

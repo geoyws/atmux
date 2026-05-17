@@ -98,8 +98,7 @@ function rowFromRaw(raw: HygieneRawRow): HygieneRow {
     lastSeenAt: raw.last_seen_at,
     attemptedFix: attempted,
     fixAppliedAt: raw.fix_applied_at,
-    fixSuccessful:
-      raw.fix_successful === null ? null : raw.fix_successful === 1,
+    fixSuccessful: raw.fix_successful === null ? null : raw.fix_successful === 1,
   };
 }
 
@@ -160,10 +159,7 @@ export class HygieneRepo {
 
   /** Fetch one row by composite key. Used by tests + drain-loop audit
    *  after `markFixed`. Returns null when the key doesn't exist. */
-  getFingerprint(
-    taskId: string,
-    fingerprintClass: HygieneFingerprintClass,
-  ): HygieneRow | null {
+  getFingerprint(taskId: string, fingerprintClass: HygieneFingerprintClass): HygieneRow | null {
     const raw = this.db
       .query(
         `SELECT * FROM superdoctor_hygiene

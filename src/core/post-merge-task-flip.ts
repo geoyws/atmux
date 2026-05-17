@@ -25,10 +25,7 @@
 // together.
 
 import { dirname } from "node:path";
-import {
-  type GitSpawn,
-  defaultGitSpawn,
-} from "./auto-done.ts";
+import { defaultGitSpawn, type GitSpawn } from "./auto-done.ts";
 import { listTasks, markTaskDone } from "./kanban.ts";
 
 // ---------- Types ----------
@@ -153,13 +150,7 @@ export async function flipTasksMergedInRange(
   // arbitrary subject contents. Note: `<from>..<to>` is git's
   // exclusive-low / inclusive-high range — exactly the commits that
   // newly arrived in the base branch as a result of this merge.
-  const r = await git([
-    "-C",
-    repoDir,
-    "log",
-    `${fromSha}..${toSha}`,
-    "--format=%H%n%s%x00",
-  ]);
+  const r = await git(["-C", repoDir, "log", `${fromSha}..${toSha}`, "--format=%H%n%s%x00"]);
   if (r.exitCode !== 0) {
     result.skippedReason = "git-log-failed";
     return result;
@@ -197,11 +188,9 @@ export async function flipTasksMergedInRange(
 
   const open = opts.listOpenTasks
     ? await opts.listOpenTasks()
-    : (
-        (await listTasks(atmuxDir, { status: "todo" })).concat(
-          await listTasks(atmuxDir, { status: "in-progress" }),
-        )
-      ).map((t) => ({ id: t.id, status: t.status ?? "" }));
+    : (await listTasks(atmuxDir, { status: "todo" }))
+        .concat(await listTasks(atmuxDir, { status: "in-progress" }))
+        .map((t) => ({ id: t.id, status: t.status ?? "" }));
   result.openTasks = open.length;
   const openSet = new Set(open.map((t) => t.id));
 

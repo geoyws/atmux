@@ -122,8 +122,7 @@ const HARD_PATTERNS: ClassifiedPattern[] = [
 const ROLE_PATTERNS: ClassifiedPattern[] = [
   {
     class: "role",
-    pattern:
-      /\b(i am not(?:\s+actually)?\s+an?|i'?m not(?:\s+actually)?\s+an?)\s+\w+\b/i,
+    pattern: /\b(i am not(?:\s+actually)?\s+an?|i'?m not(?:\s+actually)?\s+an?)\s+\w+\b/i,
     label: "role:disavow",
   },
   {
@@ -161,6 +160,7 @@ const ALL_PATTERNS: ClassifiedPattern[] = [
  *  pane -e` carry SGR codes; the classifier matches against text,
  *  not formatting. Regex tolerates the standard CSI shape
  *  (`ESC[<params>m` and similar). */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC (0x1B) is the literal start byte of ANSI CSI sequences — stripping them is the intent
 const ANSI_ESCAPE_RE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
 function stripAnsi(input: string): string {

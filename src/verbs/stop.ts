@@ -26,6 +26,7 @@
 import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
+import type { TmuxNamespace } from "../abstractions/tmux.ts";
 import { createTmux, type SendTarget } from "../abstractions/tmux.ts";
 import {
   defaultGitSpawn,
@@ -47,15 +48,14 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
-import { quiesceCron, softStop } from "../core/soft-stop.ts";
-import { UsageError } from "../errors.ts";
-import type { Team } from "../schema/team.ts";
 import {
   findPhantomInProgressClaims,
   formatPruneIso,
   prunePhantomInProgressClaims,
 } from "../core/phantom-prune.ts";
-import type { TmuxNamespace } from "../abstractions/tmux.ts";
+import { quiesceCron, softStop } from "../core/soft-stop.ts";
+import { UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
 import { cronRemove } from "./cron-remove.ts";
 
 const USAGE = "atmux stop [--force|-f] [--soft] [--no-archive] [--prune-branch]";
@@ -179,10 +179,7 @@ export interface StopOpts {
   gitSpawn?: GitSpawn;
 }
 
-export async function stop(
-  argv: ReadonlyArray<string>,
-  opts: StopOpts = {},
-): Promise<number> {
+export async function stop(argv: ReadonlyArray<string>, opts: StopOpts = {}): Promise<number> {
   const parsed = parseStopArgs(argv);
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team: Team = await requireTeam(dirOpts);
@@ -434,9 +431,7 @@ async function pruneWorktrees(
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(
-        `atmux: warn: worktree ${member.name} prune failed — ${msg}\n`,
-      );
+      process.stderr.write(`atmux: warn: worktree ${member.name} prune failed — ${msg}\n`);
     }
     // ADR-084 OQ2: branch-delete only fires on the worktree-pruned
     // success path. Dirty / missing / failed worktrees keep their
@@ -458,9 +453,7 @@ async function pruneWorktrees(
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(
-          `atmux: warn: branch ${wtBranch} delete failed — ${msg}\n`,
-        );
+        process.stderr.write(`atmux: warn: branch ${wtBranch} delete failed — ${msg}\n`);
       }
     }
   }

@@ -115,7 +115,12 @@ describe("classifyVelocity — resolution order", () => {
 
   test("reason uses windowMin from inputs (not hardcoded)", () => {
     const got = classifyVelocity(
-      baseInputs({ commitsInWindow: 0, lastCommitAgeMin: 999, inProgressTaskCount: 1, windowMin: 120 }),
+      baseInputs({
+        commitsInWindow: 0,
+        lastCommitAgeMin: 999,
+        inProgressTaskCount: 1,
+        windowMin: 120,
+      }),
     );
     expect(got.verdict).toBe("BAD");
     expect(got.reason).toContain("120min");
@@ -132,33 +137,23 @@ describe("classifyVelocity — resolution order", () => {
 
 describe("shouldNudgeLeadPane", () => {
   test("BAD + READY → true", () => {
-    expect(
-      shouldNudgeLeadPane({ verdict: "BAD", reason: "x" }, "READY"),
-    ).toBe(true);
+    expect(shouldNudgeLeadPane({ verdict: "BAD", reason: "x" }, "READY")).toBe(true);
   });
 
   test("BAD + BUSY → false (classifier-swallow risk)", () => {
-    expect(
-      shouldNudgeLeadPane({ verdict: "BAD", reason: "x" }, "BUSY"),
-    ).toBe(false);
+    expect(shouldNudgeLeadPane({ verdict: "BAD", reason: "x" }, "BUSY")).toBe(false);
   });
 
   test("BAD + UNREACHABLE → false (existing checkMember handles wedge)", () => {
-    expect(
-      shouldNudgeLeadPane({ verdict: "BAD", reason: "x" }, "UNREACHABLE"),
-    ).toBe(false);
+    expect(shouldNudgeLeadPane({ verdict: "BAD", reason: "x" }, "UNREACHABLE")).toBe(false);
   });
 
   test("OK + READY → false (no nudge needed)", () => {
-    expect(
-      shouldNudgeLeadPane({ verdict: "OK", reason: "x" }, "READY"),
-    ).toBe(false);
+    expect(shouldNudgeLeadPane({ verdict: "OK", reason: "x" }, "READY")).toBe(false);
   });
 
   test("STANDBY + READY → false", () => {
-    expect(
-      shouldNudgeLeadPane({ verdict: "STANDBY", reason: "x" }, "READY"),
-    ).toBe(false);
+    expect(shouldNudgeLeadPane({ verdict: "STANDBY", reason: "x" }, "READY")).toBe(false);
   });
 });
 

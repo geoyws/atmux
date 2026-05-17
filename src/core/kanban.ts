@@ -63,10 +63,7 @@ import {
   type KanbanStory,
   type KanbanTask,
 } from "../schema/kanban.ts";
-import {
-  DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
-  type Team,
-} from "../schema/team.ts";
+import { DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG, type Team } from "../schema/team.ts";
 import { type CallerScope, kanbanJsonPath, tryLoadTeam } from "./common.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
@@ -426,11 +423,7 @@ export function tryAutoEmitTrunkMerge(
   // KanbanStory row (no DB column added). storyFromRow spreads
   // `extra` last so `story.branch` is populated when present.
   const sourceBranch = (story as KanbanStory).branch;
-  if (
-    sourceBranch === undefined ||
-    sourceBranch === null ||
-    sourceBranch.length === 0
-  ) {
+  if (sourceBranch === undefined || sourceBranch === null || sourceBranch.length === 0) {
     return null;
   }
 
@@ -993,10 +986,7 @@ export function selectNextClaimable(
   const driverOnlyOk = (t: KanbanTask): boolean => !isDriverOnlyBlocked(t, opts.callerScope);
   const baseEligible = tasks.filter(
     (t) =>
-      t.status === "todo" &&
-      ownerOk(t) &&
-      driverOnlyOk(t) &&
-      unresolvedDeps(tasks, t).length === 0,
+      t.status === "todo" && ownerOk(t) && driverOnlyOk(t) && unresolvedDeps(tasks, t).length === 0,
   );
   const tiebreak = (a: KanbanTask, b: KanbanTask): number => {
     const pa = a.priority ?? 999;

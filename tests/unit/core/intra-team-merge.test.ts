@@ -19,18 +19,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitSpawn } from "../../../src/abstractions/branch-merge.ts";
-import {
-  closeDatabase,
-  type Database,
-  openDatabase,
-} from "../../../src/abstractions/sqlite.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import { closeDatabase, type Database, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { PreMergeGateInput } from "../../../src/core/branch-merge-state.ts";
-import {
-  type IntraTeamMergeContext,
-  performMerge,
-} from "../../../src/core/intra-team-merge.ts";
+import { type IntraTeamMergeContext, performMerge } from "../../../src/core/intra-team-merge.ts";
 import { MergerStateRepo } from "../../../src/core/repositories/merger-state-repo.ts";
 
 let scratch: string;
@@ -140,9 +133,7 @@ function gate(over: Partial<PreMergeGateInput> = {}): PreMergeGateInput {
 
 const MEMBER_BRANCH = "geoyws-whip-impl";
 
-function baseCtx(
-  overrides: Partial<IntraTeamMergeContext> = {},
-): IntraTeamMergeContext {
+function baseCtx(overrides: Partial<IntraTeamMergeContext> = {}): IntraTeamMergeContext {
   return {
     memberBranch: MEMBER_BRANCH,
     base: "geoyws",
@@ -199,9 +190,7 @@ describe("performMerge — in_progress branch (gate decisions)", () => {
   });
 
   test("owner has open tasks → stays in_progress, note refreshed", async () => {
-    const r = await performMerge(
-      baseCtx({ gate: gate({ ownerOpenTaskCount: 3 }) }),
-    );
+    const r = await performMerge(baseCtx({ gate: gate({ ownerOpenTaskCount: 3 }) }));
     expect(r.state).toBe("in_progress");
     expect(r.changed).toBe(true); // note refreshed
     expect(r.reason).toContain("3 open tasks");
@@ -209,17 +198,13 @@ describe("performMerge — in_progress branch (gate decisions)", () => {
   });
 
   test("worktree dirty → stays in_progress with dirty reason", async () => {
-    const r = await performMerge(
-      baseCtx({ gate: gate({ worktreeIsClean: false }) }),
-    );
+    const r = await performMerge(baseCtx({ gate: gate({ worktreeIsClean: false }) }));
     expect(r.state).toBe("in_progress");
     expect(r.reason).toContain("worktree dirty");
   });
 
   test("branch not ahead → stays in_progress with nothing-to-merge reason", async () => {
-    const r = await performMerge(
-      baseCtx({ gate: gate({ isAheadOfBase: false }) }),
-    );
+    const r = await performMerge(baseCtx({ gate: gate({ isAheadOfBase: false }) }));
     expect(r.state).toBe("in_progress");
     expect(r.reason).toContain("not ahead of base");
   });
@@ -232,9 +217,7 @@ describe("performMerge — in_progress branch (gate decisions)", () => {
   });
 
   test("gate clear, base moved → rebasing", async () => {
-    const r = await performMerge(
-      baseCtx({ gate: gate({ baseHasMoved: true }) }),
-    );
+    const r = await performMerge(baseCtx({ gate: gate({ baseHasMoved: true }) }));
     expect(r.state).toBe("rebasing");
     expect(r.reason).toContain("base moved");
   });
@@ -281,18 +264,19 @@ describe("performMerge — ready_to_merge branch (merge attempts)", () => {
 // ---------- Terminal states (no-op short-circuit) ----------
 
 describe("performMerge — terminal state short-circuit", () => {
-  test.each([["merged"], ["conflict"], ["reverted"]] as const)(
-    "terminal '%s' → no-op return, row untouched",
-    async (terminal) => {
-      seedState(terminal, 200, "terminal");
-      const r = await performMerge(baseCtx());
-      expect(r.state).toBe(terminal);
-      expect(r.changed).toBe(false);
-      expect(r.reason).toContain("terminal state");
-      // Row's transitioned_at untouched — no transition fired.
-      expect(repo.getState(MEMBER_BRANCH)?.transitionedAt).toBe(200);
-    },
-  );
+  test.each([
+    ["merged"],
+    ["conflict"],
+    ["reverted"],
+  ] as const)("terminal '%s' → no-op return, row untouched", async (terminal) => {
+    seedState(terminal, 200, "terminal");
+    const r = await performMerge(baseCtx());
+    expect(r.state).toBe(terminal);
+    expect(r.changed).toBe(false);
+    expect(r.reason).toContain("terminal state");
+    // Row's transitioned_at untouched — no transition fired.
+    expect(repo.getState(MEMBER_BRANCH)?.transitionedAt).toBe(200);
+  });
 });
 
 // ---------- Concurrency-loss edges (TOCTOU guard) ----------
@@ -428,14 +412,15 @@ describe("performMerge — non-conflict merge throw", () => {
 // ---------- Caller-driven holding states ----------
 
 describe("performMerge — caller-driven holding states", () => {
-  test.each([["rebasing"], ["tested"], ["test_failed"]] as const)(
-    "'%s' is caller-driven → no-op with 'waiting on outer wiring' reason",
-    async (holding) => {
-      seedState(holding, 200);
-      const r = await performMerge(baseCtx());
-      expect(r.state).toBe(holding);
-      expect(r.changed).toBe(false);
-      expect(r.reason).toContain("caller-driven");
-    },
-  );
+  test.each([
+    ["rebasing"],
+    ["tested"],
+    ["test_failed"],
+  ] as const)("'%s' is caller-driven → no-op with 'waiting on outer wiring' reason", async (holding) => {
+    seedState(holding, 200);
+    const r = await performMerge(baseCtx());
+    expect(r.state).toBe(holding);
+    expect(r.changed).toBe(false);
+    expect(r.reason).toContain("caller-driven");
+  });
 });

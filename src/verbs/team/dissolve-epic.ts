@@ -47,6 +47,7 @@ import { exists, writeText } from "../../abstractions/fs.ts";
 import { readJson } from "../../abstractions/json.ts";
 import { closeDatabase, type Database, openDatabase } from "../../abstractions/sqlite.ts";
 import { migrations } from "../../abstractions/sqlite-migrations.ts";
+import { createTmux } from "../../abstractions/tmux.ts";
 import {
   defaultGitSpawn,
   type GitSpawn,
@@ -54,7 +55,6 @@ import {
   pruneWorktree,
 } from "../../abstractions/worktree.ts";
 import { defaultCockpitConfigPath, removeEpicViewerFromParentCage } from "../../core/cockpit.ts";
-import { createTmux } from "../../abstractions/tmux.ts";
 import { resolveCallerScope } from "../../core/common.ts";
 import { ConfigError, UsageError } from "../../errors.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
@@ -241,7 +241,9 @@ export async function dissolveEpic(
       parentRoot,
       parentName: parentEntry.name ?? "",
       epicId: parsed.epicId,
-      tmuxFactory: createTmux as Parameters<typeof removeEpicViewerFromParentCage>[0]["tmuxFactory"],
+      tmuxFactory: createTmux as Parameters<
+        typeof removeEpicViewerFromParentCage
+      >[0]["tmuxFactory"],
       log: (m) => logger.log(`  ${m.replace(/^\s+/, "")}`),
       warn: (m) => logger.warn(m),
     });

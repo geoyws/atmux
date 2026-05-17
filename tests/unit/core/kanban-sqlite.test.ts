@@ -244,9 +244,7 @@ describe("kanban (SQLite mode)", () => {
     const id = await addTask(env.atmuxDir, { subject: "shipped already" });
     await claimTask(env.atmuxDir, id, "fe0");
     await markTaskDone(env.atmuxDir, id, "shipped");
-    await expect(claimTask(env.atmuxDir, id, "be0")).rejects.toThrow(
-      /already done.*claim refused/,
-    );
+    await expect(claimTask(env.atmuxDir, id, "be0")).rejects.toThrow(/already done.*claim refused/);
   });
 
   test("claimTask (SQLite path): refused done-state claim does NOT mutate state", async () => {

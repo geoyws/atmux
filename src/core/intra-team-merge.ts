@@ -30,11 +30,7 @@
 // follow the same compose-shape against the same shared module.
 
 import type { GitSpawn } from "../abstractions/branch-merge.ts";
-import {
-  defaultGitSpawn,
-  MergeConflictError,
-  mergeMember,
-} from "../abstractions/branch-merge.ts";
+import { defaultGitSpawn, MergeConflictError, mergeMember } from "../abstractions/branch-merge.ts";
 import {
   type BranchMergeState,
   isTerminalState,
@@ -204,9 +200,7 @@ function guardedTransition(
  * short-circuits on TOCTOU mismatch — best-effort guard that
  * complements the serialized write path.
  */
-export async function performMerge(
-  ctx: IntraTeamMergeContext,
-): Promise<PerformMergeResult> {
+export async function performMerge(ctx: IntraTeamMergeContext): Promise<PerformMergeResult> {
   const now = ctx.now ?? (() => Math.floor(Date.now() / 1000));
   const by = ctx.by ?? "event";
   const t = now();
@@ -292,12 +286,7 @@ export async function performMerge(
     else opts.git = ctx.git ?? defaultGitSpawn;
 
     try {
-      const mr = await mergeMember(
-        ctx.base,
-        ctx.memberBranch,
-        ctx.repoPath,
-        opts,
-      );
+      const mr = await mergeMember(ctx.base, ctx.memberBranch, ctx.repoPath, opts);
       // Re-stamp `now` AFTER the merge so the `transitioned_at`
       // column reflects when the side effect completed (helps
       // operators attribute long-running merges).

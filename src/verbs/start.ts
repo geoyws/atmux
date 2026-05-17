@@ -106,20 +106,6 @@ import {
   sanitizeBranchSegment,
 } from "../abstractions/worktree.ts";
 import {
-  buildWindowName,
-  buildWindowNameLegacy,
-  defaultEmojiForRole,
-  ensureAtmuxDirs,
-  getAtmuxDir,
-  getDefaultSocket,
-  getSessionName,
-  leadOutboxPath,
-  loadTeam,
-  resolveTeamSocket,
-  stateDir,
-  teamJsonPath,
-} from "../core/common.ts";
-import {
   type BootClaudeOpts,
   type BootResult,
   bootClaudeMember,
@@ -133,17 +119,28 @@ import {
   readNestingLevel,
   resolvePrefix,
 } from "../core/cockpit.ts";
+import {
+  buildWindowName,
+  buildWindowNameLegacy,
+  defaultEmojiForRole,
+  ensureAtmuxDirs,
+  getAtmuxDir,
+  getDefaultSocket,
+  getSessionName,
+  leadOutboxPath,
+  loadTeam,
+  resolveTeamSocket,
+  stateDir,
+  teamJsonPath,
+} from "../core/common.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
-import {
-  consumedManifestPath,
-  resumeManifestPath,
-} from "../core/soft-stop.ts";
+import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { ResumeManifest } from "../schema/resume.ts";
 import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import { ResumeManifest } from "../schema/resume.ts";
 import type { Team } from "../schema/team.ts";
 import { applyCagePrefix, reconcileCockpitSession } from "./cockpit.ts";
 import { cronInstall } from "./cron-install.ts";
@@ -665,7 +662,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   // write-only-to-true). The function body is byte-equivalent to the
   // prior inline loop body for reviewer-diff readability — only the
   // `for (const member of team.members) {` wrapper was replaced.
-  const spawnOneMember = async (member: typeof team.members[number]): Promise<void> => {
+  const spawnOneMember = async (member: (typeof team.members)[number]): Promise<void> => {
     const role = member.role ?? "member";
     const emoji = member.emoji ?? defaultEmojiForRole(role);
     if (member.emoji === undefined || member.emoji.length === 0) {
@@ -821,9 +818,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
             );
           } catch (e) {
             const cause = e instanceof Error ? e.message : String(e);
-            logger.warn(
-              `  · ${member.name}: failed to write boot-failure notice (${cause})`,
-            );
+            logger.warn(`  · ${member.name}: failed to write boot-failure notice (${cause})`);
           }
         }
       } else {
@@ -1122,7 +1117,9 @@ async function autoReconcileCockpitForTeam(
       false,
       { onlyTeam: matched.name },
     );
-    logger.log(`  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`);
+    logger.log(
+      `  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`,
+    );
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     logger.warn(`cockpit reconcile failed for '${matched.name}': ${cause}`);

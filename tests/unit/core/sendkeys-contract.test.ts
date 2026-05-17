@@ -129,9 +129,7 @@ describe("ADR-138 T3b3 contract — no raw text-body tmux.pane.sendKeys (t-06547
       }
     }
     if (violations.length > 0) {
-      const detail = violations
-        .map((v) => `  ${v.file}:${v.line}\n    ${v.snippet}`)
-        .join("\n");
+      const detail = violations.map((v) => `  ${v.file}:${v.line}\n    ${v.snippet}`).join("\n");
       throw new Error(
         `ADR-138 T3b3 contract violation — raw tmux.pane.sendKeys with text-body payload found in ${violations.length} site(s):\n${detail}\n\n` +
           "Route the payload through `pasteAndSubmit` from src/core/paste-submit.ts, OR add the source file to CARVE_OUT_FILES with a doc comment explaining why the raw path is correct (control-key only, shell prompt, slash-command, etc.).",

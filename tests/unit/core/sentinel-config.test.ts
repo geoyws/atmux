@@ -11,12 +11,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { resolveSentinel } from "../../../src/core/sentinel-config.ts";
+import { Cockpit } from "../../../src/schema/cockpit.ts";
 import {
   DEFAULT_SENTINEL_CADENCE_SEC,
   DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
   Team,
 } from "../../../src/schema/team.ts";
-import { Cockpit } from "../../../src/schema/cockpit.ts";
 
 // ---------- Precedence resolution ----------
 
@@ -79,9 +79,7 @@ describe("resolveSentinel — overrides merge per-impl defaults", () => {
     const team = Team.parse({ name: "demo", members: [] });
     const r = resolveSentinel(team);
     expect(r.cadenceSec).toBe(DEFAULT_SENTINEL_CADENCE_SEC);
-    expect(r.escalationConfidenceThreshold).toBe(
-      DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
-    );
+    expect(r.escalationConfidenceThreshold).toBe(DEFAULT_SENTINEL_ESCALATION_CONFIDENCE);
   });
 
   test("partial override merges over per-impl defaults", () => {
@@ -94,9 +92,7 @@ describe("resolveSentinel — overrides merge per-impl defaults", () => {
     const r = resolveSentinel(team);
     expect(r.cadenceSec).toBe(180);
     // Unspecified field inherits default — explicit > per-impl default.
-    expect(r.escalationConfidenceThreshold).toBe(
-      DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
-    );
+    expect(r.escalationConfidenceThreshold).toBe(DEFAULT_SENTINEL_ESCALATION_CONFIDENCE);
   });
 
   test("full override replaces both per-impl defaults", () => {

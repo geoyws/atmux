@@ -28,10 +28,7 @@ import {
   walkSessions,
 } from "../../../src/core/cockpit.ts";
 import { ConfigError, SchemaError } from "../../../src/errors.ts";
-import type {
-  Cockpit as CockpitShape,
-  CockpitSessionT,
-} from "../../../src/schema/cockpit.ts";
+import type { CockpitSessionT, Cockpit as CockpitShape } from "../../../src/schema/cockpit.ts";
 
 let homeDir: string;
 
@@ -1324,9 +1321,7 @@ describe("callerScopeAllowed (ADR-092 §D3)", () => {
       epicId: "e-alpha-2",
       sessions: [],
     } as never);
-    expect(
-      callerScopeAllowed(cockpit, "alpha-epic-1", "alpha-epic-2", undefined),
-    ).toBe(false);
+    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "alpha-epic-2", undefined)).toBe(false);
   });
 
   test("unrelated standalone teams refused", () => {

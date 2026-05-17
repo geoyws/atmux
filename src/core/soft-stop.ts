@@ -13,15 +13,11 @@
 // in around them. Tests inject `tmux` + `kanban` + `clock` + `sleep` so
 // the unit suite runs without a real tmux server.
 
+import { join } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { atomicWrite } from "../abstractions/fs.ts";
-import {
-  buildWindowName,
-  defaultEmojiForRole,
-} from "./common.ts";
-import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
 import { now } from "../abstractions/time.ts";
-import { listTasks } from "./kanban.ts";
+import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 import {
   RESUME_MANIFEST_VERSION,
@@ -30,7 +26,8 @@ import {
   type ResumeReason,
 } from "../schema/resume.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import { join } from "node:path";
+import { buildWindowName, defaultEmojiForRole } from "./common.ts";
+import { listTasks } from "./kanban.ts";
 
 /** Default grace window between the per-member notify and the manifest
  *  write + session kill. Used when `team.softStopGraceSeconds` is unset.
@@ -43,8 +40,7 @@ export const DEFAULT_SOFT_STOP_GRACE_SECONDS = 5;
  *  text without auto-submitting it on the implicit-Enter after the
  *  send. Members reading the brief know to recognise the marker and
  *  finish their current `atmux done` before the session dies. */
-export const SOFT_STOP_NOTICE =
-  "# soft-stop incoming — finish current operation, no new claims";
+export const SOFT_STOP_NOTICE = "# soft-stop incoming — finish current operation, no new claims";
 
 export interface SoftStopOpts {
   /** Team config — needed for the member roster + grace override + the
@@ -180,17 +176,15 @@ function indexInFlightByOwner(tasks: ReadonlyArray<KanbanTask>): Map<string, Kan
 }
 
 /** Build a `ResumeMember` for one team-roster entry. */
-function buildResumeMember(
-  member: TeamMember,
-  inFlight: Map<string, KanbanTask>,
-): ResumeMember {
+function buildResumeMember(member: TeamMember, inFlight: Map<string, KanbanTask>): ResumeMember {
   const task = inFlight.get(member.name);
   const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
   return {
     name: member.name,
     lastClaim: task?.id ?? null,
     claimedAt: task?.claimedAt ?? null,
-    windowName: emoji.length > 0 ? buildWindowName(member.name, emoji, member.label, member.role) : null,
+    windowName:
+      emoji.length > 0 ? buildWindowName(member.name, emoji, member.label, member.role) : null,
   };
 }
 

@@ -32,7 +32,15 @@ function ok(stdout = ""): SpawnResult {
 }
 
 function fail(stderr: string, code = 128): SpawnResult {
-  return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+  return {
+    exitCode: code,
+    stdout: "",
+    stderr,
+    argv: [],
+    cmd: "git",
+    signalled: null,
+    durationMs: 0,
+  };
 }
 
 /** Minimal Team object that parses through Zod with the merger field
@@ -125,9 +133,7 @@ describe("resolveMergerConfig", () => {
     const team = teamWith({ enabled: true });
     const git: GitSpawn = async () => ok("\n");
     await expect(resolveMergerConfig(team, "/srv/repo", { git })).rejects.toThrow(ConfigError);
-    await expect(resolveMergerConfig(team, "/srv/repo", { git })).rejects.toThrow(
-      /detached HEAD/,
-    );
+    await expect(resolveMergerConfig(team, "/srv/repo", { git })).rejects.toThrow(/detached HEAD/);
   });
 
   test("detached HEAD BUT explicit baseBranch → succeeds (git never called)", async () => {
@@ -151,7 +157,11 @@ describe("resolveMergerConfig", () => {
     // Zod rejects empty strings at parse-time (min(1)), but a non-Zod
     // caller could synthesize one. The helper should still resolve
     // rather than emit an empty branch downstream.
-    const team = { name: "atmux", members: [], merger: { enabled: true, baseBranch: "" } } as unknown as Team;
+    const team = {
+      name: "atmux",
+      members: [],
+      merger: { enabled: true, baseBranch: "" },
+    } as unknown as Team;
     const git: GitSpawn = async () => ok("geoyws\n");
     const result = await resolveMergerConfig(team, "/srv/repo", { git });
     expect(result.baseBranch).toBe("geoyws");

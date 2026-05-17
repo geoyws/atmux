@@ -417,9 +417,7 @@ export const CockpitSentinelCursor = z
     impl: z.literal("cursor"),
     enabled: z.boolean().default(false),
     cursorBinPath: z.string().default("/usr/local/bin/cursor-agent"),
-    model: z
-      .enum(["composer-2-fast", "composer-2"])
-      .default("composer-2-fast"),
+    model: z.enum(["composer-2-fast", "composer-2"]).default("composer-2-fast"),
     cageTier: z.literal("tier-2").default("tier-2"),
   })
   .strict();
@@ -464,7 +462,6 @@ export type CockpitSentinel = z.infer<typeof CockpitSentinel>;
  *  backends dropped pre-implementation. */
 export const CockpitDefaultSentinel = z.enum(["claude", "cursor"]);
 export type CockpitDefaultSentinel = z.infer<typeof CockpitDefaultSentinel>;
-
 
 /** ADR-086 §Phase 1.5: verdict literal keys for the per-verdict dedup
  *  ladder. Restated here (not imported from `core/pulse-state.ts` to

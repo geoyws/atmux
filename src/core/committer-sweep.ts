@@ -52,11 +52,9 @@
 //     sweep core stays unchanged — it owns the eligibility logic, T3
 //     owns the merge-execution path.
 
-import type {
-  BranchMergeState,
-} from "./branch-merge-state.ts";
-import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
 import type { GitSpawn } from "../abstractions/worktree.ts";
+import type { BranchMergeState } from "./branch-merge-state.ts";
+import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
 
 // ---------- Types ----------
 
@@ -109,7 +107,12 @@ export interface CommitterSweepEntry {
   memberBranch: string;
   aheadCount: number;
   /** What the sweep DID with this branch on this tick. */
-  action: "queued" | "skipped-zero-ahead" | "skipped-in-flight" | "skipped-terminal" | "queue-refused";
+  action:
+    | "queued"
+    | "skipped-zero-ahead"
+    | "skipped-in-flight"
+    | "skipped-terminal"
+    | "queue-refused";
   /** The state row read from {@link MergerStateRepo} (null when the
    *  branch has never transitioned). Surfaced for diagnosability —
    *  the action determines the rationale, the state explains why. */
@@ -193,9 +196,7 @@ export interface CommitterSweepDeps {
  * dispatcher's job (so the same code path handles event-driven AND
  * cron-backstop entry). The sweep is pure eligibility analysis.
  */
-export async function committerSweep(
-  deps: CommitterSweepDeps,
-): Promise<CommitterSweepResult> {
+export async function committerSweep(deps: CommitterSweepDeps): Promise<CommitterSweepResult> {
   const candidates = await listMemberBranches(deps);
   const entries: CommitterSweepEntry[] = [];
   let queued = 0;
@@ -301,10 +302,7 @@ async function listMemberBranches(deps: CommitterSweepDeps): Promise<string[]> {
  *  `git rev-list --count <base>..<member>` per ADR-088 W1's pattern;
  *  same semantics, same exit-code handling (non-zero → return 0 so
  *  the sweep skips the branch instead of crashing the tick). */
-async function countAhead(
-  memberBranch: string,
-  deps: CommitterSweepDeps,
-): Promise<number> {
+async function countAhead(memberBranch: string, deps: CommitterSweepDeps): Promise<number> {
   const r = await deps.git([
     "-C",
     deps.teamRoot,

@@ -206,9 +206,9 @@ describe("claim verb — integration", () => {
       const saved = priorScope();
       delete process.env.ATMUX_CALLER_SCOPE;
       try {
-        await expect(
-          claim([id, "--as", "alpha", "--team-dir", teamDir]),
-        ).rejects.toThrow(/driver-only Task/);
+        await expect(claim([id, "--as", "alpha", "--team-dir", teamDir])).rejects.toThrow(
+          /driver-only Task/,
+        );
       } finally {
         restoreScope(saved);
       }

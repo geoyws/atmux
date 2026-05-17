@@ -55,9 +55,7 @@ describe("computeVerdict — shipping", () => {
     // commits>0 means it's not Stalled either (Stalled requires silence);
     // there's queued work so it's not Cool. Idle is the right answer:
     // "work exists, the green-shipping signal is broken, look at me".
-    const v = computeVerdict(
-      baseInputs({ commitCount: 3, doctorRed: 1, inProgressCount: 1 }),
-    );
+    const v = computeVerdict(baseInputs({ commitCount: 3, doctorRed: 1, inProgressCount: 1 }));
     expect(v).toBe("🟡 Idle" as PulseVerdict);
   });
 });
@@ -140,28 +138,19 @@ describe("describeVerdict — verdict body strings", () => {
   });
 
   test("🔴 Stalled body cites in-progress count", () => {
-    const s = describeVerdict(
-      baseInputs({ inProgressCount: 3, windowMin: 30 }),
-      "🔴 Stalled",
-    );
+    const s = describeVerdict(baseInputs({ inProgressCount: 3, windowMin: 30 }), "🔴 Stalled");
     expect(s).toContain("3 in-progress");
     expect(s).toContain("0 commits in 30min");
   });
 
   test("🚨 Need you body — driver asks only", () => {
-    const s = describeVerdict(
-      baseInputs({ staleDriverInboxCount: 2 }),
-      "🚨 Need you",
-    );
+    const s = describeVerdict(baseInputs({ staleDriverInboxCount: 2 }), "🚨 Need you");
     expect(s).toContain("2 stale driver-ask(s)");
     expect(s).not.toContain("open decision");
   });
 
   test("🚨 Need you body — decisions only", () => {
-    const s = describeVerdict(
-      baseInputs({ pendingDecisionsCount: 1 }),
-      "🚨 Need you",
-    );
+    const s = describeVerdict(baseInputs({ pendingDecisionsCount: 1 }), "🚨 Need you");
     expect(s).toContain("1 open decision(s)");
     expect(s).not.toContain("driver-ask");
   });

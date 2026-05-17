@@ -7,14 +7,16 @@
 // sendKeys — out-of-order resurrects the bracketed-paste swallow bug).
 
 import { describe, expect, test } from "bun:test";
+import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   PASTE_SUBMIT_SETTLE_FLOOR_MS,
   pasteAndSubmit,
   submitAfterPaste,
 } from "../../../src/core/paste-submit.ts";
-import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 
-type Event = { kind: "sleep"; ms: number } | { kind: "sendKeys"; keys: string; enter: boolean | undefined };
+type Event =
+  | { kind: "sleep"; ms: number }
+  | { kind: "sendKeys"; keys: string; enter: boolean | undefined };
 
 function buildFakeTmux(): {
   tmux: TmuxNamespace;

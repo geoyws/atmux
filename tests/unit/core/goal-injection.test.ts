@@ -86,17 +86,12 @@ describe("injectGoalIfActive — 5-cell matrix (ADR-157 T3)", () => {
     expect(result.fired).toBe(true);
     expect(result.reason).toBe("fired");
     expect(result.goalText).toBe("All members commit in last 30min");
-    expect(sendRecord.keys).toEqual([
-      '/goal "All members commit in last 30min"',
-    ]);
+    expect(sendRecord.keys).toEqual(['/goal "All members commit in last 30min"']);
   });
 
   test("(member.goal unset, brief has Standing Goal, runtime=claude) → fires with brief-text", async () => {
     const briefPath = join(tempDir, "lead.md");
-    await writeFile(
-      briefPath,
-      "## Standing Goal\n\nKanban.status=blocked is empty\n",
-    );
+    await writeFile(briefPath, "## Standing Goal\n\nKanban.status=blocked is empty\n");
     const sendRecord = { keys: [] as string[] };
     const tmux = buildMockTmux(["❯ "], sendRecord);
     const member: TeamMember = { name: "lead", runtime: "claude" };
@@ -149,7 +144,10 @@ describe("injectGoalIfActive — 5-cell matrix (ADR-157 T3)", () => {
     // total 2 send attempts; default timeoutMs=3000 + pollIntervalMs=250.
     // We feed enough busy captures to exhaust both attempts.
     const busy = "busy-line-no-prompt-marker\n";
-    const tmux = buildMockTmux(Array.from({ length: 100 }, () => busy), sendRecord);
+    const tmux = buildMockTmux(
+      Array.from({ length: 100 }, () => busy),
+      sendRecord,
+    );
     const member: TeamMember = {
       name: "alice",
       runtime: "claude",
@@ -196,8 +194,6 @@ describe("injectGoalIfActive — opt-out + quoting", () => {
     };
     const result = await injectGoalIfActive({ ...baseOpts, tmux, member });
     expect(result.fired).toBe(true);
-    expect(sendRecord.keys[0]).toBe(
-      '/goal "condition with \\"quotes\\" inside"',
-    );
+    expect(sendRecord.keys[0]).toBe('/goal "condition with \\"quotes\\" inside"');
   });
 });

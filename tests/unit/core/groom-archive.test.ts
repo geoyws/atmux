@@ -13,14 +13,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { exists } from "../../../src/abstractions/fs.ts";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
-import { exists } from "../../../src/abstractions/fs.ts";
-import {
-  archiveDbPath,
-  groomArchive,
-  stateDbPath,
-} from "../../../src/core/groom-archive.ts";
+import { archiveDbPath, groomArchive, stateDbPath } from "../../../src/core/groom-archive.ts";
 import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 
 let atmuxDir: string;
@@ -89,7 +85,10 @@ function seedInboxMessage(
   }
 }
 
-function countMainAndArchive(atmuxDir_: string, table: string): {
+function countMainAndArchive(
+  atmuxDir_: string,
+  table: string,
+): {
   main: number;
   archive: number;
 } {
@@ -262,12 +261,11 @@ describe("groomArchive — archive.db schema", () => {
     expect(await exists(archiveDbPath(atmuxDir))).toBe(true);
     const adb = openDatabase(archiveDbPath(atmuxDir), migrations);
     try {
-      const v = (adb.query("PRAGMA user_version").get() as { user_version: number })
-        .user_version;
+      const v = (adb.query("PRAGMA user_version").get() as { user_version: number }).user_version;
       expect(v).toBeGreaterThanOrEqual(3);
-      const tables = adb
-        .query("SELECT name FROM sqlite_master WHERE type='table'")
-        .all() as Array<{ name: string }>;
+      const tables = adb.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
+        name: string;
+      }>;
       const names = new Set(tables.map((t) => t.name));
       expect(names.has("tasks")).toBe(true);
       expect(names.has("inbox_messages")).toBe(true);

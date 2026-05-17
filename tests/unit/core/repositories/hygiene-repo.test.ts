@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDatabase, openDatabase, type Database } from "../../../../src/abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase } from "../../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../../src/abstractions/sqlite-migrations.ts";
 import {
   HygieneRepo,
@@ -150,7 +150,15 @@ describe("upsertFingerprint", () => {
 
   test("composite PK isolates different fingerprint classes on same task", () => {
     repo.upsertFingerprint(mkIssue({ taskId: "t-001", fingerprintClass: "ghost-owner" }), 1000);
-    repo.upsertFingerprint(mkIssue({ taskId: "t-001", fingerprintClass: "lane-mismatch", severity: "P0", proposedFix: { kind: "set-lane", lane: "be" } }), 1000);
+    repo.upsertFingerprint(
+      mkIssue({
+        taskId: "t-001",
+        fingerprintClass: "lane-mismatch",
+        severity: "P0",
+        proposedFix: { kind: "set-lane", lane: "be" },
+      }),
+      1000,
+    );
     expect(repo.getFingerprint("t-001", "ghost-owner")).not.toBeNull();
     expect(repo.getFingerprint("t-001", "lane-mismatch")).not.toBeNull();
     expect(repo.listUnfixed()).toHaveLength(2);
@@ -162,10 +170,27 @@ describe("upsertFingerprint", () => {
 describe("listUnfixed", () => {
   test("orders by severity ASC, detected_at ASC", () => {
     // Insert in scrambled order; expect P0 first, oldest first within tier.
-    repo.upsertFingerprint(mkIssue({ taskId: "t-003", fingerprintClass: "prio-null", severity: "P3", proposedFix: { kind: "set-priority", priority: 3 } }), 3000);
-    repo.upsertFingerprint(mkIssue({ taskId: "t-002", fingerprintClass: "role-mismatch", severity: "P1" }), 1500);
-    repo.upsertFingerprint(mkIssue({ taskId: "t-001-b", fingerprintClass: "ghost-owner", severity: "P0" }), 2000);
-    repo.upsertFingerprint(mkIssue({ taskId: "t-001-a", fingerprintClass: "ghost-owner", severity: "P0" }), 1000);
+    repo.upsertFingerprint(
+      mkIssue({
+        taskId: "t-003",
+        fingerprintClass: "prio-null",
+        severity: "P3",
+        proposedFix: { kind: "set-priority", priority: 3 },
+      }),
+      3000,
+    );
+    repo.upsertFingerprint(
+      mkIssue({ taskId: "t-002", fingerprintClass: "role-mismatch", severity: "P1" }),
+      1500,
+    );
+    repo.upsertFingerprint(
+      mkIssue({ taskId: "t-001-b", fingerprintClass: "ghost-owner", severity: "P0" }),
+      2000,
+    );
+    repo.upsertFingerprint(
+      mkIssue({ taskId: "t-001-a", fingerprintClass: "ghost-owner", severity: "P0" }),
+      1000,
+    );
     const rows = repo.listUnfixed();
     expect(rows.map((r) => r.taskId)).toEqual(["t-001-a", "t-001-b", "t-002", "t-003"]);
   });

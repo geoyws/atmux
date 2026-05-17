@@ -574,19 +574,13 @@ describe("rotate() — public verb", () => {
     const bootPrompt = renderBootPrompt("t", "alice");
     expect(calls.loadBuffer.length).toBeGreaterThanOrEqual(1);
     // At least one loadBuffer carried the boot prompt as data.
-    expect(
-      calls.loadBuffer.some((l) => l.data === bootPrompt),
-    ).toBe(true);
+    expect(calls.loadBuffer.some((l) => l.data === bootPrompt)).toBe(true);
     // pasteBuffer fired with deleteAfter (the bracketed-paste envelope).
     expect(calls.pasteBuffer.length).toBeGreaterThanOrEqual(1);
     // A C-m submit followed the paste; no raw text-body sendKeys for
     // the boot prompt remains.
-    expect(
-      calls.sendKeys.some((s) => s.keys === "C-m" && s.enter === false),
-    ).toBe(true);
-    expect(
-      calls.sendKeys.some((s) => s.keys === bootPrompt),
-    ).toBe(false);
+    expect(calls.sendKeys.some((s) => s.keys === "C-m" && s.enter === false)).toBe(true);
+    expect(calls.sendKeys.some((s) => s.keys === bootPrompt)).toBe(false);
     // capturePane fired at least 3x (sentinel + readiness poll + post-boot poll).
     expect(calls.capturePane.length).toBeGreaterThanOrEqual(3);
     // Stdout carries the boot-success line + the final rotation summary.

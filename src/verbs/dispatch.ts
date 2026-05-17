@@ -37,7 +37,7 @@ import { appendDispatched, removeFromInProgress } from "../core/inbox.ts";
 import { claimTask, showTask } from "../core/kanban.ts";
 import { isPaused } from "../core/pause.ts";
 import { verifierForTui } from "../core/safe-send.ts";
-import { sendToMember, type SendOpts } from "../core/send.ts";
+import { type SendOpts, sendToMember } from "../core/send.ts";
 import { resolveTarget } from "../core/window-id.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
@@ -208,7 +208,12 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       team: team.name,
       sessionName,
       member: memberEntry.name,
-      windowName: buildWindowName(memberEntry.name, memberEntry.emoji, memberEntry.label, memberEntry.role),
+      windowName: buildWindowName(
+        memberEntry.name,
+        memberEntry.emoji,
+        memberEntry.label,
+        memberEntry.role,
+      ),
       tmux,
     });
     const body = typeof post.body === "string" ? post.body : "";

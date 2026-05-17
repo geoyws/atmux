@@ -194,9 +194,7 @@ export async function runBudgetCheck(
 
   // ADR-078 — daemon caller owns the credentials lifecycle, opts in to
   // the Fix-C OAuth refresh path.
-  const probes = await Promise.all(
-    accounts.map((a) => probe(a, { refreshOnNearExpiry: true })),
-  );
+  const probes = await Promise.all(accounts.map((a) => probe(a, { refreshOnNearExpiry: true })));
   // Stitch into [{account, result}] for downstream filtering.
   const results = accounts.map((a, i) => ({ account: a, result: probes[i] as BudgetProbeResult }));
 

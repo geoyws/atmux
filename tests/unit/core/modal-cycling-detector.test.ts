@@ -140,11 +140,7 @@ describe("computeModalHash", () => {
 
 // ---------- shouldFireCycleDetection ----------
 
-function entry(
-  hashSuffix: string,
-  detectedAt: number,
-  member = "whip-impl",
-): ModalHistoryEntry {
+function entry(hashSuffix: string, detectedAt: number, member = "whip-impl"): ModalHistoryEntry {
   return {
     member,
     paneTextHash: `sha-${hashSuffix}`,
@@ -192,10 +188,7 @@ describe("shouldFireCycleDetection", () => {
 
   test("2 distinct hashes (below threshold) → fire=false", () => {
     const now = 1_700_000_000;
-    const r = shouldFireCycleDetection(
-      [entry("A", now - 300), entry("B", now)],
-      cfg,
-    );
+    const r = shouldFireCycleDetection([entry("A", now - 300), entry("B", now)], cfg);
     expect(r.fire).toBe(false);
     expect(r.reason).toMatch(/only 2 distinct/);
   });

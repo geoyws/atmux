@@ -430,9 +430,7 @@ export class SafeSendKeysError extends Error {
     public readonly attempts: number,
     public readonly finalCapture: string,
   ) {
-    super(
-      `safeSendKeysWithVerify failed: target=${target} attempts=${attempts}`,
-    );
+    super(`safeSendKeysWithVerify failed: target=${target} attempts=${attempts}`);
     this.name = "SafeSendKeysError";
   }
 }
@@ -440,8 +438,7 @@ export class SafeSendKeysError extends Error {
 /** Default escalation log path under `$HOME/.atmux/state/`. ADR-138
  *  §"Escalation log" — append-only, MYT-timestamped, bounded by an
  *  operator-managed rotation. */
-export const DEFAULT_SEND_KEYS_FAILURES_LOG_REL =
-  ".atmux/state/send-keys-failures.log";
+export const DEFAULT_SEND_KEYS_FAILURES_LOG_REL = ".atmux/state/send-keys-failures.log";
 
 /** Default verifier poll interval. */
 export const DEFAULT_VERIFY_POLL_MS = 250;
@@ -502,10 +499,7 @@ export async function safeSendKeysWithVerify(
       const capture = await opts.capture(opts.target);
       finalCapture = capture;
       if (opts.expectVerifier(capture)) {
-        log(
-          `safeSendKeysWithVerify: ${opts.target} verified ` +
-            `(attempts=${attempts})`,
-        );
+        log(`safeSendKeysWithVerify: ${opts.target} verified ` + `(attempts=${attempts})`);
         return { success: true, attempts, finalCapture };
       }
     }
@@ -523,10 +517,7 @@ export async function safeSendKeysWithVerify(
 
   // Escalate — write to log + return failure.
   await writeEscalationLog(opts, preCapture, finalCapture, attempts, timeoutMs);
-  log(
-    `safeSendKeysWithVerify: ${opts.target} ESCALATED ` +
-      `(attempts=${attempts}, log written)`,
-  );
+  log(`safeSendKeysWithVerify: ${opts.target} ESCALATED ` + `(attempts=${attempts}, log written)`);
   return { success: false, attempts, finalCapture };
 }
 

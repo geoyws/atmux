@@ -32,11 +32,10 @@
 // send-keys-failures.log per ADR-138 and the helper returns
 // `{ fired: false, reason: "verify-failed" }` rather than throwing.
 
-import type { TmuxNamespace } from "../abstractions/tmux.ts";
-import type { SendTarget } from "../abstractions/tmux.ts";
+import type { SendTarget, TmuxNamespace } from "../abstractions/tmux.ts";
+import type { TeamMember } from "../schema/team.ts";
 import { resolveGoalForMember } from "./goal-resolver.ts";
 import { composerEmpty, safeSendKeysWithVerify } from "./safe-send.ts";
-import type { TeamMember } from "../schema/team.ts";
 
 export interface InjectGoalOpts {
   tmux: TmuxNamespace;
@@ -90,9 +89,7 @@ export interface InjectGoalResult {
  *  documented skip paths (cursor runtime + no goal active). Never
  *  throws — failures escalate via the ADR-138 log path + the caller
  *  proceeds to the next member. */
-export async function injectGoalIfActive(
-  opts: InjectGoalOpts,
-): Promise<InjectGoalResult> {
+export async function injectGoalIfActive(opts: InjectGoalOpts): Promise<InjectGoalResult> {
   const logger = opts.logger ?? {
     log: () => {},
     warn: () => {},
@@ -102,9 +99,7 @@ export async function injectGoalIfActive(
   // so we don't waste a brief-file read on a member that can't act on
   // the result.
   if (opts.member.runtime === "cursor") {
-    logger.log(
-      `${opts.member.name}: /goal injection skipped (runtime=cursor — ADR-157 §D4)`,
-    );
+    logger.log(`${opts.member.name}: /goal injection skipped (runtime=cursor — ADR-157 §D4)`);
     return { fired: false, reason: "runtime=cursor" };
   }
 
@@ -121,8 +116,7 @@ export async function injectGoalIfActive(
   // safeSendKeysWithVerify, NEVER raw tmux send-keys. The composer-
   // empty verifier confirms the slash command was consumed by the
   // TUI (the compose line clears on Enter).
-  const captureFn = (t: string) =>
-    opts.tmux.pane.capturePane({ target: t, start: -40 });
+  const captureFn = (t: string) => opts.tmux.pane.capturePane({ target: t, start: -40 });
   const sendKeysFn = async (_t: string, text: string) => {
     await opts.tmux.pane.sendKeys({
       target: opts.sendTarget,
@@ -151,9 +145,7 @@ export async function injectGoalIfActive(
   const result = await safeSendKeysWithVerify(sendOpts);
 
   if (result.success) {
-    logger.log(
-      `${opts.member.name}: /goal injected (attempts=${result.attempts}; goal="${goal}")`,
-    );
+    logger.log(`${opts.member.name}: /goal injected (attempts=${result.attempts}; goal="${goal}")`);
     return {
       fired: true,
       reason: "fired",

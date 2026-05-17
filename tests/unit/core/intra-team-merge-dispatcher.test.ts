@@ -22,19 +22,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitSpawn } from "../../../src/abstractions/branch-merge.ts";
-import {
-  closeDatabase,
-  type Database,
-  openDatabase,
-} from "../../../src/abstractions/sqlite.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import { closeDatabase, type Database, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { BranchMergeState } from "../../../src/core/branch-merge-state.ts";
 import {
   deriveMember,
+  type ProductionDispatcherDeps,
   productionQueueMergeAttempt,
   resolvePreMergeGate,
-  type ProductionDispatcherDeps,
 } from "../../../src/core/intra-team-merge-dispatcher.ts";
 import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import { MergerStateRepo } from "../../../src/core/repositories/merger-state-repo.ts";
@@ -110,7 +106,8 @@ function makeGitStub(opts: {
   mergeBaseSha?: string;
 }): GitSpawn {
   const baseSha = opts.baseSha ?? "baseTip123";
-  const mergeBaseSha = opts.mergeBaseSha ?? (opts.baseMoved === true ? "oldDivergenceSha" : baseSha);
+  const mergeBaseSha =
+    opts.mergeBaseSha ?? (opts.baseMoved === true ? "oldDivergenceSha" : baseSha);
   let mergeFired = false;
   let abortFired = false;
   return async (argv) => {
@@ -127,10 +124,7 @@ function makeGitStub(opts: {
 
     // merge-base lookup: `git merge-base <baseRef> <member>` (no --is-
     // ancestor flag) returns the merge-base SHA.
-    if (
-      argv.includes("merge-base") &&
-      !argv.includes("--is-ancestor")
-    ) {
+    if (argv.includes("merge-base") && !argv.includes("--is-ancestor")) {
       return spawnOk(`${mergeBaseSha}\n`);
     }
 
@@ -140,11 +134,7 @@ function makeGitStub(opts: {
     }
 
     // rev-parse on the base ref (gate probe to detect base movement)
-    if (
-      argv.includes("rev-parse") &&
-      !argv.includes("--verify") &&
-      !argv.includes("HEAD")
-    ) {
+    if (argv.includes("rev-parse") && !argv.includes("--verify") && !argv.includes("HEAD")) {
       return spawnOk(`${baseSha}\n`);
     }
 
@@ -182,9 +172,7 @@ function makeGitStub(opts: {
 
 // ---------- deps factory ----------
 
-function makeDeps(
-  overrides: Partial<ProductionDispatcherDeps> = {},
-): ProductionDispatcherDeps {
+function makeDeps(overrides: Partial<ProductionDispatcherDeps> = {}): ProductionDispatcherDeps {
   return {
     teamRoot: "/tmp/fake-repo",
     baseBranch: "geoyws",
@@ -200,11 +188,7 @@ function makeDeps(
 
 const MEMBER_BRANCH = "geoyws-fe-1";
 
-function seedState(
-  state: BranchMergeState,
-  t = 100,
-  branch = MEMBER_BRANCH,
-): void {
+function seedState(state: BranchMergeState, t = 100, branch = MEMBER_BRANCH): void {
   mergerRepo.transition({
     memberBranch: branch,
     next: state,
@@ -255,11 +239,7 @@ describe("resolvePreMergeGate", () => {
       }
       return spawnOk("");
     };
-    const gate = await resolvePreMergeGate(
-      "geoyws-fe-1",
-      1,
-      makeDeps({ git: dirtyGit }),
-    );
+    const gate = await resolvePreMergeGate("geoyws-fe-1", 1, makeDeps({ git: dirtyGit }));
     expect(gate.worktreeIsClean).toBe(false);
   });
 
@@ -300,9 +280,7 @@ describe("productionQueueMergeAttempt — 5-cell matrix", () => {
   // ----- Cell 1: eligible + no in-flight → started-merge -----
 
   test("cell 1: open + clean gate → walks open → in_progress → ready_to_merge → merging → tested", async () => {
-    const fn = productionQueueMergeAttempt(
-      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
-    );
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
     const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     expect(r.queued).toBe(true);
     // Final state should be `tested` (the dispatcher stops at the
@@ -317,9 +295,7 @@ describe("productionQueueMergeAttempt — 5-cell matrix", () => {
 
   test("cell 2: row in `merging` at entry → refuse with reason='in-flight: merging'", async () => {
     seedState("merging");
-    const fn = productionQueueMergeAttempt(
-      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
-    );
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
     const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     expect(r.queued).toBe(false);
     expect(r.reason).toContain("in-flight");
@@ -330,9 +306,7 @@ describe("productionQueueMergeAttempt — 5-cell matrix", () => {
 
   test("cell 2b: row in `tested` at entry (caller-driven) → refuse", async () => {
     seedState("tested");
-    const fn = productionQueueMergeAttempt(
-      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
-    );
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
     const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     expect(r.queued).toBe(false);
     expect(r.reason).toContain("in-flight");
@@ -341,9 +315,7 @@ describe("productionQueueMergeAttempt — 5-cell matrix", () => {
 
   test("cell 2c: row in `merged` at entry (terminal) → refuse with reason='terminal: merged'", async () => {
     seedState("merged");
-    const fn = productionQueueMergeAttempt(
-      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
-    );
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
     const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     expect(r.queued).toBe(false);
     expect(r.reason).toContain("terminal");
@@ -353,9 +325,7 @@ describe("productionQueueMergeAttempt — 5-cell matrix", () => {
   // ----- Cell 3: clean merge succeeds (already covered by Cell 1) -----
 
   test("cell 3: clean merge advances base; cron 'by' attribution lands in row", async () => {
-    const fn = productionQueueMergeAttempt(
-      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
-    );
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
     await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     const row = mergerRepo.getState(MEMBER_BRANCH);
     expect(row?.state).toBe("tested");
@@ -423,9 +393,7 @@ describe("productionQueueMergeAttempt — owner-tasks gate-hold", () => {
       createdFrom: null,
       note: null,
     });
-    const fn = productionQueueMergeAttempt(
-      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
-    );
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
     const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     // First tick fires open → in_progress (progress made), so queued=true.
     expect(r.queued).toBe(true);
@@ -456,9 +424,7 @@ describe("productionQueueMergeAttempt — safety cap", () => {
 
 describe("productionQueueMergeAttempt — logger evidence", () => {
   test("each tick emits a structured log line", async () => {
-    const fn = productionQueueMergeAttempt(
-      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
-    );
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
     await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     const tickLines = logs.filter((l) => l.includes("[dispatcher]"));
     expect(tickLines.length).toBeGreaterThan(0);
@@ -468,9 +434,7 @@ describe("productionQueueMergeAttempt — logger evidence", () => {
 
   test("refuse-terminal emits the refuse line", async () => {
     seedState("conflict");
-    const fn = productionQueueMergeAttempt(
-      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
-    );
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
     await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     expect(logs.some((l) => l.includes("refuse-terminal"))).toBe(true);
   });

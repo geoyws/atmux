@@ -28,12 +28,12 @@ import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
   getAtmuxDir,
-  resolveTeamSocket,
   getSessionName,
   inboxPathFor,
   kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { pauseMember } from "../core/pause.ts";
@@ -422,7 +422,11 @@ export async function handoff(
   let nativeOk = false;
   if (
     parsed.native &&
-    (await windowExists(tmux, sessionName, buildWindowName(fromMember.name, fromMember.emoji, fromMember.label, fromMember.role)))
+    (await windowExists(
+      tmux,
+      sessionName,
+      buildWindowName(fromMember.name, fromMember.emoji, fromMember.label, fromMember.role),
+    ))
   ) {
     const ask = buildHandoffNoteAsk(handoffFile);
     try {
@@ -448,7 +452,12 @@ export async function handoff(
   if (!nativeOk) {
     stderr(`  native handoff did not produce ${handoffFile} — falling back to screen capture\n`);
     const lines = resolveCaptureLines(opts);
-    const fromWindow = buildWindowName(fromMember.name, fromMember.emoji, fromMember.label, fromMember.role);
+    const fromWindow = buildWindowName(
+      fromMember.name,
+      fromMember.emoji,
+      fromMember.label,
+      fromMember.role,
+    );
     const sourceUp = await windowExists(tmux, sessionName, fromWindow);
     if (sourceUp) {
       let capture = "";
@@ -491,7 +500,13 @@ export async function handoff(
     handoffFile,
     nMigrating: migrated.length,
   });
-  if (await windowExists(tmux, sessionName, buildWindowName(toMember.name, toMember.emoji, toMember.label, toMember.role))) {
+  if (
+    await windowExists(
+      tmux,
+      sessionName,
+      buildWindowName(toMember.name, toMember.emoji, toMember.label, toMember.role),
+    )
+  ) {
     try {
       await sendToMember(
         tmux,

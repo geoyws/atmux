@@ -50,10 +50,7 @@ function makeTeam(memberNames: string[]): Team {
   } as Team;
 }
 
-async function seedAndClaim(opts: {
-  subject: string;
-  owner: string;
-}): Promise<string> {
+async function seedAndClaim(opts: { subject: string; owner: string }): Promise<string> {
   const id = await addTask(atmuxDir, { subject: opts.subject, assignee: opts.owner });
   // addTask creates `status='todo'` — flip to in-progress via direct task
   // move so the phantom detector sees it.
@@ -258,9 +255,7 @@ describe("phantom-prune end-to-end", () => {
     // task (5 cited phantom IDs).
     const seedIds: string[] = [];
     for (let i = 0; i < 5; i++) {
-      seedIds.push(
-        await seedAndClaim({ subject: `incident ${i}`, owner: `ghost${i}` }),
-      );
+      seedIds.push(await seedAndClaim({ subject: `incident ${i}`, owner: `ghost${i}` }));
     }
     const team = makeTeam(["ghost0", "ghost1", "ghost2", "ghost3", "ghost4"]);
     const got = await findPhantomInProgressClaims({
@@ -395,4 +390,3 @@ describe("formatPruneIso", () => {
     expect(formatPruneIso(0)).toBe("1970-01-01T00:00:00Z");
   });
 });
-

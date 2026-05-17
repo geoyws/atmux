@@ -27,10 +27,7 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
-import {
-  DEFAULT_HEARTBEAT_STALE_SEC,
-  readHeartbeatAges,
-} from "../core/heartbeat.ts";
+import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { gatherStatus, type KanbanCounts, type StatusSnapshot } from "./status.ts";
@@ -286,10 +283,7 @@ export interface HealthOpts {
 }
 
 /** `atmux health [--json|--text] [--budget] [--stale-sec N]`. Returns 0. */
-export async function health(
-  argv: ReadonlyArray<string>,
-  opts: HealthOpts = {},
-): Promise<number> {
+export async function health(argv: ReadonlyArray<string>, opts: HealthOpts = {}): Promise<number> {
   const parsed = parseHealthArgs(argv);
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);

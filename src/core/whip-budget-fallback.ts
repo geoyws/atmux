@@ -570,10 +570,7 @@ export async function readCagesFileV1(atmuxDir: string): Promise<FallbackCagesFi
 }
 
 /** Atomic write of the v1 cages file. */
-export async function writeCagesFileV1(
-  atmuxDir: string,
-  file: FallbackCagesFileV1,
-): Promise<void> {
+export async function writeCagesFileV1(atmuxDir: string, file: FallbackCagesFileV1): Promise<void> {
   await atomicWrite(fallbackCagesPathV1(atmuxDir), `${JSON.stringify(file, null, 2)}\n`);
 }
 

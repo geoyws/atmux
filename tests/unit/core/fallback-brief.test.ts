@@ -11,10 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  composeFallbackBrief,
-  fallbackBriefPath,
-} from "../../../src/core/fallback-brief.ts";
+import { composeFallbackBrief, fallbackBriefPath } from "../../../src/core/fallback-brief.ts";
 
 let atmuxDir: string;
 let templatesDir: string;

@@ -229,9 +229,7 @@ describe("e2e auto-emit-trunk-merge (ADR-146 T3, t-51610d4e)", () => {
     if (auto === undefined) throw new Error("auto-emit Task missing");
 
     // §D2 subject pattern verbatim.
-    expect(auto.subject).toMatch(
-      /^merge t-[0-9a-f]+ \(branch→trunk\): develop-be-1 → trunk$/,
-    );
+    expect(auto.subject).toMatch(/^merge t-[0-9a-f]+ \(branch→trunk\): develop-be-1 → trunk$/);
     // §D3 owner resolution — gitter member wins over fallbackAssignee.
     expect(auto.owner).toBe("gitter");
     expect(auto.status).toBe("todo");
@@ -346,9 +344,7 @@ describe("e2e auto-emit-trunk-merge (ADR-146 T3, t-51610d4e)", () => {
     // observe exactly one new row, owned by gitter.
     const tasks = await listTasks(fix.atmuxDir);
     const subscriberCandidates = tasks.filter(
-      (t) =>
-        t.status === "todo" &&
-        /^merge t-[0-9a-f]+ \(branch→trunk\):/.test(t.subject ?? ""),
+      (t) => t.status === "todo" && /^merge t-[0-9a-f]+ \(branch→trunk\):/.test(t.subject ?? ""),
     );
     expect(subscriberCandidates).toHaveLength(1);
     expect(subscriberCandidates[0]?.owner).toBe("gitter");

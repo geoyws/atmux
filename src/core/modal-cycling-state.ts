@@ -19,10 +19,7 @@
 import { join } from "node:path";
 import { z } from "zod";
 import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
-import {
-  type ModalClass,
-  type ModalHistoryEntry,
-} from "./modal-cycling-detector.ts";
+import type { ModalClass, ModalHistoryEntry } from "./modal-cycling-detector.ts";
 
 // ---------- Zod schemas ----------
 

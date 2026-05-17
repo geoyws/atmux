@@ -385,10 +385,7 @@ export interface ParsedInboxEntry {
  *
  *  `nowMs` controls today-implicit date resolution (entries with
  *  `- [HH:MM MYT]` lacking a date). Defaults to `time.now()`. */
-export function parseOpenEntries(
-  openBody: string,
-  nowMsOverride?: number,
-): ParsedInboxEntry[] {
+export function parseOpenEntries(openBody: string, nowMsOverride?: number): ParsedInboxEntry[] {
   if (openBody.length === 0) return [];
   const stampMs = nowMsOverride ?? nowMs();
   const lines = openBody.split("\n");
@@ -404,8 +401,7 @@ export function parseOpenEntries(
   // we get here with a trailing empty element from split, we drop it
   // to avoid double-newline on the last entry; we restore it via the
   // `\n` we append per-entry below.
-  const trailingBlank =
-    lines.length > 0 && lines[lines.length - 1] === "";
+  const trailingBlank = lines.length > 0 && lines[lines.length - 1] === "";
   const effectiveEnd = trailingBlank ? lines.length - 1 : lines.length;
 
   const entries: ParsedInboxEntry[] = [];

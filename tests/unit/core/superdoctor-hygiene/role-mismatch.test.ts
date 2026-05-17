@@ -2,16 +2,16 @@
 // (ADR-131 §D2 detector #3 / t-e75ba5aa).
 
 import { describe, expect, test } from "bun:test";
-import {
-  detect,
-  fix,
-  isExecutionTask,
-} from "../../../../src/core/superdoctor-hygiene/role-mismatch.ts";
 import type {
   FixDeps,
   HygieneIssue,
   TeamState,
 } from "../../../../src/core/superdoctor-hygiene/_shared.ts";
+import {
+  detect,
+  fix,
+  isExecutionTask,
+} from "../../../../src/core/superdoctor-hygiene/role-mismatch.ts";
 import type { KanbanTask } from "../../../../src/schema/kanban.ts";
 
 function task(o: Partial<KanbanTask>): KanbanTask {
@@ -102,9 +102,7 @@ describe("role-mismatch detect", () => {
       { name: "planner", role: "planner" },
       { name: "fe-1", role: "member", lane: "fe" },
     ]);
-    const issues = detect(t, [
-      task({ id: "t-001", owner: "planner", lane: "fe", status: "done" }),
-    ]);
+    const issues = detect(t, [task({ id: "t-001", owner: "planner", lane: "fe", status: "done" })]);
     expect(issues).toHaveLength(0);
   });
 

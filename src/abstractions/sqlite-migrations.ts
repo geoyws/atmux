@@ -291,9 +291,7 @@ export const migrations: readonly Migration[] = [
 				) STRICT;
 			`);
       db.exec("CREATE INDEX idx_merger_state_state ON merger_state(state)");
-      db.exec(
-        "CREATE INDEX idx_merger_state_transitioned ON merger_state(transitioned_at DESC)",
-      );
+      db.exec("CREATE INDEX idx_merger_state_transitioned ON merger_state(transitioned_at DESC)");
     },
   },
   // ---------- v6 → v7 ----------

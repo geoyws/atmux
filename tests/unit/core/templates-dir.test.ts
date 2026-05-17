@@ -78,12 +78,9 @@ describe("resolveBriefsDir", () => {
 // install-binary repro.
 
 describe("resolveTemplatesDir — installed-mode fallback (out-of-process)", () => {
-  test.todo(
-    "installed-mode branch — covered by post-deploy /usr/local/bin/atmux init repro",
-    () => {
-      // See commit body + RUNBOOK-deploy.md for the shell-level proof.
-    },
-  );
+  test.todo("installed-mode branch — covered by post-deploy /usr/local/bin/atmux init repro", () => {
+    // See commit body + RUNBOOK-deploy.md for the shell-level proof.
+  });
 });
 
 // ---------- Sanity coverage probe: ensure resolveBriefsDir + resolveTemplatesDir don't crash on

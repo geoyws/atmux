@@ -23,7 +23,7 @@
 // that when it fires this verb inline so its own success line is the
 // only one printed.
 
-import { defaultCrontabIO, type CrontabIO } from "../abstractions/crontab.ts";
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { stripBlockByTeam } from "../core/cron.ts";
 import { UsageError } from "../errors.ts";
@@ -96,8 +96,7 @@ export async function cronRemove(
     return 0;
   }
 
-  const dirOpts: ResolveDirOpts =
-    parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);
   // atmuxDir is resolved as a side-effect-validating call to surface
   // ConfigError early if the .atmux dir is gone (matches `requireTeam`

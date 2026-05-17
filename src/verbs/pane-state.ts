@@ -25,10 +25,10 @@ import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
-  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { readLeadWindowName, type SkillsTeamPathsOpts } from "../core/lead-marker.ts";
 import { classifyText, type PaneClassification } from "../core/pane-state.ts";

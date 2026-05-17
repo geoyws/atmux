@@ -199,9 +199,7 @@ export interface DecideMetaWatchdogFireInputs {
 
 /** Pure policy: decide whether to emit a meta-watchdog page this
  *  tick, and compute the next dedup state. */
-export function decideMetaWatchdogFire(
-  inputs: DecideMetaWatchdogFireInputs,
-): MetaWatchdogDecision {
+export function decideMetaWatchdogFire(inputs: DecideMetaWatchdogFireInputs): MetaWatchdogDecision {
   const threshold = inputs.dormancyThresholdSec ?? META_WATCHDOG_DORMANCY_SEC;
   const priorPaged = inputs.prior?.paged === true;
   const priorSince = inputs.prior?.dormantSinceSec ?? null;

@@ -24,20 +24,17 @@
 //   - spawn returns non-zero exit → outcome=`rotate-fired` with
 //     [spawn-failed] suffix in reason, Discord escalation='spawn-failed'
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureDir } from "../../../src/abstractions/fs.ts";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
+import { ensureDir } from "../../../src/abstractions/fs.ts";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { recordRefusalEvent } from "../../../src/core/refusal-scan.ts";
-import {
-  runRefusalTriggerForTeam,
-  type SpawnAtmuxFn,
-} from "../../../src/core/refusal-trigger.ts";
+import { runRefusalTriggerForTeam, type SpawnAtmuxFn } from "../../../src/core/refusal-trigger.ts";
 import type { Team } from "../../../src/schema/team.ts";
 
 interface Env {
@@ -166,17 +163,14 @@ describe("runRefusalTriggerForTeam — outer gates", () => {
     const { spawn, calls } = recordedSpawn();
     const dc = recordedDiscord();
     seedSoft("alice", 5, 10000);
-    const r = await runRefusalTriggerForTeam(
-      team(["alice"], { exemptMembers: ["alice"] }),
-      {
-        db: env.db,
-        atmuxDir: env.atmuxDir,
-        spawnAtmux: spawn,
-        sendDiscord: dc.send,
-        nowSec: () => 10500,
-        log: () => {},
-      },
-    );
+    const r = await runRefusalTriggerForTeam(team(["alice"], { exemptMembers: ["alice"] }), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: spawn,
+      sendDiscord: dc.send,
+      nowSec: () => 10500,
+      log: () => {},
+    });
     expect(r.exempt).toBe(1);
     expect(r.rotated).toBe(0);
     expect(calls).toHaveLength(0);
@@ -286,17 +280,14 @@ describe("runRefusalTriggerForTeam — cap-hit + failure paths", () => {
         `${iso}\t${utcDay}\tdemo\talice\tsoft\tcap-seed-3\n`,
     );
 
-    const r = await runRefusalTriggerForTeam(
-      team(["alice"], { maxRotationsPerDay: 3 }),
-      {
-        db: env.db,
-        atmuxDir: env.atmuxDir,
-        spawnAtmux: spawn,
-        sendDiscord: dc.send,
-        nowSec: () => 10500,
-        log: () => {},
-      },
-    );
+    const r = await runRefusalTriggerForTeam(team(["alice"], { maxRotationsPerDay: 3 }), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: spawn,
+      sendDiscord: dc.send,
+      nowSec: () => 10500,
+      log: () => {},
+    });
     expect(r.capHit).toBe(1);
     expect(r.rotated).toBe(0);
     expect(spawnCalls).toHaveLength(0);

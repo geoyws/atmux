@@ -27,18 +27,13 @@
 // trailing space) at the boundary rather than persisting them.
 
 import { z } from "zod";
-import {
-  type BranchMergeState,
-  BRANCH_MERGE_STATES,
-} from "../branch-merge-state.ts";
 import { type Database, transactImmediate } from "../../abstractions/sqlite.ts";
+import { BRANCH_MERGE_STATES, type BranchMergeState } from "../branch-merge-state.ts";
 
 /** Zod enum of every valid state literal. Mirrors
  *  {@link BRANCH_MERGE_STATES}; the cast asserts the const tuple
  *  shape Zod's `z.enum` requires. */
-const StateEnum = z.enum(
-  BRANCH_MERGE_STATES as unknown as readonly [string, ...string[]],
-);
+const StateEnum = z.enum(BRANCH_MERGE_STATES as unknown as readonly [string, ...string[]]);
 
 /** Caller identity for `transitioned_by`. Permissive — accepts the
  *  three canonical triggers plus an arbitrary string (typically a

@@ -26,9 +26,9 @@
 // window.
 
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { atomicWrite, statOrNull } from "../abstractions/fs.ts";
 import { decisionsLogPath, stateDir } from "./common.ts";
-import { join } from "node:path";
 
 /** Cursor file name. Matches bash lib/whip.sh:382. */
 const CURSOR_FILENAME = "decisions-cursor";
@@ -62,9 +62,7 @@ export interface DecisionsCheckVerdict {
  *   - file present + mtime newer but zero entries with timestamp > cursor
  *     (e.g. someone edited the prose preamble without adding entries)
  */
-export async function checkDecisions(
-  args: DecisionsCheckArgs,
-): Promise<DecisionsCheckVerdict> {
+export async function checkDecisions(args: DecisionsCheckArgs): Promise<DecisionsCheckVerdict> {
   const baseVerdict: DecisionsCheckVerdict = {
     fire: false,
     bullet: null,
@@ -142,10 +140,7 @@ export async function readDecisionsCursor(atmuxDir: string): Promise<number> {
 /** Persist the cursor. Caller invokes AFTER the Discord ping has been
  *  attempted (per bash lib/whip.sh:437-448 — fire-and-warn ordering).
  *  Atomic write so a crash mid-tick never leaves a torn cursor. */
-export async function advanceDecisionsCursor(
-  atmuxDir: string,
-  cursor: number,
-): Promise<void> {
+export async function advanceDecisionsCursor(atmuxDir: string, cursor: number): Promise<void> {
   await atomicWrite(cursorPath(atmuxDir), `${cursor}\n`);
 }
 

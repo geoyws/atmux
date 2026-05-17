@@ -15,9 +15,7 @@ import type { Team, TeamMember } from "../../../src/schema/team.ts";
 function makeTeam(member: Partial<TeamMember> = {}): Team {
   return {
     name: "demo",
-    members: [
-      { name: "alice", role: "member", tui: "claude", emoji: "🐝", ...member },
-    ],
+    members: [{ name: "alice", role: "member", tui: "claude", emoji: "🐝", ...member }],
   } as Team;
 }
 
@@ -70,7 +68,11 @@ describe("probeCageState — session-missing branch", () => {
   test("hasSession=false → CageHealth.state='down', no further probes fire", async () => {
     let listPanesCalls = 0;
     const tmux = {
-      session: { async hasSession() { return false; } },
+      session: {
+        async hasSession() {
+          return false;
+        },
+      },
       pane: {
         async listPanes() {
           listPanesCalls++;
@@ -302,10 +304,15 @@ describe("probeCageState — active branch (no heartbeat file)", () => {
 describe("probeCageState — composite + invariants", () => {
   test("windowName uses emoji + member name by default", async () => {
     const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
-    const h = await probeCageState(makeTeam(), makeMember({ name: "lead", emoji: "🧭" }), "/tmp/x", {
-      ...DEFAULT_OPTS,
-      tmux,
-    });
+    const h = await probeCageState(
+      makeTeam(),
+      makeMember({ name: "lead", emoji: "🧭" }),
+      "/tmp/x",
+      {
+        ...DEFAULT_OPTS,
+        tmux,
+      },
+    );
     expect(h.windowName).toBe("🧭lead");
   });
 
@@ -355,12 +362,13 @@ describe("probeCageState — composite + invariants", () => {
   });
 
   test("CageHealth shape — all fields present on every branch", async () => {
-    const cases: Array<{ paneText?: string; childClaude: boolean; expected: CageHealth["state"] }> = [
-      { childClaude: false, expected: "down" },
-      { paneText: "Welcome", childClaude: true, expected: "bootstrapping" },
-      { paneText: "❯ ↑ 5k tokens", childClaude: true, expected: "active" },
-      { paneText: "hit your limit", childClaude: true, expected: "wedged" },
-    ];
+    const cases: Array<{ paneText?: string; childClaude: boolean; expected: CageHealth["state"] }> =
+      [
+        { childClaude: false, expected: "down" },
+        { paneText: "Welcome", childClaude: true, expected: "bootstrapping" },
+        { paneText: "❯ ↑ 5k tokens", childClaude: true, expected: "active" },
+        { paneText: "hit your limit", childClaude: true, expected: "wedged" },
+      ];
     for (const c of cases) {
       const tmux = tmuxStub({ paneText: c.paneText ?? "" });
       const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {

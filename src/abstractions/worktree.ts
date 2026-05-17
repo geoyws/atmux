@@ -27,10 +27,10 @@
 import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { exists } from "./fs.ts";
-import { spawn as defaultSpawn, type SpawnResult } from "./spawn.ts";
 import { ConfigError } from "../errors.ts";
 import { DEFAULT_WORKTREE_ROOT, type Team } from "../schema/team.ts";
+import { exists } from "./fs.ts";
+import { spawn as defaultSpawn, type SpawnResult } from "./spawn.ts";
 
 // ---------- Spawn-injected git wrapper ----------
 
@@ -437,10 +437,7 @@ export async function deleteWorktreeBranch(
  * tracked by this enumeration (intentional; out-of-tree state is
  * out-of-scope per ADR-082).
  */
-export async function listManagedWorktrees(
-  _repoPath: string,
-  atmuxDir: string,
-): Promise<string[]> {
+export async function listManagedWorktrees(_repoPath: string, atmuxDir: string): Promise<string[]> {
   const worktreesDir = join(atmuxDir, "worktrees");
   let entries: Dirent[];
   try {

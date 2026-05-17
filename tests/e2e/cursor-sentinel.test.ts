@@ -51,9 +51,9 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import type {
   ApplyResult,
-  Sentinel,
   NudgeAction,
   Observation,
+  Sentinel,
 } from "../../src/abstractions/sentinel.ts";
 import type { PaneClassification } from "../../src/core/pane-state.ts";
 
@@ -68,10 +68,7 @@ function probeBin(cmd: string[]): boolean {
   }
 }
 
-const CURSOR_IMPL_URL = new URL(
-  "../../src/abstractions/sentinels/cursor.ts",
-  import.meta.url,
-);
+const CURSOR_IMPL_URL = new URL("../../src/abstractions/sentinels/cursor.ts", import.meta.url);
 const HAS_CURSOR_IMPL = existsSync(CURSOR_IMPL_URL.pathname);
 const HAS_CURSOR_AGENT = probeBin(["cursor-agent", "--version"]);
 const RUN_REAL_CURSOR = Bun.env.RUN_REAL_CURSOR === "1";
@@ -113,11 +110,9 @@ function paneCls(state: PaneClassification["state"] = "READY"): PaneClassificati
  *  status-indicator parsing + kanban delta + dispatch composition"
  *  shape so the token-burn assertion measures the realistic prompt
  *  size the production CursorSentinel emits. */
-function fixtureObservation(opts: {
-  team?: string;
-  last2hrCommits?: number;
-  wedgedCount?: number;
-} = {}): Observation {
+function fixtureObservation(
+  opts: { team?: string; last2hrCommits?: number; wedgedCount?: number } = {},
+): Observation {
   return {
     team: opts.team ?? "atmux",
     members: [
@@ -144,9 +139,7 @@ function fixtureObservation(opts: {
       },
     ],
     kanbanDelta: {
-      newClaims: [
-        { taskId: "t-001", member: "fe-1", claimedAtSec: Math.floor(Date.now() / 1000) },
-      ],
+      newClaims: [{ taskId: "t-001", member: "fe-1", claimedAtSec: Math.floor(Date.now() / 1000) }],
       completedSinceLastTick: [{ taskId: "t-000", subject: "prior work" }],
       wedgedClaims: Array.from({ length: opts.wedgedCount ?? 0 }, (_, i) => ({
         taskId: `t-wedge-${i}`,
@@ -232,8 +225,7 @@ describe.skipIf(!HAS_CURSOR_IMPL)("CursorSentinel — module-load smoke", () => 
     // construction round-trips without a real cursor-agent.
     const inst: Sentinel = new CursorSentinel({
       observeFn: async () => fixtureObservation(),
-      runCursorAgent: async () =>
-        JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
+      runCursorAgent: async () => JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
     });
 
     expect(inst.name).toBe("cursor");
@@ -246,128 +238,104 @@ describe.skipIf(!HAS_CURSOR_IMPL)("CursorSentinel — module-load smoke", () => 
 
 // ---------- Case 2: synthetic decide() — composer-2-fast model flag ----------
 
-describe.skipIf(!HAS_CURSOR_IMPL)(
-  "CursorSentinel — decide() invokes composer-2-fast",
-  () => {
-    test("model flag is 'composer-2-fast' when cursor-agent is spawned", async () => {
-
-      const seenArgs: string[][] = [];
-      const inst: Sentinel = new CursorSentinel({
-        observeFn: async () => fixtureObservation(),
-        runCursorAgent: async (args: string[]) => {
-          seenArgs.push(args);
-          return JSON.stringify(
-            mockCursorEnvelope(
-              5_000,
-              200,
-              JSON.stringify([
-                { kind: "enter-push", member: "fe-1", reason: "queued claim" },
-              ]),
-            ),
-          );
-        },
-      });
-      const obs = fixtureObservation();
-      const actions = await inst.decide(obs);
-
-      // At least one spawn invocation with the model flag.
-      const modelFlagPresent = seenArgs.some(
-        (args) =>
-          args.includes("--model") &&
-          args[args.indexOf("--model") + 1] === "composer-2-fast",
-      );
-      expect(modelFlagPresent).toBe(true);
-
-      // The decide() output should be a NudgeAction[].
-      expect(Array.isArray(actions)).toBe(true);
+describe.skipIf(!HAS_CURSOR_IMPL)("CursorSentinel — decide() invokes composer-2-fast", () => {
+  test("model flag is 'composer-2-fast' when cursor-agent is spawned", async () => {
+    const seenArgs: string[][] = [];
+    const inst: Sentinel = new CursorSentinel({
+      observeFn: async () => fixtureObservation(),
+      runCursorAgent: async (args: string[]) => {
+        seenArgs.push(args);
+        return JSON.stringify(
+          mockCursorEnvelope(
+            5_000,
+            200,
+            JSON.stringify([{ kind: "enter-push", member: "fe-1", reason: "queued claim" }]),
+          ),
+        );
+      },
     });
-  },
-);
+    const obs = fixtureObservation();
+    const actions = await inst.decide(obs);
+
+    // At least one spawn invocation with the model flag.
+    const modelFlagPresent = seenArgs.some(
+      (args) => args.includes("--model") && args[args.indexOf("--model") + 1] === "composer-2-fast",
+    );
+    expect(modelFlagPresent).toBe(true);
+
+    // The decide() output should be a NudgeAction[].
+    expect(Array.isArray(actions)).toBe(true);
+  });
+});
 
 // ---------- Case 3: §D5 E6 ship-zero mandatory escalation ----------
 
-describe.skipIf(!HAS_CURSOR_IMPL)(
-  "CursorSentinel — §D5 E6 ship-zero mandatory escalation",
-  () => {
-    test("shouldEscalateToClaudeLead returns true when last2hr === 0", async () => {
-
-      const inst: Sentinel = new CursorSentinel({
-        observeFn: async () => fixtureObservation({ last2hrCommits: 0 }),
-        runCursorAgent: async () =>
-          JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
-      });
-      const obs = fixtureObservation({ last2hrCommits: 0 });
-      // E6 floor is mandatory — no impl may suppress.
-      expect(inst.shouldEscalateToClaudeLead(obs)).toBe(true);
+describe.skipIf(!HAS_CURSOR_IMPL)("CursorSentinel — §D5 E6 ship-zero mandatory escalation", () => {
+  test("shouldEscalateToClaudeLead returns true when last2hr === 0", async () => {
+    const inst: Sentinel = new CursorSentinel({
+      observeFn: async () => fixtureObservation({ last2hrCommits: 0 }),
+      runCursorAgent: async () => JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
     });
+    const obs = fixtureObservation({ last2hrCommits: 0 });
+    // E6 floor is mandatory — no impl may suppress.
+    expect(inst.shouldEscalateToClaudeLead(obs)).toBe(true);
+  });
 
-    test("shouldEscalateToClaudeLead returns false when last2hr > 0 AND no other E1-E5 trigger", async () => {
-
-      const inst: Sentinel = new CursorSentinel({
-        observeFn: async () => fixtureObservation({ last2hrCommits: 10 }),
-        runCursorAgent: async () =>
-          JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
-      });
-      const obs = fixtureObservation({ last2hrCommits: 10 });
-      expect(inst.shouldEscalateToClaudeLead(obs)).toBe(false);
+  test("shouldEscalateToClaudeLead returns false when last2hr > 0 AND no other E1-E5 trigger", async () => {
+    const inst: Sentinel = new CursorSentinel({
+      observeFn: async () => fixtureObservation({ last2hrCommits: 10 }),
+      runCursorAgent: async () => JSON.stringify(mockCursorEnvelope(100, 50, "[]")),
     });
-  },
-);
+    const obs = fixtureObservation({ last2hrCommits: 10 });
+    expect(inst.shouldEscalateToClaudeLead(obs)).toBe(false);
+  });
+});
 
 // ---------- Case 4: observe → decide → apply round-trip ----------
 
-describe.skipIf(!HAS_CURSOR_IMPL)(
-  "CursorSentinel — observe → decide → apply round-trip",
-  () => {
-    test("apply() returns success on a non-escalation NudgeAction", async () => {
+describe.skipIf(!HAS_CURSOR_IMPL)("CursorSentinel — observe → decide → apply round-trip", () => {
+  test("apply() returns success on a non-escalation NudgeAction", async () => {
+    // Stub tmux send-fn — captures the dispatched action so apply()
+    // has an observable side-effect.
+    const tmuxSent: { window: string; keys: string }[] = [];
 
-
-      // Stub tmux send-fn — captures the dispatched action so apply()
-      // has an observable side-effect.
-      const tmuxSent: { window: string; keys: string }[] = [];
-
-      const inst: Sentinel = new CursorSentinel({
-        observeFn: async () => fixtureObservation(),
-        runCursorAgent: async () =>
-          JSON.stringify(
-            mockCursorEnvelope(
-              5_000,
-              200,
-              JSON.stringify([
-                { kind: "enter-push", member: "fe-1", reason: "queued claim" },
-              ]),
-            ),
+    const inst: Sentinel = new CursorSentinel({
+      observeFn: async () => fixtureObservation(),
+      runCursorAgent: async () =>
+        JSON.stringify(
+          mockCursorEnvelope(
+            5_000,
+            200,
+            JSON.stringify([{ kind: "enter-push", member: "fe-1", reason: "queued claim" }]),
           ),
-        sendKeys: async (window: string, keys: string) => {
-          tmuxSent.push({ window, keys });
-          return { success: true } as { success: boolean };
-        },
-      });
-
-      const obs = await inst.observe("atmux");
-      const actions = await inst.decide(obs);
-      const nonEscalations = actions.filter(
-        (a: NudgeAction) => a.kind !== "escalate-to-claude-lead",
-      );
-
-      if (nonEscalations.length === 0) {
-        // Impl chose to escalate everything (legitimate under high
-        // ctxTokens or wedge counts). Skip the apply walk — the
-        // mandatory-escalation contract is exercised by case 3.
-        return;
-      }
-
-      const first = nonEscalations[0];
-      if (first === undefined) {
-        throw new Error("expected at least one non-escalation action");
-      }
-      const result: ApplyResult = await inst.apply(first);
-      expect(result.success).toBe(true);
-      expect(typeof result.evidence).toBe("string");
-      expect(result.evidence.length).toBeGreaterThan(0);
+        ),
+      sendKeys: async (window: string, keys: string) => {
+        tmuxSent.push({ window, keys });
+        return { success: true } as { success: boolean };
+      },
     });
-  },
-);
+
+    const obs = await inst.observe("atmux");
+    const actions = await inst.decide(obs);
+    const nonEscalations = actions.filter((a: NudgeAction) => a.kind !== "escalate-to-claude-lead");
+
+    if (nonEscalations.length === 0) {
+      // Impl chose to escalate everything (legitimate under high
+      // ctxTokens or wedge counts). Skip the apply walk — the
+      // mandatory-escalation contract is exercised by case 3.
+      return;
+    }
+
+    const first = nonEscalations[0];
+    if (first === undefined) {
+      throw new Error("expected at least one non-escalation action");
+    }
+    const result: ApplyResult = await inst.apply(first);
+    expect(result.success).toBe(true);
+    expect(typeof result.evidence).toBe("string");
+    expect(result.evidence.length).toBeGreaterThan(0);
+  });
+});
 
 // ---------- Case 5: token-burn assertion (deterministic) ----------
 
@@ -375,8 +343,6 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
   "CursorSentinel — token-burn (deterministic, mocked envelope)",
   () => {
     test("input + output tokens fit within budget envelope vs Claude baseline", async () => {
-
-
       let observedUsage: CursorAgentJsonEnvelope["usage"] | null = null;
       const inst: Sentinel = new CursorSentinel({
         observeFn: async () => fixtureObservation(),
@@ -389,9 +355,7 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
           const envelope = mockCursorEnvelope(
             12_000, // input — well below 50k ceiling
             150, // output — well below 2k ceiling
-            JSON.stringify([
-              { kind: "enter-push", member: "fe-1", reason: "queued claim" },
-            ]),
+            JSON.stringify([{ kind: "enter-push", member: "fe-1", reason: "queued claim" }]),
           );
           observedUsage = envelope.usage;
           return JSON.stringify(envelope);
@@ -421,51 +385,47 @@ describe.skipIf(!HAS_CURSOR_IMPL)(
 describe.skipIf(!HAS_CURSOR_IMPL || !HAS_CURSOR_AGENT || !RUN_REAL_CURSOR)(
   "CursorSentinel — token-burn (real cursor-agent, env-gated)",
   () => {
-    test(
-      "real composer-2-fast call on canonical observation prompt stays under ceilings",
-      async () => {
-        // Canonical observation summary prompt — small, deterministic,
-        // exercises the same parse path the impl wraps. We invoke
-        // cursor-agent directly (not via the CursorSentinel wrapper)
-        // because the wrapper's exact CLI invocation is a T3 detail;
-        // this case verifies the BUDGET assumption against the
-        // production binary regardless of wrapper shape.
-        const prompt =
-          'Given this team observation, return [] (empty JSON array) and nothing else: ' +
-          '{"team":"atmux","members":3,"wedged":0,"commitsLast2hr":10}.';
-        const proc = Bun.spawnSync({
-          cmd: [
-            "cursor-agent",
-            "--print",
-            "--output-format",
-            "json",
-            "--model",
-            "composer-2-fast",
-            "--force",
-            prompt,
-          ],
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        const stdout = new TextDecoder().decode(proc.stdout);
-        // Last JSON line is the envelope (stream-json may emit multiple).
-        const lines = stdout.trim().split("\n").filter((l) => l.startsWith("{"));
-        const lastLine = lines[lines.length - 1];
-        if (lastLine === undefined) {
-          throw new Error(
-            `cursor-agent emitted no JSON envelope. stdout: ${stdout.slice(0, 400)}`,
-          );
-        }
-        const envelope = JSON.parse(lastLine) as CursorAgentJsonEnvelope;
-        expect(envelope.is_error).toBe(false);
-        expect(envelope.usage.inputTokens).toBeLessThanOrEqual(INPUT_CEILING);
-        expect(envelope.usage.outputTokens).toBeLessThanOrEqual(OUTPUT_CEILING);
-      },
-      // 60s timeout — cursor-agent --print round-trip on
-      // composer-2-fast averaged ~6.4s on a "echo hello" probe;
-      // canonical observation prompt is short enough to stay well
-      // under 60s. Belt-and-braces vs network-flap.
-      60_000,
-    );
+    test("real composer-2-fast call on canonical observation prompt stays under ceilings", async () => {
+      // Canonical observation summary prompt — small, deterministic,
+      // exercises the same parse path the impl wraps. We invoke
+      // cursor-agent directly (not via the CursorSentinel wrapper)
+      // because the wrapper's exact CLI invocation is a T3 detail;
+      // this case verifies the BUDGET assumption against the
+      // production binary regardless of wrapper shape.
+      const prompt =
+        "Given this team observation, return [] (empty JSON array) and nothing else: " +
+        '{"team":"atmux","members":3,"wedged":0,"commitsLast2hr":10}.';
+      const proc = Bun.spawnSync({
+        cmd: [
+          "cursor-agent",
+          "--print",
+          "--output-format",
+          "json",
+          "--model",
+          "composer-2-fast",
+          "--force",
+          prompt,
+        ],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const stdout = new TextDecoder().decode(proc.stdout);
+      // Last JSON line is the envelope (stream-json may emit multiple).
+      const lines = stdout
+        .trim()
+        .split("\n")
+        .filter((l) => l.startsWith("{"));
+      const lastLine = lines[lines.length - 1];
+      if (lastLine === undefined) {
+        throw new Error(`cursor-agent emitted no JSON envelope. stdout: ${stdout.slice(0, 400)}`);
+      }
+      const envelope = JSON.parse(lastLine) as CursorAgentJsonEnvelope;
+      expect(envelope.is_error).toBe(false);
+      expect(envelope.usage.inputTokens).toBeLessThanOrEqual(INPUT_CEILING);
+      expect(envelope.usage.outputTokens).toBeLessThanOrEqual(OUTPUT_CEILING);
+      // 60s timeout — cursor-agent --print round-trip on composer-2-fast averaged
+      // ~6.4s on a "echo hello" probe; canonical observation prompt is short
+      // enough to stay well under 60s. Belt-and-braces vs network-flap.
+    }, 60_000);
   },
 );

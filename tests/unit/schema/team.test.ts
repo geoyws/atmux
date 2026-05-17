@@ -16,10 +16,10 @@ import {
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
   DEFAULT_LANE_TICK_CRON_MINS,
-  DEFAULT_SENTINEL_CADENCE_SEC,
-  DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
   DEFAULT_REFUSAL_DETECTION_CONFIG,
+  DEFAULT_SENTINEL_CADENCE_SEC,
+  DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
   DEFAULT_WORKTREE_ROOT,
   resolveRefusalConfig,
   SentinelImpl,
@@ -30,10 +30,10 @@ import {
   TeamCrons,
   TeamEpic,
   TeamFallback,
-  TeamSentinelOverrides,
   TeamMember,
   TeamOmbudsman,
   TeamRefusalDetection,
+  TeamSentinelOverrides,
   TeamWhip,
 } from "../../../src/schema/team.ts";
 
@@ -399,12 +399,12 @@ describe("TeamMember — label field (ADR-136 Option B)", () => {
 // ---------- ADR-159 TR3: TeamMember.role gitter → committer shim ----------
 
 describe("TeamMember — role gitter→committer accept-both shim (ADR-159 TR3)", () => {
-  test("legacy `role: \"gitter\"` value coerces to canonical `\"committer\"` on parse", () => {
+  test('legacy `role: "gitter"` value coerces to canonical `"committer"` on parse', () => {
     const m = TeamMember.parse({ name: "g", role: "gitter" });
     expect(m.role).toBe("committer");
   });
 
-  test("canonical `role: \"committer\"` parses unchanged (idempotent)", () => {
+  test('canonical `role: "committer"` parses unchanged (idempotent)', () => {
     const m = TeamMember.parse({ name: "c", role: "committer" });
     expect(m.role).toBe("committer");
   });
@@ -414,7 +414,19 @@ describe("TeamMember — role gitter→committer accept-both shim (ADR-159 TR3)"
     // unblocker / discorder). Closing the enum here would break them;
     // the shim coerces ONLY the gitter→committer value, leaves
     // everything else alone.
-    for (const role of ["team-lead", "planner", "reviewer", "ombudsman", "docs", "devops", "dba", "unblocker", "discorder", "member", "lead"]) {
+    for (const role of [
+      "team-lead",
+      "planner",
+      "reviewer",
+      "ombudsman",
+      "docs",
+      "devops",
+      "dba",
+      "unblocker",
+      "discorder",
+      "member",
+      "lead",
+    ]) {
       const m = TeamMember.parse({ name: "x", role });
       expect(m.role).toBe(role);
     }
@@ -486,18 +498,12 @@ describe("TeamSentinelOverrides — defaults + bounds", () => {
   });
 
   test("escalationConfidenceThreshold rejects out-of-range values", () => {
-    expect(() =>
-      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: -0.01 }),
-    ).toThrow();
-    expect(() =>
-      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 1.01 }),
-    ).toThrow();
+    expect(() => TeamSentinelOverrides.parse({ escalationConfidenceThreshold: -0.01 })).toThrow();
+    expect(() => TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 1.01 })).toThrow();
   });
 
   test("unknown keys rejected (.strict drift detection)", () => {
-    expect(() =>
-      TeamSentinelOverrides.parse({ cadenceSecondz: 270 }),
-    ).toThrow();
+    expect(() => TeamSentinelOverrides.parse({ cadenceSecondz: 270 })).toThrow();
   });
 
   test("Team accepts sentinel + sentinelOverrides at top-level", () => {
@@ -573,9 +579,7 @@ describe("TeamOmbudsman — strict-mode + type validation", () => {
     // ADR-054 §D3 precedent — typos like `enabld` / `tickIntervalMin`
     // (singular) surface here rather than silently falling through.
     expect(() => TeamOmbudsman.parse({ enabld: true })).toThrow();
-    expect(() =>
-      TeamOmbudsman.parse({ enabled: true, tickIntervalMin: 15 }),
-    ).toThrow();
+    expect(() => TeamOmbudsman.parse({ enabled: true, tickIntervalMin: 15 })).toThrow();
   });
 
   test("enabled rejects non-boolean", () => {
@@ -584,21 +588,13 @@ describe("TeamOmbudsman — strict-mode + type validation", () => {
   });
 
   test("tickIntervalMins rejects zero / negatives / non-integers", () => {
-    expect(() =>
-      TeamOmbudsman.parse({ enabled: true, tickIntervalMins: 0 }),
-    ).toThrow();
-    expect(() =>
-      TeamOmbudsman.parse({ enabled: true, tickIntervalMins: -5 }),
-    ).toThrow();
-    expect(() =>
-      TeamOmbudsman.parse({ enabled: true, tickIntervalMins: 1.5 }),
-    ).toThrow();
+    expect(() => TeamOmbudsman.parse({ enabled: true, tickIntervalMins: 0 })).toThrow();
+    expect(() => TeamOmbudsman.parse({ enabled: true, tickIntervalMins: -5 })).toThrow();
+    expect(() => TeamOmbudsman.parse({ enabled: true, tickIntervalMins: 1.5 })).toThrow();
   });
 
   test("tickIntervalMins rejects non-number type", () => {
-    expect(() =>
-      TeamOmbudsman.parse({ enabled: true, tickIntervalMins: "15" }),
-    ).toThrow();
+    expect(() => TeamOmbudsman.parse({ enabled: true, tickIntervalMins: "15" })).toThrow();
   });
 });
 
@@ -1218,9 +1214,7 @@ describe("TeamRefusalDetection — valid + defaults (ADR-139 §Config)", () => {
   });
 
   test("strict-mode rejects unknown top-level keys (ADR-054 §D3 drift detection)", () => {
-    expect(() =>
-      TeamRefusalDetection.parse({ enabled: true, softTreshold: 3 }),
-    ).toThrow();
+    expect(() => TeamRefusalDetection.parse({ enabled: true, softTreshold: 3 })).toThrow();
   });
 
   test("zero/negative thresholds rejected", () => {

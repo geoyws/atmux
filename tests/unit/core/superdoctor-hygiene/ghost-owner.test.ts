@@ -8,12 +8,12 @@
 //   fix — reassign success, reassign verb-failure, escalate path.
 
 import { describe, expect, test } from "bun:test";
-import { detect, fix } from "../../../../src/core/superdoctor-hygiene/ghost-owner.ts";
 import type {
   FixDeps,
   HygieneIssue,
   TeamState,
 } from "../../../../src/core/superdoctor-hygiene/_shared.ts";
+import { detect, fix } from "../../../../src/core/superdoctor-hygiene/ghost-owner.ts";
 import type { KanbanTask } from "../../../../src/schema/kanban.ts";
 
 // ---------- Helpers ----------

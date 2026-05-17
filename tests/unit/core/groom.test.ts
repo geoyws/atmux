@@ -616,10 +616,7 @@ describe("ageInboxOpenToArchive", () => {
   });
 
   test("file without `## Open` is skipped (no entry returned)", async () => {
-    await writeFile(
-      join(env.atmuxDir, "driver-inbox.md"),
-      "# title\n\nfree-form preamble\n",
-    );
+    await writeFile(join(env.atmuxDir, "driver-inbox.md"), "# title\n\nfree-form preamble\n");
     const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
     expect(got).toEqual([]);
   });
@@ -693,10 +690,7 @@ describe("ageInboxOpenToArchive", () => {
     const src = join(env.atmuxDir, "driver-inbox.md");
     await writeFile(
       src,
-      "## Open\n" +
-        "- [22:00 MYT 2026-05-08] today\n" +
-        "- [malformed] no-time\n" +
-        "## Archive\n",
+      "## Open\n" + "- [22:00 MYT 2026-05-08] today\n" + "- [malformed] no-time\n" + "## Archive\n",
     );
     const got = await ageInboxOpenToArchive(env.atmuxDir, 0, { nowMs: RUN_MS });
     expect(got[0]?.agedCount).toBe(2);
@@ -709,10 +703,7 @@ describe("ageInboxOpenToArchive", () => {
 
   test("aggressive option flag matches days=0 behaviour", async () => {
     const src = join(env.atmuxDir, "lead-outbox.md");
-    await writeFile(
-      src,
-      "## Open\n- [22:00 MYT 2026-05-08] **lead**: today\n## Archive\n",
-    );
+    await writeFile(src, "## Open\n- [22:00 MYT 2026-05-08] **lead**: today\n## Archive\n");
     const got = await ageInboxOpenToArchive(env.atmuxDir, 7, {
       aggressive: true,
       nowMs: RUN_MS,
@@ -724,8 +715,7 @@ describe("ageInboxOpenToArchive", () => {
 
   test("dryRun does not mutate file", async () => {
     const src = join(env.atmuxDir, "driver-inbox.md");
-    const original =
-      "## Open\n- [09:00 MYT 2026-04-01] stale\n## Archive\n";
+    const original = "## Open\n- [09:00 MYT 2026-04-01] stale\n## Archive\n";
     await writeFile(src, original);
     const got = await ageInboxOpenToArchive(env.atmuxDir, 7, {
       dryRun: true,

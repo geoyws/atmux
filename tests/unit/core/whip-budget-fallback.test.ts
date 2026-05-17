@@ -520,15 +520,15 @@ import {
   cageKeyV1,
   DEFAULT_CURSOR_MODEL,
   DEFAULT_FALLBACK_SUSTAIN_MIN,
-  MIN_FALLBACK_SUSTAIN_MIN,
-  fallbackCagesPathV1,
   type FallbackCagesFileV1,
+  fallbackCagesPathV1,
+  MIN_FALLBACK_SUSTAIN_MIN,
   readCagesFileV1,
+  SUPPORTED_FALLBACK_TIER,
   shouldDispatchFallback,
   spawnFallbackCage,
-  SUPPORTED_FALLBACK_TIER,
-  teardownFallbackCage,
   Tier3PlusNotSupportedError,
+  teardownFallbackCage,
 } from "../../../src/core/whip-budget-fallback.ts";
 import type { Team } from "../../../src/schema/team.ts";
 
@@ -540,12 +540,14 @@ function makeTeam(over: Partial<Team> = {}): Team {
   } as Team;
 }
 
-function teamWithFallback(fb: Partial<{
-  enabled: boolean;
-  sustainMins: number;
-  tier: number;
-  cursorModel: string;
-}>): Team {
+function teamWithFallback(
+  fb: Partial<{
+    enabled: boolean;
+    sustainMins: number;
+    tier: number;
+    cursorModel: string;
+  }>,
+): Team {
   return {
     name: "atmux",
     members: [],
@@ -724,7 +726,7 @@ describe("spawnFallbackCage — ADR-050 v1 wrapper", () => {
 
   test("optional brief: sendBrief dep invoked when both brief + dep supplied", async () => {
     const team = teamWithFallback({ enabled: true });
-    let sendCalls: Array<{ handle: CageHandle; body: string }> = [];
+    const sendCalls: Array<{ handle: CageHandle; body: string }> = [];
     await spawnFallbackCage(
       {
         team,
@@ -862,10 +864,7 @@ describe("teardownFallbackCage — ADR-050 v1 wrapper", () => {
         createCage: async () => fakeHandle({ tier: 2, taskId: "t-B", team: "atmux", lane: "be" }),
       },
     );
-    await teardownFallbackCage(
-      { team, atmuxDir, member: "fe" },
-      { destroyCage: async () => {} },
-    );
+    await teardownFallbackCage({ team, atmuxDir, member: "fe" }, { destroyCage: async () => {} });
     const file = await readCagesFileV1(atmuxDir);
     expect(Object.keys(file.cages)).toEqual([cageKeyV1("atmux", "be")]);
   });
@@ -906,9 +905,9 @@ describe("teardownFallbackCage — ADR-050 v1 wrapper", () => {
       },
     };
     await writeFile(fallbackCagesPathV1(atmuxDir), JSON.stringify(file));
-    await expect(
-      teardownFallbackCage({ team, atmuxDir, member: "fe" }),
-    ).rejects.toThrow(Tier3PlusNotSupportedError);
+    await expect(teardownFallbackCage({ team, atmuxDir, member: "fe" })).rejects.toThrow(
+      Tier3PlusNotSupportedError,
+    );
   });
 });
 
@@ -938,10 +937,7 @@ describe("v1 cages-file IO + path helpers", () => {
   test("readCagesFileV1: array shape (legacy v0) → empty (reject)", async () => {
     // Distinct from ADR-058's epoch-suffixed file which uses array.
     // V1 only accepts object-keyed `cages`.
-    await writeFile(
-      fallbackCagesPathV1(atmuxDir),
-      JSON.stringify({ schemaVersion: 1, cages: [] }),
-    );
+    await writeFile(fallbackCagesPathV1(atmuxDir), JSON.stringify({ schemaVersion: 1, cages: [] }));
     const file = await readCagesFileV1(atmuxDir);
     expect(file.cages).toEqual({});
   });

@@ -69,9 +69,7 @@ async function git(
 ): Promise<string> {
   const r = await defaultGitSpawn(["-C", cwd, ...argv]);
   if (!allowNonZero && r.exitCode !== 0) {
-    throw new Error(
-      `git ${argv.join(" ")} (cwd=${cwd}) exit=${r.exitCode}\nstderr:\n${r.stderr}`,
-    );
+    throw new Error(`git ${argv.join(" ")} (cwd=${cwd}) exit=${r.exitCode}\nstderr:\n${r.stderr}`);
   }
   return r.stdout.trim();
 }

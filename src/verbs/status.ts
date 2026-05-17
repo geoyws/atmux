@@ -38,16 +38,12 @@ import {
 } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { loadInbox } from "../core/inbox.ts";
-import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { loadKanban } from "../core/kanban.ts";
+import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
-import {
-  DEFAULT_CADENCE_CONFIG,
-  DEFAULT_CADENCE_THRESHOLDS,
-  type Team,
-} from "../schema/team.ts";
+import { DEFAULT_CADENCE_CONFIG, DEFAULT_CADENCE_THRESHOLDS, type Team } from "../schema/team.ts";
 import { collectOpenEntries } from "./reply.ts";
 
 const USAGE = "atmux status [--json]";
@@ -302,11 +298,7 @@ export interface GatherStatusDeps {
    *  --author=<author> --format=%H %ct`. Tests pin to deterministic
    *  output without touching disk. Returns the raw stdout lines
    *  (`"<sha> <epoch-sec>"` per line). */
-  gitLog?: (
-    worktreePath: string,
-    sinceSec: number,
-    author: string,
-  ) => Promise<string[]>;
+  gitLog?: (worktreePath: string, sinceSec: number, author: string) => Promise<string[]>;
   /** ADR-077 §lead-uptime-measurement (t-6d950ffd) injection seam:
    *  given a process PID, return its elapsed-time-since-start in
    *  seconds. Default shells `ps -o etime= -p <pid>` and parses
@@ -504,8 +496,7 @@ export async function probeLeadUptime(
   if (deps.home !== undefined) readOpts.home = deps.home;
   const startedAt = await readLeadSessionStart(team.name, readOpts);
   const nowSec = Math.floor((deps.now ?? Date.now)() / 1000);
-  const leadSessionUptime =
-    startedAt === null ? null : Math.max(0, nowSec - startedAt);
+  const leadSessionUptime = startedAt === null ? null : Math.max(0, nowSec - startedAt);
 
   // Shell PID + etime — diagnostic-only.
   let leadPanePid: number | null = null;
@@ -640,17 +631,9 @@ export async function gatherStatus(
           // the dormant threshold — any commit older than that is
           // "dormant" regardless, so reading further back wastes
           // git log time without affecting the verdict.
-          const sinceSec = Math.max(
-            cadenceCfg.windowSec,
-            cadenceCfg.thresholds.dormantMaxAgeSec,
-          );
+          const sinceSec = Math.max(cadenceCfg.windowSec, cadenceCfg.thresholds.dormantMaxAgeSec);
           const lines = await gitLog(wt, sinceSec, m.name);
-          row.cadence = classifyCadence(
-            lines,
-            nowSec,
-            cadenceCfg.windowSec,
-            cadenceCfg.thresholds,
-          );
+          row.cadence = classifyCadence(lines, nowSec, cadenceCfg.windowSec, cadenceCfg.thresholds);
         }
       }
     }
@@ -704,13 +687,7 @@ export async function gatherStatus(
   else if (homeDir.length > 0) leadOpts.home = homeDir;
   if (deps.now !== undefined) leadOpts.now = deps.now;
   if (deps.psEtime !== undefined) leadOpts.psEtime = deps.psEtime;
-  const lead = await probeLeadUptime(
-    tmux,
-    team,
-    sessionName,
-    sessionState === "up",
-    leadOpts,
-  );
+  const lead = await probeLeadUptime(tmux, team, sessionName, sessionState === "up", leadOpts);
 
   return {
     team: team.name,
@@ -945,9 +922,7 @@ function renderTextStatus(snap: StatusSnapshot): void {
         ? "—"
         : formatDurationShort(snap.lead.lead_session_uptime_s);
     const shellStr =
-      snap.lead.shell_pid_etime_s === null
-        ? "—"
-        : formatDurationShort(snap.lead.shell_pid_etime_s);
+      snap.lead.shell_pid_etime_s === null ? "—" : formatDurationShort(snap.lead.shell_pid_etime_s);
     process.stdout.write(
       `🧭 lead ${snap.lead.leadMember ?? "?"}  session_uptime=${upStr}  (shell_etime=${shellStr})\n`,
     );
@@ -993,9 +968,9 @@ export function formatContextColumn(m: MemberStatus): string {
 // (`import { classifyCadence } from ".../verbs/status"`) keep
 // resolving without churn.
 export {
+  type CadenceThresholds,
   classifyCadence,
   defaultGitLog,
-  type CadenceThresholds,
 } from "../core/cadence-classifier.ts";
 
 /** Resolve the worktree path for a member. Honors ADR-082 §2

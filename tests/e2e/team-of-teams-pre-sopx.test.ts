@@ -37,10 +37,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  closeDatabase,
-  openDatabase,
-} from "../../src/abstractions/sqlite.ts";
+import { closeDatabase, openDatabase } from "../../src/abstractions/sqlite.ts";
 import { migrations } from "../../src/abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn } from "../../src/abstractions/worktree.ts";
 import { ConfigError } from "../../src/errors.ts";
@@ -292,9 +289,7 @@ async function git(
 ): Promise<string> {
   const r = await defaultGitSpawn(["-C", cwd, ...argv]);
   if (!allowNonZero && r.exitCode !== 0) {
-    throw new Error(
-      `git ${argv.join(" ")} (cwd=${cwd}) exit=${r.exitCode}\nstderr:\n${r.stderr}`,
-    );
+    throw new Error(`git ${argv.join(" ")} (cwd=${cwd}) exit=${r.exitCode}\nstderr:\n${r.stderr}`);
   }
   return r.stdout.trim();
 }
@@ -556,13 +551,7 @@ describe("ADR-092 cross-team tell-lead (phase-2, t-bc4fdb19)", () => {
 
     delete process.env.ATMUX_CALLER_SCOPE;
     await expect(
-      tellLead([
-        "--team-dir",
-        outsiderRoot,
-        "--team",
-        epic.epicName,
-        "should be refused",
-      ]),
+      tellLead(["--team-dir", outsiderRoot, "--team", epic.epicName, "should be refused"]),
     ).rejects.toThrow(/refused/);
     // Critical: refusal fires BEFORE appendDriverInbox — neither
     // source nor target inbox has the message.

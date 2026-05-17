@@ -20,17 +20,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDatabase, openDatabase, type Database } from "../../../../src/abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase } from "../../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../../src/abstractions/sqlite-migrations.ts";
 import { HygieneRepo } from "../../../../src/core/repositories/hygiene-repo.ts";
-import {
-  detectAll,
-  drainTick,
-} from "../../../../src/core/superdoctor-hygiene/drain.ts";
-import type {
-  FixDeps,
-  TeamState,
-} from "../../../../src/core/superdoctor-hygiene/_shared.ts";
+import type { FixDeps, TeamState } from "../../../../src/core/superdoctor-hygiene/_shared.ts";
+import { detectAll, drainTick } from "../../../../src/core/superdoctor-hygiene/drain.ts";
 import type { KanbanTask } from "../../../../src/schema/kanban.ts";
 
 let scratch: string;

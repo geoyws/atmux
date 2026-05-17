@@ -456,4 +456,3 @@ export function renderBootFailureNotice(args: {
     `Suggest: \`atmux rotate ${args.member}\` to retry, OR \`tmux capture-pane -p -t <window>\` to inspect manually.\n\n`
   );
 }
-

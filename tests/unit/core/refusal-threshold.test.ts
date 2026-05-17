@@ -53,10 +53,7 @@ describe("shouldRotate — soft threshold (3 in 30min)", () => {
   });
 
   test("2 soft events → below threshold, no rotate", () => {
-    const events = [
-      event("m1", "t1", NOW - 60, "soft"),
-      event("m1", "t1", NOW - 600, "soft"),
-    ];
+    const events = [event("m1", "t1", NOW - 60, "soft"), event("m1", "t1", NOW - 600, "soft")];
     const r = shouldRotate(events, CONFIG, NOW);
     expect(r.rotate).toBe(false);
     expect(r.triggeringClass).toBeNull();
@@ -77,10 +74,7 @@ describe("shouldRotate — soft threshold (3 in 30min)", () => {
 
 describe("shouldRotate — hard threshold (2 in 10min)", () => {
   test("2 hard events in 10min → rotate=true", () => {
-    const events = [
-      event("m1", "t1", NOW - 60, "hard"),
-      event("m1", "t1", NOW - 9 * 60, "hard"),
-    ];
+    const events = [event("m1", "t1", NOW - 60, "hard"), event("m1", "t1", NOW - 9 * 60, "hard")];
     const r = shouldRotate(events, CONFIG, NOW);
     expect(r.rotate).toBe(true);
     expect(r.triggeringClass).toBe("hard");
@@ -89,10 +83,7 @@ describe("shouldRotate — hard threshold (2 in 10min)", () => {
   });
 
   test("2 hard events, one outside 10min window → no rotate", () => {
-    const events = [
-      event("m1", "t1", NOW - 60, "hard"),
-      event("m1", "t1", NOW - 11 * 60, "hard"),
-    ];
+    const events = [event("m1", "t1", NOW - 60, "hard"), event("m1", "t1", NOW - 11 * 60, "hard")];
     const r = shouldRotate(events, CONFIG, NOW);
     expect(r.rotate).toBe(false);
   });
@@ -102,10 +93,7 @@ describe("shouldRotate — hard threshold (2 in 10min)", () => {
     // (10min) but inside the soft window (30min). They should NOT
     // count toward hard threshold even though they're in soft
     // window range.
-    const events = [
-      event("m1", "t1", NOW - 60, "hard"),
-      event("m1", "t1", NOW - 15 * 60, "hard"),
-    ];
+    const events = [event("m1", "t1", NOW - 60, "hard"), event("m1", "t1", NOW - 15 * 60, "hard")];
     const r = shouldRotate(events, CONFIG, NOW);
     expect(r.rotate).toBe(false);
   });
@@ -121,10 +109,7 @@ describe("shouldRotate — role threshold (1 instant)", () => {
   });
 
   test("0 role events → no rotate (even with soft+hard noise)", () => {
-    const events = [
-      event("m1", "t1", NOW - 60, "soft"),
-      event("m1", "t1", NOW - 120, "soft"),
-    ];
+    const events = [event("m1", "t1", NOW - 60, "soft"), event("m1", "t1", NOW - 120, "soft")];
     const r = shouldRotate(events, CONFIG, NOW);
     expect(r.rotate).toBe(false);
   });

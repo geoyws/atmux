@@ -148,9 +148,7 @@ export function classifyVelocity(inputs: VelocityInputs): VelocityClassification
   }
 
   const ageFact =
-    lastCommitAgeMin === null
-      ? "no prior commits"
-      : `last commit ${lastCommitAgeMin}min ago`;
+    lastCommitAgeMin === null ? "no prior commits" : `last commit ${lastCommitAgeMin}min ago`;
   return {
     verdict: "BAD",
     reason: `BAD: 0 commits in ${windowMin}min · ${ageFact} · ${inProgressTaskCount} in-progress (stalled)`,

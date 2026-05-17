@@ -216,11 +216,7 @@ export async function probeBudget(
   //    probe with the existing accessToken; if it 401's, the gated
   //    Branch 2 below converts that to a `probe-401` result instead of
   //    rotating the refreshToken behind another process's back.
-  if (
-    refreshOnNearExpiry &&
-    expiresAt > 0 &&
-    expiresAt < now() + REFRESH_MARGIN_SEC * 1000
-  ) {
+  if (refreshOnNearExpiry && expiresAt > 0 && expiresAt < now() + REFRESH_MARGIN_SEC * 1000) {
     if (refreshToken.length === 0) {
       const r = await finalize(
         atmuxDir,

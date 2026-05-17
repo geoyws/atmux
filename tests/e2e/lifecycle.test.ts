@@ -45,6 +45,7 @@ import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import { done as doneVerb } from "../../src/verbs/claim.ts";
 import { dispatch as dispatchVerb } from "../../src/verbs/dispatch.ts";
+import { poke as whipVerb } from "../../src/verbs/poke.ts";
 import { report as reportVerb } from "../../src/verbs/report.ts";
 import { send as sendVerb } from "../../src/verbs/send.ts";
 import { start as startVerb } from "../../src/verbs/start.ts";
@@ -52,7 +53,6 @@ import { status as statusVerb } from "../../src/verbs/status.ts";
 import { stop as stopVerb } from "../../src/verbs/stop.ts";
 import { task as taskVerb } from "../../src/verbs/task.ts";
 import { tellLead as tellLeadVerb } from "../../src/verbs/tell-lead.ts";
-import { poke as whipVerb } from "../../src/verbs/poke.ts";
 
 // Beat 8's bare `stop` (no --force) sends C-c + sleeps 2s before
 // archive/kill. Bun's 5s default trips on machines under load — give the

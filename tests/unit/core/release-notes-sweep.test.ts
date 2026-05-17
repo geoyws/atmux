@@ -35,7 +35,15 @@ function stubGit(responses: Record<string, SpawnResult>): GitSpawn {
     for (const [needle, response] of Object.entries(responses)) {
       if (joined.includes(needle)) return response;
     }
-    return { exitCode: 0, stdout: "", stderr: "", signalled: null, durationMs: 0, cmd: "git", argv: [] };
+    return {
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      signalled: null,
+      durationMs: 0,
+      cmd: "git",
+      argv: [],
+    };
   };
 }
 
@@ -159,7 +167,9 @@ describe("startOfMytDayEpochSec", () => {
 
 describe("renderers", () => {
   test("renderShippedEntry renders id + subject + note", () => {
-    const out = renderShippedEntry(task({ id: "t-1234abcd", subject: "Add foo", note: "feat(foo): add" }));
+    const out = renderShippedEntry(
+      task({ id: "t-1234abcd", subject: "Add foo", note: "feat(foo): add" }),
+    );
     expect(out).toBe("- t-1234abcd — Add foo — feat(foo): add");
   });
 
@@ -180,9 +190,9 @@ describe("renderers", () => {
   });
 
   test("renderAdrEntry renders id + title + first-add sha", () => {
-    expect(renderAdrEntry({ id: "ADR-147", title: "Ombudsman role + release-notes", sha: "deadbee" })).toBe(
-      "- ADR-147 — Ombudsman role + release-notes (first-add @ deadbee)",
-    );
+    expect(
+      renderAdrEntry({ id: "ADR-147", title: "Ombudsman role + release-notes", sha: "deadbee" }),
+    ).toBe("- ADR-147 — Ombudsman role + release-notes (first-add @ deadbee)");
   });
 });
 
@@ -205,8 +215,18 @@ describe("runReleaseNotesAutoAppend", () => {
   test("appends ## Shipped entries for done tasks completed within MYT day", async () => {
     const startOfDaySec = startOfMytDayEpochSec(MYT_NOW_2026_05_15);
     const kanban: KanbanTask[] = [
-      task({ id: "t-aaaaaaaa", subject: "Add foo", note: "feat(foo): add", completedAt: startOfDaySec + 3600 }),
-      task({ id: "t-bbbbbbbb", subject: "Fix bar", note: "fix(bar): patch", completedAt: startOfDaySec + 7200 }),
+      task({
+        id: "t-aaaaaaaa",
+        subject: "Add foo",
+        note: "feat(foo): add",
+        completedAt: startOfDaySec + 3600,
+      }),
+      task({
+        id: "t-bbbbbbbb",
+        subject: "Fix bar",
+        note: "fix(bar): patch",
+        completedAt: startOfDaySec + 7200,
+      }),
     ];
     const git = stubGit({}); // no merges, no ADRs queued
     const out = await runReleaseNotesAutoAppend({
@@ -340,7 +360,9 @@ describe("runReleaseNotesAutoAppend", () => {
     });
     expect(out.adrsLanded.appended).toEqual(["ADR-147", "ADR-148"]);
     const body = await readFile(dayFile(repoRoot), "utf8");
-    expect(body).toContain("- ADR-147 — Ombudsman role + release-notes layout (first-add @ deadbee)");
+    expect(body).toContain(
+      "- ADR-147 — Ombudsman role + release-notes layout (first-add @ deadbee)",
+    );
     expect(body).toContain("- ADR-148 — Some other decision (first-add @ cafebab)");
   });
 
@@ -431,9 +453,25 @@ describe("runReleaseNotesAutoAppend", () => {
     const git: GitSpawn = async (argv) => {
       const joined = argv.join(" ");
       if (joined.includes("log --merges")) {
-        return { exitCode: 128, stdout: "", stderr: "fatal: bad revision", signalled: null, durationMs: 0, cmd: "git", argv: [] };
+        return {
+          exitCode: 128,
+          stdout: "",
+          stderr: "fatal: bad revision",
+          signalled: null,
+          durationMs: 0,
+          cmd: "git",
+          argv: [],
+        };
       }
-      return { exitCode: 0, stdout: "", stderr: "", signalled: null, durationMs: 0, cmd: "git", argv: [] };
+      return {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        signalled: null,
+        durationMs: 0,
+        cmd: "git",
+        argv: [],
+      };
     };
     const out = await runReleaseNotesAutoAppend({
       repoRoot,

@@ -24,12 +24,7 @@
 /** Closed set of canonical role literals atmux ships out-of-the-box.
  *  Defaults render `_-prefix`; user-added (role = "member") keeps the
  *  ADR-135 hyphen form. */
-export const DEFAULT_MEMBER_ROLES = [
-  "team-lead",
-  "planner",
-  "reviewer",
-  "ombudsman",
-] as const;
+export const DEFAULT_MEMBER_ROLES = ["team-lead", "planner", "reviewer", "ombudsman"] as const;
 
 /** Union of the canonical default role literals. */
 export type DefaultMemberRole = (typeof DEFAULT_MEMBER_ROLES)[number];

@@ -136,10 +136,7 @@ export interface ObservationHistory {
  *  E6 (`ship-zero-2hr`) is enforced unconditionally — per the
  *  T2 header guarantee that the classifier hard-codes the
  *  mandatory floor above per-impl judgment. */
-export function classify(
-  obs: Observation,
-  history: ObservationHistory,
-): EscalationReason[] {
+export function classify(obs: Observation, history: ObservationHistory): EscalationReason[] {
   const reasons: EscalationReason[] = [];
 
   // E1: wedged-after-nudge
@@ -174,9 +171,7 @@ export function classify(
   }
 
   // E4: inbox-unprocessed
-  if (
-    history.inboxEntries.some((e) => e.tickAge >= E4_INBOX_TICK_AGE_THRESHOLD)
-  ) {
+  if (history.inboxEntries.some((e) => e.tickAge >= E4_INBOX_TICK_AGE_THRESHOLD)) {
     reasons.push("inbox-unprocessed");
   }
 
@@ -210,10 +205,7 @@ export function classify(
   if (obs.commitCadence.last2hr === 0) {
     reasons.push("ship-zero-2hr");
   } else if (
-    obs.members.some(
-      (m) =>
-        m.cadence !== undefined && m.cadence.verdict === "ship-zero-window",
-    )
+    obs.members.some((m) => m.cadence !== undefined && m.cadence.verdict === "ship-zero-window")
   ) {
     reasons.push("ship-zero-2hr");
   }
@@ -227,8 +219,6 @@ export function classify(
  *  impls MUST funnel their escalation decisions through this
  *  function (the impl's own `shouldEscalateToClaudeLead` may
  *  escalate ABOVE this floor but never below). */
-export function shouldEscalate(
-  reasons: ReadonlyArray<EscalationReason>,
-): boolean {
+export function shouldEscalate(reasons: ReadonlyArray<EscalationReason>): boolean {
   return reasons.length > 0;
 }

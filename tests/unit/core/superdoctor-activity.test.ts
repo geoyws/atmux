@@ -151,9 +151,7 @@ describe("gatherSuperdoctorActivity", () => {
       // Use a resolver that returns a path under a guaranteed-missing
       // parent so openDatabase's create:true can't materialise it.
       stateDbPathFor: (t) =>
-        t.name === "teamB"
-          ? "/proc/self/no-such-dir/state.db"
-          : join(t.root, ".atmux", "state.db"),
+        t.name === "teamB" ? "/proc/self/no-such-dir/state.db" : join(t.root, ".atmux", "state.db"),
     });
 
     expect(activity.openComplaints).toBe(1);

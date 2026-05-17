@@ -510,9 +510,7 @@ async function inheritClaudeAccount(
   const parentTeamPath = join(parentRoot, ".atmux", "team.json");
   if (!(await exists(parentTeamPath))) return rosterMembers;
   type ParentMember = { name?: unknown; claudeAccount?: unknown };
-  const ParentShape = z
-    .object({ members: z.array(z.unknown()) })
-    .passthrough();
+  const ParentShape = z.object({ members: z.array(z.unknown()) }).passthrough();
   let parentParsed: { members: unknown[] };
   try {
     parentParsed = await readJson(parentTeamPath, ParentShape);

@@ -1,8 +1,8 @@
 // Unit tests for src/core/superdoctor-cage-verdict.ts (t-72a6b7d7 / c-a99bf461).
 
 import { describe, expect, test } from "bun:test";
-import type { CockpitTeamCageMode } from "../../../src/schema/cockpit.ts";
 import { verdictForCage } from "../../../src/core/superdoctor-cage-verdict.ts";
+import type { CockpitTeamCageMode } from "../../../src/schema/cockpit.ts";
 
 describe("verdictForCage — cross-product of cageMode × sessionAlive", () => {
   // ---------- autonomous (default) ----------

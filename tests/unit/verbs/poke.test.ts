@@ -40,12 +40,12 @@ import {
   parseEnviron,
   parseLeadCtxPct,
   parsePokeArgs,
+  poke,
   readLeadSessionStart,
   readLeadWindowName,
   readWhipConfig,
   selectStaleTasks,
   staleAnchor,
-  poke,
   writeLeadSessionStart,
 } from "../../../src/verbs/poke.ts";
 
@@ -432,7 +432,9 @@ describe("lead-marker helpers", () => {
     // the legacy `__<team>__team-lead` default. This is what stops whip
     // from emitting false `🛑 lead: window missing` findings on freshly-
     // started teams that haven't rotated the lead yet.
-    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "🧭-lead" })).toBe("🧭-lead");
+    expect(await readLeadWindowName("demo", { home: homeDir, fallback: "🧭-lead" })).toBe(
+      "🧭-lead",
+    );
   });
 
   test("readLeadWindowName: marker text wins over fallback when present", async () => {
@@ -579,10 +581,7 @@ const seedTeam = async (
   // tests that DO exercise the scan path).
   const incomingWhip = (data.whip as Record<string, unknown> | undefined) ?? {};
   const mergedWhip = { needsApprovalEnabled: false, ...incomingWhip };
-  await writeFile(
-    join(atmuxDir, "team.json"),
-    JSON.stringify({ ...data, whip: mergedWhip }),
-  );
+  await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ ...data, whip: mergedWhip }));
 };
 
 describe("poke() — public verb", () => {

@@ -22,7 +22,7 @@
 // CLI plumbing (flag parsing + subverb routing + tabular printing
 // for the `list` output).
 
-import { getAtmuxDir, resolveCallerScope, type ResolveDirOpts } from "../core/common.ts";
+import { getAtmuxDir, type ResolveDirOpts, resolveCallerScope } from "../core/common.ts";
 import { removeFromInProgress } from "../core/inbox.ts";
 import {
   addTask,

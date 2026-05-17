@@ -44,27 +44,16 @@
 // argv shape the verb consumes.
 
 import { join } from "node:path";
-import {
-  closeDatabase,
-  type Database,
-  openDatabase,
-} from "../abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import {
-  defaultGitSpawn,
-  type GitSpawn,
-} from "../abstractions/worktree.ts";
-import {
-  getAtmuxDir,
-  type ResolveDirOpts,
-  requireTeam,
-} from "../core/common.ts";
-import {
-  committerSweep,
   type CommitterSweepDeps,
   type CommitterSweepResult,
+  committerSweep,
   type QueueMergeFn,
 } from "../core/committer-sweep.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
@@ -200,8 +189,7 @@ export async function committerSweepVerb(
   const openDb = opts.openDb ?? ((p: string) => openDatabase(p, migrations));
   const closeDb = opts.closeDb ?? closeDatabase;
 
-  const dirOpts: ResolveDirOpts =
-    parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
 
@@ -211,9 +199,7 @@ export async function committerSweepVerb(
   // still gets here. Fast no-op + log + exit 0 — matches the
   // `whip-resume-check` posture (cheap no-op when not opted in).
   if (team.autoMerge?.enabled !== true) {
-    logger.log(
-      `committer --sweep: team '${team.name}' has autoMerge.enabled !== true — no-op`,
-    );
+    logger.log(`committer --sweep: team '${team.name}' has autoMerge.enabled !== true — no-op`);
     return 0;
   }
 

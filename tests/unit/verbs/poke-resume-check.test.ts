@@ -25,9 +25,9 @@ import {
 import { ConfigError, LockTimeoutError, UsageError } from "../../../src/errors.ts";
 import {
   parsePokeResumeCheckArgs,
+  pokeResumeCheck,
   resolveProbeAccounts,
   shouldResume,
-  pokeResumeCheck,
 } from "../../../src/verbs/poke-resume-check.ts";
 
 // ---------- parsePokeResumeCheckArgs ----------

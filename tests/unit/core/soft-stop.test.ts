@@ -8,13 +8,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { addTask, claimTaskForMember } from "../../../src/core/kanban.ts";
-import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import {
   DEFAULT_SOFT_STOP_GRACE_SECONDS,
-  quiesceCron,
   QUIESCE_TAG,
+  quiesceCron,
   resumeManifestPath,
   SOFT_STOP_NOTICE,
   softStop,

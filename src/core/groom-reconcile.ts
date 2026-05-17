@@ -38,10 +38,7 @@
 
 import { dirname } from "node:path";
 import { statOrNull } from "../abstractions/fs.ts";
-import {
-  type GitSpawn,
-  defaultGitSpawn,
-} from "./auto-done.ts";
+import { defaultGitSpawn, type GitSpawn } from "./auto-done.ts";
 import { listTasks, markTaskDone } from "./kanban.ts";
 
 // ---------- Types ----------
@@ -162,11 +159,9 @@ export async function reconcileKanbanVsGit(
   // via `listOpenTasks` injection.
   const open = opts.listOpenTasks
     ? await opts.listOpenTasks()
-    : (
-        (await listTasks(atmuxDir, { status: "todo" })).concat(
-          await listTasks(atmuxDir, { status: "in-progress" }),
-        )
-      ).map((t) => ({ id: t.id, status: t.status ?? "" }));
+    : (await listTasks(atmuxDir, { status: "todo" }))
+        .concat(await listTasks(atmuxDir, { status: "in-progress" }))
+        .map((t) => ({ id: t.id, status: t.status ?? "" }));
   result.scanned = open.length;
   if (open.length === 0) return result;
 
@@ -177,13 +172,7 @@ export async function reconcileKanbanVsGit(
   // subject content (no newlines in well-formed subjects, but defensive
   // against malformed inputs).
   const git = opts.git ?? defaultGitSpawn;
-  const r = await git([
-    "-C",
-    repoDir,
-    "log",
-    "--all",
-    "--format=%H%n%s%x00",
-  ]);
+  const r = await git(["-C", repoDir, "log", "--all", "--format=%H%n%s%x00"]);
   if (r.exitCode !== 0) {
     // Most common: not a git repo. Soft-skip + audit reason; groom
     // surfaces this as a warning at call site.

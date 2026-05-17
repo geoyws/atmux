@@ -15,18 +15,18 @@
 // v3→v4 run, the open throws "table X already exists". With CREATE
 // TABLE IF NOT EXISTS the same ladder walks cleanly across legacy DBs.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrations as liveMigrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import {
   closeDatabase,
   type Migration,
   openDatabase,
   readUserVersion,
 } from "../../../src/abstractions/sqlite.ts";
+import { migrations as liveMigrations } from "../../../src/abstractions/sqlite-migrations.ts";
 
 interface Env {
   dir: string;

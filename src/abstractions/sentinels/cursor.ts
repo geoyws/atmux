@@ -56,12 +56,7 @@ import {
   type ObservationHistory,
   shouldEscalate,
 } from "../../core/sentinel-escalation.ts";
-import type {
-  ApplyResult,
-  Sentinel,
-  NudgeAction,
-  Observation,
-} from "../sentinel.ts";
+import type { ApplyResult, NudgeAction, Observation, Sentinel } from "../sentinel.ts";
 
 // ---------- Construct-time deps ----------
 
@@ -70,10 +65,7 @@ import type {
  *  send-mechanism (raw send-keys, safeSendKeysWithVerify, paste-buffer
  *  pattern) — every variant collapses to "did the keystroke land?" at
  *  this seam. Tests inject a recording stub. */
-export type CursorSendKeysFn = (
-  window: string,
-  keys: string,
-) => Promise<{ success: boolean }>;
+export type CursorSendKeysFn = (window: string, keys: string) => Promise<{ success: boolean }>;
 
 /** Cursor-agent invocation — the dispatcher wires the spawn-fn that
  *  shells out to `cursor-agent --print ...`. Tests inject a synthetic
@@ -288,15 +280,7 @@ export class CursorSentinel implements Sentinel {
    *  against every tick. */
   async decide(obs: Observation): Promise<NudgeAction[]> {
     const prompt = `${CURSOR_SYSTEM_PROMPT}\n\n## Observation\n\n${JSON.stringify(obs, null, 2)}`;
-    const args = [
-      "--print",
-      "--output-format",
-      "json",
-      "--model",
-      this.model,
-      "--force",
-      prompt,
-    ];
+    const args = ["--print", "--output-format", "json", "--model", this.model, "--force", prompt];
 
     let stdout: string;
     try {

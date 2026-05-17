@@ -58,23 +58,23 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import type { MemberObservation, Observation } from "../../src/abstractions/sentinel.ts";
+import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import {
-  classifyCadence,
-  classifyMemberCadence,
   type CadenceObservation,
   type CadenceThresholds,
+  classifyCadence,
+  classifyMemberCadence,
 } from "../../src/core/cadence-classifier.ts";
+import { decideLaneStall, type LaneStallMemberInput } from "../../src/core/lane-stall.ts";
 import {
   classify as classifyEscalation,
   type ObservationHistory,
   shouldEscalate,
 } from "../../src/core/sentinel-escalation.ts";
-import { decideLaneStall, type LaneStallMemberInput } from "../../src/core/lane-stall.ts";
+import type { Team } from "../../src/schema/team.ts";
 import { runLaneStallTick } from "../../src/verbs/lane-stall-tick.ts";
 import { formatCadenceColumn, gatherStatus } from "../../src/verbs/status.ts";
-import type { Team } from "../../src/schema/team.ts";
 
 setDefaultTimeout(30_000);
 
@@ -352,30 +352,15 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     const members: MemberObservation[] = [
       buildMemberObservation(
         "member-1",
-        classifyCadence(
-          [`abc ${NOW_SEC - 300}`],
-          NOW_SEC,
-          1800,
-          DEFAULT_THRESHOLDS,
-        ),
+        classifyCadence([`abc ${NOW_SEC - 300}`], NOW_SEC, 1800, DEFAULT_THRESHOLDS),
       ),
       buildMemberObservation(
         "member-2",
-        classifyCadence(
-          [`def ${NOW_SEC - 3600}`],
-          NOW_SEC,
-          1800,
-          DEFAULT_THRESHOLDS,
-        ),
+        classifyCadence([`def ${NOW_SEC - 3600}`], NOW_SEC, 1800, DEFAULT_THRESHOLDS),
       ),
       buildMemberObservation(
         "member-3",
-        classifyCadence(
-          [`fed ${NOW_SEC - 3 * 3600}`],
-          NOW_SEC,
-          1800,
-          DEFAULT_THRESHOLDS,
-        ),
+        classifyCadence([`fed ${NOW_SEC - 3 * 3600}`], NOW_SEC, 1800, DEFAULT_THRESHOLDS),
       ),
     ];
     expect(members[2]!.cadence!.verdict).toBe("ship-zero-window");
@@ -399,12 +384,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     const allShipping: MemberObservation[] = team.members.map((m) =>
       buildMemberObservation(
         m.name,
-        classifyCadence(
-          [`shipping-sha ${NOW_SEC - 60}`],
-          NOW_SEC,
-          1800,
-          DEFAULT_THRESHOLDS,
-        ),
+        classifyCadence([`shipping-sha ${NOW_SEC - 60}`], NOW_SEC, 1800, DEFAULT_THRESHOLDS),
       ),
     );
     const obs = buildObservation(allShipping);

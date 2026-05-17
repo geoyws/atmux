@@ -336,9 +336,7 @@ describe("epic verb — dispatch", () => {
   test("epic show <id> --json returns joined shape", async () => {
     const eid = await addEpic(atmuxDir, { title: "T" });
     await addStory(atmuxDir, { title: "child", epic: eid });
-    const { out } = await captureStdout(() =>
-      epic(["show", eid, "--json", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => epic(["show", eid, "--json", "--team-dir", teamDir]));
     const parsed = JSON.parse(out);
     expect(parsed.id).toBe(eid);
     expect(parsed.stories).toHaveLength(1);
@@ -350,18 +348,14 @@ describe("epic verb — dispatch", () => {
 
   test("epic advance default step works", async () => {
     const eid = await addEpic(atmuxDir, { title: "A" });
-    const { out: _ } = await captureStdout(() =>
-      epic(["advance", eid, "--team-dir", teamDir]),
-    );
+    const { out: _ } = await captureStdout(() => epic(["advance", eid, "--team-dir", teamDir]));
     const e = (await listEpics(atmuxDir)).find((x) => x.id === eid);
     expect(e?.status).toBe("ready");
   });
 
   test("epic advance --to specific state", async () => {
     const eid = await addEpic(atmuxDir, { title: "A" });
-    await captureStdout(() =>
-      epic(["advance", eid, "--to", "ready", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => epic(["advance", eid, "--to", "ready", "--team-dir", teamDir]));
     const e = (await listEpics(atmuxDir)).find((x) => x.id === eid);
     expect(e?.status).toBe("ready");
   });

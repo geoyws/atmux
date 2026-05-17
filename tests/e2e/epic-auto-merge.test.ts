@@ -41,14 +41,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  closeDatabase,
-  openDatabase,
-} from "../../src/abstractions/sqlite.ts";
+import { closeDatabase, openDatabase } from "../../src/abstractions/sqlite.ts";
 import { migrations } from "../../src/abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn } from "../../src/abstractions/worktree.ts";
-import { dissolveEpic } from "../../src/verbs/team/dissolve-epic.ts";
 import { epicMergeTickVerb } from "../../src/verbs/epic-merge.ts";
+import { dissolveEpic } from "../../src/verbs/team/dissolve-epic.ts";
 import { spawnEpic } from "../../src/verbs/team/spawn-epic.ts";
 
 // ---------- Helpers ----------
@@ -93,9 +90,7 @@ type CockpitShape = "sessions" | "legacy-teams";
 /** Cold-start a parent-team fixture: bare remote + working repo +
  *  initial commit on `main` + atmux state.db + cockpit.json with the
  *  parent registered. */
-async function makeFixture(
-  opts: { cockpitShape?: CockpitShape } = {},
-): Promise<Fixture> {
+async function makeFixture(opts: { cockpitShape?: CockpitShape } = {}): Promise<Fixture> {
   const cockpitShape = opts.cockpitShape ?? "sessions";
   const tmpRoot = await mkdtemp(join(tmpdir(), "atmux-e2e-epic-merge-"));
   const bareRemotePath = join(tmpRoot, "origin.git");
@@ -129,10 +124,7 @@ async function makeFixture(
       members: [{ name: "lead", role: "lead" }],
     }),
   );
-  const parentDb = openDatabase(
-    join(parentRoot, ".atmux", "state.db"),
-    migrations,
-  );
+  const parentDb = openDatabase(join(parentRoot, ".atmux", "state.db"), migrations);
   parentDb
     .query(
       `INSERT INTO epics (id, title, status, created_at)
@@ -230,10 +222,7 @@ async function spawnEpicForFixture(
  *  (the verb's `--team-dir` arg resolves the epic-team's `.atmux/`).
  *  Returns captured log line(s) so the test can grep for the tick
  *  result line. */
-async function epicMergeTick(
-  fix: Fixture,
-  epicRoot: string,
-): Promise<string[]> {
+async function epicMergeTick(fix: Fixture, epicRoot: string): Promise<string[]> {
   const logs: string[] = [];
   await epicMergeTickVerb(
     { subverb: "tick", teamDir: epicRoot },
@@ -289,302 +278,228 @@ afterEach(async () => {
 // ---------- Happy path ----------
 
 describe("e2e epic-auto-merge happy path (ADR-091 / t-9d22718b)", () => {
-  test(
-    "kanban-all-done + reviewer-trunk-signoff → ready_to_merge → merging → merged + dissolve-dispatched + parent has --no-ff merge",
-    async () => {
-      // 1. Spawn-epic creates the child team artifacts.
-      const { epicRoot, epicBranch } = await spawnEpicForFixture(
-        fix,
-        "checkout-flow",
-      );
-      // Worktree should exist with the right branch checked out.
-      const worktreeBranch = await git(epicRoot, [
-        "rev-parse",
-        "--abbrev-ref",
-        "HEAD",
-      ]);
-      expect(worktreeBranch).toBe(epicBranch);
+  test("kanban-all-done + reviewer-trunk-signoff → ready_to_merge → merging → merged + dissolve-dispatched + parent has --no-ff merge", async () => {
+    // 1. Spawn-epic creates the child team artifacts.
+    const { epicRoot, epicBranch } = await spawnEpicForFixture(fix, "checkout-flow");
+    // Worktree should exist with the right branch checked out.
+    const worktreeBranch = await git(epicRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    expect(worktreeBranch).toBe(epicBranch);
 
-      // Per-worktree git config so commits + merges succeed under
-      // stock CI (the per-team git config doesn't propagate).
-      await git(epicRoot, ["config", "user.email", "epic@example.com"]);
-      await git(epicRoot, ["config", "user.name", "EpicDev"]);
+    // Per-worktree git config so commits + merges succeed under
+    // stock CI (the per-team git config doesn't propagate).
+    await git(epicRoot, ["config", "user.email", "epic@example.com"]);
+    await git(epicRoot, ["config", "user.name", "EpicDev"]);
 
-      // 2. Commit a real change on the epic-team's branch.
-      await writeFile(join(epicRoot, "feature.md"), "checkout flow\n");
-      await git(epicRoot, ["add", "feature.md"]);
-      await git(epicRoot, ["commit", "-m", "feat: checkout flow"]);
+    // 2. Commit a real change on the epic-team's branch.
+    await writeFile(join(epicRoot, "feature.md"), "checkout flow\n");
+    await git(epicRoot, ["add", "feature.md"]);
+    await git(epicRoot, ["commit", "-m", "feat: checkout flow"]);
 
-      // 3. Seed child kanban: one feature Task done + the canonical
-      //    reviewer-trunk-signoff Task done.
-      const childAtmuxDir = join(epicRoot, ".atmux");
-      seedChildTask(childAtmuxDir, "t-feature", "done");
-      seedChildTask(
-        childAtmuxDir,
-        "t-signoff",
-        "done",
-        "reviewer-trunk-signoff",
-      );
+    // 3. Seed child kanban: one feature Task done + the canonical
+    //    reviewer-trunk-signoff Task done.
+    const childAtmuxDir = join(epicRoot, ".atmux");
+    seedChildTask(childAtmuxDir, "t-feature", "done");
+    seedChildTask(childAtmuxDir, "t-signoff", "done", "reviewer-trunk-signoff");
 
-      // 4. Tick #1 — open → in_progress (seeding).
-      const tick1 = await epicMergeTick(fix, epicRoot);
-      expect(tick1.join("\n")).toMatch(/state='in_progress'/);
+    // 4. Tick #1 — open → in_progress (seeding).
+    const tick1 = await epicMergeTick(fix, epicRoot);
+    expect(tick1.join("\n")).toMatch(/state='in_progress'/);
 
-      // 5. Tick #2 — in_progress → ready_to_merge (gate-pass).
-      const tick2 = await epicMergeTick(fix, epicRoot);
-      expect(tick2.join("\n")).toMatch(/state='ready_to_merge'/);
+    // 5. Tick #2 — in_progress → ready_to_merge (gate-pass).
+    const tick2 = await epicMergeTick(fix, epicRoot);
+    expect(tick2.join("\n")).toMatch(/state='ready_to_merge'/);
 
-      // 6. Tick #3 — ready_to_merge → merging → merged.
-      const tick3 = await epicMergeTick(fix, epicRoot);
-      const tick3str = tick3.join("\n");
-      expect(tick3str).toMatch(/state='merged'/);
-      expect(tick3str).toMatch(/dissolve-dispatched/);
+    // 6. Tick #3 — ready_to_merge → merging → merged.
+    const tick3 = await epicMergeTick(fix, epicRoot);
+    const tick3str = tick3.join("\n");
+    expect(tick3str).toMatch(/state='merged'/);
+    expect(tick3str).toMatch(/dissolve-dispatched/);
 
-      // 7. Parent's main branch should now carry the child's commit
-      //    under a --no-ff merge commit (two-parent SHA).
-      const parentLog = await git(fix.parentRoot, [
-        "log",
-        "--oneline",
-        "--merges",
-        "main",
-      ]);
-      expect(parentLog).toMatch(/Merge branch/);
+    // 7. Parent's main branch should now carry the child's commit
+    //    under a --no-ff merge commit (two-parent SHA).
+    const parentLog = await git(fix.parentRoot, ["log", "--oneline", "--merges", "main"]);
+    expect(parentLog).toMatch(/Merge branch/);
 
-      // The feature file from the child landed.
-      const featureExists = await stat(
-        join(fix.parentRoot, "feature.md"),
-      ).then(() => true).catch(() => false);
-      expect(featureExists).toBe(true);
+    // The feature file from the child landed.
+    const featureExists = await stat(join(fix.parentRoot, "feature.md"))
+      .then(() => true)
+      .catch(() => false);
+    expect(featureExists).toBe(true);
 
-      // 8. Cockpit entry removed + child worktree pruned.
-      const cockpitAfter = JSON.parse(
-        await Bun.file(fix.cockpitPath).text(),
-      );
-      const parentSession = cockpitAfter.sessions[0];
-      if (parentSession.sessions !== undefined) {
-        expect(
-          parentSession.sessions.filter(
-            (s: { type?: string; name?: string }) =>
-              s.type === "epic-team" && s.name === "checkout-flow",
-          ),
-        ).toHaveLength(0);
-      }
-      const epicRootExists = await stat(epicRoot).then(() => true).catch(
-        () => false,
-      );
-      expect(epicRootExists).toBe(false);
+    // 8. Cockpit entry removed + child worktree pruned.
+    const cockpitAfter = JSON.parse(await Bun.file(fix.cockpitPath).text());
+    const parentSession = cockpitAfter.sessions[0];
+    if (parentSession.sessions !== undefined) {
+      expect(
+        parentSession.sessions.filter(
+          (s: { type?: string; name?: string }) =>
+            s.type === "epic-team" && s.name === "checkout-flow",
+        ),
+      ).toHaveLength(0);
+    }
+    const epicRootExists = await stat(epicRoot)
+      .then(() => true)
+      .catch(() => false);
+    expect(epicRootExists).toBe(false);
 
-      // 9. Parent's EPIC row marked done by the auto-dispatched
-      //    dissolve-epic.
-      const parentDb = openDatabase(
-        join(fix.parentRoot, ".atmux", "state.db"),
-        migrations,
-      );
-      const row = parentDb
-        .query<
-          { status: string; completed_at: number | null },
-          []
-        >(
-          `SELECT status, completed_at FROM epics WHERE id = 'e-e-checkout-flow'`,
-        )
-        .get();
-      closeDatabase(parentDb);
-      expect(row?.status).toBe("done");
-      expect(row?.completed_at).not.toBeNull();
-    },
-    30_000,
-  );
+    // 9. Parent's EPIC row marked done by the auto-dispatched
+    //    dissolve-epic.
+    const parentDb = openDatabase(join(fix.parentRoot, ".atmux", "state.db"), migrations);
+    const row = parentDb
+      .query<{ status: string; completed_at: number | null }, []>(
+        `SELECT status, completed_at FROM epics WHERE id = 'e-e-checkout-flow'`,
+      )
+      .get();
+    closeDatabase(parentDb);
+    expect(row?.status).toBe("done");
+    expect(row?.completed_at).not.toBeNull();
+  }, 30_000);
 
-  test(
-    "missing reviewer-trunk-signoff blocks ready_to_merge transition",
-    async () => {
-      const { epicRoot, epicBranch } = await spawnEpicForFixture(
-        fix,
-        "checkout-flow-2",
-      );
-      void epicBranch;
-      await git(epicRoot, ["config", "user.email", "epic@example.com"]);
-      await git(epicRoot, ["config", "user.name", "EpicDev"]);
-      await writeFile(join(epicRoot, "feature.md"), "x\n");
-      await git(epicRoot, ["add", "feature.md"]);
-      await git(epicRoot, ["commit", "-m", "feat: x"]);
-      // Seed child kanban WITHOUT the reviewer-trunk-signoff Task.
-      seedChildTask(join(epicRoot, ".atmux"), "t-feature", "done");
+  test("missing reviewer-trunk-signoff blocks ready_to_merge transition", async () => {
+    const { epicRoot, epicBranch } = await spawnEpicForFixture(fix, "checkout-flow-2");
+    void epicBranch;
+    await git(epicRoot, ["config", "user.email", "epic@example.com"]);
+    await git(epicRoot, ["config", "user.name", "EpicDev"]);
+    await writeFile(join(epicRoot, "feature.md"), "x\n");
+    await git(epicRoot, ["add", "feature.md"]);
+    await git(epicRoot, ["commit", "-m", "feat: x"]);
+    // Seed child kanban WITHOUT the reviewer-trunk-signoff Task.
+    seedChildTask(join(epicRoot, ".atmux"), "t-feature", "done");
 
-      // Tick #1 — seeding to in_progress.
-      await epicMergeTick(fix, epicRoot);
-      // Tick #2 — gate fires: §Decision-anchor #5 vetoes ready_to_merge.
-      const tick2 = await epicMergeTick(fix, epicRoot);
-      const joined = tick2.join("\n");
-      expect(joined).toMatch(/state='in_progress'/);
-      expect(joined).toMatch(/reviewer-trunk-signoff/);
-    },
-    30_000,
-  );
+    // Tick #1 — seeding to in_progress.
+    await epicMergeTick(fix, epicRoot);
+    // Tick #2 — gate fires: §Decision-anchor #5 vetoes ready_to_merge.
+    const tick2 = await epicMergeTick(fix, epicRoot);
+    const joined = tick2.join("\n");
+    expect(joined).toMatch(/state='in_progress'/);
+    expect(joined).toMatch(/reviewer-trunk-signoff/);
+  }, 30_000);
 });
 
 // ---------- Conflict path ----------
 
 describe("e2e epic-auto-merge conflict path (ADR-091 / t-9d22718b)", () => {
-  test(
-    "parent-branch divergence on the same file → conflict terminal state with paths in note",
-    async () => {
-      const { epicRoot, epicBranch } = await spawnEpicForFixture(
-        fix,
-        "conflict-flow",
-      );
-      void epicBranch;
+  test("parent-branch divergence on the same file → conflict terminal state with paths in note", async () => {
+    const { epicRoot, epicBranch } = await spawnEpicForFixture(fix, "conflict-flow");
+    void epicBranch;
 
-      await git(epicRoot, ["config", "user.email", "epic@example.com"]);
-      await git(epicRoot, ["config", "user.name", "EpicDev"]);
+    await git(epicRoot, ["config", "user.email", "epic@example.com"]);
+    await git(epicRoot, ["config", "user.name", "EpicDev"]);
 
-      // Child commits to file `conflict.md`.
-      await writeFile(join(epicRoot, "conflict.md"), "child version\n");
-      await git(epicRoot, ["add", "conflict.md"]);
-      await git(epicRoot, ["commit", "-m", "feat: child write"]);
+    // Child commits to file `conflict.md`.
+    await writeFile(join(epicRoot, "conflict.md"), "child version\n");
+    await git(epicRoot, ["add", "conflict.md"]);
+    await git(epicRoot, ["commit", "-m", "feat: child write"]);
 
-      // Parent independently commits a divergent version to the same
-      // file on main.
-      await writeFile(
-        join(fix.parentRoot, "conflict.md"),
-        "parent version\n",
-      );
-      await git(fix.parentRoot, ["add", "conflict.md"]);
-      await git(fix.parentRoot, ["commit", "-m", "feat: parent write"]);
+    // Parent independently commits a divergent version to the same
+    // file on main.
+    await writeFile(join(fix.parentRoot, "conflict.md"), "parent version\n");
+    await git(fix.parentRoot, ["add", "conflict.md"]);
+    await git(fix.parentRoot, ["commit", "-m", "feat: parent write"]);
 
-      // Seed kanban for gate-pass.
-      seedChildTask(join(epicRoot, ".atmux"), "t-feature", "done");
-      seedChildTask(
-        join(epicRoot, ".atmux"),
-        "t-signoff",
-        "done",
-        "reviewer-trunk-signoff",
-      );
+    // Seed kanban for gate-pass.
+    seedChildTask(join(epicRoot, ".atmux"), "t-feature", "done");
+    seedChildTask(join(epicRoot, ".atmux"), "t-signoff", "done", "reviewer-trunk-signoff");
 
-      // Tick #1 — seed open → in_progress.
-      await epicMergeTick(fix, epicRoot);
-      // Tick #2 — in_progress evaluates gate: parent moved, so
-      // shouldEpicTransitionFromInProgress routes to `rebasing`
-      // (NOT directly to ready_to_merge), and the state machine
-      // stops there for the cron tick (rebasing is a caller-driven
-      // mid-flight state per epic-merge.ts contract).
-      //
-      // For this conflict-path test we DEMOSTRATE the rebasing
-      // detour fires by reading the merger_state row; the actual
-      // `conflict` terminal arrives via the operator's rebase
-      // attempt downstream OR via a future cron-driven rebase
-      // resolver. Today, the rebasing tick is the observable
-      // contract.
-      const tick2 = await epicMergeTick(fix, epicRoot);
-      const joined = tick2.join("\n");
-      expect(joined).toMatch(/state='rebasing'/);
-      expect(joined).toMatch(/base moved during work/);
+    // Tick #1 — seed open → in_progress.
+    await epicMergeTick(fix, epicRoot);
+    // Tick #2 — in_progress evaluates gate: parent moved, so
+    // shouldEpicTransitionFromInProgress routes to `rebasing`
+    // (NOT directly to ready_to_merge), and the state machine
+    // stops there for the cron tick (rebasing is a caller-driven
+    // mid-flight state per epic-merge.ts contract).
+    //
+    // For this conflict-path test we DEMOSTRATE the rebasing
+    // detour fires by reading the merger_state row; the actual
+    // `conflict` terminal arrives via the operator's rebase
+    // attempt downstream OR via a future cron-driven rebase
+    // resolver. Today, the rebasing tick is the observable
+    // contract.
+    const tick2 = await epicMergeTick(fix, epicRoot);
+    const joined = tick2.join("\n");
+    expect(joined).toMatch(/state='rebasing'/);
+    expect(joined).toMatch(/base moved during work/);
 
-      // The merger_state row should carry the rebase reason in note.
-      const childDb = openDatabase(
-        join(epicRoot, ".atmux", "state.db"),
-        migrations,
-      );
-      // Walk the parent's state.db for the merger_state row — same
-      // table layout as intra-team-merge ledger.
-      closeDatabase(childDb);
-      // Cockpit + worktree should still exist (no terminal-merged →
-      // no dissolve fired).
-      const epicRootExists = await stat(epicRoot)
-        .then(() => true)
-        .catch(() => false);
-      expect(epicRootExists).toBe(true);
-    },
-    30_000,
-  );
+    // The merger_state row should carry the rebase reason in note.
+    const childDb = openDatabase(join(epicRoot, ".atmux", "state.db"), migrations);
+    // Walk the parent's state.db for the merger_state row — same
+    // table layout as intra-team-merge ledger.
+    closeDatabase(childDb);
+    // Cockpit + worktree should still exist (no terminal-merged →
+    // no dissolve fired).
+    const epicRootExists = await stat(epicRoot)
+      .then(() => true)
+      .catch(() => false);
+    expect(epicRootExists).toBe(true);
+  }, 30_000);
 });
 
 // ---------- Pre-ADR-089 cockpit shape regression (t-e6e3afd4) ----------
 
 describe("e2e spawn-epic against pre-ADR-089 cockpit (t-e6e3afd4 P0 hot-fix)", () => {
-  test(
-    "legacy top-level teams[] cockpit.json — spawn-epic auto-migrates to sessions[] in-place + warns + appends epic-team child",
-    async () => {
-      // Override the default fixture with the legacy `teams[]` shape.
-      await rm(fix.tmpRoot, { recursive: true, force: true });
-      fix = await makeFixture({ cockpitShape: "legacy-teams" });
+  test("legacy top-level teams[] cockpit.json — spawn-epic auto-migrates to sessions[] in-place + warns + appends epic-team child", async () => {
+    // Override the default fixture with the legacy `teams[]` shape.
+    await rm(fix.tmpRoot, { recursive: true, force: true });
+    fix = await makeFixture({ cockpitShape: "legacy-teams" });
 
-      // Pre-condition: on-disk file has top-level teams[] and no
-      // sessions[].
-      const beforeRaw = JSON.parse(await Bun.file(fix.cockpitPath).text());
-      expect(Array.isArray(beforeRaw.teams)).toBe(true);
-      expect(beforeRaw.sessions).toBeUndefined();
+    // Pre-condition: on-disk file has top-level teams[] and no
+    // sessions[].
+    const beforeRaw = JSON.parse(await Bun.file(fix.cockpitPath).text());
+    expect(Array.isArray(beforeRaw.teams)).toBe(true);
+    expect(beforeRaw.sessions).toBeUndefined();
 
-      // Run spawn-epic — must succeed (regression: prior to the
-      // migrateLegacyShape pre-flight this threw ConfigError
-      // "parent team 'parent-team' not found in cockpit").
-      const { epicRoot, epicBranch } = await spawnEpicForFixture(
-        fix,
-        "legacy-shape-flow",
-      );
-      const worktreeBranch = await git(epicRoot, [
-        "rev-parse",
-        "--abbrev-ref",
-        "HEAD",
-      ]);
-      expect(worktreeBranch).toBe(epicBranch);
+    // Run spawn-epic — must succeed (regression: prior to the
+    // migrateLegacyShape pre-flight this threw ConfigError
+    // "parent team 'parent-team' not found in cockpit").
+    const { epicRoot, epicBranch } = await spawnEpicForFixture(fix, "legacy-shape-flow");
+    const worktreeBranch = await git(epicRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    expect(worktreeBranch).toBe(epicBranch);
 
-      // Post-spawn the on-disk cockpit.json should be fully on the
-      // new sessions[] shape — legacy teams[] stripped, schemaVersion
-      // set to 1 by migrateLegacyShape.
-      const afterRaw = JSON.parse(await Bun.file(fix.cockpitPath).text());
-      expect(afterRaw.teams).toBeUndefined();
-      expect(Array.isArray(afterRaw.sessions)).toBe(true);
-      expect(afterRaw.schemaVersion).toBe(1);
+    // Post-spawn the on-disk cockpit.json should be fully on the
+    // new sessions[] shape — legacy teams[] stripped, schemaVersion
+    // set to 1 by migrateLegacyShape.
+    const afterRaw = JSON.parse(await Bun.file(fix.cockpitPath).text());
+    expect(afterRaw.teams).toBeUndefined();
+    expect(Array.isArray(afterRaw.sessions)).toBe(true);
+    expect(afterRaw.schemaVersion).toBe(1);
 
-      // The parent session entry is now under sessions[] with
-      // type='team' lifted by the shim.
-      const parentSession = afterRaw.sessions.find(
-        (s: { type?: string; name?: string }) =>
-          s.type === "team" && s.name === "parent-team",
-      );
-      expect(parentSession).toBeDefined();
+    // The parent session entry is now under sessions[] with
+    // type='team' lifted by the shim.
+    const parentSession = afterRaw.sessions.find(
+      (s: { type?: string; name?: string }) => s.type === "team" && s.name === "parent-team",
+    );
+    expect(parentSession).toBeDefined();
 
-      // The new epic-team child should be nested under the parent's
-      // sessions[] (appendChildToSessions mutates that array).
-      expect(Array.isArray(parentSession.sessions)).toBe(true);
-      const epicChild = parentSession.sessions.find(
-        (s: { type?: string; name?: string }) =>
-          s.type === "epic-team" && s.name === "legacy-shape-flow",
-      );
-      expect(epicChild).toBeDefined();
+    // The new epic-team child should be nested under the parent's
+    // sessions[] (appendChildToSessions mutates that array).
+    expect(Array.isArray(parentSession.sessions)).toBe(true);
+    const epicChild = parentSession.sessions.find(
+      (s: { type?: string; name?: string }) =>
+        s.type === "epic-team" && s.name === "legacy-shape-flow",
+    );
+    expect(epicChild).toBeDefined();
 
-      // The migrateLegacyShape warning fired through logger.warn —
-      // captured via the test logger.
-      const warned = fix.capturedLogs.some((l) =>
-        /uses legacy flat teams\[\] — auto-lifting/.test(l),
-      );
-      expect(warned).toBe(true);
-    },
-    30_000,
-  );
+    // The migrateLegacyShape warning fired through logger.warn —
+    // captured via the test logger.
+    const warned = fix.capturedLogs.some((l) =>
+      /uses legacy flat teams\[\] — auto-lifting/.test(l),
+    );
+    expect(warned).toBe(true);
+  }, 30_000);
 });
 
 // ---------- Cleanup guarantees ----------
 
 describe("e2e epic-auto-merge cleanup guarantees", () => {
   test("after happy-path dissolve, no orphan worktree + no orphan cockpit entry under parent", async () => {
-    const { epicRoot } = await spawnEpicForFixture(
-      fix,
-      "cleanup-flow",
-    );
+    const { epicRoot } = await spawnEpicForFixture(fix, "cleanup-flow");
     await git(epicRoot, ["config", "user.email", "epic@example.com"]);
     await git(epicRoot, ["config", "user.name", "EpicDev"]);
     await writeFile(join(epicRoot, "cleanup.md"), "x\n");
     await git(epicRoot, ["add", "cleanup.md"]);
     await git(epicRoot, ["commit", "-m", "feat: cleanup"]);
     seedChildTask(join(epicRoot, ".atmux"), "t-feature", "done");
-    seedChildTask(
-      join(epicRoot, ".atmux"),
-      "t-signoff",
-      "done",
-      "reviewer-trunk-signoff",
-    );
+    seedChildTask(join(epicRoot, ".atmux"), "t-signoff", "done", "reviewer-trunk-signoff");
 
     // Drive to merged.
     await epicMergeTick(fix, epicRoot);
@@ -598,9 +513,7 @@ describe("e2e epic-auto-merge cleanup guarantees", () => {
     expect(epicRootExists).toBe(false);
 
     // Verify cockpit doesn't carry the entry anywhere.
-    const cockpitAfter = JSON.parse(
-      await Bun.file(fix.cockpitPath).text(),
-    );
+    const cockpitAfter = JSON.parse(await Bun.file(fix.cockpitPath).text());
     const stringified = JSON.stringify(cockpitAfter);
     expect(stringified).not.toMatch(/cleanup-flow/);
 

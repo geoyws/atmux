@@ -23,9 +23,9 @@
 import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
 import {
   getAtmuxDir,
-  resolveCallerScope,
   type ResolveDirOpts,
   requireTeam,
+  resolveCallerScope,
 } from "../core/common.ts";
 import {
   appendDispatched,

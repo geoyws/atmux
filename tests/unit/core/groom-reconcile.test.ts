@@ -132,9 +132,7 @@ describe("reconcileKanbanVsGit", () => {
       sha: "deadbeefcafe",
       action: "flip",
     });
-    expect(md.calls).toEqual([
-      { id: "t-aaaaaaaa", note: "groomed: shipped via SHA deadbeefcafe" },
-    ]);
+    expect(md.calls).toEqual([{ id: "t-aaaaaaaa", note: "groomed: shipped via SHA deadbeefcafe" }]);
   });
 
   test("body-only match → NOT flipped (t-4ea69dd1 P0 fix — subject-only)", async () => {
@@ -272,9 +270,7 @@ describe("reconcileKanbanVsGit", () => {
 
   test("no match → no-op, decisions empty", async () => {
     const open: OpenTask[] = [{ id: "t-dddddddd", status: "todo" }];
-    const { spawn } = fakeGit([
-      { sha: "abc", subject: "feat(x): t-99999999 — different task" },
-    ]);
+    const { spawn } = fakeGit([{ sha: "abc", subject: "feat(x): t-99999999 — different task" }]);
     const md = makeMarkDone();
     const r = await reconcileKanbanVsGit(atmuxDir, {
       repoDir,
@@ -291,9 +287,7 @@ describe("reconcileKanbanVsGit", () => {
 
   test("dry-run: decisions recorded, markDone not called", async () => {
     const open: OpenTask[] = [{ id: "t-eeeeeeee", status: "todo" }];
-    const { spawn } = fakeGit([
-      { sha: "shaeeee0001", subject: "feat: t-eeeeeeee — ship" },
-    ]);
+    const { spawn } = fakeGit([{ sha: "shaeeee0001", subject: "feat: t-eeeeeeee — ship" }]);
     const md = makeMarkDone();
     const r = await reconcileKanbanVsGit(atmuxDir, {
       dryRun: true,

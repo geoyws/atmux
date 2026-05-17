@@ -19,8 +19,8 @@
 // JSON payload (so cockpit aggregators stay shape-agnostic) AND rewrites
 // the host crontab via `pruneCronOrphans`. Read-only default unchanged.
 
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { statOrNull } from "../abstractions/fs.ts";
-import { defaultCrontabIO, type CrontabIO } from "../abstractions/crontab.ts";
 import { findCronOrphans, pruneCronOrphans } from "../core/cron.ts";
 import { UsageError } from "../errors.ts";
 

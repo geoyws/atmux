@@ -12,14 +12,14 @@
 //     EscalationReason enum covers all six §D5 triggers.
 
 import { describe, expect, test } from "bun:test";
-import type { PaneClassification } from "../../../src/core/pane-state.ts";
-import { ClaudeSentinel } from "../../../src/abstractions/sentinels/claude.ts";
 import type {
   EscalationReason,
-  Sentinel,
   NudgeAction,
   Observation,
+  Sentinel,
 } from "../../../src/abstractions/sentinel.ts";
+import { ClaudeSentinel } from "../../../src/abstractions/sentinels/claude.ts";
+import type { PaneClassification } from "../../../src/core/pane-state.ts";
 
 // ---------- Helpers ----------
 
@@ -141,18 +141,18 @@ describe("ClaudeSentinel", () => {
 
   test("apply() error message names the kind that was incorrectly dispatched", async () => {
     const m = new ClaudeSentinel({ observeFn: async () => fixtureObservation() });
-    await expect(
-      m.apply({ kind: "claim-next", member: "be-1", reason: "x" }),
-    ).rejects.toThrow(/claim-next/);
-    await expect(
-      m.apply({ kind: "rotate-routine", member: "fe-1", reason: "x" }),
-    ).rejects.toThrow(/rotate-routine/);
+    await expect(m.apply({ kind: "claim-next", member: "be-1", reason: "x" })).rejects.toThrow(
+      /claim-next/,
+    );
+    await expect(m.apply({ kind: "rotate-routine", member: "fe-1", reason: "x" })).rejects.toThrow(
+      /rotate-routine/,
+    );
     await expect(
       m.apply({ kind: "rotate-emergency", member: "fe-1", reason: "x" }),
     ).rejects.toThrow(/rotate-emergency/);
-    await expect(
-      m.apply({ kind: "modal-release", member: "fe-1", reason: "x" }),
-    ).rejects.toThrow(/modal-release/);
+    await expect(m.apply({ kind: "modal-release", member: "fe-1", reason: "x" })).rejects.toThrow(
+      /modal-release/,
+    );
     await expect(
       m.apply({ kind: "force-push-approved", member: "fe-1", reason: "x" }),
     ).rejects.toThrow(/force-push-approved/);

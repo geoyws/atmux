@@ -15,10 +15,10 @@
 // gaps (rejected proposals) since the ADR sequence may have holes
 // in the future.
 
+import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import { describe, expect, test } from "bun:test";
 
 // Project root — resolve from this test file's location.
 const REPO_ROOT = join(import.meta.dir, "..", "..");
@@ -117,9 +117,7 @@ describe("docs-consolidation (ADR-093) smoke", () => {
     );
     // Proxy: at least one markdown table row mentions both adr-bun/ and adr/.
     const tableLines = body.split("\n").filter((l) => l.startsWith("|"));
-    const hasMapRow = tableLines.some(
-      (l) => l.includes("adr-bun/") && l.includes("adr/"),
-    );
+    const hasMapRow = tableLines.some((l) => l.includes("adr-bun/") && l.includes("adr/"));
     expect(hasMapRow).toBe(true);
     // Sanity: the body mentions the renumber range explicitly.
     expect(body).toMatch(/095-130/);

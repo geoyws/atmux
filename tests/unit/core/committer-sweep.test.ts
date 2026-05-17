@@ -20,18 +20,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
-import {
-  closeDatabase,
-  type Database,
-  openDatabase,
-} from "../../../src/abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
 import type { BranchMergeState } from "../../../src/core/branch-merge-state.ts";
 import {
   type CommitterSweepDeps,
-  type QueueMergeFn,
   committerSweep,
+  type QueueMergeFn,
 } from "../../../src/core/committer-sweep.ts";
 import { MergerStateRepo } from "../../../src/core/repositories/merger-state-repo.ts";
 
@@ -128,8 +124,7 @@ function buildDeps(opts: {
     },
     ...(opts.gitOverrides ?? {}),
   };
-  const queue: QueueMergeFn =
-    opts.queue ?? (async () => ({ queued: true }));
+  const queue: QueueMergeFn = opts.queue ?? (async () => ({ queued: true }));
   return {
     teamRoot: TEAM_ROOT,
     baseBranch: BASE_BRANCH,
@@ -319,20 +314,21 @@ describe("committerSweep — in-flight state recognition", () => {
 // ---------- Terminal-state + new commits ----------
 
 describe("committerSweep — terminal state with fresh tip", () => {
-  test.each(["merged", "conflict", "reverted"] as const)(
-    "state=%s + commits ahead → queued (fresh work after terminal)",
-    async (state) => {
-      seedRepoRow("geoyws-fe-1", state);
-      const deps = buildDeps({
-        branches: ["geoyws-fe-1"],
-        aheadBy: { "geoyws-fe-1": 5 },
-      });
-      const result = await committerSweep(deps);
-      expect(result.queued).toBe(1);
-      expect(result.entries[0]?.action).toBe("queued");
-      expect(result.entries[0]?.observedState).toBe(state);
-    },
-  );
+  test.each([
+    "merged",
+    "conflict",
+    "reverted",
+  ] as const)("state=%s + commits ahead → queued (fresh work after terminal)", async (state) => {
+    seedRepoRow("geoyws-fe-1", state);
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 5 },
+    });
+    const result = await committerSweep(deps);
+    expect(result.queued).toBe(1);
+    expect(result.entries[0]?.action).toBe("queued");
+    expect(result.entries[0]?.observedState).toBe(state);
+  });
 
   test("state=merged + 0 ahead → skipped-zero-ahead (terminal stays terminal)", async () => {
     seedRepoRow("geoyws-fe-1", "merged");

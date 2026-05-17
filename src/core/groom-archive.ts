@@ -20,9 +20,9 @@
 // first run is fine — `openDatabase` creates + migrates lazily.
 
 import { join } from "node:path";
+import { exists } from "../abstractions/fs.ts";
 import { closeDatabase, openDatabase, transact } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
-import { exists } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
 
 // ---------- Paths ----------
@@ -114,18 +114,20 @@ export async function groomArchive(
     db.exec(`ATTACH DATABASE '${archivePath.replace(/'/g, "''")}' AS archive`);
     try {
       if (dryRun) {
-        const taskCount = (
-          db
-            .query(
-              `SELECT COUNT(*) AS n FROM main.tasks WHERE status='done' AND completed_at IS NOT NULL AND completed_at < $cutoff`,
-            )
-            .get({ $cutoff: cutoffEpoch }) as { n: number } | null
-        )?.n ?? 0;
-        const inboxCount = (
-          db
-            .query(`SELECT COUNT(*) AS n FROM main.inbox_messages WHERE ts < $cutoff`)
-            .get({ $cutoff: cutoffEpoch }) as { n: number } | null
-        )?.n ?? 0;
+        const taskCount =
+          (
+            db
+              .query(
+                `SELECT COUNT(*) AS n FROM main.tasks WHERE status='done' AND completed_at IS NOT NULL AND completed_at < $cutoff`,
+              )
+              .get({ $cutoff: cutoffEpoch }) as { n: number } | null
+          )?.n ?? 0;
+        const inboxCount =
+          (
+            db
+              .query(`SELECT COUNT(*) AS n FROM main.inbox_messages WHERE ts < $cutoff`)
+              .get({ $cutoff: cutoffEpoch }) as { n: number } | null
+          )?.n ?? 0;
         return { tasksArchived: taskCount, inboxArchived: inboxCount, cutoffEpoch };
       }
       return transact(db, () => {

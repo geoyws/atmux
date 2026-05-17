@@ -9,7 +9,7 @@
 // the contract, not the syscall.
 
 import { describe, expect, test } from "bun:test";
-import { defaultCrontabIO, type CrontabIO } from "../../../src/abstractions/crontab.ts";
+import { type CrontabIO, defaultCrontabIO } from "../../../src/abstractions/crontab.ts";
 
 describe("CrontabIO contract", () => {
   test("defaultCrontabIO returns an object satisfying the interface", () => {

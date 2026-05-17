@@ -74,10 +74,9 @@ import {
   WEDGED_HEARTBEAT_STALE_SEC,
 } from "../../src/core/cage-state.ts";
 import { writeHeartbeat } from "../../src/core/heartbeat.ts";
-import { checkMemberCageStates } from "../../src/verbs/doctor.ts";
-import { doctor as doctorVerb } from "../../src/verbs/doctor.ts";
-import { status as statusVerb } from "../../src/verbs/status.ts";
 import type { Team } from "../../src/schema/team.ts";
+import { checkMemberCageStates, doctor as doctorVerb } from "../../src/verbs/doctor.ts";
+import { status as statusVerb } from "../../src/verbs/status.ts";
 
 // ---------- Env probes (module-load time) ----------
 
@@ -94,14 +93,13 @@ const HAS_TMUX = probeBin(["tmux", "-V"]);
 const HAS_NODE = probeBin(["node", "--version"]);
 const NOT_IN_CAGE = Bun.env.TMUX === undefined || Bun.env.TMUX === "";
 
-const SKIP_REASON: string =
-  !HAS_TMUX
-    ? "tmux binary missing"
-    : !HAS_NODE
-      ? "node binary missing"
-      : !NOT_IN_CAGE
-        ? "running inside a tmux server (export TMUX=''; or run via `unset TMUX && bun test ...`)"
-        : "";
+const SKIP_REASON: string = !HAS_TMUX
+  ? "tmux binary missing"
+  : !HAS_NODE
+    ? "node binary missing"
+    : !NOT_IN_CAGE
+      ? "running inside a tmux server (export TMUX=''; or run via `unset TMUX && bun test ...`)"
+      : "";
 
 if (SKIP_REASON !== "") {
   // eslint-disable-next-line no-console
@@ -136,8 +134,7 @@ const MEMBERS = [
   { name: "wedged-hb-mbr", emoji: "⏱" },
 ] as const;
 
-const winFor = (memberName: string, emoji: string) =>
-  `${sessionName}:${emoji}${memberName}`;
+const winFor = (memberName: string, emoji: string) => `${sessionName}:${emoji}${memberName}`;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -228,26 +225,46 @@ beforeAll(async () => {
 
   // (2) bootstrap-mbr — welcome banner + node, no tokens.
   await tmux.pane.sendKeys({
-    target: { kind: "member", member: "bootstrap-mbr", team: teamName, target: winFor("bootstrap-mbr", "🌱") },
+    target: {
+      kind: "member",
+      member: "bootstrap-mbr",
+      team: teamName,
+      target: winFor("bootstrap-mbr", "🌱"),
+    },
     keys: "clear; echo 'Welcome to Claude. How can I help?'",
     enter: true,
   });
   await sleep(300);
   await tmux.pane.sendKeys({
-    target: { kind: "member", member: "bootstrap-mbr", team: teamName, target: winFor("bootstrap-mbr", "🌱") },
+    target: {
+      kind: "member",
+      member: "bootstrap-mbr",
+      team: teamName,
+      target: winFor("bootstrap-mbr", "🌱"),
+    },
     keys: "node -e 'process.stdin.resume()'",
     enter: true,
   });
 
   // (3) active-mbr — tokens-moved text + node.
   await tmux.pane.sendKeys({
-    target: { kind: "member", member: "active-mbr", team: teamName, target: winFor("active-mbr", "🟢") },
+    target: {
+      kind: "member",
+      member: "active-mbr",
+      team: teamName,
+      target: winFor("active-mbr", "🟢"),
+    },
     keys: "clear; echo '↑ 5k tokens · 12%'",
     enter: true,
   });
   await sleep(300);
   await tmux.pane.sendKeys({
-    target: { kind: "member", member: "active-mbr", team: teamName, target: winFor("active-mbr", "🟢") },
+    target: {
+      kind: "member",
+      member: "active-mbr",
+      team: teamName,
+      target: winFor("active-mbr", "🟢"),
+    },
     keys: "node -e 'process.stdin.resume()'",
     enter: true,
   });
@@ -255,13 +272,23 @@ beforeAll(async () => {
   // (4) wedged-rl-mbr — rate-limit banner + node. RATE-LIMIT pattern
   // fires step 4 in the probe ladder, BEFORE tokens-moved check.
   await tmux.pane.sendKeys({
-    target: { kind: "member", member: "wedged-rl-mbr", team: teamName, target: winFor("wedged-rl-mbr", "🚫") },
-    keys: "clear; echo \"You've hit your limit. Try again in 5h.\"",
+    target: {
+      kind: "member",
+      member: "wedged-rl-mbr",
+      team: teamName,
+      target: winFor("wedged-rl-mbr", "🚫"),
+    },
+    keys: 'clear; echo "You\'ve hit your limit. Try again in 5h."',
     enter: true,
   });
   await sleep(300);
   await tmux.pane.sendKeys({
-    target: { kind: "member", member: "wedged-rl-mbr", team: teamName, target: winFor("wedged-rl-mbr", "🚫") },
+    target: {
+      kind: "member",
+      member: "wedged-rl-mbr",
+      team: teamName,
+      target: winFor("wedged-rl-mbr", "🚫"),
+    },
     keys: "node -e 'process.stdin.resume()'",
     enter: true,
   });
@@ -269,13 +296,23 @@ beforeAll(async () => {
   // (5) wedged-hb-mbr — tokens-moved text (so the active path is
   // reached) + node + a heartbeat file >7200s old.
   await tmux.pane.sendKeys({
-    target: { kind: "member", member: "wedged-hb-mbr", team: teamName, target: winFor("wedged-hb-mbr", "⏱") },
+    target: {
+      kind: "member",
+      member: "wedged-hb-mbr",
+      team: teamName,
+      target: winFor("wedged-hb-mbr", "⏱"),
+    },
     keys: "clear; echo '↑ 8k tokens · 35%'",
     enter: true,
   });
   await sleep(300);
   await tmux.pane.sendKeys({
-    target: { kind: "member", member: "wedged-hb-mbr", team: teamName, target: winFor("wedged-hb-mbr", "⏱") },
+    target: {
+      kind: "member",
+      member: "wedged-hb-mbr",
+      team: teamName,
+      target: winFor("wedged-hb-mbr", "⏱"),
+    },
     keys: "node -e 'process.stdin.resume()'",
     enter: true,
   });
@@ -354,7 +391,9 @@ async function readStatusText(): Promise<string> {
   return stdout;
 }
 
-async function readDoctorJson(): Promise<{ rows: { label: string; status: string; detail?: string }[] }> {
+async function readDoctorJson(): Promise<{
+  rows: { label: string; status: string; detail?: string }[];
+}> {
   const { stdout } = await captureStdout(() => doctorVerb(["--json"]));
   // doctor --json emits an array of rows; tolerate either shape.
   try {
@@ -542,9 +581,7 @@ describe.skipIf(SKIP_REASON !== "")(
         if (memberRow === undefined) throw new Error(`status missing ${m.name}`);
         const state = memberRow.cageState;
         if (state === null) {
-          throw new Error(
-            `cageState null for ${m.name} — probe failed; check fixture spawn`,
-          );
+          throw new Error(`cageState null for ${m.name} — probe failed; check fixture spawn`);
         }
         const tokenRe = stateToken[state];
         if (tokenRe === undefined) {
@@ -579,7 +616,11 @@ describe.skipIf(SKIP_REASON !== "")(
       // these ever diverge, status's pane-text capture or its tmux
       // handle is the regression site.
       for (const m of MEMBERS) {
-        const health = await probeCageState(team, { name: m.name, role: "member", emoji: m.emoji } as Team["members"][number], atmuxDir);
+        const health = await probeCageState(
+          team,
+          { name: m.name, role: "member", emoji: m.emoji } as Team["members"][number],
+          atmuxDir,
+        );
         const expectedState =
           m.name === "down-mbr"
             ? "down"

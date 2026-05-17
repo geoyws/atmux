@@ -9,8 +9,12 @@
 // (e.g. a future `--format md` variant). Non-zero exit on UsageError;
 // scan failures (capture / classify) are logged inline and absorbed.
 
-import { type RefusalScanDeps, type RefusalScanResult, scanTeamForRefusals } from "../core/refusal-scan.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import {
+  type RefusalScanDeps,
+  type RefusalScanResult,
+  scanTeamForRefusals,
+} from "../core/refusal-scan.ts";
 import { UsageError } from "../errors.ts";
 
 const USAGE = "atmux refusal-scan [--team-dir <path>] [--json]";

@@ -40,9 +40,12 @@ describe("sqlite-migrations live ladder", () => {
 
 describe("v7 → v8: refusal_events", () => {
   test("table exists with the expected column set + types", () => {
-    const cols = db
-      .prepare("PRAGMA table_info(refusal_events)")
-      .all() as Array<{ name: string; type: string; notnull: number; pk: number }>;
+    const cols = db.prepare("PRAGMA table_info(refusal_events)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
     const byName = new Map(cols.map((c) => [c.name, c]));
 
     // Every column from the migration body is present.
@@ -79,19 +82,17 @@ describe("v7 → v8: refusal_events", () => {
   });
 
   test("UNIQUE(member, minute_bucket, severity) constraint is in place", () => {
-    const indexes = db
-      .prepare("PRAGMA index_list(refusal_events)")
-      .all() as Array<{ name: string; unique: number; origin: string }>;
+    const indexes = db.prepare("PRAGMA index_list(refusal_events)").all() as Array<{
+      name: string;
+      unique: number;
+      origin: string;
+    }>;
     const uniqueIdx = indexes.find((i) => i.unique === 1 && i.origin === "u");
     expect(uniqueIdx).toBeDefined();
-    const cols = db
-      .prepare(`PRAGMA index_info(${uniqueIdx?.name ?? ""})`)
-      .all() as Array<{ name: string }>;
-    expect(cols.map((c) => c.name).sort()).toEqual([
-      "member",
-      "minute_bucket",
-      "severity",
-    ]);
+    const cols = db.prepare(`PRAGMA index_info(${uniqueIdx?.name ?? ""})`).all() as Array<{
+      name: string;
+    }>;
+    expect(cols.map((c) => c.name).sort()).toEqual(["member", "minute_bucket", "severity"]);
   });
 
   test("phrases column rejects non-JSON values via the CHECK constraint", () => {
@@ -174,9 +175,11 @@ describe("v7 → v8: refusal_events", () => {
   });
 
   test("indexes for the threshold-window + severity scan are present", () => {
-    const indexes = db
-      .prepare("PRAGMA index_list(refusal_events)")
-      .all() as Array<{ name: string; unique: number; origin: string }>;
+    const indexes = db.prepare("PRAGMA index_list(refusal_events)").all() as Array<{
+      name: string;
+      unique: number;
+      origin: string;
+    }>;
     const names = new Set(indexes.map((i) => i.name));
     expect(names.has("idx_refusal_events_member_detected")).toBe(true);
     expect(names.has("idx_refusal_events_severity")).toBe(true);

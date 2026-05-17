@@ -1740,9 +1740,7 @@ describe("start — t-dcbff97c cron-install wiring", () => {
     const exit = await runStart([], { cronInstallFn, extraEnv: { ATMUX_NO_CRON: "" } });
     expect(exit).toBe(0);
     expect(
-      env.logs.some(
-        (l) => l.kind === "warn" && l.msg.includes("cron-install fell through"),
-      ),
+      env.logs.some((l) => l.kind === "warn" && l.msg.includes("cron-install fell through")),
     ).toBe(true);
   });
 });
@@ -1873,7 +1871,7 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
     // brief-paste path calls sleep with the spawnWaitMs constant, not
     // the member name — but the closure runs in member-spawn order
     // so we trace by call-sequence + the most recent log line.
-    let nextMember = "";
+    const nextMember = "";
     const trace = async (ms: number): Promise<void> => {
       // tag this sleep call with the current "in-flight" member by
       // peeking at the latest "spawned window <emoji>-<name>" log line.

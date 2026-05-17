@@ -22,11 +22,11 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import { ResumeManifest } from "../../src/schema/resume.ts";
 import { claim as claimVerb } from "../../src/verbs/claim.ts";
 import { start as startVerb } from "../../src/verbs/start.ts";
 import { stop as stopVerb } from "../../src/verbs/stop.ts";
 import { task as taskVerb } from "../../src/verbs/task.ts";
-import { ResumeManifest } from "../../src/schema/resume.ts";
 
 // Soft-stop's default grace is 5s; we override to 0 via `softStopGraceSeconds`
 // in the team.json so the beat doesn't block needlessly.
@@ -64,7 +64,14 @@ beforeAll(async () => {
     name: teamName,
     softStopGraceSeconds: 0,
     members: [
-      { name: "lead", role: "team-lead", emoji: "🧭", tui: "shell", model: "default", cwd: teamDir },
+      {
+        name: "lead",
+        role: "team-lead",
+        emoji: "🧭",
+        tui: "shell",
+        model: "default",
+        cwd: teamDir,
+      },
       { name: "w1", role: "member", emoji: "🐝", tui: "shell", model: "default", cwd: teamDir },
     ],
     whip: { intervalMins: 5, staleMin: 30, leadMaxMin: 60 },

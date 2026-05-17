@@ -1503,9 +1503,7 @@ export interface MemberForcePushWarningOpts {
  * matches), but the Discord ping is dedup'd so a single force-push
  * doesn't ping every tick for 12 ticks.
  */
-export function renderMemberForcePushWarning(
-  opts: MemberForcePushWarningOpts,
-): DiscordSendOpts {
+export function renderMemberForcePushWarning(opts: MemberForcePushWarningOpts): DiscordSendOpts {
   const n = opts.events.length;
   const verdict = `🟡 **Cool** — ${n} member${n === 1 ? "" : "s"} force-pushed within the last hour`;
   const bullets: string[] = [];
@@ -1565,9 +1563,7 @@ export interface SendKeysFailureWarningOpts {
  * artifact (the escalation log written by `safeSendKeysWithVerify`'s
  * escalation path).
  */
-export function renderSendKeysFailureWarning(
-  opts: SendKeysFailureWarningOpts,
-): DiscordSendOpts {
+export function renderSendKeysFailureWarning(opts: SendKeysFailureWarningOpts): DiscordSendOpts {
   const n = opts.failureCount;
   const verdict = `🟡 **Cool** — ${n} send-keys failure${n === 1 ? "" : "s"} within the last hour`;
   const bullets: string[] = [];
@@ -1578,9 +1574,7 @@ export function renderSendKeysFailureWarning(
         : "";
     bullets.push(`🟡 last: ${opts.mostRecentTarget}${ageSuffix}`);
   }
-  bullets.push(
-    "🛠️ fix: check ADR-138 escalation log at `~/.atmux/state/send-keys-failures.log`",
-  );
+  bullets.push("🛠️ fix: check ADR-138 escalation log at `~/.atmux/state/send-keys-failures.log`");
   const out: DiscordSendOpts = {
     template: "send-keys-failure",
     team: opts.team,
@@ -1919,7 +1913,9 @@ export function renderMetaWatchdog(opts: MetaWatchdogOpts): DiscordSendOpts {
   const whenMs = opts.whenMs ?? now();
   const defaultAtMs = whenMs + 30 * 60 * 1000;
   const dormantStr =
-    opts.dormantSec === null ? "no attempts on record" : `no attempts in ${formatDuration(opts.dormantSec * 1000)}`;
+    opts.dormantSec === null
+      ? "no attempts on record"
+      : `no attempts in ${formatDuration(opts.dormantSec * 1000)}`;
   const oldestAge = formatDuration(opts.oldestComplaintAgeSec * 1000);
   const bullets: string[] = [
     `🚨 superdoctor dormant — ${opts.openComplaints} open complaints, ${dormantStr}`,
@@ -2220,9 +2216,7 @@ export interface MemberRefusalRotateOpts {
  *  the verdict line is the single load-bearing field; bullets list
  *  the triggering phrases; footer carries the rotation/cap counters
  *  so the operator can see "is this team saturating" at a glance. */
-export function renderMemberRefusalRotate(
-  opts: MemberRefusalRotateOpts,
-): DiscordSendOpts {
+export function renderMemberRefusalRotate(opts: MemberRefusalRotateOpts): DiscordSendOpts {
   const isHard = opts.escalation !== "rotate";
   const category: CategoryEmoji = isHard ? "🚨" : "🔄";
 

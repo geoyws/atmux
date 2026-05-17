@@ -21,11 +21,11 @@ import { createInterface } from "node:readline/promises";
 import { createTmux } from "../abstractions/tmux.ts";
 import {
   getAtmuxDir,
-  resolveTeamSocket,
   getSessionName,
   hasTeam,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
   type SessionNameOpts,
   teamJsonPath,
 } from "../core/common.ts";

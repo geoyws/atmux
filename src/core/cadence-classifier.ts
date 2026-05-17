@@ -42,12 +42,7 @@ import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.t
  *  classifier never emits it (status.ts's gather loop assigns it
  *  before invoking the classifier when the member is in the team's
  *  `cadence.exemptMembers` list). */
-export type CadenceVerdict =
-  | "shipping"
-  | "idle"
-  | "dormant"
-  | "ship-zero-window"
-  | "exempt";
+export type CadenceVerdict = "shipping" | "idle" | "dormant" | "ship-zero-window" | "exempt";
 
 /** Per-member cadence-classifier output. Returned by
  *  {@link classifyMemberCadence} (async wrapper) and by
@@ -154,8 +149,7 @@ export function classifyCadence(
       lastCommitSha = sha.slice(0, 7);
     }
   }
-  const ageOfLastCommitSec =
-    lastCommitAt === null ? null : Math.max(0, nowSec - lastCommitAt);
+  const ageOfLastCommitSec = lastCommitAt === null ? null : Math.max(0, nowSec - lastCommitAt);
 
   let verdict: CadenceVerdict;
   if (
@@ -169,10 +163,7 @@ export function classifyCadence(
     ageOfLastCommitSec !== null &&
     ageOfLastCommitSec >= thresholds.shipZeroWindowSec
   ) {
-    verdict =
-      ageOfLastCommitSec >= thresholds.dormantMaxAgeSec
-        ? "dormant"
-        : "ship-zero-window";
+    verdict = ageOfLastCommitSec >= thresholds.dormantMaxAgeSec ? "dormant" : "ship-zero-window";
   } else if (ageOfLastCommitSec === null || ageOfLastCommitSec < thresholds.idleMaxAgeSec) {
     verdict = "idle";
   } else {
@@ -218,10 +209,7 @@ export async function classifyMemberCadence(
 ): Promise<CadenceObservation> {
   const gitLog = deps.gitLog ?? defaultGitLog;
   const nowSec = (deps.nowSec ?? (() => Math.floor(Date.now() / 1000)))();
-  const sinceSec = Math.max(
-    config.windowSec,
-    config.thresholds.dormantMaxAgeSec,
-  );
+  const sinceSec = Math.max(config.windowSec, config.thresholds.dormantMaxAgeSec);
   const lines = await gitLog(worktreePath, sinceSec, member);
   return classifyCadence(lines, nowSec, config.windowSec, config.thresholds);
 }

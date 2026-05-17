@@ -82,9 +82,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type CageHandle,
+  type CreateFallbackCageOpts,
   cageArchivePath,
   composeTier2Brief,
-  type CreateFallbackCageOpts,
   type FallbackTier,
 } from "../../src/abstractions/fallback-cage.ts";
 import {
@@ -468,19 +468,13 @@ describe("e2e ADR-050 fallback-cursor-cage Step 7 — idempotent teardown", () =
 
     // First teardown — destroyCage invoked once; cages-file removed
     // (single-cage map empties on the delete).
-    await teardownFallbackCage(
-      { team, atmuxDir: fix.atmuxDir, member: "fe-1" },
-      rig.teardownDeps,
-    );
+    await teardownFallbackCage({ team, atmuxDir: fix.atmuxDir, member: "fe-1" }, rig.teardownDeps);
     expect(rig.destroyCalls).toHaveLength(1);
     await expect(stat(fallbackCagesPathV1(fix.atmuxDir))).rejects.toThrow();
 
     // Second teardown — handle missing → log + no-op. No additional
     // destroyCage call. No throw.
-    await teardownFallbackCage(
-      { team, atmuxDir: fix.atmuxDir, member: "fe-1" },
-      rig.teardownDeps,
-    );
+    await teardownFallbackCage({ team, atmuxDir: fix.atmuxDir, member: "fe-1" }, rig.teardownDeps);
     expect(rig.destroyCalls).toHaveLength(1); // still 1
   });
 });

@@ -26,26 +26,19 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { type DiscordSendOpts, renderMemberRefusalRotate } from "../abstractions/discord.ts";
 import { appendText, ensureDir } from "../abstractions/fs.ts";
-import {
-  type DiscordSendOpts,
-  renderMemberRefusalRotate,
-} from "../abstractions/discord.ts";
 import { formatMyt } from "../abstractions/time.ts";
-import { fileDedupedComplaint } from "./complaints.ts";
-import { listRefusalEventsForMember } from "./refusal-scan.ts";
-import {
-  type RefusalEvent,
-  type ShouldRotateDecision,
-  shouldRotate,
-} from "./refusal-threshold.ts";
-import { stateDir } from "./common.ts";
 import {
   type ResolvedRefusalConfig,
   resolveRefusalConfig,
   type Team,
   type TeamMember,
 } from "../schema/team.ts";
+import { stateDir } from "./common.ts";
+import { fileDedupedComplaint } from "./complaints.ts";
+import { listRefusalEventsForMember } from "./refusal-scan.ts";
+import { type RefusalEvent, type ShouldRotateDecision, shouldRotate } from "./refusal-threshold.ts";
 
 /** Per-member decision the trigger emits. Surfaced in
  *  `RefusalTriggerResult.perMember` for logging + test assertions. */
@@ -277,12 +270,7 @@ export async function runRefusalTriggerForTeam(
     if (!filter(m)) continue;
 
     if (exemptSet.has(m.name)) {
-      const rotationsToday = await countTodayRotations(
-        rotationsLogPath,
-        m.name,
-        nowSec,
-        readFile,
-      );
+      const rotationsToday = await countTodayRotations(rotationsLogPath, m.name, nowSec, readFile);
       result.perMember.push({
         member: m.name,
         outcome: "exempt",
@@ -332,12 +320,7 @@ export async function runRefusalTriggerForTeam(
       continue;
     }
 
-    const rotationsBefore = await countTodayRotations(
-      rotationsLogPath,
-      m.name,
-      nowSec,
-      readFile,
-    );
+    const rotationsBefore = await countTodayRotations(rotationsLogPath, m.name, nowSec, readFile);
 
     if (rotationsBefore >= config.maxRotationsPerDay) {
       // Cap hit — HARD escalation path. No rotate; complaint + Discord

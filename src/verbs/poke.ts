@@ -941,8 +941,7 @@ export async function poke(argv: ReadonlyArray<string>, opts: PokeOpts = {}): Pr
       ...(opts.budgetProbe !== undefined ? { budgetProbe: opts.budgetProbe } : {}),
       modalCyclingConfig,
       commitCountInWindow: opts.commitCountInWindow ?? defaultCommitCount,
-      dispatchModalCyclingClarifier:
-        opts.dispatchModalCyclingClarifier ?? defaultClarifier,
+      dispatchModalCyclingClarifier: opts.dispatchModalCyclingClarifier ?? defaultClarifier,
       fileModalCyclingFlag: opts.fileModalCyclingFlag ?? defaultFlagFiler,
     });
   } finally {

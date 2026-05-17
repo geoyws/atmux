@@ -10,8 +10,8 @@ import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
-  cronRemove,
   type CronRemoveOpts,
+  cronRemove,
   parseCronRemoveArgs,
 } from "../../../src/verbs/cron-remove.ts";
 
@@ -90,10 +90,7 @@ describe("cronRemove — happy path", () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-cron-remove-"));
     const atmuxDir = join(scratch, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
   });
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });
@@ -173,10 +170,7 @@ describe("cronRemove — idempotent / silent no-op paths", () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-cron-remove-noop-"));
     const atmuxDir = join(scratch, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
   });
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });
@@ -253,10 +247,7 @@ describe("cronRemove — non-fatal skip paths", () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-cron-remove-skip-"));
     const atmuxDir = join(scratch, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
   });
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });

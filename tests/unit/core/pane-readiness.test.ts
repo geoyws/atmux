@@ -142,11 +142,7 @@ function buildProbeDeps(captures: string[], clockTickMs = 250) {
 describe("awaitClaudePaneReady — terminates on first conclusive state", () => {
   test("active pane on first capture → ready, no sleeps", async () => {
     const { state, deps } = buildProbeDeps([ACTIVE_PANE]);
-    const result = await awaitClaudePaneReady(
-      "atmux:0",
-      { requireBriefConsumed: true },
-      deps,
-    );
+    const result = await awaitClaudePaneReady("atmux:0", { requireBriefConsumed: true }, deps);
     expect(result.state).toBe("ready");
     expect(result.attempts).toBe(1);
     expect(state.sleeps).toHaveLength(0);
@@ -154,11 +150,7 @@ describe("awaitClaudePaneReady — terminates on first conclusive state", () => 
 
   test("welcome screen on first capture, strict → starving immediately", async () => {
     const { state, deps } = buildProbeDeps([WELCOME_SCREEN]);
-    const result = await awaitClaudePaneReady(
-      "atmux:0",
-      { requireBriefConsumed: true },
-      deps,
-    );
+    const result = await awaitClaudePaneReady("atmux:0", { requireBriefConsumed: true }, deps);
     expect(result.state).toBe("starving");
     expect(result.attempts).toBe(1);
     expect(state.sleeps).toHaveLength(0);
@@ -166,11 +158,7 @@ describe("awaitClaudePaneReady — terminates on first conclusive state", () => 
 
   test("welcome screen on first capture, lax → ready (TUI alive)", async () => {
     const { deps } = buildProbeDeps([WELCOME_SCREEN]);
-    const result = await awaitClaudePaneReady(
-      "atmux:0",
-      { requireBriefConsumed: false },
-      deps,
-    );
+    const result = await awaitClaudePaneReady("atmux:0", { requireBriefConsumed: false }, deps);
     expect(result.state).toBe("ready");
     expect(result.attempts).toBe(1);
   });

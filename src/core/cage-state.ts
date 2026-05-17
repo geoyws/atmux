@@ -31,12 +31,12 @@
 
 import type { SpawnResult } from "../abstractions/spawn.ts";
 import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { now } from "../abstractions/time.ts";
+import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import type { Team, TeamMember } from "../schema/team.ts";
 import { defaultEmojiForRole, resolveTeamSocket } from "./common.ts";
 import { readHeartbeat } from "./heartbeat.ts";
 import { classifyText } from "./pane-state.ts";
-import type { Team, TeamMember } from "../schema/team.ts";
 
 // ---------- Public type ----------
 
@@ -145,8 +145,7 @@ export async function probeCageState(
   const sessionName = `atmux-${team.name}`;
   const tmux = opts.tmux ?? createTmux({ socketPath });
   const hasSession =
-    opts.hasSession ??
-    (async (name: string, _sock: string) => tmux.session.hasSession(name));
+    opts.hasSession ?? (async (name: string, _sock: string) => tmux.session.hasSession(name));
   const childIsClaude = opts.paneChildIsClaude ?? defaultPaneChildIsClaude;
   const nowSec = opts.nowSec ?? (() => Math.floor(now() / 1000));
   const readHb = opts.readHeartbeat ?? readHeartbeat;

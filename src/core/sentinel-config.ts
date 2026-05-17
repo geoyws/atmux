@@ -26,13 +26,13 @@
 // leaving start.ts untouched per docs-discipline (ADR wins when doc
 // and ADR disagree).
 
+import type { Cockpit } from "../schema/cockpit.ts";
 import type { SentinelImpl } from "../schema/team.ts";
 import {
   DEFAULT_SENTINEL_CADENCE_SEC,
   DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
   type Team,
 } from "../schema/team.ts";
-import type { Cockpit } from "../schema/cockpit.ts";
 
 /** Effective per-team sentinel config — resolved impl + fully-merged
  *  overrides (no `undefined` for fields with a per-impl default).
@@ -61,13 +61,9 @@ export interface ResolvedSentinelConfig {
  *   only have the team config (e.g. unit tests that exercise the
  *   `team > hardcoded` path without a cockpit roster).
  */
-export function resolveSentinel(
-  team: Team,
-  cockpit?: Cockpit | undefined,
-): ResolvedSentinelConfig {
+export function resolveSentinel(team: Team, cockpit?: Cockpit | undefined): ResolvedSentinelConfig {
   // Precedence: team > cockpit > hardcoded "claude".
-  const impl: SentinelImpl =
-    team.sentinel ?? cockpit?.defaultSentinel ?? "claude";
+  const impl: SentinelImpl = team.sentinel ?? cockpit?.defaultSentinel ?? "claude";
 
   // Per-impl defaults are uniform at v1 (both 270s, both 0.7) but the
   // override merge happens by-field anyway so adding a per-impl
@@ -76,8 +72,7 @@ export function resolveSentinel(
   const overrides = team.sentinelOverrides ?? {};
   const cadenceSec = overrides.cadenceSec ?? DEFAULT_SENTINEL_CADENCE_SEC;
   const escalationConfidenceThreshold =
-    overrides.escalationConfidenceThreshold ??
-    DEFAULT_SENTINEL_ESCALATION_CONFIDENCE;
+    overrides.escalationConfidenceThreshold ?? DEFAULT_SENTINEL_ESCALATION_CONFIDENCE;
 
   return { impl, cadenceSec, escalationConfidenceThreshold };
 }

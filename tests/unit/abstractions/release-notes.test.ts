@@ -133,10 +133,7 @@ describe("appendSection — single-team mode", () => {
     await appendSection(T, "Merges (branch→trunk)", "- alice → trunk @ deadbeef", {
       repoRoot: scratch,
     });
-    const body = await readFile(
-      resolveDayFilePath(T, { repoRoot: scratch }),
-      "utf8",
-    );
+    const body = await readFile(resolveDayFilePath(T, { repoRoot: scratch }), "utf8");
     const mergesIdx = body.indexOf("## Merges (branch→trunk)");
     const entryIdx = body.indexOf("alice → trunk");
     const adrsIdx = body.indexOf("## ADRs landed");
@@ -155,16 +152,11 @@ describe("appendSection — single-team mode", () => {
     const perSection = 5;
     for (const s of sections) {
       for (let i = 0; i < perSection; i++) {
-        tasks.push(
-          appendSection(T, s, `- ${s}#${i}`, { repoRoot: scratch }),
-        );
+        tasks.push(appendSection(T, s, `- ${s}#${i}`, { repoRoot: scratch }));
       }
     }
     await Promise.all(tasks);
-    const body = await readFile(
-      resolveDayFilePath(T, { repoRoot: scratch }),
-      "utf8",
-    );
+    const body = await readFile(resolveDayFilePath(T, { repoRoot: scratch }), "utf8");
     for (const s of sections) {
       for (let i = 0; i < perSection; i++) {
         const marker = `- ${s}#${i}`;
@@ -183,10 +175,7 @@ describe("appendSection — single-team mode", () => {
     await appendSection(T, "ADRs landed", "- ADR-145 line", { repoRoot: scratch });
     await appendSection(T, "ADRs landed", "- ADR-146 line", { repoRoot: scratch });
     await appendSection(T, "ADRs landed", "- ADR-147 line", { repoRoot: scratch });
-    const body = await readFile(
-      resolveDayFilePath(T, { repoRoot: scratch }),
-      "utf8",
-    );
+    const body = await readFile(resolveDayFilePath(T, { repoRoot: scratch }), "utf8");
     const idxA = body.indexOf("ADR-145 line");
     const idxB = body.indexOf("ADR-146 line");
     const idxC = body.indexOf("ADR-147 line");
@@ -218,10 +207,7 @@ describe("appendSection — multi-team mode (ADR-147 §D6)", () => {
       repoRoot: scratch,
       teamName: "sopx team",
     });
-    const body = await readFile(
-      resolveDayFilePath(T, { repoRoot: scratch }),
-      "utf8",
-    );
+    const body = await readFile(resolveDayFilePath(T, { repoRoot: scratch }), "utf8");
     expect(body).toContain("## Complaints adjudicated");
     expect(body).toContain("### atmux team");
     expect(body).toContain("### sopx team");
@@ -244,10 +230,7 @@ describe("appendSection — multi-team mode (ADR-147 §D6)", () => {
       repoRoot: scratch,
       teamName: "atmux",
     });
-    const body = await readFile(
-      resolveDayFilePath(T, { repoRoot: scratch }),
-      "utf8",
-    );
+    const body = await readFile(resolveDayFilePath(T, { repoRoot: scratch }), "utf8");
     const subHeaderCount = (body.match(/^### atmux$/gm) ?? []).length;
     expect(subHeaderCount).toBe(1);
     expect(body).toContain("- e1");
@@ -256,10 +239,7 @@ describe("appendSection — multi-team mode (ADR-147 §D6)", () => {
 
   test("single-team default (no teamName) does NOT emit ### sub-section prefix", async () => {
     await appendSection(T, "Shipped (kanban→done)", "- e1", { repoRoot: scratch });
-    const body = await readFile(
-      resolveDayFilePath(T, { repoRoot: scratch }),
-      "utf8",
-    );
+    const body = await readFile(resolveDayFilePath(T, { repoRoot: scratch }), "utf8");
     expect(body).not.toContain("###");
     expect(body).toContain("- e1");
   });
@@ -272,10 +252,7 @@ describe("appendSection — multi-team mode (ADR-147 §D6)", () => {
       repoRoot: scratch,
       teamName: "atmux",
     });
-    const body = await readFile(
-      resolveDayFilePath(T, { repoRoot: scratch }),
-      "utf8",
-    );
+    const body = await readFile(resolveDayFilePath(T, { repoRoot: scratch }), "utf8");
     expect(body).toContain("- legacy line");
     expect(body).toContain("### atmux");
     expect(body).toContain("- atmux note");

@@ -208,7 +208,13 @@ describe("memberRename — happy path", () => {
     // ADR-161 TR2: default-role team-lead renders `_-prefix`.
     await startLiveSession({ windowName: "🧭_lead" });
 
-    const result = await runRename(["lead", "--label", "Lead Coordinator", "--socket-path", env.socketPath]);
+    const result = await runRename([
+      "lead",
+      "--label",
+      "Lead Coordinator",
+      "--socket-path",
+      env.socketPath,
+    ]);
 
     expect(result).toEqual({
       exitCode: 0,
@@ -236,7 +242,13 @@ describe("memberRename — idempotent", () => {
     await writeTeamJson([{ name: "lead", emoji: "🧭", label: "Existing" }]);
     // No tmux session — would have errored if the verb tried to rename-window.
 
-    const result = await runRename(["lead", "--label", "Existing", "--socket-path", env.socketPath]);
+    const result = await runRename([
+      "lead",
+      "--label",
+      "Existing",
+      "--socket-path",
+      env.socketPath,
+    ]);
     expect(result).toEqual({
       exitCode: 0,
       wrote: false,
@@ -406,7 +418,9 @@ describe("dispatchMemberSubverb", () => {
   });
 
   test("unknown subverb throws UsageError", async () => {
-    await expect(dispatchMemberSubverb(["frobnicate"])).rejects.toThrow(/unknown subverb 'frobnicate'/);
+    await expect(dispatchMemberSubverb(["frobnicate"])).rejects.toThrow(
+      /unknown subverb 'frobnicate'/,
+    );
   });
 
   test("rename routes to memberRename", async () => {

@@ -56,14 +56,7 @@
 // the pane — it's a `rename-window` call against an existing
 // target.
 
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  setDefaultTimeout,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -131,10 +124,7 @@ async function buildFixture(
 
   const teamJson = { name: teamName, members };
   await writeFile(join(atmuxDir, "team.json"), JSON.stringify(teamJson, null, 2));
-  await writeFile(
-    join(atmuxDir, "kanban.json"),
-    '{"tasks":[],"epics":[],"stories":[]}',
-  );
+  await writeFile(join(atmuxDir, "kanban.json"), '{"tasks":[],"epics":[],"stories":[]}');
 
   // Spin a tmux session with one window per member, using the
   // ADR-135 `<emoji>-<member>` form (hyphen-separator) — the rename
@@ -217,10 +207,7 @@ describe("e2e: ADR-136 member rename — 6-path walk", () => {
     ]);
 
     // Pre-state — inbox + team.json baseline.
-    const inboxBefore = await readFile(
-      join(fx.atmuxDir, "inboxes", "worker-1.json"),
-      "utf8",
-    );
+    const inboxBefore = await readFile(join(fx.atmuxDir, "inboxes", "worker-1.json"), "utf8");
 
     // Walk the rename.
     const result = await runRename([
@@ -247,10 +234,7 @@ describe("e2e: ADR-136 member rename — 6-path walk", () => {
 
     // ID-using state UNCHANGED: inbox file untouched (still
     // `inboxes/worker-1.json`; bytes match pre-state).
-    const inboxAfter = await readFile(
-      join(fx.atmuxDir, "inboxes", "worker-1.json"),
-      "utf8",
-    );
+    const inboxAfter = await readFile(join(fx.atmuxDir, "inboxes", "worker-1.json"), "utf8");
     expect(inboxAfter).toBe(inboxBefore);
     // Worker-1 inbox file still exists by ID (NOT renamed to
     // `Backend Worker.json`).
@@ -290,9 +274,7 @@ describe("e2e: ADR-136 member rename — 6-path walk", () => {
     expect(result.wrote).toBe(true);
 
     // Kanban owner column UNCHANGED — still the ID.
-    const k = Kanban.parse(
-      JSON.parse(await readFile(join(fx.atmuxDir, "kanban.json"), "utf8")),
-    );
+    const k = Kanban.parse(JSON.parse(await readFile(join(fx.atmuxDir, "kanban.json"), "utf8")));
     const inFlight = k.tasks.find((t) => t.id === "t-abc123");
     expect(inFlight?.owner).toBe("worker-1");
     // Defense-in-depth: owner is NOT the label.
@@ -332,9 +314,7 @@ describe("e2e: ADR-136 member rename — 6-path walk", () => {
   });
 
   test("Path D — idempotent: second rename to same label is no-op (no extraneous tmux rename)", async () => {
-    fx = await buildFixture([
-      { name: "worker-1", role: "member", emoji: "🐝", tui: "shell" },
-    ]);
+    fx = await buildFixture([{ name: "worker-1", role: "member", emoji: "🐝", tui: "shell" }]);
 
     // First rename — wrote=true, tmux rename fires.
     const first = await runRename([
@@ -369,21 +349,15 @@ describe("e2e: ADR-136 member rename — 6-path walk", () => {
   });
 
   test("Path E — concurrency: parallel renames serialize via flock; final state is one of the requested labels", async () => {
-    fx = await buildFixture([
-      { name: "worker-1", role: "member", emoji: "🐝", tui: "shell" },
-    ]);
+    fx = await buildFixture([{ name: "worker-1", role: "member", emoji: "🐝", tui: "shell" }]);
 
     // Two parallel renames with DIFFERENT labels. The
     // `updateJson` flock on team.json serializes them at the
     // kernel level (matches ADR-091 BEGIN IMMEDIATE pattern); one
     // wins, the other observes the post-write state.
     const [aRes, bRes] = await Promise.all([
-      runRename(["worker-1", "--label", "Label-A", "--socket-path", fx.socketPath]).catch(
-        (e) => e,
-      ),
-      runRename(["worker-1", "--label", "Label-B", "--socket-path", fx.socketPath]).catch(
-        (e) => e,
-      ),
+      runRename(["worker-1", "--label", "Label-A", "--socket-path", fx.socketPath]).catch((e) => e),
+      runRename(["worker-1", "--label", "Label-B", "--socket-path", fx.socketPath]).catch((e) => e),
     ]);
 
     // Both completed without throwing.

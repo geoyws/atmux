@@ -26,10 +26,10 @@ import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { findCommitForTask, type GitSpawn } from "../core/auto-done.ts";
 import {
   getAtmuxDir,
-  resolveTeamSocket,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
+  resolveTeamSocket,
 } from "../core/common.ts";
 import { resolveGoalForMember } from "../core/goal-resolver.ts";
 import { listTasks, moveTask } from "../core/kanban.ts";
@@ -43,8 +43,8 @@ import {
 } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import { defaultBriefsDir, getBriefPath } from "./rotate.ts";
 import { parseLeadCtxPct } from "./poke.ts";
+import { defaultBriefsDir, getBriefPath } from "./rotate.ts";
 
 // ---------- Public types (test-injectable deps) ----------
 
@@ -320,10 +320,7 @@ export async function runLaneTick(
     //      goal-active member returns to skip-not-ready, NOT to
     //      skip-goal-active, so the operator sees the pane health
     //      problem.
-    if (
-      !isRotateNudge &&
-      member.runtime !== "cursor"
-    ) {
+    if (!isRotateNudge && member.runtime !== "cursor") {
       let goalText: string | null = null;
       try {
         goalText = await resolveGoal(member);
@@ -343,8 +340,7 @@ export async function runLaneTick(
         // resolved-via source so goal-phrasing bugs are easy to
         // trace. team.json wins when member.goal is set + non-empty;
         // brief otherwise.
-        const explicit =
-          typeof member.goal === "string" && member.goal.length > 0;
+        const explicit = typeof member.goal === "string" && member.goal.length > 0;
         const resolvedVia = explicit ? "team.json" : "brief";
         log(
           `[lane-tick] skip claim-inject for ${member.name}: ` +

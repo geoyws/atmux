@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import {
   defaultGitSpawn,
   deleteWorktreeBranch,
@@ -30,7 +31,6 @@ import {
   resolveWorktreePath,
   sanitizeBranchSegment,
 } from "../../../src/abstractions/worktree.ts";
-import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import { ConfigError } from "../../../src/errors.ts";
 
 // ---------- Helpers ----------
@@ -236,8 +236,7 @@ describe("provisionWorktree", () => {
     // Worktree exists but checked out on the operator's root branch
     // (e.g. operator ran `git checkout geoyws` inside the worktree).
     // Treat as drift — won't auto-reconcile per ADR-082 §3.
-    const git: GitSpawn = async () =>
-      ok(porcelainBlock("/repo/.atmux/worktrees/alice", "geoyws"));
+    const git: GitSpawn = async () => ok(porcelainBlock("/repo/.atmux/worktrees/alice", "geoyws"));
     await expect(
       provisionWorktree("/repo", "geoyws", "geoyws-alice", "/repo/.atmux/worktrees/alice", {
         git,
@@ -251,8 +250,7 @@ describe("provisionWorktree", () => {
   });
 
   test("worktree present on a DIFFERENT branch → ConfigError surfaces the detected branch", async () => {
-    const git: GitSpawn = async () =>
-      ok(porcelainBlock("/repo/.atmux/worktrees/alice", "main"));
+    const git: GitSpawn = async () => ok(porcelainBlock("/repo/.atmux/worktrees/alice", "main"));
     await expect(
       provisionWorktree("/repo", "geoyws", "geoyws-alice", "/repo/.atmux/worktrees/alice", {
         git,
@@ -261,8 +259,7 @@ describe("provisionWorktree", () => {
   });
 
   test("worktree present on detached HEAD → ConfigError surfaces 'detached HEAD'", async () => {
-    const git: GitSpawn = async () =>
-      ok(porcelainBlock("/repo/.atmux/worktrees/alice", null));
+    const git: GitSpawn = async () => ok(porcelainBlock("/repo/.atmux/worktrees/alice", null));
     await expect(
       provisionWorktree("/repo", "geoyws", "geoyws-alice", "/repo/.atmux/worktrees/alice", {
         git,

@@ -110,10 +110,7 @@ async function defaultGitLog(projectRoot: string): Promise<string[]> {
 /** Default brief-template reader. Returns null when the template
  *  doesn't exist (allowed — composer falls back to a one-line note
  *  noting the missing template). */
-async function defaultReadTemplate(
-  templatesDir: string,
-  role: string,
-): Promise<string | null> {
+async function defaultReadTemplate(templatesDir: string, role: string): Promise<string | null> {
   const path = join(templatesDir, `${role}.md`);
   return await readTextOrNull(path);
 }
@@ -121,10 +118,7 @@ async function defaultReadTemplate(
 /** Default lead-outbox tail reader: returns the last `lines` lines
  *  of `<atmuxDir>/lead-outbox.md`, or empty string when the file
  *  doesn't exist. */
-async function defaultReadLeadOutboxTail(
-  atmuxDir: string,
-  lines: number,
-): Promise<string> {
+async function defaultReadLeadOutboxTail(atmuxDir: string, lines: number): Promise<string> {
   const path = join(atmuxDir, "lead-outbox.md");
   const text = await readTextOrNull(path);
   if (text === null || text.length === 0) return "";
@@ -154,7 +148,7 @@ function renderTier2Guardrails(member: string, agent: string): string {
       `The original member (\`${member}\`, model=claude-opus-4-7) is paused on a budget window.`,
     "Commit your work to the SAME branch the original member was on. " +
       "Use the SAME conventional-commit prefix. Reviewer will gate.",
-    'When you finish or hit a natural commit boundary, run `atmux reply \'[fallback-cursor] <one-line summary>\'` and exit cleanly. Do NOT continue past the natural boundary.',
+    "When you finish or hit a natural commit boundary, run `atmux reply '[fallback-cursor] <one-line summary>'` and exit cleanly. Do NOT continue past the natural boundary.",
     "If the original member resumes mid-work, your cage will be torn down; commit early + often.",
   ].join("\n");
 }
@@ -162,10 +156,7 @@ function renderTier2Guardrails(member: string, agent: string): string {
 /** Resolve the in-progress Task body for `member` from state.db.
  *  Returns null when the member has no in-progress task (e.g.
  *  paused right after `atmux done` and before next `claim`). */
-async function resolveInProgressTaskBody(
-  atmuxDir: string,
-  member: string,
-): Promise<string | null> {
+async function resolveInProgressTaskBody(atmuxDir: string, member: string): Promise<string | null> {
   const inbox = await loadInbox(atmuxDir, member);
   const ip = inbox.inProgress[0];
   if (ip === undefined) return null;
@@ -200,12 +191,10 @@ export async function composeFallbackBrief(
 ): Promise<ComposeFallbackBriefResult> {
   const gitLog = opts.gitLog ?? defaultGitLog;
   const readTemplate = opts.readTemplate ?? defaultReadTemplate;
-  const readLeadOutboxTail =
-    opts.readLeadOutboxTail ?? defaultReadLeadOutboxTail;
+  const readLeadOutboxTail = opts.readLeadOutboxTail ?? defaultReadLeadOutboxTail;
   const writeBrief = opts.writeBrief ?? defaultWriteBrief;
 
-  const taskBody =
-    opts.taskBody ?? (await resolveInProgressTaskBody(opts.atmuxDir, opts.member));
+  const taskBody = opts.taskBody ?? (await resolveInProgressTaskBody(opts.atmuxDir, opts.member));
   const template = await readTemplate(opts.templatesDir, opts.role);
   const gitLines = await gitLog(opts.projectRoot);
   const leadOutbox = await readLeadOutboxTail(opts.atmuxDir, 50);

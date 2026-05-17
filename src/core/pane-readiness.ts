@@ -201,10 +201,7 @@ export async function awaitClaudePaneReady(
  * Returns `null` for the happy path (`state === "ready"`); the caller
  * checks for null and skips the log line.
  */
-export function formatReadinessWarning(
-  member: string,
-  result: PaneReadinessResult,
-): string | null {
+export function formatReadinessWarning(member: string, result: PaneReadinessResult): string | null {
   if (result.state === "ready") return null;
   const tail = result.evidence.replace(/\n/g, " ⏎ ").trim();
   return (

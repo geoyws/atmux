@@ -73,8 +73,7 @@ export const ALLOWLIST: ReadonlyArray<string> = [
 /** Match-anywhere: `getDefaultSocket(<ident>[.x.y]*.name)`. Captures
  *  the structural shape only — receiver expression must be a dotted
  *  identifier chain ending in `.name`. */
-const BAD_CALL =
-  /getDefaultSocket\(\s*[a-zA-Z_$][a-zA-Z_$0-9.]*\.name\s*\)/;
+const BAD_CALL = /getDefaultSocket\(\s*[a-zA-Z_$][a-zA-Z_$0-9.]*\.name\s*\)/;
 
 /** Recursive walk of `*.ts` files under `dir`, returning paths
  *  relative to `dir`. Skips `*.test.ts` (tests cite the pattern in
@@ -100,10 +99,7 @@ export async function listTypeScriptFiles(dir: string): Promise<string[]> {
 
 /** Scan a single file's content for forbidden calls. Pure — drives
  *  the unit-test guard without filesystem access. */
-export function lintFileContent(
-  relativePath: string,
-  content: string,
-): SocketResolverFinding[] {
+export function lintFileContent(relativePath: string, content: string): SocketResolverFinding[] {
   if (ALLOWLIST.includes(relativePath)) return [];
   const findings: SocketResolverFinding[] = [];
   const lines = content.split("\n");

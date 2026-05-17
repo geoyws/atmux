@@ -176,9 +176,7 @@ describe("addStory", () => {
   });
 
   test("unknown epic → ConfigError", async () => {
-    await expect(
-      addStory(atmuxDir, { title: "t", epic: "e-bogus" }),
-    ).rejects.toThrow(ConfigError);
+    await expect(addStory(atmuxDir, { title: "t", epic: "e-bogus" })).rejects.toThrow(ConfigError);
   });
 
   test("empty title → UsageError", async () => {
@@ -435,18 +433,14 @@ describe("story verb — dispatch", () => {
   test("story advance --to specific state", async () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
     const sid = await addStory(atmuxDir, { title: "S", epic: eid });
-    await captureStdout(() =>
-      story(["advance", sid, "--to", "ready", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => story(["advance", sid, "--to", "ready", "--team-dir", teamDir]));
     const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
     expect(s?.status).toBe("ready");
   });
 
   test("story alias ls works", async () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
-    const { out } = await captureStdout(() =>
-      story(["ls", "--epic", eid, "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => story(["ls", "--epic", eid, "--team-dir", teamDir]));
     expect(out).toContain("(no stories for");
   });
 });

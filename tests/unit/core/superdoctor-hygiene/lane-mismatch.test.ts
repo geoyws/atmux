@@ -2,15 +2,12 @@
 // (ADR-131 §D2 detector #2 / t-e75ba5aa).
 
 import { describe, expect, test } from "bun:test";
-import {
-  detect,
-  fix,
-} from "../../../../src/core/superdoctor-hygiene/lane-mismatch.ts";
 import type {
   FixDeps,
   HygieneIssue,
   TeamState,
 } from "../../../../src/core/superdoctor-hygiene/_shared.ts";
+import { detect, fix } from "../../../../src/core/superdoctor-hygiene/lane-mismatch.ts";
 import type { KanbanTask } from "../../../../src/schema/kanban.ts";
 
 function task(o: Partial<KanbanTask>): KanbanTask {
@@ -56,17 +53,13 @@ describe("lane-mismatch detect", () => {
 
   test("MISS: lanes match → no issue", () => {
     const t = team([{ name: "be-1", lane: "be" }]);
-    const issues = detect(t, [
-      task({ id: "t-001", owner: "be-1", lane: "be", claimedAt: null }),
-    ]);
+    const issues = detect(t, [task({ id: "t-001", owner: "be-1", lane: "be", claimedAt: null })]);
     expect(issues).toHaveLength(0);
   });
 
   test("MISS: member has NO declared lane → out of scope (no-lane members match any lane)", () => {
     const t = team([{ name: "fe-1", role: "member" }]); // no lane field
-    const issues = detect(t, [
-      task({ id: "t-001", owner: "fe-1", lane: "be", claimedAt: null }),
-    ]);
+    const issues = detect(t, [task({ id: "t-001", owner: "fe-1", lane: "be", claimedAt: null })]);
     expect(issues).toHaveLength(0);
   });
 
@@ -75,9 +68,7 @@ describe("lane-mismatch detect", () => {
     // unset, not a wrong value. lane-null-orphan detector handles
     // this case.
     const t = team([{ name: "be-1", lane: "be" }]);
-    const issues = detect(t, [
-      task({ id: "t-001", owner: "be-1", lane: null, claimedAt: null }),
-    ]);
+    const issues = detect(t, [task({ id: "t-001", owner: "be-1", lane: null, claimedAt: null })]);
     // Strict mismatch interpretation: task.lane=null differs from
     // member.lane='be', so detector DOES fire here. That's a
     // judgment call — the alternative is silent skip. We fire
@@ -97,9 +88,7 @@ describe("lane-mismatch detect", () => {
 
   test("MISS: owner null → not a mismatch shape (lane-null-orphan / unclaimed territory)", () => {
     const t = team([{ name: "be-1", lane: "be" }]);
-    const issues = detect(t, [
-      task({ id: "t-001", owner: null, lane: "test", claimedAt: null }),
-    ]);
+    const issues = detect(t, [task({ id: "t-001", owner: null, lane: "test", claimedAt: null })]);
     expect(issues).toHaveLength(0);
   });
 });

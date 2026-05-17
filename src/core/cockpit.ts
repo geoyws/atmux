@@ -15,8 +15,8 @@ import { readJson } from "../abstractions/json.ts";
 import { ConfigError, SchemaError } from "../errors.ts";
 import {
   Cockpit,
-  type CockpitSentinel,
   type CockpitMedic,
+  type CockpitSentinel,
   type CockpitSessionT,
   type Cockpit as CockpitShape,
   type CockpitSuperdoctor,
@@ -220,13 +220,7 @@ export function migrateLegacyShape(
   }
   // Strip the legacy keys so the new-shape parse doesn't see them — the
   // enrichment pass adds them back from sessions[] post-validation.
-  const {
-    teams: _t,
-    superdoctor: _s,
-    medic: _m,
-    sentinel: _mt,
-    ...rest
-  } = obj;
+  const { teams: _t, superdoctor: _s, medic: _m, sentinel: _mt, ...rest } = obj;
   void _t;
   void _s;
   void _m;
@@ -579,10 +573,7 @@ export interface CockpitTeamLookup {
  *  no match. Pure (no IO); reuses {@link walkSessions} for the DFS walk
  *  so traversal-order matches every other cockpit consumer (`enabledTeams`
  *  / synthesis paths). */
-export function findTeamByName(
-  cockpit: CockpitShape,
-  name: string,
-): CockpitTeamLookup | null {
+export function findTeamByName(cockpit: CockpitShape, name: string): CockpitTeamLookup | null {
   let found: CockpitTeamLookup | null = null;
   walkSessions(cockpit.sessions ?? [], 0, (node, level, parentRoot) => {
     if (found !== null) return;
@@ -857,9 +848,7 @@ export async function addEpicViewerToParentCage(opts: {
   tmuxFactory: (config: { socketPath: string }) => {
     session: { listSessions(): Promise<ReadonlyArray<{ name: string }>> };
     window: {
-      listWindows(
-        sessionName: string,
-      ): Promise<ReadonlyArray<{ name: string; index: number }>>;
+      listWindows(sessionName: string): Promise<ReadonlyArray<{ name: string; index: number }>>;
       newWindow(args: {
         sessionName: string;
         name: string;
@@ -897,8 +886,7 @@ export async function addEpicViewerToParentCage(opts: {
   }
   // Mirror cockpit's cageRetryLoop pattern: attach in a 1s-retry loop so
   // a transient epic-cage death doesn't permanently disconnect the viewer.
-  const attachCmd =
-    `while true; do tmux -S ${opts.epicSocket} attach -t ${opts.epicSession} 2>/dev/null; sleep 1; done`;
+  const attachCmd = `while true; do tmux -S ${opts.epicSocket} attach -t ${opts.epicSession} 2>/dev/null; sleep 1; done`;
   const created = await tmux.window.newWindow({
     sessionName: opts.parentName,
     name: windowName,
@@ -921,9 +909,7 @@ export async function removeEpicViewerFromParentCage(opts: {
   tmuxFactory: (config: { socketPath: string }) => {
     session: { listSessions(): Promise<ReadonlyArray<{ name: string }>> };
     window: {
-      listWindows(
-        sessionName: string,
-      ): Promise<ReadonlyArray<{ name: string; index: number }>>;
+      listWindows(sessionName: string): Promise<ReadonlyArray<{ name: string; index: number }>>;
       killWindow(target: string): Promise<void>;
     };
   };
@@ -960,7 +946,9 @@ export async function removeEpicViewerFromParentCage(opts: {
     return true;
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
-    warn(`epic-viewer: kill-window '${windowName}' failed (${cause}) — manual cleanup may be needed`);
+    warn(
+      `epic-viewer: kill-window '${windowName}' failed (${cause}) — manual cleanup may be needed`,
+    );
     return false;
   }
 }

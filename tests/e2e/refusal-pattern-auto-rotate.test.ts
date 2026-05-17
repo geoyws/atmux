@@ -39,8 +39,8 @@
 // Cleanup: each beforeEach mkdtemp + afterEach rm — fully self-
 // contained per CLAUDE.md "fixture cleanup verified" gate.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -97,7 +97,12 @@ function makeRecorder(): Recorder & {
   };
 }
 
-function team(name: string, members: string[], block: Partial<Team["refusalDetection"]> = {}, omitBlock = false): Team {
+function team(
+  name: string,
+  members: string[],
+  block: Partial<Team["refusalDetection"]> = {},
+  omitBlock = false,
+): Team {
   const base = {
     name,
     members: members.map((n) => ({ name: n })),
@@ -135,7 +140,7 @@ async function tickOnce(
 ): Promise<void> {
   await scanTeamForRefusals(testTeam, env.atmuxDir, {
     paneCapture: async (target) => {
-      const wn = target.includes(":") ? target.split(":")[1] ?? "" : target;
+      const wn = target.includes(":") ? (target.split(":")[1] ?? "") : target;
       for (const [member, cap] of Object.entries(captureMap)) {
         if (wn.includes(member)) return cap;
       }
@@ -177,9 +182,7 @@ describe("ADR-139 refusal auto-rotate — e2e walk", () => {
     expect(rec.spawnArgs[0]).toEqual(["rotate", "alice"]);
     // Discord template fire on the trip tick — Discord ALSO fires
     // for the every-tick log-pings; filter to rotate-template only.
-    const rotateFires = rec.discord.filter(
-      (o) => o.template === "member-refusal-rotate",
-    );
+    const rotateFires = rec.discord.filter((o) => o.template === "member-refusal-rotate");
     expect(rotateFires.length).toBe(1);
     expect(rotateFires[0]?.verdict).toContain("🟡");
     expect(rotateFires[0]?.verdict).toContain("alice");
@@ -201,9 +204,7 @@ describe("ADR-139 refusal auto-rotate — e2e walk", () => {
     }
     expect(rec.spawnArgs.length).toBe(1);
     expect(rec.spawnArgs[0]).toEqual(["rotate", "bob"]);
-    const rotateFires = rec.discord.filter(
-      (o) => o.template === "member-refusal-rotate",
-    );
+    const rotateFires = rec.discord.filter((o) => o.template === "member-refusal-rotate");
     expect(rotateFires[0]?.verdict).toContain("hard");
   });
 
@@ -213,9 +214,7 @@ describe("ADR-139 refusal auto-rotate — e2e walk", () => {
     await tickOnce(t, { carol: ROLE_CAPTURE }, rec, 30_000_000);
     expect(rec.spawnArgs.length).toBe(1);
     expect(rec.spawnArgs[0]).toEqual(["rotate", "carol"]);
-    const rotateFires = rec.discord.filter(
-      (o) => o.template === "member-refusal-rotate",
-    );
+    const rotateFires = rec.discord.filter((o) => o.template === "member-refusal-rotate");
     expect(rotateFires[0]?.verdict).toContain("role");
   });
 
@@ -238,19 +237,14 @@ describe("ADR-139 refusal auto-rotate — e2e walk", () => {
     expect(rec.spawnArgs.length).toBe(3);
     // 4th cycle — same day per UTC, but cap is now saturated.
     for (let i = 0; i < 3; i += 1) {
-      await tickOnce(
-        t,
-        { dave: SOFT_CAPTURES[i] ?? "" },
-        rec,
-        t0 + 4 * 3600 + i * 300,
-      );
+      await tickOnce(t, { dave: SOFT_CAPTURES[i] ?? "" }, rec, t0 + 4 * 3600 + i * 300);
     }
     // Still 3 spawn calls — the 4th trip did NOT spawn rotate.
     expect(rec.spawnArgs.length).toBe(3);
     // Complaints table gained at least one cap-hit row.
-    const complaintRows = env.db
-      .prepare("SELECT incident_summary FROM complaints")
-      .all() as Array<{ incident_summary: string }>;
+    const complaintRows = env.db.prepare("SELECT incident_summary FROM complaints").all() as Array<{
+      incident_summary: string;
+    }>;
     expect(complaintRows.length).toBeGreaterThan(0);
     expect(complaintRows.some((r) => r.incident_summary.includes("cap hit"))).toBe(true);
     // Discord saw a 🚨 fire on the cap-hit cycle.

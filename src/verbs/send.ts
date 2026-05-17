@@ -38,15 +38,15 @@ import {
   getSessionName,
   isMedicInboxKey,
   MEDIC_INBOX_KEY,
-  resolveExistingWindowName,
   type ResolveDirOpts,
   requireTeam,
+  resolveExistingWindowName,
   resolveTeamSocket,
   SUPERDOCTOR_INBOX_KEY,
 } from "../core/common.ts";
 import { appendInboxMessage } from "../core/inbox.ts";
-import { sendToMember, type SendOpts } from "../core/send.ts";
 import { verifierForTui } from "../core/safe-send.ts";
+import { type SendOpts, sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 

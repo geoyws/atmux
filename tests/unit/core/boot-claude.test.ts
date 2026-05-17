@@ -12,6 +12,7 @@
 //     send-keys verb-failure with retry, capture-pane error → degrade.
 
 import { describe, expect, test } from "bun:test";
+import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   bootClaudeMember,
   isTuiReady,
@@ -19,7 +20,6 @@ import {
   renderBootPrompt,
   tokensMoved,
 } from "../../../src/core/boot-claude.ts";
-import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 
 // ---------- Fake-tmux helper ----------
 
@@ -42,7 +42,12 @@ function fakeTmux(opts: {
   captureThrowOn?: number;
   /** If set, sendKeys throws on the Nth call (1-indexed). */
   sendThrowOn?: number;
-}): { tmux: TmuxNamespace; calls: CallRecord[]; getCaptureCallCount: () => number; getSendCallCount: () => number } {
+}): {
+  tmux: TmuxNamespace;
+  calls: CallRecord[];
+  getCaptureCallCount: () => number;
+  getSendCallCount: () => number;
+} {
   const calls: CallRecord[] = [];
   let captureCallCount = 0;
   let sendCallCount = 0;

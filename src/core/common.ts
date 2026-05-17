@@ -549,9 +549,7 @@ export const CONVENTION_059_LANE_PREFIXES = [
 export type Convention059LanePrefix = (typeof CONVENTION_059_LANE_PREFIXES)[number];
 
 /** `^(fe|be|ops|test|review|db|misc)\d+$` — zero-indexed, no separator. */
-const INDEXED_MEMBER_NAME_REGEX = new RegExp(
-  `^(${CONVENTION_059_LANE_PREFIXES.join("|")})\\d+$`,
-);
+const INDEXED_MEMBER_NAME_REGEX = new RegExp(`^(${CONVENTION_059_LANE_PREFIXES.join("|")})\\d+$`);
 
 /** CONVENTION-059 soft validator. Returns `null` on a name that matches
  *  the indexed-member shape (`fe0` / `be1` / `ops0` / ...), or a

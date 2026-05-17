@@ -74,7 +74,7 @@ export function findBareWhipTemplates(file: string, source: string): BareWhipHit
 // ---------- Live audit ----------
 
 describe("structural lint — no bare [whip] template literal in src/", () => {
-  test("scan src/**/*.ts → zero bare `template: \"whip\"` literals", async () => {
+  test('scan src/**/*.ts → zero bare `template: "whip"` literals', async () => {
     const files = await walkTsFiles(SRC_ROOT);
     const offenders: BareWhipHit[] = [];
     for (const file of files) {
@@ -111,7 +111,7 @@ describe("structural lint — no bare [whip] template literal in src/", () => {
 
 // ---------- Synthetic regression ----------
 
-describe("synthetic regression — audit MUST detect bare `template: \"whip\"`", () => {
+describe('synthetic regression — audit MUST detect bare `template: "whip"`', () => {
   test("double-quote bare-whip → 1 hit", () => {
     const hits = findBareWhipTemplates("synthetic.ts", 'const x = { template: "whip" };');
     expect(hits).toHaveLength(1);
@@ -127,25 +127,22 @@ describe("synthetic regression — audit MUST detect bare `template: \"whip\"`",
     expect(hits).toHaveLength(1);
   });
 
-  test("no-space `template:\"whip\"` → 1 hit", () => {
+  test('no-space `template:"whip"` → 1 hit', () => {
     const hits = findBareWhipTemplates("synthetic.ts", 'const x = { template:"whip" };');
     expect(hits).toHaveLength(1);
   });
 
-  test("namespaced `template: \"whip-progress\"` → 0 hits", () => {
-    const hits = findBareWhipTemplates(
-      "synthetic.ts",
-      'const x = { template: "whip-progress" };',
-    );
+  test('namespaced `template: "whip-progress"` → 0 hits', () => {
+    const hits = findBareWhipTemplates("synthetic.ts", 'const x = { template: "whip-progress" };');
     expect(hits).toEqual([]);
   });
 
-  test("namespaced `template: \"whip-audit\"` → 0 hits", () => {
+  test('namespaced `template: "whip-audit"` → 0 hits', () => {
     const hits = findBareWhipTemplates("synthetic.ts", 'const x = { template: "whip-audit" };');
     expect(hits).toEqual([]);
   });
 
-  test("variable named `templateWhip = \"whip\"` → 0 hits (word-boundary on `template`)", () => {
+  test('variable named `templateWhip = "whip"` → 0 hits (word-boundary on `template`)', () => {
     const hits = findBareWhipTemplates("synthetic.ts", 'const templateWhip = "whip";');
     expect(hits).toEqual([]);
   });

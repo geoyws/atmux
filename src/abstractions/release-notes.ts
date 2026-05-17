@@ -19,8 +19,8 @@
 // the concurrent-append acceptance test in T5 holds deterministically.
 
 import { dirname, join } from "node:path";
-import { withLock } from "./lock.ts";
 import { readTextOrNull, writeText } from "./fs.ts";
+import { withLock } from "./lock.ts";
 import { mytDate, now } from "./time.ts";
 
 // ---------- Section taxonomy ----------
@@ -66,10 +66,7 @@ export interface ResolveOpts {
  *
  * Example: 2026-05-15 03:00 MYT → `<repoRoot>/docs/release-notes/2026/05/2026-05-15.md`.
  */
-export function resolveDayFilePath(
-  epochMs: number = now(),
-  opts: ResolveOpts = {},
-): string {
+export function resolveDayFilePath(epochMs: number = now(), opts: ResolveOpts = {}): string {
   const { year, month, iso } = mytDate(epochMs);
   const repoRoot = opts.repoRoot ?? process.cwd();
   return join(repoRoot, "docs", "release-notes", year, month, `${iso}.md`);
@@ -237,11 +234,7 @@ export function spliceEntry(
  *  `idx`. Trims any trailing blank-only lines from the target block
  *  first so the result doesn't accumulate visual gaps over many
  *  appends. */
-function insertBeforeIdx(
-  lines: ReadonlyArray<string>,
-  idx: number,
-  entry: string,
-): string[] {
+function insertBeforeIdx(lines: ReadonlyArray<string>, idx: number, entry: string): string[] {
   // Walk backwards from `idx` over any pure-blank lines so the entry
   // attaches snug under the last non-blank line of the section body.
   let insertAt = idx;
@@ -267,9 +260,7 @@ function trimLeadingBlanks(lines: ReadonlyArray<string>): string[] {
 
 // ---------- Re-exports for section iteration (tests / probes) ----------
 
-export { SECTION_ORDER };
-
 // Re-export `dirname` for the rare caller that wants to derive the
 // containing month dir (e.g. README index generation). Kept inline to
 // avoid forcing every consumer to import from `node:path` separately.
-export { dirname };
+export { dirname, SECTION_ORDER };

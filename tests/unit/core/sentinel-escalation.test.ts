@@ -19,13 +19,13 @@
 //     last2hr=0 alone triggers escalation.
 
 import { describe, expect, test } from "bun:test";
+import type { Observation } from "../../../src/abstractions/sentinel.ts";
 import type { PaneClassification } from "../../../src/core/pane-state.ts";
 import {
   classify,
-  shouldEscalate,
   type ObservationHistory,
+  shouldEscalate,
 } from "../../../src/core/sentinel-escalation.ts";
-import type { Observation } from "../../../src/abstractions/sentinel.ts";
 
 // ---------- Fixtures ----------
 
@@ -336,9 +336,7 @@ describe("E3 merge-conflict-or-push", () => {
   });
 
   test("NEAR-MISS: pendingGitDenials empty (steady state)", () => {
-    expect(classify(healthyObs(), emptyHistory())).not.toContain(
-      "merge-conflict-or-push",
-    );
+    expect(classify(healthyObs(), emptyHistory())).not.toContain("merge-conflict-or-push");
   });
 
   test("dedups when multiple denials — single E3 entry", () => {
@@ -414,9 +412,7 @@ describe("E5 low-confidence-streak", () => {
   });
 
   test("NEAR-MISS: streak === 0", () => {
-    expect(classify(healthyObs(), emptyHistory())).not.toContain(
-      "low-confidence-streak",
-    );
+    expect(classify(healthyObs(), emptyHistory())).not.toContain("low-confidence-streak");
   });
 });
 

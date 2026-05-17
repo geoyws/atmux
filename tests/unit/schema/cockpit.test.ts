@@ -17,8 +17,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   Cockpit,
-  CockpitSentinel,
   CockpitMedic,
+  CockpitSentinel,
   CockpitSession,
   CockpitSuperdoctor,
   EpicTeamSession,
@@ -150,9 +150,7 @@ describe("CockpitSentinel — discriminated union on `impl`", () => {
   });
 
   test("rejects unknown `impl` literal", () => {
-    expect(() =>
-      CockpitSentinel.parse({ impl: "minimax" as unknown as "claude" }),
-    ).toThrow();
+    expect(() => CockpitSentinel.parse({ impl: "minimax" as unknown as "claude" })).toThrow();
   });
 });
 
@@ -183,9 +181,7 @@ describe("CockpitSentinel — claude variant", () => {
     expect(() =>
       CockpitSentinel.parse({ impl: "claude", cursorBinPath: "/usr/bin/cursor" }),
     ).toThrow();
-    expect(() =>
-      CockpitSentinel.parse({ impl: "claude", model: "composer-2" }),
-    ).toThrow();
+    expect(() => CockpitSentinel.parse({ impl: "claude", model: "composer-2" })).toThrow();
   });
 });
 
@@ -211,9 +207,7 @@ describe("CockpitSentinel — cursor variant", () => {
   });
 
   test("model rejects arbitrary strings", () => {
-    expect(() =>
-      CockpitSentinel.parse({ impl: "cursor", model: "composer-2-slow" }),
-    ).toThrow();
+    expect(() => CockpitSentinel.parse({ impl: "cursor", model: "composer-2-slow" })).toThrow();
     expect(() => CockpitSentinel.parse({ impl: "cursor", model: "gpt-4" })).toThrow();
   });
 
@@ -236,18 +230,12 @@ describe("CockpitSentinel — cursor variant", () => {
         claudeAccount: { configDir: "/x", label: "y" },
       }),
     ).toThrow();
-    expect(() =>
-      CockpitSentinel.parse({ impl: "cursor", autoStart: true }),
-    ).toThrow();
+    expect(() => CockpitSentinel.parse({ impl: "cursor", autoStart: true })).toThrow();
   });
 
   test("unknown keys rejected (.strict drift detection)", () => {
-    expect(() =>
-      CockpitSentinel.parse({ impl: "cursor", enbled: true }),
-    ).toThrow();
-    expect(() =>
-      CockpitSentinel.parse({ impl: "cursor", cursorBin: "/usr/bin/cursor" }),
-    ).toThrow();
+    expect(() => CockpitSentinel.parse({ impl: "cursor", enbled: true })).toThrow();
+    expect(() => CockpitSentinel.parse({ impl: "cursor", cursorBin: "/usr/bin/cursor" })).toThrow();
   });
 });
 

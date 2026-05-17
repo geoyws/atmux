@@ -50,7 +50,7 @@ import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
 import { tryReadJson } from "../abstractions/json.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
-import { loadCockpit, type LoadCockpitOpts } from "../core/cockpit.ts";
+import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
   getSessionName,
   type ResolveDirOpts,
@@ -236,10 +236,7 @@ export function detectClassA(opts: {
 }
 
 /** Class B — cage tmpdir hyphen-form. Ports bash bit-for-bit. */
-export function detectClassB(opts: {
-  team: string;
-  tmuxTmpdir?: string;
-}): AuditFinding | null {
+export function detectClassB(opts: { team: string; tmuxTmpdir?: string }): AuditFinding | null {
   const t = opts.tmuxTmpdir;
   if (t === undefined || t.length === 0) return null;
   if (!/^\/tmp\/atmux-tmux-/.test(t)) return null;
@@ -342,9 +339,7 @@ export interface ClassEDeps {
   hasLiveSocket?: (dir: string) => Promise<boolean>;
 }
 
-export async function detectClassE(
-  opts: { team: string } & ClassEDeps,
-): Promise<AuditFinding[]> {
+export async function detectClassE(opts: { team: string } & ClassEDeps): Promise<AuditFinding[]> {
   const findings: AuditFinding[] = [];
   const tmpRoot = opts.tmpRoot ?? DEFAULT_TMP_ROOT;
   const registered = opts.registeredTmpdirs ?? new Set<string>();
@@ -450,9 +445,7 @@ export function renderHuman(findings: ReadonlyArray<AuditFinding>): string {
   lines.push(`  ${pad("CLASS", 5)} ${pad("SEVERITY", 8)} ${pad("TEAM", 12)} DETAIL — FIX-HINT`);
   lines.push(`  ${pad("-----", 5)} ${pad("--------", 8)} ${pad("----", 12)} -----------------`);
   for (const f of findings) {
-    lines.push(
-      `  ${pad(f.class, 5)} ${pad(f.severity, 8)} ${pad(f.team || "-", 12)} ${f.detail}`,
-    );
+    lines.push(`  ${pad(f.class, 5)} ${pad(f.severity, 8)} ${pad(f.team || "-", 12)} ${f.detail}`);
     lines.push(`  ${pad("", 5)} ${pad("", 8)} ${pad("", 12)}   ↳ ${f.fix_hint}`);
   }
   return `${lines.join("\n")}\n`;

@@ -64,8 +64,8 @@ import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
-import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
@@ -279,8 +279,7 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   // suffix (CLAUDE_CONFIG_DIR prefix at spawn time). Operators run
   // `atmux reconfigure` post-init to override per-member.
   const explicit = parsed.claudeAccount;
-  const stampAccount =
-    explicit !== undefined && explicit.length > 0 && explicit !== "default";
+  const stampAccount = explicit !== undefined && explicit.length > 0 && explicit !== "default";
   const stripAccount = explicit === "default";
   const rendered: TeamShape = {
     ...team,

@@ -133,9 +133,7 @@ export interface PreMergeGateDecision {
  * The first three return reasons that name the blocker; operators
  * inspecting `merger_state.note` see *why* the gate hasn't passed.
  */
-export function shouldTransitionFromInProgress(
-  input: PreMergeGateInput,
-): PreMergeGateDecision {
+export function shouldTransitionFromInProgress(input: PreMergeGateInput): PreMergeGateDecision {
   if (input.ownerOpenTaskCount > 0) {
     const plural = input.ownerOpenTaskCount === 1 ? "task" : "tasks";
     return {
@@ -183,10 +181,10 @@ export function shouldTransitionToReady(input: PreMergeGateInput): boolean {
  *  manual resets — modelled separately in {@link isValidTransition}
  *  so the data shape here stays "what the machine itself moves
  *  between" without operator-recovery noise. */
-const FORWARD_TRANSITIONS: ReadonlyMap<
+const FORWARD_TRANSITIONS: ReadonlyMap<BranchMergeState, ReadonlySet<BranchMergeState>> = new Map<
   BranchMergeState,
   ReadonlySet<BranchMergeState>
-> = new Map<BranchMergeState, ReadonlySet<BranchMergeState>>([
+>([
   // `open` only transitions on a task-done event.
   ["open", new Set<BranchMergeState>(["in_progress"])],
   // `in_progress` re-evaluates on every event/cron tick — self-loop
@@ -208,10 +206,7 @@ const FORWARD_TRANSITIONS: ReadonlyMap<
   // state machine accepts BOTH terminal `reverted` (revertOnFail:
   // true) AND a manual reset to `in_progress` (revertOnFail: false
   // + operator manual recovery).
-  [
-    "test_failed",
-    new Set<BranchMergeState>(["reverted", "in_progress"]),
-  ],
+  ["test_failed", new Set<BranchMergeState>(["reverted", "in_progress"])],
   // Terminal — no forward transitions from these without an operator
   // manual reset (see {@link isValidTransition}).
   ["merged", new Set<BranchMergeState>()],
@@ -229,10 +224,7 @@ const FORWARD_TRANSITIONS: ReadonlyMap<
  *  branch's fan-in succeeds, the next iteration starts from a fresh
  *  `open` row after the branch is realigned to the new base (per
  *  ADR-134 §Per-member-branch lifecycle after success). */
-export function isValidTransition(
-  from: BranchMergeState,
-  to: BranchMergeState,
-): boolean {
+export function isValidTransition(from: BranchMergeState, to: BranchMergeState): boolean {
   if ((from === "conflict" || from === "reverted") && to === "in_progress") {
     return true;
   }

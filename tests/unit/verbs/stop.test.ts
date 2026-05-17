@@ -98,7 +98,12 @@ async function stageTeamWithSession(members: ReadonlyArray<string>): Promise<{
 
 describe("parseStopArgs", () => {
   test("empty argv → defaults", () => {
-    expect(parseStopArgs([])).toEqual({ force: false, archive: true, soft: false, pruneBranch: false });
+    expect(parseStopArgs([])).toEqual({
+      force: false,
+      archive: true,
+      soft: false,
+      pruneBranch: false,
+    });
   });
 
   test("--force / -f sets force=true", () => {
@@ -313,7 +318,15 @@ describe("stop verb — integration", () => {
     };
   }
   function gitFail(stderr: string, code = 128): SpawnResult {
-    return { exitCode: code, stdout: "", stderr, argv: [], cmd: "git", signalled: null, durationMs: 0 };
+    return {
+      exitCode: code,
+      stdout: "",
+      stderr,
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
   }
 
   /** Stage a worktreeIsolation:true team WITH session + materialise each
@@ -507,7 +520,15 @@ describe("stop verb — integration", () => {
     };
     const { result, stdout } = await captureStdoutStderr(() =>
       stop(
-        ["--force", "--prune-branch", "--no-archive", "--socket", socketPath, "--team-dir", teamDir],
+        [
+          "--force",
+          "--prune-branch",
+          "--no-archive",
+          "--socket",
+          socketPath,
+          "--team-dir",
+          teamDir,
+        ],
         { gitSpawn },
       ),
     );
@@ -530,16 +551,21 @@ describe("stop verb — integration", () => {
       // `worktree remove` succeeds (no `-d`); `branch -d` fails with
       // unmerged stderr.
       if (argv.includes("branch") && argv.includes("-d")) {
-        return gitFail(
-          "error: the branch 'geoyws-alpha' is not fully merged.\n",
-          1,
-        );
+        return gitFail("error: the branch 'geoyws-alpha' is not fully merged.\n", 1);
       }
       return gitOk("");
     };
     const { result, stdout, stderr } = await captureStdoutStderr(() =>
       stop(
-        ["--force", "--prune-branch", "--no-archive", "--socket", socketPath, "--team-dir", teamDir],
+        [
+          "--force",
+          "--prune-branch",
+          "--no-archive",
+          "--socket",
+          socketPath,
+          "--team-dir",
+          teamDir,
+        ],
         { gitSpawn },
       ),
     );
@@ -564,7 +590,15 @@ describe("stop verb — integration", () => {
     };
     const { result, stdout } = await captureStdoutStderr(() =>
       stop(
-        ["--force", "--prune-branch", "--no-archive", "--socket", socketPath, "--team-dir", teamDir],
+        [
+          "--force",
+          "--prune-branch",
+          "--no-archive",
+          "--socket",
+          socketPath,
+          "--team-dir",
+          teamDir,
+        ],
         { gitSpawn },
       ),
     );
@@ -610,7 +644,15 @@ describe("stop verb — integration", () => {
     };
     const { result, stdout, stderr } = await captureStdoutStderr(() =>
       stop(
-        ["--force", "--prune-branch", "--no-archive", "--socket", socketPath, "--team-dir", teamDir],
+        [
+          "--force",
+          "--prune-branch",
+          "--no-archive",
+          "--socket",
+          socketPath,
+          "--team-dir",
+          teamDir,
+        ],
         { gitSpawn },
       ),
     );
@@ -622,5 +664,4 @@ describe("stop verb — integration", () => {
     // No worktree-branch summary line because pruneBranch was disabled.
     expect(stdout).not.toContain("worktree-branch:");
   });
-
 });

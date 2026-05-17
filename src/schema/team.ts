@@ -484,13 +484,10 @@ export const TeamCrons = z
       .number()
       .int()
       .positive()
-      .refine(
-        (n) => [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60].includes(n),
-        {
-          message:
-            "laneTickMins must be a divisor of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60) — cronEvery rejects non-divisors per ADR-062",
-        },
-      )
+      .refine((n) => [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60].includes(n), {
+        message:
+          "laneTickMins must be a divisor of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60) — cronEvery rejects non-divisors per ADR-062",
+      })
       .default(5),
   })
   .strict();
@@ -1121,18 +1118,13 @@ export function resolveRefusalConfig(
 ): ResolvedRefusalConfig {
   return {
     enabled: block?.enabled ?? DEFAULT_REFUSAL_DETECTION_CONFIG.enabled,
-    softThreshold:
-      block?.softThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.softThreshold,
-    hardThreshold:
-      block?.hardThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.hardThreshold,
-    roleThreshold:
-      block?.roleThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.roleThreshold,
+    softThreshold: block?.softThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.softThreshold,
+    hardThreshold: block?.hardThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.hardThreshold,
+    roleThreshold: block?.roleThreshold ?? DEFAULT_REFUSAL_DETECTION_CONFIG.roleThreshold,
     windowMin: block?.windowMin ?? DEFAULT_REFUSAL_DETECTION_CONFIG.windowMin,
-    exemptMembers:
-      block?.exemptMembers ?? DEFAULT_REFUSAL_DETECTION_CONFIG.exemptMembers,
+    exemptMembers: block?.exemptMembers ?? DEFAULT_REFUSAL_DETECTION_CONFIG.exemptMembers,
     maxRotationsPerDay:
-      block?.maxRotationsPerDay ??
-      DEFAULT_REFUSAL_DETECTION_CONFIG.maxRotationsPerDay,
+      block?.maxRotationsPerDay ?? DEFAULT_REFUSAL_DETECTION_CONFIG.maxRotationsPerDay,
   };
 }
 

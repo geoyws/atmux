@@ -26,9 +26,9 @@
 //     owner-member is not currently attached. Catches the "team
 //     session died non-gracefully" path the stop hook can't cover.
 
-import { listTasks, markTaskBlockedWithNote } from "./kanban.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 import type { Team } from "../schema/team.ts";
+import { listTasks, markTaskBlockedWithNote } from "./kanban.ts";
 
 // ---------- Live-pane probe ----------
 
@@ -87,9 +87,7 @@ export interface FindPhantomOpts {
  * pre-claim-stamp rows — fail-safe toward pruning, since the only way
  * a row reaches `in-progress` without a `claimedAt` is data drift).
  */
-export async function findPhantomInProgressClaims(
-  opts: FindPhantomOpts,
-): Promise<PhantomClaim[]> {
+export async function findPhantomInProgressClaims(opts: FindPhantomOpts): Promise<PhantomClaim[]> {
   const inProgress = await listTasks(opts.atmuxDir, { status: "in-progress" });
   if (inProgress.length === 0) return [];
   const live = await opts.liveMembers();
@@ -144,9 +142,7 @@ export interface PruneResult {
  * the throw. This is preferable to silent skips: stop-side teardown
  * wants to know if its prune scope drifted.
  */
-export async function prunePhantomInProgressClaims(
-  opts: PruneOpts,
-): Promise<PruneResult> {
+export async function prunePhantomInProgressClaims(opts: PruneOpts): Promise<PruneResult> {
   const prunedIds: string[] = [];
   const alreadyPrunedIds: string[] = [];
   const note = `auto-pruned at ${opts.asOfIso} via ${opts.source}`;

@@ -16,19 +16,15 @@
 import { statOrNull, writeText } from "../abstractions/fs.ts";
 import { formatMyt } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
-import {
-  callerScopeAllowed,
-  findTeamByName,
-  loadCockpit,
-} from "../core/cockpit.ts";
+import { callerScopeAllowed, findTeamByName, loadCockpit } from "../core/cockpit.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
   getTeamName,
-  resolveExistingWindowName,
   type ResolveDirOpts,
   requireTeam,
+  resolveExistingWindowName,
   resolveTeamSocket,
 } from "../core/common.ts";
 import { recordHeadsUp, shouldEmitHeadsUp } from "../core/heads-up-cursor.ts";
@@ -149,7 +145,7 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
     if (target === null) {
       throw new ConfigError({
         what: `tell-lead --team: no team \`${parsed.targetTeam}\` in cockpit tree`,
-        hint: "check ~/.atmux/cockpit.json (or ATMUX_COCKPIT_CONFIG); team name must match a `type: \"team\"` or `type: \"epic-team\"` node",
+        hint: 'check ~/.atmux/cockpit.json (or ATMUX_COCKPIT_CONFIG); team name must match a `type: "team"` or `type: "epic-team"` node',
       });
     }
     // ADR-092 §D3 caller-scope gate. Source team is the cwd-derived

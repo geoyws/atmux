@@ -43,15 +43,9 @@
 // machine logic.
 
 import type { GitSpawn } from "../abstractions/branch-merge.ts";
-import {
-  type BranchMergeState,
-  isTerminalState,
-} from "./branch-merge-state.ts";
-import {
-  type IntraTeamMergeContext,
-  performMerge,
-} from "./intra-team-merge.ts";
+import { type BranchMergeState, isTerminalState } from "./branch-merge-state.ts";
 import type { QueueMergeFn } from "./committer-sweep.ts";
+import { type IntraTeamMergeContext, performMerge } from "./intra-team-merge.ts";
 import {
   flipTasksMergedInRange,
   type PostMergeFlipOpts,
@@ -277,9 +271,7 @@ export async function resolvePreMergeGate(
  *     were possible. The walk fired the in_progress self-loop and
  *     stopped; useful for cron-log evidence.
  */
-export function productionQueueMergeAttempt(
-  deps: ProductionDispatcherDeps,
-): QueueMergeFn {
+export function productionQueueMergeAttempt(deps: ProductionDispatcherDeps): QueueMergeFn {
   return async ({ memberBranch, aheadCount }) => {
     const cap = deps.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
@@ -288,15 +280,11 @@ export function productionQueueMergeAttempt(
     const entryRow = deps.mergerRepo.getState(memberBranch);
     const entryState: BranchMergeState = entryRow?.state ?? "open";
     if (isTerminalState(entryState)) {
-      deps.logger.log(
-        `[dispatcher] ${memberBranch}: refuse-terminal state='${entryState}'`,
-      );
+      deps.logger.log(`[dispatcher] ${memberBranch}: refuse-terminal state='${entryState}'`);
       return { queued: false, reason: `terminal: ${entryState}` };
     }
     if (CALLER_DRIVEN_STATES.has(entryState)) {
-      deps.logger.log(
-        `[dispatcher] ${memberBranch}: refuse-caller-driven state='${entryState}'`,
-      );
+      deps.logger.log(`[dispatcher] ${memberBranch}: refuse-caller-driven state='${entryState}'`);
       return { queued: false, reason: `in-flight: ${entryState}` };
     }
     // `rebasing` / `merging` are also in-flight (another tick is
@@ -305,9 +293,7 @@ export function productionQueueMergeAttempt(
     // dispatcher invocation from T3 (post-pubsub) gets the same
     // protection.
     if (entryState === "rebasing" || entryState === "merging") {
-      deps.logger.log(
-        `[dispatcher] ${memberBranch}: refuse-in-flight state='${entryState}'`,
-      );
+      deps.logger.log(`[dispatcher] ${memberBranch}: refuse-in-flight state='${entryState}'`);
       return { queued: false, reason: `in-flight: ${entryState}` };
     }
 
@@ -405,9 +391,7 @@ export function productionQueueMergeAttempt(
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        deps.logger.log(
-          `[dispatcher] ${memberBranch}: post-merge flip threw (continuing): ${msg}`,
-        );
+        deps.logger.log(`[dispatcher] ${memberBranch}: post-merge flip threw (continuing): ${msg}`);
       }
     }
 

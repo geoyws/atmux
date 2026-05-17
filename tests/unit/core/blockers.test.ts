@@ -11,10 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  closeDatabase,
-  openDatabase,
-} from "../../../src/abstractions/sqlite.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import {
   BLOCKER_CLASSES,
@@ -82,9 +79,7 @@ describe("truncate", () => {
 
 describe("liftClassFromText", () => {
   test("[class:X] explicit token wins", () => {
-    expect(liftClassFromText("hello [class:tooling-broken]")).toBe(
-      "tooling-broken",
-    );
+    expect(liftClassFromText("hello [class:tooling-broken]")).toBe("tooling-broken");
   });
   test("leading 🔵 → decision-pending", () => {
     expect(liftClassFromText("🔵 needs an answer")).toBe("decision-pending");
@@ -215,12 +210,8 @@ describe("readStuckMergerState", () => {
     const rows = readStuckMergerState(db, FIXED_NOW);
     expect(rows.length).toBe(2);
     const byBranch = new Map(rows.map((r) => [r.id, r]));
-    expect(byBranch.get("merger:geoyws-foo")?.blocker_class).toBe(
-      "tooling-broken",
-    );
-    expect(byBranch.get("merger:geoyws-bar")?.blocker_class).toBe(
-      "push-policy-gate",
-    );
+    expect(byBranch.get("merger:geoyws-foo")?.blocker_class).toBe("tooling-broken");
+    expect(byBranch.get("merger:geoyws-bar")?.blocker_class).toBe("push-policy-gate");
   });
 
   test("ignores merged state", () => {
@@ -381,10 +372,7 @@ describe("queryAllBlockers — integration across all 7 surfaces", () => {
       join(teamDir, "flags.md"),
       "### f-feed1234 alice [p1/decision] (10:00 MYT)\n\n- **needs**: decision\n- **task**: null\n- **message**: hi\n",
     );
-    await writeFile(
-      join(teamDir, "driver-inbox.md"),
-      "## 09:00 MYT — pending\n\n🔵 needs ack\n",
-    );
+    await writeFile(join(teamDir, "driver-inbox.md"), "## 09:00 MYT — pending\n\n🔵 needs ack\n");
 
     const rows = await queryAllBlockers(teamDir, db, { nowSec: FIXED_NOW });
     const sources = new Set(rows.map((r) => r.source));

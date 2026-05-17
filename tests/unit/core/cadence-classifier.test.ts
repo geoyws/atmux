@@ -12,9 +12,9 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  type CadenceThresholds,
   classifyCadence,
   classifyMemberCadence,
-  type CadenceThresholds,
   type GitLogFn,
 } from "../../../src/core/cadence-classifier.ts";
 
@@ -53,11 +53,7 @@ describe("classifyCadence — verdict matrix", () => {
 
   test("shipping: multiple commits in window — all counted", () => {
     const out = classifyCadence(
-      [
-        logLine("aaaaaaa1234", 300),
-        logLine("bbbbbbb1234", 600),
-        logLine("ccccccc1234", 1000),
-      ],
+      [logLine("aaaaaaa1234", 300), logLine("bbbbbbb1234", 600), logLine("ccccccc1234", 1000)],
       NOW_SEC,
       1800,
       DEFAULT_THRESHOLDS,
@@ -71,12 +67,7 @@ describe("classifyCadence — verdict matrix", () => {
   test("idle: no commits in window, age < idleMax", () => {
     // Most-recent commit at 5000s ago (within shipZero-7200 window
     // floor → falls to idle path because age < idleMax=7200).
-    const out = classifyCadence(
-      [logLine("ddddddd1234", 5000)],
-      NOW_SEC,
-      1800,
-      DEFAULT_THRESHOLDS,
-    );
+    const out = classifyCadence([logLine("ddddddd1234", 5000)], NOW_SEC, 1800, DEFAULT_THRESHOLDS);
     expect(out.verdict).toBe("idle");
     expect(out.commitsInWindow).toBe(0);
     expect(out.ageOfLastCommitSec).toBe(5000);
@@ -142,12 +133,7 @@ describe("classifyCadence — verdict matrix", () => {
       dormantMaxAgeSec: 86_400,
       shipZeroWindowSec: 7200,
     };
-    const out = classifyCadence(
-      [logLine("hhhhhhh1234", 100_000)],
-      NOW_SEC,
-      1800,
-      wideThresholds,
-    );
+    const out = classifyCadence([logLine("hhhhhhh1234", 100_000)], NOW_SEC, 1800, wideThresholds);
     expect(out.verdict).toBe("dormant");
   });
 
@@ -162,22 +148,13 @@ describe("classifyCadence — verdict matrix", () => {
   });
 
   test("commitsInWindow boundary: commit 1s past windowSec → not counted", () => {
-    const out = classifyCadence(
-      [logLine("jjjjjjj1234", 1801)],
-      NOW_SEC,
-      1800,
-      DEFAULT_THRESHOLDS,
-    );
+    const out = classifyCadence([logLine("jjjjjjj1234", 1801)], NOW_SEC, 1800, DEFAULT_THRESHOLDS);
     expect(out.commitsInWindow).toBe(0);
   });
 
   test("malformed log line (missing fields) → skipped, no crash", () => {
     const out = classifyCadence(
-      [
-        "broken-line-no-sha",
-        logLine("kkkkkkk1234", 100),
-        "",
-      ],
+      ["broken-line-no-sha", logLine("kkkkkkk1234", 100), ""],
       NOW_SEC,
       1800,
       DEFAULT_THRESHOLDS,
@@ -270,10 +247,15 @@ describe("classifyMemberCadence — async wrapper", () => {
   test("default nowSec injected — uses real clock (smoke; just verify no crash)", async () => {
     const gitLog: GitLogFn = async () => [];
     // No nowSec override — exercises the Math.floor(Date.now()/1000) path.
-    const out = await classifyMemberCadence("fe-1", "/x", {
-      windowSec: 1800,
-      thresholds: DEFAULT_THRESHOLDS,
-    }, { gitLog });
+    const out = await classifyMemberCadence(
+      "fe-1",
+      "/x",
+      {
+        windowSec: 1800,
+        thresholds: DEFAULT_THRESHOLDS,
+      },
+      { gitLog },
+    );
     expect(out.verdict).toBe("idle");
   });
 

@@ -387,9 +387,7 @@ describe("setTaskDriverOnly", () => {
   });
 
   test("missing id → ConfigError", async () => {
-    await expect(setTaskDriverOnly(atmuxDir, "t-missing0", true)).rejects.toThrow(
-      ConfigError,
-    );
+    await expect(setTaskDriverOnly(atmuxDir, "t-missing0", true)).rejects.toThrow(ConfigError);
   });
 });
 
@@ -508,9 +506,7 @@ describe("claimTask — dep enforcement (bash claim.sh:42-50 parity)", () => {
     setNow(() => 1_700_000_500_000);
     await markTaskDone(atmuxDir, id, "shipped");
     setNow(() => 1_700_000_600_000);
-    await expect(claimTask(atmuxDir, id, "beta")).rejects.toThrow(
-      /already done.*claim refused/,
-    );
+    await expect(claimTask(atmuxDir, id, "beta")).rejects.toThrow(/already done.*claim refused/);
   });
 
   test("claimTask (JSON path): refused done-state claim does NOT mutate state", async () => {
@@ -645,10 +641,7 @@ describe("markTaskDone", () => {
 
 // ---------- ADR-146 T2: trunk-merge auto-emit hook ----------
 
-import {
-  closeDatabase,
-  openDatabase,
-} from "../../../src/abstractions/sqlite.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations as sqliteMigrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import {
   resolveAutoEmitTrunkMergeConfig,
@@ -681,11 +674,7 @@ function stageStoryDb(): {
   return { db, repo };
 }
 
-function seedStory(
-  repo: KanbanRepo,
-  id: string,
-  branch: string | null,
-): KanbanStory {
+function seedStory(repo: KanbanRepo, id: string, branch: string | null): KanbanStory {
   const story: KanbanStory = {
     id,
     epic: "e-test0001",
@@ -738,9 +727,7 @@ describe("resolveAutoEmitTrunkMergeConfig (ADR-146 §D7)", () => {
   });
 
   test("absent block + worktreeIsolation=false → enabled defaults false", () => {
-    const r = resolveAutoEmitTrunkMergeConfig(
-      makeTeam({ worktreeIsolation: false }),
-    );
+    const r = resolveAutoEmitTrunkMergeConfig(makeTeam({ worktreeIsolation: false }));
     expect(r.enabled).toBe(false);
   });
 
@@ -837,11 +824,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
     try {
       seedStory(repo, "s-aaaa0003", "geoyws-alpha");
       const lastTask = seedTask(repo, "t-sharedcwd", "s-aaaa0003", "done");
-      const newId = tryAutoEmitTrunkMerge(
-        repo,
-        lastTask,
-        makeTeam({ worktreeIsolation: false }),
-      );
+      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam({ worktreeIsolation: false }));
       expect(newId).toBeNull();
     } finally {
       closeDatabase(db);

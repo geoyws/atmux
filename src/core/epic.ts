@@ -103,7 +103,10 @@ export interface ListEpicsFilter {
   status?: string;
 }
 
-export async function listEpics(atmuxDir: string, filter: ListEpicsFilter = {}): Promise<KanbanEpic[]> {
+export async function listEpics(
+  atmuxDir: string,
+  filter: ListEpicsFilter = {},
+): Promise<KanbanEpic[]> {
   if (!(await exists(_stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     let epics = repo.listEpics();
@@ -196,7 +199,10 @@ export async function advanceEpic(
     }
     if (resolved === "review" || resolved === "done") {
       const blocking = [
-        ...repo.listStories({ epic: id }).filter((s) => s.status !== "done").map((s) => s.id),
+        ...repo
+          .listStories({ epic: id })
+          .filter((s) => s.status !== "done")
+          .map((s) => s.id),
         ...repo
           .listTasks({ epic: id })
           .filter((t) => (t.story === null || t.story === undefined) && t.status !== "done")

@@ -16,11 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import {
-  ALLOWLIST,
-  lintFileContent,
-  lintSourceTree,
-} from "../../src/core/socket-resolver-lint.ts";
+import { ALLOWLIST, lintFileContent, lintSourceTree } from "../../src/core/socket-resolver-lint.ts";
 
 const SRC_ROOT = resolve(import.meta.dir, "..", "..", "src");
 
@@ -28,9 +24,7 @@ describe("socket-resolver guard (t-d0229be5, t-fe0bfb65)", () => {
   test("no bare `getDefaultSocket(<ident>.name)` outside the allowlist", async () => {
     const findings = await lintSourceTree(SRC_ROOT);
     if (findings.length > 0) {
-      const report = findings
-        .map((v) => `  src/${v.file}:${v.line}\n    ${v.text}`)
-        .join("\n");
+      const report = findings.map((v) => `  src/${v.file}:${v.line}\n    ${v.text}`).join("\n");
       throw new Error(
         `socket-resolver guard: ${findings.length} bare \`getDefaultSocket(<team>.name)\` call(s) found.\n\n${report}\n\nUse \`resolveTeamSocket(team)\` instead — it honours \`team.tmuxTmpdir\`.\nIf this site genuinely cannot reach a full Team object (e.g. a CLI string),\nadd the file path to ALLOWLIST in src/core/socket-resolver-lint.ts\nwith a justifying comment.`,
       );
@@ -57,10 +51,7 @@ describe("socket-resolver guard (t-d0229be5, t-fe0bfb65)", () => {
   });
 
   test("scanner skips allowlisted files even when they contain the pattern", () => {
-    const findings = lintFileContent(
-      "core/common.ts",
-      `return getDefaultSocket(team.name);\n`,
-    );
+    const findings = lintFileContent("core/common.ts", `return getDefaultSocket(team.name);\n`);
     expect(findings).toHaveLength(0);
   });
 
@@ -81,18 +72,12 @@ describe("socket-resolver guard (t-d0229be5, t-fe0bfb65)", () => {
   });
 
   test("scanner ignores `getDefaultSocket(stringLiteral)` (no .name)", () => {
-    const findings = lintFileContent(
-      "verbs/fake.ts",
-      `const s = getDefaultSocket("alpha");\n`,
-    );
+    const findings = lintFileContent("verbs/fake.ts", `const s = getDefaultSocket("alpha");\n`);
     expect(findings).toHaveLength(0);
   });
 
   test("scanner ignores `getDefaultSocket(parsed.team)` (string CLI param, not .name)", () => {
-    const findings = lintFileContent(
-      "verbs/fake.ts",
-      `const s = getDefaultSocket(parsed.team);\n`,
-    );
+    const findings = lintFileContent("verbs/fake.ts", `const s = getDefaultSocket(parsed.team);\n`);
     expect(findings).toHaveLength(0);
   });
 });

@@ -63,15 +63,11 @@ AND no member is over ctx-threshold
   });
 
   test("case-sensitive match — `## standing goal` (lowercase) does NOT hit", () => {
-    expect(
-      parseStandingGoalFromBrief("## standing goal\n\nbody\n"),
-    ).toBeNull();
+    expect(parseStandingGoalFromBrief("## standing goal\n\nbody\n")).toBeNull();
   });
 
   test("rejects trailing colon variant — `## Standing Goal:` does NOT match", () => {
-    expect(
-      parseStandingGoalFromBrief("## Standing Goal:\n\nbody\n"),
-    ).toBeNull();
+    expect(parseStandingGoalFromBrief("## Standing Goal:\n\nbody\n")).toBeNull();
   });
 });
 
@@ -85,9 +81,7 @@ describe("resolveGoalForMember — resolution chain (ADR-157 §D2 / §OQ3)", () 
       name: "alice",
       goal: "explicit-override",
     };
-    expect(await resolveGoalForMember(member, briefPath)).toBe(
-      "explicit-override",
-    );
+    expect(await resolveGoalForMember(member, briefPath)).toBe("explicit-override");
   });
 
   test("(member.goal unset, brief has Standing Goal) → brief-parsed text", async () => {
@@ -109,9 +103,7 @@ describe("resolveGoalForMember — resolution chain (ADR-157 §D2 / §OQ3)", () 
       name: "alice",
       goal: "still-works",
     };
-    expect(
-      await resolveGoalForMember(member, "/nonexistent/path/brief.md"),
-    ).toBe("still-works");
+    expect(await resolveGoalForMember(member, "/nonexistent/path/brief.md")).toBe("still-works");
   });
 
   test("(member.goal explicitly empty string) → null (opt-out signal)", async () => {
@@ -131,9 +123,7 @@ describe("resolveGoalForMember — resolution chain (ADR-157 §D2 / §OQ3)", () 
   });
 
   test("(briefPath omitted, member.goal set) → explicit", async () => {
-    expect(
-      await resolveGoalForMember({ name: "alice", goal: "direct" }),
-    ).toBe("direct");
+    expect(await resolveGoalForMember({ name: "alice", goal: "direct" })).toBe("direct");
   });
 });
 
@@ -154,27 +144,19 @@ describe("validateGoalRuntime (ADR-157 §D4)", () => {
   });
 
   test("cursor runtime + goal unset → null (no warn)", () => {
-    expect(
-      validateGoalRuntime({ name: "martinet", runtime: "cursor" }),
-    ).toBeNull();
+    expect(validateGoalRuntime({ name: "martinet", runtime: "cursor" })).toBeNull();
   });
 
   test("cursor runtime + goal empty string → null (opt-out, no warn)", () => {
-    expect(
-      validateGoalRuntime({ name: "martinet", runtime: "cursor", goal: "" }),
-    ).toBeNull();
+    expect(validateGoalRuntime({ name: "martinet", runtime: "cursor", goal: "" })).toBeNull();
   });
 
   test("claude runtime + goal set → null (happy path)", () => {
-    expect(
-      validateGoalRuntime({ name: "lead", runtime: "claude", goal: "x" }),
-    ).toBeNull();
+    expect(validateGoalRuntime({ name: "lead", runtime: "claude", goal: "x" })).toBeNull();
   });
 
   test("runtime unset + goal set → null (TUI-derived runtime; T3 hooks gate)", () => {
-    expect(
-      validateGoalRuntime({ name: "lead", goal: "x" }),
-    ).toBeNull();
+    expect(validateGoalRuntime({ name: "lead", goal: "x" })).toBeNull();
   });
 });
 
@@ -182,9 +164,7 @@ describe("validateGoalRuntime (ADR-157 §D4)", () => {
 
 describe("TeamMember schema back-compat (ADR-157 T2 acceptance gate)", () => {
   test("existing TeamMember without goal/runtime parses unchanged", async () => {
-    const { TeamMember: TeamMemberSchema } = await import(
-      "../../../src/schema/team.ts"
-    );
+    const { TeamMember: TeamMemberSchema } = await import("../../../src/schema/team.ts");
     const parsed = TeamMemberSchema.parse({ name: "alice", role: "member" });
     expect(parsed.name).toBe("alice");
     expect(parsed.goal).toBeUndefined();
@@ -192,9 +172,7 @@ describe("TeamMember schema back-compat (ADR-157 T2 acceptance gate)", () => {
   });
 
   test("TeamMember with goal + runtime parses + round-trips", async () => {
-    const { TeamMember: TeamMemberSchema } = await import(
-      "../../../src/schema/team.ts"
-    );
+    const { TeamMember: TeamMemberSchema } = await import("../../../src/schema/team.ts");
     const parsed = TeamMemberSchema.parse({
       name: "lead",
       role: "team-lead",

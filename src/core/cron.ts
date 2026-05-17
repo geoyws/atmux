@@ -413,11 +413,8 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   // primitives elsewhere in atmux; a per-team override can land via
   // a future schema bump if a concrete demand emerges.
   if (team.epicTeam !== undefined) {
-    const epicMergeMins =
-      opts.epicMergeIntervalOverride ?? DEFAULT_EPIC_MERGE_CRON_INTERVAL_MINS;
-    out.push(
-      `${cronEvery(epicMergeMins)} ${baseEnv} epic-merge tick ${logTail("epic-merge")}`,
-    );
+    const epicMergeMins = opts.epicMergeIntervalOverride ?? DEFAULT_EPIC_MERGE_CRON_INTERVAL_MINS;
+    out.push(`${cronEvery(epicMergeMins)} ${baseEnv} epic-merge tick ${logTail("epic-merge")}`);
   }
 
   return out;

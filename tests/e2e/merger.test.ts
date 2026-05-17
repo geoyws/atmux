@@ -101,9 +101,9 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultGitSpawn, provisionWorktree } from "../../src/abstractions/worktree.ts";
 import { closeDatabase, openDatabase } from "../../src/abstractions/sqlite.ts";
 import { migrations } from "../../src/abstractions/sqlite-migrations.ts";
+import { defaultGitSpawn, provisionWorktree } from "../../src/abstractions/worktree.ts";
 import type { BranchMergeState } from "../../src/core/branch-merge-state.ts";
 import { isTerminalState } from "../../src/core/branch-merge-state.ts";
 import { performMerge } from "../../src/core/intra-team-merge.ts";
@@ -265,7 +265,10 @@ async function runUntilStop(opts: RunPerformMergeOpts): Promise<BranchMergeState
   }
 }
 
-function readState(fix: Fixture, memberBranch: string): {
+function readState(
+  fix: Fixture,
+  memberBranch: string,
+): {
   state: BranchMergeState;
   baseSha: string | null;
   conflictSha: string | null;

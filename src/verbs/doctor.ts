@@ -2296,8 +2296,7 @@ export async function checkTmuxVersionMismatch(
         status: "yellow",
         label: "tmux-version-mismatch",
         detail: `host tmux ${actual} below minimum ${TMUX_MIN_VERSION}`,
-        hint:
-          "ADR-138 send-keys verifier may break; bundled tmux available via ADR-163.",
+        hint: "ADR-138 send-keys verifier may break; bundled tmux available via ADR-163.",
       },
     ];
   }
@@ -2307,8 +2306,7 @@ export async function checkTmuxVersionMismatch(
         status: "yellow",
         label: "tmux-version-mismatch",
         detail: `host tmux ${actual} above tested ${TMUX_TESTED_VERSION}`,
-        hint:
-          "untested version; report regressions to atmux issues. Pin via ADR-163 bundled binary.",
+        hint: "untested version; report regressions to atmux issues. Pin via ADR-163 bundled binary.",
       },
     ];
   }

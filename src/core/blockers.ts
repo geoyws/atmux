@@ -15,10 +15,7 @@
 
 import type { Database } from "bun:sqlite";
 import { readTextOrNull } from "../abstractions/fs.ts";
-import {
-  decisionsLogPath,
-  driverInboxPath,
-} from "./common.ts";
+import { decisionsLogPath, driverInboxPath } from "./common.ts";
 
 // ---------- Taxonomy ----------
 
@@ -147,15 +144,12 @@ interface BlockedTaskRow {
  *  `member-stuck`. */
 export function readBlockedTasks(db: Database, nowSec: number): BlockerRow[] {
   const rows = db
-    .query(
-      "SELECT id, subject, body, owner, deps, created_at FROM tasks WHERE status = 'blocked'",
-    )
+    .query("SELECT id, subject, body, owner, deps, created_at FROM tasks WHERE status = 'blocked'")
     .all() as BlockedTaskRow[];
   return rows.map((r) => {
     const deps: string[] = r.deps ? (JSON.parse(r.deps) as string[]) : [];
     const blockingDepIds = deps.length > 0 ? findUndoneDeps(db, deps) : [];
-    const cls: BlockerClass =
-      blockingDepIds.length > 0 ? "dep-not-shipped" : "member-stuck";
+    const cls: BlockerClass = blockingDepIds.length > 0 ? "dep-not-shipped" : "member-stuck";
     const subject = r.subject ?? "(no subject)";
     const summary = truncate(`${r.id} ${subject}`);
     const action =
@@ -181,9 +175,7 @@ function findUndoneDeps(db: Database, depIds: readonly string[]): string[] {
   if (depIds.length === 0) return [];
   const placeholders = depIds.map(() => "?").join(",");
   const rows = db
-    .query(
-      `SELECT id FROM tasks WHERE id IN (${placeholders}) AND status = 'done'`,
-    )
+    .query(`SELECT id FROM tasks WHERE id IN (${placeholders}) AND status = 'done'`)
     .all(...depIds) as { id: string }[];
   const done = new Set(rows.map((r) => r.id));
   return depIds.filter((d) => !done.has(d));
@@ -216,15 +208,12 @@ export function readStaleInProgressTasks(
   for (const r of rows) {
     const claimed = r.claimed_at ?? 0;
     if (claimed === 0) continue;
-    const staleSec =
-      r.stale_min !== null ? r.stale_min * 60 : defaultStaleClaimAgeSec;
+    const staleSec = r.stale_min !== null ? r.stale_min * 60 : defaultStaleClaimAgeSec;
     const age = nowSec - claimed;
     if (age < staleSec) continue;
     const owner = r.owner ?? "(unowned)";
     const subject = r.subject ?? "(no subject)";
-    const summary = truncate(
-      `${r.id} owner=${owner} ${subject}`,
-    );
+    const summary = truncate(`${r.id} owner=${owner} ${subject}`);
     out.push({
       id: `task-stale:${r.id}`,
       source: "sqlite-tasks-stale",
@@ -306,8 +295,7 @@ export function readStuckMergerState(db: Database, nowSec: number): BlockerRow[]
     )
     .all() as MergerStateBlockerRow[];
   return rows.map((r) => {
-    const cls: BlockerClass =
-      r.state === "reverted" ? "push-policy-gate" : "tooling-broken";
+    const cls: BlockerClass = r.state === "reverted" ? "push-policy-gate" : "tooling-broken";
     const sha = r.conflict_sha ? ` @${r.conflict_sha.slice(0, 8)}` : "";
     const noteSuffix = r.note ? ` — ${r.note}` : "";
     const summary = truncate(`${r.member_branch} ${r.state}${sha}${noteSuffix}`);
@@ -336,10 +324,7 @@ export function readStuckMergerState(db: Database, nowSec: number): BlockerRow[]
  *  driver-inbox / decisions / flags markdown convention strips the date
  *  via per-day section headers; this matches the conservative path of
  *  the existing parsers in `src/core/driver-inbox.ts`. */
-export function parseMytTimestampHHMM(
-  hhmm: string,
-  nowSec: number,
-): number {
+export function parseMytTimestampHHMM(hhmm: string, nowSec: number): number {
   const m = hhmm.match(/^(\d{1,2}):(\d{2})$/);
   if (!m) return 0;
   const hh = Number(m[1]);
@@ -368,8 +353,7 @@ export async function readPendingDecisionsMd(
   if (!text) return [];
   const out: BlockerRow[] = [];
   const headerRe = /^### (d-[0-9a-f]+) — (.+?) \((\d{1,2}:\d{2}) MYT\)$/gm;
-  let match: RegExpExecArray | null;
-  while ((match = headerRe.exec(text)) !== null) {
+  for (const match of text.matchAll(headerRe)) {
     const [headLine, id, question, hhmm] = match;
     if (headLine.includes("~~")) continue;
     const opened = parseMytTimestampHHMM(hhmm!, nowSec);
@@ -398,18 +382,14 @@ export async function readPendingDecisionsMd(
  *  `**needs**: <decision|unblock|context>` → decision-pending /
  *  member-stuck / member-stuck respectively (member-stuck for context
  *  too — context-needed implies the member is wedged waiting). */
-export async function readOpenFlagsMd(
-  atmuxDir: string,
-  nowSec: number,
-): Promise<BlockerRow[]> {
+export async function readOpenFlagsMd(atmuxDir: string, nowSec: number): Promise<BlockerRow[]> {
   const path = atmuxDir.endsWith("/") ? `${atmuxDir}flags.md` : `${atmuxDir}/flags.md`;
   const text = await readTextOrNull(path);
   if (!text) return [];
 
   const resolved = new Set<string>();
   const resolveRe = /^### r-[0-9a-f]+ (f-[0-9a-f]+)/gm;
-  let rMatch: RegExpExecArray | null;
-  while ((rMatch = resolveRe.exec(text)) !== null) {
+  for (const rMatch of text.matchAll(resolveRe)) {
     resolved.add(rMatch[1]!);
   }
 
@@ -422,13 +402,20 @@ export async function readOpenFlagsMd(
     /^### (f-[0-9a-f]+) (\S+) \[(p[0-9])\/(decision|unblock|context)\] \((\d{1,2}:\d{2}) MYT\)$/gm;
   const allHeaderRe = /^### /gm;
   const allHeaderPositions: number[] = [];
-  let aMatch: RegExpExecArray | null;
-  while ((aMatch = allHeaderRe.exec(text)) !== null) {
+  for (const aMatch of text.matchAll(allHeaderRe)) {
     allHeaderPositions.push(aMatch.index);
   }
-  const flagPositions: { start: number; end: number; id: string; member: string; severity: string; needs: string; hhmm: string; matchEnd: number }[] = [];
-  let fHeaderMatch: RegExpExecArray | null;
-  while ((fHeaderMatch = flagHeaderRe.exec(text)) !== null) {
+  const flagPositions: {
+    start: number;
+    end: number;
+    id: string;
+    member: string;
+    severity: string;
+    needs: string;
+    hhmm: string;
+    matchEnd: number;
+  }[] = [];
+  for (const fHeaderMatch of text.matchAll(flagHeaderRe)) {
     const [, id, member, severity, needs, hhmm] = fHeaderMatch;
     flagPositions.push({
       start: fHeaderMatch.index,
@@ -453,15 +440,12 @@ export async function readOpenFlagsMd(
     const hhmm = fp.hhmm;
     const body = text.slice(fp.matchEnd, fp.end);
     if (resolved.has(id!)) continue;
-    const cls: BlockerClass =
-      needs === "decision" ? "decision-pending" : "member-stuck";
+    const cls: BlockerClass = needs === "decision" ? "decision-pending" : "member-stuck";
     const opened = parseMytTimestampHHMM(hhmm!, nowSec);
     const messageMatch = body!.match(/\*\*message\*\*: (.+)/);
     const message = messageMatch ? messageMatch[1]! : "(no message)";
     const taskMatch = body!.match(/\*\*task\*\*: (t-[0-9a-f]+)/);
-    const summary = truncate(
-      `${id} ${member} [${severity}/${needs}] ${message}`,
-    );
+    const summary = truncate(`${id} ${member} [${severity}/${needs}] ${message}`);
     const flagRow: BlockerRow = {
       id: `flag:${id}`,
       source: "md-flags",
@@ -507,8 +491,7 @@ export async function readDriverInboxBlockers(
   // lookaheads (which over-match `\n*$` at every line position).
   const headerRe = /^## (\d{1,2}:\d{2}) MYT — (.+?)$/gm;
   const headers: { hhmm: string; header: string; headerStart: number; headerEnd: number }[] = [];
-  let hMatch: RegExpExecArray | null;
-  while ((hMatch = headerRe.exec(text)) !== null) {
+  for (const hMatch of text.matchAll(headerRe)) {
     headers.push({
       hhmm: hMatch[1]!,
       header: hMatch[2]!,

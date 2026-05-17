@@ -22,13 +22,13 @@ import {
   renderEternalImprovementDone,
   renderEternalImprovementProgress,
   renderEternalImprovementStart,
+  renderHygieneBlocker,
   renderMemberRefusalRotate,
   renderWhipBudgetPause,
   renderWhipBudgetRefreshSoon,
   renderWhipBudgetResume,
   renderWhipBudgetWarning,
   renderWhipConfigDrift,
-  renderHygieneBlocker,
   renderWhipNeedsApproval,
   resolveWebhookUrl,
   send,
@@ -1694,9 +1694,7 @@ describe("renderWhipDefunctCwd", () => {
 
 describe("renderMemberForcePushWarning", () => {
   test("single member force-push produces verdict + 2 bullets (member + fix)", async () => {
-    const { renderMemberForcePushWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderMemberForcePushWarning } = await import("../../../src/abstractions/discord.ts");
     const out = renderMemberForcePushWarning({
       team: "atmux",
       events: [
@@ -1711,21 +1709,15 @@ describe("renderMemberForcePushWarning", () => {
     expect(out.category).toBe("📋");
     expect(out.team).toBe("atmux");
     // Verdict is warn-class (🟡 Cool) per ADR-137 §D3 — not Need-you.
-    expect(out.verdict).toBe(
-      "🟡 **Cool** — 1 member force-pushed within the last hour",
-    );
+    expect(out.verdict).toBe("🟡 **Cool** — 1 member force-pushed within the last hour");
     expect(out.bullets).toHaveLength(2);
-    expect(out.bullets?.[0]).toBe(
-      "🟡 alice: geoyws-alice reflog: update by push (forced)",
-    );
+    expect(out.bullets?.[0]).toBe("🟡 alice: geoyws-alice reflog: update by push (forced)");
     expect(out.bullets?.[1]).toContain("git merge origin/<base>");
     expect(out.bullets?.[1]).toContain("ADR-137");
   });
 
   test("multiple members surfaced as separate bullets + plural verdict", async () => {
-    const { renderMemberForcePushWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderMemberForcePushWarning } = await import("../../../src/abstractions/discord.ts");
     const out = renderMemberForcePushWarning({
       team: "atmux",
       events: [
@@ -1738,11 +1730,8 @@ describe("renderMemberForcePushWarning", () => {
   });
 
   test("long reflog message truncated with ellipsis at 40 chars", async () => {
-    const { renderMemberForcePushWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
-    const longMsg =
-      "update by push (forced) — bumped past trunk after rebase against geoyws";
+    const { renderMemberForcePushWarning } = await import("../../../src/abstractions/discord.ts");
+    const longMsg = "update by push (forced) — bumped past trunk after rebase against geoyws";
     const out = renderMemberForcePushWarning({
       team: "atmux",
       events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: longMsg }],
@@ -1757,9 +1746,7 @@ describe("renderMemberForcePushWarning", () => {
   });
 
   test("whenMs override is propagated", async () => {
-    const { renderMemberForcePushWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderMemberForcePushWarning } = await import("../../../src/abstractions/discord.ts");
     const out = renderMemberForcePushWarning({
       team: "atmux",
       events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: "forced-update" }],
@@ -1777,9 +1764,7 @@ describe("renderMemberForcePushWarning", () => {
     await send(
       renderMemberForcePushWarning({
         team: "atmux",
-        events: [
-          { member: "alice", branch: "geoyws-alice", reflogMsg: "update by push (forced)" },
-        ],
+        events: [{ member: "alice", branch: "geoyws-alice", reflogMsg: "update by push (forced)" }],
       }),
     );
     const written = await readFile(recorder, "utf8");
@@ -1793,9 +1778,7 @@ describe("renderMemberForcePushWarning", () => {
 
 describe("renderSendKeysFailureWarning", () => {
   test("single failure: verdict singular + target bullet + fix bullet", async () => {
-    const { renderSendKeysFailureWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
     const out = renderSendKeysFailureWarning({
       team: "atmux",
       failureCount: 1,
@@ -1805,9 +1788,7 @@ describe("renderSendKeysFailureWarning", () => {
     expect(out.template).toBe("send-keys-failure");
     expect(out.category).toBe("📋");
     expect(out.team).toBe("atmux");
-    expect(out.verdict).toBe(
-      "🟡 **Cool** — 1 send-keys failure within the last hour",
-    );
+    expect(out.verdict).toBe("🟡 **Cool** — 1 send-keys failure within the last hour");
     expect(out.bullets).toHaveLength(2);
     expect(out.bullets?.[0]).toBe("🟡 last: atmux-demo:🛠️worker1 (7min ago)");
     expect(out.bullets?.[1]).toContain("ADR-138");
@@ -1815,9 +1796,7 @@ describe("renderSendKeysFailureWarning", () => {
   });
 
   test("plural verdict when failureCount > 1", async () => {
-    const { renderSendKeysFailureWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
     const out = renderSendKeysFailureWarning({
       team: "atmux",
       failureCount: 4,
@@ -1828,9 +1807,7 @@ describe("renderSendKeysFailureWarning", () => {
   });
 
   test("omitted target → bullet shape collapses (no target row, fix bullet only)", async () => {
-    const { renderSendKeysFailureWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
     const out = renderSendKeysFailureWarning({
       team: "atmux",
       failureCount: 2,
@@ -1840,9 +1817,7 @@ describe("renderSendKeysFailureWarning", () => {
   });
 
   test("target without age suffix → bullet omits the (Nmin ago) tail", async () => {
-    const { renderSendKeysFailureWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
     const out = renderSendKeysFailureWarning({
       team: "atmux",
       failureCount: 1,
@@ -1852,9 +1827,7 @@ describe("renderSendKeysFailureWarning", () => {
   });
 
   test("whenMs override is propagated", async () => {
-    const { renderSendKeysFailureWarning } = await import(
-      "../../../src/abstractions/discord.ts"
-    );
+    const { renderSendKeysFailureWarning } = await import("../../../src/abstractions/discord.ts");
     const out = renderSendKeysFailureWarning({
       team: "atmux",
       failureCount: 1,
@@ -2360,9 +2333,7 @@ describe("renderHygieneBlocker — base shape", () => {
       fixesThisTick: 0,
       complaintsFiled: 0,
     });
-    expect(out.whatsNew).toEqual([
-      "Reassign t-aaaa1111 to fe-1 (lowest-load fe member)",
-    ]);
+    expect(out.whatsNew).toEqual(["Reassign t-aaaa1111 to fe-1 (lowest-load fe member)"]);
   });
 
   test("footer carries tick number + fixes + complaints counters", () => {
@@ -2504,12 +2475,8 @@ describe("renderHygieneBlocker — Need-from-George section", () => {
     });
     expect(out.sections).toHaveLength(1);
     const sec = out.sections?.[0];
-    expect(sec?.label).toBe(
-      "🙏 **Need from George** (zero deterministic candidates)",
-    );
-    expect(sec?.bullets[0]).toBe(
-      "🙏 no exec-class members on the lane — pick one",
-    );
+    expect(sec?.label).toBe("🙏 **Need from George** (zero deterministic candidates)");
+    expect(sec?.bullets[0]).toBe("🙏 no exec-class members on the lane — pick one");
     expect(sec?.bullets[sec.bullets.length - 1]).toContain(
       "**Default at 16:42 MYT if silent:** A) reassign to fe-1 anyway",
     );

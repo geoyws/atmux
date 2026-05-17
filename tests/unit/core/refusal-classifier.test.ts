@@ -25,9 +25,7 @@ describe("classifyRefusal — empty + non-refusal input", () => {
   });
 
   test("plain non-refusal pane content → detected=false", () => {
-    const r = classifyRefusal(
-      "starting test run...\n  ✓ should pass\n  ✓ should also pass\n",
-    );
+    const r = classifyRefusal("starting test run...\n  ✓ should pass\n  ✓ should also pass\n");
     expect(r.detected).toBe(false);
     expect(r.severity).toBe("none");
   });
@@ -130,9 +128,7 @@ describe("classifyRefusal — role class", () => {
 
 describe("classifyRefusal — meta class", () => {
   test("agent echoes 'rotate me' directive back → meta", () => {
-    const r = classifyRefusal(
-      "The directive says 'rotate me' but I will continue my work",
-    );
+    const r = classifyRefusal("The directive says 'rotate me' but I will continue my work");
     expect(r.detected).toBe(true);
     // Meta-only match → severity=meta (lowest precedence). Note:
     // this fixture deliberately AVOIDS the role/hard/soft regexes
@@ -156,9 +152,7 @@ describe("classifyRefusal — meta class", () => {
 describe("classifyRefusal — multi-class precedence + confidence", () => {
   test("soft + meta match → severity=soft (higher precedence)", () => {
     // Soft phrase "I'm tired of" + meta "rotate me" in same pane.
-    const r = classifyRefusal(
-      "I'm tired of being told 'rotate me' every five minutes",
-    );
+    const r = classifyRefusal("I'm tired of being told 'rotate me' every five minutes");
     expect(r.detected).toBe(true);
     expect(r.severity).toBe("soft");
     // Confidence = max(soft 0.5, meta 0.3) = 0.5.
@@ -170,17 +164,13 @@ describe("classifyRefusal — multi-class precedence + confidence", () => {
   });
 
   test("hard + soft match → severity=hard (higher precedence)", () => {
-    const r = classifyRefusal(
-      "Look, I refuse to claim this. I'm tired of it.",
-    );
+    const r = classifyRefusal("Look, I refuse to claim this. I'm tired of it.");
     expect(r.severity).toBe("hard");
     expect(r.confidence).toBe(0.8);
   });
 
   test("role + hard + soft → severity=role (highest precedence)", () => {
-    const r = classifyRefusal(
-      "I am not a planner. I refuse to claim this. I'm tired of it.",
-    );
+    const r = classifyRefusal("I am not a planner. I refuse to claim this. I'm tired of it.");
     expect(r.severity).toBe("role");
     expect(r.confidence).toBe(0.95);
     expect(r.phrases.length).toBeGreaterThanOrEqual(3);
@@ -203,9 +193,7 @@ describe("classifyRefusal — edge cases", () => {
   test("partial-phrase match doesn't false-positive", () => {
     // "refuse" alone, without "I refuse to" + work-verb, must NOT
     // classify as hard.
-    const r = classifyRefusal(
-      "We should refuse user requests for unauthorized writes",
-    );
+    const r = classifyRefusal("We should refuse user requests for unauthorized writes");
     expect(r.severity === "hard").toBe(false);
   });
 

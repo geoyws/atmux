@@ -9,15 +9,9 @@
 // `git` so the W2/W3/W6 read-sites can stub the branch resolution in
 // unit tests.
 
-import {
-  defaultGitSpawn,
-  type GitSpawn,
-} from "../abstractions/worktree.ts";
+import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import { ConfigError } from "../errors.ts";
-import {
-  DEFAULT_MERGER_STALENESS_HOURS,
-  type Team,
-} from "../schema/team.ts";
+import { DEFAULT_MERGER_STALENESS_HOURS, type Team } from "../schema/team.ts";
 
 /** Effective merger config — `baseBranch` always resolved (either
  *  explicit `team.merger.baseBranch` or the parent worktree's current
@@ -56,8 +50,7 @@ export async function resolveMergerConfig(
 ): Promise<ResolvedMergerConfig> {
   const git = opts.git ?? defaultGitSpawn;
   const enabled = team.merger?.enabled ?? false;
-  const stalenessHours =
-    team.merger?.stalenessHours ?? DEFAULT_MERGER_STALENESS_HOURS;
+  const stalenessHours = team.merger?.stalenessHours ?? DEFAULT_MERGER_STALENESS_HOURS;
 
   let baseBranch = team.merger?.baseBranch;
   if (baseBranch === undefined || baseBranch === "") {

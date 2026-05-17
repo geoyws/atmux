@@ -139,7 +139,11 @@ function hashOf(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function seededEntry(member: string, modalText: string, detectedAt: number): {
+function seededEntry(
+  member: string,
+  modalText: string,
+  detectedAt: number,
+): {
   member: string;
   paneTextHash: string;
   detectedAt: number;
@@ -261,10 +265,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
     expect(flagCalls[0]?.subject).toMatch(/modal-cycling detected on alice/);
 
     // History file now has 3 entries with 3 distinct hashes.
-    const historyRaw = await readFile(
-      join(atmuxDir, "state", "modal-history-alice.json"),
-      "utf8",
-    );
+    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
     const history = JSON.parse(historyRaw) as Array<{ paneTextHash: string }>;
     expect(history).toHaveLength(3);
     expect(new Set(history.map((e) => e.paneTextHash)).size).toBe(3);
@@ -323,10 +324,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
 
     // History file STILL records the second tick's modal (we appended,
     // even though surface actions were dedup'd).
-    const historyRaw = await readFile(
-      join(atmuxDir, "state", "modal-history-alice.json"),
-      "utf8",
-    );
+    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
     const history = JSON.parse(historyRaw) as Array<unknown>;
     expect(history.length).toBeGreaterThanOrEqual(3);
   });
@@ -367,10 +365,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
 
     // History recording still happens — the 3rd modal lands on disk;
     // only the SURFACE action was suppressed.
-    const historyRaw = await readFile(
-      join(atmuxDir, "state", "modal-history-alice.json"),
-      "utf8",
-    );
+    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
     const history = JSON.parse(historyRaw) as Array<unknown>;
     expect(history).toHaveLength(3);
   });
@@ -411,10 +406,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
 
     // History file is NOT updated for exempt members — the per-member
     // detector branch is short-circuited at the enabled+exempt gate.
-    const historyRaw = await readFile(
-      join(atmuxDir, "state", "modal-history-alice.json"),
-      "utf8",
-    );
+    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
     const history = JSON.parse(historyRaw) as Array<unknown>;
     expect(history).toHaveLength(2); // unchanged from seed
   });
@@ -487,10 +479,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
     expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(0);
 
     // History unchanged — narrative pane never trips classifyPaneAsModal.
-    const historyRaw = await readFile(
-      join(atmuxDir, "state", "modal-history-alice.json"),
-      "utf8",
-    );
+    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
     const history = JSON.parse(historyRaw) as Array<unknown>;
     expect(history).toHaveLength(2);
   });

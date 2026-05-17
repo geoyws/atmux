@@ -16,9 +16,9 @@ import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
 import type { QueueMergeFn } from "../../../src/core/committer-sweep.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
-  parseCommitterArgs,
   committer,
   committerSweepVerb,
+  parseCommitterArgs,
   recordingQueueMergeAttempt,
 } from "../../../src/verbs/committer.ts";
 
@@ -85,15 +85,9 @@ interface VerbFixture {
   teamRoot: string;
 }
 
-async function seedTeam(
-  fixture: VerbFixture,
-  cfg: Record<string, unknown>,
-): Promise<void> {
+async function seedTeam(fixture: VerbFixture, cfg: Record<string, unknown>): Promise<void> {
   await mkdir(fixture.atmuxDir, { recursive: true });
-  await writeFile(
-    join(fixture.atmuxDir, "team.json"),
-    JSON.stringify(cfg),
-  );
+  await writeFile(join(fixture.atmuxDir, "team.json"), JSON.stringify(cfg));
 }
 
 function fakeSpawnResult(stdout: string, exitCode = 0): SpawnResult {
@@ -233,8 +227,8 @@ describe("committerSweepVerb — integration with team.json + state.db", () => {
     expect(rc).toBe(0);
     expect(queueCalls).toEqual([{ memberBranch: "geoyws-fe-1", aheadCount: 3 }]);
     // Summary line emitted.
-    const summary = logs.find((l) =>
-      l.includes("team='demo'") && l.includes("checked=2") && l.includes("queued=1"),
+    const summary = logs.find(
+      (l) => l.includes("team='demo'") && l.includes("checked=2") && l.includes("queued=1"),
     );
     expect(summary).toBeDefined();
   });
