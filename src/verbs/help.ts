@@ -109,6 +109,13 @@ Maintenance:
                               cockpit entry + mark parent kanban EPIC done.
                               --skip-checks bypasses the all-tasks-done +
                               clean-worktree gates (lead-override).
+  team sweep-epics [--apply] [--idle-hours N] [--parent <team>] [--json]
+                              ADR-170: enumerate every enabled epic-team and
+                              classify each (DRAIN/SAFE-DISSOLVE/STALE-IDLE/
+                              RISKY/MISSING). Read-only by default; --apply
+                              dissolves only SAFE-DISSOLVE candidates (0 open
+                              tasks + clean worktree + branch pushed to
+                              origin) via the ADR-090 dissolve-epic pipeline.
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability

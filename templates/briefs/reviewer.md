@@ -88,6 +88,22 @@ Source of truth: ADRs → docs → brief templates → source. Code is the LAST 
    - **Approve** → `atmux story advance s-xxx --to merging` and `atmux done <review-task-id> --note "review(s-xxx): approve — N AC clauses covered, M Tasks in cumulative diff, TEST coverage green"`. Committer picks up the merging signal and handles the merge commit.
    - **Reject** → DO NOT advance the Story. Reply via `atmux send planner "[reviewer] s-xxx REJECT — <file:line>: <what's wrong>; <fix sketch>"` AND `atmux story advance s-xxx --to in-progress`. Member fixes; the Story flows back through `testing` → `review` and you get a fresh signoff Task.
 
+## EPIC-done signoff convention (epic-team reviewers — ADR-091 §Decision-anchor #5)
+
+When you ship the **final review-gate Task for an EPIC** on an epic-team (e.g. a Task whose body marks it as the EPIC-closing reviewer signoff), the auto-merge state machine queries for `extra.role = 'reviewer-trunk-signoff'` on a done Task to advance `in_progress → ready_to_merge`. **Missing the convention = the epic-team never advances past `in_progress` regardless of all other gates being clean** (per [ADR-091 §Decision-anchor #5](../../docs/adr/091-) + production query at `src/verbs/epic-merge.ts::defaultResolveGate` post-`t-b2d9c955` fix).
+
+**Per-EPIC checklist additions** (after the normal Approve / commit signoff / ping driver steps):
+
+1. `atmux done <epic-signoff-task-id> --note "review(EPIC e-xxx): approve — N Tasks in EPIC, …"` — normal done.
+2. **`atmux task update <epic-signoff-task-id> --extra '{"role": "reviewer-trunk-signoff"}'`** — stamp the magic value that wakes the auto-merge state machine. **LAST step**, after the move-to-done.
+
+**Verb-resolution gotcha** (2026-05-17): `atmux task update` does NOT currently support `--extra` (`atmux task update <id> [--body <text>] [--deps <a,b>]` only). Sub-task `t-c3c85fbe` filed to add the flag (be lane); until that ships, epic-team reviewers MUST defer the magic-value stamp to driver/operator who can run a one-line bun-eval against the team's `state.db` (must route through `openDatabase` from `src/abstractions/sqlite.ts` so the row format stays consistent — never shell out to `sqlite3` directly from a member pane; bypasses the Zod boundary).
+
+**Cross-refs**:
+- [ADR-091 §Decision-anchor #5](../../docs/adr/091-) — magic-value contract.
+- `src/verbs/epic-merge.ts::defaultResolveGate` — production consumer.
+- Task `t-b2d9c955` (P0 fix 2026-05-17) — landed the `json_extract(extra,'$.role')` query path; until both this brief lands AND epic-team reviewers adopt the convention, the query finds 0 matches and no epic-team advances.
+
 ## System-wide audits
 
 Only when the lead explicitly asks. Exhaustive grep + negative-space proof is the bar — enumerate every site, build a site-by-site table (file/lines/op/invariant/✅❌), state the coverage ratio explicitly. The coverage claim IS the deliverable. A bug found is bonus; sampling is not sufficient. After exhaustive grep of class X, ask "what OTHER classes does the same root cause enable?" — state verdict as "✅ APPROVED within vulnerability class scoped" + list adjacent classes not covered.
