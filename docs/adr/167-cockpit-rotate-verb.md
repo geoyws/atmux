@@ -1,6 +1,6 @@
 # ADR-167: `atmux cockpit rotate <session-name>` — Rung C canonical rotation verb
 
-**Status**: proposed
+**Status**: accepted (2026-05-18 — EPIC e-0b90d6ac code-complete: T2 c376f63 / T3 5245e39 / T4 771a104 / T5 057ec5f / T6 990e1f7 / T7 6c98192 / T8 this commit)
 **Date**: 2026-05-16
 **Driver-ref**: `.atmux/driver-inbox.md` §🆕 BACKLOG ASK 23:34 MYT 2026-05-16
 
@@ -192,4 +192,4 @@ T5 wires the handoff write-path at the TODO(T5) anchor T4 left at `performRespaw
 - [ADR-138](138-verified-send-keys.md) — safeSendKeysWithVerify; all Ctrl-C + spawn-prompt sends route through this.
 - [ADR-155](155-pane-state-classifier.md) — pane-state probe; reusable abstraction for gate-1 + gate-2.
 - [ADR-162](162-atmux-owns-tmux-infrastructure.md) — atmux owns cockpit tmux infrastructure; this verb fits within that scope.
-- `/bruh` skill §3a — manual fallback today; T8 flips to canonical-verb path post-impl.
+- `/bruh` skill §3a (operator-managed; lives under `~/work/journals/.sb/claude-skills/plugins/coordination/skills/bruh/SKILL.md` per the dotfiles flow) — the §3a "manual fallback today" line should be flipped to "use `atmux cockpit rotate <session-name>`" by the operator at the next dotfiles-update cycle. This ADR cannot edit `claude-skills` directly (dotfiles territory per the atmux team's claude-skills carve-out); the operator picks up the change when they refresh `~/.claude/plugins/`.
