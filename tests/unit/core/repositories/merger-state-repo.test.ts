@@ -47,15 +47,25 @@ afterEach(async () => {
 describe("migration v6 — merger_state table", () => {
   test("user_version reaches the current head after openDatabase", () => {
     // The merger_state table is introduced at v5→v6 (this describe
-    // block's scope); v6→v7 is the renumber-redux idempotent backfill
-    // (sqlite-migrations.ts:299-304). When the ladder grows, the
-    // PRAGMA tracks the head rather than the merger-introducing step.
-    // t-475f9571 sibling-F bumped from 6→7 (head moved with v7
-    // landing at the renumber redux).
+    // block's scope); subsequent migrations may extend the ladder
+    // (v6→v7 ADR-147 legacy-DB rescue, v7→v8 ADR-139 refusal_events,
+    // etc). The PRAGMA tracks the LATEST head, not the
+    // merger-introducing step.
+    //
+    // ADR-134 sibling-L (t-5a23861a, 2026-05-17): replaced the
+    // hardcoded literal (last bumped 6→7 by sibling-F t-475f9571)
+    // with a dynamic read off the migrations array — every
+    // append-only ladder extension no longer requires a coupled
+    // test-literal bump in this file. Per-step assertions for each
+    // migration's schema shape stay version-specific in their own
+    // test files; this test asserts only that the openDatabase walker
+    // reaches the last entry's `to` field.
+    const expectedHead = migrations[migrations.length - 1]?.to;
+    expect(expectedHead).toBeGreaterThanOrEqual(6); // sanity: ladder must at least include the v5→v6 introducing this table
     const v = db
       .query("PRAGMA user_version")
       .get() as { user_version: number } | null;
-    expect(v?.user_version).toBe(7);
+    expect(v?.user_version).toBe(expectedHead);
   });
 
   test("table exists with the right columns + types", () => {
