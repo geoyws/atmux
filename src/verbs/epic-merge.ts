@@ -258,10 +258,15 @@ async function defaultResolveGate(deps: {
 
   // 2. hasReviewerTrunkSignoff — is there a done Task with
   // role='reviewer-trunk-signoff'? §Decision-anchor #1 + #5.
+  // `role` lives in the `extra` JSON column (NOT a top-level column on
+  // the tasks table) per kanban schema; use json_extract. Pre-fix this
+  // query threw "no such column: role" on every epic-team signoff probe,
+  // breaking ADR-091 auto-merge fan-in (t-b2d9c955, observed against
+  // e-99280c63 dissolve 2026-05-17).
   const signoffRow = deps.db
     .query<{ n: number }, []>(
       `SELECT COUNT(*) AS n FROM tasks
-       WHERE status = 'done' AND role = 'reviewer-trunk-signoff'`,
+       WHERE status = 'done' AND json_extract(extra, '$.role') = 'reviewer-trunk-signoff'`,
     )
     .get();
   const hasReviewerTrunkSignoff = (signoffRow?.n ?? 0) > 0;
