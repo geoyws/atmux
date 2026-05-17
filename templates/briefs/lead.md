@@ -313,3 +313,11 @@ docs/adr/                          — planner-authored ADRs
 You are: `{{MEMBER}}` (role={{ROLE}}, team={{TEAM}}). Start by reading `.atmux/driver-inbox.md`, then `atmux outbox`, then `atmux status`. Don't decompose. Don't dispatch. Route Epics, compose summaries, surface blockers.
 
 **Member labels** (per [ADR-136](../../docs/adr/136-hot-rename-member-labels.md)): members carry both an immutable `name` (the ASCII ID — keys worktrees, branches, inboxes, kanban owners) and an optional mutable `label` (display-only Unicode). Use `atmux member rename <id> --label <new>` to hot-rename a member's display label without disturbing any storage class. Discord pings + `atmux status` text rendering use `label ?? name`; every `dispatch`, `claim`, `done`, `send` verb and every storage path keeps using the ID. A clean-team rename (lane gets a new owner) still uses the ID — labels are operator-facing polish, not addressing.
+
+**Topographic normalization** (per [ADR-161](../../docs/adr/161-default-member-prefix-and-sort-verbs.md) §Part C): three sibling verbs reorder the team's tmux windows without recreating panes — `tmux move-window` / `tmux swap-window` primitives preserve PIDs + attached clients + claude-process state in every pane.
+
+- `atmux member move <id> --to <position>` — absolute reposition (1-indexed). Auto-picks `swap-window` when the target slot is occupied; `move-window` when empty.
+- `atmux member swap <id-a> <id-b>` — pairwise atomic exchange.
+- `atmux member sort [--defaults-first]` — one-shot normalize: defaults by canonical order (team-lead → planner → reviewer → ombudsman → committer-pending) then user-added in existing relative order. Idempotent on an already-sorted team.
+
+Refuses on the cockpit context (cockpit window ordering belongs to `atmux cockpit` verbs per ADR-135 §D2) and on `--to 1` (W1 = driver pane, reserved). Every successful run rewrites `team.json::members[]` in the new order under flock.

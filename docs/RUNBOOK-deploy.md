@@ -91,6 +91,8 @@ This step is **diagnostic-only** — the manual `B` invocation under cron env is
 
 If the release includes the ADR-135 resolver, the simplest proof is: any `/usr/local/bin/atmux send <member> "<msg>"` from a driver pane to a member pane now succeeds without `tmux: can't find window: <emoji><member>`. Releases predating ADR-135 fail loudly on the first cross-team send.
 
+Post-[ADR-161](adr/161-default-member-prefix-and-sort-verbs.md) §Part B (TR2 commit 5b5981d), the resolver also handles the `_-prefix` form (`🧭_lead`, `🗺️_planner`, etc.) for default-role members; `resolveExistingWindowName` accepts both shapes during the migration window. The smoke command below works against either form — no operator action needed.
+
 ```bash
 /usr/local/bin/atmux send lead "smoke ping from deploy-install"
 # expect: exit 0, no "can't find window" stderr

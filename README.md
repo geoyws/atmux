@@ -709,6 +709,10 @@ atmux rotate <member>
 atmux rotate-lead
 atmux handoff <from> <to> [--reason <r>] [--no-native] [--pause-from]
 atmux add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+atmux member rename <id> --label <new>       # hot-rename display label (ADR-136)
+atmux member move <id> --to <position>       # relocate member's tmux window (ADR-161 §C)
+atmux member swap <id-a> <id-b>              # pairwise window swap (ADR-161 §C)
+atmux member sort [--defaults-first]         # canonical reorder (ADR-161 §C)
 atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
 ```
