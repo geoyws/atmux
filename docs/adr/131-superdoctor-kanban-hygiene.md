@@ -217,3 +217,54 @@ The sub-op's JSON output sits alongside the existing drain-loop fields on `Hygie
 ```
 
 The sub-op is a deliberately separate concern: kanban-hygiene drains data-shape drift (owner-not-in-roster, lane-mismatch, etc.), and phantom-prune drains process-shape drift (claim-without-runner). Keeping them parallel — both invoked from the verb, neither dispatching to the other — preserves §D2's 5-class drain semantics (one fix per tick, severity-ordered ladder) without leaking phantom rows into the `superdoctor_hygiene` table or vice versa.
+
+## Amendments
+
+### 2026-05-17 — Tighten "shipped via SHA" auto-groom criteria (high false-positive rate observed)
+
+**Observation** (planner grooming cycle 2026-05-17 ~01:50 MYT):
+
+A planner-initiated kanban-grooming sweep audited 6 EPIC-parent tasks marked `task.note = "groomed: shipped via SHA <hex>"` by an auto-groom hook (likely a §D2-adjacent rule extending the 5-class drain). Subject-vs-shipped-SHA scope-match check revealed **5 / 6 = ~83% false-positive rate**:
+
+| Task | Subject scope | Groomed-as-shipped SHA | Actual SHA scope | Match? |
+|---|---|---|---|---|
+| `t-7101c40f` | ADR-064 bash decommission | (multiple) | bin/atmux → bun shim; lib/ gone | ✅ true positive |
+| `t-60982d48` | ADR-089 **dogfood** (cockpit verbs walk + nested-cage e2e) | 7be35c4 | ADR-089 recursive sessions[] **impl** + DFS flattener | ❌ scope mismatch (impl, not dogfood-e2e) |
+| `t-c2e544b6` | ADR-092 **doctor D5a/D8/D9** + round-trip e2e | (multiple) | ADR-092 tell-lead cross-team verb; D5a in doctor.ts is ADR-057-referenced; D8+D9+e2e not visible | ❌ partial |
+| `t-8ec31d4d` | ADR-050 **§Resume continuity** (composer + member-pane paste on budget-resume) | 258ea95 | ADR-050 **§Acceptance gate Tier 2** (Cursor) fallback lifecycle | ❌ different §section |
+| `t-66746ab4` | bun-port: task add/update `--epic` + `--story` CLI flags | 407d075 | **bash** kanban verb shipped 2026-04-25; bun-port src/verbs/task.ts has no `"--epic"` literal | ❌ pre-ADR-064 bash artifact |
+| `t-e057d8ff` | ADR-140 T3 medic verb impl | 3cb1697 | `docs(changelog)`: refreshes ADR-140 entry, explicitly says **"T3 + T4 filed and claimable for be-lane"** | ❌ doc-update mistaken for ship |
+
+**Failure mode**: the auto-groom hook appears to tag `task.note = "shipped via SHA X"` based on **loose criteria** — likely an `ADR-NNN` substring match in commit subject — without verifying:
+
+1. Whether the commit's scope (subject + body) covers the task's **specific** scope (§section, sub-task identifier, deliverable surface).
+2. Whether the commit is a code-shipping commit (`feat:` / `fix:`) vs a doc/changelog refresh (`docs:` that may explicitly say the work is NOT yet done).
+3. Whether the commit reflects the modern artifact (TS port post-ADR-064) vs a pre-decommission bash artifact.
+
+**Decision** (extends §D2 5-class drain with a 6th detector class, OR — preferred — tightens §D2's `shipped-via-SHA` write-out criteria):
+
+When auto-groom writes `task.note = "groomed: shipped via SHA X"` on a `todo` task, the SHA-vs-task match MUST require **AT LEAST ONE** of the following stronger signals (not just ADR-NNN substring):
+
+- (a) commit message body explicitly cites the task ID (`t-XXXX`) OR the EPIC's specific sub-task identifier (e.g. `ADR-140 T3`).
+- (b) commit subject prefix is `feat:` or `fix:` (not `docs:` / `chore:` / `test:` alone) AND commit subject contains a substring derivable from the task's subject (not just the ADR number).
+- (c) `git diff <SHA>^..<SHA>` touches a file path that the task body explicitly names as the deliverable.
+
+If ZERO of (a)/(b)/(c) match, the auto-groom MUST instead write a weaker `task.note = "candidate-shipped via SHA X (groom-auto-detected; scope-match unverified)"` AND keep `status='todo'`. Planner-or-medic confirms the scope-match before re-grooming with the canonical `shipped via SHA` form.
+
+**Rationale**:
+
+- False-positive groom-noted closures create silent kanban drift — the task LOOKS done in `atmux task show` but the work hasn't shipped. Downstream consumers (lead status reports, reviewer signoff gates, planner cycle planning) trust the note and skip the real work.
+- The 5/6 sample is small but consistent — the failure mode is structural, not statistical noise.
+- The fix is criteria-tightening at the auto-groom write-path; no schema changes. The `superdoctor_hygiene` table doesn't change; the `tasks.note` text format gains a `candidate-` prefix for unverified matches.
+
+**Implementation surface** (a follow-up Task should impl this — file as a sibling sub-task under the relevant EPIC, OR a fresh standalone Task with body referencing this Amendment):
+
+1. Locate the auto-groom write site — likely `src/core/superdoctor-hygiene/<rule>.ts` OR `src/core/groom.ts` (verify via `rg "groomed: shipped via SHA" src/`).
+2. Add the 3-signal scope-match check before writing the canonical note.
+3. Add the `candidate-` prefix fallback for unverified matches.
+4. Unit-test coverage: 6 test cases mirroring the 5/6 false-positive sample above + 1 true-positive control.
+5. Doctor probe: `groom-candidate-shipped-stale` — warns when a `candidate-shipped` note is older than 7 days without resolution. Nice-to-have, lower priority.
+
+**Reversibility**: high. Criteria can be tuned post-impl based on observed false-positive/false-negative tradeoffs.
+
+**Cross-ref**: planner sweep 2026-05-17 surfaced via `atmux reply` (lead-outbox), see same-date entry mentioning "go-b grooming sweep — surfaced HIGH FALSE-POSITIVE rate on auto-groom 'shipped via SHA' notes. Net: 1 task closed (verified structural), 5 reverted to todo".
