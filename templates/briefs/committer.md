@@ -37,7 +37,7 @@ Two trigger paths converge into the same state machine:
 
 1. **Event-driven (primary)** — socket-pubsub cascade ([ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md)) on `atmux task move <id> done`. You subscribe to **your own team's pubsub socket** (NOT cross-team). Sub-second latency on the common path.
 
-2. **Cron backstop (secondary)** — `atmux committer --sweep` runs at `team.json::autoMerge.cronBackstopMin` (default 10min). Sweep walks every `<base>-<member>` branch and re-evaluates the state machine. Catches:
+2. **Cron backstop (secondary)** — `atmux committer --sweep` runs at `team.json::autoMerge.cronBackstopMin` (default 10min). Sweep walks every `<base>-<m>` branch where `<m>` is in `team.json::members[].name` (roster-gated per t-911c9314 — non-member branches matching the prefix like operator safety backups, archived feature branches, and `<base>-epic-<id>` branches handled by `epic-merge` are excluded) and re-evaluates the state machine. Catches:
    - Tasks that completed before you subscribed (cold-start race).
    - Socket-pubsub deliveries you missed (transient socket churn).
    - Manual `git commit` on a member branch without `atmux task move ... done` (operator hand-fix).

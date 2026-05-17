@@ -252,6 +252,13 @@ export async function committerSweepVerb(
     const deps: CommitterSweepDeps = {
       teamRoot,
       baseBranch,
+      // Roster gate (t-911c9314): non-member branches matching the
+      // `<baseBranch>-*` glob (operator safety backups, archived
+      // branches, epic-team fan-in branches handled by `epic-merge`)
+      // get dropped before the dispatcher sees them. team.json is
+      // already loaded above (`requireTeam`), so the projection is
+      // free; the sweep core does the filter.
+      rosterMembers: team.members.map((m) => m.name),
       mergerStateRepo: repo,
       queueMergeAttempt,
       git,

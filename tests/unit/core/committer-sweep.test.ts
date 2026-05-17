@@ -110,6 +110,12 @@ function buildDeps(opts: {
   queue?: QueueMergeFn;
   calls?: GitCall[];
   gitOverrides?: Partial<Parameters<typeof makeGitSpawn>[0]>;
+  /** Roster gate (t-911c9314). Defaults to the union of every member
+   *  named in `opts.branches` (suffix-after-`<base>-`) so existing
+   *  tests don't have to thread roster explicitly — they continue to
+   *  exercise the post-glob path. Tests targeting the roster gate
+   *  itself pass an explicit subset. */
+  rosterMembers?: ReadonlyArray<string>;
 }): CommitterSweepDeps {
   const branchesStdout = opts.branches.join("\n") + (opts.branches.length > 0 ? "\n" : "");
   const calls = opts.calls ?? [];
@@ -125,9 +131,14 @@ function buildDeps(opts: {
     ...(opts.gitOverrides ?? {}),
   };
   const queue: QueueMergeFn = opts.queue ?? (async () => ({ queued: true }));
+  const prefix = `${BASE_BRANCH}-`;
+  const defaultRoster = opts.branches
+    .filter((b) => b.startsWith(prefix))
+    .map((b) => b.slice(prefix.length));
   return {
     teamRoot: TEAM_ROOT,
     baseBranch: BASE_BRANCH,
+    rosterMembers: opts.rosterMembers ?? defaultRoster,
     mergerStateRepo: repo,
     queueMergeAttempt: queue,
     git: makeGitSpawn(responders, calls),
@@ -166,6 +177,7 @@ describe("committerSweep — branch enumeration", () => {
     const deps: CommitterSweepDeps = {
       teamRoot: TEAM_ROOT,
       baseBranch: BASE_BRANCH,
+      rosterMembers: ["fe-1"],
       mergerStateRepo: repo,
       queueMergeAttempt: async () => ({ queued: true }),
       git: makeGitSpawn({
@@ -175,6 +187,61 @@ describe("committerSweep — branch enumeration", () => {
     const result = await committerSweep(deps);
     expect(result.checked).toBe(0);
     expect(result.entries).toEqual([]);
+  });
+
+  test("roster gate drops non-member branches matching the glob (t-911c9314)", async () => {
+    // Repro: git branch --list `geoyws-*` returns 3 branches; only
+    // `fe-1` and `be-2` are in team.json. `planner-rebased-backup`
+    // (operator safety backup) MUST NOT be queued — that's the
+    // 2026-05-17 geoyws-planner-rebased-backup stuck-state class.
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1", "geoyws-be-2", "geoyws-planner-rebased-backup"],
+      aheadBy: {
+        "geoyws-fe-1": 1,
+        "geoyws-be-2": 1,
+        "geoyws-planner-rebased-backup": 4,
+      },
+      rosterMembers: ["fe-1", "be-2"],
+    });
+    const result = await committerSweep(deps);
+    expect(result.checked).toBe(2);
+    expect(result.queued).toBe(2);
+    const branches = result.entries.map((e) => e.memberBranch).sort();
+    expect(branches).toEqual(["geoyws-be-2", "geoyws-fe-1"]);
+    // The backup branch is silently excluded — no entry, no state-row
+    // transition, no log line. That's the contract: roster-gated
+    // branches never enter the dispatcher pipeline.
+    expect(branches).not.toContain("geoyws-planner-rebased-backup");
+  });
+
+  test("roster gate excludes epic-team `<base>-epic-<id>` branches (handled by epic-merge)", async () => {
+    // Per ADR-091 the parent committer doesn't merge `<base>-epic-<id>`
+    // branches — that's the `atmux epic-merge tick` cron's job. The
+    // roster gate is the upstream defense: epic branches are never in
+    // team.json.members so they're naturally excluded.
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1", "geoyws-epic-e-abc12345"],
+      aheadBy: { "geoyws-fe-1": 1, "geoyws-epic-e-abc12345": 3 },
+      rosterMembers: ["fe-1"],
+    });
+    const result = await committerSweep(deps);
+    expect(result.checked).toBe(1);
+    expect(result.entries[0]?.memberBranch).toBe("geoyws-fe-1");
+  });
+
+  test("empty roster disables the gate (carve-out for misconfigured team.json)", async () => {
+    // The JSDoc carve-out: empty `rosterMembers` array reverts to the
+    // pre-t-911c9314 behavior — every prefix-matching branch becomes a
+    // candidate. Prevents a typo-empty team.json from silently dropping
+    // every member branch on the floor.
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1", "geoyws-be-2"],
+      aheadBy: { "geoyws-fe-1": 1, "geoyws-be-2": 1 },
+      rosterMembers: [],
+    });
+    const result = await committerSweep(deps);
+    expect(result.checked).toBe(2);
+    expect(result.queued).toBe(2);
   });
 });
 
@@ -197,6 +264,7 @@ describe("committerSweep — ahead-of-base check", () => {
     const deps: CommitterSweepDeps = {
       teamRoot: TEAM_ROOT,
       baseBranch: BASE_BRANCH,
+      rosterMembers: ["fe-1"],
       mergerStateRepo: repo,
       queueMergeAttempt: async () => ({ queued: true }),
       git: makeGitSpawn({
@@ -212,6 +280,7 @@ describe("committerSweep — ahead-of-base check", () => {
     const deps: CommitterSweepDeps = {
       teamRoot: TEAM_ROOT,
       baseBranch: BASE_BRANCH,
+      rosterMembers: ["fe-1"],
       mergerStateRepo: repo,
       queueMergeAttempt: async () => ({ queued: true }),
       git: makeGitSpawn({
