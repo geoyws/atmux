@@ -34,7 +34,21 @@ v1 default-enabled recipes: `fix:team-json-schema-drift` / `fix:cron-pollution` 
 
 Aliases routed in `src/cli.ts`: `broadcast` → `send`, `tell-lead` → `tell`, `outbox` → `reply`, `task` → `kanban`, `done` → `claim`, `rotate-lead` → `rotate`, `resume` → `pause`.
 
-Sub-verb dispatchers in `src/cli.ts`: `team` → `src/verbs/team/*` (+ `team-repair-rename.ts`), `member` → `dispatchMemberSubverb` in `src/verbs/member.ts`, `sync` → `dispatchSyncSubverb` in `src/verbs/sync.ts` (first sub-verb `claude-team-json` materializes `.claude/team.json` from `.atmux/team.json` per [ADR-164](../../docs/adr/164-sync-claude-team-json.md); T8 covers the broader RUNBOOK + README sweep).
+Sub-verb dispatchers in `src/cli.ts`: `team` → `src/verbs/team/*` (+ `team-repair-rename.ts`), `member` → `dispatchMemberSubverb` in `src/verbs/member.ts`, `sync` → `dispatchSyncSubverb` in `src/verbs/sync.ts`.
+
+### `sync claude-team-json` ([ADR-164](../../docs/adr/164-sync-claude-team-json.md))
+
+Materializes `.claude/team.json` from `.atmux/team.json` — closes the legacy `.claude/team.json` drift operators hit when migrating off the Claude `/team` skill family. Core compute path lives in `src/core/sync-claude-team-json/{index,mapping,color-map,name-rewrite,drift,diff,types}.ts`; the dispatcher (`src/verbs/sync.ts`) only handles flag-parse, dry-run preview, write-path composition, and `DriftAbortError → exit 65` translation.
+
+Flag surface:
+
+- `--dry-run` — render +/-/space unified-diff preview to stdout + exit 0 without writing (ADR-164 §step 8).
+- `--overwrite-briefs` — replace hand-authored Claude-side `role` text with the atmux role-enum; off-by-default preserves expensive briefs (§OQ-4).
+- `--force` — override drift refusal when the on-disk `_atmuxSync` fingerprint mismatches the file's current member roster (§step 5 + §OQ-5).
+
+Exit codes: `0` success, `64` (EX_USAGE) bad flags, `65` (EX_DATAERR) drift refused.
+
+Operator one-pager: [docs/RUNBOOK-sync.md](../../docs/RUNBOOK-sync.md). Migrator README entry: [README.md §"Migrating off the Claude `/team` skill"](../../README.md).
 
 ## Layer rules (ADR-003)
 

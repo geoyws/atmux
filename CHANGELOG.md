@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔄 `atmux sync claude-team-json` — materialize `.claude/team.json` from `.atmux/team.json` (ADR-164)
+
+- **New verb** `atmux sync <subverb>` (dispatcher mirrors `atmux team` / `atmux member`); first subverb `claude-team-json` per [ADR-164](docs/adr/164-sync-claude-team-json.md). Closes the divergence operators hit when migrating off the Claude `/team` skill family — atmux owns the canonical roster at `.atmux/team.json`, the legacy `.claude/team.json` previously had to be hand-edited every `add-member` / `rotate` / `member rename` cycle.
+- **Mapping** per ADR-164 §"Context mapping table": `name` verbatim with `lead` → `team-lead` rewrite when `role==team-lead` (matches the Claude `/team rotate-lead` hard-coded identifier); `agentType: "team-lead"` emitted for the lead only; `color` resolved via emoji→color table with `.claude/team-colors.json` sidecar override + deterministic random-from-pool fallback (FNV-seeded on member name); `model` verbatim with `"default"` → `"claude-opus-4-7"` expansion per [ADR-094](docs/adr/094-c-alias-spawn-convention.md); `label`/`lane`/`tui`/`cwd`/`command`/`claudeAccount` dropped (atmux-runtime concerns).
+- **`--dry-run`** prints a unified-diff-style preview (+/-/space prefix per field) and exits 0 without writing — safe to fire repeatedly while reviewing.
+- **`--overwrite-briefs`** opt-in replacement of hand-authored long-form Claude-side `role` text with the atmux role-enum; preserve-by-default protects expensive briefs from accidental wipe per ADR-164 §OQ-4.
+- **`--force`** override for drift refusal. Drift detection compares the on-disk `_atmuxSync.sourceFingerprint` (sha256 over canonical-serialized post-sync roster) to the file's current member roster; mismatch refuses with exit `65` (EX_DATAERR) + 3-line hint per ADR-164 §step 5 + §OQ-5. `--force` proceeds + logs `action=drift-forced` to `.atmux/logs/sync-events.jsonl`.
+- **`_atmuxSync` passthrough field** stamped on every write (`{lastSyncedAt, schemaRev: "v1", sourceFingerprint}`). Top-level JSON field per ADR-164 §OQ-1 — the Claude `/team` skill ignores unknown keys, so the marker rides along without breaking the consumer.
+- **Docs**: [docs/RUNBOOK-sync.md](docs/RUNBOOK-sync.md) covers operator flow (when to run, dry-run → review → sync, drift recovery, sidecar override). Project [CLAUDE.md](CLAUDE.md) gains a "Migrators" callout. ADR-164's §"Open questions" OQ-6 (auto-cron + post-write hooks) is deferred to a follow-up.
+
 ### 🔤 Vocabulary refresh — SV register sweep
 
 - **ADR-158 (proposed)** — `martinet` → `sentinel` rename (cockpit W3 role + schema key + source identifiers). Cockpit role-type identifier change; design preserved verbatim per ADR-132. JSON-shim in `src/core/cockpit.ts::migrateMartinetBlockToSentinel` accepts legacy `martinet:` key for one release cycle with deprecation-warn (mirrors ADR-133 `migrateSuperdoctorBlockToMedic` precedent). Source identifiers renamed via TR2 (`src/abstractions/sentinel.ts`, `src/verbs/sentinel.ts`, `src/core/sentinel-escalation.ts`); same-commit docs sweep via TR4 (this entry).
