@@ -9,9 +9,9 @@ This role runs on **`claude-opus-4-7` with `CLAUDE_CODE_EFFORT_LEVEL=xhigh`** pe
 
 ## Bounded scope — fan-in, not per-Task commit
 
-The `templates/briefs/gitter.md` role is for **SHARED-CWD teams only** — teams where every member shares one working directory, the `git add → commit` flow is race-staging-prone, and one teammate (the gitter) commits on behalf of everyone. ADR-088 §Decision-1 makes that role structurally redundant in worktree-isolated teams (`worktreeIsolation: true`): every member has their own `.git/index`, their own `<base>-<member>` branch, and auto-push permission under [[CLAUDE.md Push Policy]].
+The `templates/briefs/committer.md` role is for **SHARED-CWD teams only** — teams where every member shares one working directory, the `git add → commit` flow is race-staging-prone, and one teammate (the committer) commits on behalf of everyone. ADR-088 §Decision-1 makes that role structurally redundant in worktree-isolated teams (`worktreeIsolation: true`): every member has their own `.git/index`, their own `<base>-<member>` branch, and auto-push permission under [[CLAUDE.md Push Policy]].
 
-Worktree-isolated teams DO NOT declare a gitter. If your team declared both a gitter and a merger, that is a config-error; flag it and stop until the lead corrects `team.json`.
+Worktree-isolated teams DO NOT declare a committer. If your team declared both a committer and a merger, that is a config-error; flag it and stop until the lead corrects `team.json`.
 
 ## Pull-model vocabulary
 

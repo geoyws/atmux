@@ -46,7 +46,7 @@ The pull model defines each role by what it *doesn't* do — narrow surfaces, no
 | `team-lead` | 1      | claude      | **Routes** Epic-shaped asks to the planner; composes Epic summary at end via `atmux epic show` + `git log`. **Never decomposes. Never dispatches per-Task.** |
 | `planner`   | 2      | claude      | **Owns decomposition**: Epic → (optional Stories) → Tasks, with `--lane`, `--deps`, `--deliverable`. Writes ADRs in `docs/adr/`. **Never dispatches.**  |
 | `reviewer`  | 3      | claude      | **Story-level signoff** on cumulative diff (not per-commit). Empty `acceptanceCriteria` is automatic REJECT. Never commits.                             |
-| `gitter`    | 4      | claude      | Commits on Task `done` via auto-dispatched commit-Tasks. Finalizes Stories on `merging`. Only member that commits. **Never pushes by default.**         |
+| `committer`    | 4      | claude      | Commits on Task `done` via auto-dispatched commit-Tasks. Finalizes Stories on `merging`. Only member that commits. **Never pushes by default.**         |
 | `devops`    | 5      | claude      | Deploy / env / CI/CD / infra Tasks.                                                                                                                     |
 | `dba`       | 6      | claude      | Schema + migrations + SQL (optional).                                                                                                                   |
 | `member`    | 7…n    | any         | Lane workers — pull next claimable Task in their lane via `atmux claim --next`. **FE workers also own the TEST-lane capstone for UI Stories.**          |
@@ -76,7 +76,7 @@ The kanban — `.atmux/kanban.json` — is the source of truth for work. Three t
 
 **Epic**: `planning → ready → in-progress → review → done`. The Epic auto-flips `in-progress → review` when its last child Task reaches `done` (storyless Epics) — and a `draft Epic summary` Task lands in the lead's inbox.
 
-**Story**: `planning → ready → in-progress → testing → review → merging → done`. A Story auto-flips `testing → review` when its last open child Task is `done` AND that Task is in the `test` lane (TEST capstone). Reviewer advances `review → merging`; gitter advances `merging → done` once the commit chain is clean.
+**Story**: `planning → ready → in-progress → testing → review → merging → done`. A Story auto-flips `testing → review` when its last open child Task is `done` AND that Task is in the `test` lane (TEST capstone). Reviewer advances `review → merging`; committer advances `merging → done` once the commit chain is clean.
 
 **Task**: `todo → in-progress → done` (or `blocked`). Tasks with non-`done` deps are filtered out of `claim --next` automatically.
 
@@ -95,7 +95,7 @@ Lane vocabulary: `fe` / `be` / `db` / `ops` / `test` / `review` / `misc`. UPPER-
 
 When `atmux task move <id> done` lands (or `atmux done <id>`), `lib/kanban.sh` decides side-effects atomically inside one `jq_update`:
 
-- **Always**: if the source Task has `.epic` set, append a new `commit <id>` Task targeting gitter (`owner=gitter`, `status=in-progress`, `lane=misc`, `claimedAt=now`, `epic=null` to prevent recursion). Mirror to `inboxes/gitter.json`.
+- **Always**: if the source Task has `.epic` set, append a new `commit <id>` Task targeting committer (`owner=committer`, `status=in-progress`, `lane=misc`, `claimedAt=now`, `epic=null` to prevent recursion). Mirror to `inboxes/committer.json`.
 - **Story testing → review flip**: if the moved Task is the last open child of its Story AND its lane is `test` AND the Story is currently `testing`, set `story.status=review`.
 - **Storyless-Epic in-progress → review flip**: if the Epic has zero Stories AND the moved Task is the last open child of the Epic AND the Epic is `in-progress`, set `epic.status=review` AND append a `draft Epic summary <eid>` Task to the lead's inbox.
 
@@ -109,7 +109,7 @@ Each side-effect is gated by a flag computed before the write, so the filter sta
                                 ▼
         ┌───────────────────────────────────────────────┐
         │ tasks[t-aaa].status = done                     │
-        │ if .epic   → tasks += [commit-Task → gitter]  │
+        │ if .epic   → tasks += [commit-Task → committer]  │
         │ if last test-lane child of testing Story      │
         │            → stories[s].status = review       │
         │ if last child of storyless in-progress Epic   │
@@ -118,7 +118,7 @@ Each side-effect is gated by a flag computed before the write, so the filter sta
         └───────────────────────────────────────────────┘
                                 │
                                 ▼
-        gitter / reviewer / lead inbox updates land via
+        committer / reviewer / lead inbox updates land via
         _atmux_kanban_push_inbox (mirrors kanban → inbox)
 ```
 
@@ -171,8 +171,8 @@ Every day-file follows a skeleton with append-only sections, each owned by a spe
 
 | Section                       | Written by                                                       |
 |-------------------------------|------------------------------------------------------------------|
-| `## Shipped (kanban→done)`    | gitter post-fan-in (or hygiene-tick backstop) per ADR-147 §D4    |
-| `## Merges (branch→trunk)`    | gitter post-trunk-merge per ADR-145 + ADR-146                    |
+| `## Shipped (kanban→done)`    | committer post-fan-in (or hygiene-tick backstop) per ADR-147 §D4    |
+| `## Merges (branch→trunk)`    | committer post-trunk-merge per ADR-145 + ADR-146                    |
 | `## ADRs landed`              | hygiene-tick on detecting new `docs/adr/*.md`, or ADR author     |
 | `## Complaints adjudicated`   | ombudsman per ADR-147 §D3                                        |
 | `## Doctor regressions`       | medic on red-row escalation (optional; empty most days)          |

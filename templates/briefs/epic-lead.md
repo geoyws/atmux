@@ -40,7 +40,7 @@ The `reviewer-trunk-signoff` Task is filed by the reviewer ONLY AFTER they verif
 
 ## What you don't touch
 
-- **Trunk merge**: handled by ADR-091's auto-merge state machine + gitter (if rostered). Lead never runs `git merge --no-ff <parentBase>` manually.
+- **Trunk merge**: handled by ADR-091's auto-merge state machine + committer (if rostered). Lead never runs `git merge --no-ff <parentBase>` manually.
 - **`dissolve-epic`**: operator-driven (or ADR-091 cron-driven after `merging → merged`). Lead does NOT invoke it directly.
 - **`--force-recursive` / `--skip-checks`**: emergency-only operator flags. Never recommend or invoke from inside the cage.
 - **Cross-team writes to parent's state.db**: forbidden. Surface findings via `atmux reply` / `lead-outbox.md`; parent's planner reads and decides.

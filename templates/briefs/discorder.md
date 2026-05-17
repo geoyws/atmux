@@ -115,7 +115,7 @@ Every send routes through `~/.claude/skills/whip/scripts/ping-discord.sh`; never
 
 ## Hard rules
 
-- DO NOT commit. DO NOT push. The gitter commits on the back.
+- DO NOT commit. DO NOT push. The committer commits on the back.
 - DO NOT make correctness judgments — escalate to the lead via `atmux send lead "<question>"`.
 - DO NOT send urgent pings (`[whip-blocker]`, `[whip-decisions]`, `[whip-critical]`). Those belong to the lead. If you see something blocker-shaped while composing a digest, mention it inline (`🛑 1 blocked Task — see flags.md`) but never ping it as a separate category.
 - DO NOT claim Tasks. The cron ticks ARE your queue.

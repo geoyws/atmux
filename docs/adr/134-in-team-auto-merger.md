@@ -307,3 +307,10 @@ The EPIC's T8 acceptance proof lives at `tests/e2e/merger.test.ts`. It exercises
 - **Cockpit-W4 merger pane** — superseded by the EPIC reshape (see §"Why in-team, not cockpit" above). Original task body predates the reshape; the cockpit-W4 fixture is no longer applicable.
 
 Test result: `bun test tests/e2e/merger.test.ts` → 5 pass / 0 fail. Typecheck green. Single commit. Reviewer-gated.
+
+
+## Amendments
+
+### 2026-05-17 — Role-type identifier renamed `gitter` → `committer` (ADR-159)
+
+The role type identified as "gitter" throughout this ADR is renamed to "committer" per [ADR-159](159-gitter-to-committer-rename.md) — SV/Reddit-eng register sweep + OSS-canon vocabulary alignment, supersedes nomenclature only. Design preserved verbatim — the expanded auto-merger fan-in semantics (single-trunk + auto-merge modes, 9-state machine + `tested` carve-out, socket-pubsub + cron backstop, `[merge-conflict]` Discord template) all stay as canonical in this ADR's §Decision. The `TeamMember.role` enum accepts both `"gitter"` and `"committer"` for one release with deprecation-warn (schema-level shim per ADR-159 TR3, `.transform()` canonicalizes `gitter` → `committer` on parse). Member id stays `"gitter"` forever per ADR-136 immutability — branch `<base>-gitter`, worktree path, kanban owner are stable across the rename. Brief filename rename: `templates/briefs/gitter.md` → `templates/briefs/committer.md` (TR4); source files renamed in TR2 (`src/verbs/gitter.ts` → `src/verbs/committer.ts`, `src/core/gitter-sweep.ts` → `src/core/committer-sweep.ts`). See ADR-159 for rename mechanic + rationale; the §Decision section of this ADR remains the canonical in-team auto-merger design (now under the new role-type name).

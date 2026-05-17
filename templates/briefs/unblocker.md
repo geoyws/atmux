@@ -87,7 +87,7 @@ When inspecting a wedged pane, also peek at `cd <member-cwd> && git rev-parse --
 
 - **HEAD on a `*-staging` branch (`<product>-staging`) with unpushed commits.** Primary-staging is operator-manual-only per the project's push policy. Same shape — escalate to driver-inbox tagged `🚨 staging-direct-commit`.
 
-For both shapes, the unblocker does NOT execute pushes, NOT propose pushes in `atmux send` to the wedged member, and NOT auto-route to gitter (gitter's refuse-gate would catch the push anyway, but the loop is wasteful). Driver decides the recovery path.
+For both shapes, the unblocker does NOT execute pushes, NOT propose pushes in `atmux send` to the wedged member, and NOT auto-route to committer (committer's refuse-gate would catch the push anyway, but the loop is wasteful). Driver decides the recovery path.
 
 ## Socket-driven messaging (per [ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md))
 

@@ -2,7 +2,7 @@
 
 Operator-facing playbook for the team-of-teams (epic-team) lifecycle that atmux exercises end-to-end in `tests/e2e/team-of-teams-pre-sopx.test.ts`. Pairs ADR-089 (cockpit-walk DFS substrate) + ADR-090 (epic-team lifecycle) + ADR-091 (epic-merge state machine) + ADR-092 (cross-team tell-lead) into a single operator narrative.
 
-⚠️ **Status: phase-2 partial — cross-team `tell-lead` paths (§Cross-team tell-lead) flipped to Verified per t-bc4fdb19. Lifecycle walk (§Sopx adoption) + doctor checks (§Doctor checks) remain phase-1 / t-c2e544b6 scope. Operator-runnable surfaces (`atmux team spawn-epic` / `dissolve-epic` / `epic-merge` cron) are now on the up-impl-3 branch via cherry-pick of `ba7ee3f` (ADR-092) + `a670648` (phase-1 skeleton); gitter fan-in to trunk is in flight (gitter-stuck-bug t-f4088323).**
+⚠️ **Status: phase-2 partial — cross-team `tell-lead` paths (§Cross-team tell-lead) flipped to Verified per t-bc4fdb19. Lifecycle walk (§Sopx adoption) + doctor checks (§Doctor checks) remain phase-1 / t-c2e544b6 scope. Operator-runnable surfaces (`atmux team spawn-epic` / `dissolve-epic` / `epic-merge` cron) are now on the up-impl-3 branch via cherry-pick of `ba7ee3f` (ADR-092) + `a670648` (phase-1 skeleton); committer fan-in to trunk is in flight (committer-stuck-bug t-f4088323).**
 
 ## When to spawn an epic-team
 
@@ -29,7 +29,7 @@ Driver-inbox 14:03 MYT lines 3122-3132 documented the sopx adoption sequence. Ca
 2. **Spawn 2 parallel throwaway epics.** `atmux team spawn-epic --from <parent> --epic-name <e1> --roster epic-default` + `atmux team spawn-epic --from <parent> --epic-name <e2> --roster epic-default`. Cockpit window for each epic auto-launches per ADR-089's recursive walk.
 3. **Seed mock Tasks under each epic.** `atmux task add --epic <epic-id> --lane fe "..."` + `--lane be "..."` against each epic's `<root>/.atmux/epic-<name>/state.db`.
 4. **Walk each epic's lifecycle.** Per epic: members claim → commit on `<epic-trunk>-<member>` → `atmux done`. Watch `atmux status` for cadence; expect ≤30min per Task ship.
-5. **Trigger fan-in.** Per epic: `atmux gitter --sweep` (or wait for the `*/10` cron tick). Per-member branches fan into `<epic-trunk>` via ADR-091 state machine (`recording → merging → merged`).
+5. **Trigger fan-in.** Per epic: `atmux committer --sweep` (or wait for the `*/10` cron tick). Per-member branches fan into `<epic-trunk>` via ADR-091 state machine (`recording → merging → merged`).
 6. **Dissolve each epic.** `atmux team dissolve-epic --epic <e1> --soft` + `--epic <e2> --soft`. Soft-stop notices members → grace window → resume manifest written → worktree pruned → cockpit entry removed → cron block removed. ADR-090↔091 wire-up triggers epic-trunk → parent-trunk fan-in on the way out.
 7. **Verify parent's kanban.** Both `KanbanEpic` rows are `status='done'` + `completedAt` populated. Parent `git log --oneline --merges` shows 2 new merge commits (one per epic).
 8. **Sopx flip readiness.** `atmux complaints list --status open` empty; `atmux doctor` green on the parent + zero residual `epic-team` entries in `cockpit.sessions[]`. **Sopx adoption can begin.**
@@ -58,7 +58,7 @@ If any of these go wrong in operator-runtime, the rollback path is non-destructi
 | Symptom                                                  | Recovery                                                                                                                                  |
 |----------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
 | `spawn-epic` fails after partial cockpit-write           | `atmux team dissolve-epic --epic <name> --force` (skips soft-stop grace, kills cage, prunes worktree) → re-spawn.                          |
-| Epic-team gitter stuck mid `recording`                   | `atmux gitter --reset --epic <name>` clears the in-memory state machine + lets the next `*/10` sweep re-trigger from clean.               |
+| Epic-team committer stuck mid `recording`                   | `atmux committer --reset --epic <name>` clears the in-memory state machine + lets the next `*/10` sweep re-trigger from clean.               |
 | Parent's `KanbanEpic` row stuck in `merging` post-dissolve | `atmux task move <epicId> done --as <operator>` (driver-only refuse-gate per ADR-033 — operator must use `--as driver` or have driverOnly bypass). Investigate via `atmux doctor` for orphan check. |
 | Cron block lingers after dissolve                        | `atmux cron-uninstall --team <parent>-epic-<name>` (post-ADR-091 verb; manual `crontab -e` is the operator-side fallback).                  |
 
@@ -98,7 +98,7 @@ Three cross-cutting concerns the post-ship audit surfaced. None block phase-1 / 
 
 - ADR-089 — cockpit-walk DFS substrate (load-bearing for `--team <name>` lookup).
 - ADR-090 — epic-team lifecycle (TeamEpic + KanbanEpic + spawn-epic / dissolve-epic verbs + epic-rosters/default + epic-lead brief).
-- ADR-091 — epic-merge state machine (`recording → merging → merged`) + epic-merge cron + gitter epic-team brief.
+- ADR-091 — epic-merge state machine (`recording → merging → merged`) + epic-merge cron + committer epic-team brief.
 - ADR-092 — cross-team tell-lead (parent ↔ epic-lead routing + caller-scope refusal).
 - ADR-099 — `EX_NOPERM=77` refusal exit code (used by cross-team caller-scope gate).
 - ADR-033 — driver-only refuse-gate (applies to parent-kanban Epic-row state transitions).

@@ -276,3 +276,10 @@ Wider acceptance (T2 follow-up Task) — spawn integration + brief sweep + memor
 - **Cross-team gitter sharing** — atmux's gitter does NOT serve other teams (sopx, unum). Each team spawns its own gitter; same as the prior multi-team pattern.
 - **Gitter cage tier change** — gitter inherits Tier 1 naturally from atmux-team's cage (per ADR-058 / ADR-134 §Cage tier). No new tier carve-out.
 - **PR-mode gitter** — schema-accept-but-runtime-noop per ADR-091 pre-flag #8; ADR-145 ships auto-merge mode only.
+
+
+## Amendments
+
+### 2026-05-17 — Role-type identifier renamed `gitter` → `committer` (ADR-159)
+
+The role type identified as "gitter" throughout this ADR is renamed to "committer" per [ADR-159](159-gitter-to-committer-rename.md) — SV/Reddit-eng register sweep + OSS-canon vocabulary alignment, supersedes nomenclature only. Design preserved verbatim — the spawn pattern + single-owner trunk-merge serialization + worker-side commit ownership policy described in §Decision remain canonical under the new role-type name. The `TeamMember.role` enum accepts both `"gitter"` and `"committer"` for one release with deprecation-warn (schema-level shim per ADR-159 TR3). Member id stays `"gitter"` forever per ADR-136 immutability. The 2026-05-14 policy reversal captured in §Context (operator: *"or get gitter to merge"* / *"gitter should be merging not the lead"*) — operator's literal quotes retain the legacy identifier verbatim as historical record per ADR-159 §Decision-anchor #3 append-only convention; ADR-145 §Context lines 6/38/77 cite those quotes unchanged. See ADR-159 for rename mechanic + rationale.

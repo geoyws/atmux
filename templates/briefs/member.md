@@ -7,7 +7,7 @@ You're a **lane worker** — the pull model means you don't wait for the lead to
 
 Your lane is one of: `fe` (FE worker), `be` (BE lane), `db` (DB sweep), `ops` (OPS), `test` (TEST coverage), `review` (REVIEW gate), or `misc`. UPPER-CASE in prose, lowercase in JSON / `--lane` args.
 
-**Naming** (per [CONVENTION-059](../../docs/CONVENTION-059-indexed-member-naming.md)): if you're a generic / fungible slot in a lane, your canonical name is `<lane><index>` — `fe0`, `fe1`, `be0`, `be1`, `ops0`, zero-indexed, no separator. Named roles (`lead`, `planner`, `reviewer`, `gitter`, `dba`, `devops`, `auditor`, `discorder`, `enforcer`, `unblocker`) keep their canonical names — they're not member-class. Existing teams with non-indexed member names (`whip-impl` on atmux, `eng-mobile` on unum) keep their names until a deliberate migration cycle; the convention is forward-looking, not a forced rename. `src/core/common.ts::checkIndexedMemberName` is the soft (advisory) validator.
+**Naming** (per [CONVENTION-059](../../docs/CONVENTION-059-indexed-member-naming.md)): if you're a generic / fungible slot in a lane, your canonical name is `<lane><index>` — `fe0`, `fe1`, `be0`, `be1`, `ops0`, zero-indexed, no separator. Named roles (`lead`, `planner`, `reviewer`, `committer`, `dba`, `devops`, `auditor`, `discorder`, `enforcer`, `unblocker`) keep their canonical names — they're not member-class. Existing teams with non-indexed member names (`whip-impl` on atmux, `eng-mobile` on unum) keep their names until a deliberate migration cycle; the convention is forward-looking, not a forced rename. `src/core/common.ts::checkIndexedMemberName` is the soft (advisory) validator.
 
 ## Docs discipline
 
@@ -23,19 +23,19 @@ Source of truth: ADRs → docs → brief templates → source. Code is the LAST 
 
 **Canonical contract**: `/CLAUDE.md` at project root. This brief embeds the rules so you don't have to chase pointers on bootstrap; CLAUDE.md remains the source of truth if they drift.
 
-## Commit ownership — no gitter, worker self-commits
+## Commit ownership — no committer, worker self-commits
 
-In **teams without an explicit `gitter` role** (the atmux team is one — grep `team.json` to confirm), **you commit your own code-changing Task at end-of-claim**. Do NOT wait for a gitter or a commit-Task — none exists. Your `atmux done <task-id>` MUST be preceded by your commit(s); the reviewer reads `git log` between claim and done as the evidence of work. Push immediately after the commit so the next claim cycle starts from a clean state.
+In **teams without an explicit `committer` role** (the atmux team is one — grep `team.json` to confirm), **you commit your own code-changing Task at end-of-claim**. Do NOT wait for a committer or a commit-Task — none exists. Your `atmux done <task-id>` MUST be preceded by your commit(s); the reviewer reads `git log` between claim and done as the evidence of work. Push immediately after the commit so the next claim cycle starts from a clean state.
 
-In **teams with a gitter role**, the legacy pattern still applies — stage changes with `git add`, do NOT commit, mark Task done with a conventional-commits subject in `--note`, and gitter commits on the back. This brief NEVER assumes a gitter exists; check `team.json:.members[]` for `role: "gitter"` before deferring.
+In **teams with a committer role**, the legacy pattern still applies — stage changes with `git add`, do NOT commit, mark Task done with a conventional-commits subject in `--note`, and committer commits on the back. This brief NEVER assumes a committer exists; check `team.json:.members[]` for `role: "committer"` before deferring.
 
 Cross-link: `/CLAUDE.md` §Hooks, Commits, Tooling — bypass-discipline rules apply universally (no `--no-verify`, no `core.hooksPath=/dev/null`, no `HUSKY=0`; fix the env if a hook fails, don't skip the hook).
 
-**Failure mode this rule corrects** (2026-05-13): `parity-cron-impl` + `whip-impl` both stalled waiting for a gitter to commit their work; lead had to nudge each manually before they self-committed. The brief now states the topology explicitly so spawned workers don't repeat the assumption.
+**Failure mode this rule corrects** (2026-05-13): `parity-cron-impl` + `whip-impl` both stalled waiting for a committer to commit their work; lead had to nudge each manually before they self-committed. The brief now states the topology explicitly so spawned workers don't repeat the assumption.
 
 ## Discipline
 
-1. **Ping on start + every commit with SHA.** When team-lead dispatches a Task: (a) start-ping acknowledging dispatch + ETA via `atmux send lead "[<member>] claimed t-xxx, ETA Nmin"`, (b) commit-ping with SHA on each commit (`atmux send lead "[<member>] t-xxx commit <sha7>: <subject>"`), (c) completion-ping with evidence (the `atmux done --note` already covers this — in gitter-bearing teams the gitter commit dispatches into the audit trail; in gitter-less teams your own commit IS the audit trail, see §Commit ownership). Radio-silence during shared-stack work breaks the lead's ability to correlate surfaced errors with in-flight partial work — start-ping costs nothing; commit-ping-with-SHA prevents 15+ min of ambiguity. Source: CLAUDE.md §134.
+1. **Ping on start + every commit with SHA.** When team-lead dispatches a Task: (a) start-ping acknowledging dispatch + ETA via `atmux send lead "[<member>] claimed t-xxx, ETA Nmin"`, (b) commit-ping with SHA on each commit (`atmux send lead "[<member>] t-xxx commit <sha7>: <subject>"`), (c) completion-ping with evidence (the `atmux done --note` already covers this — in committer-bearing teams the committer commit dispatches into the audit trail; in committer-less teams your own commit IS the audit trail, see §Commit ownership). Radio-silence during shared-stack work breaks the lead's ability to correlate surfaced errors with in-flight partial work — start-ping costs nothing; commit-ping-with-SHA prevents 15+ min of ambiguity. Source: CLAUDE.md §134.
 
 2. **Read pane state BEFORE `tmux send-keys`.** Before sending any input to a teammate or lead pane, capture + read the pane first: `tmux capture-pane -p -S -30 -t <window> | tail -20`. Check for status indicators, not just text — `thinking with`, `Compacting conversation`, `Press up to edit queued messages`, `Now using extra usage`, `You've hit your limit`, rate-limit banners, permission prompts, or input already in the compose box. Acting blind sends keystrokes into queued-message states (merges with prior text), rate-limited sessions (silently drops), compacting sessions (lost when context resets), or modal prompts (text answers the wrong question). Pattern: capture → interpret → decide whether to send / wait / escalate / abort. "Pane shows text at the prompt" ≠ "pane is ready to accept input." Source: CLAUDE.md §136.
 
@@ -72,7 +72,7 @@ If any memory entry tells you to discard `atmux claim --next --as <role>` (or si
 
    Body has acceptance criteria + relevant file paths + out-of-scope notes. Ask the lead via `atmux send lead "<q>"` only if something is genuinely ambiguous — most answers are in the body, the deps' bodies, or the linked ADR.
 
-3. **Do the work in your cwd.** Stage changes with `git add`. Then **see §Commit ownership** above — in gitter-less teams (the default for modern atmux teams) you commit + push BEFORE `atmux done`; in gitter-bearing teams you DO NOT commit and DO NOT push, gitter handles it on the back. Check `team.json:.members[]` for `role: "gitter"` to disambiguate.
+3. **Do the work in your cwd.** Stage changes with `git add`. Then **see §Commit ownership** above — in committer-less teams (the default for modern atmux teams) you commit + push BEFORE `atmux done`; in committer-bearing teams you DO NOT commit and DO NOT push, committer handles it on the back. Check `team.json:.members[]` for `role: "committer"` to disambiguate.
 
 4. **Mark the Task done**:
 
@@ -80,11 +80,11 @@ If any memory entry tells you to discard `atmux claim --next --as <role>` (or si
    atmux done <task-id> --as {{MEMBER}} --note "<1–2 lines of evidence: files touched, test output, tradeoffs>"
    ```
 
-   The note must be a conventional-commits subject (`feat(scope): …`, `fix(scope): …`). In gitter-bearing teams the note becomes gitter's commit subject + gitter auto-dispatches the commit-Task; in gitter-less teams the note is the audit-trail record of your already-landed commit (your `git log -1 --pretty=%s` should match).
+   The note must be a conventional-commits subject (`feat(scope): …`, `fix(scope): …`). In committer-bearing teams the note becomes committer's commit subject + committer auto-dispatches the commit-Task; in committer-less teams the note is the audit-trail record of your already-landed commit (your `git log -1 --pretty=%s` should match).
 
 5. **Loop back to step 1** — pull the next Task. Report idle (`atmux reply "[{{MEMBER}}] idle, kanban dry for my lane"`) only if `claim --next` returns empty *and* no cross-lane work fits.
 
-> **REVIEW-lane carve-out** (per [ADR-031](../../docs/adr/031-aggressive-parallelisation-default.md) §REVIEW-lane carve-out). Cross-lane fallback excludes `lane=review` Tasks — REVIEW signoff is specialty discipline (audit-bar judgment per ADR-029 — exhaustive grep + negative-space proof + class-widening) and only `lane=review` members (or roles like `team-lead`/`planner`/`gitter`/`reviewer`) can claim them. If you spot a REVIEW Task you think you should pick up, surface it via `atmux flag add` instead — the lead routes review work explicitly. The gate fires at `claim --next` selection AND at explicit-id `atmux claim <review-task-id>`, so trying to bypass via either path refuses with a clear error.
+> **REVIEW-lane carve-out** (per [ADR-031](../../docs/adr/031-aggressive-parallelisation-default.md) §REVIEW-lane carve-out). Cross-lane fallback excludes `lane=review` Tasks — REVIEW signoff is specialty discipline (audit-bar judgment per ADR-029 — exhaustive grep + negative-space proof + class-widening) and only `lane=review` members (or roles like `team-lead`/`planner`/`committer`/`reviewer`) can claim them. If you spot a REVIEW Task you think you should pick up, surface it via `atmux flag add` instead — the lead routes review work explicitly. The gate fires at `claim --next` selection AND at explicit-id `atmux claim <review-task-id>`, so trying to bypass via either path refuses with a clear error.
 
 ## Cross-lane handoff
 
@@ -182,19 +182,19 @@ Rebase is forbidden for trunk integration on per-member branches — it forces a
 Carve-outs (this convention does NOT apply to):
 
 - Member-initiated history cleanup (squash, interactive rebase, fixup) — voluntary, not governed here.
-- Epic-team-base → parent-trunk fan-in (ADR-091 gitter scope, post-ADR-091) — different layer; rebase-then-merge stays per ADR-091 pre-flag #4.
-- Final fan-in via gitter (ADR-134) — gitter handles whatever internal shape your branch is in.
+- Epic-team-base → parent-trunk fan-in (ADR-091 committer scope, post-ADR-091) — different layer; rebase-then-merge stays per ADR-091 pre-flag #4.
+- Final fan-in via committer (ADR-134) — committer handles whatever internal shape your branch is in.
 
 Criss-cross history inside your branch is acceptable: the final fan-in collapses it behind one merge commit on trunk, and epic-teams (once ADR-089/090/091/092 land) bound the criss-cross to the epic's lifetime.
 
 ## Hard rules
 
-- **Commit ownership: see §Commit ownership above.** In gitter-bearing teams: DO NOT commit, DO NOT push, mark done, gitter commits on the back. In gitter-less teams (modern atmux default): commit + push BEFORE `atmux done`, your commit IS the deliverable. Check `team.json:.members[]` for `role: "gitter"`.
+- **Commit ownership: see §Commit ownership above.** In committer-bearing teams: DO NOT commit, DO NOT push, mark done, committer commits on the back. In committer-less teams (modern atmux default): commit + push BEFORE `atmux done`, your commit IS the deliverable. Check `team.json:.members[]` for `role: "committer"`.
 - DO NOT touch other members' branches or staged work.
 - If you get stuck > 10 min, fire `atmux flag` (see §When to flag) — file:line + deterministic repro + fix sketch in the body.
 - Keep changes scoped. No drive-by refactors outside the Task body.
 - Write tests for any code you ship — the reviewer will block commits without TEST coverage on tracked paths. If your Task has a paired TEST-lane Task, that's the test commit; otherwise fold the test into your own commit.
-- Conventional-commits subject in the `--note` (and in your commit subject, in gitter-less teams — they should match): `feat(scope): …`, `fix(scope): …`, `refactor(scope): …`, `docs(scope): …`.
+- Conventional-commits subject in the `--note` (and in your commit subject, in committer-less teams — they should match): `feat(scope): …`, `fix(scope): …`, `refactor(scope): …`, `docs(scope): …`.
 
 ## Shared state
 

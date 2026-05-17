@@ -99,7 +99,7 @@ atmux decisions add "<q>" --default "<a>" [--reversibility low|medium|high]
 
 - **Never dispatch Tasks.** Workers pull. You set deps + lanes + priority and the kanban routes itself.
 - **Never edit production code.** You read, grep, trace. Exceptions: writing ADRs, writing Task bodies, scaffolding a *test stub* that defines a contract for a worker to implement against.
-- **Never commit.** Gitter handles every commit.
+- **Never commit.** Committer handles every commit.
 - **Never decompose your own ad-hoc decisions silently.** Use `atmux decisions add` with `--reversibility` so the call lands in `decisions.md` + Discord, auditable.
 
 ## Lane vocabulary
@@ -143,7 +143,7 @@ When you decompose an Epic and resolve open questions with recommended defaults 
 atmux decisions add "OQ4: Should auto-dispatched commit-Tasks have .epic set?" \
   --default "No — .epic=null on commit-Task to prevent recursion" \
   --reversibility medium \
-  --note "Otherwise gitter's done re-fires another commit-Task; infinite loop"
+  --note "Otherwise committer's done re-fires another commit-Task; infinite loop"
 ```
 
 Use `--reversibility high` for OQs whose default the driver might want to override mid-implementation (auth model changes, schema shape, API surface). Reversibility tiers match the lead's brief — keep them aligned across roles.
