@@ -1,20 +1,30 @@
-// Unit tests for src/verbs/sync.ts (ADR-164 T2 base + T4 flag-parse + T6 --dry-run).
+// Unit tests for src/verbs/sync.ts (ADR-164 T2 base + T4 flag-parse + T5
+// write path + T6 --dry-run).
 //
 // Composed coverage:
 //   - T2 (t-a890648c): dispatcher surface — bare invocation, empty-string
 //     subverb, unknown subverb, known-subverb routing.
 //   - T4 (t-87e81c8e): flag-parse surface — `--overwrite-briefs` accepted,
 //     unknown `-`-prefixed flag refused, positional arg refused.
+//   - T5 (t-c2b757c1 + 712b197 wire-through): `--force` flag-parse,
+//     write path (writeSync) atomic-writes .claude/team.json with the
+//     _atmuxSync marker, DriftAbortError → exit 65 + 3-line hint to
+//     stderr, --force overrides drift.
 //   - T6 (t-fe4a570e): `--dry-run` parses + wires through computeMappedTeam
 //     → renderDiff → stdout sink; returns 0 without writing. Fresh-file
 //     and existing-file cases both covered.
 //
-// T5 (drift / --force) and T7 (integrated bats round-trip) layer on top.
+// T7 (t-4329b053) integrated bats round-trip layers atop these.
 
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  EX_DATAERR,
+  SYNC_MARKER_KEY,
+  computeFingerprint,
+} from "../../../src/core/sync-claude-team-json/drift.ts";
 import { UsageError } from "../../../src/errors.ts";
 import { dispatchSyncSubverb } from "../../../src/verbs/sync.ts";
 
@@ -36,31 +46,74 @@ describe("dispatchSyncSubverb", () => {
     await expect(dispatchSyncSubverb(["frobnicate"])).rejects.toThrow(/claude-team-json/);
   });
 
-  test("claude-team-json (no flags) → stub error pointing at T4/T5 write path", async () => {
-    // T6 (t-fe4a570e) ships the --dry-run preview path. The non-dry-run
-    // write path still throws stub-status pointing at T4 + T5 follow-ups
-    // — the dispatcher itself routed correctly (an unknown-subverb path
-    // would surface UsageError instead, not plain Error).
-    await expect(dispatchSyncSubverb(["claude-team-json"])).rejects.toThrow(
-      /write path not yet implemented.*T4.*T5/,
-    );
+  test("claude-team-json (no flags, no .atmux/team.json) → surfaces actionable error (routing OK)", async () => {
+    // Routing assertion: the dispatcher reaches the claude-team-json
+    // subverb (an unknown-subverb path would surface UsageError instead,
+    // not the plain Error below). Pin `dir` + `stopAt` to a fresh tmpdir
+    // with no team.json so the walk-up doesn't drift onto the parent
+    // atmux repo's own .atmux/. writeSync's computeMappedTeam refuses
+    // with "no .atmux/team.json" — proving we got past the dispatcher
+    // into the real handler. Full happy-path write coverage lives in
+    // the "write path (T5)" block below + the bats round-trip +
+    // tests/unit/core/sync-claude-team-json/index.test.ts.
+    const root = await mkdtemp(join(tmpdir(), "sync-route-bare-"));
+    const atmuxDir = join(root, ".atmux");
+    const claudeDir = join(root, ".claude");
+    await mkdir(atmuxDir, { recursive: true });
+    try {
+      await expect(
+        dispatchSyncSubverb(["claude-team-json"], {
+          dir: atmuxDir,
+          claudeDir,
+          stopAt: root,
+        }),
+      ).rejects.toThrow(/no \.atmux\/team\.json/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("claude-team-json --overwrite-briefs parses + routes (T4 flag-parse)", async () => {
-    // T4 (t-87e81c8e) parses --overwrite-briefs. Without --dry-run the
-    // write path is still stub (T4 brief-preserve write wiring + T5 drift
-    // land in follow-ups), so the dispatcher throws the not-yet-implemented
-    // marker for the write branch.
-    await expect(
-      dispatchSyncSubverb(["claude-team-json", "--overwrite-briefs"]),
-    ).rejects.toThrow(/write path not yet implemented/);
+    const root = await mkdtemp(join(tmpdir(), "sync-route-briefs-"));
+    const atmuxDir = join(root, ".atmux");
+    const claudeDir = join(root, ".claude");
+    await mkdir(atmuxDir, { recursive: true });
+    try {
+      await expect(
+        dispatchSyncSubverb(["claude-team-json", "--overwrite-briefs"], {
+          dir: atmuxDir,
+          claudeDir,
+          stopAt: root,
+        }),
+      ).rejects.toThrow(/no \.atmux\/team\.json/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
-  test("claude-team-json unknown flag throws UsageError (T4 flag-parse)", async () => {
+  test("claude-team-json --force parses + routes (T5 flag-parse)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sync-route-force-"));
+    const atmuxDir = join(root, ".atmux");
+    const claudeDir = join(root, ".claude");
+    await mkdir(atmuxDir, { recursive: true });
+    try {
+      await expect(
+        dispatchSyncSubverb(["claude-team-json", "--force"], {
+          dir: atmuxDir,
+          claudeDir,
+          stopAt: root,
+        }),
+      ).rejects.toThrow(/no \.atmux\/team\.json/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude-team-json unknown flag throws UsageError (T4 + T5 flag-parse)", async () => {
     // `--frobnicate` is not a recognized flag at any task; the parser
     // refuses with UsageError rather than swallowing it silently. Locks
     // in the typo-protection promise of the flag-parse surface across
-    // T4 + T6 (and the future T5 --force).
+    // T4 + T5 + T6.
     await expect(
       dispatchSyncSubverb(["claude-team-json", "--frobnicate"]),
     ).rejects.toThrow(UsageError);
@@ -230,6 +283,171 @@ describe("dispatchSyncSubverb — --dry-run (T6 / t-fe4a570e)", () => {
           stdout: () => {},
         }),
       ).rejects.toThrow(/no \.atmux\/team\.json/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("dispatchSyncSubverb — write path (T5 / t-c2b757c1)", () => {
+  // End-to-end coverage of the non-dry-run path through the verb
+  // dispatcher: writeSync runs, .claude/team.json is materialized, the
+  // _atmuxSync marker is stamped, drift detection / --force routing
+  // surface as exit 0 vs exit 65. Pairs with the unit-level writeSync
+  // coverage in tests/unit/core/sync-claude-team-json/index.test.ts — the
+  // dispatcher tests assert exit codes + stderr surface, the unit tests
+  // assert the SyncEvent log + payload composition.
+
+  const FIXED_TS_DATE = new Date("2026-05-17T10:00:00.000Z");
+  const FIXED_NOW = () => FIXED_TS_DATE;
+
+  const ATMUX_TEAM_FIXTURE = {
+    name: "fixture-team",
+    description: "write-path coverage roster",
+    members: [
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "be-1", role: "member", emoji: "📦" },
+    ],
+  };
+
+  async function seedEnv() {
+    const root = await mkdtemp(join(tmpdir(), "sync-claude-team-json-write-"));
+    const atmuxDir = join(root, ".atmux");
+    const claudeDir = join(root, ".claude");
+    await mkdir(atmuxDir, { recursive: true });
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify(ATMUX_TEAM_FIXTURE),
+    );
+    return { root, atmuxDir, claudeDir };
+  }
+
+  test("fresh-file write → exit 0, .claude/team.json materialized with marker", async () => {
+    const { root, atmuxDir, claudeDir } = await seedEnv();
+    try {
+      const stderrBuf: string[] = [];
+      const rc = await dispatchSyncSubverb(["claude-team-json"], {
+        dir: atmuxDir,
+        claudeDir,
+        stopAt: root,
+        now: FIXED_NOW,
+        stderr: (s) => stderrBuf.push(s),
+      });
+      expect(rc).toBe(0);
+      expect(stderrBuf).toHaveLength(0); // no drift on fresh file
+
+      const raw = await readFile(join(claudeDir, "team.json"), "utf8");
+      const written = JSON.parse(raw);
+      expect(written.name).toBe("fixture-team");
+      expect(written.members).toHaveLength(2);
+      expect(written.members[0].name).toBe("team-lead"); // rewritten
+      const marker = written[SYNC_MARKER_KEY];
+      expect(marker.schemaRev).toBe("v1");
+      expect(marker.lastSyncedAt).toBe(FIXED_TS_DATE.toISOString());
+      expect(marker.sourceFingerprint).toBe(
+        computeFingerprint(written.members),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("drift detected without --force → exit 65 + 3-line hint to stderr", async () => {
+    const { root, atmuxDir, claudeDir } = await seedEnv();
+    // Seed .claude with a marker whose fingerprint won't match.
+    await writeFile(
+      join(claudeDir, "team.json"),
+      JSON.stringify({
+        name: "fixture-team",
+        members: [
+          { name: "team-lead", agentType: "team-lead", color: "white" },
+          { name: "extra-1", color: "red" }, // hand-added
+        ],
+        [SYNC_MARKER_KEY]: {
+          lastSyncedAt: "2026-01-01T00:00:00.000Z",
+          schemaRev: "v1",
+          sourceFingerprint:
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        },
+      }),
+    );
+    try {
+      const stderrBuf: string[] = [];
+      const rc = await dispatchSyncSubverb(["claude-team-json"], {
+        dir: atmuxDir,
+        claudeDir,
+        stopAt: root,
+        now: FIXED_NOW,
+        stderr: (s) => stderrBuf.push(s),
+      });
+      expect(rc).toBe(EX_DATAERR);
+      expect(rc).toBe(65);
+      // One-line drift warning + 3-line hint + 1-line "refusing"
+      // follow-up are all routed to stderr.
+      const stderrOut = stderrBuf.join("");
+      expect(stderrOut).toContain("🔧 [sync-claude-team-json]");
+      expect(stderrOut).toContain("prior fingerprint:");
+      expect(stderrOut).toContain("current fingerprint:");
+      expect(stderrOut).toContain("last synced at:");
+      expect(stderrOut).toContain("re-run with --force");
+      // The hand-edited file MUST be untouched on the abort path.
+      const after = JSON.parse(
+        await readFile(join(claudeDir, "team.json"), "utf8"),
+      );
+      expect(after.members).toHaveLength(2);
+      expect(after.members[1].name).toBe("extra-1");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("--force overrides drift → exit 0, file overwritten with fresh marker", async () => {
+    const { root, atmuxDir, claudeDir } = await seedEnv();
+    await writeFile(
+      join(claudeDir, "team.json"),
+      JSON.stringify({
+        name: "fixture-team",
+        members: [
+          { name: "team-lead", agentType: "team-lead", color: "white" },
+          { name: "extra-1", color: "red" },
+        ],
+        [SYNC_MARKER_KEY]: {
+          lastSyncedAt: "2026-01-01T00:00:00.000Z",
+          schemaRev: "v1",
+          sourceFingerprint:
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        },
+      }),
+    );
+    try {
+      const stderrBuf: string[] = [];
+      const rc = await dispatchSyncSubverb(
+        ["claude-team-json", "--force"],
+        {
+          dir: atmuxDir,
+          claudeDir,
+          stopAt: root,
+          now: FIXED_NOW,
+          stderr: (s) => stderrBuf.push(s),
+        },
+      );
+      expect(rc).toBe(0);
+      // Warning still emitted (transparency); no "refusing" follow-up.
+      const stderrOut = stderrBuf.join("");
+      expect(stderrOut).toContain("drift detected");
+      expect(stderrOut).not.toContain("refusing to overwrite");
+      // The atmux-side roster (extra-1 dropped) is now on disk.
+      const after = JSON.parse(
+        await readFile(join(claudeDir, "team.json"), "utf8"),
+      );
+      expect(after.members.map((m: { name: string }) => m.name)).toEqual([
+        "team-lead",
+        "be-1",
+      ]);
+      expect(after[SYNC_MARKER_KEY].lastSyncedAt).toBe(
+        FIXED_TS_DATE.toISOString(),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
