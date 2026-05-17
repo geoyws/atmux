@@ -91,7 +91,7 @@ Legacy cockpit.json files without `cageMode` keep their pre-flag behaviour exact
 Hourly `/loop /whip` cycle, in order:
 
 1. **Read its own inbox** (`inbox_messages` table, member `__superdoctor__` — sentinel name unchanged for the deprecation window per ADR-133 §Out of scope) — heads-up nudges from team leads or members.
-2. **Sweep each enabled team** — `atmux doctor --json` + `atmux status --json` per team. Detection layer (ADR-019).
+2. **Sweep each enabled team** — `atmux doctor --json` + `atmux status --json` per team. Detection layer (ADR-019). Doctor JSON includes the [ADR-162](./adr/162-atmux-owns-tmux-infrastructure.md) warn-class probes `tmux-version-mismatch` and `cockpit-on-default-socket` — see [`docs/RUNBOOK-cockpit.md` §4 — Doctor probes](./RUNBOOK-cockpit.md#§4--doctor-probes) for the payload shapes + self-clearing behaviour.
 3. **Triage** — silent if all green. If yellow/red anywhere, route into investigation.
 4. **Investigate** — trace the anomaly to its root cause. Read git log, recent commits, lead-queue entries, driver-inbox archive. Forks an Agent (Sonnet for read-only research) when the search is wide.
 5. **Decide authority level**:
