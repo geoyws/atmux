@@ -55,6 +55,7 @@ import { epicMerge } from "./verbs/epic-merge.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
+import { heartbeat } from "./verbs/heartbeat.ts";
 import { help } from "./verbs/help.ts";
 import { hygieneTick } from "./verbs/hygiene-tick.ts";
 import { improve } from "./verbs/improve.ts";
@@ -321,6 +322,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return pokeResumeCheck(argv.slice(1));
     case "watchdog":
       return watchdog(argv.slice(1));
+    case "heartbeat":
+      return heartbeat(argv.slice(1));
     case "pulse":
       return pulse(argv.slice(1));
     case "improve":
