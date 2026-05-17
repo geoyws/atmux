@@ -63,19 +63,24 @@ export async function dispatchSyncSubverb(
 }
 
 // Flag-parse contract for `atmux sync claude-team-json`. T4 (t-87e81c8e)
-// added `--overwrite-briefs`. T5 will add `--force` (drift override). T6
-// (this commit, t-fe4a570e) adds `--dry-run` — `--dry-run` skips the
-// atomic write step and instead renders a unified-diff-style preview to
-// stdout per ADR-164 §Behavior step 8.
+// added `--overwrite-briefs`. T5 (t-c2b757c1) adds `--force` (drift
+// override per ADR-164 §"Behavior" step 5 + §OQ-5). T6 (t-fe4a570e)
+// adds `--dry-run` — skips the atomic write step and instead renders a
+// unified-diff-style preview to stdout per ADR-164 §Behavior step 8.
 interface SyncClaudeTeamJsonFlags {
   overwriteBriefs: boolean;
   dryRun: boolean;
+  force: boolean;
 }
 
 function parseSyncClaudeTeamJsonFlags(
   argv: ReadonlyArray<string>,
 ): SyncClaudeTeamJsonFlags {
-  const flags: SyncClaudeTeamJsonFlags = { overwriteBriefs: false, dryRun: false };
+  const flags: SyncClaudeTeamJsonFlags = {
+    overwriteBriefs: false,
+    dryRun: false,
+    force: false,
+  };
   for (const a of argv) {
     if (a === "--overwrite-briefs") {
       flags.overwriteBriefs = true;
@@ -85,15 +90,19 @@ function parseSyncClaudeTeamJsonFlags(
       flags.dryRun = true;
       continue;
     }
+    if (a === "--force") {
+      flags.force = true;
+      continue;
+    }
     if (a.startsWith("-")) {
       throw new UsageError({
         what: `sync claude-team-json: unknown flag: ${a}`,
-        hint: "known flags: --dry-run | --overwrite-briefs (T5 will add --force)",
+        hint: "known flags: --dry-run | --overwrite-briefs | --force",
       });
     }
     throw new UsageError({
       what: `sync claude-team-json: unexpected positional arg: ${a}`,
-      hint: "this subverb takes no positional args; try --dry-run or --overwrite-briefs",
+      hint: "this subverb takes no positional args; try --dry-run, --overwrite-briefs, or --force",
     });
   }
   return flags;
