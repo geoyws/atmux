@@ -28,12 +28,21 @@
 
 import { z } from "zod";
 import { type Database, transactImmediate } from "../../abstractions/sqlite.ts";
-import { BRANCH_MERGE_STATES, type BranchMergeState } from "../branch-merge-state.ts";
+import {
+  BRANCH_MERGE_STATES,
+  type BranchMergeState,
+  TEST_OUTCOMES,
+  type TestOutcome,
+} from "../branch-merge-state.ts";
 
 /** Zod enum of every valid state literal. Mirrors
  *  {@link BRANCH_MERGE_STATES}; the cast asserts the const tuple
  *  shape Zod's `z.enum` requires. */
 const StateEnum = z.enum(BRANCH_MERGE_STATES as unknown as readonly [string, ...string[]]);
+
+/** Zod enum of every valid {@link TestOutcome} literal. ADR-144 T2 —
+ *  migration v8→v9 added the `test_outcome` column to `merger_state`. */
+const TestOutcomeEnum = z.enum(TEST_OUTCOMES as unknown as readonly [string, ...string[]]);
 
 /** Caller identity for `transitioned_by`. Permissive — accepts the
  *  three canonical triggers plus an arbitrary string (typically a
@@ -73,6 +82,14 @@ export const MergerStateTransition = z.object({
    *  where the merge failed) so the operator-facing flag can surface
    *  the location without re-running `git`. */
   conflictSha: z.string().nullable().optional(),
+  /** Optional test outcome for the ADR-144 test-gate. Written by the
+   *  test-runner's `ready_to_merge → tested` transition (T3 cage-mode,
+   *  T4 deployed-mode) and by the operator's `--skip-test-gate`
+   *  bypass. Read by {@link canEnterMerging} to gate the
+   *  `tested → merging` transition. Pass `null` to explicitly clear a
+   *  prior outcome (e.g. on `test_failed → in_progress` recovery so
+   *  the next test cycle starts clean). */
+  testOutcome: TestOutcomeEnum.nullable().optional(),
   /** Epoch seconds for the transition timestamp. Caller-provided so
    *  tests can pin time; production callers pass `Math.floor(Date.now()
    *  / 1000)`. */
@@ -93,6 +110,11 @@ export interface MergerStateRow {
   transitionedBy: string | null;
   baseSha: string | null;
   conflictSha: string | null;
+  /** ADR-144 §Decision T2: durable PASS/FAIL/bypass marker for the
+   *  test-gate. NULL when the row has never carried a tested-state
+   *  outcome (fresh rows, ADR-134 intra-team scope, post-recovery
+   *  reset). See {@link TestOutcome}. */
+  testOutcome: TestOutcome | null;
 }
 
 interface MergerStateRawRow {
@@ -103,6 +125,7 @@ interface MergerStateRawRow {
   transitioned_by: string | null;
   base_sha: string | null;
   conflict_sha: string | null;
+  test_outcome: string | null;
 }
 
 function rowFromRaw(raw: MergerStateRawRow): MergerStateRow {
@@ -114,6 +137,7 @@ function rowFromRaw(raw: MergerStateRawRow): MergerStateRow {
     transitionedBy: raw.transitioned_by,
     baseSha: raw.base_sha,
     conflictSha: raw.conflict_sha,
+    testOutcome: raw.test_outcome === null ? null : (raw.test_outcome as TestOutcome),
   };
 }
 
@@ -150,17 +174,18 @@ export class MergerStateRepo {
         .query(
           `INSERT INTO merger_state (
             member_branch, state, note, transitioned_at, transitioned_by,
-            base_sha, conflict_sha
+            base_sha, conflict_sha, test_outcome
           )
           VALUES ($member_branch, $state, $note, $transitioned_at, $transitioned_by,
-                  $base_sha, $conflict_sha)
+                  $base_sha, $conflict_sha, $test_outcome)
           ON CONFLICT(member_branch) DO UPDATE SET
             state = excluded.state,
             note = excluded.note,
             transitioned_at = excluded.transitioned_at,
             transitioned_by = excluded.transitioned_by,
             base_sha = excluded.base_sha,
-            conflict_sha = excluded.conflict_sha`,
+            conflict_sha = excluded.conflict_sha,
+            test_outcome = excluded.test_outcome`,
         )
         .run({
           $member_branch: parsed.memberBranch,
@@ -170,6 +195,7 @@ export class MergerStateRepo {
           $transitioned_by: parsed.by ?? null,
           $base_sha: parsed.baseSha ?? null,
           $conflict_sha: parsed.conflictSha ?? null,
+          $test_outcome: parsed.testOutcome ?? null,
         });
       // Read-back inside the same transaction so the returned row
       // reflects exactly what landed (defensive — guards against the

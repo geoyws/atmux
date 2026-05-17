@@ -30,40 +30,76 @@ import { closeDatabase, type Database, openDatabase } from "../abstractions/sqli
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import type { PreMergeGateInput } from "../core/branch-merge-state.ts";
-import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import {
+  BRANCH_MERGE_STATES,
+  type BranchMergeState,
+  canEnterMerging,
+  isValidTransition,
+} from "../core/branch-merge-state.ts";
+import {
+  getAtmuxDir,
+  type ResolveDirOpts,
+  requireTeam,
+  resolveCallerScope,
+} from "../core/common.ts";
 import {
   type EpicMergeContext,
   type PerformEpicMergeResult,
   performEpicMerge,
 } from "../core/epic-merge.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
+import { logTestGateBypass } from "../core/test-gate-bypass.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
 import { dissolveEpic } from "./team/dissolve-epic.ts";
 
-const USAGE = "atmux epic-merge tick [--team-dir <path>]";
+const USAGE =
+  "atmux epic-merge {tick | advance --to <state> [--skip-test-gate --reason <text>]} [--team-dir <path>]";
 
 // ---------- Arg parsing ----------
 
 export interface ParsedEpicMergeArgs {
-  /** Only `tick` ships in v1. Future sub-verbs (e.g. `status` for
-   *  read-only state-row inspection, `force-conflict-reset` for
-   *  operator manual recovery) would land here. */
-  subverb: "tick";
+  /** Sub-verb dispatch:
+   *   - `tick` — cron-fired one-shot state-machine tick (v1, existing).
+   *   - `advance` — operator manual transition with optional test-gate
+   *     bypass per ADR-144 §Operator bypass (v1, ADR-144 T2 t-49bd4fe1).
+   *   Future sub-verbs (e.g. `status` for read-only state-row
+   *   inspection) would land here. */
+  subverb: "tick" | "advance";
   /** Override the team-dir for `requireTeam` (test injection +
    *  cross-team operator invocation). */
   teamDir?: string;
+  /** advance: target state literal (e.g. `"merging"`, `"in_progress"`).
+   *  Validated against {@link BRANCH_MERGE_STATES} at parse time. */
+  to?: BranchMergeState;
+  /** advance: ADR-144 §Operator bypass flag — refuses the test-gate
+   *  guard on `tested → merging` and writes `test_outcome="bypass"` to
+   *  the row. Driver-scope only per ADR-033 — refused for member
+   *  callers. Requires `--reason "<text>"`. */
+  skipTestGate?: boolean;
+  /** advance: caller-supplied reason for the transition. Required
+   *  when `--skip-test-gate` is set (no silent bypasses); also
+   *  recorded in `merger_state.note` for the regular path. */
+  reason?: string;
 }
 
 /** Pure parser. Throws `UsageError` on bad invocation. */
 export function parseEpicMergeArgs(argv: ReadonlyArray<string>): ParsedEpicMergeArgs {
-  let subverb: "tick" | undefined;
+  let subverb: "tick" | "advance" | undefined;
   let teamDir: string | undefined;
+  let to: BranchMergeState | undefined;
+  let skipTestGate = false;
+  let reason: string | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
     if (a === "tick" || a === "--tick") {
       subverb = "tick";
+      i += 1;
+      continue;
+    }
+    if (a === "advance") {
+      subverb = "advance";
       i += 1;
       continue;
     }
@@ -76,6 +112,41 @@ export function parseEpicMergeArgs(argv: ReadonlyArray<string>): ParsedEpicMerge
         });
       }
       teamDir = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--to") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "epic-merge: --to requires a value",
+          hint: USAGE,
+        });
+      }
+      if (!(BRANCH_MERGE_STATES as readonly string[]).includes(v)) {
+        throw new UsageError({
+          what: `epic-merge: --to '${v}' is not a valid BranchMergeState (valid: ${BRANCH_MERGE_STATES.join(", ")})`,
+          hint: USAGE,
+        });
+      }
+      to = v as BranchMergeState;
+      i += 2;
+      continue;
+    }
+    if (a === "--skip-test-gate") {
+      skipTestGate = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--reason") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "epic-merge: --reason requires a value",
+          hint: USAGE,
+        });
+      }
+      reason = v;
       i += 2;
       continue;
     }
@@ -96,8 +167,23 @@ export function parseEpicMergeArgs(argv: ReadonlyArray<string>): ParsedEpicMerge
       hint: USAGE,
     });
   }
+  if (subverb === "advance" && to === undefined) {
+    throw new UsageError({
+      what: "epic-merge advance: --to <state> required",
+      hint: USAGE,
+    });
+  }
+  if (subverb === "advance" && skipTestGate && (reason === undefined || reason.length === 0)) {
+    throw new UsageError({
+      what: "epic-merge advance: --skip-test-gate requires --reason <text> (ADR-144 §Operator bypass — bypasses must be auditable)",
+      hint: USAGE,
+    });
+  }
   const out: ParsedEpicMergeArgs = { subverb };
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (to !== undefined) out.to = to;
+  if (skipTestGate) out.skipTestGate = true;
+  if (reason !== undefined) out.reason = reason;
   return out;
 }
 
@@ -124,6 +210,17 @@ export interface EpicMergeOpts {
   }>;
   /** Test injection — override the parent-repo path resolver. */
   resolveParentRepo?: (epicRepoPath: string) => string;
+  /** Test injection — override `resolveCallerScope` for the
+   *  `advance --skip-test-gate` driver-only gate (ADR-033). Production
+   *  default reads `process.env.ATMUX_CALLER_SCOPE`. */
+  callerScope?: () => "driver" | "member";
+  /** Test injection — override `homeDir` for the bypass log path.
+   *  Production default uses `os.homedir()`. */
+  homeDir?: string;
+  /** Test injection — override the bypass-log clock. */
+  now?: () => number;
+  /** Test injection — override `$USER` reader for `by` attribution. */
+  user?: string;
 }
 
 // ---------- Top-level dispatch ----------
@@ -136,6 +233,8 @@ export async function epicMerge(
   switch (parsed.subverb) {
     case "tick":
       return await epicMergeTickVerb(parsed, opts);
+    case "advance":
+      return await epicMergeAdvanceVerb(parsed, opts);
   }
 }
 
@@ -224,6 +323,162 @@ export async function epicMergeTickVerb(
     };
     const result = await performEpicMerge(ctx);
     logTickResult(result, logger, team.name, epicTeam.parentBase);
+    return 0;
+  } finally {
+    closeDb(db);
+  }
+}
+
+// ---------- Advance sub-verb (ADR-144 §Operator bypass) ----------
+
+/**
+ * Operator-driven manual transition for the epic-team's `merger_state`
+ * row. Covers two flows per ADR-144 §Decision T2:
+ *
+ *   1. **Recovery transitions** (`--to in-progress` from `test_failed`
+ *      or `conflict`): no test-gate involvement. Just validates the
+ *      transition + writes the new state.
+ *   2. **Bypass transition** (`--to merging --skip-test-gate --reason
+ *      "<text>"`): ADR-033 driver-scope gate. Writes
+ *      `test_outcome="bypass"` to the row + appends a record to
+ *      `~/.atmux/state/test-gate-bypasses.log`. T5 wires the Discord
+ *      `[test-gate-bypass]` template on top of the log tail.
+ *
+ * Refusals:
+ *   - Caller scope is not `driver` AND `--skip-test-gate` is set →
+ *     ADR-033 refuse. Member panes can't bypass the test-gate even
+ *     for an emergency.
+ *   - Transition is not valid per {@link isValidTransition} →
+ *     usage error with the current state + reachable next states.
+ *   - Transition would land in `merging` from `tested` AND the row's
+ *     `test_outcome` is not `"pass"` or `"bypass"` AND
+ *     `--skip-test-gate` was NOT passed → refuse. Caller must either
+ *     wait for the test to record PASS or pass `--skip-test-gate
+ *     --reason "<text>"`.
+ */
+export async function epicMergeAdvanceVerb(
+  parsed: ParsedEpicMergeArgs,
+  opts: EpicMergeOpts = {},
+): Promise<number> {
+  if (parsed.to === undefined) {
+    throw new UsageError({
+      what: "epic-merge advance: --to <state> required",
+      hint: USAGE,
+    });
+  }
+  const target = parsed.to;
+  const logger = opts.logger ?? createLogger();
+  const git = opts.git ?? defaultGitSpawn;
+  const openDb = opts.openDb ?? ((p: string) => openDatabase(p, migrations));
+  const closeDb = opts.closeDb ?? closeDatabase;
+  const callerScope = opts.callerScope ?? (() => resolveCallerScope());
+  const nowMs = opts.now ?? Date.now;
+
+  // ADR-033 driver-scope gate — only refuses when --skip-test-gate is
+  // set. Plain recovery transitions (e.g. `--to in-progress` from
+  // `test_failed`) can be fired by member panes (planner-near, etc.)
+  // because they don't bypass any safety check; they just consume
+  // a manual-recovery edge already permitted by isValidTransition.
+  if (parsed.skipTestGate === true && callerScope() !== "driver") {
+    throw new UsageError({
+      what: "epic-merge advance --skip-test-gate: refused — caller scope is not 'driver' (ADR-033 §Caller-scope gate).",
+      hint: 'from a driver pane: ATMUX_CALLER_SCOPE=driver atmux epic-merge advance --to merging --skip-test-gate --reason "<text>"',
+    });
+  }
+
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const team = await requireTeam(dirOpts);
+  const atmuxDir = await getAtmuxDir(dirOpts);
+
+  if (team.epicTeam === undefined) {
+    throw new UsageError({
+      what: `epic-merge advance: team '${team.name}' has no epicTeam block — sub-verb scoped to epic-teams only`,
+      hint: USAGE,
+    });
+  }
+
+  // Derive epic-team's branch via the same probe as `tick`.
+  const epicRepoPath = atmuxDir.endsWith("/.atmux")
+    ? atmuxDir.slice(0, -"/.atmux".length)
+    : join(atmuxDir, "..");
+  const epicBranch = await currentBranch(epicRepoPath, git);
+
+  const db = openDb(join(atmuxDir, "state.db"));
+  try {
+    const repo = new MergerStateRepo(db);
+    const row = repo.getState(epicBranch);
+    const currentState: BranchMergeState = row?.state ?? "open";
+
+    // Validate the transition shape per {@link isValidTransition}
+    // (handles the operator-driven manual resets from terminals).
+    if (!isValidTransition(currentState, target)) {
+      throw new UsageError({
+        what: `epic-merge advance: illegal transition '${currentState}' → '${target}'`,
+        hint: `current state '${currentState}' — see docs/adr/091-kanban-driven-auto-merge.md §State machine for the legal graph`,
+      });
+    }
+
+    // ADR-144 §Decision test-gate check: refuse `tested → merging`
+    // unless prior outcome is PASS or --skip-test-gate is passed.
+    const testOutcome = row?.testOutcome ?? null;
+    if (!canEnterMerging(currentState, target, testOutcome) && parsed.skipTestGate !== true) {
+      throw new UsageError({
+        what: `epic-merge advance: refused 'tested → merging' — test_outcome on row is '${testOutcome ?? "null"}', not 'pass' (ADR-144 §Decision test-gate)`,
+        hint: 'to bypass: --skip-test-gate --reason "<text>" (driver-only ADR-033 — logged to ~/.atmux/state/test-gate-bypasses.log)',
+      });
+    }
+
+    // Compose the transition.
+    const t = Math.floor(nowMs() / 1000);
+    const by = opts.user ?? process.env.USER ?? "operator";
+    const reasonText =
+      parsed.reason ??
+      (parsed.skipTestGate === true ? "operator bypass" : `operator advance --to ${target}`);
+    const transition: Parameters<MergerStateRepo["transition"]>[0] = {
+      memberBranch: epicBranch,
+      next: target,
+      note: reasonText,
+      by,
+      transitionedAt: t,
+    };
+    if (parsed.skipTestGate === true) {
+      transition.testOutcome = "bypass";
+    } else if (target === "in_progress") {
+      // Recovery from test_failed / conflict — clear stale outcome so
+      // the next test cycle starts clean.
+      transition.testOutcome = null;
+    } else if (testOutcome !== null) {
+      // Preserve the prior outcome across non-test transitions (e.g.
+      // tested → merging with PASS should keep the PASS record on the
+      // row for audit trail).
+      transition.testOutcome = testOutcome;
+    }
+    repo.transition(transition);
+
+    // ADR-144 §Operator bypass: durable audit log + Discord surface
+    // (T5 reads this log via tail-N).
+    if (parsed.skipTestGate === true) {
+      await logTestGateBypass(
+        {
+          epicId: team.epicTeam.parentEpicKanbanId,
+          epicBranch,
+          targetState: target,
+          reason: reasonText,
+          by,
+        },
+        {
+          ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
+          now: nowMs,
+        },
+      );
+      logger.log(
+        `epic-merge advance: bypass written — ${epicBranch} '${currentState}' → '${target}' by=${by} reason='${reasonText}'`,
+      );
+    } else {
+      logger.log(
+        `epic-merge advance: ${epicBranch} '${currentState}' → '${target}' by=${by} reason='${reasonText}'`,
+      );
+    }
     return 0;
   } finally {
     closeDb(db);

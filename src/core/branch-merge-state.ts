@@ -192,20 +192,32 @@ const FORWARD_TRANSITIONS: ReadonlyMap<BranchMergeState, ReadonlySet<BranchMerge
   // owner has open tasks, and each fire is a no-op transition to
   // itself).
   ["in_progress", new Set<BranchMergeState>(["ready_to_merge", "in_progress"])],
-  // From ready_to_merge, base-moved short-circuits to rebasing;
-  // base-stable proceeds to merging.
-  ["ready_to_merge", new Set<BranchMergeState>(["rebasing", "merging"])],
+  // From `ready_to_merge`:
+  //   - `rebasing` — base moved during work (ADR-134 + ADR-091 §Decision-anchor #4).
+  //   - `merging` — ADR-134 intra-team scope: test happens AFTER the merge.
+  //   - `tested` — ADR-144 epic-team scope: test BEFORE merge so a failing
+  //     test never lands on parent-trunk. Per ADR-144 §Decision the test-gate
+  //     wraps the merge step at the epic-team layer.
+  ["ready_to_merge", new Set<BranchMergeState>(["rebasing", "merging", "tested"])],
   // Rebase either succeeds (back to ready_to_merge) or hits a
   // conflict (terminal).
   ["rebasing", new Set<BranchMergeState>(["ready_to_merge", "conflict"])],
   // Merge either runs the test gate or hits a conflict.
-  ["merging", new Set<BranchMergeState>(["tested", "conflict"])],
-  // Test gate passes (merged) or fails (test_failed).
-  ["tested", new Set<BranchMergeState>(["merged", "test_failed"])],
+  ["merging", new Set<BranchMergeState>(["tested", "conflict", "merged"])],
+  // From `tested`:
+  //   - `merged` — ADR-134 intra-team scope: post-merge tests passed.
+  //   - `test_failed` — tests failed (either scope).
+  //   - `merging` — ADR-144 epic-team scope: pre-merge tests passed; proceed
+  //     to the actual `git merge --no-ff` step. Gated by {@link canEnterMerging}:
+  //     the row's `test_outcome` MUST be `"pass"` or `"bypass"` (operator
+  //     ADR-033 driver-scope override). A `"fail"` outcome refuses the
+  //     transition at the caller layer.
+  ["tested", new Set<BranchMergeState>(["merged", "test_failed", "merging"])],
   // test_failed routes per team.json::autoMerge.revertOnFail. The
   // state machine accepts BOTH terminal `reverted` (revertOnFail:
   // true) AND a manual reset to `in_progress` (revertOnFail: false
-  // + operator manual recovery).
+  // + operator manual recovery, ADR-144 §test_failed recovery for
+  // the epic-team scope via `atmux epic-merge advance --to in-progress`).
   ["test_failed", new Set<BranchMergeState>(["reverted", "in_progress"])],
   // Terminal — no forward transitions from these without an operator
   // manual reset (see {@link isValidTransition}).
@@ -216,9 +228,10 @@ const FORWARD_TRANSITIONS: ReadonlyMap<BranchMergeState, ReadonlySet<BranchMerge
 
 /** Returns true iff the state machine permits a transition from
  *  `from` to `to`. Operator-driven manual resets from
- *  `conflict` / `reverted` back to `in_progress` are always allowed
- *  per ADR-134 §state-machine "transition back to in_progress is
- *  manual"; everything else honors {@link FORWARD_TRANSITIONS}.
+ *  `conflict` / `reverted` / `test_failed` back to `in_progress` are
+ *  always allowed per ADR-134 §state-machine "transition back to
+ *  in_progress is manual" and ADR-144 §test_failed recovery; everything
+ *  else honors {@link FORWARD_TRANSITIONS}.
  *
  *  `merged → in_progress` is intentionally NOT permitted — once a
  *  branch's fan-in succeeds, the next iteration starts from a fresh
@@ -229,4 +242,62 @@ export function isValidTransition(from: BranchMergeState, to: BranchMergeState):
     return true;
   }
   return FORWARD_TRANSITIONS.get(from)?.has(to) ?? false;
+}
+
+/** Test outcome literal per ADR-144 §test_failed recovery + §Operator
+ *  bypass. Persisted on the merger_state row (column `test_outcome`,
+ *  migration v8→v9) so the test-gate guard can verify the most recent
+ *  tested outcome durably across cron ticks.
+ *
+ *  - `"pass"` — tests passed; `tested → merging` is allowed.
+ *  - `"fail"` — tests failed; `tested → merging` is REFUSED. Caller
+ *    advances to `test_failed` instead. Per ADR-144 §retryOnFlake, a
+ *    single retry may flip this back to `"pass"` before the
+ *    `test_failed` transition fires.
+ *  - `"bypass"` — operator `--skip-test-gate` override per ADR-144
+ *    §Operator bypass. Logged to `~/.atmux/state/test-gate-bypasses.log`
+ *    + Discord `[test-gate-bypass]` (T5). Allowed for `tested → merging`
+ *    so the operator can rescue a wedged epic when tests are genuinely
+ *    broken but the merge is urgent.
+ *  - `null` — no test outcome on record. The transition `tested →
+ *    merging` is refused; caller must record an outcome first. The
+ *    seed value when a row is freshly transitioned TO `tested` without
+ *    a paired outcome (e.g. test execution still running). */
+export type TestOutcome = "pass" | "fail" | "bypass";
+
+/** Frozen array of every {@link TestOutcome} literal. Mirrors
+ *  {@link BRANCH_MERGE_STATES} for Zod enum bounds. */
+export const TEST_OUTCOMES: readonly TestOutcome[] = ["pass", "fail", "bypass"] as const;
+
+/** Test-gate guard per ADR-144 §Decision "Refuse 'merging' transition
+ *  unless prior 'tested' outcome is PASS." Returns `true` iff:
+ *
+ *    1. The intended `next` transition is NOT `merging` — gate doesn't
+ *       apply (e.g. `merging → tested` for ADR-134 intra-team scope, or
+ *       any transition that doesn't touch `merging`).
+ *    2. The current `from` state is NOT `tested` — gate doesn't apply
+ *       (e.g. ADR-134's `ready_to_merge → merging` direct path skips
+ *       the test-gate; intra-team scope's test happens post-merge).
+ *    3. The current `from` is `tested` AND the persisted
+ *       `testOutcome` is `"pass"` or `"bypass"` — gate passes.
+ *
+ *  Returns `false` only for the ADR-144 epic-team scope failure mode:
+ *  `from === "tested"` AND `next === "merging"` AND the outcome is
+ *  `"fail"` OR `null` (unrecorded). Callers translate `false` into a
+ *  `test_failed` transition (auto-mode) or a usage error (operator
+ *  invocation without `--skip-test-gate`).
+ *
+ *  Pure — no I/O. The caller has already read the row via
+ *  {@link MergerStateRepo.getState}; this function gates the next
+ *  transition pre-write. The persisted outcome itself is written by
+ *  the test-runner's prior transition `ready_to_merge → tested`
+ *  (T3 cage-mode, T4 deployed-mode). */
+export function canEnterMerging(
+  from: BranchMergeState,
+  next: BranchMergeState,
+  testOutcome: TestOutcome | null,
+): boolean {
+  if (next !== "merging") return true;
+  if (from !== "tested") return true;
+  return testOutcome === "pass" || testOutcome === "bypass";
 }
