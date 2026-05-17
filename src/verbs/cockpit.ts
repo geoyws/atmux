@@ -1711,31 +1711,62 @@ export async function reconcileCockpitSession(
     // the cockpit-role windows that precede them (per ADR-135 §D2).
     const windowsForOrder = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = windowsForOrder.find((w) => w.name === "_superdriver");
-    let cursor = sdrv !== undefined ? sdrv.index + 1 : 1;
-    if (wantMedic) cursor += 1;
-    if (wantSentinel) cursor += 1;
-    for (const t of teams) {
-      // Re-list each iteration — moveWindow shifts other windows' indices,
-      // so a fixed snapshot would go stale. Tmux indices are sparse and
-      // permitted to skip values; the moveWindow target collapses the
-      // window into the requested slot.
-      const current = await cockpitTmux.window.listWindows(sessionName);
-      const w = current.find((x) => x.name === t.name);
+    const cursorBase = (sdrv !== undefined ? sdrv.index + 1 : 1)
+      + (wantMedic ? 1 : 0)
+      + (wantSentinel ? 1 : 0);
+    const desired = teams.map((t, i) => ({ name: t.name, finalIdx: cursorBase + i }));
+
+    // Park-then-place to avoid sibling-team collisions.
+    //
+    // A single-pass in-place reorder using moveWindow({kill:true}) destroys
+    // any sibling team viewer that currently occupies the cursor slot —
+    // worst-case observed in the medic-displace recreate path: alpha is
+    // killed by the displace, recreated at the trailing end, then the
+    // reorder of alpha into the slot currently held by beta kills beta. No
+    // single-direction walk (left-to-right or right-to-left) escapes this:
+    // whenever two teams have swapped relative order vs. the desired layout,
+    // at least one collision is mathematically unavoidable in a single pass.
+    //
+    // Park-then-place sidesteps the collision class: every misaligned team
+    // moves first to a high-index parking slot (empty by construction), then
+    // moves from parking to its final slot (also empty, since every team
+    // that needed that slot is also parked). Already-aligned teams are
+    // skipped — they incur zero churn.
+    const PARK_BASE = 9000;
+    const before = await cockpitTmux.window.listWindows(sessionName);
+    for (let i = 0; i < desired.length; i++) {
+      const d = desired[i]!;
+      const w = before.find((x) => x.name === d.name);
       if (w === undefined) continue;
-      if (w.index !== cursor) {
-        try {
-          await cockpitTmux.window.moveWindow({
-            source: { sessionName, windowIndex: w.index },
-            target: { sessionName, windowIndex: cursor },
-            kill: true,
-          });
-          logger.log(`  ✓ moved '${t.name}' to idx ${cursor} (was idx ${w.index})`);
-        } catch (e) {
-          const cause = e instanceof Error ? e.message : String(e);
-          logger.warn(`  ⚠ reorder of '${t.name}' to idx ${cursor} failed: ${cause}`);
-        }
+      if (w.index === d.finalIdx) continue;
+      try {
+        await cockpitTmux.window.moveWindow({
+          source: { sessionName, windowIndex: w.index },
+          target: { sessionName, windowIndex: PARK_BASE + i },
+          kill: true,
+        });
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(`  ⚠ park of '${d.name}' to idx ${PARK_BASE + i} failed: ${cause}`);
       }
-      cursor += 1;
+    }
+    for (let i = 0; i < desired.length; i++) {
+      const d = desired[i]!;
+      const current = await cockpitTmux.window.listWindows(sessionName);
+      const w = current.find((x) => x.name === d.name);
+      if (w === undefined) continue;
+      if (w.index === d.finalIdx) continue;
+      try {
+        await cockpitTmux.window.moveWindow({
+          source: { sessionName, windowIndex: w.index },
+          target: { sessionName, windowIndex: d.finalIdx },
+          kill: true,
+        });
+        logger.log(`  ✓ moved '${d.name}' to idx ${d.finalIdx} (was idx ${w.index})`);
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(`  ⚠ reorder of '${d.name}' to idx ${d.finalIdx} failed: ${cause}`);
+      }
     }
   }
 
