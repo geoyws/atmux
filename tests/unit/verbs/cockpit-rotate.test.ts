@@ -17,7 +17,14 @@
 // fe-1's T6 (t-18bddf4e) extends with each respawn path × handoff
 // payload coverage once T4+T5 land.
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  knownClaudeConfigDirs,
+  resolveClaudeWrapper,
+} from "../../../src/abstractions/claude-account-wrapper.ts";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
 import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
@@ -1369,5 +1376,377 @@ describe("cockpitRotate — T4 success audit-row shape", () => {
     expect(row.ts).toMatch(/^2026-/); // ISO 8601
     expect(typeof row.durationMs).toBe("number");
     expect(row.error).toBeUndefined();
+  });
+});
+
+// ---------- T6 residual: claude-account-wrapper direct ----------
+
+// resolveClaudeWrapper happy + error paths are exercised indirectly via
+// cockpitRotate (be-2's T4 happy-paths + "unknown configDir" failure
+// test). But knownClaudeConfigDirs() is currently dead code from a
+// test-coverage standpoint — be-2 noted it's a follow-up surface for
+// doctor / cockpit-rotate audit telemetry. Cover it now to close the
+// claude-account-wrapper.ts FN gap (lcov FNH:1/FNF:2 → 2/2).
+describe("claude-account-wrapper exports (T6 direct unit)", () => {
+  test("knownClaudeConfigDirs enumerates the canonical 4-entry registry", () => {
+    const dirs = knownClaudeConfigDirs();
+    expect(dirs).toEqual([
+      "/root/.claude",
+      "/root/.claude-unum",
+      "/root/.claude-icloud",
+      "/root/.claude-ifca",
+    ]);
+  });
+
+  test("resolveClaudeWrapper round-trips every registered configDir", () => {
+    expect(resolveClaudeWrapper("/root/.claude")).toBe("claude");
+    expect(resolveClaudeWrapper("/root/.claude-unum")).toBe("c-u");
+    expect(resolveClaudeWrapper("/root/.claude-icloud")).toBe("c-ic");
+    expect(resolveClaudeWrapper("/root/.claude-ifca")).toBe("c-i");
+  });
+
+  test("resolveClaudeWrapper throws ConfigError on unknown configDir w/ hint listing every registered dir", () => {
+    let caught: unknown;
+    try {
+      resolveClaudeWrapper("/root/.claude-bogus");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    const msg = `${(caught as Error).message}`;
+    expect(msg).toContain("/root/.claude-bogus");
+    expect(msg).toContain("ADR-094 c-alias convention");
+    // Hint enumerates the full registered set so the operator can
+    // disambiguate which alias to add to their shell init.
+    expect(msg).toContain("/root/.claude-unum");
+    expect(msg).toContain("/root/.claude-ifca");
+  });
+});
+
+// ---------- T6 residual: defaultReadLeadOutboxTail real-fs ----------
+
+// Exercises the un-injected default lead-outbox-tail reader
+// (cockpit-rotate.ts::defaultReadLeadOutboxTail). The default path
+// only fires when callers omit `readLeadOutboxTail` from
+// CockpitRotateOpts; be-2's T4/T5 harness always injects the seam, so
+// these lines stayed uncovered on the 99.36% T5 baseline.
+describe("cockpitRotate — T6 defaultReadLeadOutboxTail (real-fs)", () => {
+  let tmpRoot: string;
+
+  beforeAll(async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "atmux-rotate-t6-"));
+  });
+
+  afterAll(async () => {
+    await rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  test("team-driver handoff uses default reader when readLeadOutboxTail omitted", async () => {
+    const teamRoot = join(tmpRoot, "team-real-fs");
+    const atmuxDir = join(teamRoot, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+    const outboxLines = Array.from({ length: 60 }, (_, i) => `line-${i + 1}`);
+    await writeFile(join(atmuxDir, "lead-outbox.md"), outboxLines.join("\n"));
+
+    const h = makeHarness({
+      cockpit: {
+        sessions: [],
+        teams: [
+          {
+            name: "real-fs",
+            root: teamRoot,
+            enabled: true,
+            claudeAccount: { configDir: "/root/.claude" },
+          },
+        ],
+      } as unknown as LoadedCockpit,
+    });
+    h.stats.set("/test/home/.claude/teams/__cockpit__/team-driver/session-start.txt", {
+      mtimeMs: T0 - 2 * 60 * 60_000,
+    });
+
+    // Build opts inline OMITTING readLeadOutboxTail so the verb falls
+    // through to defaultReadLeadOutboxTail (the production default).
+    const opts = {
+      env: { ATMUX_CALLER_SCOPE: "driver", HOME: "/test/home" },
+      homeDir: "/test/home",
+      cockpitSessionName: "atmux_cockpit",
+      cockpitSocketName: "atmux-cockpit",
+      nowMs: () => h.nowMs(),
+      stderr: (m: string) => h.capturedStderr.push(m),
+      tmuxFactory: makeTmuxFactory(h),
+      stat: async (path: string) => h.stats.get(path) ?? null,
+      appendText: async (path: string, content: string) => {
+        h.appendedAudit.push({ path, content });
+      },
+      discordSend: async (sendOpts: DiscordSendOpts) => {
+        h.discordCalls.push(sendOpts);
+      },
+      loadCockpit: async () => h.cockpit,
+      safeSendKeysWithVerify: makeSafeSendKeysStub(h),
+      autoStartMedicLoop: async () => {},
+      autoStartSentinelLoop: async () => {},
+      autoStartTimeoutMs: 0,
+      atomicWrite: async (path: string, content: string) => {
+        h.handoffWrites.push({ path, content });
+      },
+      readAuditLog: async (_path: string) => h.auditLogContent,
+      // INTENTIONALLY omit readLeadOutboxTail to exercise default.
+    };
+
+    const exit = await cockpitRotate(["real-fs"], opts);
+    expect(exit).toBe(0);
+
+    // HANDOFF_LEAD_OUTBOX_TAIL_LINES = 50 (cockpit-rotate.ts L537).
+    // Default reader returns the last 50 lines of a 60-line file, i.e.
+    // lines 11..60. The team-driver handoff Markdown wraps the tail in
+    // a fenced code block under `## Recent tell-lead history`.
+    const handoff = h.handoffWrites.find((w) => w.path.endsWith("/team-driver/handoff.md"));
+    expect(handoff).toBeDefined();
+    expect(handoff?.content).toContain("line-60");
+    expect(handoff?.content).toContain("line-11");
+    // Lines 1..10 fell out of the tail window — verify the slice math.
+    expect(handoff?.content).not.toContain("line-1\n");
+    expect(handoff?.content).not.toContain("line-10\n");
+  });
+
+  test("default reader returns empty when lead-outbox.md missing", async () => {
+    const teamRoot = join(tmpRoot, "team-no-outbox");
+    await mkdir(join(teamRoot, ".atmux"), { recursive: true });
+    // NO writeFile — exercises readTextOrNull → null path inside
+    // defaultReadLeadOutboxTail, then the early-return on null/empty.
+
+    const h = makeHarness({
+      cockpit: {
+        sessions: [],
+        teams: [
+          {
+            name: "no-outbox",
+            root: teamRoot,
+            enabled: true,
+            claudeAccount: { configDir: "/root/.claude" },
+          },
+        ],
+      } as unknown as LoadedCockpit,
+    });
+    h.stats.set("/test/home/.claude/teams/__cockpit__/team-driver/session-start.txt", {
+      mtimeMs: T0 - 2 * 60 * 60_000,
+    });
+
+    const opts = {
+      env: { ATMUX_CALLER_SCOPE: "driver", HOME: "/test/home" },
+      homeDir: "/test/home",
+      cockpitSessionName: "atmux_cockpit",
+      cockpitSocketName: "atmux-cockpit",
+      nowMs: () => h.nowMs(),
+      stderr: (m: string) => h.capturedStderr.push(m),
+      tmuxFactory: makeTmuxFactory(h),
+      stat: async (path: string) => h.stats.get(path) ?? null,
+      appendText: async (path: string, content: string) => {
+        h.appendedAudit.push({ path, content });
+      },
+      discordSend: async (sendOpts: DiscordSendOpts) => {
+        h.discordCalls.push(sendOpts);
+      },
+      loadCockpit: async () => h.cockpit,
+      safeSendKeysWithVerify: makeSafeSendKeysStub(h),
+      autoStartMedicLoop: async () => {},
+      autoStartSentinelLoop: async () => {},
+      autoStartTimeoutMs: 0,
+      atomicWrite: async (path: string, content: string) => {
+        h.handoffWrites.push({ path, content });
+      },
+      readAuditLog: async (_path: string) => h.auditLogContent,
+    };
+
+    const exit = await cockpitRotate(["no-outbox"], opts);
+    expect(exit).toBe(0);
+    const handoff = h.handoffWrites.find((w) => w.path.endsWith("/team-driver/handoff.md"));
+    // Empty outbox renders the explicit placeholder per
+    // renderTeamDriverHandoff (T5 ADR-167 schema).
+    expect(handoff?.content).toContain("_no lead-outbox content available_");
+  });
+});
+
+// ---------- T6 residual: safeCapturePane catch branch ----------
+
+// safeCapturePane (cockpit-rotate.ts L453-462) swallows tmux capture
+// errors so a misconfigured cockpit doesn't crash the verb — gate-1
+// + gate-2 then receive empty text (treated as READY, the safer
+// default). Coverage gap: the catch branch (L460-461) only fires when
+// tmux.pane.capturePane throws; default harness `captures` Map returns
+// `""` non-throwingly, so the branch stayed uncovered on the T5
+// baseline.
+describe("cockpitRotate — T6 safeCapturePane catch branch", () => {
+  test("capturePane throw → gate-1+gate-2 pass on empty; rotation proceeds", async () => {
+    const h = makeHarness();
+    passGates(h, "medic");
+
+    // Custom tmuxFactory: capturePane throws on every call; window
+    // methods still record so we can assert respawn proceeded past the
+    // (degraded) gates.
+    const throwingTmuxFactory = (_cfg: TmuxConfig) =>
+      ({
+        pane: {
+          capturePane: async () => {
+            throw new Error("synthetic tmux capture failure");
+          },
+          sendKeys: async () => {},
+        },
+        window: {
+          killWindow: async (target: string) => {
+            h.killWindowCalls.push(target);
+          },
+          newWindow: async (opts: { name?: string; shellCommand?: string }) => {
+            h.newWindowCalls.push({
+              name: opts.name ?? "",
+              shellCommand: opts.shellCommand ?? "",
+            });
+            return { sessionName: "atmux_cockpit", windowIndex: h.newWindowIndex };
+          },
+          listWindows: async () => [],
+        },
+      }) as unknown as TmuxNamespace;
+
+    // Custom safeSendKeysWithVerify that DOES NOT call opts.capture
+    // (which would re-trigger the throwing factory mid-respawn). The
+    // standard harness stub exercises the capture closure for coverage,
+    // but here we narrow the surface to the safeCapturePane catch.
+    const noCaptureSafeSend = async (sendOpts: SafeSendKeysWithVerifyOpts) => {
+      h.ctrlCCalls.push({ target: sendOpts.target, keys: sendOpts.keys });
+      return { success: true, attempts: 1, finalCapture: "" };
+    };
+    const opts = {
+      ...harnessOpts(h),
+      tmuxFactory: throwingTmuxFactory,
+      safeSendKeysWithVerify: noCaptureSafeSend,
+    };
+    const exit = await cockpitRotate(["medic"], opts);
+
+    // Capture-throw is non-fatal: gates 1+2 receive "" (treated as
+    // READY per classifyGate1/2 empty-passes-defensively), gate-3
+    // passes via stat-marker mtime, respawn fires.
+    expect(exit).toBe(0);
+    expect(h.killWindowCalls).toEqual(["atmux_cockpit:_medic"]);
+    expect(h.newWindowCalls.length).toBe(1);
+    // No gate-refusal audit row — gates didn't fire even though
+    // capture-pane threw under the hood.
+    const refusals = h.appendedAudit.filter((a) => a.content.includes("gate-"));
+    expect(refusals.length).toBe(0);
+    expect(firstAuditRow(h).outcome).toBe("success");
+  });
+});
+
+// ---------- T6 residual: default cadenceLogger arrows ----------
+
+// cockpit-rotate.ts L423-428 declares 4 inline arrow functions
+// (log/ok/warn/err) inside the `?? {}` default for opts.cadenceLogger.
+// be-2's harness omits cadenceLogger (uses the default), but no test
+// actually drives an autoStart{Medic,Sentinel}Loop that calls
+// logger.log/ok/warn/err — so the 4 arrow bodies are constructed but
+// never invoked. Force-call them via a stub autoStartMedicLoop that
+// exercises every logger method.
+describe("cockpitRotate — T6 default cadenceLogger arrows", () => {
+  test("autoStart-driven logger calls hit log/ok/warn/err defaults via stderr", async () => {
+    const h = makeHarness();
+    passGates(h, "medic");
+
+    const opts = {
+      ...harnessOpts(h),
+      autoStartMedicLoop: async (autoOpts: {
+        sessionName: string;
+        windowIndex: number;
+        logger?: {
+          log: (s: string) => void;
+          ok: (s: string) => void;
+          warn: (s: string) => void;
+          err: (s: string) => void;
+        };
+      }) => {
+        // Drive each default arrow exactly once. They close over the
+        // injected `stderr` so the output lands in h.capturedStderr.
+        autoOpts.logger?.log("cadence-log-marker");
+        autoOpts.logger?.ok("cadence-ok-marker");
+        autoOpts.logger?.warn("cadence-warn-marker");
+        autoOpts.logger?.err("cadence-err-marker");
+      },
+    };
+    // INTENTIONALLY omit cadenceLogger from opts — verb falls through
+    // to resolveDeps default at cockpit-rotate.ts L423.
+    delete (opts as { cadenceLogger?: unknown }).cadenceLogger;
+
+    const exit = await cockpitRotate(["medic"], opts);
+    expect(exit).toBe(0);
+
+    const stderrJoined = h.capturedStderr.join("");
+    expect(stderrJoined).toContain("cadence-log-marker");
+    expect(stderrJoined).toContain("cadence-ok-marker");
+    expect(stderrJoined).toContain("cadence-warn-marker");
+    expect(stderrJoined).toContain("cadence-err-marker");
+  });
+});
+
+// ---------- T6 residual: default stderr arrow ----------
+
+// cockpit-rotate.ts L405 declares the default stderr writer:
+//   `const stderr = opts.stderr ?? ((msg) => process.stderr.write(msg));`
+// be-2's harness always injects `stderr`, so the default arrow is
+// constructed (line covered) but never invoked (function uncovered).
+// Drive the default by omitting `stderr` from opts and stubbing
+// `process.stderr.write` to capture without polluting test output.
+describe("cockpitRotate — T6 default stderr arrow", () => {
+  test("omitting opts.stderr falls through to process.stderr.write default", async () => {
+    const h = makeHarness();
+    const captured: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: (chunk: string | Uint8Array) => boolean }).write = (
+      chunk: string | Uint8Array,
+    ) => {
+      captured.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    };
+    try {
+      const opts = { ...harnessOpts(h) };
+      delete (opts as { stderr?: unknown }).stderr;
+      // gate-4 fires unconditionally, so it's the cheapest path to
+      // exercise deps.stderr without setting up gate state.
+      const exit = await cockpitRotate(["superdriver"], opts);
+      expect(exit).toBe(65); // EX_DATAERR for gate refusal
+    } finally {
+      (process.stderr as unknown as { write: typeof originalWrite }).write = originalWrite;
+    }
+
+    // Default arrow wrote to process.stderr — captured chunk should
+    // include the gate-4 stderr line.
+    expect(captured.join("")).toContain("gate-4-never-rotate-superdriver");
+  });
+});
+
+// ---------- T6 residual: gate-3 stat-throw fallback ----------
+
+// cockpit-rotate.ts L1198-1203 wraps `deps.stat` in try/catch so a
+// rejected stat call (fs permission error, ENOTDIR mid-path, etc.)
+// degrades to `mtimeMs = null`, which classifyGate3 treats as a hard
+// refusal (no marker → cannot prove uptime → refuse). The default
+// harness returns null without throwing, so the catch branch stayed
+// uncovered on the T5 baseline.
+describe("cockpitRotate — T6 gate-3 stat-throw", () => {
+  test("stat rejection → mtimeMs=null → gate-3 refuses (marker-missing path)", async () => {
+    const h = makeHarness();
+    const opts = {
+      ...harnessOpts(h),
+      stat: async (_path: string) => {
+        throw new Error("synthetic fs permission denied");
+      },
+    };
+
+    const exit = await cockpitRotate(["medic"], opts);
+
+    expect(exit).toBe(65); // EX_DATAERR — gate refusal
+    expect(h.capturedStderr.join("")).toContain("gate-3-uptime");
+    expect(firstAuditRow(h).outcome).toBe("gate-3-refused");
+    // No tmux mutation under a gate refusal.
+    expect(h.killWindowCalls.length).toBe(0);
+    expect(h.newWindowCalls.length).toBe(0);
   });
 });
