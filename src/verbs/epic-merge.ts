@@ -26,6 +26,13 @@
 // the verb.
 
 import { join } from "node:path";
+import {
+  type DiscordSendOpts,
+  send as discordSend,
+  renderEpicTestFail,
+  renderEpicTestPass,
+  renderTestGateBypass,
+} from "../abstractions/discord.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
@@ -223,6 +230,12 @@ export interface EpicMergeOpts {
   now?: () => number;
   /** Test injection — override `$USER` reader for `by` attribution. */
   user?: string;
+  /** ADR-144 T5 test injection — override the Discord sender for the
+   *  `[epic-test-pass]` / `[epic-test-fail]` / `[test-gate-bypass]`
+   *  fire-sites. Production default is {@link discordSend} from
+   *  `src/abstractions/discord.ts`. Tests pass a capture-args stub so
+   *  the e2e walks assert payload shape without hitting the network. */
+  discordSend?: (opts: DiscordSendOpts) => Promise<void>;
 }
 
 // ---------- Top-level dispatch ----------
@@ -347,7 +360,14 @@ export async function epicMergeTickVerb(
         });
         const passSpec = result.outcome === "pass" ? "passed" : "failed";
         const note = `cage tests ${passSpec} (attempts=${result.attempts}, exit=${result.last.exitCode}, durationMs=${result.totalDurationMs})`;
-        return { outcome: result.outcome, note };
+        return {
+          outcome: result.outcome,
+          note,
+          attempts: result.attempts,
+          durationMs: result.totalDurationMs,
+          failedTestNames: [],
+          lastStdoutLines: tailLines(result.last.stdout, 20),
+        };
       };
     }
     // ADR-144 §Deployed mode (T4 t-66a237cd): sibling of the cage
@@ -378,9 +398,8 @@ export async function epicMergeTickVerb(
         const devSuffix = lastDash >= 0 ? parentBase.slice(lastDash + 1) : parentBase;
         const epicName = epicKanbanId.startsWith("e-") ? epicKanbanId.slice(2) : epicKanbanId;
         const host = composeStagingUrl(stagingUrlTemplate, { product, devSuffix, epicName });
-        const baseUrl = host.startsWith("http://") || host.startsWith("https://")
-          ? host
-          : `https://${host}`;
+        const baseUrl =
+          host.startsWith("http://") || host.startsWith("https://") ? host : `https://${host}`;
         const result = await runDeployedTestGate({
           baseUrl,
           testCommand,
@@ -390,15 +409,111 @@ export async function epicMergeTickVerb(
         });
         const passSpec = result.outcome === "pass" ? "passed" : "failed";
         const note = `deployed tests ${passSpec} on ${result.baseUrl} (attempts=${result.attempts}, exit=${result.last.exitCode}, durationMs=${result.totalDurationMs})`;
-        return { outcome: result.outcome, note };
+        return {
+          outcome: result.outcome,
+          note,
+          attempts: result.attempts,
+          durationMs: result.totalDurationMs,
+          failedTestNames: [],
+          lastStdoutLines: tailLines(result.last.stdout, 20),
+        };
       };
     }
     const result = await performEpicMerge(ctx);
     logTickResult(result, logger, team.name, epicTeam.parentBase);
+    // ADR-144 T5: fire [epic-test-pass] / [epic-test-fail] when this
+    // tick ran the test-gate hook (PASS or FAIL). `result.testGateOutcome`
+    // is set only by `runTestGate`'s success path — the resume-from-tested
+    // path leaves it undefined so we don't double-fire on a re-tick over
+    // a row already in `tested`. Skip-mode ticks also leave it undefined
+    // (no gate fired). Fire-and-forget per ADR-008 §3 (Discord errors
+    // surface via the recorder/webhook layer; verb does not abort on
+    // template-validation refusal — wire-site discipline is the unit
+    // test's responsibility per the ADR-144 §Amendment T5).
+    if (
+      testGateMode !== "skip" &&
+      result.testGateOutcome !== undefined &&
+      (testGateMode === "cage" || testGateMode === "deployed")
+    ) {
+      const mode: "cage" | "deployed" = testGateMode;
+      await fireTestGateDiscord({
+        team: team.name,
+        epicId: epicTeam.parentEpicKanbanId,
+        epicBranch,
+        testGateMode: mode,
+        testCommand: epicTeam.testCommand,
+        requiredPasses: epicTeam.requiredPasses,
+        result,
+        opts,
+      });
+    }
     return 0;
   } finally {
     closeDb(db);
   }
+}
+
+// ---------- ADR-144 T5: Discord fire-site helpers ----------
+
+/** Tail the last `n` lines of a stdout/stderr blob. Pure — splits on
+ *  `\n` and slices. Empty input returns an empty array. Surfaces the
+ *  ADR-144 §Discord templates `epic-test-fail` body bullet capping. */
+export function tailLines(s: string, n: number): string[] {
+  if (s.length === 0) return [];
+  const lines = s.split("\n");
+  return lines.slice(Math.max(0, lines.length - n));
+}
+
+interface FireTestGateDiscordOpts {
+  team: string;
+  epicId: string;
+  epicBranch: string;
+  testGateMode: "cage" | "deployed";
+  testCommand: string;
+  requiredPasses: number;
+  result: PerformEpicMergeResult;
+  opts: EpicMergeOpts;
+}
+
+/** Fire `[epic-test-pass]` or `[epic-test-fail]` Discord based on the
+ *  performEpicMerge result. Caller-gated: only invoked when
+ *  `result.testGateOutcome !== undefined` AND `testGateMode !== "skip"`.
+ *  Hook-injectable via {@link EpicMergeOpts.discordSend} for unit tests. */
+async function fireTestGateDiscord(args: FireTestGateDiscordOpts): Promise<void> {
+  const sender = args.opts.discordSend ?? discordSend;
+  const outcome = args.result.testGateOutcome;
+  if (outcome === undefined) return;
+  const attempts = args.result.testGateAttempts ?? 1;
+  const durationMs = args.result.testGateDurationMs ?? 0;
+  if (outcome === "pass") {
+    const payload = renderEpicTestPass({
+      team: args.team,
+      epicId: args.epicId,
+      epicBranch: args.epicBranch,
+      testGateMode: args.testGateMode,
+      testCommand: args.testCommand,
+      requiredPasses: args.requiredPasses,
+      attempts,
+      durationMs,
+    });
+    await sender(payload);
+  } else if (outcome === "fail") {
+    const payload = renderEpicTestFail({
+      team: args.team,
+      epicId: args.epicId,
+      epicBranch: args.epicBranch,
+      testGateMode: args.testGateMode,
+      testCommand: args.testCommand,
+      attempts,
+      durationMs,
+      failedTestNames: args.result.testGateFailedTestNames ?? [],
+      lastStdoutLines: args.result.testGateLastStdoutLines ?? [],
+    });
+    await sender(payload);
+  }
+  // outcome === "bypass" is fired from the advance verb directly, not
+  // here — the tick path never observes a bypass outcome (bypass
+  // bypasses the tick gate).
 }
 
 // ---------- Advance sub-verb (ADR-144 §Operator bypass) ----------
@@ -527,8 +642,12 @@ export async function epicMergeAdvanceVerb(
     }
     repo.transition(transition);
 
-    // ADR-144 §Operator bypass: durable audit log + Discord surface
-    // (T5 reads this log via tail-N).
+    // ADR-144 §Operator bypass: durable audit log + Discord surface.
+    // Per ADR-144 §Discord templates: `[test-gate-bypass]` fires once
+    // per bypass invocation, paired with the JSONL audit log entry at
+    // `~/.atmux/state/test-gate-bypasses.log`. Order: log FIRST (durable
+    // audit trail must land even if Discord errors), then Discord — the
+    // log is the source of truth, Discord is the surface.
     if (parsed.skipTestGate === true) {
       await logTestGateBypass(
         {
@@ -542,6 +661,20 @@ export async function epicMergeAdvanceVerb(
           ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
           now: nowMs,
         },
+      );
+      // ADR-144 T5: Discord fire-site for `[test-gate-bypass]`. Hook-
+      // injectable via `opts.discordSend` for unit tests; production
+      // default uses the abstraction's `send`.
+      const sender = opts.discordSend ?? discordSend;
+      await sender(
+        renderTestGateBypass({
+          team: team.name,
+          epicId: team.epicTeam.parentEpicKanbanId,
+          epicBranch,
+          targetState: target,
+          by,
+          reason: reasonText,
+        }),
       );
       logger.log(
         `epic-merge advance: bypass written — ${epicBranch} '${currentState}' → '${target}' by=${by} reason='${reasonText}'`,

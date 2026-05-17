@@ -328,6 +328,9 @@ describe("epicMergeAdvanceVerb — ADR-144 §Decision test-gate", () => {
 
   test("--skip-test-gate writes bypass outcome + appends to log", async () => {
     seedRow("tested", { testOutcome: "fail" });
+    // ADR-144 T5: inject a no-op Discord stub so this test does not
+    // hit the real `ATMUX_DISCORD_WEBHOOK` set in the operator env.
+    const discordCalls: unknown[] = [];
     const rc = await epicMergeAdvanceVerb(
       {
         subverb: "advance",
@@ -342,6 +345,9 @@ describe("epicMergeAdvanceVerb — ADR-144 §Decision test-gate", () => {
         homeDir: scratchHome,
         now: () => 1779_999_000_000,
         user: "george",
+        discordSend: async (o) => {
+          discordCalls.push(o);
+        },
         logger: { log: () => {}, ok: () => {}, warn: () => {}, err: () => {} },
       },
     );
@@ -359,6 +365,69 @@ describe("epicMergeAdvanceVerb — ADR-144 §Decision test-gate", () => {
     expect(parsed.targetState).toBe("merging");
     expect(parsed.reason).toContain("release-day emergency");
     expect(parsed.by).toBe("george");
+    // ADR-144 T5: Discord [test-gate-bypass] fires exactly once paired
+    // with the JSONL log entry.
+    expect(discordCalls).toHaveLength(1);
+  });
+
+  test("--skip-test-gate fires Discord [test-gate-bypass] with structured payload (ADR-144 T5)", async () => {
+    seedRow("tested", { testOutcome: "fail" });
+    const captured: Array<Record<string, unknown>> = [];
+    const rc = await epicMergeAdvanceVerb(
+      {
+        subverb: "advance",
+        to: "merging",
+        skipTestGate: true,
+        reason: "demo prep — known flake under retry, will fix after demo",
+        teamDir,
+      },
+      {
+        git: gitStub,
+        callerScope: () => "driver",
+        homeDir: scratchHome,
+        now: () => 1779_999_000_000,
+        user: "george",
+        discordSend: async (o) => {
+          captured.push(o as unknown as Record<string, unknown>);
+        },
+        logger: { log: () => {}, ok: () => {}, warn: () => {}, err: () => {} },
+      },
+    );
+    expect(rc).toBe(0);
+    expect(captured).toHaveLength(1);
+    const payload = captured[0]!;
+    expect(payload.template).toBe("test-gate-bypass");
+    expect(payload.team).toBe("test-epic");
+    expect(payload.category).toBe("⚠️");
+    expect(String(payload.verdict)).toContain("e-aabb0001");
+    expect(String(payload.verdict)).toContain("BYPASSED");
+    expect(String(payload.verdict)).toContain("merging");
+    const bullets = (payload.bullets as ReadonlyArray<string>) ?? [];
+    expect(bullets.some((b) => b.startsWith("🆔") && b.includes("george"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("🚩") && b.includes("demo prep"))).toBe(true);
+  });
+
+  test("non-bypass advance does NOT fire Discord (passive recovery)", async () => {
+    seedRow("test_failed", { testOutcome: "fail" });
+    const captured: Array<unknown> = [];
+    await epicMergeAdvanceVerb(
+      {
+        subverb: "advance",
+        to: "in_progress",
+        reason: "fixed",
+        teamDir,
+      },
+      {
+        git: gitStub,
+        callerScope: () => "driver",
+        homeDir: scratchHome,
+        discordSend: async (o) => {
+          captured.push(o);
+        },
+        logger: { log: () => {}, ok: () => {}, warn: () => {}, err: () => {} },
+      },
+    );
+    expect(captured).toHaveLength(0);
   });
 });
 

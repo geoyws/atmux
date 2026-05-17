@@ -165,7 +165,31 @@ export interface EpicMergeContext {
    *  runner imports — verbs/epic-merge.ts wires the production
    *  default; unit tests stub a sync `{ outcome: "pass", note: "..."
    *  }`. */
-  testGate?: (ctx: EpicMergeContext) => Promise<{ outcome: TestOutcome; note: string }>;
+  testGate?: (ctx: EpicMergeContext) => Promise<TestGateHookResult>;
+}
+
+/** Return shape of the {@link EpicMergeContext.testGate} hook. The
+ *  `outcome` + `note` pair is the original T3 contract; the optional
+ *  structured fields (ADR-144 T5) surface the per-attempt detail that
+ *  the verb-layer Discord templates render in `[epic-test-pass]` /
+ *  `[epic-test-fail]` body. Production hooks (cage / deployed) populate
+ *  the optional fields; unit-test stubs may omit them. */
+export interface TestGateHookResult {
+  outcome: TestOutcome;
+  /** Folded into `merger_state.note`. Free-form prose; truncation is
+   *  the caller's concern. */
+  note: string;
+  /** ADR-144 T5: total attempts (1 baseline; >1 = flake-retry). */
+  attempts?: number;
+  /** ADR-144 T5: total hook duration in milliseconds including all
+   *  retries + lifecycle (provision / teardown). */
+  durationMs?: number;
+  /** ADR-144 T5: failing test names (best-effort; runner-specific
+   *  extraction). Empty on PASS. */
+  failedTestNames?: ReadonlyArray<string>;
+  /** ADR-144 T5: last ≤20 lines of stdout/stderr from the final
+   *  attempt. Empty when not captured. */
+  lastStdoutLines?: ReadonlyArray<string>;
 }
 
 /** Result of one `performEpicMerge` tick. Same shape as
@@ -189,6 +213,27 @@ export interface PerformEpicMergeResult {
    *  --auto <epicId>` per ADR-090. False when the dispatch failed,
    *  was skipped (T9 verb absent), or we never reached `merged`. */
   dissolveDispatched: boolean;
+  /** ADR-144 T5: set ONLY on the tick that fired the test-gate hook
+   *  (PASS or FAIL). The verb layer reads this to fire
+   *  `[epic-test-pass]` / `[epic-test-fail]` Discord templates exactly
+   *  once per gate cycle — the resume-from-tested path leaves this
+   *  `undefined` so a re-tick over a row in `tested` state does not
+   *  double-fire. Also `undefined` on `testGateMode === "skip"` and
+   *  on no-op / concurrency-lost ticks. */
+  testGateOutcome?: TestOutcome;
+  /** ADR-144 T5: hook `note` field — Discord template body when
+   *  `testGateOutcome` is set. Often more detail than `reason`. */
+  testGateNote?: string;
+  /** ADR-144 T5: hook `attempts` field — Discord template body. */
+  testGateAttempts?: number;
+  /** ADR-144 T5: hook `durationMs` field — Discord template body. */
+  testGateDurationMs?: number;
+  /** ADR-144 T5: hook `failedTestNames` — Discord `[epic-test-fail]`
+   *  body. Empty on PASS. */
+  testGateFailedTestNames?: ReadonlyArray<string>;
+  /** ADR-144 T5: hook `lastStdoutLines` — Discord `[epic-test-fail]`
+   *  body. Empty when not captured. */
+  testGateLastStdoutLines?: ReadonlyArray<string>;
 }
 
 // ---------- Helper — guarded transition with TOCTOU re-read ----------
@@ -524,7 +569,7 @@ async function runTestGate(
   // Invoke the test-runner hook. The hook handles its own try/finally
   // teardown; any throw propagates here and we leave the row in
   // `tested` for operator inspection.
-  let gateResult: { outcome: TestOutcome; note: string };
+  let gateResult: TestGateHookResult;
   try {
     gateResult = await ctx.testGate(ctx);
   } catch (e) {
@@ -550,12 +595,15 @@ async function runTestGate(
       testOutcome: "fail",
       transitionedAt: t2,
     });
-    return {
-      state: "test_failed",
-      changed: true,
-      reason: gateResult.note,
-      dissolveDispatched: false,
-    };
+    return withGateFields(
+      {
+        state: "test_failed",
+        changed: true,
+        reason: gateResult.note,
+        dissolveDispatched: false,
+      },
+      gateResult,
+    );
   }
 
   // outcome === "pass" — record PASS outcome on the `tested` row,
@@ -568,8 +616,32 @@ async function runTestGate(
     testOutcome: "pass",
     transitionedAt: t2,
   });
-  // Now run the merge step: tested → merging → merged|conflict.
-  return await runMergeFromTested(ctx, t2, by, now, "pass");
+  // Now run the merge step: tested → merging → merged|conflict. ADR-144
+  // T5: surface the gate fields onto the final result so the verb fires
+  // `[epic-test-pass]` exactly once per gate cycle (PASS path).
+  const mergeResult = await runMergeFromTested(ctx, t2, by, now, "pass");
+  return withGateFields(mergeResult, gateResult);
+}
+
+/** ADR-144 T5: fold the test-gate hook's structured fields onto a
+ *  {@link PerformEpicMergeResult}. Pure — no I/O. Idempotent: re-
+ *  applying preserves the original gate fields. Called by
+ *  {@link runTestGate} on every PASS/FAIL path so the verb-layer
+ *  Discord fire-site can read `testGateOutcome` / etc. The resume-
+ *  from-tested path does NOT call this — its outcome was recorded by
+ *  a prior tick and re-surfacing would double-fire the template. */
+function withGateFields(
+  result: PerformEpicMergeResult,
+  gate: TestGateHookResult,
+): PerformEpicMergeResult {
+  const out: PerformEpicMergeResult = { ...result };
+  out.testGateOutcome = gate.outcome;
+  out.testGateNote = gate.note;
+  if (gate.attempts !== undefined) out.testGateAttempts = gate.attempts;
+  if (gate.durationMs !== undefined) out.testGateDurationMs = gate.durationMs;
+  if (gate.failedTestNames !== undefined) out.testGateFailedTestNames = gate.failedTestNames;
+  if (gate.lastStdoutLines !== undefined) out.testGateLastStdoutLines = gate.lastStdoutLines;
+  return out;
 }
 
 /** Resume from a `tested` row observed at tick-start. Used when the
