@@ -8,11 +8,24 @@
 // superdriver), caller-scope gate, role classifier, per-role respawn
 // stubs.
 //
-// T3 (this commit): gates 1-3 IO + classifier impl + NDJSON audit-row
-// emit + Discord [cockpit-rotate-refused] emit at every gate-refusal
-// site. Each gate's pure classifier is extracted (text|mtime → reason-
-// or-null) so the test surface is small + exhaustive (T6 t-18bddf4e
-// covers each gate × each refusal path × each respawn path).
+// T3 (shipped 5245e39): gates 1-3 IO + classifier impl + NDJSON
+// audit-row emit + Discord [cockpit-rotate-refused] emit at every
+// gate-refusal site.
+//
+// T4 (shipped 771a104): per-role respawn matrix (medic / sentinel /
+// team-driver), c-alias wrapper resolver (load-bearing for medic +
+// sentinel-claude, skipped for sentinel-cursor + team-driver),
+// Ctrl-C via safeSendKeysWithVerify, success NDJSON audit row +
+// cadence re-arm via autoStartSuperdoctorLoop / autoStartSentinelLoop.
+//
+// T5 (this commit): handoff write-path. Assembles per-role Markdown
+// payload (medic / sentinel: audit-log rotation tail + placeholder
+// state markers; team-driver: lead-outbox tail + audit-log rotation
+// tail). Atomic-writes to `~/.claude/teams/__cockpit__/<role>/
+// handoff.md` per ADR-167 §OQ-1 BEFORE Ctrl-C (§Ordering invariant —
+// rotation is re-traceable if a later step crashes mid-flight). 100KB
+// soft cap per ADR-167 OQ-2 with truncate-with-trailer. Handoff write
+// failure → exit 70 + `handoff-write-failed` audit row + pane untouched.
 //
 // Exit codes (ADR-167 §Decision + §OQ-5):
 //   0   success
@@ -30,7 +43,12 @@ import {
   send as discordSendDefault,
   renderCockpitRotateRefused,
 } from "../abstractions/discord.ts";
-import { appendText as appendTextDefault, statOrNull } from "../abstractions/fs.ts";
+import {
+  appendText as appendTextDefault,
+  atomicWrite as atomicWriteDefault,
+  readTextOrNull,
+  statOrNull,
+} from "../abstractions/fs.ts";
 import { now as nowMsDefault } from "../abstractions/time.ts";
 import {
   createTmux,
@@ -341,6 +359,20 @@ export interface CockpitRotateOpts {
    *  pass `0` so the helper bails immediately after pane readiness
    *  check. */
   autoStartTimeoutMs?: number;
+  /** Read the audit-log file (entire body). Default reads via
+   *  `fs.readTextOrNull` from `<homeDir>/.atmux/state/cockpit-rotate-
+   *  audit.log`. Tests inject a recorder returning canned NDJSON for
+   *  the handoff payload's `recent rotations` section. */
+  readAuditLog?: (path: string) => Promise<string | null>;
+  /** Read the lead-outbox tail for team-driver handoff. Default reads
+   *  the last `lines` lines of `<atmuxDir>/lead-outbox.md`. The
+   *  per-team `atmuxDir` is derived from the team's `root` in
+   *  cockpit.json. */
+  readLeadOutboxTail?: (atmuxDir: string, lines: number) => Promise<string>;
+  /** Atomic write seam for the handoff payload. Default
+   *  `fs.atomicWrite` (tmp + rename per ADR-005). Tests inject a
+   *  recorder. */
+  atomicWrite?: (path: string, content: string) => Promise<void>;
 }
 
 interface ResolvedDeps {
@@ -362,6 +394,9 @@ interface ResolvedDeps {
   autoStartSentinelLoop: typeof autoStartSentinelLoopDefault;
   cadenceLogger: Logger;
   autoStartTimeoutMs: number;
+  readAuditLog: (path: string) => Promise<string | null>;
+  readLeadOutboxTail: (atmuxDir: string, lines: number) => Promise<string>;
+  atomicWrite: (path: string, content: string) => Promise<void>;
 }
 
 function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
@@ -392,7 +427,22 @@ function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
       err: (msg: string) => stderr(`${msg}\n`),
     },
     autoStartTimeoutMs: opts.autoStartTimeoutMs ?? 30_000,
+    readAuditLog: opts.readAuditLog ?? readTextOrNull,
+    readLeadOutboxTail: opts.readLeadOutboxTail ?? defaultReadLeadOutboxTail,
+    atomicWrite: opts.atomicWrite ?? atomicWriteDefault,
   };
+}
+
+/** Default lead-outbox tail reader — mirrors src/core/fallback-brief.ts.
+ *  Returns last `lines` lines of `<atmuxDir>/lead-outbox.md`, or empty
+ *  when file missing. */
+async function defaultReadLeadOutboxTail(atmuxDir: string, lines: number): Promise<string> {
+  const path = join(atmuxDir, "lead-outbox.md");
+  const text = await readTextOrNull(path);
+  if (text === null || text.length === 0) return "";
+  const all = text.split("\n");
+  const start = Math.max(0, all.length - lines);
+  return all.slice(start).join("\n");
 }
 
 /** Capture a cockpit-session pane's last N lines via the cockpit socket.
@@ -462,6 +512,202 @@ async function emitRefusal(
   }
 }
 
+// ---------- T5: handoff payload + atomic write ----------
+
+/** Per-role handoff Markdown soft cap per ADR-167 OQ-2 — payloads
+ *  larger than this are truncated with the trailer below. 100KB is
+ *  brief-paste-ready (claude-code paste buffer + first-input quirks
+ *  per ADR-081 stay well clear of this threshold); larger payloads
+ *  are pathological. */
+const HANDOFF_SOFT_CAP_BYTES = 100_000;
+
+/** Trailer appended when truncation fires — operator gets a pointer
+ *  to the audit log for the full inputs. */
+const HANDOFF_TRUNCATION_TRAILER =
+  "\n\n---\n*[truncated at 100KB; see audit log for full assembly inputs]*\n";
+
+/** Per-role audit-log tail size — handoff renders the last-N rotation
+ *  attempts for the same role. Bounded to keep handoffs small + brief-
+ *  paste-ready. */
+const HANDOFF_AUDIT_TAIL_N = 5;
+
+/** Per-role lead-outbox tail size for team-driver handoff. Mirrors the
+ *  fallback-brief reader convention (`50 lines` per ADR-050 brief
+ *  generator step 5). */
+const HANDOFF_LEAD_OUTBOX_TAIL_LINES = 50;
+
+/** Resolve the per-role handoff payload path per ADR-167 §OQ-1.
+ *  `~/.claude/teams/__cockpit__/<role>/handoff.md`. */
+export function handoffPayloadPath(homeDir: string, role: RoleId): string {
+  return join(homeDir, ".claude/teams/__cockpit__", role, "handoff.md");
+}
+
+/** Parse the cockpit-rotate audit log + return the last `n` rows
+ *  matching `role`. Pure modulo IO (the read happens in the caller via
+ *  `deps.readAuditLog`). Malformed lines are silently skipped — the
+ *  audit log is best-effort observability, never a correctness gate. */
+export function parseAuditTailForRole(
+  ndjson: string | null,
+  role: RoleId,
+  n: number,
+): CockpitRotateAuditRow[] {
+  if (ndjson === null || ndjson.length === 0) return [];
+  const matched: CockpitRotateAuditRow[] = [];
+  for (const line of ndjson.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as CockpitRotateAuditRow;
+      if (parsed.role === role) matched.push(parsed);
+    } catch {
+      // Skip malformed lines — corrupt audit-row entries do not
+      // block handoff assembly.
+    }
+  }
+  if (matched.length <= n) return matched;
+  return matched.slice(matched.length - n);
+}
+
+/** Render a tail of audit rows as Markdown bullets. Each row → one
+ *  line; readable in the brief-paste-ready handoff payload. */
+function renderAuditTailMarkdown(rows: ReadonlyArray<CockpitRotateAuditRow>): string {
+  if (rows.length === 0) {
+    return "_no recent rotation attempts recorded_";
+  }
+  return rows
+    .map((r) => {
+      const errPart = r.error !== undefined ? ` — ${r.error}` : "";
+      return `- \`${r.ts}\` · outcome=\`${r.outcome}\` · durationMs=${r.durationMs}${errPart}`;
+    })
+    .join("\n");
+}
+
+/** Truncate `text` to the soft cap, appending the truncation trailer
+ *  when the cap fires. Byte-counted (UTF-8); markdown trailer survives
+ *  truncation by reserving its byte count at the head. */
+function softCapTruncate(text: string): { content: string; truncated: boolean } {
+  const trailerBytes = Buffer.byteLength(HANDOFF_TRUNCATION_TRAILER, "utf8");
+  const totalBytes = Buffer.byteLength(text, "utf8");
+  if (totalBytes <= HANDOFF_SOFT_CAP_BYTES) {
+    return { content: text, truncated: false };
+  }
+  const budget = HANDOFF_SOFT_CAP_BYTES - trailerBytes;
+  const buf = Buffer.from(text, "utf8").subarray(0, Math.max(0, budget));
+  // Avoid cutting mid-UTF-8 codepoint: re-decode + drop the final
+  // partial code unit if any.
+  const safeUtf8 = buf.toString("utf8");
+  return { content: safeUtf8 + HANDOFF_TRUNCATION_TRAILER, truncated: true };
+}
+
+/** Compose the medic-role handoff Markdown per ADR-167 §Handoff
+ *  payload schema. Heavy state-reads (in-flight diagnosis + complaints)
+ *  are stubbed with placeholder markers — follow-up enrichment
+ *  surfaces those once the medic state-snapshot helpers stabilize. */
+function renderMedicHandoff(
+  whenIso: string,
+  recentRotations: ReadonlyArray<CockpitRotateAuditRow>,
+): string {
+  return [
+    `# Medic handoff — ${whenIso}`,
+    "",
+    "## In-flight diagnosis state",
+    "_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_",
+    "",
+    "## Recent medic-sourced complaints",
+    "_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_",
+    "",
+    "## Recent rotation calls (audit log tail)",
+    renderAuditTailMarkdown(recentRotations),
+    "",
+  ].join("\n");
+}
+
+/** Compose the sentinel-role handoff Markdown. */
+function renderSentinelHandoff(
+  whenIso: string,
+  recentRotations: ReadonlyArray<CockpitRotateAuditRow>,
+): string {
+  return [
+    `# Sentinel handoff — ${whenIso}`,
+    "",
+    "## Whip-classifier state snapshot",
+    "_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_",
+    "",
+    "## NudgeAction history",
+    "_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_",
+    "",
+    "## Recent escalations / rotation calls (audit log tail)",
+    renderAuditTailMarkdown(recentRotations),
+    "",
+  ].join("\n");
+}
+
+/** Compose the team-driver handoff Markdown. Reads the team's lead-
+ *  outbox tail (the per-team `<team-root>/.atmux/lead-outbox.md`
+ *  convention) — the operator can re-establish driver context by
+ *  pasting this section back into the respawned pane. */
+function renderTeamDriverHandoff(
+  whenIso: string,
+  teamName: string,
+  recentRotations: ReadonlyArray<CockpitRotateAuditRow>,
+  leadOutboxTail: string,
+): string {
+  const outboxBlock =
+    leadOutboxTail.length === 0
+      ? "_no lead-outbox content available_"
+      : `\`\`\`\n${leadOutboxTail}\n\`\`\``;
+  return [
+    `# Team-driver handoff — ${teamName} @ ${whenIso}`,
+    "",
+    "## Recent tell-lead history (lead-outbox tail)",
+    outboxBlock,
+    "",
+    "## Outbox state snapshot",
+    "_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_",
+    "",
+    "## Recent rotation calls (audit log tail)",
+    renderAuditTailMarkdown(recentRotations),
+    "",
+  ].join("\n");
+}
+
+/** Per-role handoff assembly. Reads the audit log tail + (for team-
+ *  driver) the lead-outbox tail; composes the Markdown payload; applies
+ *  the 100KB soft cap with truncate-with-trailer per ADR-167 OQ-2.
+ *  Returns the rendered text + whether truncation fired (audit log
+ *  caller can record truncation in the outcome row). */
+async function assembleHandoffPayload(
+  deps: ResolvedDeps,
+  role: RoleId,
+  sessionName: string,
+  cockpit: LoadedCockpit,
+): Promise<{ content: string; truncated: boolean }> {
+  const whenIso = new Date(deps.nowMs()).toISOString();
+  const auditLog = await deps.readAuditLog(auditLogPath(deps.homeDir));
+  const recentRotations = parseAuditTailForRole(auditLog, role, HANDOFF_AUDIT_TAIL_N);
+
+  let raw: string;
+  switch (role) {
+    case "medic":
+      raw = renderMedicHandoff(whenIso, recentRotations);
+      break;
+    case "sentinel":
+      raw = renderSentinelHandoff(whenIso, recentRotations);
+      break;
+    case "team-driver": {
+      const team = cockpit.teams.find((t) => t.name === sessionName);
+      const atmuxDir = team !== undefined ? join(team.root, ".atmux") : "";
+      const outboxTail =
+        atmuxDir.length > 0
+          ? await deps.readLeadOutboxTail(atmuxDir, HANDOFF_LEAD_OUTBOX_TAIL_LINES)
+          : "";
+      raw = renderTeamDriverHandoff(whenIso, sessionName, recentRotations, outboxTail);
+      break;
+    }
+  }
+  return softCapTruncate(raw);
+}
+
 // ---------- T4: respawn-path helpers ----------
 
 /** Pane-state verifier used after Ctrl-C: returns true when the claude
@@ -529,6 +775,43 @@ async function emitSuccess(
   } catch {
     // Observability is non-fatal — respawn already succeeded. Operator
     // can re-grep tmux server state to verify the new pane.
+  }
+}
+
+/** Emit a handoff-write-failed audit row (NDJSON). No Discord — the
+ *  handoff layer is observability + brief-paste-ready recovery, so a
+ *  failed atomic write surfaces via exit 70 + stderr without paging
+ *  the operator. The pane is intentionally NOT touched when the
+ *  handoff write fails — recovery is "retry the verb" not "rotate
+ *  blind". */
+async function emitHandoffWriteFailed(
+  deps: ResolvedDeps,
+  args: {
+    role: RoleId;
+    sessionName: string;
+    durationMs: number;
+    error: string;
+    handoffPath: string;
+  },
+): Promise<void> {
+  const tsIso = new Date(deps.nowMs()).toISOString();
+  const callerScope = deps.callerScope() === "driver" ? "driver" : "member";
+  const row: CockpitRotateAuditRow = {
+    ts: tsIso,
+    role: args.role,
+    sessionName: args.sessionName,
+    outcome: "handoff-write-failed",
+    durationMs: args.durationMs,
+    callerScope,
+    error: args.error,
+    handoffPath: args.handoffPath,
+  };
+  try {
+    await deps.appendText(auditLogPath(deps.homeDir), serializeAuditRow(row));
+  } catch {
+    // Observability is non-fatal — exit code + stderr surface the
+    // failure. The pane is untouched (no rotation occurred); operator
+    // re-runs the verb after addressing the underlying cause.
   }
 }
 
@@ -627,12 +910,6 @@ async function performRespawn(
   parsed: ParsedCockpitRotateArgs,
   startMs: number,
 ): Promise<number> {
-  // TODO(T5 t-fe3464df): assemble role-specific handoff payload +
-  //   atomic-write to ~/.claude/teams/__cockpit__/<role>/handoff.md
-  //   per ADR-167 §Ordering invariant (handoff write lands BEFORE
-  //   Ctrl-C so the rotation is re-traceable if a later step crashes).
-  //   T4 leaves the placeholder here; T5 wires the real payload.
-
   const windowName = targetWindowForRole(role, parsed.sessionName);
   let cmd: string;
   let cockpit: LoadedCockpit;
@@ -648,6 +925,27 @@ async function performRespawn(
       sessionName: parsed.sessionName,
       durationMs: deps.nowMs() - startMs,
       error: `loadCockpit: ${cause}`,
+    });
+    return EX_SOFTWARE;
+  }
+
+  // T5: assemble + atomic-write the role-specific handoff payload
+  // BEFORE Ctrl-C per ADR-167 §Ordering invariant. If the write fails,
+  // the pane is intentionally NOT touched — recovery is "retry the
+  // verb" not "rotate blind".
+  const handoffPathResolved = handoffPayloadPath(deps.homeDir, role);
+  try {
+    const { content } = await assembleHandoffPayload(deps, role, parsed.sessionName, cockpit);
+    await deps.atomicWrite(handoffPathResolved, content);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    deps.stderr(`cockpit rotate: handoff write failed (${cause})\n`);
+    await emitHandoffWriteFailed(deps, {
+      role,
+      sessionName: parsed.sessionName,
+      durationMs: deps.nowMs() - startMs,
+      error: `atomicWrite: ${cause}`,
+      handoffPath: handoffPathResolved,
     });
     return EX_SOFTWARE;
   }
@@ -804,6 +1102,7 @@ async function performRespawn(
     role,
     sessionName: parsed.sessionName,
     durationMs: deps.nowMs() - startMs,
+    handoffPath: handoffPathResolved,
   });
   return EX_OK;
 }

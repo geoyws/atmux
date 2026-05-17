@@ -169,6 +169,18 @@ Clarifies the wrapper-resolver semantics surfaced during T4 implementation. The 
 
 **Test seam shape** (consumed by T6 / fe-1 + T7 / fe-2 fixtures): `CockpitRotateOpts` exposes injection points for `safeSendKeysWithVerify`, `loadCockpit`, `autoStartMedicLoop`, `autoStartSentinelLoop`, `cadenceLogger`, `autoStartTimeoutMs`. The wrapper resolver itself stays pure — fe-2's hermetic T7 plan (stub wrapper-alias scripts on PATH) exercises the real `buildClaudeRespawnCommand` end-to-end without the seam.
 
+## Amendment 2026-05-17 (T5 ship — be-2 / t-fe3464df, claim-race won)
+
+T5 wires the handoff write-path at the TODO(T5) anchor T4 left at `performRespawn` opening. Two design clarifications surfaced during impl:
+
+**Heavy state-reads stubbed in v1**: ADR-167 §Handoff payload schema (per-role) lists per-role state inputs — medic's "in-flight diagnosis state from `src/verbs/medic.ts` runtime" + "recent medic-source complaints (state.db `complaints` WHERE `source_kind = 'medic'`)", sentinel's "whip-classifier state snapshot" + "NudgeAction history (per-team sentinel logs tail-N)", team-driver's "outbox state snapshot at rotation time". v1 ships placeholder markers (`_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_`) for the deep state-reads; the audit-log rotation tail + (for team-driver) lead-outbox tail are wired through. Rationale: the deep state-reads each require sqlite-repo handles + cross-module state-snapshot helpers that aren't stable today; once T7 e2e fixtures land (fe-2) the enrichment surface clarifies. Follow-up task t-TBD will enrich.
+
+**Handoff-write atomic-write convention**: uses `src/abstractions/fs.atomicWrite` (tmp + rename per ADR-005), NOT `lock.flock`. The flock-based serialization §Per-role respawn step 2 references was originally framed for concurrent rotation attempts on the same role — but cockpit rotate is operator-fired (caller-scope=driver, ADR-033), single-writer by construction. `atomicWrite`'s tmp+rename gives the same crash-safety property (partial writes never replace the destination) without the lock overhead. If concurrent rotation becomes a v2 ask (cron-fired auto-rotate per ADR-167 §Out of scope), revisit.
+
+**Failure handling**: handoff-write failure → `handoff-write-failed` audit row + exit 70 + pane intentionally **untouched** (no Ctrl-C / kill / new-window fires). Recovery semantics — "retry the verb" not "rotate blind" — preserve the operator's mental model that a `cockpit rotate` invocation either fully succeeds or leaves the pane intact for diagnosis.
+
+**Test seam additions on `CockpitRotateOpts`**: `readAuditLog` (default `fs.readTextOrNull`), `readLeadOutboxTail` (default mirrors `src/core/fallback-brief.ts` convention), `atomicWrite` (default `fs.atomicWrite`). The truncation path (>100KB) is exercised by T6 / T7 via injected large `leadOutboxByDir` content.
+
 ## Related
 
 - [ADR-006](006-error-class-and-exit-code.md) — error class → exit code mapping (65 EX_DATAERR for gate refusals).

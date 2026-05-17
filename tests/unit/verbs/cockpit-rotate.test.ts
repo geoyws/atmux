@@ -32,6 +32,8 @@ import {
   classifyRole,
   claudeUiGoneVerifier,
   cockpitRotate,
+  handoffPayloadPath,
+  parseAuditTailForRole,
   parseCockpitRotateArgs,
   serializeAuditRow,
   targetWindowForRole,
@@ -260,6 +262,14 @@ interface TestHarness {
   medicAutoStartCalls: { sessionName: string; windowIndex: number }[];
   /** Recorded sentinel auto-start invocations. */
   sentinelAutoStartCalls: { sessionName: string; windowIndex: number }[];
+  /** Recorded T5 handoff writes. */
+  handoffWrites: { path: string; content: string }[];
+  /** Force atomicWrite to throw the given error on next call. */
+  atomicWriteThrows?: Error;
+  /** Canned audit-log content returned by `readAuditLog` seam. */
+  auditLogContent: string | null;
+  /** Canned lead-outbox tail by atmuxDir for team-driver handoff. */
+  leadOutboxByDir: Map<string, string>;
 }
 
 const T0 = 1779100000000;
@@ -319,6 +329,12 @@ function makeHarness(overrides: Partial<TestHarness> = {}): TestHarness {
     windowsBySession: overrides.windowsBySession ?? new Map(),
     medicAutoStartCalls: overrides.medicAutoStartCalls ?? [],
     sentinelAutoStartCalls: overrides.sentinelAutoStartCalls ?? [],
+    handoffWrites: overrides.handoffWrites ?? [],
+    ...(overrides.atomicWriteThrows !== undefined
+      ? { atomicWriteThrows: overrides.atomicWriteThrows }
+      : {}),
+    auditLogContent: overrides.auditLogContent ?? null,
+    leadOutboxByDir: overrides.leadOutboxByDir ?? new Map(),
   };
 }
 
@@ -408,6 +424,15 @@ function harnessOpts(h: TestHarness) {
       });
     },
     autoStartTimeoutMs: 0, // bail immediately in tests
+    // ---- T5 handoff seams ----
+    atomicWrite: async (path: string, content: string) => {
+      h.handoffWrites.push({ path, content });
+      if (h.atomicWriteThrows !== undefined) throw h.atomicWriteThrows;
+    },
+    readAuditLog: async (_path: string) => h.auditLogContent,
+    readLeadOutboxTail: async (atmuxDir: string, _lines: number) => {
+      return h.leadOutboxByDir.get(atmuxDir) ?? "";
+    },
   };
 }
 
@@ -996,6 +1021,331 @@ describe("cockpitRotate — T4 failure modes", () => {
 });
 
 // ---------- T4: audit-row schema invariants ----------
+
+// =============================================================
+// T5: handoff write-path (t-fe3464df)
+// =============================================================
+
+describe("handoffPayloadPath", () => {
+  test("resolves under ~/.claude/teams/__cockpit__/<role>/handoff.md", () => {
+    expect(handoffPayloadPath("/test/home", "medic")).toBe(
+      "/test/home/.claude/teams/__cockpit__/medic/handoff.md",
+    );
+    expect(handoffPayloadPath("/test/home", "sentinel")).toBe(
+      "/test/home/.claude/teams/__cockpit__/sentinel/handoff.md",
+    );
+    expect(handoffPayloadPath("/test/home", "team-driver")).toBe(
+      "/test/home/.claude/teams/__cockpit__/team-driver/handoff.md",
+    );
+  });
+});
+
+describe("parseAuditTailForRole", () => {
+  test("null input → empty array", () => {
+    expect(parseAuditTailForRole(null, "medic", 5)).toEqual([]);
+  });
+
+  test("empty string → empty array", () => {
+    expect(parseAuditTailForRole("", "medic", 5)).toEqual([]);
+  });
+
+  test("malformed JSON lines are skipped silently", () => {
+    const ndjson = [
+      "not json at all",
+      JSON.stringify({
+        ts: "2026-05-17T10:00:00.000Z",
+        role: "medic",
+        sessionName: "medic",
+        outcome: "success",
+        durationMs: 100,
+        callerScope: "driver",
+      }),
+      "{ broken",
+    ].join("\n");
+    const rows = parseAuditTailForRole(ndjson, "medic", 5);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.outcome).toBe("success");
+  });
+
+  test("filters by role — non-matching rows excluded", () => {
+    const sentinelRow = {
+      ts: "2026-05-17T10:00:00.000Z",
+      role: "sentinel",
+      sessionName: "sentinel",
+      outcome: "success",
+      durationMs: 100,
+      callerScope: "driver",
+    };
+    const medicRow = {
+      ts: "2026-05-17T10:01:00.000Z",
+      role: "medic",
+      sessionName: "medic",
+      outcome: "gate-3-refused",
+      durationMs: 50,
+      callerScope: "driver",
+      error: "uptime <60min",
+    };
+    const ndjson = [JSON.stringify(sentinelRow), JSON.stringify(medicRow)].join("\n");
+    const rows = parseAuditTailForRole(ndjson, "medic", 5);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.outcome).toBe("gate-3-refused");
+  });
+
+  test("returns LAST `n` matching rows when more exist", () => {
+    const ndjson = Array.from({ length: 8 }, (_, i) =>
+      JSON.stringify({
+        ts: `2026-05-17T10:0${i}:00.000Z`,
+        role: "medic",
+        sessionName: "medic",
+        outcome: "success",
+        durationMs: i,
+        callerScope: "driver",
+      }),
+    ).join("\n");
+    const rows = parseAuditTailForRole(ndjson, "medic", 3);
+    expect(rows.length).toBe(3);
+    // Tail of 3 → rows 5/6/7 (durationMs values).
+    expect(rows.map((r) => r.durationMs)).toEqual([5, 6, 7]);
+  });
+
+  test("returns all when fewer than `n` match", () => {
+    const ndjson = JSON.stringify({
+      ts: "2026-05-17T10:00:00.000Z",
+      role: "medic",
+      sessionName: "medic",
+      outcome: "success",
+      durationMs: 100,
+      callerScope: "driver",
+    });
+    const rows = parseAuditTailForRole(ndjson, "medic", 5);
+    expect(rows.length).toBe(1);
+  });
+
+  test("skips blank lines (trailing newline padding)", () => {
+    const row = {
+      ts: "2026-05-17T10:00:00.000Z",
+      role: "medic",
+      sessionName: "medic",
+      outcome: "success",
+      durationMs: 100,
+      callerScope: "driver",
+    };
+    const ndjson = `${JSON.stringify(row)}\n\n\n`;
+    const rows = parseAuditTailForRole(ndjson, "medic", 5);
+    expect(rows.length).toBe(1);
+  });
+});
+
+describe("cockpitRotate — T5 handoff write happy-path", () => {
+  test("medic: handoff written BEFORE Ctrl-C, audit row carries handoffPath", async () => {
+    const h = makeHarness();
+    passGates(h, "medic");
+    const exit = await cockpitRotate(["medic"], harnessOpts(h));
+
+    expect(exit).toBe(0);
+    expect(h.handoffWrites.length).toBe(1);
+    expect(h.handoffWrites[0]?.path).toBe("/test/home/.claude/teams/__cockpit__/medic/handoff.md");
+    // Handoff payload Markdown sections per ADR-167 §Handoff payload
+    // schema for medic.
+    const md = h.handoffWrites[0]?.content ?? "";
+    expect(md).toContain("# Medic handoff");
+    expect(md).toContain("## In-flight diagnosis state");
+    expect(md).toContain("## Recent medic-sourced complaints");
+    expect(md).toContain("## Recent rotation calls (audit log tail)");
+    // Success audit row carries the handoff path.
+    const row = firstAuditRow(h);
+    expect(row.outcome).toBe("success");
+    expect(row.handoffPath).toBe("/test/home/.claude/teams/__cockpit__/medic/handoff.md");
+  });
+
+  test("sentinel: handoff Markdown carries sentinel-specific sections", async () => {
+    const h = makeHarness();
+    passGates(h, "sentinel");
+    const exit = await cockpitRotate(["sentinel"], harnessOpts(h));
+
+    expect(exit).toBe(0);
+    expect(h.handoffWrites.length).toBe(1);
+    const md = h.handoffWrites[0]?.content ?? "";
+    expect(md).toContain("# Sentinel handoff");
+    expect(md).toContain("## Whip-classifier state snapshot");
+    expect(md).toContain("## NudgeAction history");
+    expect(md).toContain("## Recent escalations / rotation calls (audit log tail)");
+  });
+
+  test("team-driver: handoff includes lead-outbox tail block + team-name in header", async () => {
+    const h = makeHarness({
+      leadOutboxByDir: new Map([
+        [
+          "/root/work/src/atmux/.atmux",
+          "lead nudge 1: pulled task t-abc\nlead nudge 2: T4 SHIPPED",
+        ],
+      ]),
+    });
+    passGates(h, "team-driver");
+    const exit = await cockpitRotate(["atmux"], harnessOpts(h));
+
+    expect(exit).toBe(0);
+    expect(h.handoffWrites.length).toBe(1);
+    const md = h.handoffWrites[0]?.content ?? "";
+    expect(md).toContain("# Team-driver handoff — atmux @");
+    expect(md).toContain("## Recent tell-lead history (lead-outbox tail)");
+    expect(md).toContain("lead nudge 1: pulled task t-abc");
+    expect(md).toContain("lead nudge 2: T4 SHIPPED");
+    expect(md).toContain("## Outbox state snapshot");
+    expect(md).toContain("## Recent rotation calls (audit log tail)");
+  });
+
+  test("team-driver with empty lead-outbox renders placeholder", async () => {
+    const h = makeHarness(); // no leadOutboxByDir entry → returns ""
+    passGates(h, "team-driver");
+    const exit = await cockpitRotate(["atmux"], harnessOpts(h));
+
+    expect(exit).toBe(0);
+    const md = h.handoffWrites[0]?.content ?? "";
+    expect(md).toContain("_no lead-outbox content available_");
+  });
+
+  test("audit-log tail renders into the recent-rotations section", async () => {
+    const recentRow = {
+      ts: "2026-05-17T09:00:00.000Z",
+      role: "medic" as const,
+      sessionName: "medic",
+      outcome: "success" as const,
+      durationMs: 4231,
+      callerScope: "driver" as const,
+    };
+    const h = makeHarness({ auditLogContent: JSON.stringify(recentRow) });
+    passGates(h, "medic");
+    await cockpitRotate(["medic"], harnessOpts(h));
+
+    const md = h.handoffWrites[0]?.content ?? "";
+    expect(md).toContain("2026-05-17T09:00:00.000Z");
+    expect(md).toContain("outcome=`success`");
+    expect(md).toContain("durationMs=4231");
+  });
+
+  test("empty audit-log renders 'no recent rotation attempts' placeholder", async () => {
+    const h = makeHarness({ auditLogContent: null });
+    passGates(h, "medic");
+    await cockpitRotate(["medic"], harnessOpts(h));
+
+    const md = h.handoffWrites[0]?.content ?? "";
+    expect(md).toContain("_no recent rotation attempts recorded_");
+  });
+});
+
+describe("cockpitRotate — T5 handoff write failure modes", () => {
+  test("atomicWrite throws → handoff-write-failed audit row + exit 70 + NO pane mutation", async () => {
+    const h = makeHarness({ atomicWriteThrows: new Error("ENOSPC: disk full") });
+    passGates(h, "medic");
+    const exit = await cockpitRotate(["medic"], harnessOpts(h));
+
+    expect(exit).toBe(70);
+    expect(h.capturedStderr.join("")).toContain("handoff write failed");
+    expect(h.appendedAudit.length).toBe(1);
+    const row = firstAuditRow(h);
+    expect(row.outcome).toBe("handoff-write-failed");
+    expect(row.error).toContain("ENOSPC");
+    expect(row.handoffPath).toBe("/test/home/.claude/teams/__cockpit__/medic/handoff.md");
+    // Pane intentionally NOT touched on handoff failure — recovery is
+    // "retry the verb" not "rotate blind".
+    expect(h.ctrlCCalls.length).toBe(0);
+    expect(h.killWindowCalls.length).toBe(0);
+    expect(h.newWindowCalls.length).toBe(0);
+  });
+
+  test("handoff write failure swallow on audit-append failure (observability non-fatal)", async () => {
+    const h = makeHarness({ atomicWriteThrows: new Error("EACCES") });
+    passGates(h, "medic");
+    const opts = {
+      ...harnessOpts(h),
+      appendText: async () => {
+        throw new Error("audit log unwriteable too");
+      },
+    };
+    const exit = await cockpitRotate(["medic"], opts);
+
+    // Both write paths failed but exit code + stderr still signal the
+    // primary failure cleanly.
+    expect(exit).toBe(70);
+    expect(h.capturedStderr.join("")).toContain("handoff write failed");
+    expect(h.ctrlCCalls.length).toBe(0);
+  });
+});
+
+describe("cockpitRotate — T5 soft-cap truncation (ADR-167 OQ-2)", () => {
+  test("payload >100KB → truncated with trailer", async () => {
+    // Generate a lead-outbox tail >100KB so the team-driver handoff
+    // overflows the soft cap.
+    const giantTail = "a".repeat(150_000);
+    const h = makeHarness({
+      leadOutboxByDir: new Map([["/root/work/src/atmux/.atmux", giantTail]]),
+    });
+    passGates(h, "team-driver");
+    const exit = await cockpitRotate(["atmux"], harnessOpts(h));
+
+    expect(exit).toBe(0);
+    expect(h.handoffWrites.length).toBe(1);
+    const md = h.handoffWrites[0]?.content ?? "";
+    // Truncation trailer present.
+    expect(md).toContain("[truncated at 100KB; see audit log for full assembly inputs]");
+    // Final payload stays within budget (trailer + content ≤ cap).
+    expect(Buffer.byteLength(md, "utf8")).toBeLessThanOrEqual(100_000);
+  });
+
+  test("payload exactly at cap → no truncation", async () => {
+    // Small payload (well under 100KB) → no trailer.
+    const h = makeHarness();
+    passGates(h, "medic");
+    await cockpitRotate(["medic"], harnessOpts(h));
+
+    const md = h.handoffWrites[0]?.content ?? "";
+    expect(md).not.toContain("[truncated at 100KB");
+  });
+});
+
+describe("cockpitRotate — T5 ordering invariant", () => {
+  test("handoff write lands BEFORE Ctrl-C (re-traceable mid-flight crash)", async () => {
+    const h = makeHarness();
+    passGates(h, "medic");
+    const sequence: string[] = [];
+
+    const opts = {
+      ...harnessOpts(h),
+      atomicWrite: async (path: string, content: string) => {
+        sequence.push("handoff-write");
+        h.handoffWrites.push({ path, content });
+      },
+      safeSendKeysWithVerify: async (sopts: SafeSendKeysWithVerifyOpts) => {
+        sequence.push("ctrl-c");
+        h.ctrlCCalls.push({ target: sopts.target, keys: sopts.keys });
+        return { success: true, attempts: 1, finalCapture: "" };
+      },
+      tmuxFactory: (_cfg: TmuxConfig) =>
+        ({
+          pane: {
+            capturePane: async () => "",
+            sendKeys: async () => {},
+          },
+          window: {
+            killWindow: async () => {
+              sequence.push("kill-window");
+            },
+            newWindow: async () => {
+              sequence.push("new-window");
+              return { sessionName: "atmux_cockpit", windowIndex: 4 };
+            },
+            listWindows: async () => [],
+          },
+        }) as unknown as TmuxNamespace,
+    };
+
+    await cockpitRotate(["medic"], opts);
+
+    // ADR-167 §Ordering invariant: handoff → Ctrl-C → kill → new.
+    expect(sequence).toEqual(["handoff-write", "ctrl-c", "kill-window", "new-window"]);
+  });
+});
 
 describe("cockpitRotate — T4 success audit-row shape", () => {
   test("success row carries ts/role/sessionName/outcome/durationMs/callerScope, no error", async () => {
