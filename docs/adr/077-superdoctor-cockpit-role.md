@@ -190,6 +190,24 @@ Deferred follow-up tasks (filed in atmux kanban under epic `t-274ec70c`):
 
   The hourly self-heal logic itself (record-attempt-with-outcome, check threshold, render-and-emit, action handler for the operator's letter reply) lives in `~/.claude/skills/superdoctor/superdoctor-prompt.md` (F1) and `~/.claude/skills/superdoctor/scripts/*` — the skill operates against the typed primitives this ADR ships in atmux.
 
+## §F7 — refusal-pattern scan + record (ADR-139 T3 hook)
+
+**Annotation 2026-05-16** (t-841049e4, ADR-139 §D2 medic integration).
+
+Medic gains an hourly **refusal-pattern scan** pass over each enabled team's members. The scan invokes the existing classifier from ADR-139 T2 (`src/core/refusal-classifier.ts`) on every member-pane capture and records positive results to the per-team `refusal_events` SQLite table (migration v6→v7 in `src/abstractions/sqlite-migrations.ts`).
+
+**Primitive surface (this commit ships)**:
+
+- `atmux refusal-scan [--team-dir <path>] [--json]` — verb at `src/verbs/refusal-scan.ts`. For each member: capture pane via tmux, classify via `classifyRefusal`, write positive results to `refusal_events` with idempotent `INSERT OR IGNORE` keyed on `(member, minute_bucket, severity)`. Emits a JSON summary to stdout; one log line per outcome to stderr.
+- `scanTeamForRefusals(team, atmuxDir, deps)` — pure-of-direct-IO core at `src/core/refusal-scan.ts`. Every external collaborator (pane capture, classifier, DB factory, clock) is dep-injectable so the medic prompt can wire its own pane-capture if it pre-captures for other diagnostic passes.
+- `refusal_events` schema: `(id TEXT PK, member TEXT, team TEXT, phrases TEXT JSON, severity TEXT, confidence REAL, detected_at INTEGER, minute_bucket INTEGER)` + `UNIQUE(member, minute_bucket, severity)`. Idempotency contract per ADR-139 §D2.
+
+**Medic invocation contract** (skill side, in `~/.claude/skills/superdoctor/superdoctor-prompt.md` aka medic per ADR-133): after the existing per-team complaints sweep, fire `atmux refusal-scan --team-dir <path>` once per enabled team. The verb is a record-only no-op when no detections land — safe to run every tick.
+
+**T3 is SCAN + RECORD only**. Threshold-trigger logic (read accumulated `refusal_events` rows + decide rotation) ships in ADR-139 T4 via `refusal-threshold.ts::shouldRotate` against the same table. Until T4 lands, the rows sit as durable observability — operators can inspect them via direct SQL (`SELECT * FROM refusal_events WHERE detected_at > ? ORDER BY detected_at DESC`).
+
+**Martinet sibling** — same verb, faster cadence (270s per tick vs medic's hourly). Wired forward-compat per ADR-132 §D1 cross-ref + `templates/briefs/martinet.md` scaffold. Once martinet's skill prompt lands (post-ADR-133 T8), it invokes the same `atmux refusal-scan` verb per-tick; medic stays as the hourly backstop.
+
 ## §lead-uptime-measurement — rotation gate reads session-start.txt, NOT process etime
 
 **Annotation 2026-05-15** (t-6d950ffd, preventive for superdoctor complaint c-06dabd47).

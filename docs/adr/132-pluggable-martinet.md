@@ -90,6 +90,8 @@ export interface Martinet {
 
 Impls live in `src/abstractions/martinets/{claude,cursor}.ts` post-2026-05-14 drop (MiniMax + Kimi removed). Escalation classifier (formal pane-state → NudgeAction mapping) lives in `src/core/martinet-escalation.ts` — load-bearing safety gate per `[[project_martinet_pattern]]`. Fleet-wide tick loop lives in `src/verbs/martinet.ts`.
 
+**Cross-ref: ADR-139 refusal-pattern scan (2026-05-16 / T3 t-841049e4)** — every martinet tick MUST invoke `atmux refusal-scan --team-dir <path>` once per enabled team as part of (or alongside) its `observe()` pass. The verb captures each member's pane via tmux, classifies via `classifyRefusal` (ADR-139 T2), and records positive results to the per-team `refusal_events` SQLite table (migration v6→v7). Martinet is the **primary detector** at 270s cadence; medic (ADR-077 §F7) is the hourly backstop running the same verb. Both writers share the same `UNIQUE(member, minute_bucket, severity)` idempotency contract so concurrent ticks collapse cleanly. T8 (cockpit wiring) picks up the verb-invocation hook from `templates/briefs/martinet.md`; until martinet's skill prompt lands, medic carries the load alone.
+
 ### (D2) Cockpit-level placement at W3 — new window topology
 
 Cockpit window order updates as follows:

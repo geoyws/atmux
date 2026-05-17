@@ -298,7 +298,7 @@ export const migrations: readonly Migration[] = [
   },
   // ---------- v6 → v7 ----------
   // Legacy-DB rescue (ADR-147 T9 dogfood discovery, 2026-05-15): the
-  // v3→v4 renumber on 2026-05-14 16:05 MYT swapped superdoctor_hygiene
+  // v3→v4 renumber on 2026-05-14 swapped superdoctor_hygiene
   // (was v3→v4) with superdoctor_attempts (now v3→v4). DBs migrated
   // before the renumber sit at user_version=4 with the hygiene table
   // but NO superdoctor_attempts — the new v3→v4 (attempts) never ran
@@ -331,6 +331,64 @@ export const migrations: readonly Migration[] = [
       db.exec(
         "CREATE INDEX IF NOT EXISTS idx_sd_attempts_outcome ON superdoctor_attempts(outcome)",
       );
+    },
+  },
+  // ---------- v7 → v8 ----------
+  // ADR-139 §D2 / T3 (t-841049e4): refusal-event ledger for the
+  // refusal-pattern auto-rotate path. Medic (hourly, ADR-077 / ADR-133)
+  // and sentinel (per-tick, ADR-132 / ADR-158 rename) scan each member-pane
+  // via `classifyRefusal` from `src/core/refusal-classifier.ts` (T2); positive
+  // results record here. T3 ships only the SCAN + RECORD path; T4 reads
+  // these rows through `refusal-threshold.ts::shouldRotate` and fires
+  // `atmux rotate-member` when threshold crossed.
+  //
+  // Renumbered from v6→v7 (gitter branch) to v7→v8 at merge time because
+  // trunk landed an ADR-147 legacy-DB rescue at v6→v7 first. Pre-existing
+  // DBs that walked the v6→v7 ladder before this merge sit at user_version=7
+  // with the legacy-rescue tables present; this v7→v8 then creates
+  // refusal_events. Fresh DBs walking from v0 see them as sequential
+  // migrations with no cross-coupling.
+  //
+  // Idempotency: `UNIQUE(member, minute_bucket, severity)` collapses
+  // repeat detections within the same minute to a single row. Re-scans
+  // across ticks within the same minute are no-ops via `INSERT OR IGNORE`
+  // at the call site. `minute_bucket = floor(detected_at / 60)` —
+  // computed by the caller (a generated column would couple this
+  // migration to bun-sqlite's STRICT-mode generated-column support; the
+  // explicit column is more portable).
+  //
+  // `phrases` is a JSON array of `{ phrase, class }` mirroring the
+  // `RefusalDetectionResult.phrases` shape from ADR-139 T2. `severity`
+  // is the highest-precedence class observed ('soft' / 'hard' / 'role' /
+  // 'meta'); the bare 'none' value never lands here (caller only writes
+  // on `detected === true`).
+  //
+  // Indexes:
+  //   - `(member, detected_at DESC)` — threshold-window lookup hot path
+  //     (T4 `shouldRotate(recentEvents, …)` reads last N events per
+  //     member).
+  //   - `severity` — cross-member audit + Discord aggregator (T4).
+  {
+    from: 7,
+    to: 8,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE refusal_events (
+					id TEXT PRIMARY KEY NOT NULL,
+					member TEXT NOT NULL,
+					team TEXT NOT NULL,
+					phrases TEXT NOT NULL CHECK(json_valid(phrases)),
+					severity TEXT NOT NULL,
+					confidence REAL NOT NULL,
+					detected_at INTEGER NOT NULL,
+					minute_bucket INTEGER NOT NULL,
+					UNIQUE(member, minute_bucket, severity)
+				) STRICT;
+			`);
+      db.exec(
+        "CREATE INDEX idx_refusal_events_member_detected ON refusal_events(member, detected_at DESC)",
+      );
+      db.exec("CREATE INDEX idx_refusal_events_severity ON refusal_events(severity)");
     },
   },
 ];

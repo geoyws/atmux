@@ -155,7 +155,16 @@ export type DiscordTemplate =
   // (`renderSendKeysFailureWarning`); dedup state TBD — wire-in is
   // deferred to a follow-up Task per the ADR-137 precedent (probe +
   // template ship in this commit; surfacer wires later).
-  | "send-keys-failure";
+  | "send-keys-failure"
+  // ADR-139 T4 (t-a830d2ee): refusal-pattern auto-rotate fire surface.
+  // Fired by `src/core/refusal-trigger.ts::runRefusalTriggerForTeam`
+  // after each `atmux rotate <member>` spawn OR cap-hit HARD-escalation
+  // decision. Renderer below (`renderMemberRefusalRotate`); discriminator
+  // is `RefusalRotateEscalation` — `'rotate'` is the normal 🟡 path,
+  // `'cap-hit'` + `'spawn-failed'` flip to 🚨 Need-you. Dedup state TBD
+  // (re-fires acceptable — operator wants visibility on every rotation
+  // until the member-day count exhausts).
+  | "member-refusal-rotate";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -2152,6 +2161,98 @@ export function renderWhipModalCycling(opts: WhipModalCyclingOpts): DiscordSendO
     template: "whip-modal-cycling",
     team: opts.team,
     category: "🔄",
+    verdict,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-139 T4 — renderMemberRefusalRotate ----------
+
+/** Discriminator on the rotate fire / escalation paths.
+ *
+ * - `'rotate'` — normal green-path fire: `atmux rotate` spawn ok,
+ *   member's pane will be re-bootstrapped; cap not yet hit.
+ *   Verdict 🟡 **Idle** (mobile-triage: visible but not paging).
+ * - `'cap-hit'` — `maxRotationsPerDay` saturated for the UTC day;
+ *   the trigger filed a complaint instead of rotating. Verdict
+ *   🚨 **Need you** — operator intervention asked.
+ * - `'spawn-failed'` — rotate decision was green but the `atmux
+ *   rotate` spawn returned non-zero. Verdict 🚨 **Need you** — the
+ *   member is still refusing AND we couldn't act.
+ */
+export type RefusalRotateEscalation = "rotate" | "cap-hit" | "spawn-failed";
+
+export interface MemberRefusalRotateOpts {
+  team: string;
+  /** Member name (kanban id, NOT display label) — code-formatted in
+   *  the verdict. The operator wants the immutable id since it's
+   *  what `atmux rotate <member>` accepts. */
+  member: string;
+  /** Triggering class — `'soft'` / `'hard'` / `'role'` per ADR-139
+   *  §D3. `'meta'` never reaches this renderer (meta-class never
+   *  rotates per ADR-139). */
+  severity: "soft" | "hard" | "role";
+  /** Count of refusal_events rows the threshold gate read — verdict
+   *  line surface so the operator sees "how loud was this". */
+  eventCount: number;
+  /** Threshold-config window-back in minutes (resolved per
+   *  ADR-139 §Config — typically 30). */
+  windowMin: number;
+  /** Today's rotation count for this member AFTER this fire (or
+   *  AT cap-hit time). Footer signal so the operator sees how
+   *  close we are to manual-intervention territory. */
+  rotationsToday: number;
+  /** Per-team cap. Footer denominator. */
+  maxRotationsPerDay: number;
+  /** Path discriminator — see {@link RefusalRotateEscalation}. */
+  escalation: RefusalRotateEscalation;
+  /** Up to 2 top phrases that fired the classifier — what's-new
+   *  bullets so the operator sees the trigger language. */
+  topPhrases: ReadonlyArray<string>;
+  whenMs?: number;
+}
+
+/** Build the `[member-refusal-rotate]` Discord send opts per
+ *  ADR-139 T4. Verdict + escalation marker discriminate on the
+ *  escalation path. Mobile-triage shape per CLAUDE.md §Discord —
+ *  the verdict line is the single load-bearing field; bullets list
+ *  the triggering phrases; footer carries the rotation/cap counters
+ *  so the operator can see "is this team saturating" at a glance. */
+export function renderMemberRefusalRotate(
+  opts: MemberRefusalRotateOpts,
+): DiscordSendOpts {
+  const isHard = opts.escalation !== "rotate";
+  const category: CategoryEmoji = isHard ? "🚨" : "🔄";
+
+  let verdict: string;
+  if (opts.escalation === "rotate") {
+    verdict = `🟡 **Idle** — auto-rotate fired on \`${opts.member}\` (${opts.severity}; ${opts.eventCount} event${opts.eventCount === 1 ? "" : "s"} in ${opts.windowMin}min)`;
+  } else if (opts.escalation === "cap-hit") {
+    verdict = `🚨 **Need you** — \`${opts.member}\` cap-hit (${opts.rotationsToday}/${opts.maxRotationsPerDay}/day) — refusal-rotate saturated, manual intervention`;
+  } else {
+    verdict = `🚨 **Need you** — \`${opts.member}\` rotate spawn FAILED on ${opts.severity}-class refusal (${opts.eventCount} events) — pane unrecovered`;
+  }
+
+  const bullets: string[] = [];
+  if (opts.topPhrases.length > 0) {
+    const phrases = opts.topPhrases.slice(0, 2);
+    for (const p of phrases) {
+      bullets.push(naBullet80(`📋 trigger: ${p}`));
+    }
+  }
+  if (isHard) {
+    bullets.push("🙏 Need from George — pause team, swap account, OR manual rotate with brief");
+  }
+  bullets.push(
+    `📍 rotations today: ${opts.rotationsToday}/${opts.maxRotationsPerDay} · window ${opts.windowMin}min`,
+  );
+
+  const out: DiscordSendOpts = {
+    template: "member-refusal-rotate",
+    team: opts.team,
+    category,
     verdict,
     bullets,
   };
