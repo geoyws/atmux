@@ -239,7 +239,10 @@ async function epicMergeTick(fix: Fixture, epicRoot: string): Promise<string[]> 
 }
 
 /** Insert a done kanban Task into the child epic-team's state.db,
- *  optionally tagged with role='reviewer-trunk-signoff'. */
+ *  optionally tagged with role='reviewer-trunk-signoff'. The role lives
+ *  in the `extra` JSON column (KanbanTask.role is a passthrough field
+ *  per ADR-090 schema landing — the v1 tasks table has no role column).
+ *  See t-95264384 for the production query fix that consumes this. */
 function seedChildTask(
   childAtmuxDir: string,
   id: string,
@@ -249,14 +252,14 @@ function seedChildTask(
   const db = openDatabase(join(childAtmuxDir, "state.db"), migrations);
   try {
     db.query(
-      `INSERT INTO tasks (id, status, role, created_at, completed_at)
-       VALUES ($id, $status, $role, $now, $cnow)`,
+      `INSERT INTO tasks (id, status, created_at, completed_at, extra)
+       VALUES ($id, $status, $now, $cnow, $extra)`,
     ).run({
       $id: id,
       $status: status,
-      $role: role,
       $now: 1000,
       $cnow: status === "done" ? 1100 : null,
+      $extra: role === null ? null : JSON.stringify({ role }),
     });
   } finally {
     closeDatabase(db);

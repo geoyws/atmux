@@ -492,6 +492,165 @@ describe("performEpicMerge — attribution surfaces", () => {
   });
 });
 
+// ---------- ADR-144 test-gate (T3) ----------
+
+describe("performEpicMerge — ADR-144 test-gate routing", () => {
+  beforeEach(() => {
+    seedState("ready_to_merge", 300, "all checks pass");
+  });
+
+  test("testGateMode=cage + PASS → ready_to_merge → tested → merging → merged", async () => {
+    const r = await performEpicMerge(
+      baseCtx({
+        testGateMode: "cage",
+        testGate: async () => ({ outcome: "pass", note: "cage tests passed" }),
+        git: makeGitStub("success"),
+      }),
+    );
+    expect(r.state).toBe("merged");
+    expect(r.changed).toBe(true);
+    expect(r.mergedSha).toBe("epicMergedSha");
+    // Final row preserves test_outcome=pass for audit trail.
+    expect(repo.getState(EPIC_BRANCH)?.testOutcome).toBe("pass");
+  });
+
+  test("testGateMode=cage + FAIL → ready_to_merge → tested → test_failed", async () => {
+    const r = await performEpicMerge(
+      baseCtx({
+        testGateMode: "cage",
+        testGate: async () => ({
+          outcome: "fail",
+          note: "cage tests failed: foo.test.ts on attempt 2/2",
+        }),
+        git: makeGitStub("success"),
+      }),
+    );
+    expect(r.state).toBe("test_failed");
+    expect(r.changed).toBe(true);
+    expect(r.reason).toContain("foo.test.ts");
+    expect(repo.getState(EPIC_BRANCH)?.testOutcome).toBe("fail");
+  });
+
+  test("testGateMode=cage + hook throws → row left in tested for inspection", async () => {
+    const r = await performEpicMerge(
+      baseCtx({
+        testGateMode: "cage",
+        testGate: async () => {
+          throw new Error("cage runner crashed");
+        },
+        git: makeGitStub("success"),
+      }),
+    );
+    expect(r.state).toBe("tested");
+    expect(r.changed).toBe(true);
+    expect(r.reason).toContain("threw");
+    expect(r.reason).toContain("cage runner crashed");
+  });
+
+  test("testGateMode=skip → direct ready_to_merge → merging (pre-ADR-144 flow)", async () => {
+    const r = await performEpicMerge(
+      baseCtx({
+        testGateMode: "skip",
+        git: makeGitStub("success"),
+      }),
+    );
+    expect(r.state).toBe("merged");
+    // No test_outcome recorded on the row — skip mode doesn't write it.
+    expect(repo.getState(EPIC_BRANCH)?.testOutcome).toBeNull();
+  });
+
+  test("testGateMode unset (default) → skip semantics (back-compat)", async () => {
+    const r = await performEpicMerge(baseCtx({ git: makeGitStub("success") }));
+    expect(r.state).toBe("merged");
+    expect(repo.getState(EPIC_BRANCH)?.testOutcome).toBeNull();
+  });
+
+  test("testGateMode=cage but testGate hook missing → throws invariant violation", async () => {
+    await expect(
+      performEpicMerge(
+        baseCtx({
+          testGateMode: "cage",
+          // testGate intentionally omitted — exercises the invariant guard
+          git: makeGitStub("success"),
+        }),
+      ),
+    ).rejects.toThrow(/testGate hook required/);
+  });
+});
+
+// ---------- ADR-144 resume from tested (T3) ----------
+
+describe("performEpicMerge — resume from `tested` (T3)", () => {
+  test("tested + null outcome → stay tested with operator-actionable reason", async () => {
+    seedState("tested", 500, "test runner mid-flight");
+    const r = await performEpicMerge(baseCtx());
+    expect(r.state).toBe("tested");
+    expect(r.changed).toBe(false);
+    expect(r.reason).toContain("no test_outcome recorded");
+    expect(r.reason).toContain("advance --to in-progress");
+  });
+
+  test("tested + pass outcome → advance to merged", async () => {
+    // Seed tested with pass outcome via direct repo.transition().
+    repo.transition({
+      memberBranch: EPIC_BRANCH,
+      next: "tested",
+      note: "seed pass",
+      by: "test",
+      testOutcome: "pass",
+      transitionedAt: 100,
+    });
+    const r = await performEpicMerge(baseCtx({ git: makeGitStub("success") }));
+    expect(r.state).toBe("merged");
+    expect(r.changed).toBe(true);
+    expect(repo.getState(EPIC_BRANCH)?.testOutcome).toBe("pass");
+  });
+
+  test("tested + bypass outcome → advance to merged (operator override)", async () => {
+    repo.transition({
+      memberBranch: EPIC_BRANCH,
+      next: "tested",
+      note: "operator bypass",
+      by: "operator",
+      testOutcome: "bypass",
+      transitionedAt: 100,
+    });
+    const r = await performEpicMerge(baseCtx({ git: makeGitStub("success") }));
+    expect(r.state).toBe("merged");
+    expect(repo.getState(EPIC_BRANCH)?.testOutcome).toBe("bypass");
+  });
+
+  test("tested + fail outcome → advance to test_failed (roll-forward from half-completed run)", async () => {
+    repo.transition({
+      memberBranch: EPIC_BRANCH,
+      next: "tested",
+      note: "half-completed run",
+      by: "test",
+      testOutcome: "fail",
+      transitionedAt: 100,
+    });
+    const r = await performEpicMerge(baseCtx());
+    expect(r.state).toBe("test_failed");
+    expect(r.changed).toBe(true);
+    expect(r.reason).toContain("outcome=fail");
+  });
+
+  test("tested + pass + merge conflict → conflict terminal (test outcome preserved)", async () => {
+    repo.transition({
+      memberBranch: EPIC_BRANCH,
+      next: "tested",
+      note: "seed pass",
+      by: "test",
+      testOutcome: "pass",
+      transitionedAt: 100,
+    });
+    const r = await performEpicMerge(baseCtx({ git: makeGitStub("conflict") }));
+    expect(r.state).toBe("conflict");
+    // Outcome preserved on conflict row for post-mortem audit.
+    expect(repo.getState(EPIC_BRANCH)?.testOutcome).toBe("pass");
+  });
+});
+
 // ---------- hasReviewerTrunkSignoff SQL (t-b2d9c955 regression) ----------
 //
 // Pre-fix defaultResolveGate ran `WHERE status='done' AND role=?` which

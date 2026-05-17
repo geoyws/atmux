@@ -171,7 +171,21 @@ export type DiscordTemplate =
   // `renderCockpitRotateRefused`. Fired by src/verbs/cockpit-rotate.ts
   // alongside the NDJSON audit-row write at gate-refusal site. Re-fires
   // acceptable — refusal is operator-fired and visibility is the point.
-  | "cockpit-rotate-refused";
+  | "cockpit-rotate-refused"
+  // ADR-144 T5 (t-45d59eeb): epic-team test-gate lifecycle templates.
+  // Fired from the verb layer (`src/verbs/epic-merge.ts`) after
+  // `performEpicMerge` returns — verb reads `testGateOutcome` +
+  // `testGateNote` + `testGateDurationMs` set by `runTestGate` and
+  // dispatches one of the three templates exactly once per gate cycle.
+  // Renderers below (`renderEpicTestPass` / `renderEpicTestFail` /
+  // `renderTestGateBypass`). Layering note: `src/core/epic-merge.ts`
+  // stays free of discord imports — the verb is the lone fire-site.
+  // No dedup: each gate cycle is one event; runTestGate sets the
+  // outcome fields only on the tick that fires the hook, so duplicate
+  // ticks on a `tested` row (resume path) do not re-fire.
+  | "epic-test-pass"
+  | "epic-test-fail"
+  | "test-gate-bypass";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -2307,6 +2321,179 @@ export function renderCockpitRotateRefused(opts: CockpitRotateRefusedOpts): Disc
     team: opts.team,
     category: "🛑",
     verdict: `🟡 **Cool** — cockpit rotate refused on \`${opts.gate}\``,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-144 T5 — epic-team test-gate templates ----------
+
+/** Common identity payload across the three ADR-144 templates. The
+ *  epic-team's `parentEpicKanbanId` (`e-XXXXXXXX`) and the shared
+ *  branch (`<parentBase>-epic-<epicId>` per ADR-091) are the operator's
+ *  primary correlation keys with `atmux status` / `merger_state` /
+ *  the bypass log. */
+export interface EpicTestPassOpts {
+  team: string;
+  /** Epic kanban id (`e-XXXXXXXX`). */
+  epicId: string;
+  /** Shared epic-team branch — `<parentBase>-epic-<epicId>`. */
+  epicBranch: string;
+  /** Mode that fired the gate. */
+  testGateMode: "cage" | "deployed";
+  /** Test command string the runner executed (e.g.
+   *  `"bun test --timeout 30000"`). Helps the operator correlate
+   *  with `team.json.epicTeam.testCommand`. */
+  testCommand: string;
+  /** Required pass count per `team.json.epicTeam.requiredPasses`.
+   *  Default 1; surfaced so an N>1 streak run is visible. */
+  requiredPasses: number;
+  /** Attempts the runner used (1 baseline; >1 means flake-retry
+   *  recovered to a PASS). */
+  attempts: number;
+  /** Total hook duration including retries + provision/teardown. */
+  durationMs: number;
+  whenMs?: number;
+}
+
+/** Build the `[epic-test-pass]` Discord send opts per ADR-144 §Discord
+ *  templates. Fires on `tested → merging` transition from the verb
+ *  layer when the verb observes `testGateOutcome === "pass"` on a
+ *  fresh `runTestGate` cycle (NOT the resume path — the resume path
+ *  re-uses a prior outcome and would double-fire if surfaced here).
+ *
+ *  Verdict per CLAUDE.md §Discord — 🟢 **Shipping** when the gate
+ *  permits the merge to proceed. Mobile-triage shape: epic id + mode
+ *  in verdict; bullets carry the test surface; footer carries the
+ *  per-tick liveness. */
+export function renderEpicTestPass(opts: EpicTestPassOpts): DiscordSendOpts {
+  const verdict = `🟢 **Shipping** — \`${opts.epicId}\` test-gate passed (${opts.testGateMode}) — merge proceeding`;
+  const bullets: string[] = [
+    naBullet80(
+      `✅ ${opts.attempts} attempt${opts.attempts === 1 ? "" : "s"} · requiredPasses=${opts.requiredPasses}`,
+    ),
+    naBullet80(`🧪 ${opts.testCommand}`),
+    `⏱️ duration: ${formatDuration(opts.durationMs)}`,
+    naBullet80(`📍 branch: \`${opts.epicBranch}\``),
+  ];
+  const out: DiscordSendOpts = {
+    template: "epic-test-pass",
+    team: opts.team,
+    category: "🚀",
+    verdict,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface EpicTestFailOpts {
+  team: string;
+  epicId: string;
+  epicBranch: string;
+  testGateMode: "cage" | "deployed";
+  testCommand: string;
+  /** Attempts used before declaring fail (1 + retryOnFlake at most). */
+  attempts: number;
+  /** Total hook duration including retries. */
+  durationMs: number;
+  /** Up to 3 failing test names extracted by the runner. Empty array
+   *  is acceptable — some runners only report aggregate counts and
+   *  the surface degrades to "(failed test names unavailable)". */
+  failedTestNames: ReadonlyArray<string>;
+  /** Last ≤20 lines of stdout/stderr from the final attempt. Joined
+   *  by newlines and dropped into a single bullet (the validator
+   *  enforces ≤80 graphemes — caller truncates upstream OR this
+   *  renderer truncates per-line for safety). One line per bullet
+   *  keeps Discord readable; for v1 we surface a single summary line
+   *  + the count. */
+  lastStdoutLines: ReadonlyArray<string>;
+  /** Optional re-work scope hint (e.g. file:line or area) — surfaces
+   *  as the final 🛠️ bullet so the operator/lead has an actionable
+   *  next step. Omit when the runner produced no usable hint. */
+  reworkHint?: string;
+  whenMs?: number;
+}
+
+/** Build the `[epic-test-fail]` Discord send opts per ADR-144 §Discord
+ *  templates. Fires on `tested → test_failed` transition. Verdict
+ *  🔴 **Stalled** — gate refused the merge; parent-trunk untouched.
+ *
+ *  The body is verdict-first per the CLAUDE.md spec rewrite — failing
+ *  test surface in bullets (≤3 names), the final stdout summary, and
+ *  the optional re-work scope hint. Recovery path (`atmux epic-merge
+ *  advance --to in_progress`) is the operator-facing next-action;
+ *  the verdict's "Stalled" framing nudges them toward it without
+ *  pasting the full verb in the bullet (mobile-triage discipline). */
+export function renderEpicTestFail(opts: EpicTestFailOpts): DiscordSendOpts {
+  const verdict = `🔴 **Stalled** — \`${opts.epicId}\` test-gate FAILED (${opts.testGateMode}) — parent-trunk untouched`;
+  const failedNames = opts.failedTestNames.slice(0, 3);
+  const bullets: string[] = [];
+  if (failedNames.length > 0) {
+    for (const name of failedNames) {
+      bullets.push(naBullet80(`🧪 failed: ${name}`));
+    }
+  } else {
+    bullets.push("🧪 failed: (test names unavailable from runner)");
+  }
+  bullets.push(
+    naBullet80(
+      `📋 ${opts.attempts} attempt${opts.attempts === 1 ? "" : "s"} · ${opts.lastStdoutLines.length} stdout line${opts.lastStdoutLines.length === 1 ? "" : "s"} captured`,
+    ),
+  );
+  bullets.push(`⏱️ duration: ${formatDuration(opts.durationMs)}`);
+  if (opts.reworkHint !== undefined && opts.reworkHint.length > 0) {
+    bullets.push(naBullet80(`🛠️ rework: ${opts.reworkHint}`));
+  }
+  const out: DiscordSendOpts = {
+    template: "epic-test-fail",
+    team: opts.team,
+    category: "🛑",
+    verdict,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+export interface TestGateBypassOpts {
+  team: string;
+  epicId: string;
+  epicBranch: string;
+  /** Target state the bypass moved the row to (today: `"merging"`). */
+  targetState: string;
+  /** Caller identity from the bypass log record (typically `$USER`
+   *  on the driver shell). */
+  by: string;
+  /** Operator-supplied `--reason "<text>"` verbatim from the verb
+   *  invocation. Required at the verb layer (refuses without it). */
+  reason: string;
+  whenMs?: number;
+}
+
+/** Build the `[test-gate-bypass]` Discord send opts per ADR-144
+ *  §Operator bypass. Fires from `epicMergeAdvanceVerb` after
+ *  `logTestGateBypass` succeeds — paired with the JSONL audit log
+ *  entry at `~/.atmux/state/test-gate-bypasses.log` for cross-
+ *  surface correlation.
+ *
+ *  Verdict 🟡 **Cool** — bypass is operator-authorized + auditable,
+ *  not an alarm. Category ⚠️ keeps it visible above quiet ticks but
+ *  below 🚨 reserved for blocker/decision. */
+export function renderTestGateBypass(opts: TestGateBypassOpts): DiscordSendOpts {
+  const verdict = `🟡 **Cool** — \`${opts.epicId}\` test-gate BYPASSED → \`${opts.targetState}\` (operator-authorized)`;
+  const bullets: string[] = [
+    naBullet80(`🆔 by: ${opts.by}`),
+    naBullet80(`🚩 reason: ${opts.reason}`),
+    naBullet80(`🎯 target: \`${opts.targetState}\``),
+    naBullet80(`📍 branch: \`${opts.epicBranch}\``),
+  ];
+  const out: DiscordSendOpts = {
+    template: "test-gate-bypass",
+    team: opts.team,
+    category: "⚠️",
+    verdict,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
