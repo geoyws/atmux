@@ -33,3 +33,23 @@ Report the summary line. If any repo SKIP'd because of branch mismatch, suggest 
 
 - `/rcheckout <branch>` — switch all repos to `<branch>` first.
 - `/rpush <branch>` — push direction.
+
+## Operator-facing report format — attention + verdict markers
+
+Per `[[feedback-unambiguous-attention-and-verdict]]` and the coordination-plugin precedent.
+
+**Verdict-derivation rules:**
+- **✅** every repo on `<branch>` ff-pulled cleanly (or was already up-to-date).
+- **⚠** all repos pulled but some were no-op (already at origin), or pre-flight skipped repos on a different branch.
+- **🔴** pre-flight refused entirely (any repo on the wrong branch), OR ≥1 repo had divergent commits blocking ff-only.
+- **👁** attaches when operator must intervene: rcheckout to switch off-branch repos first, manually resolve divergence.
+
+**Examples:**
+```
+✅ /rpull myteam-beta-dev — root + 4 submodules ff-pulled (2 had updates, 3 already current)
+```
+```
+👁 🔴 /rpull myteam-beta-dev — pre-flight refused
+Mismatches: apps/foo/_svc on `master` (expected myteam-beta-dev)
+👁 Operator: run `/rcheckout myteam-beta-dev` first, then retry /rpull
+```
