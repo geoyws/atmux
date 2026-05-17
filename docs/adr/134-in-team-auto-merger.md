@@ -141,6 +141,8 @@ Event-driven gives sub-second latency on the common path.
 
 Cron cadence is `team.json::autoMerge.cronBackstopMin` (default 10).
 
+> **§Amendment 2026-05-18 (t-911c9314)** — Sweep candidate enumeration is roster-gated. After the `git branch --list "<baseBranch>-*"` glob, results are filtered to `<baseBranch>-<m>` where `<m>` is in `team.json::members[].name`. Non-member branches matching the prefix — operator safety backups (`<base>-planner-rebased-backup`), archived feature branches, epic-team fan-in branches (`<base>-epic-<id>` handled by [ADR-091](091-epic-team-auto-merge.md)'s `epic-merge` cron) — are dropped before the dispatcher sees them. Carve-out: empty `rosterMembers` reverts to the pre-amendment behavior (every prefix-matching branch is a candidate), so a misconfigured team.json with zero members doesn't silently drop every member branch on the floor. Driver of the amendment: 2026-05-17 `geoyws-planner-rebased-backup` got enumerated, transitioned `null → in_progress → rebasing`, then stranded 7h26m because the `rebasing → ready_to_merge` outer wiring (T3+T4 in `intra-team-merge.ts:357-364`) is not yet implemented — see [t-2b7572d7](../tasks/t-2b7572d7.md) for the deeper structural follow-up. The roster gate is the upstream defense; t-2b7572d7 closes the underlying wiring gap.
+
 ### Conflict surface (3-way reliable)
 
 When `merging → conflict` OR `test_failed → reverted` fires:
