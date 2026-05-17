@@ -228,21 +228,16 @@ async function seedReadyToMerge(epicRoot: string, epicBranch: string): Promise<v
   closeDatabase(db);
 }
 
-/** Tick epic-merge against the epic-team's worktree. Injects:
- *
- *  1. {@link EpicMergeOpts.discordSend} — capture stub so the test
- *     asserts template fires without hitting the real
- *     `ATMUX_DISCORD_WEBHOOK`.
- *  2. {@link EpicMergeOpts.resolveGate} — bypass the production
- *     gate-fact resolver. The production path queries
- *     `tasks.role = 'reviewer-trunk-signoff'` which depends on a
- *     pre-T5 schema migration that is not present on this branch's
- *     tasks table (the `role` column was lost during a kanban
- *     decomposition cycle). The test pre-seeds merger_state at
- *     `ready_to_merge`, so the resolver's output is bypassed by the
- *     state machine; we still inject a stub so the resolver doesn't
- *     crash on the missing column. Fix tracked separately — this
- *     test only validates ADR-144 T5 wire-sites. */
+/** Tick epic-merge against the epic-team's worktree. Injects only
+ *  {@link EpicMergeOpts.discordSend} — capture stub so the test
+ *  asserts template fires without hitting the real
+ *  `ATMUX_DISCORD_WEBHOOK`. The production `defaultResolveGate` runs
+ *  unchanged — post-t-95264384 it reads `extra->>'$.role'` (the
+ *  passthrough JSON path) so it works against the v1 tasks schema.
+ *  Note: the seeded `ready_to_merge` row in merger_state means the
+ *  state machine never consumes gate facts in this fixture (gate is
+ *  only read from `in_progress`); the production resolver still runs
+ *  and must not throw. */
 async function tick(fix: Fixture, epicRoot: string): Promise<string[]> {
   const logs: string[] = [];
   await epicMergeTickVerb(
@@ -251,17 +246,6 @@ async function tick(fix: Fixture, epicRoot: string): Promise<string[]> {
       discordSend: async (o) => {
         fix.capturedDiscord.push(o);
       },
-      resolveGate: async () => ({
-        gate: {
-          ownerOpenTaskCount: 0,
-          worktreeIsClean: true,
-          aheadOfBase: 1,
-          isAheadOfBase: true,
-          baseSha: "stub",
-          baseHasMoved: false,
-        },
-        hasReviewerTrunkSignoff: true,
-      }),
       logger: {
         log: (m: string) => logs.push(m),
         warn: (m: string) => logs.push(`WARN: ${m}`),

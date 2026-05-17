@@ -718,10 +718,19 @@ async function defaultResolveGate(deps: {
 
   // 2. hasReviewerTrunkSignoff — is there a done Task with
   // role='reviewer-trunk-signoff'? §Decision-anchor #1 + #5.
+  //
+  // The `role` field lives in the `extra` JSON column (per ADR-090
+  // schema landing — KanbanTask.role is `.passthrough()` so the repo's
+  // taskToRow puts unknown fields into `extra`). The v1 tasks table has
+  // NO `role` column; reading it directly returns nothing. Use the
+  // SQLite JSON1 `->>'$.role'` operator to extract the field from the
+  // serialised extra blob (text-extract; equivalent to
+  // json_extract(extra, '$.role')). Per t-95264384 — broken query
+  // observed by ADR-144 T5 e2e fixture (fe-1) on 2026-05-17.
   const signoffRow = deps.db
     .query<{ n: number }, []>(
       `SELECT COUNT(*) AS n FROM tasks
-       WHERE status = 'done' AND role = 'reviewer-trunk-signoff'`,
+       WHERE status = 'done' AND extra->>'$.role' = 'reviewer-trunk-signoff'`,
     )
     .get();
   const hasReviewerTrunkSignoff = (signoffRow?.n ?? 0) > 0;
