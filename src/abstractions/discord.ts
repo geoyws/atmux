@@ -164,7 +164,14 @@ export type DiscordTemplate =
   // `'cap-hit'` + `'spawn-failed'` flip to 🚨 Need-you. Dedup state TBD
   // (re-fires acceptable — operator wants visibility on every rotation
   // until the member-day count exhausts).
-  | "member-refusal-rotate";
+  | "member-refusal-rotate"
+  // ADR-167 T3: surfaced when `atmux cockpit rotate <session-name>`
+  // refuses on one of the four pre-flight gates (user-not-typing /
+  // pane-idle / uptime / never-rotate-superdriver). Renderer:
+  // `renderCockpitRotateRefused`. Fired by src/verbs/cockpit-rotate.ts
+  // alongside the NDJSON audit-row write at gate-refusal site. Re-fires
+  // acceptable — refusal is operator-fired and visibility is the point.
+  | "cockpit-rotate-refused";
 
 /** Header category emojis per CLAUDE.md global conventions. */
 export type CategoryEmoji =
@@ -2248,6 +2255,58 @@ export function renderMemberRefusalRotate(opts: MemberRefusalRotateOpts): Discor
     team: opts.team,
     category,
     verdict,
+    bullets,
+  };
+  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
+  return out;
+}
+
+// ---------- ADR-167 T3: cockpit rotate refusal ----------
+
+export interface CockpitRotateRefusedOpts {
+  /** `atmux` for cockpit-level events (rotation is cockpit-scoped, not
+   *  per-team — team field stays code-style consistent with other
+   *  templates). */
+  team: string;
+  /** `<session-name>` from the verb argv: `medic` | `sentinel` | `<team-name>`. */
+  sessionName: string;
+  /** Which of the four pre-flight gates fired the refusal. */
+  gate:
+    | "gate-1-user-not-typing"
+    | "gate-2-pane-idle"
+    | "gate-3-uptime"
+    | "gate-4-never-rotate-superdriver";
+  /** One-line refusal reason — already formatted; chunker bounds size
+   *  per Discord's 2000-byte limit. */
+  reason: string;
+  /** Whether the operator passed `--force` (always false for gate-4
+   *  refusals — gate-4 bypass column is `no` per ADR-167 §Pre-flight
+   *  gate matrix). */
+  force: boolean;
+  whenMs?: number;
+}
+
+/** Build the `[cockpit-rotate-refused]` Discord send opts per ADR-167.
+ *  Fires alongside the NDJSON audit-row write at gate-refusal site.
+ *  Verdict + category mirror other "refusal" templates — 🛑 stop header,
+ *  🟡 Cool verdict (refusal is expected operator-firing behaviour, not
+ *  an alarm). */
+export function renderCockpitRotateRefused(opts: CockpitRotateRefusedOpts): DiscordSendOpts {
+  const bullets: string[] = [
+    `🛑 gate: \`${opts.gate}\``,
+    `📍 session: \`${opts.sessionName}\``,
+    `📋 reason: ${opts.reason}`,
+  ];
+  if (opts.force && opts.gate !== "gate-4-never-rotate-superdriver") {
+    // Defensive — gates 1-3 should not have fired under --force. If we
+    // see this in the wild it's a code regression worth surfacing.
+    bullets.push(`⚠️ unexpected: --force was passed but gate fired anyway`);
+  }
+  const out: DiscordSendOpts = {
+    template: "cockpit-rotate-refused",
+    team: opts.team,
+    category: "🛑",
+    verdict: `🟡 **Cool** — cockpit rotate refused on \`${opts.gate}\``,
     bullets,
   };
   if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;

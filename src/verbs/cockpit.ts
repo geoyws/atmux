@@ -66,6 +66,7 @@ import type {
   CockpitTeam,
 } from "../schema/cockpit.ts";
 import { Team } from "../schema/team.ts";
+import { cockpitRotate } from "./cockpit-rotate.ts";
 import { start } from "./start.ts";
 
 // ---------- ADR-064 §3: per-team driverSession resolution ----------
@@ -524,6 +525,15 @@ export async function cockpit(
   args: ReadonlyArray<string>,
   opts: CockpitOpts = {},
 ): Promise<number> {
+  // ADR-167: `cockpit rotate` has its own argv parser (separate flag
+  // set: `<session-name>` positional + `--force`) and dispatches via
+  // src/verbs/cockpit-rotate.ts. Branch BEFORE parseCockpitArgs so
+  // that parser stays focused on rebuild / reload / migrate-socket.
+  if (args[0] === "rotate") {
+    const rotateOpts: { env?: NodeJS.ProcessEnv } = {};
+    if (opts.env !== undefined) rotateOpts.env = opts.env;
+    return await cockpitRotate(args.slice(1), rotateOpts);
+  }
   const parsed = parseCockpitArgs(args);
   switch (parsed.subverb) {
     case "rebuild":

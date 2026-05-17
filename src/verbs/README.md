@@ -50,6 +50,21 @@ Exit codes: `0` success, `64` (EX_USAGE) bad flags, `65` (EX_DATAERR) drift refu
 
 Operator one-pager: [docs/RUNBOOK-sync.md](../../docs/RUNBOOK-sync.md). Migrator README entry: [README.md §"Migrating off the Claude `/team` skill"](../../README.md).
 
+### `cockpit rotate` ([ADR-167](../../docs/adr/167-cockpit-rotate-verb.md))
+
+Operator-fired rotation of cockpit role panes (`medic` / `sentinel` / `<team-name>`) with brief-paste-ready handoff. Closes Rung C of the `/bruh` escalation chain — the previously manual handoff + Ctrl-C + canonical-respawn protocol. Lives in [`src/verbs/cockpit-rotate.ts`](cockpit-rotate.ts) and dispatched from `src/verbs/cockpit.ts` (sub-verb pattern, sibling to `cockpit rebuild` + `cockpit migrate-socket`).
+
+Flag surface:
+
+- `<session-name>` — required positional: `medic`, `sentinel`, or a registered team-name. `superdriver` is unconditionally refused (operator REPL pane).
+- `--force` — bypass pre-flight gates 1-3 (user-not-typing, pane-idle, uptime) ONLY. Gate 4 (never-rotate-superdriver) is unconditional.
+
+Exit codes: `0` success, `64` (EX_USAGE) bad argv, `65` (EX_DATAERR) gate refusal (1-4), `70` (EX_SOFTWARE) respawn / handoff-write failure, `78` (EX_CONFIG) caller-scope refusal (driver-only per [ADR-033](../../docs/adr/033-caller-scope-gate.md)).
+
+Side effects: writes per-role handoff Markdown to `~/.claude/teams/__cockpit__/<role>/handoff.md` (atomic-write, 100KB soft cap); appends NDJSON audit row to `~/.atmux/state/cockpit-rotate-audit.log`; fires `cockpit-rotate-refused` Discord template on gate refusal. The c-alias wrapper resolver lives at [`src/abstractions/claude-account-wrapper.ts`](../abstractions/claude-account-wrapper.ts) per [ADR-094](../../docs/adr/094-c-alias-spawn-convention.md).
+
+Operator one-pager: [docs/RUNBOOK-cockpit.md §6](../../docs/RUNBOOK-cockpit.md).
+
 ## Layer rules (ADR-003)
 
 - Verbs MAY import from `src/core/*`, `src/abstractions/*`, `src/schema/*`, `src/errors`.

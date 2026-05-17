@@ -130,8 +130,86 @@ The cockpit socket is resolved via `getCockpitSocketName()` in `src/core/tmux-pa
 
 The override is per-invocation; agents that spawn atmux processes inherit the env at fork-time. Production cockpits should NOT set this — the default (`atmux-cockpit`) is what the doctor probes + migration verb assume.
 
+## §6 — Cockpit pane rotation (`atmux cockpit rotate`)
+
+Operator-fired rotation of a cockpit role pane — `medic`, `sentinel`, or a per-team driver pane. Closes the manual handoff + Ctrl-C + canonical-respawn protocol that previously lived in the `/bruh` skill §3a manual fallback. Per [ADR-167](adr/167-cockpit-rotate-verb.md) (Rung C of the `/bruh` escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild).
+
+```bash
+atmux cockpit rotate medic    [--force]
+atmux cockpit rotate sentinel [--force]
+atmux cockpit rotate <team>   [--force]
+```
+
+`superdriver` is **unconditionally refused** (gate 4 below; `--force` does not bypass — it's the operator REPL pane).
+
+### When to invoke
+
+- The cockpit role pane is wedged, looping, or rate-limited and you want a clean restart with a brief-paste-ready handoff.
+- You've already manually verified that letting the pane run further is worse than rotating it (uptime ≥ 60min default).
+- You're a driver — the verb is gated to `ATMUX_CALLER_SCOPE=driver` per [ADR-033](adr/033-caller-scope-gate.md).
+
+### Pre-flight gates
+
+Four gates run in order; any failure aborts with `exit 65` (EX_DATAERR) plus a structured stderr line and an NDJSON refusal row in the audit log.
+
+| # | Gate | Refuses when | `--force` bypass |
+|---|---|---|---|
+| 1 | user-not-typing | `_superdriver` compose-box has text (operator may be about to reference target panes) | yes |
+| 2 | pane-idle | target pane shows `✽` / `✻` / `Compacting` markers in the last 60s | yes |
+| 3 | uptime | per-role `session-start.txt` mtime is `<60min` ago | yes |
+| 4 | never-rotate-superdriver | session-name resolves to `superdriver` | **no** |
+
+Gate 4 fires first (cheapest + most load-bearing — superdriver is the operator REPL; rotating it would kill the interactive session).
+
+Gate refusals fire the `cockpit-rotate-refused` Discord template; success rotations are intentionally quiet (the audit log is the source of truth for "when did medic last rotate?" forensics).
+
+### What the verb does (success path)
+
+Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
+
+1. **Assemble + atomic-write handoff** to `~/.claude/teams/__cockpit__/<role>/handoff.md` — brief-paste-ready Markdown with role-specific sections (medic: diagnosis + complaints + recent rotations; sentinel: classifier state + NudgeAction history + escalations; team-driver: lead-outbox tail + outbox snapshot + recent rotations). 100KB soft cap with truncate-with-trailer per [§OQ-2](adr/167-cockpit-rotate-verb.md). Handoff write lands **before** Ctrl-C so the rotation is re-traceable if a later step crashes mid-flight.
+2. **Ctrl-C** the target pane via `safeSendKeysWithVerify` ([ADR-138](adr/138-verified-send-keys.md)) with a 3s grace + `claudeUiGoneVerifier` (no `❯` / `Cooked` / `Schlepping` / `Honking` / `Compacting` markers).
+3. **`tmux kill-window`** the target pane (SIGHUP fallback for C-c-resistant claude).
+4. **Resolve `claudeAccount` wrapper** via the [ADR-094](adr/094-c-alias-spawn-convention.md) c-alias table (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`, unknown → `ConfigError` exit 70). Load-bearing for medic + sentinel-claude; skipped for sentinel-cursor + team-driver (their spawn lines are not claude TUIs — see [ADR-167 §Amendment 2026-05-17](adr/167-cockpit-rotate-verb.md)).
+5. **`tmux new-window`** with the resolved respawn command.
+6. **Re-arm cadence** — medic gets `/loop /medic` via `autoStartSuperdoctorLoop`; sentinel-claude gets `/loop /sentinel` via `autoStartSentinelLoop`; sentinel-cursor + team-driver have no claude TUI to re-arm.
+7. **Append success audit row** to `~/.atmux/state/cockpit-rotate-audit.log` (NDJSON) with `outcome="success"` + `handoffPath`.
+
+### Recovery — when a step fails
+
+| Failure | Behavior | Pane state |
+|---|---|---|
+| Gate 1/2/3/4 refusal | exit 65, refusal-row NDJSON, Discord `cockpit-rotate-refused` | untouched |
+| Caller-scope (`ATMUX_CALLER_SCOPE != driver`) | `ConfigError` → exit 78 | untouched |
+| Handoff write failure (atomicWrite throw) | exit 70, `handoff-write-failed` audit row | **untouched** — "retry the verb" not "rotate blind" |
+| Unknown `claudeAccount.configDir` | exit 70, `respawn-failed` audit row | untouched (refused before kill-window) |
+| `loadCockpit` failure | exit 70, `respawn-failed` audit row | untouched |
+| `killWindow` throw | exit 70, `respawn-failed` audit row | Ctrl-C fired; kill failed (window may still exist — diagnose manually) |
+| `newWindow` throw | exit 70, `respawn-failed` audit row | window gone, no respawn (rare — tmux server unreachable) |
+| Ctrl-C verifier escalation | continues anyway (kill-window is destructive primitive) | rotated |
+| `autoStart` failure | continues (exit 0) | rotated but cadence un-armed — operator types `/loop /medic` or `/loop /sentinel` manually |
+
+The verb favors **"either fully succeed or leave the pane intact"** over partial-state recovery. Handoff write success without respawn IS recoverable: the operator inspects `~/.claude/teams/__cockpit__/<role>/handoff.md`, fixes the underlying issue (typically wrapper resolution or tmux state), and re-runs the verb.
+
+### Audit log
+
+NDJSON, append-only, one row per rotation attempt:
+
+```bash
+tail -3 ~/.atmux/state/cockpit-rotate-audit.log
+```
+
+Schema: `{ts, role, sessionName, outcome, durationMs, callerScope, error?, handoffPath?}`. Outcomes: `success` / `gate-{1,2,3,4}-refused` / `respawn-failed` / `handoff-write-failed`.
+
+V1 has no rotation policy ([ADR-167 §OQ-6](adr/167-cockpit-rotate-verb.md) — deferred). Rotation is operator-fired so growth is bounded; revisit if usage ramps.
+
+### Lead-pane rotation is out of scope
+
+Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)) — `cockpit rotate` operates on the cockpit socket only. Use Rung B (medic's `/team rotate-lead`) for lead rotation.
+
 ## Cross-references
 
+- [ADR-167](adr/167-cockpit-rotate-verb.md) — cockpit rotate verb (Rung C); §Amendment 2026-05-17 documents wrapper-resolver asymmetry + handoff write-path semantics.
 - [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md) — atmux owns its tmux infrastructure (cockpit socket isolation + canonical atmux.conf + version probes).
 - [ADR-135](adr/135-cockpit-naming-convention.md) — cockpit naming convention (`atmux_cockpit` session name, `_-prefix` for default-member windows).
 - [ADR-058](adr/058-cage-tier-isolation.md) — cage-tier isolation (per-team socket layer, unchanged by ADR-162).
