@@ -146,6 +146,99 @@ describe("TeamWhip — type + range validation", () => {
   });
 });
 
+// ---------- ADR-057 stallPrevention sub-schema (t-fbfb02f8) ----------
+
+describe("TeamWhip — stallPrevention shape (ADR-057 schema promotion)", () => {
+  test("absent → undefined (operator opt-in, no implicit block)", () => {
+    const w = TeamWhip.parse({});
+    expect(w.stallPrevention).toBeUndefined();
+  });
+
+  test("empty {} applies sub-defaults (heartbeatStaleSec=300, autoPush=true, rebase=true, allow=[])", () => {
+    const w = TeamWhip.parse({ stallPrevention: {} });
+    expect(w.stallPrevention).toEqual({
+      heartbeatStaleSec: 300,
+      autoPushOnDone: true,
+      rebaseBeforePush: true,
+      allowedPushBranches: [],
+    });
+  });
+
+  test("explicit overrides honored, missing fields take defaults", () => {
+    const w = TeamWhip.parse({
+      stallPrevention: { heartbeatStaleSec: 120, autoPushOnDone: false },
+    });
+    expect(w.stallPrevention?.heartbeatStaleSec).toBe(120);
+    expect(w.stallPrevention?.autoPushOnDone).toBe(false);
+    expect(w.stallPrevention?.rebaseBeforePush).toBe(true); // default
+    expect(w.stallPrevention?.allowedPushBranches).toEqual([]); // default
+  });
+
+  test("typo on a stallPrevention field rejects (.strict() catches typo)", () => {
+    expect(() =>
+      TeamWhip.parse({ stallPrevention: { heartbeatStaleSecond: 120 } }),
+    ).toThrow();
+  });
+
+  test("non-positive heartbeatStaleSec rejects", () => {
+    expect(() =>
+      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 0 } }),
+    ).toThrow();
+    expect(() =>
+      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: -5 } }),
+    ).toThrow();
+  });
+
+  test("non-integer heartbeatStaleSec rejects", () => {
+    expect(() =>
+      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 1.5 } }),
+    ).toThrow();
+  });
+
+  test("string in heartbeatStaleSec rejects (was silently defaulted pre-promotion)", () => {
+    expect(() =>
+      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: "120" } }),
+    ).toThrow();
+  });
+
+  test("non-boolean autoPushOnDone rejects", () => {
+    expect(() =>
+      TeamWhip.parse({ stallPrevention: { autoPushOnDone: "yes" } }),
+    ).toThrow();
+  });
+
+  test("allowedPushBranches with non-string element rejects", () => {
+    expect(() =>
+      TeamWhip.parse({
+        stallPrevention: { allowedPushBranches: ["main", 42, null] },
+      }),
+    ).toThrow();
+  });
+
+  test("allowedPushBranches as a string (not array) rejects", () => {
+    expect(() =>
+      TeamWhip.parse({ stallPrevention: { allowedPushBranches: "main" } }),
+    ).toThrow();
+  });
+
+  test("happy-path: full canonical block parses + every field round-trips", () => {
+    const w = TeamWhip.parse({
+      stallPrevention: {
+        heartbeatStaleSec: 600,
+        autoPushOnDone: false,
+        rebaseBeforePush: false,
+        allowedPushBranches: ["main", "develop"],
+      },
+    });
+    expect(w.stallPrevention).toEqual({
+      heartbeatStaleSec: 600,
+      autoPushOnDone: false,
+      rebaseBeforePush: false,
+      allowedPushBranches: ["main", "develop"],
+    });
+  });
+});
+
 // ---------- Parent Team schema integration ----------
 
 describe("Team schema integrates TeamWhip cleanly", () => {

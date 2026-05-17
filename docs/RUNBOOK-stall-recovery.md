@@ -480,6 +480,19 @@ After enabling v1.1.x stall-prevention on a team:
       (D6a supervisor write-path active).
 - [ ] `team.json::whip.stallPrevention` block present + Zod validates clean
       (no `[whip-config-drift]` ping per ADR-054 — `atmux doctor` reports green).
+      Canonical shape (every field has a default — omit the whole block to
+      accept defaults; per t-fbfb02f8 schema promotion the block is now
+      strict + field-typed at boot):
+      ```jsonc
+      "whip": {
+        "stallPrevention": {
+          "heartbeatStaleSec": 300,    // D6: watchdog + status threshold
+          "autoPushOnDone": true,      // D7: push per-member branch on done
+          "rebaseBeforePush": true,    // D7: rebase on origin/<base> first
+          "allowedPushBranches": []    // explicit push-target allow-list
+        }
+      }
+      ```
 - [ ] `.atmux/logs/lock-recovery.log` exists (created on first lock acquire).
 - [ ] `.atmux/logs/auto-push.jsonl` exists (created on first `atmux done`
       with auto-push enabled).

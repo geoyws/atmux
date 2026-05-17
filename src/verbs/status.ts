@@ -1048,19 +1048,15 @@ function formatHeartbeatAge(seconds: number): string {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
-/** ADR-057 §D6c: defensive read of `team.json::whip.stallPrevention.
- *  heartbeatStaleSec`. Mirrors watchdog.ts's readStaleSecFromTeam — copy
- *  rather than share to keep the two surfaces decoupled (status is
- *  read-only, watchdog also fires Discord; tying them through a shared
- *  helper would force test-fixture coordination on a single-line read).
- *  Falls back to DEFAULT_HEARTBEAT_STALE_SEC (300s) on absence / bad
- *  shape — matches watchdog's posture so the two surfaces agree on
- *  what "stale" means for the same team. */
+/** ADR-057 §D6c: read `team.json::whip.stallPrevention.heartbeatStaleSec`.
+ *  Post-promotion (t-fbfb02f8) reads the typed Zod field directly — the
+ *  schema's `z.number().int().positive()` rejects garbage at parse time,
+ *  so the call-site simplifies to a direct read + null-coalescing to the
+ *  shared default. Mirrors watchdog.ts's posture (same default, same
+ *  precedence) so the two surfaces agree on what "stale" means for the
+ *  same team. */
 export function resolveHeartbeatStaleSec(team: Team): number {
-  const whip = (team as { whip?: { stallPrevention?: { heartbeatStaleSec?: unknown } } }).whip;
-  const v = whip?.stallPrevention?.heartbeatStaleSec;
-  if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
-  return DEFAULT_HEARTBEAT_STALE_SEC;
+  return team.whip?.stallPrevention?.heartbeatStaleSec ?? DEFAULT_HEARTBEAT_STALE_SEC;
 }
 
 // ---------- ADR-148 T2: cadence column helpers ----------

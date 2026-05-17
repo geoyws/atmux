@@ -1403,12 +1403,25 @@ describe("formatHeartbeatColumn — pure formatter", () => {
   });
 });
 
-describe("resolveHeartbeatStaleSec — defensive team-config read", () => {
-  test("absent block → default 300s", () => {
+describe("resolveHeartbeatStaleSec — typed Zod read (post-promotion t-fbfb02f8)", () => {
+  // Schema rejection of non-numeric / non-positive values is exercised by
+  // tests/unit/schema/team.test.ts::TeamWhip — stallPrevention shape.
+  // The consumer-side reader simplifies to a typed read + null-coalesce.
+  test("absent whip → default 300s", () => {
     expect(resolveHeartbeatStaleSec({ name: "t", members: [] } as never)).toBe(300);
   });
 
-  test("present value honored", () => {
+  test("whip without stallPrevention → default 300s", () => {
+    expect(
+      resolveHeartbeatStaleSec({
+        name: "t",
+        members: [],
+        whip: {},
+      } as never),
+    ).toBe(300);
+  });
+
+  test("explicit heartbeatStaleSec override honored", () => {
     expect(
       resolveHeartbeatStaleSec({
         name: "t",
@@ -1416,26 +1429,6 @@ describe("resolveHeartbeatStaleSec — defensive team-config read", () => {
         whip: { stallPrevention: { heartbeatStaleSec: 120 } },
       } as never),
     ).toBe(120);
-  });
-
-  test("non-number value rejected → default", () => {
-    expect(
-      resolveHeartbeatStaleSec({
-        name: "t",
-        members: [],
-        whip: { stallPrevention: { heartbeatStaleSec: "120" } },
-      } as never),
-    ).toBe(300);
-  });
-
-  test("non-positive value rejected → default", () => {
-    expect(
-      resolveHeartbeatStaleSec({
-        name: "t",
-        members: [],
-        whip: { stallPrevention: { heartbeatStaleSec: 0 } },
-      } as never),
-    ).toBe(300);
   });
 });
 

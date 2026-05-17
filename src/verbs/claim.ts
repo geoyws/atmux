@@ -319,7 +319,7 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
 /** Re-load the team for auto-push reading (cheap; cached at the
  *  filesystem layer). Kept private so the verb's main flow stays
  *  resilient to team-load errors during the auto-push leg. */
-async function loadTeamForAutoPush(parsed: ClaimDoneArgs): Promise<{ whip?: unknown }> {
+async function loadTeamForAutoPush(parsed: ClaimDoneArgs): Promise<Team> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   return await requireTeam(dirOpts);
 }

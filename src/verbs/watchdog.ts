@@ -28,6 +28,7 @@ import {
 } from "../core/heartbeat.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
+import type { TeamWhip } from "../schema/team.ts";
 
 const USAGE = "atmux watchdog [--no-discord] [--team-dir <dir>]";
 
@@ -170,13 +171,13 @@ export async function watchdog(
 
 // ---------- Internals ----------
 
-function readStaleSecFromTeam(team: { whip?: unknown }): number | null {
-  // Read team.whip.heartbeatStaleSec if present (typed extension TBD in
-  // a future TeamWhip schema bump; today we read defensively).
-  const whip = team.whip as { stallPrevention?: { heartbeatStaleSec?: unknown } } | undefined;
-  const v = whip?.stallPrevention?.heartbeatStaleSec;
-  if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
-  return null;
+function readStaleSecFromTeam(team: { whip?: TeamWhip | undefined }): number | null {
+  // ADR-057 schema promotion (t-fbfb02f8): read the typed field. Zod's
+  // `z.number().int().positive()` on the schema side rejects garbage
+  // input at parse time, so the call-site simplifies to a direct read.
+  // Returns null when the operator omitted the override so the caller
+  // can fall back to DEFAULT_HEARTBEAT_STALE_SEC.
+  return team.whip?.stallPrevention?.heartbeatStaleSec ?? null;
 }
 
 async function writeAuditLines(
