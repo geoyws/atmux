@@ -204,3 +204,24 @@ ADR-161 completes when ALL of:
 - Memory [[project_member_hot_rename_adr_136]] — id vs label vs emoji split; ADR-161 lives in label layer.
 - Memory [[project_adr_135_naming_convention]] — D1-D6 conventions shipped 2026-05-15.
 - Project [CLAUDE.md](../../CLAUDE.md) §Docs Discipline.
+
+## Amendments
+
+### 2026-05-17 — TR3 shipped: `atmux member move | swap | sort` verbs (t-2f6c81d3, be-1)
+
+Part C verbs landed in `src/verbs/member.ts` (extending the ADR-136 TR3 sub-verb dispatcher) backed by a new shared abstraction at `src/abstractions/tmux-window-orchestrator.ts`. Key shipped semantics:
+
+- **Verb signatures** are exactly as specified in §Part C — `atmux member move <id> --to <position>` (1-indexed per §Open question #3), `atmux member swap <id-a> <id-b>`, `atmux member sort [--defaults-first]` (defaults-on per §Open question #2).
+- **Move under occupied target slot** uses `tmux swap-window` rather than `tmux move-window` — `move-window` errors with `index in use` when the destination is occupied, and swap preserves the occupant's PIDs + claude-process state alongside the source's. The orchestrator picks the right primitive based on a live `listWindows` snapshot.
+- **Swap fallback** wraps `tmux swap-window` (the version-safe primitive; tmux 1.0+, 2009) with a `TmuxError → three-move temp-index dance` fallback so the verb survives implausibly-old tmux builds without a runtime version check.
+- **Sort algorithm** iterates target-order left-to-right, re-fetching `listWindows` each step (swap shuffles sibling indices, so a stale snapshot would mis-resolve). Members rostered in `team.json` but with no live window (paused, pre-spawn) are silently skipped; their canonical position is still persisted to JSON so the next `atmux start` materializes them in order.
+- **Cockpit refusal** is a team-name guard against the reserved literals `atmux_cockpit` / legacy `atmux_teams` (per ADR-135 D1). In practice the cockpit lives on its own socket (per ADR-162) and has no `team.json`, so this is defense-in-depth.
+- **Driver slot (W1) refusal** lives in `resolveMemberToWindowIdx` + `moveMemberWindow` — both refuse with a structured `MemberWindowResolveError` that the verb layer translates to a `UsageError`. Driver index is derived from the lowest live window index rather than hardcoded `1`, so tests running under `base-index = 0` Just Work alongside production's `base-index = 1` (per ADR-162).
+- **Persistence** uses the existing `updateJson(Team)` flock pattern (no new `team-config.ts` helper; ADR-161 §Part C's prefab brief assumed one exists, but `updateJson` already serializes correctly with the rename verb on the same `team.json`).
+
+Test coverage shipped in the same commit:
+
+- `tests/unit/abstractions/tmux-window-orchestrator.test.ts` — 23 tests against a stubbed `TmuxNamespace` covering all four primitives + the pure `sortMembersDefaultsFirst` helper. 100% line + function coverage on the orchestrator file.
+- `tests/unit/verbs/member.test.ts` extended with 41 new tests against a real tmux server (per-test absolute socketPath + `base-index 1` config) — happy path / idempotent / unknown-id / W1-refusal / cockpit-refusal / team-stopped / dispatcher routing for each of move + swap + sort.
+
+§EPIC-done item #3 satisfied. TR4 (docs sweep + ADR-135 supersession annotation) remains outstanding.

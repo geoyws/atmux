@@ -514,6 +514,7 @@ function buildFakeTmux(setup: FakeTmuxSetup): TmuxNamespace {
       renameWindow: async () => {},
       selectWindow: async () => {},
       moveWindow: async () => {},
+      swapWindow: async () => {},
     },
     pane: {
       displayMessage: async (opts: { target: unknown; format: string }) => {

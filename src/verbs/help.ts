@@ -84,6 +84,10 @@ Automation:
 
 Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+  member rename <id> --label <new>          Hot-rename display label (ADR-136)
+  member move <id> --to <position>          Relocate member's tmux window (ADR-161 §C)
+  member swap <id-a> <id-b>                 Pairwise window swap (ADR-161 §C)
+  member sort [--defaults-first]            Canonical reorder (ADR-161 §C)
   team spawn-epic <epicId> --from <parent> [--roster <preset>|--roster-file <p>]
                               ADR-090: spawn an ephemeral epic-team child of
                               <parent>. Worktree at <parentRoot>-epics/<epicId>
