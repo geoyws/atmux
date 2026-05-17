@@ -96,6 +96,7 @@ import { fixSupervisorMissingRecipe } from "../core/cursor-recipes/fix-superviso
 import { fixTeamJsonSchemaDriftRecipe } from "../core/cursor-recipes/fix-team-json-schema-drift.ts";
 import type { CursorRecipe } from "../core/cursor-recipes/types.ts";
 import { runSelfHealPass } from "../core/cursor-self-heal.ts";
+import { writeHeartbeat } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { listTasks } from "../core/kanban.ts";
@@ -1558,6 +1559,21 @@ async function checkMember(
   findings: Finding[],
 ): Promise<void> {
   const { team, atmuxDir, tmux, env, nowSec, readMemberEnv } = ctx;
+
+  // ADR-057 §D6a: stamp the per-member heartbeat for every supervisor
+  // iteration BEFORE any of the per-member probes — a fresh stamp means
+  // the poke tick reached this member in team.json, which is what the
+  // watchdog (§D6b) + idle-skip predicate (§D4b) treat as the "supervisor
+  // is observing me" signal. Pane / TUI failures surface via separate
+  // findings; heartbeat staleness reserves itself for the "cron stopped
+  // ticking" / "member removed from team.json" failure mode. Best-effort
+  // per §D6 substrate — a write fault must not block the whole tick.
+  try {
+    await writeHeartbeat(atmuxDir, member.name);
+  } catch (e) {
+    ctx.stderr(`whip: heartbeat write failed for ${member.name} (continuing): ${String(e)}\n`);
+  }
+
   const session = await getSessionName({ dir: atmuxDir, team });
 
   // Resolve the window name. Lead window uses the I-2 marker first

@@ -34,6 +34,8 @@ v1 default-enabled recipes: `fix:team-json-schema-drift` / `fix:cron-pollution` 
 
 Aliases routed in `src/cli.ts`: `broadcast` → `send`, `tell-lead` → `tell`, `outbox` → `reply`, `task` → `kanban`, `done` → `claim`, `rotate-lead` → `rotate`, `resume` → `pause`.
 
+Sub-verb dispatchers in `src/cli.ts`: `team` → `src/verbs/team/*` (+ `team-repair-rename.ts`), `member` → `dispatchMemberSubverb` in `src/verbs/member.ts`, `sync` → `dispatchSyncSubverb` in `src/verbs/sync.ts` (first sub-verb `claude-team-json` materializes `.claude/team.json` from `.atmux/team.json` per [ADR-164](../../docs/adr/164-sync-claude-team-json.md); T8 covers the broader RUNBOOK + README sweep).
+
 ## Layer rules (ADR-003)
 
 - Verbs MAY import from `src/core/*`, `src/abstractions/*`, `src/schema/*`, `src/errors`.
