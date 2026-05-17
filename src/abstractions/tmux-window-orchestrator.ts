@@ -213,7 +213,9 @@ export function sortMembersDefaultsFirst<M extends MemberShape>(
   canonicalOrder: ReadonlyArray<string>,
 ): ReadonlyArray<M> {
   const orderIndex = new Map<string, number>();
-  canonicalOrder.forEach((role, idx) => orderIndex.set(role, idx));
+  for (const [idx, role] of canonicalOrder.entries()) {
+    orderIndex.set(role, idx);
+  }
   const isDefault = (m: M): boolean =>
     m.role !== undefined && orderIndex.has(m.role);
   const defaults = members
