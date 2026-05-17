@@ -328,11 +328,13 @@ describe("watchdog opts", () => {
     expect(sent).toHaveLength(1);
   });
 
-  // Note: ADR-054 made TeamWhip strict, so `team.json::whip.
-  // stallPrevention.heartbeatStaleSec` cannot land on the typed shape
-  // without a schema bump. The verb's `readStaleSecFromTeam` reader is
-  // kept defensively for a future TeamWhip extension; a `staleSec` opt
-  // override is the supported test injection point today.
+  // Note: ADR-057 schema promotion (t-fbfb02f8) landed the typed
+  // `team.json::whip.stallPrevention.heartbeatStaleSec` field —
+  // operators can now set the threshold via team.json directly + the
+  // schema rejects typos at boot. The `staleSec` opt override below
+  // remains the supported test-injection point; production reads go
+  // through `readStaleSecFromTeam(team)` which consumes the typed
+  // field (see tests/unit/schema/team.test.ts for shape coverage).
 
   test("Discord send failure is non-fatal (state still recorded)", async () => {
     await seedTeam([{ name: "alice" }]);

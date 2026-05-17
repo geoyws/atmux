@@ -253,6 +253,41 @@ export const TeamWhip = z
       .strict()
       .optional(),
 
+    // ---------- ADR-057 v1.1.x stall-prevention block ----------
+    /** ADR-057 stall-prevention config. Carries the heartbeat staleness
+     *  threshold consumed by `atmux watchdog` (§D6b) + `atmux status`
+     *  (§D6c), plus the auto-push-on-done knobs consumed by the done-leg
+     *  of `atmux claim` (§D7).
+     *
+     *  Pre-promotion the shape lived as a defensive `as { ... unknown
+     *  }` cast in three places (src/core/auto-push.ts + src/verbs/
+     *  watchdog.ts + src/verbs/status.ts). Schema-level promotion turns
+     *  typos (`heartbeatStaleSecond`) into refusals at boot (surfaced
+     *  via the existing whip-config-drift ping) instead of silent
+     *  defaults at every read site. */
+    stallPrevention: z
+      .object({
+        /** Heartbeat staleness threshold (s). Default 300 (5min) per
+         *  ADR-057 §D6. Watchdog flags + status renders `💔` when
+         *  age > this value. */
+        heartbeatStaleSec: z.number().int().positive().default(300),
+        /** ADR-057 §D7: push the per-member branch on every `atmux
+         *  done` transition. Default true — surfaces drift early. The
+         *  CLAUDE.md push policy continues to gate
+         *  `origin/<base>-staging` targets via runAutoPush refusal. */
+        autoPushOnDone: z.boolean().default(true),
+        /** Rebase the per-member branch on origin/<base> before push.
+         *  Default true — keeps criss-cross history bounded per
+         *  ADR-082. */
+        rebaseBeforePush: z.boolean().default(true),
+        /** Explicit allow-list of push targets (rare; for non-standard
+         *  trunk shapes). Empty list means "any branch except the
+         *  CLAUDE.md push-policy refusal targets". Default []. */
+        allowedPushBranches: z.array(z.string()).default([]),
+      })
+      .strict()
+      .optional(),
+
     // ---------- ADR-050 fallback chain v1 (Tier 2 Cursor only) ----------
     /** ADR-050 §Decision. Per-team Tier 2 (Cursor) fallback policy for
      *  budget-pause recovery. Distinct from `team.fallback` (top-level,
