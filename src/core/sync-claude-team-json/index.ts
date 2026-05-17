@@ -1,16 +1,30 @@
-// Orchestrator for `atmux sync claude-team-json` — ADR-164 §"Behavior"
-// steps 1-4. Reads inputs, computes the mapped Claude-side roster.
+// Orchestrator for `atmux sync claude-team-json` — ADR-164 §"Behavior".
 //
-// T3 scope (per t-312fe824 body): compute path only. Write (step 7),
-// drift detection (step 5), brief preservation (step 6), and --dry-run
-// (step 8) extend this module in T4-T6 and are intentionally out-of-scope
-// here. Callers (T6 dispatcher) compose this compute path with the
-// write / drift / preview pieces.
+// Two entry points:
+//   - computeMappedTeam (T3+T4): pure compute — read inputs, map roster,
+//     merge briefs. No side effects. Used by --dry-run (T6) and as the
+//     first half of the write path.
+//   - writeSync (T5, t-c2b757c1): compute → detect drift → emit warning +
+//     log event → abort or proceed → atomic write of `.claude/team.json`
+//     with a fresh `_atmuxSync` marker. Implements ADR-164 §Behavior
+//     steps 5 + 7 + §"File shape after sync" + §OQ-1 + §OQ-5.
 
 import { join } from "node:path";
-import { readTextOrNull } from "../../abstractions/fs.ts";
+import { atomicWrite, readTextOrNull } from "../../abstractions/fs.ts";
+import type { Writer } from "../io.ts";
+import { defaultStderrWrite } from "../io.ts";
 import type { ResolveDirOpts } from "../common.ts";
-import { tryLoadTeam } from "../common.ts";
+import { getAtmuxDir, tryLoadTeam } from "../common.ts";
+import {
+  DriftAbortError,
+  type DriftDetection,
+  type SyncEvent,
+  SYNC_MARKER_KEY,
+  detectDrift,
+  driftWarning,
+  logSyncEvent,
+  nextMarker,
+} from "./drift.ts";
 import { mapRoster, mergeBriefs } from "./mapping.ts";
 import type {
   ClaudeTeam,
@@ -93,4 +107,113 @@ export async function computeMappedTeam(
     },
     sidecar,
   };
+}
+
+/** Options for {@link writeSync}. Composes {@link ComputeOpts} so callers
+ *  pass one shape; adds the T5-specific `force` flag + a `stderr` sink for
+ *  the drift warning + a `now` injection point for deterministic marker
+ *  timestamps. */
+export interface WriteSyncOpts extends ComputeOpts {
+  /** Override drift abort per ADR-164 §OQ-5. When true, drift is logged as
+   *  `drift-forced` and the write proceeds anyway. Default false → abort
+   *  with {@link DriftAbortError}. */
+  force?: boolean;
+  /** Stderr sink for the drift warning. Defaults to `process.stderr`. */
+  stderr?: Writer;
+  /** Injection point for marker `lastSyncedAt`. Tests pin a fixed value;
+   *  production paths omit + take the wall clock. */
+  now?: () => Date;
+}
+
+export interface WriteSyncResult {
+  /** Path that was written (the `.claude/team.json` resolved from opts). */
+  path: string;
+  /** True when drift was observed AND `--force` overrode it. False on the
+   *  clean path (no prior marker, or marker matched). */
+  forced: boolean;
+}
+
+/** Apply the sync to disk. Composes:
+ *    1. computeMappedTeam (compute the mapped roster from inputs)
+ *    2. detectDrift on the prior file vs its stored fingerprint
+ *    3. on drift: emit one-line stderr warning + log SyncEvent
+ *       - without `force`: throw DriftAbortError (caller exits 65)
+ *       - with `force`: log action=drift-forced and proceed
+ *    4. compose write payload — prior's unknown top-level fields PRESERVED,
+ *       `name`/`description`/`members` REPLACED with computed values, and
+ *       `_atmuxSync` stamped with a fresh fingerprint of the post-sync
+ *       member roster (per ADR-164 §"File shape after sync" + §OQ-1).
+ *    5. atomic write + log action=synced.
+ *
+ *  The atomic write goes through `abstractions/fs.atomicWrite` (mktemp +
+ *  rename) so partial-write races leave the prior file untouched. */
+export async function writeSync(
+  opts: WriteSyncOpts = {},
+): Promise<WriteSyncResult> {
+  const { prior, computed } = await computeMappedTeam(opts);
+  const stderr = opts.stderr ?? defaultStderrWrite;
+  const atmuxDir = await getAtmuxDir(opts);
+
+  const drift = detectDrift(prior);
+  let forced = false;
+  if (drift !== null) {
+    stderr(`${driftWarning(drift)}\n`);
+    if (opts.force === true) {
+      await logSyncEvent(atmuxDir, buildEvent("drift-forced", drift, opts.now));
+      forced = true;
+    } else {
+      await logSyncEvent(atmuxDir, buildEvent("drift-abort", drift, opts.now));
+      throw new DriftAbortError(drift);
+    }
+  }
+
+  const path = join(claudeDirOf(opts), "team.json");
+  const payload = composeWritePayload(prior, computed, opts.now);
+  await atomicWrite(path, `${JSON.stringify(payload, null, 2)}\n`);
+  await logSyncEvent(atmuxDir, buildEvent("synced", undefined, opts.now));
+  return { path, forced };
+}
+
+/** Merge prior unknown top-level fields with the freshly-computed
+ *  `name`/`description`/`members` + a fresh `_atmuxSync` marker. The
+ *  marker's fingerprint covers the POST-sync roster per ADR-164 §"File
+ *  shape after sync" — so the next run reads the file, recomputes the
+ *  same fingerprint, and matches (no drift) unless the file was touched
+ *  in between. */
+function composeWritePayload(
+  prior: ClaudeTeam | null,
+  computed: ComputeResult["computed"],
+  now: WriteSyncOpts["now"],
+): ClaudeTeam {
+  const ts = (now ?? defaultNow)().toISOString();
+  const marker = nextMarker(computed.members, ts);
+  const base: ClaudeTeam = prior !== null ? { ...prior } : {};
+  base.name = computed.name;
+  if (computed.description !== undefined) {
+    base.description = computed.description;
+  } else {
+    delete base.description;
+  }
+  base.members = computed.members;
+  base[SYNC_MARKER_KEY] = marker;
+  return base;
+}
+
+function buildEvent(
+  action: SyncEvent["action"],
+  detection: DriftDetection | undefined,
+  now: WriteSyncOpts["now"],
+): SyncEvent {
+  const ts = (now ?? defaultNow)().toISOString();
+  const event: SyncEvent = {
+    ts,
+    verb: "sync.claude-team-json",
+    action,
+  };
+  if (detection !== undefined) event.detection = detection;
+  return event;
+}
+
+function defaultNow(): Date {
+  return new Date();
 }

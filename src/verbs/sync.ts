@@ -6,7 +6,11 @@
 //                         T2 (this file)  — dispatcher + sub-verb registry
 //                         T3              — core compute path (src/core/sync-claude-team-json/*)
 //                         T4 (this file)  — --overwrite-briefs flag-parse
-//                         T5              — drift detection + --force (pending)
+//                         T5 (this file)  — --force flag-parse + write-path
+//                                            wire-through (writeSync composes
+//                                            drift detection + atomic write +
+//                                            event log; DriftAbortError surfaces
+//                                            as exit 65 here)
 //                         T6 (this file)  — --dry-run preview wired through
 //                                            computeMappedTeam → renderDiff → stdout
 //
@@ -18,10 +22,21 @@
 
 import { renderDiff } from "../core/sync-claude-team-json/diff.ts";
 import {
+  DriftAbortError,
+  EX_DATAERR,
+  formatDriftHint,
+} from "../core/sync-claude-team-json/drift.ts";
+import {
   computeMappedTeam,
+  writeSync,
   type ComputeOpts,
+  type WriteSyncOpts,
 } from "../core/sync-claude-team-json/index.ts";
-import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import {
+  defaultStderrWrite,
+  defaultStdoutWrite,
+  type Writer,
+} from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 
 const KNOWN_SUBVERBS = ["claude-team-json"] as const;
@@ -32,12 +47,15 @@ function subverbList(): string {
 }
 
 /** Injection points for test isolation. `dir` / `teamDir` / `cwd` /
- *  `env` thread through to `computeMappedTeam` via the shared
- *  `ComputeOpts` shape; `claudeDir` pins the `.claude/` lookup dir;
- *  `stdout` lets unit tests capture the dry-run preview without
- *  prodding `process.stdout`. */
+ *  `env` thread through to `computeMappedTeam` / `writeSync` via the
+ *  shared `ComputeOpts` shape; `claudeDir` pins the `.claude/` lookup
+ *  dir; `stdout` lets unit tests capture the dry-run preview;
+ *  `stderr` captures the drift warning; `now` pins the marker
+ *  timestamp for deterministic write-path assertions. */
 export interface SyncOpts extends ComputeOpts {
   stdout?: Writer;
+  stderr?: Writer;
+  now?: WriteSyncOpts["now"];
 }
 
 export async function dispatchSyncSubverb(
@@ -118,21 +136,40 @@ async function syncClaudeTeamJson(
     // T6 (t-fe4a570e) — preview path: compute the mapped roster against
     // the current on-disk Claude file (or null = fresh-file) and render
     // a +/-/space diff. SKIPS the atomic write step per ADR-164 §Behavior
-    // step 8. `overwriteBriefs` is parsed-and-ignored on the dry-run path
-    // until T4's mergeBriefs is threaded into computeMappedTeam (out of
-    // scope for T6 — owned by T4's follow-up wiring commit).
-    const { prior, computed } = await computeMappedTeam(opts);
+    // step 8. The dry-run path intentionally bypasses drift detection
+    // (drift.ts §note) so previewing never aborts.
+    const computeOpts: ComputeOpts = {
+      ...opts,
+      overwriteBriefs: flags.overwriteBriefs,
+    };
+    const { prior, computed } = await computeMappedTeam(computeOpts);
     const out = renderDiff(prior, computed);
     (opts.stdout ?? defaultStdoutWrite)(out);
     return 0;
   }
 
-  // Non-dry-run write path lands when T4 (brief-preservation write
-  // wiring) + T5 (drift detection + --force) layer the atomic write on
-  // top. Until both ship, the dispatcher signals stub-status here.
-  // T7 (t-4329b053) integrated tests assert the post-T4/T5 write path
-  // end-to-end; T6 (this commit) covers the preview branch only.
-  throw new Error(
-    "atmux sync claude-team-json: write path not yet implemented — see T4 (t-87e81c8e) + T5 (t-c2b757c1). Use --dry-run for preview (ADR-164 §Behavior step 8).",
-  );
+  // T5 (t-c2b757c1) write path — compose drift detection + atomic write
+  // via writeSync. DriftAbortError surfaces as exit 65 (EX_DATAERR) with
+  // a 3-line diff hint emitted to stderr; the one-line drift warning was
+  // already emitted inside writeSync. Other errors propagate as-is so
+  // reportError's existing exit-code routing kicks in.
+  const writeOpts: WriteSyncOpts = {
+    ...opts,
+    overwriteBriefs: flags.overwriteBriefs,
+    force: flags.force,
+  };
+  const stderr = opts.stderr ?? defaultStderrWrite;
+  try {
+    await writeSync(writeOpts);
+    return 0;
+  } catch (e) {
+    if (e instanceof DriftAbortError) {
+      stderr(`${formatDriftHint(e.detection)}\n`);
+      stderr(
+        "atmux sync claude-team-json: refusing to overwrite drifted .claude/team.json; re-run with --force to override\n",
+      );
+      return EX_DATAERR;
+    }
+    throw e;
+  }
 }

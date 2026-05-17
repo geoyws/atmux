@@ -123,6 +123,10 @@ Five elements: (1) state-snapshot per step, (2) containment analysis (got throug
 
 Driver itself = no-op preclear (no coordination state). Lead in dedicated window preclears at phase boundaries.
 
+## Migrators
+
+If you arrived from the Claude `/team` skill family (`/team rotate-lead`, `/team clear <member>`, bootstrap brief paste-in), atmux owns the canonical roster at `.atmux/team.json` — but your legacy `.claude/team.json` is consumed by the Claude skills and drifts every time you `add-member` / `rotate` / `member rename`. Run `atmux sync claude-team-json --dry-run` to preview the mapping, then `atmux sync claude-team-json` to write — preserves hand-authored long-form `role` text by default; refuses on drift with exit `65` unless `--force`. Full operator flow: [docs/RUNBOOK-sync.md](docs/RUNBOOK-sync.md) ([ADR-164](docs/adr/164-sync-claude-team-json.md)).
+
 ## Related global rules
 
 Agents spawned by atmux also read the user's global `CLAUDE.md` (typically under `~/.claude/`). The global rules cover machine layout, timezone discipline, push policy, and cross-project engineering discipline. This project-local `CLAUDE.md` complements those rules — it does not override them, and where they apply (commit conventions, hook-bypass policy, etc.), the global rule wins for cross-project consistency.
