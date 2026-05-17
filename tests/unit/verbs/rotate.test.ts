@@ -34,13 +34,27 @@ import {
  *  rotate-into-claude test. Fast timeouts + no-op sleep so the readiness
  *  + tokens-moved polls don't hang real setTimeout in the test runner.
  *  Tests asserting the boot path's behaviour stage paneText sequences so
- *  the polls flip from "ready" to "tokens moved" deterministically. */
+ *  the polls flip from "ready" to "tokens moved" deterministically.
+ *
+ *  ADR-138 §submitVerify (t-1b45d565 split out the C-m submit into its
+ *  own safeSendKeysWithVerify call): without tight `submitVerifyTimeoutMs`
+ *  + `submitVerifyRetries` overrides, the verify loop spins for
+ *  `DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS (3000ms) × (DEFAULT_SUBMIT_VERIFY_RETRIES (1) + 1)`
+ *  = 6000ms of REAL wall-clock per boot attempt. The injected `sleep`
+ *  is no-op but `Date.now()` (used for the deadline check) advances
+ *  independently — the loop tight-spins until the natural timeout
+ *  elapses. Tight overrides (50ms timeout, 0 retries) keep the
+ *  verify-and-retry contract under test while bounding the worst-case
+ *  hang to <100ms per test. */
 const FAST_BOOT_CLAUDE = {
   readyPollIntervalMs: 5,
   readyTimeoutMs: 100,
   postBootPollIntervalMs: 5,
   postBootTimeoutMs: 100,
   maxAttempts: 1,
+  submitVerifyTimeoutMs: 50,
+  submitVerifyRetries: 0,
+  submitVerifyPollIntervalMs: 5,
   sleep: async () => {},
 } as const;
 
@@ -520,11 +534,14 @@ describe("rotate() — public verb", () => {
     // Staged paneText: first capture returns "ready but not booted"
     // (matches `❯` for the readiness poll, no `\d+k tokens` so the
     // already-booted sentinel doesn't short-circuit). Subsequent
-    // captures return "tokens moved" so the post-boot poll closes out
-    // on attempt 1. Last element is sticky.
+    // captures return BOTH a composer-empty line (`❯ \n` — matches
+    // ADR-138 `composerEmpty()` regex `/❯\s*$/m`) so the post-paste
+    // safeSendKeysWithVerify exits on first poll AND a tokens-moved
+    // line so the post-boot poll closes out on attempt 1. Last
+    // element is sticky.
     const { tmux, calls } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
-      paneText: ["❯ ready", "❯ ready", "❯ ↑ 5k tokens"],
+      paneText: ["❯ ready", "❯ ready", "❯ \n↑ 5k tokens"],
     });
     let stdoutBuf = "";
     let stderrBuf = "";
@@ -596,7 +613,11 @@ describe("rotate() — public verb", () => {
     await writeFile(join(briefsDir, "reviewer.md"), "BRIEF BODY");
     const { tmux, calls } = stubTmux({
       windows: [{ index: 0, name: "alice", active: true }],
-      paneText: ["❯ ready", "❯ ready", "❯ ↑ 5k tokens"],
+      // ADR-138 composerEmpty line `❯ \n` lets safeSendKeysWithVerify
+      // exit on first poll post-C-m; second line carries the
+      // tokens-moved sentinel for the post-boot poll. Same shape as
+      // the §C/T3b3 test above.
+      paneText: ["❯ ready", "❯ ready", "❯ \n↑ 5k tokens"],
     });
     type Event =
       | { kind: "capture" }

@@ -50,6 +50,18 @@ const CARVE_OUT_FILES = new Set([
   // Listed defensively in case future patches reintroduce a raw
   // path that needs the explicit carve-out treatment.
   "core/boot-claude.ts",
+  // goal-injection.ts wraps a raw sendKeys in the inner sendKeysFn
+  // callback of safeSendKeysWithVerify (the composerEmpty verifier
+  // confirms the keystroke landed + the retry budget catches
+  // bracketed-paste-Enter swallows). The audit-grep can't see
+  // through the wrap, so the file lives in the carve-out registry
+  // alongside core/send.ts + verbs/ombudsman.ts — same shape:
+  // safe-send adapter signature with inner raw sendKeys that the
+  // verify-and-retry policy gates externally. Per ADR-138 §6 the
+  // /goal "<text>" payload is slash-command-shaped (parallel to
+  // /clear, /loop /superdoctor) — bypassing the paste-submit
+  // cascade is correct here.
+  "core/goal-injection.ts",
   // Soft-stop notice — explicit `enter: false`, never submits.
   // Tests reach this carve-out via grep but enter:false also
   // disqualifies from the violation rule below.
