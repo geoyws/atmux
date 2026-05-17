@@ -50,7 +50,9 @@ Each ping is one of: 🛑 `[whip-watchdog]`, 🛑 `[whip-stale-anchor]`,
 
 ```bash
 # Step 1 — confirm staleness is real
-ls -la .atmux/heartbeats/<member>.epoch     # mtime should be <5min ago if healthy
+atmux status                                 # ❤️Ns = fresh, 💔Ns = stale, — = absent (D6c surface)
+atmux status --json | jq '.members[] | {name, heartbeat_age_s}'  # programmatic read
+ls -la .atmux/heartbeats/<member>.epoch     # raw producer artifact, mtime should be <5min ago if healthy
 date +%s                                     # current epoch
 cat .atmux/heartbeats/<member>.epoch         # member's last heartbeat
 
@@ -62,6 +64,14 @@ tmux capture-pane -p -S -30 -t <session>:<member-window> | tail -20
 
 # Step 3 — if pane is in MODAL/COMPACTING/RATE-LIMIT state, see remediation below
 ```
+
+**Note (ADR-057 §D6c):** `atmux status` surfaces per-member heartbeat
+age inline (`❤️<Ns>` fresh / `💔<Ns>` stale / `—` absent) and exposes
+the same datum as `members[].heartbeat_age_s` (seconds, or `null`) in
+the `--json` shape. Stale threshold reads `team.json::whip.stall
+Prevention.heartbeatStaleSec` (default 300s — matches the watchdog).
+Use status as the single live-no-cache observability surface; the
+watchdog continues to fire async alerts off the same heartbeat data.
 
 **Remediation by state:**
 
