@@ -9,13 +9,16 @@ import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.t
 import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
+import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import {
   defaultRoleEmoji,
   formatContextColumn,
+  formatHeartbeatColumn,
   gatherStatus,
   type MemberStatus,
   parseStatusArgs,
   readMemberContextSignal,
+  resolveHeartbeatStaleSec,
   status,
 } from "../../../src/verbs/status.ts";
 
@@ -561,6 +564,7 @@ describe("formatContextColumn — pure formatter", () => {
       pendingCount: 0,
       inProgressCount: 0,
       cageState: null,
+      heartbeat_age_s: null,
     };
     expect(formatContextColumn(m)).toBe("—");
   });
@@ -577,6 +581,7 @@ describe("formatContextColumn — pure formatter", () => {
       contextPct: 8.4,
       contextTs: 1_715_000_000,
       contextStale: false,
+      heartbeat_age_s: null,
     };
     expect(formatContextColumn(m)).toBe("8.4%");
   });
@@ -593,6 +598,7 @@ describe("formatContextColumn — pure formatter", () => {
       contextPct: 75,
       contextTs: 1_715_000_000,
       contextStale: false,
+      heartbeat_age_s: null,
     };
     expect(formatContextColumn(m)).toBe("75.0%");
   });
@@ -609,6 +615,7 @@ describe("formatContextColumn — pure formatter", () => {
       contextPct: 42.5,
       contextTs: 1_715_000_000,
       contextStale: true,
+      heartbeat_age_s: null,
     };
     expect(formatContextColumn(m)).toBe("(stale)");
   });
@@ -1348,6 +1355,168 @@ describe("text mode — pane-state column rename + cadence column", () => {
     // log → verdict='idle' with null age. formatCadenceColumn renders
     // "🟡 idle (never)".
     expect(out).toMatch(/🟡 idle \(never\)/);
+  });
+});
+
+// ---------- ADR-057 §D6c: heartbeat surface ----------
+
+describe("formatHeartbeatColumn — pure formatter", () => {
+  const base: Omit<MemberStatus, "heartbeat_age_s"> = {
+    name: "alpha",
+    role: "member",
+    tui: "claude",
+    paneCommand: "claude",
+    cageState: "active",
+    pendingCount: 0,
+    inProgressCount: 0,
+  };
+
+  test("absent heartbeat → '—'", () => {
+    expect(formatHeartbeatColumn({ ...base, heartbeat_age_s: null }, 300)).toBe("—");
+  });
+
+  test("fresh seconds-old heartbeat → '❤️Ns'", () => {
+    expect(formatHeartbeatColumn({ ...base, heartbeat_age_s: 42 }, 300)).toBe("❤️42s");
+  });
+
+  test("fresh minutes-old heartbeat → '❤️Nm'", () => {
+    expect(formatHeartbeatColumn({ ...base, heartbeat_age_s: 240 }, 300)).toBe("❤️4m");
+  });
+
+  test("boundary (age == staleSec) is fresh, not stale", () => {
+    expect(formatHeartbeatColumn({ ...base, heartbeat_age_s: 300 }, 300)).toBe("❤️5m");
+  });
+
+  test("stale heartbeat (age > staleSec) → '💔Nm'", () => {
+    expect(formatHeartbeatColumn({ ...base, heartbeat_age_s: 420 }, 300)).toBe("💔7m");
+  });
+
+  test("stale-hours heartbeat → '💔Nh'", () => {
+    expect(formatHeartbeatColumn({ ...base, heartbeat_age_s: 7200 }, 300)).toBe("💔2h");
+  });
+
+  test("custom staleSec override is honored", () => {
+    // 100s old, threshold 60s → stale.
+    expect(formatHeartbeatColumn({ ...base, heartbeat_age_s: 100 }, 60)).toBe("💔1m");
+    // Same age with threshold 300s → fresh.
+    expect(formatHeartbeatColumn({ ...base, heartbeat_age_s: 100 }, 300)).toBe("❤️1m");
+  });
+});
+
+describe("resolveHeartbeatStaleSec — defensive team-config read", () => {
+  test("absent block → default 300s", () => {
+    expect(resolveHeartbeatStaleSec({ name: "t", members: [] } as never)).toBe(300);
+  });
+
+  test("present value honored", () => {
+    expect(
+      resolveHeartbeatStaleSec({
+        name: "t",
+        members: [],
+        whip: { stallPrevention: { heartbeatStaleSec: 120 } },
+      } as never),
+    ).toBe(120);
+  });
+
+  test("non-number value rejected → default", () => {
+    expect(
+      resolveHeartbeatStaleSec({
+        name: "t",
+        members: [],
+        whip: { stallPrevention: { heartbeatStaleSec: "120" } },
+      } as never),
+    ).toBe(300);
+  });
+
+  test("non-positive value rejected → default", () => {
+    expect(
+      resolveHeartbeatStaleSec({
+        name: "t",
+        members: [],
+        whip: { stallPrevention: { heartbeatStaleSec: 0 } },
+      } as never),
+    ).toBe(300);
+  });
+});
+
+describe("gatherStatus — heartbeat surface", () => {
+  test("absent heartbeat file → row.heartbeat_age_s === null, text omits marker", async () => {
+    const { sessionName } = await stageTeam([{ name: "alpha" }], false);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => 1_715_000_000_000,
+    });
+    expect(snap.members[0]?.heartbeat_age_s).toBeNull();
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    // Renderer suppresses the "—" marker entirely so absent-heartbeat
+    // rows don't get a noisy trailing dash on every line.
+    expect(out).not.toContain("❤️");
+    expect(out).not.toContain("💔");
+  });
+
+  test("fresh heartbeat → row.heartbeat_age_s = N, text shows ❤️", async () => {
+    const { sessionName } = await stageTeam([{ name: "alpha" }], false);
+    // Stamp at wall-clock - 30s so the public `status` verb (which can't
+    // be time-injected via argv) sees the same fresh window the explicit
+    // gatherStatus call below does.
+    const nowSec = Math.floor(Date.now() / 1000);
+    await writeHeartbeat(atmuxDir, "alpha", nowSec - 30);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir);
+    const age = snap.members[0]?.heartbeat_age_s;
+    expect(age).not.toBeNull();
+    // Allow ±2s for test wall-clock drift between writeHeartbeat call
+    // above and gatherStatus's internal Date.now read.
+    expect(age ?? -1).toBeGreaterThanOrEqual(30);
+    expect(age ?? -1).toBeLessThanOrEqual(32);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("❤️");
+  });
+
+  test("stale heartbeat → row.heartbeat_age_s = N, text shows 💔", async () => {
+    const { sessionName } = await stageTeam([{ name: "alpha" }], false);
+    // Stamp a heartbeat 1h in the past — exceeds default 300s threshold.
+    const nowSec = Math.floor(Date.now() / 1000);
+    await writeHeartbeat(atmuxDir, "alpha", nowSec - 3600);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir);
+    const age = snap.members[0]?.heartbeat_age_s;
+    expect(age).not.toBeNull();
+    expect(age ?? 0).toBeGreaterThanOrEqual(3600);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("💔");
+  });
+
+  test("JSON output always includes heartbeat_age_s (null or integer)", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    // First: absent → null.
+    const { out: out1 } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed1 = JSON.parse(out1);
+    expect(parsed1.members[0]).toHaveProperty("heartbeat_age_s", null);
+
+    // Then stamp a heartbeat + re-read.
+    const nowSec = Math.floor(Date.now() / 1000);
+    await writeHeartbeat(atmuxDir, "alpha", nowSec - 5);
+    const { out: out2 } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed2 = JSON.parse(out2);
+    expect(typeof parsed2.members[0].heartbeat_age_s).toBe("number");
+    expect(parsed2.members[0].heartbeat_age_s).toBeGreaterThanOrEqual(5);
   });
 });
 

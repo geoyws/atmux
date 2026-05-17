@@ -37,6 +37,7 @@ import {
   resolveTeamSocket,
 } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
+import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { loadKanban } from "../core/kanban.ts";
@@ -157,6 +158,14 @@ export interface MemberStatus {
    *  (cwd missing in team.json AND no per-member worktree under
    *  team.worktreeRoot — defensive; the gather call skips silently). */
   cadence?: CadenceObservation;
+  /** ADR-057 §D6c (folds P3 atmux-status-cache-lies): per-member
+   *  heartbeat age in seconds, sourced from
+   *  `<atmuxDir>/heartbeats/<member>.epoch` via readHeartbeatAges.
+   *  null when the heartbeat file is absent or unparseable; integer
+   *  seconds otherwise. Live-no-cache mirror per ADR-068 §HC#4 — every
+   *  gatherStatus call re-reads. The producer (t-7e291a53) writes this
+   *  from the cron-mediated poke tick per-member loop. */
+  heartbeat_age_s: number | null;
 }
 
 /** ADR-148 §D2: cadence-classifier output for one member. T5
@@ -601,6 +610,11 @@ export async function gatherStatus(
       cageState,
       pendingCount,
       inProgressCount,
+      // ADR-057 §D6c: populated post-loop via a single readHeartbeatAges
+      // batch — kept in the row's initializer (vs delete + reassign) so
+      // the strict-mode TS contract on MemberStatus.heartbeat_age_s is
+      // satisfied at construction.
+      heartbeat_age_s: null,
     };
     if (m.emoji !== undefined && m.emoji.length > 0) row.emoji = m.emoji;
     if (m.label !== undefined && m.label.length > 0) row.label = m.label;
@@ -655,6 +669,18 @@ export async function gatherStatus(
       }
     }
     members.push(row);
+  }
+
+  // ADR-057 §D6c (folds P3 atmux-status-cache-lies): batch-read per-
+  // member heartbeat ages so `atmux status` is the single observability
+  // surface for liveness. Read-through (no cache) per ADR-068 §HC#4.
+  // ageSec === null when the heartbeat file is absent / unparseable —
+  // mirror semantics of readHeartbeatAges into MemberStatus directly.
+  const memberNames = members.map((r) => r.name);
+  const ages = await readHeartbeatAges(atmuxDir, memberNames, nowSec);
+  const ageByName = new Map(ages.map((a) => [a.member, a.ageSec]));
+  for (const row of members) {
+    row.heartbeat_age_s = ageByName.get(row.name) ?? null;
   }
 
   const counts: KanbanCounts = { todo: 0, inProgress: 0, done: 0, blocked: 0 };
@@ -739,6 +765,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
   const snap = await gatherStatus(tmux, team, sessionName, atmuxDir);
+  const heartbeatStaleSec = resolveHeartbeatStaleSec(team);
 
   if (parsed.json) {
     // Bash json shape (lib/status.sh:148-155): {team, session,
@@ -765,6 +792,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           cageState: CageState | null;
           pendingCount: number;
           inProgressCount: number;
+          heartbeat_age_s: number | null;
           label?: string;
           contextPct?: number;
           contextTs?: number;
@@ -778,6 +806,10 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           cageState: m.cageState,
           pendingCount: m.pendingCount,
           inProgressCount: m.inProgressCount,
+          // ADR-057 §D6c: always emit the heartbeat field (even when
+          // null) so JSON consumers can present the row uniformly
+          // without per-team key-presence forks.
+          heartbeat_age_s: m.heartbeat_age_s,
         };
         if (m.label !== undefined && m.label.length > 0) row.label = m.label;
         if (m.contextPct !== undefined) row.contextPct = m.contextPct;
@@ -804,7 +836,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
     return 0;
   }
 
-  renderTextStatus(snap);
+  renderTextStatus(snap, heartbeatStaleSec);
   return 0;
 }
 
@@ -860,7 +892,7 @@ async function readMemberCounts(
   return { pending: ib.pending.length, inProgress: ib.inProgress.length };
 }
 
-function renderTextStatus(snap: StatusSnapshot): void {
+function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
   const sessEmoji = snap.sessionState === "up" ? "🟢" : "🔴";
   process.stdout.write(
     `${sessEmoji} 🧭 TEAM ${snap.team}  session=${snap.session} [${snap.sessionState}]\n\n`,
@@ -911,8 +943,16 @@ function renderTextStatus(snap: StatusSnapshot): void {
     // ADR-148 §D3: cadence column. Width pinned to 20 chars — fits
     // the longest expected verdict ("🚨 ship-zero (24h)" + change).
     const cadence = formatCadenceColumn(m.cadence).padEnd(20);
+    // ADR-057 §D6c: heartbeat marker appended inline to the trailing
+    // tasks segment — keeps existing column alignment intact while
+    // surfacing the producer-side liveness signal next to the kanban
+    // verdicts. Omitted entirely when no heartbeat exists ("—") to
+    // avoid stamping every row with a dash on teams that haven't yet
+    // ticked their first cron-mediated poke cycle.
+    const hb = formatHeartbeatColumn(m, staleSec);
+    const hbSuffix = hb === "—" ? "" : `  ${hb}`;
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo${hbSuffix}\n`,
     );
   }
   const k = snap.kanban;
@@ -982,6 +1022,45 @@ export function formatContextColumn(m: MemberStatus): string {
   if (m.contextPct === undefined) return "—";
   if (m.contextStale === true) return "(stale)";
   return `${m.contextPct.toFixed(1)}%`;
+}
+
+/** ADR-057 §D6c: format the heartbeat column for one member row. Three
+ *  states:
+ *    - Heartbeat absent (heartbeat_age_s === null)         → "—"
+ *    - Fresh heartbeat (age <= staleSec)                   → "❤️<Ns>"
+ *    - Stale heartbeat (age >  staleSec)                   → "💔<Ns>"
+ *
+ *  Age unit follows the global CLAUDE.md duration convention: <60s →
+ *  "Ns"; <3600s → "Nm"; otherwise "Nh". Stale shape uses a broken-heart
+ *  emoji distinct from the fresh heart so the operator can spot a
+ *  watchdog-relevant member without parsing the number. */
+export function formatHeartbeatColumn(m: MemberStatus, staleSec: number): string {
+  const age = m.heartbeat_age_s;
+  if (age === null) return "—";
+  const isStale = age > staleSec;
+  const emoji = isStale ? "💔" : "❤️";
+  return `${emoji}${formatHeartbeatAge(age)}`;
+}
+
+function formatHeartbeatAge(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h`;
+}
+
+/** ADR-057 §D6c: defensive read of `team.json::whip.stallPrevention.
+ *  heartbeatStaleSec`. Mirrors watchdog.ts's readStaleSecFromTeam — copy
+ *  rather than share to keep the two surfaces decoupled (status is
+ *  read-only, watchdog also fires Discord; tying them through a shared
+ *  helper would force test-fixture coordination on a single-line read).
+ *  Falls back to DEFAULT_HEARTBEAT_STALE_SEC (300s) on absence / bad
+ *  shape — matches watchdog's posture so the two surfaces agree on
+ *  what "stale" means for the same team. */
+export function resolveHeartbeatStaleSec(team: Team): number {
+  const whip = (team as { whip?: { stallPrevention?: { heartbeatStaleSec?: unknown } } }).whip;
+  const v = whip?.stallPrevention?.heartbeatStaleSec;
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  return DEFAULT_HEARTBEAT_STALE_SEC;
 }
 
 // ---------- ADR-148 T2: cadence column helpers ----------
