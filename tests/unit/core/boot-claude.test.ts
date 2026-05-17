@@ -264,14 +264,25 @@ describe("bootClaudeMember — readiness poll", () => {
 
 describe("bootClaudeMember — retry", () => {
   test("first attempt sends but tokens never move; second attempt succeeds → attempts=2", async () => {
-    const { tmux } = fakeTmux({
+    // Capture-call accounting (post t-1b45d565 — safeSendKeysWithVerify
+    // composerEmpty step landed between paste and tokens-poll, so each
+    // attempt now consumes: 1 preCapture + ≥1 verify-loop capture before
+    // entering the tokens-moved poll). Sequence is intentionally tuned so
+    // the sticky-last "↑ 1k tokens\n❯ " entry first appears at attempt-2's
+    // tokens-poll, NOT during attempt 1.
+    const { tmux, calls } = fakeTmux({
       captures: [
-        "no-tokens", // initial sentinel
-        "❯ ", // ready immediately
-        "still nothing", // post-boot poll attempt 1 (loops until timeout)
-        "still nothing",
-        "still nothing",
-        "↑ 1k tokens\n❯ ", // post-boot poll attempt 2 — first success + composer cleared
+        "no-tokens", // [0] initial sentinel — tokensMoved FALSE
+        "❯ ", // [1] readiness — isTuiReady TRUE
+        // ----- attempt 1 -----
+        "no-tokens\n❯ ", // [2] safeSend preCapture
+        "no-tokens\n❯ ", // [3] verify-loop: composerEmpty TRUE (❯ at line end)
+        "no-tokens\n❯ ", // [4] tokens-poll iter 1 — tokensMoved FALSE
+        "no-tokens\n❯ ", // [5] tokens-poll iter 2 — FALSE, timeout exhausts
+        // ----- attempt 2 -----
+        "no-tokens\n❯ ", // [6] safeSend preCapture
+        "no-tokens\n❯ ", // [7] verify-loop: composerEmpty TRUE
+        "↑ 1k tokens\n❯ ", // [8] tokens-poll iter 1 — tokensMoved TRUE (sticky thereafter)
       ],
     });
     const r = await bootClaudeMember({
@@ -290,6 +301,12 @@ describe("bootClaudeMember — retry", () => {
     });
     expect(r.status).toBe("booted");
     expect(r.attempts).toBe(2);
+    // Second-attempt assertion: BOTH boot-prompt pastes fired
+    // (loadBuffer records as "send"-shaped entry per fakeTmux contract).
+    const sends = calls.filter((c) => c.kind === "send");
+    expect(sends).toHaveLength(2);
+    expect(sends[0]!.payload).toBe(renderBootPrompt("atmux", "fe-1"));
+    expect(sends[1]!.payload).toBe(renderBootPrompt("atmux", "fe-1"));
   });
 
   test("both attempts fail → failed with tokens-never-moved, attempts=maxAttempts", async () => {
