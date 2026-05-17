@@ -963,7 +963,23 @@ export const TeamEpic = z
      *  expanded at deploy time by `scripts/deploy.sh`. */
     stagingUrlTemplate: z.string().nullable().default(null),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    // ADR-144 §Deployed mode (T4 t-66a237cd) — when `testGateMode` is
+    // `"deployed"`, `stagingUrlTemplate` MUST be non-null. The deploy
+    // hook can't compose the branch-staging URL without it, and a
+    // silent default-null would crash the test-gate at first merge
+    // attempt with a cryptic "URL is null" stack instead of the clear
+    // schema-parse refusal here.
+    if (data.testGateMode === "deployed" && data.stagingUrlTemplate === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["stagingUrlTemplate"],
+        message:
+          "testGateMode: 'deployed' requires a non-null stagingUrlTemplate (e.g. '${product}-${dev-suffix}-${epic-name}-staging.ifca.app') — null is only valid in 'cage' / 'skip' modes.",
+      });
+    }
+  });
 export type TeamEpic = z.infer<typeof TeamEpic>;
 
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.

@@ -1061,6 +1061,76 @@ describe("TeamEpic — ADR-090 §Schema valid shape + defaults", () => {
   });
 });
 
+// ---------- TeamEpic — ADR-144 §Deployed mode superRefine ----------
+
+describe("TeamEpic superRefine — ADR-144 T4 deployed-requires-stagingUrlTemplate", () => {
+  test("testGateMode: 'deployed' with non-null stagingUrlTemplate parses cleanly", () => {
+    const e = TeamEpic.parse({
+      parent: "p",
+      parentEpicKanbanId: "e-1",
+      parentBase: "sopx-geoyws",
+      testGateMode: "deployed",
+      stagingUrlTemplate: "${product}-${dev-suffix}-${epic-name}-staging.ifca.app",
+    });
+    expect(e.testGateMode).toBe("deployed");
+    expect(e.stagingUrlTemplate).toBe(
+      "${product}-${dev-suffix}-${epic-name}-staging.ifca.app",
+    );
+  });
+  test("testGateMode: 'deployed' with null stagingUrlTemplate REFUSES at parse", () => {
+    expect(() =>
+      TeamEpic.parse({
+        parent: "p",
+        parentEpicKanbanId: "e-1",
+        parentBase: "main",
+        testGateMode: "deployed",
+        // stagingUrlTemplate omitted → default null → superRefine refuses.
+      }),
+    ).toThrow(/stagingUrlTemplate/);
+  });
+  test("testGateMode: 'deployed' with explicit null stagingUrlTemplate REFUSES", () => {
+    expect(() =>
+      TeamEpic.parse({
+        parent: "p",
+        parentEpicKanbanId: "e-1",
+        parentBase: "main",
+        testGateMode: "deployed",
+        stagingUrlTemplate: null,
+      }),
+    ).toThrow(/stagingUrlTemplate/);
+  });
+  test("testGateMode: 'cage' with null stagingUrlTemplate is fine (cage doesn't need URL)", () => {
+    const e = TeamEpic.parse({
+      parent: "p",
+      parentEpicKanbanId: "e-1",
+      parentBase: "main",
+      testGateMode: "cage",
+    });
+    expect(e.testGateMode).toBe("cage");
+    expect(e.stagingUrlTemplate).toBeNull();
+  });
+  test("testGateMode: 'skip' with null stagingUrlTemplate is fine", () => {
+    const e = TeamEpic.parse({
+      parent: "p",
+      parentEpicKanbanId: "e-1",
+      parentBase: "main",
+    });
+    expect(e.testGateMode).toBe("skip");
+    expect(e.stagingUrlTemplate).toBeNull();
+  });
+  test("testGateMode: 'cage' with non-null stagingUrlTemplate is still accepted (operator may pre-stage future deploy switch)", () => {
+    const e = TeamEpic.parse({
+      parent: "p",
+      parentEpicKanbanId: "e-1",
+      parentBase: "main",
+      testGateMode: "cage",
+      stagingUrlTemplate: "future.ifca.app",
+    });
+    expect(e.testGateMode).toBe("cage");
+    expect(e.stagingUrlTemplate).toBe("future.ifca.app");
+  });
+});
+
 // ---------- Team — ADR-090 cross-field superRefine ----------
 
 describe("Team superRefine — ADR-090 cross-field gates", () => {

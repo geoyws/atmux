@@ -48,6 +48,7 @@ import {
   performEpicMerge,
 } from "../core/epic-merge.ts";
 import { expandCagePath, runCageTestGate } from "../core/epic-test-cage.ts";
+import { composeStagingUrl, runDeployedTestGate } from "../core/epic-test-deploy.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { logTestGateBypass } from "../core/test-gate-bypass.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -346,6 +347,49 @@ export async function epicMergeTickVerb(
         });
         const passSpec = result.outcome === "pass" ? "passed" : "failed";
         const note = `cage tests ${passSpec} (attempts=${result.attempts}, exit=${result.last.exitCode}, durationMs=${result.totalDurationMs})`;
+        return { outcome: result.outcome, note };
+      };
+    }
+    // ADR-144 §Deployed mode (T4 t-66a237cd): sibling of the cage
+    // branch above. When `testGateMode: "deployed"`, compose the
+    // branch-staging URL from `stagingUrlTemplate` + the epic-team's
+    // identity (product = parentBase before first `-`, devSuffix =
+    // parentBase after last `-`, epicName = parentEpicKanbanId without
+    // the `e-` prefix) and run the test command against
+    // `E2E_BASE_URL=https://<composed-url>`. Deploy + teardown
+    // lifecycle hooks fire at spawn-epic / dissolve-epic respectively
+    // (per ADR-144 §Mode-A-deployed lifecycle) — out of scope for the
+    // per-merge test-gate, which assumes the URL is already serving.
+    // Schema-level superRefine on `TeamEpic` guarantees
+    // `stagingUrlTemplate !== null` when `testGateMode === "deployed"`,
+    // so the null check below is a runtime defense for the type
+    // narrower rather than an operator-recoverable path.
+    if (testGateMode === "deployed" && epicTeam.stagingUrlTemplate !== null) {
+      const stagingUrlTemplate = epicTeam.stagingUrlTemplate;
+      const testCommand = epicTeam.testCommand;
+      const retryOnFlake = epicTeam.retryOnFlake;
+      const testTimeoutMin = epicTeam.testTimeoutMin;
+      const parentBase = epicTeam.parentBase;
+      const epicKanbanId = epicTeam.parentEpicKanbanId;
+      ctx.testGate = async () => {
+        const dashIdx = parentBase.indexOf("-");
+        const product = dashIdx >= 0 ? parentBase.slice(0, dashIdx) : parentBase;
+        const lastDash = parentBase.lastIndexOf("-");
+        const devSuffix = lastDash >= 0 ? parentBase.slice(lastDash + 1) : parentBase;
+        const epicName = epicKanbanId.startsWith("e-") ? epicKanbanId.slice(2) : epicKanbanId;
+        const host = composeStagingUrl(stagingUrlTemplate, { product, devSuffix, epicName });
+        const baseUrl = host.startsWith("http://") || host.startsWith("https://")
+          ? host
+          : `https://${host}`;
+        const result = await runDeployedTestGate({
+          baseUrl,
+          testCommand,
+          cwd: epicRepoPath,
+          timeoutMs: testTimeoutMin * 60_000,
+          retryOnFlake,
+        });
+        const passSpec = result.outcome === "pass" ? "passed" : "failed";
+        const note = `deployed tests ${passSpec} on ${result.baseUrl} (attempts=${result.attempts}, exit=${result.last.exitCode}, durationMs=${result.totalDurationMs})`;
         return { outcome: result.outcome, note };
       };
     }
