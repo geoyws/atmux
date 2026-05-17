@@ -307,25 +307,45 @@ state to a fresh lead before killing.
 - `[whip-watchdog]` ping fires for every member at the same time.
 - `ls -la .atmux/heartbeats/` shows mtime on ALL files older than 5min.
 
+**Producer (D6a):** the per-member heartbeat is written by
+`atmux heartbeat write <member>` (`src/verbs/heartbeat.ts`). Today the
+caller is the cron-mediated `atmux poke` tick — `checkMember` in
+`src/verbs/poke.ts` invokes `writeHeartbeat` (fail-soft) once per
+per-member iteration, so a fresh heartbeat means the */5min poke loop
+reached this member in `team.json` at least once in the last window.
+A simultaneous stale-on-all-members signal therefore narrows to: cron
+stopped firing, poke is wedged on the team-level lock, or the team
+roster diverged from what poke iterates.
+
 **Diagnosis:**
 
 ```bash
-# Step 1 — supervisor is the heartbeat writer (D6a default)
-tmux capture-pane -p -S -50 -t <session>:supervisor | tail -30
-# Look for crashes, errors, or a wedged state.
+# Step 1 — is cron firing the poke tick at all?
+tail -20 .atmux/logs/poke.log                  # last few ticks logged here
+crontab -l | grep atmux                        # poke + watchdog lines installed?
 
-# Step 2 — check supervisor process
-pgrep -af "atmux.*supervisor"                  # is it alive?
-# If alive but wedged: kill + rotate
-# If dead: respawn
+# Step 2 — is poke wedged on its single-instance lock?
+ls -la .atmux/state/whip.lock                  # stale lockfile?
+fuser .atmux/state/whip.lock 2>/dev/null       # who's holding it?
+
+# Step 3 — manual heartbeat write (smoke-test the producer path)
+atmux heartbeat write <member> --team-dir <project-root>
+ls -la .atmux/heartbeats/<member>.epoch        # mtime should be 'just now'
 ```
 
 **Recovery:**
 
 ```bash
-# Soft restart — keeps coordination state
-atmux supervisor --restart                     # if available
-# OR full session recycle (loses pane history; preserves kanban + inboxes)
+# Path A — cron is the missing piece (fresh host, post-restore, etc.)
+atmux cron-install
+
+# Path B — lock is wedged on a dead PID
+rm .atmux/state/whip.lock                      # next */5 tick re-acquires
+
+# Path C — manually run one tick to confirm the producer is alive again
+atmux poke                                     # writes heartbeats for every member in team.json
+
+# Path D — full session recycle (loses pane history; preserves kanban + inboxes)
 atmux stop && atmux start
 ```
 
