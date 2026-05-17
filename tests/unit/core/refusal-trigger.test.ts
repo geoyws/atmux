@@ -112,8 +112,11 @@ function seedSoft(member: string, count: number, baseSec: number): void {
 }
 
 function seedHard(member: string, count: number, baseSec: number): void {
+  // 60s spacing keeps up to 9 events within the 10min HARD_REFUSAL_WINDOW
+  // when nowSec is baseSec+500. Pre-fix used 120s spacing which left the
+  // 2nd-and-later events 20s past the window — silent fixture rot.
   for (let i = 0; i < count; i += 1) {
-    recordRefusalEvent(env.db, baseSec - i * 120, {
+    recordRefusalEvent(env.db, baseSec - i * 60, {
       member,
       team: "demo",
       result: {
