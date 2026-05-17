@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🟢 Shipped — `atmux member move | swap | sort` (ADR-161 TR3, t-2f6c81d3, 2026-05-17)
+
+- **[`src/abstractions/tmux-window-orchestrator.ts`](src/abstractions/tmux-window-orchestrator.ts)** (NEW) — shared topographic-normalization primitives consumed by the three new verbs: `resolveMemberToWindowIdx`, `moveMemberWindow`, `swapMemberWindows`, `sortMembersDefaultsFirst`, `candidateWindowNames`. All preserve PIDs + attached clients + claude-process state inside each pane.
+- **[`src/verbs/member.ts`](src/verbs/member.ts)** — three new sub-verbs grafted onto the ADR-136 `dispatchMemberSubverb` dispatcher:
+  - `atmux member move <id> --to <position>` — absolute reposition (1-indexed per ADR-161 §Open question #3). Auto-picks `tmux swap-window` when the target slot is occupied (preserving the occupant's PIDs) and `tmux move-window` when empty.
+  - `atmux member swap <id-a> <id-b>` — pairwise atomic swap via `tmux swap-window` (the version-safe primitive; tmux 1.0+, 2009). Defensive fallback to a three-move temp-index dance if the primitive throws `TmuxError`.
+  - `atmux member sort [--defaults-first]` — one-shot normalize per ADR-161 §Decision-anchor #4 canonical order: `team-lead → planner → reviewer → ombudsman` (committer pending ADR-159), then user-added in existing relative order. Iterate-and-swap loop with per-iteration `listWindows` refresh — `move`s shuffle sibling indices, so a stale snapshot would mis-resolve.
+- **[`src/abstractions/tmux.ts`](src/abstractions/tmux.ts)** — `tmux.window.swapWindow({source, target})` primitive added alongside existing `moveWindow`. Wraps `tmux swap-window -s -t`.
+- **Cockpit refusal** — all three verbs refuse with `UsageError` when the team name is the cockpit reserved literal (`atmux_cockpit` / legacy `atmux_teams`). Defense-in-depth — cockpit lives on its own socket per ADR-162 and has no `team.json`.
+- **Team-stopped behavior** — `move`/`swap` no-op with stderr notice; `sort` persists `team.json::members[]` in canonical order so the next `atmux start` materializes windows in place.
+- **Persistence** — every successful run rewrites `team.json::members[]` via the existing `updateJson(Team)` flock pattern; ordering is derived from a post-mutation `listWindows` snapshot (authoritative — avoids hand-computed shifts).
+- **Tests** — `tests/unit/abstractions/tmux-window-orchestrator.test.ts` (NEW, 23 tests, 100% line + function coverage). `tests/unit/verbs/member.test.ts` extended by 45 tests against a real tmux server with `base-index 1` config (per-test isolated socket). Closes §EPIC-done item #3 of ADR-161; TR4 docs sweep remains.
+
 ### 🔤 Vocabulary refresh — SV register sweep
 
 - **ADR-158 (proposed)** — `martinet` → `sentinel` rename (cockpit W3 role + schema key + source identifiers). Cockpit role-type identifier change; design preserved verbatim per ADR-132. JSON-shim in `src/core/cockpit.ts::migrateMartinetBlockToSentinel` accepts legacy `martinet:` key for one release cycle with deprecation-warn (mirrors ADR-133 `migrateSuperdoctorBlockToMedic` precedent). Source identifiers renamed via TR2 (`src/abstractions/sentinel.ts`, `src/verbs/sentinel.ts`, `src/core/sentinel-escalation.ts`); same-commit docs sweep via TR4 (this entry).

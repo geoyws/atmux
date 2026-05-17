@@ -258,6 +258,14 @@ export interface TmuxNamespace {
      *  (`-k`), an existing window at the target slot is killed first;
      *  otherwise tmux errors if the target is occupied. */
     moveWindow(opts: { source: Target; target: Target; kill?: boolean }): Promise<void>;
+    /** `tmux swap-window -s <source> -t <target>`. Pairwise atomic
+     *  swap — both windows survive at the swapped indices with PIDs,
+     *  attached clients, and pane contents preserved. tmux has shipped
+     *  `swap-window` since 1.0 (2009), so production callers can rely
+     *  on the primitive being present; the orchestrator (ADR-161 §Part
+     *  C) still wraps it in a TmuxError-fallback to the two-move dance
+     *  for paranoid version-safety. */
+    swapWindow(opts: { source: Target; target: Target }): Promise<void>;
   };
   readonly pane: {
     sendKeys(opts: {
@@ -511,6 +519,18 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
           serializeTarget(opts.target),
         ];
         if (opts.kill) argv.push("-k");
+        await tmuxRun(argv);
+      },
+
+      /** `tmux swap-window -s <source> -t <target>`. */
+      async swapWindow(opts) {
+        const argv = [
+          "swap-window",
+          "-s",
+          serializeTarget(opts.source),
+          "-t",
+          serializeTarget(opts.target),
+        ];
         await tmuxRun(argv);
       },
     },

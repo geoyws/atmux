@@ -2488,6 +2488,9 @@ function makeMockTmux(socketTag: string, state: MockTmuxState): TmuxNamespace {
       async moveWindow() {
         throw new Error("not used by migrate-socket");
       },
+      async swapWindow() {
+        throw new Error("not used by migrate-socket");
+      },
     },
     pane: {
       async capturePane(opts) {
