@@ -88,6 +88,7 @@ import { dispatchSyncSubverb } from "./verbs/sync.ts";
 import { task } from "./verbs/task.ts";
 import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
 import { spawnEpic } from "./verbs/team/spawn-epic.ts";
+import { sweepEpics } from "./verbs/team/sweep-epics.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
 import { up } from "./verbs/up.ts";
@@ -370,7 +371,7 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
   const sub = argv[0];
   if (sub === undefined || sub === "") {
     throw new UsageError({
-      what: "team: subverb required (try: repair-rename | spawn-epic | dissolve-epic)",
+      what: "team: subverb required (try: repair-rename | spawn-epic | dissolve-epic | sweep-epics)",
       hint: "run 'atmux help' for the list of verbs",
     });
   }
@@ -381,9 +382,11 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
       return spawnEpic(argv.slice(1));
     case "dissolve-epic":
       return dissolveEpic(argv.slice(1));
+    case "sweep-epics":
+      return sweepEpics(argv.slice(1));
     default:
       throw new UsageError({
-        what: `team: unknown subverb '${sub}' (try: repair-rename | spawn-epic | dissolve-epic)`,
+        what: `team: unknown subverb '${sub}' (try: repair-rename | spawn-epic | dissolve-epic | sweep-epics)`,
         hint: "run 'atmux help' for the list of verbs",
       });
   }

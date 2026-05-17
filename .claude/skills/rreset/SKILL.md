@@ -41,6 +41,33 @@ Leaves-first (deepest submodules first), root last — symmetric with `/rpush`. 
 
 Report the summary line. If any repo failed (fetch error, network issue), surface them so the user can retry or investigate. Working tree should be clean across every repo afterward — verify with `git status` if uncertain.
 
+## Operator-facing report format — attention + verdict markers
+
+Per `[[feedback-unambiguous-attention-and-verdict]]` and the coordination-plugin precedent. `/rreset` is destructive; the verdict communicates whether the destruction landed AND whether what was destroyed is recoverable.
+
+**Verdict-derivation rules:**
+- **✅** every repo on `<branch>` fetched + reset cleanly, working tree clean across the tree, AND no unpushed commits were observably destroyed (pre-reset HEAD matched origin tip on every repo).
+- **⚠** reset landed cleanly BUT some repos had unpushed commits at HEAD pre-reset (now recoverable only via reflog) — operator should know what was just dropped.
+- **🔴** pre-flight refused (off-branch repos), OR ≥1 fetch failed (network/auth), OR reset itself failed mid-tree leaving partial state.
+- **👁** attaches when operator must decide: confirm dropped unpushed work was intentional, run reflog recovery, manually finish a partial reset.
+
+**Examples:**
+```
+✅ /rreset myteam-beta-dev — root + 4 submodules snapped to origin/<branch>, no unpushed commits dropped
+```
+```
+👁 ⚠ /rreset myteam-beta-dev — reset OK, 2 repos had unpushed commits (now reflog-only)
+Dropped: apps/foo/_svc (3 commits ahead of origin), apps/bar/_lib (1 commit ahead)
+👁 Operator: if any of those mattered, recover via `git reflog` in the affected repo NOW (before next gc)
+```
+```
+👁 🔴 /rreset <product>-staging — refused per safety reminder
+Cause: primary-staging branch, operator must explicitly intend to drop unpushed staging commits
+👁 Operator: if intentional, override by running the underlying script manually with --i-mean-it; otherwise abort
+```
+
+**Anti-pattern:** marking `✅` after dropping unpushed work without surfacing what was dropped. Silent destructive success defeats the safety reminder — always escalate to `⚠ + 👁` when reflog is the only recovery path.
+
 ## Safety reminders
 
 - This **discards uncommitted work** silently. There is no `--dry-run` or interactive prompt — operator confirms by typing the command.

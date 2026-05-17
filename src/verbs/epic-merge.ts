@@ -719,18 +719,19 @@ async function defaultResolveGate(deps: {
   // 2. hasReviewerTrunkSignoff — is there a done Task with
   // role='reviewer-trunk-signoff'? §Decision-anchor #1 + #5.
   //
-  // The `role` field lives in the `extra` JSON column (per ADR-090
-  // schema landing — KanbanTask.role is `.passthrough()` so the repo's
-  // taskToRow puts unknown fields into `extra`). The v1 tasks table has
-  // NO `role` column; reading it directly returns nothing. Use the
-  // SQLite JSON1 `->>'$.role'` operator to extract the field from the
-  // serialised extra blob (text-extract; equivalent to
-  // json_extract(extra, '$.role')). Per t-95264384 — broken query
-  // observed by ADR-144 T5 e2e fixture (fe-1) on 2026-05-17.
+  // `role` lives in the `extra` JSON column (NOT a top-level column on
+  // the tasks table) per kanban schema; use json_extract. Pre-fix this
+  // query threw "no such column: role" on every epic-team signoff probe,
+  // breaking ADR-091 auto-merge fan-in (parallel fixes — t-b2d9c955 on
+  // trunk via b27a9d7 + t-95264384 on geoyws-epic-e-03919b3b via 459ae5f;
+  // both landed json_extract / extra->>'$.role' independently. Reconciled
+  // here at merge time to the trunk's json_extract form — `->>` is the
+  // newer SQLite JSON1 shorthand but the explicit json_extract reads more
+  // portably).
   const signoffRow = deps.db
     .query<{ n: number }, []>(
       `SELECT COUNT(*) AS n FROM tasks
-       WHERE status = 'done' AND extra->>'$.role' = 'reviewer-trunk-signoff'`,
+       WHERE status = 'done' AND json_extract(extra, '$.role') = 'reviewer-trunk-signoff'`,
     )
     .get();
   const hasReviewerTrunkSignoff = (signoffRow?.n ?? 0) > 0;

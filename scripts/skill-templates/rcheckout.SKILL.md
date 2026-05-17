@@ -27,3 +27,23 @@ Report the summary line and any per-repo `WARN:` lines. If any failures (branch 
 
 - `/rpull <branch>` — recursive `git pull --ff-only origin <branch>` after checkout.
 - `/rpush <branch>` — recursive `git push origin <branch>` (leaves-first).
+
+## Operator-facing report format — attention + verdict markers
+
+Per `[[feedback-unambiguous-attention-and-verdict]]` and the coordination-plugin precedent.
+
+**Verdict-derivation rules:**
+- **✅** every repo (root + submodules) ended up on `<branch>` cleanly.
+- **⚠** most repos switched but some emitted `WARN:` (branch missing locally/remotely on specific submodules, attached from detached-HEAD with caveat).
+- **🔴** root failed, OR ≥1 repo couldn't switch (branch missing everywhere, dirty working-tree blocking checkout).
+- **👁** attaches when operator must decide: create the missing branch locally, stash dirty tree, accept partial-state.
+
+**Examples:**
+```
+✅ /rcheckout myteam-beta-dev — root + 4 submodules switched cleanly
+```
+```
+👁 ⚠ /rcheckout myteam-beta-dev — root switched, 1 submodule WARN
+WARN: apps/foo/_charity-svc — branch missing local+origin, stayed on master
+👁 Operator: create `myteam-beta-dev` in that submodule, or skip if intentional
+```

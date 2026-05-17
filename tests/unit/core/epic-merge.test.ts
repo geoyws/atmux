@@ -650,3 +650,74 @@ describe("performEpicMerge — resume from `tested` (T3)", () => {
     expect(repo.getState(EPIC_BRANCH)?.testOutcome).toBe("pass");
   });
 });
+
+// ---------- hasReviewerTrunkSignoff SQL (t-b2d9c955 regression) ----------
+//
+// Pre-fix defaultResolveGate ran `WHERE status='done' AND role=?` which
+// threw "no such column: role" — `role` lives in the `extra` JSON column.
+// These tests pin the corrected `json_extract(extra,'$.role')=?` shape.
+// Tests exercise the SQL directly (defaultResolveGate isn't exported);
+// drift between the inline query here and the verb's query is the
+// regression signal.
+describe("hasReviewerTrunkSignoff query — json_extract(extra,'$.role')", () => {
+  const QUERY = `SELECT COUNT(*) AS n FROM tasks
+     WHERE status = 'done' AND json_extract(extra, '$.role') = 'reviewer-trunk-signoff'`;
+
+  function insertTask(id: string, status: string, extra: string | null): void {
+    db.prepare(
+      `INSERT INTO tasks (id, status, extra, created_at) VALUES (?, ?, ?, ?)`,
+    ).run(id, status, extra, 1000);
+  }
+
+  test("done row with extra.role='reviewer-trunk-signoff' → count=1", () => {
+    insertTask("t-signoff", "done", JSON.stringify({ role: "reviewer-trunk-signoff" }));
+    const row = db.query<{ n: number }, []>(QUERY).get();
+    expect(row?.n).toBe(1);
+  });
+
+  test("done row with extra.role='other' → count=0", () => {
+    insertTask("t-other", "done", JSON.stringify({ role: "member" }));
+    const row = db.query<{ n: number }, []>(QUERY).get();
+    expect(row?.n).toBe(0);
+  });
+
+  test("done row with no extra.role → count=0", () => {
+    insertTask("t-no-role", "done", JSON.stringify({ priority: 1 }));
+    const row = db.query<{ n: number }, []>(QUERY).get();
+    expect(row?.n).toBe(0);
+  });
+
+  test("done row with extra=NULL → count=0 (no SQL error)", () => {
+    insertTask("t-null-extra", "done", null);
+    const row = db.query<{ n: number }, []>(QUERY).get();
+    expect(row?.n).toBe(0);
+  });
+
+  test("non-done row with extra.role='reviewer-trunk-signoff' → count=0 (status gate enforced)", () => {
+    insertTask("t-in-progress-signoff", "in-progress", JSON.stringify({ role: "reviewer-trunk-signoff" }));
+    const row = db.query<{ n: number }, []>(QUERY).get();
+    expect(row?.n).toBe(0);
+  });
+
+  test("mixed rows: only done+signoff-role counted", () => {
+    insertTask("t-1", "done", JSON.stringify({ role: "reviewer-trunk-signoff" }));
+    insertTask("t-2", "done", JSON.stringify({ role: "reviewer-trunk-signoff" }));
+    insertTask("t-3", "done", JSON.stringify({ role: "member" }));
+    insertTask("t-4", "in-progress", JSON.stringify({ role: "reviewer-trunk-signoff" }));
+    insertTask("t-5", "done", null);
+    const row = db.query<{ n: number }, []>(QUERY).get();
+    expect(row?.n).toBe(2);
+  });
+
+  test("pre-fix query (role as column) FAILS — regression-pin proves bug existed", () => {
+    insertTask("t-signoff", "done", JSON.stringify({ role: "reviewer-trunk-signoff" }));
+    expect(() =>
+      db
+        .query<{ n: number }, []>(
+          `SELECT COUNT(*) AS n FROM tasks
+           WHERE status = 'done' AND role = 'reviewer-trunk-signoff'`,
+        )
+        .get(),
+    ).toThrow(/no such column.*role/i);
+  });
+});

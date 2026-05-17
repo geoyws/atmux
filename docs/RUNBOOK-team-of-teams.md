@@ -94,10 +94,36 @@ Three cross-cutting concerns the post-ship audit surfaced. None block phase-1 / 
 2. **Claude API rate-limit ceiling under 2 epics × 7 members = 14 simultaneous TUIs.** Validate via `/coordination:budget` before spawning two parallel epics on the same account. Cross-correlate with t-77ae2baa Class 3 stress test.
 3. **gh-CLI process-global auth-switch race under pr-mode.** `gh auth switch` mutates `~/.config/gh/hosts.yml::active-user` globally. Auto-mode capstone bypasses this; pr-mode follow-up will need mutex sequencing per ADR-090/091 audit fold-in.
 
+## Fleet sweep — `atmux team sweep-epics` (ADR-170)
+
+Operators accumulate epic-teams faster than they tear them down. `sweep-epics` walks every enabled epic-team in `cockpit.json`, classifies each by activity, and (with `--apply`) dissolves the safe ones via the ADR-090 `dissolve-epic` pipeline.
+
+```bash
+atmux team sweep-epics                       # read-only report
+atmux team sweep-epics --json                # machine-readable
+atmux team sweep-epics --parent sopx         # filter to one parent's children
+atmux team sweep-epics --idle-hours 48       # tune STALE-IDLE threshold (default 24h)
+ATMUX_CALLER_SCOPE=driver \
+  atmux team sweep-epics --apply             # dissolve SAFE-DISSOLVE candidates
+```
+
+Verdicts (full ladder in ADR-170 §Verdict ladder):
+
+| Verdict | When | `--apply` |
+|---|---|---|
+| `DRAIN` | open tasks > 0 | skip |
+| `SAFE-DISSOLVE` | 0 open tasks AND clean AND branch pushed to origin | dissolve |
+| `STALE-IDLE` | 0 open tasks AND last commit ≥ idle-hours AND NOT pushed | report — push or investigate first |
+| `RISKY` | dirty worktree OR unmerged unpushed commits | report — manual review |
+| `MISSING` | cockpit entry but worktree directory absent | report — manual cockpit cleanup |
+
+`--apply` runs only against `SAFE-DISSOLVE` rows. STALE-IDLE and RISKY are reported but never auto-dissolved — a worktree-prune that drops unpushed commits is unrecoverable, so the push-to-origin check is load-bearing.
+
 ## Cross-refs
 
 - ADR-089 — cockpit-walk DFS substrate (load-bearing for `--team <name>` lookup).
 - ADR-090 — epic-team lifecycle (TeamEpic + KanbanEpic + spawn-epic / dissolve-epic verbs + epic-rosters/default + epic-lead brief).
+- ADR-170 — `sweep-epics` verb (composition over loadCockpit + dissolveEpic; SAFE-DISSOLVE auto-apply, STALE-IDLE/RISKY report-only).
 - ADR-091 — epic-merge state machine (`recording → merging → merged`) + epic-merge cron + committer epic-team brief.
 - ADR-092 — cross-team tell-lead (parent ↔ epic-lead routing + caller-scope refusal).
 - ADR-099 — `EX_NOPERM=77` refusal exit code (used by cross-team caller-scope gate).
