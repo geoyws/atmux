@@ -1267,3 +1267,113 @@ describe("renderCronLines — gitter-sweep (ADR-134 T7)", () => {
     expect(renderCronLines(baseOpts(team))).toEqual(renderCronLines(baseOpts(team)));
   });
 });
+
+// ---------- ADR-057 §D6d / t-bb519494: golden-file parity ----------
+
+describe("renderCronBlock — golden-file parity (ADR-057 §D6d)", () => {
+  // Reference team exercises every conditional cron line EXCEPT the
+  // discorder pair (mutually exclusive with `report` — discorder
+  // coverage stays in the inline assertion suite above). Stays in sync
+  // with scripts/regen-cron-golden.ts; update both together if the
+  // renderer grows a new gated line. Gating conditions per line are
+  // documented in the golden file's header (tests/golden/cron-block.txt
+  // L1-L12) AND in docs/RUNBOOK-cron-migration.md §Golden-file parity.
+  const goldenReferenceTeam = (): Team =>
+    ({
+      name: "golden-reference",
+      members: [
+        { name: "lead", role: "lead", cwd: "/x" },
+        { name: "u", role: "unblocker", cwd: "/x" },
+        { name: "fe", role: "member", lane: "fe", cwd: "/x" },
+        { name: "ombud", role: "ombudsman", cwd: "/x" },
+        { name: "git", role: "committer", cwd: "/x" },
+      ],
+      whip: { claudeAccount: "icloud" },
+      merger: { enabled: true },
+      ombudsman: { enabled: true },
+      cadence: { enabled: true },
+      autoMerge: { enabled: true },
+      epicTeam: { parentName: "demo-parent", anchorEpicId: "e-golden01" },
+    }) as unknown as Team;
+
+  const loadGoldenBlock = async (): Promise<string> => {
+    // Resolve relative to this test file so the path is stable across
+    // cwd quirks (bun test runner sets cwd to repo root, but worktree
+    // setups + IDE-driven runs can drift).
+    const path = new URL("../../golden/cron-block.txt", import.meta.url);
+    const text = await Bun.file(path).text();
+    // Locate the canonical block start (`# >>> atmux:team=…`) — every
+    // line before that is documentation-only header (gating conditions,
+    // regenerate procedure) and is ignored by the parity assertion.
+    // Anchor on `\n# >>> atmux:team=` (start-of-line) so the substring
+    // appearing mid-line in the header documentation doesn't false-match.
+    const newlineMarkerIdx = text.indexOf("\n# >>> atmux:team=");
+    const markerIdx = newlineMarkerIdx === -1
+      ? (text.startsWith("# >>> atmux:team=") ? 0 : -1)
+      : newlineMarkerIdx + 1;
+    if (markerIdx === -1) {
+      throw new Error(
+        "golden file missing canonical block start (# >>> atmux:team=) on a line of its own; regenerate via scripts/regen-cron-golden.ts",
+      );
+    }
+    return text.slice(markerIdx);
+  };
+
+  test("renderCronBlock output is byte-equal to tests/golden/cron-block.txt (reference team)", async () => {
+    const rendered = renderCronBlock({
+      team: goldenReferenceTeam(),
+      atmuxDir: "/srv/golden-reference/.atmux",
+      atmuxBin: "/usr/local/bin/atmux",
+    });
+    const golden = await loadGoldenBlock();
+    expect(rendered).toBe(golden);
+  });
+
+  test("golden file pins every conditional line in render order (L1-L12 from header)", async () => {
+    // Sentinel against accidental line-shuffling that still happens to
+    // produce a byte-equal block (impossible in practice, but the
+    // explicit ordering check makes the intent visible to readers).
+    const golden = await loadGoldenBlock();
+    const bodyLines = golden
+      .split("\n")
+      .filter((l) => l.length > 0 && !l.startsWith("# >>>") && !l.startsWith("# <<<"));
+    const orderedVerbs = [
+      " poke ",
+      " report ",
+      " decisions digest ",
+      " groom --quiet ",
+      " poke-resume-check ",
+      " unblocker tick ",
+      " lane-tick ",
+      " merge-cycle --push ",
+      " ombudsman tick ",
+      " lane-stall-tick ",
+      " gitter --sweep ",
+      " epic-merge tick ",
+    ];
+    expect(bodyLines.length).toBe(orderedVerbs.length);
+    for (let i = 0; i < orderedVerbs.length; i++) {
+      const lineI = bodyLines[i];
+      const verbI = orderedVerbs[i];
+      if (lineI === undefined || verbI === undefined) {
+        throw new Error(`golden body missing line/verb at index ${i}`);
+      }
+      expect(lineI).toContain(verbI);
+    }
+  });
+
+  test("idempotence: re-rendering reference team yields the same golden block", () => {
+    const team = goldenReferenceTeam();
+    const a = renderCronBlock({
+      team,
+      atmuxDir: "/srv/golden-reference/.atmux",
+      atmuxBin: "/usr/local/bin/atmux",
+    });
+    const b = renderCronBlock({
+      team,
+      atmuxDir: "/srv/golden-reference/.atmux",
+      atmuxBin: "/usr/local/bin/atmux",
+    });
+    expect(a).toBe(b);
+  });
+});
