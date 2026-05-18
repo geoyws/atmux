@@ -9,7 +9,7 @@ ADRs (`docs/adr/`, append-only, numbered, monotonic) → docs (`docs/PRD.md`, `d
 ## Binding discipline
 
 1. **Peruse before working.** Claiming an unfamiliar Task → read `docs/PRD.md` + `docs/ARCHITECTURE.md` + matching `RUNBOOK-*` + ADRs named in the Task body. "I didn't know X" when X is documented is a reviewer flag.
-2. **Same-commit doc + ADR-pointer update** for any change to a documented surface: verb signature (`atmux <verb> …`), brief vocabulary (`templates/briefs/*.md`), state-file shape (`.atmux/state/*.json`, `.atmux/state.db`), cron template, kanban / event schema, ADR-named invariants (e.g. ADR-029 §F6 byte-equal bash parity).
+2. **Same-commit doc + ADR-pointer update** for documented-surface changes: verb sig, brief vocab (`templates/briefs/*.md`), state shape (`.atmux/state/*`), cron template, kanban/event schema, ADR-named invariants.
 3. **Reviewer enforces the gate** — code-without-doc-update on documented surfaces is fail-state, blocked until the doc lands in the same or sibling commit on the same PR/Story.
 4. **New decisions = new ADR before code lands.** Numbered monotonically, zero-padded. `Status: proposed` becomes `accepted` only via reviewer signoff or driver/lead `decisions-add`. Intentionally-held ADRs use `Status: proposed (deferred: <reason>)` so ADR-085 surfacer doesn't ping (no lint today; if rot recurs, see `t-968416aa`).
 
@@ -31,18 +31,7 @@ Per-member `<base>-<member>` branches are long-lived (ADR-082 + ADR-084). Fallin
 
 ## Manual Claude spawn pattern
 
-Always `--permission-mode auto` (other modes stop on every tool call):
-
-```bash
-case "${CLAUDE_CONFIG_DIR:-$(realpath ~/.claude 2>/dev/null)}" in
-  */.claude-unum*)    DRIVER_WRAPPER="c-u" ;;
-  */.claude-icloud*)  DRIVER_WRAPPER="c-ic" ;;
-  *)                  DRIVER_WRAPPER="claude" ;;
-esac
-CLAUDE_GUARD_AGENT=1 ${DRIVER_WRAPPER} --permission-mode auto --model claude-opus-4-7
-```
-
-Wrong mode after spawn → `tmux send-keys -t <window> BTab` to cycle, never kill+respawn. Verify `⏵⏵ auto mode on` in the footer.
+Always `--permission-mode auto` (other modes stop on every tool call). Match driver's account: `.claude-unum` → `c-u`, `.claude-icloud` → `c-ic`, else `claude`. Set `CLAUDE_GUARD_AGENT=1`. Wrong mode after spawn → `tmux send-keys -t <window> BTab`, never kill+respawn. Verify `⏵⏵ auto mode on`.
 
 ## Model selection
 
@@ -53,10 +42,10 @@ Wrong mode after spawn → `tmux send-keys -t <window> BTab` to cycle, never kil
 
 ## Tmux + pane discipline
 
-- **Capture pane state before `send-keys`.** `tmux capture-pane -p -t <w> -S -30 | tail -20`. Check `thinking with` / `Compacting` / `Press up to edit queued` / `Now using extra usage` / rate-limit / permission prompts / queued compose. "Text at prompt" ≠ "ready for input."
-- **Rate-limit triage uses API headers, not pane footers.** Footers freeze during active turns. Curl Anthropic Messages API for `anthropic-ratelimit-*`. Never invoke destructive recovery (rotate / kill+respawn / /clear) on footer numbers alone — require BOTH stale-looking budget AND zero `✽`/`✻` turn markers in last 60s of capture.
-- **Ping before touching shared live stack** (walks / runs / e2e / live-URL probes / bootstrap). Local-only work is autonomous.
-- **Watch filters: enumerate anomalous, not exclude noise.** Pair with a known-green smoke probe; >0 anomalies under no load means the filter is wrong.
+- **Capture pane state before `send-keys`.** `tmux capture-pane -p -t <w> -S -30 | tail -20`. Check for `thinking` / `Compacting` / `Press up to edit queued` / rate-limit / permission prompts. "Text at prompt" ≠ "ready."
+- **Rate-limit triage uses API headers, not pane footers** (footers freeze during active turns). Destructive recovery requires BOTH stale budget AND zero `✽`/`✻` markers in last 60s.
+- **Ping before touching shared live stack** (walks/runs/e2e/live-URL/bootstrap). Local-only work is autonomous.
+- **Watch filters: enumerate anomalous, not exclude noise.** Pair with a known-green smoke probe.
 
 ## Reviewer vs auditor
 
@@ -73,6 +62,6 @@ Pair runbook beats with e2e step labels — beat name = `test.step()` label verb
 
 Preclear at every phase boundary — phase = "shipped X end-to-end" (committed + pushed + smoked/typechecked/deployed green). Memory + handoff + task-list land while context is fresh. Driver itself = no-op preclear (no coordination state); lead in dedicated window preclears at boundaries.
 
-## Migrators (from Claude `/team` skill family)
+## Migrators
 
-atmux owns the canonical roster at `.atmux/team.json`. Legacy `.claude/team.json` is consumed by Claude skills and drifts on every `add-member` / `rotate` / `member rename`. Preview: `atmux sync claude-team-json --dry-run`. Write: `atmux sync claude-team-json` (preserves hand-authored `role` text; refuses on drift with exit `65` unless `--force`). Flow: [`docs/RUNBOOK-sync.md`](docs/RUNBOOK-sync.md) ([ADR-164](docs/adr/164-sync-claude-team-json.md)).
+Roster lives at `.atmux/team.json`; sync to legacy `.claude/team.json` via `atmux sync claude-team-json` (see [docs/RUNBOOK-sync.md](docs/RUNBOOK-sync.md) / [ADR-164](docs/adr/164-sync-claude-team-json.md)).
