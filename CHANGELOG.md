@@ -7,15 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### 🟢 Fixed — `atmux rotate-lead` brief re-paste skipped on stale-token scrollback (EPIC e-f28c2596 T7, 2026-05-18)
+### 🟢 Fixed — auto-fire Enter on queued worker compose-box + rotate-lead brief-paste decoupled from already-booted short-circuit (EPIC e-f28c2596, 2026-05-18)
+
+Two-front fix for chronic stuck-pane patterns observed across `/bau` scans on 2026-05-17 and 2026-05-18: (1) cron-fired hot-loop verbs now ACTIVELY unstick queued compose-box text via ADR-138 verify-and-retry instead of merely surfacing the stuck state, and (2) `atmux rotate-lead` no longer skips the brief re-paste when tmux scrollback retains pre-`/clear` tokens. Both halves of the EPIC ship to trunk in this release; reviewer-trunk-signoff fires when this CHANGELOG entry lands alongside the T6 e2e (7cf5b02) + T8 unit (e97c357) gates.
+
+**Half 1 — auto-fire Enter on queued worker compose-box** (T1-T6):
+
+Cron-fired `poke` / `lane-tick` per-member loops now detect stuck queued text in the composer (e.g. `❯ /loop /whip`, `❯ claim --next`, `❯ atmux ombudsman work` that the worker typed but never submitted) and re-fire the same text via ADR-138 `safeSendKeysWithVerify` + `composerEmpty()` verifier. Pre-fix: operator had to push Enter on N panes per `/bau` cycle OR fire `atmux send <member>` per pane; the cage looked alive but actually had queued work that just needed a submit signal (~50+ manual Enter pushes per 24h shift across the team-of-teams cockpit).
+
+- **[`src/core/queued-text-resubmit.ts`](src/core/queued-text-resubmit.ts)** (NEW, T1 c24ee2b) — pure-of-IO `detectAndResubmit(paneCapture, sendKeysFn, clockFn, failureLogFn)` helper. Decision tree: composer empty → noop; queued + active-turn indicator → skip (mid-turn); queued + idle → fire via `sendKeysFn`; post-fire verifier failure → log-failure (caller's `failureLogFn` invoked). All side effects flow through injected deps so the four state branches unit-test without spinning up tmux.
+- **[`src/verbs/poke.ts`](src/verbs/poke.ts)** (T2+T4 collapse 0d69bf3 / 490c0ec) — wired into `checkMember` per-member iteration. ADR-160 collapsed the legacy bash `whip.sh` per-member vs team-level loop distinction into one `for (const member of team.members)` in `runTick` → T2 (per-member) + T4 (team-level) share the call site. Outer guards skip rate-limited / compacting / busy panes (sends would mis-target). Coverage spans every role in `team.json::members[]` (lead / planner / reviewer / workers / ombudsman when present) because no role filtering happens upstream.
+- **[`src/verbs/lane-tick.ts`](src/verbs/lane-tick.ts)** (T3 23a33b1) — wired at the top of the per-member loop, after pane capture but before READY classification. New `LaneTickMemberOutcome` value `injected-queued-resubmit` distinguishes the resubmit-fired case from the legacy `injected` (claim-injection); both `fire` and `log-failure` outcomes map to it (the member is now executing their OWN queued command, lane-tick defers to avoid stacking a second claim). Best-effort try/catch wraps the call so a tmux fault doesn't crash the ADR-080 §B2 auto-done scan.
+- **Test coverage** — T5 unit (0505bb4, 4 helper-state branches + `extractQueuedText` edge cases) + T6 bats integration (7cf5b02, vs real tmux + claude TUI shim).
+
+**Half 2 — `atmux rotate-lead` brief re-paste skipped on stale-token scrollback** (T7-T8):
 
 Decouples the `bootClaudeMember` already-booted sentinel from the rotate-after-`/clear` path. Pre-fix bug: `atmux rotate-lead` printed `rotate: <role>: already booted — boot prompt skipped` and the rotated lead landed at 0 tok of brief context in the next `/bau` scan. Root cause: `/clear` resets the Claude session but tmux's own scrollback persists, so `capturePane(start: -40)` after `/clear` matched residual `Nk tokens` text and the sentinel mis-fired as already-booted, skipping the brief re-paste entirely (`goal injection skipped` was the downstream symptom — goal-injection runs AFTER brief-paste and silently no-ops when boot was skipped).
 
-- **[`src/core/boot-claude.ts`](src/core/boot-claude.ts)** — new `BootClaudeOpts.forceBootPrompt?: boolean` (default `false`). When `true`, the (1) already-booted sentinel branch is bypassed; the call proceeds straight to the readiness wait + boot prompt regardless of what tmux scrollback shows. `start.ts` and other first-spawn callers keep the default `false` (the double-submit guard remains correct for first-spawn — no `/clear` precedes the call).
-- **[`src/verbs/rotate.ts`](src/verbs/rotate.ts)** — passes `forceBootPrompt: true` to `bootClaudeMember` for every claude-TUI rotate, treating `/clear` as definitive ground truth for context-wipe. Override via `opts.bootClaude.forceBootPrompt` (the post-`Object.assign` override path is preserved per the existing test-injection convention).
+- **[`src/core/boot-claude.ts`](src/core/boot-claude.ts)** (T7 1b6b111) — new `BootClaudeOpts.forceBootPrompt?: boolean` (default `false`). When `true`, the (1) already-booted sentinel branch is bypassed; the call proceeds straight to readiness wait + boot prompt regardless of what tmux scrollback shows. `start.ts` and other first-spawn callers keep default `false` (the double-submit guard remains correct for first-spawn — no `/clear` precedes the call).
+- **[`src/verbs/rotate.ts`](src/verbs/rotate.ts)** (T7 1b6b111) — passes `forceBootPrompt: true` to `bootClaudeMember` for every claude-TUI rotate, treating `/clear` as definitive ground truth for context-wipe. Override via `opts.bootClaude.forceBootPrompt` (the post-`Object.assign` override path is preserved per the existing test-injection convention).
 - **Operator-visible fingerprint of the pre-T7 bug** — `rotate: <role>: already booted — boot prompt skipped` in rotate stderr, followed by 0-token `<role>` in the next `/bau` scan. ADR-077 (medic cockpit role) reviewed for the same short-circuit: its rotate path uses `cockpit-rotate.ts` (kill-pane + new-window per [ADR-167](docs/adr/167-cockpit-rotate-verb.md)) not `bootClaudeMember`, so the bug does NOT apply there.
-- **Cross-refs** — [ADR-081 §C](docs/adr/081-bootstrap-brief-paste-bug.md) (boot-prompt mechanism), [ADR-138](docs/adr/138-verified-send-keys.md) (the `safeSendKeysWithVerify` C-m submit verify path still runs inside `bootClaudeMember`'s paste loop), [ADR-168](docs/adr/168-send-keys-failures-log.md) (escalation log target for verify-exhausted paths).
-- **Tests deferred to paired T5+T8** — T5 (t-94ac4d75) ships the helper-contract coverage at 0505bb4; T7-specific assertions (`forceBootPrompt` skips sentinel + `rotate.ts` threads the option) land via T8 (t-a4a53960, test-lane) since T7 is BE-lane code-only.
+- **Test coverage** — T8 unit (e97c357, 6 new tests: 4 in `boot-claude.test.ts` covering forceBootPrompt true/false × tokens/no-tokens × verify-fail edges + 2 in `rotate.test.ts` covering rotate-default threads true + operator-override pins false).
+
+**Cross-refs**:
+
+- [ADR-138](docs/adr/138-verified-send-keys.md) §Amendment 2026-05-18 — annotates `detectAndResubmit` as the new downstream consumer + names the wiring sites.
+- [ADR-168](docs/adr/168-send-keys-failures-log.md) — escalation log target; `safeSendKeysWithVerify`'s built-in `onFail:"escalate"` path owns disk persistence (helper `failureLogFn` re-emits to verb stderr only).
+- memory `feedback_atmux_send_for_queued_panes` — revised: post-fix, cron-fired verbs auto-unstick queued panes; driver-side `atmux send <member>` is now a fallback for the rare verify-exhausted case, not the primary recovery path.
+- memory `feedback_shared_index_commit_race_hazard` (NEW, 2026-05-18 e-f28c2596) — observed-twice pattern in this EPIC: shared-worktree shared-index can absorb or swap staged files between concurrent commits (4133af1 pre-push absorption; 7cf5b02/1b6b111 post-push subject-content swap). Mandatory pre/post-commit `git diff --cached --stat` + `git show --stat HEAD` ritual mitigates.
+
+**EPIC commits**: T1 c24ee2b · T2 0d69bf3 · T3 23a33b1 · T4 490c0ec · T5 0505bb4 · T6 7cf5b02 · T7 1b6b111 · T8 e97c357 · T9 (this commit).
 
 ### 🟢 Shipped — `atmux cockpit rotate <session-name>` — Rung C canonical rotation verb (ADR-167, EPIC e-0b90d6ac, 2026-05-18)
 
