@@ -1,4 +1,6 @@
-# ADR-171: EPIC-aware lane-drift-revert — skip parents with progressing children
+# ADR-176: EPIC-aware lane-drift-revert — skip parents with progressing children
+
+> **Renumbering note**: originally drafted as ADR-171 on the planner branch (63d0b55); renumbered to 176 on merge to trunk because 086c142 had already shipped a different ADR-171 (`tmux-conf-local-override`, carve-out from ADR-163). Append-only/monotonic invariant preserved per ADR-091.
 
 **Status**: proposed
 **Date**: 2026-05-17
@@ -72,7 +74,7 @@ New `DriftDecision.reason` enum value: `"epic-children-progressing"`. Surfaced u
 | **be**  | Verb wrapper (lane-tick / groom call site) pre-builds the children map from all-tasks.                  |
 | **test**| New unit cases: (1) EPIC parent with one in-progress child → skip; (2) EPIC parent with all-todo children → revert (todo doesn't count); (3) non-EPIC Task (no children entry) → behavior unchanged; (4) EPIC parent with `done` child but `claimedAgoMin` past threshold → skip (done child still counts as progressing — the EPIC isn't dead). |
 | **ops** | None — the cron line is unchanged; the verb internals tighten.                                          |
-| **docs**| `docs/adr/127-lane-claim-auto-pickup.md` §OQ5 gains an amendment header pointing to ADR-171.            |
+| **docs**| `docs/adr/127-lane-claim-auto-pickup.md` §OQ5 gains an amendment header pointing to ADR-176.            |
 
 **What we give up**: a stuck-EPIC-with-stuck-children case won't auto-revert (children also stuck, none "progressing"). **Mitigation**: leaf-Task drift reverts cascade — once each child is reverted to `todo`, parent becomes eligible on the next tick (children no longer progressing). The cascade is the correct order anyway: revert leaves first, parents only after the structural reason for staying claimed is gone.
 
@@ -91,5 +93,5 @@ New `DriftDecision.reason` enum value: `"epic-children-progressing"`. Surfaced u
 ## Related
 
 - **ADR-127** (`lane-claim-auto-pickup-cron-and-universal-supervision`) §OQ5 — the original 3-criterion specification this ADR amends.
-- **ADR-131** (`superdoctor-kanban-hygiene-auto-fix-loop`) §Amendment 2026-05-17 — sibling tightening on the auto-CLOSE path ("shipped via SHA" 5/6 false-positive rate). ADR-171 addresses the auto-REVERT path with the same scope-match discipline.
-- **ADR-091** (`epic-team-lifecycle-and-trunk-merge-gate`) — EPIC parents in atmux dogfooding are typically claimed by `planner` for decomp + tracking, while sub-tasks execute under spawned epic-teams. ADR-171's criterion (d) reflects that two-tier topology.
+- **ADR-131** (`superdoctor-kanban-hygiene-auto-fix-loop`) §Amendment 2026-05-17 — sibling tightening on the auto-CLOSE path ("shipped via SHA" 5/6 false-positive rate). ADR-176 addresses the auto-REVERT path with the same scope-match discipline.
+- **ADR-091** (`epic-team-lifecycle-and-trunk-merge-gate`) — EPIC parents in atmux dogfooding are typically claimed by `planner` for decomp + tracking, while sub-tasks execute under spawned epic-teams. ADR-176's criterion (d) reflects that two-tier topology.
