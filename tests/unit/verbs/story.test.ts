@@ -1021,3 +1021,153 @@ describe("story verb — --merge-mode dispatch", () => {
     ).rejects.toThrow(/--merge-mode must be/);
   });
 });
+
+// ---------- T3 capstone: ADR-175 rentx E1 4-story shape repro ----------
+//
+// Closes the rentx-driver SQL-bypass class per ADR-175 §Consequences.
+// 4 stories historically used raw `UPDATE stories SET status='done'`
+// (operator-authorized 2026-05-17 13:55 MYT) because no CLI surface
+// existed for: (a) flipping reviewSignoff, (b) skipping merging for
+// trunk-direct shapes. T1 (signoff verbs) + T2 (mergeMode field +
+// trunk-direct advance branching) close both gaps; this capstone walks
+// each historical story shape through the canonical CLI path and
+// asserts the bypass is no longer needed.
+
+interface RentxE1Shape {
+  /** Original story-id from rentx E1 — used as a grep anchor so the
+   *  4-id list in the commit body matches the test names. */
+  rentxStoryId: string;
+  /** Short label matching the platform/infra shape observed on rentx. */
+  shapeLabel: string;
+}
+
+const RENTX_E1_SHAPES: ReadonlyArray<RentxE1Shape> = [
+  { rentxStoryId: "s-425249d0", shapeLabel: "rentx submodule attach" },
+  { rentxStoryId: "s-dc19b96e", shapeLabel: "rentx nginx symlink" },
+  { rentxStoryId: "s-f5797a08", shapeLabel: "rentx systemd unit" },
+  { rentxStoryId: "s-cb99f131", shapeLabel: "rentx deploy worktree provision" },
+];
+
+describe("ADR-175 rentx E1 capstone — 4 trunk-direct story shapes", () => {
+  for (const shape of RENTX_E1_SHAPES) {
+    test(`shape repro (${shape.rentxStoryId} — ${shape.shapeLabel}): planning → review → SIGNOFF → done (no merging)`, async () => {
+      const eid = await addEpic(atmuxDir, { title: "rentx E1" });
+      // Synthetic local story modeling the rentx-side shape — we cannot
+      // use the literal rentxStoryId because addStory mints a fresh ID,
+      // but the rentxStoryId is the audit-trail anchor in the test name.
+      const sid = await addStory(atmuxDir, {
+        title: shape.shapeLabel,
+        epic: eid,
+        mergeMode: "trunk-direct",
+        acceptanceCriteria: `repro of ${shape.rentxStoryId} historical SQL-bypass shape`,
+      });
+      // Drive through machine — same advance path as feature-branch up
+      // through review; only review → done differs.
+      await advanceStory(atmuxDir, sid, "ready");
+      await advanceStory(atmuxDir, sid, "in-progress");
+      await advanceStory(atmuxDir, sid, "testing");
+      await advanceStory(atmuxDir, sid, "review");
+      // Canonical signoff verb — replaces the SQL UPDATE bypass.
+      await storySignoff(atmuxDir, sid, {
+        as: "reviewer",
+        note: `rentx E1 capstone shape repro (${shape.rentxStoryId})`,
+      });
+      // review → done — trunk-direct skips merging entirely.
+      const d = await advanceStory(atmuxDir, sid, "done");
+      expect(d.from).toBe("review");
+      expect(d.to).toBe("done");
+      expect(d.dispatchedTaskId).toBe(null);
+      // Final state assertions — every gate per task body:
+      const row = getStoryRow(sid);
+      expect(row?.status).toBe("done");
+      expect(row?.mergeTaskId ?? null).toBe(null);
+      expect(row?.reviewSignoff).toBe(true);
+      expect(row?.completedAt).toBeGreaterThan(0);
+      const audit = row?.signoffAudit as Array<Record<string, unknown>>;
+      expect(audit.length).toBeGreaterThanOrEqual(1);
+      expect(audit[0]?.signedOffBy).toBe("reviewer");
+      expect(audit[0]?.note).toMatch(new RegExp(shape.rentxStoryId));
+      // No synthetic merge-Task lingering — listTasks(story) returns
+      // empty (no test-lane task was filed for this synthetic shape).
+      const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+      const repo = new KanbanRepo(db);
+      const childTasks = repo.listTasks({ story: sid });
+      const reviewTasks = childTasks.filter((t) => t.lane === "review");
+      const mergeTasks = childTasks.filter(
+        (t) => (t.subject ?? "").startsWith("merge "),
+      );
+      closeDatabase(db);
+      // review entry dispatches a `review <sid>` reviewer-lane Task per
+      // src/core/story.ts — that's expected. NO merge-Task should ever
+      // get synthesized.
+      expect(reviewTasks.length).toBe(1);
+      expect(mergeTasks.length).toBe(0);
+    });
+  }
+
+  test("feature-branch negative control — synthetic merge-Task IS created (T2 did not regress)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "feature-branch control" });
+    // Default mergeMode — omitted, schema default 'feature-branch' applies.
+    const sid = await addStory(atmuxDir, {
+      title: "feature-branch shape",
+      epic: eid,
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer", note: "feature-branch control" });
+    // review → merging: synthetic merge-Task dispatched to gitter.
+    const m = await advanceStory(atmuxDir, sid, "merging");
+    expect(m.to).toBe("merging");
+    expect(m.dispatchedTaskId).not.toBe(null);
+    const tid = m.dispatchedTaskId as string;
+    const mergedRow = getStoryRow(sid);
+    expect(mergedRow?.mergeTaskId).toBe(tid);
+    // merging → done blocked until merge-Task done.
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
+      /gitter has not completed/,
+    );
+    await moveTask(atmuxDir, tid, "done");
+    const d = await advanceStory(atmuxDir, sid, "done");
+    expect(d.to).toBe("done");
+    expect(getStoryRow(sid)?.mergeTaskId).toBe(tid);
+  });
+
+  test("trunk-direct review → done refuses without signoff", async () => {
+    const eid = await addEpic(atmuxDir, { title: "negative gate" });
+    const sid = await addStory(atmuxDir, {
+      title: "trunk-direct no-signoff",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    // No signoff — review → done MUST refuse with the documented message.
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
+      /reviewer signoff missing/,
+    );
+    // State unchanged — still in review.
+    expect(getStoryRow(sid)?.status).toBe("review");
+    expect(getStoryRow(sid)?.reviewSignoff).not.toBe(true);
+  });
+
+  test("trunk-direct review → merging is an explicit foot-gun (T2 documented refusal)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "trunk-direct merging foot-gun" });
+    const sid = await addStory(atmuxDir, {
+      title: "trunk-direct -> merging",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    await expect(advanceStory(atmuxDir, sid, "merging")).rejects.toThrow(
+      /trunk-direct.*has no merging phase/,
+    );
+  });
+});
