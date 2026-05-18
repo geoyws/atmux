@@ -187,6 +187,25 @@ export interface BootClaudeOpts {
   appendLog?: AppendLogFn;
   /** `$HOME` override for escalation-log path resolution (test injection). */
   home?: string;
+  /** EPIC e-f28c2596 T7: when `true`, skip the (1) already-booted
+   *  sentinel and unconditionally proceed to readiness wait + boot
+   *  prompt. Rotate.ts passes `true` post-`/clear` because the
+   *  brief context has DEFINITIVELY been wiped regardless of what
+   *  tmux scrollback shows (tokens visible in `capturePane(start:
+   *  -40)` after `/clear` reflect stale scrollback, NOT live session
+   *  state — `/clear` resets the Claude session but tmux's own
+   *  scrollback persists, so the sentinel mis-fires and skips the
+   *  brief re-paste, leaving the rotated lead at 0 tok of brief
+   *  context).
+   *
+   *  Default `false` — start.ts and other first-spawn callers keep
+   *  the double-submit guard since they don't precede the call with
+   *  a `/clear`.
+   *
+   *  Operator-visible fingerprint of the pre-T7 bug:
+   *    `rotate: <role>: already booted — boot prompt skipped`
+   *  followed by 0-token <role> in the next `/bau` scan. */
+  forceBootPrompt?: boolean;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
@@ -280,19 +299,31 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
   // (1) Already-booted sentinel: tokens already moving at entry.
   // Captures the "rotation re-entry mid-turn" + "double-call
   // protection" cases. Per reviewer pre-flag: don't double-submit.
-  let initialCapture = "";
-  try {
-    initialCapture = await opts.tmux.pane.capturePane({
-      target: opts.paneTargetString,
-      start: -40,
-    });
-  } catch {
-    // capture failure → degrade-to-poll (the readiness loop will
-    // retry the capture). Don't short-circuit; the pane may
-    // recover momentarily.
-  }
-  if (tokensMoved(initialCapture)) {
-    return { status: "already-booted", attempts: 0 };
+  //
+  // EPIC e-f28c2596 T7 carve-out: `forceBootPrompt: true` (set by
+  // rotate.ts after `/clear`) bypasses this sentinel entirely. `/clear`
+  // resets the live Claude session but NOT the tmux scrollback —
+  // capturePane(start: -40) post-`/clear` may still show pre-clear
+  // tokens, causing this sentinel to mis-fire as already-booted and
+  // skip the brief re-paste, leaving the rotated pane at 0 tok of
+  // brief context. The forceBootPrompt path treats `/clear` as
+  // definitive ground truth and proceeds straight to readiness wait +
+  // boot prompt.
+  if (opts.forceBootPrompt !== true) {
+    let initialCapture = "";
+    try {
+      initialCapture = await opts.tmux.pane.capturePane({
+        target: opts.paneTargetString,
+        start: -40,
+      });
+    } catch {
+      // capture failure → degrade-to-poll (the readiness loop will
+      // retry the capture). Don't short-circuit; the pane may
+      // recover momentarily.
+    }
+    if (tokensMoved(initialCapture)) {
+      return { status: "already-booted", attempts: 0 };
+    }
   }
 
   // (2) Readiness wait for the TUI to render.

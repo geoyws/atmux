@@ -158,6 +158,29 @@ ADR-160 completes when:
 
 4. **Should the 7 ADR §Amendments be templated identically or per-ADR-customized?** **Planner recommendation**: identical template-copy. Each is a 1-line annotation pointing here for rename rationale. Custom per-ADR text wastes signoff effort.
 
+## §Amendment 2026-05-18 — EPIC e-f28c2596 T2+T4 collapse
+
+EPIC e-f28c2596 (auto-fire Enter on queued worker compose-box) decomposed
+the queued-text resubmit wiring into:
+
+- **T2** — wire into `src/verbs/poke.ts` per-member iteration
+- **T4** — wire into `src/verbs/whip.ts` team-level loop
+
+Post-ADR-160 these collapse into a SINGLE wiring at
+`src/verbs/poke.ts::checkMember`. The legacy bash `whip.sh` distinguished a
+"team-level loop" from per-member checks; the TS port consolidated both into
+one `for (const member of team.members)` in `runTick` that calls
+`checkMember` per entry — the per-member wiring IS the team-level wiring.
+Coverage spans every role in `team.json::members[]` (lead / planner /
+reviewer / workers / ombudsman when present) because no role filtering
+happens upstream of the call.
+
+T4 lands as a doc-only annotation (this §Amendment + a code-comment block
+at the T2 insertion point in `checkMember`) referencing the T2 commit
+(`0d69bf3`) as the canonical wiring site. No additional code change is
+required to satisfy T4's acceptance criteria; the team-level coverage
+property is structurally preserved by the consolidated runTick loop.
+
 ## Cross-references
 
 - [ADR-079](079-discord-noise-drainage.md) — whip-cadence Discord notification gating; gets §Amendment.
