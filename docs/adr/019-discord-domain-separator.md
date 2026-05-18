@@ -57,3 +57,9 @@ A hash-based palette gives deterministic per-team color without operator config:
 3. **OQ A3: per-team color/emoji override fields?** Resolved: yes, both optional in `team.json:.discord.{color,emoji}`. (low-rev.)
 
 All resolutions logged to `.atmux/decisions.md`.
+
+---
+
+**Annotation 2026-05-18 — palette brand rename (label-only, no value change)**
+
+The 16-color palette in `lib/discord.sh` was originally sourced from Catppuccin Frappe (per §1 and §"16-color palette" above). The hex values remain unchanged; the operator's working theme has moved off Catppuccin to a tokyonight-night / opencode-dark-vibes aesthetic. Names like `mauve`, `rosewater`, etc. in the palette array are historical labels from the source theme, not load-bearing identifiers — they're stable hex anchors used for hash→color routing and are documented here for reviewer traceability only. Any future palette revision should reference this annotation.

@@ -34,15 +34,17 @@
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
+  buildWindowNameLegacy,
   getAtmuxDir,
   getSessionName,
   isMedicInboxKey,
   MEDIC_INBOX_KEY,
   type ResolveDirOpts,
   requireTeam,
-  resolveExistingWindowName,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
   SUPERDOCTOR_INBOX_KEY,
+  type WindowShimOps,
 } from "../core/common.ts";
 import { appendInboxMessage } from "../core/inbox.ts";
 import { verifierForTui } from "../core/safe-send.ts";
@@ -247,10 +249,16 @@ export function buildMemberTarget(
 }
 
 /** Async variant of {@link buildMemberTarget} that consults the live
- *  tmux window list and falls back to the legacy `<emoji><member>` form
- *  if the canonical `<emoji>-<member>` window isn't present. Used by
- *  the send + broadcast paths to address pre-ADR-135 teams correctly
- *  during the deprecation window. */
+ *  tmux window list, atomically renaming any legacy-form window to the
+ *  canonical name via {@link resolveWindowWithRenameShim} (per EPIC
+ *  e-a3077ca0). Used by the send + broadcast paths so cages that
+ *  predate ADR-135 / ADR-161 self-heal on the next addressing call
+ *  instead of permanently silently-missing the target window.
+ *
+ *  Throws `ConfigError("no tmux window for <canonical>")` when neither
+ *  canonical nor any legacy variant exists — preserves the operator-
+ *  facing error string the bash callers grep for. Caller (single-member
+ *  path bubbles the throw; broadcast catches per-member and warns). */
 export async function resolveMemberTarget(
   tmux: TmuxNamespace,
   sessionName: string,
@@ -259,14 +267,20 @@ export async function resolveMemberTarget(
   label?: string,
   role?: string,
 ): Promise<string> {
-  const windowName = await resolveExistingWindowName(
-    sessionName,
-    memberName,
-    emoji,
-    label,
-    async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
-    role,
-  );
+  const canonical = buildWindowName(memberName, emoji, label, role);
+  const adr135Hyphen = buildWindowName(memberName, emoji, label);
+  const legacy = buildWindowNameLegacy(memberName, emoji);
+  // De-dup legacy variants against canonical — for non-default-role
+  // members the hyphen form IS canonical; for emoji-less members all
+  // three collapse to the same string. `resolveWindowWithRenameShim`
+  // also self-guards (`legacy === canonical` skip) but filtering here
+  // keeps the call shape obvious to readers.
+  const legacyVariants = [adr135Hyphen, legacy].filter((v) => v !== canonical);
+  const ops: WindowShimOps = {
+    listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+    renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+  };
+  const windowName = await resolveWindowWithRenameShim(sessionName, canonical, legacyVariants, ops);
   return `${sessionName}:${windowName}`;
 }
 
@@ -381,7 +395,6 @@ async function broadcastSend(
   let anyFailed = false;
   for (const m of team.members) {
     if (!parsed.includeDriver && m.name === "driver") continue;
-    const target = await resolveMemberTarget(tmux, sessionName, m.name, m.emoji, m.label, m.role);
     // ADR-138 T3b2: per-member TUI dispatch (broadcast targets can be
     // heterogeneous — claude members get composerEmpty(), shell members
     // skip verify).
@@ -389,6 +402,19 @@ async function broadcastSend(
     const perMemberOpts: SendOpts = { ...sendOpts };
     if (verifier !== null) perMemberOpts.expectVerifier = verifier;
     try {
+      // EPIC e-a3077ca0 T3: resolveMemberTarget may throw ConfigError
+      // ("no tmux window for X") when neither canonical nor any legacy
+      // variant exists — that's the self-heal shim's miss path. Catch
+      // here so per-member resolve failures absorb into the same warn
+      // bucket as paste-buffer/sendToMember failures (bash parity).
+      const target = await resolveMemberTarget(
+        tmux,
+        sessionName,
+        m.name,
+        m.emoji,
+        m.label,
+        m.role,
+      );
       await sendToMember(
         tmux,
         atmuxDir,

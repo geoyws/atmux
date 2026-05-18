@@ -1,6 +1,6 @@
 # ADR-144: epic-team test-gate — isolated branch-staging or cage e2e before merge to trunk
 
-**Status**: proposed
+**Status**: accepted (T2/T3/T4 shipped 2026-05-17; T5 capstone 2026-05-17 — see §Amendment T5)
 **Date**: 2026-05-16
 **Origin**: 2026-05-14 driver session — operator directive: *"we have to make the epic-team run e2e on their own branch staging isolated and make sure tests are passing before we can merge their work into our 'trunk' which is the pwd's branch"*
 
@@ -136,6 +136,106 @@ Three new templates in `src/abstractions/discord.ts` (per global CLAUDE.md Disco
    - **Default**: driver-only (`ATMUX_CALLER_SCOPE=driver` gate per ADR-033).
    - **Rationale**: leads are in the loop but the bypass affects parent-trunk integrity; restricting to driver scope matches the existing pattern for high-consequence verbs (spawn-epic, dissolve-epic).
 
+## §Amendment 2026-05-17 — T2 shipped (t-49bd4fe1)
+
+Per Task t-49bd4fe1 the state-machine + repo-layer + operator bypass surfaces landed. T3 (cage-mode test runner) and T4 (deployed-mode branch-staging) wire the actual test execution on top of the substrate this Task put down; T5 ships the Discord templates + e2e tests and flips this ADR's status to `accepted`.
+
+**Shipped (epic-branch `geoyws-epic-e-03919b3b`):**
+
+- **State machine** (`src/core/branch-merge-state.ts`):
+  - New forward edges: `ready_to_merge → tested` (ADR-144 pre-merge test gate entry) and `tested → merging` (post-test-pass advance into actual git merge).
+  - `merging → merged` edge formalised (existing epic-merge.ts caller already used this direct path; the adjacency map now matches).
+  - New `TestOutcome` type + `TEST_OUTCOMES` enum (`"pass" | "fail" | "bypass"`).
+  - New pure helper `canEnterMerging(from, next, testOutcome)` — refuses `tested → merging` when outcome is `null` or `"fail"`, accepts `"pass"` or `"bypass"`. Gate doesn't apply to ADR-134's `ready_to_merge → merging` direct path (test happens post-merge in that scope).
+- **Migration v8 → v9** (`src/abstractions/sqlite-migrations.ts`): `ALTER TABLE merger_state ADD COLUMN test_outcome TEXT`. Permissive TEXT typing (no CHECK constraint) consistent with the rest of the merger_state shape. NULL on existing rows; written by the test-runner (T3/T4) at the `ready_to_merge → tested` transition.
+- **Repo extension** (`src/core/repositories/merger-state-repo.ts`): `MergerStateTransition` Zod schema accepts `testOutcome?: "pass" | "fail" | "bypass" | null`. `MergerStateRow.testOutcome` round-trips through `getState()` / `transition()`. UPSERT preserves the "complete snapshot" contract — callers preserving a sticky outcome across non-test transitions MUST re-pass it (mirrors `baseSha` semantics).
+- **Operator bypass log** (`src/core/test-gate-bypass.ts`): `logTestGateBypass(record, opts?)` appends one JSONL line to `~/.atmux/state/test-gate-bypasses.log`. Path constant `DEFAULT_TEST_GATE_BYPASSES_LOG_REL` exported for T5's Discord aggregator (`[test-gate-bypass]` template tails the same log). Each line: `{ ts, iso, epicId, epicBranch, targetState, reason, by }`. Test injection via `homeDir` + `now` opts.
+- **Operator bypass verb** (`src/verbs/epic-merge.ts`): new `atmux epic-merge advance --to <state> [--skip-test-gate --reason <text>] [--team-dir <path>]` sub-verb.
+  - ADR-033 driver-scope gate: `--skip-test-gate` refused for member callers (recovery `--to in_progress` allowed for member callers since it doesn't bypass a safety check).
+  - Validates the transition via `isValidTransition`; refuses with current-state context on illegal edges.
+  - Enforces the ADR-144 test-gate via `canEnterMerging`; refuses `tested → merging` without `--skip-test-gate` when outcome is not PASS.
+  - On bypass: writes `test_outcome = "bypass"` to the row + appends the bypass log entry. On `--to in_progress` recovery: explicitly clears stale test outcome so the next test cycle starts clean.
+
+**Coverage**: 100% on `branch-merge-state.ts`, `repositories/merger-state-repo.ts`, `test-gate-bypass.ts` per `bun test`. New test files:
+- `tests/unit/core/branch-merge-state.test.ts` extended with `TEST_OUTCOMES` + `canEnterMerging` cases; existing forbidden-edges tests flipped to allowed for the new ADR-144 edges.
+- `tests/unit/core/repositories/merger-state-repo.test.ts` extended with `test_outcome` round-trip + UPSERT semantics + Zod refusal cases.
+- `tests/unit/core/test-gate-bypass.test.ts` — 8 cases on the JSONL logger.
+- `tests/unit/verbs/epic-merge-advance.test.ts` — parser + driver-scope gate + transition validity + test-gate refusal + bypass log emission + recovery transitions.
+
+**Deferred to T3/T4/T5:**
+- T3 cage-mode test runner — invokes `bun test` inside `/tmp/atmux_${team}_${epic}_test_cage/` then transitions `ready_to_merge → tested` with the resulting `testOutcome`. **Shipped 2026-05-17 — see §Amendment T3 below.**
+- T4 deployed-mode branch-staging — same shape via `scripts/deploy.sh` + `E2E_BASE_URL`.
+- T5 Discord templates `[epic-test-pass]` / `[epic-test-fail]` / `[test-gate-bypass]` + e2e synthetic-epic-team walks for both modes + ADR-144 status flip to `accepted`.
+- Wiring of the `runAutoMerge` flow in `src/core/epic-merge.ts` to route through `ready_to_merge → tested` (vs. today's direct `ready_to_merge → merging`) when `team.epicTeam.testGateMode !== "skip"`. **Shipped 2026-05-17 as part of T3.** Today's direct path is preserved as the `skip` mode fallback per the table in §Decision; T3/T4 swap in the real test runner that decides which transition to fire.
+
+## §Amendment T3 2026-05-17 (t-8cba0705)
+
+Per Task t-8cba0705 the cage-mode test runner + epic-merge wiring landed. T4 (be-1, deployed-mode) consumes the schema fields added here; T5 ships Discord templates + e2e + ADR status flip.
+
+**Shipped (epic-branch `geoyws-epic-e-03919b3b`):**
+
+- **Schema** (`src/schema/team.ts::TeamEpic`): added ADR-144 config fields with defaults — `testGateMode` (default `"skip"` for back-compat), `testCommand` (default `"bun test --timeout 30000"`), `retryOnFlake` (default `1`), `cageTmpdir` (default `/tmp/atmux_${team}_${epic}_test_cage`, nullable for deployed mode), `testTimeoutMin` (default `30`), `requiredPasses` (default `1`), `stagingUrlTemplate` (default `null`, set by T4 deployed-mode).
+- **Cage runner module** (`src/core/epic-test-cage.ts`):
+  - `expandCagePath(template, team, epic)` — `${team}` + `${epic}` placeholder expansion.
+  - `tokenizeTestCommand(cmd)` — shell-ish argv splitter with quote handling; no `$VAR` / backtick interpretation.
+  - `provisionCage(cagePath)` — `mkdir -p`, idempotent.
+  - `teardownCage(cagePath)` — `rm -rf`, idempotent.
+  - `runCageTestOnce(...)` — single-attempt test execution wrapping the command in `env -u TMUX TMUX_TMPDIR=<cagePath> <cmd>` per [[feedback_pause_bun_tests]] — the `env -u TMUX` is the no-shell equivalent of `unset TMUX &&` that prevents the bun-test orphan-survival path from killing the parent cage.
+  - `runCageTest(opts)` — retry loop with PASS-wins-immediately semantics per §retryOnFlake; honors `retryOnFlake: 0` to disable retry; clamps negative retryOnFlake to 0.
+  - `runCageTestGate(opts)` — full lifecycle (`provision → run → teardown`); teardown fires in `finally` so a wedged bun process can't leak cage tmpdirs. Teardown failures are swallowed so they don't mask a successful test outcome.
+- **State machine wiring** (`src/core/epic-merge.ts`):
+  - New `EpicMergeContext.testGateMode` (`"skip" | "cage" | "deployed"`) + `testGate?(ctx): Promise<{ outcome, note }>` hook field. Hook indirection keeps `src/core/*` free of cage-runner imports; verbs/epic-merge.ts wires the production cage default; tests stub a sync hook.
+  - `runTestGate(ctx, t, by, now)` — composes the `ready_to_merge → tested → (merging | test_failed)` sequence. Optimistic transition to `tested` BEFORE invoking the hook (durable signal — a crash mid-test leaves an operator-visible row).
+  - `resumeFromTested(ctx, t, by, now, outcome)` — handles ticks that observe a `tested` row at start (crash recovery, operator-written bypass outcome). Branches on the recorded `test_outcome` (`null` → stay, `fail` → terminal `test_failed`, `pass`/`bypass` → advance to merge).
+  - `runMergeFromTested(ctx, ...)` — shared `tested → merging → merged | conflict` runner. Re-passes the row's `test_outcome` through every subsequent transition so the audit trail shows the gate evidence on the final `merged` / `conflict` row.
+  - `guardedTransition` helper extended to accept an optional `testOutcome` field for preserving the gate evidence across transitions.
+  - Mis-config refusal: `testGateMode !== "skip"` AND `testGate` hook undefined throws an invariant violation rather than silently degrading to skip — the parent-trunk gate must not bypass by accident.
+- **Production verb wiring** (`src/verbs/epic-merge.ts`): the cron tick verb wires the cage hook when `epicTeam.testGateMode === "cage"` and `cageTmpdir` is non-null. The hook expands the cage path with the team name + parentEpicKanbanId, runs `runCageTestGate` with the team's `testCommand` + `retryOnFlake` + `testTimeoutMin`, and folds the result's attempts + exitCode + durationMs into the `merger_state.note`.
+
+**Coverage**: 100% func / 99.20% line on `epic-test-cage.ts`; 93.33% func / 88.11% line on `epic-merge.ts` (uncovered lines are existing pre-T3 helper paths not exercised by the new ADR-144 tests). 27 new cage tests + 12 new ADR-144 state-machine routing tests.
+
+**Test files added:**
+- `tests/unit/core/epic-test-cage.test.ts` — 27 tests covering path expansion, tokeniser, provision/teardown, single-attempt run, retry loop with PASS/FAIL/flake-then-pass scenarios, full lifecycle teardown-on-throw.
+- `tests/unit/core/epic-merge.test.ts` extended with 12 ADR-144 tests — cage mode PASS/FAIL/hook-throws, skip mode (default + explicit), invariant violation on missing hook, resume-from-tested with all four outcome states, conflict-during-merge preserves outcome.
+
+**Layering note:** `src/core/*` imports `src/abstractions/*` only; cage runner sits in core, production verb wires it together. No verb-layer imports from core (already-established direction).
+
+## §Amendment T5 2026-05-17 (t-45d59eeb) — capstone: Discord templates + e2e walks + status flip
+
+Per Task t-45d59eeb the capstone work shipped: three Discord templates wired at the verb layer + cross-mode e2e walks + ADR status flip from `proposed` to `accepted`. With T2/T3/T4/T5 all landed, the test-gate is end-to-end usable: configure `team.epicTeam.testGateMode` to `"cage"` (atmux self) or `"deployed"` (IFCA products), and the auto-merger refuses parent-trunk merges that fail the gate while surfacing PASS/FAIL/bypass on Discord.
+
+**Shipped (epic-branch `geoyws-epic-e-03919b3b`):**
+
+- **Discord templates** (`src/abstractions/discord.ts`): three new literals added to the central `DiscordTemplate` union with paired `render*` fns and Opts interfaces.
+  - `[epic-test-pass]` (`renderEpicTestPass` / `EpicTestPassOpts`) — fires on `tested → merging` PASS path. Category 🚀, verdict 🟢 **Shipping** ("`<epicId>` test-gate passed (`<mode>`) — merge proceeding"). Body bullets: ✅ attempts + requiredPasses, 🧪 testCommand, ⏱️ duration via `formatDuration`, 📍 branch.
+  - `[epic-test-fail]` (`renderEpicTestFail` / `EpicTestFailOpts`) — fires on `tested → test_failed`. Category 🛑, verdict 🔴 **Stalled** ("`<epicId>` test-gate FAILED (`<mode>`) — parent-trunk untouched"). Body bullets: 🧪 ≤3 failed test names (or "test names unavailable" fallback), 📋 attempts + stdout-line count, ⏱️ duration, optional 🛠️ reworkHint.
+  - `[test-gate-bypass]` (`renderTestGateBypass` / `TestGateBypassOpts`) — fires on `epic-merge advance --skip-test-gate`. Category ⚠️, verdict 🟡 **Cool** ("`<epicId>` test-gate BYPASSED → `<state>` (operator-authorized)"). Body bullets: 🆔 by, 🚩 reason, 🎯 targetState, 📍 branch. All bullet prefixes already in `ALLOWED_BULLET_PREFIX` — no allowlist amendments needed.
+
+- **Hook return shape extension** (`src/core/epic-merge.ts`): new exported `TestGateHookResult` interface — extends the original T3 `{ outcome, note }` contract with optional `attempts` / `durationMs` / `failedTestNames` / `lastStdoutLines` fields for Discord template body. Back-compat: test stubs returning `{ outcome, note }` only continue to work; production hooks (cage + deployed) populate the optional fields.
+
+- **PerformEpicMergeResult extension** (`src/core/epic-merge.ts`): new optional fields `testGateOutcome` / `testGateNote` / `testGateAttempts` / `testGateDurationMs` / `testGateFailedTestNames` / `testGateLastStdoutLines` — set ONLY on the tick that fires the test-gate hook (via new `withGateFields` helper applied at runTestGate's PASS + FAIL branches). The resume-from-tested path leaves them `undefined` so re-ticks over `tested` rows do not double-fire Discord. Skip mode + concurrency-lost ticks also leave them `undefined`.
+
+- **Verb-layer Discord fire-sites** (`src/verbs/epic-merge.ts`):
+  - `epicMergeTickVerb` — after `performEpicMerge` returns, if `result.testGateOutcome !== undefined` AND `testGateMode !== "skip"`, dispatches `fireTestGateDiscord` which builds either `renderEpicTestPass` or `renderEpicTestFail` based on the outcome and sends via injectable `opts.discordSend` (defaults to `discord.send`).
+  - `epicMergeAdvanceVerb` — after `logTestGateBypass` succeeds on `--skip-test-gate`, fires `renderTestGateBypass` via the same injectable sender. Order: log FIRST (durable audit trail must land even if Discord errors), then Discord — the log is the source of truth, Discord is the surface.
+  - New `tailLines(s, n)` helper exported for cage + deployed hooks to extract the last ≤20 stdout lines for the FAIL template body.
+  - `EpicMergeOpts.discordSend?` test-injection seam — production default is `discord.send`; tests pass a capture-args stub to assert payload shape without hitting the network.
+
+- **Cage / deployed hook structured returns** (`src/verbs/epic-merge.ts`): both production hooks now populate the optional `TestGateHookResult` fields (`attempts` + `durationMs` + `lastStdoutLines: tailLines(result.last.stdout, 20)`). `failedTestNames` defaults to `[]` — runner-specific test-name extraction is deferred (runners produce different stdout formats; the template renders "(test names unavailable from runner)" fallback gracefully).
+
+**Coverage**: 16 new Discord template tests (98.15% line on `src/abstractions/discord.ts`), 3 new advance-verb Discord-fire tests, 5 e2e walks. The full T5 unit + e2e suite passes clean (240 unit + 5 e2e). `src/abstractions/discord.ts` uncovered lines are pre-existing helper paths unrelated to ADR-144.
+
+**Test files added/extended:**
+- `tests/unit/abstractions/discord.test.ts` — 16 new tests across the three renderers (verdict shape, category emoji, bullet emoji prefixes, attempts pluralisation, fallback prose, optional fields).
+- `tests/unit/verbs/epic-merge-advance.test.ts` — 3 new tests: bypass fires Discord exactly once, payload shape assertion, non-bypass advance does NOT fire.
+- `tests/e2e/epic-test-gate.test.ts` — NEW file. 5 stateful e2e walks: cage PASS (state machine + Discord + parent-trunk merge), cage FAIL (state machine + Discord + parent-trunk untouched), cage retryOnFlake (fail-then-pass via shell-script counter, attempts=2 surfaces in Discord), deployed-mode DNS-unresolved FAIL (composeStagingUrl placeholder expansion + DNS pre-flight refusal surfaces in Discord verdict), operator bypass (JSONL log + Discord [test-gate-bypass] paired emission).
+
+**Layering note (carried forward from T3):** `src/core/epic-merge.ts` stays free of `src/abstractions/discord` imports — the verb is the lone fire-site. The hook indirection (`EpicMergeContext.testGate` returning `TestGateHookResult`) propagates structured fields through `PerformEpicMergeResult` so the verb can render templates without core-layer cross-imports.
+
+**Deferred (intentional, post-T5):**
+- Runner-specific failed-test-name extraction (bun vs vitest vs jest vs pnpm-e2e stdout formats). The renderer's "(test names unavailable)" fallback is the v1 contract; an extraction helper can ship as a follow-up Task once a real product team needs the surface.
+- Deployed-mode PASS e2e walk requires a resolvable staging URL — exercised in production (an IFCA product team) rather than in this dogfood test. The test-gate wiring is identical at the verb layer; the DNS-unresolved test validates the same code path's FAIL surface.
+
 ## Cross-refs
 
 - [ADR-090](090-epic-team-lifecycle.md) — epic-team lifecycle; provisions cage/deployment at spawn time.
@@ -143,5 +243,7 @@ Three new templates in `src/abstractions/discord.ts` (per global CLAUDE.md Disco
 - [ADR-134](134-in-team-auto-merger.md) — sibling test-gate pattern at the intra-team gitter layer (one level up).
 - [ADR-058](058-fallback-cage-tiering.md) — cage tiering; cage-mode uses Tier 1 with own state.db.
 - [ADR-018](018-per-team-tmux-socket-isolation.md) — per-team tmux socket isolation; cage-mode uses its own socket.
+- [ADR-008](008-decisions-verb.md) — Discord template R10 enforcement; this ADR adds three literals to the central union.
 - Global CLAUDE.md §Environment Tiers — branch-staging convention for deployed mode.
+- Global CLAUDE.md §Discord — verdict-first body shape, banned em-dash runs, bullet emoji prefix allowlist.
 - Memory [[feedback_pause_bun_tests]] — cage-guard's `unset TMUX` bypass precedent.

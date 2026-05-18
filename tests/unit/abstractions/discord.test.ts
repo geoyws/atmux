@@ -19,11 +19,14 @@ import {
   renderAccountSwapPassComplete,
   renderAccountSwapStart,
   renderAccountSwapSuccess,
+  renderEpicTestFail,
+  renderEpicTestPass,
   renderEternalImprovementDone,
   renderEternalImprovementProgress,
   renderEternalImprovementStart,
   renderHygieneBlocker,
   renderMemberRefusalRotate,
+  renderTestGateBypass,
   renderWhipBudgetPause,
   renderWhipBudgetRefreshSoon,
   renderWhipBudgetResume,
@@ -2700,5 +2703,298 @@ describe("renderMemberRefusalRotate (ADR-139 T4)", () => {
     const bullets = (opts.bullets ?? []) as string[];
     expect(bullets.some((b) => b.startsWith("📋"))).toBe(false);
     expect(bullets[bullets.length - 1]).toContain("rotations today");
+  });
+});
+
+// ---------- renderEpicTestPass — ADR-144 T5 ----------
+
+describe("renderEpicTestPass (ADR-144 T5)", () => {
+  test("cage-mode PASS renders 🟢 verdict + 🚀 category + 4 bullets", () => {
+    const opts = renderEpicTestPass({
+      team: "atmux",
+      epicId: "e-03919b3b",
+      epicBranch: "geoyws-epic-e-03919b3b",
+      testGateMode: "cage",
+      testCommand: "bun test --timeout 30000",
+      requiredPasses: 1,
+      attempts: 1,
+      durationMs: 12_500,
+      whenMs: 1_700_000_000_000,
+    });
+    expect(opts.template).toBe("epic-test-pass");
+    expect(opts.category).toBe("🚀");
+    expect(opts.verdict).toContain("🟢");
+    expect(opts.verdict).toContain("Shipping");
+    expect(opts.verdict).toContain("e-03919b3b");
+    expect(opts.verdict).toContain("cage");
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.length).toBe(4);
+    expect(bullets.some((b) => b.startsWith("✅") && b.includes("1 attempt"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("🧪") && b.includes("bun test"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("⏱️"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("📍") && b.includes("geoyws-epic-e-03919b3b"))).toBe(
+      true,
+    );
+  });
+
+  test("deployed-mode PASS surfaces 'deployed' in verdict", () => {
+    const opts = renderEpicTestPass({
+      team: "sopx-master",
+      epicId: "e-abcd1234",
+      epicBranch: "master-epic-e-abcd1234",
+      testGateMode: "deployed",
+      testCommand: "pnpm e2e",
+      requiredPasses: 1,
+      attempts: 1,
+      durationMs: 60_000,
+    });
+    expect(opts.verdict).toContain("deployed");
+  });
+
+  test("plural 'attempts' on N>1 attempts (flake recovery)", () => {
+    const opts = renderEpicTestPass({
+      team: "atmux",
+      epicId: "e-aabb",
+      epicBranch: "geoyws-epic-e-aabb",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      requiredPasses: 1,
+      attempts: 2,
+      durationMs: 1_000,
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.includes("2 attempts"))).toBe(true);
+  });
+
+  test("whenMs propagates to opts when provided", () => {
+    const opts = renderEpicTestPass({
+      team: "atmux",
+      epicId: "e-aabb",
+      epicBranch: "b",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      requiredPasses: 1,
+      attempts: 1,
+      durationMs: 1,
+      whenMs: 42,
+    });
+    expect(opts.whenMs).toBe(42);
+  });
+
+  test("whenMs omitted when not provided", () => {
+    const opts = renderEpicTestPass({
+      team: "atmux",
+      epicId: "e-aabb",
+      epicBranch: "b",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      requiredPasses: 1,
+      attempts: 1,
+      durationMs: 1,
+    });
+    expect(opts.whenMs).toBeUndefined();
+  });
+});
+
+// ---------- renderEpicTestFail — ADR-144 T5 ----------
+
+describe("renderEpicTestFail (ADR-144 T5)", () => {
+  test("cage-mode FAIL renders 🔴 verdict + 🛑 category", () => {
+    const opts = renderEpicTestFail({
+      team: "atmux",
+      epicId: "e-03919b3b",
+      epicBranch: "geoyws-epic-e-03919b3b",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      attempts: 2,
+      durationMs: 30_000,
+      failedTestNames: ["foo.test.ts > should bar", "baz.test.ts > qux"],
+      lastStdoutLines: ["error here", "stack trace"],
+      whenMs: 1_700_000_000_000,
+    });
+    expect(opts.template).toBe("epic-test-fail");
+    expect(opts.category).toBe("🛑");
+    expect(opts.verdict).toContain("🔴");
+    expect(opts.verdict).toContain("Stalled");
+    expect(opts.verdict).toContain("e-03919b3b");
+    expect(opts.verdict).toContain("parent-trunk untouched");
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.filter((b) => b.startsWith("🧪")).length).toBe(2);
+    expect(bullets.some((b) => b.includes("foo.test.ts"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("📋") && b.includes("2 attempts"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("⏱️"))).toBe(true);
+  });
+
+  test("caps failed test names at 3", () => {
+    const opts = renderEpicTestFail({
+      team: "atmux",
+      epicId: "e-x",
+      epicBranch: "b",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      attempts: 1,
+      durationMs: 1,
+      failedTestNames: ["t1", "t2", "t3", "t4", "t5"],
+      lastStdoutLines: [],
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.filter((b) => b.startsWith("🧪 failed:")).length).toBe(3);
+    expect(bullets.some((b) => b.includes("t4"))).toBe(false);
+  });
+
+  test("empty failedTestNames surfaces fallback prose", () => {
+    const opts = renderEpicTestFail({
+      team: "atmux",
+      epicId: "e-x",
+      epicBranch: "b",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      attempts: 1,
+      durationMs: 1,
+      failedTestNames: [],
+      lastStdoutLines: [],
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.includes("test names unavailable"))).toBe(true);
+  });
+
+  test("reworkHint surfaces as 🛠️ bullet when provided", () => {
+    const opts = renderEpicTestFail({
+      team: "atmux",
+      epicId: "e-x",
+      epicBranch: "b",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      attempts: 1,
+      durationMs: 1,
+      failedTestNames: [],
+      lastStdoutLines: [],
+      reworkHint: "src/foo.ts:42",
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.startsWith("🛠️") && b.includes("src/foo.ts:42"))).toBe(true);
+  });
+
+  test("omitted reworkHint produces no 🛠️ bullet", () => {
+    const opts = renderEpicTestFail({
+      team: "atmux",
+      epicId: "e-x",
+      epicBranch: "b",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      attempts: 1,
+      durationMs: 1,
+      failedTestNames: [],
+      lastStdoutLines: [],
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.startsWith("🛠️"))).toBe(false);
+  });
+
+  test("deployed-mode FAIL surfaces 'deployed' in verdict", () => {
+    const opts = renderEpicTestFail({
+      team: "sopx-master",
+      epicId: "e-z",
+      epicBranch: "b",
+      testGateMode: "deployed",
+      testCommand: "pnpm e2e",
+      attempts: 1,
+      durationMs: 1,
+      failedTestNames: [],
+      lastStdoutLines: [],
+    });
+    expect(opts.verdict).toContain("deployed");
+  });
+
+  test("single attempt drops the plural 's'", () => {
+    const opts = renderEpicTestFail({
+      team: "atmux",
+      epicId: "e-x",
+      epicBranch: "b",
+      testGateMode: "cage",
+      testCommand: "bun test",
+      attempts: 1,
+      durationMs: 1,
+      failedTestNames: [],
+      lastStdoutLines: ["one"],
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.some((b) => b.includes("1 attempt ·"))).toBe(true);
+    expect(bullets.some((b) => b.includes("1 attempts ·"))).toBe(false);
+    expect(bullets.some((b) => b.includes("1 stdout line "))).toBe(true);
+  });
+});
+
+// ---------- renderTestGateBypass — ADR-144 T5 ----------
+
+describe("renderTestGateBypass (ADR-144 T5)", () => {
+  test("renders 🟡 verdict + ⚠️ category + 4 bullets", () => {
+    const opts = renderTestGateBypass({
+      team: "atmux",
+      epicId: "e-03919b3b",
+      epicBranch: "geoyws-epic-e-03919b3b",
+      targetState: "merging",
+      by: "george",
+      reason: "demo prep — flaky e2e, will re-run post-demo",
+      whenMs: 1_700_000_000_000,
+    });
+    expect(opts.template).toBe("test-gate-bypass");
+    expect(opts.category).toBe("⚠️");
+    expect(opts.verdict).toContain("🟡");
+    expect(opts.verdict).toContain("Cool");
+    expect(opts.verdict).toContain("BYPASSED");
+    expect(opts.verdict).toContain("e-03919b3b");
+    expect(opts.verdict).toContain("merging");
+    expect(opts.verdict).toContain("operator-authorized");
+    const bullets = (opts.bullets ?? []) as string[];
+    expect(bullets.length).toBe(4);
+    expect(bullets.some((b) => b.startsWith("🆔") && b.includes("george"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("🚩") && b.includes("demo prep"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("🎯") && b.includes("merging"))).toBe(true);
+    expect(bullets.some((b) => b.startsWith("📍") && b.includes("geoyws-epic-e-03919b3b"))).toBe(
+      true,
+    );
+  });
+
+  test("whenMs propagates when provided", () => {
+    const opts = renderTestGateBypass({
+      team: "atmux",
+      epicId: "e-x",
+      epicBranch: "b",
+      targetState: "merging",
+      by: "ci",
+      reason: "test",
+      whenMs: 99,
+    });
+    expect(opts.whenMs).toBe(99);
+  });
+
+  test("whenMs omitted when not provided", () => {
+    const opts = renderTestGateBypass({
+      team: "atmux",
+      epicId: "e-x",
+      epicBranch: "b",
+      targetState: "merging",
+      by: "ci",
+      reason: "test",
+    });
+    expect(opts.whenMs).toBeUndefined();
+  });
+
+  test("long reason truncates to ≤80 graphemes via naBullet80", () => {
+    const longReason = "x".repeat(200);
+    const opts = renderTestGateBypass({
+      team: "atmux",
+      epicId: "e-x",
+      epicBranch: "b",
+      targetState: "merging",
+      by: "ci",
+      reason: longReason,
+    });
+    const bullets = (opts.bullets ?? []) as string[];
+    const reasonBullet = bullets.find((b) => b.startsWith("🚩"));
+    expect(reasonBullet).toBeDefined();
+    // 80-grapheme cap including the 🚩 prefix + "reason: " label
+    expect([...(reasonBullet ?? "")].length).toBeLessThanOrEqual(80);
   });
 });

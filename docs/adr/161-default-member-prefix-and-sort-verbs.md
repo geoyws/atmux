@@ -225,3 +225,38 @@ Test coverage shipped in the same commit:
 - `tests/unit/verbs/member.test.ts` extended with 41 new tests against a real tmux server (per-test absolute socketPath + `base-index 1` config) — happy path / idempotent / unknown-id / W1-refusal / cockpit-refusal / team-stopped / dispatcher routing for each of move + swap + sort.
 
 §EPIC-done item #3 satisfied. TR4 (docs sweep + ADR-135 supersession annotation) remains outstanding.
+
+### 2026-05-18 — Self-heal shim for legacy default-member window names (EPIC e-a3077ca0)
+
+§D2's `atmux start` in-place rename shim (hyphen → underscore for default-member roles) self-heals legacy cages **at next start invocation**. A cage continuously running across the ADR-161 deploy never sees an `atmux start` call and stays on the pre-ADR-161 format indefinitely: `buildWindowName('lead', '🧭', undefined, 'team-lead')` produces `🧭_lead` (post-ADR-161 canonical) while the live cage still has `🧭-lead`. Every addressing verb (`atmux rotate-lead` / `send` / `dispatch` / `lane-tick` / `poke` / `tell-lead`) refused with `no tmux window for lead (is the team running?)` against such cages until an operator manually `tmux rename-window`'d each of the 6 coordination panes.
+
+Observed 2026-05-18 on the atmux parent cage (4-day uptime; `🧭-lead` / `🎯-planner` / `🔍-reviewer` / `🦦-docs` / `🌿-gitter` / `⚖️-ombudsman` all on hyphen form). Cross-format failure also caught at `src/verbs/lane-tick.ts` against the docs window: `lane-tick: docs: capture error — can't find window: 🦦docs` (no-separator pre-ADR-135 variant — captured by t-fabd2528 verify-poll while the actual pane was `🦦_docs`).
+
+**Three observed formats** coexist during the ADR-135 → ADR-161 deprecation window for default-member roles:
+
+1. **Canonical** — `<emoji>_<member>` (ADR-161 default-member `_-prefix` — what `buildWindowName` produces today with `role` set).
+2. **ADR-135 hyphen** — `<emoji>-<member>` (pre-ADR-161 default-member legacy; also today's canonical for non-default-member roles per §D2).
+3. **Pre-ADR-135 no-separator** — `<emoji><member>` (what `buildWindowNameLegacy` still produces; what production `lane-tick` was looking for as of atmux 0.8.4).
+
+**Resolver helper** — `src/core/common.ts::resolveWindowWithRenameShim(sessionName, canonical, legacyVariants, ops)` (T1 86c0e4a). Lists tmux windows on `sessionName`. Canonical present → return immediately (no rename). Else iterates `legacyVariants` in caller-supplied order; first hit → atomic `tmux rename-window <legacy> <canonical>` → return canonical. Neither present → throw `ConfigError("no tmux window for <canonical>")` so the operator-message names the target shape regardless of which legacy form was probed. Dep-injectable `WindowShimOps` interface narrows the tmux abstraction to two ops (`listWindowNames` + `renameWindow`) so unit tests stub without spinning a tmux server. Atomicity: `tmux rename-window` is a single server op — there is no observable intermediate state between legacy and canonical; concurrent shim calls converge to the same post-rename state.
+
+**Wire-sites** — 6 default-member addressing surfaces, all calling through the same canonical / hyphen / no-sep dedup pattern:
+
+- `src/verbs/rotate.ts` (T2 5f07a60) — highest-frequency call-site; was the original symptom for `rotate-lead` failure on the atmux parent cage.
+- `src/verbs/send.ts` (T3 1182e66) — both single-member + broadcast paths via `resolveMemberTarget`. Broadcast catch widens to absorb `ConfigError("no tmux window for X")` into the same warn bucket as paste-buffer failures (bash parity preserved).
+- `src/verbs/dispatch.ts` (T4 f1e7744) — kanban Task dispatch.
+- `src/verbs/lane-tick.ts` + `src/verbs/poke.ts` (T5 13ad850) — per-member iteration; was the surface that caught the `🦦docs` capture error.
+- `src/verbs/tell-lead.ts` (T6 0dcffae) — driver→lead + member→lead paths. Maps the resolver's `ConfigError` to ADR-029 §F6 + F7 byte-equal `no tmux window for <lead.name> (is the team running?)` body (parity-test-gated).
+
+**Doctor probe** — `src/verbs/doctor.ts::checkLegacyWindowNameFormat` (T8 22a2df6). Walks every cockpit cage (`~/.atmux/cockpit.json::teams[]`; falls back to current-team when cockpit absent / unreadable / no schema). For each cage, lists windows on `atmux-<team.name>` session, then for each default-member-role member checks whether canonical is present; flags hyphen / no-separator offenders with copy-paste-ready `tmux -S <socket> rename-window -t <session>:<from> <canonical>` one-liner in the hint. Warn-class only (never blocks). Self-clearing post-rename — whether operator runs the hint OR the shim wires self-heal on the next addressing call. Cages whose socket file isn't on disk silently skip (cage not running); cages whose canonical session name isn't on the socket silently skip (out of scope).
+
+**Gitter exemption** (per [[project_adr_161_tr2_shipped]] memory + ADR-159 pending) — `🌿-gitter` stays canonical-as-hyphen until the gitter → committer schema rename lands. The resolver helper accepts `canonical="🌿-gitter"` with an empty `legacyVariants[]`; the doctor probe filters via `isDefaultMemberRole(role)` which already excludes `role: "committer"` (the committer role is not in `DEFAULT_MEMBER_ROLES`).
+
+**Carve-outs** (probe + shim are out-of-scope for these):
+
+- **Epic-viewer windows** (`🌳-<eid>`) — hyphen stays canonical by spec; never default-member-role anyway.
+- **User-added member names without a default-member role** — `role: "member"` keeps hyphen as canonical per §D2; the probe filters them out, and the resolver collapses canonical / hyphen-form to the same string (resolver deduplicates legacy variants against canonical).
+
+**Test coverage** — T7 unit at `tests/unit/core/common.test.ts` (86c0e4a, 4 cases on `resolveWindowWithRenameShim` covering canonical-exists / hyphen-form-renamed / no-separator-renamed / neither-throws). Per-wire shim coverage landed alongside each commit: 5 cases in `send.test.ts` (1182e66), 4 cases in `tell-lead.test.ts` (0dcffae), 11 cases in `doctor.test.ts` (22a2df6 — covering cockpit-walk multi-team, current-team-vs-cockpit dedup, role-undefined silent, exempt-role silent).
+
+§EPIC e-a3077ca0 done items satisfied: T1 helper + T2-T6 wires + T7 unit + T8 probe + this §Amendment + the CHANGELOG bullet + the `feedback_atmux_dispatch_emoji_window_bug` memory cross-link (resolved as of 2026-05-18). Reviewer-trunk-signoff fires when CHANGELOG + Amendment land — both in this commit.

@@ -30,11 +30,14 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v8)", () => {
+  test("opening with the full ladder advances user_version to the tail (v9)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
-    // the new table.
-    expect(readUserVersion(db)).toBe(8);
+    // the new table or column. v8→v9 added the merger_state.test_outcome
+    // column per ADR-144 T2 (t-49bd4fe1); shape assertions live in
+    // tests/unit/core/repositories/merger-state-repo.test.ts §"migration
+    // v6 — merger_state table".
+    expect(readUserVersion(db)).toBe(9);
   });
 });
 

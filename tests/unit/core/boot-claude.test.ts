@@ -555,3 +555,158 @@ describe("renderBootFailureNotice", () => {
     expect(submitNotVerified).toContain("verified-send-keys");
   });
 });
+
+// ---------- bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7) ----------
+
+describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
+  test("forceBootPrompt=true: bypasses already-booted sentinel even when initial capture shows tokens", async () => {
+    // Pre-T7: tokens-in-initial-capture → already-booted short-circuit
+    // (status='already-booted', no send). Post-T7 with forceBootPrompt:true:
+    // the sentinel block is skipped entirely; the call proceeds to readiness
+    // wait + boot prompt + tokens-moved poll. The initial capture is NOT
+    // consumed (no `capturePane(start: -40)` pre-poll), so the first capture
+    // in the array is consumed by the readiness poll instead.
+    const { tmux, calls } = fakeTmux({
+      captures: [
+        "❯ ↑ 5k tokens", // [0] readiness — isTuiReady TRUE (matches ❯ + tokens)
+        "❯ pre", // [1] safeSend preCapture (composer not empty — would normally fail verify)
+        "❯ ", // [2] safeSend verify poll #1 — composerEmpty TRUE
+        "↑ 12k tokens\n❯ ", // [3] tokens-poll — tokensMoved TRUE, status=booted
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:lead-x",
+      team: "atmux",
+      member: "lead-x",
+      forceBootPrompt: true,
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      submitVerifyTimeoutMs: 500,
+      submitVerifyPollIntervalMs: 50,
+      submitVerifyRetries: 0,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      now: fakeClock({ step: 25 }),
+      appendLog: async () => {},
+    });
+    // Sentinel bypassed → boot prompt fired → status booted
+    expect(r.status).toBe("booted");
+    expect(r.attempts).toBe(1);
+    // Exactly ONE "send"-shaped entry (loadBuffer carrying the boot prompt).
+    const sends = calls.filter((c) => c.kind === "send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.payload).toBe(renderBootPrompt("atmux", "lead-x"));
+  });
+
+  test("forceBootPrompt=true + composer stays loaded → submit-not-verified (escalates to send-keys-failures.log)", async () => {
+    // Pre-T7 + tokens-in-initial-capture would have returned already-booted
+    // with no work. Post-T7 with forceBootPrompt:true the sentinel is
+    // bypassed, the boot prompt fires, but the verifier never sees the
+    // composer clear → submit-not-verified. The escalate path
+    // (safeSendKeysWithVerify onFail:"escalate") fires; tests inject
+    // appendLog so the recorder catches the disk-bound write without
+    // touching real disk.
+    const escalations: Array<{ path: string; body: string }> = [];
+    const { tmux } = fakeTmux({
+      captures: [
+        "❯ ↑ 5k tokens", // [0] readiness ready
+        "❯ pre", // [1] safeSend preCapture
+        "❯ Read /tmp/atmux-brief", // [2..N] composer stays non-empty — sticky
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:lead-x",
+      team: "atmux",
+      member: "lead-x",
+      forceBootPrompt: true,
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      submitVerifyTimeoutMs: 200,
+      submitVerifyPollIntervalMs: 50,
+      submitVerifyRetries: 0,
+      postBootTimeoutMs: 99_000, // generous — if we wrongly enter tokens poll, this surfaces as wrong-reason
+      postBootPollIntervalMs: 1_000,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      now: fakeClock({ step: 25 }),
+      appendLog: async (path, body) => {
+        escalations.push({ path, body });
+      },
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("submit-not-verified");
+    // ADR-168: escalation log row was written.
+    expect(escalations.length).toBeGreaterThanOrEqual(1);
+    // The escalation entry references the target pane.
+    expect(escalations[0]!.body).toContain("atmux:lead-x");
+  });
+
+  test("forceBootPrompt=false (default): tokens-in-initial-capture → already-booted (no regression — sentinel preserved for start.ts callers)", async () => {
+    // Regression coverage: start.ts and other first-spawn callers do NOT
+    // pass forceBootPrompt, so the default-false path must still short-
+    // circuit on a tokens-moving pane (e.g. operator-pre-bootstrapped
+    // member, double-call protection during start.ts re-entry).
+    const { tmux, calls } = fakeTmux({
+      captures: ["↑ 5k ↓ 2k tokens · 12%"],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      // forceBootPrompt omitted → undefined → branch enters sentinel
+      sleep: noopSleep,
+      now: fakeClock(),
+    });
+    expect(r.status).toBe("already-booted");
+    expect(r.attempts).toBe(0);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(0);
+  });
+
+  test("forceBootPrompt=true + cold-boot (no tokens in initial capture) → booted (no regression on legitimate respawn)", async () => {
+    // Counter-fixture from T8 task body: a cold-boot rotation (TUI
+    // freshly started, no tokens yet) must still complete the full boot
+    // path with forceBootPrompt:true — the option must not regress the
+    // already-correct cold-start case.
+    const { tmux, calls } = fakeTmux({
+      captures: [
+        "✻ Welcome to Claude", // [0] readiness poll #1 — not ready
+        "❯ ", // [1] readiness poll #2 — ready
+        "❯ pre", // [2] safeSend preCapture
+        "❯ ", // [3] safeSend verify poll — composerEmpty TRUE
+        "↑ 4k tokens\n❯ ", // [4] tokens-poll — tokensMoved TRUE
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:lead-x",
+      team: "atmux",
+      member: "lead-x",
+      forceBootPrompt: true,
+      readyTimeoutMs: 5_000,
+      readyPollIntervalMs: 100,
+      submitVerifyTimeoutMs: 500,
+      submitVerifyPollIntervalMs: 50,
+      submitVerifyRetries: 0,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      now: fakeClock({ step: 25 }),
+      appendLog: async () => {},
+    });
+    expect(r.status).toBe("booted");
+    expect(r.attempts).toBe(1);
+    const sends = calls.filter((c) => c.kind === "send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.payload).toBe(renderBootPrompt("atmux", "lead-x"));
+  });
+});

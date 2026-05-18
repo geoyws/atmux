@@ -918,8 +918,68 @@ export const TeamEpic = z
      *  user that owns PR creation; ADR-091's pr-mode runtime resolves at
      *  PR-creation time via `gh auth switch --user <prAuthorUser>`. */
     prAuthorUser: z.string().optional(),
+    /** ADR-144 §Two test-isolation modes (T3 t-8cba0705). Default
+     *  `"skip"` keeps the pre-ADR-144 direct `ready_to_merge → merging`
+     *  flow — back-compat for epic-teams created before T3 lands. Set
+     *  to `"cage"` for internal-tools self-dogfood path (atmux itself;
+     *  ADR-144 §Cage mode); `"deployed"` for IFCA product teams (T4).
+     *  Wired in `src/core/epic-merge.ts::runAutoMerge`. */
+    testGateMode: z.enum(["skip", "cage", "deployed"]).default("skip"),
+    /** ADR-144 §Cage mode: shell command the test-gate runner executes
+     *  inside the cage. Default `"bun test --timeout 30000"` matches
+     *  the atmux team's CI gate; per-team override (e.g. sopx might
+     *  use `"pnpm e2e"`). Empty string is refused at schema parse to
+     *  prevent silent skip. Honored in cage mode (deployed mode reads
+     *  `E2E_BASE_URL` from `stagingUrlTemplate` instead). */
+    testCommand: z.string().min(1).default("bun test --timeout 30000"),
+    /** ADR-144 §retryOnFlake: re-run the test command this many times
+     *  on a fail before declaring `test_failed`. Default `1` per the
+     *  ADR's resolved OQ-3 — single flake doesn't strike. Set to `0`
+     *  to disable retry. Capped at runtime to a sane upper-bound by
+     *  the test-cage runner (2 retries = 3 total attempts max). */
+    retryOnFlake: z.number().int().nonnegative().default(1),
+    /** ADR-144 §Cage mode: tmpdir path for the cage's TMUX_TMPDIR
+     *  override. The runner expands `${team}` + `${epic}` placeholders
+     *  at cage-spawn time per the ADR's example
+     *  `/tmp/atmux_${team}_${epic}_test_cage`. Operator-overridable for
+     *  teams that need a non-`/tmp` location (e.g. encrypted volume
+     *  for sensitive test fixtures). Null in `deployed` mode. */
+    cageTmpdir: z.string().nullable().default("/tmp/atmux_${team}_${epic}_test_cage"),
+    /** ADR-144 §retryOnFlake: per-attempt timeout in minutes. Default
+     *  `30`. Enforces orphan-reap discipline per global CLAUDE.md §`bun
+     *  test` orphans; the spawn primitive's underlying `timeoutMs`
+     *  reads `testTimeoutMin * 60_000`. */
+    testTimeoutMin: z.number().int().positive().default(30),
+    /** ADR-144 §Config shape: required PASS count before the test gate
+     *  releases. Default `1` (cold-start+walk shape per CLAUDE.md
+     *  §Testing Discipline). Raise to N>1 only for streak-stable
+     *  subsets — most epic-test gates are 1x acceptance, not
+     *  idempotence. */
+    requiredPasses: z.number().int().positive().default(1),
+    /** ADR-144 §Deployed mode (T4): URL template for the deploy step.
+     *  Null in cage mode; required string in deployed mode (the
+     *  TeamEpic-level superRefine enforces — landed in T4). Template
+     *  variables `${product}`, `${dev-suffix}`, `${epic-name}` are
+     *  expanded at deploy time by `scripts/deploy.sh`. */
+    stagingUrlTemplate: z.string().nullable().default(null),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    // ADR-144 §Deployed mode (T4 t-66a237cd) — when `testGateMode` is
+    // `"deployed"`, `stagingUrlTemplate` MUST be non-null. The deploy
+    // hook can't compose the branch-staging URL without it, and a
+    // silent default-null would crash the test-gate at first merge
+    // attempt with a cryptic "URL is null" stack instead of the clear
+    // schema-parse refusal here.
+    if (data.testGateMode === "deployed" && data.stagingUrlTemplate === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["stagingUrlTemplate"],
+        message:
+          "testGateMode: 'deployed' requires a non-null stagingUrlTemplate (e.g. '${product}-${dev-suffix}-${epic-name}-staging.ifca.app') — null is only valid in 'cage' / 'skip' modes.",
+      });
+    }
+  });
 export type TeamEpic = z.infer<typeof TeamEpic>;
 
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.

@@ -220,6 +220,19 @@ Per ADR-090's reuse-statement pattern — minimal new abstractions:
 
 ## Amendments
 
+### 2026-05-18 — `atmux cockpit rotate <session-name>` formalizes Rung C (ADR-167)
+
+[ADR-167](167-cockpit-rotate-verb.md) lands `atmux cockpit rotate medic|sentinel|<team-name>` as the canonical Rung C verb of the `/bruh` escalation chain — closing the previously manual handoff + Ctrl-C + canonical-respawn protocol. Sits within ADR-162's scope (atmux owns cockpit tmux infrastructure): the verb operates exclusively on `tmux -L atmux-cockpit` per §Decision-anchor #1, and uses the existing cockpit window topology (`_medic` / `_sentinel` / `<team-name>` per ADR-135) as its target surface. Lead panes are untouched (they live in per-team cages per ADR-162) — lead rotation continues to use Rung B (medic's `/team rotate-lead`).
+
+Operationally relevant interactions with ADR-162:
+
+- **Socket isolation honored**: cockpit-rotate's tmux factory call resolves the cockpit socket via `getCockpitSocketName(env)` — same resolver path as `cockpit rebuild`. Operators on a pre-migration legacy cockpit (default socket) must run `atmux cockpit migrate-socket` first; `cockpit rotate` against a legacy-socket cockpit will not find the target window.
+- **Audit log**: rotations append NDJSON rows to `~/.atmux/state/cockpit-rotate-audit.log` (operator-fired growth, bounded; no rotation policy in v1).
+- **Discord refusal**: pre-flight gate refusals (gates 1-4 per ADR-167) fire the `cockpit-rotate-refused` Discord template; success rotations are quiet (audit row is the source of truth).
+- **Caller-scope gate**: cockpit-rotate is driver-only per ADR-033, consistent with `spawn-epic` / `dissolve-epic` / `migrate-socket`. Member-scope callers are refused with `ConfigError` (exit 78 EX_CONFIG).
+
+EPIC `e-0b90d6ac` code-complete 2026-05-18 with full test coverage (T6 unit + T7 e2e). [RUNBOOK-cockpit.md §3](../RUNBOOK-cockpit.md) carries the operator-facing flow.
+
 ### 2026-05-16 — §Decision-anchor #4 mechanism: graceful-recreate, NOT PID-preservation (t-26346aef TR3 impl)
 
 The §Decision-anchor #4 step 4 ("Re-attaches each running process to its new home on the atmux-cockpit socket via tmux's pane-respawn primitive") **does not match what tmux can actually do**. The TR3 implementation surfaces the honest mechanism + the operator-side acceptance:

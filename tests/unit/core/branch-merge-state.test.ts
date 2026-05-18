@@ -6,12 +6,15 @@ import { describe, expect, test } from "bun:test";
 import {
   BRANCH_MERGE_STATES,
   type BranchMergeState,
+  canEnterMerging,
   isTerminalState,
   isValidTransition,
   type PreMergeGateInput,
   shouldTransitionFromInProgress,
   shouldTransitionToReady,
   TERMINAL_STATES,
+  TEST_OUTCOMES,
+  type TestOutcome,
 } from "../../../src/core/branch-merge-state.ts";
 
 // ---------- enum shape ----------
@@ -263,7 +266,7 @@ describe("isValidTransition — adjacency matrix", () => {
     expect(isValidTransition("rebasing", "conflict")).toBe(true);
   });
 
-  test("merging → tested (merge clean, run testCommand)", () => {
+  test("merging → tested (ADR-134 — merge clean, run testCommand post-merge)", () => {
     expect(isValidTransition("merging", "tested")).toBe(true);
   });
 
@@ -271,7 +274,15 @@ describe("isValidTransition — adjacency matrix", () => {
     expect(isValidTransition("merging", "conflict")).toBe(true);
   });
 
-  test("tested → merged (testCommand passed)", () => {
+  test("merging → merged (ADR-091 v1 + ADR-144 — direct terminal after merge)", () => {
+    // ADR-091 v1 epic-team flow skips the post-merge `tested` step
+    // (reviewer-trunk-signoff Task absorbs the gate) and ADR-144's
+    // pre-merge gate path also lands on `merging → merged` after
+    // the merge step itself completes.
+    expect(isValidTransition("merging", "merged")).toBe(true);
+  });
+
+  test("tested → merged (ADR-134 — testCommand passed post-merge)", () => {
     expect(isValidTransition("tested", "merged")).toBe(true);
   });
 
@@ -279,12 +290,27 @@ describe("isValidTransition — adjacency matrix", () => {
     expect(isValidTransition("tested", "test_failed")).toBe(true);
   });
 
+  test("tested → merging (ADR-144 — pre-merge tests passed, proceed to actual merge)", () => {
+    // ADR-144 §Decision T2: epic-team scope tests BEFORE the merge.
+    // After tests pass, transition tested → merging so the git
+    // merge --no-ff step fires next. Gated by canEnterMerging on the
+    // row's test_outcome — the state machine's adjacency map allows
+    // the edge unconditionally; the gate refusal lives at the caller.
+    expect(isValidTransition("tested", "merging")).toBe(true);
+  });
+
   test("test_failed → reverted (revertOnFail: true path)", () => {
     expect(isValidTransition("test_failed", "reverted")).toBe(true);
   });
 
-  test("test_failed → in_progress (revertOnFail: false + operator recovery)", () => {
+  test("test_failed → in_progress (revertOnFail: false + operator recovery / ADR-144 §test_failed recovery)", () => {
     expect(isValidTransition("test_failed", "in_progress")).toBe(true);
+  });
+
+  test("ready_to_merge → tested (ADR-144 — pre-merge test-gate entry)", () => {
+    // ADR-144 §Decision T2: the epic-team scope runs tests BEFORE
+    // merging so a failing test never lands on parent-trunk.
+    expect(isValidTransition("ready_to_merge", "tested")).toBe(true);
   });
 
   // ---------- accepted backward / recovery transitions
@@ -311,10 +337,6 @@ describe("isValidTransition — adjacency matrix", () => {
     expect(isValidTransition("in_progress", "merging")).toBe(false);
   });
 
-  test("ready_to_merge → tested FORBIDDEN (must pass through merging)", () => {
-    expect(isValidTransition("ready_to_merge", "tested")).toBe(false);
-  });
-
   test("merged → in_progress FORBIDDEN (next cycle starts from fresh `open`)", () => {
     expect(isValidTransition("merged", "in_progress")).toBe(false);
   });
@@ -339,11 +361,70 @@ describe("isValidTransition — adjacency matrix", () => {
     expect(isValidTransition("rebasing", "merging")).toBe(false);
   });
 
-  test("tested → merging FORBIDDEN (no backwards edge)", () => {
-    expect(isValidTransition("tested", "merging")).toBe(false);
-  });
-
   test("test_failed → merged FORBIDDEN (must reset)", () => {
     expect(isValidTransition("test_failed", "merged")).toBe(false);
+  });
+});
+
+// ---------- TEST_OUTCOMES enum (ADR-144 T2) ----------
+
+describe("TEST_OUTCOMES", () => {
+  test("contains exactly 3 outcomes — pass / fail / bypass", () => {
+    expect(TEST_OUTCOMES).toHaveLength(3);
+    const expected: ReadonlyArray<TestOutcome> = ["pass", "fail", "bypass"];
+    for (const o of expected) expect(TEST_OUTCOMES).toContain(o);
+  });
+
+  test("preserves declaration order — pass first (most common gate-pass result)", () => {
+    expect(TEST_OUTCOMES[0]).toBe("pass");
+    expect(TEST_OUTCOMES[1]).toBe("fail");
+    expect(TEST_OUTCOMES[2]).toBe("bypass");
+  });
+});
+
+// ---------- canEnterMerging — ADR-144 §Decision test-gate ----------
+
+describe("canEnterMerging — test-gate guard", () => {
+  test("non-merging targets always allowed (gate doesn't apply)", () => {
+    // No matter what the source state or outcome is, transitions to
+    // anything other than `merging` skip the gate entirely.
+    expect(canEnterMerging("ready_to_merge", "rebasing", null)).toBe(true);
+    expect(canEnterMerging("tested", "merged", null)).toBe(true);
+    expect(canEnterMerging("tested", "test_failed", "fail")).toBe(true);
+    expect(canEnterMerging("merging", "merged", null)).toBe(true);
+    expect(canEnterMerging("conflict", "in_progress", "fail")).toBe(true);
+  });
+
+  test("ADR-134 path — ready_to_merge → merging skips the gate (test happens post-merge)", () => {
+    // Intra-team scope: tests run AFTER merging, so the gate doesn't
+    // apply to the entry-into-merging edge. testOutcome stays null on
+    // ADR-134 rows; this confirms the gate doesn't reject them.
+    expect(canEnterMerging("ready_to_merge", "merging", null)).toBe(true);
+    expect(canEnterMerging("ready_to_merge", "merging", "pass")).toBe(true);
+  });
+
+  test("ADR-144 path — tested → merging requires outcome = 'pass'", () => {
+    expect(canEnterMerging("tested", "merging", "pass")).toBe(true);
+  });
+
+  test("ADR-144 path — tested → merging accepts outcome = 'bypass' (driver override)", () => {
+    expect(canEnterMerging("tested", "merging", "bypass")).toBe(true);
+  });
+
+  test("ADR-144 path — tested → merging REFUSED on outcome = 'fail'", () => {
+    expect(canEnterMerging("tested", "merging", "fail")).toBe(false);
+  });
+
+  test("ADR-144 path — tested → merging REFUSED on null outcome (no test recorded)", () => {
+    // Caller is expected to record an outcome (pass/fail/bypass) at
+    // the ready_to_merge → tested transition. Null means "test never
+    // ran" — refuse the merge by default.
+    expect(canEnterMerging("tested", "merging", null)).toBe(false);
+  });
+
+  test("pure — same inputs yield same output (no I/O, no clock)", () => {
+    const a = canEnterMerging("tested", "merging", "pass");
+    const b = canEnterMerging("tested", "merging", "pass");
+    expect(a).toEqual(b);
   });
 });

@@ -42,9 +42,11 @@ import {
   probeCageState as defaultProbeCageState,
   STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
 } from "../core/cage-state.ts";
-import { cageSessionName } from "../core/cockpit.ts";
+import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
+import { cageSessionName, type LoadedCockpit, loadCockpit } from "../core/cockpit.ts";
 import {
   buildWindowName,
+  buildWindowNameLegacy,
   defaultEmojiForRole,
   driverInboxPath,
   getAtmuxDir,
@@ -2363,6 +2365,166 @@ export async function checkCockpitOnDefaultSocket(
   ];
 }
 
+export interface CheckLegacyWindowNameFormatOpts {
+  /** tmux spawn override. */
+  tmux?: TmuxSpawn;
+  /** Cockpit reader override. Default loads `~/.atmux/cockpit.json` and
+   *  returns `null` if absent / unreadable (single-cage fallback). */
+  loadCockpitFn?: () => Promise<LoadedCockpit | null>;
+  /** Load `team.json` from a cockpit team's root dir. Default uses
+   *  `tryLoadTeam({ teamDir: <root> })`; returns `null` on absence so
+   *  cockpit entries with missing team.json don't tank the whole probe. */
+  loadTeamForRoot?: (root: string) => Promise<Team | null>;
+  /** Socket-existence check — skips cages whose socket file isn't on
+   *  disk (cage not running). Default uses `fs.exists`. */
+  socketExists?: (path: string) => Promise<boolean>;
+}
+
+/**
+ * EPIC e-a3077ca0 T8 — `legacy-window-name-format` warn-class probe.
+ *
+ * Lists tmux windows on every live cage (cockpit-walk; falls back to
+ * `currentTeam` when cockpit is absent / unreadable) and flags any
+ * default-member-role window that's still in a pre-ADR-161 form:
+ *
+ *   - `<emoji>-<member>` (ADR-135 hyphen — was default-member canonical
+ *      pre-ADR-161 TR2)
+ *   - `<emoji><member>`  (pre-ADR-135 no-separator)
+ *
+ * Default-member roles per {@link DEFAULT_MEMBER_ROLES} —
+ * `team-lead` / `planner` / `reviewer` / `ombudsman`. The committer
+ * role is exempt by definition (its canonical IS the hyphen form per
+ * `project_adr_161_tr2_shipped` memory + ADR-159 pending). Members
+ * with no role / `role: "member"` are also exempt: the hyphen IS their
+ * canonical form so a hyphen-named window isn't a migration miss.
+ *
+ * Emits one yellow row per flagged window with a `tmux rename-window`
+ * one-liner the operator can paste back. Idempotent: once renamed, the
+ * canonical form lives in the window list and the probe stops firing.
+ *
+ * Out-of-scope (skipped silently):
+ *   - Epic-viewer windows (`🌳-<eid>`) — hyphen is canonical there by
+ *     spec; never default-member-role anyway.
+ *   - User-added member names without a default-member role — hyphen
+ *     is their canonical (per ADR-161 §D2).
+ *   - Cages whose socket file isn't present (cage not running).
+ *   - Cages whose `atmux-<team.name>` session isn't on the socket
+ *     (non-canonical session name; out of scope for this warn).
+ *
+ * Driver-ref: 2026-05-18 atmux parent cage (4-day uptime, 6 windows
+ * still hyphenated, `rotate-lead` refused with `no tmux window for
+ * lead`). The shim wires (T2-T6) self-heal at every reachable call-
+ * site, but operators wanting an at-a-glance verdict of "are any cages
+ * still on the old format?" get it from this probe.
+ */
+export async function checkLegacyWindowNameFormat(
+  currentTeam: Team | null,
+  opts: CheckLegacyWindowNameFormatOpts = {},
+): Promise<DoctorRow[]> {
+  const tmux = opts.tmux ?? defaultTmuxSpawn;
+  const loadCockpitFn =
+    opts.loadCockpitFn ??
+    (async (): Promise<LoadedCockpit | null> => {
+      try {
+        return await loadCockpit();
+      } catch {
+        // No cockpit / unreadable / schema error → single-cage fallback.
+        return null;
+      }
+    });
+  const loadTeamForRoot =
+    opts.loadTeamForRoot ??
+    (async (root: string): Promise<Team | null> => {
+      try {
+        return await tryLoadTeam({ teamDir: root });
+      } catch {
+        return null;
+      }
+    });
+  const socketExistsFn = opts.socketExists ?? exists;
+
+  // Build the probe target set: cockpit teams (when loadable) ∪ currentTeam.
+  // Dedup by team name so a current-team that's also in cockpit isn't
+  // probed twice (would emit duplicate yellow rows per flagged window).
+  const targets: Array<{ team: Team }> = [];
+  const seenNames = new Set<string>();
+  const cockpit = await loadCockpitFn();
+  if (cockpit !== null) {
+    for (const ct of cockpit.teams) {
+      const t = await loadTeamForRoot(ct.root);
+      if (t === null) continue;
+      if (seenNames.has(t.name)) continue;
+      seenNames.add(t.name);
+      targets.push({ team: t });
+    }
+  }
+  if (currentTeam !== null && !seenNames.has(currentTeam.name)) {
+    seenNames.add(currentTeam.name);
+    targets.push({ team: currentTeam });
+  }
+
+  const rows: DoctorRow[] = [];
+  for (const { team } of targets) {
+    const socket = resolveTeamSocket(team);
+    if (!(await socketExistsFn(socket))) continue; // cage not running
+    const sessionName = `atmux-${team.name}`;
+    let result: SpawnResult;
+    try {
+      result = await tmux([
+        "-S",
+        socket,
+        "list-windows",
+        "-t",
+        sessionName,
+        "-F",
+        "#{window_name}",
+      ]);
+    } catch {
+      continue; // tmux spawn failed; deps probe already covers
+    }
+    if (result.exitCode !== 0) continue; // session missing / non-canonical
+    const windowNames = new Set(
+      result.stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    );
+    for (const m of team.members) {
+      // Only default-member roles need the cross-format migration.
+      // `role` may be undefined on older team.json — `isDefaultMemberRole`
+      // already returns false for undefined.
+      if (!isDefaultMemberRole(m.role)) continue;
+      const canonical = buildWindowName(m.name, m.emoji, m.label, m.role);
+      const hyphenForm = buildWindowName(m.name, m.emoji, m.label);
+      const legacyForm = buildWindowNameLegacy(m.name, m.emoji);
+      // Canonical present → no migration needed. (Defensive: if BOTH
+      // canonical AND a legacy variant exist, we still flag the legacy
+      // entry — it's an orphan window left behind by an interrupted
+      // rename and clutters operator scroll.)
+      const offenders: string[] = [];
+      if (hyphenForm !== canonical && windowNames.has(hyphenForm)) {
+        offenders.push(hyphenForm);
+      }
+      if (
+        legacyForm !== canonical &&
+        legacyForm !== hyphenForm &&
+        windowNames.has(legacyForm)
+      ) {
+        offenders.push(legacyForm);
+      }
+      for (const legacyName of offenders) {
+        rows.push({
+          status: "yellow",
+          label: "legacy-window-name-format",
+          detail: `${team.name} cage: window '${legacyName}' should be '${canonical}' (default-member role '${m.role}')`,
+          hint: `tmux -S ${socket} rename-window -t ${sessionName}:${legacyName} ${canonical}`,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
 /** Default chain — all in-scope checks invoked in bash main() order. */
 export async function runAllChecks(atmuxDir: string, team: Team | null): Promise<DoctorRow[]> {
   const rows: DoctorRow[] = [];
@@ -2440,6 +2602,13 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // post-migration. Never blocks.
   rows.push(...(await checkTmuxVersionMismatch()));
   rows.push(...(await checkCockpitOnDefaultSocket()));
+  // EPIC e-a3077ca0 T8: legacy-window-name-format — warn class.
+  // Walks every cockpit cage (falls back to currentTeam if cockpit
+  // is absent / unreadable) and flags default-member-role windows
+  // still on hyphen / no-separator forms. Self-clearing once the
+  // operator runs the suggested `tmux rename-window` one-liner OR
+  // the shim wires (T2-T6) heal them on the next addressing call.
+  rows.push(...(await checkLegacyWindowNameFormat(team)));
   return rows;
 }
 

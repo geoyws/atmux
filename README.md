@@ -478,7 +478,7 @@ Preserve-by-default protects hand-authored long-form `role` text on the Claude s
 
 ### Discord palette per team
 
-When multiple atmux teams ping into the same Discord channel, the team-name backticks alone aren't enough to distinguish pings at a glance — under load (20+ pings/hour, 2–3 teams), the wall blurs together. atmux solves this by rendering each ping as a Discord webhook **embed** with a **per-team color** (a 16-color Catppuccin-Frappe-aligned palette) and a **leading glyph** in the embed title.
+When multiple atmux teams ping into the same Discord channel, the team-name backticks alone aren't enough to distinguish pings at a glance — under load (20+ pings/hour, 2–3 teams), the wall blurs together. atmux solves this by rendering each ping as a Discord webhook **embed** with a **per-team color** (a curated 16-color dark-theme palette) and a **leading glyph** in the embed title.
 
 **Default (no config — works out of the box).** Each team gets a deterministic auto-color via `sha256(team-name)[0] mod 16` → palette index. `atmux-kanban` always renders one fixed color, `myteam-alpha` always another — no operator config required, and the assignment is stable across restarts.
 
