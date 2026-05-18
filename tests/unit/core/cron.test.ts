@@ -1202,43 +1202,59 @@ describe("renderCronLines — lane-stall-watch (ADR-148 §D4 / T3)", () => {
   });
 });
 
-// ---------- ADR-134 T7: gitter-sweep cron line ----------
+// ---------- ADR-134 T7 / ADR-159 TR4: committer-sweep cron line ----------
 
-describe("renderCronLines — gitter-sweep (ADR-134 T7)", () => {
+describe("renderCronLines — committer-sweep (ADR-134 T7, verb-name ADR-159 TR4)", () => {
   const withGitter = (overrides: Partial<Team> = {}): Team =>
     baseTeam({
       members: [{ name: "gitter", role: "gitter" }] as never,
       ...overrides,
     });
 
-  test("absent autoMerge block → no gitter --sweep line", () => {
+  test("absent autoMerge block → no committer --sweep line", () => {
     const lines = renderCronLines(baseOpts(withGitter()));
-    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+    expect(lines.find((l) => l.includes("committer --sweep"))).toBeUndefined();
   });
 
-  test("autoMerge.enabled=false → no gitter --sweep line", () => {
+  test("autoMerge.enabled=false → no committer --sweep line", () => {
     const team = withGitter({ autoMerge: { enabled: false } } as never);
     const lines = renderCronLines(baseOpts(team));
-    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+    expect(lines.find((l) => l.includes("committer --sweep"))).toBeUndefined();
   });
 
-  test("autoMerge.enabled=true WITHOUT a role:gitter member → suppressed", () => {
+  test("autoMerge.enabled=true WITHOUT a role:committer|gitter member → suppressed", () => {
     const team = baseTeam({
       autoMerge: { enabled: true } as never,
       members: [{ name: "lead", role: "lead" }] as never,
     });
     const lines = renderCronLines(baseOpts(team));
-    expect(lines.find((l) => l.includes("gitter --sweep"))).toBeUndefined();
+    expect(lines.find((l) => l.includes("committer --sweep"))).toBeUndefined();
   });
 
-  test("autoMerge.enabled=true + role:gitter member → renders at 10min default", () => {
+  test("autoMerge.enabled=true + role:gitter member → renders canonical verb at 10min default (ADR-159 TR4)", () => {
     const team = withGitter({ autoMerge: { enabled: true } } as never);
     const lines = renderCronLines(baseOpts(team));
-    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    const gl = lines.find((l) => l.includes("committer --sweep"));
     expect(gl).toBeDefined();
     expect(gl).toMatch(/^\*\/10 /);
-    expect(gl).toContain("gitter --sweep");
-    expect(gl).toContain("/srv/demo/.atmux/logs/gitter-sweep.log");
+    expect(gl).toContain("committer --sweep");
+    expect(gl).toContain("/srv/demo/.atmux/logs/committer-sweep.log");
+    // Legacy verb name must NOT appear in the emitted line (ADR-159 TR4
+    // canonical-emit gate; the alias still parses at the CLI dispatcher).
+    expect(gl).not.toContain("gitter --sweep");
+    expect(gl).not.toContain("gitter-sweep.log");
+  });
+
+  test("role:committer member (canonical) → renders the same canonical verb (ADR-159 TR4)", () => {
+    const team = baseTeam({
+      autoMerge: { enabled: true } as never,
+      members: [{ name: "gitter", role: "committer" }] as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const gl = lines.find((l) => l.includes("committer --sweep"));
+    expect(gl).toBeDefined();
+    expect(gl).toContain("committer --sweep");
+    expect(gl).toContain("/srv/demo/.atmux/logs/committer-sweep.log");
   });
 
   test("autoMerge.cronBackstopMin overrides the 10min default", () => {
@@ -1246,7 +1262,7 @@ describe("renderCronLines — gitter-sweep (ADR-134 T7)", () => {
       autoMerge: { enabled: true, cronBackstopMin: 5 },
     } as never);
     const lines = renderCronLines(baseOpts(team));
-    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    const gl = lines.find((l) => l.includes("committer --sweep"));
     expect(gl).toMatch(/^\*\/5 /);
   });
 
@@ -1258,7 +1274,7 @@ describe("renderCronLines — gitter-sweep (ADR-134 T7)", () => {
       ...baseOpts(team),
       gitterSweepIntervalOverride: 15,
     });
-    const gl = lines.find((l) => l.includes("gitter --sweep"));
+    const gl = lines.find((l) => l.includes("committer --sweep"));
     expect(gl).toMatch(/^\*\/15 /);
   });
 
@@ -1348,7 +1364,7 @@ describe("renderCronBlock — golden-file parity (ADR-057 §D6d)", () => {
       " merge-cycle --push ",
       " ombudsman tick ",
       " lane-stall-tick ",
-      " gitter --sweep ",
+      " committer --sweep ",
       " epic-merge tick ",
     ];
     expect(bodyLines.length).toBe(orderedVerbs.length);

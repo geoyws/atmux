@@ -297,7 +297,7 @@ The golden file's reference team exercises **every** conditional line EXCEPT the
 | 8 | `merge-cycle --push` | `team.merger.enabled === true` |
 | 9 | `ombudsman tick` | `team.ombudsman.enabled === true` AND `team.members[].role === "ombudsman"` |
 | 10 | `lane-stall-tick` | `team.cadence.enabled === true` AND `team.cadence.laneStallEnabled !== false` |
-| 11 | `gitter --sweep` | `team.autoMerge.enabled === true` AND `team.members[].role ∈ {committer,gitter}` (ADR-159 TR3 accept-both grace) |
+| 11 | `committer --sweep` | `team.autoMerge.enabled === true` AND `team.members[].role ∈ {committer,gitter}` (ADR-159 TR3 accept-both grace; emitted verb is the canonical `committer` per ADR-159 TR4) |
 | 12 | `epic-merge tick` | `team.epicTeam !== undefined` |
 
 The full gate table is duplicated in the golden file's documentation header (`tests/golden/cron-block.txt` L1-L31) so a reader landing on the fixture can interpret the pinned ordering without bouncing to this runbook.

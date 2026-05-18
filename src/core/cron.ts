@@ -152,10 +152,13 @@ export interface RenderCronBlockOpts {
    *  `cron-install --template lane-stall-watch --interval <N>`. */
   laneStallIntervalOverride?: number;
   /** ADR-134 T7 (t-a87a39f1) — transient override for the
-   *  `gitter --sweep` cron-backstop line's cadence (minutes). When set,
-   *  beats `team.autoMerge.cronBackstopMin` and the
+   *  `committer --sweep` cron-backstop line's cadence (minutes). When
+   *  set, beats `team.autoMerge.cronBackstopMin` and the
    *  {@link DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN} fallback. Threaded
-   *  via `cron-install --template gitter-sweep --interval <N>`. */
+   *  via `cron-install --template gitter-sweep --interval <N>` (the
+   *  template flag retains the legacy `gitter-sweep` name; the emitted
+   *  cron line uses the canonical `committer --sweep` verb per
+   *  ADR-159 TR4). */
   gitterSweepIntervalOverride?: number;
   /** ADR-091 §State machine (t-04350614) — transient override for the
    *  `epic-merge tick` line's cadence (minutes). When set, beats
@@ -364,15 +367,15 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
     out.push(`${cronEvery(laneStallMins)} ${baseEnv} lane-stall-tick ${logTail("lane-stall")}`);
   }
 
-  // 11. ADR-134 T7 (t-a87a39f1) — gitter-sweep: cron backstop for the
+  // 11. ADR-134 T7 (t-a87a39f1) — committer-sweep: cron backstop for the
   // intra-team auto-merger. Walks every `<base>-<member>` branch and
-  // re-evaluates the state machine (covers events the gitter member
+  // re-evaluates the state machine (covers events the committer member
   // missed while paused / rate-limited). Gated on BOTH
   // `team.autoMerge.enabled === true` AND member roster containing a
-  // `role: "gitter"` entry — mirrors the ombudsman-tick dual-gate
-  // (line 9 above) since the sweep verb writes into the gitter's own
-  // merger-state SQLite repo and there's nothing to back-stop if the
-  // role isn't seated.
+  // `role: "committer"` (or legacy "gitter") entry — mirrors the
+  // ombudsman-tick dual-gate (line 9 above) since the sweep verb writes
+  // into the committer's own merger-state SQLite repo and there's
+  // nothing to back-stop if the role isn't seated.
   //
   // Cadence resolution (same precedence shape as merge-cycle):
   // (a) `opts.gitterSweepIntervalOverride` (transient install-time
@@ -383,6 +386,11 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   // ADR-159 TR3: schema transforms "gitter" → "committer" at parse, but
   // in-memory Team objects from test fixtures (Zod-bypassed) may still
   // carry the legacy value. Accept both during the grace cycle.
+  // ADR-159 TR4 (t-d8525ec8 2026-05-18): emit the canonical `committer
+  // --sweep` verb here. The legacy `gitter --sweep` alias still parses
+  // at the CLI dispatcher (src/cli.ts) with a deprecation warning, but
+  // newly-installed cron blocks now route through the canonical name
+  // so the alias can drop cleanly next release.
   const hasGitter = team.members.some((m) => {
     const role = (m as { role?: string }).role;
     return role === "committer" || role === "gitter";
@@ -392,7 +400,7 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
       opts.gitterSweepIntervalOverride ??
       team.autoMerge.cronBackstopMin ??
       DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN;
-    out.push(`${cronEvery(gitterMins)} ${baseEnv} gitter --sweep ${logTail("gitter-sweep")}`);
+    out.push(`${cronEvery(gitterMins)} ${baseEnv} committer --sweep ${logTail("committer-sweep")}`);
   }
 
   // 12. ADR-091 §State machine — epic-merge-tick: fires `atmux epic-

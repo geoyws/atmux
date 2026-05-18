@@ -164,3 +164,20 @@ ADR-159 completes when:
 - Driver-ref: 2026-05-16 driver session.
 - Memory [[feedback_atmux_no_gitter_worker_commits]] — gitter policy reversal; gets body update post-rename.
 - Project [CLAUDE.md](../../CLAUDE.md) §Docs Discipline.
+
+## §Amendment 2026-05-18 — TR4 cron-emitter completion (t-d8525ec8)
+
+TR3 (schema accept-both + transform + cron alias + tests) shipped via `4bceed9 feat(schema): TeamMember.role gitter+committer accept-both shim` but **missed the cron-emitter half** of §Decision-anchor #1's intent ("Cron templates emit `atmux committer --sweep`"). The runtime CLI dispatcher accepted both verbs (with deprecation-warn on legacy), but `src/core/cron.ts:395` (the only call-site that writes the cron line into operators' crontabs) was never updated. Every `atmux start` / `atmux cron-install` continued to emit the legacy `gitter --sweep` line; every `*/10` sweep on every auto-merge team logged the deprecation warning. Latent today (alias accepts), high-severity once the alias drops next release (silent backstop failure fleet-wide).
+
+**Discovery**: gitter session 2026-05-18 15:08 MYT after `atmux cron-install` ran on the atmux parent team and yielded a byte-identical block. The fix re-pointed:
+
+1. `src/core/cron.ts:395` emitter — `gitter --sweep` → `committer --sweep`; log filename `gitter-sweep.log` → `committer-sweep.log` (operators' existing files become historical; logrotate picks up the new path on next rotation cycle).
+2. `tests/golden/cron-block.txt` L51 — golden block re-pinned to the canonical line; L35 gate documentation updated.
+3. `tests/unit/core/cron.test.ts` — `gitter-sweep` describe block renamed to `committer-sweep`; assertions re-pointed to `committer --sweep` + `committer-sweep.log`; added explicit regression test that the legacy `gitter --sweep` string does NOT appear in the emitted line.
+4. `docs/RUNBOOK-cron-migration.md:300` — gate table row updated.
+
+**Carve-outs intentionally NOT renamed in this amendment**:
+- `cron-install --template gitter-sweep` (CLI flag) — keeps legacy name; user-facing surface, separate deprecation cycle warranted.
+- `gitterSweepIntervalOverride` (internal option field) — typed refactor with multi-file rename; deferred to a follow-up if/when surface area grows.
+
+**Verb-name dispatcher**: `atmux gitter --sweep` alias retained in `src/cli.ts` until the next release per §Decision-anchor #1. Operators' pre-existing crontabs (still emitting the legacy verb) continue to work; the alias drop and the cron-emitter switch are now decoupled — new `atmux start` writes the canonical form, old crontabs keep parsing until manually refreshed.

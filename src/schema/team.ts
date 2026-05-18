@@ -704,7 +704,7 @@ export const TeamAutoMerge = z
     /** ADR-134 §Config: cadence in minutes for the cron backstop
      *  sweep. Default `10`. Consumed by T7's cron-install template
      *  emission — this field is the cadence input to `cronEvery(N)`.
-     *  T4's `atmux gitter --sweep` verb is cadence-agnostic; it runs
+     *  T4's `atmux committer --sweep` verb is cadence-agnostic; it runs
      *  on whatever interval the cron line fires. Must be a divisor of
      *  60 for `cronEvery` (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60);
      *  the renderer fail-fasts on non-divisors at install time. */
@@ -719,7 +719,7 @@ export const TeamAutoMerge = z
   .strict();
 export type TeamAutoMerge = z.infer<typeof TeamAutoMerge>;
 
-/** ADR-134 §Config default — used by T4's `gitter --sweep` cron line
+/** ADR-134 §Config default — used by T4's `committer --sweep` cron line
  *  emission (T7 cron-install template) when `team.autoMerge
  *  .cronBackstopMin` is unset. Matches the 10-min default the ADR
  *  specifies; co-located with the schema so non-Zod call sites (cron
