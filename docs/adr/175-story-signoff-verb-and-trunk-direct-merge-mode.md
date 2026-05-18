@@ -1,6 +1,7 @@
 # ADR-175: `atmux story signoff` verb + `mergeMode` story field for trunk-direct stories
 
-**Status**: proposed
+**Status**: accepted
+**Accepted**: 2026-05-18
 **Date**: 2026-05-18
 **Driver-ref**: `.atmux/driver-inbox.md` 09:08 MYT 2026-05-17 (rentx cross-team ask — `atmux story signoff <id>` verb) + 14:22 MYT 2026-05-17 (rentx reviewer 13:55 MYT — 2 verb gaps in atmux v0.8.4 hit during E1 reviewer signoff; SQL bypass authorized as one-off, CLI gap needs to close).
 **Relates**: ADR-007 (Epic/Story/Task hierarchy + OQ2 reviewer-signoff gate — origin of the gate ADR-175 makes settable), ADR-091 (epic-team lifecycle + intra-team auto-merge — sibling concept at epic layer), ADR-144 (epic-team test-gate — sibling pattern at epic layer; same shape as story-level signoff gate), ADR-159 (gitter→committer rename — `role=committer` is the canonical name; ADR-175 preserves the legacy `role=gitter` / `name=gitter` shim per ADR-159 TR3).
