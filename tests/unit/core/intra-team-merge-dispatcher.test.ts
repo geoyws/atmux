@@ -170,6 +170,67 @@ function makeGitStub(opts: {
   };
 }
 
+/** ADR-134 T3+T4 (t-2b7572d7): GitSpawn that handles BOTH the merge
+ *  probe sequence AND the rebase probe sequence (rev-parse --git-dir
+ *  worktree check, rebase main op, rebase --abort, post-rebase
+ *  rev-parse HEAD). Used by cell-5 tests that walk through performRebase.
+ *
+ *  `rebaseOutcome === 'conflict'` → rebase main op fails + status
+ *  returns conflict-marker porcelain BEFORE abort fires. */
+function makeRebaseAwareGitStub(opts: {
+  baseMoved: boolean;
+  rebaseOutcome: "clean" | "conflict";
+}): GitSpawn {
+  const baseSha = "baseTip123";
+  const mergeBaseSha = opts.baseMoved ? "oldDivergenceSha" : baseSha;
+  let rebaseFired = false;
+  let abortFired = false;
+  return async (argv) => {
+    // ---- worktree probe (performRebase) — must match BEFORE the
+    // generic rev-parse <ref> branch below since that one's guard
+    // excludes only --verify + HEAD, not --git-dir.
+    if (argv.includes("rev-parse") && argv.includes("--git-dir")) {
+      return spawnOk(".git\n");
+    }
+    // ---- rebase main op (performRebase) ----
+    if (argv.includes("rebase") && argv.includes("--abort")) {
+      abortFired = true;
+      return spawnOk("");
+    }
+    if (argv.includes("rebase") && !argv.includes("--abort")) {
+      rebaseFired = true;
+      if (opts.rebaseOutcome === "clean") return spawnOk("");
+      return spawnFail("", "CONFLICT (content): Merge conflict in src/foo.ts", 1);
+    }
+    // ---- status — porcelain. Gate-side probes run BEFORE performRebase
+    // has fired (`rebaseFired === false`) → always clean (operator's
+    // worktree is fine at sweep entry). Once the rebase has fired AND
+    // failed AND not yet aborted, return conflict markers so
+    // performRebase's extractConflictPaths sees them.
+    if (argv.includes("status") && argv.includes("--porcelain")) {
+      if (rebaseFired && opts.rebaseOutcome === "conflict" && !abortFired) {
+        return spawnOk("UU src/foo.ts\n");
+      }
+      return spawnOk("");
+    }
+    // ---- merge-base / ancestry (gate probes) ----
+    if (argv.includes("merge-base") && !argv.includes("--is-ancestor")) {
+      return spawnOk(`${mergeBaseSha}\n`);
+    }
+    if (argv.includes("merge-base") && argv.includes("--is-ancestor")) {
+      return spawnOk("");
+    }
+    if (argv.includes("rev-parse") && !argv.includes("--verify") && !argv.includes("HEAD")) {
+      return spawnOk(`${baseSha}\n`);
+    }
+    // ---- post-rebase HEAD lookup ----
+    if (argv.includes("rev-parse") && argv.includes("HEAD")) {
+      return spawnOk("newRebaseTip0123\n");
+    }
+    return spawnOk("");
+  };
+}
+
 // ---------- deps factory ----------
 
 function makeDeps(overrides: Partial<ProductionDispatcherDeps> = {}): ProductionDispatcherDeps {
@@ -346,23 +407,68 @@ describe("productionQueueMergeAttempt — 5-cell matrix", () => {
     expect(r.reason).toContain("conflict");
   });
 
-  // ----- Cell 5: stale base → rebasing detour -----
+  // ----- Cell 5: stale base → rebasing detour drives performRebase -----
 
-  test("cell 5: baseHasMoved=true → walks open → in_progress → rebasing", async () => {
+  test("cell 5: baseHasMoved=true → walks open → in_progress → rebasing → ready_to_merge (T3+T4 wiring)", async () => {
+    // ADR-134 T3+T4 (t-2b7572d7): the dispatcher now drives the rebase
+    // inline via performRebase when the walk enters rebasing. Per
+    // "one rebase per tick max" the walk breaks AFTER the rebase, so
+    // the merge step lands on the next cron tick.
     const fn = productionQueueMergeAttempt(
       makeDeps({
-        git: makeGitStub({ behavior: "success", baseMoved: true }),
+        git: makeRebaseAwareGitStub({ baseMoved: true, rebaseOutcome: "clean" }),
+        resolveMemberWorktreePath: async () => "/tmp/fake-worktree/geoyws-fe-1",
       }),
     );
     const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
     expect(r.queued).toBe(true);
-    // Stops at `rebasing` — caller (T9 follow-up OR T2-T3 rebase
-    // wiring) drives the rebase + transition back to ready_to_merge.
-    // From the dispatcher's POV, `rebasing` is caller-driven once we
-    // arrive there, so the walk stops on the next iteration when the
-    // state-check sees `rebasing`. But the walk SHOULD have
-    // transitioned in_progress → rebasing in this invocation.
-    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("rebasing");
+    // End-state: ready_to_merge (rebased + waiting for next-tick merge).
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("ready_to_merge");
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.note).toContain("clean");
+    // Dispatcher emitted the rebase-tick log line.
+    expect(logs.some((l) => l.includes("rebase-tick"))).toBe(true);
+  });
+
+  test("cell 5b: rebase conflict during dispatcher walk → terminal conflict", async () => {
+    const fn = productionQueueMergeAttempt(
+      makeDeps({
+        git: makeRebaseAwareGitStub({ baseMoved: true, rebaseOutcome: "conflict" }),
+        resolveMemberWorktreePath: async () => "/tmp/fake-worktree/geoyws-fe-1",
+      }),
+    );
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    expect(r.queued).toBe(true);
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("conflict");
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.note).toContain("rebase conflict");
+  });
+
+  test("cell 5c: missing worktree resolver → terminal conflict with descriptive reason", async () => {
+    const fn = productionQueueMergeAttempt(
+      makeDeps({
+        git: makeRebaseAwareGitStub({ baseMoved: true, rebaseOutcome: "clean" }),
+        resolveMemberWorktreePath: async () => null,
+      }),
+    );
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    expect(r.queued).toBe(true);
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("conflict");
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.note).toContain("cannot resolve worktree");
+  });
+
+  test("cell 5d: entry-state already rebasing → dispatcher re-enters rebase path", async () => {
+    // Prior tick wedged the row in rebasing (the pre-T3+T4 strand).
+    // The dispatcher should now pick it up and advance — that's the
+    // whole point of removing the entry-state refusal.
+    seedState("rebasing");
+    const fn = productionQueueMergeAttempt(
+      makeDeps({
+        git: makeRebaseAwareGitStub({ baseMoved: true, rebaseOutcome: "clean" }),
+        resolveMemberWorktreePath: async () => "/tmp/fake-worktree/geoyws-fe-1",
+      }),
+    );
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    expect(r.queued).toBe(true);
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("ready_to_merge");
   });
 });
 

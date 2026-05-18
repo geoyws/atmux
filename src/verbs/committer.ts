@@ -235,6 +235,26 @@ export async function committerSweepVerb(
     // resolution so the dispatcher has full context. The recording
     // stub stays available as an explicit `opts.queueMergeAttempt`
     // injection (test seam only).
+    // ADR-134 T3+T4 (t-2b7572d7): resolve member worktree from
+     // `<base>-<member>` branch via the team's worktreeIsolation
+     // convention. Mirrors `src/verbs/status.ts::resolveMemberWorktree`
+     // but takes the branch directly; the convention is `<teamRoot>/
+     // .atmux/worktrees/<member>` (or `team.worktreeRoot/<member>`).
+     // Returns null when worktreeIsolation is disabled — the
+     // dispatcher's rebase path treats null as "missing worktree" and
+     // transitions to terminal conflict.
+    const worktreeRoot = team.worktreeRoot ?? ".atmux/worktrees";
+    const resolveMemberWorktreePath = async (memberBranch: string): Promise<string | null> => {
+      if (team.worktreeIsolation !== true) return null;
+      const prefix = `${baseBranch}-`;
+      if (!memberBranch.startsWith(prefix)) return null;
+      const member = memberBranch.slice(prefix.length);
+      if (member.length === 0) return null;
+      return worktreeRoot.startsWith("/")
+        ? join(worktreeRoot, member)
+        : join(teamRoot, worktreeRoot, member);
+    };
+
     const queueMergeAttempt =
       opts.queueMergeAttempt ??
       productionQueueMergeAttempt({
@@ -248,6 +268,7 @@ export async function committerSweepVerb(
         // wires through atmuxDir so the dispatcher's helper can open
         // the kanban DB after every successful merge tick.
         atmuxDir,
+        resolveMemberWorktreePath,
       });
     const deps: CommitterSweepDeps = {
       teamRoot,

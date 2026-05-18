@@ -93,7 +93,7 @@ Terminal states: `merged`, `conflict`, `reverted`. From `conflict` or `reverted`
 
 4. **If ready**, transition `open → in_progress → ready_to_merge` (single transaction).
 
-5. **Rebase gate** — if base moved during member's work (`git -C <teamRoot> merge-base <base> <base>-<member>` is not `<base>`'s tip), transition `ready_to_merge → rebasing`. Run `git rebase <base>` on the member branch. On clean → `rebasing → ready_to_merge`. On conflict → `rebasing → conflict` (terminal).
+5. **Rebase gate** — if base moved during member's work (`git -C <teamRoot> merge-base <base> <base>-<member>` is not `<base>`'s tip), transition `in_progress → rebasing`. The dispatcher then drives `src/core/intra-team-rebase.ts::performRebase()` (ADR-134 T3+T4 / t-2b7572d7) which runs `git rebase origin/<base>` inside the member's worktree. On clean → `rebasing → ready_to_merge` with `baseSha` = post-rebase HEAD. On conflict → terminal `conflict` (porcelain paths captured, `git rebase --abort` restores worktree). One rebase per cron tick max — the merge step lands on the next tick.
 
 6. **performMerge** — `git -C <teamRoot> merge --no-ff <base>-<member>` (still inside the BEGIN IMMEDIATE transaction). On clean → `merging → tested`. On conflict → `merging → conflict` (terminal — see §Conflict surface below).
 
