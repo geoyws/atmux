@@ -21,12 +21,15 @@ import {
 } from "../core/boot-claude.ts";
 import {
   buildWindowName,
+  buildWindowNameLegacy,
   getAtmuxDir,
   getSessionName,
   leadOutboxPath,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
+  type WindowShimOps,
 } from "../core/common.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
@@ -267,10 +270,37 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = (opts.buildTmux ?? defaultBuildTmux)(socketPath);
 
-  const windowName = buildWindowName(target.name, target.emoji, target.label, target.role);
-  if (!(await windowExists(tmux, sessionName, windowName))) {
-    throw new ConfigError({ what: `no tmux window for ${target.name}` });
-  }
+  // EPIC e-a3077ca0 T2: route through resolveWindowWithRenameShim so
+  // legacy hyphen / no-separator panes self-heal to the canonical form
+  // in-place. Original failure mode (Epic body, "Symptom: atmux
+  // rotate-lead failed with no tmux window for lead") was a cage
+  // continuously running across the ADR-161 shim deploy that never
+  // saw `atmux start`'s rename pass — the verb threw rather than
+  // recovering. Legacy variants:
+  //
+  //   - `<emoji>-<display>`  (ADR-135 hyphen — pre-ADR-161 default-member
+  //                           form; canonical for non-default members)
+  //   - `<emoji><member>`    (pre-ADR-135 no-separator legacy)
+  //
+  // When `role` matches a default-member role, `buildWindowName`
+  // produces `<emoji>_<display>` and the hyphen form is a true legacy
+  // variant. For non-default members `buildWindowName` already returns
+  // the hyphen form, so the de-dup guard at the helper's loop head
+  // (legacy === canonical → skip) collapses the variant list to just
+  // the no-separator form.
+  const canonical = buildWindowName(target.name, target.emoji, target.label, target.role);
+  const adr135Hyphen = buildWindowName(target.name, target.emoji, target.label);
+  const pre135NoSep = buildWindowNameLegacy(target.name, target.emoji);
+  const shimOps: WindowShimOps = {
+    listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+    renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+  };
+  const windowName = await resolveWindowWithRenameShim(
+    sessionName,
+    canonical,
+    [adr135Hyphen, pre135NoSep],
+    shimOps,
+  );
   const tmuxTarget = `${sessionName}:${windowName}`;
   const tui = typeof target.tui === "string" ? target.tui : "claude";
   const role = typeof target.role === "string" ? target.role : "member";

@@ -26,7 +26,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import { buildMemberTarget, parseSendArgs, send } from "../../../src/verbs/send.ts";
+import {
+  buildMemberTarget,
+  parseSendArgs,
+  resolveMemberTarget,
+  send,
+} from "../../../src/verbs/send.ts";
 
 // ---------- pure: parseSendArgs ----------
 
@@ -179,6 +184,106 @@ describe("buildMemberTarget", () => {
 
   test("empty emoji string treated as no emoji (parity with buildWindowName)", () => {
     expect(buildMemberTarget("atmux-foo", "alpha", "")).toBe("atmux-foo:alpha");
+  });
+});
+
+// ---------- resolveMemberTarget — cross-format self-heal (EPIC e-a3077ca0 T3) ----------
+
+describe("resolveMemberTarget — window-name self-heal shim", () => {
+  let socketDir: string;
+  let socketPath: string;
+  let priorTmux: string | undefined;
+  let tmux: TmuxNamespace;
+  let sessionName: string;
+
+  beforeEach(async () => {
+    socketDir = await mkdtemp(join(tmpdir(), "atmux-rmt-sock-"));
+    socketPath = join(socketDir, "sock");
+    priorTmux = process.env.TMUX;
+    delete process.env.TMUX;
+    tmux = createTmux({ socketPath, configFile: "/dev/null" });
+    sessionName = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  });
+
+  afterEach(async () => {
+    try {
+      await tmux.server.killServer();
+    } catch {
+      // expected: server may already be gone
+    }
+    if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+    await rm(socketDir, { recursive: true, force: true });
+  });
+
+  test("(a) canonical window exists → no rename, returns canonical target", async () => {
+    // role=team-lead → buildWindowName produces `_-prefix` canonical.
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName: "🧭_lead",
+    });
+    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    expect(target).toBe(`${sessionName}:🧭_lead`);
+    // No additional window was created — canonical was already there.
+    const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+    expect(wins).toContain("🧭_lead");
+    expect(wins).not.toContain("🧭-lead");
+  });
+
+  test("(b) ADR-135 hyphen-form exists → atomic rename → returns canonical (default-member role)", async () => {
+    // Stage the pre-ADR-161 hyphen form for a default-member role.
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName: "🧭-lead",
+    });
+    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    expect(target).toBe(`${sessionName}:🧭_lead`);
+    // Post-call: window was renamed in place.
+    const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+    expect(wins).toContain("🧭_lead");
+    expect(wins).not.toContain("🧭-lead");
+  });
+
+  test("(c) pre-ADR-135 no-separator form exists → atomic rename → returns canonical", async () => {
+    // Stage the pre-ADR-135 concatenated form.
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName: "🧭lead",
+    });
+    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    expect(target).toBe(`${sessionName}:🧭_lead`);
+    const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+    expect(wins).toContain("🧭_lead");
+    expect(wins).not.toContain("🧭lead");
+  });
+
+  test("(d) neither canonical nor legacy variants exist → ConfigError 'no tmux window for <canonical>'", async () => {
+    // Empty session — no matching windows.
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName: "unrelated",
+    });
+    await expect(
+      resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead"),
+    ).rejects.toThrow(/no tmux window for 🧭_lead/);
+  });
+
+  test("non-default-role member (role=member) — hyphen IS canonical, only no-sep gets renamed", async () => {
+    // For role="member", buildWindowName returns `<emoji>-<member>` (hyphen).
+    // Stage the pre-ADR-135 no-separator legacy → rename to hyphen canonical.
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName: "🐝be-1",
+    });
+    const target = await resolveMemberTarget(tmux, sessionName, "be-1", "🐝", undefined, "member");
+    expect(target).toBe(`${sessionName}:🐝-be-1`);
+    const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+    expect(wins).toContain("🐝-be-1");
+    expect(wins).not.toContain("🐝be-1");
   });
 });
 

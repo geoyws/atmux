@@ -17,11 +17,13 @@ import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { CageState } from "../../../src/core/cage-state.ts";
+import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
   checkCockpitOnDefaultSocket,
+  checkLegacyWindowNameFormat,
   checkCronBlock,
   checkCronIntervalDivisors,
   checkCronOrphans,
@@ -4060,5 +4062,235 @@ describe("checkCockpitOnDefaultSocket", () => {
       durationMs: 0,
     });
     expect(typeof spawn).toBe("function");
+  });
+});
+
+// ---------- EPIC e-a3077ca0 T8: checkLegacyWindowNameFormat ----------
+
+describe("checkLegacyWindowNameFormat", () => {
+  /** Spawn-result helper — `list-windows` stdout = one window name per line. */
+  function tmuxListOk(stdout: string): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "tmux",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  /** Minimal Team fixture — only fields the probe reads. */
+  function buildTeam(
+    name: string,
+    members: ReadonlyArray<{
+      name: string;
+      role: string;
+      emoji?: string;
+      label?: string;
+    }>,
+  ): Team {
+    return {
+      name,
+      members: members.map((m) => ({
+        name: m.name,
+        role: m.role,
+        emoji: m.emoji,
+        label: m.label,
+        tui: "claude",
+      })),
+    } as unknown as Team;
+  }
+
+  test("currentTeam canonical _-prefix windows present → no rows", async () => {
+    const team = buildTeam("atmux", [
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "planner", role: "planner", emoji: "🎯" },
+    ]);
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => tmuxListOk("🧭_lead\n🎯_planner\n__atmux__home\n"),
+      loadCockpitFn: async () => null,
+      socketExists: async () => true,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("hyphen-form default-member window → yellow row with rename one-liner (atmux parent cage symptom)", async () => {
+    // The 2026-05-18 atmux parent cage: 4-day uptime, never migrated;
+    // every default-member window still on hyphen form.
+    const team = buildTeam("atmux", [
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "planner", role: "planner", emoji: "🎯" },
+      { name: "reviewer", role: "reviewer", emoji: "🔍" },
+      { name: "ombudsman", role: "ombudsman", emoji: "⚖️" },
+    ]);
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => tmuxListOk("🧭-lead\n🎯-planner\n🔍-reviewer\n⚖️-ombudsman\n"),
+      loadCockpitFn: async () => null,
+      socketExists: async () => true,
+    });
+    expect(rows).toHaveLength(4);
+    for (const row of rows) {
+      expect(row.status).toBe("yellow");
+      expect(row.label).toBe("legacy-window-name-format");
+      expect(row.detail).toContain("atmux cage:");
+    }
+    const leadRow = rows.find((r) => r.detail?.includes("🧭-lead"));
+    expect(leadRow).toBeDefined();
+    expect(leadRow?.detail).toContain("should be '🧭_lead'");
+    expect(leadRow?.hint).toContain("rename-window");
+    expect(leadRow?.hint).toContain("🧭-lead 🧭_lead");
+  });
+
+  test("pre-ADR-135 no-separator default-member window → yellow row with rename one-liner", async () => {
+    const team = buildTeam("atmux", [{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => tmuxListOk("🧭lead\n"),
+      loadCockpitFn: async () => null,
+      socketExists: async () => true,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("🧭lead");
+    expect(rows[0]?.detail).toContain("should be '🧭_lead'");
+    expect(rows[0]?.hint).toContain("🧭lead 🧭_lead");
+  });
+
+  test("committer / member roles are EXEMPT — hyphen IS canonical for them", async () => {
+    // committer (gitter) and regular `member` lane workers stay on hyphen
+    // canonically per project_adr_161_tr2_shipped + ADR-159 pending.
+    // Hyphen-named committer/member windows must NOT be flagged.
+    const team = buildTeam("atmux", [
+      { name: "gitter", role: "committer", emoji: "🌿" },
+      { name: "be-1", role: "member", emoji: "🐝" },
+      { name: "fe-1", role: "member", emoji: "🐝" },
+    ]);
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => tmuxListOk("🌿-gitter\n🐝-be-1\n🐝-fe-1\n"),
+      loadCockpitFn: async () => null,
+      socketExists: async () => true,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("cage socket missing → silent skip (cage not running)", async () => {
+    const team = buildTeam("atmux", [{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+    let tmuxCalled = false;
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => {
+        tmuxCalled = true;
+        return tmuxListOk("");
+      },
+      loadCockpitFn: async () => null,
+      socketExists: async () => false,
+    });
+    expect(rows).toEqual([]);
+    expect(tmuxCalled).toBe(false);
+  });
+
+  test("tmux list-windows non-zero (session missing) → silent skip", async () => {
+    const team = buildTeam("atmux", [{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "can't find session: atmux-atmux",
+        argv: [],
+        cmd: "tmux",
+        signalled: null,
+        durationMs: 0,
+      }),
+      loadCockpitFn: async () => null,
+      socketExists: async () => true,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("tmux spawn throws → silent skip", async () => {
+    const team = buildTeam("atmux", [{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => {
+        throw new Error("ENOENT");
+      },
+      loadCockpitFn: async () => null,
+      socketExists: async () => true,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("currentTeam=null + no cockpit → no rows (nothing to probe)", async () => {
+    const rows = await checkLegacyWindowNameFormat(null, {
+      tmux: async () => tmuxListOk(""),
+      loadCockpitFn: async () => null,
+      socketExists: async () => true,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("cockpit walk — probes every cockpit team's cage", async () => {
+    const teamA = buildTeam("alpha", [{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+    const teamB = buildTeam("beta", [{ name: "planner", role: "planner", emoji: "🎯" }]);
+    const fakeCockpit = {
+      teams: [
+        { name: "alpha", root: "/fake/alpha" },
+        { name: "beta", root: "/fake/beta" },
+      ],
+    } as unknown as LoadedCockpit;
+    const rows = await checkLegacyWindowNameFormat(null, {
+      tmux: async (argv) => {
+        // -t <sessionName> at argv[3]
+        const sessionName = argv[4];
+        if (sessionName === "atmux-alpha") return tmuxListOk("🧭-lead\n");
+        if (sessionName === "atmux-beta") return tmuxListOk("🎯_planner\n");
+        return tmuxListOk("");
+      },
+      loadCockpitFn: async () => fakeCockpit,
+      loadTeamForRoot: async (root) => {
+        if (root === "/fake/alpha") return teamA;
+        if (root === "/fake/beta") return teamB;
+        return null;
+      },
+      socketExists: async () => true,
+    });
+    // alpha → hyphen lead flagged; beta → already canonical, no flag.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("alpha cage");
+    expect(rows[0]?.detail).toContain("🧭-lead");
+  });
+
+  test("currentTeam dedup — already in cockpit, only probed once", async () => {
+    const team = buildTeam("alpha", [{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+    const fakeCockpit = {
+      teams: [{ name: "alpha", root: "/fake/alpha" }],
+    } as unknown as LoadedCockpit;
+    let listCalls = 0;
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => {
+        listCalls += 1;
+        return tmuxListOk("🧭-lead\n");
+      },
+      loadCockpitFn: async () => fakeCockpit,
+      loadTeamForRoot: async () => team,
+      socketExists: async () => true,
+    });
+    // Cockpit + currentTeam both name "alpha" → dedup → single probe →
+    // single flagged row (not two).
+    expect(listCalls).toBe(1);
+    expect(rows).toHaveLength(1);
+  });
+
+  test("member without role (legacy team.json) → not flagged (isDefaultMemberRole=false)", async () => {
+    // Members without an explicit role default to undefined role.
+    // isDefaultMemberRole(undefined) returns false → probe skips them
+    // entirely. This protects pre-ADR-161 team.json files from getting
+    // a flood of false-positive warns on every doctor run.
+    const team = buildTeam("legacy", [{ name: "lead", role: "member", emoji: "🧭" }]);
+    const rows = await checkLegacyWindowNameFormat(team, {
+      tmux: async () => tmuxListOk("🧭-lead\n"),
+      loadCockpitFn: async () => null,
+      socketExists: async () => true,
+    });
+    // role="member" → hyphen IS canonical → no flag.
+    expect(rows).toEqual([]);
   });
 });

@@ -18,14 +18,17 @@ import { formatMyt } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { callerScopeAllowed, findTeamByName, loadCockpit } from "../core/cockpit.ts";
 import {
+  buildWindowName,
+  buildWindowNameLegacy,
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
   getTeamName,
   type ResolveDirOpts,
   requireTeam,
-  resolveExistingWindowName,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
+  type WindowShimOps,
 } from "../core/common.ts";
 import { recordHeadsUp, shouldEmitHeadsUp } from "../core/heads-up-cursor.ts";
 import { sendToMember } from "../core/send.ts";
@@ -211,23 +214,41 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   // 2026-05-13 failures.
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
-  // ADR-135 deprecation-window legacy fallback (extended ADR-161 TR2):
-  // resolve to whichever form (`<emoji>_<name>` default-member canonical,
-  // `<emoji>-<name>` ADR-135 hyphen, OR `<emoji><name>` pre-ADR-135
-  // legacy) the live tmux window list actually contains. Pre-ADR-135
-  // teams spawned under the older binary still have legacy windows; the
-  // canonical-only build silently broke tell-lead for those teams ("no
-  // tmux window for lead (is the team running?)" even when the team was
-  // clearly up). The `lead.role` arg threads through so the resolver
-  // generates the ADR-161 TR2 default-member canonical when applicable.
-  const windowName = await resolveExistingWindowName(
-    sessionName,
-    lead.name,
-    lead.emoji,
-    lead.label,
-    async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
-    lead.role,
-  );
+  // EPIC e-a3077ca0 T6: self-heal window-name resolution. Resolve the
+  // lead's window to its canonical (ADR-161 `_-prefix` default-member)
+  // form, atomically renaming any legacy variant (`<emoji>-<name>`
+  // ADR-135 hyphen, `<emoji><name>` pre-ADR-135 no-separator) in place.
+  // Pre-shim, the canonical-only build silently broke tell-lead for
+  // cages whose windows hadn't been migrated via `atmux start`'s rename
+  // shim (the 2026-05-18 atmux parent cage 4-day-uptime symptom).
+  //
+  // Resolver miss → ConfigError("no tmux window for <canonical>"). We
+  // map that to the bash-byte-equal "no tmux window for <lead.name>
+  // (is the team running?)" body per ADR-029 §F6 + F7 — the parity
+  // contract (and the tests at tell-lead.test.ts line 221) require
+  // exactly this string. Use `lead.name` (the immutable ID) not the
+  // canonical window name so the operator-facing message stays stable
+  // across hot-rename + format migrations.
+  const canonical = buildWindowName(lead.name, lead.emoji, lead.label, lead.role);
+  const adr135Hyphen = buildWindowName(lead.name, lead.emoji, lead.label);
+  const legacy = buildWindowNameLegacy(lead.name, lead.emoji);
+  const legacyVariants = [adr135Hyphen, legacy].filter((v) => v !== canonical);
+  const ops: WindowShimOps = {
+    listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+    renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+  };
+  let windowName: string;
+  try {
+    windowName = await resolveWindowWithRenameShim(sessionName, canonical, legacyVariants, ops);
+  } catch (e) {
+    // Per ADR-029 §F6 + F7 — bash-byte-equal error body. The durable
+    // appendDriverInbox call above already landed, matching bash's
+    // "inbox first, then ping" ordering.
+    throw new ConfigError({
+      what: `no tmux window for ${lead.name} (is the team running?)`,
+      cause: e,
+    });
+  }
   const target = `${sessionName}:${windowName}`;
   // Bash heads-up (lib/tell.sh:43): "📬 driver-inbox has a new ask: <msg≤80>…"
   const headsUp = buildHeadsUp(parsed.msg);

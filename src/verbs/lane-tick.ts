@@ -25,11 +25,15 @@ import { dirname } from "node:path";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { findCommitForTask, type GitSpawn } from "../core/auto-done.ts";
 import {
+  buildWindowName,
+  buildWindowNameLegacy,
   getAtmuxDir,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
+  type WindowShimOps,
 } from "../core/common.ts";
 import { resolveGoalForMember } from "../core/goal-resolver.ts";
 import { listTasks, moveTask } from "../core/kanban.ts";
@@ -90,6 +94,15 @@ export interface LaneTickDeps {
    *  real brief file. Return value: resolved goal text OR `null` when
    *  no goal is active. */
   resolveGoal?: (member: TeamMember) => Promise<string | null>;
+  /** EPIC e-a3077ca0 T5: dep-injectable window-shim ops. Production
+   *  wires through `tmux.window.listWindows` + `tmux.window.renameWindow`
+   *  so legacy hyphen / no-separator panes self-heal to canonical on the
+   *  per-member capture iteration (the production failure path from
+   *  t-fabd2528 verify-poll). Tests inject a stub to bypass tmux
+   *  invocation entirely; on `null` (the default test path) the helper
+   *  falls back to the canonical form without renaming — matches the
+   *  pre-shim behavior for fixture-only tests. */
+  shimOps?: WindowShimOps | null;
 }
 
 export interface LaneTickResult {
@@ -191,6 +204,19 @@ export async function runLaneTick(
   const sendFn = deps.sendFn ?? safeSendKeys;
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
+  // EPIC e-a3077ca0 T5: shim ops default to tmux.window in production;
+  // tests that override `tmux`/`capture` without overriding `shimOps`
+  // get `null`-typed dep → resolveMemberWindow short-circuits to
+  // canonical without invoking tmux at all (matches the pre-shim
+  // behavior for fixture-only tests). Explicit-null is the test
+  // contract; production caller defaults to the live tmux wiring.
+  const shimOps: WindowShimOps | null =
+    deps.shimOps === undefined
+      ? {
+          listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+          renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+        }
+      : deps.shimOps;
   const sendKeysFn: SendKeysFn =
     deps.sendKeysFn ??
     (async (target: string, keys: string, opts) => {
@@ -255,7 +281,7 @@ export async function runLaneTick(
   const outcomes: Record<string, LaneTickMemberOutcome> = {};
 
   for (const member of lanedMembers) {
-    const windowTarget = resolveWindowTarget(session, member);
+    const windowTarget = await resolveMemberWindowTarget(session, member, shimOps);
 
     let classification: PaneClassification;
     let paneText = "";
@@ -621,14 +647,52 @@ export function parseLaneTickArgs(argv: ReadonlyArray<string>): ParsedArgs {
 
 // ---------- Internals ----------
 
-/** Build the tmux window target string for a member. Matches the
- *  whip.ts resolution: `${session}:${emoji}${name}` for regular
- *  members. Lead-window resolution lives in whip (uses the I-2 marker
+/** EPIC e-a3077ca0 T5: build the tmux window target string for a
+ *  member, self-healing legacy hyphen / no-separator window names to
+ *  the ADR-161 canonical form in-place. Previously this returned
+ *  `${session}:${emoji}${name}` (pre-ADR-135 no-separator form) which
+ *  was exactly the failure trail captured 2026-05-18 03:52 UTC in
+ *  lane-tick.log: `capture error — can't find window: 🦦docs` while
+ *  the actual pane was `🦦_docs`.
+ *
+ *  Behavior: derive canonical (ADR-161-aware) + the two legacy variants,
+ *  call resolveWindowWithRenameShim, return `${session}:<canonical>`.
+ *  On shim failure (no matching window in any form OR `shimOps === null`
+ *  for fixture-only tests) fall back to canonical without renaming —
+ *  the downstream capture call will then produce its usual
+ *  `capture error` line + skip-capture-error outcome, matching
+ *  pre-shim behavior for absent panes.
+ *
+ *  Lead-window resolution still lives in whip (uses the I-2 marker
  *  fallback for renamed lead windows); lane-tick only iterates
  *  members with `.lane` set, and lead/planner/reviewer/gitter don't
- *  carry a worker lane in practice — the simpler form suffices. */
-function resolveWindowTarget(session: string, member: TeamMember): string {
-  const windowName = `${member.emoji ?? ""}${member.name}`;
+ *  carry a worker lane in practice — the shim suffices here. */
+async function resolveMemberWindowTarget(
+  session: string,
+  member: TeamMember,
+  shimOps: WindowShimOps | null,
+): Promise<string> {
+  const canonical = buildWindowName(member.name, member.emoji, member.label, member.role);
+  if (shimOps === null) {
+    return `${session}:${canonical}`;
+  }
+  const adr135Hyphen = buildWindowName(member.name, member.emoji, member.label);
+  const pre135NoSep = buildWindowNameLegacy(member.name, member.emoji);
+  let windowName: string;
+  try {
+    windowName = await resolveWindowWithRenameShim(
+      session,
+      canonical,
+      [adr135Hyphen, pre135NoSep],
+      shimOps,
+    );
+  } catch {
+    // Either no matching window OR list-windows failed (tmux unavailable
+    // in test harness). Fall back to canonical so the downstream
+    // capture call produces its `capture error` log line + the per-
+    // member loop logs skip-capture-error — matches pre-shim behavior.
+    windowName = canonical;
+  }
   return `${session}:${windowName}`;
 }
 

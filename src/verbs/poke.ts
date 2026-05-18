@@ -85,6 +85,7 @@ import {
 } from "../core/account-swap.ts";
 import {
   buildWindowName,
+  buildWindowNameLegacy,
   classifyPaneState,
   displayMemberName,
   getAtmuxDir,
@@ -93,8 +94,10 @@ import {
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
   stateDir,
   teamJsonPath,
+  type WindowShimOps,
 } from "../core/common.ts";
 import { fixCronPollutionRecipe } from "../core/cursor-recipes/fix-cron-pollution.ts";
 import { fixSupervisorMissingRecipe } from "../core/cursor-recipes/fix-supervisor-missing.ts";
@@ -130,19 +133,19 @@ import {
 import { classifyText } from "../core/pane-state.ts";
 import { PASTE_SUBMIT_SETTLE_FLOOR_MS, submitAfterPaste } from "../core/paste-submit.ts";
 import {
-  detectAndResubmit,
-  type QueuedResubmitAction,
-  type QueuedResubmitFailureLogFn,
-  type QueuedResubmitSendKeysFn,
-} from "../core/queued-text-resubmit.ts";
-import { composerEmpty, safeSendKeysWithVerify } from "../core/safe-send.ts";
-import {
   loadPermModeDriftState,
   parsePermissionMode,
   recordDrift,
   savePermModeDriftState,
   shouldFireDrift,
 } from "../core/perm-mode-drift-state.ts";
+import {
+  detectAndResubmit,
+  type QueuedResubmitAction,
+  type QueuedResubmitFailureLogFn,
+  type QueuedResubmitSendKeysFn,
+} from "../core/queued-text-resubmit.ts";
+import { composerEmpty, safeSendKeysWithVerify } from "../core/safe-send.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
 import {
   type BudgetCheckCtx,
@@ -413,7 +416,38 @@ function makeDefaultModalCyclingClarifier(
   return async (member: string, message: string): Promise<void> => {
     const session = await getSessionName({ dir: args.atmuxDir, team: args.team });
     const memberEntry = args.team.members.find((m) => m.name === member);
-    const windowName = `${memberEntry?.emoji ?? ""}${member}`;
+    // EPIC e-a3077ca0 T5: route window resolution through the shim so a
+    // legacy hyphen / no-separator pane self-heals to canonical before
+    // we try to paste-buffer into it. The shim's listWindows + rename
+    // is wrapped in the existing best-effort try-catch — if it throws,
+    // we proceed with the canonical form and let the downstream paste
+    // fail-silently per the clarifier's contract (the flag + Discord
+    // surfaces are independent of clarifier success).
+    const canonical = buildWindowName(
+      member,
+      memberEntry?.emoji,
+      memberEntry?.label,
+      memberEntry?.role,
+    );
+    let windowName = canonical;
+    if (memberEntry !== undefined) {
+      const adr135Hyphen = buildWindowName(member, memberEntry.emoji, memberEntry.label);
+      const pre135NoSep = buildWindowNameLegacy(member, memberEntry.emoji);
+      const shimOps: WindowShimOps = {
+        listWindowNames: async (s) => (await args.tmux.window.listWindows(s)).map((w) => w.name),
+        renameWindow: (s, from, to) => args.tmux.window.renameWindow(`${s}:${from}`, to),
+      };
+      try {
+        windowName = await resolveWindowWithRenameShim(
+          session,
+          canonical,
+          [adr135Hyphen, pre135NoSep],
+          shimOps,
+        );
+      } catch {
+        windowName = canonical;
+      }
+    }
     const target = `${session}:${windowName}`;
     const bufferName = `atmux-modal-cycling-${args.team.name}-${member}-${args.nowSec}`;
     try {
@@ -1605,21 +1639,66 @@ async function checkMember(
   if (role === "team-lead") homeOpts.fallback = memberWindowName;
   const windowName =
     role === "team-lead" ? await readLeadWindowName(team.name, homeOpts) : memberWindowName;
-  const windowTarget = `${session}:${windowName}`;
 
-  // Window existence — `displayMessage` returns "" + non-zero if absent.
+  // EPIC e-a3077ca0 T5: for non-lead members, self-heal legacy hyphen /
+  // no-separator panes to canonical via resolveWindowWithRenameShim
+  // BEFORE the existence check. The shim does its own listWindows;
+  // the canonical-exists branch is a no-op (early return). When neither
+  // canonical nor any legacy variant matches, the helper throws — we
+  // treat that exactly like the pre-shim windowExists=false finding,
+  // surfacing the missing-window blocker per pre-existing behavior.
+  //
+  // Lead path is intentionally NOT shimmed: it routes through
+  // readLeadWindowName which uses the I-2 marker file fallback for
+  // post-auto-rotate lead-rename cases; the marker name doesn't
+  // necessarily match buildWindowName's canonical, and the shim would
+  // misidentify the marker form as "legacy" and rename it. Lead falls
+  // through to the existing listWindows + windowExists check below.
+  let resolvedWindowName = windowName;
+  if (role !== "team-lead") {
+    const adr135Hyphen = buildWindowName(member.name, member.emoji, member.label);
+    const pre135NoSep = buildWindowNameLegacy(member.name, member.emoji);
+    const shimOps: WindowShimOps = {
+      listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+      renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+    };
+    try {
+      resolvedWindowName = await resolveWindowWithRenameShim(
+        session,
+        memberWindowName,
+        [adr135Hyphen, pre135NoSep],
+        shimOps,
+      );
+    } catch {
+      // None of canonical / hyphen / no-separator matched, OR the
+      // underlying listWindows failed (transient cron-window race
+      // against stop/start). Surface the same missing-window finding
+      // and return — matches pre-shim defensive behavior at this site.
+      findings.push({
+        category: "blocker",
+        bullet: bullet80(`🛑 ${display}: window missing (role=${role})`),
+      });
+      return;
+    }
+  }
+  const windowTarget = `${session}:${resolvedWindowName}`;
+
+  // Window existence (lead-only path now — non-lead shimmed above).
+  // `displayMessage` returns "" + non-zero if absent.
   // Cleaner: `listWindows` + `.some(w => w.name === windowName)`.
   // expected: tmux server transient unreachability (cron-window race against
   // a stop / start) — degrade to "no windows" so the per-member loop surfaces
   // the missing-window finding instead of crashing the whole tick.
-  const windows = await tmux.window.listWindows(session).catch(() => []);
-  const windowExists = windows.some((w) => w.name === windowName);
-  if (!windowExists) {
-    findings.push({
-      category: "blocker",
-      bullet: bullet80(`🛑 ${display}: window missing (role=${role})`),
-    });
-    return;
+  if (role === "team-lead") {
+    const windows = await tmux.window.listWindows(session).catch(() => []);
+    const windowExists = windows.some((w) => w.name === resolvedWindowName);
+    if (!windowExists) {
+      findings.push({
+        category: "blocker",
+        bullet: bullet80(`🛑 ${display}: window missing (role=${role})`),
+      });
+      return;
+    }
   }
 
   // Pane current command — must match the configured TUI. Crashed pane

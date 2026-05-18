@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🟢 Fixed — self-heal shim for legacy default-member window names (EPIC e-a3077ca0, 2026-05-18)
+
+Cages continuously running across the ADR-161 default-member `_-prefix` deploy never saw an `atmux start` rename pass and stayed on pre-ADR-161 hyphen / no-separator window names indefinitely. Every addressing verb refused with `no tmux window for lead (is the team running?)` against such cages until an operator manually `tmux rename-window`'d each of the 6 coordination panes. Observed 2026-05-18 on the atmux parent cage (4-day uptime; `🧭-lead` / `🎯-planner` / `🔍-reviewer` / `🦦-docs` / `🌿-gitter` / `⚖️-ombudsman` all on hyphen form). Cross-format failure also caught at `src/verbs/lane-tick.ts` against the docs window: `lane-tick: docs: capture error — can't find window: 🦦docs` (no-separator pre-ADR-135 variant — captured by t-fabd2528 verify-poll while the actual pane was `🦦_docs`).
+
+New `src/core/common.ts::resolveWindowWithRenameShim(sessionName, canonical, legacyVariants, ops)` helper drives an atomic legacy → canonical `tmux rename-window` on the first addressing call against a legacy cage, then returns the canonical name. Wired into the 6 default-member addressing surfaces; first call after deploy self-heals each cage. Doctor probe `legacy-window-name-format` provides an at-a-glance verdict for operators with copy-paste-ready rename hints.
+
+- **[`src/core/common.ts`](src/core/common.ts)** (T1 86c0e4a) — `resolveWindowWithRenameShim` + `WindowShimOps` dep-injectable interface. Canonical handles all three observed formats: `<emoji>_<member>` ADR-161 default-member canonical, `<emoji>-<member>` ADR-135 hyphen, `<emoji><member>` pre-ADR-135 no-separator. Gitter exemption preserved (canonical stays `🌿-gitter` per `project_adr_161_tr2_shipped` + ADR-159 pending — caller passes empty `legacyVariants[]`).
+- **[`src/verbs/rotate.ts`](src/verbs/rotate.ts)** (T2 5f07a60) — highest-frequency call-site; was the original 2026-05-18 atmux parent-cage `rotate-lead` failure symptom.
+- **[`src/verbs/send.ts`](src/verbs/send.ts)** (T3 1182e66) — both single-member + broadcast paths via `resolveMemberTarget`. Broadcast catch widens to absorb the new `ConfigError("no tmux window for X")` miss-path into the same warn bucket as paste-buffer failures (bash parity).
+- **[`src/verbs/dispatch.ts`](src/verbs/dispatch.ts)** (T4 f1e7744) — kanban Task dispatch.
+- **[`src/verbs/lane-tick.ts`](src/verbs/lane-tick.ts)** + **[`src/verbs/poke.ts`](src/verbs/poke.ts)** (T5 13ad850) — per-member iteration; was the surface that caught the `🦦docs` capture error in production logs.
+- **[`src/verbs/tell-lead.ts`](src/verbs/tell-lead.ts)** (T6 0dcffae) — driver→lead + member→lead paths; preserves ADR-029 §F6 + F7 byte-equal `no tmux window for <lead.name> (is the team running?)` error body (parity-test-gated).
+- **[`src/verbs/doctor.ts`](src/verbs/doctor.ts)** (T8 22a2df6) — new warn-class probe `legacy-window-name-format`. Walks every cockpit cage (`~/.atmux/cockpit.json::teams[]`; falls back to current-team when cockpit absent / unreadable). Emits yellow rows with `tmux -S <socket> rename-window` one-liners. Gitter + plain `role: "member"` exempt by definition (hyphen IS their canonical per ADR-161 §D2). Self-clearing post-rename — whether operator runs the hint OR the shim wires self-heal on the next addressing call.
+
+**Test coverage** — T7 unit (86c0e4a, 4 cases on `resolveWindowWithRenameShim` covering canonical-exists, hyphen-form-renamed, no-separator-renamed, neither-throws). Per-wire shim coverage landed alongside each commit: 5 cases in `send.test.ts` (1182e66), 4 cases in `tell-lead.test.ts` (0dcffae), 11 cases in `doctor.test.ts` (22a2df6, including cockpit-walk, current-team dedup, and the role-undefined-silent path). Wire commits for T2 / T4 / T5 carry their own per-verb shim tests against the same matrix.
+
+**Cross-refs**:
+
+- [ADR-161](docs/adr/161-default-member-prefix-and-sort-verbs.md) §Amendment 2026-05-18 — names the helper + the 6 wire-sites + the doctor probe + the gitter exemption + the carve-outs (epic-viewer + user-added members).
+- memory `feedback_atmux_dispatch_emoji_window_bug` — RESOLVED 2026-05-18; documents the three observed formats + recovery flow.
+
+**EPIC commits**: T1 86c0e4a · T2 5f07a60 · T3 1182e66 · T4 f1e7744 · T5 13ad850 · T6 0dcffae · T7 (bundled with T1) · T8 22a2df6 · T9 (this commit).
+
 ### 🟢 Fixed — auto-fire Enter on queued worker compose-box + rotate-lead brief-paste decoupled from already-booted short-circuit (EPIC e-f28c2596, 2026-05-18)
 
 Two-front fix for chronic stuck-pane patterns observed across `/bau` scans on 2026-05-17 and 2026-05-18: (1) cron-fired hot-loop verbs now ACTIVELY unstick queued compose-box text via ADR-138 verify-and-retry instead of merely surfacing the stuck state, and (2) `atmux rotate-lead` no longer skips the brief re-paste when tmux scrollback retains pre-`/clear` tokens. Both halves of the EPIC ship to trunk in this release; reviewer-trunk-signoff fires when this CHANGELOG entry lands alongside the T6 e2e (7cf5b02) + T8 unit (e97c357) gates.
