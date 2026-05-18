@@ -650,8 +650,16 @@ export async function setTaskDriverOnly(
   });
 }
 
-/** Update a task's owner. Throws `ConfigError` on miss. */
-export async function assignTask(atmuxDir: string, id: string, owner: string): Promise<void> {
+/** Update a task's owner. Throws `ConfigError` on miss.
+ *
+ *  Pass `null` to unassign (parking-lot convention per `feedback_
+ *  task_body_no_self_claim_language`) — surfaces in `task list` as
+ *  the bare `-` placeholder and skips the pull-model claim path. */
+export async function assignTask(
+  atmuxDir: string,
+  id: string,
+  owner: string | null,
+): Promise<void> {
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
       transact(db, () => {
