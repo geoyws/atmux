@@ -1718,10 +1718,19 @@ async function checkMember(
     });
   }
 
-  // ---------- EPIC e-f28c2596 T2: active queued-text resubmit ----------
+  // ---------- EPIC e-f28c2596 T2 + T4: active queued-text resubmit ----------
   // Passive `snap.queuedMessages` above only SURFACES the stuck state; ADR-
   // 138-routed resubmit actually unsticks the compose box. Helper is pure
   // (src/core/queued-text-resubmit.ts) — we wire the tmux + log deps here.
+  //
+  // EPIC T2 (per-member iteration) + T4 (team-level loop in then-`whip.ts`)
+  // BOTH land at this site post-ADR-160 (whip→poke rename). The legacy bash
+  // whip.sh distinguished a "team-level" loop from per-member checks; the TS
+  // port consolidates both into a single `for (const member of team.members)`
+  // in `runTick` that calls `checkMember` per entry — i.e. the per-member
+  // wiring IS the team-level wiring. Coverage spans every role in
+  // `team.json::members[]` (lead / planner / reviewer / workers / ombudsman
+  // when present) because no role filtering happens upstream of this call.
   // Skip when the pane is in a state where re-firing would mis-target:
   //   • rate-limit hard      → sends silently dropped (memory feedback_rate_limit_pane)
   //   • compacting           → keystrokes absorbed + lost during context redraw
