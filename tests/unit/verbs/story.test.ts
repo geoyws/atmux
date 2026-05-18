@@ -808,3 +808,216 @@ describe("story verb — signoff / unsignoff dispatch", () => {
     }
   });
 });
+
+// ---------- ADR-175 GAP 2: mergeMode field + trunk-direct branching ----------
+
+describe("parseAddArgs — --merge-mode", () => {
+  test("default omitted → mergeMode undefined", () => {
+    const a = parseAddArgs(["t", "--epic", "e-1"]);
+    expect(a.mergeMode).toBeUndefined();
+  });
+
+  test("--merge-mode trunk-direct captured", () => {
+    const a = parseAddArgs(["t", "--epic", "e-1", "--merge-mode", "trunk-direct"]);
+    expect(a.mergeMode).toBe("trunk-direct");
+  });
+
+  test("--merge-mode feature-branch captured", () => {
+    const a = parseAddArgs(["t", "--epic", "e-1", "--merge-mode", "feature-branch"]);
+    expect(a.mergeMode).toBe("feature-branch");
+  });
+
+  test("--merge-mode bogus → UsageError naming the field", () => {
+    expect(() =>
+      parseAddArgs(["t", "--epic", "e-1", "--merge-mode", "bogus"]),
+    ).toThrow(/--merge-mode must be/);
+  });
+
+  test("dangling --merge-mode → UsageError", () => {
+    expect(() => parseAddArgs(["t", "--epic", "e-1", "--merge-mode"])).toThrow(
+      UsageError,
+    );
+  });
+});
+
+describe("addStory — mergeMode field", () => {
+  test("omitted defaults to 'feature-branch'", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.mergeMode).toBe("feature-branch");
+  });
+
+  test("explicit trunk-direct persists", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "S",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.mergeMode).toBe("trunk-direct");
+  });
+
+  test("explicit feature-branch persists", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "S",
+      epic: eid,
+      mergeMode: "feature-branch",
+    });
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.mergeMode).toBe("feature-branch");
+  });
+});
+
+describe("advanceStory — trunk-direct branching", () => {
+  async function buildTrunkDirectAtReview(): Promise<{ eid: string; sid: string }> {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "S",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    return { eid, sid };
+  }
+
+  test("review → done legal after signoff (no merge-task synthesized)", async () => {
+    const { sid } = await buildTrunkDirectAtReview();
+    await storySignoff(atmuxDir, sid, { as: "reviewer", note: "trunk-direct ack" });
+    const r = await advanceStory(atmuxDir, sid, "done");
+    expect(r.to).toBe("done");
+    const row = getStoryRow(sid);
+    expect(row?.status).toBe("done");
+    expect(row?.mergeTaskId ?? null).toBeNull();
+    expect(row?.completedAt).toBeGreaterThan(0);
+  });
+
+  test("review → done refused without signoff", async () => {
+    const { sid } = await buildTrunkDirectAtReview();
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
+      /reviewer signoff missing/,
+    );
+  });
+
+  test("review → merging refused (no merging phase for trunk-direct)", async () => {
+    const { sid } = await buildTrunkDirectAtReview();
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    await expect(advanceStory(atmuxDir, sid, "merging")).rejects.toThrow(
+      /trunk-direct/,
+    );
+  });
+
+  test("default next-step from review jumps to done for trunk-direct", async () => {
+    const { sid } = await buildTrunkDirectAtReview();
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    // No --to: trunk-direct should jump straight to done, not merging.
+    const r = await advanceStory(atmuxDir, sid);
+    expect(r.from).toBe("review");
+    expect(r.to).toBe("done");
+  });
+
+  test("feature-branch regression — review → merging path unchanged", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    // No --mergeMode → defaults to feature-branch.
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    const m = await advanceStory(atmuxDir, sid, "merging");
+    expect(m.to).toBe("merging");
+    expect(m.dispatchedTaskId).not.toBe(null);
+    expect(getStoryRow(sid)?.mergeTaskId).toBe(m.dispatchedTaskId);
+  });
+
+  test("feature-branch regression — review → done without merging refused", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    // feature-branch must NOT take the trunk-direct review→done shortcut.
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(/illegal transition/);
+  });
+});
+
+// ---------- Integration: trunk-direct full state-machine via signoff verb ----------
+
+describe("ADR-175 GAP 2 integration — trunk-direct full state machine", () => {
+  test("planning → ready → in-progress → testing → review → SIGNOFF → done (skips merging)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "rentx E1 shape (trunk-direct)",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, {
+      as: "reviewer",
+      note: "trunk-direct integration capstone",
+    });
+    const d = await advanceStory(atmuxDir, sid, "done");
+    expect(d.to).toBe("done");
+    expect(d.dispatchedTaskId).toBeNull();
+    const final = getStoryRow(sid);
+    expect(final?.status).toBe("done");
+    expect(final?.mergeMode).toBe("trunk-direct");
+    expect(final?.mergeTaskId ?? null).toBeNull();
+    expect(final?.reviewSignoff).toBe(true);
+    const audit = final?.signoffAudit as Array<Record<string, unknown>>;
+    expect(audit.length).toBe(1);
+    expect(audit[0]?.signedOffBy).toBe("reviewer");
+  });
+});
+
+// ---------- Verb-layer --merge-mode dispatch ----------
+
+describe("story verb — --merge-mode dispatch", () => {
+  test("story add --merge-mode trunk-direct persists mode", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const { out } = await captureStdout(() =>
+      story([
+        "add",
+        "--epic",
+        eid,
+        "--merge-mode",
+        "trunk-direct",
+        "--team-dir",
+        teamDir,
+        "Some",
+        "title",
+      ]),
+    );
+    const sid = out.trim();
+    expect(sid).toMatch(/^s-[0-9a-f]{8}$/);
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.mergeMode).toBe("trunk-direct");
+  });
+
+  test("story add --merge-mode bogus → UsageError via verb path", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    await expect(
+      story([
+        "add",
+        "--epic",
+        eid,
+        "--merge-mode",
+        "no-merge",
+        "--team-dir",
+        teamDir,
+        "T",
+      ]),
+    ).rejects.toThrow(/--merge-mode must be/);
+  });
+});

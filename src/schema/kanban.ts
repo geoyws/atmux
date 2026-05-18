@@ -248,6 +248,35 @@ export const KanbanStory = z
       .array(z.record(z.string(), z.unknown()))
       .nullable()
       .optional(),
+    /** ADR-175 GAP 2: how this Story integrates onto trunk.
+     *
+     *   - `'feature-branch'` (DEFAULT) — current behaviour.
+     *     `review → merging` synthesizes a gitter/committer merge-Task
+     *     per `src/core/story.ts:320-349`; `merging → done` waits on
+     *     that Task. Suits the "branch off, PR-merge back" shape.
+     *
+     *   - `'trunk-direct'` — code lands on trunk without a feature
+     *     branch / merge commit. `review → done` becomes legal
+     *     (skipping `merging`); the synthetic merge-Task is NOT
+     *     created. Reviewer signoff is still required (we bypass the
+     *     merge phase, not the review phase). Suits platform / infra
+     *     stories (submodule attach, nginx symlink, systemd unit,
+     *     deploy provisioning) where there is no merge artifact.
+     *
+     *  Persisted as a dedicated `merge_mode` SQLite column (added in
+     *  migration v9→v10 — see `src/abstractions/sqlite-migrations.ts`)
+     *  and round-tripped via `KNOWN_STORY_FIELDS` in
+     *  `src/core/repositories/kanban-repo.ts`. Default `'feature-branch'`
+     *  applies to both legacy rows (NULL column) and rows where the
+     *  caller omitted the field — `storyFromRow` passes the NULL through
+     *  as `undefined` and Zod's `.default()` backfills.
+     *
+     *  Two values only (per ADR-175 §Decision GAP 2 — YAGNI tightens
+     *  scope). A future third mode (e.g. `'no-merge'` per ADR-175
+     *  OQ-3) lands additively without schema churn. */
+    mergeMode: z
+      .enum(["feature-branch", "trunk-direct"])
+      .default("feature-branch"),
   })
   .passthrough();
 export type KanbanStory = z.infer<typeof KanbanStory>;

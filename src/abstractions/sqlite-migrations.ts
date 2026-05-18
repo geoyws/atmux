@@ -422,4 +422,41 @@ export const migrations: readonly Migration[] = [
       db.exec("ALTER TABLE merger_state ADD COLUMN test_outcome TEXT");
     },
   },
+  // ---------- v9 → v10 ----------
+  // ADR-175 GAP 2 (t-aacb8664): per-story merge mode for trunk-direct
+  // stories. New column `merge_mode TEXT DEFAULT 'feature-branch'` on the
+  // `stories` table. Two legal values today:
+  //   - 'feature-branch' — current behaviour. `review → merging`
+  //                        synthesizes the gitter merge-Task per
+  //                        src/core/story.ts:320-349.
+  //   - 'trunk-direct'   — code lands on trunk without a feature
+  //                        branch / merge commit. `review → done`
+  //                        becomes legal (skips merging); signoff bit
+  //                        still required.
+  //
+  // Permissive TEXT typing (no CHECK constraint) matches the rest of
+  // the stories schema. Enum is gated at the Zod layer (KanbanStory
+  // in src/schema/kanban.ts) + at the verb parser (`atmux story add
+  // --merge-mode <m>` in src/verbs/story.ts). Forward-compatible: a
+  // future third mode (e.g. 'no-merge' per ADR-175 OQ-3) lands
+  // additively without ALTER.
+  //
+  // Backfill: SQLite ALTER TABLE … DEFAULT applies to new rows AND
+  // backfills NULL into existing rows (then SELECT returns the default
+  // for those rows because the column was declared with a non-NULL
+  // default). The Zod schema's `.default('feature-branch')` covers
+  // the read-side fallback when the column is genuinely NULL (legacy
+  // rows from a DB that was on v9 when the migration ran but where
+  // the SQLite version doesn't backfill — belt and suspenders).
+  //
+  // No index — column is read alongside the row by PK; no standalone
+  // scan path. Cardinality is also tiny (2 values today, capped at 3
+  // by ADR-175 §Decision).
+  {
+    from: 9,
+    to: 10,
+    up: (db) => {
+      db.exec("ALTER TABLE stories ADD COLUMN merge_mode TEXT DEFAULT 'feature-branch'");
+    },
+  },
 ];

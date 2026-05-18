@@ -24,7 +24,8 @@ import { ConfigError, UsageError } from "../errors.ts";
 
 const USAGE_HINT_ROOT =
   "atmux story <add|list|show|advance|signoff|unsignoff> [args]";
-const USAGE_ADD = "atmux story add <title> --epic <eid> [--ac C] [--body T]";
+const USAGE_ADD =
+  "atmux story add <title> --epic <eid> [--ac C] [--body T] [--merge-mode feature-branch|trunk-direct]";
 const USAGE_LIST = "atmux story list --epic <eid> [--status S] [--json]";
 const USAGE_SHOW = "atmux story show <id> [--json]";
 const USAGE_ADV = "atmux story advance <id> [--to <state>]";
@@ -73,6 +74,7 @@ async function storyAdd(argv: ReadonlyArray<string>): Promise<number> {
   const opts: Parameters<typeof addStory>[1] = { title: parsed.title, epic: parsed.epic };
   if (parsed.body !== undefined) opts.body = parsed.body;
   if (parsed.ac !== undefined) opts.acceptanceCriteria = parsed.ac;
+  if (parsed.mergeMode !== undefined) opts.mergeMode = parsed.mergeMode;
   const sid = await addStory(atmuxDir, opts);
   process.stderr.write(`story: added ${sid} → ${parsed.epic} — ${parsed.title}\n`);
   process.stdout.write(`${sid}\n`);
@@ -174,6 +176,7 @@ interface ParsedAddArgs {
   epic: string;
   body?: string;
   ac?: string;
+  mergeMode?: "feature-branch" | "trunk-direct";
   teamDir?: string;
 }
 
@@ -182,6 +185,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   let epic = "";
   let body: string | undefined;
   let ac: string | undefined;
+  let mergeMode: "feature-branch" | "trunk-direct" | undefined;
   let teamDir: string | undefined;
   let i = 0;
   while (i < argv.length) {
@@ -210,6 +214,24 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
         throw new UsageError({ what: "story add: --body requires a value", hint: USAGE_ADD });
       }
       body = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--merge-mode") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "story add: --merge-mode requires a value",
+          hint: USAGE_ADD,
+        });
+      }
+      if (v !== "feature-branch" && v !== "trunk-direct") {
+        throw new UsageError({
+          what: `story add: --merge-mode must be 'feature-branch' or 'trunk-direct' (got '${v}')`,
+          hint: USAGE_ADD,
+        });
+      }
+      mergeMode = v;
       i += 2;
       continue;
     }
@@ -244,6 +266,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   const out: ParsedAddArgs = { title, epic };
   if (body !== undefined) out.body = body;
   if (ac !== undefined) out.ac = ac;
+  if (mergeMode !== undefined) out.mergeMode = mergeMode;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }

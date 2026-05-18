@@ -82,6 +82,9 @@ export interface AddStoryOpts {
   epic: string;
   body?: string;
   acceptanceCriteria?: string;
+  /** ADR-175 GAP 2: how this Story integrates onto trunk. Omitted →
+   *  `'feature-branch'` (current behaviour). */
+  mergeMode?: "feature-branch" | "trunk-direct";
 }
 
 export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<string> {
@@ -115,6 +118,7 @@ export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<st
       status: "planning",
       reviewSignoff: false,
       mergeTaskId: null,
+      mergeMode: opts.mergeMode ?? "feature-branch",
       createdAt: nowEpoch(),
       completedAt: null,
     };
@@ -198,15 +202,36 @@ export async function advanceStory(
     }
     const cur = story.status ?? "planning";
     const eid = story.epic ?? null;
-    const resolved = target !== undefined && target.length > 0 ? target : storyNextState(cur);
+    // ADR-175 GAP 2: trunk-direct stories take the shorter machine
+    //   planning → ready → in-progress → testing → review → done
+    // (skipping `merging`). Compute mode here so both `storyNextState`
+    // fallback and the legal-transition gate respect the chosen path.
+    const mergeMode = story.mergeMode ?? "feature-branch";
+    const trunkDirect = mergeMode === "trunk-direct";
+    const resolved =
+      target !== undefined && target.length > 0
+        ? target
+        : trunkDirect && cur === "review"
+          ? "done"
+          : storyNextState(cur);
     if (resolved === null) {
       throw new UsageError({ what: `story advance: ${id} is in terminal state '${cur}'` });
     }
-    if (!storyLegalTransition(cur, resolved)) {
+    // Trunk-direct carve-out: `review → done` legal in addition to the
+    // feature-branch machine. Every other transition still goes through
+    // the canonical gate so e.g. `review → merging` on a trunk-direct
+    // story would refuse here (no merging phase) before hitting the
+    // merging-specific signoff gate below — but we want a clearer
+    // error for that explicit foot-gun, so the merging branch checks
+    // mergeMode too.
+    const trunkDirectReviewToDone =
+      trunkDirect && cur === "review" && resolved === "done";
+    if (!trunkDirectReviewToDone && !storyLegalTransition(cur, resolved)) {
       throw new UsageError({
         what:
           `story advance: illegal transition ${cur} → ${resolved} ` +
-          `(machine: planning→ready→in-progress→testing→review→merging→done)`,
+          `(machine: planning→ready→in-progress→testing→review→` +
+          `${trunkDirect ? "done [trunk-direct]" : "merging→done"})`,
       });
     }
     if (cur === resolved) {
@@ -244,6 +269,13 @@ export async function advanceStory(
         });
       }
     } else if (resolved === "merging") {
+      if (trunkDirect) {
+        throw new UsageError({
+          what:
+            `story advance: cannot advance ${id} to merging — ` +
+            "mergeMode='trunk-direct' has no merging phase; use --to done after signoff",
+        });
+      }
       if (story.reviewSignoff !== true) {
         throw new UsageError({
           what:
@@ -252,22 +284,35 @@ export async function advanceStory(
         });
       }
     } else if (resolved === "done") {
-      const mergeTid = story.mergeTaskId;
-      if (mergeTid === null || mergeTid === undefined || mergeTid.length === 0) {
-        throw new UsageError({
-          what:
-            `story advance: cannot advance ${id} to done — ` +
-            "no merge task on record (was the story dispatched to gitter via merging?)",
-        });
-      }
-      const mergeTask = repo.getTask(mergeTid);
-      const mergeStatus = mergeTask?.status ?? "";
-      if (mergeStatus !== "done") {
-        throw new UsageError({
-          what:
-            `story advance: cannot advance ${id} to done — ` +
-            `merge task ${mergeTid} is '${mergeStatus}' (gitter has not completed merge)`,
-        });
+      if (trunkDirectReviewToDone) {
+        // ADR-175 GAP 2: trunk-direct review→done skips merging
+        // entirely. Signoff bit STILL required (review gate intact —
+        // we're bypassing the merge phase, not the review phase).
+        if (story.reviewSignoff !== true) {
+          throw new UsageError({
+            what:
+              `story advance: cannot advance ${id} to done — ` +
+              "reviewer signoff missing (.reviewSignoff != true)",
+          });
+        }
+      } else {
+        const mergeTid = story.mergeTaskId;
+        if (mergeTid === null || mergeTid === undefined || mergeTid.length === 0) {
+          throw new UsageError({
+            what:
+              `story advance: cannot advance ${id} to done — ` +
+              "no merge task on record (was the story dispatched to gitter via merging?)",
+          });
+        }
+        const mergeTask = repo.getTask(mergeTid);
+        const mergeStatus = mergeTask?.status ?? "";
+        if (mergeStatus !== "done") {
+          throw new UsageError({
+            what:
+              `story advance: cannot advance ${id} to done — ` +
+              `merge task ${mergeTid} is '${mergeStatus}' (gitter has not completed merge)`,
+          });
+        }
       }
     }
     const now = nowEpoch();

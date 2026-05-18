@@ -686,6 +686,7 @@ function seedStory(repo: KanbanRepo, id: string, branch: string | null): KanbanS
     completedAt: null,
     reviewSignoff: false,
     mergeTaskId: null,
+    mergeMode: "feature-branch",
     branch,
   };
   repo.upsertStory(story);

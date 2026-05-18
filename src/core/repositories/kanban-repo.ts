@@ -66,6 +66,7 @@ interface StoryRow {
   advanced_at: number | null;
   review_signoff: number | null;
   merge_task_id: string | null;
+  merge_mode: string | null;
   extra: string | null;
 }
 
@@ -229,6 +230,7 @@ const KNOWN_STORY_FIELDS = new Set([
   "advancedAt",
   "reviewSignoff",
   "mergeTaskId",
+  "mergeMode",
 ]);
 
 export function storyFromRow(row: StoryRow): KanbanStory {
@@ -245,6 +247,10 @@ export function storyFromRow(row: StoryRow): KanbanStory {
     advancedAt: row.advanced_at,
     reviewSignoff: row.review_signoff === null ? undefined : row.review_signoff === 1,
     mergeTaskId: row.merge_task_id,
+    // ADR-175 GAP 2: NULL column → undefined → Zod `.default('feature-branch')`.
+    // Pre-v10 rows + freshly-INSERTed rows that did not pass merge_mode
+    // both land here as NULL; Zod default backfills both paths.
+    mergeMode: row.merge_mode ?? undefined,
     ...extra,
   });
 }
@@ -266,6 +272,7 @@ export function storyToRow(story: KanbanStory): StoryRow {
     advanced_at: story.advancedAt ?? null,
     review_signoff: story.reviewSignoff === undefined ? null : story.reviewSignoff ? 1 : 0,
     merge_task_id: story.mergeTaskId ?? null,
+    merge_mode: story.mergeMode ?? null,
     extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
   };
 }
@@ -420,16 +427,17 @@ export class KanbanRepo {
       .query(
         `INSERT INTO stories (id, epic, title, body, acceptance_criteria, status,
 				                      created_at, completed_at, advanced_at, review_signoff,
-				                      merge_task_id, extra)
+				                      merge_task_id, merge_mode, extra)
 				 VALUES ($id, $epic, $title, $body, $acceptance_criteria, $status,
 				         $created_at, $completed_at, $advanced_at, $review_signoff,
-				         $merge_task_id, $extra)
+				         $merge_task_id, $merge_mode, $extra)
 				 ON CONFLICT(id) DO UPDATE SET
 				   epic=excluded.epic, title=excluded.title, body=excluded.body,
 				   acceptance_criteria=excluded.acceptance_criteria, status=excluded.status,
 				   created_at=excluded.created_at, completed_at=excluded.completed_at,
 				   advanced_at=excluded.advanced_at, review_signoff=excluded.review_signoff,
-				   merge_task_id=excluded.merge_task_id, extra=excluded.extra`,
+				   merge_task_id=excluded.merge_task_id, merge_mode=excluded.merge_mode,
+				   extra=excluded.extra`,
       )
       .run(bind(row));
   }
