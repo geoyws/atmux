@@ -851,8 +851,27 @@ export function perTeamCageSocketPath(teamRoot: string): string {
 async function resolveParentCageHandle(opts: {
   parentRoot: string;
   parentName: string;
+  /** Optional liveness probe — passed through to {@link resolveCageSocket}
+   *  to prefer a tmux-responding candidate when both legacy + per-team
+   *  sockets exist. See resolveCageSocket's "Liveness preference" note for
+   *  the stale-socket case this guards against. */
+  tmuxFactory?: (config: { socketPath: string }) => {
+    session: { listSessions(): Promise<ReadonlyArray<{ name: string }>> };
+  };
 }): Promise<{ socket: string; session: string }> {
-  const socket = await resolveCageSocket(opts.parentName, opts.parentRoot);
+  const resolverDeps: Parameters<typeof resolveCageSocket>[2] = {};
+  if (opts.tmuxFactory !== undefined) {
+    const factory = opts.tmuxFactory;
+    resolverDeps.isLive = async (p) => {
+      try {
+        await factory({ socketPath: p }).session.listSessions();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+  }
+  const socket = await resolveCageSocket(opts.parentName, opts.parentRoot, resolverDeps);
   const anchor = await readTextOrNull(sessionAnchorPath(join(opts.parentRoot, ".atmux")));
   const session =
     anchor !== null && anchor.trim().length > 0 ? anchor.trim() : `atmux-${opts.parentName}`;
@@ -885,6 +904,7 @@ export async function addEpicViewerToParentCage(opts: {
   const { socket: parentSocket, session: parentSession } = await resolveParentCageHandle({
     parentRoot: opts.parentRoot,
     parentName: opts.parentName,
+    tmuxFactory: opts.tmuxFactory,
   });
   const tmux = opts.tmuxFactory({ socketPath: parentSocket });
   let parentAlive = false;
@@ -944,6 +964,7 @@ export async function removeEpicViewerFromParentCage(opts: {
   const { socket: parentSocket, session: parentSession } = await resolveParentCageHandle({
     parentRoot: opts.parentRoot,
     parentName: opts.parentName,
+    tmuxFactory: opts.tmuxFactory,
   });
   const tmux = opts.tmuxFactory({ socketPath: parentSocket });
   let parentAlive = false;
@@ -991,6 +1012,17 @@ export async function removeEpicViewerFromParentCage(opts: {
  * error messages reference a canonical location. Pure modulo `exists`;
  * tests inject `deps.exists` to drive every branch.
  *
+ * **Liveness preference (2026-05-18, observed 10:55 CEST):** when `isLive`
+ * is provided AND multiple candidates exist, prefer the one with a
+ * responding tmux server. Stale socket files on the legacy path persist
+ * across reinstalls (e.g. atmux 0.8.4→0.8.5 left `/tmp/atmux-atmux/sock`
+ * as a zero-byte file with no listener), breaking callers that resolve
+ * the legacy socket first and then fail their session probe. With
+ * `isLive`, the resolver picks the live socket instead of giving up at
+ * the caller. Callers without `isLive` keep the original exists-only
+ * behaviour for back-compat (and because liveness probes have a tmux
+ * dependency the resolver shouldn't take unconditionally).
+ *
  * Mirrors the same widening that landed in claude-skills `bau` socket
  * resolver (790dc4e) — single source of truth for cockpit-side cage
  * socket discovery so the next probe-widening lands in one place.
@@ -998,15 +1030,41 @@ export async function removeEpicViewerFromParentCage(opts: {
 export async function resolveCageSocket(
   teamName: string,
   teamRoot: string,
-  deps: { exists?: (p: string) => Promise<boolean> } = {},
+  deps: {
+    exists?: (p: string) => Promise<boolean>;
+    /** Optional liveness probe — returns true if a tmux server is
+     *  responding on the socket. When provided, the resolver picks the
+     *  first LIVE candidate (regardless of order), falling back to the
+     *  first that merely exists if none are live. */
+    isLive?: (p: string) => Promise<boolean>;
+  } = {},
 ): Promise<string> {
   const existsFn = deps.exists ?? exists;
   const legacy = cageSocketPath(teamName);
   const perTeam = perTeamCageSocketPath(teamRoot);
   const candidates = [legacy, perTeam];
-  for (const p of candidates) {
-    if (await existsFn(p)) return p;
+  // Fast path: no liveness preference — preserve byte-equal pre-fix
+  // behaviour (walk in order, return first that exists, probe stops
+  // at first hit — observable to tests that assert call count).
+  if (deps.isLive === undefined) {
+    for (const p of candidates) {
+      if (await existsFn(p)) return p;
+    }
+    return legacy;
   }
+  // Liveness-preferred path: walk all candidates, prefer live-and-existing
+  // over merely-existing. Guards against the stale-socket case where a
+  // prior install left a zero-byte legacy socket file with no listener.
+  const existingCandidates: string[] = [];
+  for (const p of candidates) {
+    if (await existsFn(p)) existingCandidates.push(p);
+  }
+  if (existingCandidates.length > 1) {
+    for (const p of existingCandidates) {
+      if (await deps.isLive(p)) return p;
+    }
+  }
+  if (existingCandidates.length > 0) return existingCandidates[0]!;
   return legacy;
 }
 
