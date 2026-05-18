@@ -4,7 +4,7 @@
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-f462289a follow-on per lead 23:01 MYT P0 BLAST)
 **Driver-ref**: 2026-05-14 23:01 MYT cockpit driver — operator chat-YES auth. *"kanban auto-files trunk-merge Task on Story-done; gitter drains via plain claim cascade. Supersedes branch-watcher/cron suggestion."*
-**Relates**: ADR-145 (trunk-merge dispatch template — provides the Task shape this ADR auto-emits), ADR-091 (epic-team auto-merge state machine — sibling pattern at higher nesting level), ADR-134 (in-team auto-merger — provides the state-machine + cron-backstop infra), ADR-088 W1 (`src/abstractions/branch-merge.ts` primitive — gitter calls into).
+**Relates**: ADR-145 (trunk-merge dispatch template — provides the Task shape this ADR auto-emits), ADR-091 (epic-team auto-merge state machine — sibling pattern at higher nesting level), ADR-134 (in-team auto-merger — provides the state-machine + cron-backstop infra), ADR-179 W1 (`src/abstractions/branch-merge.ts` primitive — gitter calls into).
 **Supersedes (proposed only)**: prior branch-watcher / cron-poller suggestion (operator floated earlier; never landed as ADR). The event-driven auto-file model replaces the poll-based watcher.
 
 ## Context
@@ -38,7 +38,7 @@ Event-driven hook supersedes watcher/cron for this scope. (Cron-backstop per ADR
 - **ADR-032 socket-pubsub** — `atmux task add` cascades a wake-event to subscribed members. Gitter is already subscribed (per ADR-134 §Triggers); no new subscription needed.
 - **ADR-007 pull-model kanban** — `atmux task move <id> done` is the event source. The hook is at the existing transition site.
 - **ADR-091 epic-team auto-merge** — sibling pattern at the parent-team layer. ADR-091 fires its merge inside the same transaction-wrap (per ADR-091 pre-flag #1 BEGIN IMMEDIATE). ADR-146 reuses that wrap for its own auto-file emit.
-- **ADR-088 W1 `src/abstractions/branch-merge.ts`** — the primitive gitter calls into to actually do the merge. ADR-146 only adds the auto-Task-file step; the merge action itself uses W1 unchanged.
+- **ADR-179 W1 `src/abstractions/branch-merge.ts`** — the primitive gitter calls into to actually do the merge. ADR-146 only adds the auto-Task-file step; the merge action itself uses W1 unchanged.
 
 ## Decision
 
@@ -165,7 +165,7 @@ Per §D5, Stories without `branch` set OR teams without `worktreeIsolation` skip
 - **[ADR-145](145-atmux-adopts-gitter.md) §Trunk-merge dispatch** — provides the Task shape this ADR auto-emits. ADR-146 is a strict superset (auto-emit uses the same fields verbatim).
 - **[ADR-091](091-)** — epic-team auto-merge state machine. Same atomic-write-in-transaction pattern (pre-flag #1 BEGIN IMMEDIATE). Sibling at parent-team nesting level.
 - **[ADR-134](134-in-team-auto-merger.md)** — in-team auto-merger architecture. Cron-backstop still applies as defense-in-depth (for the case where the auto-emit write itself fails — rare but covered).
-- **[ADR-088](088-per-member-branch-fan-in.md) W1** — `src/abstractions/branch-merge.ts` primitive. Gitter calls into this for the actual merge action — unchanged by ADR-146 (ADR-146 only adds the auto-Task-file step).
+- **[ADR-179](179-per-member-branch-fan-in.md) W1** — `src/abstractions/branch-merge.ts` primitive. Gitter calls into this for the actual merge action — unchanged by ADR-146 (ADR-146 only adds the auto-Task-file step).
 - **[ADR-032](032-socket-pubsub-messaging-layer.md)** — task-done cascade socket-pubsub. Gitter wakes on the auto-emitted Task via the existing subscription; no new wake mechanism.
 - **[ADR-082](082-worktree-isolation-per-member.md) + [ADR-084](084-worktree-per-member-branch-model.md)** — worktree-isolation substrate. Auto-emit short-circuits when worktreeIsolation is false (per §D5).
 - **[ADR-007](007-pull-kanban.md)** — pull-model kanban + `atmux task move` semantics. The event source ADR-146 hooks into.
@@ -216,7 +216,7 @@ For T1 specifically (this commit):
 - [x] `docs/adr/146-kanban-auto-files-trunk-merge.md` exists with `Status: Proposed`.
 - [x] Hook point (D1) + auto-emit Task shape (D2) + assignee policy (D3) documented.
 - [x] `KanbanStory.branch` schema addition (D4) + short-circuit rules (D5) + test-gate-out-of-scope rationale (D6) + config block (D7) documented.
-- [x] Cross-refs to ADR-145, ADR-091, ADR-134, ADR-088 W1, ADR-032, ADR-082+084, ADR-007, CLAUDE.md.
+- [x] Cross-refs to ADR-145, ADR-091, ADR-134, ADR-179 W1, ADR-032, ADR-082+084, ADR-007, CLAUDE.md.
 - [x] 2 OQs with recommended defaults.
 - [ ] Single commit; reviewer-gated.
 

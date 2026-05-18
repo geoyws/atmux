@@ -1,4 +1,6 @@
-# ADR-088: Per-member-branch fan-in policy — `<base>-<member>` → `<base>` merger model
+# ADR-179: Per-member-branch fan-in policy — `<base>-<member>` → `<base>` merger model
+
+> **§Amendment 2026-05-18 (t-88da6978) — renumbered ADR-088 → ADR-179.** The file was originally landed as `docs/adr/088-per-member-branch-fan-in.md` (Accepted 2026-05-15), colliding with `docs/adr/088-worktree-submodule-init.md` (accepted, dated 2026-05-13). Per atmux ADR convention (monotonic, append-only, one ADR per number; CLAUDE.md §Source-of-truth chain), the older submodule-init ADR keeps the 088 number; this ADR moves to the next free (179). Source-commit history preserved: a37dacc (W1 mergeMember primitive) + 086505c (W2 merge-member verb) + 10dcf43 (W3 merge-cycle bulk wrapper) + 191b721 (W7 cron-install template) + f4ea9a2 (W8 e2e). All external references to the per-member-branch fan-in ADR-088 retarget to ADR-179 in the same commit; references to ADR-088 submodule-init remain unchanged. Convention precedents: b4d62da `docs(adr-176): renumber ADR-171 epic-aware-lane-drift-revert → ADR-176` and 830e9fc `docs(adr-177): renumber ADR-087 whip-velocity-gate → ADR-177` (sibling collision resolved 2026-05-18 via t-fe51cf64; same pattern).
 
 **Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
@@ -47,7 +49,7 @@ For worktree-isolated teams, the per-Task `gitter` relay pattern (one teammate c
 - Their own branch (`<base>-<member>`)
 - Auto-push permission under [[CLAUDE.md Push Policy]]
 
-The path-restricted-commit + lint-staged race-defenses in `gitter.md` are **inapplicable** in worktree-isolated teams — race conditions cannot occur across members. Each member commits + pushes their own Task work. This is already current practice on atmux-team (per [[feedback_atmux_no_gitter_worker_commits]]); ADR-088 encodes it formally.
+The path-restricted-commit + lint-staged race-defenses in `gitter.md` are **inapplicable** in worktree-isolated teams — race conditions cannot occur across members. Each member commits + pushes their own Task work. This is already current practice on atmux-team (per [[feedback_atmux_no_gitter_worker_commits]]); ADR-179 encodes it formally.
 
 **Implication**: worktree-isolated teams DO NOT declare a `gitter` member. The gitter brief stays valid for **shared-cwd teams** (epic-teams, legacy non-isolated) where the race-staging concerns apply.
 
@@ -66,7 +68,7 @@ Fan-in (`<base>-<member>` → `<base>`) is opt-in per-team via `team.json::merge
 
 **Shape B: driver-fired `atmux merge-cycle`** — no merger member. Driver / operator fires `atmux merge-cycle` (or schedules it via `atmux cron-install`). One-shot version of the merger loop. Reasonable for teams with sub-daily fan-in cadence or operator-supervised merging.
 
-Default `team.merger.enabled === false`. Operators opt in explicitly per team. atmux-team is the first opt-in candidate (post-ADR-088 W2 lands).
+Default `team.merger.enabled === false`. Operators opt in explicitly per team. atmux-team is the first opt-in candidate (post-ADR-179 W2 lands).
 
 ### (3) `atmux merge-member <member>` verb — single-merge primitive
 
@@ -84,7 +86,7 @@ async function mergeMember(team: Team, member: string, opts: { push?: boolean })
   await git(baseWt, "fetch", "origin");
   await git(baseWt, "checkout", base);
   try {
-    await git(baseWt, "merge", "--no-ff", wtBranch, "-m", `merge(${member}): fan-in <base>-<member> per ADR-088`);
+    await git(baseWt, "merge", "--no-ff", wtBranch, "-m", `merge(${member}): fan-in <base>-<member> per ADR-179`);
   } catch (e) {
     await git(baseWt, "merge", "--abort");
     throw new MergeConflictError(member, wtBranch);
@@ -125,11 +127,11 @@ Cron-installed merge-cycle is the **automated equivalent** of a merger member, w
 - `merger-branch-stale` — `<base>-<m>` has commits ≥**`merger.stalenessHours`** old (default 24h) AND `team.merger.enabled === true`. Suggests `atmux merge-member <m>` or surface to operator. Auto-fixable with `--fix` only if `<base>` worktree is clean + `merge-member` returns clean fast-forward.
 - `merger-disabled-but-member-present` — `team.members[]` contains a member with `role: "merger"` but `team.merger.enabled !== true`. Surface; not auto-fixable.
 
-### (7) Deferred to future ADR-088b fold-in
+### (7) Deferred to future ADR-179b fold-in
 
 - **PR-based fan-in** — `gh pr create` per `<base>-<m>`; auto-merge clean PRs via `gh pr merge --auto`. Heavier; needs `gh` auth + per-product PR-review-gate config. Driver-flagged use-case for sopx-guild (where reviewer-gated merge is the demo path); not in v1 scope for atmux-team.
 - **Reviewer-gated fan-in** — require reviewer ✓ on every commit in `<base>-<m>` before merger picks up. ADR-085 (whip-approvals-watcher) is the precedent for the gate primitive; not in v1 scope.
-- **Cross-team / cross-tenant fan-in** — epic-team children fan-in to epic-team base (complement of ADR-091's epic-merge cron). Reserved for an ADR-088b/c fold-in once ADR-090 + ADR-091 are accepted.
+- **Cross-team / cross-tenant fan-in** — epic-team children fan-in to epic-team base (complement of ADR-091's epic-merge cron). Reserved for an ADR-179b/c fold-in once ADR-090 + ADR-091 are accepted.
 - **Submodule per-member merging** — gated on ADR-082 OQ4 outcome (per-member submodule worktrees). If the demo-Wed sopx submodule collision surfaced, that ADR fires first; submodule fan-in then composes on top of this ADR.
 
 ## Resolved open questions
@@ -159,13 +161,13 @@ Three new OQs introduced by this ADR's design; recommended defaults below:
 
 ## Cross-references
 
-- ADR-082 — per-member worktree isolation. ADR-088 resolves ADR-082's deferred OQ3.
-- ADR-084 — per-member branch model. ADR-088 resolves ADR-084's deferred OQ-3 (gitter alignment).
+- ADR-082 — per-member worktree isolation. ADR-179 resolves ADR-082's deferred OQ3.
+- ADR-084 — per-member branch model. ADR-179 resolves ADR-084's deferred OQ-3 (gitter alignment).
 - ADR-090 — epic-team shared-cwd lifecycle. Different topology; no member-branch / no fan-in needed inside an epic-team.
-- ADR-091 — epic-merge state machine. Different scope (epic → parent merge, not per-member → base merge). ADR-088 may borrow ADR-091's transition-function structure for `merge-cycle`'s state shape.
+- ADR-091 — epic-merge state machine. Different scope (epic → parent merge, not per-member → base merge). ADR-179 may borrow ADR-091's transition-function structure for `merge-cycle`'s state shape.
 - ADR-085 — whip-approvals-watcher. Precedent for the reviewer-gate primitive deferred in §Decision-7.
 - ADR-028 — main/master PR-only push policy. Composes with §Decision-3 guards.
-- `templates/briefs/gitter.md` — referenced and explicitly bounded as "shared-cwd-teams only" by ADR-088 §Decision-1.
+- `templates/briefs/gitter.md` — referenced and explicitly bounded as "shared-cwd-teams only" by ADR-179 §Decision-1.
 - `feedback_atmux_no_gitter_worker_commits.md` — operator-side rule this ADR encodes formally.
 - CLAUDE.md "Push Policy" — primary-staging gate composes with merger push-policy.
 

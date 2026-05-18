@@ -204,7 +204,7 @@ conflict-hint: <short prose>             # known collision surface (file paths, 
    against an active per-member branch. Body has source-branch / target /
    owning-lane / conflict-hint fields. Gitter:
      a. Read source Task body — note source-branch + conflict-hint.
-     b. Verify base worktree is clean (per ADR-088 §Decision-3 safeguard).
+     b. Verify base worktree is clean (per ADR-179 §Decision-3 safeguard).
      c. git -C <teamRoot> fetch origin
      d. git -C <teamRoot> checkout <base>
      e. git -C <teamRoot> merge --no-ff <source-branch>

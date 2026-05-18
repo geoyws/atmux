@@ -204,7 +204,7 @@ export async function committerSweepVerb(
   }
 
   // Resolve baseBranch via the existing merger-config helper (same
-  // resolution path as ADR-088 W2/W3 — single source of truth for
+  // resolution path as ADR-179 W2/W3 — single source of truth for
   // "what does this team merge into"). Note: `resolveMergerConfig`
   // reads `team.merger.baseBranch` first, falling back to the
   // worktree's current HEAD. ADR-134's `autoMerge` config doesn't

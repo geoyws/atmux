@@ -1,4 +1,4 @@
-// Unit tests for src/verbs/merge-member.ts (ADR-088 W2 / t-e7724527).
+// Unit tests for src/verbs/merge-member.ts (ADR-179 W2 / t-e7724527).
 //
 // Strategy:
 //   - parser tests run pure on the exported `parseMergeMemberArgs`

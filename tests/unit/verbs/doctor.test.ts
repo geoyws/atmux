@@ -2734,7 +2734,7 @@ describe("collectStarvingMembers — ADR-081 §D row-scan", () => {
   });
 });
 
-// ---------- ADR-088 §Decision-6 W6: checkMergerFanIn ----------
+// ---------- ADR-179 §Decision-6 W6: checkMergerFanIn ----------
 
 describe("checkMergerFanIn", () => {
   let atmuxDir: string;

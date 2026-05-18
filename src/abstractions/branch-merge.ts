@@ -1,4 +1,4 @@
-// ADR-088 §Decision-3 W1 (Task t-bed51da2) — per-member branch fan-in primitive.
+// ADR-179 §Decision-3 W1 (Task t-bed51da2) — per-member branch fan-in primitive.
 //
 // `mergeMember(base, wtBranch, repoPath, opts)` merges `<base>-<member>`
 // into `<base>` from the base worktree. Hard-refuses on the three
@@ -15,7 +15,7 @@
 // state, then throw `MergeConflictError` with the conflicted-path list
 // extracted from porcelain status BEFORE the abort fired. Semantic
 // conflicts are not auto-resolvable — the caller surfaces to the
-// operator (ADR-088 §Decision-3 line 64: "leave <base>-<m> untouched,
+// operator (ADR-179 §Decision-3 line 64: "leave <base>-<m> untouched,
 // surface via `atmux flag add --severity high`").
 //
 // No raw `child_process` — all git invocations route through the
@@ -177,7 +177,7 @@ function deriveMemberFromBranch(base: string, wtBranch: string): string {
  * `no-op` discriminator on idempotent re-fire, OR throws
  * `MergeConflictError` after restoring the worktree to clean state.
  *
- * Step-by-step (matches ADR-088 §Decision-3 pseudocode):
+ * Step-by-step (matches ADR-179 §Decision-3 pseudocode):
  *
  *   1. `guardBaseWorktreeClean(repoPath)` — refuse on dirty.
  *   2. `guardBranchExists(repoPath, wtBranch)` — refuse on missing.
@@ -187,7 +187,7 @@ function deriveMemberFromBranch(base: string, wtBranch: string): string {
  *      Caller-injectable for tests with local-only fixtures.
  *   5. `git -C <repoPath> checkout <base>`.
  *   6. `git -C <repoPath> merge --no-ff <wtBranch> -m "merge(<member>):
- *      fan-in <wtBranch> per ADR-088"`.
+ *      fan-in <wtBranch> per ADR-179"`.
  *   7. On non-zero rc → capture porcelain status for conflictPaths →
  *      `git merge --abort` → throw `MergeConflictError`.
  *   8. On success → `git -C <repoPath> rev-parse HEAD` → return
@@ -199,7 +199,7 @@ function deriveMemberFromBranch(base: string, wtBranch: string): string {
  * is 0). This is the property cron-mode + retry-on-flag depend on.
  *
  * Pushes are NOT performed here — the verb layer (`src/verbs/
- * merge-member.ts`, ADR-088 W2) wires push policy + `guardPushTarget`
+ * merge-member.ts`, ADR-179 W2) wires push policy + `guardPushTarget`
  * on top of this primitive. Keeping push-policy out of the abstraction
  * matches the ADR's "primitives vs policy" split.
  */
@@ -236,7 +236,7 @@ export async function mergeMember(
   }
 
   const member = deriveMemberFromBranch(base, wtBranch);
-  const mergeMsg = `merge(${member}): fan-in ${wtBranch} per ADR-088`;
+  const mergeMsg = `merge(${member}): fan-in ${wtBranch} per ADR-179`;
   const mr = await git(["-C", repoPath, "merge", "--no-ff", wtBranch, "-m", mergeMsg]);
   if (mr.exitCode !== 0) {
     // Capture conflict paths BEFORE aborting — the abort restores the

@@ -146,7 +146,7 @@ const CALLER_DRIVEN_STATES: ReadonlySet<BranchMergeState> = new Set<BranchMergeS
 // ---------- Owner derivation ----------
 
 /** Derive the member-name from the `<base>-<member>` branch convention
- *  (per ADR-082 + ADR-088 + ADR-134). The base IS the prefix; the
+ *  (per ADR-082 + ADR-179 + ADR-134). The base IS the prefix; the
  *  remainder is the member.
  *
  *  Returns `null` when the branch doesn't match the convention

@@ -179,7 +179,7 @@ The `branch-merge-state.ts::isValidTransition` already permits `conflict → in_
 Per ADR-090 §Reuse statement pattern — ZERO new abstractions:
 
 - State machine: `src/core/branch-merge-state.ts` (ADR-091 + ADR-134 shared, landed `7da4e85`).
-- Merge primitive: `src/abstractions/branch-merge.ts::mergeMember` (ADR-088 W1, landed in `a37dacc`).
+- Merge primitive: `src/abstractions/branch-merge.ts::mergeMember` (ADR-179 W1, landed in `a37dacc`).
 - Persistence: `src/core/repositories/merger-state-repo.ts` (ADR-134 T2, landed `a636dc6`).
 - Caller wrapper: `src/core/epic-merge.ts::performEpicMerge` (this ADR's impl, landed `a34fafa`).
 - Verb: `src/verbs/epic-merge.ts::epicMergeTickVerb` (this ADR's impl, landed `a34fafa`).
@@ -229,7 +229,7 @@ The `dissolved` terminal state (§Decision-anchor #6) is NOT yet in the shared `
 - [ADR-082](082-worktree-isolation-per-member.md) — per-member worktree primitive; HARD CONFLICT carve-out at epic-team scope per ADR-090 §Decision-anchor #3.
 - [ADR-084](084-worktree-per-member-branch-model.md) — per-member-branch model; per-member intra-team is ADR-134's scope, epic-team is THIS ADR's scope.
 - [ADR-087](087-atmux-stop-soft.md) — soft-stop primitive; consumed by `dissolve-epic` (ADR-090) which this ADR's dispatchDissolve hook invokes.
-- [ADR-088](088-per-member-branch-fan-in.md) — per-member-branch fan-in; sibling pattern at intra-team scope, primitives shared.
+- [ADR-179](179-per-member-branch-fan-in.md) — per-member-branch fan-in; sibling pattern at intra-team scope, primitives shared.
 - [ADR-089](089-hierarchical-cockpit.md) — recursive `Cockpit.sessions[]`; the cron emission ground-truth depends on the cockpit walk finding the epic-team session entry.
 - [ADR-090](090-epic-team-lifecycle.md) — epic-team lifecycle (TeamEpic schema + roster + spawn-epic + dissolve-epic verbs). This ADR consumes ADR-090's schema fields verbatim; ADR-090's §Decision-anchor #5 defines the EPIC-done gate THIS ADR fires on.
 - [ADR-092](092-cross-team-tell-lead.md) — cross-team tell-lead + caller-scope gate; the SECOND-line conflict surface ships when ADR-092 lands.

@@ -9,7 +9,7 @@
 //
 //   1. List per-member branches: `git -C <teamRoot> branch --list
 //      "<baseBranch>-*"`. The `<base>-<member>` convention is the
-//      same one ADR-082 + ADR-084 + ADR-088 W1 already use; the
+//      same one ADR-082 + ADR-084 + ADR-179 W1 already use; the
 //      `branch --list` glob does the lane-filtering for us.
 //      Roster gate (t-911c9314): the glob result is then filtered to
 //      `<base>-<m>` where `<m>` is in the team.json roster. Branches
@@ -176,7 +176,7 @@ export interface CommitterSweepDeps {
    *  factory; T4 unit tests pass a recording stub. */
   queueMergeAttempt: QueueMergeFn;
   /** `git` spawn injection (GitSpawn — same shape used by
-   *  `merger-config.ts` and the ADR-088 W1 primitive). Defaults
+   *  `merger-config.ts` and the ADR-179 W1 primitive). Defaults
    *  injected at the verb layer to {@link defaultGitSpawn}. */
   git: GitSpawn;
 }
@@ -338,7 +338,7 @@ async function listMemberBranches(deps: CommitterSweepDeps): Promise<string[]> {
 }
 
 /** Count commits on `memberBranch` that aren't on `baseBranch`. Uses
- *  `git rev-list --count <base>..<member>` per ADR-088 W1's pattern;
+ *  `git rev-list --count <base>..<member>` per ADR-179 W1's pattern;
  *  same semantics, same exit-code handling (non-zero → return 0 so
  *  the sweep skips the branch instead of crashing the tick). */
 async function countAhead(memberBranch: string, deps: CommitterSweepDeps): Promise<number> {

@@ -1,7 +1,7 @@
-// ADR-088 §Decision-4 W3 (Task t-d78127c7) — `atmux merge-cycle` verb.
+// ADR-179 §Decision-4 W3 (Task t-d78127c7) — `atmux merge-cycle` verb.
 //
 // Bulk-merge across every `<base>-<member>` branch in one shot. Used
-// by ADR-088 Shape B (driver-fired) and by the cron template (W7).
+// by ADR-179 Shape B (driver-fired) and by the cron template (W7).
 // Composes on top of the W1 primitive (`mergeMember`) — the per-branch
 // safety guards live there, not here.
 //
@@ -20,14 +20,14 @@
 //      b. If `--dry-run`: record what would merge; no git mutation.
 //      c. Otherwise: call W1 primitive (with `fetch: false`). Outcome
 //         either `merged` (continue) or `MergeConflictError` (record +
-//         flag + continue — per ADR-088 §Decision-4: "On conflict
+//         flag + continue — per ADR-179 §Decision-4: "On conflict
 //         per-branch: continue iteration (don't abort the whole
 //         cycle)").
 //   4. After iteration: print summary `{ merged: [...], noOp: [...],
 //      conflicts: [...] }` and (when `--push`) attempt one push of
 //      `<base>` to origin AT THE END (single push regardless of how
 //      many merges landed — saves origin network on multi-member
-//      cycles; ADR-088 §OQ-3 default "per-merge" was overridden here
+//      cycles; ADR-179 §OQ-3 default "per-merge" was overridden here
 //      for cycle mode since the cycle is the atomic unit).
 //
 // Exit codes:
@@ -259,7 +259,7 @@ export async function mergeCycle(
           atmuxDir,
           `merger-conflict · severity=high · member=${member} · branch=${wtBranch} · paths=${paths}`,
         );
-        // Per ADR-088 §Decision-4: continue iterating; one conflict
+        // Per ADR-179 §Decision-4: continue iterating; one conflict
         // doesn't abort the cycle. Surface in summary + flags.
         continue;
       }

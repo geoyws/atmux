@@ -428,7 +428,7 @@ export function tryAutoEmitTrunkMerge(
   }
 
   // (5) Shared-base short-circuit per §D5 row 2. Compare against
-  //     the team's `merger.baseBranch` (when set) — see ADR-088.
+  //     the team's `merger.baseBranch` (when set) — see ADR-179.
   //     The resolver in `src/core/merger-config.ts` is the strict
   //     resolver, but the kanban hook intentionally stays config-
   //     local to avoid pulling in the merger resolver's git-probe

@@ -1888,9 +1888,9 @@ function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
   return out;
 }
 
-// ---------- ADR-088 W6: merger-fan-in probe class ----------
+// ---------- ADR-179 W6: merger-fan-in probe class ----------
 
-/** ADR-088 §Decision-2+3+6: `team.merger` block, mirrored locally because
+/** ADR-179 §Decision-2+3+6: `team.merger` block, mirrored locally because
  *  this branch (geoyws-up-impl-2) implements W6 in parallel with sibling
  *  branches that own W3 (`merge-cycle` verb) and W4 (the canonical Zod
  *  block on `team.ts`). When the trunk merge lands, the schema-level
@@ -1904,7 +1904,7 @@ interface MergerConfig {
   stalenessHours?: number;
 }
 
-/** ADR-088 §Decision-6 default. The W4 Zod default lives at the schema
+/** ADR-179 §Decision-6 default. The W4 Zod default lives at the schema
  *  layer; this constant is the read-site fallback so the probe runs
  *  identically pre- and post-trunk-merge. */
 const DEFAULT_MERGER_STALENESS_HOURS = 24;
@@ -1927,7 +1927,7 @@ export interface CheckMergerFanInOpts {
 }
 
 /**
- * ADR-088 §Decision-6 — surface 2 anomaly classes for the merger fan-in
+ * ADR-179 §Decision-6 — surface 2 anomaly classes for the merger fan-in
  * policy. Both are pre-emptive: they flag misconfiguration / drift before
  * unattended fan-in silently stops working.
  *
@@ -1937,7 +1937,7 @@ export interface CheckMergerFanInOpts {
  *                              than `merger.stalenessHours`
  *                              (default 24h). YELLOW. Hint: run
  *                              `atmux merge-member <m>` manually. The
- *                              ADR-088 §Decision-6 auto-fix path (clean
+ *                              ADR-179 §Decision-6 auto-fix path (clean
  *                              base worktree + clean fast-forward) is
  *                              wired into `--fix` once the W3
  *                              `merge-cycle` verb merges into trunk;
@@ -1993,7 +1993,7 @@ export async function checkMergerFanIn(
   const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
 
   // Resolve base — `merger.baseBranch` wins if set; otherwise fall back
-  // to current branch in the project root (matches ADR-088 §Decision-3
+  // to current branch in the project root (matches ADR-179 §Decision-3
   // resolution order in `mergeMember`).
   let baseBranch = typeof merger?.baseBranch === "string" ? merger.baseBranch : "";
   if (baseBranch.length === 0) {
@@ -2585,7 +2585,7 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // the same `(emoji, label-or-name)` display tuple. Pure (no I/O);
   // returns [] when team is null OR no collisions exist.
   rows.push(...checkMemberLabelCollision(team));
-  // ADR-088 §Decision-6 W6: merger-fan-in anomalies — stale per-member
+  // ADR-179 §Decision-6 W6: merger-fan-in anomalies — stale per-member
   // branch + role/feature-flag mismatch. Silent when `team.merger` is
   // unset or `merger.enabled !== true` (the staleness branch); the
   // role-mismatch branch surfaces regardless when a `role: "merger"`
