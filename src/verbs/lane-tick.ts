@@ -35,11 +35,14 @@ import { resolveGoalForMember } from "../core/goal-resolver.ts";
 import { listTasks, moveTask } from "../core/kanban.ts";
 import { type CaptureFn, classifyText, type PaneClassification } from "../core/pane-state.ts";
 import { pasteAndSubmit } from "../core/paste-submit.ts";
+import { detectAndResubmit } from "../core/queued-text-resubmit.ts";
 import {
+  composerEmpty,
   type SafeSendOpts,
   type SafeSendResult,
   type SendKeysFn,
   safeSendKeys,
+  safeSendKeysWithVerify,
 } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
@@ -108,6 +111,15 @@ export type LaneTickMemberOutcome =
    *  before mid-think drift sets in. Operator-visible outcome distinct
    *  from `injected` so the post-tick summary distinguishes the cause. */
   | "injected-rotate-nudge"
+  /** EPIC e-f28c2596 T3: `detectAndResubmit` (the helper at the top of
+   *  the per-member loop) found queued text in an idle composer and
+   *  fired the member's own queued command via `safeSendKeysWithVerify`.
+   *  On the helper's `fire` AND `log-failure` outcomes both — both
+   *  attempted to re-fire, just one succeeded the verifier and the
+   *  other escalated to send-keys-failures.log. Distinct from `injected`
+   *  (no claim-injection happened — the member is now executing their
+   *  OWN queued command, lane-tick deferred to avoid stacking). */
+  | "injected-queued-resubmit"
   | "skip-not-ready"
   | "skip-capture-error"
   | "skip-send-refused"
@@ -156,6 +168,7 @@ export async function laneTick(
     `lane-tick: visited=${result.visited} ` +
       `injected=${count(result.outcomes, "injected")} ` +
       `injected-rotate-nudge=${count(result.outcomes, "injected-rotate-nudge")} ` +
+      `injected-queued-resubmit=${count(result.outcomes, "injected-queued-resubmit")} ` +
       `auto-done-resolved=${result.autoDoneResolved} ` +
       `skip-not-ready=${count(result.outcomes, "skip-not-ready")} ` +
       `skip-capture-error=${count(result.outcomes, "skip-capture-error")} ` +
@@ -254,6 +267,97 @@ export async function runLaneTick(
       log(`lane-tick: ${member.name}: capture error (${msg}) — skip`);
       outcomes[member.name] = "skip-capture-error";
       continue;
+    }
+
+    // EPIC e-f28c2596 T3 — detect stuck queued text in the composer
+    // and re-fire it via ADR-138 verified-send BEFORE running the
+    // normal lane-tick claim-injection logic. Helper is pure-of-IO;
+    // the closure wraps safeSendKeysWithVerify (which already writes
+    // the ADR-168 escalation log on its escalate path — the helper's
+    // failureLogFn here is a verb-stderr shim for operator visibility,
+    // mirroring T2 (poke.ts, commit 0d69bf3); the on-disk persistence
+    // is owned by safe-send, NOT duplicated here).
+    //
+    // States:
+    //   - `noop`        — composer empty; fall through to existing logic.
+    //   - `skip`        — queued + mid-turn; fall through (the existing
+    //                     READY classification below will mark skip-not-
+    //                     ready since active-turn indicators are present).
+    //   - `fire`        — queued + idle; helper re-fired the member's own
+    //                     queued command + verifier confirmed transition.
+    //                     We `continue` so lane-tick does NOT stack a
+    //                     second claim-injection on top of the freshly-
+    //                     started turn.
+    //   - `log-failure` — queued + idle; resubmit attempted but the
+    //                     verifier timed out across all retries. The
+    //                     wrapped safeSendKeysWithVerify already escalated
+    //                     to send-keys-failures.log per ADR-168; we
+    //                     `continue` for the same anti-stacking reason
+    //                     (the member's composer may still hold queued
+    //                     text — pile-on would be incorrect).
+    //
+    // Best-effort: the entire resubmit call is try/wrapped so a tmux /
+    // verifier fault does not crash the auto-done scan that runs after
+    // this loop (the scan is the lane-tick-tick's secondary safety net
+    // per ADR-080 §B2 and must remain reachable).
+    try {
+      const queuedAction = await detectAndResubmit(
+        paneText,
+        async (text) => {
+          const r = await safeSendKeysWithVerify({
+            target: windowTarget,
+            keys: text,
+            expectVerifier: composerEmpty(),
+            capture,
+            sendKeys: sendKeysFn,
+            log,
+          });
+          return { success: r.success, attempts: r.attempts, finalCapture: r.finalCapture };
+        },
+        Date.now,
+        async (entry) => {
+          // safeSendKeysWithVerify already persisted the ADR-168 log
+          // entry on its escalate path; this shim re-emits a structured
+          // line to the verb tick log so operators tailing
+          // logs/lane-tick.log see the failure in the per-member stream
+          // (mirrors T2's poke.ts pattern for cross-verb consistency).
+          log(
+            `lane-tick: ${member.name}: queued-text resubmit log-failure ` +
+              `(attempts=${entry.sendResult.attempts}, ` +
+              `text="${truncate(entry.text, 60)}")`,
+          );
+        },
+      );
+      if (queuedAction.kind === "fire") {
+        log(
+          `lane-tick: ${member.name}: queued-text resubmit FIRED ` +
+            `(attempts=${queuedAction.sendResult?.attempts ?? 0}, ` +
+            `text="${truncate(queuedAction.text ?? "", 60)}") — ` +
+            `skip claim-injection this tick`,
+        );
+        outcomes[member.name] = "injected-queued-resubmit";
+        continue;
+      }
+      if (queuedAction.kind === "log-failure") {
+        log(
+          `lane-tick: ${member.name}: queued-text resubmit FAILED ` +
+            `(attempts=${queuedAction.sendResult?.attempts ?? 0}) — ` +
+            `see ~/.atmux/state/send-keys-failures.log`,
+        );
+        outcomes[member.name] = "injected-queued-resubmit";
+        continue;
+      }
+      if (queuedAction.kind === "skip") {
+        log(`lane-tick: ${member.name}: queued-text resubmit skipped — ${queuedAction.reason}`);
+        // Fall through: the active-turn indicator that triggered the
+        // helper's skip will also trigger the READY classification's
+        // skip-not-ready outcome below, which is the correct audit signal.
+      }
+    } catch (e) {
+      // Best-effort — disk / tmux faults must not abort the wider tick.
+      // The auto-done scan + remaining per-member iterations need to
+      // remain reachable. Log + fall through to the legacy path.
+      log(`lane-tick: ${member.name}: queued-text resubmit threw: ${String(e)} — fall through`);
     }
 
     if (classification.state !== "READY") {
