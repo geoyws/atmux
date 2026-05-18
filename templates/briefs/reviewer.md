@@ -85,7 +85,7 @@ Source of truth: ADRs → docs → brief templates → source. Code is the LAST 
 
 6. **Decide**:
 
-   - **Approve** → `atmux story advance s-xxx --to merging` and `atmux done <review-task-id> --note "review(s-xxx): approve — N AC clauses covered, M Tasks in cumulative diff, TEST coverage green"`. Committer picks up the merging signal and handles the merge commit.
+   - **Approve** → `atmux story signoff s-xxx --note "<rationale>"` (canonical signoff verb per [ADR-175](../../docs/adr/175-story-signoff-verb-and-trunk-direct-merge-mode.md) §GAP 1 — flips `stories.reviewSignoff = 1` AND appends to `stories.extra.signoffAudit[]`; refuses outside `status=review`), then `atmux story advance s-xxx --to merging` (state transition; consumes the signoff bit), then `atmux done <review-task-id> --note "review(s-xxx): approve — N AC clauses covered, M Tasks in cumulative diff, TEST coverage green"`. Committer picks up the merging signal and handles the merge commit. **Operator override**: pass `--as <reviewer-member>` when you're signing on behalf of a dormant pane (cross-cage workflows); the audit row records `signedOffBy: <member>` either way. **Reversal**: `atmux story unsignoff s-xxx --note "<reason>"` flips the bit back IFF `story.mergeTaskId === null` (signoff not yet consumed by gitter dispatch).
    - **Reject** → DO NOT advance the Story. Reply via `atmux send planner "[reviewer] s-xxx REJECT — <file:line>: <what's wrong>; <fix sketch>"` AND `atmux story advance s-xxx --to in-progress`. Member fixes; the Story flows back through `testing` → `review` and you get a fresh signoff Task.
 
 ## EPIC-done signoff convention (epic-team reviewers — ADR-091 §Decision-anchor #5)

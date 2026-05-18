@@ -231,6 +231,23 @@ export const KanbanStory = z
      *  spread on read. Zero-migration roll-out per ADR-146 backfill-
      *  via-script (T2 ships `scripts/backfill-story-branch.ts`). */
     branch: z.string().nullable().optional(),
+    /** ADR-175 GAP 1: append-only audit trail for `atmux story signoff`
+     *  + `atmux story unsignoff`. Each `signoff` call appends a
+     *  `{ signedOffBy, signedOffAt, note }` entry; each `unsignoff`
+     *  appends a `{ unsignedBy, unsignedAt, note }` counter-entry.
+     *  Timestamps are epoch-ms (`Date.now()`) per ADR-175 §Decision —
+     *  finer granularity than the seconds-resolution fields elsewhere
+     *  on the row so back-to-back signoff/unsignoff pairs preserve
+     *  ordering.
+     *
+     *  Storage note: rides through `extra` JSON column — NOT in
+     *  `KNOWN_STORY_FIELDS` per ADR-091's extra-JSON-append pattern.
+     *  Field schema kept permissive (`z.array(z.record)`) so future
+     *  audit-entry additions don't churn the schema. */
+    signoffAudit: z
+      .array(z.record(z.string(), z.unknown()))
+      .nullable()
+      .optional(),
   })
   .passthrough();
 export type KanbanStory = z.infer<typeof KanbanStory>;
