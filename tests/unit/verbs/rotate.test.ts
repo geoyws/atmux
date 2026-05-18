@@ -1036,6 +1036,89 @@ describe("rotate() — public verb", () => {
       process.stderr.write = origStderrWrite;
     }
   });
+
+  test("EPIC e-f28c2596 T7: rotate-lead fires brief boot prompt even when scrollback shows tokens (forceBootPrompt:true threaded into bootClaudeMember)", async () => {
+    // Regression test for EPIC e-f28c2596 T7. Pre-fix: paneText with
+    // `Nk tokens` triggered bootClaudeMember's already-booted sentinel,
+    // which short-circuited the boot prompt → brief never re-pasted →
+    // rotated lead at 0 tok of brief context. Post-fix: rotate.ts
+    // unconditionally sets `forceBootPrompt: true`, so the sentinel is
+    // bypassed and the boot prompt fires (observable as loadBuffer +
+    // pasteBuffer calls carrying the boot-prompt body).
+    //
+    // Counter-fixture: the next test inverts forceBootPrompt via
+    // opts.bootClaude.forceBootPrompt=false to confirm the override
+    // still works (the Object.assign happens AFTER rotate.ts's default
+    // — operator can pin the old behavior if needed).
+    process.env.ATMUX_SESSION = "atmux-t";
+    await seedTeam({
+      name: "t",
+      members: [{ name: "lead-x", role: "team-lead", tui: "claude" }],
+    });
+    const { tmux, calls } = stubTmux({
+      windows: [{ index: 0, name: "lead-x", active: true }],
+      // paneText that pre-T7 would have short-circuited as already-booted
+      // (matches `\d+k tokens`). With T7's forceBootPrompt:true default
+      // the sentinel is bypassed; readiness poll passes (matches `❯`),
+      // boot prompt fires via loadBuffer + pasteBuffer.
+      paneText: "❯ ↑ 5k tokens",
+    });
+    const exit = await rotate(["--team-dir", scratch, "--lead"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: () => {},
+      bootClaude: FAST_BOOT_CLAUDE,
+    });
+    expect(exit).toBe(0);
+    // /clear lands on the lead pane (step 1 of rotate).
+    expect(calls.sendKeys[0]?.target).toBe("atmux-t:lead-x");
+    expect(calls.sendKeys[0]?.keys).toBe("/clear");
+    // Boot prompt fires via loadBuffer + pasteBuffer (the T7 fix —
+    // pre-fix these arrays would have been EMPTY because the sentinel
+    // short-circuited).
+    expect(calls.loadBuffer.length).toBeGreaterThanOrEqual(1);
+    expect(calls.loadBuffer.some((l) => l.data.includes("/tmp/atmux-brief-generic-t.md"))).toBe(
+      true,
+    );
+    expect(calls.pasteBuffer.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("EPIC e-f28c2596 T7: bootClaude.forceBootPrompt=false override pins legacy sentinel behavior (operator opt-out)", async () => {
+    // Counter-fixture: explicit operator override via opts.bootClaude
+    // (Object.assign runs AFTER rotate.ts's default forceBootPrompt:true,
+    // so an explicit false here wins). The sentinel re-engages → no
+    // loadBuffer/pasteBuffer (legacy short-circuit). Confirms the
+    // forceBootPrompt option is honored from BOTH sides — rotate's
+    // default and operator override.
+    process.env.ATMUX_SESSION = "atmux-t";
+    await seedTeam({
+      name: "t",
+      members: [{ name: "lead-x", role: "team-lead", tui: "claude" }],
+    });
+    const { tmux, calls } = stubTmux({
+      windows: [{ index: 0, name: "lead-x", active: true }],
+      paneText: "❯ ↑ 5k tokens", // triggers sentinel when forceBootPrompt=false
+    });
+    const exit = await rotate(["--team-dir", scratch, "--lead"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: () => {},
+      // Override: pin legacy already-booted sentinel behavior.
+      bootClaude: { ...FAST_BOOT_CLAUDE, forceBootPrompt: false },
+    });
+    expect(exit).toBe(0);
+    // /clear still fires (step 1 unchanged).
+    expect(calls.sendKeys[0]?.keys).toBe("/clear");
+    // But with forceBootPrompt=false override + tokens-in-scrollback,
+    // the sentinel fires → status='already-booted' → no boot prompt
+    // paste → loadBuffer + pasteBuffer remain empty.
+    expect(calls.loadBuffer).toEqual([]);
+    expect(calls.pasteBuffer).toEqual([]);
+  });
 });
 
 describe("rotateLead", () => {
