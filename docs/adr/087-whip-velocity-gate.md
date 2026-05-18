@@ -190,22 +190,24 @@ dedup window, or strike-reset semantics.
 
 ## What V1 defers (follow-up Task to file post-commit)
 
-- [ ] `src/verbs/whip.ts` wiring — call classifier per tick, write
+- [x] `src/verbs/whip.ts` wiring — call classifier per tick, write
       strike record on BAD, inject `safeSendKeys` action-menu when
       `shouldNudgeLeadPane` returns true. Deferred because whip.ts
       is 1826 LOC at HEAD; extending it cleanly + the same-commit
       reviewer surface for the kernel + the wire-up would exceed
       single-commit scope. The kernel is independently useful (T2
       can read the strikes file even without the wire-up).
-- [ ] Reply validation — `^[ABCD]:` marker enforcement on lead's
+- [x] Reply validation — `^[ABCD]:` marker enforcement on lead's
       next turn. Requires comparing consecutive tick captures of the
       lead pane — net-new state in `whip-strikes-<team>.json`
       (`lastMenuTickSec` + `lastMenuHash`). Out of single-commit
       scope.
-- [ ] Action-menu UX — the prose text George wants ("If you're
+- [x] Action-menu UX — the prose text George wants ("If you're
       about to write making progress / thinking through / analyzing
       — STOP and pick A or B. Verbs not nouns. SHA or no SHA.") +
       the A/B/C/D payload validators. Bundled with the wiring above.
+
+> **§Amendment 2026-05-18 (t-5d85dddb)** — All three V1-deferred items shipped. Wiring lives in `src/verbs/poke.ts::runVelocityGate` (called from `runTick` near the end, gated on `team.crons?.whipVelocityGateEnabled !== false` per ADR-087 §Spec); the orchestration logic + pure helpers live in the new `src/core/velocity-gate.ts` module so the decision tree is testable without spinning up a full poke tick context. State-file additions: `StrikeRecord` gains optional `menuSentAtSec` + `menuPaneHash` fields (preserved across `incrementStrike`, owned by `recordMenuSent` / `clearPendingMenu`; backward-compat readers default missing to null). Reply-validation pass runs at the top of the velocity-gate sub-op: prior tick's pending-menu state → compute current pane hash → matching hash = `classifier-swallow` strike (keystroke dropped); differing hash without `^[ABCD]:` marker = `no-marker` strike; with marker = compliant (clear menu). The classifier still runs after validation, so a compliant reply doesn't excuse a fresh BAD tick (commits-in-window is the only OK trigger). Action-menu prompt text lives in `buildActionMenuPrompt` with George's verbatim "verbs not nouns. SHA or no SHA" preamble. Send path uses tmux paste-buffer + paste-submit (matches modal-cycling clarifier convention; safer for multi-line text than raw send-keys). BUSY pane signal → strike but no send (classifier-swallow guard); UNREACHABLE pane → no strike, no send (out-of-scope per existing checkMember wedge escalation path). Sibling T2 (t-e91fec98) — superdoctor complaint escalation on count ≥ strikeThreshold — remains a separate Task; this module's symptom-hash usage is intentionally narrow to `velocityStalledSymptomHash`.
 
 ## Rollback
 
