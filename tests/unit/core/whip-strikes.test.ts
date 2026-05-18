@@ -1,4 +1,4 @@
-// Unit tests for src/core/whip-strikes.ts — ADR-087 strike counter
+// Unit tests for src/core/whip-strikes.ts — ADR-177 strike counter
 // state file IO. Per-test mkdtemp so file IO is contained.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -53,7 +53,7 @@ describe("velocityStalledSymptomHash", () => {
   });
 });
 
-// ---------- ADR-087 §T2 (Task t-e91fec98 §2) symptom hashes ----------
+// ---------- ADR-177 §T2 (Task t-e91fec98 §2) symptom hashes ----------
 
 describe("etaLiedSymptomHash", () => {
   test("returns canonical `whip-<team>-eta-lied` form", () => {
@@ -164,7 +164,7 @@ describe("readStrikesFile + readStrikeRecord", () => {
       firstStrikeSec: null,
       lastStrikeSec: null,
       lastReason: null,
-      // ADR-087 §What V1 defers (t-5d85dddb) — reply-validation fields.
+      // ADR-177 §What V1 defers (t-5d85dddb) — reply-validation fields.
       menuSentAtSec: null,
       menuPaneHash: null,
     });
@@ -206,7 +206,7 @@ describe("readStrikesFile + readStrikeRecord", () => {
           firstStrikeSec: 1715630000,
           lastStrikeSec: 1715630600,
           lastReason: "BAD: 0 commits in 60min",
-          // ADR-087 §What V1 defers (t-5d85dddb) — reply-validation fields.
+          // ADR-177 §What V1 defers (t-5d85dddb) — reply-validation fields.
           menuSentAtSec: null,
           menuPaneHash: null,
         },
@@ -337,7 +337,7 @@ describe("file format on disk", () => {
   });
 });
 
-// ---------- ADR-087 §What V1 defers (t-5d85dddb): menu state helpers ----------
+// ---------- ADR-177 §What V1 defers (t-5d85dddb): menu state helpers ----------
 
 describe("computePaneHash", () => {
   test("returns 16-hex-char digest deterministic for same input", () => {

@@ -1,9 +1,9 @@
-// ADR-087 §"What V1 defers" — whip velocity-gate orchestrator.
+// ADR-177 §"What V1 defers" — whip velocity-gate orchestrator.
 //
 // Wires the V1 kernel (src/core/velocity.ts classifier +
 // src/core/whip-strikes.ts state file) into the live whip tick.
 // Sibling to V1 (t-289119f2 — classifier + strikes file + schema).
-// This is the wiring half (T2 of ADR-087 §What V1 defers).
+// This is the wiring half (T2 of ADR-177 §What V1 defers).
 //
 // Task t-5d85dddb covers §1 (runTick wiring), §2 (action-menu prompt
 // text), §3 (reply validation). T2 (sibling t-e91fec98) extends with
@@ -147,7 +147,7 @@ export interface VelocityGateDeps {
   /** Epoch seconds for the current tick — used for timestamps. */
   nowSec: number;
   /** Sliding-window minute count for the commit query. Comes from
-   *  `team.whip.velocityGate.windowMin` (default 60 per ADR-087). */
+   *  `team.whip.velocityGate.windowMin` (default 60 per ADR-177). */
   windowMin: number;
   /** Standby grace window — `team.whip.velocityGate.standbyGraceMin`
    *  (default 30). */
@@ -183,7 +183,7 @@ export interface VelocityGateDeps {
  * conservative default (count=0, signal=UNREACHABLE, no menu) so a
  * transient git / tmux glitch never blocks the rest of the tick.
  *
- * Decision tree (matches ADR-087 §Spec):
+ * Decision tree (matches ADR-177 §Spec):
  *
  *   1. Reply validation pass — if the prior tick recorded a pending
  *      menu (menuSentAtSec set on the strike record), capture the

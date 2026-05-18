@@ -1,4 +1,4 @@
-// ADR-087 §T2 (Task t-e91fec98) — whip→superdoctor escalation orchestrator.
+// ADR-177 §T2 (Task t-e91fec98) — whip→superdoctor escalation orchestrator.
 //
 // The strike kernel (`whip-strikes.ts`) writes counters; the complaint
 // filer (`complaints.ts`) writes rows. This module is the glue: when
@@ -22,7 +22,7 @@ import { type FileDedupedResult, fileDedupedComplaint } from "./complaints.ts";
 import { renderStrikeTimeline, resetStrikeRecord, type StrikeRecord } from "./whip-strikes.ts";
 
 /** Default strike threshold — matches Task t-e91fec98 §1 ("when whip
- *  strike counter ≥ 3 for a team") + the ADR-087 schema default. The
+ *  strike counter ≥ 3 for a team") + the ADR-177 schema default. The
  *  whip caller may override via `team.json::whip.velocityGate
  *  .strikeThreshold` (read in the deferred wire-up Task t-5d85dddb;
  *  this module accepts the threshold as a parameter). */

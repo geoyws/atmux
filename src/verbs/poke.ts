@@ -1199,10 +1199,10 @@ async function runTick(parsed: PokeArgs, ctx: TickCtx): Promise<number> {
       }
     }
 
-    // ---------- ADR-087 §"What V1 defers": velocity-gate check ----------
+    // ---------- ADR-177 §"What V1 defers": velocity-gate check ----------
     // Wires the V1 kernel (classifier + strikes file) into the live
     // tick. Kill-switch is `team.crons?.whipVelocityGateEnabled !==
-    // false` (default-on) per ADR-087 §Spec. Best-effort: probe
+    // false` (default-on) per ADR-177 §Spec. Best-effort: probe
     // failures collapse to conservative defaults inside the
     // orchestrator (commits=0 + signal=UNREACHABLE), and the helper
     // catches its own throws so a velocity-gate hiccup never blocks
@@ -1329,7 +1329,7 @@ async function safeAppendLeadEvent(
 // a type-level alias used in the helper's signature.
 type _NeedsApprovalReportRef = NeedsApprovalReport;
 
-// ---------- ADR-087 §"What V1 defers": velocity-gate helper ----------
+// ---------- ADR-177 §"What V1 defers": velocity-gate helper ----------
 
 /**
  * One tick's worth of velocity-gate work. Builds the injected deps
@@ -1421,7 +1421,7 @@ async function runVelocityGate(ctx: TickCtx, homeOpts: SkillsTeamPathsOpts): Pro
       // retries when the composer's clear.
       try {
         const probe = await tmux.pane.capturePane({ target, start: -5 });
-        if (!composerEmpty(probe)) return "busy";
+        if (!composerEmpty()(probe)) return "busy";
       } catch {
         // Capture failure → conservative: treat as unreachable rather
         // than blast keystrokes at a missing pane.

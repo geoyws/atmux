@@ -1,7 +1,7 @@
-// Unit tests for src/core/velocity.ts — ADR-087 ground-truth
+// Unit tests for src/core/velocity.ts — ADR-177 ground-truth
 // velocity classifier. Pure module, so the test harness is a
 // straight assertion suite over the resolution table from
-// ADR-087 §Spec.
+// ADR-177 §Spec.
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -185,7 +185,7 @@ describe("default constants match schema defaults", () => {
   });
 
   test("DEFAULT_STANDBY_GRACE_MIN < DEFAULT_VELOCITY_WINDOW_MIN (grace shorter than window)", () => {
-    // ADR-087 §OQ3 — grace should be tighter than window so a fresh
+    // ADR-177 §OQ3 — grace should be tighter than window so a fresh
     // post-ship pause isn't suppressed by the window's own buffer.
     expect(DEFAULT_STANDBY_GRACE_MIN).toBeLessThan(DEFAULT_VELOCITY_WINDOW_MIN);
   });

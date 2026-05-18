@@ -1,4 +1,4 @@
-// ADR-087: Whip Velocity-Gate — ground-truth velocity classifier.
+// ADR-177: Whip Velocity-Gate — ground-truth velocity classifier.
 //
 // Pure module. Inputs: ground-truth signals (commits-in-window count,
 // last-commit-age in minutes, in-progress task count). Output: a
@@ -7,7 +7,7 @@
 //
 // Why a pure classifier separate from the whip orchestrator: the
 // existing whip pattern (1826 LOC at HEAD) couples I/O + classify +
-// dispatch in `runTick`. ADR-087 §Spec splits the classify step out
+// dispatch in `runTick`. ADR-177 §Spec splits the classify step out
 // so the verdict logic is unit-testable against mocked inputs (Task
 // body: "bun-test unit on classifier (mocked inputs)"), the wiring
 // can iterate independently of the rule, and a future sibling probe
@@ -16,7 +16,7 @@
 // The classifier is OUT OF SCOPE for fake-liveness signal sources
 // (lead self-report tokens / "analysis" prose / `thinking with` pane
 // banners). Per the operator-observed failure mode that drove
-// ADR-087 (10 zero-commit heartbeats over 4.5h on 2026-05-14): the
+// ADR-177 (10 zero-commit heartbeats over 4.5h on 2026-05-14): the
 // whole point is to NOT consume lead self-report — only ground-truth
 // post-fact evidence (commits landed + kanban transitions). The
 // pane-state input is included not as a velocity signal but as an

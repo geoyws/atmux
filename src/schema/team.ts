@@ -222,8 +222,8 @@ export const TeamWhip = z
      *  (ADR-056 §"Lead/planner exclusion"). */
     accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
 
-    // ---------- ADR-087 velocity-gate cadence knobs ----------
-    /** ADR-087 §Spec. Per-team tunables for the whip velocity-gate
+    // ---------- ADR-177 velocity-gate cadence knobs ----------
+    /** ADR-177 §Spec. Per-team tunables for the whip velocity-gate
      *  classifier + strike counter. Operators rarely need to tune —
      *  the defaults match the operator-observed failure mode that
      *  drove the ADR (10 zero-commit heartbeats over 4.5h). The
@@ -493,13 +493,13 @@ export const TeamCrons = z
      *  Operators flip this off to halt lane-driven auto-claim without
      *  removing `.lane` annotations from `team.members[]`. */
     laneTickEnabled: z.boolean().default(true),
-    /** ADR-087 §Rollback. Velocity-gate kill-switch. When `false`,
+    /** ADR-177 §Rollback. Velocity-gate kill-switch. When `false`,
      *  whip skips ground-truth velocity classification + strike-counter
-     *  bumping entirely (effectively reverting to pre-ADR-087 fake-
+     *  bumping entirely (effectively reverting to pre-ADR-177 fake-
      *  liveness reliance on lead self-report). Default `true` — the
      *  gate is opt-OUT, not opt-in, because the operator-observed
      *  failure mode (10 zero-commit heartbeats over 4.5h) is what
-     *  ADR-087 was authored to prevent. Pairs with
+     *  ADR-177 was authored to prevent. Pairs with
      *  `whip.velocityGate` cadence knobs (window minute count + strike
      *  threshold); the kill-switch lives here for fleet-consistent
      *  shape with `laneTickEnabled`. */

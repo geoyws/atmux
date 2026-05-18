@@ -1,4 +1,4 @@
-// Unit tests for src/core/velocity-gate.ts (ADR-087 §"What V1 defers"
+// Unit tests for src/core/velocity-gate.ts (ADR-177 §"What V1 defers"
 // / t-5d85dddb).
 //
 // Coverage matrix matches the Task body's 6 acceptance gates:

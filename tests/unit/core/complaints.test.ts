@@ -1,4 +1,4 @@
-// Unit tests for src/core/complaints.ts (ADR-087 §T2 / Task t-e91fec98).
+// Unit tests for src/core/complaints.ts (ADR-177 §T2 / Task t-e91fec98).
 //
 // Exercises the dedup contract end-to-end against an in-memory SQLite
 // database wired up with the same migrations the production verb uses.

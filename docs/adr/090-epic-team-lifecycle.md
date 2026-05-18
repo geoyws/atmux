@@ -367,7 +367,7 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 - [ADR-084](084-worktree-per-member-branch-model.md) — per-member-branch model (HARD CONFLICT carve-out per §Decision-anchor #3).
 - [ADR-087](087-atmux-stop-soft.md) — `soft-stop` primitive (consumed by `dissolve-epic` per §`dissolve-epic` step 4).
 - [ADR-088](088-per-member-branch-fan-in.md) — `initSubmodules` primitive (consumed by `spawn-epic` step 6).
-- [ADR-088 (the OTHER one)](088-worktree-submodule-init.md) — pre-existing duplicate-numbered ADR (project has two ADR-087 + two ADR-088 files; this duplication predates ADR-090 and is flagged for future cleanup outside this ADR's scope per CLAUDE.md §Docs Discipline "Single ADR tree per project").
+- [ADR-088 (the OTHER one)](088-worktree-submodule-init.md) — pre-existing duplicate-numbered ADR. The sibling ADR-087 collision (`087-atmux-stop-soft.md` vs `087-whip-velocity-gate.md`) was resolved 2026-05-18 via t-fe51cf64 (velocity-gate renumbered → ADR-177); the ADR-088 collision (`088-per-member-branch-fan-in.md` vs `088-worktree-submodule-init.md`) remains and is flagged for future cleanup outside this ADR's scope per CLAUDE.md §Docs Discipline "Single ADR tree per project".
 - [ADR-089](089-hierarchical-cockpit.md) — recursive `Cockpit.sessions[]` + tmux prefix chain (consumed by `spawn-epic` step 10).
 - [ADR-091](091-kanban-driven-auto-merge.md) — auto-merge state machine (consumes `TeamEpic.mergeMode` + `KanbanTask.role` + `KanbanEpic.epicTeamName/Root`); forward-ref pending t-4af76f05 ship.
 - [ADR-092](092-cross-team-tell-lead.md) — cross-team tell-lead + caller-scope gate; forward-ref.

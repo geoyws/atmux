@@ -17,7 +17,7 @@ The complaint surface already exists:
 - `src/verbs/complaints.ts` — `atmux complaints file|list|resolve` verbs.
 - `src/core/complaints.ts` — SQLite-backed store via `state.db` (ADR-060).
 - Medic / superdoctor files complaints on observed anomalies (per ADR-077 §D5 + §F2, ADR-131).
-- Whip + whip-velocity-gate file complaints on velocity stalls (per ADR-087).
+- Whip + whip-velocity-gate file complaints on velocity stalls (per ADR-177).
 - Operator + CLI file complaints manually.
 
 But there's no role that **adjudicates** open complaints. Today, `atmux complaints list --status open` returns rows that linger indefinitely:

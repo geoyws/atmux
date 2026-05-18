@@ -1,4 +1,4 @@
-// ADR-087: Whip Velocity-Gate — strike counter state file.
+// ADR-177: Whip Velocity-Gate — strike counter state file.
 //
 // Pure module — IO is the only side effect, isolated behind two
 // readers (`readStrikes`, `readStrikeRecord`) + one writer
@@ -46,7 +46,7 @@ export interface StrikeRecord {
   /** Last verdict reason that incremented the counter — surfaced as
    *  "observable-evidence" in the eventual complaint body. */
   lastReason: string | null;
-  /** ADR-087 §"What V1 defers" (Task t-5d85dddb §3 reply validation):
+  /** ADR-177 §"What V1 defers" (Task t-5d85dddb §3 reply validation):
    *  epoch seconds when the action-menu was last delivered to the lead
    *  pane via `safeSendKeys`. Null when no menu is pending. Next tick
    *  uses this to decide whether to enforce the `^[ABCD]:` reply marker
@@ -55,7 +55,7 @@ export interface StrikeRecord {
    *  Stored as an optional field for backward-compat with v1 strike files
    *  written before the wire-up landed — readers default missing to null. */
   menuSentAtSec?: number | null;
-  /** ADR-087 §"What V1 defers" (Task t-5d85dddb §3 reply validation):
+  /** ADR-177 §"What V1 defers" (Task t-5d85dddb §3 reply validation):
    *  sha-256 hash of the lead-pane capture text taken at menu-send
    *  time. Lets the next tick distinguish "lead replied (pane changed,
    *  inspect reply for marker)" from "classifier-swallow (pane
@@ -280,7 +280,7 @@ export function velocityStalledSymptomHash(teamName: string): string {
   return `whip-${teamName}-velocity-stalled`;
 }
 
-// ---------- ADR-087 §T2 (Task t-e91fec98 §2) symptom hash variants ----------
+// ---------- ADR-177 §T2 (Task t-e91fec98 §2) symptom hash variants ----------
 //
 // Three failure modes the whip can recognize that warrant distinct
 // complaint rows — each gets its own dedup key so an alternating
