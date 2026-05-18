@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { Logger } from "../../../src/core/tui.ts";
-import { UsageError } from "../../../src/errors.ts";
+import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { CockpitTeam } from "../../../src/schema/cockpit.ts";
 import type { Team } from "../../../src/schema/team.ts";
 import {
@@ -17,6 +17,7 @@ import {
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
   cageAlive,
+  cockpitAttach,
   cockpitMigrateSocket,
   cockpitRebuild,
   LEGACY_COCKPIT_SESSION_NAMES,
@@ -2812,5 +2813,218 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
     // Migration completes despite capture failure
     expect(code).toBe(0);
     expect(cockpitState.sessions.has("atmux_cockpit")).toBe(true);
+  });
+});
+
+// ---------- `cockpit attach` subverb ----------
+//
+// ADR-162 §Decision-anchor #1 surfaces the convenience verb that closes
+// the "where's my cockpit?" gap after the socket moved off the operator's
+// default tmux server. Tests below are fully isolated: stubbed
+// TmuxNamespace (no shelling to real tmux), temp-dir cockpit.json (no
+// touching ~/.atmux/), and TMUX env save/restore so `attachWithTmux`'s
+// in-call delete doesn't leak to sibling tests.
+
+describe("parseCockpitArgs — attach subverb", () => {
+  test("bare attach parses with default-false flags", () => {
+    const p = parseCockpitArgs(["attach"]);
+    expect(p.subverb).toBe("attach");
+    expect(p.noCycle).toBe(false);
+    expect(p.forceCycle).toBe(false);
+    expect(p.noLaunch).toBe(false);
+    expect(p.dryRun).toBe(false);
+    expect(p.keepLegacy).toBe(false);
+    expect(p.configPath).toBeUndefined();
+  });
+
+  test("attach accepts --config <path>", () => {
+    const p = parseCockpitArgs(["attach", "--config", "/tmp/cockpit.json"]);
+    expect(p.subverb).toBe("attach");
+    expect(p.configPath).toBe("/tmp/cockpit.json");
+  });
+
+  test("attach rejects --no-cycle (rebuild-only flag)", () => {
+    expect(() => parseCockpitArgs(["attach", "--no-cycle"])).toThrow(UsageError);
+  });
+
+  test("attach rejects --force-cycle + ack (rebuild-only flag)", () => {
+    expect(() =>
+      parseCockpitArgs([
+        "attach",
+        "--force-cycle",
+        "--acknowledge-dangerous-bau-interruption",
+        "--yes",
+      ]),
+    ).toThrow(UsageError);
+  });
+
+  test("attach rejects --no-launch (rebuild-only flag)", () => {
+    expect(() => parseCockpitArgs(["attach", "--no-launch"])).toThrow(UsageError);
+  });
+
+  test("attach rejects --dry-run (migrate-socket-only flag)", () => {
+    expect(() => parseCockpitArgs(["attach", "--dry-run"])).toThrow(UsageError);
+  });
+
+  test("attach rejects --keep-legacy (migrate-socket-only flag)", () => {
+    expect(() => parseCockpitArgs(["attach", "--keep-legacy"])).toThrow(UsageError);
+  });
+
+  test("unknown-sub-verb error names the valid set including attach", () => {
+    try {
+      parseCockpitArgs(["bogus"]);
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(UsageError);
+      expect(String(e)).toContain("attach");
+    }
+  });
+});
+
+describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => {
+  let workDir: string;
+  let cockpitJson: string;
+  let priorTmux: string | undefined;
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-attach-"));
+    cockpitJson = join(workDir, "cockpit.json");
+    // Snapshot + clear TMUX so the attach env-unset/restore dance is
+    // observable + so a stale parent TMUX doesn't leak into the test.
+    priorTmux = process.env.TMUX;
+  });
+
+  afterEach(async () => {
+    if (priorTmux === undefined) {
+      delete process.env.TMUX;
+    } else {
+      process.env.TMUX = priorTmux;
+    }
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  function attachOpts(overrides: Partial<ParsedCockpitArgs> = {}): ParsedCockpitArgs {
+    return {
+      subverb: "attach",
+      noCycle: false,
+      forceCycle: false,
+      ackDangerous: false,
+      noLaunch: false,
+      yes: false,
+      dryRun: false,
+      keepLegacy: false,
+      configPath: cockpitJson,
+      ...overrides,
+    };
+  }
+
+  function stubTmux(opts: {
+    sessionExists: boolean;
+    captureSocket?: (socket: string) => void;
+    captureAttachTarget?: (target: string) => void;
+  }): TmuxNamespace {
+    return {
+      session: {
+        async hasSession(name: string) {
+          opts.captureAttachTarget?.(name);
+          return opts.sessionExists;
+        },
+      },
+      client: {
+        async attachSession(_name: string) {
+          // No-op: real attach would block on tty.
+        },
+      },
+    } as unknown as TmuxNamespace;
+  }
+
+  test("resolves canonical socket (atmux-cockpit) when env override absent", async () => {
+    await writeFile(
+      cockpitJson,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_cockpit",
+        sessions: [],
+      }),
+    );
+    let capturedSocket: string | undefined;
+    let capturedTarget: string | undefined;
+    const exit = await cockpitAttach(attachOpts(), {
+      env: {},
+      tmuxFactory: (cfg) => {
+        if ("socket" in cfg) capturedSocket = cfg.socket;
+        return stubTmux({
+          sessionExists: true,
+          captureAttachTarget: (t) => {
+            capturedTarget = t;
+          },
+        });
+      },
+    });
+    expect(exit).toBe(0);
+    expect(capturedSocket).toBe("atmux-cockpit");
+    // attachWithTmux uses exactSessionTarget(=<name>) for the hasSession probe.
+    expect(capturedTarget).toBe("=atmux_cockpit");
+  });
+
+  test("honours ATMUX_COCKPIT_SOCKET escape hatch (ADR-162 legacy operators)", async () => {
+    await writeFile(
+      cockpitJson,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_cockpit",
+        sessions: [],
+      }),
+    );
+    let capturedSocket: string | undefined;
+    const exit = await cockpitAttach(attachOpts(), {
+      env: { ATMUX_COCKPIT_SOCKET: "default" },
+      tmuxFactory: (cfg) => {
+        if ("socket" in cfg) capturedSocket = cfg.socket;
+        return stubTmux({ sessionExists: true });
+      },
+    });
+    expect(exit).toBe(0);
+    expect(capturedSocket).toBe("default");
+  });
+
+  test("uses cockpitSession from cockpit.json (ADR-135 canonical field)", async () => {
+    await writeFile(
+      cockpitJson,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_cockpit_alt",
+        sessions: [],
+      }),
+    );
+    let capturedTarget: string | undefined;
+    await cockpitAttach(attachOpts(), {
+      env: {},
+      tmuxFactory: () =>
+        stubTmux({
+          sessionExists: true,
+          captureAttachTarget: (t) => {
+            capturedTarget = t;
+          },
+        }),
+    });
+    expect(capturedTarget).toBe("=atmux_cockpit_alt");
+  });
+
+  test("missing-session surfaces ConfigError (run 'atmux cockpit rebuild' hint)", async () => {
+    await writeFile(
+      cockpitJson,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_cockpit",
+        sessions: [],
+      }),
+    );
+    await expect(
+      cockpitAttach(attachOpts(), {
+        env: {},
+        tmuxFactory: () => stubTmux({ sessionExists: false }),
+      }),
+    ).rejects.toBeInstanceOf(ConfigError);
   });
 });
