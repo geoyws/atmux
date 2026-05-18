@@ -301,7 +301,7 @@ export function readStuckMergerState(db: Database, nowSec: number): BlockerRow[]
     const summary = truncate(`${r.member_branch} ${r.state}${sha}${noteSuffix}`);
     const action =
       r.state === "conflict"
-        ? `Resolve conflict on \`${r.member_branch}\` then \`atmux gitter --sweep\` to retry merge`
+        ? `Resolve conflict on \`${r.member_branch}\` then \`atmux committer --sweep\` to retry merge`
         : `Investigate revert on \`${r.member_branch}\` (test failed); fix + re-claim or set \`autoMerge.revertOnFail=false\` for manual recovery`;
     return {
       id: `merger:${r.member_branch}`,

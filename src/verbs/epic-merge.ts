@@ -11,12 +11,13 @@
 // outside cron also works — the verb is idempotent on an unchanged
 // state.db row + clean git tree.
 //
-// Sister verb to `atmux gitter --sweep` (ADR-134 T4 intra-team
-// sweep). Both consume the same MergerStateRepo + branch-merge-state
-// shared module; the epic-merge tick is single-row-per-invocation
-// (one row per epic-team, since the epic-team has one shared branch
-// per ADR-090 §Decision-anchor #3) where the gitter sweep iterates
-// the whole team's per-member-branch fanout.
+// Sister verb to `atmux committer --sweep` (ADR-134 T4 intra-team
+// sweep; verb renamed per ADR-159, legacy `gitter --sweep` alias
+// retained in dispatcher). Both consume the same MergerStateRepo +
+// branch-merge-state shared module; the epic-merge tick is single-
+// row-per-invocation (one row per epic-team, since the epic-team has
+// one shared branch per ADR-090 §Decision-anchor #3) where the
+// committer sweep iterates the whole team's per-member-branch fanout.
 //
 // Out of scope (v1): cross-epic batch ticks (one verb run per epic-
 // team is the cron contract); pr-mode runtime (deferred per ADR-090

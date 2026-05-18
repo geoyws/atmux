@@ -32,9 +32,10 @@
 #                          AND team.members[].role === "ombudsman"
 #   L10 lane-stall-tick    team.cadence.enabled === true
 #                          AND team.cadence.laneStallEnabled !== false
-#   L11 gitter --sweep     team.autoMerge.enabled === true
+#   L11 committer --sweep  team.autoMerge.enabled === true
 #                          AND team.members[].role ∈ {committer,gitter}
-#                          (ADR-159 TR3 accept-both grace)
+#                          (ADR-159 TR3 accept-both grace; emitted verb
+#                          is the canonical `committer` per ADR-159 TR4)
 #   L12 epic-merge tick    team.epicTeam !== undefined
 # --- canonical block below; lines above this fence are ignored by the test ---
 # >>> atmux:team=golden-reference — managed by atmux start; do not edit by hand
@@ -48,6 +49,6 @@
 */15 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux merge-cycle --push >> /srv/golden-reference/.atmux/logs/merge-cycle.log 2>&1
 */15 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux ombudsman tick >> /srv/golden-reference/.atmux/logs/ombudsman.log 2>&1
 */5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux lane-stall-tick >> /srv/golden-reference/.atmux/logs/lane-stall.log 2>&1
-*/10 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux gitter --sweep >> /srv/golden-reference/.atmux/logs/gitter-sweep.log 2>&1
+*/10 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux committer --sweep >> /srv/golden-reference/.atmux/logs/committer-sweep.log 2>&1
 */5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux epic-merge tick >> /srv/golden-reference/.atmux/logs/epic-merge.log 2>&1
 # <<< atmux:team=golden-reference

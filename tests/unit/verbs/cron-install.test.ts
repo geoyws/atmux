@@ -911,7 +911,7 @@ describe("cronInstall — --template gitter-sweep integration (ADR-134 T7)", () 
     await writeFile(join(scratch, ".atmux", "team.json"), JSON.stringify(cfg));
   }
 
-  test("--template gitter-sweep + enabled=true + member role=gitter → emits sweep line at 10min default", async () => {
+  test("--template gitter-sweep + enabled=true + member role=gitter → emits canonical committer --sweep line at 10min default (ADR-159 TR4)", async () => {
     await seedTeam({ autoMerge: { enabled: true }, withGitterMember: true });
     const { io, captured } = makeFakeCrontab(null);
     const rc = await cronInstall(["--template", "gitter-sweep", "--team-dir", scratch], {
@@ -923,7 +923,12 @@ describe("cronInstall — --template gitter-sweep integration (ADR-134 T7)", () 
     });
     expect(rc).toBe(0);
     const body = captured.writes[0] ?? "";
-    expect(body).toMatch(/\*\/10 \* \* \* \* .*atmux gitter --sweep >> .*\/gitter-sweep\.log/);
+    // ADR-159 TR4: the CLI --template name retains the legacy
+    // `gitter-sweep` identifier for backward-compat, but the EMITTED
+    // cron line uses the canonical `committer --sweep` verb + log path.
+    expect(body).toMatch(/\*\/10 \* \* \* \* .*atmux committer --sweep >> .*\/committer-sweep\.log/);
+    expect(body.includes("gitter --sweep")).toBe(false);
+    expect(body.includes("gitter-sweep.log")).toBe(false);
   });
 
   test("--template gitter-sweep + autoMerge.enabled=false → ConfigError", async () => {
@@ -968,6 +973,7 @@ describe("cronInstall — --template gitter-sweep integration (ADR-134 T7)", () 
     });
     expect(rc).toBe(0);
     const body = captured.writes[0] ?? "";
+    expect(body.includes("committer --sweep")).toBe(false);
     expect(body.includes("gitter --sweep")).toBe(false);
   });
 
@@ -982,7 +988,7 @@ describe("cronInstall — --template gitter-sweep integration (ADR-134 T7)", () 
       stdout: () => {},
     });
     const body = captured.writes[0] ?? "";
-    expect(body).toMatch(/\*\/5 \* \* \* \* .*atmux gitter --sweep/);
+    expect(body).toMatch(/\*\/5 \* \* \* \* .*atmux committer --sweep/);
     expect(body.includes("*/10 * * * *")).toBe(false);
   });
 
@@ -997,7 +1003,7 @@ describe("cronInstall — --template gitter-sweep integration (ADR-134 T7)", () 
       stdout: () => {},
     });
     const body = captured.writes[0] ?? "";
-    expect(body).toMatch(/0 \* \* \* \* .*atmux gitter --sweep/);
+    expect(body).toMatch(/0 \* \* \* \* .*atmux committer --sweep/);
   });
 
   test("idempotent re-install: second --template gitter-sweep run is byte-equal", async () => {
