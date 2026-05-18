@@ -736,7 +736,13 @@ describe("rotate() — public verb", () => {
         { index: 0, name: "alpha", active: false },
         { index: 1, name: "lead-x", active: true },
       ],
-      paneText: "❯ ↑ 5k tokens", // already-booted: skip boot-prompt send.
+      // Pre-T7 this paneText would have short-circuited the
+      // bootClaudeMember sentinel as already-booted (matches the
+      // `\d+k tokens` regex) and skipped the boot prompt. EPIC
+      // e-f28c2596 T7 decouples the brief-paste from the sentinel:
+      // rotate.ts now sets `forceBootPrompt: true` so the boot
+      // prompt fires regardless of stale-token scrollback.
+      paneText: "❯ ↑ 5k tokens",
     });
     const exit = await rotate(["--team-dir", scratch, "--lead"], {
       buildTmux: () => tmux,
@@ -746,11 +752,11 @@ describe("rotate() — public verb", () => {
       bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
+    // Lead resolved from roster: /clear lands on the team-lead pane.
+    // (This test's primary assertion; the boot-prompt paste-buffer
+    // calls are now expected per T7 but their exact shape is covered
+    // by the §C/§T3b3 tests above + the T8 forceBootPrompt sweep.)
     expect(calls.sendKeys[0]?.target).toBe("atmux-t:lead-x");
-    // No brief file in briefsDir → no loadBuffer / pasteBuffer (also,
-    // claude TUI no longer takes the paste-buffer path regardless).
-    expect(calls.loadBuffer).toEqual([]);
-    expect(calls.pasteBuffer).toEqual([]);
   });
 
   test("ADR-057 §D2c: --lead writes pre-rotate handoff file", async () => {

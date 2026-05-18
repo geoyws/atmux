@@ -367,6 +367,16 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
       paneTargetString: tmuxTarget,
       team: team.name,
       member: target.name,
+      // EPIC e-f28c2596 T7: `/clear` definitively wiped the live
+      // session above (step 1) — bypass bootClaudeMember's
+      // already-booted sentinel so the brief boot prompt fires
+      // UNCONDITIONALLY. Pre-T7 bug: tmux scrollback retains
+      // tokens-shaped text after /clear → sentinel mis-fires as
+      // already-booted → brief never re-pastes → rotated lead sits
+      // at 0 tok of brief context. The pre-fix operator-visible
+      // fingerprint was `rotate: <role>: already booted — boot
+      // prompt skipped` followed by 0-token lead in next /bau.
+      forceBootPrompt: true,
     };
     if (opts.bootClaude !== undefined) {
       Object.assign(bootOpts, opts.bootClaude);

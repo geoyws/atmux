@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🟢 Fixed — `atmux rotate-lead` brief re-paste skipped on stale-token scrollback (EPIC e-f28c2596 T7, 2026-05-18)
+
+Decouples the `bootClaudeMember` already-booted sentinel from the rotate-after-`/clear` path. Pre-fix bug: `atmux rotate-lead` printed `rotate: <role>: already booted — boot prompt skipped` and the rotated lead landed at 0 tok of brief context in the next `/bau` scan. Root cause: `/clear` resets the Claude session but tmux's own scrollback persists, so `capturePane(start: -40)` after `/clear` matched residual `Nk tokens` text and the sentinel mis-fired as already-booted, skipping the brief re-paste entirely (`goal injection skipped` was the downstream symptom — goal-injection runs AFTER brief-paste and silently no-ops when boot was skipped).
+
+- **[`src/core/boot-claude.ts`](src/core/boot-claude.ts)** — new `BootClaudeOpts.forceBootPrompt?: boolean` (default `false`). When `true`, the (1) already-booted sentinel branch is bypassed; the call proceeds straight to the readiness wait + boot prompt regardless of what tmux scrollback shows. `start.ts` and other first-spawn callers keep the default `false` (the double-submit guard remains correct for first-spawn — no `/clear` precedes the call).
+- **[`src/verbs/rotate.ts`](src/verbs/rotate.ts)** — passes `forceBootPrompt: true` to `bootClaudeMember` for every claude-TUI rotate, treating `/clear` as definitive ground truth for context-wipe. Override via `opts.bootClaude.forceBootPrompt` (the post-`Object.assign` override path is preserved per the existing test-injection convention).
+- **Operator-visible fingerprint of the pre-T7 bug** — `rotate: <role>: already booted — boot prompt skipped` in rotate stderr, followed by 0-token `<role>` in the next `/bau` scan. ADR-077 (medic cockpit role) reviewed for the same short-circuit: its rotate path uses `cockpit-rotate.ts` (kill-pane + new-window per [ADR-167](docs/adr/167-cockpit-rotate-verb.md)) not `bootClaudeMember`, so the bug does NOT apply there.
+- **Cross-refs** — [ADR-081 §C](docs/adr/081-bootstrap-brief-paste-bug.md) (boot-prompt mechanism), [ADR-138](docs/adr/138-verified-send-keys.md) (the `safeSendKeysWithVerify` C-m submit verify path still runs inside `bootClaudeMember`'s paste loop), [ADR-168](docs/adr/168-send-keys-failures-log.md) (escalation log target for verify-exhausted paths).
+- **Tests deferred to paired T5+T8** — T5 (t-94ac4d75) ships the helper-contract coverage at 0505bb4; T7-specific assertions (`forceBootPrompt` skips sentinel + `rotate.ts` threads the option) land via T8 (t-a4a53960, test-lane) since T7 is BE-lane code-only.
+
 ### 🟢 Shipped — `atmux cockpit rotate <session-name>` — Rung C canonical rotation verb (ADR-167, EPIC e-0b90d6ac, 2026-05-18)
 
 Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>`) with brief-paste-ready handoff. Closes the previously manual `/bruh` skill §3a fallback (Rung C of the escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild). Caller-scope=driver only per [ADR-033](docs/adr/033-caller-scope-gate.md). `superdriver` unconditionally refused (operator REPL pane).
