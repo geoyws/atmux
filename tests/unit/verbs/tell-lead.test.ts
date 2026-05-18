@@ -385,6 +385,84 @@ describe("tellLead — integration", () => {
     }
   });
 
+  // ---------- EPIC e-a3077ca0 T6: window-name self-heal shim ----------
+
+  /** Stage a team.json with one emoji'd lead member + spin a tmux
+   *  session whose ONLY window is named `windowName`. Lets each shim
+   *  test inject a specific pre-rename window form. */
+  async function stageEmojiLead(
+    leadName: string,
+    emoji: string,
+    role: string,
+    windowName: string,
+  ): Promise<{ teamName: string; sessionName: string }> {
+    const teamName = `${sessionPrefix}-team`;
+    const sessionName = `atmux-${teamName}`;
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: teamName,
+        members: [{ name: leadName, emoji, role }],
+      }),
+    );
+    await tmux.session.newSession({ name: sessionName, shellCommand: "cat", windowName });
+    await new Promise((r) => setTimeout(r, 80));
+    return { teamName, sessionName };
+  }
+
+  test("shim (a): canonical default-member window already present → no rename, ping lands", async () => {
+    // role=team-lead + emoji → canonical = `🧭_lead` (ADR-161 `_-prefix`).
+    const { sessionName } = await stageEmojiLead("lead", "🧭", "team-lead", "🧭_lead");
+    const { stderr } = await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "ack"]),
+    );
+    expect(stderr).toContain("✅ atmux tell-lead → lead");
+    const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+    expect(wins).toContain("🧭_lead");
+    // No `🧭-lead` artifact created (canonical was already present).
+    expect(wins).not.toContain("🧭-lead");
+  });
+
+  test("shim (b): legacy hyphen window (🧭-lead) → rename to 🧭_lead → ping lands", async () => {
+    // The 2026-05-18 atmux parent-cage symptom: 4-day uptime, never saw
+    // the ADR-161 rename shim on a fresh `atmux start` — lead window is
+    // still `🧭-lead`. tell-lead now self-heals it on the first call.
+    const { sessionName } = await stageEmojiLead("lead", "🧭", "team-lead", "🧭-lead");
+    const { stderr } = await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "ack"]),
+    );
+    expect(stderr).toContain("✅ atmux tell-lead → lead");
+    const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+    expect(wins).toContain("🧭_lead");
+    expect(wins).not.toContain("🧭-lead");
+    // Send log proves the ping actually landed at the renamed canonical.
+    const log = await Bun.file(join(atmuxDir, "logs", "send-lead.log")).text();
+    expect(log).toContain("driver-inbox has a new ask");
+  });
+
+  test("shim (c): pre-ADR-135 no-separator window (🧭lead) → rename to 🧭_lead → ping lands", async () => {
+    const { sessionName } = await stageEmojiLead("lead", "🧭", "team-lead", "🧭lead");
+    const { stderr } = await captureStdoutStderr(() =>
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "ack"]),
+    );
+    expect(stderr).toContain("✅ atmux tell-lead → lead");
+    const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+    expect(wins).toContain("🧭_lead");
+    expect(wins).not.toContain("🧭lead");
+  });
+
+  test("shim (d): no canonical + no legacy variants → ConfigError 'no tmux window for <lead.name> (is the team running?)' (durable inbox preserved)", async () => {
+    // Stage team + session, but the only window is named `unrelated`.
+    // Resolver miss → bash-byte-equal ADR-029 §F6 + F7 error. Inbox
+    // write still landed (predates the send) — proof of durability.
+    await stageEmojiLead("lead", "🧭", "team-lead", "unrelated");
+    await expect(
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "ask body"]),
+    ).rejects.toThrow(/no tmux window for lead \(is the team running\?\)/);
+    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    expect(di).toContain("ask body");
+  });
+
   test("zero-byte driver-inbox.md does not get a leading \\n on first append (ADR-029 §F14)", async () => {
     // Bash `printf >> file` appends to EOF; a zero-byte file produces
     // just the entry, no leading separator. Earlier TS port falsely
