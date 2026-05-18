@@ -69,7 +69,12 @@ import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abs
 import { tryParseJsonString } from "../abstractions/json.ts";
 import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts";
 import { spawn } from "../abstractions/spawn.ts";
-import { createTmux, type SendTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  type SendTarget,
+  serializeSendTarget,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import {
   type AccountSwapCheckCtx,
   type AccountSwapCheckDeps,
@@ -124,6 +129,13 @@ import {
 } from "../core/modal-cycling-state.ts";
 import { classifyText } from "../core/pane-state.ts";
 import { PASTE_SUBMIT_SETTLE_FLOOR_MS, submitAfterPaste } from "../core/paste-submit.ts";
+import {
+  detectAndResubmit,
+  type QueuedResubmitAction,
+  type QueuedResubmitFailureLogFn,
+  type QueuedResubmitSendKeysFn,
+} from "../core/queued-text-resubmit.ts";
+import { composerEmpty, safeSendKeysWithVerify } from "../core/safe-send.ts";
 import {
   loadPermModeDriftState,
   parsePermissionMode,
@@ -1706,6 +1718,52 @@ async function checkMember(
     });
   }
 
+  // ---------- EPIC e-f28c2596 T2: active queued-text resubmit ----------
+  // Passive `snap.queuedMessages` above only SURFACES the stuck state; ADR-
+  // 138-routed resubmit actually unsticks the compose box. Helper is pure
+  // (src/core/queued-text-resubmit.ts) — we wire the tmux + log deps here.
+  // Skip when the pane is in a state where re-firing would mis-target:
+  //   • rate-limit hard      → sends silently dropped (memory feedback_rate_limit_pane)
+  //   • compacting           → keystrokes absorbed + lost during context redraw
+  //   • busy (active turn)   → helper's own ACTIVE_TURN_RE re-checks but redundant
+  //                            guard avoids constructing the SendTarget at all
+  if (snap.rateLimit !== "hard" && !snap.compacting && !snap.busy && state !== "") {
+    try {
+      const action = await runQueuedTextResubmit({
+        tmux,
+        sendTarget: {
+          kind: "member",
+          member: member.name,
+          team: team.name,
+          target: windowTarget,
+        },
+        paneCapture: state,
+        memberName: member.name,
+        log: (m) => ctx.stderr(`poke: ${m}\n`),
+      });
+      if (action.kind === "fire") {
+        ctx.stderr(
+          `poke: ${member.name}: queued-text resubmit FIRED ` +
+            `(attempts=${action.sendResult?.attempts ?? 0}, ` +
+            `text="${(action.text ?? "").slice(0, 60)}")\n`,
+        );
+      } else if (action.kind === "log-failure") {
+        ctx.stderr(
+          `poke: ${member.name}: queued-text resubmit FAILED ` +
+            `(attempts=${action.sendResult?.attempts ?? 0}) — ` +
+            `see ~/.atmux/state/send-keys-failures.log\n`,
+        );
+      } else if (action.kind === "skip") {
+        ctx.stderr(`poke: ${member.name}: queued-text resubmit skipped — ${action.reason}\n`);
+      }
+    } catch (e) {
+      // Resubmit is best-effort — disk / tmux faults must not crash the
+      // wider per-member tick (heartbeat, modal-cycling, stale-task scan
+      // still need to run).
+      ctx.stderr(`poke: ${member.name}: queued-text resubmit threw: ${String(e)}\n`);
+    }
+  }
+
   // ---------- Check 3: stale-task scan ----------
   // ADR-076: read via loadInbox (SQL-canonical when state.db exists; JSON
   // fallback for pre-migration teams). Replaces the direct tryReadJson read
@@ -1862,6 +1920,64 @@ async function checkMember(
       }
     }
   }
+}
+
+/**
+ * EPIC e-f28c2596 T2 — wire {@link detectAndResubmit} to the per-member tmux
+ * deps. Constructed-once per checkMember call; the helper's own ACTIVE_TURN_RE
+ * drives the decision tree, this wrapper only owns the {@link safeSendKeysWithVerify}
+ * + escalation-log-fan-out closures.
+ *
+ * Note on double-logging: `safeSendKeysWithVerify` with `onFail: "escalate"`
+ * writes to send-keys-failures.log on its own (ADR-168). The helper's
+ * `failureLogFn` here is intentionally a SHIM that re-emits to the verb's
+ * stderr logger — the file persistence belongs to safe-send, the operator-
+ * visibility belongs to the verb tick log.
+ */
+async function runQueuedTextResubmit(opts: {
+  tmux: TmuxNamespace;
+  sendTarget: SendTarget;
+  paneCapture: string;
+  memberName: string;
+  log: (m: string) => void;
+}): Promise<QueuedResubmitAction> {
+  const { tmux, sendTarget, paneCapture, memberName, log } = opts;
+  const captureFn = (t: string) => tmux.pane.capturePane({ target: t, start: -30 });
+  const targetStr = serializeSendTarget(sendTarget);
+  const sendKeysFn: QueuedResubmitSendKeysFn = async (text) => {
+    const result = await safeSendKeysWithVerify({
+      target: targetStr,
+      keys: text,
+      expectVerifier: composerEmpty(),
+      capture: captureFn,
+      sendKeys: async (_t, k) => {
+        await tmux.pane.sendKeys({
+          target: sendTarget,
+          keys: k,
+          enter: true,
+        });
+      },
+      onFail: "escalate",
+      log,
+    });
+    return {
+      success: result.success,
+      attempts: result.attempts,
+      finalCapture: result.finalCapture,
+    };
+  };
+  const failureLogFn: QueuedResubmitFailureLogFn = async (entry) => {
+    // File-side write already handled by safeSendKeysWithVerify's escalate
+    // path; this shim exists so the helper contract (failureLogFn called on
+    // post-fire no token-delta) stays satisfied + so callers can attach
+    // verb-specific log fan-out without re-implementing the helper.
+    log(
+      `${memberName}: queued-text resubmit log-failure ` +
+        `(attempts=${entry.sendResult.attempts}, ` +
+        `text="${entry.text.slice(0, 60)}")`,
+    );
+  };
+  return await detectAndResubmit(paneCapture, sendKeysFn, () => Date.now(), failureLogFn);
 }
 
 function expectedTuiCmd(tui: string): string | null {
