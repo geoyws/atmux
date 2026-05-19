@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📜 Doctrine — committer no-deploy + test-trust principle (t-afcc71af, ADR-091/134/144 §Amendment 2026-05-19)
+
+Driver finding 2026-05-19 06:30 MYT (operator: "make sure committers/gitters don't deploy… make sure they understand that if they are merging that means tests are already passing because the epic-team has already done the merge earlier and has run tests") surfaced two implicit doctrines worth making explicit before they drift:
+
+- **Committer scope is merge-and-push, NOT deploy** — `kubectl` / `helm` / `terraform` / pipeline-triggers / manifest edits / service restarts are all out-of-scope refusal-class. Codified in [`templates/briefs/committer.md`](templates/briefs/committer.md) §Deploy is out of scope + §Hard rules (both modes) (new bullet). Per [ADR-145](docs/adr/145-atmux-adopts-gitter.md) the committer role's scope was always merge-and-push, but the brief now names the deploy refusal-class explicitly so future agents can't drift into infra territory while looking adjacent to push semantics.
+
+- **Test-trust principle — tests fire ONCE at L1, fan-in trusts the verdict** — the intra-team merger ([ADR-134](docs/adr/134-in-team-auto-merger.md)) is the SOURCE-of-truth test layer (`autoMerge.testCommand` at `merging → tested`); the epic-team fan-in ([ADR-091](docs/adr/091-kanban-driven-auto-merge.md) via `atmux epic-merge tick`) **trusts** that verdict with `testGateMode: "skip"` default ([ADR-144](docs/adr/144-epic-team-test-gate.md) §Amendment 2026-05-19). The schema-level default (`src/schema/team.ts::TeamEpicSchema.testGateMode = "skip"`) and unit-test pin (`tests/unit/core/epic-merge.test.ts` "testGateMode unset (default) → skip semantics") were already in place; this Task makes the **doctrine** explicit across 3 ADR §Amendments + committer brief §Test-trust principle. `"cage"` / `"deployed"` are operator escape hatches for the rare case where L1 tests were knowingly incomplete; the default behavior is skip-and-trust.
+
+The change is **brief + ADR amendments only** — Part B of the originating Task (default-flip + unit test) was already satisfied at source; the ADR §Amendments codify the WHY behind the existing default. Reviewer surface for regressions: a re-test fire on default fan-in violates the principle and should land as `atmux flag add --severity high`.
+
 ### 📐 ADR-186 — unified wedge-clearing mechanism (proposed; EPIC e-35dd6274 T1, t-73128937)
 
 Driver mechanism audit 2026-05-19 (5 wedges discovered in 1h of manual investigation, ~70 lines of orphan crontab hand-cleaned, 1 silent committer death uncaught for hours) framed the need: a single substrate for detecting + clearing wedges across all current + future failure modes. [ADR-186](docs/adr/186-wedge-clearing-mechanism.md) is the T1 spec.
