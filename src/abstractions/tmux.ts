@@ -19,7 +19,7 @@
 // memory ref `feedback_tmux_test_isolation.md`).
 
 import { TmuxError } from "../errors.ts";
-import { type ExpectExitCode, spawn } from "./spawn.ts";
+import { type ExpectExitCode, spawn, spawnInheritStdio } from "./spawn.ts";
 
 // ---------- Target IDs ----------
 
@@ -306,6 +306,11 @@ export interface TmuxNamespace {
   };
   readonly client: {
     attachSession(name: string): Promise<void>;
+    /** ADR-180: tty-inherit variant of `attachSession`. Spawns tmux with
+     *  the parent's stdin/stdout/stderr inherited so a real controlling
+     *  terminal flows through. Used by `atmux cockpit attach --human`;
+     *  agent callers stay on `attachSession` (piped-stdio default). */
+    attachSessionInheritStdio(name: string): Promise<void>;
     switchClient(opts: { target: string; clientName?: string }): Promise<void>;
     listClients(): Promise<{ name: string; session: string; tty: string }[]>;
   };
@@ -668,6 +673,23 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
       /** `tmux attach-session -t <name>`. Note: blocks until detached. */
       async attachSession(name) {
         await tmuxRun(["attach-session", "-t", name]);
+      },
+
+      /** ADR-180: tty-inherit `attach-session`. Spawns tmux with the
+       *  parent's stdio inherited so the caller's controlling terminal
+       *  reaches tmux. Wraps a non-zero exit in `TmuxError` so error
+       *  shapes match the rest of the namespace. */
+      async attachSessionInheritStdio(name) {
+        const argv = [...socketArgs, "attach-session", "-t", name];
+        const exitCode = await spawnInheritStdio({ cmd: "tmux", argv });
+        if (exitCode !== 0) {
+          throw new TmuxError({
+            argv,
+            exitCode,
+            stderr: "",
+            stdout: "",
+          });
+        }
       },
 
       /** `tmux switch-client [-c <client>] -t <target>`. */

@@ -2843,6 +2843,35 @@ describe("parseCockpitArgs — attach subverb", () => {
     expect(p.configPath).toBe("/tmp/cockpit.json");
   });
 
+  test("attach accepts --human (ADR-180)", () => {
+    const p = parseCockpitArgs(["attach", "--human"]);
+    expect(p.subverb).toBe("attach");
+    expect(p.human).toBe(true);
+  });
+
+  test("attach without --human defaults human=false (agent path)", () => {
+    const p = parseCockpitArgs(["attach"]);
+    expect(p.human).toBe(false);
+  });
+
+  test("attach accepts --human + --config together", () => {
+    const p = parseCockpitArgs(["attach", "--human", "--config", "/tmp/c.json"]);
+    expect(p.human).toBe(true);
+    expect(p.configPath).toBe("/tmp/c.json");
+  });
+
+  test("rebuild rejects --human (attach-only flag)", () => {
+    expect(() => parseCockpitArgs(["rebuild", "--human"])).toThrow(UsageError);
+  });
+
+  test("reload rejects --human (attach-only flag)", () => {
+    expect(() => parseCockpitArgs(["reload", "--human"])).toThrow(UsageError);
+  });
+
+  test("migrate-socket rejects --human (attach-only flag)", () => {
+    expect(() => parseCockpitArgs(["migrate-socket", "--human"])).toThrow(UsageError);
+  });
+
   test("attach rejects --no-cycle (rebuild-only flag)", () => {
     expect(() => parseCockpitArgs(["attach", "--no-cycle"])).toThrow(UsageError);
   });
@@ -2913,6 +2942,7 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
       yes: false,
       dryRun: false,
       keepLegacy: false,
+      human: false,
       configPath: cockpitJson,
       ...overrides,
     };
@@ -2922,6 +2952,7 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
     sessionExists: boolean;
     captureSocket?: (socket: string) => void;
     captureAttachTarget?: (target: string) => void;
+    captureAttachPath?: (path: "piped" | "inherit") => void;
   }): TmuxNamespace {
     return {
       session: {
@@ -2932,7 +2963,12 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
       },
       client: {
         async attachSession(_name: string) {
+          opts.captureAttachPath?.("piped");
           // No-op: real attach would block on tty.
+        },
+        async attachSessionInheritStdio(_name: string) {
+          opts.captureAttachPath?.("inherit");
+          // No-op: real attach would block on tty (with parent stdio).
         },
       },
     } as unknown as TmuxNamespace;
@@ -3009,6 +3045,52 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
         }),
     });
     expect(capturedTarget).toBe("=atmux_cockpit_alt");
+  });
+
+  test("ADR-180: human=false routes through piped-stdio attachSession", async () => {
+    await writeFile(
+      cockpitJson,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_cockpit",
+        sessions: [],
+      }),
+    );
+    let capturedPath: "piped" | "inherit" | undefined;
+    await cockpitAttach(attachOpts({ human: false }), {
+      env: {},
+      tmuxFactory: () =>
+        stubTmux({
+          sessionExists: true,
+          captureAttachPath: (p) => {
+            capturedPath = p;
+          },
+        }),
+    });
+    expect(capturedPath).toBe("piped");
+  });
+
+  test("ADR-180: human=true routes through inherit-stdio attachSessionInheritStdio", async () => {
+    await writeFile(
+      cockpitJson,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_cockpit",
+        sessions: [],
+      }),
+    );
+    let capturedPath: "piped" | "inherit" | undefined;
+    await cockpitAttach(attachOpts({ human: true }), {
+      env: {},
+      tmuxFactory: () =>
+        stubTmux({
+          sessionExists: true,
+          captureAttachPath: (p) => {
+            capturedPath = p;
+          },
+        }),
+    });
+    expect(capturedPath).toBe("inherit");
   });
 
   test("missing-session surfaces ConfigError (run 'atmux cockpit rebuild' hint)", async () => {

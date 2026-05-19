@@ -86,6 +86,7 @@ function buildFakeTmux(opts: { sessionUp: boolean; panes: Record<string, string>
     },
     client: {
       attachSession: async () => {},
+      attachSessionInheritStdio: async () => {},
       switchClient: async () => {},
       listClients: async () => [],
     },

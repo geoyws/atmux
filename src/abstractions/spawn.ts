@@ -160,6 +160,47 @@ export async function spawn(opts: SpawnOpts): Promise<SpawnResult> {
   };
 }
 
+// ---------- TTY-inherit spawn (ADR-180) ----------
+
+/** Options for `spawnInheritStdio` — narrow on purpose. No timeout (the
+ *  call is interactive and blocks until the user detaches), no
+ *  `expectExitCode` (the caller maps non-zero however suits — tmux
+ *  attach surfaces nonzero as `TmuxError`), no stdin payload (stdio is
+ *  inherited, not piped). */
+export interface SpawnInheritStdioOpts {
+  cmd: string;
+  argv?: ReadonlyArray<string>;
+  cwd?: string;
+  env?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Spawn `cmd argv` with the parent process's stdin/stdout/stderr
+ * inherited (controlling tty flows through). Resolves with the child's
+ * exit code; caller decides what nonzero means.
+ *
+ * ADR-180 carve-out to ADR-100. The only legitimate callsite today is
+ * `client.attachSessionInheritStdio` in `abstractions/tmux.ts`, used
+ * when the verb is human-typed (`atmux cockpit attach --human`) and
+ * therefore guaranteed to have a real tty on fds 0/1/2. The agent path
+ * stays on the piped `spawn()` default.
+ */
+export async function spawnInheritStdio(opts: SpawnInheritStdioOpts): Promise<number> {
+  const argv = opts.argv ?? [];
+  const cmdResolved = resolveCmd(opts.cmd, argv);
+  const env = mergeEnv(opts.env);
+  const proc = Bun.spawn({
+    cmd: [cmdResolved, ...argv],
+    cwd: opts.cwd ?? process.cwd(),
+    env,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  await proc.exited;
+  return proc.exitCode ?? -1;
+}
+
 // ---------- Streaming spawn ----------
 
 /**

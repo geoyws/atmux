@@ -553,6 +553,7 @@ function buildFakeTmux(setup: FakeTmuxSetup): TmuxNamespace {
     },
     client: {
       attachSession: async () => {},
+      attachSessionInheritStdio: async () => {},
       switchClient: async () => {},
       listClients: async () => [],
     },

@@ -1,7 +1,7 @@
 // Unit tests for src/abstractions/spawn.ts (ADR-007).
 
 import { describe, expect, test } from "bun:test";
-import { spawn, spawnStream } from "../../../src/abstractions/spawn.ts";
+import { spawn, spawnInheritStdio, spawnStream } from "../../../src/abstractions/spawn.ts";
 import { SpawnError, SpawnTimeoutError } from "../../../src/errors.ts";
 
 describe("spawn (buffered)", () => {
@@ -266,5 +266,38 @@ describe("spawnStream", () => {
     // Already exited; kill should be a no-op.
     handle.kill();
     expect(true).toBe(true);
+  });
+});
+
+// ---------- spawnInheritStdio (ADR-180) ----------
+//
+// The point of this primitive is fd inheritance, which is impossible to
+// directly assert in bun:test (the test runner's stdio is what gets
+// inherited, and we don't want to write to it). Tests cover the
+// exit-code passthrough, command-resolution failure path, and the no-
+// argv ergonomics; the actual tty-inherit behaviour is validated by
+// running `atmux cockpit attach --human` from a real shell.
+
+describe("spawnInheritStdio (ADR-180)", () => {
+  test("returns 0 for `true`", async () => {
+    const code = await spawnInheritStdio({ cmd: "true" });
+    expect(code).toBe(0);
+  });
+
+  test("returns 1 for `false`", async () => {
+    const code = await spawnInheritStdio({ cmd: "false" });
+    expect(code).toBe(1);
+  });
+
+  test("throws SpawnError when cmd cannot be resolved", async () => {
+    await expect(
+      spawnInheritStdio({ cmd: "definitely-not-a-real-binary-xyz" }),
+    ).rejects.toBeInstanceOf(SpawnError);
+  });
+
+  test("accepts argv", async () => {
+    // `true` ignores argv; we just confirm the path doesn't blow up.
+    const code = await spawnInheritStdio({ cmd: "true", argv: ["ignored"] });
+    expect(code).toBe(0);
   });
 });

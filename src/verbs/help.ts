@@ -34,13 +34,18 @@ Setup:
                               TUI auto-launch + cockpit session). Reads roster
                               from ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
-  cockpit attach [--config <p>]
+  cockpit attach [--config <p>] [--human]
                               tmux-attach to the cockpit session on its named
                               socket (\`tmux -L atmux-cockpit attach -t
                               atmux_cockpit\`). Socket + session name resolved
                               dynamically via getCockpitSocketName +
                               cockpit.json so the verb stays correct across
                               renames + ATMUX_COCKPIT_SOCKET overrides.
+                              \`--human\` (ADR-180): route through tty-inherit
+                              spawn so the caller's controlling terminal
+                              reaches tmux. Default (agent path) uses piped
+                              stdio and exits 1 on no-tty — the intended
+                              shape for headless probes.
   cockpit rotate <session-name> [--force]
                               ADR-167 Rung C: canonical rotation of a cockpit-
                               level role pane — \`medic\` (W2), \`sentinel\` (W3),

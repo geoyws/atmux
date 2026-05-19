@@ -319,6 +319,15 @@ export interface ParsedCockpitArgs {
    *  planned ops. ALSO required when `--force-cycle` is set (the
    *  per-team cage cycle is destructive at the claude-TUI layer). */
   yes: boolean;
+  /** ADR-180: `attach`-sub-verb-only flag. Routes the attach through
+   *  the inherit-stdio spawn path so the caller's controlling tty
+   *  reaches tmux. Default (undefined / false) keeps the agent-path
+   *  piped-stdio shape — that path exits 1 with "open terminal failed:
+   *  not a terminal" when there's no tty, which is the intended
+   *  agent-side semantic. Rejected on every non-`attach` sub-verb.
+   *  Optional for backward-compat with test fixtures constructed before
+   *  ADR-180 added the flag (mirrors the dryRun / keepLegacy pattern). */
+  human?: boolean;
 }
 
 /**
@@ -363,10 +372,25 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   let dryRun = false;
   let keepLegacy = false;
 
+  let human = false;
+
   let i = 1;
   while (i < args.length) {
     const a = args[i] ?? "";
     switch (a) {
+      case "--human":
+        if (sub !== "attach") {
+          throw new UsageError({
+            what: `cockpit ${sub}: --human only applies to 'attach'`,
+            hint:
+              "use 'atmux cockpit attach --human' for the human-entry path " +
+              "(tty inherited through to tmux); rebuild/reload/migrate-socket " +
+              "have no attach step",
+          });
+        }
+        human = true;
+        i += 1;
+        break;
       case "--no-cycle":
         if (sub === "reload") {
           throw new UsageError({
@@ -448,11 +472,13 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
 
   // `attach` is a read-only operation; reject every rebuild/migrate-socket
   // flag so operators get a clear hint instead of silently-ignored args.
+  // `--human` (ADR-180) is the one attach-specific flag — gated above
+  // before this check so it doesn't trip the rejection.
   if (sub === "attach") {
     if (noCycle || forceCycle || ackDangerous || noLaunch || yes || dryRun || keepLegacy) {
       throw new UsageError({
-        what: "cockpit attach: only --config is accepted",
-        hint: "usage: atmux cockpit attach [--config <path>]",
+        what: "cockpit attach: only --config and --human are accepted",
+        hint: "usage: atmux cockpit attach [--config <path>] [--human]",
       });
     }
   }
@@ -505,6 +531,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     yes,
     dryRun,
     keepLegacy,
+    human,
   };
   if (configPath !== undefined) out.configPath = configPath;
   return out;
@@ -595,7 +622,7 @@ export async function cockpitAttach(
 
   const socket = getCockpitSocketName(env);
   const tmux = factory({ socket });
-  return attachWithTmux(tmux, cockpit.cockpitSession);
+  return attachWithTmux(tmux, cockpit.cockpitSession, { inheritStdio: parsed.human === true });
 }
 
 /** The rebuild flow. Exported for direct unit-test access. */

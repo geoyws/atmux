@@ -103,6 +103,7 @@ function buildFakeTmux(opts: {
     },
     client: {
       attachSession: async () => {},
+      attachSessionInheritStdio: async () => {},
       switchClient: async () => {},
       listClients: async () => [],
     },
