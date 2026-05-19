@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔤 Vocabulary / scope — medic vs sentinel boundary tightened (ADR-077 + ADR-132 §Amendment 2026-05-19)
+
+Driver mechanism audit (finding #2 against EPIC e-35dd6274) surfaced a coverage gap: medic (W2, [ADR-077](docs/adr/077-superdoctor-cockpit-role.md) / renamed via [ADR-133](docs/adr/133-medic-rename.md)) owned "health probes" and sentinel (W3, [ADR-132](docs/adr/132-pluggable-martinet.md) / renamed via [ADR-158](docs/adr/158-martinet-to-sentinel-rename.md)) owned "whip", but **pane-death detection / claude TUI wedge** sat in the seam. Today's silent gitter/committer death (TUI wedged but process alive; no `✻` activity, no commits, no operator response) went uncaught for hours because reviewer + driver triage couldn't point to which mechanism owned it.
+
+Two append-only §Amendment sections — one in each ADR — codify the boundary:
+
+- **Medic scope** (repository health): test/lint/build failures, schema drift, code-class probes; drives same-commit fixes. NOT pane-liveness.
+- **Sentinel scope** (pane liveness + mechanical nudges): TUI dead/wedged/rate-limited/refusing, enter-push, claim-next, modal-release, routine + emergency rotation. NOT code health.
+- **Doctor** stays shared probe substrate per [ADR-027](docs/adr/027-doctor-self-diagnostics.md); both callers invoke it.
+- **Cross-invocation**: sentinel routes code-class findings to medic via escalate-to-claude-lead; medic routes liveness-class findings via the shared probe library.
+
+Brief cross-link added at [`templates/briefs/martinet.md`](templates/briefs/martinet.md) §"Scope boundary vs medic". No `medic.md` / `sentinel.md` briefs exist today; the existing `martinet.md` (sentinel canonical pre-ADR-158 rename) carries the contract.
+
+No code changes — pure docs sweep. `rg -i 'medic vs sentinel|pane death' src/` returns zero hits, confirming no contradicting language remains.
+
+**Cross-refs**:
+
+- [ADR-077](docs/adr/077-superdoctor-cockpit-role.md) §Amendment 2026-05-19 — medic side.
+- [ADR-132](docs/adr/132-pluggable-martinet.md) §Amendment 2026-05-19 — sentinel side.
+- [ADR-027](docs/adr/027-doctor-self-diagnostics.md) — shared probe substrate.
+- [ADR-140](docs/adr/140-cheap-model-first.md) — sentinel = mechanical, medic = judgment-bearing.
+- EPIC e-35dd6274 — wedge-clearing mechanism (scope clarity is precondition for probe-class routing per ADR-186).
+- Task `t-c8be6daa` — this docs sweep.
+
 ### 🏷️ Renamed — ADR-088 per-member-branch fan-in → ADR-179 (collision resolution, t-88da6978, 2026-05-18)
 
 Sibling pattern to the t-fe51cf64 ADR-087 renumber (same day). `docs/adr/088-per-member-branch-fan-in.md` (Accepted 2026-05-15) collided with `docs/adr/088-worktree-submodule-init.md` (accepted 2026-05-13). Per atmux ADR convention (monotonic, append-only, one ADR per number — CLAUDE.md §Source-of-truth chain), the older submodule-init ADR keeps the 088 number; the fan-in ADR moves to ADR-179. Both ADR-087 + ADR-088 collisions now closed; project is back to a single ADR per number. Convention precedent: b4d62da `docs(adr-176)` + 830e9fc `docs(adr-177)`.

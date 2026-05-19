@@ -234,3 +234,24 @@ Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47
 - Automated rollback of superdoctor-authored fixes that fail CI — Phase 6+.
 - LLM-judge cross-check on superdoctor's preventive asks (ADR-023 cascade) — Phase 6+.
 - Replacing the superdriver with superdoctor-driven autonomous operation — explicitly NOT a goal; superdriver remains the operator's interactive REPL, superdoctor remains a bg watcher.
+
+## Amendments
+
+### 2026-05-19 — Scope tightened to repository health; pane-liveness moved to Sentinel
+
+**Driver finding 2026-05-19 06:00 MYT** (mechanism audit finding #2 against EPIC e-35dd6274). Today's silent gitter/committer death exposed a coverage gap: medic owned "health probes" but **pane-death detection / claude TUI wedge** sat in the seam between this role and the sentinel role at W3 ([ADR-132](./132-pluggable-martinet.md) / [ADR-158](./158-martinet-to-sentinel-rename.md)). Reviewer + driver triage couldn't point to which mechanism owned it. Without explicit boundary text, future agents would keep falling into "medic should have caught that" / "I thought sentinel did that" arguments.
+
+**Medic scope (this ADR — narrowed):**
+
+- Repository health: test failures, lint errors, broken builds, schema drift.
+- Code-fix path: drives same-commit fixes when probes flag regressions (preserves §D3 code-fix-to-atmux authority).
+- Probe runner for `atmux doctor` (code/test/lint classes) — invoked event-driven per the 2026-05-14 cadence narrowing.
+- **Not scoped to**: pane liveness, claude TUI wedges, queued compose-boxes, refusal patterns. Those are sentinel scope per [[ADR-132 §Amendment 2026-05-19]].
+
+**Sentinel sibling (boundary):** pane-liveness, mechanical nudges, member-state observation, routine + emergency rotation per [ADR-132](./132-pluggable-martinet.md) §Amendment 2026-05-19. Sentinel observe-pass invokes doctor probes for code-class findings (read-only) and escalates code-fix work back to medic via the escalate-to-claude-lead path; medic invokes doctor for liveness-class findings via the shared probe library.
+
+**Doctor stays shared infra** per [ADR-027](./027-doctor-self-diagnostics.md) — owns no loop of its own; probe classes (code-health, deploy-completeness per [ADR-183](./183-deploy-completeness-probe-class.md), wedge-classes per EPIC e-35dd6274, lifecycle-symmetry per audit finding #1) are invoked by callers.
+
+**Why the seam mattered today.** Gitter pane appeared alive (process running, no segfault), but claude TUI was wedged (no `✻` activity, no commit since N hours, no response to operator). That is sentinel scope. Medic wouldn't probe it because nothing was broken in the code/test/build sense; the member was just *quiet*. Same root cause as the lifecycle-symmetry gap (audit finding #1).
+
+Cross-refs: ADR-132 §Amendment 2026-05-19 (sentinel boundary side), ADR-027 (doctor framework), ADR-140 (cheap-model-first — sentinel = mechanical, medic = judgment-bearing), EPIC e-35dd6274 (wedge-clearing mechanism — scope clarity is precondition for probe-class routing per ADR-186), t-186d5910 (sentinel deploy — landing the deploy makes the boundary observable).
