@@ -153,11 +153,11 @@ async function syncClaudeTeamJson(
   // a 3-line diff hint emitted to stderr; the one-line drift warning was
   // already emitted inside writeSync. Other errors propagate as-is so
   // reportError's existing exit-code routing kicks in.
-  const writeOpts: WriteSyncOpts = {
+  const writeOpts = {
     ...opts,
     overwriteBriefs: flags.overwriteBriefs,
     force: flags.force,
-  };
+  } as WriteSyncOpts;
   const stderr = opts.stderr ?? defaultStderrWrite;
   try {
     await writeSync(writeOpts);
