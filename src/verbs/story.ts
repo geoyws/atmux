@@ -12,14 +12,25 @@
 //   atmux story adv     ↔ advance
 
 import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
-import { addStory, advanceStory, listStories, showStory } from "../core/story.ts";
+import {
+  addStory,
+  advanceStory,
+  listStories,
+  showStory,
+  storySignoff,
+  storyUnsignoff,
+} from "../core/story.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
-const USAGE_HINT_ROOT = "atmux story <add|list|show|advance> [args]";
-const USAGE_ADD = "atmux story add <title> --epic <eid> [--ac C] [--body T]";
+const USAGE_HINT_ROOT =
+  "atmux story <add|list|show|advance|signoff|unsignoff> [args]";
+const USAGE_ADD =
+  "atmux story add <title> --epic <eid> [--ac C] [--body T] [--merge-mode feature-branch|trunk-direct]";
 const USAGE_LIST = "atmux story list --epic <eid> [--status S] [--json]";
 const USAGE_SHOW = "atmux story show <id> [--json]";
 const USAGE_ADV = "atmux story advance <id> [--to <state>]";
+const USAGE_SIGNOFF = "atmux story signoff <id> [--as <member>] [--note <text>]";
+const USAGE_UNSIGNOFF = "atmux story unsignoff <id> [--as <member>] [--note <text>]";
 
 export async function story(argv: ReadonlyArray<string>): Promise<number> {
   const first = argv[0];
@@ -42,9 +53,13 @@ export async function story(argv: ReadonlyArray<string>): Promise<number> {
     case "advance":
     case "adv":
       return await storyAdvance(rest);
+    case "signoff":
+      return await storySignoffVerb(rest);
+    case "unsignoff":
+      return await storyUnsignoffVerb(rest);
     default:
       throw new UsageError({
-        what: `story: unknown verb: ${first} (use add|list|show|advance)`,
+        what: `story: unknown verb: ${first} (use add|list|show|advance|signoff|unsignoff)`,
         hint: USAGE_HINT_ROOT,
       });
   }
@@ -59,6 +74,7 @@ async function storyAdd(argv: ReadonlyArray<string>): Promise<number> {
   const opts: Parameters<typeof addStory>[1] = { title: parsed.title, epic: parsed.epic };
   if (parsed.body !== undefined) opts.body = parsed.body;
   if (parsed.ac !== undefined) opts.acceptanceCriteria = parsed.ac;
+  if (parsed.mergeMode !== undefined) opts.mergeMode = parsed.mergeMode;
   const sid = await addStory(atmuxDir, opts);
   process.stderr.write(`story: added ${sid} → ${parsed.epic} — ${parsed.title}\n`);
   process.stdout.write(`${sid}\n`);
@@ -160,6 +176,7 @@ interface ParsedAddArgs {
   epic: string;
   body?: string;
   ac?: string;
+  mergeMode?: "feature-branch" | "trunk-direct";
   teamDir?: string;
 }
 
@@ -168,6 +185,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   let epic = "";
   let body: string | undefined;
   let ac: string | undefined;
+  let mergeMode: "feature-branch" | "trunk-direct" | undefined;
   let teamDir: string | undefined;
   let i = 0;
   while (i < argv.length) {
@@ -196,6 +214,24 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
         throw new UsageError({ what: "story add: --body requires a value", hint: USAGE_ADD });
       }
       body = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--merge-mode") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "story add: --merge-mode requires a value",
+          hint: USAGE_ADD,
+        });
+      }
+      if (v !== "feature-branch" && v !== "trunk-direct") {
+        throw new UsageError({
+          what: `story add: --merge-mode must be 'feature-branch' or 'trunk-direct' (got '${v}')`,
+          hint: USAGE_ADD,
+        });
+      }
+      mergeMode = v;
       i += 2;
       continue;
     }
@@ -230,6 +266,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   const out: ParsedAddArgs = { title, epic };
   if (body !== undefined) out.body = body;
   if (ac !== undefined) out.ac = ac;
+  if (mergeMode !== undefined) out.mergeMode = mergeMode;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }
@@ -384,6 +421,103 @@ function parseAdvanceFlags(argv: ReadonlyArray<string>): AdvanceFlags {
   }
   const out: AdvanceFlags = {};
   if (to !== undefined) out.to = to;
+  if (teamDir !== undefined) out.teamDir = teamDir;
+  return out;
+}
+
+// ---------- ADR-175 GAP 1: signoff / unsignoff subverbs ----------
+
+async function storySignoffVerb(argv: ReadonlyArray<string>): Promise<number> {
+  const { positional, rest } = splitFlagsAndPositionals(argv);
+  const id = positional[0];
+  if (id === undefined || id.length === 0) {
+    throw new UsageError({ what: "story signoff: <id> required", hint: USAGE_SIGNOFF });
+  }
+  const flags = parseSignoffFlags(rest, "story signoff", USAGE_SIGNOFF);
+  const dirOpts: ResolveDirOpts = flags.teamDir !== undefined ? { teamDir: flags.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const callerMember = process.env.ATMUX_MEMBER;
+  const opts: Parameters<typeof storySignoff>[2] = {};
+  if (flags.as !== undefined) opts.as = flags.as;
+  if (flags.note !== undefined) opts.note = flags.note;
+  if (callerMember !== undefined && callerMember.length > 0) opts.callerMember = callerMember;
+  const r = await storySignoff(atmuxDir, id, opts);
+  process.stderr.write(
+    `story: ${r.storyId} signed off by ${r.signedOffBy} at ${r.signedOffAt}\n`,
+  );
+  return 0;
+}
+
+async function storyUnsignoffVerb(argv: ReadonlyArray<string>): Promise<number> {
+  const { positional, rest } = splitFlagsAndPositionals(argv);
+  const id = positional[0];
+  if (id === undefined || id.length === 0) {
+    throw new UsageError({ what: "story unsignoff: <id> required", hint: USAGE_UNSIGNOFF });
+  }
+  const flags = parseSignoffFlags(rest, "story unsignoff", USAGE_UNSIGNOFF);
+  const dirOpts: ResolveDirOpts = flags.teamDir !== undefined ? { teamDir: flags.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const callerMember = process.env.ATMUX_MEMBER;
+  const opts: Parameters<typeof storyUnsignoff>[2] = {};
+  if (flags.as !== undefined) opts.as = flags.as;
+  if (flags.note !== undefined) opts.note = flags.note;
+  if (callerMember !== undefined && callerMember.length > 0) opts.callerMember = callerMember;
+  const r = await storyUnsignoff(atmuxDir, id, opts);
+  process.stderr.write(
+    `story: ${r.storyId} signoff REVERSED by ${r.unsignedBy} at ${r.unsignedAt}\n`,
+  );
+  return 0;
+}
+
+interface SignoffFlags {
+  as?: string;
+  note?: string;
+  teamDir?: string;
+}
+
+export function parseSignoffFlags(
+  argv: ReadonlyArray<string>,
+  label = "story signoff",
+  usage = USAGE_SIGNOFF,
+): SignoffFlags {
+  let as: string | undefined;
+  let note: string | undefined;
+  let teamDir: string | undefined;
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--as") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: `${label}: --as requires a value`, hint: usage });
+      }
+      as = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--note") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: `${label}: --note requires a value`, hint: usage });
+      }
+      note = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--team-dir") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: `${label}: --team-dir requires a value`, hint: usage });
+      }
+      teamDir = v;
+      i += 2;
+      continue;
+    }
+    throw new UsageError({ what: `${label}: unknown flag: ${a ?? ""}`, hint: usage });
+  }
+  const out: SignoffFlags = {};
+  if (as !== undefined) out.as = as;
+  if (note !== undefined) out.note = note;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }

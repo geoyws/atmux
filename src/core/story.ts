@@ -82,6 +82,9 @@ export interface AddStoryOpts {
   epic: string;
   body?: string;
   acceptanceCriteria?: string;
+  /** ADR-175 GAP 2: how this Story integrates onto trunk. Omitted →
+   *  `'feature-branch'` (current behaviour). */
+  mergeMode?: "feature-branch" | "trunk-direct";
 }
 
 export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<string> {
@@ -115,6 +118,7 @@ export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<st
       status: "planning",
       reviewSignoff: false,
       mergeTaskId: null,
+      mergeMode: opts.mergeMode ?? "feature-branch",
       createdAt: nowEpoch(),
       completedAt: null,
     };
@@ -198,15 +202,36 @@ export async function advanceStory(
     }
     const cur = story.status ?? "planning";
     const eid = story.epic ?? null;
-    const resolved = target !== undefined && target.length > 0 ? target : storyNextState(cur);
+    // ADR-175 GAP 2: trunk-direct stories take the shorter machine
+    //   planning → ready → in-progress → testing → review → done
+    // (skipping `merging`). Compute mode here so both `storyNextState`
+    // fallback and the legal-transition gate respect the chosen path.
+    const mergeMode = story.mergeMode ?? "feature-branch";
+    const trunkDirect = mergeMode === "trunk-direct";
+    const resolved =
+      target !== undefined && target.length > 0
+        ? target
+        : trunkDirect && cur === "review"
+          ? "done"
+          : storyNextState(cur);
     if (resolved === null) {
       throw new UsageError({ what: `story advance: ${id} is in terminal state '${cur}'` });
     }
-    if (!storyLegalTransition(cur, resolved)) {
+    // Trunk-direct carve-out: `review → done` legal in addition to the
+    // feature-branch machine. Every other transition still goes through
+    // the canonical gate so e.g. `review → merging` on a trunk-direct
+    // story would refuse here (no merging phase) before hitting the
+    // merging-specific signoff gate below — but we want a clearer
+    // error for that explicit foot-gun, so the merging branch checks
+    // mergeMode too.
+    const trunkDirectReviewToDone =
+      trunkDirect && cur === "review" && resolved === "done";
+    if (!trunkDirectReviewToDone && !storyLegalTransition(cur, resolved)) {
       throw new UsageError({
         what:
           `story advance: illegal transition ${cur} → ${resolved} ` +
-          `(machine: planning→ready→in-progress→testing→review→merging→done)`,
+          `(machine: planning→ready→in-progress→testing→review→` +
+          `${trunkDirect ? "done [trunk-direct]" : "merging→done"})`,
       });
     }
     if (cur === resolved) {
@@ -244,6 +269,13 @@ export async function advanceStory(
         });
       }
     } else if (resolved === "merging") {
+      if (trunkDirect) {
+        throw new UsageError({
+          what:
+            `story advance: cannot advance ${id} to merging — ` +
+            "mergeMode='trunk-direct' has no merging phase; use --to done after signoff",
+        });
+      }
       if (story.reviewSignoff !== true) {
         throw new UsageError({
           what:
@@ -252,22 +284,35 @@ export async function advanceStory(
         });
       }
     } else if (resolved === "done") {
-      const mergeTid = story.mergeTaskId;
-      if (mergeTid === null || mergeTid === undefined || mergeTid.length === 0) {
-        throw new UsageError({
-          what:
-            `story advance: cannot advance ${id} to done — ` +
-            "no merge task on record (was the story dispatched to gitter via merging?)",
-        });
-      }
-      const mergeTask = repo.getTask(mergeTid);
-      const mergeStatus = mergeTask?.status ?? "";
-      if (mergeStatus !== "done") {
-        throw new UsageError({
-          what:
-            `story advance: cannot advance ${id} to done — ` +
-            `merge task ${mergeTid} is '${mergeStatus}' (gitter has not completed merge)`,
-        });
+      if (trunkDirectReviewToDone) {
+        // ADR-175 GAP 2: trunk-direct review→done skips merging
+        // entirely. Signoff bit STILL required (review gate intact —
+        // we're bypassing the merge phase, not the review phase).
+        if (story.reviewSignoff !== true) {
+          throw new UsageError({
+            what:
+              `story advance: cannot advance ${id} to done — ` +
+              "reviewer signoff missing (.reviewSignoff != true)",
+          });
+        }
+      } else {
+        const mergeTid = story.mergeTaskId;
+        if (mergeTid === null || mergeTid === undefined || mergeTid.length === 0) {
+          throw new UsageError({
+            what:
+              `story advance: cannot advance ${id} to done — ` +
+              "no merge task on record (was the story dispatched to gitter via merging?)",
+          });
+        }
+        const mergeTask = repo.getTask(mergeTid);
+        const mergeStatus = mergeTask?.status ?? "";
+        if (mergeStatus !== "done") {
+          throw new UsageError({
+            what:
+              `story advance: cannot advance ${id} to done — ` +
+              `merge task ${mergeTid} is '${mergeStatus}' (gitter has not completed merge)`,
+          });
+        }
       }
     }
     const now = nowEpoch();
@@ -352,6 +397,200 @@ export async function advanceStory(
       repo.upsertStory(updatedStory);
     });
     return { from: cur, to: resolved, parentEpicFlipped, dispatchedTaskId, noop: false };
+  });
+}
+
+// ---------- ADR-175 GAP 1: signoff / unsignoff ----------
+
+export interface SignoffOpts {
+  /** Operator override — attribute signoff to this member regardless of
+   *  caller's actual role. When set, the caller-role gate is bypassed
+   *  (cross-cage workflows, off-hours reviewer-pane-dormant). The audit
+   *  entry's `signedOffBy` (or `unsignedBy`) field carries this value. */
+  as?: string;
+  /** Free-form note appended to the audit entry. */
+  note?: string;
+  /** Pane-effective member identity, normally `$ATMUX_MEMBER` injected at
+   *  the verb layer. Consulted only when `--as` is NOT passed: the role
+   *  check looks this member up in `team.json` and refuses unless their
+   *  role is `reviewer`. */
+  callerMember?: string;
+}
+
+export interface SignoffResult {
+  storyId: string;
+  signedOffBy: string;
+  signedOffAt: number;
+  noteApplied: string | null;
+}
+
+export interface UnsignoffResult {
+  storyId: string;
+  unsignedBy: string;
+  unsignedAt: number;
+  noteApplied: string | null;
+}
+
+function _resolveSignoffMember(
+  team: Awaited<ReturnType<typeof tryLoadTeam>>,
+  opts: SignoffOpts,
+  verbLabel: string,
+): string {
+  const effective = opts.as ?? opts.callerMember;
+  if (effective === undefined || effective.length === 0) {
+    throw new UsageError({
+      what: `${verbLabel}: need --as <member> or $ATMUX_MEMBER to attribute the signoff`,
+    });
+  }
+  // Operator override: --as bypasses the caller-role gate but still
+  // requires the named member to exist in team.json so audit entries
+  // can't carry made-up names. If team.json itself is absent we trust
+  // the caller (tests / one-off cages).
+  if (opts.as !== undefined) {
+    if (team !== null) {
+      const target = team.members.find((m) => m.name === opts.as);
+      if (target === undefined) {
+        throw new ConfigError({
+          what: `${verbLabel}: --as ${opts.as}: no such member in team.json`,
+        });
+      }
+    }
+    return effective;
+  }
+  // No --as: caller MUST be role=reviewer per team.json.
+  if (team === null) {
+    throw new ConfigError({
+      what: `${verbLabel}: no team.json — pass --as <reviewer-member> for operator-side invocation`,
+    });
+  }
+  const caller = team.members.find((m) => m.name === opts.callerMember);
+  if (caller === undefined) {
+    throw new ConfigError({
+      what: `${verbLabel}: $ATMUX_MEMBER=${opts.callerMember} not found in team.json`,
+    });
+  }
+  if (caller.role !== "reviewer") {
+    throw new UsageError({
+      what:
+        `${verbLabel}: role=${caller.role ?? "(unset)"} cannot sign off — ` +
+        "must be role=reviewer or pass --as <reviewer-member>",
+    });
+  }
+  return effective;
+}
+
+export async function storySignoff(
+  atmuxDir: string,
+  id: string,
+  opts: SignoffOpts = {},
+): Promise<SignoffResult> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) {
+    throw new ConfigError({ what: `story signoff: no such story: ${id}` });
+  }
+  const team = await tryLoadTeam({ dir: atmuxDir });
+  const member = _resolveSignoffMember(team, opts, "story signoff");
+  return await _withRepo(atmuxDir, (repo, db) => {
+    const story = repo.getStory(id);
+    if (story === null) {
+      throw new ConfigError({ what: `story signoff: no such story: ${id}` });
+    }
+    if ((story.status ?? "") !== "review") {
+      throw new UsageError({
+        what:
+          `story signoff: ${id} is in '${story.status ?? "(unset)"}' state — ` +
+          "signoff is only valid in 'review' (advance the story to review first)",
+      });
+    }
+    const ts = Date.now();
+    const note = opts.note !== undefined && opts.note.length > 0 ? opts.note : null;
+    const auditEntry: Record<string, unknown> = {
+      signedOffBy: member,
+      signedOffAt: ts,
+      note,
+    };
+    const prior = Array.isArray(story.signoffAudit) ? story.signoffAudit : [];
+    let result: SignoffResult = {
+      storyId: id,
+      signedOffBy: member,
+      signedOffAt: ts,
+      noteApplied: note,
+    };
+    transact(db, () => {
+      const updated: KanbanStory = {
+        ...story,
+        reviewSignoff: true,
+        signoffAudit: [...prior, auditEntry],
+      };
+      repo.upsertStory(updated);
+      result = {
+        storyId: id,
+        signedOffBy: member,
+        signedOffAt: ts,
+        noteApplied: note,
+      };
+    });
+    return result;
+  });
+}
+
+export async function storyUnsignoff(
+  atmuxDir: string,
+  id: string,
+  opts: SignoffOpts = {},
+): Promise<UnsignoffResult> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) {
+    throw new ConfigError({ what: `story unsignoff: no such story: ${id}` });
+  }
+  const team = await tryLoadTeam({ dir: atmuxDir });
+  const member = _resolveSignoffMember(team, opts, "story unsignoff");
+  return await _withRepo(atmuxDir, (repo, db) => {
+    const story = repo.getStory(id);
+    if (story === null) {
+      throw new ConfigError({ what: `story unsignoff: no such story: ${id}` });
+    }
+    if ((story.status ?? "") !== "review") {
+      throw new UsageError({
+        what:
+          `story unsignoff: ${id} is in '${story.status ?? "(unset)"}' state — ` +
+          "unsignoff is only valid in 'review' (signoff has not been consumed yet)",
+      });
+    }
+    if (story.mergeTaskId !== null && story.mergeTaskId !== undefined) {
+      throw new UsageError({
+        what:
+          `story unsignoff: ${id} already has mergeTaskId=${story.mergeTaskId} — ` +
+          "signoff has been consumed by gitter dispatch; use the merge-task abort flow instead",
+      });
+    }
+    const ts = Date.now();
+    const note = opts.note !== undefined && opts.note.length > 0 ? opts.note : null;
+    const auditEntry: Record<string, unknown> = {
+      unsignedBy: member,
+      unsignedAt: ts,
+      note,
+    };
+    const prior = Array.isArray(story.signoffAudit) ? story.signoffAudit : [];
+    let result: UnsignoffResult = {
+      storyId: id,
+      unsignedBy: member,
+      unsignedAt: ts,
+      noteApplied: note,
+    };
+    transact(db, () => {
+      const updated: KanbanStory = {
+        ...story,
+        reviewSignoff: false,
+        signoffAudit: [...prior, auditEntry],
+      };
+      repo.upsertStory(updated);
+      result = {
+        storyId: id,
+        unsignedBy: member,
+        unsignedAt: ts,
+        noteApplied: note,
+      };
+    });
+    return result;
   });
 }
 

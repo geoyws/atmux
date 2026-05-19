@@ -138,6 +138,7 @@ function seedStoryWithTasks(
       body: null,
       status: "in-progress",
       createdAt: Math.floor(Date.now() / 1000),
+      mergeMode: "feature-branch",
       ...(opts.branch !== undefined ? { branch: opts.branch } : {}),
     };
     repo.upsertStory(story);

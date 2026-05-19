@@ -76,10 +76,13 @@ atmux epic list [--status <s>] [--json]
 atmux epic show <id>
 atmux epic advance <id> [--to <state>]
 
-atmux story add "title" --epic <eid> [--ac "criteria"] [--body <text>]
+atmux story add "title" --epic <eid> [--ac "criteria"] [--body <text>] \
+                                     [--merge-mode feature-branch|trunk-direct]
 atmux story list --epic <eid>
 atmux story show <id>
 atmux story advance <id> [--to <state>]
+atmux story signoff   <id> [--as <reviewer>] [--note <text>]
+atmux story unsignoff <id> [--as <reviewer>] [--note <text>]
 
 atmux task add "subject" [--body <text>] [--priority N] [--deps <id,id>] \
                          [--epic <eid>] [--story <sid>] \

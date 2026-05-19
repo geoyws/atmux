@@ -17,9 +17,16 @@ import {
   showStory,
   storyLegalTransition,
   storyNextState,
+  storySignoff,
+  storyUnsignoff,
 } from "../../../src/core/story.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import { parseAddArgs, parseListArgs, story } from "../../../src/verbs/story.ts";
+import {
+  parseAddArgs,
+  parseListArgs,
+  parseSignoffFlags,
+  story,
+} from "../../../src/verbs/story.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -442,5 +449,725 @@ describe("story verb — dispatch", () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
     const { out } = await captureStdout(() => story(["ls", "--epic", eid, "--team-dir", teamDir]));
     expect(out).toContain("(no stories for");
+  });
+});
+
+// ---------- ADR-175 GAP 1: signoff / unsignoff ----------
+
+async function advanceToReview(eid: string, sid: string): Promise<void> {
+  await advanceStory(atmuxDir, sid, "ready");
+  await advanceStory(atmuxDir, sid, "in-progress");
+  await advanceStory(atmuxDir, sid, "testing");
+  await advanceStory(atmuxDir, sid, "review");
+  // Silence unused warn — eid kept for caller readability.
+  void eid;
+}
+
+function getStoryRow(sid: string) {
+  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  const repo = new KanbanRepo(db);
+  const s = repo.getStory(sid);
+  closeDatabase(db);
+  return s;
+}
+
+describe("parseSignoffFlags", () => {
+  test("empty argv → all undefined", () => {
+    const f = parseSignoffFlags([]);
+    expect(f.as).toBeUndefined();
+    expect(f.note).toBeUndefined();
+  });
+
+  test("--as + --note + --team-dir captured", () => {
+    const f = parseSignoffFlags([
+      "--as",
+      "reviewer",
+      "--note",
+      "approved",
+      "--team-dir",
+      "/x",
+    ]);
+    expect(f.as).toBe("reviewer");
+    expect(f.note).toBe("approved");
+    expect(f.teamDir).toBe("/x");
+  });
+
+  test("dangling --as → UsageError", () => {
+    expect(() => parseSignoffFlags(["--as"])).toThrow(UsageError);
+  });
+
+  test("unknown flag → UsageError", () => {
+    expect(() => parseSignoffFlags(["--bogus"])).toThrow(UsageError);
+  });
+});
+
+describe("storySignoff", () => {
+  test("flips reviewSignoff=true + appends audit entry", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    const r = await storySignoff(atmuxDir, sid, {
+      as: "reviewer",
+      note: "n AC clauses covered",
+    });
+    expect(r.signedOffBy).toBe("reviewer");
+    expect(r.signedOffAt).toBeGreaterThan(0);
+    const row = getStoryRow(sid);
+    expect(row?.reviewSignoff).toBe(true);
+    const audit = row?.signoffAudit as Array<Record<string, unknown>> | undefined;
+    expect(Array.isArray(audit)).toBe(true);
+    expect(audit?.length).toBe(1);
+    expect(audit?.[0]?.signedOffBy).toBe("reviewer");
+    expect(audit?.[0]?.note).toBe("n AC clauses covered");
+    expect(typeof audit?.[0]?.signedOffAt).toBe("number");
+  });
+
+  test("status != review → UsageError", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    // Still in planning.
+    await expect(storySignoff(atmuxDir, sid, { as: "reviewer" })).rejects.toThrow(
+      /'planning' state/,
+    );
+  });
+
+  test("non-reviewer caller without --as → UsageError", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    await expect(
+      storySignoff(atmuxDir, sid, { callerMember: "alpha" }),
+    ).rejects.toThrow(/role=member cannot sign off/);
+  });
+
+  test("reviewer caller WITHOUT --as → accepted (caller-role gate satisfied)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    const r = await storySignoff(atmuxDir, sid, { callerMember: "reviewer" });
+    expect(r.signedOffBy).toBe("reviewer");
+    expect(getStoryRow(sid)?.reviewSignoff).toBe(true);
+  });
+
+  test("--as <member> operator override accepts non-reviewer caller", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    const r = await storySignoff(atmuxDir, sid, {
+      as: "reviewer",
+      callerMember: "alpha",
+    });
+    expect(r.signedOffBy).toBe("reviewer");
+    expect(getStoryRow(sid)?.reviewSignoff).toBe(true);
+  });
+
+  test("--as <bogus> → ConfigError (member must exist)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    await expect(
+      storySignoff(atmuxDir, sid, { as: "ghost" }),
+    ).rejects.toThrow(/no such member/);
+  });
+
+  test("no --as and no $ATMUX_MEMBER → UsageError", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    await expect(storySignoff(atmuxDir, sid, {})).rejects.toThrow(/--as/);
+  });
+
+  test("missing story → ConfigError", async () => {
+    await expect(
+      storySignoff(atmuxDir, "s-deadbeef", { as: "reviewer" }),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("callerMember not in team.json → ConfigError", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    await expect(
+      storySignoff(atmuxDir, sid, { callerMember: "ghost-pane" }),
+    ).rejects.toThrow(/ghost-pane.*not found in team\.json/);
+  });
+
+  test("no state.db → ConfigError", async () => {
+    const freshDir = join(teamDir, "fresh-no-db");
+    await mkdir(freshDir, { recursive: true });
+    await expect(
+      storySignoff(freshDir, "s-anything", { as: "reviewer" }),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("idempotent re-call appends a second audit entry", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    await storySignoff(atmuxDir, sid, { as: "reviewer", note: "first" });
+    await storySignoff(atmuxDir, sid, { as: "reviewer", note: "second" });
+    const audit = getStoryRow(sid)?.signoffAudit as Array<Record<string, unknown>>;
+    expect(audit.length).toBe(2);
+    expect(audit[0]?.note).toBe("first");
+    expect(audit[1]?.note).toBe("second");
+  });
+});
+
+describe("storyUnsignoff", () => {
+  test("flips reviewSignoff=false + appends counter-entry", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    await storySignoff(atmuxDir, sid, { as: "reviewer", note: "approve" });
+    const r = await storyUnsignoff(atmuxDir, sid, {
+      as: "reviewer",
+      note: "changed my mind",
+    });
+    expect(r.unsignedBy).toBe("reviewer");
+    const row = getStoryRow(sid);
+    expect(row?.reviewSignoff).toBe(false);
+    const audit = row?.signoffAudit as Array<Record<string, unknown>>;
+    expect(audit.length).toBe(2);
+    expect(audit[0]?.signedOffBy).toBe("reviewer");
+    expect(audit[1]?.unsignedBy).toBe("reviewer");
+    expect(audit[1]?.note).toBe("changed my mind");
+  });
+
+  test("refuses when mergeTaskId already set (signoff consumed)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    // Plant a mergeTaskId by writing directly — we don't want to advance
+    // past review here (that flips status to merging which would itself
+    // refuse on status gate; this isolates the mergeTaskId gate).
+    {
+      const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+      const repo = new KanbanRepo(db);
+      const s = repo.getStory(sid);
+      if (s !== null)
+        repo.upsertStory({ ...s, reviewSignoff: true, mergeTaskId: "t-faketask" });
+      closeDatabase(db);
+    }
+    await expect(
+      storyUnsignoff(atmuxDir, sid, { as: "reviewer" }),
+    ).rejects.toThrow(/mergeTaskId/);
+  });
+
+  test("status != review → UsageError", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await expect(
+      storyUnsignoff(atmuxDir, sid, { as: "reviewer" }),
+    ).rejects.toThrow(/'planning' state/);
+  });
+
+  test("non-reviewer caller without --as → UsageError", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceToReview(eid, sid);
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    await expect(
+      storyUnsignoff(atmuxDir, sid, { callerMember: "alpha" }),
+    ).rejects.toThrow(/cannot sign off/);
+  });
+
+  test("missing story → ConfigError", async () => {
+    await expect(
+      storyUnsignoff(atmuxDir, "s-deadbeef", { as: "reviewer" }),
+    ).rejects.toThrow(ConfigError);
+  });
+});
+
+// ---------- Integration: full state-machine via signoff verb ----------
+
+describe("ADR-175 signoff integration — full feature-branch state machine", () => {
+  test("planning → ready → in-progress → testing → review → SIGNOFF → merging → done", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    // Drive forward through the full machine.
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    // Signoff via canonical verb path (not raw repo upsert like the
+    // pre-ADR-175 test at L322-329).
+    await storySignoff(atmuxDir, sid, {
+      as: "reviewer",
+      note: "approve — full state-machine integration",
+    });
+    const afterSignoff = getStoryRow(sid);
+    expect(afterSignoff?.reviewSignoff).toBe(true);
+    const audit = afterSignoff?.signoffAudit as Array<Record<string, unknown>>;
+    expect(audit[0]?.signedOffBy).toBe("reviewer");
+    // review → merging now legal (signoff bit set).
+    const m = await advanceStory(atmuxDir, sid, "merging");
+    expect(m.dispatchedTaskId).not.toBe(null);
+    expect(getStoryRow(sid)?.mergeTaskId).toBe(m.dispatchedTaskId);
+    // Close synthetic gitter Task → story → done.
+    await moveTask(atmuxDir, m.dispatchedTaskId as string, "done");
+    const d = await advanceStory(atmuxDir, sid, "done");
+    expect(d.to).toBe("done");
+    // Audit trail survives state advance (extra-JSON intact).
+    const finalAudit = getStoryRow(sid)?.signoffAudit as Array<Record<string, unknown>>;
+    expect(finalAudit.length).toBe(1);
+    expect(finalAudit[0]?.signedOffBy).toBe("reviewer");
+  });
+});
+
+// ---------- Verb-layer signoff dispatch ----------
+
+describe("story verb — signoff / unsignoff dispatch", () => {
+  test("story signoff missing id → UsageError", async () => {
+    await expect(story(["signoff", "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("story signoff applies via verb path", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    const rc = await story([
+      "signoff",
+      sid,
+      "--as",
+      "reviewer",
+      "--note",
+      "via verb",
+      "--team-dir",
+      teamDir,
+    ]);
+    expect(rc).toBe(0);
+    expect(getStoryRow(sid)?.reviewSignoff).toBe(true);
+  });
+
+  test("story unsignoff applies via verb path", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    const rc = await story([
+      "unsignoff",
+      sid,
+      "--as",
+      "reviewer",
+      "--note",
+      "reverse",
+      "--team-dir",
+      teamDir,
+    ]);
+    expect(rc).toBe(0);
+    expect(getStoryRow(sid)?.reviewSignoff).toBe(false);
+  });
+
+  test("unknown verb hint mentions signoff/unsignoff", async () => {
+    await expect(story(["bogus", "--team-dir", teamDir])).rejects.toThrow(
+      /signoff/,
+    );
+  });
+
+  test("verb-layer threads $ATMUX_MEMBER to callerMember", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    const prior = process.env.ATMUX_MEMBER;
+    process.env.ATMUX_MEMBER = "reviewer";
+    try {
+      const rc = await story(["signoff", sid, "--team-dir", teamDir]);
+      expect(rc).toBe(0);
+      expect(getStoryRow(sid)?.reviewSignoff).toBe(true);
+    } finally {
+      if (prior === undefined) delete process.env.ATMUX_MEMBER;
+      else process.env.ATMUX_MEMBER = prior;
+    }
+  });
+
+  test("verb-layer non-reviewer $ATMUX_MEMBER refuses", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    const prior = process.env.ATMUX_MEMBER;
+    process.env.ATMUX_MEMBER = "alpha";
+    try {
+      await expect(
+        story(["signoff", sid, "--team-dir", teamDir]),
+      ).rejects.toThrow(/cannot sign off/);
+    } finally {
+      if (prior === undefined) delete process.env.ATMUX_MEMBER;
+      else process.env.ATMUX_MEMBER = prior;
+    }
+  });
+});
+
+// ---------- ADR-175 GAP 2: mergeMode field + trunk-direct branching ----------
+
+describe("parseAddArgs — --merge-mode", () => {
+  test("default omitted → mergeMode undefined", () => {
+    const a = parseAddArgs(["t", "--epic", "e-1"]);
+    expect(a.mergeMode).toBeUndefined();
+  });
+
+  test("--merge-mode trunk-direct captured", () => {
+    const a = parseAddArgs(["t", "--epic", "e-1", "--merge-mode", "trunk-direct"]);
+    expect(a.mergeMode).toBe("trunk-direct");
+  });
+
+  test("--merge-mode feature-branch captured", () => {
+    const a = parseAddArgs(["t", "--epic", "e-1", "--merge-mode", "feature-branch"]);
+    expect(a.mergeMode).toBe("feature-branch");
+  });
+
+  test("--merge-mode bogus → UsageError naming the field", () => {
+    expect(() =>
+      parseAddArgs(["t", "--epic", "e-1", "--merge-mode", "bogus"]),
+    ).toThrow(/--merge-mode must be/);
+  });
+
+  test("dangling --merge-mode → UsageError", () => {
+    expect(() => parseAddArgs(["t", "--epic", "e-1", "--merge-mode"])).toThrow(
+      UsageError,
+    );
+  });
+});
+
+describe("addStory — mergeMode field", () => {
+  test("omitted defaults to 'feature-branch'", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.mergeMode).toBe("feature-branch");
+  });
+
+  test("explicit trunk-direct persists", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "S",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.mergeMode).toBe("trunk-direct");
+  });
+
+  test("explicit feature-branch persists", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "S",
+      epic: eid,
+      mergeMode: "feature-branch",
+    });
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.mergeMode).toBe("feature-branch");
+  });
+});
+
+describe("advanceStory — trunk-direct branching", () => {
+  async function buildTrunkDirectAtReview(): Promise<{ eid: string; sid: string }> {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "S",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    return { eid, sid };
+  }
+
+  test("review → done legal after signoff (no merge-task synthesized)", async () => {
+    const { sid } = await buildTrunkDirectAtReview();
+    await storySignoff(atmuxDir, sid, { as: "reviewer", note: "trunk-direct ack" });
+    const r = await advanceStory(atmuxDir, sid, "done");
+    expect(r.to).toBe("done");
+    const row = getStoryRow(sid);
+    expect(row?.status).toBe("done");
+    expect(row?.mergeTaskId ?? null).toBeNull();
+    expect(row?.completedAt).toBeGreaterThan(0);
+  });
+
+  test("review → done refused without signoff", async () => {
+    const { sid } = await buildTrunkDirectAtReview();
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
+      /reviewer signoff missing/,
+    );
+  });
+
+  test("review → merging refused (no merging phase for trunk-direct)", async () => {
+    const { sid } = await buildTrunkDirectAtReview();
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    await expect(advanceStory(atmuxDir, sid, "merging")).rejects.toThrow(
+      /trunk-direct/,
+    );
+  });
+
+  test("default next-step from review jumps to done for trunk-direct", async () => {
+    const { sid } = await buildTrunkDirectAtReview();
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    // No --to: trunk-direct should jump straight to done, not merging.
+    const r = await advanceStory(atmuxDir, sid);
+    expect(r.from).toBe("review");
+    expect(r.to).toBe("done");
+  });
+
+  test("feature-branch regression — review → merging path unchanged", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    // No --mergeMode → defaults to feature-branch.
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    const m = await advanceStory(atmuxDir, sid, "merging");
+    expect(m.to).toBe("merging");
+    expect(m.dispatchedTaskId).not.toBe(null);
+    expect(getStoryRow(sid)?.mergeTaskId).toBe(m.dispatchedTaskId);
+  });
+
+  test("feature-branch regression — review → done without merging refused", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    // feature-branch must NOT take the trunk-direct review→done shortcut.
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(/illegal transition/);
+  });
+});
+
+// ---------- Integration: trunk-direct full state-machine via signoff verb ----------
+
+describe("ADR-175 GAP 2 integration — trunk-direct full state machine", () => {
+  test("planning → ready → in-progress → testing → review → SIGNOFF → done (skips merging)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "rentx E1 shape (trunk-direct)",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, {
+      as: "reviewer",
+      note: "trunk-direct integration capstone",
+    });
+    const d = await advanceStory(atmuxDir, sid, "done");
+    expect(d.to).toBe("done");
+    expect(d.dispatchedTaskId).toBeNull();
+    const final = getStoryRow(sid);
+    expect(final?.status).toBe("done");
+    expect(final?.mergeMode).toBe("trunk-direct");
+    expect(final?.mergeTaskId ?? null).toBeNull();
+    expect(final?.reviewSignoff).toBe(true);
+    const audit = final?.signoffAudit as Array<Record<string, unknown>>;
+    expect(audit.length).toBe(1);
+    expect(audit[0]?.signedOffBy).toBe("reviewer");
+  });
+});
+
+// ---------- Verb-layer --merge-mode dispatch ----------
+
+describe("story verb — --merge-mode dispatch", () => {
+  test("story add --merge-mode trunk-direct persists mode", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const { out } = await captureStdout(() =>
+      story([
+        "add",
+        "--epic",
+        eid,
+        "--merge-mode",
+        "trunk-direct",
+        "--team-dir",
+        teamDir,
+        "Some",
+        "title",
+      ]),
+    );
+    const sid = out.trim();
+    expect(sid).toMatch(/^s-[0-9a-f]{8}$/);
+    const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
+    expect(s?.mergeMode).toBe("trunk-direct");
+  });
+
+  test("story add --merge-mode bogus → UsageError via verb path", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    await expect(
+      story([
+        "add",
+        "--epic",
+        eid,
+        "--merge-mode",
+        "no-merge",
+        "--team-dir",
+        teamDir,
+        "T",
+      ]),
+    ).rejects.toThrow(/--merge-mode must be/);
+  });
+});
+
+// ---------- T3 capstone: ADR-175 rentx E1 4-story shape repro ----------
+//
+// Closes the rentx-driver SQL-bypass class per ADR-175 §Consequences.
+// 4 stories historically used raw `UPDATE stories SET status='done'`
+// (operator-authorized 2026-05-17 13:55 MYT) because no CLI surface
+// existed for: (a) flipping reviewSignoff, (b) skipping merging for
+// trunk-direct shapes. T1 (signoff verbs) + T2 (mergeMode field +
+// trunk-direct advance branching) close both gaps; this capstone walks
+// each historical story shape through the canonical CLI path and
+// asserts the bypass is no longer needed.
+
+interface RentxE1Shape {
+  /** Original story-id from rentx E1 — used as a grep anchor so the
+   *  4-id list in the commit body matches the test names. */
+  rentxStoryId: string;
+  /** Short label matching the platform/infra shape observed on rentx. */
+  shapeLabel: string;
+}
+
+const RENTX_E1_SHAPES: ReadonlyArray<RentxE1Shape> = [
+  { rentxStoryId: "s-425249d0", shapeLabel: "rentx submodule attach" },
+  { rentxStoryId: "s-dc19b96e", shapeLabel: "rentx nginx symlink" },
+  { rentxStoryId: "s-f5797a08", shapeLabel: "rentx systemd unit" },
+  { rentxStoryId: "s-cb99f131", shapeLabel: "rentx deploy worktree provision" },
+];
+
+describe("ADR-175 rentx E1 capstone — 4 trunk-direct story shapes", () => {
+  for (const shape of RENTX_E1_SHAPES) {
+    test(`shape repro (${shape.rentxStoryId} — ${shape.shapeLabel}): planning → review → SIGNOFF → done (no merging)`, async () => {
+      const eid = await addEpic(atmuxDir, { title: "rentx E1" });
+      // Synthetic local story modeling the rentx-side shape — we cannot
+      // use the literal rentxStoryId because addStory mints a fresh ID,
+      // but the rentxStoryId is the audit-trail anchor in the test name.
+      const sid = await addStory(atmuxDir, {
+        title: shape.shapeLabel,
+        epic: eid,
+        mergeMode: "trunk-direct",
+        acceptanceCriteria: `repro of ${shape.rentxStoryId} historical SQL-bypass shape`,
+      });
+      // Drive through machine — same advance path as feature-branch up
+      // through review; only review → done differs.
+      await advanceStory(atmuxDir, sid, "ready");
+      await advanceStory(atmuxDir, sid, "in-progress");
+      await advanceStory(atmuxDir, sid, "testing");
+      await advanceStory(atmuxDir, sid, "review");
+      // Canonical signoff verb — replaces the SQL UPDATE bypass.
+      await storySignoff(atmuxDir, sid, {
+        as: "reviewer",
+        note: `rentx E1 capstone shape repro (${shape.rentxStoryId})`,
+      });
+      // review → done — trunk-direct skips merging entirely.
+      const d = await advanceStory(atmuxDir, sid, "done");
+      expect(d.from).toBe("review");
+      expect(d.to).toBe("done");
+      expect(d.dispatchedTaskId).toBe(null);
+      // Final state assertions — every gate per task body:
+      const row = getStoryRow(sid);
+      expect(row?.status).toBe("done");
+      expect(row?.mergeTaskId ?? null).toBe(null);
+      expect(row?.reviewSignoff).toBe(true);
+      expect(row?.completedAt).toBeGreaterThan(0);
+      const audit = row?.signoffAudit as Array<Record<string, unknown>>;
+      expect(audit.length).toBeGreaterThanOrEqual(1);
+      expect(audit[0]?.signedOffBy).toBe("reviewer");
+      expect(audit[0]?.note).toMatch(new RegExp(shape.rentxStoryId));
+      // No synthetic merge-Task lingering — listTasks(story) returns
+      // empty (no test-lane task was filed for this synthetic shape).
+      const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+      const repo = new KanbanRepo(db);
+      const childTasks = repo.listTasks({ story: sid });
+      const reviewTasks = childTasks.filter((t) => t.lane === "review");
+      const mergeTasks = childTasks.filter(
+        (t) => (t.subject ?? "").startsWith("merge "),
+      );
+      closeDatabase(db);
+      // review entry dispatches a `review <sid>` reviewer-lane Task per
+      // src/core/story.ts — that's expected. NO merge-Task should ever
+      // get synthesized.
+      expect(reviewTasks.length).toBe(1);
+      expect(mergeTasks.length).toBe(0);
+    });
+  }
+
+  test("feature-branch negative control — synthetic merge-Task IS created (T2 did not regress)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "feature-branch control" });
+    // Default mergeMode — omitted, schema default 'feature-branch' applies.
+    const sid = await addStory(atmuxDir, {
+      title: "feature-branch shape",
+      epic: eid,
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer", note: "feature-branch control" });
+    // review → merging: synthetic merge-Task dispatched to gitter.
+    const m = await advanceStory(atmuxDir, sid, "merging");
+    expect(m.to).toBe("merging");
+    expect(m.dispatchedTaskId).not.toBe(null);
+    const tid = m.dispatchedTaskId as string;
+    const mergedRow = getStoryRow(sid);
+    expect(mergedRow?.mergeTaskId).toBe(tid);
+    // merging → done blocked until merge-Task done.
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
+      /gitter has not completed/,
+    );
+    await moveTask(atmuxDir, tid, "done");
+    const d = await advanceStory(atmuxDir, sid, "done");
+    expect(d.to).toBe("done");
+    expect(getStoryRow(sid)?.mergeTaskId).toBe(tid);
+  });
+
+  test("trunk-direct review → done refuses without signoff", async () => {
+    const eid = await addEpic(atmuxDir, { title: "negative gate" });
+    const sid = await addStory(atmuxDir, {
+      title: "trunk-direct no-signoff",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    // No signoff — review → done MUST refuse with the documented message.
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
+      /reviewer signoff missing/,
+    );
+    // State unchanged — still in review.
+    expect(getStoryRow(sid)?.status).toBe("review");
+    expect(getStoryRow(sid)?.reviewSignoff).not.toBe(true);
+  });
+
+  test("trunk-direct review → merging is an explicit foot-gun (T2 documented refusal)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "trunk-direct merging foot-gun" });
+    const sid = await addStory(atmuxDir, {
+      title: "trunk-direct -> merging",
+      epic: eid,
+      mergeMode: "trunk-direct",
+    });
+    await advanceStory(atmuxDir, sid, "ready");
+    await advanceStory(atmuxDir, sid, "in-progress");
+    await advanceStory(atmuxDir, sid, "testing");
+    await advanceStory(atmuxDir, sid, "review");
+    await storySignoff(atmuxDir, sid, { as: "reviewer" });
+    await expect(advanceStory(atmuxDir, sid, "merging")).rejects.toThrow(
+      /trunk-direct.*has no merging phase/,
+    );
   });
 });

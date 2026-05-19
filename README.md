@@ -658,10 +658,14 @@ atmux epic add <title> [--body <txt>] [--driver-ref <ref>]
 atmux epic list [--status <s>] [--json]
 atmux epic show <id>
 atmux epic advance <id> [--to <state>]              # planning→ready→in-progress→review→done
-atmux story add <title> --epic <eid> [--ac <text>] [--body <text>]
+atmux story add <title> --epic <eid> [--ac <text>] [--body <text>] \
+                                     [--merge-mode feature-branch|trunk-direct]  # ADR-175
 atmux story list --epic <eid> [--status <s>] [--json]
 atmux story show <id>
-atmux story advance <id> [--to <state>]             # planning→ready→in-progress→testing→review→merging→done
+atmux story advance <id> [--to <state>]             # feature-branch: planning→ready→in-progress→testing→review→merging→done
+                                                    # trunk-direct:   planning→ready→in-progress→testing→review→done  (ADR-175)
+atmux story signoff   <id> [--as <m>] [--note <t>]  # Flip review-signoff bit + audit append (ADR-175 GAP 1)
+atmux story unsignoff <id> [--as <m>] [--note <t>]  # Revert review-signoff (pre-merging only; ADR-175 GAP 1)
 atmux task add <subject> [--body <txt>] [--epic <eid>] [--story <sid>] \
                          [--lane fe|be|db|ops|test|review|misc] \
                          [--deliverable <text>] [--assignee <m>] [--deps <id,id>] [--priority <n>]
