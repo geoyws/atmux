@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📐 ADR-186 — unified wedge-clearing mechanism (proposed; EPIC e-35dd6274 T1, t-73128937)
+
+Driver mechanism audit 2026-05-19 (5 wedges discovered in 1h of manual investigation, ~70 lines of orphan crontab hand-cleaned, 1 silent committer death uncaught for hours) framed the need: a single substrate for detecting + clearing wedges across all current + future failure modes. [ADR-186](docs/adr/186-wedge-clearing-mechanism.md) is the T1 spec.
+
+**Decision**: extend three existing mechanisms (no new cockpit-tier member):
+
+- **Doctor probe-class registry** (`src/core/doctor-probes/`) — typed `{id, severity, tier, describe, fingerprint, suggestResolution, probe}` contract per probe; ships 7 classes at T2 (`orphan-cron`, `husk-worktree`, `missing-viewer`, `default-sentinel`, `pane-death`, `partial-dissolve`, `code-shipped-not-wired`).
+- **Sentinel observe-pass invokes the registry** with `autoFile=true` per ADR-132 §D5 tick (T4 of the EPIC) — runner is the existing sentinel loop; cron backstop fires independently every 15min.
+- **`atmux wedges` operator surface** — `list / show / clear --tier / resolve / --json / --resolved`; cockpit-dashboard-friendly output.
+
+**Tiered auto-clear** per global CLAUDE.md destructive-actions rule: `safe` (auto-cleanup, e.g. orphan-cron) / `fix` (installer-class repair, e.g. missing-viewer) / `suggest` (operator-judgment path, e.g. pane-death) / `surface` (read-only meta-probes). Dedup via SHA256 fingerprint of `<probe-id>|<finding-stable-key>` matched against open Task body markers `auto-filed:<probe-id>:<fp>`. Backup-before-destructive at `/tmp/wedge-clear-backup-<ts>/`, retention 7d.
+
+Cross-refs: [ADR-027](docs/adr/027-doctor-self-diagnostics.md) (substrate), [ADR-132](docs/adr/132-pluggable-martinet.md)/[ADR-158](docs/adr/158-martinet-to-sentinel-rename.md) (runner), [ADR-140](docs/adr/140-cheap-model-first.md) (mechanical-fits-sentinel), [ADR-091](docs/adr/091-kanban-driven-auto-merge.md) (EPIC-done flow), [ADR-090](docs/adr/090-epic-team-lifecycle.md) (lifecycle seams), ADR-183 (deploy-completeness sibling), [ADR-178](docs/adr/178-test-cage-leak-reaper.md) (backup-on-clear convention), [ADR-184](docs/adr/184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (cluster-precondition).
+
+Out of scope: new cockpit-tier "wedge-clearer" member (rejected — sentinel covers loop, cron covers backstop); LLM-based wedge classification (defer — v1 is deterministic invariants); cross-team wedge correlation (defer to ADR-150).
+
+Status: proposed; reviewer flips to accepted per ADR-091 §EPIC-done #4 (trunk-signoff at `docs/reviews/t-73128937-trunk-signoff-<date>.md`) once the EPIC fan-in commit lands.
+
 ### 🔤 Vocabulary / scope — medic vs sentinel boundary tightened (ADR-077 + ADR-132 §Amendment 2026-05-19)
 
 Driver mechanism audit (finding #2 against EPIC e-35dd6274) surfaced a coverage gap: medic (W2, [ADR-077](docs/adr/077-superdoctor-cockpit-role.md) / renamed via [ADR-133](docs/adr/133-medic-rename.md)) owned "health probes" and sentinel (W3, [ADR-132](docs/adr/132-pluggable-martinet.md) / renamed via [ADR-158](docs/adr/158-martinet-to-sentinel-rename.md)) owned "whip", but **pane-death detection / claude TUI wedge** sat in the seam. Today's silent gitter/committer death (TUI wedged but process alive; no `✻` activity, no commits, no operator response) went uncaught for hours because reviewer + driver triage couldn't point to which mechanism owned it.
