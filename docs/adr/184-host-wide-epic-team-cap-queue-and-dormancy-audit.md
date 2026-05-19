@@ -1,4 +1,4 @@
-# ADR-181: Host-wide epic-team cap + spawn queue + dormancy audit
+# ADR-184: Host-wide epic-team cap + spawn queue + dormancy audit
 
 **Status**: proposed
 **Date**: 2026-05-18
@@ -324,18 +324,18 @@ Operator-driven manual reduction precedes any new spawn — v1 cap (8) is well b
 
 ## Sub-tasks (decomposed by planner)
 
-- **T1** — ADR-181 draft (this file) + Zod schema sketch for registry + host-config + cross-refs (lane=`misc`, deps=none, priority=1).
+- **T1** — ADR-184 draft (this file) + Zod schema sketch for registry + host-config + cross-refs (lane=`misc`, deps=none, priority=1).
 - **T2** — Schema + IO module `src/core/host-registry.ts` + `src/schema/host-registry.ts` with flock-bracketed read/write, atomic temp-file rename, Zod validation (lane=`be`, deps=T1, priority=1).
 - **T3** — `atmux host-audit --init` BACKFILL — glob `*-epics/e-*` host-wide, write initial registry, emit `[host-cap-reached]` if already over cap (lane=`be`, deps=T2, priority=1).
 - **T4** — `atmux team spawn-epic` gate — pre-spawn flock + cap-check + queue + exit-75 path + roster-print on refuse + Discord templates (lane=`be`, deps=T2, priority=1).
 - **T5** — `atmux team dissolve-epic` registry-cleanup + queue auto-dispatch on success + `[host-cap-opened]` ping (lane=`be`, deps=T2+T4, priority=2).
 - **T6** — `atmux host-audit` verb (read-only scan + dormancy verdict + `--json` + `--retire-dormant` operator-gated path) + host-tier cron block install/prune in `atmux start`/`atmux stop` (lane=`be`, deps=T2, priority=2).
 - **T7** — e2e: cap-refuse → dissolve → queued spawn fires; dormancy detection via fake heartbeat mtimes + fake git log; flock contention test under 4-way parallel spawn-epic (lane=`test`, deps=T4+T5+T6, priority=2).
-- **T8** — Docs: NEW `docs/RUNBOOK-host-tier.md` + CHANGELOG + `CLAUDE.md` §host-cap pointer + briefs update (lead + planner) + ADR-181 status flip proposed→accepted gated on reviewer signoff (lane=`misc`, deps=T7, priority=3).
+- **T8** — Docs: NEW `docs/RUNBOOK-host-tier.md` + CHANGELOG + `CLAUDE.md` §host-cap pointer + briefs update (lead + planner) + ADR-184 status flip proposed→accepted gated on reviewer signoff (lane=`misc`, deps=T7, priority=3).
 
 ## Acceptance
 
-- [ ] ADR-181 lands proposed → accepted after reviewer signoff.
+- [ ] ADR-184 lands proposed → accepted after reviewer signoff.
 - [ ] `~/.atmux/state/host-epic-registry.json` exists + `host-audit --init` backfills successfully against current 61 tmux servers.
 - [ ] `atmux team spawn-epic` hard-refuses at cap with printed roster + retirement hints; `--queue` enqueues + exit 75.
 - [ ] `atmux team dissolve-epic` removes the row + auto-dispatches highest-priority queued head.
