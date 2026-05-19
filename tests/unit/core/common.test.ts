@@ -43,10 +43,12 @@ import {
   requireTeam,
   resolveCallerScope,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
   sessionAnchorPath,
   stateDir,
   teamJsonPath,
   tryLoadTeam,
+  type WindowShimOps,
 } from "../../../src/core/common.ts";
 import { ConfigError, SchemaError, UsageError } from "../../../src/errors.ts";
 
@@ -927,5 +929,157 @@ describe("checkIndexedMemberName (CONVENTION-059)", () => {
       "db",
       "misc",
     ]);
+  });
+});
+
+describe("resolveWindowWithRenameShim (EPIC e-a3077ca0 T1)", () => {
+  const SESSION = "atmux-test";
+  const CANONICAL = "🦦_docs";
+  const HYPHEN_FORM = "🦦-docs";
+  const NO_SEPARATOR = "🦦docs";
+
+  /** Helper: build a recording `WindowShimOps` with a fixed window-name list. */
+  function makeOps(names: ReadonlyArray<string>): {
+    ops: WindowShimOps;
+    renamed: Array<{ session: string; from: string; to: string }>;
+    listCalls: Array<string>;
+  } {
+    const renamed: Array<{ session: string; from: string; to: string }> = [];
+    const listCalls: Array<string> = [];
+    const ops: WindowShimOps = {
+      async listWindowNames(s) {
+        listCalls.push(s);
+        return names;
+      },
+      async renameWindow(s, from, to) {
+        renamed.push({ session: s, from, to });
+      },
+    };
+    return { ops, renamed, listCalls };
+  }
+
+  // ---- T7 mandated cases ----
+
+  test("(a) canonical exists → return canonical, no rename", async () => {
+    const { ops, renamed } = makeOps([CANONICAL]);
+    const result = await resolveWindowWithRenameShim(
+      SESSION,
+      CANONICAL,
+      [HYPHEN_FORM, NO_SEPARATOR],
+      ops,
+    );
+    expect(result).toBe(CANONICAL);
+    expect(renamed).toEqual([]);
+  });
+
+  test("(b) hyphen-form exists, canonical absent → rename + return canonical", async () => {
+    const { ops, renamed } = makeOps([HYPHEN_FORM]);
+    const result = await resolveWindowWithRenameShim(
+      SESSION,
+      CANONICAL,
+      [HYPHEN_FORM, NO_SEPARATOR],
+      ops,
+    );
+    expect(result).toBe(CANONICAL);
+    expect(renamed).toEqual([{ session: SESSION, from: HYPHEN_FORM, to: CANONICAL }]);
+  });
+
+  test("(c) no-separator-form exists, canonical+hyphen absent → rename + return canonical", async () => {
+    const { ops, renamed } = makeOps([NO_SEPARATOR]);
+    const result = await resolveWindowWithRenameShim(
+      SESSION,
+      CANONICAL,
+      [HYPHEN_FORM, NO_SEPARATOR],
+      ops,
+    );
+    expect(result).toBe(CANONICAL);
+    expect(renamed).toEqual([{ session: SESSION, from: NO_SEPARATOR, to: CANONICAL }]);
+  });
+
+  test("(d) none exist → throws ConfigError with 'no tmux window for <canonical>'", async () => {
+    const { ops, renamed } = makeOps(["🐝-fe-1", "🔍_reviewer"]);
+    await expect(
+      resolveWindowWithRenameShim(SESSION, CANONICAL, [HYPHEN_FORM, NO_SEPARATOR], ops),
+    ).rejects.toMatchObject({
+      // ConfigError from src/errors.ts: matches the canonical "no tmux window for X"
+      // string that callers (rotate / tell-lead / send) grep on.
+      message: expect.stringContaining(`no tmux window for ${CANONICAL}`),
+    });
+    expect(renamed).toEqual([]);
+  });
+
+  // ---- T7 defensive (extra-credit) case ----
+
+  test("(e) canonical + hyphen both exist → prefer canonical, no rename", async () => {
+    const { ops, renamed } = makeOps([CANONICAL, HYPHEN_FORM]);
+    const result = await resolveWindowWithRenameShim(
+      SESSION,
+      CANONICAL,
+      [HYPHEN_FORM, NO_SEPARATOR],
+      ops,
+    );
+    expect(result).toBe(CANONICAL);
+    expect(renamed).toEqual([]);
+  });
+
+  // ---- Gitter carve-out: empty legacyVariants ----
+
+  test("gitter carve-out: empty legacyVariants + canonical present → no rename", async () => {
+    const GITTER = "🌿-gitter"; // ADR-159 pending: hyphen stays canonical
+    const { ops, renamed } = makeOps([GITTER]);
+    const result = await resolveWindowWithRenameShim(SESSION, GITTER, [], ops);
+    expect(result).toBe(GITTER);
+    expect(renamed).toEqual([]);
+  });
+
+  test("gitter carve-out: empty legacyVariants + canonical missing → throws", async () => {
+    const GITTER = "🌿-gitter";
+    const { ops, renamed } = makeOps(["🐝-fe-1"]);
+    await expect(resolveWindowWithRenameShim(SESSION, GITTER, [], ops)).rejects.toMatchObject({
+      message: expect.stringContaining(`no tmux window for ${GITTER}`),
+    });
+    expect(renamed).toEqual([]);
+  });
+
+  // ---- legacyVariants ordering: first hit wins ----
+
+  test("legacyVariants iteration: first matching variant wins (caller-supplied order)", async () => {
+    // Both legacy forms present — caller orders [HYPHEN_FORM, NO_SEPARATOR];
+    // hyphen-form is first match.
+    const { ops, renamed } = makeOps([HYPHEN_FORM, NO_SEPARATOR]);
+    const result = await resolveWindowWithRenameShim(
+      SESSION,
+      CANONICAL,
+      [HYPHEN_FORM, NO_SEPARATOR],
+      ops,
+    );
+    expect(result).toBe(CANONICAL);
+    expect(renamed).toEqual([{ session: SESSION, from: HYPHEN_FORM, to: CANONICAL }]);
+  });
+
+  test("legacyVariants iteration: reversed order picks no-separator first when both present", async () => {
+    const { ops, renamed } = makeOps([HYPHEN_FORM, NO_SEPARATOR]);
+    const result = await resolveWindowWithRenameShim(
+      SESSION,
+      CANONICAL,
+      [NO_SEPARATOR, HYPHEN_FORM],
+      ops,
+    );
+    expect(result).toBe(CANONICAL);
+    expect(renamed).toEqual([{ session: SESSION, from: NO_SEPARATOR, to: CANONICAL }]);
+  });
+
+  test("legacyVariants containing canonical itself is skipped, not renamed", async () => {
+    // Defensive: caller passes canonical inside legacyVariants by mistake;
+    // helper must not call rename-window with from === to.
+    const { ops, renamed } = makeOps([CANONICAL]);
+    const result = await resolveWindowWithRenameShim(
+      SESSION,
+      CANONICAL,
+      [CANONICAL, HYPHEN_FORM],
+      ops,
+    );
+    expect(result).toBe(CANONICAL);
+    expect(renamed).toEqual([]);
   });
 });

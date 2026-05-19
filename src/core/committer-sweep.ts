@@ -11,6 +11,14 @@
 //      "<baseBranch>-*"`. The `<base>-<member>` convention is the
 //      same one ADR-082 + ADR-084 + ADR-088 W1 already use; the
 //      `branch --list` glob does the lane-filtering for us.
+//      Roster gate (t-911c9314): the glob result is then filtered to
+//      `<base>-<m>` where `<m>` is in the team.json roster. Branches
+//      matching the prefix but not in the roster (operator safety
+//      backups like `<base>-planner-rebased-backup`, archived feature
+//      branches, epic-team `<base>-epic-<id>` branches owned by the
+//      ADR-091 `epic-merge` cron) are excluded so a non-member branch
+//      can't get stranded in the state machine via a transition path
+//      that has no exit wiring.
 //
 //   2. For each candidate branch, compute the ahead-of-base count via
 //      `git rev-list --count <baseBranch>..<memberBranch>`. Zero ⇒ skip
@@ -153,6 +161,14 @@ export interface CommitterSweepDeps {
    *  `<baseBranch>-*` glob enumerates candidates; the
    *  `<baseBranch>..<member>` rev-list checks ahead-of-base. */
   baseBranch: string;
+  /** Member names from `team.json::members[].name` — the roster gate
+   *  applied AFTER the `<baseBranch>-*` glob (t-911c9314). Branches
+   *  whose suffix-after-`<baseBranch>-` isn't in this set are dropped
+   *  from candidacy. Pass an empty array to disable the gate (the
+   *  pre-t-911c9314 behavior — every prefix-matching branch becomes a
+   *  candidate). Callers in the verb layer pull this list from
+   *  `team.members.map((m) => m.name)`. */
+  rosterMembers: ReadonlyArray<string>;
   /** Repo shim for `merger_state` row lookups. */
   mergerStateRepo: MergerStateRepo;
   /** Dispatcher — fires the actual merge attempt for eligible
@@ -275,7 +291,18 @@ export async function committerSweep(deps: CommitterSweepDeps): Promise<Committe
  *  branch itself or unrelated branches that happen to share a prefix
  *  fragment (the `-` suffix is the discriminator). The output is the
  *  set of `<base>-<member>` strings stripped of the leading `* ` /
- *  `  ` markers `git branch` prepends. */
+ *  `  ` markers `git branch` prepends.
+ *
+ *  Roster gate (t-911c9314): after the glob match, results are
+ *  filtered to entries whose suffix-after-`<baseBranch>-` is in
+ *  `deps.rosterMembers`. Non-member branches matching the prefix
+ *  (operator safety backups like `<base>-planner-rebased-backup`,
+ *  archived branches, epic-team `<base>-epic-<id>` branches handled
+ *  by `epic-merge`) are dropped. An empty `rosterMembers` array
+ *  disables the gate — the pre-t-911c9314 behavior — for the legacy
+ *  callers that haven't been threaded through yet (none in tree;
+ *  the carve-out exists so a misconfigured team.json with zero
+ *  members doesn't silently drop every branch). */
 async function listMemberBranches(deps: CommitterSweepDeps): Promise<string[]> {
   const pattern = `${deps.baseBranch}-*`;
   const r = await deps.git([
@@ -292,10 +319,22 @@ async function listMemberBranches(deps: CommitterSweepDeps): Promise<string[]> {
     // graceful — one bad git call doesn't crash the cron tick.
     return [];
   }
-  return r.stdout
+  const globMatched = r.stdout
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+
+  if (deps.rosterMembers.length === 0) {
+    // Carve-out: empty roster disables the gate. See JSDoc above.
+    return globMatched;
+  }
+  const rosterSet = new Set(deps.rosterMembers);
+  const prefix = `${deps.baseBranch}-`;
+  return globMatched.filter((branch) => {
+    if (!branch.startsWith(prefix)) return false;
+    const suffix = branch.slice(prefix.length);
+    return rosterSet.has(suffix);
+  });
 }
 
 /** Count commits on `memberBranch` that aren't on `baseBranch`. Uses

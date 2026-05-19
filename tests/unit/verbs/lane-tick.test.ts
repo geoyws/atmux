@@ -371,7 +371,12 @@ describe("runLaneTick — edge cases", () => {
     expect(busyLog).toContain("skip");
   });
 
-  test("emoji-prefixed window names resolve correctly", async () => {
+  test("emoji-prefixed window names resolve to ADR-135 canonical (EPIC e-a3077ca0 T5)", async () => {
+    // EPIC e-a3077ca0 T5 changes the per-member target shape from the
+    // pre-ADR-135 no-separator form (`${session}:🎨fe-worker`) to the
+    // ADR-135-aware canonical (`${session}:🎨-fe-worker` for non-default-
+    // role members). Test now pins the post-fix shape — the no-separator
+    // form is one of the legacy variants the shim renames away from.
     await writeFile(
       join(atmuxDir, "team.json"),
       JSON.stringify({
@@ -381,14 +386,65 @@ describe("runLaneTick — edge cases", () => {
     );
     const team = await loadTeam({ teamDir });
     const session = "test-sess";
-    const target = `${session}:🎨fe-worker`;
+    const target = `${session}:🎨-fe-worker`; // ADR-135 hyphen-form is canonical for non-default-role members
     const { capture, calls } = buildFixtureCapture({ [target]: FIXTURE_READY });
     const { sendFn, calls: sendCalls } = buildMockSendFn();
-    const result = await runLaneTick(atmuxDir, team, { capture, sendFn, log: () => {} });
+    const result = await runLaneTick(atmuxDir, team, {
+      capture,
+      sendFn,
+      log: () => {},
+      shimOps: null, // fixture-only — no tmux invocation, fall back to canonical
+    });
     expect(calls[0]?.target).toBe(target);
     expect(sendCalls[0]?.target).toBe(target);
     expect(sendCalls[0]?.text).toBe("atmux claim --next --as fe-worker");
     expect(result.outcomes["fe-worker"]).toBe("injected");
+  });
+
+  test("EPIC e-a3077ca0 T5: shim renames legacy no-separator pane to canonical in-place", async () => {
+    // Production failure path from t-fabd2528 verify-poll: cage had
+    // `🦦docs` (no-separator), lane-tick was looking for `🦦_docs`
+    // (canonical) → capture-error. The shim self-heals by renaming
+    // legacy → canonical on the per-member iteration; the capture
+    // then hits the (renamed) canonical target.
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "team",
+        members: [{ name: "docs-worker", lane: "docs", emoji: "🦦" }],
+      }),
+    );
+    const team = await loadTeam({ teamDir });
+    const session = "test-sess";
+    const legacyName = "🦦docs-worker"; // pre-ADR-135 no-separator
+    const canonicalName = "🦦-docs-worker"; // ADR-135 hyphen (non-default-role)
+    const canonicalTarget = `${session}:${canonicalName}`;
+
+    // Track shim ops invocations. After rename, capture is fed the
+    // canonical fixture — that's the post-self-heal target.
+    const renamed: Array<{ session: string; from: string; to: string }> = [];
+    const stubShim = {
+      listWindowNames: async () => [legacyName],
+      renameWindow: async (s: string, from: string, to: string) => {
+        renamed.push({ session: s, from, to });
+      },
+    };
+
+    const { capture } = buildFixtureCapture({ [canonicalTarget]: FIXTURE_READY });
+    const { sendFn, calls: sendCalls } = buildMockSendFn();
+    const result = await runLaneTick(atmuxDir, team, {
+      capture,
+      sendFn,
+      log: () => {},
+      shimOps: stubShim,
+    });
+
+    // Shim fired the rename — legacy → canonical, single call.
+    expect(renamed).toEqual([{ session, from: legacyName, to: canonicalName }]);
+    // Capture + send hit the canonical (post-rename) target.
+    expect(sendCalls[0]?.target).toBe(canonicalTarget);
+    expect(sendCalls[0]?.text).toBe("atmux claim --next --as docs-worker");
+    expect(result.outcomes["docs-worker"]).toBe("injected");
   });
 });
 

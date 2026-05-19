@@ -34,6 +34,27 @@ Setup:
                               TUI auto-launch + cockpit session). Reads roster
                               from ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
+  cockpit attach [--config <p>] [--human]
+                              tmux-attach to the cockpit session on its named
+                              socket (\`tmux -L atmux-cockpit attach -t
+                              atmux_cockpit\`). Socket + session name resolved
+                              dynamically via getCockpitSocketName +
+                              cockpit.json so the verb stays correct across
+                              renames + ATMUX_COCKPIT_SOCKET overrides.
+                              \`--human\` (ADR-180): route through tty-inherit
+                              spawn so the caller's controlling terminal
+                              reaches tmux. Default (agent path) uses piped
+                              stdio and exits 1 on no-tty — the intended
+                              shape for headless probes.
+  cockpit rotate <session-name> [--force]
+                              ADR-167 Rung C: canonical rotation of a cockpit-
+                              level role pane — \`medic\` (W2), \`sentinel\` (W3),
+                              or \`<team-name>\` (W4+ driver pane). Refuses
+                              \`superdriver\` unconditionally; four pre-flight
+                              gates (user-not-typing / pane-idle / uptime /
+                              never-rotate-superdriver) protect against
+                              accidental rotation. Driver-only via
+                              ATMUX_CALLER_SCOPE=driver.
   sentinel [tick|status] [--once] [--config <p>] [--state <p>]
                               ADR-132 §D2: cockpit-tier fleet-wide whip-manager
                               tick loop (window W3, sibling of medic at W2).
@@ -84,6 +105,10 @@ Automation:
 
 Maintenance:
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+  member rename <id> --label <new>          Hot-rename display label (ADR-136)
+  member move <id> --to <position>          Relocate member's tmux window (ADR-161 §C)
+  member swap <id-a> <id-b>                 Pairwise window swap (ADR-161 §C)
+  member sort [--defaults-first]            Canonical reorder (ADR-161 §C)
   team spawn-epic <epicId> --from <parent> [--roster <preset>|--roster-file <p>]
                               ADR-090: spawn an ephemeral epic-team child of
                               <parent>. Worktree at <parentRoot>-epics/<epicId>
@@ -96,6 +121,13 @@ Maintenance:
                               cockpit entry + mark parent kanban EPIC done.
                               --skip-checks bypasses the all-tasks-done +
                               clean-worktree gates (lead-override).
+  team sweep-epics [--apply] [--idle-hours N] [--parent <team>] [--json]
+                              ADR-170: enumerate every enabled epic-team and
+                              classify each (DRAIN/SAFE-DISSOLVE/STALE-IDLE/
+                              RISKY/MISSING). Read-only by default; --apply
+                              dissolves only SAFE-DISSOLVE candidates (0 open
+                              tasks + clean worktree + branch pushed to
+                              origin) via the ADR-090 dissolve-epic pipeline.
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability

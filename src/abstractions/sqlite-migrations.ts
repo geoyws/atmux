@@ -389,4 +389,37 @@ export const migrations: readonly Migration[] = [
       db.exec("CREATE INDEX idx_refusal_events_severity ON refusal_events(severity)");
     },
   },
+  // ---------- v8 → v9 ----------
+  // ADR-144 §Decision T2 (t-49bd4fe1): epic-team test-gate — durable
+  // outcome record for the `tested` state.
+  //
+  // The merger_state.state column already accepts 'tested' + 'test_failed'
+  // literals (permissive TEXT typing per v5→v6 comment); this migration
+  // adds a sibling `test_outcome` column for the test-gate guard
+  // ({@link canEnterMerging} in src/core/branch-merge-state.ts). Values:
+  //   - 'pass'   — test suite passed; `tested → merging` allowed.
+  //   - 'fail'   — test suite failed; `tested → merging` refused. The
+  //                test-runner advances to `test_failed` instead.
+  //   - 'bypass' — operator ADR-033 driver-scope override via
+  //                `atmux epic-merge advance --to merging --skip-test-gate`.
+  //                Logged to ~/.atmux/state/test-gate-bypasses.log +
+  //                Discord [test-gate-bypass] (T5).
+  //   - NULL     — no outcome on record. Default for fresh rows; also
+  //                the value held during ADR-134 intra-team scope
+  //                (intra-team's test-gate is post-merge so the column
+  //                stays NULL for those branches).
+  //
+  // Permissive TEXT typing (no CHECK constraint) matches the rest of
+  // the merger_state shape; a future state-set extension (e.g.
+  // 'flake-retry' for §retryOnFlake telemetry) lands additively.
+  //
+  // No index — column is read alongside the row by branch-name PK; no
+  // standalone scan path.
+  {
+    from: 8,
+    to: 9,
+    up: (db) => {
+      db.exec("ALTER TABLE merger_state ADD COLUMN test_outcome TEXT");
+    },
+  },
 ];

@@ -73,6 +73,7 @@ function buildFakeTmux(opts: {
       renameWindow: async () => {},
       selectWindow: async () => {},
       moveWindow: async () => {},
+      swapWindow: async () => {},
     },
     pane: {
       displayMessage: async (o: { target: unknown; format: string }) => {
@@ -102,6 +103,7 @@ function buildFakeTmux(opts: {
     },
     client: {
       attachSession: async () => {},
+      attachSessionInheritStdio: async () => {},
       switchClient: async () => {},
       listClients: async () => [],
     },

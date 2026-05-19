@@ -276,3 +276,51 @@ After migrating, on the cron host:
 - **Config knob:** `team.json::whip.stallPrevention.heartbeatStaleSec` (default 300s).
 - **Discord template:** `[whip-watchdog]` (per-member dedup; quiet on hourly cron).
 - **Operator playbook:** [`RUNBOOK-stall-recovery.md`](RUNBOOK-stall-recovery.md) — what to do when a watchdog ping fires.
+
+## Golden-file parity (ADR-057 §D6d / t-bb519494)
+
+The marker-fenced crontab block that `src/core/cron.ts::renderCronBlock` emits is pinned by a golden fixture at `tests/golden/cron-block.txt` plus the parity assertion `tests/unit/core/cron.test.ts → describe "renderCronBlock — golden-file parity (ADR-057 §D6d)"`. Drift in line order, marker text, cron schedule, env-prefix (`PATH=…`, `TMUX_TMPDIR=…`, `ATMUX_DIR=…`), verb invocation, or log-tail fails loud (`bun test` red) at the next CI run — folds in driver pre-decision **P2 cron-groom window-order invariant** so an accidental re-order between `poke` / `report` / `decisions` / `groom` / `poke-resume-check` / `unblocker` (and the rest of the 12-line conditional set) is caught at PR-review time, not at the next `atmux start` cycle.
+
+### Reference team config
+
+The golden file's reference team exercises **every** conditional line EXCEPT the discorder pair (mutually exclusive with `report` — discorder coverage stays in the inline assertion suite). The 12 pinned lines, in render order:
+
+| # | Verb | Gate |
+|--:|------|------|
+| 1 | `poke` | always |
+| 2 | `report` | always (swap to `discorder progress` + `discorder heartbeat` when `team.members[].role === "discorder"`) |
+| 3 | `decisions digest` | always |
+| 4 | `groom --quiet` | always |
+| 5 | `poke-resume-check` | `team.whip.claudeAccount` non-empty |
+| 6 | `unblocker tick` | `team.members[].role === "unblocker"` |
+| 7 | `lane-tick` | ≥1 member with non-empty `.lane` AND `team.crons.laneTickEnabled !== false` |
+| 8 | `merge-cycle --push` | `team.merger.enabled === true` |
+| 9 | `ombudsman tick` | `team.ombudsman.enabled === true` AND `team.members[].role === "ombudsman"` |
+| 10 | `lane-stall-tick` | `team.cadence.enabled === true` AND `team.cadence.laneStallEnabled !== false` |
+| 11 | `committer --sweep` | `team.autoMerge.enabled === true` AND `team.members[].role ∈ {committer,gitter}` (ADR-159 TR3 accept-both grace; emitted verb is the canonical `committer` per ADR-159 TR4) |
+| 12 | `epic-merge tick` | `team.epicTeam !== undefined` |
+
+The full gate table is duplicated in the golden file's documentation header (`tests/golden/cron-block.txt` L1-L31) so a reader landing on the fixture can interpret the pinned ordering without bouncing to this runbook.
+
+### Regenerating the golden fixture (intentional renderer change)
+
+When an intentional change to `src/core/cron.ts` shifts the rendered block shape (new gated line, schedule cadence tweak, env-prefix addition, marker text change), regenerate the canonical block portion of `tests/golden/cron-block.txt` via the helper script:
+
+```bash
+# Print the new block to stdout — review the diff against the
+# existing golden's block portion before applying.
+bun scripts/regen-cron-golden.ts
+
+# Or rewrite in place; the documentation header (everything BEFORE
+# `# >>> atmux:team=`) is preserved automatically.
+bun scripts/regen-cron-golden.ts --in-place
+```
+
+After regenerating:
+
+1. Update the gate table above + the L1-L31 header in `tests/golden/cron-block.txt` if a new line was added (or an existing line's gating condition shifted).
+2. Update the `orderedVerbs` array in `tests/unit/core/cron.test.ts → "golden file pins every conditional line in render order (L1-L12 from header)"` to match the new ordering.
+3. Re-run `unset TMUX && timeout 60 bun test --timeout 30000 tests/unit/core/cron.test.ts` — all three `renderCronBlock — golden-file parity` cases should pass.
+4. Same-commit ADR pointer (ADR-057 §D6d) per the project's doc-update convention.
+
+The reference Team config lives inside `scripts/regen-cron-golden.ts` and inside the test file (`goldenReferenceTeam()` helper) — keep them in sync. A future cleanup could move the fixture into a shared module, but the current duplication is intentional: the test must stay self-contained (no `scripts/` import in `tests/`) and the script must run standalone (no test-helper import in `scripts/`).

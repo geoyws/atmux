@@ -1,6 +1,6 @@
 # ADR-167: `atmux cockpit rotate <session-name>` — Rung C canonical rotation verb
 
-**Status**: proposed
+**Status**: accepted (2026-05-18 — EPIC e-0b90d6ac code-complete: T2 c376f63 / T3 5245e39 / T4 771a104 / T5 057ec5f / T6 990e1f7 / T7 6c98192 / T8 this commit)
 **Date**: 2026-05-16
 **Driver-ref**: `.atmux/driver-inbox.md` §🆕 BACKLOG ASK 23:34 MYT 2026-05-16
 
@@ -156,6 +156,31 @@ Per [ADR-033](033-caller-scope-gate.md): verb refuses non-driver callers. Cockpi
    - **Default**: defer to follow-up. V1 ships append-only with no rotation; v2 adds size-cap rotation if growth proves problematic.
    - **Rationale**: rotation is operator-fired; growth is bounded. Premature rotation policy is over-engineering.
 
+## Amendment 2026-05-17 (T4 ship — be-2 / t-a245bbc8)
+
+Clarifies the wrapper-resolver semantics surfaced during T4 implementation. The §Per-role respawn matrix listed `claudeAccount` wrapper resolution under all three roles — but team-driver cockpit windows are the cage-attach retry loop (per ADR-162), NOT a claude TUI. The wrapper resolution does not apply there.
+
+**Resolved**:
+- **medic / sentinel-claude**: wrapper resolver is **load-bearing** in the spawn line. Respawn command is `CLAUDE_GUARD_AGENT=1 <wrapper> [--plugin-dir=…] --permission-mode <mode> --model claude-opus-4-7`, where `<wrapper>` is the c-alias name (`claude` / `c-u` / `c-ic` / `c-i`) resolved from `claudeAccount.configDir`. Differs from cockpit-rebuild's `buildClaudeWindowCommand` (which uses inline `CLAUDE_CONFIG_DIR=…` env + bare `claude` literal); rotate honors the literal §Decision text + lets hermetic T7 fixtures (Plan A) exercise the resolver by stubbing the wrapper name on PATH.
+- **sentinel-cursor**: wrapper resolver is **skipped** (no claude process to invoke); reuses cockpit-rebuild's `buildSentinelWindowCommand` for the bash `while true; do atmux sentinel tick; sleep 270; done` loop. ADR-132 §D4 already excludes the cursor variant from `/loop /sentinel` auto-injection; this amendment makes the symmetric exclusion explicit for the wrapper-resolver step.
+- **team-driver**: wrapper resolver is **skipped**. The cockpit team-window is the `cageRetryLoop` (per `src/verbs/cockpit.ts::buildTeamWindowCommand` mode=`attach`) — `while true; do tmux attach || tmux attach; sleep 1; done` — which does not invoke claude. The team's `claudeAccount.configDir` field rides through cockpit.json for other consumers (cockpit-rebuild's lead-pane spawn inside the cage) and is intentionally untouched at rotate time.
+
+**Unknown configDir handling**: when medic / sentinel-claude points at an unregistered configDir, `resolveClaudeWrapper` throws `ConfigError`. The verb catches this at `performRespawn` boundary, emits a `respawn-failed` audit row (with the configDir in the `error` field), prints a structured stderr line, and exits `70 (EX_SOFTWARE)` — **before** any pane is touched. Operator's two recovery paths are (a) register the wrapper alias in their shell init + retry, or (b) edit `cockpit.json` to point at a registered configDir.
+
+**Test seam shape** (consumed by T6 / fe-1 + T7 / fe-2 fixtures): `CockpitRotateOpts` exposes injection points for `safeSendKeysWithVerify`, `loadCockpit`, `autoStartMedicLoop`, `autoStartSentinelLoop`, `cadenceLogger`, `autoStartTimeoutMs`. The wrapper resolver itself stays pure — fe-2's hermetic T7 plan (stub wrapper-alias scripts on PATH) exercises the real `buildClaudeRespawnCommand` end-to-end without the seam.
+
+## Amendment 2026-05-17 (T5 ship — be-2 / t-fe3464df, claim-race won)
+
+T5 wires the handoff write-path at the TODO(T5) anchor T4 left at `performRespawn` opening. Two design clarifications surfaced during impl:
+
+**Heavy state-reads stubbed in v1**: ADR-167 §Handoff payload schema (per-role) lists per-role state inputs — medic's "in-flight diagnosis state from `src/verbs/medic.ts` runtime" + "recent medic-source complaints (state.db `complaints` WHERE `source_kind = 'medic'`)", sentinel's "whip-classifier state snapshot" + "NudgeAction history (per-team sentinel logs tail-N)", team-driver's "outbox state snapshot at rotation time". v1 ships placeholder markers (`_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_`) for the deep state-reads; the audit-log rotation tail + (for team-driver) lead-outbox tail are wired through. Rationale: the deep state-reads each require sqlite-repo handles + cross-module state-snapshot helpers that aren't stable today; once T7 e2e fixtures land (fe-2) the enrichment surface clarifies. Follow-up task t-TBD will enrich.
+
+**Handoff-write atomic-write convention**: uses `src/abstractions/fs.atomicWrite` (tmp + rename per ADR-005), NOT `lock.flock`. The flock-based serialization §Per-role respawn step 2 references was originally framed for concurrent rotation attempts on the same role — but cockpit rotate is operator-fired (caller-scope=driver, ADR-033), single-writer by construction. `atomicWrite`'s tmp+rename gives the same crash-safety property (partial writes never replace the destination) without the lock overhead. If concurrent rotation becomes a v2 ask (cron-fired auto-rotate per ADR-167 §Out of scope), revisit.
+
+**Failure handling**: handoff-write failure → `handoff-write-failed` audit row + exit 70 + pane intentionally **untouched** (no Ctrl-C / kill / new-window fires). Recovery semantics — "retry the verb" not "rotate blind" — preserve the operator's mental model that a `cockpit rotate` invocation either fully succeeds or leaves the pane intact for diagnosis.
+
+**Test seam additions on `CockpitRotateOpts`**: `readAuditLog` (default `fs.readTextOrNull`), `readLeadOutboxTail` (default mirrors `src/core/fallback-brief.ts` convention), `atomicWrite` (default `fs.atomicWrite`). The truncation path (>100KB) is exercised by T6 / T7 via injected large `leadOutboxByDir` content.
+
 ## Related
 
 - [ADR-006](006-error-class-and-exit-code.md) — error class → exit code mapping (65 EX_DATAERR for gate refusals).
@@ -167,4 +192,4 @@ Per [ADR-033](033-caller-scope-gate.md): verb refuses non-driver callers. Cockpi
 - [ADR-138](138-verified-send-keys.md) — safeSendKeysWithVerify; all Ctrl-C + spawn-prompt sends route through this.
 - [ADR-155](155-pane-state-classifier.md) — pane-state probe; reusable abstraction for gate-1 + gate-2.
 - [ADR-162](162-atmux-owns-tmux-infrastructure.md) — atmux owns cockpit tmux infrastructure; this verb fits within that scope.
-- `/bruh` skill §3a — manual fallback today; T8 flips to canonical-verb path post-impl.
+- `/bruh` skill §3a (operator-managed; lives under `~/work/journals/.sb/claude-skills/plugins/coordination/skills/bruh/SKILL.md` per the dotfiles flow) — the §3a "manual fallback today" line should be flipped to "use `atmux cockpit rotate <session-name>`" by the operator at the next dotfiles-update cycle. This ADR cannot edit `claude-skills` directly (dotfiles territory per the atmux team's claude-skills carve-out); the operator picks up the change when they refresh `~/.claude/plugins/`.

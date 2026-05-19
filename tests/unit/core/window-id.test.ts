@@ -40,6 +40,7 @@ function fakeTmux(o: FakeTmuxOpts = {}): TmuxNamespace {
       renameWindow: async () => {},
       selectWindow: async () => {},
       moveWindow: async () => {},
+      swapWindow: async () => {},
     },
     pane: {
       displayMessage: async () => {

@@ -39,6 +39,8 @@ Cross-link: `/CLAUDE.md` §Hooks, Commits, Tooling — bypass-discipline rules a
 
 2. **Read pane state BEFORE `tmux send-keys`.** Before sending any input to a teammate or lead pane, capture + read the pane first: `tmux capture-pane -p -S -30 -t <window> | tail -20`. Check for status indicators, not just text — `thinking with`, `Compacting conversation`, `Press up to edit queued messages`, `Now using extra usage`, `You've hit your limit`, rate-limit banners, permission prompts, or input already in the compose box. Acting blind sends keystrokes into queued-message states (merges with prior text), rate-limited sessions (silently drops), compacting sessions (lost when context resets), or modal prompts (text answers the wrong question). Pattern: capture → interpret → decide whether to send / wait / escalate / abort. "Pane shows text at the prompt" ≠ "pane is ready to accept input." Source: CLAUDE.md §136.
 
+3. **Never root a filesystem walker at `/`.** `find` / `bfs` / `fd` MUST be scoped to `.` or a specific project subtree — never the whole filesystem. A `/`-rooted walk pegs CPU at 100% for minutes on a busy box and competes with every other team for I/O. Observed 2026-05-17: a sibling agent ran `bfs -path '*templates/briefs/member.md' /` for 1+ min at 107% CPU. If you don't know where a file lives, scope to a project root first (`rg --files` from the project dir, or `ls` + grep), not a `/`-rooted walk.
+
 ## Socket-driven messaging (per [ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md))
 
 Your pane may receive **supervisor-injected keystrokes between turns** — typically prefixed with an event-type tag so you can disambiguate at a glance:

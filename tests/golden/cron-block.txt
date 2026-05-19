@@ -1,0 +1,54 @@
+# golden-file: tests/golden/cron-block.txt
+# gate: ADR-057 §D6d (Class F, v1.1.x stall-prevention) — pins the
+#       marker-fenced crontab block shape rendered by
+#       src/core/cron.ts::renderCronBlock for a reference team config
+#       that exercises every conditional line EXCEPT the discorder pair
+#       (mutually exclusive with `report` — discorder coverage stays in
+#       the inline assertion suite at tests/unit/core/cron.test.ts).
+# parity: byte-equal against `renderCronBlock(opts)` (see test:
+#       tests/unit/core/cron.test.ts → describe "renderCronBlock —
+#       golden-file parity (ADR-057 §D6d)"). Test loads this file,
+#       locates the canonical block by `# >>> atmux:team=` marker, and
+#       asserts byte-equal from marker-line through `# <<< atmux:team=`
+#       footer. Any drift in line order, marker text, cron schedule,
+#       env-prefix, verb invocation, or log-tail fails loud.
+# regenerate (intentional renderer change):
+#       bun run scripts/regen-cron-golden.ts > tests/golden/cron-block.txt
+#       (or hand-port if the generator script is absent — see RUNBOOK-
+#       cron-migration.md §Golden-file parity for procedure)
+# per-line gating conditions (in pinned render order):
+#   L1  poke               always
+#   L2  report             always (discorder absent ⇒ report; discorder
+#                          present ⇒ swap for `discorder progress` +
+#                          `discorder heartbeat` pair, mutually exclusive)
+#   L3  decisions digest   always
+#   L4  groom --quiet      always
+#   L5  poke-resume-check  team.whip.claudeAccount non-empty
+#   L6  unblocker tick     team.members[].role === "unblocker"
+#   L7  lane-tick          ≥1 member with non-empty .lane
+#                          AND team.crons.laneTickEnabled !== false
+#   L8  merge-cycle --push team.merger.enabled === true
+#   L9  ombudsman tick     team.ombudsman.enabled === true
+#                          AND team.members[].role === "ombudsman"
+#   L10 lane-stall-tick    team.cadence.enabled === true
+#                          AND team.cadence.laneStallEnabled !== false
+#   L11 committer --sweep  team.autoMerge.enabled === true
+#                          AND team.members[].role ∈ {committer,gitter}
+#                          (ADR-159 TR3 accept-both grace; emitted verb
+#                          is the canonical `committer` per ADR-159 TR4)
+#   L12 epic-merge tick    team.epicTeam !== undefined
+# --- canonical block below; lines above this fence are ignored by the test ---
+# >>> atmux:team=golden-reference — managed by atmux start; do not edit by hand
+*/15 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux poke >> /srv/golden-reference/.atmux/logs/poke.log 2>&1
+*/30 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux report >> /srv/golden-reference/.atmux/logs/report.log 2>&1
+0 */4 * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux decisions digest >> /srv/golden-reference/.atmux/logs/decisions-digest.log 2>&1
+0 4 * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux groom --quiet >> /srv/golden-reference/.atmux/logs/groom.log 2>&1
+*/1 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux poke-resume-check >> /srv/golden-reference/.atmux/logs/poke-resume-check.log 2>&1
+*/2 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux unblocker tick >> /srv/golden-reference/.atmux/logs/unblocker.log 2>&1
+*/5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux lane-tick >> /srv/golden-reference/.atmux/logs/lane-tick.log 2>&1
+*/15 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux merge-cycle --push >> /srv/golden-reference/.atmux/logs/merge-cycle.log 2>&1
+*/15 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux ombudsman tick >> /srv/golden-reference/.atmux/logs/ombudsman.log 2>&1
+*/5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux lane-stall-tick >> /srv/golden-reference/.atmux/logs/lane-stall.log 2>&1
+*/10 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux committer --sweep >> /srv/golden-reference/.atmux/logs/committer-sweep.log 2>&1
+*/5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux epic-merge tick >> /srv/golden-reference/.atmux/logs/epic-merge.log 2>&1
+# <<< atmux:team=golden-reference

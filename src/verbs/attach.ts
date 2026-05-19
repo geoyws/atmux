@@ -130,7 +130,19 @@ export function exactSessionTarget(sessionName: string): string {
  * 164 (`return 0`) reachable in coverage without forcing tests to
  * defeat the abstraction's tty-blocking semantics.
  */
-export async function attachWithTmux(tmux: TmuxNamespace, sessionName: string): Promise<number> {
+export interface AttachWithTmuxOpts {
+  /** ADR-180: route through `client.attachSessionInheritStdio` so the
+   *  caller's controlling tty reaches tmux. Set by human-entry verbs
+   *  (`atmux cockpit attach --human`). Default false keeps the
+   *  agent-path piped-stdio shape that callers without a tty rely on. */
+  inheritStdio?: boolean;
+}
+
+export async function attachWithTmux(
+  tmux: TmuxNamespace,
+  sessionName: string,
+  opts: AttachWithTmuxOpts = {},
+): Promise<number> {
   const target = exactSessionTarget(sessionName);
 
   if (!(await tmux.session.hasSession(target))) {
@@ -150,7 +162,11 @@ export async function attachWithTmux(tmux: TmuxNamespace, sessionName: string): 
   const priorTmux = process.env.TMUX;
   if (priorTmux !== undefined) delete process.env.TMUX;
   try {
-    await tmux.client.attachSession(target);
+    if (opts.inheritStdio) {
+      await tmux.client.attachSessionInheritStdio(target);
+    } else {
+      await tmux.client.attachSession(target);
+    }
     return 0;
   } finally {
     if (priorTmux !== undefined) process.env.TMUX = priorTmux;

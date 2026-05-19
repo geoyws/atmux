@@ -463,9 +463,22 @@ The rotate is what re-spawns the window under the new emoji name; until then the
 
 See [docs/adr/030-registry-emoji-immutability.md](docs/adr/030-registry-emoji-immutability.md) for the full design + risk register.
 
+### Migrating off the Claude `/team` skill
+
+Operators coming from the Claude `/team` skill family (`/team rotate-lead`, `/team clear <member>`, bootstrap brief paste-in) still have a `.claude/team.json` on disk that drifts the moment atmux owns the canonical roster at `.atmux/team.json`. `atmux sync claude-team-json` materializes the Claude-side file from the atmux-side one so both surfaces stay aligned without hand-edits ([ADR-164](docs/adr/164-sync-claude-team-json.md)).
+
+```bash
+atmux sync claude-team-json --dry-run        # preview the diff (no write)
+atmux sync claude-team-json                  # atomic write of .claude/team.json
+atmux sync claude-team-json --overwrite-briefs   # replace hand-authored long-form roles
+atmux sync claude-team-json --force          # override drift refusal (after reviewing diff)
+```
+
+Preserve-by-default protects hand-authored long-form `role` text on the Claude side; drift detection refuses re-sync (exit `65`) when the file was hand-edited since the last sync. Color sidecar `.claude/team-colors.json` lets operators paint specific emoji-or-member combos. See [docs/RUNBOOK-sync.md](docs/RUNBOOK-sync.md) for the full operator flow.
+
 ### Discord palette per team
 
-When multiple atmux teams ping into the same Discord channel, the team-name backticks alone aren't enough to distinguish pings at a glance — under load (20+ pings/hour, 2–3 teams), the wall blurs together. atmux solves this by rendering each ping as a Discord webhook **embed** with a **per-team color** (a 16-color Catppuccin-Frappe-aligned palette) and a **leading glyph** in the embed title.
+When multiple atmux teams ping into the same Discord channel, the team-name backticks alone aren't enough to distinguish pings at a glance — under load (20+ pings/hour, 2–3 teams), the wall blurs together. atmux solves this by rendering each ping as a Discord webhook **embed** with a **per-team color** (a curated 16-color dark-theme palette) and a **leading glyph** in the embed title.
 
 **Default (no config — works out of the box).** Each team gets a deterministic auto-color via `sha256(team-name)[0] mod 16` → palette index. `atmux-kanban` always renders one fixed color, `myteam-alpha` always another — no operator config required, and the assignment is stable across restarts.
 
@@ -696,6 +709,10 @@ atmux rotate <member>
 atmux rotate-lead
 atmux handoff <from> <to> [--reason <r>] [--no-native] [--pause-from]
 atmux add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
+atmux member rename <id> --label <new>       # hot-rename display label (ADR-136)
+atmux member move <id> --to <position>       # relocate member's tmux window (ADR-161 §C)
+atmux member swap <id-a> <id-b>              # pairwise window swap (ADR-161 §C)
+atmux member sort [--defaults-first]         # canonical reorder (ADR-161 §C)
 atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
 ```

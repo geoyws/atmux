@@ -66,6 +66,8 @@ import type {
   CockpitTeam,
 } from "../schema/cockpit.ts";
 import { Team } from "../schema/team.ts";
+import { attachWithTmux } from "./attach.ts";
+import { cockpitRotate } from "./cockpit-rotate.ts";
 import { start } from "./start.ts";
 
 // ---------- ADR-064 §3: per-team driverSession resolution ----------
@@ -276,7 +278,7 @@ export interface ParsedCockpitArgs {
    *  one-shot verb that moves the cockpit session from the operator's
    *  default tmux socket to the dedicated `atmux-cockpit` named socket
    *  (per §Decision-anchor #1 + #4). */
-  subverb: "rebuild" | "reload" | "migrate-socket";
+  subverb: "rebuild" | "reload" | "migrate-socket" | "attach";
   /** Skip the cage cycle phase (only normalise team.json + reconcile cockpit). */
   noCycle: boolean;
   /** Cycle every cage even if claude procs are running (DESTRUCTIVE — kills in-flight work). */
@@ -317,6 +319,15 @@ export interface ParsedCockpitArgs {
    *  planned ops. ALSO required when `--force-cycle` is set (the
    *  per-team cage cycle is destructive at the claude-TUI layer). */
   yes: boolean;
+  /** ADR-180: `attach`-sub-verb-only flag. Routes the attach through
+   *  the inherit-stdio spawn path so the caller's controlling tty
+   *  reaches tmux. Default (undefined / false) keeps the agent-path
+   *  piped-stdio shape — that path exits 1 with "open terminal failed:
+   *  not a terminal" when there's no tty, which is the intended
+   *  agent-side semantic. Rejected on every non-`attach` sub-verb.
+   *  Optional for backward-compat with test fixtures constructed before
+   *  ADR-180 added the flag (mirrors the dryRun / keepLegacy pattern). */
+  human?: boolean;
 }
 
 /**
@@ -332,18 +343,19 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     throw new UsageError({
       what: "cockpit: missing sub-verb",
       hint:
-        "usage: atmux cockpit {rebuild | reload | migrate-socket} " +
+        "usage: atmux cockpit {rebuild | reload | migrate-socket | attach} " +
         "[--no-cycle | --force-cycle --acknowledge-dangerous-bau-interruption] " +
         "[--no-launch] [--config <path>] [--dry-run] [--keep-legacy]",
     });
   }
   const sub = args[0];
-  if (sub !== "rebuild" && sub !== "reload" && sub !== "migrate-socket") {
+  if (sub !== "rebuild" && sub !== "reload" && sub !== "migrate-socket" && sub !== "attach") {
     throw new UsageError({
       what: `cockpit: unknown sub-verb: ${sub}`,
       hint:
         "supported: 'rebuild' (full), 'reload' (hot-reload alias), " +
-        "or 'migrate-socket' (ADR-162 TR3: move legacy cockpit-on-default-socket → atmux-cockpit)",
+        "'migrate-socket' (ADR-162 TR3: move legacy cockpit-on-default-socket → atmux-cockpit), " +
+        "or 'attach' (tmux-attach to the cockpit session on its named socket)",
     });
   }
 
@@ -360,10 +372,25 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   let dryRun = false;
   let keepLegacy = false;
 
+  let human = false;
+
   let i = 1;
   while (i < args.length) {
     const a = args[i] ?? "";
     switch (a) {
+      case "--human":
+        if (sub !== "attach") {
+          throw new UsageError({
+            what: `cockpit ${sub}: --human only applies to 'attach'`,
+            hint:
+              "use 'atmux cockpit attach --human' for the human-entry path " +
+              "(tty inherited through to tmux); rebuild/reload/migrate-socket " +
+              "have no attach step",
+          });
+        }
+        human = true;
+        i += 1;
+        break;
       case "--no-cycle":
         if (sub === "reload") {
           throw new UsageError({
@@ -443,6 +470,19 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     }
   }
 
+  // `attach` is a read-only operation; reject every rebuild/migrate-socket
+  // flag so operators get a clear hint instead of silently-ignored args.
+  // `--human` (ADR-180) is the one attach-specific flag — gated above
+  // before this check so it doesn't trip the rejection.
+  if (sub === "attach") {
+    if (noCycle || forceCycle || ackDangerous || noLaunch || yes || dryRun || keepLegacy) {
+      throw new UsageError({
+        what: "cockpit attach: only --config and --human are accepted",
+        hint: "usage: atmux cockpit attach [--config <path>] [--human]",
+      });
+    }
+  }
+
   if (noCycle && forceCycle) {
     throw new UsageError({
       what: "cockpit rebuild: --no-cycle and --force-cycle are mutually exclusive",
@@ -483,7 +523,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   }
 
   const out: ParsedCockpitArgs = {
-    subverb: sub as "rebuild" | "reload" | "migrate-socket",
+    subverb: sub as "rebuild" | "reload" | "migrate-socket" | "attach",
     noCycle,
     forceCycle,
     ackDangerous,
@@ -491,6 +531,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     yes,
     dryRun,
     keepLegacy,
+    human,
   };
   if (configPath !== undefined) out.configPath = configPath;
   return out;
@@ -524,6 +565,15 @@ export async function cockpit(
   args: ReadonlyArray<string>,
   opts: CockpitOpts = {},
 ): Promise<number> {
+  // ADR-167: `cockpit rotate` has its own argv parser (separate flag
+  // set: `<session-name>` positional + `--force`) and dispatches via
+  // src/verbs/cockpit-rotate.ts. Branch BEFORE parseCockpitArgs so
+  // that parser stays focused on rebuild / reload / migrate-socket.
+  if (args[0] === "rotate") {
+    const rotateOpts: { env?: NodeJS.ProcessEnv } = {};
+    if (opts.env !== undefined) rotateOpts.env = opts.env;
+    return await cockpitRotate(args.slice(1), rotateOpts);
+  }
   const parsed = parseCockpitArgs(args);
   switch (parsed.subverb) {
     case "rebuild":
@@ -541,7 +591,38 @@ export async function cockpit(
       // named socket (per §Decision-anchor #1 + #4). Idempotent — re-
       // running on an already-migrated cockpit reports "nothing to do".
       return await cockpitMigrateSocket(parsed, opts);
+    case "attach":
+      // Convenience verb — `tmux -L <cockpit-socket> attach -t <session>`
+      // resolved from the same `getCockpitSocketName` + cockpit.json
+      // `cockpitSession` field that `rebuild` writes. Closes the
+      // "where's my cockpit?" discoverability gap after ADR-162 moved
+      // the cockpit off the operator's default tmux socket.
+      return await cockpitAttach(parsed, opts);
   }
+}
+
+/** `atmux cockpit attach` — tmux-attach to the cockpit session on its
+ *  named socket. Resolves both the socket name (via `getCockpitSocketName`,
+ *  honouring the `ATMUX_COCKPIT_SOCKET` escape hatch) and the session name
+ *  (via `loadCockpit` → `cockpitSession` field) so this stays correct
+ *  across socket renames and operator overrides.
+ *
+ *  Exported for direct unit-test access (mirrors `cockpitRebuild` /
+ *  `cockpitMigrateSocket`). */
+export async function cockpitAttach(
+  parsed: ParsedCockpitArgs,
+  opts: CockpitOpts = {},
+): Promise<number> {
+  const env = opts.env ?? process.env;
+  const factory = opts.tmuxFactory ?? createTmux;
+
+  const loadOpts: LoadCockpitOpts = { env };
+  if (parsed.configPath !== undefined) loadOpts.path = parsed.configPath;
+  const cockpit = await loadCockpit(loadOpts);
+
+  const socket = getCockpitSocketName(env);
+  const tmux = factory({ socket });
+  return attachWithTmux(tmux, cockpit.cockpitSession, { inheritStdio: parsed.human === true });
 }
 
 /** The rebuild flow. Exported for direct unit-test access. */
@@ -1668,17 +1749,41 @@ export async function reconcileCockpitSession(
 
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const present = new Set(windows.map((w) => w.name));
+  // ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, ba1f1c1): the cockpit hosts
+  // only L2 parent-team viewer windows. L3 epic-team viewers live INSIDE
+  // their parent's cage as 🌳-prefixed siblings of lead/planner/etc — added
+  // at epic `atmux start` time via addEpicViewerToParentCage (start.ts:967),
+  // not by cockpit rebuild. Filter epic-teams out of every cockpit-side
+  // window operation: wanted-set (drives orphan removal), add-loop, reorder
+  // pass. Regression source: prior rebuild iterated `teams` (which includes
+  // both type:"team" and type:"epic-team" per enabledTeams) and created a
+  // cockpit window per row, producing per-epic duplicates of the
+  // parent-cage viewers — surfaced 2026-05-18 as complaint c-abb7b603.
+  //
+  // The runtime check uses `in` rather than asserting a wider type because
+  // the param is typed `CockpitTeam[]` for back-compat — real fleet callers
+  // (cockpitRebuild) pass FlattenedTeamEntry[] which has `.type`, while
+  // legacy test fixtures may pass bare CockpitTeam[] without it. The `in`
+  // check is false on the legacy shape → no filtering → byte-identical
+  // behavior to pre-fix for callers that never had epic-teams to filter.
+  const cockpitTeams = teams.filter(
+    (t) => !("type" in t && (t as { type?: string }).type === "epic-team"),
+  );
   const wanted = new Set([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
     ...(wantSentinel ? ["_sentinel"] : []),
-    ...teams.map((t) => t.name),
+    ...cockpitTeams.map((t) => t.name),
   ]);
 
   // Per-team mode: filter teams to JUST the named one before the add
   // pass — defensive against callers passing the full roster but
-  // wanting only one window touched.
-  const teamsToAdd = onlyTeam !== undefined ? teams.filter((t) => t.name === onlyTeam) : teams;
+  // wanting only one window touched. Per-team callers may name an
+  // epic-team; cockpitTeams already excludes those, so the filter
+  // returns [] for an epic-team target — correct (no cockpit window
+  // is wanted) and skips the add pass naturally.
+  const teamsToAdd =
+    onlyTeam !== undefined ? cockpitTeams.filter((t) => t.name === onlyTeam) : cockpitTeams;
 
   // Add missing viewer windows.
   for (const t of teamsToAdd) {
@@ -1711,7 +1816,11 @@ export async function reconcileCockpitSession(
     const sdrv = windowsForOrder.find((w) => w.name === "_superdriver");
     const cursorBase =
       (sdrv !== undefined ? sdrv.index + 1 : 1) + (wantMedic ? 1 : 0) + (wantSentinel ? 1 : 0);
-    const desired = teams.map((t, i) => ({ name: t.name, finalIdx: cursorBase + i }));
+    // ADR-089 §Pillar 1 §Amendment: epic-teams are NOT cockpit windows;
+    // reorder only places L2 parent teams. Using `teams` (which contains
+    // epic-teams too) would assign cockpit slots to entries that have no
+    // cockpit window, leaving gaps and offsetting sibling teams.
+    const desired = cockpitTeams.map((t, i) => ({ name: t.name, finalIdx: cursorBase + i }));
 
     // Park-then-place to avoid sibling-team collisions.
     //

@@ -253,6 +253,41 @@ export const TeamWhip = z
       .strict()
       .optional(),
 
+    // ---------- ADR-057 v1.1.x stall-prevention block ----------
+    /** ADR-057 stall-prevention config. Carries the heartbeat staleness
+     *  threshold consumed by `atmux watchdog` (§D6b) + `atmux status`
+     *  (§D6c), plus the auto-push-on-done knobs consumed by the done-leg
+     *  of `atmux claim` (§D7).
+     *
+     *  Pre-promotion the shape lived as a defensive `as { ... unknown
+     *  }` cast in three places (src/core/auto-push.ts + src/verbs/
+     *  watchdog.ts + src/verbs/status.ts). Schema-level promotion turns
+     *  typos (`heartbeatStaleSecond`) into refusals at boot (surfaced
+     *  via the existing whip-config-drift ping) instead of silent
+     *  defaults at every read site. */
+    stallPrevention: z
+      .object({
+        /** Heartbeat staleness threshold (s). Default 300 (5min) per
+         *  ADR-057 §D6. Watchdog flags + status renders `💔` when
+         *  age > this value. */
+        heartbeatStaleSec: z.number().int().positive().default(300),
+        /** ADR-057 §D7: push the per-member branch on every `atmux
+         *  done` transition. Default true — surfaces drift early. The
+         *  CLAUDE.md push policy continues to gate
+         *  `origin/<base>-staging` targets via runAutoPush refusal. */
+        autoPushOnDone: z.boolean().default(true),
+        /** Rebase the per-member branch on origin/<base> before push.
+         *  Default true — keeps criss-cross history bounded per
+         *  ADR-082. */
+        rebaseBeforePush: z.boolean().default(true),
+        /** Explicit allow-list of push targets (rare; for non-standard
+         *  trunk shapes). Empty list means "any branch except the
+         *  CLAUDE.md push-policy refusal targets". Default []. */
+        allowedPushBranches: z.array(z.string()).default([]),
+      })
+      .strict()
+      .optional(),
+
     // ---------- ADR-050 fallback chain v1 (Tier 2 Cursor only) ----------
     /** ADR-050 §Decision. Per-team Tier 2 (Cursor) fallback policy for
      *  budget-pause recovery. Distinct from `team.fallback` (top-level,
@@ -669,7 +704,7 @@ export const TeamAutoMerge = z
     /** ADR-134 §Config: cadence in minutes for the cron backstop
      *  sweep. Default `10`. Consumed by T7's cron-install template
      *  emission — this field is the cadence input to `cronEvery(N)`.
-     *  T4's `atmux gitter --sweep` verb is cadence-agnostic; it runs
+     *  T4's `atmux committer --sweep` verb is cadence-agnostic; it runs
      *  on whatever interval the cron line fires. Must be a divisor of
      *  60 for `cronEvery` (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60);
      *  the renderer fail-fasts on non-divisors at install time. */
@@ -684,7 +719,7 @@ export const TeamAutoMerge = z
   .strict();
 export type TeamAutoMerge = z.infer<typeof TeamAutoMerge>;
 
-/** ADR-134 §Config default — used by T4's `gitter --sweep` cron line
+/** ADR-134 §Config default — used by T4's `committer --sweep` cron line
  *  emission (T7 cron-install template) when `team.autoMerge
  *  .cronBackstopMin` is unset. Matches the 10-min default the ADR
  *  specifies; co-located with the schema so non-Zod call sites (cron
@@ -883,8 +918,68 @@ export const TeamEpic = z
      *  user that owns PR creation; ADR-091's pr-mode runtime resolves at
      *  PR-creation time via `gh auth switch --user <prAuthorUser>`. */
     prAuthorUser: z.string().optional(),
+    /** ADR-144 §Two test-isolation modes (T3 t-8cba0705). Default
+     *  `"skip"` keeps the pre-ADR-144 direct `ready_to_merge → merging`
+     *  flow — back-compat for epic-teams created before T3 lands. Set
+     *  to `"cage"` for internal-tools self-dogfood path (atmux itself;
+     *  ADR-144 §Cage mode); `"deployed"` for IFCA product teams (T4).
+     *  Wired in `src/core/epic-merge.ts::runAutoMerge`. */
+    testGateMode: z.enum(["skip", "cage", "deployed"]).default("skip"),
+    /** ADR-144 §Cage mode: shell command the test-gate runner executes
+     *  inside the cage. Default `"bun test --timeout 30000"` matches
+     *  the atmux team's CI gate; per-team override (e.g. sopx might
+     *  use `"pnpm e2e"`). Empty string is refused at schema parse to
+     *  prevent silent skip. Honored in cage mode (deployed mode reads
+     *  `E2E_BASE_URL` from `stagingUrlTemplate` instead). */
+    testCommand: z.string().min(1).default("bun test --timeout 30000"),
+    /** ADR-144 §retryOnFlake: re-run the test command this many times
+     *  on a fail before declaring `test_failed`. Default `1` per the
+     *  ADR's resolved OQ-3 — single flake doesn't strike. Set to `0`
+     *  to disable retry. Capped at runtime to a sane upper-bound by
+     *  the test-cage runner (2 retries = 3 total attempts max). */
+    retryOnFlake: z.number().int().nonnegative().default(1),
+    /** ADR-144 §Cage mode: tmpdir path for the cage's TMUX_TMPDIR
+     *  override. The runner expands `${team}` + `${epic}` placeholders
+     *  at cage-spawn time per the ADR's example
+     *  `/tmp/atmux_${team}_${epic}_test_cage`. Operator-overridable for
+     *  teams that need a non-`/tmp` location (e.g. encrypted volume
+     *  for sensitive test fixtures). Null in `deployed` mode. */
+    cageTmpdir: z.string().nullable().default("/tmp/atmux_${team}_${epic}_test_cage"),
+    /** ADR-144 §retryOnFlake: per-attempt timeout in minutes. Default
+     *  `30`. Enforces orphan-reap discipline per global CLAUDE.md §`bun
+     *  test` orphans; the spawn primitive's underlying `timeoutMs`
+     *  reads `testTimeoutMin * 60_000`. */
+    testTimeoutMin: z.number().int().positive().default(30),
+    /** ADR-144 §Config shape: required PASS count before the test gate
+     *  releases. Default `1` (cold-start+walk shape per CLAUDE.md
+     *  §Testing Discipline). Raise to N>1 only for streak-stable
+     *  subsets — most epic-test gates are 1x acceptance, not
+     *  idempotence. */
+    requiredPasses: z.number().int().positive().default(1),
+    /** ADR-144 §Deployed mode (T4): URL template for the deploy step.
+     *  Null in cage mode; required string in deployed mode (the
+     *  TeamEpic-level superRefine enforces — landed in T4). Template
+     *  variables `${product}`, `${dev-suffix}`, `${epic-name}` are
+     *  expanded at deploy time by `scripts/deploy.sh`. */
+    stagingUrlTemplate: z.string().nullable().default(null),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    // ADR-144 §Deployed mode (T4 t-66a237cd) — when `testGateMode` is
+    // `"deployed"`, `stagingUrlTemplate` MUST be non-null. The deploy
+    // hook can't compose the branch-staging URL without it, and a
+    // silent default-null would crash the test-gate at first merge
+    // attempt with a cryptic "URL is null" stack instead of the clear
+    // schema-parse refusal here.
+    if (data.testGateMode === "deployed" && data.stagingUrlTemplate === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["stagingUrlTemplate"],
+        message:
+          "testGateMode: 'deployed' requires a non-null stagingUrlTemplate (e.g. '${product}-${dev-suffix}-${epic-name}-staging.ifca.app') — null is only valid in 'cage' / 'skip' modes.",
+      });
+    }
+  });
 export type TeamEpic = z.infer<typeof TeamEpic>;
 
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.

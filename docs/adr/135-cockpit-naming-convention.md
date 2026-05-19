@@ -156,3 +156,14 @@ Per-team sockets remain on the existing cage-tier `-S <team-root>/.atmux/tmux/tm
 The migration verb `atmux cockpit migrate-socket` (ADR-162 TR3) handles existing operators: it discovers legacy `atmux_cockpit` (or pre-this-ADR `atmux_teams`) sessions on the default socket and recreates them on the dedicated socket. Process state is NOT transferred (tmux primitives can't re-bind PIDs across servers — documented in [ADR-162 §Amendment 2026-05-16](162-atmux-owns-tmux-infrastructure.md#2026-05-16--decision-anchor-4-mechanism-graceful-recreate-not-pid-preservation-t-26346aef-tr3-impl)); scrollback is preserved as a breadcrumb file. Cron-spawned cockpit roles re-establish on the next tick. See [`docs/RUNBOOK-cockpit.md`](../RUNBOOK-cockpit.md) §2 for the operator-facing flow.
 
 This ADR-135 file remains unmodified above the `## Amendments` header (append-only convention). The decisions documented in §D2 (`_-prefix` window names) and §D3 (`<emoji>-<member>` hyphen format) are still operative — ADR-162 layers socket isolation underneath without superseding the naming format.
+
+### 2026-05-17 — ADR-161 supersedes D3 for default in-team members
+
+[ADR-161](161-default-member-prefix-and-sort-verbs.md) §Part B extends this ADR's §D2 `_-prefix` convention one level down — to **in-team default members**. Pre-ADR-161, §D3 specified `<emoji>-<member>` (hyphen separator) for every in-team window. Post-ADR-161:
+
+- **Default in-team members** (`role` in `["team-lead", "planner", "reviewer", "ombudsman"]`; `committer` joins once ADR-159 ships) render `${emoji}_${label}` — underscore as both prefix marker and separator, matching the cockpit-tier convention.
+- **User-added in-team members** (any other `role`, typically `"member"`) keep `${emoji}-${label}` (hyphen separator per this ADR's §D3 — still operative for the non-default branch).
+
+§D3 is **partially superseded** for the default-role branch; it remains the canonical form for user-added members. The split lives in `src/core/common.ts::buildWindowName(name, emoji, label, role)` as a role-aware format check (per ADR-161 §Decision-anchor #2). Both shapes coexist in production code — `isMemberWindowName` and `resolveExistingWindowName` accept either form during the multi-release migration window.
+
+ADR-161 §Part C also adds the `atmux member move | swap | sort` verb suite for operator-controlled tmux-window ordering. Each verb preserves PIDs + attached clients + claude-process state via `tmux move-window` / `tmux swap-window` orchestration (mirrors this ADR's §D4 in-place rename pattern). See [ADR-161 §Amendment 2026-05-17](161-default-member-prefix-and-sort-verbs.md#2026-05-17--tr3-shipped-atmux-member-move--swap--sort-verbs-t-2f6c81d3-be-1) for TR3 ship details.

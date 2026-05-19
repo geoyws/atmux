@@ -27,11 +27,14 @@
 import { createTmux } from "../abstractions/tmux.ts";
 import {
   buildWindowName,
+  buildWindowNameLegacy,
   getAtmuxDir,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
+  type WindowShimOps,
 } from "../core/common.ts";
 import { appendDispatched, removeFromInProgress } from "../core/inbox.ts";
 import { claimTask, showTask } from "../core/kanban.ts";
@@ -198,6 +201,48 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     // symptom of "4 members stuck at compose for 4h20m".
     const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
     const tmux = createTmux({ socketPath });
+    // EPIC e-a3077ca0 T4: self-heal cross-format windows before
+    // resolveTarget tries to find them by name. A cage continuously
+    // running across the ADR-161 hyphen→underscore deploy will have
+    // `🦦-docs` while buildWindowName now produces `🦦_docs`;
+    // resolveWindowId's listWindows + name-match misses and
+    // resolveTarget falls back to `<session>:<canonical>` — which
+    // tmux can't address either. The shim renames legacy → canonical
+    // in-place so resolveTarget's downstream lookup hits cleanly.
+    //
+    // Best-effort: dispatch.ts intentionally tolerates missing windows
+    // (sendToMember's TmuxError is caught + warn-logged below — see the
+    // `ping to <m> failed` test). If the shim itself can't find any of
+    // the three forms, fall back to canonical and let the downstream
+    // sendToMember produce its usual warn; throwing here would regress
+    // the kanban-still-updates-on-missing-pane behavior the tests gate
+    // on.
+    const canonical = buildWindowName(
+      memberEntry.name,
+      memberEntry.emoji,
+      memberEntry.label,
+      memberEntry.role,
+    );
+    const adr135Hyphen = buildWindowName(memberEntry.name, memberEntry.emoji, memberEntry.label);
+    const pre135NoSep = buildWindowNameLegacy(memberEntry.name, memberEntry.emoji);
+    const shimOps: WindowShimOps = {
+      listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+      renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+    };
+    let windowName: string;
+    try {
+      windowName = await resolveWindowWithRenameShim(
+        sessionName,
+        canonical,
+        [adr135Hyphen, pre135NoSep],
+        shimOps,
+      );
+    } catch {
+      // Window absent in all three forms — preserve best-effort behavior:
+      // resolveTarget falls back to `<session>:<canonical>` and the
+      // sendToMember try-catch below logs the warn.
+      windowName = canonical;
+    }
     // ADR-057 §D5b: address the member by immutable @N window ID when
     // possible; falls back to `<session>:<windowName>` on cache miss
     // OR when the window doesn't exist yet (first dispatch after spawn
@@ -208,12 +253,7 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       team: team.name,
       sessionName,
       member: memberEntry.name,
-      windowName: buildWindowName(
-        memberEntry.name,
-        memberEntry.emoji,
-        memberEntry.label,
-        memberEntry.role,
-      ),
+      windowName,
       tmux,
     });
     const body = typeof post.body === "string" ? post.body : "";

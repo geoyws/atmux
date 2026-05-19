@@ -36,6 +36,24 @@ Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md):
 - `tmux-version-mismatch` — host tmux below min 3.2 or untested above tested-against 3.6a.
 - `cockpit-on-default-socket` — legacy `atmux_cockpit` / `atmux_teams` session residue on the default socket. Self-clearing post-migration.
 
+**Member window-name format (per [ADR-161](adr/161-default-member-prefix-and-sort-verbs.md) §Part B):** in-team windows split by role class. `buildWindowName(name, emoji, label, role)` in `src/core/common.ts` picks the format:
+
+- **Default members** (`role` in `{team-lead, planner, reviewer, ombudsman}`; `committer` joins per ADR-159) render `${emoji}_${label}` — underscore as both prefix marker and separator. Mirrors the cockpit-tier `_-prefix` convention from [ADR-135](adr/135-cockpit-naming-convention.md) §D2.
+- **User-added members** (any other role, typically `"member"`) render `${emoji}-${label}` — hyphen separator per ADR-135 §D3 (still operative for the non-default branch).
+
+`tmux list-windows` for a typical team renders `driver / 🧭_lead / 🗺️_planner / 🔍_reviewer / 🛠️-be-1 / 🛠️-fe-1` — defaults grouped at the top by canonical order, user-added below.
+
+**Topographic-normalization verbs (per ADR-161 §Part C):** four `atmux member <sub>` verbs operate on the team layer (cockpit refused). Each uses `tmux move-window` / `tmux swap-window` primitives — pane PIDs, attached clients, and the running claude-process state are preserved across reorders.
+
+| Verb | Effect | Idempotent on |
+|---|---|---|
+| `atmux member rename <id> --label <new>` | Hot-rename display label (ADR-136); no window-index change. | Label already matches. |
+| `atmux member move <id> --to <position>` | Relocate one member's window to absolute 1-indexed slot. Auto-picks `swap-window` when target occupied (preserves occupant's PIDs), `move-window` when empty. | Source already at `<position>`. |
+| `atmux member swap <id-a> <id-b>` | Pairwise atomic exchange via `tmux swap-window`. TmuxError-fallback to a three-move temp-index dance. | `idA === idB` refused at parse. |
+| `atmux member sort [--defaults-first]` | One-shot canonical normalize: defaults by §Decision-anchor #4 order, user-added in existing relative order. | Already-sorted team. |
+
+Every successful run rewrites `team.json::members[]` via `updateJson(Team)` under flock; ordering is derived from a post-mutation `listWindows` snapshot (authoritative — avoids hand-computed shifts).
+
 ## Roles
 
 The pull model defines each role by what it *doesn't* do — narrow surfaces, no overlap. See [ADR-007](adr/007-pull-kanban.md) for the full spec.

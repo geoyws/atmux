@@ -514,6 +514,7 @@ function buildFakeTmux(setup: FakeTmuxSetup): TmuxNamespace {
       renameWindow: async () => {},
       selectWindow: async () => {},
       moveWindow: async () => {},
+      swapWindow: async () => {},
     },
     pane: {
       displayMessage: async (opts: { target: unknown; format: string }) => {
@@ -552,6 +553,7 @@ function buildFakeTmux(setup: FakeTmuxSetup): TmuxNamespace {
     },
     client: {
       attachSession: async () => {},
+      attachSessionInheritStdio: async () => {},
       switchClient: async () => {},
       listClients: async () => [],
     },

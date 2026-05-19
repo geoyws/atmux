@@ -82,6 +82,9 @@ describe("migration v6 — merger_state table", () => {
     expect(byName.get("base_sha")?.notnull).toBe(0);
     expect(byName.get("conflict_sha")?.notnull).toBe(0);
     expect(byName.get("extra")?.notnull).toBe(0);
+    // ADR-144 T2 v8→v9: test_outcome column for the test-gate guard.
+    expect(byName.get("test_outcome")?.type).toBe("TEXT");
+    expect(byName.get("test_outcome")?.notnull).toBe(0);
   });
 
   test("indexes exist on state + transitioned_at DESC", () => {
@@ -113,6 +116,9 @@ describe("getState", () => {
     expect(row?.note).toBe("owner picked up first task");
     expect(row?.transitionedBy).toBe("event");
     expect(row?.transitionedAt).toBe(100);
+    // ADR-144 T2: testOutcome defaults to null on transitions that
+    // don't carry a test outcome.
+    expect(row?.testOutcome).toBeNull();
   });
 });
 
@@ -329,6 +335,105 @@ describe("transition — transactImmediate semantics", () => {
     expect(row?.state).toBe("merged");
     expect(row?.transitionedAt).toBe(100 + states.length - 1);
     expect(repo.listAll()).toHaveLength(1);
+  });
+});
+
+// ---------- test_outcome round-trip (ADR-144 T2 / v8→v9) ----------
+
+describe("transition — test_outcome round-trip", () => {
+  test("PASS outcome written + read back", () => {
+    const out = repo.transition({
+      memberBranch: "sopx-geoyws-epic-checkout",
+      next: "tested",
+      note: "cage tests passed",
+      by: "epic-cron",
+      testOutcome: "pass",
+      transitionedAt: 500,
+    });
+    expect(out.testOutcome).toBe("pass");
+    expect(repo.getState("sopx-geoyws-epic-checkout")?.testOutcome).toBe("pass");
+  });
+
+  test("FAIL outcome written + read back", () => {
+    const out = repo.transition({
+      memberBranch: "sopx-geoyws-epic-checkout",
+      next: "tested",
+      note: "cage tests failed: foo.test.ts",
+      by: "epic-cron",
+      testOutcome: "fail",
+      transitionedAt: 500,
+    });
+    expect(out.testOutcome).toBe("fail");
+  });
+
+  test("BYPASS outcome written + read back (operator --skip-test-gate)", () => {
+    const out = repo.transition({
+      memberBranch: "sopx-geoyws-epic-checkout",
+      next: "merging",
+      note: "operator bypass — release-day emergency",
+      by: "operator",
+      testOutcome: "bypass",
+      transitionedAt: 500,
+    });
+    expect(out.testOutcome).toBe("bypass");
+  });
+
+  test("null outcome explicitly clears prior value (recovery transition)", () => {
+    // Seed with a PASS.
+    repo.transition({
+      memberBranch: "sopx-geoyws-epic-checkout",
+      next: "tested",
+      testOutcome: "pass",
+      transitionedAt: 500,
+    });
+    // Recovery transition explicitly clears.
+    const out = repo.transition({
+      memberBranch: "sopx-geoyws-epic-checkout",
+      next: "in_progress",
+      note: "operator reset for retry",
+      by: "operator",
+      testOutcome: null,
+      transitionedAt: 600,
+    });
+    expect(out.testOutcome).toBeNull();
+  });
+
+  test("Zod refuses unknown test_outcome literal", () => {
+    expect(() =>
+      repo.transition({
+        memberBranch: "sopx-geoyws-epic-checkout",
+        next: "tested",
+        testOutcome: "maybe" as unknown as "pass",
+        transitionedAt: 500,
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("missing testOutcome on insert defaults column to NULL", () => {
+    repo.transition({
+      memberBranch: "geoyws-fe-1",
+      next: "merging",
+      transitionedAt: 100,
+    });
+    expect(repo.getState("geoyws-fe-1")?.testOutcome).toBeNull();
+  });
+
+  test("UPSERT semantics — second transition without testOutcome clears the prior value", () => {
+    // The repo contract is "complete snapshot" — every transition()
+    // call fully describes the post-write row. Callers preserving a
+    // sticky test_outcome across transitions MUST re-pass it.
+    repo.transition({
+      memberBranch: "sopx-geoyws-epic-checkout",
+      next: "tested",
+      testOutcome: "pass",
+      transitionedAt: 500,
+    });
+    repo.transition({
+      memberBranch: "sopx-geoyws-epic-checkout",
+      next: "merging",
+      transitionedAt: 600,
+    });
+    expect(repo.getState("sopx-geoyws-epic-checkout")?.testOutcome).toBeNull();
   });
 });
 

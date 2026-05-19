@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { appendText, ensureDir } from "../abstractions/fs.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { now } from "../abstractions/time.ts";
+import type { TeamWhip } from "../schema/team.ts";
 
 // ---------- Policy ----------
 
@@ -275,25 +276,29 @@ export async function runAutoPush(
 
 // ---------- team.json config reader ----------
 
-/** Read auto-push opts from team.json::stallPrevention. Returns
- *  defensively-shaped opts (all fields optional). */
-export interface TeamStallPreventionShape {
-  autoPushOnDone?: unknown;
-  rebaseBeforePush?: unknown;
-  allowedPushBranches?: unknown;
-}
-
-export function readAutoPushOptsFromTeam(team: { whip?: unknown }): {
+/**
+ * Read auto-push opts from `team.json::whip.stallPrevention`. Reads the
+ * typed TeamWhip shape directly per ADR-057 schema promotion
+ * (t-fbfb02f8) — pre-promotion this site cast `team.whip as { ... }`
+ * because the stallPrevention block lived as a defensive shape; the
+ * Zod schema now enforces field-level types + .strict() typo rejection
+ * at boot, so the call-site simplifies to typed reads + null-coalescing
+ * defaults that match the schema's own field-level defaults.
+ *
+ * Pre-promotion fixtures that passed mixed-type arrays (e.g. `[42, null,
+ * "main"]`) are no longer possible — the Zod array-of-string rejects
+ * such values at parse time, surfacing via the existing
+ * whip-config-drift Discord ping.
+ */
+export function readAutoPushOptsFromTeam(team: { whip?: TeamWhip | undefined }): {
   enabled: boolean;
   rebase: boolean;
   allowedPushBranches: string[];
 } {
-  const whip = team.whip as { stallPrevention?: TeamStallPreventionShape } | undefined;
-  const sp = whip?.stallPrevention;
-  const enabled = typeof sp?.autoPushOnDone === "boolean" ? sp.autoPushOnDone : true;
-  const rebase = typeof sp?.rebaseBeforePush === "boolean" ? sp.rebaseBeforePush : true;
-  const allowedPushBranches = Array.isArray(sp?.allowedPushBranches)
-    ? sp.allowedPushBranches.filter((s: unknown): s is string => typeof s === "string")
-    : [];
-  return { enabled, rebase, allowedPushBranches };
+  const sp = team.whip?.stallPrevention;
+  return {
+    enabled: sp?.autoPushOnDone ?? true,
+    rebase: sp?.rebaseBeforePush ?? true,
+    allowedPushBranches: sp?.allowedPushBranches ?? [],
+  };
 }

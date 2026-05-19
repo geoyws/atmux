@@ -84,18 +84,29 @@ export const DEFAULT_SUBMIT_VERIFY_RETRIES = 1;
 
 // ---------- Boot prompt + readiness regex ----------
 
-/** ADR-081 §C task-body §3 verbatim boot prompt. Placeholders are
+/** ADR-081 §C task-body §3 boot prompt. Placeholders are
  *  `{team}` (team name) + `{member}` (member name). Single line so
  *  send-keys + Enter submits cleanly; no bracketed-paste mode is
- *  triggered (which is what makes this approach reliable). */
+ *  triggered (which is what makes this approach reliable).
+ *
+ *  Self-verification preamble (2026-05-19 update). The "Your role is
+ *  {member}" assertion is trustworthy only when the paste reaches
+ *  the intended pane. Mis-targeted pastes happen — `atmux rotate
+ *  <member>` with wrong emoji/window resolution will fire this
+ *  template into the wrong pane and trick the recipient into
+ *  adopting the wrong role (observed 2026-05-19: driver pane received
+ *  "Your role is lead" after rotate mis-resolved window 1). Recipient
+ *  must `echo $ATMUX_MEMBER` first and abort + alert the operator on
+ *  mismatch rather than silently bootstrap as the wrong member. The
+ *  env var is set per-pane at spawn time + is not lying. */
 const BOOT_PROMPT_TEMPLATE =
-  "Read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as that team member. Your role is {member}.";
+  "First run `echo $ATMUX_MEMBER` — if it isn't `{member}`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as {member}.";
 
 /** Render the boot prompt for a (team, member) pair. Exported for
  *  unit tests + observability — the lead-outbox failure surface
  *  echoes this string so the operator can see what was sent. */
 export function renderBootPrompt(team: string, member: string): string {
-  return BOOT_PROMPT_TEMPLATE.replace("{team}", team).replace("{member}", member);
+  return BOOT_PROMPT_TEMPLATE.replaceAll("{team}", team).replaceAll("{member}", member);
 }
 
 /** TUI-ready detection. Matches either:
@@ -187,6 +198,25 @@ export interface BootClaudeOpts {
   appendLog?: AppendLogFn;
   /** `$HOME` override for escalation-log path resolution (test injection). */
   home?: string;
+  /** EPIC e-f28c2596 T7: when `true`, skip the (1) already-booted
+   *  sentinel and unconditionally proceed to readiness wait + boot
+   *  prompt. Rotate.ts passes `true` post-`/clear` because the
+   *  brief context has DEFINITIVELY been wiped regardless of what
+   *  tmux scrollback shows (tokens visible in `capturePane(start:
+   *  -40)` after `/clear` reflect stale scrollback, NOT live session
+   *  state — `/clear` resets the Claude session but tmux's own
+   *  scrollback persists, so the sentinel mis-fires and skips the
+   *  brief re-paste, leaving the rotated lead at 0 tok of brief
+   *  context).
+   *
+   *  Default `false` — start.ts and other first-spawn callers keep
+   *  the double-submit guard since they don't precede the call with
+   *  a `/clear`.
+   *
+   *  Operator-visible fingerprint of the pre-T7 bug:
+   *    `rotate: <role>: already booted — boot prompt skipped`
+   *  followed by 0-token <role> in the next `/bau` scan. */
+  forceBootPrompt?: boolean;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
@@ -280,19 +310,31 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
   // (1) Already-booted sentinel: tokens already moving at entry.
   // Captures the "rotation re-entry mid-turn" + "double-call
   // protection" cases. Per reviewer pre-flag: don't double-submit.
-  let initialCapture = "";
-  try {
-    initialCapture = await opts.tmux.pane.capturePane({
-      target: opts.paneTargetString,
-      start: -40,
-    });
-  } catch {
-    // capture failure → degrade-to-poll (the readiness loop will
-    // retry the capture). Don't short-circuit; the pane may
-    // recover momentarily.
-  }
-  if (tokensMoved(initialCapture)) {
-    return { status: "already-booted", attempts: 0 };
+  //
+  // EPIC e-f28c2596 T7 carve-out: `forceBootPrompt: true` (set by
+  // rotate.ts after `/clear`) bypasses this sentinel entirely. `/clear`
+  // resets the live Claude session but NOT the tmux scrollback —
+  // capturePane(start: -40) post-`/clear` may still show pre-clear
+  // tokens, causing this sentinel to mis-fire as already-booted and
+  // skip the brief re-paste, leaving the rotated pane at 0 tok of
+  // brief context. The forceBootPrompt path treats `/clear` as
+  // definitive ground truth and proceeds straight to readiness wait +
+  // boot prompt.
+  if (opts.forceBootPrompt !== true) {
+    let initialCapture = "";
+    try {
+      initialCapture = await opts.tmux.pane.capturePane({
+        target: opts.paneTargetString,
+        start: -40,
+      });
+    } catch {
+      // capture failure → degrade-to-poll (the readiness loop will
+      // retry the capture). Don't short-circuit; the pane may
+      // recover momentarily.
+    }
+    if (tokensMoved(initialCapture)) {
+      return { status: "already-booted", attempts: 0 };
+    }
   }
 
   // (2) Readiness wait for the TUI to render.

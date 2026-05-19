@@ -69,7 +69,12 @@ import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abs
 import { tryParseJsonString } from "../abstractions/json.ts";
 import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts";
 import { spawn } from "../abstractions/spawn.ts";
-import { createTmux, type SendTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  type SendTarget,
+  serializeSendTarget,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import {
   type AccountSwapCheckCtx,
   type AccountSwapCheckDeps,
@@ -80,6 +85,7 @@ import {
 } from "../core/account-swap.ts";
 import {
   buildWindowName,
+  buildWindowNameLegacy,
   classifyPaneState,
   displayMemberName,
   getAtmuxDir,
@@ -88,14 +94,17 @@ import {
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
   stateDir,
   teamJsonPath,
+  type WindowShimOps,
 } from "../core/common.ts";
 import { fixCronPollutionRecipe } from "../core/cursor-recipes/fix-cron-pollution.ts";
 import { fixSupervisorMissingRecipe } from "../core/cursor-recipes/fix-supervisor-missing.ts";
 import { fixTeamJsonSchemaDriftRecipe } from "../core/cursor-recipes/fix-team-json-schema-drift.ts";
 import type { CursorRecipe } from "../core/cursor-recipes/types.ts";
 import { runSelfHealPass } from "../core/cursor-self-heal.ts";
+import { writeHeartbeat } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { listTasks } from "../core/kanban.ts";
@@ -130,6 +139,13 @@ import {
   savePermModeDriftState,
   shouldFireDrift,
 } from "../core/perm-mode-drift-state.ts";
+import {
+  detectAndResubmit,
+  type QueuedResubmitAction,
+  type QueuedResubmitFailureLogFn,
+  type QueuedResubmitSendKeysFn,
+} from "../core/queued-text-resubmit.ts";
+import { composerEmpty, safeSendKeysWithVerify } from "../core/safe-send.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
 import {
   type BudgetCheckCtx,
@@ -400,7 +416,38 @@ function makeDefaultModalCyclingClarifier(
   return async (member: string, message: string): Promise<void> => {
     const session = await getSessionName({ dir: args.atmuxDir, team: args.team });
     const memberEntry = args.team.members.find((m) => m.name === member);
-    const windowName = `${memberEntry?.emoji ?? ""}${member}`;
+    // EPIC e-a3077ca0 T5: route window resolution through the shim so a
+    // legacy hyphen / no-separator pane self-heals to canonical before
+    // we try to paste-buffer into it. The shim's listWindows + rename
+    // is wrapped in the existing best-effort try-catch — if it throws,
+    // we proceed with the canonical form and let the downstream paste
+    // fail-silently per the clarifier's contract (the flag + Discord
+    // surfaces are independent of clarifier success).
+    const canonical = buildWindowName(
+      member,
+      memberEntry?.emoji,
+      memberEntry?.label,
+      memberEntry?.role,
+    );
+    let windowName = canonical;
+    if (memberEntry !== undefined) {
+      const adr135Hyphen = buildWindowName(member, memberEntry.emoji, memberEntry.label);
+      const pre135NoSep = buildWindowNameLegacy(member, memberEntry.emoji);
+      const shimOps: WindowShimOps = {
+        listWindowNames: async (s) => (await args.tmux.window.listWindows(s)).map((w) => w.name),
+        renameWindow: (s, from, to) => args.tmux.window.renameWindow(`${s}:${from}`, to),
+      };
+      try {
+        windowName = await resolveWindowWithRenameShim(
+          session,
+          canonical,
+          [adr135Hyphen, pre135NoSep],
+          shimOps,
+        );
+      } catch {
+        windowName = canonical;
+      }
+    }
     const target = `${session}:${windowName}`;
     const bufferName = `atmux-modal-cycling-${args.team.name}-${member}-${args.nowSec}`;
     try {
@@ -1558,6 +1605,21 @@ async function checkMember(
   findings: Finding[],
 ): Promise<void> {
   const { team, atmuxDir, tmux, env, nowSec, readMemberEnv } = ctx;
+
+  // ADR-057 §D6a: stamp the per-member heartbeat for every supervisor
+  // iteration BEFORE any of the per-member probes — a fresh stamp means
+  // the poke tick reached this member in team.json, which is what the
+  // watchdog (§D6b) + idle-skip predicate (§D4b) treat as the "supervisor
+  // is observing me" signal. Pane / TUI failures surface via separate
+  // findings; heartbeat staleness reserves itself for the "cron stopped
+  // ticking" / "member removed from team.json" failure mode. Best-effort
+  // per §D6 substrate — a write fault must not block the whole tick.
+  try {
+    await writeHeartbeat(atmuxDir, member.name);
+  } catch (e) {
+    ctx.stderr(`whip: heartbeat write failed for ${member.name} (continuing): ${String(e)}\n`);
+  }
+
   const session = await getSessionName({ dir: atmuxDir, team });
 
   // Resolve the window name. Lead window uses the I-2 marker first
@@ -1577,21 +1639,66 @@ async function checkMember(
   if (role === "team-lead") homeOpts.fallback = memberWindowName;
   const windowName =
     role === "team-lead" ? await readLeadWindowName(team.name, homeOpts) : memberWindowName;
-  const windowTarget = `${session}:${windowName}`;
 
-  // Window existence — `displayMessage` returns "" + non-zero if absent.
+  // EPIC e-a3077ca0 T5: for non-lead members, self-heal legacy hyphen /
+  // no-separator panes to canonical via resolveWindowWithRenameShim
+  // BEFORE the existence check. The shim does its own listWindows;
+  // the canonical-exists branch is a no-op (early return). When neither
+  // canonical nor any legacy variant matches, the helper throws — we
+  // treat that exactly like the pre-shim windowExists=false finding,
+  // surfacing the missing-window blocker per pre-existing behavior.
+  //
+  // Lead path is intentionally NOT shimmed: it routes through
+  // readLeadWindowName which uses the I-2 marker file fallback for
+  // post-auto-rotate lead-rename cases; the marker name doesn't
+  // necessarily match buildWindowName's canonical, and the shim would
+  // misidentify the marker form as "legacy" and rename it. Lead falls
+  // through to the existing listWindows + windowExists check below.
+  let resolvedWindowName = windowName;
+  if (role !== "team-lead") {
+    const adr135Hyphen = buildWindowName(member.name, member.emoji, member.label);
+    const pre135NoSep = buildWindowNameLegacy(member.name, member.emoji);
+    const shimOps: WindowShimOps = {
+      listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+      renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+    };
+    try {
+      resolvedWindowName = await resolveWindowWithRenameShim(
+        session,
+        memberWindowName,
+        [adr135Hyphen, pre135NoSep],
+        shimOps,
+      );
+    } catch {
+      // None of canonical / hyphen / no-separator matched, OR the
+      // underlying listWindows failed (transient cron-window race
+      // against stop/start). Surface the same missing-window finding
+      // and return — matches pre-shim defensive behavior at this site.
+      findings.push({
+        category: "blocker",
+        bullet: bullet80(`🛑 ${display}: window missing (role=${role})`),
+      });
+      return;
+    }
+  }
+  const windowTarget = `${session}:${resolvedWindowName}`;
+
+  // Window existence (lead-only path now — non-lead shimmed above).
+  // `displayMessage` returns "" + non-zero if absent.
   // Cleaner: `listWindows` + `.some(w => w.name === windowName)`.
   // expected: tmux server transient unreachability (cron-window race against
   // a stop / start) — degrade to "no windows" so the per-member loop surfaces
   // the missing-window finding instead of crashing the whole tick.
-  const windows = await tmux.window.listWindows(session).catch(() => []);
-  const windowExists = windows.some((w) => w.name === windowName);
-  if (!windowExists) {
-    findings.push({
-      category: "blocker",
-      bullet: bullet80(`🛑 ${display}: window missing (role=${role})`),
-    });
-    return;
+  if (role === "team-lead") {
+    const windows = await tmux.window.listWindows(session).catch(() => []);
+    const windowExists = windows.some((w) => w.name === resolvedWindowName);
+    if (!windowExists) {
+      findings.push({
+        category: "blocker",
+        bullet: bullet80(`🛑 ${display}: window missing (role=${role})`),
+      });
+      return;
+    }
   }
 
   // Pane current command — must match the configured TUI. Crashed pane
@@ -1688,6 +1795,61 @@ async function checkMember(
       category: "blocker",
       bullet: bullet80(`📍 ${display}: messages queued but not submitted`),
     });
+  }
+
+  // ---------- EPIC e-f28c2596 T2 + T4: active queued-text resubmit ----------
+  // Passive `snap.queuedMessages` above only SURFACES the stuck state; ADR-
+  // 138-routed resubmit actually unsticks the compose box. Helper is pure
+  // (src/core/queued-text-resubmit.ts) — we wire the tmux + log deps here.
+  //
+  // EPIC T2 (per-member iteration) + T4 (team-level loop in then-`whip.ts`)
+  // BOTH land at this site post-ADR-160 (whip→poke rename). The legacy bash
+  // whip.sh distinguished a "team-level" loop from per-member checks; the TS
+  // port consolidates both into a single `for (const member of team.members)`
+  // in `runTick` that calls `checkMember` per entry — i.e. the per-member
+  // wiring IS the team-level wiring. Coverage spans every role in
+  // `team.json::members[]` (lead / planner / reviewer / workers / ombudsman
+  // when present) because no role filtering happens upstream of this call.
+  // Skip when the pane is in a state where re-firing would mis-target:
+  //   • rate-limit hard      → sends silently dropped (memory feedback_rate_limit_pane)
+  //   • compacting           → keystrokes absorbed + lost during context redraw
+  //   • busy (active turn)   → helper's own ACTIVE_TURN_RE re-checks but redundant
+  //                            guard avoids constructing the SendTarget at all
+  if (snap.rateLimit !== "hard" && !snap.compacting && !snap.busy && state !== "") {
+    try {
+      const action = await runQueuedTextResubmit({
+        tmux,
+        sendTarget: {
+          kind: "member",
+          member: member.name,
+          team: team.name,
+          target: windowTarget,
+        },
+        paneCapture: state,
+        memberName: member.name,
+        log: (m) => ctx.stderr(`poke: ${m}\n`),
+      });
+      if (action.kind === "fire") {
+        ctx.stderr(
+          `poke: ${member.name}: queued-text resubmit FIRED ` +
+            `(attempts=${action.sendResult?.attempts ?? 0}, ` +
+            `text="${(action.text ?? "").slice(0, 60)}")\n`,
+        );
+      } else if (action.kind === "log-failure") {
+        ctx.stderr(
+          `poke: ${member.name}: queued-text resubmit FAILED ` +
+            `(attempts=${action.sendResult?.attempts ?? 0}) — ` +
+            `see ~/.atmux/state/send-keys-failures.log\n`,
+        );
+      } else if (action.kind === "skip") {
+        ctx.stderr(`poke: ${member.name}: queued-text resubmit skipped — ${action.reason}\n`);
+      }
+    } catch (e) {
+      // Resubmit is best-effort — disk / tmux faults must not crash the
+      // wider per-member tick (heartbeat, modal-cycling, stale-task scan
+      // still need to run).
+      ctx.stderr(`poke: ${member.name}: queued-text resubmit threw: ${String(e)}\n`);
+    }
   }
 
   // ---------- Check 3: stale-task scan ----------
@@ -1846,6 +2008,64 @@ async function checkMember(
       }
     }
   }
+}
+
+/**
+ * EPIC e-f28c2596 T2 — wire {@link detectAndResubmit} to the per-member tmux
+ * deps. Constructed-once per checkMember call; the helper's own ACTIVE_TURN_RE
+ * drives the decision tree, this wrapper only owns the {@link safeSendKeysWithVerify}
+ * + escalation-log-fan-out closures.
+ *
+ * Note on double-logging: `safeSendKeysWithVerify` with `onFail: "escalate"`
+ * writes to send-keys-failures.log on its own (ADR-168). The helper's
+ * `failureLogFn` here is intentionally a SHIM that re-emits to the verb's
+ * stderr logger — the file persistence belongs to safe-send, the operator-
+ * visibility belongs to the verb tick log.
+ */
+async function runQueuedTextResubmit(opts: {
+  tmux: TmuxNamespace;
+  sendTarget: SendTarget;
+  paneCapture: string;
+  memberName: string;
+  log: (m: string) => void;
+}): Promise<QueuedResubmitAction> {
+  const { tmux, sendTarget, paneCapture, memberName, log } = opts;
+  const captureFn = (t: string) => tmux.pane.capturePane({ target: t, start: -30 });
+  const targetStr = serializeSendTarget(sendTarget);
+  const sendKeysFn: QueuedResubmitSendKeysFn = async (text) => {
+    const result = await safeSendKeysWithVerify({
+      target: targetStr,
+      keys: text,
+      expectVerifier: composerEmpty(),
+      capture: captureFn,
+      sendKeys: async (_t, k) => {
+        await tmux.pane.sendKeys({
+          target: sendTarget,
+          keys: k,
+          enter: true,
+        });
+      },
+      onFail: "escalate",
+      log,
+    });
+    return {
+      success: result.success,
+      attempts: result.attempts,
+      finalCapture: result.finalCapture,
+    };
+  };
+  const failureLogFn: QueuedResubmitFailureLogFn = async (entry) => {
+    // File-side write already handled by safeSendKeysWithVerify's escalate
+    // path; this shim exists so the helper contract (failureLogFn called on
+    // post-fire no token-delta) stays satisfied + so callers can attach
+    // verb-specific log fan-out without re-implementing the helper.
+    log(
+      `${memberName}: queued-text resubmit log-failure ` +
+        `(attempts=${entry.sendResult.attempts}, ` +
+        `text="${entry.text.slice(0, 60)}")`,
+    );
+  };
+  return await detectAndResubmit(paneCapture, sendKeysFn, () => Date.now(), failureLogFn);
 }
 
 function expectedTuiCmd(tui: string): string | null {

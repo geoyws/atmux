@@ -25,21 +25,28 @@ import { dirname } from "node:path";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { findCommitForTask, type GitSpawn } from "../core/auto-done.ts";
 import {
+  buildWindowName,
+  buildWindowNameLegacy,
   getAtmuxDir,
   getSessionName,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
+  resolveWindowWithRenameShim,
+  type WindowShimOps,
 } from "../core/common.ts";
 import { resolveGoalForMember } from "../core/goal-resolver.ts";
 import { listTasks, moveTask } from "../core/kanban.ts";
 import { type CaptureFn, classifyText, type PaneClassification } from "../core/pane-state.ts";
 import { pasteAndSubmit } from "../core/paste-submit.ts";
+import { detectAndResubmit } from "../core/queued-text-resubmit.ts";
 import {
+  composerEmpty,
   type SafeSendOpts,
   type SafeSendResult,
   type SendKeysFn,
   safeSendKeys,
+  safeSendKeysWithVerify,
 } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
@@ -87,6 +94,15 @@ export interface LaneTickDeps {
    *  real brief file. Return value: resolved goal text OR `null` when
    *  no goal is active. */
   resolveGoal?: (member: TeamMember) => Promise<string | null>;
+  /** EPIC e-a3077ca0 T5: dep-injectable window-shim ops. Production
+   *  wires through `tmux.window.listWindows` + `tmux.window.renameWindow`
+   *  so legacy hyphen / no-separator panes self-heal to canonical on the
+   *  per-member capture iteration (the production failure path from
+   *  t-fabd2528 verify-poll). Tests inject a stub to bypass tmux
+   *  invocation entirely; on `null` (the default test path) the helper
+   *  falls back to the canonical form without renaming — matches the
+   *  pre-shim behavior for fixture-only tests. */
+  shimOps?: WindowShimOps | null;
 }
 
 export interface LaneTickResult {
@@ -108,6 +124,15 @@ export type LaneTickMemberOutcome =
    *  before mid-think drift sets in. Operator-visible outcome distinct
    *  from `injected` so the post-tick summary distinguishes the cause. */
   | "injected-rotate-nudge"
+  /** EPIC e-f28c2596 T3: `detectAndResubmit` (the helper at the top of
+   *  the per-member loop) found queued text in an idle composer and
+   *  fired the member's own queued command via `safeSendKeysWithVerify`.
+   *  On the helper's `fire` AND `log-failure` outcomes both — both
+   *  attempted to re-fire, just one succeeded the verifier and the
+   *  other escalated to send-keys-failures.log. Distinct from `injected`
+   *  (no claim-injection happened — the member is now executing their
+   *  OWN queued command, lane-tick deferred to avoid stacking). */
+  | "injected-queued-resubmit"
   | "skip-not-ready"
   | "skip-capture-error"
   | "skip-send-refused"
@@ -156,6 +181,7 @@ export async function laneTick(
     `lane-tick: visited=${result.visited} ` +
       `injected=${count(result.outcomes, "injected")} ` +
       `injected-rotate-nudge=${count(result.outcomes, "injected-rotate-nudge")} ` +
+      `injected-queued-resubmit=${count(result.outcomes, "injected-queued-resubmit")} ` +
       `auto-done-resolved=${result.autoDoneResolved} ` +
       `skip-not-ready=${count(result.outcomes, "skip-not-ready")} ` +
       `skip-capture-error=${count(result.outcomes, "skip-capture-error")} ` +
@@ -178,6 +204,19 @@ export async function runLaneTick(
   const sendFn = deps.sendFn ?? safeSendKeys;
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
+  // EPIC e-a3077ca0 T5: shim ops default to tmux.window in production;
+  // tests that override `tmux`/`capture` without overriding `shimOps`
+  // get `null`-typed dep → resolveMemberWindow short-circuits to
+  // canonical without invoking tmux at all (matches the pre-shim
+  // behavior for fixture-only tests). Explicit-null is the test
+  // contract; production caller defaults to the live tmux wiring.
+  const shimOps: WindowShimOps | null =
+    deps.shimOps === undefined
+      ? {
+          listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+          renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+        }
+      : deps.shimOps;
   const sendKeysFn: SendKeysFn =
     deps.sendKeysFn ??
     (async (target: string, keys: string, opts) => {
@@ -242,7 +281,7 @@ export async function runLaneTick(
   const outcomes: Record<string, LaneTickMemberOutcome> = {};
 
   for (const member of lanedMembers) {
-    const windowTarget = resolveWindowTarget(session, member);
+    const windowTarget = await resolveMemberWindowTarget(session, member, shimOps);
 
     let classification: PaneClassification;
     let paneText = "";
@@ -254,6 +293,97 @@ export async function runLaneTick(
       log(`lane-tick: ${member.name}: capture error (${msg}) — skip`);
       outcomes[member.name] = "skip-capture-error";
       continue;
+    }
+
+    // EPIC e-f28c2596 T3 — detect stuck queued text in the composer
+    // and re-fire it via ADR-138 verified-send BEFORE running the
+    // normal lane-tick claim-injection logic. Helper is pure-of-IO;
+    // the closure wraps safeSendKeysWithVerify (which already writes
+    // the ADR-168 escalation log on its escalate path — the helper's
+    // failureLogFn here is a verb-stderr shim for operator visibility,
+    // mirroring T2 (poke.ts, commit 0d69bf3); the on-disk persistence
+    // is owned by safe-send, NOT duplicated here).
+    //
+    // States:
+    //   - `noop`        — composer empty; fall through to existing logic.
+    //   - `skip`        — queued + mid-turn; fall through (the existing
+    //                     READY classification below will mark skip-not-
+    //                     ready since active-turn indicators are present).
+    //   - `fire`        — queued + idle; helper re-fired the member's own
+    //                     queued command + verifier confirmed transition.
+    //                     We `continue` so lane-tick does NOT stack a
+    //                     second claim-injection on top of the freshly-
+    //                     started turn.
+    //   - `log-failure` — queued + idle; resubmit attempted but the
+    //                     verifier timed out across all retries. The
+    //                     wrapped safeSendKeysWithVerify already escalated
+    //                     to send-keys-failures.log per ADR-168; we
+    //                     `continue` for the same anti-stacking reason
+    //                     (the member's composer may still hold queued
+    //                     text — pile-on would be incorrect).
+    //
+    // Best-effort: the entire resubmit call is try/wrapped so a tmux /
+    // verifier fault does not crash the auto-done scan that runs after
+    // this loop (the scan is the lane-tick-tick's secondary safety net
+    // per ADR-080 §B2 and must remain reachable).
+    try {
+      const queuedAction = await detectAndResubmit(
+        paneText,
+        async (text) => {
+          const r = await safeSendKeysWithVerify({
+            target: windowTarget,
+            keys: text,
+            expectVerifier: composerEmpty(),
+            capture,
+            sendKeys: sendKeysFn,
+            log,
+          });
+          return { success: r.success, attempts: r.attempts, finalCapture: r.finalCapture };
+        },
+        Date.now,
+        async (entry) => {
+          // safeSendKeysWithVerify already persisted the ADR-168 log
+          // entry on its escalate path; this shim re-emits a structured
+          // line to the verb tick log so operators tailing
+          // logs/lane-tick.log see the failure in the per-member stream
+          // (mirrors T2's poke.ts pattern for cross-verb consistency).
+          log(
+            `lane-tick: ${member.name}: queued-text resubmit log-failure ` +
+              `(attempts=${entry.sendResult.attempts}, ` +
+              `text="${truncate(entry.text, 60)}")`,
+          );
+        },
+      );
+      if (queuedAction.kind === "fire") {
+        log(
+          `lane-tick: ${member.name}: queued-text resubmit FIRED ` +
+            `(attempts=${queuedAction.sendResult?.attempts ?? 0}, ` +
+            `text="${truncate(queuedAction.text ?? "", 60)}") — ` +
+            `skip claim-injection this tick`,
+        );
+        outcomes[member.name] = "injected-queued-resubmit";
+        continue;
+      }
+      if (queuedAction.kind === "log-failure") {
+        log(
+          `lane-tick: ${member.name}: queued-text resubmit FAILED ` +
+            `(attempts=${queuedAction.sendResult?.attempts ?? 0}) — ` +
+            `see ~/.atmux/state/send-keys-failures.log`,
+        );
+        outcomes[member.name] = "injected-queued-resubmit";
+        continue;
+      }
+      if (queuedAction.kind === "skip") {
+        log(`lane-tick: ${member.name}: queued-text resubmit skipped — ${queuedAction.reason}`);
+        // Fall through: the active-turn indicator that triggered the
+        // helper's skip will also trigger the READY classification's
+        // skip-not-ready outcome below, which is the correct audit signal.
+      }
+    } catch (e) {
+      // Best-effort — disk / tmux faults must not abort the wider tick.
+      // The auto-done scan + remaining per-member iterations need to
+      // remain reachable. Log + fall through to the legacy path.
+      log(`lane-tick: ${member.name}: queued-text resubmit threw: ${String(e)} — fall through`);
     }
 
     if (classification.state !== "READY") {
@@ -517,14 +647,52 @@ export function parseLaneTickArgs(argv: ReadonlyArray<string>): ParsedArgs {
 
 // ---------- Internals ----------
 
-/** Build the tmux window target string for a member. Matches the
- *  whip.ts resolution: `${session}:${emoji}${name}` for regular
- *  members. Lead-window resolution lives in whip (uses the I-2 marker
+/** EPIC e-a3077ca0 T5: build the tmux window target string for a
+ *  member, self-healing legacy hyphen / no-separator window names to
+ *  the ADR-161 canonical form in-place. Previously this returned
+ *  `${session}:${emoji}${name}` (pre-ADR-135 no-separator form) which
+ *  was exactly the failure trail captured 2026-05-18 03:52 UTC in
+ *  lane-tick.log: `capture error — can't find window: 🦦docs` while
+ *  the actual pane was `🦦_docs`.
+ *
+ *  Behavior: derive canonical (ADR-161-aware) + the two legacy variants,
+ *  call resolveWindowWithRenameShim, return `${session}:<canonical>`.
+ *  On shim failure (no matching window in any form OR `shimOps === null`
+ *  for fixture-only tests) fall back to canonical without renaming —
+ *  the downstream capture call will then produce its usual
+ *  `capture error` line + skip-capture-error outcome, matching
+ *  pre-shim behavior for absent panes.
+ *
+ *  Lead-window resolution still lives in whip (uses the I-2 marker
  *  fallback for renamed lead windows); lane-tick only iterates
  *  members with `.lane` set, and lead/planner/reviewer/gitter don't
- *  carry a worker lane in practice — the simpler form suffices. */
-function resolveWindowTarget(session: string, member: TeamMember): string {
-  const windowName = `${member.emoji ?? ""}${member.name}`;
+ *  carry a worker lane in practice — the shim suffices here. */
+async function resolveMemberWindowTarget(
+  session: string,
+  member: TeamMember,
+  shimOps: WindowShimOps | null,
+): Promise<string> {
+  const canonical = buildWindowName(member.name, member.emoji, member.label, member.role);
+  if (shimOps === null) {
+    return `${session}:${canonical}`;
+  }
+  const adr135Hyphen = buildWindowName(member.name, member.emoji, member.label);
+  const pre135NoSep = buildWindowNameLegacy(member.name, member.emoji);
+  let windowName: string;
+  try {
+    windowName = await resolveWindowWithRenameShim(
+      session,
+      canonical,
+      [adr135Hyphen, pre135NoSep],
+      shimOps,
+    );
+  } catch {
+    // Either no matching window OR list-windows failed (tmux unavailable
+    // in test harness). Fall back to canonical so the downstream
+    // capture call produces its `capture error` log line + the per-
+    // member loop logs skip-capture-error — matches pre-shim behavior.
+    windowName = canonical;
+  }
   return `${session}:${windowName}`;
 }
 

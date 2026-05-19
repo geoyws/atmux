@@ -387,6 +387,118 @@ export async function resolveExistingWindowName(
 }
 
 /**
+ * Dep-injectable tmux ops for {@link resolveWindowWithRenameShim}. The
+ * helper drives only `list-windows` + `rename-window`; the shape is
+ * narrowed from the full {@link Tmux} abstraction so unit tests can
+ * stub these two operations directly without spinning a tmux server.
+ *
+ * Production callers wire as:
+ *
+ *   ```ts
+ *   const ops: WindowShimOps = {
+ *     listWindowNames: async (s) =>
+ *       (await tmux.window.listWindows(s)).map((w) => w.name),
+ *     renameWindow: (s, from, to) =>
+ *       tmux.window.renameWindow(`${s}:${from}`, to),
+ *   };
+ *   ```
+ *
+ * `renameWindow` uses the `session:window-name` Target string form
+ * supported by `tmux.window.renameWindow`; the helper itself stays
+ * abstraction-free so the same shape works in pure-bun tests and in
+ * production cages.
+ */
+export interface WindowShimOps {
+  /** `tmux list-windows -t <session>` → window names on the session. */
+  listWindowNames(sessionName: string): Promise<ReadonlyArray<string>>;
+  /** `tmux rename-window -t <session>:<fromName> <toName>` — atomic. */
+  renameWindow(sessionName: string, fromName: string, toName: string): Promise<void>;
+}
+
+/**
+ * Resolve a tmux window to its canonical name, atomically renaming a
+ * legacy variant in place if found. Returns the canonical name on
+ * success; throws `ConfigError("no tmux window for <canonical>")` if
+ * neither canonical nor any legacy variant exists.
+ *
+ * Per EPIC e-a3077ca0 (window-name self-heal shim) — three window-name
+ * formats coexist in production cages during the ADR-135 → ADR-161
+ * deprecation window for default-member roles:
+ *
+ *   1. canonical    e.g. `🦦_docs`   (ADR-161 `_-prefix` for default
+ *                                     members — what `buildWindowName`
+ *                                     produces today with `role` set)
+ *   2. hyphen-form  e.g. `🦦-docs`   (ADR-135 hyphen — pre-ADR-161
+ *                                     default-member legacy; also today's
+ *                                     canonical for non-default members
+ *                                     per ADR-161 §D2)
+ *   3. no-separator e.g. `🦦docs`    (pre-ADR-135 legacy — what
+ *                                     `buildWindowNameLegacy` produces;
+ *                                     what production lane-tick was
+ *                                     looking for as of atmux 0.8.4)
+ *
+ * Behavior:
+ *   1. List windows on `sessionName`.
+ *   2. If `canonical` is present → return `canonical` (no rename).
+ *      Defensive: when both canonical and a legacy variant coexist
+ *      (rare — implies a prior rename was interrupted mid-flight),
+ *      prefer canonical and skip the rename; the legacy entry stays
+ *      as an orphan window that operator-side cleanup (T8 doctor
+ *      probe) surfaces separately.
+ *   3. Else iterate `legacyVariants` in caller-supplied order; first
+ *      hit → atomic `tmux rename-window <legacy> <canonical>` → return
+ *      `canonical`.
+ *   4. Neither canonical nor any legacy variant matches → throw
+ *      `ConfigError` with the canonical `no tmux window for <name>`
+ *      string that existing callers (rotate / tell-lead / send) grep
+ *      for. The error message names `canonical`, not the variant the
+ *      caller spawned with, so operator messages always point at the
+ *      target shape.
+ *
+ * Atomicity: `tmux rename-window` is a single tmux server op — there
+ * is no observable intermediate state between legacy and canonical.
+ * Concurrent shim calls may race the rename; both win in the sense
+ * that the post-rename state is identical regardless of order.
+ *
+ * Gitter carve-out (per `project_adr_161_tr2_shipped` memory +
+ * ADR-159 pending): the gitter member's canonical form stays
+ * `🌿-gitter` (hyphen). Callers for gitter pass
+ * `canonical="🌿-gitter"` with an EMPTY `legacyVariants` array —
+ * there's no hyphen→underscore migration to apply, so the helper
+ * either finds canonical or throws (matching ADR-159 intent).
+ *
+ * Out-of-scope (caller responsibility):
+ *   - Epic-viewer windows (`🌳-<eid>`) keep hyphen by spec — never call
+ *     this helper for them.
+ *   - User-added member names — only the default-role members
+ *     (team-lead / planner / reviewer / ombudsman per
+ *     {@link isDefaultMemberRole}) need the cross-format resolver.
+ *
+ * Production failure trail driving this shim: 2026-05-18 03:52 UTC
+ * lane-tick.log `lane-tick: docs: capture error — can't find window:
+ * 🦦docs` while the actual pane was `🦦_docs` — verify-poll caught
+ * the post-deploy regression after ADR-161's default-member rename
+ * shipped without back-fill at the per-iteration capture call-sites.
+ */
+export async function resolveWindowWithRenameShim(
+  sessionName: string,
+  canonical: string,
+  legacyVariants: ReadonlyArray<string>,
+  ops: WindowShimOps,
+): Promise<string> {
+  const names = new Set(await ops.listWindowNames(sessionName));
+  if (names.has(canonical)) return canonical;
+  for (const legacy of legacyVariants) {
+    if (legacy === canonical) continue;
+    if (names.has(legacy)) {
+      await ops.renameWindow(sessionName, legacy, canonical);
+      return canonical;
+    }
+  }
+  throw new ConfigError({ what: `no tmux window for ${canonical}` });
+}
+
+/**
  * ADR-136 TR4: display name for a member. Returns `member.label` when
  * set + non-empty, otherwise `member.name`. Use this for operator-
  * facing surfaces (Discord templates, status output, brief

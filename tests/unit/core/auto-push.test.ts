@@ -25,6 +25,16 @@ import {
   runAutoPush,
   STAGING_PATTERNS,
 } from "../../../src/core/auto-push.ts";
+import { TeamWhip } from "../../../src/schema/team.ts";
+
+/** Test helper — Zod-parse a raw whip-shape fixture so callers get a
+ *  fully-typed TeamWhip (with sub-defaults applied) instead of casting
+ *  through `as never`. Mirrors the production load-path: team.json
+ *  parses through TeamWhip at boot, then the typed shape flows into
+ *  consumers. */
+function parseTeamWhip(raw: unknown): TeamWhip {
+  return TeamWhip.parse(raw);
+}
 
 let atmuxDir: string;
 
@@ -374,8 +384,22 @@ describe("runAutoPush — happy path", () => {
 // ---------- readAutoPushOptsFromTeam ----------
 
 describe("readAutoPushOptsFromTeam", () => {
+  // Post-promotion (t-fbfb02f8 / ADR-057 schema bump) the reader
+  // consumes the typed `team.whip.stallPrevention` Zod field directly.
+  // Garbage-shape inputs (mixed-type arrays, non-array allowedPushBranches,
+  // string values for numeric fields) are now rejected at team-load
+  // parse time — those defensive-runtime cases are covered by
+  // tests/unit/schema/team.test.ts::TeamWhip — stallPrevention shape.
   test("no whip block → defaults (enabled=true, rebase=true, no overrides)", () => {
     expect(readAutoPushOptsFromTeam({})).toEqual({
+      enabled: true,
+      rebase: true,
+      allowedPushBranches: [],
+    });
+  });
+
+  test("whip with no stallPrevention block → defaults", () => {
+    expect(readAutoPushOptsFromTeam({ whip: parseTeamWhip({}) })).toEqual({
       enabled: true,
       rebase: true,
       allowedPushBranches: [],
@@ -385,7 +409,7 @@ describe("readAutoPushOptsFromTeam", () => {
   test("whip.stallPrevention.autoPushOnDone=false disables", () => {
     expect(
       readAutoPushOptsFromTeam({
-        whip: { stallPrevention: { autoPushOnDone: false } },
+        whip: parseTeamWhip({ stallPrevention: { autoPushOnDone: false } }),
       }),
     ).toMatchObject({ enabled: false });
   });
@@ -393,28 +417,20 @@ describe("readAutoPushOptsFromTeam", () => {
   test("whip.stallPrevention.rebaseBeforePush=false skips rebase", () => {
     expect(
       readAutoPushOptsFromTeam({
-        whip: { stallPrevention: { rebaseBeforePush: false } },
+        whip: parseTeamWhip({ stallPrevention: { rebaseBeforePush: false } }),
       }),
     ).toMatchObject({ rebase: false });
   });
 
-  test("allowedPushBranches array preserved (string-filtered)", () => {
+  test("allowedPushBranches array preserved verbatim", () => {
     expect(
       readAutoPushOptsFromTeam({
-        whip: {
+        whip: parseTeamWhip({
           stallPrevention: {
-            allowedPushBranches: ["main", "production", 42, null],
+            allowedPushBranches: ["main", "production"],
           },
-        },
+        }),
       }).allowedPushBranches,
     ).toEqual(["main", "production"]);
-  });
-
-  test("non-array allowedPushBranches → empty list (defensive)", () => {
-    expect(
-      readAutoPushOptsFromTeam({
-        whip: { stallPrevention: { allowedPushBranches: "main" } },
-      }).allowedPushBranches,
-    ).toEqual([]);
   });
 });

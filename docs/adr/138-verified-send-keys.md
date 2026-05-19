@@ -197,6 +197,26 @@ In the meantime (pre-martinet), driver + lead + whip + dispatch verbs use `safeS
 - Verification of pane state across cage boundaries (cross-team) — defer; single-team scope.
 - Network-failure handling (tmux server unresponsive) — assume tmux is live.
 
+## Amendment 2026-05-18 — `detectAndResubmit` downstream consumer (EPIC e-f28c2596)
+
+EPIC e-f28c2596 ("auto-fire Enter on queued worker compose-box + rotate-lead brief-skip") added a new downstream consumer of `safeSendKeysWithVerify`:
+
+- **`src/core/queued-text-resubmit.ts::detectAndResubmit`** (T1 c24ee2b) — pure-of-IO helper that detects stuck queued text in a worker compose box and (when safe) resubmits via an injected `sendKeysFn` closure. Callers wrap `safeSendKeysWithVerify` with `composerEmpty()` verifier; on verifier exhaustion the wrapped helper escalates to `~/.atmux/state/send-keys-failures.log` per ADR-168.
+
+**Wiring sites** (all per-member or per-pane iteration, fire-on-idle-only):
+
+- `src/verbs/poke.ts::checkMember` (T2 + T4 0d69bf3 / 490c0ec) — per-member iteration in the consolidated `runTick` loop (post-ADR-160 the legacy bash `whip.sh` per-member + team-level distinction collapsed into one `for (const member of team.members)`).
+- `src/verbs/lane-tick.ts::runLaneTick` (T3 23a33b1) — per-member loop in the cron-fired lane orchestrator. New outcome `injected-queued-resubmit` distinguishes the resubmit-fired case from the legacy `injected` (claim-injection) case.
+- `src/verbs/rotate.ts` — does NOT use `detectAndResubmit`. T7 (1b6b111) instead adds `BootClaudeOpts.forceBootPrompt?: boolean` to bypass the already-booted sentinel in `src/core/boot-claude.ts` after `/clear`; the verified-send path inside `bootClaudeMember` already uses `safeSendKeysWithVerify` directly for the C-m submit (the helper's spirit, not its specific entrypoint).
+
+**Failure-log ownership** — `safeSendKeysWithVerify`'s built-in `onFail:"escalate"` path is the canonical writer of `send-keys-failures.log` rows. The helper's `failureLogFn` injection is for verb-stderr re-emission (operator visibility in cron tick logs) — file persistence is NOT duplicated.
+
+**Cross-refs**:
+
+- [ADR-168](168-send-keys-failures-log.md) — escalation log target + rotation policy.
+- EPIC e-f28c2596 — auto-fire Enter on queued compose box + rotate-lead brief decouple.
+- memory `feedback_atmux_send_for_queued_panes` — pre-fix recovery pattern (driver-side `atmux send <member>`); post-fix the cron-fired verbs auto-unstick, and `atmux send` is the fallback for the rare verify-exhausted case.
+
 ## Cross-references
 
 - **ADR-081** ([`docs/adr/081-bootstrap-brief-paste-bug.md`](081-bootstrap-brief-paste-bug.md)) — §A C-m submit cascade; this helper sits on top.

@@ -19,7 +19,7 @@
 // memory ref `feedback_tmux_test_isolation.md`).
 
 import { TmuxError } from "../errors.ts";
-import { type ExpectExitCode, spawn } from "./spawn.ts";
+import { type ExpectExitCode, spawn, spawnInheritStdio } from "./spawn.ts";
 
 // ---------- Target IDs ----------
 
@@ -258,6 +258,14 @@ export interface TmuxNamespace {
      *  (`-k`), an existing window at the target slot is killed first;
      *  otherwise tmux errors if the target is occupied. */
     moveWindow(opts: { source: Target; target: Target; kill?: boolean }): Promise<void>;
+    /** `tmux swap-window -s <source> -t <target>`. Pairwise atomic
+     *  swap — both windows survive at the swapped indices with PIDs,
+     *  attached clients, and pane contents preserved. tmux has shipped
+     *  `swap-window` since 1.0 (2009), so production callers can rely
+     *  on the primitive being present; the orchestrator (ADR-161 §Part
+     *  C) still wraps it in a TmuxError-fallback to the two-move dance
+     *  for paranoid version-safety. */
+    swapWindow(opts: { source: Target; target: Target }): Promise<void>;
   };
   readonly pane: {
     sendKeys(opts: {
@@ -298,6 +306,11 @@ export interface TmuxNamespace {
   };
   readonly client: {
     attachSession(name: string): Promise<void>;
+    /** ADR-180: tty-inherit variant of `attachSession`. Spawns tmux with
+     *  the parent's stdin/stdout/stderr inherited so a real controlling
+     *  terminal flows through. Used by `atmux cockpit attach --human`;
+     *  agent callers stay on `attachSession` (piped-stdio default). */
+    attachSessionInheritStdio(name: string): Promise<void>;
     switchClient(opts: { target: string; clientName?: string }): Promise<void>;
     listClients(): Promise<{ name: string; session: string; tty: string }[]>;
   };
@@ -513,6 +526,18 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
         if (opts.kill) argv.push("-k");
         await tmuxRun(argv);
       },
+
+      /** `tmux swap-window -s <source> -t <target>`. */
+      async swapWindow(opts) {
+        const argv = [
+          "swap-window",
+          "-s",
+          serializeTarget(opts.source),
+          "-t",
+          serializeTarget(opts.target),
+        ];
+        await tmuxRun(argv);
+      },
     },
 
     // ============== pane ==============
@@ -648,6 +673,23 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
       /** `tmux attach-session -t <name>`. Note: blocks until detached. */
       async attachSession(name) {
         await tmuxRun(["attach-session", "-t", name]);
+      },
+
+      /** ADR-180: tty-inherit `attach-session`. Spawns tmux with the
+       *  parent's stdio inherited so the caller's controlling terminal
+       *  reaches tmux. Wraps a non-zero exit in `TmuxError` so error
+       *  shapes match the rest of the namespace. */
+      async attachSessionInheritStdio(name) {
+        const argv = [...socketArgs, "attach-session", "-t", name];
+        const exitCode = await spawnInheritStdio({ cmd: "tmux", argv });
+        if (exitCode !== 0) {
+          throw new TmuxError({
+            argv,
+            exitCode,
+            stderr: "",
+            stdout: "",
+          });
+        }
       },
 
       /** `tmux switch-client [-c <client>] -t <target>`. */
