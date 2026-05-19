@@ -1,25 +1,21 @@
 # atmux — agent contract
 
-Binding rules for every agent (lead / planner / reviewer / lane workers / driver). Rationale lives in the linked ADRs. Global rules at `~/.claude/CLAUDE.md` still apply; this file does not override them.
+Binding rules for every agent (lead / planner / reviewer / lane workers / driver). Rationale lives in linked ADRs. Global rules at `~/.claude/CLAUDE.md` still apply; this file does not override them.
 
-## Source-of-truth chain
+## Source of truth
 
-ADRs (`docs/adr/`, append-only, numbered, monotonic) → docs (`docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK-*.md`, `docs/medic.md`, `README.md`, `CHANGELOG.md`) → code. When a doc disagrees with an ADR, the ADR wins and the doc is updated. Doc writes cite the ADR (`per ADR-052 §B`).
+ADRs (`docs/adr/`, append-only, numbered, monotonic) → docs (`docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK-*.md`, `docs/medic.md`, `README.md`, `CHANGELOG.md`) → code. ADR wins when a doc disagrees; doc writes cite the ADR (`per ADR-052 §B`).
+
+Look-up order: `rg -i '<topic>' docs/adr/` → `rg -i '<topic>' docs/ README.md CHANGELOG.md` → `rg -i '<topic>' templates/briefs/` → `rg -i '<topic>' src/`. Topic in source but not docs → file a Task (docs gap).
 
 ## Binding discipline
 
 1. **Peruse before working.** Claiming an unfamiliar Task → read `docs/PRD.md` + `docs/ARCHITECTURE.md` + matching `RUNBOOK-*` + ADRs named in the Task body. "I didn't know X" when X is documented is a reviewer flag.
 2. **Same-commit doc + ADR-pointer update** for documented-surface changes: verb sig, brief vocab (`templates/briefs/*.md`), state shape (`.atmux/state/*`), cron template, kanban/event schema, ADR-named invariants.
 3. **Reviewer enforces the gate** — code-without-doc-update on documented surfaces is fail-state, blocked until the doc lands in the same or sibling commit on the same PR/Story.
-4. **New decisions = new ADR before code lands.** Numbered monotonically, zero-padded. `Status: proposed` becomes `accepted` only via reviewer signoff or driver/lead `decisions-add`. Intentionally-held ADRs use `Status: proposed (deferred: <reason>)` so ADR-085 surfacer doesn't ping (no lint today; if rot recurs, see `t-968416aa`).
+4. **New decisions = new ADR before code lands.** Numbered monotonically, zero-padded. `Status: proposed` → `accepted` only via reviewer signoff or driver/lead `decisions-add`. Intentionally-held → `Status: proposed (deferred: <reason>)` so ADR-085 surfacer doesn't ping (no lint today; if rot recurs see `t-968416aa`).
 
-## Carve-outs (no doc update required)
-
-Pure refactors that preserve every documented surface · generated code (e.g. SQL migrations from Zod) · test files (unless adding a public test-helper API). Else default to doc-update-required; reviewer's call governs.
-
-## Where to look first
-
-`rg -i '<topic>' docs/adr/` → `rg -i '<topic>' docs/ README.md CHANGELOG.md` → `rg -i '<topic>' templates/briefs/` → `rg -i '<topic>' src/`. Topic not in ADRs/docs but findable in source = docs gap; file a Task.
+**Carve-outs (no doc update required):** pure refactors that preserve every documented surface · generated code (e.g. SQL migrations from Zod) · test files (unless adding a public test-helper API). Else default to doc-update-required; reviewer's call governs.
 
 ## Pull model
 
@@ -29,16 +25,10 @@ Members auto-claim via `atmux claim --next --as <member>`. Lead routes priority 
 
 Per-member `<base>-<member>` branches are long-lived (ADR-082 + ADR-084). Falling behind → `git merge origin/<base> --no-edit`, never `git rebase` (forces force-push, trips harness deny, breaks sibling fetches). Carve-outs: voluntary history cleanup, epic-team→parent fan-in via ADR-091 committer (rebase-then-merge per its pre-flag #4), final fan-in via ADR-134 committer.
 
-## Manual Claude spawn pattern
+## Spawning + model selection
 
-Always `--permission-mode auto` (other modes stop on every tool call). Match driver's account: `.claude-unum` → `c-u`, `.claude-icloud` → `c-ic`, else `claude`. Set `CLAUDE_GUARD_AGENT=1`. Wrong mode after spawn → `tmux send-keys -t <window> BTab`, never kill+respawn. Verify `⏵⏵ auto mode on`.
-
-## Model selection
-
-- Team members: Opus (`claude-opus-4-7`) + `CLAUDE_CODE_EFFORT_LEVEL=xhigh`. Never Sonnet.
-- Subagents reading only (Explore, general-purpose): Sonnet OK.
-- Subagents writing code: Opus.
-- Driver / lead: Opus always.
+- Manual Claude spawn always `--permission-mode auto` (other modes stop on every tool call). Match driver's account: `.claude-unum` → `c-u`, `.claude-icloud` → `c-ic`, `.claude-ifca` → `c-i`, else `claude`. Set `CLAUDE_GUARD_AGENT=1`. Wrong mode after spawn → `tmux send-keys -t <window> BTab`, never kill+respawn. Verify `⏵⏵ auto mode on`.
+- Models: team members + driver + lead always Opus (`claude-opus-4-7`) + `CLAUDE_CODE_EFFORT_LEVEL=xhigh`. Never Sonnet for member roles. Sub-agents: Sonnet OK for read-only (Explore, general-purpose); Opus when writing code.
 
 ## Tmux + pane discipline
 
@@ -49,8 +39,8 @@ Always `--permission-mode auto` (other modes stop on every tool call). Match dri
 
 ## Reviewer vs auditor
 
-- **Reviewer** = per-commit auto-gate, narrow + deep on the diff (schema / GraphQL / authz / secrets / coverage / doc-update). Blocks code-without-tests and code-without-doc-update; fail-state.
-- **Auditor** = driver-dispatched, system-wide, read-only. Flags via team-lead. Push back on stub-scaffolds requested purely for demo when a real implementation exists — propose a signoff carve-out citing the real mechanism + ADR.
+- **Reviewer** = per-commit auto-gate, narrow + deep on diff (schema / GraphQL / authz / secrets / coverage / doc-update). Blocks code-without-tests + code-without-doc-update; fail-state.
+- **Auditor** = driver-dispatched, system-wide, read-only. Flags via team-lead. Push back on stub-scaffolds requested purely for demo when a real implementation exists — propose signoff carve-out citing the real mechanism + ADR.
 
 ## Test-finding report shape
 
