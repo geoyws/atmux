@@ -84,18 +84,29 @@ export const DEFAULT_SUBMIT_VERIFY_RETRIES = 1;
 
 // ---------- Boot prompt + readiness regex ----------
 
-/** ADR-081 §C task-body §3 verbatim boot prompt. Placeholders are
+/** ADR-081 §C task-body §3 boot prompt. Placeholders are
  *  `{team}` (team name) + `{member}` (member name). Single line so
  *  send-keys + Enter submits cleanly; no bracketed-paste mode is
- *  triggered (which is what makes this approach reliable). */
+ *  triggered (which is what makes this approach reliable).
+ *
+ *  Self-verification preamble (2026-05-19 update). The "Your role is
+ *  {member}" assertion is trustworthy only when the paste reaches
+ *  the intended pane. Mis-targeted pastes happen — `atmux rotate
+ *  <member>` with wrong emoji/window resolution will fire this
+ *  template into the wrong pane and trick the recipient into
+ *  adopting the wrong role (observed 2026-05-19: driver pane received
+ *  "Your role is lead" after rotate mis-resolved window 1). Recipient
+ *  must `echo $ATMUX_MEMBER` first and abort + alert the operator on
+ *  mismatch rather than silently bootstrap as the wrong member. The
+ *  env var is set per-pane at spawn time + is not lying. */
 const BOOT_PROMPT_TEMPLATE =
-  "Read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as that team member. Your role is {member}.";
+  "First run `echo $ATMUX_MEMBER` — if it isn't `{member}`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as {member}.";
 
 /** Render the boot prompt for a (team, member) pair. Exported for
  *  unit tests + observability — the lead-outbox failure surface
  *  echoes this string so the operator can see what was sent. */
 export function renderBootPrompt(team: string, member: string): string {
-  return BOOT_PROMPT_TEMPLATE.replace("{team}", team).replace("{member}", member);
+  return BOOT_PROMPT_TEMPLATE.replaceAll("{team}", team).replaceAll("{member}", member);
 }
 
 /** TUI-ready detection. Matches either:

@@ -133,10 +133,10 @@ function fakeClock(opts: { step?: number; start?: number } = {}) {
 // ---------- renderBootPrompt ----------
 
 describe("renderBootPrompt", () => {
-  test("verbatim from ADR-081 §C task body §3 — single line, template-substituted", () => {
+  test("ADR-081 §C boot prompt — single line, template-substituted, self-verifying", () => {
     const out = renderBootPrompt("atmux", "fe-1");
     expect(out).toBe(
-      "Read /tmp/atmux-brief-generic-atmux.md and your role brief if your role appears in templates/briefs/, then bootstrap as that team member. Your role is fe-1.",
+      "First run `echo $ATMUX_MEMBER` — if it isn't `fe-1`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-atmux.md and your role brief if your role appears in templates/briefs/, then bootstrap as fe-1.",
     );
     // Reviewer pre-flag: single-line (no newlines anywhere)
     expect(out.includes("\n")).toBe(false);
@@ -145,7 +145,19 @@ describe("renderBootPrompt", () => {
   test("substitutes both placeholders", () => {
     const out = renderBootPrompt("sopx-guild", "be-2");
     expect(out).toContain("/tmp/atmux-brief-generic-sopx-guild.md");
-    expect(out).toContain("Your role is be-2");
+    expect(out).toContain("bootstrap as be-2");
+  });
+
+  test("self-verification preamble — recipient must check $ATMUX_MEMBER before adopting role", () => {
+    const out = renderBootPrompt("sopx", "driver");
+    // The "if it isn't `{member}`" assertion forces the recipient to
+    // cross-check against the pane's env var before bootstrapping.
+    // Prevents the 2026-05-19 mis-paste class (rotate mis-resolved
+    // window 1, drove the driver pane to adopt "lead" role).
+    expect(out).toContain("echo $ATMUX_MEMBER");
+    expect(out).toContain("if it isn't `driver`");
+    expect(out).toContain("mis-targeted");
+    expect(out).toContain("do NOT bootstrap");
   });
 });
 
