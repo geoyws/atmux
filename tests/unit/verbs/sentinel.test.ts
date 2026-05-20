@@ -342,6 +342,41 @@ describe("sentinelTick", () => {
     expect(Object.keys(state.teams).sort()).toEqual(["alpha", "e-live"]);
   });
 
+  test("t-70c8b562 — parallel tick: 10 teams with 100ms-each observe stub completes in roughly max(per-team), not sum", async () => {
+    // Pre-parallel: 10 × 100ms = ~1000ms sequential. Post-parallel:
+    // ~max(100ms) per Promise.allSettled with bounded jitter. Threshold
+    // 500ms is generous to absorb event-loop / fs noise but firmly
+    // below the sequential lower bound — regression to a serial loop
+    // would 2x past the threshold.
+    const sessions = Array.from({ length: 10 }, (_, i) => ({
+      type: "team" as const,
+      name: `t${i}`,
+      root: `/r${i}`,
+      enabled: true,
+    }));
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_teams",
+        sessions,
+      }),
+    );
+    const observeFn = async (team: string): Promise<Observation> => {
+      await new Promise((r) => setTimeout(r, 100));
+      return buildStubObservation(team);
+    };
+    const t0 = Date.now();
+    await sentinelTick(
+      { subverb: "tick", configPath: cockpitPath, statePath },
+      { env: { HOME: tmpDir }, logger: createLogger(), observeFn },
+    );
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(500);
+    const state = JSON.parse(await readFile(statePath, "utf-8"));
+    expect(Object.keys(state.teams)).toHaveLength(10);
+  });
+
   test("per-team failures are isolated — fleet pass continues + records error", async () => {
     await writeFile(
       cockpitPath,

@@ -386,7 +386,24 @@ export async function sentinelTick(
 
   const teamStates: Record<string, SentinelTeamState> = {};
   const tickStarted = Date.now();
-  for (const team of teams) {
+
+  // ADR-183 follow-up (t-70c8b562): tick teams in parallel via
+  // Promise.allSettled. Each team's observe → decide → apply chain is
+  // independent (per-team error containment was already in place), so
+  // sequential iteration was leaving wall-clock on the table. Pre-
+  // parallel: 18 teams × ~6s = ~110s. Post-parallel: ~max(per-team) ≈
+  // 6-10s. CPU spike profile flips from sustained 100% (one fat
+  // cursor-agent at a time) to bursty (N short cursor-agents) — the
+  // bargained tradeoff that lets us drop the */5 cron backstop (pulled
+  // 2026-05-20 due to CPU sustain when running alongside W3 loop).
+  //
+  // `allSettled` (not `all`) preserves the per-team try/catch contract:
+  // one team's apply() throwing does NOT abort the fleet pass. The
+  // observe/decide/apply try/catch below mirrors the legacy serial
+  // body verbatim — only the loop shape changes.
+  const perTeamTick = async (
+    team: (typeof teams)[number],
+  ): Promise<{ name: string; state: SentinelTeamState }> => {
     const implName = resolveSentinelImplName({
       // The team's `team.json::sentinel` field is resolved at impl-side
       // via `loadTeam` per ADR-132 §D6, but T8 ships fleet-default-only
@@ -436,7 +453,35 @@ export async function sentinelTick(
       escalated,
     };
     if (error !== undefined) state.error = error;
-    teamStates[team.name] = state;
+    return { name: team.name, state };
+  };
+
+  const settled = await Promise.allSettled(teams.map(perTeamTick));
+  for (let i = 0; i < settled.length; i += 1) {
+    const result = settled[i];
+    const team = teams[i];
+    if (team === undefined) continue;
+    if (result === undefined) continue;
+    if (result.status === "fulfilled") {
+      teamStates[result.value.name] = result.value.state;
+    } else {
+      // perTeamTick already wraps observe/decide/apply in try/catch — a
+      // rejected promise here means the framing code itself threw (e.g.
+      // resolveSentinelImplName / build constructor). Synthesize an
+      // error-only state row so the team is still represented in the
+      // snapshot. This preserves the invariant "every iterated team
+      // appears in state.teams[]" that the doctor probe + status verb
+      // rely on.
+      const cause = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      logger.warn(`sentinel: ${team.name}: tick framing failed — ${cause}`);
+      teamStates[team.name] = {
+        impl: "claude",
+        tickedAt: Date.now(),
+        actions: [],
+        escalated: false,
+        error: `tick framing: ${cause}`,
+      };
+    }
   }
 
   await persistState({ lastTickAt: tickStarted, teams: teamStates }, env, parsed.statePath);
