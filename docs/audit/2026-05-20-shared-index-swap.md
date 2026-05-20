@@ -82,3 +82,66 @@ For reviewer-grep:
 - ADR-032 §socket-pubsub messaging — `docs/adr/032-socket-pubsub-messaging-layer.md` (the cross-pane STOP message that prevented be-2's force-push).
 - ADR-027 §Orchestration — `docs/adr/027-team-rename-verb-and-topology-invariant.md` (the parent EPIC; T7 §Deviations will cross-link here).
 - Prior incidents 2026-05-18 (epic `e-f28c2596`): commits `4133af1` (absorption), `7cf5b02` + `1b6b111` (swap + follow-up).
+
+## §4 — 4th manifestation: edge-test commits race (2026-05-20, follow-up)
+
+Filed as a same-day extension after lead approved durable-improvement § (a) work on top of the already-shipped audit. Same root cause, narrower commit window, same recovery posture (accept; no force-push).
+
+### What happened
+
+After §1–§3 landed and the writes-halt was released for follow-up work, **be-2** and **fe-2** independently produced edge-case test files for their respective T3 / T5 source modules:
+
+- **fe-2**: `tests/unit/verbs/team-rename-tmux.edge.test.ts` (467 lines, 12 cases — brings combined coverage on `team-rename-tmux.ts` to 100% line + 100% function across the original + edge test files).
+- **be-2**: `tests/unit/verbs/team-rename-fs.test.ts` (103 lines of edge-test additions on top of the file shipped in `492f1fa`).
+
+fe-2 staged via `git add tests/unit/verbs/team-rename-tmux.edge.test.ts`. Pre-commit `git diff --cached --stat` showed **both** files staged — be-2's `team-rename-fs.test.ts` modification was already in the index. fe-2 ran `git reset HEAD -- tests/unit/verbs/team-rename-fs.test.ts` to unstage be-2's work (per §point 4 absorption-recovery recipe). Post-reset `git diff --cached --name-only` confirmed only fe-2's file staged. fe-2 ran `git commit -m "test(team-rename-tmux): edge-case + rollback-path coverage for ADR-027 T5"`.
+
+`git log --oneline -3` after the commit:
+
+```
+a108370 test(team-rename-fs): edge-case coverage for ADR-027 T3
+3c66e37 docs(audit): 2026-05-20 shared-index file-swap during ADR-027 EPIC e-1e223687
+492f1fa feat(team-rename): ADR-027 T3 — file-state steps 1/2/5/9
+```
+
+`git show --stat a108370` showed `tests/unit/verbs/team-rename-tmux.edge.test.ts | 467 ++++++++++++++++++++++++++` — the file is **fe-2's**, the subject is **be-2's**. Be-2's actual `team-rename-fs.test.ts` modification remained uncommitted on disk.
+
+### Root cause (refined)
+
+This occurrence sharpens the timing model: the race window between `git reset HEAD -- <other-files>` + `git diff --cached --name-only` (which confirmed clean state) + `git commit` is on the order of single-digit milliseconds. Be-2's parallel `git add` + `git commit` cycle landed inside that window: their `add` of `team-rename-fs.test.ts` re-staged it AFTER fe-2's reset, then their commit message landed AFTER fe-2's commit message but BEFORE fe-2's `git commit` actually closed.
+
+The audit subject↔content mapping mechanism appears to bind the *message* in `git commit -m` order while the *staged-content* binds in `git add` order — and these two orderings interleaved in opposite directions across the two sessions for this commit.
+
+### Recovery
+
+Same Option C posture as §1–§3:
+
+- fe-2 pushed `a108370` to `origin/geoyws-epic-e-1e223687` (`3c66e37..a108370`). Trunk is canonical.
+- fe-2 notified be-2 via `atmux send` that `team-rename-fs.test.ts` is still uncommitted on disk and needs a follow-up `git commit` (with a corrected subject).
+- fe-2 notified lead; lead approved §4 of this audit as the recovery artifact.
+- be-2's pending follow-up commit will be serialized via lead GO signal (no more parallel commits in this session).
+
+### Mapping update
+
+Add to the canonical SHA-to-task table in §SHA-to-task mapping above:
+
+| Task | Owner | Files | Located in commit | Subject in commit |
+|---|---|---|---|---|
+| **T5 edge-tests (durable-improvement §a)** | fe-2 | `tests/unit/verbs/team-rename-tmux.edge.test.ts` | `a108370` | "test(team-rename-fs): edge-case coverage for ADR-027 T3" *(subject is be-2's; content is fe-2's)* |
+| **T3 edge-tests (durable-improvement §a, pending)** | be-2 | `tests/unit/verbs/team-rename-fs.test.ts` | *(not yet committed at audit-time)* | *(operator follow-up; lead GO signal)* |
+
+### Reinforced recommendations
+
+1. **`git reset HEAD -- <other-files>` does NOT close the race.** It clears the index for the duration of one round-trip but a parallel `add` can re-stage between the reset and the commit. The atmux-managed commit mutex proposed in §point 1 of the original recommendations is the only mechanism that fully closes this — moving the priority from P1 to **P0** in light of the 4th manifestation.
+2. **No more parallel commits in the same shared worktree during the same session window.** Lead serializes via GO signals until T6 ships. The §a (durable improvements) work should have been gated on the same GO discipline; the audit + write-halt only covered the §1–§3 recovery commit itself.
+3. **Single-pane GO discipline** = one member's `git add` + `git commit` + `git push` chain completes before the next member's chain begins. Cost: ~3–8s of serial wait per commit. Saves: scrambled commit attribution + audit overhead + reviewer confusion.
+
+### Subject lookup table (additive)
+
+| SHA | Subject claimed | Subject actual (by diff) | Owner-of-content | Owner-of-subject |
+|---|---|---|---|---|
+| `37c156d` | T5 (fe-2) | T4 (fe-1) | fe-1 | fe-2 |
+| `492f1fa` | T3 (be-2) | T3 + T5 (be-2 + fe-2) | be-2 + fe-2 | be-2 |
+| `a108370` | T3 edge-tests (be-2) | T5 edge-tests (fe-2) | fe-2 | be-2 |
+
+Three of the four ADR-027-T-series commits since `c274453` (T2) are mis-attributed by subject. The audit doc is the canonical reverse-lookup for reviewer + T7 §Deviations.
