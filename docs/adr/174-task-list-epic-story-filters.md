@@ -2,8 +2,8 @@
 
 **Status**: proposed
 **Date**: 2026-05-18
-**Driver-ref**: ADR-172 §OQ-4 ("file as a sibling follow-up ADR/task. ADR-172 stays focused on the write-side gap; read-side ergonomics is a separate ADR") + ADR-173 §Related ("`atmux task list --epic` filter remains as a future fast-follow").
-**Relates**: ADR-172 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-173 (`atmux epic show` children enumeration — sibling read-side surface), ADR-007 (Epic/Story/Task hierarchy original spec), ADR-006 (JSON output stability convention).
+**Driver-ref**: ADR-193 §OQ-4 ("file as a sibling follow-up ADR/task. ADR-193 stays focused on the write-side gap; read-side ergonomics is a separate ADR") + ADR-173 §Related ("`atmux task list --epic` filter remains as a future fast-follow").
+**Relates**: ADR-193 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-173 (`atmux epic show` children enumeration — sibling read-side surface), ADR-007 (Epic/Story/Task hierarchy original spec), ADR-006 (JSON output stability convention).
 
 ## Context
 
@@ -25,7 +25,7 @@ ADR-173 chose a *tree* render for `atmux epic show`; ADR-174 keeps the *flat* re
 atmux task list [--status S] [--assignee M] [--lane L] [--epic <eid>] [--story <sid>] [--json]
 ```
 
-- `--epic <eid>` — filter to tasks where `.epic === eid`. `eid` regex-validated as `e-[0-9a-f]{8}` per ADR-172.
+- `--epic <eid>` — filter to tasks where `.epic === eid`. `eid` regex-validated as `e-[0-9a-f]{8}` per ADR-193.
 - `--story <sid>` — filter to tasks where `.story === sid`. `sid` regex-validated as `s-[0-9a-f]{8}`.
 - Combined with existing flags via AND. `atmux task list --epic e-xxx --status todo --lane be` = "todo BE-lane tasks under EPIC e-xxx".
 - Combined `--epic` + `--story` is allowed; resolves to AND. Useful when a Story is partway through a multi-EPIC restructure (rare) — but operators usually pass one or the other.
@@ -41,7 +41,7 @@ Unchanged. Same default as today (createdAt ASC). Operators wanting priority-sor
 
 ### Data path
 
-Trivial: extend the SQL WHERE clause in `src/verbs/task.ts::list`. Both columns (`epic`, `story`) already indexed in state.db schema (or should be after ADR-172 T2 ships).
+Trivial: extend the SQL WHERE clause in `src/verbs/task.ts::list`. Both columns (`epic`, `story`) already indexed in state.db schema (or should be after ADR-193 T2 ships).
 
 ## Consequences
 
@@ -57,7 +57,7 @@ Trivial: extend the SQL WHERE clause in `src/verbs/task.ts::list`. Both columns 
 
 - **Cockpit consumers** (`/bau`, `/bruh`, `superdoctor`, reviewer) can switch from `--json | jq '.[] | select(.epic == ...)'` to first-class `--epic <eid>` flag. Reduces shell-pipeline brittleness.
 - **Worker pre-claim checks** — `atmux task list --epic <eid> --lane <my-lane> --status todo` becomes the canonical "what's pullable for me under this EPIC" probe.
-- **Closes the three-ADR EPIC-task-CLI arc** with ADR-172 (write-side flags) + ADR-173 (epic show children tree) + ADR-174 (task list filters). Together they restore the full CLI affordance set ADR-007 originally documented.
+- **Closes the three-ADR EPIC-task-CLI arc** with ADR-193 (write-side flags) + ADR-173 (epic show children tree) + ADR-174 (task list filters). Together they restore the full CLI affordance set ADR-007 originally documented.
 
 **What we give up**: nothing. Pure additive WHERE narrowing.
 
@@ -68,7 +68,7 @@ Trivial: extend the SQL WHERE clause in `src/verbs/task.ts::list`. Both columns 
 1. **Sort order — keep createdAt ASC, or default to priority ASC for filtered queries?** **Default**: keep createdAt ASC (current behavior, predictable). Operators wanting priority-sort pipe through `sort` or add a future `--sort priority` flag. Reconsider if user friction surfaces. *Why*: filtering ≠ sorting; bundling them is scope creep.
 2. **`--epic ''` for orphan tasks — should empty-string explicitly match null, or be a syntax error?** **Default**: empty-string matches null. Useful for `atmux task list --epic ''` = "show me orphan tasks" — discoverable through experimentation. *Why*: SQL `epic = ''` would never match (null comparison semantics); the verb-side treats `''` as a sentinel for "WHERE epic IS NULL".
 3. **Should we add `--priority N` while we're here?** **Default**: NO — different OQ-class, separate fast-follow if surface demand grows. ADR-174 stays focused on EPIC/Story parentage filters. *Why*: bundling unrelated flags blurs the ADR's surface decision.
-4. **Validate eid/sid exists at filter-time?** **Default**: NO — same stance as ADR-172. Filter against any well-formed id; empty result if nothing matches. Operators run `atmux epic show <eid>` if they want existence-check. *Why*: filter-with-empty-result is unambiguous; validation adds latency + an error case for the cross-worktree-decomp workflow.
+4. **Validate eid/sid exists at filter-time?** **Default**: NO — same stance as ADR-193. Filter against any well-formed id; empty result if nothing matches. Operators run `atmux epic show <eid>` if they want existence-check. *Why*: filter-with-empty-result is unambiguous; validation adds latency + an error case for the cross-worktree-decomp workflow.
 
 ## Reversibility
 
@@ -76,7 +76,7 @@ Trivial: extend the SQL WHERE clause in `src/verbs/task.ts::list`. Both columns 
 
 ## Related
 
-- **ADR-172** — PREREQUISITE: `.epic` / `.story` need to be CLI-writable for the filter to have non-empty results at runtime. ADR-174 absorbs `.epic: null` gracefully — empty result, no error.
+- **ADR-193** — PREREQUISITE: `.epic` / `.story` need to be CLI-writable for the filter to have non-empty results at runtime. ADR-174 absorbs `.epic: null` gracefully — empty result, no error.
 - **ADR-173** — sibling read-side ergonomics. `atmux epic show <eid>` renders the tree; `atmux task list --epic <eid>` renders the flat slice. Complementary, not overlapping.
-- **ADR-007** — original Epic/Story/Task hierarchy. ADR-174 implements the third (and final) of the documented read-side affordances. With ADR-172/173/174 together, the three-ADR arc closes the CLI round-trip on EPIC-task linkage.
+- **ADR-007** — original Epic/Story/Task hierarchy. ADR-174 implements the third (and final) of the documented read-side affordances. With ADR-193/173/174 together, the three-ADR arc closes the CLI round-trip on EPIC-task linkage.
 - **ADR-006** — JSON output stability. ADR-174 narrows the slice without changing keys; additive-keys-non-breaking convention preserved.

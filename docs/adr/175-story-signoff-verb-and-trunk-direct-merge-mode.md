@@ -138,5 +138,5 @@ trunk-direct:    planning → ready → in-progress → testing → review → d
 - **ADR-091** — epic-team lifecycle; intra-team auto-merge sibling at the epic layer. ADR-175's mergeMode is a story-layer counterpart but does NOT introduce auto-merge dispatch logic; we just skip the dispatch when trunk-direct.
 - **ADR-144** — epic-team test-gate; sibling shape (gate at state-machine transition, requires explicit bit flip). ADR-175's signoff gate has the same shape at the story layer.
 - **ADR-159** TR3 — `gitter → committer` rename grace shim. ADR-175 preserves both lookups (`role === 'committer' || role === 'gitter' || name === 'gitter'`) for the trunk-direct skip path's role check.
-- **ADR-172** (sibling planner-session ADR) — `atmux task add --epic` flag. ADR-175 ships independently; once ADR-172 T2 lands, `atmux story add --epic <eid> --merge-mode trunk-direct` becomes the canonical filing pattern. Gracefully degrades to body-text convention until then.
+- **ADR-193** (sibling planner-session ADR) — `atmux task add --epic` flag. ADR-175 ships independently; once ADR-193 T2 lands, `atmux story add --epic <eid> --merge-mode trunk-direct` becomes the canonical filing pattern. Gracefully degrades to body-text convention until then.
 - **ADR-126** / **ADR-169** — state.db migration patterns ADR-175's `merge_mode` column follows.
