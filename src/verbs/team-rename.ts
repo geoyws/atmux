@@ -32,7 +32,7 @@
 import { dirname } from "node:path";
 import type { CrontabIO } from "../abstractions/crontab.ts";
 import type { TmuxNamespace } from "../abstractions/tmux.ts";
-import { loadCockpit } from "../core/cockpit.ts";
+import { defaultCockpitConfigPath, loadCockpit } from "../core/cockpit.ts";
 import { getAtmuxDir, getDefaultSocket, loadTeam, type ResolveDirOpts } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { listTasks } from "../core/kanban.ts";
@@ -40,6 +40,30 @@ import { ConfigError, UsageError } from "../errors.ts";
 import type { Cockpit, CockpitSessionT } from "../schema/cockpit.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 import { cronInstall } from "./cron-install.ts";
+import { type SyncCockpitRegistryArgs, syncCockpitRegistry } from "./team-rename-cockpit.ts";
+import {
+  type ConvergenceResult,
+  formatConvergenceHint,
+  verifyConvergence,
+} from "./team-rename-convergence.ts";
+import {
+  type AcquireRenameLockInput,
+  acquireRenameLock,
+  type MutateTeamJsonInput,
+  mutateTeamJson,
+  type ReleaseRenameLockInput,
+  type RewriteSessionAnchorInput,
+  releaseRenameLock,
+  rewriteSessionAnchor,
+} from "./team-rename-fs.ts";
+import {
+  type BranchRenameMember,
+  type RenamePerMemberBranchesOpts,
+  type RenamePerMemberBranchesResult,
+  type RenameTeamViewerWindowOpts,
+  renamePerMemberBranches,
+  renameTeamViewerWindow,
+} from "./team-rename-tmux.ts";
 
 const USAGE =
   "atmux team rename <new-name> [--from <old>] [--session <new-session>] [--dry-run] [--force] [--force-branches] [--socket <path>] [--team-dir <path>]";
@@ -357,136 +381,94 @@ export async function reinstallCronBlock(input: ReinstallCronBlockInput): Promis
 // T2 — TeamRenameDeps + dispatcher
 // ============================================================
 
-/** Injectable orchestration steps. T2 ships defaults that:
- *  - Step 3 (renameTmuxSession) + Step 6 (reinstallCronBlock) → REAL.
- *  - Steps 1, 2, 4, 5, 7, 8, 9 → no-op stubs with labelled RollbackStep
- *    placeholders so the rollback chain stays inspectable.
- *  T3/T4/T5 override the stubs in their respective slots when wiring
- *  real impls. */
+/** Injectable orchestration steps. T6 wires every sibling-shipped impl
+ *  into the dispatcher: T3 owns steps 1/2/5/9 (file-state), T4 owns
+ *  step 7 (cockpit registry), T5 owns steps 4 (cockpit team-viewer
+ *  window) + 8 (per-member branches), and T2 owns steps 3 (rename-
+ *  session) + 6 (cron). Every fn is overridable for tests.
+ *
+ *  Topology cross-ref (post-ADR-135 + ADR-162):
+ *  - Step 3 + cage probes run on the team's cage socket (per-member
+ *    windows live here, named `🐝-<member>` per ADR-135).
+ *  - Step 4 runs on the cockpit socket (`tmux -L atmux-cockpit` per
+ *    ADR-162); team-viewer windows in cockpit carry the bare team-name.
+ *  - The pre-ADR-135 per-pane `__<old>__*` rename pattern is DEAD — no
+ *    callsite still references it. See T7 §Deviations. */
 export interface TeamRenameDeps {
-  /** Step 1 — acquire `.atmux/state/rename.lock`. T3 wires real impl. */
-  acquireRenameLock?: (atmuxDir: string) => Promise<RollbackStep>;
-  /** Step 2 — `team.json:.name = newName`. T3 wires real impl. */
-  mutateTeamJsonName?: (
-    atmuxDir: string,
-    oldName: string,
-    newName: string,
-  ) => Promise<RollbackStep>;
-  /** Step 4 — window rename on the relevant socket. T5 wires real impl.
-   *  TODO(T6 convergence): the ADR-027 §step 3 `__<old>__*` per-pane
-   *  rename pattern is pre-ADR-135/162 and dead in current topology
-   *  (post-ADR-135 windows are emoji-prefix `🐝-<member>` on the team
-   *  cage socket; per-member-pane rename is moot since members are
-   *  1-pane-per-window). T5's actual step-4 is the COCKPIT team-viewer
-   *  window rename on the `-L atmux-cockpit` socket (different socket
-   *  entirely from the cage). This dispatcher slot's signature reflects
-   *  the legacy ADR-027 wording; T6 (convergence) is the natural owner
-   *  of the signature rework + ADR-027 §Deviations note. T2 ships a
-   *  no-op stub so the orchestration chain stays intact. */
-  renameMemberWindows?: (
-    tmux: TmuxNamespace,
-    session: string,
-    oldName: string,
-    newName: string,
-  ) => Promise<RollbackStep>;
-  /** Step 5 — `.atmux/state/session.txt` rewrite when present. T3 wires
-   *  real impl. */
-  rewriteSessionTxt?: (atmuxDir: string, newName: string) => Promise<RollbackStep>;
-  /** Step 7 — cockpit.json registry update. T4 wires real impl. */
-  updateCockpitRegistry?: (
-    oldName: string,
-    newName: string,
-    newSession: string,
-  ) => Promise<RollbackStep>;
-  /** Step 8 — per-member branch rename. T5 wires real impl. */
-  renameMemberBranches?: (
-    atmuxDir: string,
-    oldName: string,
-    newName: string,
-    forceBranches: boolean,
-  ) => Promise<RollbackStep>;
-  /** Step 9 — release lock. Always runs in `finally`; not on rollback
-   *  chain. T3 wires real impl. */
-  releaseRenameLock?: (atmuxDir: string) => Promise<void>;
+  /** Step 1 — acquire `.atmux/state/rename.lock`. Defaults to
+   *  `team-rename-fs.acquireRenameLock`. */
+  acquireRenameLockFn?: (input: AcquireRenameLockInput) => Promise<RollbackStep>;
+  /** Step 2 — `team.json:.name = newName` with rollback backup.
+   *  Defaults to `team-rename-fs.mutateTeamJson`. */
+  mutateTeamJsonFn?: (input: MutateTeamJsonInput) => Promise<RollbackStep>;
+  /** Step 4 — cockpit team-viewer window rename on the cockpit socket.
+   *  Defaults to `team-rename-tmux.renameTeamViewerWindow`. */
+  renameTeamViewerWindowFn?: (opts: RenameTeamViewerWindowOpts) => Promise<RollbackStep>;
+  /** Step 5 — `.atmux/state/session.txt` rewrite (no-op when absent).
+   *  Defaults to `team-rename-fs.rewriteSessionAnchor`. */
+  rewriteSessionAnchorFn?: (input: RewriteSessionAnchorInput) => Promise<RollbackStep>;
+  /** Step 7 — cockpit.json registry update (DFS-mutate type:"team"
+   *  node). Defaults to `team-rename-cockpit.syncCockpitRegistry`. */
+  syncCockpitRegistryFn?: (args: SyncCockpitRegistryArgs) => Promise<RollbackStep>;
+  /** Step 8 — per-member `<oldName>-<member>` → `<newName>-<member>`
+   *  branch rename, local + (when `pushBranches`) remote. Defaults
+   *  to `team-rename-tmux.renamePerMemberBranches`. */
+  renamePerMemberBranchesFn?: (
+    opts: RenamePerMemberBranchesOpts,
+  ) => Promise<RenamePerMemberBranchesResult>;
+  /** Step 9 — release lock (idempotent). Defaults to
+   *  `team-rename-fs.releaseRenameLock`. Always runs in `finally`. */
+  releaseRenameLockFn?: (input: ReleaseRenameLockInput) => Promise<void>;
 
   loadCockpitFn?: () => Promise<Cockpit>;
   loadTasksFn?: (atmuxDir: string) => Promise<ReadonlyArray<KanbanTask>>;
-  buildTmuxAtSocket?: (socketPath: string) => TmuxNamespace;
+  /** Builds a TmuxNamespace on the team's cage socket — used for
+   *  step 3 (rename-session). Default: `createTmux({ socketPath })`. */
+  buildCageTmux?: (socketPath: string) => TmuxNamespace;
+  /** Builds a TmuxNamespace pinned to the cockpit socket — used for
+   *  step 4 (team-viewer window rename). Default:
+   *  `createTmux({ socket: "atmux-cockpit" })`. */
+  buildCockpitTmux?: () => TmuxNamespace;
+  /** Override the cockpit.json path. Defaults to
+   *  `<home>/.atmux/cockpit.json`. */
+  cockpitPath?: string;
+  /** Crontab IO seam (test injection). */
   crontab?: CrontabIO;
+  /** Test-injectable cron-install entry. */
   cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
+  /** When set, push the per-member branch renames to `origin` regardless
+   *  of `--force-branches`. Test-fixture path. */
+  pushBranches?: boolean;
   stdout?: Writer;
   stderr?: Writer;
 }
 
-const stubStep = (label: string): RollbackStep => ({
-  label,
-  undo: async () => {
-    /* no-op stub */
-  },
-});
-
-/** Production stub registry — every step T3/T4/T5 will own returns a
- *  labelled no-op so the rollback chain still has an entry for that
- *  slot. The label encodes "stub — Tn wires" so observers reading the
- *  rollback log know which Task fills it in. */
-function defaultDeps(): Required<
-  Pick<
-    TeamRenameDeps,
-    | "acquireRenameLock"
-    | "mutateTeamJsonName"
-    | "renameMemberWindows"
-    | "rewriteSessionTxt"
-    | "updateCockpitRegistry"
-    | "renameMemberBranches"
-    | "releaseRenameLock"
-  >
-> {
-  return {
-    acquireRenameLock: async (_atmuxDir) =>
-      stubStep("step 1 — acquire rename.lock (stub — T3 wires real impl)"),
-    mutateTeamJsonName: async (_atmuxDir, oldName, newName) =>
-      stubStep(`step 2 — team.json:.name '${oldName}' → '${newName}' (stub — T3 wires real impl)`),
-    renameMemberWindows: async (_tmux, _session, oldName, newName) =>
-      stubStep(
-        `step 4 — tmux rename-window __${oldName}__* → __${newName}__* (stub — T5 wires real impl)`,
-      ),
-    rewriteSessionTxt: async (_atmuxDir, newName) =>
-      stubStep(`step 5 — state/session.txt = '${newName}' (stub — T3 wires real impl)`),
-    updateCockpitRegistry: async (oldName, newName, newSession) =>
-      stubStep(
-        `step 7 — cockpit registry: deregister '${oldName}', upsert '${newName}' [session=${newSession}] (stub — T4 wires real impl)`,
-      ),
-    renameMemberBranches: async (_atmuxDir, oldName, newName, force) =>
-      stubStep(
-        `step 8 — per-member branch rename '${oldName}-*' → '${newName}-*' (force=${force}) (stub — T5 wires real impl)`,
-      ),
-    releaseRenameLock: async (_atmuxDir) => {
-      /* no-op — T3 wires real impl */
-    },
-  };
-}
-
-/** Render the orchestration plan for `--dry-run`. Numbered 1-9 per the
- *  ADR-027 step renumbering (planner's T2-T5 split). */
+/** Render the orchestration plan for `--dry-run`. Numbered 1-10 per
+ *  ADR-027 §Orchestration sequence (planner's T2-T6 split). Step 4
+ *  reflects the post-ADR-135/162 topology: cockpit team-viewer window
+ *  rename on the cockpit socket — NOT a per-member-pane sweep (which
+ *  was the pre-ADR-135 wording of ADR-027 §step 3, now dead). */
 export function renderRenamePlan(args: {
   oldName: string;
   newName: string;
   newSession: string;
   forceBranches: boolean;
+  cockpitSession: string;
 }): ReadonlyArray<string> {
-  const { oldName, newName, newSession, forceBranches } = args;
+  const { oldName, newName, newSession, forceBranches, cockpitSession } = args;
   return [
     `🪪 atmux team rename — plan for "${oldName}" → "${newName}" (session "${newSession}")`,
     "",
     "  1. acquire .atmux/state/rename.lock",
-    `  2. team.json:.name = "${newName}"`,
-    `  3. tmux rename-session "${oldName}" → "${newSession}"`,
-    `  4. tmux rename-window __${oldName}__* → __${newName}__* (per pane)`,
-    `  5. .atmux/state/session.txt = "${newSession}"`,
+    `  2. team.json:.name = "${newName}" (backup at team.json.bak.<epoch>)`,
+    `  3. tmux rename-session "${oldName}" → "${newSession}" (cage socket; PIDs preserved)`,
+    `  4. tmux rename-window "${oldName}" → "${newName}" (cockpit socket '${cockpitSession}')`,
+    `  5. .atmux/state/session.txt = "${newSession}" (when present)`,
     `  6. cron-install --quiet (refresh block under '${newName}'; strips old marker)`,
-    `  7. cockpit.json registry: deregister '${oldName}', upsert '${newName}' [session=${newSession}]`,
-    `  8. per-member branch rename: '${oldName}-*' → '${newName}-*' (force=${forceBranches})`,
+    `  7. cockpit.json registry: rename type:"team" node '${oldName}' → '${newName}'`,
+    `  8. per-member branch rename: '${oldName}-<m>' → '${newName}-<m>' (push=${forceBranches})`,
     "  9. release rename.lock",
+    " 10. verify convergence (probe team.json / session.txt / tmux / cockpit / lock / cron)",
     "",
   ];
 }
@@ -531,12 +513,19 @@ export async function teamRename(
     throw new ConfigError({ what: `team rename: ${gate.reason ?? "refused"}` });
   }
 
+  // Resolve cockpit metadata up-front — used by plan rendering + live
+  // orchestration. Cockpit session defaults to `atmux_cockpit` per
+  // ADR-135 §D1; cockpit path defaults to `<home>/.atmux/cockpit.json`.
+  const cockpitSessionName = cockpit.cockpitSession ?? "atmux_cockpit";
+  const cockpitPath = opts.cockpitPath ?? defaultCockpitConfigPath(process.env.HOME ?? "/root");
+
   if (parsed.dryRun) {
     for (const line of renderRenamePlan({
       oldName,
       newName: parsed.newName,
       newSession,
       forceBranches: parsed.forceBranches,
+      cockpitSession: cockpitSessionName,
     })) {
       stdout(`${line}\n`);
     }
@@ -544,57 +533,113 @@ export async function teamRename(
     return 0;
   }
 
-  const stubs = defaultDeps();
-  const deps = {
-    acquireRenameLock: opts.acquireRenameLock ?? stubs.acquireRenameLock,
-    mutateTeamJsonName: opts.mutateTeamJsonName ?? stubs.mutateTeamJsonName,
-    renameMemberWindows: opts.renameMemberWindows ?? stubs.renameMemberWindows,
-    rewriteSessionTxt: opts.rewriteSessionTxt ?? stubs.rewriteSessionTxt,
-    updateCockpitRegistry: opts.updateCockpitRegistry ?? stubs.updateCockpitRegistry,
-    renameMemberBranches: opts.renameMemberBranches ?? stubs.renameMemberBranches,
-    releaseRenameLock: opts.releaseRenameLock ?? stubs.releaseRenameLock,
-    buildTmuxAtSocket: opts.buildTmuxAtSocket,
-    crontab: opts.crontab,
-    cronInstallFn: opts.cronInstallFn,
-  };
+  // Resolve step fns — every fn defaults to the sibling-shipped impl.
+  const acquireFn = opts.acquireRenameLockFn ?? acquireRenameLock;
+  const mutateFn = opts.mutateTeamJsonFn ?? mutateTeamJson;
+  const viewerFn = opts.renameTeamViewerWindowFn ?? renameTeamViewerWindow;
+  const anchorFn = opts.rewriteSessionAnchorFn ?? rewriteSessionAnchor;
+  const cockpitSyncFn = opts.syncCockpitRegistryFn ?? syncCockpitRegistry;
+  const branchFn = opts.renamePerMemberBranchesFn ?? renamePerMemberBranches;
+  const releaseFn = opts.releaseRenameLockFn ?? releaseRenameLock;
+
   const socketPath = parsed.socketPath ?? getDefaultSocket(oldName);
-  let tmux: TmuxNamespace;
-  if (deps.buildTmuxAtSocket !== undefined) {
-    tmux = deps.buildTmuxAtSocket(socketPath);
+  let cageTmux: TmuxNamespace;
+  if (opts.buildCageTmux !== undefined) {
+    cageTmux = opts.buildCageTmux(socketPath);
   } else {
     const { createTmux } = await import("../abstractions/tmux.ts");
-    tmux = createTmux({ socketPath });
+    cageTmux = createTmux({ socketPath });
   }
-  const crontabIo = deps.crontab ?? (await import("../abstractions/crontab.ts")).defaultCrontabIO();
+  let cockpitTmux: TmuxNamespace;
+  if (opts.buildCockpitTmux !== undefined) {
+    cockpitTmux = opts.buildCockpitTmux();
+  } else {
+    const { createTmux } = await import("../abstractions/tmux.ts");
+    cockpitTmux = createTmux({ socket: "atmux-cockpit" });
+  }
+  const crontabIo = opts.crontab ?? (await import("../abstractions/crontab.ts")).defaultCrontabIO();
   const teamDir = dirname(atmuxDir);
+  const members: ReadonlyArray<BranchRenameMember> = teamObj.members.map((m) => ({
+    name: m.name,
+  }));
+  const pushBranches = opts.pushBranches ?? parsed.forceBranches;
 
   const rollback: RollbackStep[] = [];
   let exitCode = 0;
 
   try {
-    rollback.push(await deps.acquireRenameLock(atmuxDir));
-    rollback.push(await deps.mutateTeamJsonName(atmuxDir, oldName, parsed.newName));
-    rollback.push(await renameTmuxSession({ tmux, oldSession: oldName, newSession }));
-    rollback.push(await deps.renameMemberWindows(tmux, newSession, oldName, parsed.newName));
-    rollback.push(await deps.rewriteSessionTxt(atmuxDir, newSession));
-
+    // Step 1 — acquire rename lock.
+    rollback.push(await acquireFn({ atmuxDir, oldName, newName: parsed.newName }));
+    // Step 2 — team.json rename with .bak.
+    rollback.push(await mutateFn({ atmuxDir, oldName, newName: parsed.newName }));
+    // Step 3 — tmux rename-session on cage socket (T2 impl).
+    rollback.push(await renameTmuxSession({ tmux: cageTmux, oldSession: oldName, newSession }));
+    // Step 4 — cockpit team-viewer window rename (T5 impl, cockpit socket).
+    rollback.push(
+      await viewerFn({
+        tmux: cockpitTmux,
+        cockpitSession: cockpitSessionName,
+        oldName,
+        newName: parsed.newName,
+      }),
+    );
+    // Step 5 — session.txt anchor rewrite (T3 impl).
+    rollback.push(await anchorFn({ atmuxDir, newSession }));
+    // Step 6 — cron re-install (T2 impl).
     const cronStepInput: ReinstallCronBlockInput = {
       teamDir,
       oldName,
       newName: parsed.newName,
       crontab: crontabIo,
     };
-    if (deps.cronInstallFn !== undefined) cronStepInput.cronInstallFn = deps.cronInstallFn;
+    if (opts.cronInstallFn !== undefined) cronStepInput.cronInstallFn = opts.cronInstallFn;
     rollback.push(await reinstallCronBlock(cronStepInput));
-
-    rollback.push(await deps.updateCockpitRegistry(oldName, parsed.newName, newSession));
+    // Step 7 — cockpit.json registry rename (T4 impl).
     rollback.push(
-      await deps.renameMemberBranches(atmuxDir, oldName, parsed.newName, parsed.forceBranches),
+      await cockpitSyncFn({
+        cockpitPath,
+        oldName,
+        newName: parsed.newName,
+        newSession,
+      }),
     );
+    // Step 8 — per-member branch rename (T5 impl).
+    const branchResult = await branchFn({
+      teamDir,
+      members,
+      oldName,
+      newName: parsed.newName,
+      push: pushBranches,
+    });
+    rollback.push(branchResult.rollback);
 
     stdout(
       `team rename: '${oldName}' → '${parsed.newName}' (session '${newSession}') — ${rollback.length} steps applied\n`,
     );
+
+    // Step 10 — convergence check (T6). Non-fatal: gaps print as a
+    // stderr block with a repair-rename hint, but exitCode stays 0 —
+    // the rename itself already succeeded. `atmux doctor` re-runs the
+    // same probes on every invocation; this is the immediate readout.
+    try {
+      const convergence: ConvergenceResult = await verifyConvergence({
+        atmuxDir,
+        newName: parsed.newName,
+        newSession,
+        oldName,
+        cockpitTmux,
+        cageTmux,
+        cockpitSession: cockpitSessionName,
+        cockpitPath,
+        crontabRead: () => crontabIo.read(),
+      });
+      if (!convergence.converged) {
+        stderr(formatConvergenceHint(convergence, parsed.newName));
+      }
+    } catch (err) {
+      const cmsg = err instanceof Error ? err.message : String(err);
+      stderr(`team rename: convergence probe failed: ${cmsg}\n`);
+    }
   } catch (err) {
     const failureReason = err instanceof Error ? err.message : String(err);
     const walk = await rollbackWalk(rollback);
@@ -612,7 +657,7 @@ export async function teamRename(
     exitCode = 1;
   } finally {
     try {
-      await deps.releaseRenameLock(atmuxDir);
+      await releaseFn({ atmuxDir });
     } catch (err) {
       const fmsg = err instanceof Error ? err.message : String(err);
       stderr(`team rename: warning — releaseRenameLock failed: ${fmsg}\n`);

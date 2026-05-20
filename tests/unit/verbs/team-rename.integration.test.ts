@@ -190,30 +190,36 @@ describe("reinstallCronBlock", () => {
 // ---------- renderRenamePlan ----------
 
 describe("renderRenamePlan", () => {
-  test("emits 12 lines covering all 9 steps", () => {
+  test("emits 13 lines covering all 10 steps (post-T6)", () => {
     const lines = renderRenamePlan({
       oldName: "old",
       newName: "new",
       newSession: "new",
       forceBranches: false,
+      cockpitSession: "atmux_cockpit",
     });
-    expect(lines.length).toBe(12);
+    expect(lines.length).toBe(13);
     expect(lines[0]).toContain("old");
     expect(lines[0]).toContain("new");
     const joined = lines.join("\n");
-    for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
-      expect(joined).toContain(`  ${n}.`);
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      expect(joined).toContain(` ${n}.`);
     }
+    // Step 4 cites the cockpit socket (post-ADR-135/162 topology).
+    expect(lines.find((l) => l.startsWith("  4."))).toContain("atmux_cockpit");
+    // Dead-path purge: no `__<old>__*` references survive.
+    expect(joined).not.toMatch(/__old__|__new__/);
   });
 
-  test("force=true rendered in step 8", () => {
+  test("force-branches flag rendered in step 8", () => {
     const lines = renderRenamePlan({
       oldName: "o",
       newName: "n",
       newSession: "n",
       forceBranches: true,
+      cockpitSession: "atmux_cockpit",
     });
-    expect(lines.find((l) => l.startsWith("  8."))).toContain("force=true");
+    expect(lines.find((l) => l.startsWith("  8."))).toContain("push=true");
   });
 });
 
@@ -239,15 +245,24 @@ describe("teamRename dispatcher", () => {
     const out = { buf: "" };
     const err = { buf: "" };
     const releaseRef = { n: 0 };
-    const tmux = {
+    const cageTmux = {
       session: {
         renameSession: async (o: string, n: string) =>
           void tmuxRecorded.push({ oldName: o, newName: n }),
       },
     } as unknown as TmuxNamespace;
+    const cockpitTmux = {
+      window: {
+        listWindows: async () =>
+          [] as Array<{ index: number; id: string; name: string; active: boolean }>,
+        renameWindow: async () => {},
+      },
+      session: { listSessions: async () => [] },
+    } as unknown as TmuxNamespace;
     const crontab = stubCrontab("").io;
     const deps: TeamRenameDeps = {
-      buildTmuxAtSocket: () => tmux,
+      buildCageTmux: () => cageTmux,
+      buildCockpitTmux: () => cockpitTmux,
       crontab,
       cronInstallFn: async () => {
         cronCalls.n += 1;
@@ -255,31 +270,40 @@ describe("teamRename dispatcher", () => {
       },
       loadCockpitFn: async () => emptyCockpit(),
       loadTasksFn: async () => [],
-      acquireRenameLock: async () => {
+      acquireRenameLockFn: async () => {
         stepLog.push("acq-lock");
         return { label: "acquired lock", undo: async () => void stepLog.push("undo-acq-lock") };
       },
-      mutateTeamJsonName: async () => {
+      mutateTeamJsonFn: async () => {
         stepLog.push("mutate-team-json");
         return { label: "mutated team.json", undo: async () => void stepLog.push("undo-mutate") };
       },
-      renameMemberWindows: async () => {
-        stepLog.push("rename-windows");
-        return { label: "renamed windows", undo: async () => void stepLog.push("undo-windows") };
+      renameTeamViewerWindowFn: async () => {
+        stepLog.push("rename-viewer-window");
+        return {
+          label: "renamed viewer window",
+          undo: async () => void stepLog.push("undo-viewer"),
+        };
       },
-      rewriteSessionTxt: async () => {
+      rewriteSessionAnchorFn: async () => {
         stepLog.push("rewrite-state");
         return { label: "rewrote state.txt", undo: async () => void stepLog.push("undo-state") };
       },
-      updateCockpitRegistry: async () => {
-        stepLog.push("update-cockpit");
-        return { label: "updated cockpit", undo: async () => void stepLog.push("undo-cockpit") };
+      syncCockpitRegistryFn: async () => {
+        stepLog.push("sync-cockpit");
+        return { label: "synced cockpit", undo: async () => void stepLog.push("undo-cockpit") };
       },
-      renameMemberBranches: async () => {
+      renamePerMemberBranchesFn: async () => {
         stepLog.push("rename-branches");
-        return { label: "renamed branches", undo: async () => void stepLog.push("undo-branches") };
+        return {
+          rollback: {
+            label: "renamed branches",
+            undo: async () => void stepLog.push("undo-branches"),
+          },
+          outcomes: [],
+        };
       },
-      releaseRenameLock: async () => {
+      releaseRenameLockFn: async () => {
         releaseRef.n += 1;
       },
       stdout: (s: string) => {
@@ -319,9 +343,9 @@ describe("teamRename dispatcher", () => {
     expect(d.stepLog).toEqual([
       "acq-lock",
       "mutate-team-json",
-      "rename-windows",
+      "rename-viewer-window",
       "rewrite-state",
-      "update-cockpit",
+      "sync-cockpit",
       "rename-branches",
     ]);
     expect(d.releaseCalled).toBe(1);
@@ -400,10 +424,10 @@ describe("teamRename dispatcher", () => {
     const td = await fixtureTeamDir("old-team");
     dirs.push(td);
     const d = baseDeps();
-    // Step 4 (renameMemberWindows) throws — step 1, 2, 3 should be
+    // Step 4 (renameTeamViewerWindow) throws — step 1, 2, 3 should be
     // undone in reverse order. The rollback log records "undo-mutate"
     // + "undo-acq-lock" (step 3 tmux undo is real, not via stepLog).
-    d.renameMemberWindows = async () => {
+    d.renameTeamViewerWindowFn = async () => {
       throw new Error("simulated step 4 failure");
     };
     const exit = await teamRename(["new-team", "--team-dir", td], d);
@@ -432,38 +456,17 @@ describe("teamRename dispatcher", () => {
     expect(d.stepLog).toEqual([]);
   });
 
-  test("default-stub deps fire when caller omits step overrides", async () => {
-    const td = await fixtureTeamDir("old-team");
-    dirs.push(td);
-    // Strip every step-override from baseDeps; keep only the I/O
-    // injection (cockpit + tasks + tmux + crontab) so the dispatcher
-    // exercises the default no-op stubs at every slot.
-    const d = baseDeps();
-    delete d.acquireRenameLock;
-    delete d.mutateTeamJsonName;
-    delete d.renameMemberWindows;
-    delete d.rewriteSessionTxt;
-    delete d.updateCockpitRegistry;
-    delete d.renameMemberBranches;
-    delete d.releaseRenameLock;
-    const exit = await teamRename(["new-team", "--team-dir", td], d);
-    expect(exit).toBe(0);
-    expect(d.tmuxRecorded).toEqual([{ oldName: "old-team", newName: "new-team" }]);
-    expect(d.cronCalls).toBe(1);
-    expect(d.stdoutBuf).toContain("8 steps applied");
-  });
-
   test("rollback-undo failure surfaces in stderr", async () => {
     const td = await fixtureTeamDir("old-team");
     dirs.push(td);
     const d = baseDeps();
-    d.mutateTeamJsonName = async () => ({
+    d.mutateTeamJsonFn = async () => ({
       label: "step 2 — mutate (throwing undo)",
       undo: async () => {
         throw new Error("undo failed");
       },
     });
-    d.renameMemberWindows = async () => {
+    d.renameTeamViewerWindowFn = async () => {
       throw new Error("step 4 boom");
     };
     const exit = await teamRename(["new-team", "--team-dir", td], d);
@@ -476,7 +479,7 @@ describe("teamRename dispatcher", () => {
     const td = await fixtureTeamDir("old-team");
     dirs.push(td);
     const d = baseDeps();
-    d.releaseRenameLock = async () => {
+    d.releaseRenameLockFn = async () => {
       throw new Error("lock release exploded");
     };
     const exit = await teamRename(["new-team", "--team-dir", td], d);
