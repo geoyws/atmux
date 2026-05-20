@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🟢 Shipped — sentinel epic-team coverage + atmux release verb + W3 self-heal + bounded tick concurrency (release sweep 2026-05-20, t-1fad1f12)
+
+Headline: **sentinel epic-team coverage (dynamic discovery to follow) + `atmux release` one-shot deploy verb + W3 self-heal in `atmux doctor --fix` + bounded sentinel tick concurrency**. Closes the ~30h gap between code-shipped and code-deployed that hid the original t-186d5910 silent-member-death class, plus adds the operator surface to keep that gap closed permanently.
+
+**Versions cut today**: `0.8.5 → 0.8.6 → 0.8.7 → 0.8.8`. The 0.8.6 cut dogfooded the manual 4-step deploy one last time; 0.8.7 cut after the `atmux release` verb landed (so 0.8.8 used the new verb to ship itself — closed-loop validation).
+
+- **`atmux release <patch|minor|major>`** ([3efd34b](src/verbs/release.ts), [58c6fed](src/verbs/release.ts), t-c3f4c418) — one-shot deploy replacing the 4-step `npm version` + commit + `bun run build:install` + `git push` flow that hid t-186d5910 for ~30h. Flags: `--dry-run` (print plan + exit 0), `--allow-dirty` (skip the tree-clean gate). Exit codes: `0` success / `64` usage / `65` dirty-or-no-op refused / `70` step failure (git / build / push). Branch-name fix in 58c6fed prints the actual branch instead of the unevaluated shell expression.
+- **Sentinel scope extended to epic-teams** ([3b92c9d](src/verbs/sentinel.ts), [ADR-183](docs/adr/183-sentinel-scope-includes-epic-teams.md), t-186d5910 Parts C + D) — closes the silent-member-death class. `sentinelTick` swaps `cockpit.teams ?? []` → `enabledTeams(cockpit)` (the post-ADR-089 flattener); cockpit-tier exclusions (medic / superdriver / sentinel itself) preserved via the flattener's discriminator filter. ADR-183 flipped proposed → accepted.
+- **`cockpit-has-w3-sentinel` doctor probe** (3b92c9d Part D) — surfaces the W3 sentinel install state. P1 fail when W3 absent so a regression on `atmux cockpit rebuild` doesn't silently drop the install.
+- **W3 self-heal in `atmux doctor --fix` + `deployed-binary-lag` probe** ([1dc83dd](src/verbs/doctor.ts), t-3234a084 + t-400a1cad) — doctor can now repair a missing W3 sentinel window in-place (no full cockpit rebuild required). The `deployed-binary-lag` probe catches the case where source HEAD is ahead of `/opt/atmux/current` symbol set (the code-shipped-not-deployed gap that originally hid t-186d5910).
+- **Sentinel tick parallelised** ([54a546e](src/core/sentinel-escalation.ts), t-70c8b562) — switches from serial per-team observation to `Promise.allSettled` per-team. Fleet-pass wallclock drops from ~36s (5 teams serial) to ~2s (parallel), keeping the 270s W3 loop cadence comfortably under budget as the epic-team scope expansion grows the team count.
+- **Bounded concurrency cap N=4** (aec82d5) — the parallelisation above is now capped at 4 concurrent observations per tick to protect CPU + RAM. Prevents the spike pattern that drove the earlier sentinel-cron backstop removal (see §Sentinel constraints below). First of the constraints folded in per the operator design call 2026-05-20 (`don't spike CPU+RAM`).
+- **Human-readable tick-duration logs** ([4fc3d36](src/core/sentinel-escalation.ts)) — sentinel tick logs now print `d/h/m/s/ms` units via `formatTickDuration` instead of raw milliseconds, so cron-log inspection doesn't require mental math.
+
+**Sentinel constraints folded in** (load-bearing non-functional requirements per operator design call 2026-05-20):
+
+1. **Epic-teams are dynamic** — created / dissolved often. They MUST be absent from `cockpit.json::sessions[]`. Sentinel discovers them at tick time. Follow-up impl: t-b51f085b (filed). The implication for ADR-183 is captured in its §Amendment 2026-05-20 + ADR-185 below.
+2. **Don't spike CPU+RAM** — sentinel-cron backstop was REMOVED earlier this cycle due to CPU sustain; all remaining sentinel paths respect bounded concurrency (aec82d5 above), per-team timeouts (t-ccf06b97 filed), and RAM-aware cursor-agent spawn caps. PRD §Sentinel updated to name this as a load-bearing NFR.
+
+**Cross-refs**:
+- [ADR-183 §Amendment 2026-05-20](docs/adr/183-sentinel-scope-includes-epic-teams.md) — supersedes the §D1 static-cockpit-roster assumption with the dynamic-discovery model.
+- [ADR-185](docs/adr/185-sentinel-dynamic-epic-discovery.md) — NEW proposed ADR for the dynamic-discovery follow-up (t-b51f085b is its impl Task).
+- [ADR-187](docs/adr/187-coordination-skills-plugin.md) — NEW proposed ADR documenting the sibling Claude Code skills plugin (`~/work/journals/.sb/claude-skills/plugins/coordination/`).
+- Filed-but-pending: t-b51f085b (sentinel dynamic epic-team discovery, P1) · t-ccf06b97 (sentinel per-tick token budget + per-team timeout, P2) · t-a0396228 (pre-commit hook: migration delete + ADR status downgrade, P2) · t-c0f0ff5a (MEMORY.md auto-archive, P3) · t-60031ded (`atmux bau` native verb, P3).
+
 ### 📜 Doctrine — committer no-deploy + test-trust principle (t-afcc71af, ADR-091/134/144 §Amendment 2026-05-19)
 
 Driver finding 2026-05-19 06:30 MYT (operator: "make sure committers/gitters don't deploy… make sure they understand that if they are merging that means tests are already passing because the epic-team has already done the merge earlier and has run tests") surfaced two implicit doctrines worth making explicit before they drift:

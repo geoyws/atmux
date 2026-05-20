@@ -177,6 +177,41 @@ sentinel` — see ADR-132 §D6 for the W3 cage / `cursor-agent` path /
 cage-tier shape. Legacy `martinet` / `defaultMartinet` / `martinetOverrides`
 keys still parse during the ADR-158 grace cycle with a deprecation warn.
 
+**Sentinel scope — parent teams AND epic-teams** (ADR-183 + ADR-183
+§Amendment 2026-05-20). `sentinelTick` observes every enabled team-shape
+session — parent teams *and* epic-teams. The cockpit-tier exclusion
+(medic / superdriver / sentinel itself) is preserved via the
+flattener's discriminator filter, not the team-shape boundary. Epic-team
+silent-member-death (a gitter / committer dying inside an epic-team
+cage) surfaces within ≤270s (W3 loop cadence) — same SLA as parent-team
+coverage. Doctor probe `cockpit-has-w3-sentinel` (P1) guards against a
+regression dropping the W3 install.
+
+**Dynamic-discovery model for epic-teams** (ADR-185, operator design
+call 2026-05-20). Epic-teams have high churn (created / dissolved often,
+≥13 live observed within days of ADR-091 landing). They **MUST be
+absent** from `cockpit.json::sessions[]` — static registration produced
+three drift paths (cron orphan, sentinel gap on stale entries, cockpit-
+rebuild churn). Sentinel discovers them at tick time via one of the
+ADR-185 candidate mechanisms (parent state.db epics query / filesystem
+glob / live tmux enumeration / crontab walk). Parent teams stay
+cockpit.json-registered (low churn, operator-managed); epic-teams are
+discovered. Impl Task t-b51f085b.
+
+**Load-bearing NFR — don't spike CPU + RAM** (operator design call
+2026-05-20). The sentinel-cron backstop was removed earlier this cycle
+due to sustained CPU usage from per-tick cursor-agent spawns; all
+remaining sentinel paths respect this constraint. The cap is enforced
+across three layers: (1) **bounded concurrency** — `Promise.allSettled`
+fleet-pass capped at N=4 concurrent observations per tick (`aec82d5`);
+(2) **per-team timeout** — every team observation gets a hard timeout
+(impl t-ccf06b97); (3) **RAM-aware cursor-agent spawn caps** — the
+W3 sentinel cage's per-impl spawn count is bounded so RAM doesn't
+balloon during fleet observation of a 30+ epic-team cohort (ADR-181
+host-wide cap territory). The constraint is non-negotiable; future
+sentinel work that adds per-tick cost MUST cite this NFR + show how
+it stays inside the budget.
+
 ### 3.2 TUI matrix
 
 | TUI         | Binary           | Default model                                  |

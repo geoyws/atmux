@@ -207,6 +207,107 @@ V1 has no rotation policy ([ADR-167 §OQ-6](adr/167-cockpit-rotate-verb.md) — 
 
 Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)) — `cockpit rotate` operates on the cockpit socket only. Use Rung B (medic's `/team rotate-lead`) for lead rotation.
 
+## §7 — W3 `_sentinel` install + recovery
+
+Per [ADR-183](adr/183-sentinel-scope-includes-epic-teams.md) the cockpit's W3 `_sentinel` window observes every enabled team-shape session (parent teams + epic-teams) every 270s. The original t-186d5910 finding was that source-side sentinel code shipped without the cockpit window install path being wired — silent-member-death class went uncaught for hours. The install + recovery surfaces below close that gap.
+
+### Install paths
+
+| Path | When to use | Reach |
+|---|---|---|
+| `atmux cockpit rebuild` | Full cockpit re-provision (after schema bumps, migrating socket, recovering from a stop --force). | Tears down + recreates every cockpit window from cockpit.json. |
+| `atmux doctor --fix` | The W3 window is the only thing missing; everything else is fine. | Targeted: re-installs W3 only; leaves W1/W2/Wn untouched. |
+| Manual `tmux new-window` (legacy stopgap) | Disaster recovery — `atmux` binary itself is broken. | One-shot; same `while true; do atmux sentinel tick; sleep 270; done` body. |
+
+**Recommended**: run `atmux doctor --fix` first. It's idempotent + scoped + cheap. Full `atmux cockpit rebuild` is a heavier hammer reserved for multi-window drift.
+
+### Verify W3 alive
+
+```bash
+# Window exists?
+tmux -L atmux-cockpit list-windows -t atmux_cockpit | grep _sentinel
+
+# State file getting updated?
+stat -c '%Y' ~/.atmux/state/sentinel-state.json
+date +%s
+# Diff should be < 270s (one tick cadence)
+
+# Cursor or claude impl picked up?
+jq -r '.lastTick.impl, .lastTick.tookMs' ~/.atmux/state/sentinel-state.json
+```
+
+### Doctor probes guarding W3
+
+Per [ADR-183 §D4](adr/183-sentinel-scope-includes-epic-teams.md) + the 2026-05-20 release:
+
+- **`cockpit-has-w3-sentinel`** (P1) — fails when the W3 window is missing. `atmux doctor --fix` repairs in-place.
+- **`deployed-binary-lag`** (warn) — flags the case where source HEAD has sentinel features that `/opt/atmux/current` doesn't (the code-shipped-not-deployed gap that hid the original t-186d5910). Repair: `atmux release patch` (or appropriate bump) — see §8.
+
+### Epic-teams + dynamic discovery (post ADR-183 §Amendment 2026-05-20)
+
+Sentinel scope includes epic-teams. Per [ADR-185](adr/185-sentinel-dynamic-epic-discovery.md), epic-teams MUST be absent from `cockpit.json::sessions[]` — sentinel discovers them at tick time. If `atmux doctor` flags an epic-team registered in cockpit.json, the fix is `atmux team dissolve-epic` for the registered entry (or hand-edit removal) — NOT to wire more entries. Registration creates drift; discovery dodges it.
+
+## §8 — Release / deployment via `atmux release`
+
+Canonical deploy surface as of 2026-05-20 ([ADR-183 sibling Task t-c3f4c418](adr/183-sentinel-scope-includes-epic-teams.md)). Replaces the 4-step manual flow (`npm version` + commit + `bun run build:install` + `git push`) that hid t-186d5910 for ~30h.
+
+```bash
+atmux release patch                  # 0.8.8 → 0.8.9
+atmux release minor                  # 0.8.8 → 0.9.0
+atmux release major                  # 0.8.8 → 1.0.0
+atmux release patch --dry-run        # print plan + exit 0 (no mutation)
+atmux release patch --allow-dirty    # skip tree-clean gate (uncommitted changes WILL ship)
+```
+
+**Exit codes**: `0` success / `64` usage / `65` dirty-or-no-op refused / `70` step failure (git / build / push).
+
+**What it does** (success path):
+
+1. Bump `package.json::version` (semver `patch` / `minor` / `major`).
+2. `git add package.json && git commit -m "chore(release): bump version to <new>"`.
+3. `bun run build:install` — builds + installs to `/opt/atmux/<new>/` with an atomic symlink swap (`/opt/atmux/current → /opt/atmux/<new>`).
+4. `git push origin <current-branch>` (the verb resolves the actual branch via `git rev-parse --abbrev-ref HEAD`; the 2026-05-20 fix in 58c6fed addressed an earlier bug that printed `$(git symbolic-ref ...)` unevaluated).
+
+**Safety gates** — refused unless `--allow-dirty`:
+
+- Working tree must be clean (no uncommitted source changes that would be omitted from the deploy).
+- HEAD must not equal the last `chore(release)` bump commit AND `/opt/atmux/current` version must differ from source `package.json` version (the "nothing to ship" gate — prevents empty deploys).
+
+**Manual 4-step fallback** (legacy / disaster):
+
+```bash
+npm version patch --no-git-tag-version
+git add package.json && git commit -m "chore(release): bump version to <new>"
+bun run build:install
+git push origin <branch>
+```
+
+Use only when `atmux release` itself is broken (`atmux` binary unbootable, `package.json` non-semver). Per the design intent the legacy form is deprecated for daily use — `atmux release` is the canonical surface.
+
+## §9 — Operator coordination skills (`/bau`, `/bruh`, `/whip`, `/team`)
+
+The Claude Code skills plugin at `~/work/journals/.sb/claude-skills/plugins/coordination/` ships operator-facing `/slash-commands` that wrap atmux verbs for hands-on cockpit work. Skills are NOT installed by `atmux start` or `atmux cockpit rebuild` — they're operator-managed via the dotfiles flow per auto-memory `feedback_claude_skills_dotfiles_territory` (2026-05-15). See [ADR-187](adr/187-coordination-skills-plugin.md) for the design.
+
+| When to run | Skill | What it does |
+|---|---|---|
+| Start-of-session, status snapshot | `/bau [hours]` | Commit cadence / rate-limits / kanban / churn per team. Default 24h window. Escalates Dormant teams to lead. |
+| Want sentinel-like cadence without the cockpit role | `/whip [verb]` | Autonomous-work nudge loop (run / cadence / watchdog). Pure-shell. |
+| End-of-day unblocker pass | `/bruh` | Sweeps pending decisions / blockers / flags / worktrees in one pass. |
+| One-shot team lifecycle | `/team <verb>` | start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member. Calls `atmux team` verbs underneath. |
+| Diagnostic across all Claude accounts | `/budget` | 5h + weekly rate-limit utilization + reset times. Pure-shell + Anthropic API. |
+| Driver → lead durable ask | `/tell-lead <msg>` | Writes to `.atmux/driver-inbox.md` + best-effort lead-pane wake-up. |
+
+**Install via dotfiles**:
+
+```bash
+# Operator-side, NOT from inside an atmux cage
+cd ~/work/journals/.sb/_dotfiles
+git pull              # or edit locally
+dotfiles push         # deploys to $HOME/.claude/plugins/coordination/
+```
+
+Per the `feedback_claude_skills_dotfiles_territory` memory: the atmux team must NOT escalate "coordination skill missing" to a PR or atmux-side fix. Surface to the driver / operator with the dotfiles-flow ask; do not direct-edit the plugin from inside an atmux cage. The plugin is an operator-side surface that pairs with atmux at the cockpit boundary, like the W3 sentinel cage is an atmux-side surface that pairs with the operator at the same boundary.
+
 ## Cross-references
 
 - [ADR-167](adr/167-cockpit-rotate-verb.md) — cockpit rotate verb (Rung C); §Amendment 2026-05-17 documents wrapper-resolver asymmetry + handoff write-path semantics.
