@@ -170,8 +170,10 @@ export async function release(
   }
 
   // Step 3 — print + dry-run gate.
+  const branchProbe = await spawn("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const currentBranch = branchProbe.exitCode === 0 ? branchProbe.stdout.trim() : "<unknown>";
   stdout(`atmux release ${parsed.bump}: ${current} → ${next}\n`);
-  stdout(`  branch:    $(git rev-parse --abbrev-ref HEAD)\n`);
+  stdout(`  branch:    ${currentBranch}\n`);
   if (parsed.dryRun) {
     stdout("  --dry-run set — would perform:\n");
     stdout(`    1. write package.json version=${next}\n`);
