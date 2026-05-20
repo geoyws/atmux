@@ -23,6 +23,7 @@ import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
   checkCockpitOnDefaultSocket,
+  checkCockpitSentinelWindow,
   checkLegacyWindowNameFormat,
   checkCronBlock,
   checkCronIntervalDivisors,
@@ -4051,7 +4052,7 @@ describe("checkCockpitOnDefaultSocket", () => {
   });
 
   // Reference to TmuxSpawn type keeps the import alive (consumed via opts.tmux above).
-  test("type sanity — TmuxSpawn shape matches opts.tmux signature", () => {
+  test("type sanity — TmuxSpawn shape matches opts.tmux signature (cockpit-on-default-socket)", () => {
     const spawn: TmuxSpawn = async () => ({
       exitCode: 0,
       stdout: "",
@@ -4062,6 +4063,127 @@ describe("checkCockpitOnDefaultSocket", () => {
       durationMs: 0,
     });
     expect(typeof spawn).toBe("function");
+  });
+});
+
+// ---------- t-186d5910 Part D: checkCockpitSentinelWindow ----------
+
+describe("checkCockpitSentinelWindow", () => {
+  function tmuxListOk(stdout: string): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "tmux",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  const cockpitWithSentinel = {
+    sentinel: { impl: "cursor", enabled: true },
+  } as unknown as LoadedCockpit;
+  const cockpitSentinelDisabled = {
+    sentinel: { impl: "cursor", enabled: false },
+  } as unknown as LoadedCockpit;
+  const cockpitNoSentinel = {} as unknown as LoadedCockpit;
+
+  test("sentinel enabled + _sentinel window present → no rows", async () => {
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async () => tmuxListOk("_superdriver\n_medic\n_sentinel\natmux\n"),
+      loadCockpitFn: async () => cockpitWithSentinel,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("sentinel enabled + _sentinel window missing → one yellow row with rebuild hint", async () => {
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async () => tmuxListOk("_superdriver\n_medic\natmux\n"),
+      loadCockpitFn: async () => cockpitWithSentinel,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("cockpit-has-w3-sentinel");
+    expect(rows[0]?.detail).toContain("cursor");
+    expect(rows[0]?.detail).toContain("enabled=true");
+    expect(rows[0]?.hint).toContain("atmux cockpit rebuild");
+    expect(rows[0]?.hint).toContain("ADR-132");
+    expect(rows[0]?.hint).toContain("t-186d5910");
+  });
+
+  test("sentinel disabled → silent regardless of window state", async () => {
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async () => tmuxListOk("_superdriver\n_medic\n"),
+      loadCockpitFn: async () => cockpitSentinelDisabled,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("sentinel block absent (operator opt-out by omission) → silent", async () => {
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async () => tmuxListOk("_superdriver\n_medic\n"),
+      loadCockpitFn: async () => cockpitNoSentinel,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("cockpit.json missing / unreadable → silent (single-cage fallback)", async () => {
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async () => tmuxListOk("anything\n"),
+      loadCockpitFn: async () => null,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("tmux session absent (list-windows non-zero) → silent (red surface owned by other probes)", async () => {
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "no such session: atmux_cockpit",
+        argv: [],
+        cmd: "tmux",
+        signalled: null,
+        durationMs: 0,
+      }),
+      loadCockpitFn: async () => cockpitWithSentinel,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("tmux spawn throws → silent (deps probe covers tmux-on-PATH)", async () => {
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async () => {
+        throw new Error("ENOENT");
+      },
+      loadCockpitFn: async () => cockpitWithSentinel,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("custom cockpitSocket + cockpitSession opts thread to tmux argv", async () => {
+    let observedArgv: ReadonlyArray<string> = [];
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async (argv) => {
+        observedArgv = argv;
+        return tmuxListOk("_sentinel\n");
+      },
+      loadCockpitFn: async () => cockpitWithSentinel,
+      cockpitSocket: "custom-sock",
+      cockpitSession: "custom_session",
+    });
+    expect(rows).toEqual([]);
+    expect(observedArgv).toContain("custom-sock");
+    expect(observedArgv).toContain("custom_session");
+  });
+
+  test("trims whitespace on window names — handles trailing newlines + spaces", async () => {
+    const rows = await checkCockpitSentinelWindow({
+      tmux: async () => tmuxListOk("  _superdriver  \n  _medic  \n  _sentinel  \n\n"),
+      loadCockpitFn: async () => cockpitWithSentinel,
+    });
+    expect(rows).toEqual([]);
   });
 });
 

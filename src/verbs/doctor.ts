@@ -2365,6 +2365,96 @@ export async function checkCockpitOnDefaultSocket(
   ];
 }
 
+export interface CheckCockpitSentinelWindowOpts {
+  /** tmux spawn override. */
+  tmux?: TmuxSpawn;
+  /** Cockpit reader override. Default loads `~/.atmux/cockpit.json` and
+   *  returns `null` if absent / unreadable (single-cage fallback). */
+  loadCockpitFn?: () => Promise<LoadedCockpit | null>;
+  /** Cockpit session name to walk. Defaults to ADR-135's `"atmux_cockpit"`. */
+  cockpitSession?: string;
+  /** Cockpit socket name to walk via `tmux -L <name>`. Defaults to ADR-162
+   *  Decision-anchor #2's `"atmux-cockpit"`. */
+  cockpitSocket?: string;
+}
+
+/**
+ * t-186d5910 Part D — `cockpit-has-w3-sentinel` warn-class probe.
+ *
+ * When `cockpit.sentinel?.enabled === true` (ADR-132 §D2 / ADR-158)
+ * AND a `_sentinel` window is absent from the cockpit tmux session,
+ * emit one yellow row with the rebuild hint. Self-clearing once
+ * `atmux cockpit rebuild` provisions W3 from the sentinel block
+ * (cockpit.ts:1681-1748 — Part A's idempotent install).
+ *
+ * Why this probe exists at all: the cockpit-rebuild W3 install path
+ * is correct, but a hand-edited `cockpit.sentinel` block on a running
+ * cockpit (no rebuild fired afterward) leaves the operator with a
+ * sentinel-enabled config and no live W3 pane — the exact regression
+ * mode that produced t-186d5910 in the first place (W3 hand-installed
+ * on 2026-05-19 11:26 MYT, wiped on next cockpit restart). This probe
+ * catches that state on next `atmux doctor` run; the cron backstop
+ * keeps observation alive in the meantime.
+ *
+ * Silent when:
+ * - cockpit.json absent / unreadable → probe doesn't apply
+ * - `cockpit.sentinel` undefined OR `enabled !== true` (operator opted out)
+ * - tmux session itself missing — that's a different (red) failure mode
+ *   surfaced by other probes
+ * - tmux spawn fails — degrade silently rather than blocking doctor
+ */
+export async function checkCockpitSentinelWindow(
+  opts: CheckCockpitSentinelWindowOpts = {},
+): Promise<DoctorRow[]> {
+  const tmux = opts.tmux ?? defaultTmuxSpawn;
+  const cockpitSession = opts.cockpitSession ?? "atmux_cockpit";
+  const cockpitSocket = opts.cockpitSocket ?? "atmux-cockpit";
+  const loadCockpitFn =
+    opts.loadCockpitFn ??
+    (async (): Promise<LoadedCockpit | null> => {
+      try {
+        return await loadCockpit();
+      } catch {
+        return null;
+      }
+    });
+
+  const cockpit = await loadCockpitFn();
+  if (cockpit === null) return [];
+  if (cockpit.sentinel?.enabled !== true) return [];
+
+  let result: SpawnResult;
+  try {
+    result = await tmux([
+      "-L",
+      cockpitSocket,
+      "list-windows",
+      "-t",
+      cockpitSession,
+      "-F",
+      "#{window_name}",
+    ]);
+  } catch {
+    return []; // spawn miss — deps probe covers tmux-on-PATH
+  }
+  if (result.exitCode !== 0) return []; // session absent — other probes own that surface
+
+  const windows = result.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (windows.includes("_sentinel")) return [];
+
+  return [
+    {
+      status: "yellow",
+      label: "cockpit-has-w3-sentinel",
+      detail: `cockpit.sentinel.enabled=true but no '_sentinel' window in '${cockpitSession}' (impl=${cockpit.sentinel.impl})`,
+      hint: "run 'atmux cockpit rebuild' to provision W3 from cockpit.sentinel (ADR-132 §D2; t-186d5910 Part A).",
+    },
+  ];
+}
+
 export interface CheckLegacyWindowNameFormatOpts {
   /** tmux spawn override. */
   tmux?: TmuxSpawn;
@@ -2602,6 +2692,11 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // post-migration. Never blocks.
   rows.push(...(await checkTmuxVersionMismatch()));
   rows.push(...(await checkCockpitOnDefaultSocket()));
+  // t-186d5910 Part D: `cockpit-has-w3-sentinel` — warn class.
+  // Fires when cockpit.sentinel.enabled=true but no `_sentinel` window
+  // in the cockpit tmux session. Self-clearing on next `atmux cockpit
+  // rebuild`. Silent when sentinel is opt-out (enabled=false / absent).
+  rows.push(...(await checkCockpitSentinelWindow()));
   // EPIC e-a3077ca0 T8: legacy-window-name-format — warn class.
   // Walks every cockpit cage (falls back to currentTeam if cockpit
   // is absent / unreadable) and flags default-member-role windows

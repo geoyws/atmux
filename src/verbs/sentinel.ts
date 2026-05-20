@@ -42,7 +42,7 @@ import {
   CursorSentinel,
 } from "../abstractions/sentinels/cursor.ts";
 import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
-import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
+import { enabledTeams, type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
 import type { Cockpit, CockpitDefaultSentinel } from "../schema/cockpit.ts";
@@ -357,12 +357,24 @@ export async function sentinelTick(
   if (parsed.configPath !== undefined) loadOpts.path = parsed.configPath;
   const cockpit = await loadCockpit(loadOpts);
 
-  // Only iterate top-level enabled teams. Nested epic-teams + cockpit-
-  // internal singletons (superdriver / medic / sentinel itself) are
-  // excluded — the sentinel observes work-doing teams, not its
-  // cockpit-tier siblings (ADR-132 §"Out of scope" — Sentinel does NOT
-  // observe cockpit-tier surfaces).
-  const teams = (cockpit.teams ?? []).filter((t) => t.enabled);
+  // Iterate every enabled team-shape session (type: "team" OR
+  // "epic-team"). The epic-team extension is ADR-183 §D1 — supersedes
+  // ADR-132 §"Out of scope" §item-2 (was: "nested epic-teams excluded").
+  // Cockpit-internal singletons (superdriver / medic / sentinel itself)
+  // remain excluded; `enabledTeams` filters them by discriminator.
+  //
+  // Why the rollback: post-ADR-091 epic-team proliferation (12+ live
+  // epic-teams across atmux/sopx/rentx at the change date) means the
+  // original §"Out of scope" carve-out leaves silent-member-death holes
+  // exactly in the layer that ships P0 work. The cursor-impl observe
+  // path is `tmux capture-pane`-based, identical machinery for team +
+  // epic-team panes — the exclusion was nomenclature-driven, not
+  // capability-driven.
+  //
+  // Per-team override via `team.json::sentinel` (ADR-132 §D6) still
+  // honoured downstream — an epic-team can opt out by setting its
+  // sentinel field to "disabled" once T3 wires the per-team read path.
+  const teams = enabledTeams(cockpit);
   if (teams.length === 0) {
     logger.warn("sentinel: no enabled teams in cockpit.json — tick is a no-op");
     // Still persist the lastTickAt so `status` is honest about when the

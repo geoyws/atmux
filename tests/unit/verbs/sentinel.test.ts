@@ -274,6 +274,74 @@ describe("sentinelTick", () => {
     expect(Object.keys(state.teams).sort()).toEqual(["alpha"]);
   });
 
+  test("ADR-183 / t-186d5910 Part C — sentinel scope includes epic-teams", async () => {
+    // Regression: pre-ADR-183, sentinel iterated `cockpit.teams` (parent-
+    // team-only synthesis). Epic-teams were silently invisible — the
+    // silent-member-death class operator was burned by (gitter / committer
+    // dying inside an epic-team with no observation coverage). Post-
+    // ADR-183, `enabledTeams(cockpit)` walks both `type: "team"` and
+    // `type: "epic-team"` entries.
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_teams",
+        sessions: [
+          {
+            type: "team",
+            name: "alpha",
+            root: "/a",
+            enabled: true,
+            sessions: [
+              { type: "epic-team", name: "e-aaa", parent: "alpha", epicId: "e-aaa", enabled: true },
+              { type: "epic-team", name: "e-bbb", parent: "alpha", epicId: "e-bbb", enabled: true },
+            ],
+          },
+        ],
+      }),
+    );
+    await sentinelTick(
+      { subverb: "tick", configPath: cockpitPath, statePath },
+      { env: { HOME: tmpDir }, logger: createLogger() },
+    );
+    const state = JSON.parse(await readFile(statePath, "utf-8"));
+    // Pre-ADR-183 path would only tick `alpha`; post-ADR-183 ticks all
+    // three (parent team + 2 epic-teams). Sort-compare to keep iteration
+    // order off the assertion surface.
+    expect(Object.keys(state.teams).sort()).toEqual(["alpha", "e-aaa", "e-bbb"]);
+    // Each ticked entry gets a per-team state row with the resolved impl.
+    expect(state.teams["e-aaa"].impl).toBe("claude");
+    expect(state.teams["e-bbb"].actions).toEqual(["escalate-to-claude-lead"]);
+  });
+
+  test("ADR-183 — disabled epic-teams are skipped (consistent with parent-team disabled filter)", async () => {
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_teams",
+        sessions: [
+          {
+            type: "team",
+            name: "alpha",
+            root: "/a",
+            enabled: true,
+            sessions: [
+              { type: "epic-team", name: "e-live", parent: "alpha", epicId: "e-live", enabled: true },
+              { type: "epic-team", name: "e-dead", parent: "alpha", epicId: "e-dead", enabled: false },
+            ],
+          },
+        ],
+      }),
+    );
+    await sentinelTick(
+      { subverb: "tick", configPath: cockpitPath, statePath },
+      { env: { HOME: tmpDir }, logger: createLogger() },
+    );
+    const state = JSON.parse(await readFile(statePath, "utf-8"));
+    expect(Object.keys(state.teams).sort()).toEqual(["alpha", "e-live"]);
+  });
+
   test("per-team failures are isolated — fleet pass continues + records error", async () => {
     await writeFile(
       cockpitPath,

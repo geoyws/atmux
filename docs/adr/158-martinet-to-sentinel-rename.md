@@ -1,7 +1,7 @@
 # ADR-158: martinet → sentinel rename — SV register sweep, supersedes ADR-132 nomenclature
 
-**Status**: proposed
-**Date**: 2026-05-16
+**Status**: accepted
+**Date**: 2026-05-16 (accepted 2026-05-20 — operator chat-time flip; rename SHIPPED end-to-end 2026-05-16 per TR2 125011d / TR3 1b40f98 / TR4 docs sweep)
 **Driver-ref**: 2026-05-16 driver session — operator chat-time decision on SV/Reddit-eng register sweep for cockpit roles.
 **Parent EPIC**: t-f3a9ac0c (this ADR is the umbrella; TR1-TR4 filed in same session per [[feedback_decomp_same_session_with_deps]]).
 **Cross-refs**: ADR-132 (martinet — pluggable whip-manager; this ADR supersedes nomenclature, not design), ADR-133 (superdoctor → medic — rename-mechanics precedent), ADR-135 (cockpit naming convention — `_-prefix` D4 in-place rename pattern), ADR-159 (gitter → committer — sibling vocabulary rename), ADR-160 (whip → poke — sibling vocabulary rename), ADR-161 (default-member `_-prefix` — sibling convention).
