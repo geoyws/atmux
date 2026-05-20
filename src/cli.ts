@@ -75,6 +75,7 @@ import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
 import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
 import { refusalScan } from "./verbs/refusal-scan.ts";
+import { release } from "./verbs/release.ts";
 import { outbox, reply } from "./verbs/reply.ts";
 import { report } from "./verbs/report.ts";
 import { rotate, rotateLead } from "./verbs/rotate.ts";
@@ -84,12 +85,12 @@ import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { story } from "./verbs/story.ts";
-import { release } from "./verbs/release.ts";
 import { dispatchSyncSubverb } from "./verbs/sync.ts";
 import { task } from "./verbs/task.ts";
 import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
 import { spawnEpic } from "./verbs/team/spawn-epic.ts";
 import { sweepEpics } from "./verbs/team/sweep-epics.ts";
+import { teamRename } from "./verbs/team-rename.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
 import { up } from "./verbs/up.ts";
@@ -374,11 +375,13 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
   const sub = argv[0];
   if (sub === undefined || sub === "") {
     throw new UsageError({
-      what: "team: subverb required (try: repair-rename | spawn-epic | dissolve-epic | sweep-epics)",
+      what: "team: subverb required (try: rename | repair-rename | spawn-epic | dissolve-epic | sweep-epics)",
       hint: "run 'atmux help' for the list of verbs",
     });
   }
   switch (sub) {
+    case "rename":
+      return teamRename(argv.slice(1));
     case "repair-rename":
       return teamRepairRename(argv.slice(1));
     case "spawn-epic":
@@ -389,7 +392,7 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
       return sweepEpics(argv.slice(1));
     default:
       throw new UsageError({
-        what: `team: unknown subverb '${sub}' (try: repair-rename | spawn-epic | dissolve-epic | sweep-epics)`,
+        what: `team: unknown subverb '${sub}' (try: rename | repair-rename | spawn-epic | dissolve-epic | sweep-epics)`,
         hint: "run 'atmux help' for the list of verbs",
       });
   }
