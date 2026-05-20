@@ -238,3 +238,106 @@ describe("releaseRenameLock", () => {
     await releaseRenameLock({ atmuxDir });
   });
 });
+
+// ---------- Edge cases ----------
+//
+// Beyond the 100% line/branch/funcs coverage of the happy + undo paths
+// above, these tests pin down behavior at boundary conditions where
+// the dispatcher contract is implicit: epoch-precision granularity,
+// schema-failure-mid-mutation, empty-string-vs-absent file semantics,
+// and the documented idempotence claim across the rollback chain.
+
+describe("acquireRenameLock — boundary", () => {
+  test("epoch is millisecond-precision (Date.now), not second-precision", async () => {
+    // The bak filename uses Math.floor(Date.now() / 1000) (seconds) per
+    // groom-side convention; the lock body uses Date.now() (ms) to
+    // disambiguate two renames inside the same second. Pin this here
+    // so the precision skew is documented.
+    await acquireRenameLock({ atmuxDir, oldName: "x", newName: "y" });
+    const body = JSON.parse(await readFile(renameLockPath(atmuxDir), "utf8")) as RenameLockBody;
+    // ms-precision epochs are >= 1e12 (year 2001+); s-precision are < 1e10.
+    expect(body.epoch).toBeGreaterThanOrEqual(1e12);
+  });
+
+  test("undo() after a sibling releaseRenameLock is a silent no-op", async () => {
+    // Documents the docstring claim: rollback walks reverse-iterate
+    // every completed step; if step 9 (releaseRenameLock) already ran,
+    // step 1's undo() must not throw on the missing file.
+    const step = await acquireRenameLock({ atmuxDir, oldName: "p", newName: "q" });
+    await releaseRenameLock({ atmuxDir });
+    await step.undo(); // must not throw — removeFile uses force:true
+  });
+});
+
+describe("mutateTeamJson — boundary", () => {
+  test("two same-second mutations collide on bak path; second's undo() throws after first's undo() removed the shared bak", async () => {
+    // The bak naming is `<path>.bak.<epoch-seconds>`. Two
+    // mutateTeamJson calls within one second hash to the SAME bak
+    // path, and step2's `atomicWrite(backupPath, original)` overwrites
+    // step1's backup with step2's pre-image. This is acceptable under
+    // the rename.lock serialization invariant (only one rename in
+    // flight at a time per ADR-027 §Pre-flight), but if a future
+    // change accidentally allows parallel mutations, the rollback
+    // chain breaks predictably: whichever undo() runs last finds the
+    // bak gone (removed by the earlier undo()) and throws FsError.
+    //
+    // Pin BOTH ends:
+    //   (a) when same-second collision happens, only one bak file
+    //       exists post-mutation;
+    //   (b) the SECOND undo() to run throws FsError on the missing
+    //       shared bak.
+    await seedTeamJson("alpha");
+    const step1 = await mutateTeamJson({ atmuxDir, oldName: "alpha", newName: "beta" });
+    // Rapid second call: re-seed `alpha` to mirror a hypothetical
+    // rollback-then-redo cycle within the same second.
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      `${JSON.stringify({ name: "alpha", members: [] }, null, 2)}\n`,
+      "utf8",
+    );
+    const step2 = await mutateTeamJson({ atmuxDir, oldName: "alpha", newName: "gamma" });
+
+    const entries = await readdir(atmuxDir);
+    const baks = entries.filter((f) => f.startsWith("team.json.bak."));
+    if (baks.length !== 1) {
+      // CI ticked the second boundary between the two calls; collision
+      // didn't fire, no double-rollback hazard to assert. Best-effort
+      // cleanup + skip the boundary assertions.
+      await step2.undo();
+      await step1.undo();
+      return;
+    }
+    // Collision fired. step2.undo() restores team.json from the shared
+    // bak then removes it. step1.undo() then finds the bak gone and
+    // throws FsError — proving the parallel-mutation hazard.
+    await step2.undo();
+    await expect(step1.undo()).rejects.toThrow(FsError);
+  });
+});
+
+describe("rewriteSessionAnchor — boundary", () => {
+  test("empty-string session.txt is treated as present (not absent)", async () => {
+    // readTextOrNull returns null ONLY on ENOENT; an empty file
+    // returns "". The step must take the "present" branch and
+    // rewrite, with undo() restoring the empty string.
+    const anchor = join(atmuxDir, "state", "session.txt");
+    await writeFile(anchor, "", "utf8");
+    const step = await rewriteSessionAnchor({ atmuxDir, newSession: "fresh" });
+    expect(step.label).not.toContain("no-op");
+    expect(await readFile(anchor, "utf8")).toBe("fresh\n");
+    await step.undo();
+    expect(await readFile(anchor, "utf8")).toBe("");
+  });
+
+  test("newSession content is written verbatim without normalization (caller validates upstream)", async () => {
+    // The helper trusts the caller's newSession value; no charset
+    // validation here (that's `validateTeamName` from T1, called by
+    // the dispatcher before this helper runs). Document the contract:
+    // whatever bytes the caller passes get written, plus one \n.
+    const anchor = join(atmuxDir, "state", "session.txt");
+    await writeFile(anchor, "prior\n", "utf8");
+    const step = await rewriteSessionAnchor({ atmuxDir, newSession: "with-special_chars-09" });
+    expect(await readFile(anchor, "utf8")).toBe("with-special_chars-09\n");
+    await step.undo();
+  });
+});
