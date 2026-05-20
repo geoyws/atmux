@@ -220,6 +220,86 @@ describe("spawnEpic — happy path", () => {
   });
 });
 
+// ---------- t-54ba3c49: soft-warn at 20+ concurrent epics (ADR-090 §Amendment 2026-05-20) ----------
+
+describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", () => {
+  async function writeCockpitWithNEpics(n: number) {
+    const epicChildren = Array.from({ length: n }, (_, i) => ({
+      type: "epic-team",
+      name: `e-existing-${String(i).padStart(4, "0")}`,
+      parent: "parent-team",
+      epicId: `e-existing-${String(i).padStart(4, "0")}`,
+      enabled: true,
+    }));
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        sessions: [
+          {
+            type: "team",
+            name: "parent-team",
+            enabled: true,
+            root: parentRoot,
+            sessions: epicChildren,
+          },
+        ],
+      }),
+    );
+  }
+
+  test("19 existing epic-teams under parent — no warn (under threshold)", async () => {
+    await writeCockpitWithNEpics(19);
+    const warns: string[] = [];
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      templatesDir,
+      callerScope: () => "driver",
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: (m) => warns.push(m) },
+    };
+    const rc = await spawnEpic(["e-new-spawn", "--from", "parent-team"], opts);
+    expect(rc).toBe(0);
+    expect(warns.filter((w) => w.includes("sentinel coverage may saturate"))).toHaveLength(0);
+  });
+
+  test("20 existing epic-teams under parent — soft-warn fires (at threshold)", async () => {
+    await writeCockpitWithNEpics(20);
+    const warns: string[] = [];
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      templatesDir,
+      callerScope: () => "driver",
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: (m) => warns.push(m) },
+    };
+    const rc = await spawnEpic(["e-new-spawn", "--from", "parent-team"], opts);
+    // Spawn still proceeds (warn, not refuse) per ADR-090 §Amendment.
+    expect(rc).toBe(0);
+    const matched = warns.filter((w) => w.includes("sentinel coverage may saturate"));
+    expect(matched).toHaveLength(1);
+    expect(matched[0]).toContain("20 concurrent epic-team");
+    expect(matched[0]).toContain("parent-team");
+    expect(matched[0]).toContain("ADR-090 §Amendment 2026-05-20");
+  });
+
+  test("25 existing epic-teams under parent — soft-warn fires (well past threshold)", async () => {
+    await writeCockpitWithNEpics(25);
+    const warns: string[] = [];
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      templatesDir,
+      callerScope: () => "driver",
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: (m) => warns.push(m) },
+    };
+    const rc = await spawnEpic(["e-new-spawn", "--from", "parent-team"], opts);
+    expect(rc).toBe(0);
+    const matched = warns.filter((w) => w.includes("25 concurrent epic-team"));
+    expect(matched).toHaveLength(1);
+  });
+});
+
 // ---------- claudeAccount inheritance (t-72f90a08, fix shipped 2674670) ----------
 
 describe("spawnEpic — claudeAccount inheritance from parent (ADR-091)", () => {
