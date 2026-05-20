@@ -187,20 +187,26 @@ All six §Open questions were resolved in spec. Shipped impl honors each resolut
 - **OQ H1**: APPENDED Se/Sf/Sg letters — impl collapsed to T1–T7 under single EPIC e-1e223687 (Story-letter mapping dropped during planner decomposition; not load-bearing).
 - **OQ H2**: 4 separate Tasks for bulk-rename — out of scope for this EPIC; deferred to a follow-up operational sweep.
 - **OQ H3**: install-new-then-remove-old cron order — T2 honors via `installCronBlock`'s `stripByAtmuxDir` pass.
-- **OQ H4**: file-based `<projectRoot>/.atmux/state/rename.lock` — T3 creates the lock; consumer-side honor is **partially shipped** (see §Deviation 8).
+- **OQ H4**: file-based `<projectRoot>/.atmux/state/rename.lock` — T3 creates the lock; consumer-side honor is **complete** (see §Deviation 8 for the file:line refs).
 - **OQ H5**: Sg REVIEW Task — out of scope (bulk-rename deferred per OQ H2).
 - **OQ H6**: `--migrate-session` opt-in — out of scope for v1; not implemented. Deferred to a follow-up Task.
 
-### 8 — Cron-consumer rename-lock guards (PARTIAL)
+### 8 — Cron-consumer rename-lock guards (COMPLETE)
 
 **Spec**: §Consequences — every cron'd consumer (whip / super-status / cron orphan-detect / decisions digest) adds `[[ -f rename.lock ]] && return 0` at entry. ~3 LOC each.
 
-**Shipped**: T3 (`team-rename-fs.ts::acquireRenameLock`) creates the lock file as designed, but consumer-side guards were NOT wired during this EPIC. Verified absent 2026-05-20 via direct grep:
-- `src/verbs/sentinel.ts` (formerly `lib/super-status.sh`) — no guard.
-- `src/verbs/cron-orphans.ts` (orphan-detect path) — no guard.
-- `src/verbs/whip.ts` + `src/verbs/decisions.ts` — files don't exist (consolidated during the bun port; the consumed code path is currently inside `sentinel.ts` and other verbs and doesn't honor the lock).
+**Shipped**: T3 (`team-rename-fs.ts::acquireRenameLock`) creates the lock file; ADR-027 follow-up Task t-f0adc3bc (2026-05-20) wired the consumer-side guards via a shared `isRenameInProgress(atmuxDir)` helper exported from `src/verbs/team-rename-fs.ts`:
 
-Race risk: a sentinel tick / cron orphan-detect firing during an in-flight rename would race against mid-rename state mutations — exactly the failure mode OQ H4 set out to prevent. Follow-up Task filed at T7 commit time; T6's convergence helper asserts post-rename hygiene (lock cleaned up) but does NOT cover mid-rename consumer-race detection.
+- **`src/verbs/sentinel.ts` perTeamTick** (formerly `lib/super-status.sh`) — checks `team.root + "/.atmux"` per team iteration; skip-and-log returns a `skipped-rename-in-flight` state row so `allSettled` gather treats it as fulfilled.
+- **`src/verbs/cron-orphans.ts` verb entry** (orphan-detect path) — cwd-walks via `hasTeam()` + `getAtmuxDir()`; emits `[]` and returns 0 when the resolved team is mid-rename. Null cwd (cockpit-wide invocation) falls through to the regular scan.
+- **`src/verbs/pulse.ts` per-team loop** (consolidated whip-verdict path post bun port) — checks `team.root + "/.atmux"` per team; skip-and-log + `continue` excludes the team from this tick's observations.
+- **`src/verbs/discorder.ts` verb entry** (consolidated decisions-digest path post bun port) — checks the resolved `atmuxDir` after pre-flight; logs and returns 0 before the per-subverb single-instance lock is acquired.
+
+Race risk eliminated: sentinel ticks / cron orphan-detect / pulse verdicts / discorder digests now skip silently during an in-flight rename — matching the bash `[[ -f rename.lock ]] && return 0` semantics across every consolidated post-port consumer. T6's convergence helper continues to assert post-rename hygiene (lock cleaned up); the consumer guards close the mid-rename window.
+
+Notes:
+- `src/verbs/whip.ts` + `src/verbs/decisions.ts` remain absent in the bun port — see §Deviation 6. `pulse` + `discorder` are the consolidated heirs; both are now guarded.
+- The `isRenameInProgress` helper is fail-open (returns `false` on fs errors) — the read-side guard never blocks a tick on a misread; worst case is the pre-ADR-027 baseline.
 
 ### 9 — Topology invariant check (deferred)
 

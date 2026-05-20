@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { ConfigError, FsError } from "../../../src/errors.ts";
 import {
   acquireRenameLock,
+  isRenameInProgress,
   mutateTeamJson,
   releaseRenameLock,
   renameLockPath,
@@ -339,5 +340,29 @@ describe("rewriteSessionAnchor — boundary", () => {
     const step = await rewriteSessionAnchor({ atmuxDir, newSession: "with-special_chars-09" });
     expect(await readFile(anchor, "utf8")).toBe("with-special_chars-09\n");
     await step.undo();
+  });
+});
+
+// ---------- isRenameInProgress (read-side guard primitive) ----------
+
+describe("isRenameInProgress", () => {
+  test("returns false when rename.lock is absent", async () => {
+    expect(await isRenameInProgress(atmuxDir)).toBe(false);
+  });
+
+  test("returns true when rename.lock is present", async () => {
+    await writeFile(renameLockPath(atmuxDir), '{"old":"a","new":"b","epoch":1}', "utf8");
+    expect(await isRenameInProgress(atmuxDir)).toBe(true);
+  });
+
+  test("returns true regardless of body content (presence is the signal)", async () => {
+    await writeFile(renameLockPath(atmuxDir), "", "utf8");
+    expect(await isRenameInProgress(atmuxDir)).toBe(true);
+  });
+
+  test("fail-open on bogus atmuxDir (non-existent path) — returns false", async () => {
+    // Read-side guard must NEVER block a tick on a misread; the worst
+    // case is the pre-ADR-027 baseline behavior.
+    expect(await isRenameInProgress("/nonexistent/path/that/has/no/atmux/dir")).toBe(false);
   });
 });
