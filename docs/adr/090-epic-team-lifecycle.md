@@ -344,7 +344,7 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 
 **None outstanding** — all 7 reviewer pre-flag anchors + all 4 adjacent-class audit recommendations are folded into §Decision above. Carve-out:
 
-- **Class 3 multi-epic resource contention** (audit §Class 3, line 162): structurally pre-ship-unauditable. Post-dogfood Task seed in audit §Class 3; planner files the seed Task after `spawn-epic` ships green (T8 dogfood gate, separate impl Task tracked in this ADR's sibling decomp; deferred per audit carve-out).
+- **Class 3 multi-epic resource contention** (audit §Class 3, line 162): structurally pre-ship-unauditable. Post-dogfood Task seed in audit §Class 3; planner files the seed Task after `spawn-epic` ships green (T8 dogfood gate, separate impl Task tracked in this ADR's sibling decomp; deferred per audit carve-out). **Resolved via §Amendment 2026-05-20 — cap lifted unconditionally**; see ## Amendments below.
 - **GH Actions cross-account secret-scoping under pr-mode** (audit Class 1 §6): slow-mode wire-up only; documented in §Out-of-scope below. Re-surfaces when ADR-091's pr-mode runtime is implemented.
 
 ## Out of scope
@@ -357,6 +357,45 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 - **`atmux doctor` D9 prefix-level consistency check** — ADR-092 territory (per driver-inbox L3097 `doctor.ts:910-980 D9`).
 - **Adjacent-class audit Task** — already filed as t-cc4c5fd9 (complete; this ADR consumes its findings).
 - **Impl Tasks** — this ADR is a single design-doc commit. Sub-tasks are filed in the same session per [[feedback_decomp_same_session_with_deps]] in a sibling commit (see §Decomp below).
+
+## Amendments
+
+### 2026-05-20 — lift the per-parent concurrent-epic cap (t-54ba3c49)
+
+**Driver-call source:** operator 2026-05-20 22:30 MYT, post-128GB-RAM-confirmation: *"why do the atmux teams only have epic running at one time? why don't they have multiple running? ... 1 epic team is too slow ... or 5 is also slow"*.
+
+**What changes:**
+- The §Open questions / §Out-of-scope §Class 3 multi-epic deferred-stress-test carve-out is **resolved as: no cap.**
+- The `/bruh` §0.6 hard-stop ("Already an active epic-team under the parent") is **removed** from the convention.
+- The verb `spawn-epic` did **not** enforce a cap in source code (verified 2026-05-20 — `rg active.*epic.*team src/verbs/team/` returns zero hits in spawn-epic). The cap lived only as a `/bruh` skill convention. This amendment formalizes the lift at the design layer.
+
+**What stays:**
+- Soft observability — a follow-up impl task may add a stderr warn at 20+ concurrent epics under same parent (visibility nudge, not refuse).
+- Auto-merge cron throughput (5-10 merges/min) remains the ground-truth queue regulator; concurrent epics fan-in serially through ADR-091's state machine, so trunk-merge ordering is preserved by construction without a spawn-side cap.
+
+**Why the cap was originally set vs why it's lifted now:**
+
+| Original concern (audit §Class 3) | Status post-128GB hax |
+|---|---|
+| RAM (4-6GB per epic-team × N) | NO — 21+ epics fit in 128GB |
+| Trunk merge serialization | YES (still binding) — but degrades gracefully via auto-merge queue latency, not hard fail |
+| Per-cage cron load (N × auto-merge tick) | NO — 20× `*/5` cron = trivial |
+| Operator coordination bandwidth (parent lead/planner overload) | WEAK — epic-teams have their own lead/planner/reviewer; parent lead only routes EPIC-level decisions |
+| Cockpit visual clutter | NO — scrollable / collapsible |
+
+Only trunk-merge serialization remains load-bearing, and it self-regulates via the auto-merge cron. No spawn-time guard needed.
+
+**Cross-refs added by this amendment:**
+- [[feedback_hax_128gb_ram_throttling]] — 128GB context that makes the lift safe
+- [`aec82d5`](../../) — sentinel bounded N=4 concurrency cap (the safety net for observation under high epic count)
+- [t-b51f085b](../../) — sentinel dynamic-discovery follow-up (handles the increased team count in observation)
+- [t-54ba3c49](../../) — this amendment's tracking task (the visibility-warn impl is here if shipped)
+
+**Acceptance evidence (post-ship dogfood):**
+- Spawn 3+ concurrent epic-teams under the atmux parent
+- All bootstrap cleanly; sentinel surfaces all of them in `atmux sentinel status`
+- Auto-merge cron processes the queue in commit order
+- No RAM pressure (host shows <50% memory utilization with all epics live)
 
 ## Cross-references
 
