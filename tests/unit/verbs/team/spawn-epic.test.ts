@@ -220,6 +220,119 @@ describe("spawnEpic — happy path", () => {
   });
 });
 
+// ---------- claudeAccount inheritance (t-72f90a08, fix shipped 2674670) ----------
+
+describe("spawnEpic — claudeAccount inheritance from parent (ADR-091)", () => {
+  async function writeParentTeam(members: Array<Record<string, unknown>>) {
+    await mkdir(join(parentRoot, ".atmux"), { recursive: true });
+    await writeFile(
+      join(parentRoot, ".atmux", "team.json"),
+      JSON.stringify({ name: "parent-team", members }),
+    );
+  }
+
+  async function readChild(epicId: string) {
+    return JSON.parse(
+      await readFile(
+        join(scratch, "parent-team-epics", epicId, ".atmux", "team.json"),
+        "utf8",
+      ),
+    );
+  }
+
+  function driverOpts(): SpawnEpicOpts {
+    return {
+      cockpitPath,
+      templatesDir,
+      callerScope: () => "driver",
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+    };
+  }
+
+  test("per-member name match wins — each child member inherits its parent namesake's claudeAccount", async () => {
+    await writeParentTeam([
+      { name: "lead", role: "lead", claudeAccount: "personal" },
+      { name: "planner", role: "planner", claudeAccount: "personal" },
+      { name: "reviewer", role: "reviewer", claudeAccount: "icloud" },
+      { name: "fe-1", role: "member", claudeAccount: "ifca" },
+    ]);
+    await spawnEpic(["e-aa01", "--from", "parent-team"], driverOpts());
+    const child = await readChild("e-aa01");
+    const byName = Object.fromEntries(child.members.map((m: { name: string }) => [m.name, m]));
+    expect(byName.lead.claudeAccount).toBe("personal");
+    expect(byName.planner.claudeAccount).toBe("personal");
+    expect(byName.reviewer.claudeAccount).toBe("icloud");
+    expect(byName["fe-1"].claudeAccount).toBe("ifca");
+  });
+
+  test("team-default fallback — child members without a parent namesake inherit the parent's first-member claudeAccount", async () => {
+    // Parent has different member names than the default roster.
+    await writeParentTeam([
+      { name: "alpha", role: "lead", claudeAccount: "personal" },
+      { name: "bravo", role: "planner", claudeAccount: "icloud" },
+    ]);
+    await spawnEpic(["e-aa02", "--from", "parent-team"], driverOpts());
+    const child = await readChild("e-aa02");
+    // All 4 default-roster members fall back to teamDefault = "personal"
+    // (the first parent member's claudeAccount).
+    for (const m of child.members) {
+      expect(m.claudeAccount).toBe("personal");
+    }
+  });
+
+  test("does NOT overwrite roster entries that already specify claudeAccount", async () => {
+    // Custom roster preset where one member pins its own account.
+    await writeFile(
+      join(templatesDir, "pinned.json"),
+      JSON.stringify({
+        members: [
+          { name: "lead", role: "lead", tui: "claude", claudeAccount: "ifca" },
+          { name: "fe-1", role: "member", lane: "fe", tui: "claude" },
+        ],
+      }),
+    );
+    await writeParentTeam([
+      { name: "lead", role: "lead", claudeAccount: "personal" },
+      { name: "fe-1", role: "member", claudeAccount: "personal" },
+    ]);
+    await spawnEpic(
+      ["e-aa03", "--from", "parent-team", "--roster", "pinned"],
+      driverOpts(),
+    );
+    const child = await readChild("e-aa03");
+    const byName = Object.fromEntries(child.members.map((m: { name: string }) => [m.name, m]));
+    // Roster-pinned value preserved; non-pinned member inherits.
+    expect(byName.lead.claudeAccount).toBe("ifca");
+    expect(byName["fe-1"].claudeAccount).toBe("personal");
+  });
+
+  test("parent team.json with no claudeAccount anywhere — child members unchanged (no synthetic injection)", async () => {
+    await writeParentTeam([
+      { name: "lead", role: "lead" },
+      { name: "planner", role: "planner" },
+    ]);
+    await spawnEpic(["e-aa04", "--from", "parent-team"], driverOpts());
+    const child = await readChild("e-aa04");
+    for (const m of child.members) {
+      expect(m.claudeAccount).toBeUndefined();
+    }
+  });
+
+  test("parent team.json missing — early return, child members unchanged (regression guard for the helper's no-parent-file path)", async () => {
+    // Default beforeEach creates parentRoot WITHOUT .atmux/team.json,
+    // so this test verifies the early-return branch at the top of
+    // inheritClaudeAccount (the originally-broken path before 2674670
+    // was a no-op that left members un-inherited — same observable as
+    // the no-file case, so this is the contract-level guard).
+    await spawnEpic(["e-aa05", "--from", "parent-team"], driverOpts());
+    const child = await readChild("e-aa05");
+    for (const m of child.members) {
+      expect(m.claudeAccount).toBeUndefined();
+    }
+  });
+});
+
 // ---------- Refusal paths ----------
 
 describe("spawnEpic — refusal paths", () => {

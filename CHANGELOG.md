@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📐 Documented — `claudeAccount` inheritance contract for `spawn-epic` (ADR-090 §Amendment 2026-05-20, t-72f90a08)
+
+Retroactive coverage for the 2026-05-16 dogfood regression fix that landed at commit `2674670` ("fix(epic-team): two regressions caught by 2026-05-16 dogfood") without the same-commit unit test + ADR §Amendment its acceptance criteria required. Closes t-72f90a08 (P0).
+
+- **5 unit tests** in `tests/unit/verbs/team/spawn-epic.test.ts` (`describe spawnEpic — claudeAccount inheritance from parent`) covering all four rules of the inheritance contract: per-member name match, team-default fallback, roster-pin precedence, and no-account-parent no-op. All 20 tests in the file pass; spawn-epic.ts coverage advances per `inheritClaudeAccount` helper at lines 506–545.
+- **ADR-090 §Amendment 2026-05-20** documents the contract surface — gives future roster preset authors + reviewers a citable reference instead of relying on the helper's inline doc-comment.
+- Memory `feedback_spawn_epic_claude_account_inheritance_gap.md` remains the operator-workaround anchor; the §Amendment cross-refs it for traceability.
+
+Cross-refs: [ADR-090 §Amendment 2026-05-20](docs/adr/090-epic-team-lifecycle.md), `src/verbs/team/spawn-epic.ts::inheritClaudeAccount`, t-72f90a08.
+
 ### 🟢 Shipped — sentinel epic-team coverage + atmux release verb + W3 self-heal + bounded tick concurrency (release sweep 2026-05-20, t-1fad1f12)
 
 Headline: **sentinel epic-team coverage (dynamic discovery to follow) + `atmux release` one-shot deploy verb + W3 self-heal in `atmux doctor --fix` + bounded sentinel tick concurrency**. Closes the ~30h gap between code-shipped and code-deployed that hid the original t-186d5910 silent-member-death class, plus adds the operator surface to keep that gap closed permanently.

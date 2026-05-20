@@ -384,3 +384,21 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
 
 **Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+
+## §Amendment 2026-05-20 — `claudeAccount` inheritance contract (t-72f90a08)
+
+Closes a 2026-05-16 dogfood regression surfaced by the first real epic-team spawn (`e-fbef65d7`): the default roster preset shipped without `claudeAccount`, so every spawned cage member hit `Please run /login · API Error: 401` on first bootstrap. Driver workaround was `jq`-patch the child `team.json` post-spawn + `atmux stop --force` + `atmux start` (6/7 bootstrapped cleanly afterwards). The proper fix is roster-synthesis-time inheritance from the parent, documented here so future roster preset additions can't silently regress the same way.
+
+**Contract** — `spawn-epic` MUST inherit `claudeAccount` from the parent team's per-member entries onto roster members that don't already specify one:
+
+1. **Per-member name match wins.** For each roster member, look up the parent member with the same `.name`; if the parent carries `claudeAccount`, the child member inherits it.
+2. **Team-default fallback.** Roster members whose name is absent from the parent (e.g. lane-indexed `fe-1` against a parent without `fe-1`) inherit the parent's first-found `claudeAccount` — preserves the no-401-on-bootstrap invariant when the roster names diverge from the parent's roster.
+3. **Roster-pin wins.** Roster entries that already specify `claudeAccount` are NEVER overwritten by inheritance — the preset author's explicit choice takes precedence (e.g. an `ifca` member inside a `personal`-account parent stays `ifca`).
+4. **No-account parent ⇒ no-op.** If the parent's `team.json` is unreadable OR has no `claudeAccount` anywhere, inheritance is a no-op (returns members unchanged). The downstream `loadTeam` schema validation surfaces a misconfig more clearly than a synthetic error would.
+
+**Concrete impl**: `src/verbs/team/spawn-epic.ts::inheritClaudeAccount` (helper added 2026-05-16 at commit `2674670`, "fix(epic-team): two regressions caught by 2026-05-16 dogfood"). Same-commit test coverage was missed at the time; landed retroactively at t-72f90a08 (5 unit tests in `tests/unit/verbs/team/spawn-epic.test.ts` covering all four rules above).
+
+**Cross-refs:** Memory `feedback_spawn_epic_claude_account_inheritance_gap.md` (workaround anchor) · ADR-091 §Decision-anchor #3 (sibling marker-shape consistency).
+
+**Filed via** t-72f90a08 (docs role, 2026-05-20).
