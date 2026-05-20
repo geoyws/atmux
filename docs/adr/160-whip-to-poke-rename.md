@@ -1,6 +1,6 @@
 # ADR-160: whip → poke rename — SV register sweep, atmux-internal scope
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-16
 **Driver-ref**: 2026-05-16 driver session — SV/Reddit-eng register sweep; `whip` carries punitive overtone (worker-with-a-lash); `poke` is engineer-vernacular for the periodic-nudge action the role actually performs.
 **Parent EPIC**: t-827d3072 (this ADR is the umbrella; TR1-TR4 filed in same session per [[feedback_decomp_same_session_with_deps]]).
@@ -198,3 +198,10 @@ property is structurally preserved by the consolidated runTick loop.
 - Driver-ref: 2026-05-16 driver session.
 - Memory [[feedback_claude_skills_dotfiles_territory]] — `~/.claude/skills/whip/` rename is OUT OF SCOPE.
 - Project [CLAUDE.md](../../CLAUDE.md) §Docs Discipline.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

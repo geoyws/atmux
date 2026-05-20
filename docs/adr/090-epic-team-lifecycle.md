@@ -1,6 +1,6 @@
 # ADR-090: Epic-team lifecycle — `spawn-epic` / `dissolve-epic` verbs + `TeamEpic` schema + roster preset
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-15
 **Driver-ref**: `.atmux/driver-inbox.md` 14:03 MYT 2026-05-13 §Pillar 4 (lines 3054–3069) + §Pillar 3 EPIC-Task linkage (lines 3036–3052) + §Open call #3 (auto-merge gitter ownership, line 3137) + §Open call #5 resolved (EPIC-done definition, line 3140) + §Files modified (line 3088 schema citation).
 **Parent Task**: t-e576dd43 (team-of-teams umbrella). **Authored under**: t-6f80c4cb (ADR seq 4/6, DRAFT only).
@@ -377,3 +377,10 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 - `.atmux/reviewer-preflag-ADR089-091.md` §ADR-090 (7 anchors).
 - `.atmux/audits/adr-089-091-adjacent-class-2026-05-13.md` §Class 1 (4 schema-field recs) + §Class 3 carve-out.
 - Project [CLAUDE.md](../../CLAUDE.md) §Testing Discipline (trunk-signoff test-coverage gate per §Decision-anchor #5) + §Docs Discipline (same-commit doc updates) + §Push Policy (epic-team's `<base>-epic-<epicId>` branches fall under `<dev>-staging` shape — auto-push allowed).
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

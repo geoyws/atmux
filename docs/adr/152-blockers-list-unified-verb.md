@@ -1,6 +1,6 @@
 # ADR-152: `atmux blockers list` — unified verb fans across 7 surfaces with normalized rows + `blocker_class` taxonomy
 
-**Status**: proposed (2026-05-16, ships in same commit as T1 impl per planner-deferred decomp note in t-8f3061ef body)
+**Status**: accepted (2026-05-16, ships in same commit as T1 impl per planner-deferred decomp note in t-8f3061ef body)
 **Date**: 2026-05-16
 **Author**: atmux team (driver complaint c-1d28fc72; impl by up-impl)
 **Parent task**: t-8f3061ef
@@ -183,3 +183,10 @@ Same-commit doc per `/CLAUDE.md §Docs Discipline` — the verb is a documented 
 - ADR-151 (unblocker) — primary downstream consumer of the JSON form.
 - [ADR-148](148-commit-cadence-truth-signal.md) — sibling "single canonical truth signal" pattern; `blockers list` is to "what's blocked" what cadence is to "what's working".
 - Complaint c-1d28fc72 — original surface-of-the-need.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

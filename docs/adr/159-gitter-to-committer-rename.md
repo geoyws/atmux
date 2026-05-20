@@ -1,6 +1,6 @@
 # ADR-159: gitter → committer rename — SV register sweep, OSS-canon vocabulary
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-16
 **Driver-ref**: 2026-05-16 driver session — SV/Reddit-eng register sweep; chat-app brand collision on `gitter`.
 **Parent EPIC**: t-5081041c (this ADR is the umbrella; TR1-TR4 filed in same session per [[feedback_decomp_same_session_with_deps]]).
@@ -181,3 +181,10 @@ TR3 (schema accept-both + transform + cron alias + tests) shipped via `4bceed9 f
 - `gitterSweepIntervalOverride` (internal option field) — typed refactor with multi-file rename; deferred to a follow-up if/when surface area grows.
 
 **Verb-name dispatcher**: `atmux gitter --sweep` alias retained in `src/cli.ts` until the next release per §Decision-anchor #1. Operators' pre-existing crontabs (still emitting the legacy verb) continue to work; the alias drop and the cron-emitter switch are now decoupled — new `atmux start` writes the canonical form, old crontabs keep parsing until manually refreshed.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

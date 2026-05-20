@@ -1,6 +1,6 @@
 # ADR-161: default-member `_-prefix` convention + window-name format split + topographic-normalization verbs
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-16
 **Driver-ref**: 2026-05-16 driver session — operator: apply ADR-135 D2 `_-prefix` convention from cockpit-roles (`_superdriver` / `_medic` / `_martinet`) to in-team default members. Plus ship the missing topographic-normalization verbs (sort/move/swap).
 **Parent EPIC**: t-2d8363f4 (this ADR is the umbrella; TR1-TR4 filed in same session per [[feedback_decomp_same_session_with_deps]]).
@@ -260,3 +260,10 @@ Observed 2026-05-18 on the atmux parent cage (4-day uptime; `🧭-lead` / `🎯-
 **Test coverage** — T7 unit at `tests/unit/core/common.test.ts` (86c0e4a, 4 cases on `resolveWindowWithRenameShim` covering canonical-exists / hyphen-form-renamed / no-separator-renamed / neither-throws). Per-wire shim coverage landed alongside each commit: 5 cases in `send.test.ts` (1182e66), 4 cases in `tell-lead.test.ts` (0dcffae), 11 cases in `doctor.test.ts` (22a2df6 — covering cockpit-walk multi-team, current-team-vs-cockpit dedup, role-undefined silent, exempt-role silent).
 
 §EPIC e-a3077ca0 done items satisfied: T1 helper + T2-T6 wires + T7 unit + T8 probe + this §Amendment + the CHANGELOG bullet + the `feedback_atmux_dispatch_emoji_window_bug` memory cross-link (resolved as of 2026-05-18). Reviewer-trunk-signoff fires when CHANGELOG + Amendment land — both in this commit.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

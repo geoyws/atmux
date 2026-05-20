@@ -1,6 +1,6 @@
 # ADR-092: Cross-team `tell-lead --team <name>` — cockpit-walk lookup + caller-scope gate
 
-**Status**: proposed (2026-05-16, ships in same commit as impl T1 per planner-deferred decomp note in t-5f20ba85 body)
+**Status**: accepted (2026-05-16, ships in same commit as impl T1 per planner-deferred decomp note in t-5f20ba85 body)
 **Date**: 2026-05-16
 **Author**: atmux team (parent EPIC t-e576dd43; impl by up-impl)
 **Parent task**: t-5f20ba85 (ADR-092 impl)
@@ -135,3 +135,10 @@ ADR-091 T12 (epic-merge conflict surface) currently uses `atmux flag add` as the
 - ADR-058 (cage-tier naming, forward-reference) — cage tier; cross-team routing respects Tier-1 boundaries (D5).
 - Task t-c2e544b6 — sibling e2e (parent ↔ epic-lead round-trip + doctor D8/D9 extends).
 - [ADR-099](099-error-handling.md) — `ConfigError` / BSD exit code mapping (`EX_NOPERM=77` for refusal).
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

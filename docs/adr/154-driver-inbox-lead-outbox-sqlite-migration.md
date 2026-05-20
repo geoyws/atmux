@@ -1,6 +1,6 @@
 # ADR-154: Driver-inbox + lead-outbox SQLite migration — markdown → canonical SQLite tables with rendered markdown view
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-15
 **Author**: atmux team (driver-claude-sopx complaint c-96e5a8f2, 2026-05-15 /bruh sweep 00:17 MYT)
 **Relates**: [ADR-060](./060-kanban-sqlite-canonical.md) (kanban SQLite canonical store), [ADR-076](./076-inboxes-sqlite-migration.md) (member inboxes → SQLite tasks-table; ELIMINATED `.atmux/inboxes/<m>.json`), [ADR-152] (blockers list — consumes these tables), [ADR-153] (auto-promotion inbox→flag at 12h — needs DB-indexable timestamps), [ADR-155] (pane-state verb — sibling drafting), [ADR-151] (unblocker role — consumer).
@@ -268,3 +268,10 @@ Reviewer / operator: any non-default flips `Status: proposed → accepted`.
 - **ADR-152 / ADR-153** — direct downstream consumers; the SQL view paths they need land in this ADR's schema.
 - **CLAUDE.md driver-inbox triage convention** — the ✅ / 📤 / ⏳ / ❌ glyph set is preserved in the markdown render (D4 table) so operator muscle-memory survives the cut.
 - **`[[project_inbox_migration_done.md]]` memory** — ADR-076 burned in a clean one-release deprecation window. ADR-154 mirrors that pattern (D7 + D8).
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

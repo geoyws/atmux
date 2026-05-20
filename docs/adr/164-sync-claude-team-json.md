@@ -1,6 +1,6 @@
 # ADR-164: `atmux sync claude-team-json` — materialize `.claude/team.json` from `.atmux/team.json`
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-16
 **Driver-ref**: `.atmux/driver-inbox.md` §🚨 16:55 MYT 2026-05-16 — sopx-lead → atmux/lead
 
@@ -159,3 +159,10 @@ The atmux convention is `members[0].name = "lead"` (short, one-word, single-quot
 - ADR-094 — c-alias spawn convention (model default resolution).
 - ADR-136 — display label vs immutable name (informs why `label` is dropped from the sync surface).
 - ADR-145 — atmux adopts gitter (drives current 20-member team layouts that surfaced this divergence).
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

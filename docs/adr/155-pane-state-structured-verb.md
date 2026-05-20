@@ -1,6 +1,6 @@
 # ADR-155: `atmux pane-state` — structured TUI-viewport verb to replace tail-10 heuristics
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-16
 **Author**: atmux team (driver-claude-sopx complaint `c-6cd891d1` + sopx-side downstream `c-068eba4d` / `c-a3c3a42d`, /bruh sweep 2026-05-16 00:17 MYT)
 **Relates**: [ADR-057] (`src/core/pane-state.ts` internal classifier for `safeSendKeys`), [ADR-138](./138-verified-send-keys.md) (verified send-keys; consumes pane state for verifier policy), [ADR-148](./148-commit-cadence-truth-signal.md) (cadence is canonical truth; pane-state is the proxy), [ADR-077] (medic substrate; consumes pane-state), [ADR-133](./133-medic-rename.md) (medic rename; carries the pane-state read in its observe loop), [ADR-132](./132-pluggable-martinet.md) (martinet observe-loop; primary pane-state consumer), [ADR-151] (unblocker role; uses `runtime_state=dead` signal for reanimation), [ADR-152] (blockers list; joins pane-state with kanban for member-stuck classification), [ADR-154](./154-driver-inbox-lead-outbox-sqlite-migration.md) (sibling /bruh sweep draft).
@@ -253,3 +253,10 @@ Reviewer / operator: any non-default flips `Status: proposed → accepted`.
 - **ADR-151 unblocker role** — the `runtime_state=dead` signal is unblocker's reanimation trigger. ADR-155 makes that signal queryable, which is what makes ADR-151's authority enforceable in code (without a structured "dead" signal, unblocker would re-implement bespoke PID checks).
 - **`[[feedback_decomp_same_session_with_deps]]` memory** — T2-T6 execution slices are filed in the same session with populated deps, per the established pattern.
 - **`[[project_martinet_pattern]]` memory** — martinet is the primary cheap-model consumer; ADR-155 is one of the load-bearing primitives that makes the cheap-model-first principle tractable.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

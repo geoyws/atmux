@@ -1,6 +1,6 @@
 # ADR-083: cron-install port scope — `atmux start` auto-install glue (refs ADR-051)
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-05-12
 **Owner:** parity-cron-impl
 
@@ -125,3 +125,10 @@ Deferred items above remain *operational footguns* of varying severity:
 the most painful is the missing `cron-remove` on `atmux stop` (stale
 blocks fire forever until manually scrubbed), but the install-side
 strip-by-atmux_dir pass prevents the historical tmux-crash failure mode.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
