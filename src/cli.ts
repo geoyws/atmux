@@ -84,6 +84,7 @@ import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { story } from "./verbs/story.ts";
+import { release } from "./verbs/release.ts";
 import { dispatchSyncSubverb } from "./verbs/sync.ts";
 import { task } from "./verbs/task.ts";
 import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
@@ -229,6 +230,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return dispatchMemberSubverb(argv.slice(1));
     case "sync":
       return dispatchSyncSubverb(argv.slice(1));
+    case "release":
+      return release(argv.slice(1));
     case "tell-lead":
       return tellLead(argv.slice(1));
     case "claim":
