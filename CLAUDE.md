@@ -55,3 +55,7 @@ Preclear at every phase boundary — phase = "shipped X end-to-end" (committed +
 ## Migrators
 
 Roster lives at `.atmux/team.json`; sync to legacy `.claude/team.json` via `atmux sync claude-team-json` (see [docs/RUNBOOK-sync.md](docs/RUNBOOK-sync.md) / [ADR-164](docs/adr/164-sync-claude-team-json.md)).
+
+## Cron discipline
+
+Before arming a recurring cadence (OS crontab block, Claude Code `CronCreate`, or `ScheduleWakeup`-driven `/Xloop`), check whether the same arm already exists; skip the duplicate if so. Contract is per [ADR-192](docs/adr/192-cron-arm-idempotency-contract.md) — three rules: (1) pre-arm `CronList` with fuzzy prompt-hash + interval-exact match, (2) Levenshtein-normalized-tokens fuzzy default (operator-configurable threshold), (3) dynamic-paced loops mark a state-file at `~/.atmux/state/loop-arm-<hash>.json` and re-check at wake-time. Impl ownership for the `/Xloop` skills lives in operator dotfiles (claude-skills tree, per memory `feedback_claude_skills_dotfiles_territory`); atmux carries the ADR + cross-refs only. OS-crontab idempotency is already covered via `atmux start`'s sandwich markers (`# >>> atmux:team=<name>` blocks).
