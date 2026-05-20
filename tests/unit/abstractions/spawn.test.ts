@@ -301,3 +301,60 @@ describe("spawnInheritStdio (ADR-180)", () => {
     expect(code).toBe(0);
   });
 });
+
+// ---------- t-681e5b91 — ATMUX_SPAWN_TIMEOUT_MS env override ----------
+
+import { afterEach, beforeEach } from "bun:test";
+import { resolveDefaultTimeoutMs } from "../../../src/abstractions/spawn.ts";
+
+describe("resolveDefaultTimeoutMs — ATMUX_SPAWN_TIMEOUT_MS env override", () => {
+  const original = process.env.ATMUX_SPAWN_TIMEOUT_MS;
+
+  beforeEach(() => {
+    delete process.env.ATMUX_SPAWN_TIMEOUT_MS;
+  });
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.ATMUX_SPAWN_TIMEOUT_MS;
+    else process.env.ATMUX_SPAWN_TIMEOUT_MS = original;
+  });
+
+  test("default is 30_000ms when env unset", () => {
+    expect(resolveDefaultTimeoutMs()).toBe(30_000);
+  });
+
+  test("default is 30_000ms when env empty string", () => {
+    process.env.ATMUX_SPAWN_TIMEOUT_MS = "";
+    expect(resolveDefaultTimeoutMs()).toBe(30_000);
+  });
+
+  test("honors valid positive integer env (sopx submodule-init 120s)", () => {
+    process.env.ATMUX_SPAWN_TIMEOUT_MS = "120000";
+    expect(resolveDefaultTimeoutMs()).toBe(120_000);
+  });
+
+  test("honors fractional positive numeric env (Number coerces)", () => {
+    process.env.ATMUX_SPAWN_TIMEOUT_MS = "45000.5";
+    expect(resolveDefaultTimeoutMs()).toBe(45_000.5);
+  });
+
+  test("falls back to 30_000ms when env is non-numeric", () => {
+    process.env.ATMUX_SPAWN_TIMEOUT_MS = "fast";
+    expect(resolveDefaultTimeoutMs()).toBe(30_000);
+  });
+
+  test("falls back to 30_000ms when env is zero", () => {
+    process.env.ATMUX_SPAWN_TIMEOUT_MS = "0";
+    expect(resolveDefaultTimeoutMs()).toBe(30_000);
+  });
+
+  test("falls back to 30_000ms when env is negative", () => {
+    process.env.ATMUX_SPAWN_TIMEOUT_MS = "-1000";
+    expect(resolveDefaultTimeoutMs()).toBe(30_000);
+  });
+
+  test("falls back to 30_000ms when env is Infinity literal", () => {
+    process.env.ATMUX_SPAWN_TIMEOUT_MS = "Infinity";
+    expect(resolveDefaultTimeoutMs()).toBe(30_000);
+  });
+});
