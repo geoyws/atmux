@@ -127,12 +127,39 @@ const TUI_READY_RE = /❯|tokens/;
  *  `tokens · <int>%`, both shapes claude's status line uses. */
 const TOKENS_MOVED_RE = /(?<![0-9])\d+k\s*(?:tokens|↓)|tokens\s*·\s*\d+%/i;
 
+/** Sentinel: claude has entered an active thinking / extended-context
+ *  turn but hasn't yet emitted enough tokens for the `Nk tokens` footer
+ *  to render. Matches the `✻ Churned for Xm Ys` / `✻ Worked for Xm Ys`
+ *  / `✻ thinking with N` status-line shapes. Required because a member
+ *  spawned into a long-thinking-on-first-turn (>2 min on xhigh + dense
+ *  brief paste) can be genuinely alive + productive while the existing
+ *  `tokensMoved` check still reads false — observed 2026-05-20 on sopx
+ *  epic-team viewers (e-24b6b90d/planner, e-de96991b/fe-1) where medic
+ *  bootstrap-verify declared false-negative `failed` on alive members
+ *  (t-a1db24dd). Single-shot match — no cross-probe increment check
+ *  (parity with `tokensMoved` which also accepts any positive signal). */
+const THINKING_ACTIVE_RE = /[✻✶✽✺✷]\s*(?:Churned|Worked|thinking)\s+(?:for\s+\d+[hms]|with\s+\d+)/i;
+
 export function isTuiReady(captured: string): boolean {
   return TUI_READY_RE.test(captured);
 }
 
 export function tokensMoved(captured: string): boolean {
   return TOKENS_MOVED_RE.test(captured);
+}
+
+export function thinkingActive(captured: string): boolean {
+  return THINKING_ACTIVE_RE.test(captured);
+}
+
+/** Combined post-boot liveness predicate: tokens are flowing OR claude
+ *  is mid-thinking. Either signal proves the boot prompt landed + a
+ *  turn started; the difference is whether the turn is far enough
+ *  along to render the `Nk tokens` footer (`tokensMoved`) or still in
+ *  the thinking/agentic preamble (`thinkingActive`). Wraps both so the
+ *  pollUntil loop's single-predicate API stays clean. */
+export function bootSignalLive(captured: string): boolean {
+  return tokensMoved(captured) || thinkingActive(captured);
 }
 
 // ---------- bootClaudeMember ----------
@@ -332,7 +359,7 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
       // retry the capture). Don't short-circuit; the pane may
       // recover momentarily.
     }
-    if (tokensMoved(initialCapture)) {
+    if (bootSignalLive(initialCapture)) {
       return { status: "already-booted", attempts: 0 };
     }
   }
@@ -447,7 +474,7 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
     // Post-send: watch tokens. C-m verified to have cleared the
     // composer at this point; tokensMoved confirms claude actually
     // started a turn (vs. composer-cleared-but-then-stuck).
-    const moved = await pollUntil(tokensMoved, {
+    const moved = await pollUntil(bootSignalLive, {
       tmux: opts.tmux,
       target: opts.paneTargetString,
       intervalMs: postBootInterval,

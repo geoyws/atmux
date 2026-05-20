@@ -18,6 +18,8 @@ import {
   isTuiReady,
   renderBootFailureNotice,
   renderBootPrompt,
+  bootSignalLive,
+  thinkingActive,
   tokensMoved,
 } from "../../../src/core/boot-claude.ts";
 
@@ -198,6 +200,56 @@ describe("tokensMoved", () => {
     // Note: regex matches 0k too. Document the corner: a freshly-spawned
     // claude shows no count footer at all, so this corner is academic.
     expect(tokensMoved("0k tokens")).toBe(true);
+  });
+});
+
+// ---------- thinkingActive + bootSignalLive (t-a1db24dd) ----------
+
+describe("thinkingActive", () => {
+  test("matches `✻ Churned for Xm Ys`", () => {
+    expect(thinkingActive("✻ Churned for 2m 19s")).toBe(true);
+  });
+  test("matches `✻ Worked for Xm Ys`", () => {
+    expect(thinkingActive("✻ Worked for 1m 30s")).toBe(true);
+  });
+  test("matches `✻ Worked for Xh`", () => {
+    expect(thinkingActive("✻ Worked for 3h")).toBe(true);
+  });
+  test("matches `✻ thinking with N`", () => {
+    expect(thinkingActive("✻ thinking with 4123")).toBe(true);
+  });
+  test("matches alternate spinner glyphs (✶ / ✽ / ✺ / ✷)", () => {
+    expect(thinkingActive("✶ Churned for 1m 5s")).toBe(true);
+    expect(thinkingActive("✽ thinking with 200")).toBe(true);
+    expect(thinkingActive("✺ Worked for 30s")).toBe(true);
+    expect(thinkingActive("✷ Churned for 2h")).toBe(true);
+  });
+  test("MISS: empty → false", () => {
+    expect(thinkingActive("")).toBe(false);
+  });
+  test("MISS: spinner glyph alone with no thinking-verb → false", () => {
+    expect(thinkingActive("✻ (no verb)")).toBe(false);
+  });
+  test("MISS: thinking verb without spinner glyph → false (guard against narrative text matches)", () => {
+    expect(thinkingActive("the planner is thinking with 5 members")).toBe(false);
+  });
+});
+
+describe("bootSignalLive", () => {
+  test("true on tokensMoved-hit", () => {
+    expect(bootSignalLive("↑ 5k ↓ 2k tokens · 12%")).toBe(true);
+  });
+  test("true on thinkingActive-hit (the t-a1db24dd false-negative fix)", () => {
+    expect(bootSignalLive("✻ Churned for 2m 19s")).toBe(true);
+  });
+  test("true on both signals present", () => {
+    expect(bootSignalLive("✻ Worked for 1m 30s\n↑ 1k ↓ 0k tokens")).toBe(true);
+  });
+  test("MISS: empty → false", () => {
+    expect(bootSignalLive("")).toBe(false);
+  });
+  test("MISS: TUI-ready glyph alone → false (TUI rendered but turn hasn't started)", () => {
+    expect(bootSignalLive("❯")).toBe(false);
   });
 });
 
