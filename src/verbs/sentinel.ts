@@ -456,31 +456,51 @@ export async function sentinelTick(
     return { name: team.name, state };
   };
 
-  const settled = await Promise.allSettled(teams.map(perTeamTick));
-  for (let i = 0; i < settled.length; i += 1) {
-    const result = settled[i];
-    const team = teams[i];
-    if (team === undefined) continue;
-    if (result === undefined) continue;
-    if (result.status === "fulfilled") {
-      teamStates[result.value.name] = result.value.state;
-    } else {
-      // perTeamTick already wraps observe/decide/apply in try/catch — a
-      // rejected promise here means the framing code itself threw (e.g.
-      // resolveSentinelImplName / build constructor). Synthesize an
-      // error-only state row so the team is still represented in the
-      // snapshot. This preserves the invariant "every iterated team
-      // appears in state.teams[]" that the doctor probe + status verb
-      // rely on.
-      const cause = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      logger.warn(`sentinel: ${team.name}: tick framing failed — ${cause}`);
-      teamStates[team.name] = {
-        impl: "claude",
-        tickedAt: Date.now(),
-        actions: [],
-        escalated: false,
-        error: `tick framing: ${cause}`,
-      };
+  // Bounded concurrency (operator constraint 2026-05-20: 'don't spike
+  // CPU and RAM'). Naive Promise.allSettled fires N teams simultaneously
+  // — with N=18 epic-teams + parent teams that's 18 cursor-agent spawns
+  // + 18 tmux capture-pane probes racing for CPU + GB-class memory
+  // peaks. Chunked dispatch caps peak concurrency to MAX_PARALLEL and
+  // serializes the rest:
+  //
+  //   - 18 teams sequential = ~110s wall + 1 cursor-agent at a time
+  //   - 18 teams unbounded  = ~6-10s wall + 18 cursor-agents (RAM spike)
+  //   - 18 teams @ N=4      = ~30-40s wall + 4 cursor-agents (capped)
+  //
+  // The middle ground keeps wall-clock well under the 270s W3 loop
+  // cadence (4-5x headroom) while bounding RAM at ~4 × per-agent. The
+  // chunk size is hard-coded for v1; the t-b51f085b follow-up promotes
+  // it to cockpit.sentinel.maxParallel for operator tuning.
+  const MAX_PARALLEL = 4;
+  for (let i = 0; i < teams.length; i += MAX_PARALLEL) {
+    const chunk = teams.slice(i, i + MAX_PARALLEL);
+    const settled = await Promise.allSettled(chunk.map(perTeamTick));
+    for (let j = 0; j < settled.length; j += 1) {
+      const result = settled[j];
+      const team = chunk[j];
+      if (team === undefined) continue;
+      if (result === undefined) continue;
+      if (result.status === "fulfilled") {
+        teamStates[result.value.name] = result.value.state;
+      } else {
+        // perTeamTick already wraps observe/decide/apply in try/catch — a
+        // rejected promise here means the framing code itself threw (e.g.
+        // resolveSentinelImplName / build constructor). Synthesize an
+        // error-only state row so the team is still represented in the
+        // snapshot. This preserves the invariant "every iterated team
+        // appears in state.teams[]" that the doctor probe + status verb
+        // rely on.
+        const cause =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
+        logger.warn(`sentinel: ${team.name}: tick framing failed — ${cause}`);
+        teamStates[team.name] = {
+          impl: "claude",
+          tickedAt: Date.now(),
+          actions: [],
+          escalated: false,
+          error: `tick framing: ${cause}`,
+        };
+      }
     }
   }
 
