@@ -179,7 +179,7 @@ The `branch-merge-state.ts::isValidTransition` already permits `conflict → in_
 Per ADR-090 §Reuse statement pattern — ZERO new abstractions:
 
 - State machine: `src/core/branch-merge-state.ts` (ADR-091 + ADR-134 shared, landed `7da4e85`).
-- Merge primitive: `src/abstractions/branch-merge.ts::mergeMember` (ADR-088 W1, landed in `a37dacc`).
+- Merge primitive: `src/abstractions/branch-merge.ts::mergeMember` (ADR-179 W1, landed in `a37dacc`).
 - Persistence: `src/core/repositories/merger-state-repo.ts` (ADR-134 T2, landed `a636dc6`).
 - Caller wrapper: `src/core/epic-merge.ts::performEpicMerge` (this ADR's impl, landed `a34fafa`).
 - Verb: `src/verbs/epic-merge.ts::epicMergeTickVerb` (this ADR's impl, landed `a34fafa`).
@@ -221,6 +221,20 @@ The `dissolved` terminal state (§Decision-anchor #6) is NOT yet in the shared `
 - **`atmux epic advance` reverse-transition verb sugar** — follow-up Task.
 - **Multi-epic resource stress test (Class 3)** — post-dogfood, tracked at t-77ae2baa.
 
+## §Amendment 2026-05-19 — Test-trust principle (fan-in trusts L1 verdict)
+
+Driver finding 2026-05-19 06:30 MYT (operator: "make sure committers/gitters don't deploy… make sure they understand that if they are merging that means tests are already passing because the epic-team has already done the merge earlier and has run tests"). The test-gate-once doctrine was implicit in this ADR's design — the `dispatchDissolve` hook fires on `merging → merged` straight from the merge step, never running a parent-side test gate. Making it **explicit** in the ADR body prevents future drift where a parent fan-in tick grows its own `bun test` invocation.
+
+**Doctrine** — tests run **once** at the layer they're authoritative for; the parent fan-in (this ADR's scope) **trusts the epic-team's intra-team test verdict** rather than re-running:
+
+1. **Layer 1 — intra-team merger** ([ADR-134](134-in-team-auto-merger.md)): when an epic-team member's branch merges back to the epic-team's own `<parentBase>-epic-<epicId>` trunk, the `team.json::autoMerge.testCommand` (default `bun test`) fires at `merging → tested`. This is the SOURCE-of-truth test layer for that branch's content — the merge state machine refuses `tested → merged` until the test outcome is recorded.
+2. **Layer 2 — epic-team fan-in** (THIS ADR's `performEpicMerge`): when the epic-team's trunk fans into the parent's base, the default `team.json::epicTeam.testGateMode = "skip"` (per [ADR-144](144-epic-team-test-gate.md) §Amendment 2026-05-19) means the state machine transitions `ready_to_merge → merging → merged` directly, **without invoking a test hook**. Tests already passed at L1; re-running would be wasteful (same suite, same SHA) and flake-prone (a flake passes once at L1 + fails on retry at L2 → false-fail revert wedge).
+3. **Escape hatch** — `testGateMode: "cage"` or `"deployed"` (config-flip in `team.json::epicTeam`) opts in to a parent-side re-test for the rare case where the epic-team's L1 tests were knowingly incomplete (e.g. skipped flake, partial coverage on a fast-moving epic). Operator-driven, not auto-fired.
+
+**Reviewer surface** — if a committer or epic-merge code path is observed re-running tests on a default fan-in (no `testGateMode` override in `team.json`), file `atmux flag add --severity high --subject "[committer/epic-merge] re-test on default fan-in violates ADR-091 §Amendment 2026-05-19 + ADR-144 §Amendment 2026-05-19"`. Brief carrier: [`templates/briefs/committer.md`](../../templates/briefs/committer.md) §Test-trust principle + §Hard rules (both modes).
+
+**Filed via** t-afcc71af (P1 doctrine clarification, 2026-05-19).
+
 ## Cross-references
 
 - [ADR-018](018-per-team-tmuxdir.md) — per-team tmpdir; epic-team's nested `/tmp/atmux-<parent>/epics/<epicId>/` re-uses this primitive (ADR-089 §Pillar 1).
@@ -229,7 +243,7 @@ The `dissolved` terminal state (§Decision-anchor #6) is NOT yet in the shared `
 - [ADR-082](082-worktree-isolation-per-member.md) — per-member worktree primitive; HARD CONFLICT carve-out at epic-team scope per ADR-090 §Decision-anchor #3.
 - [ADR-084](084-worktree-per-member-branch-model.md) — per-member-branch model; per-member intra-team is ADR-134's scope, epic-team is THIS ADR's scope.
 - [ADR-087](087-atmux-stop-soft.md) — soft-stop primitive; consumed by `dissolve-epic` (ADR-090) which this ADR's dispatchDissolve hook invokes.
-- [ADR-088](088-per-member-branch-fan-in.md) — per-member-branch fan-in; sibling pattern at intra-team scope, primitives shared.
+- [ADR-179](179-per-member-branch-fan-in.md) — per-member-branch fan-in; sibling pattern at intra-team scope, primitives shared.
 - [ADR-089](089-hierarchical-cockpit.md) — recursive `Cockpit.sessions[]`; the cron emission ground-truth depends on the cockpit walk finding the epic-team session entry.
 - [ADR-090](090-epic-team-lifecycle.md) — epic-team lifecycle (TeamEpic schema + roster + spawn-epic + dissolve-epic verbs). This ADR consumes ADR-090's schema fields verbatim; ADR-090's §Decision-anchor #5 defines the EPIC-done gate THIS ADR fires on.
 - [ADR-092](092-cross-team-tell-lead.md) — cross-team tell-lead + caller-scope gate; the SECOND-line conflict surface ships when ADR-092 lands.

@@ -393,7 +393,7 @@ The legacy `atmux report` cron line — pre-discorder, lead-composed report — 
 
 Optional per-team complaint-adjudicator member, spawned at `role=ombudsman, lane=misc` (emoji `⚖️`). Per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1, reads open complaints (filed by medic / whip-velocity-gate / operator / CLI), triages each into one of five outcomes (file epic / file task / wontfix / already-addressed / defer), and writes its adjudication entry to the day's release-notes file. Surface-only on the code side — never claims code Tasks, never plans, only writes kanban + complaint resolutions.
 
-**Why**: the complaint *filing* side has named owners (medic per ADR-077, whip per ADR-087), but the *adjudicating* side has none — open complaints linger indefinitely until the operator triages them by hand. Ombudsman closes that loop per ADR-147 §Context.
+**Why**: the complaint *filing* side has named owners (medic per ADR-077, whip per ADR-177), but the *adjudicating* side has none — open complaints linger indefinitely until the operator triages them by hand. Ombudsman closes that loop per ADR-147 §Context.
 
 **Wake mechanism** (per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D2): **event-driven, NOT whip-polled**. A sentinel file `.atmux/state/ombudsman-pending.json` is written-through by `atmux complaints file|resolve`; a cron line `atmux ombudsman tick` (default 15min via `team.ombudsman.tickIntervalMins`) fast-paths no-op when the sentinel is empty and wakes the ombudsman pane via verified send-keys ([ADR-138](docs/adr/138-verified-send-keys.md)) when non-empty. Lane-tick MUST NOT inject `atmux claim --next --as ombudsman` — the role is outside the pull-model cadence.
 

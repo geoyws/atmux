@@ -140,7 +140,7 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 
 ## Out of scope
 
-- **Renumbering colliding ADR-088 files** — two ADR-088 files exist on diverged branches (`088-worktree-submodule-init.md` + `088-per-member-branch-fan-in.md`); separate cleanup Task per atmux CLAUDE.md "Single ADR tree per project" convention. Not blocking this ADR.
+- **Renumbering colliding ADR-088 files** — ~~two ADR-088 files exist on diverged branches (`088-worktree-submodule-init.md` + `088-per-member-branch-fan-in.md`); separate cleanup Task per atmux CLAUDE.md "Single ADR tree per project" convention. Not blocking this ADR.~~ **Resolved 2026-05-18 via t-88da6978**: per-member-branch fan-in renumbered to ADR-179; submodule-init retains ADR-088. Sibling ADR-087 collision (whip-velocity-gate vs atmux-stop-soft) also resolved same day via t-fe51cf64 (velocity-gate → ADR-177).
 - **Operator dotfiles cockpit-skill rename surfaces** — ADR-133 TR8 (`~/.claude/skills/superdoctor/ → medic/`) is the precedent; if a parallel cockpit-skill exists for `cockpit-session` it gets a sibling driver-only TR. Out of repo scope per ADR-133 §D3.
 - **Hot-rename of arbitrary member names** — ADR-136 covers the id-vs-label split for live-team member renames. ADR-135 only touches the *format* of `<emoji><member>` window names, not member identity.
 - **Window-order changes** — D2 only renames; window indices stay (W1=_superdriver, W2=_medic, W3=_martinet, W4..N=team viewers). Order changes belong to a follow-up ADR if needed.

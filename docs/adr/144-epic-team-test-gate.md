@@ -236,6 +236,24 @@ Per Task t-45d59eeb the capstone work shipped: three Discord templates wired at 
 - Runner-specific failed-test-name extraction (bun vs vitest vs jest vs pnpm-e2e stdout formats). The renderer's "(test names unavailable)" fallback is the v1 contract; an extraction helper can ship as a follow-up Task once a real product team needs the surface.
 - Deployed-mode PASS e2e walk requires a resolvable staging URL — exercised in production (an IFCA product team) rather than in this dogfood test. The test-gate wiring is identical at the verb layer; the DNS-unresolved test validates the same code path's FAIL surface.
 
+## §Amendment 2026-05-19 — `testGateMode: "skip"` is the doctrine default (test-trust principle, t-afcc71af)
+
+Driver finding 2026-05-19 06:30 MYT codifies a doctrine implicit in this ADR's §Decision: the schema-level default at `src/schema/team.ts::TeamEpicSchema.testGateMode` is `"skip"` (`z.enum(["skip", "cage", "deployed"]).default("skip")`), and the unit-test pin at `tests/unit/core/epic-merge.test.ts` ("testGateMode unset (default) → skip semantics (back-compat)") locks the behavior. This §Amendment makes the **doctrine** explicit:
+
+**`testGateMode: "skip"` is the default because tests are already authoritative at L1** ([ADR-134](134-in-team-auto-merger.md) intra-team merger). When an epic-team's `<parentBase>-epic-<epicId>` trunk fans into the parent's base via `atmux epic-merge tick`, the branch's content **already passed** the auto-merger's `team.json::autoMerge.testCommand` at the epic-team's own `merging → tested` transition. Running the test suite again at the L2 fan-in layer would be:
+
+1. **Wasteful** — same suite, same SHA, same expected outcome.
+2. **Flake-prone** — a flaky test that passed once at L1 may fail on retry at L2 (`testGateMode: "cage"` provisions a fresh cage; `testGateMode: "deployed"` exercises a fresh branch-staging URL with potentially different DNS/cache state). False-fail at L2 triggers `tested → test_failed → reverted` and walks back a merge that was genuinely passing — the failure mode this ADR's `revertOnFail` was supposed to protect against, **inverted by re-test**.
+3. **Doctrine-confusing** — if L1 says pass and L2 says fail, which verdict is authoritative? The test-trust principle answers definitively: L1 is the source of truth; L2's job is to fan-in, not to re-adjudicate.
+
+**`"cage"` and `"deployed"` are operator escape hatches** — for the rare case where the epic-team's L1 tests were knowingly incomplete (skipped flake, partial coverage on a fast-moving epic, intentional opt-out of bun test for a docs-only team). The operator flips `team.json::epicTeam.testGateMode` to `"cage"` or `"deployed"` explicitly; the default behavior across every newly-spawned epic-team is **skip**, and that's by design.
+
+**§Cage mode / §Deployed mode of this ADR stand verbatim** — when `testGateMode !== "skip"`, the state machine's `ready_to_merge → tested` transition routes through `runTestGate()` as documented; the cage/deployed runners (T3 + T4) still ship as the configured behavior. This §Amendment scopes only the default's doctrine — `skip` was always the back-compat default; now it's the **principled** default.
+
+**Reviewer surface** — if a committer or epic-merge code path is observed firing a parent-side test gate on a default fan-in (no `testGateMode` override in `team.json`), file `atmux flag add --severity high --subject "[committer/epic-merge] re-test on default fan-in violates ADR-144 §Amendment 2026-05-19 test-trust principle"`. Brief carriers: [`templates/briefs/committer.md`](../../templates/briefs/committer.md) §Test-trust principle + §Hard rules (both modes); cross-refs [ADR-091 §Amendment 2026-05-19](091-kanban-driven-auto-merge.md) (parent fan-in trust statement) + [ADR-134 §Amendment 2026-05-19](134-in-team-auto-merger.md) (L1 source-of-truth statement).
+
+**Filed via** t-afcc71af (P1 doctrine clarification, 2026-05-19).
+
 ## Cross-refs
 
 - [ADR-090](090-epic-team-lifecycle.md) — epic-team lifecycle; provisions cage/deployment at spawn time.

@@ -12,6 +12,7 @@
 //   atmux task move   <id> <todo|in-progress|done|blocked>
 //   atmux task mv     ↔ move
 //   atmux task assign <id> <member>
+//   atmux task update <id> [--body T] [--deps a,b] [--owner M|--unassign]
 //   atmux task rm     <id>
 //   atmux task remove ↔ rm
 //
@@ -22,7 +23,7 @@
 // CLI plumbing (flag parsing + subverb routing + tabular printing
 // for the `list` output).
 
-import { getAtmuxDir, type ResolveDirOpts, resolveCallerScope } from "../core/common.ts";
+import { getAtmuxDir, requireTeam, type ResolveDirOpts, resolveCallerScope } from "../core/common.ts";
 import { removeFromInProgress } from "../core/inbox.ts";
 import {
   addTask,
@@ -56,7 +57,8 @@ const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--js
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
 const USAGE_PRIORITY = "atmux task priority <id> <N|->";
-const USAGE_UPDATE = "atmux task update <id> [--body <text>] [--deps <a,b>]";
+const USAGE_UPDATE =
+  "atmux task update <id> [--body <text>] [--deps <a,b>] [--owner <member>|--unassign]";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
 
@@ -276,13 +278,19 @@ async function taskPriority(argv: ReadonlyArray<string>): Promise<number> {
   return 0;
 }
 
-// `atmux task update <id> [--body <text>] [--deps <a,b>]`
+// `atmux task update <id> [--body <text>] [--deps <a,b>] [--owner <member>|--unassign]`
 //
-// Mutate an existing Task's body and/or deps without touching status,
-// owner, or other fields. Empty `--body ""` clears the body; empty
-// `--deps ""` clears all upstream blockers. At least one of --body or
-// --deps must be supplied (otherwise the call is a no-op and we surface
-// it as a usage error so the operator notices the typo).
+// Mutate an existing Task's body / deps / owner without touching status
+// or other fields. Empty `--body ""` clears the body; empty `--deps ""`
+// clears all upstream blockers; `--unassign` (or `--owner ""`) sets
+// owner to null per the parking-lot convention (`feedback_task_body_no
+// _self_claim_language`). At least one of --body / --deps / --owner /
+// --unassign must be supplied; otherwise we surface a usage error so
+// the operator notices the typo. `--owner` validates against
+// `team.json::members[].name` to refuse reassignment to a phantom
+// owner (the failure mode that drove t-218b2c08 — atmux team had 8
+// blockers tagged `up-impl` after the 2026-05-16 6-core decomp; lead
+// couldn't reassign via CLI because update had no --owner flag).
 async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
   const { positional, rest } = splitFlagsAndPositionals(argv);
   const id = positional[0];
@@ -291,6 +299,9 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
   }
   let body: string | undefined;
   let deps: string[] | undefined;
+  // `owner` triple-state: `undefined` = no change, `null` = explicit unassign
+  // (parking-lot), `string` = reassign to named member.
+  let owner: string | null | undefined;
   let teamDir: string | undefined;
   let i = 0;
   while (i < rest.length) {
@@ -321,6 +332,25 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
       i += 2;
       continue;
     }
+    if (a === "--owner") {
+      const v = rest[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "task update: --owner requires a value (or use --unassign)",
+          hint: USAGE_UPDATE,
+        });
+      }
+      // Bare `--owner ""` aliases `--unassign` (parking-lot pattern). Any
+      // non-empty value is validated against team.json::members[] below.
+      owner = v.length === 0 ? null : v;
+      i += 2;
+      continue;
+    }
+    if (a === "--unassign") {
+      owner = null;
+      i += 1;
+      continue;
+    }
     if (a === "--team-dir") {
       const v = rest[i + 1];
       if (v === undefined) {
@@ -338,19 +368,36 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
       hint: USAGE_UPDATE,
     });
   }
-  if (body === undefined && deps === undefined) {
+  if (body === undefined && deps === undefined && owner === undefined) {
     throw new UsageError({
-      what: "task update: at least one of --body or --deps required",
+      what: "task update: at least one of --body / --deps / --owner / --unassign required",
       hint: USAGE_UPDATE,
     });
   }
   const dirOpts = teamDir !== undefined ? { teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);
+  // Validate --owner <member> against team.json::members[] BEFORE any
+  // mutation — refusing a typo'd name partway through a multi-flag
+  // update would leave the body/deps mutations applied with an
+  // unreassigned task, which is a worse end-state than a clean refuse.
+  if (typeof owner === "string") {
+    const team = await requireTeam(dirOpts);
+    if (!team.members.some((m) => m.name === owner)) {
+      const valid = team.members.map((m) => m.name).join(", ");
+      throw new ConfigError({
+        what: `task update: --owner '${owner}' not in team.json::members[].name`,
+        hint: `valid members: ${valid} (or use --unassign for parking-lot)`,
+      });
+    }
+  }
   if (body !== undefined) {
     await setTaskBody(atmuxDir, id, body.length === 0 ? null : body);
   }
   if (deps !== undefined) {
     await setTaskDeps(atmuxDir, id, deps);
+  }
+  if (owner !== undefined) {
+    await assignTask(atmuxDir, id, owner);
   }
   process.stdout.write(`task ${id} updated\n`);
   return 0;

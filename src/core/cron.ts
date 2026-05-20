@@ -134,7 +134,7 @@ export interface RenderCronBlockOpts {
   /** Optional `TMUX_TMPDIR=<value> ` prefix per ADR-018 (cage socket
    *  isolation). Bash equivalent: `lib/cron.sh:46-48`. */
   tmuxTmpdir?: string;
-  /** ADR-088 W7 (t-2f12839e) — transient override for the `merge-cycle`
+  /** ADR-179 W7 (t-2f12839e) — transient override for the `merge-cycle`
    *  line's cadence (minutes). When set, beats the team.merger
    *  .cycleIntervalMins config for THIS render. Used by `atmux
    *  cron-install --template merge-cycle --interval <N>` so the
@@ -306,7 +306,7 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
     out.push(`${cronEvery(laneTickMins)} ${baseEnv} lane-tick ${logTail("lane-tick")}`);
   }
 
-  // 8. ADR-088 §Decision-5 W7 — merge-cycle: bulk per-member-branch
+  // 8. ADR-179 §Decision-5 W7 — merge-cycle: bulk per-member-branch
   // fan-in. Gated on `team.merger.enabled === true`. Cadence:
   // (a) `opts.mergerIntervalOverride` (transient install-time override
   // from `cron-install --template merge-cycle --interval <N>`) wins

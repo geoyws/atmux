@@ -1,4 +1,4 @@
-// Unit tests for src/core/merger-config.ts (ADR-088 W4 / t-f9f49ded).
+// Unit tests for src/core/merger-config.ts (ADR-179 W4 / t-f9f49ded).
 //
 // Coverage (per ADR test plan + 100%-on-new-code rule):
 //   - resolveMergerConfig with no `team.merger` block → defaults

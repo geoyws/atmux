@@ -1,4 +1,6 @@
-# ADR-087: Whip Velocity-Gate — ground-truth classifier + strike counter
+# ADR-177: Whip Velocity-Gate — ground-truth classifier + strike counter
+
+> **§Amendment 2026-05-18 (t-fe51cf64) — renumbered ADR-087 → ADR-177.** The file was originally landed as `docs/adr/087-whip-velocity-gate.md` in commit 2a7db33, colliding with `docs/adr/087-atmux-stop-soft.md` (commit 3b8fd40, Status: Accepted 2026-05-15). Per atmux ADR convention (monotonic, append-only, one ADR per number; CLAUDE.md §Source-of-truth chain), the older soft-stop ADR keeps the 087 number; this ADR moves to the next free (177) — pre-flagged by the t-5d85dddb planner scope-refresh note ("ADR-087 file renumber 087-whip-velocity-gate.md → 177-*.md (planner reply forthcoming) — parent ADR ref will become ADR-177 post-renumber"). Source-commit history preserved: 2a7db33 (kernel) + eb97ea6 (V1 wiring per ADR-087 §What V1 defers, now ADR-177 §What V1 defers). All external references to the velocity-gate ADR-087 retarget to ADR-177 in the same commit; references to ADR-087 soft-stop remain unchanged. Convention precedent: b4d62da `docs(adr-176): renumber ADR-171 epic-aware-lane-drift-revert → ADR-176 (collision with trunk 086c142)` — same renumber pattern, different collision.
 
 - **Status**: proposed (deferred: whip.ts wiring + reply validation +
   action-menu UX deferred to follow-up Task **t-5d85dddb**, per
@@ -104,7 +106,7 @@ process-frozen — see t-e91fec98 §2). V1 has one symptom hash:
 
 - `crons.whipVelocityGateEnabled: boolean` (default `true`) — fleet-
   consistent shape with `crons.laneTickEnabled`. Operators flip off
-  to revert to pre-ADR-087 behavior (no velocity gate; lead self-
+  to revert to pre-ADR-177 behavior (no velocity gate; lead self-
   report wins).
 - `whip.velocityGate?: { windowMin, strikeThreshold, standbyGraceMin }` —
   all optional, defaults baked into the classifier constants
@@ -113,7 +115,7 @@ process-frozen — see t-e91fec98 §2). V1 has one symptom hash:
 
 ## What V1 ships (this commit, t-289119f2)
 
-- [x] ADR-087 (this doc), Status: proposed
+- [x] ADR-177 (this doc), Status: proposed
 - [x] `src/core/velocity.ts` — pure classifier + `shouldNudgeLeadPane`
       + `shouldIncrementStrike` helpers
 - [x] `src/core/whip-strikes.ts` — strike state file IO (read /
@@ -190,22 +192,24 @@ dedup window, or strike-reset semantics.
 
 ## What V1 defers (follow-up Task to file post-commit)
 
-- [ ] `src/verbs/whip.ts` wiring — call classifier per tick, write
+- [x] `src/verbs/whip.ts` wiring — call classifier per tick, write
       strike record on BAD, inject `safeSendKeys` action-menu when
       `shouldNudgeLeadPane` returns true. Deferred because whip.ts
       is 1826 LOC at HEAD; extending it cleanly + the same-commit
       reviewer surface for the kernel + the wire-up would exceed
       single-commit scope. The kernel is independently useful (T2
       can read the strikes file even without the wire-up).
-- [ ] Reply validation — `^[ABCD]:` marker enforcement on lead's
+- [x] Reply validation — `^[ABCD]:` marker enforcement on lead's
       next turn. Requires comparing consecutive tick captures of the
       lead pane — net-new state in `whip-strikes-<team>.json`
       (`lastMenuTickSec` + `lastMenuHash`). Out of single-commit
       scope.
-- [ ] Action-menu UX — the prose text George wants ("If you're
+- [x] Action-menu UX — the prose text George wants ("If you're
       about to write making progress / thinking through / analyzing
       — STOP and pick A or B. Verbs not nouns. SHA or no SHA.") +
       the A/B/C/D payload validators. Bundled with the wiring above.
+
+> **§Amendment 2026-05-18 (t-5d85dddb)** — All three V1-deferred items shipped. Wiring lives in `src/verbs/poke.ts::runVelocityGate` (called from `runTick` near the end, gated on `team.crons?.whipVelocityGateEnabled !== false` per ADR-177 §Spec); the orchestration logic + pure helpers live in the new `src/core/velocity-gate.ts` module so the decision tree is testable without spinning up a full poke tick context. State-file additions: `StrikeRecord` gains optional `menuSentAtSec` + `menuPaneHash` fields (preserved across `incrementStrike`, owned by `recordMenuSent` / `clearPendingMenu`; backward-compat readers default missing to null). Reply-validation pass runs at the top of the velocity-gate sub-op: prior tick's pending-menu state → compute current pane hash → matching hash = `classifier-swallow` strike (keystroke dropped); differing hash without `^[ABCD]:` marker = `no-marker` strike; with marker = compliant (clear menu). The classifier still runs after validation, so a compliant reply doesn't excuse a fresh BAD tick (commits-in-window is the only OK trigger). Action-menu prompt text lives in `buildActionMenuPrompt` with George's verbatim "verbs not nouns. SHA or no SHA" preamble. Send path uses tmux paste-buffer + paste-submit (matches modal-cycling clarifier convention; safer for multi-line text than raw send-keys). BUSY pane signal → strike but no send (classifier-swallow guard); UNREACHABLE pane → no strike, no send (out-of-scope per existing checkMember wedge escalation path). Sibling T2 (t-e91fec98) — superdoctor complaint escalation on count ≥ strikeThreshold — remains a separate Task; this module's symptom-hash usage is intentionally narrow to `velocityStalledSymptomHash`.
 
 ## Rollback
 
@@ -241,7 +245,7 @@ incoming strikes and never escalates. Reversible.
   5 strikes → complaint, 10 strikes → Discord-loud. Decompose when
   the operator-observed false-positive rate is measurable.
 
-## Acceptance (full ADR-087, across T1 + follow-up)
+## Acceptance (full ADR-177, across T1 + follow-up)
 
 - [x] (T1) Classifier returns expected verdicts across the resolution
       table; 100% test coverage on the pure module.

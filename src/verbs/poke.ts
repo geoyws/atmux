@@ -131,6 +131,11 @@ import {
   shouldFireDedup as shouldFireModalCyclingDedup,
 } from "../core/modal-cycling-state.ts";
 import { classifyText } from "../core/pane-state.ts";
+import {
+  paneStateToSignal,
+  runVelocityGateCheck,
+  type VelocityGateDeps,
+} from "../core/velocity-gate.ts";
 import { PASTE_SUBMIT_SETTLE_FLOOR_MS, submitAfterPaste } from "../core/paste-submit.ts";
 import {
   loadPermModeDriftState,
@@ -1194,6 +1199,22 @@ async function runTick(parsed: PokeArgs, ctx: TickCtx): Promise<number> {
       }
     }
 
+    // ---------- ADR-177 §"What V1 defers": velocity-gate check ----------
+    // Wires the V1 kernel (classifier + strikes file) into the live
+    // tick. Kill-switch is `team.crons?.whipVelocityGateEnabled !==
+    // false` (default-on) per ADR-177 §Spec. Best-effort: probe
+    // failures collapse to conservative defaults inside the
+    // orchestrator (commits=0 + signal=UNREACHABLE), and the helper
+    // catches its own throws so a velocity-gate hiccup never blocks
+    // the rest of the tick.
+    if (team.crons?.whipVelocityGateEnabled !== false) {
+      try {
+        await runVelocityGate(ctx, homeOpts);
+      } catch (e) {
+        ctx.stderr(`whip: velocity-gate check failed: ${String(e)}\n`);
+      }
+    }
+
     // ---------- Check 7: cursor self-heal pass (ADR-055 §D2) ----------
     // Runs AFTER per-member + lead-uptime + stale-anchor (per ADR-055
     // §D2 "after the main per-member checks"). Already gated above
@@ -1307,6 +1328,146 @@ async function safeAppendLeadEvent(
 // `safeAppendLeadEvent`'s `extra` — keep the import lint-quiet via
 // a type-level alias used in the helper's signature.
 type _NeedsApprovalReportRef = NeedsApprovalReport;
+
+// ---------- ADR-177 §"What V1 defers": velocity-gate helper ----------
+
+/**
+ * One tick's worth of velocity-gate work. Builds the injected deps
+ * for {@link runVelocityGateCheck} from the live tick context — git
+ * log shell-out for team-wide commit count + last-commit age,
+ * `listTasks` for in-progress count, lead-pane capture via the
+ * existing `readLeadWindowName` + `tmux.pane.capturePane` pattern,
+ * keystroke injection via `safeSendKeysWithVerify`.
+ *
+ * Gated at the call site on `team.crons?.whipVelocityGateEnabled !==
+ * false` (default-on). Best-effort: probe failures inside the
+ * orchestrator return conservative defaults; this wrapper's own
+ * try/catch is the outer net.
+ */
+async function runVelocityGate(ctx: TickCtx, homeOpts: SkillsTeamPathsOpts): Promise<void> {
+  const { team, atmuxDir, nowSec, tmux, stderr } = ctx;
+  const velocityCfg = team.whip?.velocityGate;
+  const windowMin = velocityCfg?.windowMin ?? 60;
+  const standbyGraceMin = velocityCfg?.standbyGraceMin ?? 30;
+
+  // Team-wide commit probe — `git log --since=<windowMin>m
+  // --format=%ct` against the team root (parent of atmuxDir). Pure
+  // ground-truth: anything in any branch since the window opens
+  // counts. Failure → 0 commits + null age.
+  const teamRoot = atmuxDir.endsWith("/.atmux")
+    ? atmuxDir.slice(0, -"/.atmux".length)
+    : dirname(atmuxDir);
+  const probeCommits = async (
+    win: number,
+  ): Promise<{ count: number; lastAgeMin: number | null }> => {
+    try {
+      const r = await spawn({
+        cmd: "git",
+        argv: ["-C", teamRoot, "log", "--all", `--since=${win}.minutes`, "--format=%ct"],
+        timeoutMs: 5_000,
+        expectExitCode: "any",
+      });
+      if (r.exitCode !== 0) return { count: 0, lastAgeMin: null };
+      const stamps = r.stdout
+        .split("\n")
+        .map((l) => Number.parseInt(l.trim(), 10))
+        .filter((n) => Number.isFinite(n));
+      if (stamps.length === 0) return { count: 0, lastAgeMin: null };
+      const maxTs = stamps.reduce((a, b) => (a > b ? a : b), 0);
+      const ageMin = Math.max(0, Math.floor((nowSec - maxTs) / 60));
+      return { count: stamps.length, lastAgeMin: ageMin };
+    } catch {
+      return { count: 0, lastAgeMin: null };
+    }
+  };
+
+  const probeInProgress = async (): Promise<number> => {
+    try {
+      const tasks = await listTasks(atmuxDir, { status: "in-progress" });
+      return tasks.length;
+    } catch {
+      return 0;
+    }
+  };
+
+  const probeLeadPane = async (): Promise<string | null> => {
+    try {
+      const leadWindow = await readLeadWindowName(team.name, homeOpts);
+      if (leadWindow === null || leadWindow.length === 0) return null;
+      const session = await getSessionName({ dir: atmuxDir, team });
+      return await tmux.pane.capturePane({
+        target: `${session}:${leadWindow}`,
+        start: -30,
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  const classifyLeadCapture: VelocityGateDeps["classifyLeadCapture"] = (capture) => {
+    const c = classifyText(capture);
+    return paneStateToSignal(c.state);
+  };
+
+  const sendToLeadPane: VelocityGateDeps["sendToLeadPane"] = async (text) => {
+    try {
+      const leadWindow = await readLeadWindowName(team.name, homeOpts);
+      if (leadWindow === null || leadWindow.length === 0) return "unreachable";
+      const session = await getSessionName({ dir: atmuxDir, team });
+      const target = `${session}:${leadWindow}`;
+      // Composer-empty guard: if the lead pane has queued text in its
+      // composer, the paste-submit pattern would smear our menu into
+      // the operator's draft. Skip + return busy so the next tick
+      // retries when the composer's clear.
+      try {
+        const probe = await tmux.pane.capturePane({ target, start: -5 });
+        if (!composerEmpty()(probe)) return "busy";
+      } catch {
+        // Capture failure → conservative: treat as unreachable rather
+        // than blast keystrokes at a missing pane.
+        return "unreachable";
+      }
+      const bufferName = `atmux-velocity-gate-${team.name}-${nowSec}`;
+      const sendTarget: SendTarget = {
+        kind: "lead",
+        team: team.name,
+        target,
+      };
+      try {
+        await tmux.buffer.loadBuffer({ name: bufferName, data: text });
+        await tmux.buffer.pasteBuffer({
+          name: bufferName,
+          target: sendTarget,
+          deleteAfter: true,
+        });
+        await submitAfterPaste(tmux, sendTarget);
+        return "sent";
+      } catch {
+        return "fail";
+      }
+    } catch {
+      return "fail";
+    }
+  };
+
+  const deps: VelocityGateDeps = {
+    atmuxDir,
+    teamName: team.name,
+    nowSec,
+    windowMin,
+    standbyGraceMin,
+    probeCommits,
+    probeInProgress,
+    probeLeadPane,
+    classifyLeadCapture,
+    sendToLeadPane,
+    // Routine tick-evidence routes to stdout (matches whip-session +
+    // budget-pause + needs-approval logging convention); stderr is
+    // reserved for failures + the outer try/catch in runTick.
+    log: (msg) => ctx.stdout(msg),
+  };
+  await runVelocityGateCheck(deps);
+}
 
 /** Recipe registry for the self-heal pass (ADR-055 §D4). v1 ships
  *  three recipes: schema drift, cron pollution, supervisor missing.

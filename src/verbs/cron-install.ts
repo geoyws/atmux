@@ -29,7 +29,7 @@ import type { Team } from "../schema/team.ts";
 const USAGE =
   "atmux cron-install [--quiet] [--template merge-cycle|ombudsman-tick|lane-stall-watch|gitter-sweep|epic-merge] [--interval 5m|15m|1h|<N>m] [--team-dir <dir>]";
 
-/** Allowed `--template` values. ADR-088 W7 added `merge-cycle`;
+/** Allowed `--template` values. ADR-179 W7 added `merge-cycle`;
  *  ADR-147 T3 (t-94a22bb0) added `ombudsman-tick` for the complaint-
  *  adjudicator role wake; ADR-148 §D4 / T3 (t-e9424574) added
  *  `lane-stall-watch` for the lane-stall fleet-wide safety net;
@@ -60,7 +60,7 @@ const TEMPLATES_WITH_INTERVAL: ReadonlySet<CronInstallTemplate> = new Set([
 
 export interface CronInstallArgs {
   quiet: boolean;
-  /** ADR-088 W7 (t-2f12839e) — template validator. When `merge-cycle`,
+  /** ADR-179 W7 (t-2f12839e) — template validator. When `merge-cycle`,
    *  the install path verifies `team.merger.enabled === true` and
    *  errors out with a config hint if not. The standard install
    *  block ALWAYS includes the merge-cycle line when merger is enabled
@@ -68,7 +68,7 @@ export interface CronInstallArgs {
    *  "I'm installing for merge-cycle specifically" assertion (also
    *  the natural place to validate the schema). */
   template?: CronInstallTemplate;
-  /** ADR-088 W7 — transient cadence override for the template-named
+  /** ADR-179 W7 — transient cadence override for the template-named
    *  cron line. Parsed from `5m` / `15m` / `1h` / `<N>m` (canonical →
    *  minutes). Threaded into `installCronBlock` as the override field
    *  matching the active template (`mergerIntervalOverride` for
@@ -237,7 +237,7 @@ export async function cronInstall(
     return 0;
   }
 
-  // ADR-088 W7: when `--template merge-cycle` is passed, validate that
+  // ADR-179 W7: when `--template merge-cycle` is passed, validate that
   // the team has merger enabled in config — otherwise the install would
   // be a no-op (the merge-cycle line is gated on team.merger.enabled in
   // renderCronLines) and the operator silently has no effect from the
@@ -245,7 +245,7 @@ export async function cronInstall(
   if (parsed.template === "merge-cycle" && team.merger?.enabled !== true) {
     throw new ConfigError({
       what: "cron-install --template merge-cycle: requires team.merger.enabled = true in team.json",
-      hint: "set `team.merger.enabled: true` (per ADR-088) before installing the merge-cycle cron template",
+      hint: "set `team.merger.enabled: true` (per ADR-179) before installing the merge-cycle cron template",
     });
   }
 

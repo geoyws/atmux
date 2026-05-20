@@ -428,7 +428,7 @@ export function tryAutoEmitTrunkMerge(
   }
 
   // (5) Shared-base short-circuit per §D5 row 2. Compare against
-  //     the team's `merger.baseBranch` (when set) — see ADR-088.
+  //     the team's `merger.baseBranch` (when set) — see ADR-179.
   //     The resolver in `src/core/merger-config.ts` is the strict
   //     resolver, but the kanban hook intentionally stays config-
   //     local to avoid pulling in the merger resolver's git-probe
@@ -650,8 +650,16 @@ export async function setTaskDriverOnly(
   });
 }
 
-/** Update a task's owner. Throws `ConfigError` on miss. */
-export async function assignTask(atmuxDir: string, id: string, owner: string): Promise<void> {
+/** Update a task's owner. Throws `ConfigError` on miss.
+ *
+ *  Pass `null` to unassign (parking-lot convention per `feedback_
+ *  task_body_no_self_claim_language`) — surfaces in `task list` as
+ *  the bare `-` placeholder and skips the pull-model claim path. */
+export async function assignTask(
+  atmuxDir: string,
+  id: string,
+  owner: string | null,
+): Promise<void> {
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
       transact(db, () => {

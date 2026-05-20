@@ -222,8 +222,8 @@ export const TeamWhip = z
      *  (ADR-056 §"Lead/planner exclusion"). */
     accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
 
-    // ---------- ADR-087 velocity-gate cadence knobs ----------
-    /** ADR-087 §Spec. Per-team tunables for the whip velocity-gate
+    // ---------- ADR-177 velocity-gate cadence knobs ----------
+    /** ADR-177 §Spec. Per-team tunables for the whip velocity-gate
      *  classifier + strike counter. Operators rarely need to tune —
      *  the defaults match the operator-observed failure mode that
      *  drove the ADR (10 zero-commit heartbeats over 4.5h). The
@@ -493,13 +493,13 @@ export const TeamCrons = z
      *  Operators flip this off to halt lane-driven auto-claim without
      *  removing `.lane` annotations from `team.members[]`. */
     laneTickEnabled: z.boolean().default(true),
-    /** ADR-087 §Rollback. Velocity-gate kill-switch. When `false`,
+    /** ADR-177 §Rollback. Velocity-gate kill-switch. When `false`,
      *  whip skips ground-truth velocity classification + strike-counter
-     *  bumping entirely (effectively reverting to pre-ADR-087 fake-
+     *  bumping entirely (effectively reverting to pre-ADR-177 fake-
      *  liveness reliance on lead self-report). Default `true` — the
      *  gate is opt-OUT, not opt-in, because the operator-observed
      *  failure mode (10 zero-commit heartbeats over 4.5h) is what
-     *  ADR-087 was authored to prevent. Pairs with
+     *  ADR-177 was authored to prevent. Pairs with
      *  `whip.velocityGate` cadence knobs (window minute count + strike
      *  threshold); the kill-switch lives here for fleet-consistent
      *  shape with `laneTickEnabled`. */
@@ -598,13 +598,13 @@ export type TeamGitter = z.infer<typeof TeamGitter>;
  * (the same field shape is used to opt into expensive observability
  * paths without making them mandatory).
  */
-/** ADR-088 §Decision-2+3+6: per-member-branch fan-in policy ("merger"
+/** ADR-179 §Decision-2+3+6: per-member-branch fan-in policy ("merger"
  *  role). Worktree-isolated teams accumulate `<base>-<member>` branches
  *  whose commits never automatically return to `<base>`. Opt-in
  *  `team.merger.enabled` activates either a `merger` member role
  *  (Shape A) or driver-fired `atmux merge-cycle` verb (Shape B) — both
  *  consume the same effective config. Defaults preserve the
- *  pre-ADR-088 behaviour (operator-manual fan-in). */
+ *  pre-ADR-179 behaviour (operator-manual fan-in). */
 export const TeamMerger = z
   .object({
     /** When `true`, fan-in automation is enabled: a `merger` member
@@ -614,7 +614,7 @@ export const TeamMerger = z
     enabled: z.boolean().default(false),
     /** Branch to merge per-member branches into. Optional — when
      *  unset, `resolveMergerConfig` resolves it at read-time via
-     *  `git -C <repoPath> branch --show-current` (mirrors ADR-088
+     *  `git -C <repoPath> branch --show-current` (mirrors ADR-179
      *  §Decision-3 pseudocode). Explicit value useful when the team
      *  operates on a branch other than the parent worktree's current
      *  HEAD (e.g. cron-fired merges against a fixed `<product>-staging`
@@ -625,7 +625,7 @@ export const TeamMerger = z
      *  than this AND zero merge-back fires the probe. Default `24`
      *  (one-day fan-in cadence target). */
     stalenessHours: z.number().int().min(1).default(24),
-    /** ADR-088 §Decision-5 / W7 (t-2f12839e) — cron cadence for the
+    /** ADR-179 §Decision-5 / W7 (t-2f12839e) — cron cadence for the
      *  `atmux merge-cycle` line (added to the team's standard cron
      *  block only when `enabled === true`). Default `15` (minutes);
      *  must be one of cron's divisor-of-60 set (1, 2, 3, 4, 5, 6, 10,
@@ -639,20 +639,20 @@ export const TeamMerger = z
   .strict();
 export type TeamMerger = z.infer<typeof TeamMerger>;
 
-/** ADR-088 §Decision-5 / W7 default — used by `cron.ts::renderCronLines`
+/** ADR-179 §Decision-5 / W7 default — used by `cron.ts::renderCronLines`
  *  + `cron-install` verb when `team.merger.cycleIntervalMins` is unset.
  *  Matches the 15-min default the ADR specifies. */
 export const DEFAULT_MERGER_CYCLE_INTERVAL_MINS = 15;
 
 /** ADR-134 §Config: per-team auto-merger config (intra-team gitter
  *  event-driven + cron-backstop fan-in). Separate from {@link TeamMerger}
- *  (ADR-088 bulk-merge-cycle verb) — they target different scopes:
+ *  (ADR-179 bulk-merge-cycle verb) — they target different scopes:
  *  - `team.merger` — operator-fired `atmux merge-cycle` bulk pass,
- *    per ADR-088.
+ *    per ADR-179.
  *  - `team.autoMerge` — gitter member's event-driven auto-merge +
  *    cron-backstop sweep, per ADR-134.
  *
- *  The two can coexist: a team can opt into both ADR-088's hand-fired
+ *  The two can coexist: a team can opt into both ADR-179's hand-fired
  *  bulk pass AND ADR-134's continuous gitter auto-merge. They serialize
  *  through the same {@link MergerStateRepo} (ADR-091 + ADR-134 shared
  *  state machine), so concurrent firings are safe — BEGIN IMMEDIATE
@@ -1252,7 +1252,7 @@ export const Team = z
      *  of the team's filesystem footprint. No-op when isolation is
      *  off. Use {@link DEFAULT_WORKTREE_ROOT} when reading. */
     worktreeRoot: z.string().optional(),
-    /** ADR-088: when `true` AND `worktreeIsolation === true`, `atmux start`
+    /** ADR-179: when `true` AND `worktreeIsolation === true`, `atmux start`
      *  passes `initSubmodules: true` through to `provisionWorktree`, which
      *  runs `git submodule update --init --recursive` inside each newly
      *  created worktree. Best-effort: a non-zero exit warns to stderr but
@@ -1306,14 +1306,14 @@ export const Team = z
     unblocker: TeamUnblocker.optional(),
     /** ADR-080 §B2: gitter-member knobs (auto-done scan repo path). */
     gitter: TeamGitter.optional(),
-    /** ADR-088 §Decision-2: per-member-branch fan-in policy (merger
+    /** ADR-179 §Decision-2: per-member-branch fan-in policy (merger
      *  role). Opt-in via `merger.enabled: true`; effective config
      *  resolved at read-time via {@link resolveMergerConfig} from
      *  `src/core/merger-config.ts`. */
     merger: TeamMerger.optional(),
     /** ADR-134 §Config: per-team intra-team auto-merger config
      *  (gitter event-driven + cron-backstop fan-in). Distinct from
-     *  {@link merger} (ADR-088 bulk-merge-cycle verb) — see
+     *  {@link merger} (ADR-179 bulk-merge-cycle verb) — see
      *  {@link TeamAutoMerge} JSDoc for the scope comparison. Opt-in;
      *  absent block keeps pre-ADR-134 manual fan-in. */
     autoMerge: TeamAutoMerge.optional(),
@@ -1433,7 +1433,7 @@ export type Team = z.infer<typeof Team>;
  *  W4 (stop), and W5 (doctor) share the same constant. */
 export const DEFAULT_WORKTREE_ROOT = ".atmux/worktrees";
 
-/** ADR-088 §Decision-3: default staleness window (hours) for the
+/** ADR-179 §Decision-3: default staleness window (hours) for the
  *  merger-branch-stale doctor probe + general merger heuristics. Mirrors
  *  the Zod `stalenessHours.default(24)` so non-Zod callers (W6 probe,
  *  brief docs) share the same constant. */

@@ -1,4 +1,4 @@
-// ADR-087 §T2 (Task t-e91fec98) — dedup-aware complaint filer.
+// ADR-177 §T2 (Task t-e91fec98) — dedup-aware complaint filer.
 //
 // The whip→superdoctor escalation pipeline must coalesce repeated strikes
 // into a single complaint row + a bumped `source_count`, NOT flood the

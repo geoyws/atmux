@@ -1,4 +1,4 @@
-// ADR-088 §Decision-3 W2 (Task t-e7724527) — `atmux merge-member` verb.
+// ADR-179 §Decision-3 W2 (Task t-e7724527) — `atmux merge-member` verb.
 //
 // Wraps the W1 primitive (`abstractions/branch-merge.ts::mergeMember`)
 // with the policy + surfacing layer:
@@ -26,7 +26,7 @@
 // staging` manually).
 //
 // Flag surface: `<atmuxDir>/flags.md` via the same one-line markdown
-// bullet convention `lane-drift-check.ts` uses. ADR-088 W5/W6 will
+// bullet convention `lane-drift-check.ts` uses. ADR-179 W5/W6 will
 // upgrade these into Discord pings once the flag verb has structured
 // severity routing.
 

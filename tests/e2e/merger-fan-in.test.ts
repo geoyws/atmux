@@ -1,4 +1,4 @@
-// E2E for ADR-088 §Decision-3+4+5+6 (Task t-7a7f0825 W8).
+// E2E for ADR-179 §Decision-3+4+5+6 (Task t-7a7f0825 W8).
 //
 // Walks the merger fan-in path end-to-end against a real git repo
 // with per-member worktrees:
@@ -25,7 +25,7 @@
 // Out-of-scope (per Task body §7 — defer to a separate task):
 //   - `atmux stop --force` cleanup verification. The stop verb's
 //     internal session/tmux state probes are heavy + orthogonal to
-//     the fan-in correctness this test certifies. ADR-088 W8b can
+//     the fan-in correctness this test certifies. ADR-179 W8b can
 //     pick that up as a sibling e2e once needed.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -155,7 +155,7 @@ afterEach(async () => {
 
 // ---------- Tests ----------
 
-describe("e2e merger-fan-in (ADR-088 W8, t-7a7f0825)", () => {
+describe("e2e merger-fan-in (ADR-179 W8, t-7a7f0825)", () => {
   test("merge-cycle --dry-run lists 3 prospective merges; base + branches unchanged", async () => {
     await seedMemberBranch(fix, "alpha", [{ name: "alpha-1.md", body: "alpha\n" }]);
     await seedMemberBranch(fix, "bob", [{ name: "bob-1.md", body: "bob\n" }]);

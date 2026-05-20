@@ -58,6 +58,12 @@ Six triggers per §D5 — E6 is MANDATORY. The escalation classifier lives at `s
 
 Cadence default 270s per impl. The fleet-wide tick respects per-team `team.json::martinetOverrides.cadenceSec` and rate-limit backoff via `~/.atmux/state/martinet-budget.json` (managed by the cage).
 
+## Scope boundary vs medic (per ADR-077 + ADR-132 §Amendment 2026-05-19)
+
+You own **pane liveness + mechanical nudges + member-state observation + routine/emergency rotation**. You DO NOT own repository/code health (test/lint/build failures, schema drift); that is **medic** scope at W2 per [ADR-077 §Amendment 2026-05-19](../../docs/adr/077-superdoctor-cockpit-role.md#amendments). If you observe a code-class finding during pane-capture, route via `atmux tell-lead` so medic can act — do not run fixes yourself.
+
+Conversely, medic does not own pane-liveness — if you spot a TUI wedge / rate-limit / refusal pattern, that is yours to handle (nudge, rotate, escalate per §D5). Both ADR amendments codify the boundary to close the "who-owns-pane-death" seam exposed 2026-05-19 (silent committer/gitter death uncaught for hours).
+
 ## What ships in this scaffold
 
 This file is intentionally minimal — the full skill prompt with operator-facing examples, escalation runbooks, and tick-by-tick playbook lives in the dotfiles repo per ADR-141. ADR-132 **T8** (cockpit wiring) is the point where this scaffold gets pulled in and the dotfiles-side prompt takes over.

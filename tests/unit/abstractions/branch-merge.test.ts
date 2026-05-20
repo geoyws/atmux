@@ -1,4 +1,4 @@
-// Unit tests for src/abstractions/branch-merge.ts (ADR-088 W1 / t-bed51da2).
+// Unit tests for src/abstractions/branch-merge.ts (ADR-179 W1 / t-bed51da2).
 //
 // Coverage strategy mirrors worktree.test.ts:
 //   - Mock GitSpawn that records every argv it sees and scripts the
@@ -280,7 +280,7 @@ describe("mergeMember — clean merge path", () => {
     expect(mergeCall).toContain(WT_BRANCH);
   });
 
-  test("merge commit message follows ADR-088 shape", async () => {
+  test("merge commit message follows ADR-179 shape", async () => {
     const { git, calls } = happyPathGit({ aheadCount: 1, sha: POST_MERGE_SHA });
     await mergeMember(TEAM_BASE, WT_BRANCH, REPO_PATH, { git, fetch: false });
     const mergeCall = calls.find((c) => c.includes("merge") && !c.includes("--abort"));
@@ -288,7 +288,7 @@ describe("mergeMember — clean merge path", () => {
     const msgIdx = (mergeCall ?? []).indexOf("-m");
     expect(msgIdx).toBeGreaterThan(-1);
     const msg = mergeCall?.[msgIdx + 1] ?? "";
-    expect(msg).toBe(`merge(alpha): fan-in ${WT_BRANCH} per ADR-088`);
+    expect(msg).toBe(`merge(alpha): fan-in ${WT_BRANCH} per ADR-179`);
   });
 
   test("wtBranch that doesn't follow `<base>-<member>` shape — member derives to full wtBranch", async () => {
@@ -298,7 +298,7 @@ describe("mergeMember — clean merge path", () => {
     const mergeCall = calls.find((c) => c.includes("merge") && !c.includes("--abort"));
     const msgIdx = (mergeCall ?? []).indexOf("-m");
     const msg = mergeCall?.[msgIdx + 1] ?? "";
-    expect(msg).toBe(`merge(feature-X): fan-in feature-X per ADR-088`);
+    expect(msg).toBe(`merge(feature-X): fan-in feature-X per ADR-179`);
   });
 
   test("every git call routes through `-C <repoPath>`", async () => {

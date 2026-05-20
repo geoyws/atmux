@@ -1,4 +1,4 @@
-// Unit tests for src/core/whip-strikes.ts — ADR-087 strike counter
+// Unit tests for src/core/whip-strikes.ts — ADR-177 strike counter
 // state file IO. Per-test mkdtemp so file IO is contained.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -7,11 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   classifierSwallowSymptomHash,
+  clearPendingMenu,
+  computePaneHash,
   etaLiedSymptomHash,
   incrementStrike,
   processFrozenSymptomHash,
   readStrikeRecord,
   readStrikesFile,
+  recordMenuSent,
   renderStrikeTimeline,
   resetStrikeRecord,
   type StrikesFile,
@@ -50,7 +53,7 @@ describe("velocityStalledSymptomHash", () => {
   });
 });
 
-// ---------- ADR-087 §T2 (Task t-e91fec98 §2) symptom hashes ----------
+// ---------- ADR-177 §T2 (Task t-e91fec98 §2) symptom hashes ----------
 
 describe("etaLiedSymptomHash", () => {
   test("returns canonical `whip-<team>-eta-lied` form", () => {
@@ -161,6 +164,9 @@ describe("readStrikesFile + readStrikeRecord", () => {
       firstStrikeSec: null,
       lastStrikeSec: null,
       lastReason: null,
+      // ADR-177 §What V1 defers (t-5d85dddb) — reply-validation fields.
+      menuSentAtSec: null,
+      menuPaneHash: null,
     });
   });
 
@@ -200,6 +206,9 @@ describe("readStrikesFile + readStrikeRecord", () => {
           firstStrikeSec: 1715630000,
           lastStrikeSec: 1715630600,
           lastReason: "BAD: 0 commits in 60min",
+          // ADR-177 §What V1 defers (t-5d85dddb) — reply-validation fields.
+          menuSentAtSec: null,
+          menuPaneHash: null,
         },
       },
     };
@@ -325,5 +334,82 @@ describe("file format on disk", () => {
     await incrementStrike(atmuxDir, "demo", "h1", "r", 1000);
     const text = await readFile(strikesPath(atmuxDir, "demo"), "utf8");
     expect(text.endsWith("\n")).toBe(true);
+  });
+});
+
+// ---------- ADR-177 §What V1 defers (t-5d85dddb): menu state helpers ----------
+
+describe("computePaneHash", () => {
+  test("returns 16-hex-char digest deterministic for same input", () => {
+    const h1 = computePaneHash("captured pane text");
+    const h2 = computePaneHash("captured pane text");
+    expect(h1).toBe(h2);
+    expect(h1).toMatch(/^[a-f0-9]{16}$/);
+  });
+
+  test("distinguishes different inputs", () => {
+    expect(computePaneHash("a")).not.toBe(computePaneHash("b"));
+  });
+});
+
+describe("recordMenuSent + clearPendingMenu", () => {
+  test("records menuSentAtSec + menuPaneHash on existing record (preserves count)", async () => {
+    await incrementStrike(atmuxDir, "demo", "h1", "first strike", 1000);
+    await recordMenuSent(atmuxDir, "demo", "h1", "deadbeef00000000", 2000);
+    const r = await readStrikeRecord(atmuxDir, "demo", "h1");
+    expect(r.count).toBe(1);
+    expect(r.menuSentAtSec).toBe(2000);
+    expect(r.menuPaneHash).toBe("deadbeef00000000");
+  });
+
+  test("recordMenuSent creates empty record on first-ever call (count=0)", async () => {
+    await recordMenuSent(atmuxDir, "demo", "h1", "abc", 2000);
+    const r = await readStrikeRecord(atmuxDir, "demo", "h1");
+    expect(r.count).toBe(0);
+    expect(r.menuSentAtSec).toBe(2000);
+    expect(r.menuPaneHash).toBe("abc");
+  });
+
+  test("incrementStrike preserves pending menu state", async () => {
+    await recordMenuSent(atmuxDir, "demo", "h1", "abc", 2000);
+    await incrementStrike(atmuxDir, "demo", "h1", "no-marker", 3000);
+    const r = await readStrikeRecord(atmuxDir, "demo", "h1");
+    expect(r.count).toBe(1);
+    expect(r.menuSentAtSec).toBe(2000);
+    expect(r.menuPaneHash).toBe("abc");
+  });
+
+  test("clearPendingMenu nulls both fields without touching count", async () => {
+    await incrementStrike(atmuxDir, "demo", "h1", "r1", 1000);
+    await recordMenuSent(atmuxDir, "demo", "h1", "abc", 2000);
+    await clearPendingMenu(atmuxDir, "demo", "h1");
+    const r = await readStrikeRecord(atmuxDir, "demo", "h1");
+    expect(r.count).toBe(1);
+    expect(r.menuSentAtSec).toBeNull();
+    expect(r.menuPaneHash).toBeNull();
+  });
+
+  test("clearPendingMenu is a no-op when no menu pending", async () => {
+    await incrementStrike(atmuxDir, "demo", "h1", "r1", 1000);
+    await clearPendingMenu(atmuxDir, "demo", "h1");
+    const r = await readStrikeRecord(atmuxDir, "demo", "h1");
+    expect(r.count).toBe(1);
+  });
+
+  test("clearPendingMenu is a no-op when no record exists (readStrikeRecord returns empty)", async () => {
+    await clearPendingMenu(atmuxDir, "demo", "missing-hash");
+    const r = await readStrikeRecord(atmuxDir, "demo", "missing-hash");
+    expect(r.count).toBe(0);
+    expect(r.menuSentAtSec).toBeNull();
+  });
+
+  test("resetStrikeRecord deletes the row → readStrikeRecord returns empty record", async () => {
+    await incrementStrike(atmuxDir, "demo", "h1", "r1", 1000);
+    await recordMenuSent(atmuxDir, "demo", "h1", "abc", 2000);
+    await resetStrikeRecord(atmuxDir, "demo", "h1");
+    const r = await readStrikeRecord(atmuxDir, "demo", "h1");
+    expect(r.count).toBe(0);
+    expect(r.menuSentAtSec).toBeNull();
+    expect(r.menuPaneHash).toBeNull();
   });
 });

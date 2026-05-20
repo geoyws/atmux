@@ -306,3 +306,24 @@ Reviewer flips this ADR Proposed → Accepted in a follow-up commit per the EPIC
 
 The role type identified as "martinet" throughout this ADR is renamed to "sentinel" per [ADR-158](158-martinet-to-sentinel-rename.md) — SV/Reddit-eng register sweep, supersedes nomenclature only. Design preserved verbatim. Cockpit window `_martinet` → `_sentinel` via ADR-135 §D4 in-place rename (preserves PID + claude-process state). Schema JSON-shim in `src/core/cockpit.ts::migrateMartinetBlockToSentinel` accepts both `martinet:` and `sentinel:` keys for one release cycle (deprecation-warn on the legacy key). Source identifiers renamed in TR2: `src/abstractions/martinet.ts` → `src/abstractions/sentinel.ts`, `src/verbs/martinet.ts` → `src/verbs/sentinel.ts`, `src/core/martinet-escalation.ts` → `src/core/sentinel-escalation.ts`. See ADR-158 for the rename mechanic + rationale; the §Decision section of this ADR remains the canonical pluggable-impl design (now under the new name).
 
+### 2026-05-19 — Scope confirmed: pane-liveness + mechanical nudges (boundary with medic)
+
+**Driver finding 2026-05-19 06:00 MYT** (mechanism audit finding #2 against EPIC e-35dd6274). Boundary text added in tandem with [[ADR-077 §Amendment 2026-05-19]] to close the "who-owns-pane-death" seam exposed by today's silent gitter/committer death (TUI wedged but process alive; medic wouldn't probe because nothing was broken in the code sense). Without explicit text in both ADRs, future agents would keep falling into "medic should have caught that" / "I thought sentinel did that" arguments.
+
+**Sentinel scope (this ADR — confirmed):**
+
+- Pane liveness: claude TUI dead / wedged / rate-limited / refusing role.
+- Mechanical nudges: enter-push, claim-next, modal-release, force-push-approved.
+- Routine + emergency rotation (firing `atmux rotate <member>`) — preserves the cadence + authority narrowing per §D5 + ADR-140.
+- Member compose-box unstick + observation per [ADR-140](./140-cheap-model-first.md) cheap-model-first.
+- **Not scoped to**: code health, test failures, build/lint state, repository invariants. Those are medic scope per [[ADR-077 §Amendment 2026-05-19]].
+
+**Out-of-scope clarification.** The original §"Out of scope" entry "Martinet observation of cockpit-tier surfaces (medic own loop, superdriver) — out of v1 scope" is preserved verbatim. EPIC e-35dd6274 §Part C (sentinel epic-team scope extension, codified in [ADR-185](./185-sentinel-epic-team-scope.md) per [t-2bbb828f](#)) extends sentinel observation to epic-team cages without dissolving this medic/sentinel boundary — sentinel still does not observe medic; medic still does not observe pane-liveness.
+
+**Sentinel ↔ medic cross-invocation:**
+
+- Sentinel observe-pass invokes doctor probes for code-class findings (read-only) and routes structural-fix asks to medic via escalate-to-claude-lead.
+- Medic invokes doctor for liveness-class findings via the shared probe library (no medic owns sentinel's loop — both consume the same probe substrate per [ADR-027](./027-doctor-self-diagnostics.md)).
+
+Cross-refs: ADR-077 §Amendment 2026-05-19 (medic boundary side), ADR-027 (doctor framework — shared probe substrate), ADR-140 (cheap-model-first justification), ADR-184 (host-cap epic-team gate — sentinel iteration scope), ADR-185 (sentinel epic-team scope extension), EPIC e-35dd6274 (wedge-clearing mechanism), t-186d5910 (sentinel deploy — landing makes the boundary observable in production cockpit telemetry).
+

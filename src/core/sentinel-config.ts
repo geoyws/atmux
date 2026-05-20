@@ -1,7 +1,7 @@
 // ADR-132 §D6 (t-f3e9ac2a / T5): effective-default resolver for the
 // pluggable cockpit-W3 whip-manager (Sentinel) abstraction.
 //
-// Mirrors the existing `merger-config.ts` resolver pattern (ADR-088
+// Mirrors the existing `merger-config.ts` resolver pattern (ADR-179
 // §Decision-3 — single resolution path, single test injection point).
 // The Zod schemas in `src/schema/team.ts` + `src/schema/cockpit.ts`
 // declare the static defaults; this helper bridges schema-string to

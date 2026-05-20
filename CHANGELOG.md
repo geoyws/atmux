@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📜 Doctrine — committer no-deploy + test-trust principle (t-afcc71af, ADR-091/134/144 §Amendment 2026-05-19)
+
+Driver finding 2026-05-19 06:30 MYT (operator: "make sure committers/gitters don't deploy… make sure they understand that if they are merging that means tests are already passing because the epic-team has already done the merge earlier and has run tests") surfaced two implicit doctrines worth making explicit before they drift:
+
+- **Committer scope is merge-and-push, NOT deploy** — `kubectl` / `helm` / `terraform` / pipeline-triggers / manifest edits / service restarts are all out-of-scope refusal-class. Codified in [`templates/briefs/committer.md`](templates/briefs/committer.md) §Deploy is out of scope + §Hard rules (both modes) (new bullet). Per [ADR-145](docs/adr/145-atmux-adopts-gitter.md) the committer role's scope was always merge-and-push, but the brief now names the deploy refusal-class explicitly so future agents can't drift into infra territory while looking adjacent to push semantics.
+
+- **Test-trust principle — tests fire ONCE at L1, fan-in trusts the verdict** — the intra-team merger ([ADR-134](docs/adr/134-in-team-auto-merger.md)) is the SOURCE-of-truth test layer (`autoMerge.testCommand` at `merging → tested`); the epic-team fan-in ([ADR-091](docs/adr/091-kanban-driven-auto-merge.md) via `atmux epic-merge tick`) **trusts** that verdict with `testGateMode: "skip"` default ([ADR-144](docs/adr/144-epic-team-test-gate.md) §Amendment 2026-05-19). The schema-level default (`src/schema/team.ts::TeamEpicSchema.testGateMode = "skip"`) and unit-test pin (`tests/unit/core/epic-merge.test.ts` "testGateMode unset (default) → skip semantics") were already in place; this Task makes the **doctrine** explicit across 3 ADR §Amendments + committer brief §Test-trust principle. `"cage"` / `"deployed"` are operator escape hatches for the rare case where L1 tests were knowingly incomplete; the default behavior is skip-and-trust.
+
+The change is **brief + ADR amendments only** — Part B of the originating Task (default-flip + unit test) was already satisfied at source; the ADR §Amendments codify the WHY behind the existing default. Reviewer surface for regressions: a re-test fire on default fan-in violates the principle and should land as `atmux flag add --severity high`.
+
+### 📐 ADR-186 — unified wedge-clearing mechanism (proposed; EPIC e-35dd6274 T1, t-73128937)
+
+Driver mechanism audit 2026-05-19 (5 wedges discovered in 1h of manual investigation, ~70 lines of orphan crontab hand-cleaned, 1 silent committer death uncaught for hours) framed the need: a single substrate for detecting + clearing wedges across all current + future failure modes. [ADR-186](docs/adr/186-wedge-clearing-mechanism.md) is the T1 spec.
+
+**Decision**: extend three existing mechanisms (no new cockpit-tier member):
+
+- **Doctor probe-class registry** (`src/core/doctor-probes/`) — typed `{id, severity, tier, describe, fingerprint, suggestResolution, probe}` contract per probe; ships 7 classes at T2 (`orphan-cron`, `husk-worktree`, `missing-viewer`, `default-sentinel`, `pane-death`, `partial-dissolve`, `code-shipped-not-wired`).
+- **Sentinel observe-pass invokes the registry** with `autoFile=true` per ADR-132 §D5 tick (T4 of the EPIC) — runner is the existing sentinel loop; cron backstop fires independently every 15min.
+- **`atmux wedges` operator surface** — `list / show / clear --tier / resolve / --json / --resolved`; cockpit-dashboard-friendly output.
+
+**Tiered auto-clear** per global CLAUDE.md destructive-actions rule: `safe` (auto-cleanup, e.g. orphan-cron) / `fix` (installer-class repair, e.g. missing-viewer) / `suggest` (operator-judgment path, e.g. pane-death) / `surface` (read-only meta-probes). Dedup via SHA256 fingerprint of `<probe-id>|<finding-stable-key>` matched against open Task body markers `auto-filed:<probe-id>:<fp>`. Backup-before-destructive at `/tmp/wedge-clear-backup-<ts>/`, retention 7d.
+
+Cross-refs: [ADR-027](docs/adr/027-doctor-self-diagnostics.md) (substrate), [ADR-132](docs/adr/132-pluggable-martinet.md)/[ADR-158](docs/adr/158-martinet-to-sentinel-rename.md) (runner), [ADR-140](docs/adr/140-cheap-model-first.md) (mechanical-fits-sentinel), [ADR-091](docs/adr/091-kanban-driven-auto-merge.md) (EPIC-done flow), [ADR-090](docs/adr/090-epic-team-lifecycle.md) (lifecycle seams), ADR-183 (deploy-completeness sibling), [ADR-178](docs/adr/178-test-cage-leak-reaper.md) (backup-on-clear convention), [ADR-184](docs/adr/184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (cluster-precondition).
+
+Out of scope: new cockpit-tier "wedge-clearer" member (rejected — sentinel covers loop, cron covers backstop); LLM-based wedge classification (defer — v1 is deterministic invariants); cross-team wedge correlation (defer to ADR-150).
+
+Status: proposed; reviewer flips to accepted per ADR-091 §EPIC-done #4 (trunk-signoff at `docs/reviews/t-73128937-trunk-signoff-<date>.md`) once the EPIC fan-in commit lands.
+
+### 🔤 Vocabulary / scope — medic vs sentinel boundary tightened (ADR-077 + ADR-132 §Amendment 2026-05-19)
+
+Driver mechanism audit (finding #2 against EPIC e-35dd6274) surfaced a coverage gap: medic (W2, [ADR-077](docs/adr/077-superdoctor-cockpit-role.md) / renamed via [ADR-133](docs/adr/133-medic-rename.md)) owned "health probes" and sentinel (W3, [ADR-132](docs/adr/132-pluggable-martinet.md) / renamed via [ADR-158](docs/adr/158-martinet-to-sentinel-rename.md)) owned "whip", but **pane-death detection / claude TUI wedge** sat in the seam. Today's silent gitter/committer death (TUI wedged but process alive; no `✻` activity, no commits, no operator response) went uncaught for hours because reviewer + driver triage couldn't point to which mechanism owned it.
+
+Two append-only §Amendment sections — one in each ADR — codify the boundary:
+
+- **Medic scope** (repository health): test/lint/build failures, schema drift, code-class probes; drives same-commit fixes. NOT pane-liveness.
+- **Sentinel scope** (pane liveness + mechanical nudges): TUI dead/wedged/rate-limited/refusing, enter-push, claim-next, modal-release, routine + emergency rotation. NOT code health.
+- **Doctor** stays shared probe substrate per [ADR-027](docs/adr/027-doctor-self-diagnostics.md); both callers invoke it.
+- **Cross-invocation**: sentinel routes code-class findings to medic via escalate-to-claude-lead; medic routes liveness-class findings via the shared probe library.
+
+Brief cross-link added at [`templates/briefs/martinet.md`](templates/briefs/martinet.md) §"Scope boundary vs medic". No `medic.md` / `sentinel.md` briefs exist today; the existing `martinet.md` (sentinel canonical pre-ADR-158 rename) carries the contract.
+
+No code changes — pure docs sweep. `rg -i 'medic vs sentinel|pane death' src/` returns zero hits, confirming no contradicting language remains.
+
+**Cross-refs**:
+
+- [ADR-077](docs/adr/077-superdoctor-cockpit-role.md) §Amendment 2026-05-19 — medic side.
+- [ADR-132](docs/adr/132-pluggable-martinet.md) §Amendment 2026-05-19 — sentinel side.
+- [ADR-027](docs/adr/027-doctor-self-diagnostics.md) — shared probe substrate.
+- [ADR-140](docs/adr/140-cheap-model-first.md) — sentinel = mechanical, medic = judgment-bearing.
+- EPIC e-35dd6274 — wedge-clearing mechanism (scope clarity is precondition for probe-class routing per ADR-186).
+- Task `t-c8be6daa` — this docs sweep.
+
+### 🏷️ Renamed — ADR-088 per-member-branch fan-in → ADR-179 (collision resolution, t-88da6978, 2026-05-18)
+
+Sibling pattern to the t-fe51cf64 ADR-087 renumber (same day). `docs/adr/088-per-member-branch-fan-in.md` (Accepted 2026-05-15) collided with `docs/adr/088-worktree-submodule-init.md` (accepted 2026-05-13). Per atmux ADR convention (monotonic, append-only, one ADR per number — CLAUDE.md §Source-of-truth chain), the older submodule-init ADR keeps the 088 number; the fan-in ADR moves to ADR-179. Both ADR-087 + ADR-088 collisions now closed; project is back to a single ADR per number. Convention precedent: b4d62da `docs(adr-176)` + 830e9fc `docs(adr-177)`.
+
+- **`git mv docs/adr/088-per-member-branch-fan-in.md → docs/adr/179-per-member-branch-fan-in.md`** — file body header `# ADR-088:` → `# ADR-179:`; new §Amendment 2026-05-18 (t-88da6978) at the top documents the renumber + source-commit history (W1 a37dacc, W2 086505c, W3 10dcf43, W7 191b721, W8 f4ea9a2).
+- **External fan-in refs swept** (~25 files): `src/abstractions/branch-merge.ts`, `src/verbs/merge-member.ts`, `src/verbs/merge-cycle.ts`, `src/verbs/committer.ts`, `src/verbs/cron-install.ts`, `src/verbs/doctor.ts`, `src/core/committer-sweep.ts`, `src/core/intra-team-merge-dispatcher.ts`, `src/core/merger-config.ts`, `src/core/sentinel-config.ts`, `src/core/cron.ts`, `src/core/kanban.ts`, `src/schema/team.ts` (all fan-in refs; no submodule-init refs in this file), `tests/e2e/merger.test.ts`, `tests/e2e/merger-fan-in.test.ts`, `tests/unit/abstractions/branch-merge.test.ts`, `tests/unit/core/merger-config.test.ts`, `tests/unit/verbs/cron-install.test.ts`, `tests/unit/verbs/doctor.test.ts`, `tests/unit/verbs/merge-member.test.ts`, `tests/unit/verbs/merge-cycle.test.ts`, `templates/briefs/merger.md`, `docs/adr/091-kanban-driven-auto-merge.md` (lines 182 + 232 — line 7 chain-shift preserved), `docs/adr/145-atmux-adopts-gitter.md`, `docs/adr/146-kanban-auto-files-trunk-merge.md`, `docs/reviews/ADR-134-planner-pair-review-2026-05-14.md`.
+- **Untouched** (refs are submodule-init, NOT fan-in): `docs/adr/088-worktree-submodule-init.md`, `src/abstractions/worktree.ts`, `tests/unit/abstractions/worktree.test.ts`, `tests/e2e/worktree-submodule.test.ts`, `src/verbs/start.ts`, `docs/adr/089-hierarchical-cockpit.md` (chain-shift only), `docs/adr/134-in-team-auto-merger.md` (chain reference only).
+- **ADR-090 line 369 misroute corrected**: was `[ADR-088](088-per-member-branch-fan-in.md) — initSubmodules primitive` (fan-in ADR never contained initSubmodules); retargeted to `088-worktree-submodule-init.md` with parenthetical noting the pre-existing typo + that the fan-in ADR is now ADR-179.
+- **ADR-090 line 370 + ADR-135 line 143** updated to past tense — both 087 + 088 collisions are now closed.
+
+### 🏷️ Renamed — ADR-087 whip-velocity-gate → ADR-177 (collision resolution, t-fe51cf64, 2026-05-18)
+
+`docs/adr/087-whip-velocity-gate.md` collided with `docs/adr/087-atmux-stop-soft.md` (Accepted 2026-05-13). Per atmux ADR convention (monotonic, append-only, one ADR per number — CLAUDE.md §Source-of-truth chain), the older soft-stop ADR keeps the 087 number; the velocity-gate ADR moves to ADR-177 (pre-flagged by the t-5d85dddb planner scope-refresh note). Convention precedent: b4d62da `docs(adr-176): renumber ADR-171 epic-aware-lane-drift-revert → ADR-176`. Source-commit history preserved across the rename: 2a7db33 (kernel), eb97ea6 (V1 wiring per ADR-177 §What V1 defers).
+
+- **`git mv docs/adr/087-whip-velocity-gate.md docs/adr/177-whip-velocity-gate.md`** — file body header updated `# ADR-087:` → `# ADR-177:`; new §Amendment 2026-05-18 (t-fe51cf64) at the top documents the renumber + collision context.
+- **External refs swept** — all `ADR-087` references in source / docs / tests that pointed at the velocity-gate retarget to `ADR-177`: `src/core/velocity.ts`, `src/core/whip-strikes.ts`, `src/core/whip-escalation.ts`, `src/core/complaints.ts`, `src/core/velocity-gate.ts`, `src/verbs/poke.ts`, `src/schema/team.ts` (velocity-gate cadence knobs + kill-switch fields only — soft-stop `softStopGraceSeconds` ref preserved), `tests/unit/core/velocity.test.ts`, `tests/unit/core/velocity-gate.test.ts`, `tests/unit/core/whip-strikes.test.ts`, `tests/unit/core/whip-escalation.test.ts`, `tests/unit/core/complaints.test.ts`, `docs/adr/139-refusal-pattern-auto-rotate.md`, `docs/adr/147-ombudsman-and-release-notes.md`, `README.md`, `docs/release-notes/2026/05/2026-05-16.md` (lines 18 + 21 + historical-note added).
+- **Untouched** (refs are soft-stop, NOT velocity-gate): `docs/adr/087-atmux-stop-soft.md`, `src/core/soft-stop.ts`, `src/verbs/stop.ts`, `src/verbs/start.ts`, `src/schema/resume.ts`, `tests/e2e/stop-soft.test.ts`, `tests/unit/core/soft-stop.test.ts`, `docs/adr/089-hierarchical-cockpit.md`, `docs/adr/090-epic-team-lifecycle.md`, `docs/adr/091-kanban-driven-auto-merge.md`, `docs/adr/134-in-team-auto-merger.md`, `src/verbs/help.ts`, prior CHANGELOG entries for soft-stop §D4 cron quiescence and stop-soft-resume-manifest sections.
+- **Tests** — no test behavior changed; ADR ID strings inside test docstrings updated to match the new number.
+
 ### 🟢 Fixed — self-heal shim for legacy default-member window names (EPIC e-a3077ca0, 2026-05-18)
 
 Cages continuously running across the ADR-161 default-member `_-prefix` deploy never saw an `atmux start` rename pass and stayed on pre-ADR-161 hyphen / no-separator window names indefinitely. Every addressing verb refused with `no tmux window for lead (is the team running?)` against such cages until an operator manually `tmux rename-window`'d each of the 6 coordination panes. Observed 2026-05-18 on the atmux parent cage (4-day uptime; `🧭-lead` / `🎯-planner` / `🔍-reviewer` / `🦦-docs` / `🌿-gitter` / `⚖️-ombudsman` all on hyphen form). Cross-format failure also caught at `src/verbs/lane-tick.ts` against the docs window: `lane-tick: docs: capture error — can't find window: 🦦docs` (no-separator pre-ADR-135 variant — captured by t-fabd2528 verify-poll while the actual pane was `🦦_docs`).

@@ -58,7 +58,7 @@ describe("parseCronInstallArgs", () => {
   });
 });
 
-// ---------- ADR-088 W7 (t-2f12839e) — --template + --interval ----------
+// ---------- ADR-179 W7 (t-2f12839e) — --template + --interval ----------
 
 describe("parseCronInstallArgs — --template / --interval", () => {
   test("--template merge-cycle captured", () => {
@@ -413,7 +413,7 @@ describe("cronInstall — strip-and-replace semantics", () => {
   });
 });
 
-// ---------- ADR-088 W7 (t-2f12839e) — merge-cycle template integration ----------
+// ---------- ADR-179 W7 (t-2f12839e) — merge-cycle template integration ----------
 
 describe("cronInstall — --template merge-cycle integration", () => {
   let scratch: string;
