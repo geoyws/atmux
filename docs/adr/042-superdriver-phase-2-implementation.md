@@ -260,3 +260,10 @@ Sd (Phase 2D — atmux drive <team>)         [parallel with Sa; tiny scope]
 - [ADR-034](./034-superdriver-phase-2-commit.md) — driver-authored commit; this ADR is its implementation pair.
 - Driver-inbox 2026-04-28 08:05 MYT entry (Constraints 1-5 canonical source) — preserved verbatim in `t-8704d75a` body.
 - Driver-inbox 2026-04-28 21:17 MYT entry (Phase 2 commit + ordering recommendation) — preserved verbatim in `t-8704d75a` body.
+
+
+## §Amendment 2026-05-20 — driver-inbox.md renamed to lead-inbox.md per ADR-198
+
+Per operator design call 2026-05-20 + EPIC e-af5650db, `.atmux/driver-inbox.md` is renamed to `.atmux/lead-inbox.md` — naming-semantics fix per [ADR-198](198-driver-inbox-rename-to-lead-inbox.md). The `lead-inbox.md` (lead reads, driver writes) ↔ `lead-outbox.md` (lead writes, driver reads) pairing makes the asymmetric view explicit: both files belong to the lead's view; one inbound, one outbound. This ADR's prose above cites `driver-inbox.md` in §Context, §Constraints 3, §Phase 2A artifacts table, §Phase 2B detector list (items 2-3), §`_super_inbox_idle` predicate, and §Cross-references — all preserved verbatim per append-only convention; readers should mentally substitute `lead-inbox.md` for `driver-inbox.md` (per-team file) going forward. The fleet-level `~/.claude/teams/superdriver-inbox.md` is a distinct surface and is NOT affected by ADR-198. One-release back-compat read shim accepts both filenames per ADR-198 §Decision-anchor #2; T2 walker (EPIC e-af5650db) migrates existing on-disk state.
+
+**Filed via** t-f8ab55bd (T4 of EPIC e-af5650db / parent e-5d1d4038).

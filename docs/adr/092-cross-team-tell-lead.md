@@ -142,3 +142,14 @@ ADR-091 T12 (epic-merge conflict surface) currently uses `atmux flag add` as the
 Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
 
 **Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+
+## §Amendment 2026-05-20 — driver-inbox.md renamed to lead-inbox.md per ADR-198
+
+Per operator design call 2026-05-20 + EPIC e-af5650db, `.atmux/driver-inbox.md` is renamed to `.atmux/lead-inbox.md` — naming-semantics fix per [ADR-198](198-driver-inbox-rename-to-lead-inbox.md). The `lead-inbox.md` (lead reads, driver writes) ↔ `lead-outbox.md` (lead writes, driver reads) pairing makes the asymmetric view explicit: both files belong to the lead's view; one inbound, one outbound. Body prose above (§Context "appends to `.atmux/driver-inbox.md`", §Context "Driver-inbox 14:03 MYT pillar", §Driver-ref) is preserved verbatim per append-only convention; readers should mentally substitute `lead-inbox.md` for `driver-inbox.md` going forward.
+
+**Naming was a contributing root cause to t-fd43d71a self-loop** (per ADR-198 §Context observed-cost list): the `driver-inbox.md` filename hid the lead-writes-to-own-inbox case when `atmux tell-lead --team <other>` mis-resolved the target cage via cwd walk-up. The lead's appends landed in its OWN inbox rather than the intended sibling cage's inbox; the naming made the bug feel less wrong on code review. Renaming makes the bug visually obvious — a verb that's supposed to target a *remote* lead's inbox writing to the *local* `lead-inbox.md` is unmistakable as a wiring defect. The cwd-walk-up resolution fix itself remains the structural correction (separate Task / memory `[[feedback_atmux_tell_lead_team_flag_no_target_switch]]`); ADR-198 only removes the linguistic camouflage.
+
+One-release back-compat read shim accepts both filenames per ADR-198 §Decision-anchor #2; T2 walker (EPIC e-af5650db) migrates existing on-disk state.
+
+**Filed via** t-f8ab55bd (T4 of EPIC e-af5650db / parent e-5d1d4038).

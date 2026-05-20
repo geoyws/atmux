@@ -91,3 +91,10 @@ E2 and E4 are PARALLEL per lead 17:58 directive — neither blocks the other. Th
 - `atmux flag history --task <id>` — list all flags ever filed against a task (for retros). Defer to E5+ analytics.
 - Flag SLA reminders (whip pings if a p0 flag is open >30min unresolved). Natural follow-up; defer to keep MVP tight.
 - Member self-resolve auto-detection (member fires another flag with `--needs context` after the first; second auto-resolves first). Out of scope; lead resolves manually for now.
+
+
+## §Amendment 2026-05-20 — driver-inbox.md renamed to lead-inbox.md per ADR-198
+
+Per operator design call 2026-05-20 + EPIC e-af5650db, `.atmux/driver-inbox.md` is renamed to `.atmux/lead-inbox.md` — naming-semantics fix per [ADR-198](198-driver-inbox-rename-to-lead-inbox.md). The `lead-inbox.md` (lead reads, driver writes) ↔ `lead-outbox.md` (lead writes, driver reads) pairing makes the asymmetric view explicit: both files belong to the lead's view; one inbound, one outbound. The **Driver-ref** field above (`driver-inbox.md @ 17:00 MYT 2026-04-25`) is preserved verbatim per append-only convention; readers should mentally substitute `lead-inbox.md` for `driver-inbox.md` going forward. One-release back-compat read shim accepts both filenames per ADR-198 §Decision-anchor #2; T2 walker (EPIC e-af5650db) migrates existing on-disk state.
+
+**Filed via** t-f8ab55bd (T4 of EPIC e-af5650db / parent e-5d1d4038).

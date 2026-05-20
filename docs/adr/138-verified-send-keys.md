@@ -239,3 +239,10 @@ EPIC e-f28c2596 ("auto-fire Enter on queued worker compose-box + rotate-lead bri
 ADR-188's 4-step pattern is the **outer wrapper** around this ADR's verify-and-retry mechanism: scroll/dismiss-preamble → send → verify (this ADR) → if verify-failed, the 4-step pattern fires from scratch (not just the send step). Single-keystroke control callsites (menu nav, known-modals.ts auto-dismiss with a specific catalog-keystroke, copy-mode commands, raw tmux key passthrough that is NOT message-content) keep this ADR's verify-and-retry discipline without the 4-step preamble/postamble.
 
 This file is the historical baseline — read ADR-188 for the forward direction once impl lands.
+
+
+## §Amendment 2026-05-20 — driver-inbox.md renamed to lead-inbox.md per ADR-198
+
+Per operator design call 2026-05-20 + EPIC e-af5650db, `.atmux/driver-inbox.md` is renamed to `.atmux/lead-inbox.md` — naming-semantics fix per [ADR-198](198-driver-inbox-rename-to-lead-inbox.md). The `lead-inbox.md` (lead reads, driver writes) ↔ `lead-outbox.md` (lead writes, driver reads) pairing makes the asymmetric view explicit: both files belong to the lead's view; one inbound, one outbound. This ADR's only inbox-related mention is §Context "(member-inbox surfacing)" at the `atmux send <member> <msg>` row — that surface is the per-member inbox (per ADR-076's `.atmux/inboxes/<m>.json`, distinct from the team-level `lead-inbox.md`) and is NOT affected by ADR-198. The verify-and-retry pattern + 5 built-in verifiers + escalation log apply identically to send-keys callsites that target the renamed `lead-inbox.md` write path (T1 scope, EPIC e-af5650db) — `safeSendKeysWithVerify` doesn't care which markdown file the caller writes; the verifier contract is per-callsite.
+
+**Filed via** t-f8ab55bd (T4 of EPIC e-af5650db / parent e-5d1d4038).

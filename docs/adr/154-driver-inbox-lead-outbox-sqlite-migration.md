@@ -275,3 +275,18 @@ Reviewer / operator: any non-default flips `Status: proposed → accepted`.
 Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
 
 **Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+
+## §Amendment 2026-05-20 — driver-inbox.md renamed to lead-inbox.md per ADR-198 (file NOT renamed)
+
+Per operator design call 2026-05-20 + EPIC e-af5650db, `.atmux/driver-inbox.md` is renamed to `.atmux/lead-inbox.md` — naming-semantics fix per [ADR-198](198-driver-inbox-rename-to-lead-inbox.md). The `lead-inbox.md` (lead reads, driver writes) ↔ `lead-outbox.md` (lead writes, driver reads) pairing makes the asymmetric view explicit: both files belong to the lead's view; one inbound, one outbound.
+
+**This ADR's filename + title intentionally retain the legacy `driver-inbox` term** — per ADR-198 §Decision-anchor #4 + ADR-133 §D5 precedent, append-only convention covers filenames too; renaming an ADR file is policy-forbidden. Acceptance criteria bullet #6 of T4's task body (t-f8ab55bd) initially floated a file rename to `154-lead-inbox-lead-outbox-sqlite-migration.md` as a possible path; the reviewer-gate concern in the same task body resolved it explicitly to **§Amendment paragraph only, no file rename**. This §Amendment is that resolution.
+
+**Body prose stays verbatim** — every cite of `driver-inbox.md` in §Context, §Decision (D1, D5 verb table, D7 migration steps, D9 backward-compat), §Tradeoffs, §Migration, §Verbs, §Out-of-scope, and §Related-work is preserved per append-only convention. Readers should mentally substitute `lead-inbox.md` for `driver-inbox.md` (per-team file path) going forward. The `coordination_messages` table schema, the `direction='lead-to-driver'` column value, and the rendered-glyph translation table (§D4) are **unchanged** — ADR-198 renames the file path only, not the storage layer.
+
+The §D5 proposed `atmux driver-inbox show / triage / archive` verb-family (forward-looking; ADR-154's acceptance scope was the ADR + structural decision per its §Out-of-scope list) rebases to `atmux lead-inbox show / triage / archive` whenever it ships. The §D7 migration walker (markdown → SQLite) and the §D9 legacy-archive path (`.atmux/legacy/`) both consume the renamed per-team file; if any cage still holds `.atmux/driver-inbox.md` on disk when ADR-198's T2 walker runs, the merge-by-mtime + idempotent-archive logic from ADR-198 §Decision-anchor #3 handles the residue.
+
+One-release back-compat read shim accepts both filenames per ADR-198 §Decision-anchor #2.
+
+**Filed via** t-f8ab55bd (T4 of EPIC e-af5650db / parent e-5d1d4038).
