@@ -1,3 +1,7 @@
+// per ADR-132 §Amendment 2026-05-20: cron-polling deprecated under lean-mode;
+//   CursorSentinel still fires on-demand + via event-driven dispatcher escalation
+//   (t-ffcbd1dc), but the continuous-cron invocation pattern is retired.
+//
 // ADR-132 §D4 / T3 (t-e96d286a): CursorSentinel — production-default
 // pluggable Sentinel impl backed by `cursor-agent --print --model
 // composer-2-fast --force`.
