@@ -1,3 +1,7 @@
+// per ADR-132 §Amendment 2026-05-20: cron-polling deprecated under lean-mode;
+//   on-demand `atmux sentinel tick --once` + event-driven dispatcher escalation
+//   (t-ffcbd1dc) are the canonical invocation paths.
+//
 // ADR-132 §D3 / T8: sentinel verb — cockpit-level fleet-wide tick loop.
 //
 // Runs in cockpit W3 (sibling of medic at W2 per ADR-132 §D2). Iterates

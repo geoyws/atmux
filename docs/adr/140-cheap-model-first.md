@@ -6,6 +6,23 @@
 **EPIC**: `t-83dcef6b` · **T1 scope** (this commit). T2 (ADR annotations on ADR-077 / ADR-131 / ADR-132 / ADR-139), T3 (medic verb refactor to event-driven), T4 (martinet `NudgeAction` enum extension) remain open under the EPIC.
 **Reviewer**: gate before T3 (medic refactor) lands.
 
+## §Amendment — cron-polling pattern revision (2026-05-20)
+
+Cheap-model-first principle (cursor for observation loops + mechanical nudges + routine rotation) STANDS. The cron-polling delivery pattern for cheap-model invocation is REVISED:
+
+### Decision
+
+Cheap-model invocations under lean-mode topology fire via:
+
+1. On-demand operator verb (`atmux sentinel tick --once`, `atmux doctor`, `atmux wedges`)
+2. Event-driven dispatcher hook (escalate-to-claude-lead per `t-ffcbd1dc`)
+
+NOT via continuous cron-polling. The 65-70% Claude-burn reduction projected in this ADR was an EVERY-TICK calculation under cron-polling; under lean-mode, the realized reduction is HIGHER because most ticks no longer fire (no idle-cycle observation cost).
+
+See [ADR-132 §Amendment 2026-05-20](./132-pluggable-martinet.md) + [ADR-189](./189-lean-mode-side-project-topology-preset.md) (the lean-mode pivot anchor) + Epic `e-be01fc89` for the full pivot.
+
+**Filed via** t-4de68474 (docs role, 2026-05-20).
+
 ## Context
 
 ### Operator's 4-message arc (2026-05-14)

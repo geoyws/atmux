@@ -14,6 +14,20 @@
 
 > **Implementation note (2026-05-15)**: `CursorMartinet` ships in `src/abstractions/martinets/cursor.ts` per Task **t-e96d286a** (the kanban EPIC's repurposed T3 slot — slid up from the original T4 line in §"Implementation plan" below to absorb the dropped MiniMax T3). The verb-layer wiring in `src/verbs/martinet.ts::buildMartinet` constructs the impl when `team.martinet === "cursor"` (or `cockpit.defaultMartinet === "cursor"`); `src/verbs/cockpit.ts::buildMartinetWindowCommand` emits a `while true; do atmux martinet tick; sleep 270; done` loop for the cursor variant (no Claude TUI — cursor-agent is a `--print` CLI; the loop owns cadence). Cage posture: the cockpit W3 window itself runs as operator UID with full git access — the W3 window IS the Tier-2 cage in trust posture per ADR-058 §D1, so no separate `/tmp/atmux_cursor_martinet_<team>/sock` carve-out is provisioned (martinet is fleet-wide singleton; per-team cage paths in the original t-e96d286a body predated the §D2 fleet-singleton reshape).
 
+## §Amendment — cost-curve realization + cron-polling deprecation (2026-05-20)
+
+Cron-polling pattern documented in this ADR was load-bearing during fleet-bootstrap (4 teams, 27s/tick, ~5% CPU/cycle). At 18-team fleet observed 2026-05-20, the same pattern scaled to 2min/tick + 40% CPU/cycle on empty epic-team observations. Operator killed sentinel cron at 11:15 MYT.
+
+### Decision
+
+Cron-polling is DEPRECATED under lean-mode side-project topology (new [ADR-189](./189-lean-mode-side-project-topology-preset.md)). The `atmux sentinel tick --once` verb is PRESERVED as on-demand audit invocation; identical observe→decide→apply loop, single tick exit.
+
+Event-driven escalate-to-claude-lead from dispatcher (`t-ffcbd1dc` anchor) replaces cron-polling for wedge-detection. See Epic `e-be01fc89` for the full lean-mode pivot.
+
+ADR-132 §D2 (sentinel load-bearing safety gate) REMAINS in force as the substrate for the on-demand verb + event-driven dispatcher escalation. Only the cron-polling integration is deprecated.
+
+**Filed via** t-4de68474 (docs role, 2026-05-20).
+
 ## Context
 
 ### The lead's whip burns Opus-grade tokens on mechanical work
