@@ -65,7 +65,7 @@ Setup:
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
   broadcast <msg...>          Send to every member except the driver
-  tell-lead <msg...>          Driver-only: send to lead + append to driver-inbox.md
+  tell-lead <msg...>          Driver-only: send to lead + append to lead-inbox.md (ADR-198)
   reply <msg...>              Member → driver: write to lead-outbox.md
   outbox [--ack] [--json]     Driver: read lead-outbox.md (--ack archives)
 
@@ -145,6 +145,13 @@ Maintenance:
                               ADR-022 Discord cron pings. progress = 30-min
                               digest; heartbeat = hourly state-of-team.
                               Read-only on kanban/git/decisions.
+  migrate-lead-inbox [--dry-run] [--team-dir <dir>] [--json]
+                              ADR-198: per-cage walker that retires the legacy
+                              \`.atmux/driver-inbox.md\` filename in favour of
+                              \`.atmux/lead-inbox.md\`. Discovers cages from
+                              cockpit.json (team + nested epic-team) OR a
+                              single cage via --team-dir. Idempotent: both-
+                              files merges by mtime; same-canonical noops.
 
 Misc:
   version

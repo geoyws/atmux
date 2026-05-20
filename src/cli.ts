@@ -67,6 +67,7 @@ import { laneTick } from "./verbs/lane-tick.ts";
 import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
+import { migrateLeadInbox } from "./verbs/migrate-lead-inbox.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
 import { pause, resume } from "./verbs/pause.ts";
@@ -75,6 +76,7 @@ import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
 import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
 import { refusalScan } from "./verbs/refusal-scan.ts";
+import { release } from "./verbs/release.ts";
 import { outbox, reply } from "./verbs/reply.ts";
 import { report } from "./verbs/report.ts";
 import { rotate, rotateLead } from "./verbs/rotate.ts";
@@ -84,7 +86,6 @@ import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { story } from "./verbs/story.ts";
-import { release } from "./verbs/release.ts";
 import { dispatchSyncSubverb } from "./verbs/sync.ts";
 import { task } from "./verbs/task.ts";
 import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
@@ -351,6 +352,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return discorder(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
+    case "migrate-lead-inbox":
+      // ADR-198 §Decision-anchor #3 — per-cage on-disk walker that
+      // retires `.atmux/driver-inbox.md` in favour of `.atmux/lead-inbox.md`.
+      return migrateLeadInbox(argv.slice(1));
     case "up":
       return up(argv.slice(1));
     case "":

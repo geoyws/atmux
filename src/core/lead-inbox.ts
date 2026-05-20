@@ -46,6 +46,21 @@ import { driverInboxLegacyPath, leadInboxPath, stateDir } from "./common.ts";
 
 const CURSOR_FILENAME = "last-driver-inbox-read.txt";
 
+/** Canonical header prefixed to a fresh `.atmux/lead-inbox.md` on first
+ *  append (per ADR-198). Consumed by `src/verbs/tell-lead.ts` on first
+ *  write and by `src/verbs/migrate-lead-inbox.ts` when seeding a freshly
+ *  migrated cage. Re-exporting from core keeps the canonical text in one
+ *  place so a future header tweak doesn't require touching both verbs. */
+export const LEAD_INBOX_HEADER = `# Lead Inbox — driver asks for the lead (ADR-198)
+
+Lead reads this at the start of every whip turn. Mark each entry:
+  ✅ done  ·  📤 delegated  ·  ⏳ in-progress  ·  ❌ rejected
+
+Keep entries bulleted, terse, and timestamped. Move >24h entries to "## Archive".
+
+## Open
+`;
+
 /** Resolve `<atmuxDir>/state/last-driver-inbox-read.txt`. Filename
  *  retained post-ADR-198 per append-only convention on state files. */
 export function lastLeadInboxReadPath(atmuxDir: string): string {

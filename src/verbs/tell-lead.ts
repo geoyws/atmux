@@ -37,21 +37,15 @@ import {
   type WindowShimOps,
 } from "../core/common.ts";
 import { recordHeadsUp, shouldEmitHeadsUp } from "../core/heads-up-cursor.ts";
+import { LEAD_INBOX_HEADER } from "../core/lead-inbox.ts";
 import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
 const USAGE = "atmux tell-lead [--team <name>] [--socket <p>] [--team-dir <d>] <msg...>";
 
-const LEAD_INBOX_HEADER = `# Lead Inbox — driver asks for the lead (ADR-198)
-
-Lead reads this at the start of every whip turn. Mark each entry:
-  ✅ done  ·  📤 delegated  ·  ⏳ in-progress  ·  ❌ rejected
-
-Keep entries bulleted, terse, and timestamped. Move >24h entries to "## Archive".
-
-## Open
-`;
+// LEAD_INBOX_HEADER lives in `core/lead-inbox.ts` so the migration
+// walker (T2) can seed freshly migrated cages with the same header.
 
 /** Parsed `tell-lead` argv. `targetTeam` (ADR-092 §D1) populates from
  *  `--team <name>`; when set the verb routes through cockpit-walk +

@@ -284,6 +284,61 @@ git push origin <branch>
 
 Use only when `atmux release` itself is broken (`atmux` binary unbootable, `package.json` non-semver). Per the design intent the legacy form is deprecated for daily use — `atmux release` is the canonical surface.
 
+## §9a — `atmux migrate-lead-inbox` (ADR-198 rename walker)
+
+Per [ADR-198](adr/198-driver-inbox-rename-to-lead-inbox.md), the canonical driver→lead ask file is `.atmux/lead-inbox.md` (pairing with `lead-outbox.md` — both belong to the lead's view). The legacy filename `driver-inbox.md` is read-only during the one-release grace window; new writes from `atmux tell-lead` land in `lead-inbox.md` from T1 onward. This section documents the per-cage on-disk migration walker that retires the legacy filename across every enabled cage.
+
+### When to run
+
+- **After upgrading to atmux ≥ the release that lands ADR-198** — once per host. `atmux doctor` surfaces the `lead-inbox-legacy` warn row (added in T1) for every cage that still has `.atmux/driver-inbox.md` on disk; that's the signal to run the walker.
+- **Before the grace window ends** (one release cycle post-T1). After that, the read shim in `core/lead-inbox.ts` is removed and cages still on legacy refuse to read with a `ConfigError` naming ADR-198.
+
+### Invocation
+
+```bash
+# Cockpit-driven walk: enumerate every enabled team + nested epic-team
+atmux migrate-lead-inbox
+
+# Dry-run first (recommended) — prints planned moves, no disk writes
+atmux migrate-lead-inbox --dry-run
+
+# JSON report instead of human render
+atmux migrate-lead-inbox --json
+
+# Single-cage mode (skip cockpit walk; useful when no cockpit on disk)
+atmux migrate-lead-inbox --team-dir /path/to/atmux/cage
+```
+
+### Per-cage idempotency
+
+Each cage's `.atmux/` directory falls into one of four branches:
+
+| Branch | Disk state | Action |
+|--------|------------|--------|
+| 1 — both absent | neither `driver-inbox.md` nor `lead-inbox.md` | noop (nothing to migrate) |
+| 2 — canonical-only | only `lead-inbox.md` | noop (already migrated) |
+| 3 — legacy-only | only `driver-inbox.md` | `rename(2)` → `lead-inbox.md`; logged to `.atmux/logs/migration.log` |
+| 4 — both present (mid-rollout race) | both files | concat-merge by mtime (older block first); delete legacy; logged |
+
+The walker is strictly sequential per cage (no parallel `mv`) per ADR-198 §AC §5. Symlinks are realpath-resolved before any stat / rename / unlink — operators who symlinked their state files don't see a corrupted post-state.
+
+### Rollback
+
+Every non-noop action appends a JSONL row to `<atmuxDir>/logs/migration.log` of the form:
+
+```json
+{"ts":"2026-05-20T13:42:11Z","action":"rename","from":"/.../driver-inbox.md","to":"/.../lead-inbox.md"}
+{"ts":"2026-05-20T13:42:11Z","action":"merge-delete","legacy":"/.../driver-inbox.md","canonical":"/.../lead-inbox.md","mergedBytes":2840,"mergeOrder":"legacy-first"}
+```
+
+To reverse a rename per logged entry: `mv lead-inbox.md driver-inbox.md` from the cage's `.atmux/`. Merge-delete entries are best-effort to reverse (the legacy file is gone); the rollback path documented in ADR-198 §Rollback path covers the source-side `git revert`.
+
+### Exit codes
+
+- `0` — success (including all-noop and dry-run paths).
+- `1` — at least one cage hit an IO error during a non-dry-run pass; other cages still completed. Error rows surface in the report (`action: "error"`).
+- `64` — `UsageError` (bad flag shape).
+
 ## §9 — Operator coordination skills (`/bau`, `/bruh`, `/whip`, `/team`)
 
 The Claude Code skills plugin at `~/work/journals/.sb/claude-skills/plugins/coordination/` ships operator-facing `/slash-commands` that wrap atmux verbs for hands-on cockpit work. Skills are NOT installed by `atmux start` or `atmux cockpit rebuild` — they're operator-managed via the dotfiles flow per auto-memory `feedback_claude_skills_dotfiles_territory` (2026-05-15). See [ADR-187](adr/187-coordination-skills-plugin.md) for the design.
@@ -295,7 +350,7 @@ The Claude Code skills plugin at `~/work/journals/.sb/claude-skills/plugins/coor
 | End-of-day unblocker pass | `/bruh` | Sweeps pending decisions / blockers / flags / worktrees in one pass. |
 | One-shot team lifecycle | `/team <verb>` | start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member. Calls `atmux team` verbs underneath. |
 | Diagnostic across all Claude accounts | `/budget` | 5h + weekly rate-limit utilization + reset times. Pure-shell + Anthropic API. |
-| Driver → lead durable ask | `/tell-lead <msg>` | Writes to `.atmux/driver-inbox.md` + best-effort lead-pane wake-up. |
+| Driver → lead durable ask | `/tell-lead <msg>` | Writes to `.atmux/lead-inbox.md` (ADR-198; legacy `driver-inbox.md` still readable during grace) + best-effort lead-pane wake-up. |
 
 **Install via dotfiles**:
 
