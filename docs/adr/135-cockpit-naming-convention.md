@@ -3,11 +3,11 @@
 **Status**: Accepted (2026-05-15)
 **Date**: 2026-05-14
 **Author**: atmux team (parity-state-impl / t-b3958ee6)
-**Supersedes (naming only)**: ADR-063 §session-name (`atmux_teams`) + ADR-017 buildWindowName format (`<emoji><member>`)
+**Supersedes (naming only)**: ADR-063 §session-name (`atmux_teams`) + ADR-110 buildWindowName format (`<emoji><member>`)
 
 ## Context
 
-ADR-063 named the operator cockpit session **`atmux_teams`**. ADR-017 (`buildWindowName`) named per-member windows **`<emoji><member>`** (e.g. `🧭lead`, `📦whip-impl`). Two friction points surfaced once the cockpit topology grew past a single superdriver window:
+ADR-063 named the operator cockpit session **`atmux_teams`**. ADR-110 (`buildWindowName`) named per-member windows **`<emoji><member>`** (e.g. `🧭lead`, `📦whip-impl`) — that ADR's §Decision dropped the bash-era `__<team>__` prefix and established the `<emoji><member>` shape. Two friction points surfaced once the cockpit topology grew past a single superdriver window:
 
 ### Session name conflates container with contents
 
@@ -123,7 +123,7 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 - **Operator zero-disruption** — in-place `rename-session` + `rename-window` preserve attached clients. The cockpit reattach + per-team `atmux start` next-run apply migration silently.
 - **No state-file migration** — `~/.atmux/cockpit.json` field is value-level (a string literal), not key-level; legacy value accepted with warning during the deprecation window per D5.
 - **Reversibility** — flip back is one default change + one buildWindowName line; the migration shim's idempotency makes "what's the current name" the source of truth, not "what's the config say".
-- **Cross-references**: ADR-063 (cockpit verb), ADR-046 (cockpit session naming origin), ADR-077 (medic role), ADR-132 (martinet role), ADR-133 (medic rename precedent for D2 underscore-prefix migration shape), ADR-017 (buildWindowName origin).
+- **Cross-references**: ADR-063 (cockpit verb), ADR-046 (cockpit session naming origin), ADR-077 (medic role), ADR-132 (martinet role), ADR-133 (medic rename precedent for D2 underscore-prefix migration shape), ADR-110 (buildWindowName origin — supersedes the bash-era `__<team>__<emoji><member>` to `<emoji><member>`; this ADR's D3 amends to `<emoji>-<member>`).
 
 ## Cross-references
 
@@ -131,7 +131,7 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 - ADR-077 — medic role (originally superdoctor). Window name `_medic` per D2.
 - ADR-132 — pluggable martinet. Window name `_martinet` per D2.
 - ADR-133 — medic rename (TR2/TR3 already landed). Same backward-compat shim shape (D5) reused here for session/window scope.
-- ADR-017 — buildWindowName naming origin. Hyphen separator per D3 amends the format.
+- ADR-110 — buildWindowName naming origin (drops bash-era `__<team>__` prefix; establishes `<emoji><member>`). Hyphen separator per D3 amends the format.
 - ADR-046 — original cockpit session naming (historical; pre-dates the docs/adr/ tree's current numbering).
 - `src/core/common.ts::buildWindowName` — function the D3 change lands in.
 - `src/verbs/cockpit.ts` rebuild handler — D4 migration shim lands here.
