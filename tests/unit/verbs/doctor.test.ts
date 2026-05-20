@@ -33,6 +33,7 @@ import {
   checkCursorPluginCache,
   checkDeps,
   checkInboxMarks,
+  checkLeadInboxLegacy,
   checkMemberCageStates,
   checkMemberForcePushRecent,
   checkMemberLabelCollision,
@@ -1916,6 +1917,73 @@ describe("checkInboxMarks", () => {
       JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
     );
     expect(await checkInboxMarks(atmuxDir)).toEqual([]);
+  });
+});
+
+// ---------- ADR-198 §Decision-anchor #2 + §5: checkLeadInboxLegacy ----------
+
+describe("checkLeadInboxLegacy (ADR-198 T1 §AC5 + T7 §AC4)", () => {
+  let dir: string;
+  let atmuxDir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "atmux-doctor-leadinbox-"));
+    atmuxDir = join(dir, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("no legacy file → silent (no rows)", async () => {
+    expect(await checkLeadInboxLegacy(atmuxDir)).toEqual([]);
+  });
+
+  test("only canonical lead-inbox.md present → silent (post-migration steady state)", async () => {
+    await writeFile(
+      join(atmuxDir, "lead-inbox.md"),
+      "# Lead Inbox\n## Open\n- [10:00 MYT] new entry\n",
+    );
+    expect(await checkLeadInboxLegacy(atmuxDir)).toEqual([]);
+  });
+
+  test("legacy-only → yellow row, 'readers still see legacy content via the ADR-198 shim'", async () => {
+    await writeFile(
+      join(atmuxDir, "driver-inbox.md"),
+      "# Driver Inbox\n## Open\n- [09:00 MYT] legacy entry\n",
+    );
+    const rows = await checkLeadInboxLegacy(atmuxDir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("lead-inbox-legacy");
+    expect(rows[0]?.detail).toMatch(/driver-inbox\.md present.*canonical.*missing/);
+    expect(rows[0]?.hint).toMatch(/migrate.*lead.inbox|mv .*driver-inbox\.md/);
+  });
+
+  test("both files present (mid-rollout race) → yellow row, 'merge by mtime' detail", async () => {
+    await writeFile(
+      join(atmuxDir, "driver-inbox.md"),
+      "# Driver Inbox\n## Open\n- [09:00 MYT] legacy entry\n",
+    );
+    await writeFile(
+      join(atmuxDir, "lead-inbox.md"),
+      "# Lead Inbox\n## Open\n- [10:00 MYT] canonical entry\n",
+    );
+    const rows = await checkLeadInboxLegacy(atmuxDir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("lead-inbox-legacy");
+    expect(rows[0]?.detail).toMatch(/both.*driver-inbox\.md.*lead-inbox\.md.*exist/);
+    expect(rows[0]?.detail).toMatch(/merge by mtime/);
+  });
+
+  test("ADR-198 §D2: probe self-clears once legacy file is removed", async () => {
+    // Pre-state: legacy present → yellow
+    await writeFile(join(atmuxDir, "driver-inbox.md"), "legacy");
+    expect((await checkLeadInboxLegacy(atmuxDir)).length).toBe(1);
+    // Walker simulation: remove legacy
+    await rm(join(atmuxDir, "driver-inbox.md"));
+    // Post-state: silent
+    expect(await checkLeadInboxLegacy(atmuxDir)).toEqual([]);
   });
 });
 
