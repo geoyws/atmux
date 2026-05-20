@@ -1,6 +1,6 @@
 # ADR-091: Kanban-driven auto-merge state machine — epic-team → parent fan-in
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-16
 **Driver-ref**: `.atmux/driver-inbox.md` 14:03 MYT 2026-05-13 §Pillar 3 + §Open call #3 (auto-merge gitter ownership, resolved: epic-team-scoped gitter) + §Open call #5 resolved (EPIC-done definition).
 **Parent Task**: t-e576dd43 (team-of-teams umbrella). **Authored under**: t-4af76f05 (ADR draft, 5/6 in the ADR-085 → ADR-092 batch).
@@ -255,3 +255,10 @@ Driver finding 2026-05-19 06:30 MYT (operator: "make sure committers/gitters don
 - `.atmux/audits/adr-089-091-adjacent-class-2026-05-13.md` §Class 1 (3 state-machine recs) + §Class 3 carve-out (multi-epic stress).
 - Impl commits: `7da4e85` (t-b5f12ab1 — shared state machine), `a34fafa` (t-04350614 — caller wrapper + verb + cron), `b502ebe` (t-9a8b0e4e — dispatchDissolve wire-up), `d79840b` (t-9d22718b — e2e dogfood).
 - Project [CLAUDE.md](../../CLAUDE.md) §Testing Discipline (trunk-signoff test-coverage gate per §EPIC-done definition) + §Docs Discipline (same-commit doc updates) + §Push Policy (epic-team `<parentBase>-epic-<epicId>` branches fall under `<dev>-staging` shape).
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

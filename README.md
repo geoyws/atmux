@@ -719,6 +719,11 @@ atmux member swap <id-a> <id-b>              # pairwise window swap (ADR-161 §C
 atmux member sort [--defaults-first]         # canonical reorder (ADR-161 §C)
 atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
+
+🚢 Release
+atmux release <patch|minor|major>            # one-shot deploy: bump package.json + commit
+              [--dry-run] [--allow-dirty]    # + bun run build:install + git push (ADR-183 sibling — t-c3f4c418)
+                                             # exit 0=ok, 64=usage, 65=dirty/no-op refused, 70=step failure
 ```
 
 ## 📡 Commit-cadence column (ADR-148)
@@ -840,6 +845,28 @@ Member briefs (`templates/briefs/*.md`) are paste-targets for every spawned pane
 3. **Bottom — pointers to churning state.** `state.db` (tasks / inbox rows), `lead-outbox.md`, `flags.md`. The pointers are stable; the *stores they point at* churn faster than the cache TTL, so the references go LAST so the cached preamble survives every tick.
 
 See [ADR-041 §Prompt-cache discipline](docs/adr/041-token-savings-kanban-slicing.md) for the full rationale + claim-reply / `task list` / whip-prelude levers. Roll-out is incremental (per ADR-041 OQ D2 resolution): each brief touched in normal evolution gets reordered if needed; reviewer flags ordering on changes. Mass restructure was rejected — cache-discipline wins are cumulative.
+
+## 🧰 Coordination skills plugin
+
+atmux pairs with a sibling **Claude Code skills plugin** that lives outside this repo at `~/work/journals/.sb/claude-skills/plugins/coordination/`. The plugin ships operator-facing `/slash-commands` that wrap atmux verbs (and add a few pure-shell helpers) so the driver can drive a fleet without memorising the full verb surface. See `docs/adr/187-coordination-skills-plugin.md` for the design.
+
+| Skill              | What it does                                                          | Calls atmux verb              |
+|--------------------|-----------------------------------------------------------------------|-------------------------------|
+| `/bau`             | Business-as-usual status check + auto-escalate dormant teams to lead. | `atmux status / report` (read) |
+| `/bruh`            | Unblocker sweep — decisions / blockers / flags / worktrees in one pass. | `atmux flags / decisions / inbox` |
+| `/budget`          | Live rate-limit probe across every Claude account, prints utilisation. | (pure-shell — Anthropic API)  |
+| `/heads-up <msg>`  | Lightweight nudge to teammates about new tasks / cascade unblocks.    | `atmux send`                  |
+| `/session`         | Session continuity (cont / preclear / handoff / stop) at phase boundaries. | `atmux handoff`           |
+| `/superdoctor`     | Hourly cockpit-level self-healing diagnosis-and-prevention loop.      | `atmux doctor / status`       |
+| `/team`            | Team lifecycle (start / stop / add / clear / cleanup / rotate-lead).  | `atmux team / start / stop`   |
+| `/tell-lead <msg>` | Driver → lead durable ask with best-effort pane wake-up.              | `atmux tell-lead`             |
+| `/whip`            | Autonomous-work nudge loop (run / cadence / watchdog verbs).          | `atmux whip`                  |
+
+**Installation** — plugin lives in `~/work/journals/.sb/_dotfiles` and ships via the dotfiles flow (`dotfiles push` deploys; the plugin is operator-managed, not owned by atmux). atmux does NOT install the plugin itself — per the auto-memory `feedback_claude_skills_dotfiles_territory` convention (2026-05-15), the atmux team must not touch `claude-skills` paths from inside cages. Operators install once via dotfiles and `~/.claude/plugins.json` references the directory; Claude Code picks up the skills automatically on next launch.
+
+**Operator workflow** — `/bau` for status snapshots, `/whip` for nudge cycles, `/team` for lifecycle, `/bruh` for end-of-day unblocker sweeps, `/tell-lead` for one-shot driver→lead asks. Most skills are thin wrappers; the value is the cached prompt+context per skill instead of re-typing verb chains.
+
+**No-static-registration parallel** — the plugin's skill list isn't registered in any atmux state; Claude Code discovers it via the plugin manifest. This mirrors the dynamic-discovery model the sentinel uses for epic-teams (see [ADR-185](docs/adr/185-sentinel-dynamic-epic-discovery.md)) — atmux's coordination surface and the operator's skill surface are both discovered at use-time, not pre-registered in cockpit state.
 
 ## Configuration (environment variables)
 

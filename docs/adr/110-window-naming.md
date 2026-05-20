@@ -110,3 +110,16 @@ Considered. Keep bash and TS in lockstep by changing both. Rejected per ADR-106 
 - ADR-096 (module taxonomy — common is the right home for this helper)
 - ADR-106 (WIP bash deferral — governs cross-language drift)
 - Task #22 (this commit) — blocks #14 start, #15 attach, #16 add-member while landing
+
+## §Amendment 2026-05-20 — partial supersession by ADR-135 (per audit T2 follow-up t-55100181)
+
+The §Decision's `buildWindowName` format `<emoji><member>` (e.g. `🧭lead`) is **partially superseded** by [ADR-135 §D3](./135-cockpit-naming-convention.md):
+
+- **Default-role windows** — canonical form is now `<emoji>_<member>` (underscore prefix; sorts before plain member names in `tmux list-windows`). Affects `_superdriver`, `_medic`, `_sentinel`, etc.
+- **User-added member windows** — canonical form is now `<emoji>-<member>` (hyphen separator) per [ADR-161 §C](./161-default-member-prefix-and-sort-verbs.md).
+
+Both shapes coexist in production code via the role-aware `src/core/common.ts::buildWindowName(name, emoji, label, role)` post-ADR-161 §Decision-anchor #2; legacy `<emoji><member>` (no separator) format gets in-place rename on next `atmux start` per ADR-135 §D5 + ADR-161 §D4 (multi-release migration window).
+
+This §Amendment is filed via t-55100181 (T1 audit follow-up — the original audit incorrectly cited ADR-135's supersession reference as targeting ADR-017; the correct target is THIS ADR per the §Decision's authorship of `buildWindowName` per `src/core/common.ts` commit `707e4dd`).
+
+**The §Decision's drop-the-`__<team>__`-prefix decision stands verbatim** — that's the core supersession of bash-era naming. Only the trailing `<emoji><member>` shape is amended by ADR-135 + ADR-161; the prefix-elimination remains canonical.

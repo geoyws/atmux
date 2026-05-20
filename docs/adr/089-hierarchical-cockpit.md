@@ -1,6 +1,6 @@
 # ADR-089: Hierarchical cockpit — recursive `sessions[]` + nested tmux prefix chain
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-13
 **Driver-ref**: `.atmux/driver-inbox.md` 14:03 MYT 2026-05-13 §Pillar 1+2 (lines 2986-3032).
 **Parent Task**: t-e576dd43. **Authored under**: t-5e7a6631 (ADR seq 3/6, DRAFT only).
@@ -296,3 +296,10 @@ Covered by §Decision (C) auto-detect + fallback chain. The 12-row compat matrix
 - **T5** = ADR-089 impl: tmux prefix-chain by nesting level + `ATMUX_NESTING_LEVEL` env propagation (`t-7e7031dc`).
 - **T6** = ADR-089 dogfood: cockpit verbs walk recursive tree + nested-cage e2e gate (`t-60982d48`).
 - **T7+** = downstream ADRs (090 epic-team lifecycle / 091 auto-merge / 092 cross-team tell-lead).
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

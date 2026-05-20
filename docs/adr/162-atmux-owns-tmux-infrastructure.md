@@ -1,6 +1,6 @@
 # ADR-162: atmux owns its tmux infrastructure — cockpit-socket isolation + canonical tmux.conf + version-check
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-16
 **Driver-ref**: 2026-05-16 driver session — operator: "atmux should not clobber the user's default tmux." Audit found 3 gaps in current isolation posture.
 **Parent EPIC**: t-0b15d199 (this ADR is the umbrella; sub-tasks TR1-TR6 filed in same session per [[feedback_decomp_same_session_with_deps]]).
@@ -259,3 +259,10 @@ The original §Decision-anchor text is preserved as authored (append-only ADR co
 ### 2026-05-16 — TR3 e2e deferred to follow-up Task
 
 The TR3 task body called for a real-tmux ephemeral-socket e2e (spin up a cockpit on default socket, run migrate-socket, assert windows present on atmux-cockpit + default socket has no residue + scrollback breadcrumb exists). The TR3 ship covers all 6 phases via mock-driven unit tests (~96% line coverage) including the deliberate graceful-recreate mechanism, but defers the real-tmux e2e to a sibling Task. The unit-mock coverage narrows the e2e surface to "happy-path on real tmux" — discovery/capture/recreate/cleanup are all exercised at the abstraction boundary. Reviewer may request the e2e before final signoff.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

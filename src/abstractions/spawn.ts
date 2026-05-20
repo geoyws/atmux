@@ -62,7 +62,21 @@ export interface SpawnStreamHandle {
 
 // ---------- Buffered spawn ----------
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+/** Operator override per t-681e5b91 (sopx submodule-init >30s on epic-team
+ *  spawn). Env-parse fails closed to the 30s default if the value is missing,
+ *  non-numeric, non-finite, or non-positive — submodule-heavy teams export
+ *  `ATMUX_SPAWN_TIMEOUT_MS=120000` (or higher) at team-start time. Exported
+ *  for direct unit-test coverage; the module-load resolution snapshots the
+ *  value into `DEFAULT_TIMEOUT_MS`. */
+export function resolveDefaultTimeoutMs(): number {
+  const raw = process.env.ATMUX_SPAWN_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return 30_000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 30_000;
+  return parsed;
+}
+
+const DEFAULT_TIMEOUT_MS = resolveDefaultTimeoutMs();
 const SIGKILL_GRACE_MS = 1_000;
 
 /**

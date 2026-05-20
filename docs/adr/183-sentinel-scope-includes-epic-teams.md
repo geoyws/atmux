@@ -126,4 +126,29 @@ None at write time. The cursor-impl `observe` path is socket-discovery-only (per
 
 ## Amendments
 
-(none at write time)
+### 2026-05-20 — Dynamic-discovery model supersedes §D1 static-cockpit-roster assumption (t-1fad1f12, follow-up impl t-b51f085b)
+
+§D1 above instructed `sentinelTick` to iterate `enabledTeams(cockpit)`, the post-ADR-089 flattener that reads cockpit.json's `sessions[]` tree. That assumes epic-teams are *registered* in `cockpit.json::sessions[]`. Operator design call 2026-05-20 reverses that assumption.
+
+**New invariant** — epic-teams are dynamic. They are created and dissolved often (proliferation hit ~13 live across atmux / sopx / rentx within days of ADR-091 landing). They **MUST be absent** from `cockpit.json::sessions[]`. Registering them there produces drift across three independent paths:
+
+1. **Cron orphan** — `dissolve-epic` leaves the cockpit.json entry behind if the dissolve isn't fully atomic (auto-memory `project_epic_team_dissolve_cron_leak`, 2026-05-19).
+2. **Sentinel gap** — if cockpit.json gets out of sync with disk reality (epic-team worktree gone but entry still listed), sentinel observes a phantom team and logs error rows.
+3. **Cockpit-rebuild churn** — `atmux cockpit rebuild` reconciles cockpit.json against running tmux state; epic-team turnover means rebuild keeps adding and removing the same kinds of entries.
+
+**Dynamic-discovery model** — sentinel discovers epic-teams at tick time, NOT from cockpit.json registration. The candidate enumeration mechanisms (one will be chosen via [ADR-185](185-sentinel-dynamic-epic-discovery.md)):
+
+- (A) Parent `.atmux/state.db` epics table query — walks `epics WHERE status IN ('in_progress', 'review')` and resolves the worktree per epic-team naming convention.
+- (B) Filesystem scan — `<parent-root>-epics/` or `.atmux/worktrees/e-*` glob.
+- (C) Live tmux session enumeration on the parent cage — `tmux list-sessions` filtered by the `atmux_<parent>__epic-` prefix per ADR-089 §F naming.
+- (D) Crontab walk — every epic-team has an `atmux:team=e-*` block; walk those.
+
+Each candidate trades freshness against IO cost; the chosen mechanism is sized to keep sentinel tick well under the 270s W3 cadence even at ≥30 epic-teams (the ADR-181 host-wide cap).
+
+**Bounded concurrency cap** — `sentinelTick` parallelisation via `Promise.allSettled` (per t-70c8b562) is now bounded at **N=4** concurrent observations per tick (commit `aec82d5`). The cap exists to protect CPU + RAM — the sentinel-cron backstop was removed earlier this cycle due to sustained CPU usage, and bounded concurrency is the first of the constraints folded in per the operator design call 2026-05-20 "don't spike CPU+RAM". Follow-up: per-team timeout + per-tick token budget (t-ccf06b97).
+
+**Implication for §D1** — sentinel still iterates "enabled team-shape sessions", but the *source* of that list flips from cockpit.json walk to the dynamic-discovery mechanism. Parent teams continue to be cockpit.json-registered (low churn, operator-managed); epic-teams are discovered. The output of the iteration step is unchanged — same observe → decide → apply per pane.
+
+**Reviewer surface** — if a future change re-registers epic-teams in `cockpit.json::sessions[]` (e.g. a fix-up Task that "fixes the missing entries"), file `atmux flag add --severity high --subject "[sentinel] epic-team registration in cockpit.json violates ADR-183 §Amendment 2026-05-20"`. The drift problem is what motivates the dynamic-discovery model; re-adding registration recreates it.
+
+**Filed via** t-1fad1f12 (P0 docs sweep, 2026-05-20); follow-up impl Task t-b51f085b.

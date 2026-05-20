@@ -1,6 +1,6 @@
 # ADR-157: `/goal` as primary drain for Claude service-loop roles — lane-tick narrows to backstop
 
-**Status**: proposed (2026-05-16, planner-decomp T1; pending reviewer pre-flag → accepted)
+**Status**: accepted (2026-05-16, planner-decomp T1; pending reviewer pre-flag → accepted)
 **Date**: 2026-05-16
 **Author**: atmux team (planner-decomp / lead re-slot 01:08 MYT; draft by up-impl)
 **Parent EPIC**: t-3c1aab98
@@ -180,3 +180,10 @@ EPIC-level acceptance (T1 closes only the draft beat; T2–T7 carry the rest):
 - ADR-151 (unblocker) — first goal-driven role consumer (Out of scope T7 dep).
 - [ADR-148](148-commit-cadence-truth-signal.md) — cadence-as-canonical-truth; `/goal` latency informs the new cadence baseline (D6).
 - [[feedback_decomp_same_session_with_deps]] — planner-decomp gate honored; T1–T7 filed same-session with populated `deps[]`.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
