@@ -166,7 +166,7 @@ describe("findLead", () => {
 
 describe("buildHeadsUp", () => {
   test("short msg: full text, no ellipsis", () => {
-    expect(buildHeadsUp("short ask")).toBe("📬 driver-inbox has a new ask: short ask");
+    expect(buildHeadsUp("short ask")).toBe("📬 lead-inbox has a new ask: short ask");
   });
 
   test("80-char msg: included full, no ellipsis", () => {
@@ -186,21 +186,25 @@ describe("buildHeadsUp", () => {
 // ---------- Integration ----------
 
 describe("tellLead — integration", () => {
-  test("happy path: appends to driver-inbox.md + pings lead (ADR-029 §F3)", async () => {
+  test("happy path: appends to lead-inbox.md + pings lead (ADR-029 §F3, ADR-198)", async () => {
     // Per ADR-029 §F3 — bash atmux::ok writes to STDERR with `✅ atmux `
     // prefix (lib/common.sh:21); TS now mirrors. Earlier port wrote to
-    // stdout with no prefix.
+    // stdout with no prefix. ADR-198 renamed the inbox file +
+    // heads-up text from `driver-inbox` → `lead-inbox`.
     await stageTeam([{ name: "alpha", role: "team-lead" }], true);
     const { stderr } = await captureStdoutStderr(() =>
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "review", "the", "migration"]),
     );
     expect(stderr).toContain("✅ atmux tell-lead → alpha");
-    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
-    expect(di).toContain("# Driver Inbox");
+    const di = await Bun.file(join(atmuxDir, "lead-inbox.md")).text();
+    expect(di).toContain("# Lead Inbox");
     expect(di).toContain("review the migration");
+    // ADR-198 §Decision-anchor #2 — writes go to lead-inbox.md ONLY;
+    // legacy driver-inbox.md is NOT touched by tell-lead.
+    expect(await Bun.file(join(atmuxDir, "driver-inbox.md")).exists()).toBe(false);
     // Send log written by sendToMember.
     const log = await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).text();
-    expect(log).toContain("driver-inbox has a new ask");
+    expect(log).toContain("lead-inbox has a new ask");
   });
 
   test("falls back to member named 'lead' when no team-lead role", async () => {
@@ -230,11 +234,11 @@ describe("tellLead — integration", () => {
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "ask body"]),
     ).rejects.toThrow(/no tmux window for alpha \(is the team running\?\)/);
     // Inbox write happened BEFORE the throw — durable.
-    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    const di = await Bun.file(join(atmuxDir, "lead-inbox.md")).text();
     expect(di).toContain("ask body");
   });
 
-  test("multiple asks accumulate in driver-inbox", async () => {
+  test("multiple asks accumulate in lead-inbox", async () => {
     await stageTeam([{ name: "alpha", role: "team-lead" }], true);
     await captureStdoutStderr(() =>
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "first"]),
@@ -242,12 +246,12 @@ describe("tellLead — integration", () => {
     await captureStdoutStderr(() =>
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "second"]),
     );
-    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    const di = await Bun.file(join(atmuxDir, "lead-inbox.md")).text();
     expect(di).toContain("first");
     expect(di).toContain("second");
   });
 
-  test("driver-inbox entry timestamp is HH:MM MYT format (ADR-029 §F8)", async () => {
+  test("lead-inbox entry timestamp is HH:MM MYT format (ADR-029 §F8)", async () => {
     // Bash atmux::now_myt emits HH:MM MYT (lib/common.sh:225); the TS port
     // earlier used formatMytFull (YYYY-MM-DD HH:MM:SS MYT) which violated
     // CLAUDE.md global timezone rule + diverged from bash. Verify the
@@ -256,7 +260,7 @@ describe("tellLead — integration", () => {
     await captureStdoutStderr(() =>
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "format check"]),
     );
-    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    const di = await Bun.file(join(atmuxDir, "lead-inbox.md")).text();
     expect(di).toMatch(/- \[\d{2}:\d{2} MYT\] format check/);
     expect(di).not.toMatch(/- \[\d{4}-\d{2}-\d{2}/);
   });
@@ -275,7 +279,7 @@ describe("tellLead — integration", () => {
     );
     const cursorPath = join(atmuxDir, "state", "heads-up-cursor.json");
     const cursorJson = JSON.parse(await Bun.file(cursorPath).text()) as Record<string, number>;
-    const inboxPath = join(atmuxDir, "driver-inbox.md");
+    const inboxPath = join(atmuxDir, "lead-inbox.md");
     const key = `${inboxPath}:alpha`;
     expect(cursorJson[key]).toBeGreaterThan(0);
     // The cursor mtime should match the inbox file's mtime exactly
@@ -288,14 +292,14 @@ describe("tellLead — integration", () => {
   test("t-bf09aec0: heads-up SUPPRESSED when cursor already at-or-past inbox mtime", async () => {
     // Replicate the polling-supervisor flood scenario: cursor has
     // already been advanced (by a different emitter — supervisor or
-    // a racing tell-lead) past the current driver-inbox.md mtime.
+    // a racing tell-lead) past the current lead-inbox.md mtime.
     // tell-lead's pre-emit gate should suppress the redundant send
     // so the lead pane doesn't burn tokens on a stale ping.
     await stageTeam([{ name: "alpha", role: "team-lead" }], true);
     // Pre-seed the cursor with a huge mtime — any subsequent
     // append's mtime will be <= this value (system clock can't
     // realistically reach Number.MAX_SAFE_INTEGER ms).
-    const inboxPath = join(atmuxDir, "driver-inbox.md");
+    const inboxPath = join(atmuxDir, "lead-inbox.md");
     const fs = await import("node:fs/promises");
     await fs.mkdir(join(atmuxDir, "state"), { recursive: true });
     await fs.writeFile(
@@ -369,7 +373,7 @@ describe("tellLead — integration", () => {
         tellLead(["--team-dir", teamDir, "regression ping"]),
       );
       expect(stderr).toContain("✅ atmux tell-lead → alpha");
-      const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+      const di = await Bun.file(join(atmuxDir, "lead-inbox.md")).text();
       expect(di).toContain("regression ping");
       // Per-member send log lands ONLY when the keystroke fired — proves
       // tell-lead routed to the live tmpdir-derived socket, not the
@@ -437,7 +441,7 @@ describe("tellLead — integration", () => {
     expect(wins).not.toContain("🧭-lead");
     // Send log proves the ping actually landed at the renamed canonical.
     const log = await Bun.file(join(atmuxDir, "logs", "send-lead.log")).text();
-    expect(log).toContain("driver-inbox has a new ask");
+    expect(log).toContain("lead-inbox has a new ask");
   });
 
   test("shim (c): pre-ADR-135 no-separator window (🧭lead) → rename to 🧭_lead → ping lands", async () => {
@@ -459,24 +463,24 @@ describe("tellLead — integration", () => {
     await expect(
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "ask body"]),
     ).rejects.toThrow(/no tmux window for lead \(is the team running\?\)/);
-    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    const di = await Bun.file(join(atmuxDir, "lead-inbox.md")).text();
     expect(di).toContain("ask body");
   });
 
-  test("zero-byte driver-inbox.md does not get a leading \\n on first append (ADR-029 §F14)", async () => {
+  test("zero-byte lead-inbox.md does not get a leading \\n on first append (ADR-029 §F14)", async () => {
     // Bash `printf >> file` appends to EOF; a zero-byte file produces
     // just the entry, no leading separator. Earlier TS port falsely
     // prepended `\n` because the empty-string `existing` failed the
     // `endsWith("\n")` check, triggering the "needs separator" branch.
     // Result: bash 23 bytes vs TS 24 bytes (extra leading newline).
     await stageTeam([{ name: "alpha", role: "team-lead" }], true);
-    // Pre-create driver-inbox.md as zero bytes — matches lifecycle
+    // Pre-create lead-inbox.md as zero bytes — matches lifecycle
     // fixture preset (factory.ts:168), which is the parity-test stage.
-    await Bun.write(join(atmuxDir, "driver-inbox.md"), "");
+    await Bun.write(join(atmuxDir, "lead-inbox.md"), "");
     await captureStdoutStderr(() =>
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "test ask"]),
     );
-    const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+    const di = await Bun.file(join(atmuxDir, "lead-inbox.md")).text();
     expect(di).not.toMatch(/^\n/);
     expect(di).toMatch(/^- \[\d{2}:\d{2} MYT\] test ask\n$/);
   });

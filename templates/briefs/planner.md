@@ -78,7 +78,7 @@ Canonical matrix — same content in `templates/briefs/lead.md`. Verified agains
 
 | Direction | Verb | Lands in | Reader |
 |---|---|---|---|
-| driver → lead | (FILE — manual edit) | `.atmux/driver-inbox.md` | lead reads first every whip tick |
+| driver → lead | (FILE — manual edit) | `.atmux/lead-inbox.md` (ADR-198 — legacy `.atmux/driver-inbox.md` still read during grace) | lead reads first every whip tick |
 | lead → planner (ad hoc) | `atmux send planner` | planner pane (tmux send-keys) | planner sees keystroke in REPL |
 | lead → member (kanban Task) | `atmux dispatch <member> <task-id>` | `<member>-inbox.json` | member reads via `atmux inbox` |
 | lead → member (ad hoc) | `atmux send <member>` | member pane (tmux send-keys) | member sees keystroke in REPL |

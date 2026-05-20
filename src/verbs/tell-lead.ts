@@ -1,12 +1,18 @@
-// ADR-010: CLI dispatcher — `tell-lead` verb (driver convenience).
+// ADR-010 + ADR-198: CLI dispatcher — `tell-lead` verb (driver convenience).
 // Bash spec: lib/tell.sh @ worktree-frozen.
 //
 // `atmux tell-lead <msg...>`
 //
-// Driver appends an ask to .atmux/driver-inbox.md (durable, greppable,
+// Driver appends an ask to .atmux/lead-inbox.md (durable, greppable,
 // survives /clear) AND pings the lead's pane with a heads-up. Pattern
 // mirrors the driver→lead routing rule in CLAUDE.md (file-based, not
 // SendMessage).
+//
+// ADR-198 (2026-05-20): write path renamed driver-inbox.md → lead-inbox.md.
+// Pairs with lead-outbox.md (both belong to the lead's view: one inbound,
+// one outbound). The read shim in `core/lead-inbox.ts::readLeadInbox`
+// accepts BOTH filenames during the one-release grace window; writes go
+// to lead-inbox.md only.
 //
 // Lead resolution (bash lib/tell.sh::_atmux_find_lead):
 //   1. First member with role="team-lead"
@@ -20,10 +26,10 @@ import { callerScopeAllowed, findTeamByName, loadCockpit } from "../core/cockpit
 import {
   buildWindowName,
   buildWindowNameLegacy,
-  driverInboxPath,
   getAtmuxDir,
   getSessionName,
   getTeamName,
+  leadInboxPath,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
@@ -37,7 +43,7 @@ import type { Team, TeamMember } from "../schema/team.ts";
 
 const USAGE = "atmux tell-lead [--team <name>] [--socket <p>] [--team-dir <d>] <msg...>";
 
-const DRIVER_INBOX_HEADER = `# Driver Inbox — driver asks for the lead
+const LEAD_INBOX_HEADER = `# Lead Inbox — driver asks for the lead (ADR-198)
 
 Lead reads this at the start of every whip turn. Mark each entry:
   ✅ done  ·  📤 delegated  ·  ⏳ in-progress  ·  ❌ rejected
@@ -182,17 +188,17 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   }
 
   const atmuxDir = await getAtmuxDir(dirOpts);
-  await appendDriverInbox(atmuxDir, parsed.msg);
+  await appendLeadInbox(atmuxDir, parsed.msg);
 
-  // t-bf09aec0: heads-up sender-side dedup. Stat driver-inbox.md
+  // t-bf09aec0: heads-up sender-side dedup. Stat lead-inbox.md
   // post-append to get the mtime of the revision we just produced;
   // shouldEmitHeadsUp consults the cursor file to decide whether to
   // ping. For tell-lead's single-shot path the gate almost always
-  // green-lights (every call advances driver-inbox.md mtime), but
+  // green-lights (every call advances lead-inbox.md mtime), but
   // recording the cursor here claims the mtime so a polling emitter
   // (bash lib/supervisor.sh, future TS supervisor) won't re-fire on
   // the same revision and burn lead context with "Stale heads-up".
-  const inboxPath = driverInboxPath(atmuxDir);
+  const inboxPath = leadInboxPath(atmuxDir);
   const inboxStat = await statOrNull(inboxPath);
   const sourceMtimeMs = inboxStat?.mtimeMs ?? 0;
   const cursorOpts = {
@@ -209,9 +215,9 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   // tell-lead pinned `/tmp/atmux-<team>/sock` unconditionally and broke
   // the heads-up ping whenever team.json declared a project-local
   // `.atmux/tmux` tmpdir. The inbox append still landed (it predates
-  // the send), so the symptom was "driver-inbox.md got the entry but
+  // the send), so the symptom was "lead-inbox.md got the entry but
   // the lead pane never woke" — exactly the 07:52 + 08:25 MYT
-  // 2026-05-13 failures.
+  // 2026-05-13 failures (file then named driver-inbox.md, pre-ADR-198).
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = createTmux({ socketPath });
   // EPIC e-a3077ca0 T6: self-heal window-name resolution. Resolve the
@@ -242,7 +248,7 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
     windowName = await resolveWindowWithRenameShim(sessionName, canonical, legacyVariants, ops);
   } catch (e) {
     // Per ADR-029 §F6 + F7 — bash-byte-equal error body. The durable
-    // appendDriverInbox call above already landed, matching bash's
+    // appendLeadInbox call above already landed, matching bash's
     // "inbox first, then ping" ordering.
     throw new ConfigError({
       what: `no tmux window for ${lead.name} (is the team running?)`,
@@ -250,7 +256,8 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
     });
   }
   const target = `${sessionName}:${windowName}`;
-  // Bash heads-up (lib/tell.sh:43): "📬 driver-inbox has a new ask: <msg≤80>…"
+  // Heads-up text per ADR-198 (post-rename): "📬 lead-inbox has a new ask: <msg≤80>…".
+  // Bash precedent (lib/tell.sh:43) was "📬 driver-inbox has a new ask: ..." pre-rename.
   const headsUp = buildHeadsUp(parsed.msg);
   if (!shouldEmit) {
     // Cursor already at-or-past this mtime: another emitter (or a
@@ -277,7 +284,7 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
     // body; the ADR-006 prefix divergence (`💥 atmux ` vs
     // `atmux: config: `) + exit-code divergence (1 vs 78) get masked
     // at parity-row level. The inbox write above is durable —
-    // appendDriverInbox already landed before this throw.
+    // appendLeadInbox already landed before this throw.
     throw new ConfigError({
       what: `no tmux window for ${lead.name} (is the team running?)`,
       cause: e,
@@ -312,7 +319,9 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
 export function buildHeadsUp(msg: string): string {
   const truncated = msg.slice(0, 80);
   const ellipsis = msg.length > 80 ? "…" : "";
-  return `📬 driver-inbox has a new ask: ${truncated}${ellipsis}`;
+  // ADR-198 (2026-05-20): heads-up text now says `lead-inbox` to match
+  // the renamed file. Pre-ADR-198 text was `driver-inbox has a new ask`.
+  return `📬 lead-inbox has a new ask: ${truncated}${ellipsis}`;
 }
 
 /** ADR-092 §D3 helper — resolve the *source* team name for the caller-scope
@@ -327,14 +336,17 @@ async function resolveSourceTeamName(dirOpts: ResolveDirOpts): Promise<string> {
   }
 }
 
-async function appendDriverInbox(atmuxDir: string, msg: string): Promise<void> {
-  const path = driverInboxPath(atmuxDir);
+async function appendLeadInbox(atmuxDir: string, msg: string): Promise<void> {
+  // ADR-198: write to `lead-inbox.md` (canonical). Legacy
+  // `driver-inbox.md` is read-only during the grace window; the T2
+  // walker migrates existing per-cage state to the new filename.
+  const path = leadInboxPath(atmuxDir);
   const file = Bun.file(path);
-  const existing = (await file.exists()) ? await file.text() : DRIVER_INBOX_HEADER;
+  const existing = (await file.exists()) ? await file.text() : LEAD_INBOX_HEADER;
   // Per ADR-029 §F8 — bash atmux::now_myt emits HH:MM MYT (lib/common.sh:225,
-  // lib/tell.sh appends to driver-inbox.md); formatMyt mirrors. Earlier port
-  // used formatMytFull (YYYY-MM-DD HH:MM:SS MYT) which violated CLAUDE.md
-  // global timezone rule + diverged from bash.
+  // lib/tell.sh appended to driver-inbox.md pre-ADR-198); formatMyt mirrors.
+  // Earlier port used formatMytFull (YYYY-MM-DD HH:MM:SS MYT) which violated
+  // CLAUDE.md global timezone rule + diverged from bash.
   const ts = formatMyt();
   const entry = `- [${ts}] ${msg}\n`;
   // Per ADR-029 §F14 — bash `printf >> file` appends entry directly to

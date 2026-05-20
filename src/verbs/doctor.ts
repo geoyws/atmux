@@ -32,6 +32,7 @@ import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
+import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
 import { resolveDayFilePath } from "../abstractions/release-notes.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { mytDate, now } from "../abstractions/time.ts";
@@ -43,16 +44,17 @@ import {
   probeCageState as defaultProbeCageState,
   STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
 } from "../core/cage-state.ts";
-import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
 import { cageSessionName, type LoadedCockpit, loadCockpit } from "../core/cockpit.ts";
 import {
   buildWindowName,
   buildWindowNameLegacy,
   defaultEmojiForRole,
+  driverInboxLegacyPath,
   driverInboxPath,
   getAtmuxDir,
   inboxPathFor,
   kanbanJsonPath,
+  leadInboxPath,
   type ResolveDirOpts,
   resolveTeamSocket,
   teamJsonPath,
@@ -1567,6 +1569,42 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+/**
+ * ADR-198 §Decision-anchor #2 + §5: warn when legacy `.atmux/driver-inbox.md`
+ * is still present after the rename. The read-shim in
+ * `core/lead-inbox.ts::readLeadInbox` keeps consumers bilingual for one
+ * release, but the operator should run the T2 migration walker
+ * (`atmux migrate lead-inbox` OR `atmux doctor --fix` — both pending) to
+ * retire the legacy file. Self-clearing once the file is removed.
+ *
+ * Yellow (warn) class — never blocks. Silent when the team is unconfigured
+ * (`atmuxDir` empty / `.atmux/` absent) or when only the canonical
+ * `lead-inbox.md` exists.
+ */
+export async function checkLeadInboxLegacy(atmuxDir: string): Promise<DoctorRow[]> {
+  const legacyPath = driverInboxLegacyPath(atmuxDir);
+  const canonicalPath = leadInboxPath(atmuxDir);
+  const [legacyStat, canonicalStat] = await Promise.all([
+    statOrNull(legacyPath),
+    statOrNull(canonicalPath),
+  ]);
+  if (legacyStat === null) return [];
+  // Both files present → mid-rollout race; warn that the canonical now
+  // owns new writes and the walker should retire the legacy file.
+  // Legacy-only → walker hasn't run yet; same hint.
+  const bothPresent = canonicalStat !== null;
+  return [
+    {
+      status: "yellow",
+      label: "lead-inbox-legacy",
+      detail: bothPresent
+        ? `both .atmux/driver-inbox.md (legacy) and .atmux/lead-inbox.md (canonical) exist — readers merge by mtime but writes go to canonical only`
+        : `.atmux/driver-inbox.md present but canonical .atmux/lead-inbox.md missing — readers still see legacy content via the ADR-198 shim`,
+      hint: "run the T2 migration walker (atmux migrate lead-inbox — pending) or `mv .atmux/driver-inbox.md .atmux/lead-inbox.md` per cage; see ADR-198",
+    },
+  ];
+}
+
 // ---------- Render ----------
 
 const STATUS_GLYPH: Record<DoctorStatus, string> = {
@@ -2834,11 +2872,7 @@ export async function checkLegacyWindowNameFormat(
       if (hyphenForm !== canonical && windowNames.has(hyphenForm)) {
         offenders.push(hyphenForm);
       }
-      if (
-        legacyForm !== canonical &&
-        legacyForm !== hyphenForm &&
-        windowNames.has(legacyForm)
-      ) {
+      if (legacyForm !== canonical && legacyForm !== hyphenForm && windowNames.has(legacyForm)) {
         offenders.push(legacyForm);
       }
       for (const legacyName of offenders) {
@@ -2883,6 +2917,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkSubmoduleIntegrity()));
   // ADR-057 §D5c: inbox-mark verification (P3 finding per orphan id).
   rows.push(...(await checkInboxMarks(atmuxDir)));
+  // ADR-198 §Decision-anchor #2: warn when legacy `.atmux/driver-inbox.md`
+  // is still present after the lead-inbox rename. Self-clearing once the
+  // T2 migration walker (or a manual `mv`) retires the legacy file.
+  rows.push(...(await checkLeadInboxLegacy(atmuxDir)));
   // ADR-064 §4: driver-pane health (no row when team unconfigured).
   rows.push(...(await checkDriverPaneState(team, atmuxDir)));
   // ADR-081 §D: per-member cage-state — surface `starving` panes whose

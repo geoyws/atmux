@@ -135,8 +135,40 @@ export function archiveDir(atmuxDir: string): string {
   return join(atmuxDir, "archive");
 }
 
-export function driverInboxPath(atmuxDir: string): string {
+/** Canonical lead-inbox path (ADR-198): `<atmuxDir>/lead-inbox.md`. The
+ *  lead reads this every cycle; the driver (or sibling lead via cross-team
+ *  `tell-lead`) writes asks here via `atmux tell-lead`. Pairs with
+ *  {@link leadOutboxPath} — both belong to the lead's view, one inbound,
+ *  one outbound. */
+export function leadInboxPath(atmuxDir: string): string {
+  return join(atmuxDir, "lead-inbox.md");
+}
+
+/** Legacy `<atmuxDir>/driver-inbox.md` — pre-ADR-198 filename. Read-only
+ *  fallback for the one-release grace window; writes go to
+ *  {@link leadInboxPath}. The on-disk migration walker (T2 per ADR-198)
+ *  is the path that retires this file per cage.
+ *
+ *  Alias of {@link driverInboxPath} — kept distinct so the
+ *  read-shim helper in `core/lead-inbox.ts` can name its legacy-fallback
+ *  intent at the call site without implying it owns the canonical write
+ *  surface. */
+export function driverInboxLegacyPath(atmuxDir: string): string {
   return join(atmuxDir, "driver-inbox.md");
+}
+
+/** ADR-198 grace window: this still resolves to legacy
+ *  `<atmuxDir>/driver-inbox.md` for callsites that read or copy the
+ *  legacy file directly (blockers, status, stop archive, doctor inbox-
+ *  mark check, etc.). Tell-lead — the only canonical writer — uses
+ *  {@link leadInboxPath} for new writes. Once T2's walker ships, legacy
+ *  files are migrated per-cage and this path returns null on stat.
+ *
+ *  New code should prefer `core/lead-inbox.ts::readLeadInbox` (which
+ *  concat-merges canonical + legacy) for read paths and
+ *  {@link leadInboxPath} for write paths. */
+export function driverInboxPath(atmuxDir: string): string {
+  return driverInboxLegacyPath(atmuxDir);
 }
 
 export function leadOutboxPath(atmuxDir: string): string {

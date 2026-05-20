@@ -440,9 +440,15 @@ async function spawnEpicForFixture(
 }
 
 async function readInboxOrEmpty(atmuxDir: string): Promise<string> {
-  const path = join(atmuxDir, "driver-inbox.md");
-  const f = Bun.file(path);
-  return (await f.exists()) ? await f.text() : "";
+  // ADR-198 (2026-05-20): tell-lead writes to lead-inbox.md (canonical);
+  // the read-shim in core/lead-inbox.ts still accepts legacy driver-inbox.md
+  // during the grace window. Check both for parity-grade assertions —
+  // either name being present satisfies the cross-team write surface.
+  const canonical = Bun.file(join(atmuxDir, "lead-inbox.md"));
+  if (await canonical.exists()) return canonical.text();
+  const legacy = Bun.file(join(atmuxDir, "driver-inbox.md"));
+  if (await legacy.exists()) return legacy.text();
+  return "";
 }
 
 describe("ADR-092 cross-team tell-lead (phase-2, t-bc4fdb19)", () => {
@@ -488,7 +494,10 @@ describe("ADR-092 cross-team tell-lead (phase-2, t-bc4fdb19)", () => {
     ).rejects.toThrow(ConfigError);
     const epicInbox = await readInboxOrEmpty(epic.epicAtmuxDir);
     expect(epicInbox).toContain("phase-2 driver ping");
-    expect(epicInbox).toContain("# Driver Inbox");
+    // ADR-198: header text changed `# Driver Inbox` → `# Lead Inbox` on the
+    // canonical write surface. Legacy header still acceptable if a fixture
+    // pre-seeded driver-inbox.md.
+    expect(epicInbox).toMatch(/# (Lead|Driver) Inbox/);
     // Parent inbox stays empty — routing went to epic, not source.
     const parentInbox = await readInboxOrEmpty(fixture.atmuxDir);
     expect(parentInbox).toBe("");
