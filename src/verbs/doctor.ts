@@ -25,6 +25,7 @@
 //   the red row, and prunes phantom-inbox entries (other fix paths
 //   deferred per ADR-019).
 
+import { readlink as fsReadlink } from "node:fs/promises";
 import { join } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
@@ -2455,6 +2456,244 @@ export async function checkCockpitSentinelWindow(
   ];
 }
 
+export interface FixMissingSentinelWindowOpts {
+  /** tmux spawn override. Defaults to `defaultTmuxSpawn`. */
+  tmux?: TmuxSpawn;
+  /** Cockpit reader override. */
+  loadCockpitFn?: () => Promise<LoadedCockpit | null>;
+  /** Cockpit tmux socket / session names. Default ADR-162 + ADR-135 canonical. */
+  cockpitSocket?: string;
+  cockpitSession?: string;
+}
+
+export interface FixMissingSentinelWindowResult {
+  /** True when a new window was created (or already present and no-op).
+   *  False when the operation couldn't proceed (cockpit absent, sentinel
+   *  opt-out, tmux session missing). */
+  installed: boolean;
+  /** Human-readable summary for the operator log line. */
+  detail: string;
+}
+
+/**
+ * t-3234a084 — `atmux doctor --fix` W3 self-heal. Idempotent install of
+ * the `_sentinel` cockpit window when `cockpit.sentinel.enabled === true`
+ * but the window is absent.
+ *
+ * Loop command matches the canonical cockpit-rebuild path
+ * (`while true; do atmux sentinel tick; sleep 270; done`) so the
+ * recovery state is byte-equivalent to a fresh rebuild. Lands at
+ * position 3 (sentinel's canonical W3 slot per ADR-135) via the
+ * `-t <session>:3 -a -d` flags — same as the operator stopgap
+ * captured in t-186d5910 §Amendment 2026-05-19 11:26 MYT.
+ *
+ * No-ops when:
+ *   - cockpit.json absent / unreadable
+ *   - cockpit.sentinel.enabled !== true (operator opt-out)
+ *   - the tmux session itself is missing (other probes own that surface)
+ *   - the window is already present (idempotent skip)
+ */
+export async function fixMissingSentinelWindow(
+  opts: FixMissingSentinelWindowOpts = {},
+): Promise<FixMissingSentinelWindowResult> {
+  const tmux = opts.tmux ?? defaultTmuxSpawn;
+  const cockpitSession = opts.cockpitSession ?? "atmux_cockpit";
+  const cockpitSocket = opts.cockpitSocket ?? "atmux-cockpit";
+  const loadCockpitFn =
+    opts.loadCockpitFn ??
+    (async (): Promise<LoadedCockpit | null> => {
+      try {
+        return await loadCockpit();
+      } catch {
+        return null;
+      }
+    });
+
+  const cockpit = await loadCockpitFn();
+  if (cockpit === null) {
+    return { installed: false, detail: "cockpit.json absent — nothing to install" };
+  }
+  if (cockpit.sentinel?.enabled !== true) {
+    return { installed: false, detail: "cockpit.sentinel disabled / absent — operator opt-out" };
+  }
+
+  let listRes: SpawnResult;
+  try {
+    listRes = await tmux([
+      "-L",
+      cockpitSocket,
+      "list-windows",
+      "-t",
+      cockpitSession,
+      "-F",
+      "#{window_name}",
+    ]);
+  } catch {
+    return { installed: false, detail: "tmux spawn failed — see deps probe" };
+  }
+  if (listRes.exitCode !== 0) {
+    return { installed: false, detail: `tmux session '${cockpitSession}' missing` };
+  }
+
+  const windows = listRes.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (windows.includes("_sentinel")) {
+    return { installed: true, detail: "_sentinel already present — idempotent skip" };
+  }
+
+  // Install at slot 3 (-a appends after target). Loop command matches
+  // cockpit-rebuild's buildSentinelWindowCommand canonical form.
+  let createRes: SpawnResult;
+  try {
+    createRes = await tmux([
+      "-L",
+      cockpitSocket,
+      "new-window",
+      "-t",
+      `${cockpitSession}:3`,
+      "-a",
+      "-d",
+      "-n",
+      "_sentinel",
+      "while true; do atmux sentinel tick; sleep 270; done",
+    ]);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    return { installed: false, detail: `tmux new-window threw: ${cause}` };
+  }
+  if (createRes.exitCode !== 0) {
+    return {
+      installed: false,
+      detail: `tmux new-window exit=${createRes.exitCode}: ${createRes.stderr.trim()}`,
+    };
+  }
+  return {
+    installed: true,
+    detail: `installed _sentinel at ${cockpitSession}:3 (impl=${cockpit.sentinel.impl})`,
+  };
+}
+
+export interface CheckDeployedBinaryLagOpts {
+  /** Git spawn override (test injection). Reads HEAD + the commit that
+   *  last touched package.json. Defaults to `defaultGitSpawn`. */
+  git?: GitSpawn;
+  /** Reader for /opt/atmux/current symlink target. Returns the version
+   *  string (e.g. `"0.8.7"`) or null when the symlink is absent /
+   *  unreadable. Defaults to readlink on the canonical path. */
+  readDeployedVersion?: () => Promise<string | null>;
+  /** Reader for the source-tree package.json version. Defaults to
+   *  reading `./package.json`. Test injection. */
+  readSourceVersion?: () => Promise<string | null>;
+}
+
+/**
+ * t-400a1cad — `deployed-binary-lag` warn-class probe.
+ *
+ * Compares the source tree (git HEAD + package.json version) against
+ * the deployed binary at `/opt/atmux/current`. Emits yellow when the
+ * source has commits past the deployed version — exactly the class
+ * that hid t-186d5910 for ~30h (code-shipped-not-deployed).
+ *
+ * Signals checked, in order:
+ *   1. Source package.json version vs deployed `/opt/atmux/current`
+ *      symlink target. Mismatch → yellow with `atmux release` hint.
+ *   2. When versions match: count commits between HEAD and the SHA
+ *      that last bumped package.json. Any commits → yellow (source
+ *      ahead of deploy; needs version bump + redeploy).
+ *
+ * Silent when:
+ *   - /opt/atmux/current absent (non-system install — operator runs
+ *     from source via `bun run` and doesn't deploy to /opt).
+ *   - package.json absent (probe doesn't apply).
+ *   - git not on PATH (deps probe covers this surface).
+ *   - source ↔ deploy in sync (the green case).
+ */
+export async function checkDeployedBinaryLag(
+  opts: CheckDeployedBinaryLagOpts = {},
+): Promise<DoctorRow[]> {
+  const git = opts.git ?? defaultGitSpawn;
+  const readDeployedVersion =
+    opts.readDeployedVersion ??
+    (async (): Promise<string | null> => {
+      try {
+        const target = await fsReadlink("/opt/atmux/current");
+        // /opt/atmux/0.8.7 → "0.8.7"
+        const m = target.match(/\/([0-9]+\.[0-9]+\.[0-9]+(?:[.-][A-Za-z0-9.-]+)?)\/?$/);
+        return m?.[1] ?? null;
+      } catch {
+        return null;
+      }
+    });
+  const readSourceVersion =
+    opts.readSourceVersion ??
+    (async (): Promise<string | null> => {
+      const buf = await readTextOrNull("package.json");
+      if (buf === null) return null;
+      try {
+        const parsed = JSON.parse(buf);
+        const v = parsed?.version;
+        return typeof v === "string" ? v : null;
+      } catch {
+        return null;
+      }
+    });
+
+  const [deployed, source] = await Promise.all([readDeployedVersion(), readSourceVersion()]);
+  if (deployed === null) return []; // no system install — silent
+  if (source === null) return []; // no source-side version — silent
+
+  // Signal 1: version mismatch.
+  if (source !== deployed) {
+    return [
+      {
+        status: "yellow",
+        label: "deployed-binary-lag",
+        detail: `source package.json=${source} but /opt/atmux/current=${deployed}`,
+        hint: "run `bun run build:install` (or t-c3f4c418's `atmux release` once landed) to roll forward.",
+      },
+    ];
+  }
+
+  // Signal 2: versions match but commits after the last bump exist.
+  let headRes: SpawnResult;
+  let lastBumpRes: SpawnResult;
+  try {
+    headRes = await git(["rev-parse", "HEAD"]);
+    lastBumpRes = await git(["log", "-1", "--pretty=%H", "--", "package.json"]);
+  } catch {
+    return []; // git spawn miss → silent
+  }
+  if (headRes.exitCode !== 0 || lastBumpRes.exitCode !== 0) return [];
+
+  const headSha = headRes.stdout.trim();
+  const lastBumpSha = lastBumpRes.stdout.trim();
+  if (headSha === "" || lastBumpSha === "") return [];
+  if (headSha === lastBumpSha) return []; // version-bump commit IS HEAD — green
+
+  // Count commits between last-bump and HEAD (exclusive of last-bump,
+  // inclusive of HEAD).
+  let countRes: SpawnResult;
+  try {
+    countRes = await git(["rev-list", "--count", `${lastBumpSha}..HEAD`]);
+  } catch {
+    return [];
+  }
+  if (countRes.exitCode !== 0) return [];
+  const n = Number.parseInt(countRes.stdout.trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) return [];
+
+  return [
+    {
+      status: "yellow",
+      label: "deployed-binary-lag",
+      detail: `${n} commit(s) after v${source} bump — source ahead of /opt/atmux/current`,
+      hint: "version bump + `bun run build:install` (or `atmux release patch` per t-c3f4c418) to ship the post-bump commits.",
+    },
+  ];
+}
+
 export interface CheckLegacyWindowNameFormatOpts {
   /** tmux spawn override. */
   tmux?: TmuxSpawn;
@@ -2697,6 +2936,15 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // in the cockpit tmux session. Self-clearing on next `atmux cockpit
   // rebuild`. Silent when sentinel is opt-out (enabled=false / absent).
   rows.push(...(await checkCockpitSentinelWindow()));
+  // t-400a1cad: deployed-binary-lag — warn class. (Note: --fix path
+  // for `cockpit-has-w3-sentinel` lives below in the main doctor()
+  // function — see fixMissingSentinelWindow.)
+  // t-400a1cad: deployed-binary-lag — warn class. Compares git HEAD +
+  // package.json version against /opt/atmux/current symlink target.
+  // Catches the "code-shipped-not-deployed" class that hid t-186d5910
+  // for ~30h. Silent on non-system install (no /opt/atmux/current) or
+  // missing package.json (probe doesn't apply).
+  rows.push(...(await checkDeployedBinaryLag()));
   // EPIC e-a3077ca0 T8: legacy-window-name-format — warn class.
   // Walks every cockpit cage (falls back to currentTeam if cockpit
   // is absent / unreadable) and flags default-member-role windows
@@ -2746,6 +2994,17 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
   // remain stubbed pending ADR-019 §"Fix" resolution; the trailing
   // hint below covers the residual.
   if (parsed.fix && !parsed.quiet) {
+    // t-3234a084 — W3 sentinel self-heal. Runs FIRST in --fix so the
+    // cockpit-level observation loop is back online before per-team
+    // recovery actions fire below. Only triggers when the upstream
+    // probe (cockpit-has-w3-sentinel) flagged yellow — silent
+    // otherwise (no probe row → opt-out / already-installed / no-op).
+    const sentinelRows = report.rows.filter((r) => r.label === "cockpit-has-w3-sentinel");
+    if (sentinelRows.length > 0) {
+      const fixResult = await fixMissingSentinelWindow();
+      stderr(`\natmux doctor --fix: ${fixResult.detail}\n`);
+    }
+
     // ADR-081 §D: real --fix action — re-paste the brief on starving
     // members so the operator doesn't have to ssh in + run the manual
     // recovery sequence captured in the ADR's audit trail. Runs BEFORE

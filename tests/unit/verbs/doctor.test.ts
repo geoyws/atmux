@@ -24,7 +24,9 @@ import {
   buildReport,
   checkCockpitOnDefaultSocket,
   checkCockpitSentinelWindow,
+  checkDeployedBinaryLag,
   checkLegacyWindowNameFormat,
+  fixMissingSentinelWindow,
   checkCronBlock,
   checkCronIntervalDivisors,
   checkCronOrphans,
@@ -4184,6 +4186,216 @@ describe("checkCockpitSentinelWindow", () => {
       loadCockpitFn: async () => cockpitWithSentinel,
     });
     expect(rows).toEqual([]);
+  });
+});
+
+// ---------- t-400a1cad: checkDeployedBinaryLag ----------
+
+describe("checkDeployedBinaryLag", () => {
+  function gitResult(stdout: string, exitCode = 0): SpawnResult {
+    return {
+      exitCode,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  test("matched version + HEAD == last bump commit → silent (green)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async (argv) => {
+        if (argv[0] === "rev-parse") return gitResult("abc123\n");
+        if (argv[0] === "log") return gitResult("abc123\n");
+        return gitResult("0\n");
+      },
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("source ahead by N commits after last bump → yellow with commit count", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async (argv) => {
+        if (argv[0] === "rev-parse") return gitResult("head-sha\n");
+        if (argv[0] === "log") return gitResult("bump-sha\n");
+        if (argv[0] === "rev-list") return gitResult("3\n");
+        return gitResult("");
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("deployed-binary-lag");
+    expect(rows[0]?.detail).toContain("3 commit");
+    expect(rows[0]?.hint).toContain("build:install");
+  });
+
+  test("version mismatch (source ahead of deploy) → yellow with rebuild hint", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.5",
+      readSourceVersion: async () => "0.8.7",
+      git: async () => gitResult(""),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.detail).toContain("source package.json=0.8.7");
+    expect(rows[0]?.detail).toContain("/opt/atmux/current=0.8.5");
+    expect(rows[0]?.hint).toContain("build:install");
+  });
+
+  test("no /opt/atmux/current symlink → silent (non-system install)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => null,
+      readSourceVersion: async () => "0.8.7",
+      git: async () => gitResult(""),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("no package.json → silent (probe doesn't apply)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => null,
+      git: async () => gitResult(""),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("git spawn throws → silent (deps probe owns tmux/git surface)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async () => {
+        throw new Error("ENOENT");
+      },
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("rev-list returns 0 (HEAD == last bump) → silent", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async (argv) => {
+        if (argv[0] === "rev-parse") return gitResult("h\n");
+        if (argv[0] === "log") return gitResult("b\n");
+        if (argv[0] === "rev-list") return gitResult("0\n");
+        return gitResult("");
+      },
+    });
+    expect(rows).toEqual([]);
+  });
+});
+
+// ---------- t-3234a084: fixMissingSentinelWindow ----------
+
+describe("fixMissingSentinelWindow", () => {
+  function tmuxResult(stdout: string, exitCode = 0, stderr = ""): SpawnResult {
+    return {
+      exitCode,
+      stdout,
+      stderr,
+      argv: [],
+      cmd: "tmux",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+  const cockpitEnabled = {
+    sentinel: { impl: "cursor", enabled: true },
+  } as unknown as LoadedCockpit;
+
+  test("sentinel enabled + window missing → installs at <session>:3 via tmux new-window", async () => {
+    let newWindowArgv: ReadonlyArray<string> | undefined;
+    const result = await fixMissingSentinelWindow({
+      tmux: async (argv) => {
+        if (argv.includes("list-windows")) return tmuxResult("_superdriver\n_medic\natmux\n");
+        if (argv.includes("new-window")) {
+          newWindowArgv = argv;
+          return tmuxResult("");
+        }
+        return tmuxResult("");
+      },
+      loadCockpitFn: async () => cockpitEnabled,
+    });
+    expect(result.installed).toBe(true);
+    expect(result.detail).toContain("installed _sentinel");
+    expect(result.detail).toContain("impl=cursor");
+    // Verify the new-window invocation hit the right slot + loop command.
+    expect(newWindowArgv).toBeDefined();
+    expect(newWindowArgv).toContain("-n");
+    expect(newWindowArgv).toContain("_sentinel");
+    expect(newWindowArgv?.join(" ")).toContain("atmux_cockpit:3");
+    expect(newWindowArgv?.join(" ")).toContain("atmux sentinel tick");
+  });
+
+  test("idempotent: window already present → no-op skip", async () => {
+    const result = await fixMissingSentinelWindow({
+      tmux: async () => tmuxResult("_superdriver\n_medic\n_sentinel\natmux\n"),
+      loadCockpitFn: async () => cockpitEnabled,
+    });
+    expect(result.installed).toBe(true);
+    expect(result.detail).toContain("already present");
+  });
+
+  test("cockpit absent → no-op with explanation", async () => {
+    const result = await fixMissingSentinelWindow({
+      tmux: async () => tmuxResult(""),
+      loadCockpitFn: async () => null,
+    });
+    expect(result.installed).toBe(false);
+    expect(result.detail).toContain("cockpit.json absent");
+  });
+
+  test("sentinel disabled → no-op (operator opt-out)", async () => {
+    const result = await fixMissingSentinelWindow({
+      tmux: async () => tmuxResult(""),
+      loadCockpitFn: async () =>
+        ({
+          sentinel: { impl: "cursor", enabled: false },
+        }) as unknown as LoadedCockpit,
+    });
+    expect(result.installed).toBe(false);
+    expect(result.detail).toContain("disabled");
+  });
+
+  test("tmux session missing (list-windows exit non-zero) → no-op", async () => {
+    const result = await fixMissingSentinelWindow({
+      tmux: async () => tmuxResult("", 1, "no session"),
+      loadCockpitFn: async () => cockpitEnabled,
+    });
+    expect(result.installed).toBe(false);
+    expect(result.detail).toContain("session");
+  });
+
+  test("tmux spawn throws → no-op (deps probe owns this surface)", async () => {
+    const result = await fixMissingSentinelWindow({
+      tmux: async () => {
+        throw new Error("ENOENT");
+      },
+      loadCockpitFn: async () => cockpitEnabled,
+    });
+    expect(result.installed).toBe(false);
+    expect(result.detail).toContain("tmux spawn failed");
+  });
+
+  test("tmux new-window exit non-zero → installed=false with stderr in detail", async () => {
+    const result = await fixMissingSentinelWindow({
+      tmux: async (argv) => {
+        if (argv.includes("list-windows")) return tmuxResult("_superdriver\n");
+        if (argv.includes("new-window")) return tmuxResult("", 1, "tmux err");
+        return tmuxResult("");
+      },
+      loadCockpitFn: async () => cockpitEnabled,
+    });
+    expect(result.installed).toBe(false);
+    expect(result.detail).toContain("exit=1");
+    expect(result.detail).toContain("tmux err");
   });
 });
 
