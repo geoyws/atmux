@@ -207,6 +207,52 @@ V1 has no rotation policy ([ADR-167 §OQ-6](adr/167-cockpit-rotate-verb.md) — 
 
 Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)) — `cockpit rotate` operates on the cockpit socket only. Use Rung B (medic's `/team rotate-lead`) for lead rotation.
 
+## §7 — Team rename (`atmux team rename`)
+
+Operator-side surface for renaming a team atomically across every place the team-name appears: `team.json:.name` + tmux session + cockpit team-viewer window + cron markers + the single-session capture file + the recursive `cockpit.json::sessions[]` tree. The verb is rollback-staged — any step ≥2 failure reverse-walks completed steps; partial-failure state captures at `<projectRoot>/.atmux/state/rename-rollback.log`. Sibling to `atmux team repair-rename` ([ADR-103](adr/103-team-repair-rename.md)) on the recovery side. Full spec: [ADR-027](adr/027-team-rename-verb-and-topology-invariant.md).
+
+### Pre-flight checklist
+
+1. **No in-progress kanban Tasks.** `atmux task list --status in-progress` → expect empty. Mid-flight work would land in indeterminate naming state. Pass `--force` to bypass if the operator accepts the risk; collision + invalid-name refusals stay hard (NOT `--force`-overridable).
+2. **New name doesn't collide.** Cockpit registry DFS-walks `sessions[]` for the proposed new name; any `type: "team"` hit refuses.
+3. **New name matches `[a-z0-9_-]+`.** Lowercase + digits + underscore + hyphen only.
+
+### Verb invocation
+
+```bash
+atmux team rename <new-name> \
+  [--from <old>]              # default: current team's name from team.json
+  [--session <new-session>]   # default: derived via cageSessionName(<new-name>)
+  [--dry-run]                 # print 10-step orchestration plan; no mutation
+  [--force]                   # bypass in-progress refuse only (collision + invalid stay hard)
+  [--force-branches]          # opt-in step 8: also rename <old>-<member> branches → <new>-<member>
+  [--socket <path>]           # cockpit socket override (default per ADR-162: -L atmux-cockpit)
+  [--team-dir <path>]         # project root override
+```
+
+### Convergence verification
+
+`atmux doctor` post-rename runs the [ADR-027 §Decision second half topology invariant check](adr/027-team-rename-verb-and-topology-invariant.md) (post-rename portion — `verifyConvergence` in `src/verbs/team-rename-convergence.ts`). The verb-internal post-rename check also fires automatically before exit; a non-converged result surfaces a row with the suggested fix:
+
+```bash
+atmux doctor
+# expected post-rename: green row for the new team name; no orphan cron block under the old marker.
+```
+
+### Failure recovery
+
+If `team rename` partial-failed AND rollback didn't fully restore state, the sibling recovery verb reconciles file-by-file against the cockpit registry:
+
+```bash
+atmux team repair-rename <name> [--from <last-known-good>]
+```
+
+Inspect `<projectRoot>/.atmux/state/rename-rollback.log` first to identify which orchestration step failed; pass `--from` to skip already-good steps. Do NOT delete the rollback log — it's the audit trail.
+
+### Dogfood reference
+
+End-to-end dogfood pattern on the atmux team itself shipped under EPIC e-1e223687 (T6). The pattern: pick a reversible target (e.g. `atmux` → `atmux-core` then `atmux-core` → `atmux`), capture before/after `tmux list-panes -F '#{pane_pid}'` for PID stability, run `top -b -n 30 -d 0.1 -p $(pgrep -f atmux)` to verify peak RSS during rename < baseline × 1.1, confirm idempotent round-trip.
+
 ## Cross-references
 
 - [ADR-167](adr/167-cockpit-rotate-verb.md) — cockpit rotate verb (Rung C); §Amendment 2026-05-17 documents wrapper-resolver asymmetry + handoff write-path semantics.
