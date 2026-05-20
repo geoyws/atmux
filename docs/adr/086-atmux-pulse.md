@@ -252,3 +252,11 @@ The same 5-min cron tick that emits `[pulse-verdict]` also probes the cockpit's 
 - ADR-077 §D5 — the `complaints` table this aggregates.
 - Phase 1 (this ADR's main body) — the cron + state.json shape this extends.
 - t-351318dc — kanban Task that authored the implementation.
+
+## §Amendment 2026-05-20 — partial supersession by ADR-132 (Phase 2 MiniMax forward-pointer generalised)
+
+This ADR's §Context line 1 + §Phase 2 reservation describe a future MiniMax-as-parallel-pulse-observer that swaps the deterministic verdict-renderer for a MiniMax-via-OpenCode call against the same input bundle. That Phase 2 **forward-pointer** is superseded by [ADR-132](./132-pluggable-martinet.md) (`Supersedes (in scope): ADR-086 §"Forward pointer (Phase 2)" — MiniMax-as-parallel-pulse-observer. This ADR generalises that forward-pointer to *any* Martinet impl observing+nudging *any* team's loop, not just pulse-verdict rendering`).
+
+The supersession is **scoped to the Phase 2 forward-pointer only**. The §Decision's Phase 1 deterministic verdict probe (cron + verdict function + Discord rendering + dedup + state.json shape) stands verbatim — `atmux pulse` continues to ship as the cheap deterministic surface; the Phase 2 reservation was for cross-cutting LLM observation which the [pluggable Martinet → renamed sentinel per ADR-158](./158-martinet-to-sentinel-rename.md) substrate now provides as a separate W3 cockpit role. ADR-086's Phase 2 §"Meta-watchdog" sub-section (`superdoctor_attempts` table observer) stands as a Phase-1-class addition (read-only doctor-attempt aggregation) — it's NOT the MiniMax forward-pointer that ADR-132 supersedes.
+
+**Filed via** t-2d750500 (T2 sweep of [docs/audits/adr-supersession-audit-2026-05-20.md](../audits/adr-supersession-audit-2026-05-20.md) D1 drift #6, 2026-05-20).
