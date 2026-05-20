@@ -111,3 +111,46 @@ export function formatDuration(ms: number): string {
   const m = totalMin % 60;
   return m === 0 ? `${h}h` : `${h}h${m}m`;
 }
+
+/**
+ * Granular human-readable duration — d/h/m/s/ms units. Distinct from
+ * {@link formatDuration} (which rounds-up to minute floor per CLAUDE.md
+ * §Conventions). Use this for short-cycle log lines where sub-minute
+ * precision matters (sentinel ticks 26ms-2min typical; tick health
+ * latency observation; e2e step timings).
+ *
+ * Picks the two largest non-zero units for readability:
+ *   - 750ms          → "750ms"
+ *   - 26119ms        → "26s"
+ *   - 5500ms         → "5s500ms" (sub-1s remainder kept when total < 1m)
+ *   - 110484ms       → "1m50s"
+ *   - 3600000ms      → "1h"
+ *   - 3660000ms      → "1h1m"
+ *   - 90061000ms     → "1d1h"
+ *   - 0 / NaN / -ve  → "0ms"
+ */
+export function formatTickDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0ms";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+
+  const totalSec = Math.floor(ms / 1000);
+  const remMs = Math.round(ms - totalSec * 1000);
+  const s = totalSec % 60;
+  const totalMin = Math.floor(totalSec / 60);
+
+  if (totalMin === 0) {
+    // <1 minute — keep ms tail if present so 5500ms reads "5s500ms"
+    return remMs > 0 ? `${s}s${remMs}ms` : `${s}s`;
+  }
+  const m = totalMin % 60;
+  const totalHour = Math.floor(totalMin / 60);
+  if (totalHour === 0) {
+    return s === 0 ? `${m}m` : `${m}m${s}s`;
+  }
+  const h = totalHour % 24;
+  const d = Math.floor(totalHour / 24);
+  if (d === 0) {
+    return m === 0 ? `${h}h` : `${h}h${m}m`;
+  }
+  return h === 0 ? `${d}d` : `${d}d${h}h`;
+}

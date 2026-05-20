@@ -34,6 +34,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { ensureDir, exists } from "../abstractions/fs.ts";
 import { readJson, writeJson } from "../abstractions/json.ts";
+import { formatTickDuration } from "../abstractions/time.ts";
 import type { Observation, Sentinel } from "../abstractions/sentinel.ts";
 import { ClaudeSentinel } from "../abstractions/sentinels/claude.ts";
 import {
@@ -440,7 +441,7 @@ export async function sentinelTick(
 
   await persistState({ lastTickAt: tickStarted, teams: teamStates }, env, parsed.statePath);
   logger.log(
-    `sentinel: tick completed (${teams.length} team${teams.length === 1 ? "" : "s"}, ${Date.now() - tickStarted}ms)`,
+    `sentinel: tick completed (${teams.length} team${teams.length === 1 ? "" : "s"}, ${formatTickDuration(Date.now() - tickStarted)})`,
   );
   return 0;
 }
