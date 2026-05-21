@@ -1,6 +1,6 @@
 # ADR-216: Retire the default-member `_`-prefix convention — ADR-161 superseded; member IDs drop the underscore going forward
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (ADR-161 default-member `_`-prefix convention retires; new members + new teams use bare IDs going forward; existing `_`-prefixed IDs stay per ADR-136 immutability — mixed teams accepted; Zod regex `^_?[a-z][a-z0-9_-]*$` covers both forms; doctor probe member-id-underscore-residue is info-level only; TR2 commit 5b5981d source stays as no-op back-compat; ADR-135 cockpit window `_`-prefix convention NOT affected — different scope; cleanup-EPIC purges dead role-aware branch in buildWindowName when convenient; §OQ recommendations as-written; sibling simplification to ADR-211/212/213/214/215 batch ratified same session)
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-21 operator — *"okay let's retire the convention"* — after observing `geoyws-docs` / `geoyws-gitter` branches don't carry the `_`-prefix that ADR-161 specified for default members. Continuation of the same-session simplification arc (ADR-211/212/213/214/215 + this ADR).
 **Supersedes**: [ADR-161](161-default-member-prefix.md) — the `_`-prefix convention for default-member IDs (`_committer`, `_gitter`, `_jury`, etc.) retires. The historical impl work (ADR-161 TR2 commit `5b5981d` + the buildWindowName role-awareness shim) stays in tree as no-op back-compat — member IDs already present with the underscore continue to parse + render; new teams + new members use the no-underscore form.
