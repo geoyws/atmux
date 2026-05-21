@@ -65,6 +65,10 @@ import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import {
+  installSkillsPlugin,
+  renderSkillsInstallResult,
+} from "../core/skills-plugin-install.ts";
 import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -86,6 +90,13 @@ export interface ParsedInitArgs {
    *  unset (schema-default applies). Operators run `atmux reconfigure`
    *  to override per-member after init. */
   claudeAccount?: string;
+  /** ADR-217 §D5: --no-skills skips the bundled /atmux: skills plugin
+   *  install step (default behavior is to install). */
+  noSkills: boolean;
+  /** ADR-217 §D5: --skills-only runs ONLY the skills-plugin install
+   *  step, skipping the team.json scaffold. Re-install path post manual
+   *  delete; valid even on an already-initialized team. */
+  skillsOnly: boolean;
 }
 
 /**
@@ -103,6 +114,11 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
   let force = false;
   let wizard = false;
   let claudeAccount: string | undefined;
+  let noSkills = false;
+  let skillsOnly = false;
+
+  const usageHint =
+    "usage: atmux init [--name <team>] [--force|-f] [--no-skills|--skills-only] [--claude-account <suffix>]";
 
   let i = 0;
   while (i < args.length) {
@@ -113,7 +129,7 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
         if (val === undefined) {
           throw new UsageError({
             what: "init: --name requires a value",
-            hint: "usage: atmux init [--name <team>] [--force|-f] [--claude-account <suffix>]",
+            hint: usageHint,
           });
         }
         name = val;
@@ -128,6 +144,14 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
       case "--wizard":
       case "-w":
         wizard = true;
+        i += 1;
+        break;
+      case "--no-skills":
+        noSkills = true;
+        i += 1;
+        break;
+      case "--skills-only":
+        skillsOnly = true;
         i += 1;
         break;
       case "--claude-account": {
@@ -150,14 +174,23 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
       default:
         throw new UsageError({
           what: `init: unknown arg: ${a}`,
-          hint: "usage: atmux init [--name <team>] [--force|-f] [--claude-account <suffix>]",
+          hint: usageHint,
         });
     }
+  }
+  // ADR-217 §D5: --no-skills and --skills-only are mutually exclusive.
+  // Refusing surfaces the conflict at parse time rather than at runtime
+  // (skills-only would silently win since it short-circuits the install).
+  if (noSkills && skillsOnly) {
+    throw new UsageError({
+      what: "init: --no-skills and --skills-only cannot be combined",
+      hint: usageHint,
+    });
   }
   // exactOptionalPropertyTypes: only set keys when defined (an explicit
   // `name: undefined` is not the same as an absent key under the strict
   // tsconfig). Build the shape conditionally.
-  const out: ParsedInitArgs = { force, wizard };
+  const out: ParsedInitArgs = { force, wizard, noSkills, skillsOnly };
   if (name !== undefined) out.name = name;
   if (claudeAccount !== undefined) out.claudeAccount = claudeAccount;
   return out;
@@ -219,6 +252,18 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   }
 
   const env = opts.env ?? process.env;
+  const stdout = opts.stdout ?? defaultStdoutWrite;
+
+  // ADR-217 §D5: --skills-only short-circuits scaffold entirely. The
+  // re-install path post-manual-delete should NOT require the team.json
+  // to be absent (--force) nor risk overwriting it (no --force). Run the
+  // plugin step + return.
+  if (parsed.skillsOnly) {
+    const result = await installSkillsPlugin({ env, force: parsed.force });
+    stdout(renderSkillsInstallResult(result));
+    return 0;
+  }
+
   const cwd = opts.cwd ?? process.cwd();
   const teamName =
     parsed.name !== undefined && parsed.name.length > 0 ? parsed.name : basename(cwd);
@@ -350,8 +395,21 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   // emit color-stripped output (bash via `[[ -t 1 ]]`; TS via
   // `defaultPalette`'s isTty + NO_COLOR detection in src/core/tui.ts).
   const logger = opts.logger ?? createLogger();
-  const stdout = opts.stdout ?? defaultStdoutWrite;
   logger.ok(`initialized atmux team '${teamName}' at ${dir}`);
+
+  // ADR-217 §D5: install the bundled /atmux: skills plugin by
+  // symlinking ~/.claude/plugins/atmux/ → <atmux-source>/plugins/atmux/.
+  // Default-install; --no-skills opts out. Real-directory override
+  // preserved + opt-out marker honoured + idempotent on already-correct
+  // symlink. Output goes to stdout alongside the "Next:" lines so the
+  // operator sees the full picture in one block.
+  const skillsResult = await installSkillsPlugin({
+    env,
+    noSkills: parsed.noSkills,
+    force: parsed.force,
+  });
+  stdout(renderSkillsInstallResult(skillsResult));
+
   stdout("\n");
   stdout("Next:\n");
   stdout(`  1. review ${tj}\n`);

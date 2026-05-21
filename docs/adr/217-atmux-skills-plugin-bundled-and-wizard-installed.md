@@ -45,6 +45,30 @@ plugins/atmux/
 
 Plugin namespace: invocations are `/atmux:<skill>` (per Claude Code convention `plugin:skill`).
 
+### §D1.5 — Adjacent-asset bundling
+
+When the source's SKILL.md body invokes adjacent files (scripts, tests, prompt siblings), the bundled plugin preserves them 1:1 at `plugins/atmux/skills/<name>/<asset-path>`. Rules:
+
+1. **`scripts/`** — bundled as-is alongside SKILL.md. Script bodies undergo the same §D4 strip pass (personal paths, host refs, account ids, operator name). SKILL.md path references already use `${CLAUDE_PLUGIN_ROOT}/skills/<name>/scripts/<file>.sh`; the symlink wizard step (§D5) makes this resolve correctly post-install.
+2. **`tests/`** — bundled when present (e.g. `bau/tests/velocity-gate.bats`). Tests for skill scripts run as part of atmux's own test suite OR ship as documentation for users wanting to verify their override.
+3. **`<name>-prompt.md`** — adjacent prompt files (e.g. `whip-prompt.md`, `sweep-prompt.md` ex `superdoctor-prompt.md`) bundled alongside SKILL.md. Generalization pass applies §D4 + §D1.5 strip rules.
+4. **Dangling references** — if SKILL.md references an adjacent file the source dir doesn't ship (e.g. `cockpit-rebuild` SKILL.md references `scripts/cockpit-rebuild.sh` but no such file exists in source), the generalized output either **drops the reference** OR **adds a clear TODO** citing this rule. Don't ship dead links.
+
+**Audit inventory** (planner sweep 2026-05-21, full per-skill table in [.atmux/decisions.md OQ4](../../.atmux/decisions.md)):
+
+| Skill | Adjacent assets in source |
+|---|---|
+| `team` | 2 scripts (`clear-member.sh`, `rotate-member.sh`) |
+| `whip` | 5 scripts + `whip-prompt.md` (`watchdog.sh` is cron-driven — path-stability ADR-pointer needed) |
+| `bau` | 2 scripts + `tests/` (bats) |
+| `ghostbuster` | 1 script |
+| `budget` | 1 script |
+| `sweep` (ex `superdoctor`) | `superdoctor-prompt.md` (renames to `sweep-prompt.md` per §D2.1) |
+| `cockpit-rebuild` | dangling reference only (no actual file in source) — apply rule 4 |
+| `bruh` / `bruhloop` / `heads-up` / `session` / `tell-lead` | none (SKILL.md is self-contained) |
+
+The 1:1 preservation contract decouples skill ownership from operator dotfiles: a user installing the bundled plugin gets a fully-functional skill surface without separately copying scripts out of operator-private trees.
+
 ### §D2 — Skill carve set + naming
 
 12 skills, source → destination:
@@ -90,8 +114,24 @@ Each carved SKILL.md needs a pass to strip operator-specific surface:
 | Personal Claude accounts | `c-u`, `c-ic`, `c-i` | `claudeAccount` is documented per-team; user configures |
 | Operator name | `geoyws`, `George` | drop or generalize to `<operator>` |
 | Personal whip cadences | hardcoded 270s / 3600s pinned by operator | document the default + how to tune |
+| ADR-superseded vocab | `atmux_teams` (pre-[ADR-135](135-cockpit-naming-convention.md) cockpit session name); `superdoctor` (pre-§D2.1 sweep rename); `martinet` (pre-[ADR-158](158-martinet-to-sentinel-rename.md) sentinel rename); `lead-inbox.md` filename in *helper-call* contexts (ADR-198 was REVERTED + reassigned — canonical helper is `driverInboxPath` writing to `.atmux/driver-inbox.md`; the user-facing inbox label can still reference "lead-inbox" but the file path must be `driver-inbox.md`); `medic` as a *live cockpit role* (per [ADR-212](212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the role retired — disambiguate "medic" as the historical role name only, never as a live target); any other ADR-flagged retired vocab discovered during the pass | `atmux_cockpit` / `sweep` / `sentinel` / `driver-inbox.md` / current-canonical per the cited ADR |
+| Sed-regression artifacts | Naive search-replace residue from the `/skill` → `/atmux:skill` namespace pass — patterns like `.claude/atmux:team.json` (path string clobbered), `~/.claude/skills/atmux:whip/atmux:whip-prompt.md` (dir + filename both rewritten), `${TEAM}/atmux:whip-cadence.txt` (state-file name clobbered). These appear when the carve agent used a global `s|/skill|/atmux:skill|g` without scoping to invocation contexts. | restore the original path/filename token; only rename in *user-invocation* contexts (`/skill` as a slash-command call) |
 
-Substrate-level coupling (atmux verbs, ADR refs, cage/cockpit semantics) STAYS — those are the public atmux surface. The generalization is removing operator-specific path/host/domain particulars, not atmux particulars.
+Substrate-level coupling (atmux verbs, ADR refs, cage/cockpit semantics) STAYS — those are the public atmux surface. The generalization is removing operator-specific path/host/domain particulars + retired-vocab residue + sed-regression artifacts, not atmux particulars.
+
+Adjacent assets bundled per §D1.5 (`scripts/`, `tests/`, `<name>-prompt.md`) undergo the same strip pass — the rules in this table apply to their bodies too, not just to SKILL.md. The scripts-bring-over scope split (which assets to bundle 1:1 from operator dotfiles, which to drop, which to TODO) is governed by §D1.5 rules 1-4; this §D4 strip pass operates on whatever §D1.5 brought over.
+
+**Upstream provenance for this strip list:** reviewer's audit of the Story 1 scaffold commit (5-point check on plugin.json shape, dir-tree, ADR-pointer comments, SKILL.md frontmatter, and 12-skill name order) surfaced the dir-depth + namespace-collision risks that motivate rows 1-6. Planner's §D1.5 amendment (adjacent-asset bundling scope) plus the 2026-05-21 cross-skill sed-regression sighting (the session/SKILL.md `.claude/atmux:team.json` clobber caught during the 12-carve sibling-compare) motivate rows 7-8 and the paragraph above.
+
+#### §D4.1 — Per-skill known-leak pre-inventory
+
+Pre-pass audit notes captured from lead's 2026-05-21 sweep (supplement as additional leaks are discovered during the Story 2 passes). Each carve agent reads the row for their target skill BEFORE the pass so the per-pass grep finds the named patterns:
+
+| Skill | Known leaks (pre-pass) |
+|---|---|
+| `cockpit-rebuild` | operator dotfiles path (`~/work/journals/.sb/...`); `~/bin` symlink reference; `geoy.ws` host-check guard; stale `atmux_teams` session name (pre-ADR-135). Lead-confirmed 2026-05-21. |
+
+(Other skills add rows as their carve passes complete and surface leaks the strip-list categories didn't pre-anticipate.)
 
 ### §D5 — Wizard integration (ADR-200 extension)
 

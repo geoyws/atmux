@@ -261,6 +261,43 @@ Environment variables documented in `README.md` "Configuration" — not
 duplicated here to avoid drift. `team.json` schema is the on-disk
 source of truth.
 
+### 3.5 Skills plugin (`/atmux:` namespace, optional)
+
+atmux ships with a Claude Code plugin (`plugins/atmux/`) bundling 12
+operator-cockpit-tier skills under the `/atmux:` namespace —
+`/atmux:bruh`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:session`,
+`/atmux:whip`, `/atmux:bau`, `/atmux:budget`, `/atmux:cockpit-rebuild`,
+`/atmux:ghostbuster`, `/atmux:heads-up`, `/atmux:bruhloop`,
+`/atmux:sweep`. Each wraps a recurring multi-step atmux workflow that
+operators previously either retyped from memory or maintained in
+private dotfiles. Bundling them with atmux makes the cockpit-tier
+workflow discoverable + survives operator-machine bootstrap.
+Source: [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md).
+
+**Install posture:**
+
+- **Optional** — the install wizard (`atmux init`, per
+  [ADR-200](adr/200-install-wizard-guided-first-run-setup.md))
+  prompts `[Y/n/s]` (yes / no / show-list). Skip with `--no-skills`;
+  re-install later with `--skills-only`.
+- **Symlink not copy** — wizard symlinks
+  `<atmux-source>/plugins/atmux/` into `~/.claude/plugins/atmux/`
+  (Claude Code's plugin discovery path). atmux upgrades automatically
+  refresh the bundled SKILL.md bodies — operators don't have to
+  re-install the plugin to pick up newer skill behavior.
+- **Operator dotfiles override preserved** — if
+  `~/.claude/plugins/atmux/` already exists as a real directory
+  (not a symlink), the wizard preserves it + prints a notice.
+  Operators who maintain their own per-skill customizations keep
+  them; the bundle becomes the default for users who don't.
+- **Doctor probe** — `atmux doctor` adds an `atmux-skills-plugin`
+  row surfacing the install state (green when symlinked +
+  `plugin.json` validates; yellow when missing / malformed;
+  info-level when opted out at wizard time).
+
+For the full skill list + per-skill invocation reference + uninstall
+instructions, see `plugins/atmux/README.md`.
+
 ---
 
 ## 4. MVP shipped (v1 = bash atmux pre-cutover)
