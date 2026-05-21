@@ -211,7 +211,7 @@ The `cockpit.martinet.{claudeAccount, tuiOverrides}` pair re-uses `CockpitClaude
 
 The Martinet runs in its own cage with its own runtime token budget — **independent of the Claude Max budget** that ADR-049 budget-pause guards. A team with `martinet: "cursor"` continues whipping during a Claude lead's budget-pause window. This is the load-bearing operational win: **the team's commit cadence becomes decoupled from the Claude lead's budget cycle** for the mechanical-observation tier.
 
-Escalations during a Claude budget-pause window queue in the driver-inbox / lead-inbox and process when the Claude lead's pause resolves. Martinet keeps the team moving on mechanical work in the meantime.
+Escalations during a Claude budget-pause window queue in the driver-inbox and process when the Claude lead's pause resolves. Martinet keeps the team moving on mechanical work in the meantime.
 
 ### (D8) Same-commit doc updates per atmux CLAUDE.md docs discipline
 
