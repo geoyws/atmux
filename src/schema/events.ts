@@ -74,6 +74,38 @@ export const CommitLandedPayload = z
   })
   .passthrough();
 
+/**
+ * `gitter.escalated` — gitter consumer hit a failure class it cannot
+ * auto-resolve (merge conflict, test-failed-on-trunk, missing worktree,
+ * dispatcher refusal) and is handing off to lead-gated judgment per
+ * ADR-212 §D2 (canonical lead-gated destructive action pattern) +
+ * ADR-145 §"escalate via flag/reply on conflict". The payload carries
+ * enough context for the lead's Claude to decide between rebase / squash
+ * / revert / handoff-to-author without re-investigating the worktree.
+ */
+export const GitterEscalatedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("gitter.escalated"),
+    taskId: z.string(),
+    member: z.string(),
+    team: z.string(),
+    branch: z.string(),
+    commitSha: z.string(),
+    conflictFiles: z.array(z.string()).optional(),
+    suggestedResolution: z
+      .enum(["rebase", "squash", "revert", "handoff-to-author"])
+      .optional(),
+    severity: z.enum(["low", "medium", "high"]).default("medium"),
+    failureClass: z.enum([
+      "merge-conflict",
+      "test-failed-on-trunk",
+      "missing-worktree",
+      "dispatcher-refused",
+    ]),
+  })
+  .passthrough();
+
 /** Substrate self-monitoring: extension loaded + smoke passed. ADR-203 §D8. */
 export const InternalHonkerLoadedPayload = z
   .object({
@@ -107,6 +139,7 @@ export const EventPayload = z.discriminatedUnion("topic", [
   TaskClaimedPayload,
   TaskDonePayload,
   CommitLandedPayload,
+  GitterEscalatedPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -115,6 +148,7 @@ export type EventPayload = z.infer<typeof EventPayload>;
 export type TaskClaimedPayload = z.infer<typeof TaskClaimedPayload>;
 export type TaskDonePayload = z.infer<typeof TaskDonePayload>;
 export type CommitLandedPayload = z.infer<typeof CommitLandedPayload>;
+export type GitterEscalatedPayload = z.infer<typeof GitterEscalatedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -155,6 +189,8 @@ export const TOPICS = [
   "commit.landed",
   "commit.pushed",
   "commit.merge-staged",
+  // Gitter lifecycle (team-scope) — lead-gated escalation per ADR-212 §D2
+  "gitter.escalated",
   // Pane lifecycle (team-scope)
   "pane.classifier.completed",
   "pane.wedged",
