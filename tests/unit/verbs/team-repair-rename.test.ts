@@ -1004,8 +1004,15 @@ describe("teamRepairRename", () => {
     // probe drift; just tmpdir + state-sync drift.
     const { factory } = buildStubFactory({});
     const outStr: string[] = [];
+    // t-e8e15255: mock cronInstallFn so step 5 (cron-block refresh) does NOT
+    // touch the host crontab. The default cronInstallFn invokes the REAL
+    // cron-install verb which leaks `atmux:team=new` blocks pointing at
+    // /tmp/atmux-repair-rename-<mktemp-suffix>/.atmux into the host crontab
+    // (3 recurrences observed 2026-05-21 03:37 / 04:41 / 13:10 MYT before
+    // the test-author wired the injection).
     const code = await teamRepairRename(["--team-dir", join(fixture.atmuxDir, ".."), "new"], {
       buildTmux: factory,
+      cronInstallFn: async () => 0,
       stdout: (s) => {
         outStr.push(s);
         return true;
