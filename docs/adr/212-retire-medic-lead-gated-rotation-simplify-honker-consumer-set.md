@@ -87,6 +87,44 @@ One probe row `medic-config-residue` (yellow → red post-cleanup-EPIC) when `co
 
 No separate sentinel-config-residue probe needed (ADR-211 already specifies one). The two probes merge in cleanup-EPIC.
 
+### D7 — Context-pct enrichment of rotation-candidate events
+
+Every rotation-candidate event emitted by `e-honker-observation-watchdogs` (lead-uptime-exceeded, task-stalled, refusal-detected, pane-wedged) is **enriched with the candidate member's current context-pct + staleness** before the consumer writes the lead's driver-inbox entry. The lead reads one structured entry with full picture instead of cross-checking sources.
+
+**Substrate already exists** — no new measurement code:
+
+- `measure-context.sh` (`/root/work/journals/.sb/claude-skills/plugins/coordination/skills/whip/scripts/measure-context.sh`) runs from each member's idle-hook (post-turn, pre-wait), parses `↑ Nk ↓ Mk tokens` from Claude Code status line, atomic-writes `${HOME}/.claude/teams/${TEAM}/member-context/${MEMBER}.json` per ADR convention. Operator-managed dotfile, not in atmux repo.
+- `src/verbs/status.ts:127` already reads `contextPct` + `contextTs` for the `ctx %` column with stale detection at 2× whip cadence.
+
+**New code in this EPIC** — single reader + enrichment hook:
+
+```ts
+// src/abstractions/member-context.ts (~50 lines)
+export interface MemberContextReading {
+  pct: number;       // 0-100; 70+ = rotation-recommended on 1M-context Opus per
+                     // feedback_rotation_threshold_400k (30% remaining trigger)
+  ts: number;        // epoch seconds when measure-context.sh wrote the JSON
+  stale: boolean;    // true if ts older than 2× whip cadence
+}
+export async function readMemberContext(
+  atmuxDir: string, team: string, member: string, whipCadenceMin = 5,
+): Promise<MemberContextReading | null>;
+```
+
+Consumer code reads this for every rotation-candidate event + attaches to the driver-inbox entry payload. Example enriched entries the lead sees:
+
+```
+[uptime-exceeded] lead has been running 65 min — ctx 78%, 4 commits @ 12/8/15/9 min apart
+[task-stalled]   be-1 stalled on t-abcd1234 — ctx 92% (HIGH — rotation strongly recommended)
+[refusal-detected] fe-2 hit refusal #3 — ctx 41% (low — try clearing first)
+```
+
+**Context-pct as a standalone trigger** (no-rotation-candidate-but-high-context case) is **deferred** — start with enrichment-only. If observed behavior shows quiet-high-context members slipping past, add a `member.context-high` watchdog in a follow-up commit (still inside this same EPIC's scope).
+
+Per memory `feedback_rotation_threshold_400k`: threshold = 70% used (30% remaining) on 1M-context Opus. Threshold ≥ 60% = `LOW — consider clearing`; ≥ 75% = `MED — rotation recommended`; ≥ 85% = `HIGH — rotation strongly recommended`. Rendered as the suffix on the inbox entry.
+
+Stale + absent readings — both render as `ctx ?? (stale)` / `ctx ?? (no signal)` — lead handles like any other absent signal (decision goes through without the context boost, lead infers from pane glyph).
+
 ## Consequences
 
 **Becomes easier:**
