@@ -92,7 +92,7 @@ Single-line revert in `src/verbs/team.spawn-epic.ts` (flip default back to `fals
 
 3. **Per-member branch naming?** **Default**: existing ADR-082 / ADR-084 convention — `<base>-<member>` (e.g. `geoyws-epic-e-1e223687-be-1`). *Rationale*: no schema change; merger already routes on this pattern. Low-rev.
 
-4. **Should `atmux doctor` add a probe for shared-mode epic-teams?** **Default**: YES (medium-rev). Probe class `epic-team-shared-mode` at P2 — surfaces every running epic-team with `worktreeIsolation: false` so operators can audit. Probe does not auto-fix (would require cage dissolve). Folds into `docs/RUNBOOK-doctor-probes.md` per [ADR-183](./183-deploy-completeness-probe-class.md). Medium-rev.
+4. **Should `atmux doctor` add a probe for shared-mode epic-teams?** **Default**: YES (medium-rev). Probe class `epic-team-shared-mode` at P2 — surfaces every running epic-team with `worktreeIsolation: false` so operators can audit. Probe does not auto-fix (would require cage dissolve). Folds into `docs/RUNBOOK-doctor-probes.md` per [ADR-208](./208-deploy-completeness-probe-class.md). Medium-rev.
 
 5. **Should the dispatch-summary verb (cage 22:36 MYT outbox — "verb dispatch-summary expects 'team-lead' role but team.json has 'lead'") be audited as part of this ADR's rollout?** **Default**: NO — separate scope. Surfaces as standalone Task `[atmux-bug] dispatch-summary role-name canonical drift (team-lead vs lead)` for the parent kanban. ADR-196 stays focused on the worktree-mode flip. Low-rev.
 

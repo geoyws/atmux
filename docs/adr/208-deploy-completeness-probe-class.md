@@ -1,4 +1,6 @@
-# ADR-183: Deploy-completeness probe class — extends ADR-027 doctor framework
+# ADR-208: Deploy-completeness probe class — extends ADR-027 doctor framework
+
+> **Renumber note (2026-05-21):** Originally filed as ADR-183 (commit `94eb4ca` 2026-05-20 11:06 MYT — `batch land 178/183/184/185/188/190/191/192`). Collided with the earlier-filed `183-sentinel-scope-includes-epic-teams.md` (commit `3b92c9d` 2026-05-20 03:53 MYT). Per the "older keeps the number" convention (memory `project_adr_collision_resolutions_2026_05_18`), the sentinel-scope ADR retains 183; this ADR is renumbered to 208. All cross-refs in the rest of the tree were updated in the same commit.
 
 **Status**: Accepted — ratified by driver 2026-05-21 (deploy-completeness probe-class extends ADR-027; §OQ recommendations as-written: programmatic TS registry, file-based Discord dedup per ADR-126, 15min cron backstop hardcoded, --fail-on-gap = P0+P1 only, name=deploy-completeness, sentinel uses own severity mapping, --list-probes covers introspection)
 **Date**: 2026-05-19
@@ -159,7 +161,7 @@ Already filed under `e-b54050b6` — see `t-e26aced0` (Part A: 7 probes), `t-c51
 
 ## Acceptance
 
-- [ ] ADR-183 file lands at `docs/adr/183-deploy-completeness-probe-class.md`.
+- [ ] ADR-208 file lands at `docs/adr/208-deploy-completeness-probe-class.md` (renumbered from 183 — see header note).
 - [ ] `src/core/doctor-class.ts` probe-class registry abstraction extends ADR-027.
 - [ ] 7 deploy-completeness probes registered + green against current hax state (post the wedge-fixes landing).
 - [ ] `atmux doctor --class deploy-completeness --json` lists ≥ 7 probes + per-probe severity.
