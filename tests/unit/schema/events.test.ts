@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   EventPayload,
+  GitterEscalatedPayload,
   isKnownTopic,
   TaskClaimedPayload,
   TOPICS,
@@ -119,6 +120,88 @@ describe("EventPayload discriminated union", () => {
     expect(parsed.topic).toBe("commit.landed");
   });
 
+  test("parses gitter.escalated with required fields (ADR-212 §D2 lead-gated handoff)", () => {
+    const parsed = EventPayload.parse({
+      topic: "gitter.escalated",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      taskId: "t-abcd1234",
+      member: "be-1",
+      team: "atmux",
+      branch: "atmux-geoyws-foo",
+      commitSha: "abc1234",
+      failureClass: "merge-conflict",
+    });
+    expect(parsed.topic).toBe("gitter.escalated");
+    if (parsed.topic === "gitter.escalated") {
+      // severity defaults to medium when omitted
+      expect(parsed.severity).toBe("medium");
+      expect(parsed.failureClass).toBe("merge-conflict");
+      expect(parsed.conflictFiles).toBeUndefined();
+      expect(parsed.suggestedResolution).toBeUndefined();
+    }
+  });
+
+  test("parses gitter.escalated with optional conflictFiles + suggestedResolution + explicit severity", () => {
+    const parsed = EventPayload.parse({
+      topic: "gitter.escalated",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      taskId: "t-xyz",
+      member: "be-2",
+      team: "atmux",
+      branch: "atmux-geoyws-bar",
+      commitSha: "def5678",
+      conflictFiles: ["src/a.ts", "src/b.ts"],
+      suggestedResolution: "rebase",
+      severity: "high",
+      failureClass: "test-failed-on-trunk",
+    });
+    if (parsed.topic === "gitter.escalated") {
+      expect(parsed.conflictFiles).toEqual(["src/a.ts", "src/b.ts"]);
+      expect(parsed.suggestedResolution).toBe("rebase");
+      expect(parsed.severity).toBe("high");
+      expect(parsed.failureClass).toBe("test-failed-on-trunk");
+    }
+  });
+
+  test("rejects gitter.escalated with empty body (required fields missing)", () => {
+    expect(() => GitterEscalatedPayload.parse({})).toThrow();
+  });
+
+  test("rejects gitter.escalated with unknown failureClass", () => {
+    expect(() =>
+      EventPayload.parse({
+        topic: "gitter.escalated",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        taskId: "t-xyz",
+        member: "be-1",
+        team: "atmux",
+        branch: "atmux-geoyws-baz",
+        commitSha: "ffeedd",
+        failureClass: "made-up-class",
+      }),
+    ).toThrow();
+  });
+
+  test("rejects gitter.escalated with unknown suggestedResolution", () => {
+    expect(() =>
+      EventPayload.parse({
+        topic: "gitter.escalated",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        taskId: "t-xyz",
+        member: "be-1",
+        team: "atmux",
+        branch: "atmux-geoyws-baz",
+        commitSha: "ffeedd",
+        failureClass: "merge-conflict",
+        suggestedResolution: "force-push",
+      }),
+    ).toThrow();
+  });
+
   test("parses internal.honker.loaded substrate event (ADR-203 §D8)", () => {
     const parsed = EventPayload.parse({
       topic: "internal.honker.loaded",
@@ -187,8 +270,9 @@ describe("TOPICS registry + isKnownTopic", () => {
   test("v1 closed topic set has the expected size (ADR-203 §D2 enumeration)", () => {
     // Adding a topic to TOPICS requires an ADR amendment — failing here
     // is the reminder. Current closed set: 5 task + 8 story + 4 epic +
-    // 3 commit + 3 pane + 4 coordination + 8 cockpit + 4 internal = 39.
-    expect(TOPICS.length).toBe(39);
+    // 3 commit + 1 gitter + 3 pane + 4 coordination + 8 cockpit + 4
+    // internal = 40.
+    expect(TOPICS.length).toBe(40);
   });
 
   test("known topics across each domain are present", () => {
@@ -198,6 +282,7 @@ describe("TOPICS registry + isKnownTopic", () => {
     expect(set.has("story.jury.ratified")).toBe(true);
     expect(set.has("epic.merge-ready")).toBe(true);
     expect(set.has("commit.landed")).toBe(true);
+    expect(set.has("gitter.escalated")).toBe(true);
     expect(set.has("pane.wedged")).toBe(true);
     expect(set.has("complaint.filed")).toBe(true);
     expect(set.has("budget.warning")).toBe(true);
