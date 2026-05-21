@@ -14,10 +14,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { CageState } from "../../../src/core/cage-state.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
+import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
@@ -39,6 +42,7 @@ import {
   checkMergerFanIn,
   checkOrphanSessions,
   checkPhantomInboxes,
+  checkLegacyInboxJson,
   checkReleaseNoteMissing,
   checkSendKeysFailureRecent,
   checkStateDir,
@@ -56,6 +60,7 @@ import {
   type DoctorRow,
   doctor,
   findInboxTaskMarks,
+  findLegacyInboxJson,
   findPhantomInboxes,
   firstBin,
   installHint,
@@ -624,6 +629,101 @@ describe("findPhantomInboxes", () => {
     expect(rows[0]?.status).toBe("yellow");
     expect(rows[0]?.label).toBe("phantom-inbox");
     expect(rows[0]?.detail).toContain("t-ghost");
+  });
+
+  test("ignores stale JSON inProgress when state.db is canonical", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "x",
+        members: [{ name: "alpha", role: "lead", tui: "claude" }],
+      }),
+    );
+    await writeFile(
+      join(atmuxDir, "inboxes", "alpha.json"),
+      JSON.stringify({
+        pending: [],
+        inProgress: [{ id: "t-ghost", subject: "stale json phantom" }],
+        done: [],
+      }),
+    );
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const repo = new KanbanRepo(db);
+      repo.upsertTask({
+        id: "t-live",
+        subject: "live sql task",
+        status: "todo",
+        owner: "alpha",
+        deps: [],
+      });
+    } finally {
+      closeDatabase(db);
+    }
+    expect(await findPhantomInboxes(atmuxDir)).toEqual([]);
+  });
+
+  test("SQL in-progress tasks that exist in kanban are not phantoms", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "x",
+        members: [{ name: "alpha", role: "lead", tui: "claude" }],
+      }),
+    );
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const repo = new KanbanRepo(db);
+      repo.upsertTask({
+        id: "t-live",
+        subject: "active claim",
+        status: "in-progress",
+        owner: "alpha",
+        deps: [],
+      });
+    } finally {
+      closeDatabase(db);
+    }
+    expect(await findPhantomInboxes(atmuxDir)).toEqual([]);
+  });
+});
+
+// ---------- findLegacyInboxJson / checkLegacyInboxJson ----------
+
+describe("findLegacyInboxJson", () => {
+  let dir: string;
+  let atmuxDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "atmux-doctor-legacy-inbox-"));
+    atmuxDir = join(dir, ".atmux");
+    await mkdir(join(atmuxDir, "inboxes"), { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("returns [] when state.db absent (JSON may still be canonical)", async () => {
+    await writeFile(join(atmuxDir, "inboxes", "gitter.json"), "{}");
+    expect(await findLegacyInboxJson(atmuxDir)).toEqual([]);
+  });
+
+  test("returns legacy json basenames when state.db exists", async () => {
+    await writeFile(join(atmuxDir, "state.db"), "");
+    await writeFile(join(atmuxDir, "inboxes", "gitter.json"), "{}");
+    await writeFile(join(atmuxDir, "inboxes", "alpha.json"), "{}");
+    expect(await findLegacyInboxJson(atmuxDir)).toEqual(["alpha.json", "gitter.json"]);
+  });
+
+  test("checkLegacyInboxJson surfaces yellow doctor row with purge hint", async () => {
+    await writeFile(join(atmuxDir, "state.db"), "");
+    await writeFile(join(atmuxDir, "inboxes", "gitter.json"), "{}");
+    const rows = await checkLegacyInboxJson(atmuxDir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("legacy-inbox-json");
+    expect(rows[0]?.detail).toContain("gitter.json");
+    expect(rows[0]?.hint).toContain("atmux cleanup inboxes --purge-legacy");
   });
 });
 

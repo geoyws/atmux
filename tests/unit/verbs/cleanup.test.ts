@@ -5,7 +5,7 @@
 // through both sub-ops in order.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "../../../src/core/tui.ts";
@@ -214,5 +214,51 @@ describe("cleanup verb", () => {
     });
     const logs = env.logs.filter((l) => l.kind === "log").map((l) => l.msg);
     expect(logs.some((m) => m.includes("b.json pruned=1"))).toBe(true);
+  });
+
+  test("inboxes --purge-legacy skips when state.db absent", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    await writeFile(join(env.inboxDir, "gitter.json"), "{}");
+    const rc = await cleanup(["inboxes", "--purge-legacy"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+    });
+    expect(rc).toBe(0);
+    expect(await readdir(env.inboxDir)).toContain("gitter.json");
+    const logs = env.logs.filter((l) => l.kind === "log").map((l) => l.msg);
+    expect(logs.some((m) => m.includes("skipped (no state.db"))).toBe(true);
+  });
+
+  test("inboxes --purge-legacy removes legacy json files", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    await writeFile(join(env.atmuxDir, "state.db"), "");
+    await writeFile(join(env.inboxDir, "gitter.json"), "{}");
+    await writeFile(join(env.inboxDir, "gitter.json.lock"), "");
+    const rc = await cleanup(["inboxes", "--purge-legacy"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+    });
+    expect(rc).toBe(0);
+    expect(await readdir(env.inboxDir)).toEqual([]);
+    const oks = env.logs.filter((l) => l.kind === "ok").map((l) => l.msg);
+    expect(oks.some((m) => m.includes("removed 2 legacy file(s)"))).toBe(true);
+    const logs = env.logs.filter((l) => l.kind === "log").map((l) => l.msg);
+    expect(logs.some((m) => m.includes("removed gitter.json"))).toBe(true);
+  });
+
+  test("inboxes --purge-legacy --dry-run lists without deleting", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    await writeFile(join(env.atmuxDir, "state.db"), "");
+    await writeFile(join(env.inboxDir, "alpha.json"), "{}");
+    await cleanup(["inboxes", "--purge-legacy", "--dry-run"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+    });
+    expect(await readdir(env.inboxDir)).toContain("alpha.json");
+    const logs = env.logs.filter((l) => l.kind === "log").map((l) => l.msg);
+    expect(logs.some((m) => m.includes("[dry-run] would remove inboxes/alpha.json"))).toBe(true);
   });
 });
