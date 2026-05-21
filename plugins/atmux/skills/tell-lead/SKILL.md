@@ -42,11 +42,11 @@ You will see something like:
 
 **The two `lead listener absent` warnings are EXPECTED when the team is stopped — they are not failures.**
 
-Why two warnings, not one? Per [ADR-042](../../../docs/adr/042-socket-pubsub.md) phase 2, both `tell.sh` and the nested `send_to_member` independently call `sock_publish`. When no supervisor is listening on the lead's socket (team stopped, lead pane not yet bootstrapped, supervisor crashed), both publishes warn-only and continue. The durable `.atmux/lead-inbox.md` write is the contract; the publish is just a wake-up nudge.
+Why two warnings, not one? Per [ADR-042](../../../../docs/adr/042-socket-pubsub.md) phase 2, both `tell.sh` and the nested `send_to_member` independently call `sock_publish`. When no supervisor is listening on the lead's socket (team stopped, lead pane not yet bootstrapped, supervisor crashed), both publishes warn-only and continue. The durable `.atmux/lead-inbox.md` write is the contract; the publish is just a wake-up nudge.
 
 When the team **is up** and the lead's supervisor is listening, you'll see one `✅ sock_publish` per call instead of the warning, plus the final `✅ tell-lead → lead` line.
 
-> **Legacy `driver-inbox.md`** (one-release back-compat per [ADR-198](../../../docs/adr/198-medic-host-pressure-playbook.md) §History): this verb previously wrote to `.atmux/driver-inbox.md`. The atmux read path still accepts the legacy filename — if both files exist mid-rollout they merge by mtime. New writes go to `.atmux/lead-inbox.md` only; the per-team migration walker handles the on-disk `mv`.
+> **Legacy `driver-inbox.md`** (one-release back-compat per [ADR-198](../../../../docs/adr/198-medic-host-pressure-playbook.md) §History): this verb previously wrote to `.atmux/driver-inbox.md`. The atmux read path still accepts the legacy filename — if both files exist mid-rollout they merge by mtime. New writes go to `.atmux/lead-inbox.md` only; the per-team migration walker handles the on-disk `mv`.
 
 ## Failure mode (real this time)
 
