@@ -63,10 +63,23 @@ export interface HonkerHooks {
   env?: NodeJS.ProcessEnv;
 }
 
-/** Returns `true` when `ATMUX_HONKER` env var enables the substrate. */
+/**
+ * Returns `true` when the Honker substrate should attempt to load.
+ *
+ * Default flipped to ON 2026-05-21 (driver-initiated dogfood). Operators
+ * disable explicitly via `ATMUX_HONKER=off|0|false`; the substrate is
+ * graceful — when the binary isn't present, `loadHonkerOrFallback`
+ * returns `{loaded: false, fallbackReason: "..."}` cleanly and consumers
+ * fall through to their cron-backstop / direct-INSERT paths (ADR-202
+ * §D6). So flipping default ON before the binary is universally
+ * distributed is safe; it just enables the load-attempt + the doctor
+ * probe's yellow `fallback` row when the binary is missing.
+ */
 export function isHonkerEnabled(env?: NodeJS.ProcessEnv): boolean {
   const raw = (env ?? process.env).ATMUX_HONKER?.toLowerCase().trim() ?? "";
-  return raw === "on" || raw === "1" || raw === "true";
+  if (raw === "off" || raw === "0" || raw === "false") return false;
+  // Default ON — empty string, unset, or any positive form.
+  return true;
 }
 
 /**
