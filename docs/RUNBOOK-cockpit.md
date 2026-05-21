@@ -103,6 +103,8 @@ Warn-class only — doesn't block atmux. Surfaces via `atmux doctor` (human) + `
 
 Both probes are warn-class — they don't block `atmux cockpit rebuild` or any verb. They surface drift; the operator decides when to act.
 
+> **Skill cross-link** (per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D7): for a fleet-wide sweep of these probes plus `atmux status --json` across every enabled team (with auto-complaint filing and the [ADR-198](adr/198-medic-host-pressure-playbook.md) host-pressure playbook as one trigger), invoke `/atmux:sweep` from Claude Code instead of running `atmux doctor` team-by-team.
+
 ## §5 — `ATMUX_COCKPIT_SOCKET` escape hatch
 
 The cockpit socket is resolved via `getCockpitSocketName()` in `src/core/tmux-paths.ts`. Resolution chain:
@@ -221,6 +223,8 @@ Per [ADR-183](adr/183-sentinel-scope-includes-epic-teams.md) the cockpit's W3 `_
 
 **Recommended**: run `atmux doctor --fix` first. It's idempotent + scoped + cheap. Full `atmux cockpit rebuild` is a heavier hammer reserved for multi-window drift.
 
+> **Skill cross-link** (per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D7): the full-rebuild path is also wrapped as `/atmux:cockpit-rebuild` from Claude Code — same verb under the hood, with the args (`--no-cycle`, `--force-cycle`) passed through. Use the slash form when driving from the cockpit Claude pane; use the bare `atmux cockpit rebuild` verb when scripting.
+
 ### Verify W3 alive
 
 ```bash
@@ -284,29 +288,38 @@ git push origin <branch>
 
 Use only when `atmux release` itself is broken (`atmux` binary unbootable, `package.json` non-semver). Per the design intent the legacy form is deprecated for daily use — `atmux release` is the canonical surface.
 
-## §9 — Operator coordination skills (`/bau`, `/bruh`, `/whip`, `/team`)
+## §9 — Operator coordination skills (`/atmux:bau`, `/atmux:bruh`, `/atmux:whip`, `/atmux:team`, …)
 
-The Claude Code skills plugin at `~/work/journals/.sb/claude-skills/plugins/coordination/` ships operator-facing `/slash-commands` that wrap atmux verbs for hands-on cockpit work. Skills are NOT installed by `atmux start` or `atmux cockpit rebuild` — they're operator-managed via the dotfiles flow per auto-memory `feedback_claude_skills_dotfiles_territory` (2026-05-15). See [ADR-187](adr/187-coordination-skills-plugin.md) for the design.
+Atmux ships a Claude Code skills plugin at `plugins/atmux/` (in the atmux source tree) that wraps the cockpit-tier verbs as operator-facing `/slash-commands`. Per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md), the plugin is installed by the first-run wizard (`atmux init` per [ADR-200](adr/200-install-wizard-guided-first-run-setup.md) §D5) and symlinked into Claude Code's plugin discovery path so skill upgrades ride atmux releases automatically. Operators who prefer their own dotfiles-resident variants can override by dropping a real directory at `~/.claude/plugins/atmux/` (the wizard preserves it).
 
 | When to run | Skill | What it does |
 |---|---|---|
-| Start-of-session, status snapshot | `/bau [hours]` | Commit cadence / rate-limits / kanban / churn per team. Default 24h window. Escalates Dormant teams to lead. |
-| Want sentinel-like cadence without the cockpit role | `/whip [verb]` | Autonomous-work nudge loop (run / cadence / watchdog). Pure-shell. |
-| End-of-day unblocker pass | `/bruh` | Sweeps pending decisions / blockers / flags / worktrees in one pass. |
-| One-shot team lifecycle | `/team <verb>` | start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member. Calls `atmux team` verbs underneath. |
-| Diagnostic across all Claude accounts | `/budget` | 5h + weekly rate-limit utilization + reset times. Pure-shell + Anthropic API. |
-| Driver → lead durable ask | `/tell-lead <msg>` | Writes to `.atmux/driver-inbox.md` + best-effort lead-pane wake-up. |
+| Start-of-session, status snapshot | `/atmux:bau [hours]` | Commit cadence / rate-limits / kanban / churn per team. Default 24h window. Escalates Dormant teams to lead. |
+| Want sentinel-like cadence without the cockpit role | `/atmux:whip [verb]` | Autonomous-work nudge loop (run / cadence / watchdog). Pure-shell. |
+| End-of-day unblocker pass | `/atmux:bruh` | Sweeps pending decisions / blockers / flags / worktrees in one pass. |
+| Hands-off 15-min `/atmux:bruh` cadence | `/atmux:bruhloop` | Sugar wrapper that arms `/loop 15mins /atmux:bruh …` so the operator doesn't retype the chain. |
+| One-shot team lifecycle | `/atmux:team <verb>` | start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member. Calls `atmux team` verbs underneath. |
+| Session continuity (resume / handoff / preclear / stop) | `/atmux:session <verb>` | Reads / writes `handoff.md`, drives `/clear`-safe boundaries. |
+| Diagnostic across all Claude accounts | `/atmux:budget` | 5h + weekly rate-limit utilization + reset times. Pure-shell + Anthropic API. |
+| Driver → lead durable ask | `/atmux:tell-lead <msg>` | Writes to `.atmux/lead-inbox.md` + best-effort lead-pane wake-up. |
+| Lightweight teammate ping (atmux-injected) | `/atmux:heads-up <event>` | Silent acknowledgement of supervisor injections; folds into next idle turn. |
+| Mergeable epic-team branch sweep | `/atmux:ghostbuster [--dry-run] …` | Merges branches ahead of trunk, deletes fully-merged branches, leaves active worktrees alone. |
+| Full cockpit + cage rebuild | `/atmux:cockpit-rebuild [--no-cycle]` | Same verb as bare `atmux cockpit rebuild`; see §1 + §7 cross-links above. |
+| Fleet-wide diagnose + complain sweep | `/atmux:sweep [run\|once\|dry-run]` | Runs `atmux doctor` + `atmux status --json` across every enabled team, files complaints, takes structural fixes. Persisted host-pressure playbook from [ADR-198](adr/198-medic-host-pressure-playbook.md) is one trigger. |
 
-**Install via dotfiles**:
+**Install via the wizard** (primary path, per ADR-217 §D5 / ADR-200 §D6):
 
 ```bash
-# Operator-side, NOT from inside an atmux cage
-cd ~/work/journals/.sb/_dotfiles
-git pull              # or edit locally
-dotfiles push         # deploys to $HOME/.claude/plugins/coordination/
+atmux init                  # Step 6/N offers the skills plugin; accept default [Y]
+# OR re-install after manual deletion:
+atmux init --skills-only
 ```
 
-Per the `feedback_claude_skills_dotfiles_territory` memory: the atmux team must NOT escalate "coordination skill missing" to a PR or atmux-side fix. Surface to the driver / operator with the dotfiles-flow ask; do not direct-edit the plugin from inside an atmux cage. The plugin is an operator-side surface that pairs with atmux at the cockpit boundary, like the W3 sentinel cage is an atmux-side surface that pairs with the operator at the same boundary.
+The wizard symlinks `<atmux-source>/plugins/atmux/` → `~/.claude/plugins/atmux/`. A doctor probe (`atmux-skills-plugin`) surfaces yellow when the symlink is missing or `plugin.json` is malformed; info-level when the operator explicitly opted out via `~/.atmux/state/skills-plugin-opted-out`.
+
+**Override with your own dotfiles** (alternate path — operators who maintain customised skill bodies):
+
+Drop a real directory at `~/.claude/plugins/atmux/` instead of accepting the wizard's symlink. The wizard preserves it and prints a notice; your local copy wins. Tradeoff: you opt out of automatic skill-body refreshes on atmux upgrade. Per the `feedback_claude_skills_dotfiles_territory` memory, the dotfiles-resident variant remains the right home for operator-flavored bodies that reference personal hosts/paths/accounts; the bundled plugin is the *generalized* public surface.
 
 ## §10 — Team rename (`atmux team rename`)
 
@@ -366,3 +379,5 @@ End-to-end dogfood pattern on the atmux team itself shipped under EPIC e-1e22368
 - `templates/tmux/atmux.conf` — canonical 8-option baseline.
 - `src/core/tmux-paths.ts` — `getCockpitSocketName()` + `getAtmuxTmuxConfPath()` resolvers.
 - `src/verbs/cockpit.ts::cockpitMigrateSocket` — the migration verb implementation.
+- [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) — atmux skills plugin bundled in `plugins/atmux/` and installed by `atmux init` wizard; defines the `/atmux:` skill namespace (§9 cross-links above).
+- [ADR-198](adr/198-medic-host-pressure-playbook.md) — host-pressure playbook (one trigger inside `/atmux:sweep`).
