@@ -260,7 +260,7 @@ Reset one teammate's conversation context in place, preserving window / agent re
 1. **Parse args.** `<name>` required. Remaining = reason.
 2. **Invoke script:**
    ```bash
-   bash ~/.claude/skills/team/scripts/clear-member.sh "$TEAM" "$NAME" "$REASON"
+   bash ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/team/scripts/clear-member.sh "$TEAM" "$NAME" "$REASON"
    ```
 3. **Report** the script's output. Exit codes:
    - `0` — cleared + re-briefed OK
@@ -636,7 +636,7 @@ The canonical implementation lives in `scripts/rotate-member.sh` — invoke it d
 ### Invocation
 
 ```bash
-bash ~/.claude/skills/team/scripts/rotate-member.sh "$TEAM" "$MEMBER"
+bash ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/team/scripts/rotate-member.sh "$TEAM" "$MEMBER"
 ```
 
 Exit codes:
