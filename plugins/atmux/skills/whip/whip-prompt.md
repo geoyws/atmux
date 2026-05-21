@@ -635,7 +635,7 @@ done
 
 ## 1d. Teammate-rate-limit detection — Discord-once + dispatch lockout
 
-Distinct from §1c (interactive-prompt blocker): a teammate whose **Claude account hit its weekly cap** and is now stuck on the `You've hit your limit · resets <DATE> (Europe/Berlin)` banner + `/rate-limit-options` modal. Whip cannot answer this (the choice is operator-grade: wait / `/extra-usage` / swap account). Until reset, every keystroke whip sends gets eaten by the modal — so dispatching to this member is wasted, and the lead needs to KNOW so §4 routing can skip them.
+Distinct from §1c (interactive-prompt blocker): a teammate whose **Claude account hit its weekly cap** and is now stuck on the `You've hit your limit · resets <DATE> (<tz>)` banner + `/rate-limit-options` modal. Whip cannot answer this (the choice is operator-grade: wait / `/extra-usage` / swap account). Until reset, every keystroke whip sends gets eaten by the modal — so dispatching to this member is wasted, and the lead needs to KNOW so §4 routing can skip them.
 
 **Detection runs every whip turn, after §1c.** Per-reset-window state persisted at `~/.claude/teams/${TEAM}/rate-limited-${MEMBER}.json` so the Discord ping fires exactly once per (member, reset-window) and §4 dispatch can cheaply re-check on each turn.
 
@@ -651,15 +651,20 @@ for w in $TEAM_WINDOWS; do
   STATE_FILE="$HOME/.claude/teams/${TEAM}/rate-limited-${MEMBER}.json"
   TAIL=$(tmux capture-pane -t "$w" -p -S -15 | tail -10)
 
-  # Match the rate-limit banner. Anthropic format: "May 13, 4pm (Europe/Berlin)".
-  RL_MATCH=$(echo "$TAIL" | grep -oE "You've hit your limit · resets [A-Za-z]+ [0-9]+, ?[0-9]+[ap]m \(Europe/Berlin\)" | head -1)
+  # Match the rate-limit banner. Anthropic format: "May 13, 4pm (<tz>)" — capture
+  # the timezone token verbatim from the banner so the parser stays correct if
+  # Anthropic ever switches their banner timezone. The capture group preserves
+  # whatever zone the banner declares.
+  RL_MATCH=$(echo "$TAIL" | grep -oE "You've hit your limit · resets [A-Za-z]+ [0-9]+, ?[0-9]+[ap]m \([A-Za-z_/]+\)" | head -1)
   [ -z "$RL_MATCH" ] && continue
 
   # Parse reset date → epoch. Add current year — bare "May 13" without a
-  # year sometimes resolves to a past year via `date -d`.
-  RESET_HUMAN=$(echo "$RL_MATCH" | sed -E 's/^You.+resets //; s/ ?\(Europe\/Berlin\)//')
+  # year sometimes resolves to a past year via `date -d`. Banner timezone
+  # is captured from the parens.
+  BANNER_TZ=$(echo "$RL_MATCH" | sed -E 's/.*\(([A-Za-z_/]+)\)$/\1/')
+  RESET_HUMAN=$(echo "$RL_MATCH" | sed -E 's/^You.+resets //; s/ ?\([A-Za-z_/]+\)$//')
   YEAR=$(date +%Y)
-  RESET_EPOCH=$(TZ=Europe/Berlin date -d "$RESET_HUMAN $YEAR" +%s 2>/dev/null)
+  RESET_EPOCH=$(TZ="$BANNER_TZ" date -d "$RESET_HUMAN $YEAR" +%s 2>/dev/null)
   [ -z "$RESET_EPOCH" ] && continue  # parse failed — leave for next turn
 
   NOW=$(date +%s)
@@ -688,7 +693,7 @@ for w in $TEAM_WINDOWS; do
 
 🚫 Teammate Claude account hit weekly cap — dispatch locked until reset.
 
-⏰ Resets: \`${RESET_LOCAL}\` (= ${RESET_HUMAN} per Anthropic's banner, which uses Europe/Berlin)
+⏰ Resets: \`${RESET_LOCAL}\` (banner: ${RESET_HUMAN} ${BANNER_TZ})
 🎯 Member: \`${MEMBER}\` (pane: \`${w}\`)
 
 Operator options:
