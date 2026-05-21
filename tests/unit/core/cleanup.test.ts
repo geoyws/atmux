@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pruneInboxes, rotateLogs } from "../../../src/core/cleanup.ts";
+import { pruneInboxes, purgeLegacyInboxes, rotateLogs } from "../../../src/core/cleanup.ts";
 
 const RUN_MS = Date.UTC(2026, 4, 8, 14, 55, 0);
 
@@ -210,5 +210,38 @@ describe("pruneInboxes", () => {
     expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 0 })).rejects.toThrow(RangeError);
     expect(pruneInboxes(env.atmuxDir, { maxAgeDays: -1 })).rejects.toThrow(RangeError);
     expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 1.5 })).rejects.toThrow(RangeError);
+  });
+});
+
+// ---------- purgeLegacyInboxes ----------
+
+describe("purgeLegacyInboxes", () => {
+  test("skips when state.db absent", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    await writeFile(join(env.inboxDir, "gitter.json"), "{}");
+    const got = await purgeLegacyInboxes(env.atmuxDir);
+    expect(got.skipped).toBe(true);
+    expect(got.removed).toEqual([]);
+    expect(await readdir(env.inboxDir)).toContain("gitter.json");
+  });
+
+  test("removes legacy inbox json when state.db exists", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    await writeFile(join(env.atmuxDir, "state.db"), "");
+    await writeFile(join(env.inboxDir, "gitter.json"), "{}");
+    await writeFile(join(env.inboxDir, "gitter.json.lock"), "");
+    const got = await purgeLegacyInboxes(env.atmuxDir);
+    expect(got.skipped).toBe(false);
+    expect(got.removed.sort()).toEqual(["gitter.json", "gitter.json.lock"]);
+    expect(await readdir(env.inboxDir)).toEqual([]);
+  });
+
+  test("dry-run lists files without deleting", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    await writeFile(join(env.atmuxDir, "state.db"), "");
+    await writeFile(join(env.inboxDir, "alpha.json"), "{}");
+    const got = await purgeLegacyInboxes(env.atmuxDir, { dryRun: true });
+    expect(got.removed).toEqual(["alpha.json"]);
+    expect(await readdir(env.inboxDir)).toContain("alpha.json");
   });
 });

@@ -26,7 +26,8 @@ export interface ResolveTuiOpts {
   /** Process env. Defaults to `process.env`. Test injection point —
    *  ATMUX_CLAUDE_BIN / ATMUX_CLAUDE_EFFORT / ATMUX_CLAUDE_PERMISSION /
    *  ATMUX_OPENCODE_BIN / ATMUX_OPENCODE_DEFAULT_MODEL / ATMUX_KIMI_BIN /
-   *  ATMUX_KIMI_DEFAULT_MODEL / ATMUX_CURSOR_BIN / ATMUX_CURSOR_DEFAULT_MODEL
+   *  ATMUX_KIMI_DEFAULT_MODEL / ATMUX_CURSOR_BIN / ATMUX_CURSOR_DEFAULT_MODEL /
+   *  ATMUX_CURSOR_FORCE / ATMUX_CURSOR_APPROVE_MCPS / ATMUX_CURSOR_ARGS_EXTRA
    *  knobs are read here. */
   env?: NodeJS.ProcessEnv;
   /** Override the member's cwd. Defaults to `member.cwd ?? "."`. */
@@ -211,13 +212,39 @@ function tuiKimi(name: string, cwd: string, model: string, env: NodeJS.ProcessEn
   return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${bin} --model ${posixQuote(m)}`;
 }
 
+/**
+ * Build the spawn command for a `tui: "cursor"` member.
+ *
+ * Bakes Cursor CLI safe-autonomy defaults (ADR-201):
+ *   - `--force` — Auto-run in TUI; still honours `permissions.deny` in
+ *     `~/.cursor/cli-config.json` / `<repo>/.cursor/cli.json` (deny wins).
+ *     Pair with `approvalMode: allowlist` + broad allow + hard deny — see
+ *     `templates/cursor-cli-permissions.json`. Disable via `ATMUX_CURSOR_FORCE=0`.
+ *   - `--approve-mcps` — auto-approve MCP servers on spawn. Disable via
+ *     `ATMUX_CURSOR_APPROVE_MCPS=0`.
+ *
+ * Env-knob override surface:
+ *   - `ATMUX_CURSOR_BIN` (default `cursor-agent`)
+ *   - `ATMUX_CURSOR_DEFAULT_MODEL` (default `composer-2`)
+ *   - `ATMUX_CURSOR_FORCE` (default `1`)
+ *   - `ATMUX_CURSOR_APPROVE_MCPS` (default `1`)
+ *   - `ATMUX_CURSOR_ARGS_EXTRA` — trailing args appended verbatim
+ */
 function tuiCursor(name: string, cwd: string, model: string, env: NodeJS.ProcessEnv): string {
   const bin = env.ATMUX_CURSOR_BIN ?? "cursor-agent";
   const m =
     model === "default" || model.length === 0
       ? (env.ATMUX_CURSOR_DEFAULT_MODEL ?? "composer-2")
       : model;
-  return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${bin} --model ${posixQuote(m)}`;
+  const forceRaw = env.ATMUX_CURSOR_FORCE ?? "1";
+  const forceFlag =
+    forceRaw !== "0" && forceRaw !== "false" ? " --force" : "";
+  const mcpRaw = env.ATMUX_CURSOR_APPROVE_MCPS ?? "1";
+  const mcpFlag =
+    mcpRaw !== "0" && mcpRaw !== "false" ? " --approve-mcps" : "";
+  const extra = env.ATMUX_CURSOR_ARGS_EXTRA ?? "";
+  const extraSuffix = extra.length > 0 ? ` ${extra}` : "";
+  return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${bin}${forceFlag}${mcpFlag} --model ${posixQuote(m)}${extraSuffix}`;
 }
 
 function tuiShell(name: string, cwd: string): string {

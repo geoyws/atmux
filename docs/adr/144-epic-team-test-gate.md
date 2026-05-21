@@ -254,6 +254,29 @@ Driver finding 2026-05-19 06:30 MYT codifies a doctrine implicit in this ADR's �
 
 **Filed via** t-afcc71af (P1 doctrine clarification, 2026-05-19).
 
+## §Amendment 2026-05-21 — Jury gate appended between `tested` and `merge-ready` (per ADR-204)
+
+[ADR-204](204-jury-role-acceptance-criteria-contract.md) introduces a `_jury` cursor-based adversarial-LLM gate that judges shipped work against planner-written acceptance criteria. The jury gate slots between this ADR's `tested` state and the gitter merge step. Story state machine becomes:
+
+```
+planning → ready → in-progress → testing → tested
+                                         ↘ test-failed → in-progress
+tested → jury-pending → jury-approved → merge-ready (gitter)
+                     ↘ jury-rejected → in-progress
+```
+
+**Pre-work AC ratification** is a precondition on `planning → ready`: planner cannot move a Story to `ready` (unblocking member claim) until jury has ratified the AC list via `atmux jury ratify <story-id>`. If `stories.extra.acceptance_criteria[]` is present + every entry `status: proposed` + `stories.extra.jury_rounds.ratify === 0`, the move-to-ready verb auto-fires `atmux jury ratify` first. Empty / absent AC list also auto-fails ratify (jury refuses to ratify a Story with no criteria — equivalent to ADR-144's existing empty-acceptanceCriteria reviewer auto-reject pattern, just enforced at the AC-list-level instead of reviewer body).
+
+**Gitter refusal:** gitter refuses to merge unless story state is `jury-approved`. Same kill-switch shape as test-gate refusal in §Operator bypass — operator bypass via `--bypass-jury` driver-scope-only flag, mirrors `--bypass-test-gate`. Both bypasses log to decisions.md per the existing audit convention.
+
+**`testGateMode: "skip"` interaction:** when test-gate is skipped (the doctrine default per §Amendment 2026-05-19), the state machine transition from `in-progress` skips `testing → tested` and lands directly in `jury-pending`. Jury still fires. The test-trust principle stands — L1 tests authoritative — but jury is **non-skippable** by default because AC verification is a different concern from test verification (test passes ≠ AC met; that's the entire reason ADR-204 exists). Operator may set `team.json::epicTeam.juryGateMode: "skip"` symmetric to `testGateMode: "skip"` for explicit opt-out, but the **default is jury-on**.
+
+**3-strike ping-pong cap + lead escalation:** see ADR-204 §D5. State machine does not re-enter `jury-pending` from `jury-rejected` until the epic-team has produced a new commit on the branch (gates against thrashing without code change).
+
+**Reviewer surface (sibling to §Amendment 2026-05-19's reviewer flag):** if gitter merges a Story without `jury-approved` state (and no `--bypass-jury` audit row in decisions.md), file `atmux flag add --severity high --subject "[gitter] merged without jury verdict per ADR-144 §Amendment 2026-05-21 + ADR-204"`.
+
+**Filed via** ADR-204 same-commit-set (2026-05-21).
+
 ## Cross-refs
 
 - [ADR-090](090-epic-team-lifecycle.md) — epic-team lifecycle; provisions cage/deployment at spawn time.

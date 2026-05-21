@@ -5,7 +5,7 @@
 //
 // USAGE:
 //   atmux cleanup logs    [--max-size <bytes>] [--dry-run]
-//   atmux cleanup inboxes [--max-age-days <N>] [--dry-run]
+//   atmux cleanup inboxes [--max-age-days <N>] [--purge-legacy] [--dry-run]
 //   atmux cleanup all     [<flags>]
 //
 // `all` = `logs` followed by `inboxes` with the same arg vector. Flags
@@ -18,7 +18,9 @@
 import {
   type InboxPruneResult,
   type LogRotationResult,
+  type PurgeLegacyInboxesResult,
   pruneInboxes,
+  purgeLegacyInboxes,
   rotateLogs,
 } from "../core/cleanup.ts";
 import { getAtmuxDir } from "../core/common.ts";
@@ -35,6 +37,7 @@ export interface ParsedCleanupArgs {
   maxBytes?: number;
   maxAgeDays?: number;
   dryRun: boolean;
+  purgeLegacy: boolean;
 }
 
 const VALID_SUBS = new Set<string>(["logs", "inboxes", "all"]);
@@ -54,6 +57,7 @@ export function parseCleanupArgs(args: ReadonlyArray<string>): ParsedCleanupArgs
     });
   }
   let dryRun = false;
+  let purgeLegacy = false;
   let maxBytes: number | undefined;
   let maxAgeDays: number | undefined;
 
@@ -62,6 +66,11 @@ export function parseCleanupArgs(args: ReadonlyArray<string>): ParsedCleanupArgs
     const a = args[i] ?? "";
     if (a === "--dry-run") {
       dryRun = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--purge-legacy") {
+      purgeLegacy = true;
       i += 1;
       continue;
     }
@@ -109,7 +118,7 @@ export function parseCleanupArgs(args: ReadonlyArray<string>): ParsedCleanupArgs
     });
   }
 
-  const out: ParsedCleanupArgs = { sub: sub as CleanupSub, dryRun };
+  const out: ParsedCleanupArgs = { sub: sub as CleanupSub, dryRun, purgeLegacy };
   if (maxBytes !== undefined) out.maxBytes = maxBytes;
   if (maxAgeDays !== undefined) out.maxAgeDays = maxAgeDays;
   return out;
@@ -129,6 +138,7 @@ export interface CleanupOptions {
 export interface CleanupResult {
   logs?: LogRotationResult;
   inboxes?: InboxPruneResult;
+  legacyInboxes?: PurgeLegacyInboxesResult;
 }
 
 export async function cleanup(
@@ -170,36 +180,57 @@ export async function cleanup(
   }
 
   if (parsed.sub === "inboxes" || parsed.sub === "all") {
-    const opts2: { maxAgeDays?: number; dryRun?: boolean; nowMs?: number } = {
-      dryRun: parsed.dryRun,
-    };
-    if (parsed.maxAgeDays !== undefined) opts2.maxAgeDays = parsed.maxAgeDays;
-    if (opts.nowMs !== undefined) opts2.nowMs = opts.nowMs;
-    try {
-      out.inboxes = await pruneInboxes(atmuxDir, opts2);
-    } catch (e) {
-      if (e instanceof RangeError) {
-        throw new UsageError({
-          what: e.message,
-          hint: "see atmux help",
-        });
+    if (parsed.purgeLegacy) {
+      out.legacyInboxes = await purgeLegacyInboxes(atmuxDir, { dryRun: parsed.dryRun });
+      if (out.legacyInboxes.skipped) {
+        logger.log("cleanup inboxes --purge-legacy: skipped (no state.db — JSON may still be canonical)");
+      } else if (parsed.dryRun) {
+        for (const name of out.legacyInboxes.removed) {
+          logger.log(`  [dry-run] would remove inboxes/${name}`);
+        }
+        logger.ok(
+          `cleanup inboxes --purge-legacy (dry-run): would remove ${out.legacyInboxes.removed.length} legacy file(s)`,
+        );
+      } else {
+        for (const name of out.legacyInboxes.removed) {
+          logger.log(`cleanup inboxes --purge-legacy: removed ${name}`);
+        }
+        logger.ok(
+          `cleanup inboxes --purge-legacy: removed ${out.legacyInboxes.removed.length} legacy file(s)`,
+        );
       }
-      throw e;
-    }
-    if (parsed.dryRun) {
-      for (const f of out.inboxes.files) {
-        logger.log(`  [dry-run] ${f.name}: would prune ${f.pruned} done[], keep ${f.kept}`);
-      }
-      logger.ok(
-        `cleanup inboxes (dry-run): would prune ${out.inboxes.totalPruned} entries (>${out.inboxes.cutoffDays}d), ${out.inboxes.totalKept} recent kept`,
-      );
     } else {
-      for (const f of out.inboxes.files) {
-        logger.log(`cleanup inboxes: ${f.name} pruned=${f.pruned} kept=${f.kept}`);
+      const opts2: { maxAgeDays?: number; dryRun?: boolean; nowMs?: number } = {
+        dryRun: parsed.dryRun,
+      };
+      if (parsed.maxAgeDays !== undefined) opts2.maxAgeDays = parsed.maxAgeDays;
+      if (opts.nowMs !== undefined) opts2.nowMs = opts.nowMs;
+      try {
+        out.inboxes = await pruneInboxes(atmuxDir, opts2);
+      } catch (e) {
+        if (e instanceof RangeError) {
+          throw new UsageError({
+            what: e.message,
+            hint: "see atmux help",
+          });
+        }
+        throw e;
       }
-      logger.ok(
-        `cleanup inboxes: pruned ${out.inboxes.totalPruned} entries (>${out.inboxes.cutoffDays}d), ${out.inboxes.totalKept} kept`,
-      );
+      if (parsed.dryRun) {
+        for (const f of out.inboxes.files) {
+          logger.log(`  [dry-run] ${f.name}: would prune ${f.pruned} done[], keep ${f.kept}`);
+        }
+        logger.ok(
+          `cleanup inboxes (dry-run): would prune ${out.inboxes.totalPruned} entries (>${out.inboxes.cutoffDays}d), ${out.inboxes.totalKept} recent kept`,
+        );
+      } else {
+        for (const f of out.inboxes.files) {
+          logger.log(`cleanup inboxes: ${f.name} pruned=${f.pruned} kept=${f.kept}`);
+        }
+        logger.ok(
+          `cleanup inboxes: pruned ${out.inboxes.totalPruned} entries (>${out.inboxes.cutoffDays}d), ${out.inboxes.totalKept} kept`,
+        );
+      }
     }
   }
 
