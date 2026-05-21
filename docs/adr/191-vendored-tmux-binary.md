@@ -1,6 +1,6 @@
 # ADR-191: atmux ships its own vendored tmux binary — version-pinning + behavior isolation + reproducibility
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (vendored tmux at /opt/atmux/<v>/bin/tmux pinned to 3.6a; resolution chain ATMUX_TMUX_BIN → vendored → system fallback; §OQ recommendations as-written)
 **Date**: 2026-05-20
 **Driver-ref**: driver-2026-05-20-13:25-MYT (ASK 1 of operator's structural-foundations dispatch; sibling to ADR-190 ASK 2 atmux.conf OSS-ready)
 **Operator order**: lands AFTER Epic e-63c97ed8 (atmux.conf shipped patterns); ASK 1 is the "insulation layer" on top of the conf-patterns Epic.

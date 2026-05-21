@@ -21,8 +21,10 @@
 
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { statOrNull } from "../abstractions/fs.ts";
+import { getAtmuxDir, hasTeam } from "../core/common.ts";
 import { findCronOrphans, pruneCronOrphans } from "../core/cron.ts";
 import { UsageError } from "../errors.ts";
+import { isRenameInProgress } from "./team-rename-fs.ts";
 
 const USAGE = "atmux cron-orphans [--prune]";
 
@@ -33,6 +35,10 @@ export interface CronOrphansOpts {
   dirExists?: (path: string) => Promise<boolean>;
   /** Defaults to `process.stdout.write`. */
   stdout?: (s: string) => void;
+  /** Resolve the cwd's atmuxDir for the ADR-027 rename.lock guard.
+   *  Defaults to `tryLoadTeam`-style walk from process.cwd(). Tests
+   *  inject `null` to skip the guard or a fixture path. */
+  resolveAtmuxDir?: () => Promise<string | null>;
 }
 
 export interface ParsedCronOrphansArgs {
@@ -68,6 +74,21 @@ export async function cronOrphans(
   const stdout = opts.stdout ?? ((s: string) => void process.stdout.write(s));
   const crontab = opts.crontab ?? defaultCrontabIO();
   const dirExists = opts.dirExists ?? defaultDirExists;
+  const resolveAtmuxDir = opts.resolveAtmuxDir ?? defaultResolveAtmuxDir;
+
+  // ADR-027 §Consequences — rename.lock guard. Cron orphan detect
+  // races against the cron-marker swap step of team-rename (install-
+  // new-then-remove-old per ADR-027 §OQ H3); a tick in that window
+  // surfaces the new block as transiently-orphan or vice versa.
+  // Skip silently when the cwd-resolved team is mid-rename. No-op
+  // (continue) when cwd isn't inside any atmux team — the verb is
+  // also invocable cockpit-wide via doctor.checkCronOrphans which
+  // owns its own coordination.
+  const guardDir = await resolveAtmuxDir();
+  if (guardDir !== null && (await isRenameInProgress(guardDir))) {
+    stdout("[]\n");
+    return 0;
+  }
 
   if (!(await crontab.available())) {
     stdout("[]\n");
@@ -88,4 +109,19 @@ export async function cronOrphans(
 async function defaultDirExists(p: string): Promise<boolean> {
   const s = await statOrNull(p);
   return s !== null && s.isDirectory;
+}
+
+/** Best-effort cwd-walk to locate the enclosing team's atmuxDir for
+ *  the rename.lock guard. Returns null when cwd isn't inside any
+ *  atmux team (e.g. cockpit-wide invocation via doctor) — falling
+ *  through to the regular scan in that case is fine because cockpit-
+ *  level renames are bounded to a single team's atmuxDir and that
+ *  team's own consumers are already guarded individually. */
+async function defaultResolveAtmuxDir(): Promise<string | null> {
+  try {
+    if (!(await hasTeam())) return null;
+    return await getAtmuxDir();
+  } catch {
+    return null;
+  }
 }

@@ -9,7 +9,6 @@ import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { addTask, assignTask, loadKanban, moveTask } from "../../../src/core/kanban.ts";
 import { loadInbox } from "../../../src/core/inbox.ts";
-import { loadInbox } from "../../../src/core/inbox.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { TeamMember } from "../../../src/schema/team.ts";
 import { claim, done, parseClaimDoneArgs, pickMemberName } from "../../../src/verbs/claim.ts";

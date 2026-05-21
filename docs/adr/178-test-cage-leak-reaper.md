@@ -1,6 +1,6 @@
 # ADR-178: Test-cage leak reaper — spinTmux sidecar + `atmux test-reaper` verb
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (spinTmux sidecar `.leak-tracker.json` + `atmux test-reaper` verb for test-cage cleanup; §OQ recommendations as-written)
 **Date**: 2026-05-18
 **Driver-ref**: complaint c-27a1c8f4 (filed 2026-05-17 by medic; adjudicated by ombudsman 2026-05-17 to atmux team for in-process half; dotfiles half scoped out per `[[feedback_claude_skills_dotfiles_territory]]`).
 **Relates**: ADR-018 (per-team tmux socket isolation — same isolation pattern), ADR-058 (cage tiering — test cage is ephemeral Tier-1), ADR-162 (atmux owns its tmux infrastructure — cockpit-socket isolation; same defensive-cleanup discipline applied to tests).

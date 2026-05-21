@@ -250,7 +250,7 @@ Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47
 
 **Sentinel sibling (boundary):** pane-liveness, mechanical nudges, member-state observation, routine + emergency rotation per [ADR-132](./132-pluggable-martinet.md) §Amendment 2026-05-19. Sentinel observe-pass invokes doctor probes for code-class findings (read-only) and escalates code-fix work back to medic via the escalate-to-claude-lead path; medic invokes doctor for liveness-class findings via the shared probe library.
 
-**Doctor stays shared infra** per [ADR-027](./027-doctor-self-diagnostics.md) — owns no loop of its own; probe classes (code-health, deploy-completeness per [ADR-183](./183-deploy-completeness-probe-class.md), wedge-classes per EPIC e-35dd6274, lifecycle-symmetry per audit finding #1) are invoked by callers.
+**Doctor stays shared infra** per [ADR-027](./027-doctor-self-diagnostics.md) — owns no loop of its own; probe classes (code-health, deploy-completeness per [ADR-208](./208-deploy-completeness-probe-class.md), wedge-classes per EPIC e-35dd6274, lifecycle-symmetry per audit finding #1) are invoked by callers.
 
 **Why the seam mattered today.** Gitter pane appeared alive (process running, no segfault), but claude TUI was wedged (no `✻` activity, no commit since N hours, no response to operator). That is sentinel scope. Medic wouldn't probe it because nothing was broken in the code/test/build sense; the member was just *quiet*. Same root cause as the lifecycle-symmetry gap (audit finding #1).
 

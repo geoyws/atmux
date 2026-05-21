@@ -1,6 +1,6 @@
 # ADR-150: Cross-team complaint storage semantics — target-team-authoritative writes
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (`--target-team` becomes authoritative for storage residency; target's state.db gets the complaint row; cockpit-walk lookup per `lookupTeamAtmuxDir`; §OQ recommendations as-written)
 **Date**: 2026-05-16
 **Author**: atmux team (docs / t-3b65330b)
 **Parent EPIC**: t-1ea440e8

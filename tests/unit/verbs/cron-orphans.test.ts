@@ -280,3 +280,103 @@ describe("cronOrphans --prune — recovery flow", () => {
     expect(io.writes).toEqual([]);
   });
 });
+
+// ---------- ADR-027 rename.lock guard ----------
+
+describe("cronOrphans — ADR-027 rename.lock guard", () => {
+  test("resolveAtmuxDir → present rename.lock → emit [] + exit 0, no crontab read", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = await mkdtemp(join(tmpdir(), "atmux-cron-orphans-rename-"));
+    try {
+      const atmuxDir = join(root, ".atmux");
+      await mkdir(join(atmuxDir, "state"), { recursive: true });
+      await writeFile(join(atmuxDir, "state", "rename.lock"), "{}");
+
+      let crontabReadAttempts = 0;
+      const io: CrontabIO = {
+        available: async () => {
+          crontabReadAttempts += 1;
+          return true;
+        },
+        read: async () => {
+          crontabReadAttempts += 1;
+          return "";
+        },
+        write: async () => {},
+      };
+
+      const stdoutBuf: string[] = [];
+      const code = await cronOrphans([], {
+        crontab: io,
+        dirExists: async () => true,
+        stdout: (s) => stdoutBuf.push(s),
+        resolveAtmuxDir: async () => atmuxDir,
+      });
+      expect(code).toBe(0);
+      expect(stdoutBuf.join("")).toBe("[]\n");
+      expect(crontabReadAttempts).toBe(0); // guard short-circuited before crontab IO
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveAtmuxDir returns null → guard skipped, regular scan proceeds", async () => {
+    // Cockpit-wide invocation (no team cwd) — guard fails open so the
+    // regular scan still runs and the .available() check is reached.
+    let availableCalls = 0;
+    const io: CrontabIO = {
+      available: async () => {
+        availableCalls += 1;
+        return false; // forces early exit at the available() gate
+      },
+      read: async () => "",
+      write: async () => {},
+    };
+
+    const stdoutBuf: string[] = [];
+    const code = await cronOrphans([], {
+      crontab: io,
+      stdout: (s) => stdoutBuf.push(s),
+      resolveAtmuxDir: async () => null,
+    });
+    expect(code).toBe(0);
+    expect(stdoutBuf.join("")).toBe("[]\n");
+    expect(availableCalls).toBe(1); // guard didn't short-circuit
+  });
+
+  test("resolveAtmuxDir returns path WITHOUT rename.lock → regular scan proceeds", async () => {
+    const { mkdtemp, mkdir, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = await mkdtemp(join(tmpdir(), "atmux-cron-orphans-norename-"));
+    try {
+      const atmuxDir = join(root, ".atmux");
+      await mkdir(join(atmuxDir, "state"), { recursive: true });
+      // No rename.lock written.
+
+      let availableCalls = 0;
+      const io: CrontabIO = {
+        available: async () => {
+          availableCalls += 1;
+          return false;
+        },
+        read: async () => "",
+        write: async () => {},
+      };
+
+      const stdoutBuf: string[] = [];
+      const code = await cronOrphans([], {
+        crontab: io,
+        stdout: (s) => stdoutBuf.push(s),
+        resolveAtmuxDir: async () => atmuxDir,
+      });
+      expect(code).toBe(0);
+      expect(stdoutBuf.join("")).toBe("[]\n");
+      expect(availableCalls).toBe(1); // guard didn't fire (no lock)
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

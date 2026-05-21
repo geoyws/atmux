@@ -1,6 +1,6 @@
 # ADR-166: `team.json.autonomy` shared policy block — aggression dials read by all action-class actors
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (`team.json::autonomy` shared policy block — aggression dials consumed by martinet/bruh/gitter/reviewer; rejects whip→bruh rename in favor of shared policy; §OQ recommendations as-written)
 **Date**: 2026-05-16
 **Author**: `whip-impl` (per `t-446cc619`, parent EPIC `t-99b85ee9` — *team.json.autonomy shared policy block — rejects whip→bruh rename*)
 **Driver-ref**: 2026-05-15 19:02 MYT — operator proposed *"rename whip to bruh and merge functionalities, let team.json handle how bruh should be used (sometimes we don't want auto flip, auto accept adrs, etc)"*. Driver pushback led to the shared-policy-block reframe captured in this ADR.

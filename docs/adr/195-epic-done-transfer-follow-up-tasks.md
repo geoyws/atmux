@@ -1,6 +1,6 @@
 # ADR-195: epic-team EPIC-done — transfer follow-up Tasks to parent kanban before dissolve
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (EPIC-done transfers follow-ups to parent kanban via carry-forward beat; §OQ recommendations as-written: automatic self-containment heuristic with operator-confirm escape, regenerate IDs, topological transfer + dep[] re-map folded into D2, Option A strip local Epic ref)
 **Date**: 2026-05-20
 **Related**: [ADR-091](./091-kanban-driven-auto-merge.md) §EPIC-done definition (the section this ADR amends), [ADR-090](./090-epic-team-lifecycle.md) §`dissolve-epic` (the dissolve mechanism that destroys the kanban), [ADR-134](./134-in-team-auto-merger.md) (intra-team merger sibling — same scope-mirror question one level down).
 

@@ -1,6 +1,6 @@
 # ADR-196: `worktreeIsolation: true` as default for `spawn-epic` — structural fix for shared-index race class
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (worktreeIsolation=true default for spawn-epic + opt-out flag/parent-inheritance; §OQ recommendations as-written: universal flip, no auto-migration of in-flight epics, ADR-082/084 branch naming, YES new epic-team-shared-mode doctor probe P2, dispatch-summary role-drift = separate scope)
 **Date**: 2026-05-20
 **Related**: [ADR-082](./082-worktree-per-member.md) (per-member worktree primitive), [ADR-084](./084-worktree-per-member-branch.md) (per-member-branch convention), [ADR-090](./090-epic-team-lifecycle.md) (spawn-epic / dissolve-epic — the verbs this ADR amends defaults on), [ADR-091](./091-kanban-driven-auto-merge.md) (fan-in mode the per-member-branch pattern feeds), [ADR-134](./134-in-team-auto-merger.md) (intra-team auto-merger consuming per-member commits), [ADR-194](./194-auto-push-just-done-sha.md) (sibling auto-push race mitigation — `shared` mode), [`feedback_shared_index_commit_race_hazard`](memory).
 
@@ -92,7 +92,7 @@ Single-line revert in `src/verbs/team.spawn-epic.ts` (flip default back to `fals
 
 3. **Per-member branch naming?** **Default**: existing ADR-082 / ADR-084 convention — `<base>-<member>` (e.g. `geoyws-epic-e-1e223687-be-1`). *Rationale*: no schema change; merger already routes on this pattern. Low-rev.
 
-4. **Should `atmux doctor` add a probe for shared-mode epic-teams?** **Default**: YES (medium-rev). Probe class `epic-team-shared-mode` at P2 — surfaces every running epic-team with `worktreeIsolation: false` so operators can audit. Probe does not auto-fix (would require cage dissolve). Folds into `docs/RUNBOOK-doctor-probes.md` per [ADR-183](./183-deploy-completeness-probe-class.md). Medium-rev.
+4. **Should `atmux doctor` add a probe for shared-mode epic-teams?** **Default**: YES (medium-rev). Probe class `epic-team-shared-mode` at P2 — surfaces every running epic-team with `worktreeIsolation: false` so operators can audit. Probe does not auto-fix (would require cage dissolve). Folds into `docs/RUNBOOK-doctor-probes.md` per [ADR-208](./208-deploy-completeness-probe-class.md). Medium-rev.
 
 5. **Should the dispatch-summary verb (cage 22:36 MYT outbox — "verb dispatch-summary expects 'team-lead' role but team.json has 'lead'") be audited as part of this ADR's rollout?** **Default**: NO — separate scope. Surfaces as standalone Task `[atmux-bug] dispatch-summary role-name canonical drift (team-lead vs lead)` for the parent kanban. ADR-196 stays focused on the worktree-mode flip. Low-rev.
 

@@ -1,6 +1,6 @@
 # ADR-190: tmux statusline scaling at multi-team-of-teams cages — zero-fork cage + TTL-cached operator-curated
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (cage statusline zero-fork builtin-only; operator-curated daily-driver/cockpit MAY use #() but MUST TTL-cache; §OQ recommendations as-written)
 **Date**: 2026-05-20
 **Driver-ref**: driver-2026-05-20-13:24-MYT (operator dispatch from /bruh-discovered tmux statusline performance findings)
 **ADR number**: 190 selected per 2026-05-20 collision tracking — 183/184/185/186/187/188/189 all claimed (189 reserved for Epic e-be01fc89 T5 lean-mode-side-project-topology ADR; not yet drafted at time of this filing).

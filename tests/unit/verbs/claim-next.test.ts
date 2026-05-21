@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { addTask, loadKanban, moveTask, selectNextClaimable } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
-import { claim, loadInbox, parseClaimDoneArgs } from "../../../src/verbs/claim.ts";
+import { loadInbox } from "../../../src/core/inbox.ts";
+import { claim, parseClaimDoneArgs } from "../../../src/verbs/claim.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -301,7 +302,7 @@ describe("claim --next verb — integration", () => {
     expect(claimed?.owner).toBe("fe-worker");
     expect(claimed?.status).toBe("in-progress");
     const inbox = await loadInbox(atmuxDir, "fe-worker");
-    expect(inbox.inProgress.map((t) => t.id)).toContain(id);
+    expect(inbox.inProgress.map((t: { id: string }) => t.id)).toContain(id);
   });
 
   test("AC2: deps-blocked task is skipped, eligible sibling is picked", async () => {

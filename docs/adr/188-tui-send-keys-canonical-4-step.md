@@ -1,6 +1,6 @@
 # ADR-188: TUI send-keys canonical 4-step pattern (scroll → Enter×3 → paste → Enter×3)
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (4-step canonical: scroll → Enter×3 → paste → Enter×3; §OQ recommendations as-written. Note: ADR-205 refines Step 3 to bracketed-paste-by-default — non-conflicting per ADR-205 §OQ5)
 **Date**: 2026-05-20
 
 ## Context

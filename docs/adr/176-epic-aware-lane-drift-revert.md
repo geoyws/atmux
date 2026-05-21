@@ -2,7 +2,7 @@
 
 > **Renumbering note**: originally drafted as ADR-171 on the planner branch (63d0b55); renumbered to 176 on merge to trunk because 086c142 had already shipped a different ADR-171 (`tmux-conf-local-override`, carve-out from ADR-163). Append-only/monotonic invariant preserved per ADR-091.
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (4th criterion (d) `epic-children-progressing` is additive — only skips reverts; never causes them; §OQ recommendations as-written)
 **Date**: 2026-05-17
 **Supersedes (in part)**: ADR-127 §OQ5 — the 3-criterion auto-revert algorithm gains a 4th criterion (`epic-children-progressing`). Original 3 criteria remain; this ADR tightens the algorithm, never relaxes it.
 

@@ -895,7 +895,7 @@ export const TeamEpic = z
     parentEpicKanbanId: z.string().min(1),
     /** Parent branch the epic-team will merge into. Used by ADR-091's
      *  auto-merge state machine + `dissolve-epic` cleanup. Example: `"main"`,
-     *  `"geoyws"`, `"sopx-geoyws"`. */
+     *  `"atmux-geoyws"`, `"sopx-geoyws"`. */
     parentBase: z.string().min(1),
     /** Merge mode for ADR-091 auto-merge state machine. `"auto"` runs the
      *  direct merge (default). `"pr"` is schema-accept-but-runtime-noop

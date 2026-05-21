@@ -232,7 +232,7 @@ The init wizard does not prompt for this field — opt-in is a manual `team.json
 
 ### Renaming a team
 
-`atmux team rename` renames a team **atomically across every surface** the team-name appears in: `team.json:.name`, tmux session + window names, cron markers, the fleet registry, and the single-session capture file. ~150 LOC of orchestration plus a rollback engine — the verb refuses unsafe states up front rather than half-committing on failure ([ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md)).
+`atmux team rename` renames a team **atomically across every surface** the team-name appears in: `team.json:.name`, tmux session, the cockpit team-viewer window (per [ADR-135](docs/adr/135-cockpit-naming-convention.md) — only the team-viewer window carries the team-name; per-member windows are NOT touched), cron markers, the cockpit registry (`cockpit.json::sessions[]` DFS — see ADR-089 §B), and the single-session capture file. Rollback-staged orchestration plus refuse-gate preflight (in-progress kanban, name collision, invalid charset) — the verb refuses unsafe states up front rather than half-committing on failure ([ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md)).
 
 ```bash
 atmux team rename <old> <new> [--session <new-session>] [--migrate-session] [--force]
@@ -248,10 +248,10 @@ atmux team rename <old> <new> [--session <new-session>] [--migrate-session] [--f
 
 1. Set the `rename.lock` state file. Cron'd consumers (whip, super-status, decisions digest, cron orphan-detect) check this at entry and return 0 silently — no concurrent state mutation while the rename runs.
 2. `jq`-edit `team.json:.name` → `<new>`. Backup at `team.json.bak.<epoch>`.
-3. `tmux rename-window` per `__<old>__*` window → `__<new>__*`. If `--session <new-session>` differs from the current session name, also `tmux rename-session` (or `--migrate-session` invokes the ADR-016 Phase 2 migrate path for legacy dedicated→driver-session moves).
+3. `tmux rename-window` for the cockpit team-viewer window matching the bare `<old>` name → `<new>` (per [ADR-135](docs/adr/135-cockpit-naming-convention.md) §window-naming: cockpit team-viewer carries the team name; per-member `<emoji>-<member>` + cockpit-role `_<role>` + epic-viewer `🌳-<eid>` windows do NOT carry team-name and are NOT touched). If `--session <new-session>` differs from the current session name, `tmux rename-session` runs too.
 4. Rewrite `state/session.txt` for single-session teams.
 5. **Cron re-install with NEW marker first, then remove the OLD marker.** Install-new-then-remove-old is the explicit ordering — avoids any window where the team has zero cron coverage (per ADR-027 OQ H3). Brief overlap of two markers is harmless; whip is flock-guarded so duplicate fires no-op.
-6. Registry update: `atmux::registry_deregister <old>` + `atmux::registry_upsert <new> <projectRoot> <new-session>`. `createdAt` is preserved on the new entry — rename, not re-init.
+6. Cockpit registry update: DFS-walk `cockpit.json::sessions[]` (per [ADR-089](docs/adr/089-recursive-cockpit-sessions.md) §B) for the `type: "team"` node matching `<old>`; mutate `.name = <new>` in place. Legacy flat `teams[]` rosters auto-lift to the canonical `sessions[]` shape on first rename via `migrateLegacyShape`. Child epic-team nodes' `.name` fields are NOT touched — only the renamed team's own `.name` is mutated.
 7. Clear `rename.lock`.
 8. Return success.
 
@@ -886,6 +886,9 @@ atmux pairs with a sibling **Claude Code skills plugin** that lives outside this
 | `ATMUX_KIMI_DEFAULT_MODEL`           | `kimi-latest`                                | Default `--model` for Kimi                          |
 | `ATMUX_CURSOR_DEFAULT_MODEL`         | `composer-2`                                 | Default `--model` for Cursor                        |
 | `ATMUX_CURSOR_BIN`                   | `cursor-agent`                               | Cursor CLI binary                                   |
+| `ATMUX_CURSOR_FORCE`                 | `1`                                          | Append `--force` (Auto-run); set `0` to disable     |
+| `ATMUX_CURSOR_APPROVE_MCPS`          | `1`                                          | Append `--approve-mcps`; set `0` to disable           |
+| `ATMUX_CURSOR_ARGS_EXTRA`            | _(empty)_                                    | Extra args appended after `--model`                   |
 | `ATMUX_KIMI_BIN`                     | `kimi`                                       | Kimi CLI binary                                     |
 
 ## Dependencies

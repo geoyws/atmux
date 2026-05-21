@@ -567,3 +567,74 @@ describe("buildStubObservation", () => {
     expect(typeof obs.lastTickAt).toBe("number");
   });
 });
+
+// ---------- ADR-027 rename.lock guard ----------
+
+describe("sentinelTick — ADR-027 rename.lock guard", () => {
+  let tmpDir: string;
+  let cockpitPath: string;
+  let statePath: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "atmux-sentinel-rename-"));
+    cockpitPath = join(tmpDir, "cockpit.json");
+    statePath = join(tmpDir, "state.json");
+  });
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test("team with rename.lock present is skipped — no observe/decide/apply, .error notes the skip", async () => {
+    const teamRoot = join(tmpDir, "team-a");
+    await mkdir(join(teamRoot, ".atmux", "state"), { recursive: true });
+    await writeFile(
+      join(teamRoot, ".atmux", "state", "rename.lock"),
+      '{"old":"team-a","new":"team-renamed","epoch":1}',
+    );
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_teams",
+        sessions: [{ type: "team", name: "team-a", root: teamRoot, enabled: true }],
+      }),
+    );
+    const rc = await sentinelTick(
+      { subverb: "tick", configPath: cockpitPath, statePath },
+      { env: { HOME: tmpDir }, logger: createLogger() },
+    );
+    expect(rc).toBe(0);
+    const state = JSON.parse(await readFile(statePath, "utf-8"));
+    expect(Object.keys(state.teams)).toEqual(["team-a"]);
+    expect(state.teams["team-a"].actions).toEqual([]); // no observe/decide ran
+    expect(state.teams["team-a"].escalated).toBe(false);
+    expect(state.teams["team-a"].error).toContain("rename.lock present");
+  });
+
+  test("mixed fleet: locked team skipped, unlocked team ticks normally", async () => {
+    const lockedRoot = join(tmpDir, "locked");
+    const openRoot = join(tmpDir, "open");
+    await mkdir(join(lockedRoot, ".atmux", "state"), { recursive: true });
+    await writeFile(join(lockedRoot, ".atmux", "state", "rename.lock"), "{}");
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atmux_teams",
+        sessions: [
+          { type: "team", name: "locked", root: lockedRoot, enabled: true },
+          { type: "team", name: "open", root: openRoot, enabled: true },
+        ],
+      }),
+    );
+    await sentinelTick(
+      { subverb: "tick", configPath: cockpitPath, statePath },
+      { env: { HOME: tmpDir }, logger: createLogger() },
+    );
+    const state = JSON.parse(await readFile(statePath, "utf-8"));
+    expect(state.teams.locked.actions).toEqual([]);
+    expect(state.teams.locked.error).toContain("rename.lock present");
+    expect(state.teams.open.actions).toEqual(["escalate-to-claude-lead"]);
+    expect(state.teams.open.error).toBeUndefined();
+  });
+});

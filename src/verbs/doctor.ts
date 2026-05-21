@@ -28,6 +28,13 @@
 import { readlink as fsReadlink } from "node:fs/promises";
 import { join } from "node:path";
 import { removeLegacyInboxFiles } from "../core/cleanup.ts";
+import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
+import { announceHonkerState } from "../abstractions/events.ts";
+import {
+  bootHonker,
+  type HonkerHooks,
+  type HonkerRuntimeState,
+} from "../abstractions/honker.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
@@ -624,6 +631,78 @@ export async function checkLegacyInboxJson(atmuxDir: string): Promise<DoctorRow[
       hint: "atmux cleanup inboxes  (canonical inbox is state.db tasks + `atmux inbox <member>`)",
     },
   ];
+}
+
+// ---------- Honker substrate probe (ADR-202 §D11) ----------
+
+/** Pure: map a HonkerRuntimeState into a doctor row. Exported for unit
+ *  tests; the verb-side wrapper `checkHonker(atmuxDir)` boots + delegates. */
+export function honkerStateRows(state: HonkerRuntimeState | null): DoctorRow[] {
+  if (state === null) {
+    return [
+      {
+        status: "info",
+        label: "honker",
+        detail: "boot not invoked (no state.db opened on this run)",
+      },
+    ];
+  }
+  if (state.loaded) {
+    return [
+      {
+        status: "green",
+        label: "honker",
+        detail: `substrate loaded — extension at ${state.extensionPath ?? "<unknown>"}`,
+      },
+    ];
+  }
+  // loaded === false branches: kill-switch off vs explicit fallback
+  if (state.fallbackReason === null) {
+    return [
+      {
+        status: "info",
+        label: "honker",
+        detail: "kill-switch off (ATMUX_HONKER unset or off); poll-mode in effect",
+      },
+    ];
+  }
+  return [
+    {
+      status: "yellow",
+      label: "honker",
+      detail: `fallback mode — ${state.fallbackReason}`,
+      hint:
+        "extension binary not yet provisioned (install wizard ADR-200 §D6 ships this); " +
+        "consumers fall through to poll-mode + cron-backstop sweep",
+    },
+  ];
+}
+
+/** Boot the Honker substrate against the team's state.db, announce
+ *  via the events bus, and surface the runtime state as a doctor row.
+ *  Tolerant of missing state.db (returns info row) — first-run hosts
+ *  don't fail this probe. */
+export async function checkHonker(
+  atmuxDir: string,
+  hooks: HonkerHooks = {},
+): Promise<DoctorRow[]> {
+  const stateDb = join(atmuxDir, "state.db");
+  if (!(await exists(stateDb))) {
+    return [
+      {
+        status: "info",
+        label: "honker",
+        detail: "state.db absent (first-run or atmux init not invoked)",
+      },
+    ];
+  }
+  const db = openDatabase(stateDb, migrations);
+  try {
+    const state = bootHonker(db, hooks, announceHonkerState());
+    return honkerStateRows(state);
+  } finally {
+    closeDatabase(db);
+  }
 }
 
 export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]> {
@@ -2910,6 +2989,12 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
   rows.push(...(await checkLegacyInboxJson(atmuxDir)));
+  // ADR-202 §D11: Honker substrate runtime probe. Surfaces extension-
+  // load state + fallback reason so operators can see whether the
+  // event-driven path is live or whether consumers are in cron-backstop
+  // poll mode. Info-level when state.db absent or kill-switch off;
+  // yellow on fallback (load failure / smoke fail); green on loaded.
+  rows.push(...(await checkHonker(atmuxDir)));
   // t-af159454: phantom in-progress claims (kanban rows with dead
   // owner panes). Distinct vulnerability class from phantom-inbox
   // above (that one scans member inProgress via loadInbox; this scans

@@ -1,6 +1,6 @@
 # ADR-149: Eternal-improvement gating — config disable toggle + backlog non-emptiness gate
 
-**Status**: Proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (per-team enable/disable via `team.json::eternalImprovement.enabled` default true; backlog non-emptiness gate; tickCycle short-circuit + no Discord ping + no EPIC spawn + doctor probe row; §OQ recommendations as-written)
 **Date**: 2026-05-15
 **Author**: atmux team (whip-impl / t-496348ea)
 **Parent EPIC**: t-7c1c50f8
