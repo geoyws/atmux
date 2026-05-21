@@ -252,6 +252,8 @@ Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47
 
 **Doctor stays shared infra** per [ADR-027](./027-doctor-self-diagnostics.md) — owns no loop of its own; probe classes (code-health, deploy-completeness per [ADR-208](./208-deploy-completeness-probe-class.md), wedge-classes per EPIC e-35dd6274, lifecycle-symmetry per audit finding #1) are invoked by callers.
 
+> **§Amendment 2026-05-21 — partial supersession by [ADR-212](./212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md):** The **cockpit-tier Medic scheduled-tick role** (the W2 pane running hourly diagnosis-and-prevention) retires per ADR-212 §D1. The **probe substrate library** described above (`src/core/doctor-class.ts`, doctor probe registry, probe-class taxonomy) **PERSISTS** — it's reusable infrastructure for the Honker consumer EPICs that absorb medic's functions. Only the W2 role retires; the doctor library that this ADR established stays in tree.
+
 **Why the seam mattered today.** Gitter pane appeared alive (process running, no segfault), but claude TUI was wedged (no `✻` activity, no commit since N hours, no response to operator). That is sentinel scope. Medic wouldn't probe it because nothing was broken in the code/test/build sense; the member was just *quiet*. Same root cause as the lifecycle-symmetry gap (audit finding #1).
 
 Cross-refs: ADR-132 §Amendment 2026-05-19 (sentinel boundary side), ADR-027 (doctor framework), ADR-140 (cheap-model-first — sentinel = mechanical, medic = judgment-bearing), EPIC e-35dd6274 (wedge-clearing mechanism — scope clarity is precondition for probe-class routing per ADR-186), t-186d5910 (sentinel deploy — landing the deploy makes the boundary observable).
