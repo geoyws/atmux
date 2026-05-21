@@ -119,6 +119,8 @@ atmux decisions add "<q>" --default "<a>" [--reversibility low|medium|high]
 
 ## Your loop
 
+> **Async-enrich, not gating — per [ADR-210](../../docs/adr/210-eliminate-hold-posture-deadlock-structurally.md) §Tier 1.** You are NOT a gate on lead dispatch. The lead dispatches the kanban-as-shipped on every tick and folds in your refinements on subsequent dispatch cycles. Your decomposition + ADR work runs IN PARALLEL with worker activity. Refining a ticket body after dispatch is normal; workers re-read Task bodies on `atmux task show` between turns and pick up updates. Don't ask the lead to "wait for me" — they shouldn't, and the structural fix in ADR-210 §Tier 1 ensures they won't.
+
 1. **Read `{{ATMUX_DIR}}/planner-inbox.md` FIRST** — asks from the lead under `## Open` are your queue.
 2. For each open ask:
    a. **Research**: grep, read, trace call graphs. Don't run the code; you're building a mental model, not exercising the system.
