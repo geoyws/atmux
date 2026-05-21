@@ -886,6 +886,9 @@ atmux pairs with a sibling **Claude Code skills plugin** that lives outside this
 | `ATMUX_KIMI_DEFAULT_MODEL`           | `kimi-latest`                                | Default `--model` for Kimi                          |
 | `ATMUX_CURSOR_DEFAULT_MODEL`         | `composer-2`                                 | Default `--model` for Cursor                        |
 | `ATMUX_CURSOR_BIN`                   | `cursor-agent`                               | Cursor CLI binary                                   |
+| `ATMUX_CURSOR_FORCE`                 | `1`                                          | Append `--force` (Auto-run); set `0` to disable     |
+| `ATMUX_CURSOR_APPROVE_MCPS`          | `1`                                          | Append `--approve-mcps`; set `0` to disable           |
+| `ATMUX_CURSOR_ARGS_EXTRA`            | _(empty)_                                    | Extra args appended after `--model`                   |
 | `ATMUX_KIMI_BIN`                     | `kimi`                                       | Kimi CLI binary                                     |
 
 ## Dependencies

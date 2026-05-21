@@ -44,15 +44,17 @@ teardown() {
   [[ "$output" =~ "kimi-latest" ]]
 }
 
-@test "tui: cursor default uses composer-2" {
+@test "tui: cursor default uses composer-2 with --force" {
   run atmux::tui_cmd cursor default /tmp/p w member
-  [[ "$output" =~ "cursor-agent --model" ]]
+  [[ "$output" =~ "cursor-agent --force" ]]
+  [[ "$output" =~ "--approve-mcps" ]]
   [[ "$output" =~ "composer-2" ]]
 }
 
 @test "tui: cursor respects ATMUX_CURSOR_BIN override" {
   ATMUX_CURSOR_BIN="my-cursor" run atmux::tui_cmd cursor default /tmp/p w member
-  [[ "$output" =~ "my-cursor --model" ]]
+  [[ "$output" =~ "my-cursor --force" ]]
+  [[ "$output" =~ "--approve-mcps" ]]
 }
 
 @test "tui: shell falls through to \$SHELL" {

@@ -253,10 +253,28 @@ describe("resolveTuiCommand priority chain", () => {
     );
   });
 
-  test("cursor built-in defaults to composer-2", () => {
+  test("cursor built-in defaults to composer-2 with --force and --approve-mcps", () => {
     const m = mkMember({ name: "x", tui: "cursor", cwd: "/p", model: "default" });
     expect(resolveTuiCommand(m, baseTeam, { env: {} })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && cursor-agent --model composer-2",
+      "export ATMUX_MEMBER=x && cd /p && cursor-agent --force --approve-mcps --model composer-2",
+    );
+  });
+
+  test("cursor built-in honors force/mcp disable env overrides", () => {
+    const m = mkMember({ name: "x", tui: "cursor", cwd: "/p", model: "default" });
+    expect(
+      resolveTuiCommand(m, baseTeam, {
+        env: { ATMUX_CURSOR_FORCE: "0", ATMUX_CURSOR_APPROVE_MCPS: "0" },
+      }),
+    ).toBe("export ATMUX_MEMBER=x && cd /p && cursor-agent --model composer-2");
+  });
+
+  test("cursor built-in honors ATMUX_CURSOR_ARGS_EXTRA", () => {
+    const m = mkMember({ name: "x", tui: "cursor", cwd: "/p", model: "default" });
+    expect(
+      resolveTuiCommand(m, baseTeam, { env: { ATMUX_CURSOR_ARGS_EXTRA: "--sandbox disabled" } }),
+    ).toBe(
+      "export ATMUX_MEMBER=x && cd /p && cursor-agent --force --approve-mcps --model composer-2 --sandbox disabled",
     );
   });
 
