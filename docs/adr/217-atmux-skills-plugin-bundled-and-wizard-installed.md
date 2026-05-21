@@ -90,8 +90,19 @@ Each carved SKILL.md needs a pass to strip operator-specific surface:
 | Personal Claude accounts | `c-u`, `c-ic`, `c-i` | `claudeAccount` is documented per-team; user configures |
 | Operator name | `geoyws`, `George` | drop or generalize to `<operator>` |
 | Personal whip cadences | hardcoded 270s / 3600s pinned by operator | document the default + how to tune |
+| ADR-superseded vocab | `atmux_teams` (pre-[ADR-135](135-cockpit-naming-convention.md) cockpit session name); `superdoctor` (pre-§D2.1 sweep rename); `martinet` (pre-[ADR-158](158-martinet-to-sentinel-rename.md) sentinel rename); any other ADR-flagged retired vocab discovered during the pass | `atmux_cockpit` / `sweep` / `sentinel` / current-canonical per the cited ADR |
 
-Substrate-level coupling (atmux verbs, ADR refs, cage/cockpit semantics) STAYS — those are the public atmux surface. The generalization is removing operator-specific path/host/domain particulars, not atmux particulars.
+Substrate-level coupling (atmux verbs, ADR refs, cage/cockpit semantics) STAYS — those are the public atmux surface. The generalization is removing operator-specific path/host/domain particulars + retired-vocab residue, not atmux particulars.
+
+#### §D4.1 — Per-skill known-leak pre-inventory
+
+Pre-pass audit notes captured from lead's 2026-05-21 sweep (supplement as additional leaks are discovered during the Story 2 passes). Each carve agent reads the row for their target skill BEFORE the pass so the per-pass grep finds the named patterns:
+
+| Skill | Known leaks (pre-pass) |
+|---|---|
+| `cockpit-rebuild` | operator dotfiles path (`~/work/journals/.sb/...`); `~/bin` symlink reference; `geoy.ws` host-check guard; stale `atmux_teams` session name (pre-ADR-135). Lead-confirmed 2026-05-21. |
+
+(Other skills add rows as their carve passes complete and surface leaks the strip-list categories didn't pre-anticipate.)
 
 ### §D5 — Wizard integration (ADR-200 extension)
 
