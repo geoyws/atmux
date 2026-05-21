@@ -30,14 +30,15 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v9)", () => {
+  test("opening with the full ladder advances user_version to the tail (v11)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
-    // the new table or column. v8→v9 added the merger_state.test_outcome
-    // column per ADR-144 T2 (t-49bd4fe1); shape assertions live in
-    // tests/unit/core/repositories/merger-state-repo.test.ts §"migration
-    // v6 — merger_state table".
-    expect(readUserVersion(db)).toBe(9);
+    // the new table or column.
+    //   - v8→v9  added merger_state.test_outcome (ADR-144 T2, t-49bd4fe1)
+    //   - v9→v10 added stories.merge_mode (ADR-175 GAP 2, t-aacb8664)
+    //   - v10→v11 added events + subscriber_offsets tables (ADR-202
+    //             §D1 Honker substrate + ADR-203 §D7 idempotency)
+    expect(readUserVersion(db)).toBe(11);
   });
 });
 
@@ -186,5 +187,135 @@ describe("v7 → v8: refusal_events", () => {
     const names = new Set(indexes.map((i) => i.name));
     expect(names.has("idx_refusal_events_member_detected")).toBe(true);
     expect(names.has("idx_refusal_events_severity")).toBe(true);
+  });
+});
+
+describe("v10 → v11: events + subscriber_offsets (Honker substrate)", () => {
+  test("events table exists with the expected column set + types", () => {
+    const cols = db.prepare("PRAGMA table_info(events)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+
+    const expected: ReadonlyArray<readonly [string, string]> = [
+      ["event_id", "TEXT"],
+      ["topic", "TEXT"],
+      ["payload", "TEXT"],
+      ["emitted_at_sec", "INTEGER"],
+      ["schema_version", "INTEGER"],
+    ];
+    for (const [name, type] of expected) {
+      const c = byName.get(name);
+      expect(c).toBeDefined();
+      expect(c?.type).toBe(type);
+    }
+    expect(cols).toHaveLength(expected.length);
+
+    // `event_id` is PK; topic/payload/emitted_at_sec NOT NULL per ADR-203 §D3
+    // (the discriminator + payload + windowing-clock are all required).
+    expect(byName.get("event_id")?.pk).toBe(1);
+    expect(byName.get("topic")?.notnull).toBe(1);
+    expect(byName.get("payload")?.notnull).toBe(1);
+    expect(byName.get("emitted_at_sec")?.notnull).toBe(1);
+    expect(byName.get("schema_version")?.notnull).toBe(1);
+  });
+
+  test("events table accepts a row with a UUIDv7 event_id + JSON payload", () => {
+    // Use a fixed UUIDv7-shaped id — `1` version-nibble, `8` variant-nibble.
+    db.prepare(
+      `INSERT INTO events (event_id, topic, payload, emitted_at_sec, schema_version)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      "01890000-0000-7000-8000-000000000001",
+      "task.claimed",
+      JSON.stringify({ topic: "task.claimed", taskId: "t-abcd1234", member: "be-1" }),
+      1_700_000_000,
+      1,
+    );
+    const row = db
+      .prepare("SELECT topic, schema_version FROM events WHERE event_id = ?")
+      .get("01890000-0000-7000-8000-000000000001") as
+      | { topic: string; schema_version: number }
+      | undefined;
+    expect(row?.topic).toBe("task.claimed");
+    expect(row?.schema_version).toBe(1);
+  });
+
+  test("events_topic_id index supports topic-filtered streaming queries", () => {
+    const indexes = db.prepare("PRAGMA index_list(events)").all() as Array<{
+      name: string;
+      origin: string;
+    }>;
+    const idx = indexes.find((i) => i.name === "events_topic_id");
+    expect(idx).toBeDefined();
+    expect(idx?.origin).toBe("c"); // created by CREATE INDEX (not autoindex)
+
+    const cols = db.prepare("PRAGMA index_info(events_topic_id)").all() as Array<{
+      name: string;
+    }>;
+    expect(cols.map((c) => c.name)).toEqual(["topic", "event_id"]);
+  });
+
+  test("subscriber_offsets table exists with the expected shape", () => {
+    const cols = db.prepare("PRAGMA table_info(subscriber_offsets)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+
+    const expected: ReadonlyArray<readonly [string, string]> = [
+      ["consumer_name", "TEXT"],
+      ["last_event_id", "TEXT"],
+      ["last_processed_at_sec", "INTEGER"],
+    ];
+    for (const [name, type] of expected) {
+      const c = byName.get(name);
+      expect(c).toBeDefined();
+      expect(c?.type).toBe(type);
+    }
+    expect(cols).toHaveLength(expected.length);
+
+    expect(byName.get("consumer_name")?.pk).toBe(1);
+    expect(byName.get("last_event_id")?.notnull).toBe(1);
+    expect(byName.get("last_processed_at_sec")?.notnull).toBe(1);
+  });
+
+  test("subscriber_offsets supports the scope-qualified consumer-name pattern (ADR-203 §D7)", () => {
+    // Per ADR-203 §D7: `<team>:<consumer>` for team scope,
+    // `cockpit:<consumer>` for cockpit scope. TEXT column accepts both.
+    db.prepare(
+      `INSERT INTO subscriber_offsets (consumer_name, last_event_id, last_processed_at_sec)
+       VALUES (?, ?, ?)`,
+    ).run("team-alpha:gitter", "01890000-0000-7000-8000-000000000001", 1_700_000_000);
+    db.prepare(
+      `INSERT INTO subscriber_offsets (consumer_name, last_event_id, last_processed_at_sec)
+       VALUES (?, ?, ?)`,
+    ).run("cockpit:medic", "01890000-0000-7000-8000-000000000002", 1_700_000_001);
+
+    const rows = db
+      .prepare("SELECT consumer_name FROM subscriber_offsets ORDER BY consumer_name")
+      .all() as Array<{ consumer_name: string }>;
+    expect(rows.map((r) => r.consumer_name)).toEqual(["cockpit:medic", "team-alpha:gitter"]);
+  });
+
+  test("subscriber_offsets enforces uniqueness on consumer_name (PK)", () => {
+    db.prepare(
+      `INSERT INTO subscriber_offsets (consumer_name, last_event_id, last_processed_at_sec)
+       VALUES (?, ?, ?)`,
+    ).run("team-alpha:gitter", "01890000-0000-7000-8000-000000000003", 1_700_000_002);
+
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO subscriber_offsets (consumer_name, last_event_id, last_processed_at_sec)
+           VALUES (?, ?, ?)`,
+        )
+        .run("team-alpha:gitter", "01890000-0000-7000-8000-000000000004", 1_700_000_003),
+    ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/);
   });
 });

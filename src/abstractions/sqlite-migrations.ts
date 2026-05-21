@@ -459,4 +459,83 @@ export const migrations: readonly Migration[] = [
       db.exec("ALTER TABLE stories ADD COLUMN merge_mode TEXT DEFAULT 'feature-branch'");
     },
   },
+  // ---------- v10 → v11 ----------
+  // ADR-202 §D1 (Honker substrate) + ADR-203 §D7 (subscriber idempotency).
+  // Adds the two tables Phase-1 substrate consumers will read/write:
+  //
+  //   - `events`             — append-only event log. Honker NOTIFY/LISTEN
+  //                            consumers may bypass this table when the
+  //                            extension is loaded + native streams are
+  //                            primary; the table is the defense-in-depth
+  //                            cron-backstop sweep target per ADR-202 §D6
+  //                            AND the fallback-mode primary store when
+  //                            `loadHonkerOrFallback()` returns
+  //                            `{loaded: false}` (extension binary not
+  //                            yet provisioned, kill-switch off, smoke
+  //                            probe failed, etc.). Writers ALWAYS INSERT
+  //                            into this table regardless of mode — the
+  //                            stream is a notification optimization
+  //                            layer, not a substitute for durability.
+  //                            Columns:
+  //                              event_id TEXT PRIMARY KEY  — UUIDv7 per
+  //                                                           ADR-203 §D6
+  //                              topic TEXT NOT NULL        — dotted name
+  //                              payload TEXT NOT NULL      — JSON per
+  //                                                           the Zod
+  //                                                           discriminated
+  //                                                           union (src/
+  //                                                           schema/
+  //                                                           events.ts)
+  //                              emitted_at_sec INTEGER     — epoch s;
+  //                                                           sibling of
+  //                                                           UUIDv7's
+  //                                                           embedded
+  //                                                           ms for
+  //                                                           cron-sweep
+  //                                                           windowing
+  //                              schema_version INTEGER     — payload
+  //                                                           schema
+  //                                                           version
+  //                                                           per ADR-203
+  //                                                           §D3
+  //
+  //   - `subscriber_offsets` — per-consumer last-processed-eventId
+  //                            tracking for at-least-once idempotency
+  //                            per ADR-203 §D7. Composite key
+  //                            `(consumer_name)` because consumer is
+  //                            already scope-qualified (per ADR-203 §D7:
+  //                            `<team>:<consumer>` for team scope,
+  //                            `cockpit:<consumer>` for cockpit scope).
+  //
+  // Index on `(topic, event_id)` — fast topic-filtered streaming reads
+  // for cron-backstop sweeps and Honker's own `SELECT ... WHERE topic=?
+  // AND event_id > ?` queries.
+  //
+  // No FK between subscriber_offsets.last_event_id and events.event_id
+  // because Honker's stream replay window may garbage-collect older
+  // events (in a future cleanup-EPIC); FK would block the GC and
+  // overstate the durability guarantee.
+  {
+    from: 10,
+    to: 11,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE events (
+          event_id TEXT PRIMARY KEY NOT NULL,
+          topic TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          emitted_at_sec INTEGER NOT NULL,
+          schema_version INTEGER NOT NULL DEFAULT 1
+        )
+      `);
+      db.exec(`CREATE INDEX events_topic_id ON events(topic, event_id)`);
+      db.exec(`
+        CREATE TABLE subscriber_offsets (
+          consumer_name TEXT PRIMARY KEY NOT NULL,
+          last_event_id TEXT NOT NULL,
+          last_processed_at_sec INTEGER NOT NULL
+        )
+      `);
+    },
+  },
 ];
