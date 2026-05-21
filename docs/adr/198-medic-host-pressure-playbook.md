@@ -1,6 +1,6 @@
 # ADR-198: Medic host-pressure playbook — automated cleanup at load / RAM / swap thresholds
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (§D1 3 thresholds + §D2 5-step playbook + §OQ recommendations as-written: v1 hardcoded constants, no auto-rollback, single-host scope, no cgroup-cage caps, permissive stack regex w/ protected-list, 5-min cadence tighten under pressure)
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-21 operator manual cleanup of hax (load 82 → 27, RAM 68GB-used/2GB-free → 61GB/29GB, 11 merged epic-teams dissolved, duplicate sopx-staging + sopx-e2e docker stacks stopped) — surfaced via complaints `c-718abae6` (atmux) + `c-f901569f` (ifca-docs sibling).
 **Cross-refs**: [ADR-077](077-superdoctor-cockpit-role.md) (medic substrate — fleet self-healing loop at cockpit W2), [ADR-184](184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (host-wide epic-team cap + spawn queue — same multi-project host-tier surface), [ADR-132](132-pluggable-martinet.md) (sentinel sibling — observe-only counterpart at W3), [ADR-158](158-martinet-to-sentinel-rename.md) (rename), [ADR-189](189-lean-mode-side-project-topology-preset.md) (lean-mode pivot — on-demand-via-medic-verb rather than continuous cron-poll), [ADR-197](197-cron-reaper-teardown-contract.md) (cron-reaper teardown contract — sibling cleanup class for the cron surface), complaint `c-718abae6` (closes), complaint `c-f901569f` (closes — ifca-docs cross-link), Epic `e-a771c03d` (parent — this ADR is its T1 anchor).

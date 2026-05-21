@@ -1,6 +1,6 @@
 # ADR-189: Lean-mode side-project topology preset — disable cron-polling stopgaps + aggressive auto-prune
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (lean vs fleet `team.json::topology` enum; lean is default for NEW installs; lean disables sentinel cron-poll / doctor cron backstop / drainer-cron pattern; event-driven dispatcher replaces; §OQ recommendations as-written)
 **Date**: 2026-05-20
 **Driver-ref**: driver-2026-05-20-11:20 MYT (operator killed sentinel cron 11:15 MYT after observing the 40% CPU/cycle cost at 18-team fleet scale).
 **Parent EPIC**: e-be01fc89 (lean-mode side-project topology — anchor decision).

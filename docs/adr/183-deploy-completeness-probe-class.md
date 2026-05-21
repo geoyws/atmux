@@ -1,6 +1,6 @@
 # ADR-183: Deploy-completeness probe class — extends ADR-027 doctor framework
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (deploy-completeness probe-class extends ADR-027; §OQ recommendations as-written: programmatic TS registry, file-based Discord dedup per ADR-126, 15min cron backstop hardcoded, --fail-on-gap = P0+P1 only, name=deploy-completeness, sentinel uses own severity mapping, --list-probes covers introspection)
 **Date**: 2026-05-19
 **Driver-ref**: driver-inbox P1 2026-05-19 04:25 MYT — "3 confirmed wedges in 30min audit + 5+ open all share root cause: code shipped, tests green, deploy-side wire-up never lands". EPIC `e-b54050b6` (deploy-completeness probe class) Part A `t-e26aced0`. Lead confirmed ADR number 183 in turn 2026-05-19 14:44 MYT (implicit confirmation via "178 + planner sidebar reservations" framing).
 **Extends**: ADR-027 (`atmux doctor` framework — probe registry + severity ladder). This ADR adds the **probe-class concept** as a first-class organizing principle within ADR-027's substrate. No supersession; ADR-027 gains a thin §Amendment cross-referencing this ADR.

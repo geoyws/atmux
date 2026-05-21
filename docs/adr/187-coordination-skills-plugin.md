@@ -1,6 +1,6 @@
 # ADR-187: Coordination skills plugin — operator-facing Claude Code skills that pair with atmux
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (9-skill plugin mapping ↔ atmux verbs; skill-side lives in dotfiles, atmux team owns the verb contract not the skill code; §OQ recommendations as-written)
 **Date**: 2026-05-20
 **Driver-ref**: 2026-05-20 driver session — operator design call following the [ADR-183](./183-sentinel-scope-includes-epic-teams.md) + [ADR-185](./185-sentinel-dynamic-epic-discovery.md) ship batch. Operator framing: *"document the skills plugin that pairs with atmux — operator-facing surface, lives in dotfiles, atmux team must not touch it."*
 **Parent EPIC**: none.

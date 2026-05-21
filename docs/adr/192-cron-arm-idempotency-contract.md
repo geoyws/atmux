@@ -1,6 +1,6 @@
 # ADR-192: Cron-idempotency contract for "arm a cadence" verbs
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (every /Xloop / arm-a-cadence verb runs CronList before CronCreate + skips on match; fuzzy prompt-hash + interval-exact match algorithm; §OQ recommendations as-written)
 **Date**: 2026-05-20
 **Driver-ref**: driver-2026-05-20-16:09-MYT (cockpit /loop idempotency gap)
 **Impl ownership**: claude-skills dotfiles (NOT atmux source) per memory `feedback_claude_skills_dotfiles_territory` — this ADR is the SPEC; impl lives in operator-managed `~/work/journals/.sb/_dotfiles/claude-shared/skills/<skill>.md` or equivalent. atmux contains the ADR + cross-refs only.

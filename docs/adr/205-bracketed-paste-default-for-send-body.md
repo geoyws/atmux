@@ -1,6 +1,6 @@
-# ADR-199: Bracketed-paste mode as default for send-keys body content — slash-leading wedge fix
+# ADR-205: Bracketed-paste mode as default for send-keys body content — slash-leading wedge fix
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (Option 2 default + `rawSendKeys` per-call escape; §OQ recommendations as-written: 500ms settle parity with ADR-081, `rawSendKeys` naming, bracketed-paste covers future trigger chars, no high-freq batching, ADR-188 Step-3 refinement is non-conflicting)
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-21 10:36 MYT — literal slash-leading body wedge observed across unum + ifca-docs leads; operator manual recovery required (C-u to clear → retype → Enter); `/bruh`-via-cron unreliable; cron-only operator observability blind. Filed via Epic `e-2ba5ae45` (P1 SILENT KILLER wake-up wedge).
 **Cross-refs**: [ADR-081](081-bootstrap-brief-paste-bug.md) §A (bracketed-paste-mode envelope + C-m submit contract — primary substrate), [ADR-138](138-verified-send-keys.md) (verify-and-retry pattern — outer layer; this ADR refines its send-method default), [ADR-188](188-tui-send-keys-canonical-4-step.md) (4-step canonical pattern for text-into-composer — preserves the popup-stack mitigation as the outer flow), commit `2456678` (`fix(send-keys): honour team.tmuxTmpdir in tell-lead/send/dispatch/stop`) — socket-resolution alignment that this ADR's send-path inherits.
@@ -53,7 +53,7 @@ Default = **Option 2** (bracketed-paste default + `opts.rawSendKeys` escape).
 export interface SendKeysOpts {
   target: SendTarget;
   /** Body content. Bracketed-paste envelope is applied by default
-   *  (Option 2 per ADR-199). */
+   *  (Option 2 per ADR-205). */
   body: string;
   /** Per-call escape — bypass bracketed-paste, use literal
    *  `tmux send-keys -l` instead. Required for control sequences,
@@ -107,7 +107,7 @@ If Option 2 surfaces problems in production (e.g. settle interferes with a high-
 
 ## Sub-tasks (decomposed by planner; impl Tasks land downstream)
 
-- **T1** — ADR-199 draft (this file). Lane=`misc`, deps=none, priority=1. (← *this Task is t-7debe6e1*)
+- **T1** — ADR-205 draft (this file). Lane=`misc`, deps=none, priority=1. (← *this Task is t-7debe6e1*)
 - **T2** — `src/abstractions/tmux.ts::sendKeys` (or equivalent canonical surface) — flip default to bracketed-paste + add `rawSendKeys` opt + thread through every caller. Same-commit migration of ~15 wire-shape tests. Lane=`be`, deps=T1, priority=1.
 - **T3** — Audit + migrate raw-keystroke call sites — `known-modals.ts` catalog dismisses, copy-mode commands, single-key nav (`BTab` etc.) all set `opts.rawSendKeys = true` explicitly. Lane=`be`, deps=T2, priority=1.
 - **T4** — Integration test: synthetic slash-leading body → assert popup NOT triggered + body lands in compose box. Lane=`test`, deps=T2, priority=1.
@@ -128,7 +128,7 @@ If Option 2 surfaces problems in production (e.g. settle interferes with a high-
 ## Cross-refs
 
 - [ADR-081 §A](081-bootstrap-brief-paste-bug.md) — bracketed-paste-Enter-swallow + C-m submit contract; this ADR's `PASTE_SUBMIT_SETTLE_FLOOR_MS` + C-m submit pattern are inherited verbatim.
-- [ADR-138](138-verified-send-keys.md) — verify-and-retry pattern; this ADR refines the send-method default that ADR-138 wraps. ADR-138 §Amendment 2026-05-20 (forward-ref to ADR-188) extends to forward-ref ADR-199 once accepted.
+- [ADR-138](138-verified-send-keys.md) — verify-and-retry pattern; this ADR refines the send-method default that ADR-138 wraps. ADR-138 §Amendment 2026-05-20 (forward-ref to ADR-188) extends to forward-ref ADR-205 once accepted.
 - [ADR-188](188-tui-send-keys-canonical-4-step.md) — 4-step canonical pattern for text-into-composer; this ADR's bracketed-paste default IS the Step 3 mechanism, refined.
 - Commit `2456678` — `fix(send-keys): honour team.tmuxTmpdir in tell-lead/send/dispatch/stop`; this ADR inherits the socket-resolution path established there.
 - Complaint chain — Epic `e-2ba5ae45` (P1 SILENT KILLER wake-up wedge) is the parent; t-7debe6e1 is its T1 anchor.

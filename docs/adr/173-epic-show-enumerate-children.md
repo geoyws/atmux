@@ -1,6 +1,6 @@
 # ADR-173: `atmux epic show <eid>` — enumerate child Stories + Tasks
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (read-side `atmux epic show <eid>` enumerates children; §OQ recommendations as-written: 1-level only, story-show fast-follow YES, no lane grouping, show all by default, no body truncation)
 **Date**: 2026-05-18
 **Driver-ref**: ADR-193 §OQ-4 carve-out — read-side ergonomics deferred to a sibling ADR. ADR-176 §Consequences also references the gap implicitly (criterion (d) requires children-indexable data; the operator-facing view of those children is what ADR-173 surfaces).
 **Relates**: ADR-007 (Epic/Story/Task hierarchy original spec), ADR-193 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-176 (criterion (d) — same data path), ADR-165 (CLI-surface pattern reference).

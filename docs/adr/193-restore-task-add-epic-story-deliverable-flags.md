@@ -1,6 +1,6 @@
 # ADR-193: Restore documented `atmux task add` flags — `--epic` / `--story` / `--deliverable`
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (restore --epic/--story/--deliverable flags + inverse mutations on task update; §OQ recommendations as-written: no add-time existence validation, free-form deliverable string, no auto-backfill, list-filter ADR sibling, routine schema migration)
 **Date**: 2026-05-18
 **Renumbered 2026-05-20**: originally drafted as ADR-172 (`d7586c4` on `geoyws-planner`). Trunk merge `fe8aea1` shipped `docs/adr/172-stop-github-ci-until-stabilise.md` between drafting and rename. Renumbered per "older keeps the number" heuristic (memory `project_adr_collision_resolutions_2026_05_18`). 193 chosen as next free across trunk + geoyws + planner refs.
 **Driver-ref**: ADR-176 §sibling-gap surface 2026-05-17 — criterion (d) in `src/core/lane-drift.ts` requires `.epic` populated on kanban Tasks; at runtime all tasks have `.epic: null` because there is no CLI path to set it.

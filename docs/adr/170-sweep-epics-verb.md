@@ -1,6 +1,6 @@
 # ADR-170 — `atmux team sweep-epics` verb: enumerate + safely dissolve idle epic-teams
 
-Status: proposed
+Status: Accepted — ratified by driver 2026-05-21 (`atmux team sweep-epics [--apply] [--idle-hours N] [--parent T] [--json]` — 4-signal verdict; --apply dispatches dissolveEpic only on SAFE-DISSOLVE; §OQ recommendations as-written)
 Date: 2026-05-17
 
 ## Context

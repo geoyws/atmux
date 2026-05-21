@@ -1,6 +1,6 @@
 # ADR-194: auto-push targets the just-done SHA, not branch tip — shared-worktree race mitigation
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (push just-done SHA not branch tip; §OQ recommendations as-written: post-rebase capture, reuse fail-branch-resolve, no sticky --no-auto-push, `git commit --only` RECOMMENDED with 30-day observation window (flip to mandatory if any incident continues post-D1), no --force-with-lease)
 **Date**: 2026-05-20
 **Related**: [ADR-057](./057-stall-prevention.md) §D7 R57-T7 (auto-push origin), [ADR-091](./091-kanban-driven-auto-merge.md) (shared-worktree fan-in mode that the race depends on), [ADR-032](./032-socket-pubsub-messaging-layer.md) (cross-pane recovery channel used during incident response), [ADR-134](./134-in-team-auto-merger.md) (intra-team merger that consumes pushed history), [feedback_shared_index_commit_race_hazard](memory) (prior occurrences across e-f28c2596 + e-1e223687).
 

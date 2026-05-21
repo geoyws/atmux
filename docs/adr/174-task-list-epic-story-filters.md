@@ -1,6 +1,6 @@
 # ADR-174: `atmux task list` — add `--epic <eid>` and `--story <sid>` filters
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (`--epic` and `--story` filters; §OQ recommendations as-written: createdAt-ASC sort preserved, empty-string matches null, no `--priority` bundling, no filter-time eid/sid validation)
 **Date**: 2026-05-18
 **Driver-ref**: ADR-193 §OQ-4 ("file as a sibling follow-up ADR/task. ADR-193 stays focused on the write-side gap; read-side ergonomics is a separate ADR") + ADR-173 §Related ("`atmux task list --epic` filter remains as a future fast-follow").
 **Relates**: ADR-193 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-173 (`atmux epic show` children enumeration — sibling read-side surface), ADR-007 (Epic/Story/Task hierarchy original spec), ADR-006 (JSON output stability convention).
