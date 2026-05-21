@@ -179,3 +179,67 @@ function defaultSmokeProbe(db: Database): boolean {
   const row = db.query("SELECT honker_version() AS v").get() as { v?: unknown } | null;
   return typeof row?.v === "string" && row.v.length > 0;
 }
+
+// ---------- Boot helper + state accessor ----------
+
+/** Per-Database runtime state, keyed weakly so DB GC reclaims it. */
+const HONKER_STATE = new WeakMap<Database, HonkerRuntimeState>();
+
+/** Optional emitter so the boot can announce its state without coupling
+ *  honker.ts to events.ts (avoids the circular schema/events ↔ honker
+ *  import). Callers supply this from src/abstractions/events.ts. */
+export type AnnounceFn = (db: Database, state: HonkerRuntimeState) => void;
+
+/**
+ * Boot the Honker substrate against `db`: loads the extension (or
+ * falls back), stashes the runtime state for later retrieval via
+ * `getHonkerState(db)`, and (when an `announce` callback is provided)
+ * publishes an `internal.honker.{loaded,fallback}` event.
+ *
+ * Call once per process / per DB handle, ideally right after
+ * `openDatabase()` returns. Subsequent calls on the same db return
+ * the cached state without re-running the load. Tests that want a
+ * fresh boot should reset their fixture DB rather than re-call.
+ *
+ * Per ADR-202 §D5: never throws. On any failure (kill-switch off,
+ * load throw, smoke fail), the returned state has `loaded: false`
+ * and consumers branch on the flag.
+ *
+ * @param db       Open Database (per-team state.db or cockpit-events.db).
+ * @param hooks    Test-injection seam — production callers pass `{}`.
+ * @param announce Optional callback invoked with the resulting state.
+ *                 src/abstractions/events.ts provides the canonical
+ *                 emit-based announcer; consumers call bootHonker with
+ *                 the bound version.
+ */
+export function bootHonker(
+  db: Database,
+  hooks: HonkerHooks = {},
+  announce?: AnnounceFn,
+): HonkerRuntimeState {
+  const cached = HONKER_STATE.get(db);
+  if (cached) return cached;
+
+  const state = loadHonkerOrFallback(db, hooks);
+  HONKER_STATE.set(db, state);
+  if (announce) {
+    try {
+      announce(db, state);
+    } catch {
+      // Announce failure must not block boot — the substrate is the
+      // critical path; observability is best-effort.
+    }
+  }
+  return state;
+}
+
+/** Read the cached runtime state for a previously-booted db.
+ *  Returns `null` when bootHonker() hasn't been called for this db. */
+export function getHonkerState(db: Database): HonkerRuntimeState | null {
+  return HONKER_STATE.get(db) ?? null;
+}
+
+/** Reset the cache for `db`. Test-only — production code must not call. */
+export function resetHonkerStateForTest(db: Database): void {
+  HONKER_STATE.delete(db);
+}

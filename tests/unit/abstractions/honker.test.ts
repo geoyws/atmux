@@ -19,8 +19,11 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  bootHonker,
+  getHonkerState,
   isHonkerEnabled,
   loadHonkerOrFallback,
+  resetHonkerStateForTest,
 } from "../../../src/abstractions/honker.ts";
 
 describe("isHonkerEnabled", () => {
@@ -325,5 +328,110 @@ describe("loadHonkerOrFallback — production bun:sqlite path (no hooks injected
     expect(state.loaded).toBe(false);
     expect(state.fallbackReason).toMatch(/smoke probe threw/);
     expect(state.fallbackReason).toMatch(/honker_version/);
+  });
+});
+
+describe("bootHonker + getHonkerState", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = new Database(":memory:");
+  });
+  afterEach(() => {
+    resetHonkerStateForTest(db);
+    db.close();
+  });
+
+  test("getHonkerState returns null before bootHonker is called", () => {
+    expect(getHonkerState(db)).toBeNull();
+  });
+
+  test("bootHonker stashes state retrievable via getHonkerState", () => {
+    const state = bootHonker(db, {
+      env: { ATMUX_HONKER: "on", HOME: "/root" },
+      platform: "linux",
+      loadExtension: () => {},
+      smokeProbe: () => true,
+    });
+    expect(state.loaded).toBe(true);
+    expect(getHonkerState(db)).toBe(state);
+  });
+
+  test("second bootHonker call returns cached state (does not re-load)", () => {
+    let loadCount = 0;
+    bootHonker(db, {
+      env: { ATMUX_HONKER: "on", HOME: "/root" },
+      platform: "linux",
+      loadExtension: () => {
+        loadCount += 1;
+      },
+      smokeProbe: () => true,
+    });
+    expect(loadCount).toBe(1);
+    // Second call with a fresh hook set should NOT fire loadExtension again.
+    bootHonker(db, {
+      env: { ATMUX_HONKER: "on", HOME: "/root" },
+      platform: "linux",
+      loadExtension: () => {
+        loadCount += 1;
+      },
+      smokeProbe: () => true,
+    });
+    expect(loadCount).toBe(1);
+  });
+
+  test("kill-switch off → state cached as {loaded: false} with no fallback reason", () => {
+    const state = bootHonker(db, { env: {} });
+    expect(state.loaded).toBe(false);
+    expect(state.fallbackReason).toBeNull();
+    expect(getHonkerState(db)).toBe(state);
+  });
+
+  test("announce callback invoked with the final state", () => {
+    const announced: Array<{ loaded: boolean; reason: string | null }> = [];
+    bootHonker(
+      db,
+      {
+        env: { ATMUX_HONKER: "on", HOME: "/root" },
+        platform: "linux",
+        loadExtension: () => {
+          throw new Error("missing binary");
+        },
+      },
+      (_db, state) => {
+        announced.push({ loaded: state.loaded, reason: state.fallbackReason });
+      },
+    );
+    expect(announced).toHaveLength(1);
+    expect(announced[0]?.loaded).toBe(false);
+    expect(announced[0]?.reason).toMatch(/missing binary/);
+  });
+
+  test("announce callback throwing does NOT block boot (best-effort observability)", () => {
+    const state = bootHonker(
+      db,
+      {
+        env: { ATMUX_HONKER: "on", HOME: "/root" },
+        platform: "linux",
+        loadExtension: () => {},
+        smokeProbe: () => true,
+      },
+      () => {
+        throw new Error("emit failed");
+      },
+    );
+    expect(state.loaded).toBe(true);
+    expect(getHonkerState(db)).toBe(state);
+  });
+
+  test("resetHonkerStateForTest clears the cache (test-only)", () => {
+    bootHonker(db, {
+      env: { ATMUX_HONKER: "on", HOME: "/root" },
+      platform: "linux",
+      loadExtension: () => {},
+      smokeProbe: () => true,
+    });
+    expect(getHonkerState(db)).not.toBeNull();
+    resetHonkerStateForTest(db);
+    expect(getHonkerState(db)).toBeNull();
   });
 });

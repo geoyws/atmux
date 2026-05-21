@@ -43,6 +43,7 @@
 
 import type { Database } from "bun:sqlite";
 import { EventPayload } from "../schema/events.ts";
+import type { HonkerRuntimeState } from "./honker.ts";
 import { uuidv7 } from "./uuidv7.ts";
 
 /** Runtime state-flag passed by callers — wraps `HonkerRuntimeState.loaded`. */
@@ -255,4 +256,46 @@ export async function withIdempotency(
   }
 
   return processed;
+}
+
+// ---------- bootHonker announce binding ----------
+
+/**
+ * Build an `AnnounceFn` (per src/abstractions/honker.ts) that emits an
+ * `internal.honker.loaded` or `internal.honker.fallback` event when
+ * `bootHonker()` reports its state. Pass to bootHonker as the third
+ * argument:
+ *
+ *     const announce = announceHonkerState();
+ *     bootHonker(db, {}, announce);
+ *
+ * The announce is best-effort: if the events table doesn't exist yet
+ * (migrations haven't run), if Zod parsing fails, etc., the failure is
+ * swallowed by bootHonker's announce try/catch — boot itself never
+ * blocks on observability.
+ *
+ * Wired this way (rather than as a direct import of emit() inside
+ * honker.ts) to keep honker.ts free of the schema/events.ts coupling
+ * — same one-direction dependency rule as the rest of the abstractions
+ * tier (honker → bun:sqlite; events → schema/events.ts + honker).
+ */
+export function announceHonkerState(emitOverride?: typeof emit): (
+  db: Database,
+  state: HonkerRuntimeState,
+) => void {
+  const emitFn = emitOverride ?? emit;
+  return (db, state) => {
+    if (state.loaded) {
+      emitFn(db, {
+        topic: "internal.honker.loaded",
+        extensionPath: state.extensionPath ?? "",
+      });
+    } else {
+      emitFn(db, {
+        topic: "internal.honker.fallback",
+        fallbackReason: state.fallbackReason ?? "kill-switch off",
+        extensionPath: state.extensionPath,
+      });
+    }
+  };
 }

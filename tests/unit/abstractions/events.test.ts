@@ -24,12 +24,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  announceHonkerState,
   drainSince,
   emit,
   loadOffset,
   saveOffset,
   withIdempotency,
 } from "../../../src/abstractions/events.ts";
+import { bootHonker, resetHonkerStateForTest } from "../../../src/abstractions/honker.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { openDatabase } from "../../../src/abstractions/sqlite.ts";
 
@@ -324,5 +326,84 @@ describe("withIdempotency", () => {
     });
     expect(seenRecovered).toEqual(["t-3", "t-4"]);
     expect(loadOffset(db, "alpha:gitter")).toBe(fakeId(4));
+  });
+});
+
+describe("announceHonkerState binding for bootHonker", () => {
+  test("loaded state emits internal.honker.loaded event", () => {
+    const announce = announceHonkerState();
+    bootHonker(
+      db,
+      {
+        env: { ATMUX_HONKER: "on", HOME: "/root", ATMUX_HONKER_PATH: "/test/honker.so" },
+        platform: "linux",
+        loadExtension: () => {},
+        smokeProbe: () => true,
+      },
+      announce,
+    );
+    resetHonkerStateForTest(db); // for next test's bootHonker call
+    const rows = drainSince(db, {
+      topics: ["internal.honker.loaded", "internal.honker.fallback"],
+      lastEventId: "",
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.topic).toBe("internal.honker.loaded");
+    if (rows[0]?.topic === "internal.honker.loaded") {
+      expect(rows[0].extensionPath).toBe("/test/honker.so");
+    }
+  });
+
+  test("fallback state emits internal.honker.fallback event with reason", () => {
+    const announce = announceHonkerState();
+    bootHonker(
+      db,
+      {
+        env: { ATMUX_HONKER: "on", HOME: "/root" },
+        platform: "linux",
+        loadExtension: () => {
+          throw new Error("missing binary");
+        },
+      },
+      announce,
+    );
+    resetHonkerStateForTest(db);
+    const rows = drainSince(db, {
+      topics: ["internal.honker.loaded", "internal.honker.fallback"],
+      lastEventId: "",
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.topic).toBe("internal.honker.fallback");
+    if (rows[0]?.topic === "internal.honker.fallback") {
+      expect(rows[0].fallbackReason).toMatch(/missing binary/);
+      expect(rows[0].extensionPath).toBe("/root/.atmux/extensions/honker.so");
+    }
+  });
+
+  test("kill-switch off → fallback event with sentinel reason 'kill-switch off'", () => {
+    const announce = announceHonkerState();
+    bootHonker(db, { env: {} }, announce);
+    resetHonkerStateForTest(db);
+    const rows = drainSince(db, { topics: ["internal.honker.fallback"], lastEventId: "" });
+    expect(rows.length).toBe(1);
+    if (rows[0]?.topic === "internal.honker.fallback") {
+      expect(rows[0].fallbackReason).toBe("kill-switch off");
+      expect(rows[0].extensionPath).toBeNull();
+    }
+  });
+
+  test("emitOverride seam: injected emit is used instead of the real one", () => {
+    let calls = 0;
+    const fakeEmit = ((..._args: Parameters<typeof emit>) => {
+      calls += 1;
+      return {} as ReturnType<typeof emit>;
+    }) as typeof emit;
+    const announce = announceHonkerState(fakeEmit);
+    bootHonker(db, { env: {} }, announce);
+    resetHonkerStateForTest(db);
+    expect(calls).toBe(1);
+    // Verify no real INSERT happened (fake emit short-circuited)
+    const count = (db.prepare("SELECT COUNT(*) AS n FROM events").get() as { n: number }).n;
+    expect(count).toBe(0);
   });
 });
