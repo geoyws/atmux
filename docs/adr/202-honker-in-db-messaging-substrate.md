@@ -211,18 +211,23 @@ CI implications: Honker extension binary must be present on CI runners. Install 
 
 ### D12 — Migration phases (EPIC sequence)
 
-Eight EPICs in sequence, each kill-switched, each kept-behind-cron-backstop until ≥30 days observed-stable:
+**Amended 2026-05-21 per [ADR-211](211-retire-sentinel-role-distribute-to-honker-consumers.md):** `e-honker-sentinel` REMOVED. The Sentinel role retires entirely (no Opus-sentinel impl-EPIC); its observation functions split into four single-responsibility consumer EPICs (pane-classifier, wedge-clearer, refusal-handler, silent-team-detector). Medic (ADR-077) is NOT affected — medic is scheduled hourly diagnosis, not continuous observation. ADR-207 (Opus-sentinel) stays Accepted but never ships an impl-EPIC.
+
+Ten EPICs in sequence, each kill-switched, each kept-behind-cron-backstop until ≥30 days observed-stable:
 
 | EPIC | Scope | Eta |
 |---|---|---|
 | e-honker-substrate | Extension load + schema (per-team + cockpit-events DBs) + consumer-base class + kill-switch + doctor probe + smoke tests. **No consumers.** | 3-5 days |
 | e-honker-jury | First real consumer — `_jury` ratify/verdict pipeline (ADR-204). Cron-poll backstop kept. | 2-3 days (after substrate) |
 | e-honker-gitter | gitter listens for `task.done` → merge. Cron retained. | 1-2 days |
-| e-honker-watchdogs | Port absence-detection (15min stall, wedged pane, lead-unresponsive) to Honker scheduler. Deletes ≥5 cron entries. | 1-2 days |
+| e-honker-watchdogs | Port absence-detection (15min stall, wedged pane, lead-unresponsive) to Honker scheduler. Deletes ≥5 cron entries. Absorbs sentinel's stall-complaint emission (ADR-211 §D2). | 1-2 days |
+| e-honker-pane-classifier *(ADR-211 split)* | Event-triggered tmux capture-pane + classify. Emits `pane.classified`, `pane.wedged`, `pane.refusal-detected`. Cron-backstop sweep at 10-min cadence for catch-net. Absorbs sentinel function #1 from ADR-211 §D2. | 1-2 days |
+| e-honker-wedge-clearer *(ADR-211 split)* | Consumer of `pane.wedged`. Re-uses ADR-138 verified-send-keys. Absorbs sentinel's wedge-recovery half. | 1 day |
+| e-honker-refusal-handler *(ADR-211 split, may fold into watchdogs)* | Consumer of `pane.refusal-detected`. Emits `*.escalated` if ADR-139 threshold exceeded. | 1 day |
+| e-honker-silent-team-detector *(ADR-211 split)* | Consumer of substrate's `internal.smoke.tick` absence-per-team. Replaces ADR-183 silent-member-death role. | 1 day |
 | e-honker-whip | `/whip run` loop becomes event-consumer; deprecation grace one release. | 1-2 days |
-| e-honker-sentinel | Sentinel observation eventized; pane-classifier event-triggered (not periodic). | 1-2 days |
-| e-honker-medic | Medic state-driven on complaint/hygiene/wedge events. | 1-2 days |
-| e-honker-cleanup | Delete deprecated loops; remove cron-backstops where ≥30 days stable; ADR-091/134/145 §Amendments documenting switchover. | 2-3 days |
+| e-honker-medic | Medic state-driven on complaint/hygiene/wedge events. Sibling role at W2 STAYS (per ADR-211 §D6 — scheduled, not continuous). | 1-2 days |
+| e-honker-cleanup | Delete deprecated loops; remove cron-backstops where ≥30 days stable; ADR-091/134/145 §Amendments documenting switchover. Absorbs sentinel residue deletion per ADR-211 §D3 (delete `src/abstractions/sentinel.ts` + `src/verbs/sentinel.ts` + sentinel-related cron entries + reviewer-surface entries). | 2-3 days |
 
 Total estimate ~3-4 weeks of focused EPIC throughput. Each EPIC behind kill-switch + cron-backstop → zero-risk rollback if Honker craps out alpha-style.
 
