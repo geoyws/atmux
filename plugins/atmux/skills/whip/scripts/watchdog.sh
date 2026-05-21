@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Driver-side watchdog for the team-lead's /whip loop + teammate/lead interactive-blockers.
+# Driver-side watchdog for the team-lead's /atmux:whip loop + teammate/lead interactive-blockers.
 # Runs from cron every 10min. Zero Claude tokens per tick.
 #
 # Invoke: bash watchdog.sh <team-name>
 #   cwd must be the git repo for the team (lead-stall carve-out 2b uses `git log --since`).
+#
+# Path stability: cron entries reference this script via
+#   ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/watchdog.sh
+# which is symlink-stable post-wizard-install per ADR-217 §D5 — the wizard
+# symlinks ~/.claude/plugins/atmux/ → <atmux-source>/plugins/atmux/, so atmux
+# upgrades refresh script bodies in-place without rewriting cron entries.
 #
 # Four independent checks per tick:
 #   1. Lead-stall — is /whip's Discord flush-file >30min stale? (with carve-outs)

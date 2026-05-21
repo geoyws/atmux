@@ -46,7 +46,7 @@ Dual-harness: this is the Claude Code entry point; OpenCode runs the same logic 
 
 Each time this skill fires in `run` mode, do the following. Keep the response terse — goal is *action*, not narration.
 
-1. **Load the shared prompt.** Read `$HOME/.claude/skills/atmux:whip/atmux:whip-prompt.md` and follow it verbatim. It is the single source of truth for whip behaviour (shared with the OpenCode harness).
+1. **Load the shared prompt.** Read `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/whip-prompt.md` and follow it verbatim. It is the single source of truth for whip behaviour (shared with the OpenCode harness).
 
 2. **Check for `.claude/team.json`** in the current cwd. If absent, exit cleanly — whip is a no-op without a team.
 
@@ -57,7 +57,7 @@ Each time this skill fires in `run` mode, do the following. Keep the response te
 4. **Escalate only real blockers.** If and only if a blocker needs user input (credentials, ambiguous product decision, external access), call:
 
    ```
-   bash "$HOME/.claude/skills/atmux:whip/scripts/ping-discord.sh" "🚨 **[whip-blocker]** · \`$TEAM\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
+   bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/ping-discord.sh" "🚨 **[whip-blocker]** · \`$TEAM\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
 
 <what's blocked> — <what team tried> — <what's needed>"
    ```
@@ -216,7 +216,7 @@ Remind the user:
 
 **The primary path is cron** (per-team, `*/10 * * * *`). This slash command is the **manual one-shot** form — useful during active-shipping windows where you want a spot-check between cron ticks.
 
-The canonical implementation lives in `$HOME/work/journals/.sb/claude-skills/plugins/coordination/skills/atmux:whip/scripts/watchdog.sh`. Cron invokes it directly; path must stay stable.
+The canonical implementation lives in `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/watchdog.sh`. Cron invokes it directly; the path is **symlink-stable** post-wizard-install — per ADR-217 §D5 the wizard symlinks `~/.claude/plugins/atmux/` → `<atmux-source>/plugins/atmux/`, so atmux upgrades pick up new script bodies without rewriting the path operators wired into cron.
 
 ### Why this exists
 
@@ -235,7 +235,7 @@ Mechanical check — no reasoning, no dispatch, no inbox reading. A Claude `/loo
 **Install** (one crontab entry per team):
 
 ```
-*/10 * * * * bash $HOME/work/journals/.sb/claude-skills/plugins/coordination/skills/atmux:whip/scripts/watchdog.sh <team-name> >>$HOME/.claude/teams/<team-name>/watchdog.log 2>&1
+*/10 * * * * bash ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/watchdog.sh <team-name> >>$HOME/.claude/teams/<team-name>/watchdog.log 2>&1
 ```
 
 Verify `cron` is active: `systemctl status cron`.
@@ -263,7 +263,7 @@ tail -f ~/.claude/teams/<team-name>/watchdog.log
 
 ### Implementation (manual path)
 
-The script at `$HOME/work/journals/.sb/claude-skills/plugins/coordination/skills/atmux:whip/scripts/watchdog.sh` is the full implementation with all four checks (lead-stall, teammate-blockers, lead-blocker, teammate-uptime-nag). When running this slash command as a one-shot:
+The script at `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/watchdog.sh` is the full implementation with all four checks (lead-stall, teammate-blockers, lead-blocker, teammate-uptime-nag). When running this slash command as a one-shot:
 
 ```bash
 # Resolve team — arg overrides .claude/team.json
@@ -274,7 +274,7 @@ if [ -z "$TEAM" ] || [ "$TEAM" = "null" ]; then
 fi
 
 # Delegate to the canonical script — same logic as cron
-bash "$HOME/work/journals/.sb/claude-skills/plugins/coordination/skills/atmux:whip/scripts/watchdog.sh" "$TEAM"
+bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/watchdog.sh" "$TEAM"
 ```
 
 ### §Watchdog — what it checks (4 parallel)

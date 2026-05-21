@@ -20,7 +20,7 @@ You are the team lead. Your job right now is to keep progress moving without pag
 date +%s > /root/.claude/teams/<team>/lead-session-start.txt; cat /root/.claude/teams/<team>/lead-session-start.txt
 
 # ❌ DON'T — compound with &&
-bash "$HOME/.claude/skills/atmux:whip/scripts/ping-discord.sh" "..." && date +%s > /root/.claude/teams/<team>/last-discord-flush.txt
+bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/ping-discord.sh" "..." && date +%s > /root/.claude/teams/<team>/last-discord-flush.txt
 
 # ❌ DON'T — compound with subshell for grouping
 (cd apps/<ui> && pnpm typecheck && pnpm vitest run)
@@ -261,7 +261,7 @@ IN_FLIGHT=$(jq -r 'first(.inProgress[]?.id) // ""' \
 
 # Non-blocking, exit-0-silent on any failure. Skip via `|| true` so a
 # parse-miss / no-tokens-line never blocks the whip turn.
-bash "$HOME/.claude/skills/atmux:whip/scripts/measure-context.sh" \
+bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/measure-context.sh" \
   "$TEAM" "$MEMBER" "$IN_FLIGHT" 2>/dev/null || true
 ```
 
@@ -418,7 +418,7 @@ for NAME in $(jq -r '.members[] | select(.name != "team-lead") | .name' .claude/
         # Per ADR — dispatch via the canonical clear-member.sh, which
         # handles idle-detection + /clear + re-brief paste. Reason
         # threads into the brief so the rotated member sees why.
-        bash "$HOME/.claude/skills/atmux:team/scripts/clear-member.sh" \
+        bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/team/scripts/clear-member.sh" \
           "$TEAM" "$NAME" "context-pressure-pct=${CTX_PCT}" \
           2>&1 | sed "s/^/[clear ${NAME}] /"
         ROTATED_MEMBERS="${ROTATED_MEMBERS:-} ${NAME}"
@@ -525,7 +525,7 @@ EOF
     # and then verifies the command was consumed; non-zero exit = visible failure.
     tmux send-keys -t "$WIN" "/clear" Enter
     sleep 2
-    if ! bash "$HOME"/.claude/skills/atmux:whip/scripts/send-keys-submit.sh "$WIN" \
+    if ! bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}"/skills/whip/scripts/send-keys-submit.sh "$WIN" \
          "Read ${BRIEF} and follow the instructions inside — you were just /clear'd; teammates + team-lead are alive, do NOT run /atmux:team start."; then
       echo "WARN: ${NAME} rotation submit verification failed — log + continue; next whip retries"
       # Don't append to ROTATED_MEMBERS — we didn't actually rotate
@@ -606,7 +606,7 @@ for w in $TEAM_WINDOWS; do
   fi
 
   # Escalate
-  bash "$HOME/.claude/skills/atmux:whip/scripts/ping-discord.sh" "🛑 **teammate blocked** · \`${TEAM}\` · \`${MEMBER}\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
+  bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/ping-discord.sh" "🛑 **teammate blocked** · \`${TEAM}\` · \`${MEMBER}\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
 
 Teammate is waiting on an interactive prompt. Whip cannot answer — user input needed.
 
@@ -683,7 +683,7 @@ for w in $TEAM_WINDOWS; do
   printf '{"member":"%s","reset_epoch":%d,"reset_human":"%s","reset_myt":"%s","detected_at":%d}\n' \
     "$MEMBER" "$RESET_EPOCH" "$RESET_HUMAN" "$RESET_MYT" "$NOW" > "$STATE_FILE"
 
-  bash "$HOME/.claude/skills/atmux:whip/scripts/ping-discord.sh" "🚫 **[whip-rate-limit]** · \`${TEAM}\` · \`${MEMBER}\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
+  bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/ping-discord.sh" "🚫 **[whip-rate-limit]** · \`${TEAM}\` · \`${MEMBER}\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
 
 🚫 Teammate Claude account hit weekly cap — dispatch locked until reset.
 
@@ -889,7 +889,7 @@ For real blockers needing the user, the template:
 Bash invocation (note heredoc — multi-line bodies need it):
 
 ```bash
-bash "$HOME"/.claude/skills/atmux:whip/scripts/ping-discord.sh "$(cat <<EOF
+bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}"/skills/whip/scripts/ping-discord.sh "$(cat <<EOF
 🚨 **[blocker]** · \`${TEAM}\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
 
 🚨 **Need you** — UI palette for 13-domain re-skin
@@ -1034,7 +1034,7 @@ ${CONCERN_LINES}
 
 📍 ${FLUSH_REASON}"
 
-    bash "$HOME/.claude/skills/atmux:whip/scripts/ping-discord.sh" "$BODY"
+    bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/ping-discord.sh" "$BODY"
     echo -e "${CURRENT_HASH}\n${NOW}" > "$PEND_FLUSH_FILE"
   fi
 fi
@@ -1228,7 +1228,7 @@ if [ "$SEEDED" -eq 0 ] && [ "$MIN_SINCE_FLUSH" -ge 30 ] && [ "$COMMITS_30M" -eq 
   #   "between phases — Phase 3 sign-off pending"
   #   "waiting on user — 2 high-priority decisions open"
   #   "rotating ${MEMBER} after 60min uptime"
-  bash "$HOME"/.claude/skills/atmux:whip/scripts/ping-discord.sh "$(cat <<EOF
+  bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}"/skills/whip/scripts/ping-discord.sh "$(cat <<EOF
 💓 **[heartbeat]** · \`${TEAM}\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
 
 🟡 **Cool** — <one-line reason for the deliberate quiet, ≤80 chars>
@@ -1256,7 +1256,7 @@ if [ "$SEEDED" -eq 0 ] && [ "$MIN_SINCE_FLUSH" -ge 15 ] && [ "$COMMITS_15M" -gt 
   # Variables shown here are the verdict-line + footer (mechanical); the
   # **What's new** bullets are HAND-CURATED from RECENT_ENTRY — never
   # mass-extracted by awk/sed.
-  bash "$HOME"/.claude/skills/atmux:whip/scripts/ping-discord.sh "$(cat <<EOF
+  bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}"/skills/whip/scripts/ping-discord.sh "$(cat <<EOF
 📊 **[progress]** · \`${TEAM}\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
 
 🟢 **Shipping** — ${COMMITS_15M} commits in ${MIN_SINCE_FLUSH}min, 0 asks, 0 stalls
