@@ -23,6 +23,14 @@ import { withIdempotency } from "../abstractions/events.ts";
 import { isHonkerEnabled } from "../abstractions/honker.ts";
 import type { TaskDonePayload } from "../schema/events.ts";
 
+// Re-export the T4 merge-handler factory so consumers wire the real
+// dispatcher via a single import (`{gitterConsume, createGitterMergeHandler}
+// from './gitter-consumer.ts'`).
+export {
+  createGitterMergeHandler,
+  type GitterMergeHandlerDeps,
+} from "./gitter-merge-handler.ts";
+
 /**
  * Outcome of a single gitter handler invocation. Drives the
  * {processed, escalated} totals + (in T4) the trunk-merge state
