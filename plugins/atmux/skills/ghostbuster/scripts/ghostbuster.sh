@@ -78,7 +78,9 @@ case "$TRUNK" in
 esac
 
 # ---------- timestamp + report header ----------
-NOW_HUMAN="$(TZ="${COORDINATION_TZ:-Asia/Kuala_Lumpur}" date +'%H:%M %Z %F')"
+# TZ falls back to UTC when COORDINATION_TZ (plugin userConfig) is unset
+# — matches the bundled-plugin canonical default (bau.sh, watchdog.sh).
+NOW_HUMAN="$(TZ="${COORDINATION_TZ:-UTC}" date +'%H:%M %Z %F')"
 echo "# /ghostbuster — $NOW_HUMAN · trunk=\`$TRUNK\` · dry-run=$DRY_RUN"
 echo
 
