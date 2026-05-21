@@ -28,7 +28,7 @@ The skill itself does not act. Per the team-member brief in atmux templates, atm
 1. **Read the args** (`$ARGUMENTS`). The args summarise what changed:
    - `new task <id> dispatched` → next idle turn, claim or note the task
    - `cascade unblock — claim --next` → run `atmux claim --next` when ready
-   - `new tell-lead from driver` → re-read `.atmux/lead-inbox.md` `## Open` section (the lead's incoming inbox; driver→lead direction per [ADR-215](../../../../docs/adr/215-multi-driver-support-per-team-default-three.md) §D3)
+   - `new tell-lead from driver` → re-read `.atmux/driver-inbox.md` `## Open` section (the lead's incoming inbox; an earlier proposed rename was REVERTED — canonical filename is `driver-inbox.md`; driver→lead direction per [ADR-215](../../../../docs/adr/215-multi-driver-support-per-team-default-three.md) §D3)
    - `new flag <id>` / `flag-add` / `flag-resolve` → `atmux flags list --status open`
    - `new reply from <member>` → re-read `.atmux/lead-outbox.md`
    - `decisions-add` → re-read `.atmux/decisions.md`
@@ -51,7 +51,7 @@ It exists purely so `/atmux:heads-up <args>` is a valid skill invocation rather 
 
 ## Attention + verdict format — deliberate exemption
 
-Unlike `/atmux:whip` §8.0, the medic operator surface, `/atmux:bau` header, `/atmux:bruh` §7, `/atmux:session` global, and `/atmux:team` global — which all mandate an `✅/⚠/🔴` + `👁` attention-marker header on every operator-facing report — `/atmux:heads-up` **deliberately produces no output**, attention markers included. Pane silence IS the success state: the injection is a hint folded into the next idle loop, not a turn the operator reads. Echoing any verdict line — even `✅` — defeats the noise-suppression purpose.
+Unlike `/atmux:whip` §8.0, `/atmux:sweep` §9.5 (formerly the medic operator surface; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the role retired but the marker scheme stayed), `/atmux:bau` header, `/atmux:bruh` §7, `/atmux:session` global, and `/atmux:team` global — which all mandate an `✅/⚠/🔴` + `👁` attention-marker header on every operator-facing report — `/atmux:heads-up` **deliberately produces no output**, attention markers included. Pane silence IS the success state: the injection is a hint folded into the next idle loop, not a turn the operator reads. Echoing any verdict line — even `✅` — defeats the noise-suppression purpose.
 
 If something genuinely warrants the operator's attention as a result of a heads-up (e.g. parsing the args revealed a 🔴-class condition), the receiving agent surfaces it via its *own* normal channel (lead-queue entry, whip status line, BAU report) — NOT via this skill's output. Keep this skill silent.
 

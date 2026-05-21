@@ -63,7 +63,7 @@ The operator runs this team to produce real work — code committed, tests run, 
 
 ## 0.1. Test-fixture reaper — kill orphan spinTmux() leaks (every turn)
 
-Mirrors medic §0.6. `tests/unit/verbs/cockpit.test.ts` spawns real tmux servers via `spinTmux("<prefix>")` into `/tmp/atmux-cockpit-<prefix>-XXXXXX/sock`; cleanup hooks (`afterAll`, `process.on('exit')`) never fire when bun-test is SIGKILL'd (BashTool 2-min timeout, OS OOM, harness kill). Each leak holds a tmux server + zombie claude at ~140-280MB RSS (complaint c-27a1c8f4). Whip runs every 270s × N teams — runs the reaper too so leaks die faster than medic's hourly cadence.
+Mirrors `/atmux:sweep` §0.6 (formerly the medic role's §0.6; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the auto-spawned medic role retired, the probe substrate persisted). `tests/unit/verbs/cockpit.test.ts` spawns real tmux servers via `spinTmux("<prefix>")` into `/tmp/atmux-cockpit-<prefix>-XXXXXX/sock`; cleanup hooks (`afterAll`, `process.on('exit')`) never fire when bun-test is SIGKILL'd (BashTool 2-min timeout, OS OOM, harness kill). Each leak holds a tmux server + zombie claude at ~140-280MB RSS (complaint c-27a1c8f4). Whip runs every 270s × N teams — runs the reaper too so leaks die faster than `/atmux:sweep`'s hourly cadence.
 
 ```bash
 find /tmp -maxdepth 1 -type d -name 'atmux-cockpit-cockpit-*' -mmin +60
@@ -83,7 +83,7 @@ tmux -S "$DIR/sock" kill-server
 rm -rf "$DIR"
 ```
 
-**Hard constraints (same as medic §0.6):**
+**Hard constraints (same as `/atmux:sweep` §0.6):**
 - ONLY dirs whose name starts with `atmux-cockpit-cockpit-` (double-cockpit test-convention prefix). Single-`cockpit-` dirs may be live; do NOT touch.
 - ONLY sessions named `test_*` or `s` (test-fixture conventions). Live cage sessions never use those names.
 - ONLY `-mmin +60` (older than 1h). Avoids racing against in-flight `bun test`.
@@ -1356,7 +1356,7 @@ The verdict is derived from observed state (commit-cadence, member health, rate-
 
 Self-check before picking the marker: would the driver, scan-skimming 8 team status lines in 5 seconds, be misled if I picked ✅ for this turn? If yes, downgrade.
 
-Related memory: `[[feedback-unambiguous-attention-and-verdict]]` (medic uses the same scheme in lead-queue + operator reports).
+Cross-skill consistency: `/atmux:sweep` uses the same verdict scheme in its lead-queue + operator reports (per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the medic role retired but the marker scheme persisted into `/atmux:sweep`).
 
 
 Derive the status from disk, not shell variables — Steps 7, 7.5, and 8 typically run in separate `Bash` tool calls, so in-memory shell state does NOT persist between them. File mtimes are the source of truth:
@@ -1410,7 +1410,7 @@ echo "$STREAK" > "$STREAK_FILE"
 #   - missing OR "auto" OR "fast" OR "default" → adaptive (270s active, 3600s after 3 idle turns)
 #   - integer                                  → locked at that value
 #   - anything else                            → fallback to 270
-CADENCE_FILE="$HOME/.claude/teams/${TEAM}/atmux:whip-cadence.txt"
+CADENCE_FILE="$HOME/.claude/teams/${TEAM}/whip-cadence.txt"
 CADENCE_SETTING=$(cat "$CADENCE_FILE" 2>/dev/null || echo auto)
 CADENCE_MODE="manual"
 case "$CADENCE_SETTING" in

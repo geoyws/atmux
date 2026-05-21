@@ -24,7 +24,7 @@ This aligns with the principle: "fix it yourself / keep fixing" = scope-level pr
 
 Plus two implicit cascades:
 
-- **Rotation cascade** — driver asks each lead to rotate stale members; driver asks medic (the cockpit self-healing role at W2) to rotate stale leads. /atmux:bruh delegates to the role that owns each rung — driver stays thin.
+- **Rotation cascade** — driver asks each lead to rotate stale members; driver asks `/atmux:sweep` (the operator-invoked successor to the medic cockpit self-healing role, per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) + [ADR-217](../../../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D2.1) to rotate stale leads. /atmux:bruh delegates to the role that owns each rung — driver stays thin.
 - **Reanimation authority** — /atmux:bruh is authorised to **reanimate dead/zombie member panes** directly. Unlike rotation (which is delegated), reanimation is driver-actionable because a dead member can't self-rotate and the lead can't dispatch to a dead pane. /atmux:bruh respawns the claude process in-place via the canonical spawn pattern + re-bootstrap.
 
 ## Procedure
@@ -88,18 +88,18 @@ If none hold, you're a per-team lead (or a solo agent) — skip this section and
 
 **Cockpit-level concerns the superdriver keeps for itself** (run after fan-out, before reporting):
 
-- **Rung B rotation cascade** — medic → leads (per §3 Rung B). The superdriver is the natural place to nudge medic.
+- **Rung B rotation cascade** — `/atmux:sweep` → leads (per §3 Rung B; successor to the retired medic role per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)). The superdriver is the natural place to nudge a running sweep pane.
 - **Cockpit-level inbox / decisions** — use atmux verbs to query cockpit-tier state (e.g. `atmux complaint list`, `atmux task list --status blocked`, whichever decision-listing verb atmux exposes); never grep `~/.atmux/*.md` or `docs/pending-decisions.md` — sqlite is canonical, those `.md` files are stale mirrors.
 - **Cockpit-tier worktrees** — only worktrees in cockpit infra repos (dotfiles, atmux source). Per-team worktrees are each team's lead's /atmux:bruh job.
 
 **Hard stops specific to superdriver fan-out**:
 
-- Don't `atmux tell-lead` to a team if its **lead is in a rate-limit lockout with an active reset timer** — the message lands in the durable inbox just fine, but the lead can't process it; surface to the operator so the decision (wait vs. escalate to medic) is theirs.
-- Don't reanimate a dead **driver or lead** pane via /atmux:bruh — that's medic's authority (drivers/leads sit above /atmux:bruh's reanimation scope). /atmux:bruh's reanimation authority (§3.5) covers members only.
+- Don't `atmux tell-lead` to a team if its **lead is in a rate-limit lockout with an active reset timer** — the message lands in the durable inbox just fine, but the lead can't process it; surface to the operator so the decision (wait vs. escalate to a `/atmux:sweep` invocation, the medic-role successor per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)) is theirs.
+- Don't reanimate a dead **driver or lead** pane via /atmux:bruh — that's `/atmux:sweep`'s authority (the medic-role successor per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md); drivers/leads sit above /atmux:bruh's reanimation scope). /atmux:bruh's reanimation authority (§3.5) covers members only.
 
 ### 0.5 Epic-lead propagation (per-team lead fan-out)
 
-When /atmux:bruh runs in a team lead context (not the cockpit superdriver — one rung lower), it must propagate the sweep one more rung — to each **epic-lead** in the team's cage. Teams running atmux's epic-teams architecture have epic-leads with their own lead-inbox / outbox / kanban scope that the parent team lead doesn't sweep. Skipping this rung leaves whole epics' worth of surfaces unswept.
+When /atmux:bruh runs in a team lead context (not the cockpit superdriver — one rung lower), it must propagate the sweep one more rung — to each **epic-lead** in the team's cage. Teams running atmux's epic-teams architecture have epic-leads with their own lead's driver-inbox / outbox / kanban scope that the parent team lead doesn't sweep. Skipping this rung leaves whole epics' worth of surfaces unswept.
 
 This layer only applies to teams that have spawned epic-teams via `atmux team spawn-epic`. Teams with a single lead (no epic-team fan-out) skip this section.
 
@@ -134,7 +134,7 @@ Generalised across all teams: every team with parallelizable epic work spawns it
 
 **When to spawn (any team)**: lead's scope is parallelizable but currently serialized — there's a bounded EPIC in the backlog with ≥3 in-flight slices that's parallel-safe with the team's other lanes, AND the team has no active epic-team yet under the cockpit `parent` field for this EPIC, AND it's not POST-DEMO deferred. Default = spawn; the lead decides which initiative warrants its own roster.
 
-**When NOT to spawn (any team)**: scope genuinely linear (one slice at a time), no eligible EPIC in todo, an active epic-team already exists under this team (one-epic-at-a-time guard), or the operator held the queue via lead-inbox in the last 24h.
+**When NOT to spawn (any team)**: scope genuinely linear (one slice at a time), no eligible EPIC in todo, an active epic-team already exists under this team (one-epic-at-a-time guard), or the operator held the queue via lead's driver-inbox in the last 24h.
 
 **Coordination-only teams**: a team whose parent roster is coordination-only (no impl seats) MUST spawn-epic to make any progress when scope is non-empty. Teams that retain impl seats in the parent roster can keep shipping in serial; spawning an epic-team is an *optimisation* for parallel throughput, not a requirement to avoid going idle.
 
@@ -168,7 +168,7 @@ Generalised across all teams: every team with parallelizable epic work spawns it
    atmux team spawn-epic <epicId> --from <yourTeam>   # --from is the parent team's name
    ```
 
-   Default roster + `--merge-mode auto` (direct fast-forward to parent trunk per [ADR-091](../../../../docs/adr/091-kanban-driven-auto-merge.md) — auto-merge cron is installed automatically). For PR-mode or custom rosters, surface to lead-inbox first.
+   Default roster + `--merge-mode auto` (direct fast-forward to parent trunk per [ADR-091](../../../../docs/adr/091-kanban-driven-auto-merge.md) — auto-merge cron is installed automatically). For PR-mode or custom rosters, surface to lead's driver-inbox first.
 
    After spawn, register the new epic-team in cockpit and bring up its cage:
 
@@ -182,7 +182,7 @@ Generalised across all teams: every team with parallelizable epic work spawns it
 **Hard stops on spawn-epic** (skip + log reason):
 
 - `gh auth status` failing AND the target EPIC's roster has `mergeMode === "pr"` ([ADR-090](../../../../docs/adr/090-pr-vs-direct-trunk-merge.md) §Decision-anchor #10 — refuse before worktree creation)
-- Operator explicitly held the queue via lead-inbox in the last 24h (e.g. "freeze before demo")
+- Operator explicitly held the queue via lead's driver-inbox in the last 24h (e.g. "freeze before demo")
 
 **No per-parent cap** (per [ADR-090](../../../../docs/adr/090-pr-vs-direct-trunk-merge.md) §Amendment 2026-05-20 — supersedes §Class 3 deferred carve-out): spawn freely; bounded-concurrency (sentinel default N=4) + auto-merge cron throughput + adequate host RAM absorb the load. Don't check for sibling epic-teams under the same parent; the cap was deferred-then-lifted. Soft observability: spawn-epic verb emits a stderr warn at 20+ concurrent under the same parent — that's a visibility nudge, not a refuse. Tune `sentinel.maxParallel` in team config per your host's CPU/RAM headroom.
 
@@ -219,7 +219,7 @@ When §0.6 finds no eligible EPIC to spawn AND §1 survey finds zero blocking su
 
 **Hard stops on eternal-improvement** (skip + log reason):
 
-- Operator explicit "freeze" in lead-inbox in last 24h (e.g. demo lockdown — same gate as §0.6)
+- Operator explicit "freeze" in lead's driver-inbox in last 24h (e.g. demo lockdown — same gate as §0.6)
 - All 6 heuristics return empty hit OR every hit already has a sibling todo task (genuine "nothing to improve" — extremely rare, log as `♻️ eternal improvement: codebase is unusually clean — no actionable hits this cycle` and let the team stay idle until next /atmux:bruh fires)
 - CPU/RAM throttle active (if bounded-concurrency caps are hit, skip filing more work)
 
@@ -288,7 +288,7 @@ Driver doesn't pull the trigger on rotations; the role that owns each rung does.
 atmux tell-lead "/atmux:bruh sweep — rotate any stale or context-heavy members. Use /atmux:team rotate-member <name> for productive-but-bloated, /atmux:team clear <name> for drifting. Default = forward; you decide who."
 ```
 
-The lead reads lead-inbox on its next whip turn, surveys its members (uptime, last-commit cadence, recent drift signals), and makes the calls. Don't enumerate members from the driver side — leads have the live context.
+The lead reads lead's driver-inbox on its next whip turn, surveys its members (uptime, last-commit cadence, recent drift signals), and makes the calls. Don't enumerate members from the driver side — leads have the live context.
 
 **Rung A.5 — leads spawn epic-teams for parallelizable work.** Same dispatch path as Rung A. Driver pushes the directive; lead has the context to decide which initiatives warrant their own roster.
 
@@ -320,17 +320,17 @@ The atmux team itself is the canonical model: its parent .atmux/team.json is coo
 
 Log under terminal report `✂️ roster-slim cascade: dispatched to N teams; parent members trimmed: N (list per team)`.
 
-**Rung B — medic rotates leads.** Medic is the cockpit self-healing role at W2 ([ADR-077](../../../../docs/adr/077-superdoctor-cockpit-role.md), renamed from `superdoctor` per [ADR-133](../../../../docs/adr/133-superdoctor-to-medic-rename.md)) — authorised to rotate leads, clear members, and cycle cages. The slash command still exists as `/superdoctor` during the one-release-cycle deprecation window; canonical role name going forward is `medic`.
+**Rung B — `/atmux:sweep` rotates leads.** The cockpit self-healing role was introduced as `superdoctor` ([ADR-077](../../../../docs/adr/077-superdoctor-cockpit-role.md)), renamed `medic` per [ADR-133](../../../../docs/adr/133-superdoctor-to-medic-rename.md), then retired as an auto-spawned cockpit role per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — its probe substrate persists as a library + on-demand surface. The canonical operator-invoked entry point is now [`/atmux:sweep`](../sweep/SKILL.md) (renamed from `/superdoctor` per [ADR-217](../../../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D2.1) — authorised to rotate leads, clear members, and cycle cages.
 
-**Not to be confused with `sentinel`** (W3, [ADR-132](../../../../docs/adr/132-sentinel-whip-manager.md) / [ADR-158](../../../../docs/adr/158-martinet-to-sentinel-rename.md), formerly `martinet`) — that's the **whip-manager / NudgeAction classifier**, a different role at a different cockpit window with a different scope. Sentinel does NOT rotate leads. Medic at W2 ≠ sentinel at W3.
+**Not to be confused with `sentinel`** (W3, [ADR-132](../../../../docs/adr/132-sentinel-whip-manager.md); see also [ADR-158](../../../../docs/adr/158-martinet-to-sentinel-rename.md) for the role's earlier name) — that's the **whip-manager / NudgeAction classifier**, a different role at a different cockpit window with a different scope. Sentinel does NOT rotate leads. Medic at W2 ≠ sentinel at W3.
 
-- **If cockpit medic running** (`tmux list-windows -t "$cockpitSession" -F '#W' | grep _medic`):
+- **If a dedicated `/atmux:sweep` loop is running** (operator-spawned, e.g. via `/loop /atmux:sweep` in a cockpit pane — note: per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) there is no auto-spawned cockpit window for this; the operator runs the loop on demand). Detect a candidate window via `tmux list-windows -t "$cockpitSession" -F '#W'` looking for any window where the calling agent has invoked `/atmux:sweep`:
   - Capture pane first (read state BEFORE `tmux send-keys`)
-  - If idle, send: `tmux send-keys -t "$cockpitSession":_medic "/atmux:sweep once -- bruh-sweep rotate-stale-leads" Enter`
-  - Medic's `/atmux:sweep once` runs a one-shot diagnosis sweep with full action authority. It applies its own ADR-077 gates — /atmux:bruh does not duplicate them
-- **If no cockpit medic** (solo mode / cockpit disabled): /atmux:bruh applies the pre-flight gates itself per team before firing `/atmux:team rotate-lead`
+  - If idle, send: `tmux send-keys -t "$cockpitSession":<sweep-pane> "/atmux:sweep once -- bruh-sweep rotate-stale-leads" Enter`
+  - `/atmux:sweep once` runs a one-shot diagnosis sweep with full action authority. It applies its own ADR-077 gates — /atmux:bruh does not duplicate them.
+- **If no sweep loop is running** (default — no operator-driven sweep pane): /atmux:bruh applies the pre-flight gates itself per team before firing `/atmux:team rotate-lead`.
 
-### 3a. Rung C — atmux rotates cockpit-tier roles (medic, sentinel, drivers)
+### 3a. Rung C — atmux rotates cockpit-tier roles (medic/sentinel — both retired per [ADR-211](../../../../docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) + [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — and team-drivers)
 
 Medic at W2 can grow stale. Sentinel at W3 (once up) can grow stale. Team drivers (one per enabled team in cockpit windows by team-name) can grow stale. None can self-rotate cleanly, and no role sits above them in the cockpit pyramid.
 
@@ -339,7 +339,7 @@ Medic at W2 can grow stale. Sentinel at W3 (once up) can grow stale. Team driver
 **Dispatch from cockpit superdriver** (run from the atmux source root):
 
 ```bash
-cd <atmux-source-root> && atmux tell-lead "/atmux:bruh Rung C — survey cockpit-tier roles: medic at \"\$cockpitSession\":_medic, sentinel at \"\$cockpitSession\":_sentinel (or _martinet during rename window) if up, and every team-driver at \"\$cockpitSession\":<team-name>. Rotate any that pass the pre-flight gates below. Never rotate the superdriver (W1) — that is the operator's REPL."
+cd <atmux-source-root> && atmux tell-lead "/atmux:bruh Rung C — survey cockpit-tier roles: medic at \"\$cockpitSession\":_medic (note: per ADR-212 the auto-spawned medic role retired — the window slot may not exist), sentinel at \"\$cockpitSession\":_sentinel if up (note: per ADR-211 sentinel retired similarly), and every team-driver at \"\$cockpitSession\":<team-name>. Rotate any that pass the pre-flight gates below. Never rotate the superdriver (W1) — that is the operator's REPL."
 ```
 
 **Pre-flight gates (Rung C — apply to every cockpit-tier rotation)**:
@@ -361,7 +361,7 @@ cd <atmux-source-root> && atmux tell-lead "/atmux:bruh Rung C — survey cockpit
 **Canonical verb** (request — may not exist yet):
 
 ```bash
-atmux cockpit rotate <session-name>  # e.g. atmux cockpit rotate medic | sentinel | <team-name>
+atmux cockpit rotate <session-name>  # e.g. atmux cockpit rotate <team-name> — the retired medic/sentinel slots may not exist per ADR-211 / ADR-212
 ```
 
 **Status — verb not yet implemented**: as of the bundling cut, neither `atmux cockpit rotate` nor a per-role rotation skill exists. The atmux team owns building this. Until then, the atmux lead falls back to manual rotation: (i) write handoff to `~/.claude/teams/__cockpit__/<role>/handoff.md`, (ii) `tmux send-keys` Ctrl-C twice to exit claude in the pane, (iii) respawn via the canonical spawn pattern from /atmux:bruh §3.5. /atmux:bruh Rung C should log every fallback explicitly so the surface gets prioritised in atmux backlog.
@@ -389,7 +389,7 @@ A lead is **safe to rotate** when ALL of these hold. If any fail, skip the team 
 
 ### Order
 
-Rung A first (leads triage members), give 30–60s for leads to pick up lead-inbox, then Rung B (medic triages leads). Rotating a lead mid-dispatch strands the member-rotation it just kicked off.
+Rung A first (leads triage members), give 30–60s for leads to pick up lead's driver-inbox, then Rung B (`/atmux:sweep` triages leads — the medic-role successor per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)). Rotating a lead mid-dispatch strands the member-rotation it just kicked off.
 
 ### 3.5 Zombie reanimation — driver-actionable (not delegated)
 
@@ -497,7 +497,7 @@ End with a single verdict-first summary. The top-line verdict emoji + the `🛑 
 - outbox replies sent: N
 - queued claims submitted: N
 - zombie panes reanimated: N (list team/role + dead-signal that triggered)
-- rotations requested: leads→members N (via tell-lead), medic→leads N
+- rotations requested: leads→members N (via tell-lead), `/atmux:sweep`→leads N (the medic-role successor per ADR-212)
 - epic-spawn cascade: dispatched to N teams (lead picks targets); epic-teams spawned this sweep: N (list <team>→<epicId>)
 - roster-slim cascade: dispatched to N teams (parent team.json cleanup); parent members trimmed this sweep: N (list per team)
 - PRs merged: N
@@ -535,7 +535,7 @@ After writing the terminal report, **immediately attempt the `📍 next-step rec
 | "Peek at / capture pane X" | `tmux capture-pane -p -t <X> -S -25` and inline the relevant lines under `📍 auto-applied:` |
 | "Rotate <member/lead>" | Fire `/atmux:team rotate-member <X>` or `/atmux:team rotate-lead` via the appropriate cage send-keys path |
 | "Tell-lead X" / "Dispatch X" | Fire `atmux tell-lead "<X>"` from the team's root |
-| "Fire Rung B / medic /atmux:sweep once" | Send `/atmux:sweep once -- <reason>` to the medic pane |
+| "Fire Rung B /atmux:sweep once" (formerly medic; per ADR-212) | Send `/atmux:sweep once -- <reason>` to the running sweep pane |
 | "Commit + push <branch>" | Only if branch is NOT a primary/shared staging target — per push policy in §6 |
 | "File task X on team kanban" | `atmux task add --title "<X>"` (or whatever the canonical task-create verb is) |
 | "Reanimate dead pane X" | Apply §3.5 reanimation procedure |

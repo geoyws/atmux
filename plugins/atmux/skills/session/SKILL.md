@@ -48,7 +48,7 @@ Resume work after `/clear`. Mode-aware.
 ### Step 0 — Detect mode (BEFORE anything destructive)
 
 ```bash
-TEAM="$(jq -r .name .claude/atmux:team.json 2>/dev/null || echo '')"
+TEAM="$(jq -r .name .claude/team.json 2>/dev/null || echo '')"
 MY_WINDOW="$(tmux display-message -p '#{window_name}' 2>/dev/null || echo '')"
 
 # Resolve LEAD_WIN — cascade: emoji-prefix → member-name-suffix → legacy.
@@ -69,8 +69,8 @@ if [ -n "${TMUX:-}" ]; then
   [ -n "$MY_SESSION" ] && TMUX_SCOPE="-t $MY_SESSION"
 fi
 
-LEAD_EMOJI="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .emoji // empty' .claude/atmux:team.json 2>/dev/null | head -1)"
-LEAD_NAME="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .name' .claude/atmux:team.json 2>/dev/null | head -1)"
+LEAD_EMOJI="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .emoji // empty' .claude/team.json 2>/dev/null | head -1)"
+LEAD_NAME="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .name' .claude/team.json 2>/dev/null | head -1)"
 LEAD_WIN=""
 if [ -n "$LEAD_EMOJI" ] && [ "$LEAD_EMOJI" != "null" ]; then
   LEAD_WIN=$(tmux list-windows $TMUX_SCOPE -F '#{window_name}' 2>/dev/null | grep -m1 "^${LEAD_EMOJI}")
@@ -112,11 +112,11 @@ The mode matters because `/atmux:team start` (Step 3) kills all team-member wind
 - Instead, pivot to `/atmux:team bootstrap` — this is a fresh lead context, not a session resume. Reads handoff + memory + panes and starts `/atmux:whip`.
 - Exit here with a note telling the user to run `/atmux:team bootstrap` from inside the lead window.
 
-**`MODE=solo`** (no team-lead window, but a `.claude/atmux:team.json` team is defined):
+**`MODE=solo`** (no team-lead window, but a `.claude/team.json` team is defined):
 - Continue to Step 1 normally. User's session is the lead; `/atmux:team start` spawns the teammates.
 
-**`MODE=no-team`** (no `.claude/atmux:team.json` at all):
-- Bail gracefully. Report `"no team found at .claude/atmux:team.json — not a team project"`. User may want `/init` or `/atmux:team start --team <name>`.
+**`MODE=no-team`** (no `.claude/team.json` at all):
+- Bail gracefully. Report `"no team found at .claude/team.json — not a team project"`. User may want `/init` or `/atmux:team start --team <name>`.
 
 ### Step 1 — Read handoff.md
 
@@ -208,9 +208,9 @@ In all modes the team stays alive. `preclear` does not kill teammates, ever. For
 ### Step 1 — Sanity check + mode detection
 
 ```bash
-TEAM="$(jq -r .name .claude/atmux:team.json 2>/dev/null || echo '')"
+TEAM="$(jq -r .name .claude/team.json 2>/dev/null || echo '')"
 if [ -z "$TEAM" ]; then
-  echo "ERROR: no .claude/atmux:team.json team name resolvable — aborting preclear"
+  echo "ERROR: no .claude/team.json team name resolvable — aborting preclear"
   exit 1
 fi
 
@@ -240,8 +240,8 @@ if [ -n "${TMUX:-}" ]; then
   MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
   [ -n "$MY_SESSION" ] && TMUX_SCOPE="-t $MY_SESSION"
 fi
-LEAD_EMOJI="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .emoji // empty' .claude/atmux:team.json 2>/dev/null | head -1)"
-LEAD_NAME="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .name' .claude/atmux:team.json 2>/dev/null | head -1)"
+LEAD_EMOJI="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .emoji // empty' .claude/team.json 2>/dev/null | head -1)"
+LEAD_NAME="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .name' .claude/team.json 2>/dev/null | head -1)"
 LEAD_WIN=""
 if [ -n "$LEAD_EMOJI" ] && [ "$LEAD_EMOJI" != "null" ]; then
   LEAD_WIN=$(tmux list-windows $TMUX_SCOPE -F '#{window_name}' 2>/dev/null | grep -m1 "^${LEAD_EMOJI}")
@@ -452,8 +452,8 @@ Destructive counterpart to `preclear`. Kills the alive team cleanly and writes a
 ### Step 0 — Pre-flight sanity
 
 ```bash
-TEAM="$(jq -r .name .claude/atmux:team.json 2>/dev/null || echo "")"
-if [ -z "$TEAM" ]; then echo "ERROR: no .claude/atmux:team.json — aborting"; exit 1; fi
+TEAM="$(jq -r .name .claude/team.json 2>/dev/null || echo "")"
+if [ -z "$TEAM" ]; then echo "ERROR: no .claude/team.json — aborting"; exit 1; fi
 
 MY_WINDOW="$(tmux display-message -p '#{window_name}' 2>/dev/null || echo '')"
 # Lead window resolution cascade — see cont Step 0 for full explanation:
@@ -465,8 +465,8 @@ if [ -n "${TMUX:-}" ]; then
   MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
   [ -n "$MY_SESSION" ] && TMUX_SCOPE="-t $MY_SESSION"
 fi
-LEAD_EMOJI="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .emoji // empty' .claude/atmux:team.json 2>/dev/null | head -1)"
-LEAD_NAME="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .name' .claude/atmux:team.json 2>/dev/null | head -1)"
+LEAD_EMOJI="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .emoji // empty' .claude/team.json 2>/dev/null | head -1)"
+LEAD_NAME="$(jq -r '.members[] | select(.role == "team-lead" or .agentType == "team-lead" or .name == "team-lead") | .name' .claude/team.json 2>/dev/null | head -1)"
 LEAD_WIN=""
 if [ -n "$LEAD_EMOJI" ] && [ "$LEAD_EMOJI" != "null" ]; then
   LEAD_WIN=$(tmux list-windows $TMUX_SCOPE -F '#{window_name}' 2>/dev/null | grep -m1 "^${LEAD_EMOJI}")
@@ -596,7 +596,7 @@ Team is down. /clear when ready; /atmux:session cont tomorrow will re-start via 
 
 ## Operator-facing report format — attention + verdict markers
 
-Every session verb ends with a one-block summary the operator reads to decide what to do next (`/clear` now? wait? retry?). All four verbs use the same attention+verdict scheme as whip §8.0, medic §9.5, bau header, and bruh §7 (per `[[feedback-unambiguous-attention-and-verdict]]`).
+Every session verb ends with a one-block summary the operator reads to decide what to do next (`/clear` now? wait? retry?). All four verbs use the same attention+verdict scheme as `/atmux:whip` §8.0, `/atmux:sweep` §9.5 (formerly the medic surface; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the role retired but the marker scheme stayed), `/atmux:bau` header, and `/atmux:bruh` §7.
 
 **Marker glossary:**
 - **Top-line emoji** — verdict for the whole verb run: ✅ (clean / ready) · ⚠ (partial / watch one cycle) · 🔴 (failed / blocking)

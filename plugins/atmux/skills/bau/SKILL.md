@@ -32,12 +32,12 @@ The script emits per-team verdicts (🟢 BAU / 🟡 Quiescent-fresh / 🟡 Quies
 
 This is a thin synthesis layer — DO NOT re-format the script body. The operator's eye lands on the header, decides whether to read the table, and moves on.
 
-Verdict-mapping rationale (mirrors `[[feedback-unambiguous-attention-and-verdict]]` and whip §8.0 / medic §9.5):
+Verdict-mapping rationale (consistent with `/atmux:whip` §8.0 / `/atmux:sweep` §9.5 — the latter formerly the medic surface; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the role retired but the marker scheme stayed):
 - 🟢 BAU and 🟡 Quiescent-fresh map to ✅ (the team is working as intended)
 - 🟡 Quiescent-stale maps to ⚠ (sliding, watch one cycle)
 - 🚫 Rate-Limited / 💤 Down / 💀 Saturated / ⚙️ Stuck-input / 🔴 Dormant map to 👁 + 🔴 unless the auto-fix is in-flight (then ⚠ for one cycle)
 
-If the script's escalation step (Step 5) already wrote a velocity-fix to the team's lead-inbox, name that team and "auto-fix dispatched, watching next cycle" in the ⚠ header — the operator doesn't need to act unless the lead also fails.
+If the script's escalation step (Step 5) already wrote a velocity-fix to the team's driver-inbox, name that team and "auto-fix dispatched, watching next cycle" in the ⚠ header — the operator doesn't need to act unless the lead also fails.
 
 ## Arguments
 
@@ -51,10 +51,10 @@ If the script's escalation step (Step 5) already wrote a velocity-fix to the tea
 2. Loads the team roster from `~/.atmux/cockpit.json`.
 3. Fans out per-team data collection in parallel (git root + submodules, `atmux task list`, `atmux complaints list`, per-window `tmux capture-pane`).
 4. Computes per-team verdict: 🟢 BAU · 🟡 Quiescent-fresh · 🟡 Quiescent-stale · 🔴 Dormant · 🚫 Rate-Limited · 💀 Saturated · ⚙️ Stuck-input · 💤 Down.
-5. If verdict trigger fires (last ship age ≥ `BAU_STALE_THRESHOLD_HOURS`, default 4h) and the lead can act, writes a velocity-fix directive to that team's `.atmux/lead-inbox.md` via `atmux tell-lead`. Skipped on Rate-Limited / Saturated / Down / Stuck-input.
+5. If verdict trigger fires (last ship age ≥ `BAU_STALE_THRESHOLD_HOURS`, default 4h) and the lead can act, writes a velocity-fix directive to that team's `.atmux/driver-inbox.md` via `atmux tell-lead`. Skipped on Rate-Limited / Saturated / Down / Stuck-input.
 6. Emits the final markdown report on stdout.
 
-> **Legacy filename** (one-release back-compat per ADR-198): per-team `.atmux/driver-inbox.md` is still readable when present, so a velocity-fix landing during mid-rollout doesn't get lost if a team hasn't been migrated yet. New writes go only to `.atmux/lead-inbox.md`.
+> **Filename note**: a rename proposed under the original ADR-198 slot was REVERTED before landing on trunk; `.atmux/driver-inbox.md` is and remains the canonical helper path (`driverInboxPath`). ADR-198 was then re-assigned to the medic host-pressure playbook.
 
 ## Key invariants (so the model knows what it's reading)
 

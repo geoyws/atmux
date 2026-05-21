@@ -1,6 +1,6 @@
 ---
 name: tell-lead
-description: Send a driver→lead ask via `atmux tell-lead` — durable to .atmux/lead-inbox.md plus best-effort wake-up to the lead's pane. Explains the two listener-absent warnings as expected output, not a failure.
+description: Send a driver→lead ask via `atmux tell-lead` — durable to .atmux/driver-inbox.md plus best-effort wake-up to the lead's pane. Explains the two listener-absent warnings as expected output, not a failure.
 argument-hint: <message>
 ---
 
@@ -10,8 +10,8 @@ argument-hint: <message>
 
 Wraps `atmux tell-lead "$ARGUMENTS"`. The verb does two things:
 
-1. **Durable**: appends a timestamped bullet to `.atmux/lead-inbox.md` under `## Open`. This is the source of truth — it survives `/clear`, pane crashes, and team restarts.
-2. **Best-effort wake-up**: `sock_publish` an event to the lead's supervisor socket (real-time nudge), then `tmux send-keys` a `📬 lead-inbox has a new ask` ping to the lead's pane.
+1. **Durable**: appends a timestamped bullet to `.atmux/driver-inbox.md` under `## Open`. This is the source of truth — it survives `/clear`, pane crashes, and team restarts.
+2. **Best-effort wake-up**: `sock_publish` an event to the lead's supervisor socket (real-time nudge), then `tmux send-keys` a `📬 driver-inbox has a new ask` ping to the lead's pane.
 
 The user is in their driver pane and types `/atmux:tell-lead <message>`. Run the verb, then explain the output cleanly — especially the `lead listener absent` warnings, which look scary but are by design.
 
@@ -20,7 +20,7 @@ The user is in their driver pane and types `/atmux:tell-lead <message>`. Run the
 Run `atmux status 2>&1 | head -3` to check the team is up.
 
 - **session=up** → proceed normally; the wake-up will land.
-- **session=down** → the durable write to `.atmux/lead-inbox.md` will still happen, but the lead can't be paged because there's no pane. Two paths:
+- **session=down** → the durable write to `.atmux/driver-inbox.md` will still happen, but the lead can't be paged because there's no pane. Two paths:
   - Recommend the user run `atmux start` first, then retry — the lead will read the inbox on bootstrap anyway.
   - OR confirm the user wants the message queued for whenever the team next starts (still useful — the inbox is the actual contract).
 
@@ -37,23 +37,23 @@ You will see something like:
 ```
 ⚠️ atmux sock_publish: lead listener absent (this is fine — durable write still happened)
 ⚠️ atmux sock_publish: lead listener absent (this is fine — durable write still happened)
-✅ tell-lead → lead (appended to .atmux/lead-inbox.md)
+✅ tell-lead → lead (appended to .atmux/driver-inbox.md)
 ```
 
 **The two `lead listener absent` warnings are EXPECTED when the team is stopped — they are not failures.**
 
-Why two warnings, not one? Per [ADR-042](../../../../docs/adr/042-socket-pubsub.md) phase 2, both `tell.sh` and the nested `send_to_member` independently call `sock_publish`. When no supervisor is listening on the lead's socket (team stopped, lead pane not yet bootstrapped, supervisor crashed), both publishes warn-only and continue. The durable `.atmux/lead-inbox.md` write is the contract; the publish is just a wake-up nudge.
+Why two warnings, not one? Per [ADR-042](../../../../docs/adr/042-socket-pubsub.md) phase 2, both `tell.sh` and the nested `send_to_member` independently call `sock_publish`. When no supervisor is listening on the lead's socket (team stopped, lead pane not yet bootstrapped, supervisor crashed), both publishes warn-only and continue. The durable `.atmux/driver-inbox.md` write is the contract; the publish is just a wake-up nudge.
 
 When the team **is up** and the lead's supervisor is listening, you'll see one `✅ sock_publish` per call instead of the warning, plus the final `✅ tell-lead → lead` line.
 
-> **Legacy `driver-inbox.md`** (one-release back-compat per [ADR-198](../../../../docs/adr/198-medic-host-pressure-playbook.md) §History): this verb previously wrote to `.atmux/driver-inbox.md`. The atmux read path still accepts the legacy filename — if both files exist mid-rollout they merge by mtime. New writes go to `.atmux/lead-inbox.md` only; the per-team migration walker handles the on-disk `mv`.
+> **Filename note**: an earlier proposed rename of the durable file (filed under the original ADR-198 slot) was REVERTED before landing on trunk; the canonical helper is `driverInboxPath` writing to `.atmux/driver-inbox.md`. ADR-198 was then re-assigned to the medic host-pressure playbook. Every file-path token in this skill points at `.atmux/driver-inbox.md`; user-facing prose may informally describe it as "the lead's incoming queue" (which is its purpose) but the path is unambiguous.
 
 ## Failure mode (real this time)
 
 If the verb exits **non-zero** with `no tmux window for lead`:
 
 - The team session isn't running at all (no panes exist).
-- The lead-inbox.md write **still happened** — re-run `cat .atmux/lead-inbox.md | tail -5` to confirm.
+- The driver-inbox.md write **still happened** — re-run `cat .atmux/driver-inbox.md | tail -5` to confirm.
 - Recover with `atmux start`, then optionally re-run `tell-lead` to deliver the wake-up nudge (the inbox entry is already there, so this is just for immediacy).
 
 If the verb exits non-zero with `no lead defined in team.json`:
@@ -62,8 +62,8 @@ If the verb exits non-zero with `no lead defined in team.json`:
 
 ## What to check after a successful tell-lead
 
-- The lead's pane should show a `📬 lead-inbox has a new ask: <first 80 chars>…` ping line within ~1 second.
-- `cat .atmux/lead-inbox.md | tail -3` should show the new bullet with a `[HH:MM TZ]` timestamp (timezone configurable per team via the supervisor's tz config) and your message.
+- The lead's pane should show a `📬 driver-inbox has a new ask: <first 80 chars>…` ping line within ~1 second.
+- `cat .atmux/driver-inbox.md | tail -3` should show the new bullet with a `[HH:MM TZ]` timestamp (timezone configurable per team via the supervisor's tz config) and your message.
 - The lead will mark it ✅ / 📤 / ⏳ / ❌ on their next whip turn — don't expect an immediate reply in the driver pane.
 
 ## Anti-pattern
@@ -81,14 +81,14 @@ When in doubt: if you'd be annoyed to see it sitting in your inbox unmarked tomo
 
 **Verdict-derivation rules:**
 
-- **✅** when `atmux tell-lead` exits 0 AND durable write to `.atmux/lead-inbox.md` confirmed (the two `lead listener absent` warnings are ℹ noise, NOT a downgrade — they're expected when supervisor isn't listening; durable write still happened).
+- **✅** when `atmux tell-lead` exits 0 AND durable write to `.atmux/driver-inbox.md` confirmed (the two `lead listener absent` warnings are ℹ noise, NOT a downgrade — they're expected when supervisor isn't listening; durable write still happened).
 - **⚠** when exit 0 but team session is down (durable write OK, lead can't be paged until team-start) — operator should know they may want to `atmux start` before the inbox grows stale.
 - **🔴** when exit non-zero AND durable write didn't happen (`no tmux window for lead` with empty inbox, or `no lead defined in team.json`) — the ask was lost, operator must retry.
 
 **Examples:**
 
 ```
-✅ /atmux:tell-lead — delivered to lead (appended to .atmux/lead-inbox.md, sock_publish OK)
+✅ /atmux:tell-lead — delivered to lead (appended to .atmux/driver-inbox.md, sock_publish OK)
 ```
 
 ```

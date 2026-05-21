@@ -34,11 +34,11 @@ esac
 
 Autonomous-work nudge. Fires every N seconds (default 270s; overridable via `cadence`). Tells the lead to continue working, make judgment calls, and only escalate real blockers.
 
-Dual-harness: this is the Claude Code entry point; OpenCode runs the same logic via `WhipMonitor` in `opencode-plugin-orch` (`src/core/atmux:whip-monitor.ts`), which reads the same `whip-prompt.md` so both harnesses behave identically.
+Dual-harness: this is the Claude Code entry point; OpenCode runs the same logic via `WhipMonitor` in `opencode-plugin-orch` (`src/core/whip-monitor.ts`), which reads the same `whip-prompt.md` so both harnesses behave identically.
 
 ### How to run
 
-- **Start**: `/loop /atmux:whip` — dynamic mode. The skill self-paces via `ScheduleWakeup` at the end of each turn, reading cadence from `~/.claude/teams/${TEAM}/atmux:whip-cadence.txt` (fallback 270s).
+- **Start**: `/loop /atmux:whip` — dynamic mode. The skill self-paces via `ScheduleWakeup` at the end of each turn, reading cadence from `~/.claude/teams/${TEAM}/whip-cadence.txt` (fallback 270s).
 - **Stop**: reply `stop` on the next whip turn, or exit the session.
 - **Restart after `/clear`**: `/loop /atmux:whip` again.
 
@@ -52,7 +52,7 @@ Each time this skill fires in `run` mode, do the following. Keep the response te
 
 3. **Execute the prompt.** Do the team check, dispatch/unblock work, make judgment calls. Do NOT stop and wait for the user.
 
-   **Eternal-improvement fallback** (operator directive 2026-05-20): if the team check finds zero work to dispatch/unblock AND zero pending claims AND every member is genuinely idle (not paused / not rate-limited / not mid-rotation), trigger one cycle of `/atmux:bruh` §0.7 — file ONE [improve P3] task per the heuristics there (tech-debt grep / ADR §OQ / coverage gap / aged doctor warn / lint sweep / stale memory). Do NOT lengthen the cadence yet — let §Cadence's adaptive slow-down fire only if the team STAYS idle after the improvement-task injection. Skip the fallback if operator freeze is in lead-inbox last 24h. This replaces the legacy "idle = slow down" reflex with "idle = generate self-directed work".
+   **Eternal-improvement fallback** (operator directive 2026-05-20): if the team check finds zero work to dispatch/unblock AND zero pending claims AND every member is genuinely idle (not paused / not rate-limited / not mid-rotation), trigger one cycle of `/atmux:bruh` §0.7 — file ONE [improve P3] task per the heuristics there (tech-debt grep / ADR §OQ / coverage gap / aged doctor warn / lint sweep / stale memory). Do NOT lengthen the cadence yet — let §Cadence's adaptive slow-down fire only if the team STAYS idle after the improvement-task injection. Skip the fallback if operator freeze is in lead's driver-inbox last 24h. This replaces the legacy "idle = slow down" reflex with "idle = generate self-directed work".
 
 4. **Escalate only real blockers.** If and only if a blocker needs user input (credentials, ambiguous product decision, external access), call:
 
@@ -66,7 +66,7 @@ Each time this skill fires in `run` mode, do the following. Keep the response te
 
    Healthy state = no Discord ping. The user should only be paged when you genuinely need them.
 
-5. **Re-arm.** At the end of the turn, read cadence from `~/.claude/teams/${TEAM}/atmux:whip-cadence.txt` (fallback 270 if missing/invalid; clamp to [60, 3600]), then call:
+5. **Re-arm.** At the end of the turn, read cadence from `~/.claude/teams/${TEAM}/whip-cadence.txt` (fallback 270 if missing/invalid; clamp to [60, 3600]), then call:
 
    ```
    ScheduleWakeup(delaySeconds: ${CADENCE}, prompt: "<<autonomous-loop-dynamic>>", reason: "whip re-arm")
@@ -140,7 +140,7 @@ if [ -z "$TEAM" ]; then
   exit 1
 fi
 CONFIG_DIR="${HOME}/.claude/teams/${TEAM}"
-CONFIG_FILE="${CONFIG_DIR}/atmux:whip-cadence.txt"
+CONFIG_FILE="${CONFIG_DIR}/whip-cadence.txt"
 mkdir -p "${CONFIG_DIR}"
 
 # Step 1/2 — parse sub-verb + apply
@@ -300,10 +300,12 @@ Each check has its own rate-limit file under `~/.claude/teams/<team>/`. Full log
 
 ---
 
-## Migration from old skill names
+## Migration from old (operator-dotfiles) skill names
 
-- `/atmux:whip-cadence <args>` → `/atmux:whip cadence <args>`
-- `/atmux:whip-watchdog` → `/atmux:whip watchdog [team]`
-- `/atmux:whip` (bare) → unchanged (`/atmux:whip run` behaviour)
+These hyphen-form slash commands existed only in operator-dotfiles unification predecessors; they were never bundled. Documented here so operators migrating their muscle memory know the canonical bundled forms:
 
-Old slash-command entries removed. The `whip/scripts/watchdog.sh` script path is **preserved** — cron contracts stay intact.
+- `/whip-cadence <args>` (dotfiles legacy) → `/atmux:whip cadence <args>`
+- `/whip-watchdog` (dotfiles legacy) → `/atmux:whip watchdog [team]`
+- `/whip` (dotfiles bare) → `/atmux:whip` (bundled, equivalent to `/atmux:whip run`)
+
+Old slash-command entries do not exist in this plugin. The `whip/scripts/watchdog.sh` script path is **preserved** under `plugins/atmux/skills/whip/scripts/` — cron contracts stay intact.

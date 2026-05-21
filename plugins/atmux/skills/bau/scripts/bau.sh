@@ -134,6 +134,8 @@ declare -a TEAM_ORDER
 # Single jq expression that handles both cockpit.json shapes:
 #   - Legacy (pre-ADR-089): flat `.teams[]`
 #   - Modern (ADR-089): `.sessions[]` with `type` discriminator ("team" / "medic" / "epic-team")
+#     Note: the "medic" discriminator value is reserved per back-compat after ADR-212
+#     retired the auto-spawned medic role; the cockpit.json schema slot remains.
 # Only top-level type=="team" sessions are emitted — medic has root=null
 # (would break git ops downstream) and epic-teams roll up to their parent for
 # now. If/when bau grows per-epic verdicts, walk into `.sessions[].sessions[]`.

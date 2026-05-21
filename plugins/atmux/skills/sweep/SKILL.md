@@ -54,7 +54,7 @@ Each time this skill fires in `run` mode, do the following. Keep responses terse
 
 3. **Execute the brief.** Run the per-team sweep, triage, investigate, decide authority, act, log to complaint box.
 
-   **Eternal-improvement fallback**: if the per-team sweep finds zero anomalies AND zero open complaints AND every team is shipping (commit-cadence green per BAU verdict), trigger one cycle of `/atmux:bruh` §0.7 in driver-scope per team in scope — file ONE [improve P3] task per the heuristics there (tech-debt grep / ADR §OQ / coverage gap / aged doctor warn / lint sweep / stale memory). Sweep's hourly cadence + low-frequency anomaly profile makes it the natural place to inject background improvements without burning whip-rate tokens. Skip if operator freeze in lead-inbox last 24h. Skip if CPU/RAM throttle active. Log under terminal report as `♻️ eternal improvement: <team> · t-XXXXXXXX <title>`.
+   **Eternal-improvement fallback**: if the per-team sweep finds zero anomalies AND zero open complaints AND every team is shipping (commit-cadence green per BAU verdict), trigger one cycle of `/atmux:bruh` §0.7 in driver-scope per team in scope — file ONE [improve P3] task per the heuristics there (tech-debt grep / ADR §OQ / coverage gap / aged doctor warn / lint sweep / stale memory). Sweep's hourly cadence + low-frequency anomaly profile makes it the natural place to inject background improvements without burning whip-rate tokens. Skip if operator freeze in lead's driver-inbox last 24h. Skip if CPU/RAM throttle active. Log under terminal report as `♻️ eternal improvement: <team> · t-XXXXXXXX <title>`.
 
 4. **Re-arm.** At the end of the turn:
 
