@@ -89,9 +89,9 @@ All logic lives in the bundled probe script:
 bash ~/.claude/plugins/atmux/skills/budget/scripts/probe-budget.sh [args]
 ```
 
-Or invoke via the skill harness (with the args passed through). The script is symlinked into Claude Code's plugin discovery path during atmux's install-wizard step per [ADR-200](../../../../docs/adr/200-install-wizard-guided-first-run-setup.md) §D6 / [ADR-217](../../../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D5.
+Or invoke via the skill harness (with the args passed through). The script is bundled at `plugins/atmux/skills/budget/scripts/probe-budget.sh` per [ADR-217](../../../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D1.5 (adjacent-asset bundling) and symlinked into Claude Code's plugin discovery path during atmux's install-wizard step per [ADR-200](../../../../docs/adr/200-install-wizard-guided-first-run-setup.md) §D6 / ADR-217 §D5.
 
-> **Bring-over status (2026-05-21):** ADR-217 §D2 scope carves only `SKILL.md` (+ `*-prompt.md`) per skill in the first wave; the supporting `scripts/probe-budget.sh` bring-over is follow-up work. Until the script lands at `plugins/atmux/skills/budget/scripts/probe-budget.sh`, `/atmux:budget` invocations resolve only the SKILL.md and `bash <path>` will fail. Track the script-bring-over Task separately (planner: file under Story 2 amend, or new Story).
+**Timezone:** output uses UTC by default. Operators on a fixed timezone export `ATMUX_BUDGET_TZ=<tz-spec>` (any value accepted by `date -d` / `TZ=`, e.g. `America/Los_Angeles`, `Europe/London`) to get local-time rendering in the pretty table.
 
 ## Reliability invariants
 
