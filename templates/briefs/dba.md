@@ -62,7 +62,7 @@ atmux reply "FYI for lead: schema foo.bar is now v3 (migration m-0017)"
 
 ```
 {{ATMUX_DIR}}/kanban.json          — your assigned tasks
-{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json — your inbox
+`atmux inbox {{MEMBER}}` (SQL: {{ATMUX_DIR}}/state.db tasks) — your inbox
 {{ATMUX_DIR}}/lead-outbox.md       — `atmux reply` writes here
 db/                                — schema + migrations (project-dependent)
 ```

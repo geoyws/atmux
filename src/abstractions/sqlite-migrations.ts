@@ -459,4 +459,211 @@ export const migrations: readonly Migration[] = [
       db.exec("ALTER TABLE stories ADD COLUMN merge_mode TEXT DEFAULT 'feature-branch'");
     },
   },
+  // ---------- v10 → v11 ----------
+  // Typed kanban columns: drop reliance on untyped JSON blobs (`extra`,
+  // `deps`, `stories`, `claimed_from`, `created_from`) for core entities.
+  {
+    from: 10,
+    to: 11,
+    up: (db) => {
+      db.exec("ALTER TABLE tasks ADD COLUMN role TEXT");
+      db.exec("ALTER TABLE tasks ADD COLUMN claimed_from_owner TEXT");
+      db.exec("ALTER TABLE tasks ADD COLUMN claimed_from_ts INTEGER");
+      db.exec("ALTER TABLE tasks ADD COLUMN created_from_tag TEXT");
+      db.exec("ALTER TABLE tasks ADD COLUMN created_from_parent_task_id TEXT");
+      db.exec("ALTER TABLE tasks ADD COLUMN created_from_depth INTEGER");
+
+      db.exec(`
+        CREATE TABLE task_deps (
+          task_id TEXT NOT NULL,
+          dep_id TEXT NOT NULL,
+          ord INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (task_id, dep_id)
+        ) STRICT
+      `);
+      db.exec("CREATE INDEX idx_task_deps_dep ON task_deps(dep_id)");
+
+      db.exec("ALTER TABLE epics ADD COLUMN epic_team_name TEXT");
+      db.exec("ALTER TABLE epics ADD COLUMN epic_team_root TEXT");
+      db.exec("ALTER TABLE epics ADD COLUMN pr_number INTEGER");
+      db.exec("ALTER TABLE epics ADD COLUMN pr_state TEXT");
+      db.exec("ALTER TABLE epics ADD COLUMN note TEXT");
+
+      db.exec(`
+        CREATE TABLE story_signoff_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          story_id TEXT NOT NULL,
+          event_kind TEXT NOT NULL,
+          actor TEXT,
+          event_at INTEGER NOT NULL,
+          note TEXT
+        ) STRICT
+      `);
+      db.exec(
+        "CREATE INDEX idx_story_signoff_story ON story_signoff_events(story_id, event_at)",
+      );
+
+      type TaskBackfillRow = {
+        id: string;
+        deps: string | null;
+        extra: string | null;
+        claimed_from: string | null;
+        created_from: string | null;
+      };
+      const taskRows = db
+        .query("SELECT id, deps, extra, claimed_from, created_from FROM tasks")
+        .all() as TaskBackfillRow[];
+      for (const row of taskRows) {
+        if (row.deps !== null && row.deps.length > 0) {
+          try {
+            const deps = JSON.parse(row.deps) as unknown;
+            if (Array.isArray(deps)) {
+              deps.forEach((dep, ord) => {
+                if (typeof dep === "string") {
+                  db.query(
+                    "INSERT OR IGNORE INTO task_deps (task_id, dep_id, ord) VALUES (?, ?, ?)",
+                  ).run(row.id, dep, ord);
+                }
+              });
+            }
+          } catch {
+            /* skip malformed legacy deps */
+          }
+        }
+        if (row.extra !== null && row.extra.length > 0) {
+          try {
+            const extra = JSON.parse(row.extra) as Record<string, unknown>;
+            if (typeof extra.role === "string") {
+              db.query("UPDATE tasks SET role = ? WHERE id = ?").run(extra.role, row.id);
+            }
+          } catch {
+            /* skip */
+          }
+        }
+        if (row.claimed_from !== null && row.claimed_from.length > 0) {
+          if (row.claimed_from.charCodeAt(0) === 0x7b /* '{' */) {
+            try {
+              const o = JSON.parse(row.claimed_from) as Record<string, unknown>;
+              if (typeof o.prevOwner === "string") {
+                db.query("UPDATE tasks SET claimed_from_owner = ? WHERE id = ?").run(
+                  o.prevOwner,
+                  row.id,
+                );
+              }
+              if (typeof o.ts === "number") {
+                db.query("UPDATE tasks SET claimed_from_ts = ? WHERE id = ?").run(o.ts, row.id);
+              }
+            } catch {
+              /* skip */
+            }
+          } else {
+            db.query("UPDATE tasks SET claimed_from_owner = ? WHERE id = ?").run(
+              row.claimed_from,
+              row.id,
+            );
+          }
+        }
+        if (row.created_from !== null && row.created_from.length > 0) {
+          if (row.created_from.charCodeAt(0) === 0x7b /* '{' */) {
+            try {
+              const o = JSON.parse(row.created_from) as Record<string, unknown>;
+              if (typeof o.parentTaskId === "string") {
+                db.query("UPDATE tasks SET created_from_parent_task_id = ? WHERE id = ?").run(
+                  o.parentTaskId,
+                  row.id,
+                );
+              }
+              if (typeof o.depth === "number") {
+                db.query("UPDATE tasks SET created_from_depth = ? WHERE id = ?").run(
+                  o.depth,
+                  row.id,
+                );
+              }
+            } catch {
+              /* skip */
+            }
+          } else {
+            db.query("UPDATE tasks SET created_from_tag = ? WHERE id = ?").run(
+              row.created_from,
+              row.id,
+            );
+          }
+        }
+      }
+
+      type EpicBackfillRow = { id: string; extra: string | null };
+      const epicRows = db
+        .query("SELECT id, extra FROM epics WHERE extra IS NOT NULL")
+        .all() as EpicBackfillRow[];
+      for (const row of epicRows) {
+        if (row.extra === null || row.extra.length === 0) continue;
+        try {
+          const extra = JSON.parse(row.extra) as Record<string, unknown>;
+          if (typeof extra.epicTeamName === "string") {
+            db.query("UPDATE epics SET epic_team_name = ? WHERE id = ?").run(
+              extra.epicTeamName,
+              row.id,
+            );
+          }
+          if (typeof extra.epicTeamRoot === "string") {
+            db.query("UPDATE epics SET epic_team_root = ? WHERE id = ?").run(
+              extra.epicTeamRoot,
+              row.id,
+            );
+          }
+          if (typeof extra.prNumber === "number") {
+            db.query("UPDATE epics SET pr_number = ? WHERE id = ?").run(extra.prNumber, row.id);
+          }
+          if (typeof extra.prState === "string") {
+            db.query("UPDATE epics SET pr_state = ? WHERE id = ?").run(extra.prState, row.id);
+          }
+          if (typeof extra.note === "string") {
+            db.query("UPDATE epics SET note = ? WHERE id = ?").run(extra.note, row.id);
+          }
+        } catch {
+          /* skip */
+        }
+      }
+
+      type StoryBackfillRow = { id: string; extra: string | null };
+      const storyRows = db
+        .query("SELECT id, extra FROM stories WHERE extra IS NOT NULL")
+        .all() as StoryBackfillRow[];
+      for (const row of storyRows) {
+        if (row.extra === null || row.extra.length === 0) continue;
+        try {
+          const extra = JSON.parse(row.extra) as Record<string, unknown>;
+          const audit = extra.signoffAudit;
+          if (!Array.isArray(audit)) continue;
+          for (const entry of audit) {
+            if (typeof entry !== "object" || entry === null) continue;
+            const e = entry as Record<string, unknown>;
+            if (typeof e.signedOffBy === "string" && typeof e.signedOffAt === "number") {
+              db.query(
+                `INSERT INTO story_signoff_events (story_id, event_kind, actor, event_at, note)
+                 VALUES (?, 'signoff', ?, ?, ?)`,
+              ).run(
+                row.id,
+                e.signedOffBy,
+                e.signedOffAt,
+                typeof e.note === "string" ? e.note : null,
+              );
+            } else if (typeof e.unsignedBy === "string" && typeof e.unsignedAt === "number") {
+              db.query(
+                `INSERT INTO story_signoff_events (story_id, event_kind, actor, event_at, note)
+                 VALUES (?, 'unsignoff', ?, ?, ?)`,
+              ).run(
+                row.id,
+                e.unsignedBy,
+                e.unsignedAt,
+                typeof e.note === "string" ? e.note : null,
+              );
+            }
+          }
+        } catch {
+          /* skip */
+        }
+      }
+    },
+  },
 ];

@@ -29,7 +29,6 @@ import {
   buildWindowName,
   getAtmuxDir,
   getSessionName,
-  inboxPathFor,
   kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
@@ -39,7 +38,6 @@ import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.
 import { pauseMember } from "../core/pause.ts";
 import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { type InboxEntry, Inbox as InboxSchema } from "../schema/inbox.ts";
 import { Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 import { defaultSleep, windowExists } from "./rotate.ts";
@@ -264,48 +262,14 @@ export async function migrateTasks(
   return migrated;
 }
 
-/** Mirror `migrated` into to-inbox.inProgress (idempotent unique-by-id),
- *  clear from-inbox.inProgress. Bash handoff.sh:88-105. */
+/** SQL-canonical: kanban owner migration is authoritative; inbox view derives from tasks. */
 export async function migrateInboxes(
-  atmuxDir: string,
-  from: string,
-  to: string,
-  migrated: ReadonlyArray<KanbanTask>,
+  _atmuxDir: string,
+  _from: string,
+  _to: string,
+  _migrated: ReadonlyArray<KanbanTask>,
 ): Promise<void> {
-  const fromPath = inboxPathFor(atmuxDir, from);
-  const toPath = inboxPathFor(atmuxDir, to);
-  if (await exists(fromPath)) {
-    await updateJson(fromPath, InboxSchema, (current) => ({
-      ...current,
-      inProgress: [],
-    }));
-  }
-  // Build the entries to push — bash uses the kanban tasks raw, but the
-  // inbox schema expects `{id, subject?, body?, dispatchedAt?}`. Keep
-  // dispatchedAt as the original task's claimedAt where present, else
-  // `now()`-stamped at migration time.
-  const entries: InboxEntry[] = migrated.map((t) => {
-    const e: InboxEntry = { id: t.id };
-    if (typeof t.subject === "string") e.subject = t.subject;
-    if (typeof t.body === "string") e.body = t.body;
-    return e;
-  });
-  await updateJson(
-    toPath,
-    InboxSchema,
-    (current) => {
-      const seen = new Set(current.inProgress.map((e) => e.id));
-      const merged = [...current.inProgress];
-      for (const e of entries) {
-        if (!seen.has(e.id)) {
-          merged.push(e);
-          seen.add(e.id);
-        }
-      }
-      return { ...current, inProgress: merged };
-    },
-    { initial: { pending: [], inProgress: [], done: [] } },
-  );
+  // No-op — ADR-076 Phase 3: per-member inbox JSON removed; loadInbox reads tasks table.
 }
 
 /** Default file-existence poller — checks `path` every `intervalMs`,

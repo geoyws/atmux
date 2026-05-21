@@ -1,11 +1,8 @@
-// ADR-060 §D3: kanban repository. SQL is owned here; verbs + core/
-// modules see a typed CRUD surface that mirrors the existing
-// `core/kanban.ts` API. Zod stays at the row↔domain bridge so DB
-// constraints + Zod parse are belt-and-suspenders.
+// ADR-060 §D3: kanban repository — typed SQLite columns (v11+).
 //
-// Field naming convention: SQL columns are snake_case; domain
-// objects (TS types) are camelCase. `taskFromRow` / `taskToRow`
-// own the conversion. Future schema work folds into row helpers.
+// Core kanban entities no longer round-trip through untyped JSON blobs
+// (`extra`, JSON-encoded `deps`, etc.). Unknown fields fail at the Zod
+// write boundary instead of landing in a catch-all column.
 
 import type { Database } from "bun:sqlite";
 import {
@@ -17,15 +14,12 @@ import {
   KanbanTask as KanbanTaskSchema,
 } from "../../schema/kanban.ts";
 
-// ---------- Row shapes (SQL columns; raw bun:sqlite output) ----------
-
 interface TaskRow {
   id: string;
   subject: string | null;
   body: string | null;
   status: string | null;
   owner: string | null;
-  deps: string | null;
   priority: number | null;
   epic: string | null;
   story: string | null;
@@ -36,10 +30,13 @@ interface TaskRow {
   created_at: number | null;
   claimed_at: number | null;
   completed_at: number | null;
-  claimed_from: string | null;
-  created_from: string | null;
   note: string | null;
-  extra: string | null;
+  role: string | null;
+  claimed_from_owner: string | null;
+  claimed_from_ts: number | null;
+  created_from_tag: string | null;
+  created_from_parent_task_id: string | null;
+  created_from_depth: number | null;
 }
 
 interface EpicRow {
@@ -50,8 +47,11 @@ interface EpicRow {
   driver_ref: string | null;
   created_at: number | null;
   completed_at: number | null;
-  stories: string | null;
-  extra: string | null;
+  epic_team_name: string | null;
+  epic_team_root: string | null;
+  pr_number: number | null;
+  pr_state: string | null;
+  note: string | null;
 }
 
 interface StoryRow {
@@ -67,66 +67,41 @@ interface StoryRow {
   review_signoff: number | null;
   merge_task_id: string | null;
   merge_mode: string | null;
-  extra: string | null;
 }
 
-// ---------- Row ↔ domain bridges ----------
-
-/** Encode a string-or-object value for SQLite TEXT storage. Strings store
- *  verbatim (so `_maybeParseJsonValue` returns them as strings). Objects
- *  serialize as JSON. Null/undefined → null. Used for `claimedFrom` /
- *  `createdFrom` which bash atmux writes in either shape (per src/schema/
- *  kanban.ts comment for those fields). */
-function _maybeStringifyValue(v: unknown): string | null {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "string") return v;
-  return JSON.stringify(v);
+interface SignoffEventRow {
+  event_kind: string;
+  actor: string | null;
+  event_at: number;
+  note: string | null;
 }
 
-/** Inverse of `_maybeStringifyValue`. A stored string that PARSES to a JSON
- *  object round-trips back to the object; anything else (plain tags like
- *  `"commit"`, `"dispatch"`, member names) returns as-is. */
-function _maybeParseJsonValue(s: string | null): unknown {
-  if (s === null) return null;
-  if (s.length === 0 || s.charCodeAt(0) !== 0x7b /* '{' */) return s;
-  try {
-    return JSON.parse(s);
-  } catch {
-    return s;
+function _claimedFromFromRow(row: TaskRow): KanbanTask["claimedFrom"] {
+  if (row.claimed_from_owner !== null && row.claimed_from_ts !== null) {
+    return { prevOwner: row.claimed_from_owner, ts: row.claimed_from_ts };
   }
+  if (row.claimed_from_owner !== null) return row.claimed_from_owner;
+  return undefined;
 }
 
-const KNOWN_TASK_FIELDS = new Set([
-  "id",
-  "subject",
-  "body",
-  "status",
-  "owner",
-  "deps",
-  "priority",
-  "epic",
-  "story",
-  "lane",
-  "deliverable",
-  "staleMin",
-  "driverOnly",
-  "createdAt",
-  "claimedAt",
-  "completedAt",
-  "claimedFrom",
-  "createdFrom",
-  "note",
-]);
+function _createdFromFromRow(row: TaskRow): KanbanTask["createdFrom"] {
+  if (row.created_from_parent_task_id !== null) {
+    const out: Record<string, unknown> = { parentTaskId: row.created_from_parent_task_id };
+    if (row.created_from_depth !== null) out.depth = row.created_from_depth;
+    return out;
+  }
+  if (row.created_from_tag !== null) return row.created_from_tag;
+  return undefined;
+}
 
-export function taskFromRow(row: TaskRow): KanbanTask {
-  const extra = row.extra ? (JSON.parse(row.extra) as Record<string, unknown>) : {};
-  const candidate: Record<string, unknown> = {
+export function taskFromRow(row: TaskRow, deps: ReadonlyArray<string> = []): KanbanTask {
+  return KanbanTaskSchema.parse({
     id: row.id,
     subject: row.subject ?? undefined,
     body: row.body,
     status: row.status ?? undefined,
     owner: row.owner,
-    deps: row.deps ? JSON.parse(row.deps) : undefined,
+    deps: [...deps],
     priority: row.priority,
     epic: row.epic,
     story: row.story,
@@ -137,26 +112,43 @@ export function taskFromRow(row: TaskRow): KanbanTask {
     createdAt: row.created_at ?? undefined,
     claimedAt: row.claimed_at,
     completedAt: row.completed_at,
-    claimedFrom: _maybeParseJsonValue(row.claimed_from),
-    createdFrom: _maybeParseJsonValue(row.created_from),
+    claimedFrom: _claimedFromFromRow(row),
+    createdFrom: _createdFromFromRow(row),
     note: row.note,
-    ...extra,
-  };
-  return KanbanTaskSchema.parse(candidate);
+    role: row.role,
+  });
 }
 
 export function taskToRow(task: KanbanTask): TaskRow {
-  const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(task)) {
-    if (!KNOWN_TASK_FIELDS.has(k)) extra[k] = v;
+  let claimedFromOwner: string | null = null;
+  let claimedFromTs: number | null = null;
+  const cf = task.claimedFrom;
+  if (typeof cf === "string") {
+    claimedFromOwner = cf;
+  } else if (cf !== null && cf !== undefined && typeof cf === "object") {
+    const o = cf as Record<string, unknown>;
+    if (typeof o.prevOwner === "string") claimedFromOwner = o.prevOwner;
+    if (typeof o.ts === "number") claimedFromTs = o.ts;
   }
+
+  let createdFromTag: string | null = null;
+  let createdFromParent: string | null = null;
+  let createdFromDepth: number | null = null;
+  const cr = task.createdFrom;
+  if (typeof cr === "string") {
+    createdFromTag = cr;
+  } else if (cr !== null && cr !== undefined && typeof cr === "object") {
+    const o = cr as Record<string, unknown>;
+    if (typeof o.parentTaskId === "string") createdFromParent = o.parentTaskId;
+    if (typeof o.depth === "number") createdFromDepth = o.depth;
+  }
+
   return {
     id: task.id,
     subject: task.subject ?? null,
     body: task.body ?? null,
     status: task.status ?? null,
     owner: task.owner ?? null,
-    deps: task.deps ? JSON.stringify(task.deps) : null,
     priority: task.priority ?? null,
     epic: task.epic ?? null,
     story: task.story ?? null,
@@ -167,26 +159,17 @@ export function taskToRow(task: KanbanTask): TaskRow {
     created_at: task.createdAt ?? null,
     claimed_at: task.claimedAt ?? null,
     completed_at: task.completedAt ?? null,
-    claimed_from: _maybeStringifyValue(task.claimedFrom),
-    created_from: _maybeStringifyValue(task.createdFrom),
     note: task.note ?? null,
-    extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
+    role: task.role ?? null,
+    claimed_from_owner: claimedFromOwner,
+    claimed_from_ts: claimedFromTs,
+    created_from_tag: createdFromTag,
+    created_from_parent_task_id: createdFromParent,
+    created_from_depth: createdFromDepth,
   };
 }
 
-const KNOWN_EPIC_FIELDS = new Set([
-  "id",
-  "title",
-  "body",
-  "status",
-  "driverRef",
-  "createdAt",
-  "completedAt",
-  "stories",
-]);
-
-export function epicFromRow(row: EpicRow): KanbanEpic {
-  const extra = row.extra ? (JSON.parse(row.extra) as Record<string, unknown>) : {};
+export function epicFromRow(row: EpicRow, stories: ReadonlyArray<string> = []): KanbanEpic {
   return KanbanEpicSchema.parse({
     id: row.id,
     title: row.title ?? undefined,
@@ -195,16 +178,16 @@ export function epicFromRow(row: EpicRow): KanbanEpic {
     driverRef: row.driver_ref,
     createdAt: row.created_at ?? undefined,
     completedAt: row.completed_at,
-    stories: row.stories ? JSON.parse(row.stories) : undefined,
-    ...extra,
+    stories: stories.length > 0 ? [...stories] : undefined,
+    epicTeamName: row.epic_team_name,
+    epicTeamRoot: row.epic_team_root,
+    prNumber: row.pr_number,
+    prState: row.pr_state,
+    note: row.note,
   });
 }
 
 export function epicToRow(epic: KanbanEpic): EpicRow {
-  const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(epic)) {
-    if (!KNOWN_EPIC_FIELDS.has(k)) extra[k] = v;
-  }
   return {
     id: epic.id,
     title: epic.title ?? null,
@@ -213,28 +196,36 @@ export function epicToRow(epic: KanbanEpic): EpicRow {
     driver_ref: epic.driverRef ?? null,
     created_at: epic.createdAt ?? null,
     completed_at: epic.completedAt ?? null,
-    stories: epic.stories ? JSON.stringify(epic.stories) : null,
-    extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
+    epic_team_name: epic.epicTeamName ?? null,
+    epic_team_root: epic.epicTeamRoot ?? null,
+    pr_number: epic.prNumber ?? null,
+    pr_state: epic.prState ?? null,
+    note: epic.note ?? null,
   };
 }
 
-const KNOWN_STORY_FIELDS = new Set([
-  "id",
-  "epic",
-  "title",
-  "body",
-  "acceptanceCriteria",
-  "status",
-  "createdAt",
-  "completedAt",
-  "advancedAt",
-  "reviewSignoff",
-  "mergeTaskId",
-  "mergeMode",
-]);
+function _signoffAuditFromEvents(rows: ReadonlyArray<SignoffEventRow>): KanbanStory["signoffAudit"] {
+  if (rows.length === 0) return undefined;
+  return rows.map((r) => {
+    if (r.event_kind === "unsignoff") {
+      return {
+        unsignedBy: r.actor ?? "",
+        unsignedAt: r.event_at,
+        note: r.note,
+      };
+    }
+    return {
+      signedOffBy: r.actor ?? "",
+      signedOffAt: r.event_at,
+      note: r.note,
+    };
+  });
+}
 
-export function storyFromRow(row: StoryRow): KanbanStory {
-  const extra = row.extra ? (JSON.parse(row.extra) as Record<string, unknown>) : {};
+export function storyFromRow(
+  row: StoryRow,
+  signoffEvents: ReadonlyArray<SignoffEventRow> = [],
+): KanbanStory {
   return KanbanStorySchema.parse({
     id: row.id,
     epic: row.epic,
@@ -247,19 +238,12 @@ export function storyFromRow(row: StoryRow): KanbanStory {
     advancedAt: row.advanced_at,
     reviewSignoff: row.review_signoff === null ? undefined : row.review_signoff === 1,
     mergeTaskId: row.merge_task_id,
-    // ADR-175 GAP 2: NULL column → undefined → Zod `.default('feature-branch')`.
-    // Pre-v10 rows + freshly-INSERTed rows that did not pass merge_mode
-    // both land here as NULL; Zod default backfills both paths.
     mergeMode: row.merge_mode ?? undefined,
-    ...extra,
+    signoffAudit: _signoffAuditFromEvents(signoffEvents),
   });
 }
 
 export function storyToRow(story: KanbanStory): StoryRow {
-  const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(story)) {
-    if (!KNOWN_STORY_FIELDS.has(k)) extra[k] = v;
-  }
   return {
     id: story.id,
     epic: story.epic ?? null,
@@ -273,16 +257,9 @@ export function storyToRow(story: KanbanStory): StoryRow {
     review_signoff: story.reviewSignoff === undefined ? null : story.reviewSignoff ? 1 : 0,
     merge_task_id: story.mergeTaskId ?? null,
     merge_mode: story.mergeMode ?? null,
-    extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
   };
 }
 
-// ---------- Bind-param helper ----------
-
-/** bun:sqlite named-bind expects keys prefixed with `$` (matches the SQL
- *  placeholder syntax `$col`). Row interfaces use bare column names; this
- *  helper prefixes at the call site. Return type narrowed to the
- *  `SQLQueryBindings` value union bun:sqlite accepts. */
 type BindValue = string | number | null;
 function bind(row: TaskRow | EpicRow | StoryRow): Record<string, BindValue> {
   const out: Record<string, BindValue> = {};
@@ -290,7 +267,34 @@ function bind(row: TaskRow | EpicRow | StoryRow): Record<string, BindValue> {
   return out;
 }
 
-// ---------- Repository ----------
+const TASK_COLS = `
+  id, subject, body, status, owner, priority, epic, story, lane, deliverable,
+  stale_min, driver_only, created_at, claimed_at, completed_at, note, role,
+  claimed_from_owner, claimed_from_ts, created_from_tag, created_from_parent_task_id,
+  created_from_depth
+`;
+
+const TASK_INSERT = `
+  INSERT INTO tasks (${TASK_COLS})
+  VALUES ($id, $subject, $body, $status, $owner, $priority, $epic, $story, $lane,
+          $deliverable, $stale_min, $driver_only, $created_at, $claimed_at, $completed_at,
+          $note, $role, $claimed_from_owner, $claimed_from_ts, $created_from_tag,
+          $created_from_parent_task_id, $created_from_depth)
+`;
+
+const TASK_UPSERT = `
+  ON CONFLICT(id) DO UPDATE SET
+    subject=excluded.subject, body=excluded.body, status=excluded.status,
+    owner=excluded.owner, priority=excluded.priority, epic=excluded.epic,
+    story=excluded.story, lane=excluded.lane, deliverable=excluded.deliverable,
+    stale_min=excluded.stale_min, driver_only=excluded.driver_only,
+    created_at=excluded.created_at, claimed_at=excluded.claimed_at,
+    completed_at=excluded.completed_at, note=excluded.note, role=excluded.role,
+    claimed_from_owner=excluded.claimed_from_owner, claimed_from_ts=excluded.claimed_from_ts,
+    created_from_tag=excluded.created_from_tag,
+    created_from_parent_task_id=excluded.created_from_parent_task_id,
+    created_from_depth=excluded.created_from_depth
+`;
 
 export interface TaskFilter {
   owner?: string;
@@ -303,54 +307,101 @@ export interface TaskFilter {
 export class KanbanRepo {
   constructor(private db: Database) {}
 
-  // ----- task CRUD -----
+  private _listTaskDeps(taskId: string): string[] {
+    const rows = this.db
+      .query("SELECT dep_id FROM task_deps WHERE task_id = $id ORDER BY ord ASC, dep_id ASC")
+      .all({ $id: taskId }) as Array<{ dep_id: string }>;
+    return rows.map((r) => r.dep_id);
+  }
+
+  private _writeTaskDeps(taskId: string, deps: ReadonlyArray<string> | undefined): void {
+    this.db.query("DELETE FROM task_deps WHERE task_id = $id").run({ $id: taskId });
+    if (deps === undefined) return;
+    deps.forEach((depId, ord) => {
+      this.db
+        .query("INSERT INTO task_deps (task_id, dep_id, ord) VALUES ($taskId, $depId, $ord)")
+        .run({ $taskId: taskId, $depId: depId, $ord: ord });
+    });
+  }
+
+  private _taskFromDbRow(row: TaskRow): KanbanTask {
+    return taskFromRow(row, this._listTaskDeps(row.id));
+  }
+
+  private _listEpicStoryIds(epicId: string): string[] {
+    const rows = this.db
+      .query("SELECT id FROM stories WHERE epic = $epic ORDER BY created_at ASC, id ASC")
+      .all({ $epic: epicId }) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  private _listSignoffEvents(storyId: string): SignoffEventRow[] {
+    return this.db
+      .query(
+        `SELECT event_kind, actor, event_at, note FROM story_signoff_events
+         WHERE story_id = $id ORDER BY event_at ASC, id ASC`,
+      )
+      .all({ $id: storyId }) as SignoffEventRow[];
+  }
+
+  private _writeSignoffEvents(
+    storyId: string,
+    audit: KanbanStory["signoffAudit"],
+  ): void {
+    this.db.query("DELETE FROM story_signoff_events WHERE story_id = $id").run({ $id: storyId });
+    if (!Array.isArray(audit)) return;
+    for (const entry of audit) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const e = entry as Record<string, unknown>;
+      if (typeof e.signedOffBy === "string" && typeof e.signedOffAt === "number") {
+        this.db
+          .query(
+            `INSERT INTO story_signoff_events (story_id, event_kind, actor, event_at, note)
+             VALUES ($storyId, 'signoff', $actor, $eventAt, $note)`,
+          )
+          .run({
+            $storyId: storyId,
+            $actor: e.signedOffBy,
+            $eventAt: e.signedOffAt,
+            $note: typeof e.note === "string" ? e.note : null,
+          });
+      } else if (typeof e.unsignedBy === "string" && typeof e.unsignedAt === "number") {
+        this.db
+          .query(
+            `INSERT INTO story_signoff_events (story_id, event_kind, actor, event_at, note)
+             VALUES ($storyId, 'unsignoff', $actor, $eventAt, $note)`,
+          )
+          .run({
+            $storyId: storyId,
+            $actor: e.unsignedBy,
+            $eventAt: e.unsignedAt,
+            $note: typeof e.note === "string" ? e.note : null,
+          });
+      }
+    }
+  }
 
   addTask(task: KanbanTask): void {
     const row = taskToRow(task);
-    this.db
-      .query(
-        `INSERT INTO tasks (id, subject, body, status, owner, deps, priority,
-				                    epic, story, lane, deliverable, stale_min, driver_only,
-				                    created_at, claimed_at, completed_at, claimed_from,
-				                    created_from, note, extra)
-				 VALUES ($id, $subject, $body, $status, $owner, $deps, $priority,
-				         $epic, $story, $lane, $deliverable, $stale_min, $driver_only,
-				         $created_at, $claimed_at, $completed_at, $claimed_from,
-				         $created_from, $note, $extra)`,
-      )
-      .run(bind(row));
+    this.db.query(`${TASK_INSERT}`).run(bind(row));
+    if (task.deps !== undefined) {
+      this._writeTaskDeps(task.id, task.deps);
+    }
   }
 
   upsertTask(task: KanbanTask): void {
     const row = taskToRow(task);
-    this.db
-      .query(
-        `INSERT INTO tasks (id, subject, body, status, owner, deps, priority,
-				                    epic, story, lane, deliverable, stale_min, driver_only,
-				                    created_at, claimed_at, completed_at, claimed_from,
-				                    created_from, note, extra)
-				 VALUES ($id, $subject, $body, $status, $owner, $deps, $priority,
-				         $epic, $story, $lane, $deliverable, $stale_min, $driver_only,
-				         $created_at, $claimed_at, $completed_at, $claimed_from,
-				         $created_from, $note, $extra)
-				 ON CONFLICT(id) DO UPDATE SET
-				   subject=excluded.subject, body=excluded.body, status=excluded.status,
-				   owner=excluded.owner, deps=excluded.deps, priority=excluded.priority,
-				   epic=excluded.epic, story=excluded.story, lane=excluded.lane,
-				   deliverable=excluded.deliverable, stale_min=excluded.stale_min,
-				   driver_only=excluded.driver_only, created_at=excluded.created_at,
-				   claimed_at=excluded.claimed_at, completed_at=excluded.completed_at,
-				   claimed_from=excluded.claimed_from, created_from=excluded.created_from,
-				   note=excluded.note, extra=excluded.extra`,
-      )
-      .run(bind(row));
+    this.db.query(`${TASK_INSERT} ${TASK_UPSERT}`).run(bind(row));
+    if (task.deps !== undefined) {
+      this._writeTaskDeps(task.id, task.deps);
+    }
   }
 
   getTask(id: string): KanbanTask | null {
     const row = this.db
-      .query("SELECT * FROM tasks WHERE id = $id")
+      .query(`SELECT ${TASK_COLS} FROM tasks WHERE id = $id`)
       .get({ $id: id }) as TaskRow | null;
-    return row ? taskFromRow(row) : null;
+    return row ? this._taskFromDbRow(row) : null;
   }
 
   listTasks(filter: TaskFilter = {}): KanbanTask[] {
@@ -376,85 +427,99 @@ export class KanbanRepo {
       where.push("story = $story");
       params.$story = filter.story;
     }
-    const sql = `SELECT * FROM tasks${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at ASC, id ASC`;
+    const sql = `SELECT ${TASK_COLS} FROM tasks${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at ASC, id ASC`;
     const rows = this.db.query(sql).all(params) as TaskRow[];
-    return rows.map(taskFromRow);
+    return rows.map((row) => this._taskFromDbRow(row));
   }
 
   deleteTask(id: string): boolean {
+    this.db.query("DELETE FROM task_deps WHERE task_id = $id").run({ $id: id });
     const result = this.db.query("DELETE FROM tasks WHERE id = $id").run({ $id: id });
     return result.changes > 0;
   }
-
-  // ----- epic CRUD -----
 
   upsertEpic(epic: KanbanEpic): void {
     const row = epicToRow(epic);
     this.db
       .query(
-        `INSERT INTO epics (id, title, body, status, driver_ref, created_at,
-				                    completed_at, stories, extra)
-				 VALUES ($id, $title, $body, $status, $driver_ref, $created_at,
-				         $completed_at, $stories, $extra)
-				 ON CONFLICT(id) DO UPDATE SET
-				   title=excluded.title, body=excluded.body, status=excluded.status,
-				   driver_ref=excluded.driver_ref, created_at=excluded.created_at,
-				   completed_at=excluded.completed_at, stories=excluded.stories,
-				   extra=excluded.extra`,
+        `INSERT INTO epics (id, title, body, status, driver_ref, created_at, completed_at,
+                            epic_team_name, epic_team_root, pr_number, pr_state, note)
+         VALUES ($id, $title, $body, $status, $driver_ref, $created_at, $completed_at,
+                 $epic_team_name, $epic_team_root, $pr_number, $pr_state, $note)
+         ON CONFLICT(id) DO UPDATE SET
+           title=excluded.title, body=excluded.body, status=excluded.status,
+           driver_ref=excluded.driver_ref, created_at=excluded.created_at,
+           completed_at=excluded.completed_at, epic_team_name=excluded.epic_team_name,
+           epic_team_root=excluded.epic_team_root, pr_number=excluded.pr_number,
+           pr_state=excluded.pr_state, note=excluded.note`,
       )
       .run(bind(row));
   }
 
   getEpic(id: string): KanbanEpic | null {
     const row = this.db
-      .query("SELECT * FROM epics WHERE id = $id")
+      .query(
+        `SELECT id, title, body, status, driver_ref, created_at, completed_at,
+                epic_team_name, epic_team_root, pr_number, pr_state, note
+         FROM epics WHERE id = $id`,
+      )
       .get({ $id: id }) as EpicRow | null;
-    return row ? epicFromRow(row) : null;
+    return row ? epicFromRow(row, this._listEpicStoryIds(id)) : null;
   }
 
   listEpics(): KanbanEpic[] {
     const rows = this.db
-      .query("SELECT * FROM epics ORDER BY created_at ASC, id ASC")
+      .query(
+        `SELECT id, title, body, status, driver_ref, created_at, completed_at,
+                epic_team_name, epic_team_root, pr_number, pr_state, note
+         FROM epics ORDER BY created_at ASC, id ASC`,
+      )
       .all() as EpicRow[];
-    return rows.map(epicFromRow);
+    return rows.map((row) => epicFromRow(row, this._listEpicStoryIds(row.id)));
   }
-
-  // ----- story CRUD -----
 
   upsertStory(story: KanbanStory): void {
     const row = storyToRow(story);
     this.db
       .query(
         `INSERT INTO stories (id, epic, title, body, acceptance_criteria, status,
-				                      created_at, completed_at, advanced_at, review_signoff,
-				                      merge_task_id, merge_mode, extra)
-				 VALUES ($id, $epic, $title, $body, $acceptance_criteria, $status,
-				         $created_at, $completed_at, $advanced_at, $review_signoff,
-				         $merge_task_id, $merge_mode, $extra)
-				 ON CONFLICT(id) DO UPDATE SET
-				   epic=excluded.epic, title=excluded.title, body=excluded.body,
-				   acceptance_criteria=excluded.acceptance_criteria, status=excluded.status,
-				   created_at=excluded.created_at, completed_at=excluded.completed_at,
-				   advanced_at=excluded.advanced_at, review_signoff=excluded.review_signoff,
-				   merge_task_id=excluded.merge_task_id, merge_mode=excluded.merge_mode,
-				   extra=excluded.extra`,
+                              created_at, completed_at, advanced_at, review_signoff,
+                              merge_task_id, merge_mode)
+         VALUES ($id, $epic, $title, $body, $acceptance_criteria, $status,
+                 $created_at, $completed_at, $advanced_at, $review_signoff,
+                 $merge_task_id, $merge_mode)
+         ON CONFLICT(id) DO UPDATE SET
+           epic=excluded.epic, title=excluded.title, body=excluded.body,
+           acceptance_criteria=excluded.acceptance_criteria, status=excluded.status,
+           created_at=excluded.created_at, completed_at=excluded.completed_at,
+           advanced_at=excluded.advanced_at, review_signoff=excluded.review_signoff,
+           merge_task_id=excluded.merge_task_id, merge_mode=excluded.merge_mode`,
       )
       .run(bind(row));
+    this._writeSignoffEvents(story.id, story.signoffAudit);
   }
 
   getStory(id: string): KanbanStory | null {
     const row = this.db
-      .query("SELECT * FROM stories WHERE id = $id")
+      .query(
+        `SELECT id, epic, title, body, acceptance_criteria, status, created_at,
+                completed_at, advanced_at, review_signoff, merge_task_id, merge_mode
+         FROM stories WHERE id = $id`,
+      )
       .get({ $id: id }) as StoryRow | null;
-    return row ? storyFromRow(row) : null;
+    return row ? storyFromRow(row, this._listSignoffEvents(id)) : null;
   }
 
   listStories(filter: { epic?: string } = {}): KanbanStory[] {
     const sql = filter.epic
-      ? "SELECT * FROM stories WHERE epic = $epic ORDER BY created_at ASC, id ASC"
-      : "SELECT * FROM stories ORDER BY created_at ASC, id ASC";
+      ? `SELECT id, epic, title, body, acceptance_criteria, status, created_at,
+                completed_at, advanced_at, review_signoff, merge_task_id, merge_mode
+         FROM stories WHERE epic = $epic ORDER BY created_at ASC, id ASC`
+      : `SELECT id, epic, title, body, acceptance_criteria, status, created_at,
+                completed_at, advanced_at, review_signoff, merge_task_id, merge_mode
+         FROM stories ORDER BY created_at ASC, id ASC`;
     const params = filter.epic ? { $epic: filter.epic } : {};
     const rows = this.db.query(sql).all(params) as StoryRow[];
-    return rows.map(storyFromRow);
+    return rows.map((row) => storyFromRow(row, this._listSignoffEvents(row.id)));
   }
 }

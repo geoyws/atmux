@@ -723,7 +723,7 @@ describe("findLegacyInboxJson", () => {
     expect(rows[0]?.status).toBe("yellow");
     expect(rows[0]?.label).toBe("legacy-inbox-json");
     expect(rows[0]?.detail).toContain("gitter.json");
-    expect(rows[0]?.hint).toContain("atmux cleanup inboxes --purge-legacy");
+    expect(rows[0]?.hint).toContain("atmux cleanup inboxes");
   });
 });
 

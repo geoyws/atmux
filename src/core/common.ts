@@ -19,6 +19,8 @@ import { dirname, join, resolve } from "node:path";
 import { ensureDir, exists, readTextOrNull } from "../abstractions/fs.ts";
 import { readJson, tryReadJson } from "../abstractions/json.ts";
 import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
+import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
 
@@ -157,10 +159,18 @@ export function sessionAnchorPath(atmuxDir: string): string {
 /** Bash `atmux::ensure_dirs` — mkdir -p for the standard layout. */
 export async function ensureAtmuxDirs(atmuxDir: string): Promise<void> {
   await ensureDir(atmuxDir);
-  await ensureDir(inboxDir(atmuxDir));
   await ensureDir(logsDir(atmuxDir));
   await ensureDir(stateDir(atmuxDir));
   await ensureDir(archiveDir(atmuxDir));
+}
+
+/** Provision an empty `state.db` with migrations applied (idempotent). */
+export async function ensureStateDb(atmuxDir: string): Promise<void> {
+  const dbPath = join(atmuxDir, "state.db");
+  if (await exists(dbPath)) return;
+  await ensureDir(atmuxDir);
+  const db = openDatabase(dbPath, migrations);
+  closeDatabase(db);
 }
 
 // ---------- Team load ----------

@@ -369,55 +369,10 @@ describe("migrateTasks + migrateInboxes (kanban + inbox migration)", () => {
     expect(migrated.every((t) => t.owner === "bravo")).toBe(true);
   });
 
-  test("migrateInboxes — empties from-inbox.inProgress, appends to to-inbox", async () => {
-    // Pre-stage from-inbox with two entries; to-inbox absent (will be
-    // first-run-initted by updateJson).
-    await writeFile(
-      join(atmuxDir, "inboxes", "alpha.json"),
-      JSON.stringify({
-        pending: [],
-        inProgress: [{ id: "t-1" }, { id: "t-2" }],
-        done: [],
-      }),
-    );
+  test("migrateInboxes is a no-op (SQL inbox derives from tasks table)", async () => {
     const migrated = await migrateTasks(atmuxDir, "alpha", "bravo");
     await migrateInboxes(atmuxDir, "alpha", "bravo", migrated);
-    const fromInbox = JSON.parse(await readFile(join(atmuxDir, "inboxes", "alpha.json"), "utf8"));
-    expect(fromInbox.inProgress).toEqual([]);
-    const toInbox = JSON.parse(await readFile(join(atmuxDir, "inboxes", "bravo.json"), "utf8"));
-    expect(toInbox.inProgress.map((e: { id: string }) => e.id).sort()).toEqual(["t-1", "t-2"]);
-    expect(toInbox.inProgress[0].subject).toBeDefined();
-  });
-
-  test("migrateInboxes is idempotent (re-run does not duplicate)", async () => {
-    const migrated = await migrateTasks(atmuxDir, "alpha", "bravo");
-    await migrateInboxes(atmuxDir, "alpha", "bravo", migrated);
-    await migrateInboxes(atmuxDir, "alpha", "bravo", migrated);
-    const toInbox = JSON.parse(await readFile(join(atmuxDir, "inboxes", "bravo.json"), "utf8"));
-    expect(toInbox.inProgress.length).toBe(2);
-  });
-
-  test("migrateInboxes — body field preserved when present on kanban task", async () => {
-    // Add a body to t-1 first.
-    await addTask(atmuxDir, { subject: "with body", body: "body-x", assignee: "alpha" });
-    const migrated = await migrateTasks(atmuxDir, "alpha", "bravo");
-    await migrateInboxes(atmuxDir, "alpha", "bravo", migrated);
-    const toInbox = JSON.parse(await readFile(join(atmuxDir, "inboxes", "bravo.json"), "utf8"));
-    const withBody = toInbox.inProgress.find(
-      (e: { body?: string; subject?: string }) => e.body === "body-x",
-    );
-    // addTask defaults to status="todo" (not in-progress), so it
-    // SHOULD NOT be migrated. Confirms the filter is doing its job.
-    expect(withBody).toBeUndefined();
-  });
-
-  test("migrateInboxes silently skips when from-inbox file is absent", async () => {
-    // No alpha.json staged. Should not throw — bash bash if [[ -f ]]
-    // guard at handoff.sh:100.
-    const migrated = await migrateTasks(atmuxDir, "alpha", "bravo");
-    await migrateInboxes(atmuxDir, "alpha", "bravo", migrated);
-    const toInbox = JSON.parse(await readFile(join(atmuxDir, "inboxes", "bravo.json"), "utf8"));
-    expect(toInbox.inProgress.length).toBe(2);
+    expect(migrated.map((t) => t.id).sort()).toEqual(["t-1", "t-2"]);
   });
 });
 

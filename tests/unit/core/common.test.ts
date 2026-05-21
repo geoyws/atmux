@@ -168,7 +168,6 @@ describe("ensureAtmuxDirs", () => {
     await ensureAtmuxDirs(atmuxDir);
     const { stat } = await import("node:fs/promises");
     expect((await stat(atmuxDir)).isDirectory()).toBe(true);
-    expect((await stat(inboxDir(atmuxDir))).isDirectory()).toBe(true);
     expect((await stat(logsDir(atmuxDir))).isDirectory()).toBe(true);
     expect((await stat(stateDir(atmuxDir))).isDirectory()).toBe(true);
     expect((await stat(archiveDir(atmuxDir))).isDirectory()).toBe(true);

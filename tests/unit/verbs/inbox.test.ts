@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendDispatched } from "../../../src/core/inbox.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { inbox, parseInboxArgs } from "../../../src/verbs/inbox.ts";
 
@@ -20,6 +22,8 @@ beforeEach(async () => {
     join(atmuxDir, "team.json"),
     JSON.stringify({ name: "team", members: [{ name: "alpha" }] }),
   );
+  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  closeDatabase(db);
 });
 
 afterEach(async () => {
@@ -95,12 +99,15 @@ describe("inbox verb — integration", () => {
   });
 
   test("populated inProgress shows id + subject", async () => {
-    await appendDispatched(
-      atmuxDir,
-      "alpha",
-      { id: "t-aaaaaaaa", subject: "ship X", status: "in-progress", deps: [] },
-      1,
-    );
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    new KanbanRepo(db).upsertTask({
+      id: "t-aaaaaaaa",
+      subject: "ship X",
+      status: "in-progress",
+      owner: "alpha",
+      deps: [],
+    });
+    closeDatabase(db);
     const { out } = await captureStdout(() => inbox(["alpha", "--team-dir", teamDir]));
     expect(out).toContain("t-aaaaaaaa");
     expect(out).toContain("ship X");

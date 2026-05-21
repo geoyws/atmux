@@ -28,12 +28,6 @@ import {
   resolveCallerScope,
 } from "../core/common.ts";
 import {
-  appendDispatched,
-  loadInbox,
-  moveInProgressToDone,
-  movePendingToInProgress,
-} from "../core/inbox.ts";
-import {
   claimTask,
   claimTaskForMember,
   listTasks,
@@ -183,7 +177,7 @@ export async function claim(argv: ReadonlyArray<string>): Promise<number> {
   // inbox-mirror write.
   const callerScope = resolveCallerScope();
   const { pre } = await claimTaskForMember(atmuxDir, parsed.id, who, { callerScope });
-  await movePendingToInProgress(atmuxDir, who, pre, claimedAt);
+  void pre;
 
   process.stdout.write(`${who} claimed ${parsed.id}\n`);
   // Suppress unused-var warning — dirOpts is only needed to thread
@@ -249,7 +243,8 @@ async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
   // wrapper so a concurrent member who claimed this candidate between
   // selectNextClaimable + claim still loses the race cleanly.
   const { pre } = await claimTaskForMember(atmuxDir, candidate.id, who);
-  await movePendingToInProgress(atmuxDir, who, pre, claimedAt);
+  void pre;
+  void claimedAt;
 
   process.stdout.write(`${who} claimed ${candidate.id}\n`);
   return 0;
@@ -284,11 +279,8 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
   // predicate as taskMove `done` transitions inside its transaction.
   const callerScope = resolveCallerScope();
   await markTaskDone(atmuxDir, parsed.id, parsed.note, { callerScope });
-
-  // Inbox mirror: bash does this only if the task is already in the
-  // member's inbox.inProgress; if missing, it's a no-op-on-pending +
-  // append-to-done. Mirror exactly.
-  await moveInProgressToDone(atmuxDir, who, pre, completedAt);
+  void pre;
+  void completedAt;
 
   process.stdout.write(`${who} completed ${parsed.id}\n`);
 
@@ -343,7 +335,3 @@ async function resolveContext(
   return { who, dirOpts, atmuxDir };
 }
 
-// Re-export inbox helper for tests that want to stage a "task already
-// in inbox" state without going through dispatch verb. Keeps the test
-// file from importing two paths for what's conceptually one helper.
-export { appendDispatched, loadInbox };

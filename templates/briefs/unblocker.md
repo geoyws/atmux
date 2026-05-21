@@ -92,7 +92,7 @@ The 4-step per-tick loop:
 3. **Never `task move <id> blocked → todo` autonomously.** Surface the recommendation; lead/driver mutates the kanban.
 4. **Never `tmux send-keys /clear` without lead approval.** Default action is nudge or surface; clear is lead's call.
 
-When a tick lands you a fresh ask in `{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json` (lead dispatched a triage Task explicitly), reply via `atmux done <task-id> --note "<classification + action taken>"`.
+When a tick lands you a fresh ask via `atmux inbox {{MEMBER}}` (lead dispatched a triage Task explicitly), reply via `atmux done <task-id> --note "<classification + action taken>"`.
 
 ## Pane detection — git-state escalation ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
 
@@ -131,7 +131,7 @@ For both shapes, the unblocker does NOT execute pushes, NOT propose pushes in `a
 
 ```
 {{ATMUX_DIR}}/kanban.json                       — read for blocked + stale-in-progress Tasks
-{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json           — explicit unblock asks from lead land here
+`atmux inbox {{MEMBER}}` (SQL: {{ATMUX_DIR}}/state.db tasks) — explicit unblock asks from lead land here
 {{ATMUX_DIR}}/lead-outbox.md                    — your `atmux reply` surfaces land here
 {{ATMUX_DIR}}/driver-inbox.md                   — escalation surface for git-state anomalies + driver-needed wedges
 {{ATMUX_DIR}}/flags.md                          — your `atmux flag` writes here

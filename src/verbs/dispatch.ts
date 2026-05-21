@@ -36,7 +36,6 @@ import {
   resolveWindowWithRenameShim,
   type WindowShimOps,
 } from "../core/common.ts";
-import { appendDispatched, removeFromInProgress } from "../core/inbox.ts";
 import { claimTask, showTask } from "../core/kanban.ts";
 import { isPaused } from "../core/pause.ts";
 import { verifierForTui } from "../core/safe-send.ts";
@@ -166,9 +165,8 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       : null;
   if (oldOwner !== null && oldOwner !== parsed.member) {
     process.stderr.write(
-      `atmux: warn: dispatch: reassigning ${parsed.id} from ${oldOwner} to ${parsed.member} (draining old owner's inbox)\n`,
+      `atmux: warn: dispatch: reassigning ${parsed.id} from ${oldOwner} to ${parsed.member}\n`,
     );
-    await removeFromInProgress(atmuxDir, oldOwner, parsed.id);
   }
 
   // claimTask enforces the deps gate AND the missing-id check + sets
@@ -180,13 +178,8 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
   // so the inbox entry at line 63-65 carries the ORIGINAL task shape
   // plus only `dispatchedAt`, not the mutated owner/status/claimedAt.
   const { pre, post } = await claimTask(atmuxDir, parsed.id, parsed.member);
-
-  // Bash inbox-push (lib/dispatch.sh:62-65) stamps `dispatchedAt`
-  // (NOT `claimedAt`) on the inbox entry — the inbox tracks the
-  // dispatch event independently from the kanban claim. Mirror.
-  // Use `pre` (pre-mutation snapshot) per F1 fix — bash inbox entry
-  // does NOT carry the post-mutation owner/status/claimedAt triple.
-  await appendDispatched(atmuxDir, parsed.member, pre, post.claimedAt ?? 0);
+  void pre;
+  void post;
 
   process.stdout.write(`dispatched ${parsed.id} → ${parsed.member}\n`);
 

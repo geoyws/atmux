@@ -24,7 +24,6 @@
 // for the `list` output).
 
 import { getAtmuxDir, requireTeam, type ResolveDirOpts, resolveCallerScope } from "../core/common.ts";
-import { removeFromInProgress } from "../core/inbox.ts";
 import {
   addTask,
   assignTask,
@@ -39,13 +38,6 @@ import {
   showTask,
 } from "../core/kanban.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-
-/** Statuses where the task is no longer the assignee's responsibility,
- *  so its `inbox.inProgress` entry should be drained. `done` is handled
- *  by `atmux done` (which appends to `inbox.done` instead) — this set
- *  covers the parking statuses bash never drained: `blocked` (parked
- *  by lead) and `todo` (un-claim / bounce-back). t-e452296b. */
-const STATUSES_THAT_DRAIN_INBOX = new Set(["blocked", "todo"]);
 
 const USAGE_HINT_ROOT =
   "atmux task <add|list|show|move|assign|lane|priority|update|rm> [args] " +
@@ -479,29 +471,8 @@ async function taskMove(argv: ReadonlyArray<string>): Promise<number> {
   }
   const dirOpts = parseTeamDirOnly(rest);
   const atmuxDir = await getAtmuxDir(dirOpts);
-  // Pre-read so we know the current owner before moveTask possibly
-  // mutates schema fields. moveTask itself throws ConfigError on miss,
-  // so a present pre-snapshot guarantees the post-move task exists.
-  const pre = await showTask(atmuxDir, id);
-  // ADR-033: moveTask enforces the driver-only refuse-gate inside its
-  // transaction for `in-progress` / `done` targets (`todo` / `blocked`
-  // remain unrestricted per ADR-033 §Refuse-gate site #2 carve-out).
   const callerScope = resolveCallerScope();
   await moveTask(atmuxDir, id, status, { callerScope });
-  // t-e452296b: bash mirror left `.inProgress` entries behind on
-  // status transitions that don't go through `atmux done`. Whip then
-  // fired false `in-progress > 90min` alerts on shelved tasks. Drain
-  // the assignee's inbox.inProgress on parking transitions so kanban
-  // truth and inbox truth stay aligned. Idempotent: if the entry
-  // wasn't there, the filter is a no-op.
-  if (
-    pre !== null &&
-    STATUSES_THAT_DRAIN_INBOX.has(status) &&
-    typeof pre.owner === "string" &&
-    pre.owner.length > 0
-  ) {
-    await removeFromInProgress(atmuxDir, pre.owner, id);
-  }
   process.stdout.write(`task ${id} → ${status}\n`);
   return 0;
 }

@@ -27,7 +27,7 @@
 
 import { readlink as fsReadlink } from "node:fs/promises";
 import { join } from "node:path";
-import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
+import { removeLegacyInboxFiles } from "../core/cleanup.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
@@ -621,7 +621,7 @@ export async function checkLegacyInboxJson(atmuxDir: string): Promise<DoctorRow[
       status: "yellow",
       label: "legacy-inbox-json",
       detail: `${files.length} stale .atmux/inboxes/*.json file(s) on SQL-canonical team (e.g. ${sample}${more})`,
-      hint: "atmux cleanup inboxes --purge-legacy  (canonical inbox is state.db tasks + `atmux inbox <member>`)",
+      hint: "atmux cleanup inboxes  (canonical inbox is state.db tasks + `atmux inbox <member>`)",
     },
   ];
 }
@@ -3093,6 +3093,13 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
         );
         for (const id of result.prunedIds) stderr(`  - ${id} → blocked (${asOfIso})\n`);
       }
+    }
+    const legacyInbox = await findLegacyInboxJson(atmuxDir);
+    if (legacyInbox.length > 0) {
+      const removed = await removeLegacyInboxFiles(atmuxDir);
+      stderr(
+        `\natmux doctor --fix: removed ${removed.removed.length} legacy inbox JSON file(s)\n`,
+      );
     }
     // Other --fix paths (branch-orphan deletion, team.json wizard
     // re-run) remain deferred per ADR-019 V-24. Phantom-prune above

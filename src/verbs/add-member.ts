@@ -43,7 +43,6 @@
 // Phase 2 follow-up wires `lib/tui.sh::atmux::tui_cmd` into both verbs in
 // one commit so they activate together.
 
-import { ensureDir, exists, writeText } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
@@ -52,8 +51,6 @@ import {
   emojiPoolForRole,
   getAtmuxDir,
   getSessionName,
-  inboxDir,
-  inboxPathFor,
   loadTeam,
   resolveTeamSocket,
   teamJsonPath,
@@ -353,18 +350,7 @@ export async function addMember(
     return { ...current, members: [...current.members, newMember] };
   });
 
-  // 5. Prime inbox (lib/add-member.sh:49-51). Defensive `ensureDir` —
-  //    bash relies on `atmux init` having mkdir'd inboxes/ already, but
-  //    a fresh-from-template team that skipped init would tank on
-  //    `echo > <missing-dir>/file`. Belt-and-braces here matches the
-  //    R6 invariant (typed FS errors only).
-  const ibPath = inboxPathFor(dir, parsed.name);
-  if (!(await exists(ibPath))) {
-    await ensureDir(inboxDir(dir));
-    await writeText(ibPath, '{"pending":[],"inProgress":[],"done":[]}\n');
-  }
-
-  // 6. Log success (lib/add-member.sh:53).
+  // 5. Log success (lib/add-member.sh:53).
   logger.ok(
     `added member '${emoji} ${parsed.name}' (role=${parsed.role}, tui=${parsed.tui}) to team.json`,
   );

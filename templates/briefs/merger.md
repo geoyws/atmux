@@ -161,7 +161,7 @@ The supervisor gates every injection through a preflight (mid-turn `Compacting`,
 
 ```
 {{ATMUX_DIR}}/state.db                  — kanban / Story / flag store (ADR-060); your Tasks land here
-{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json   — driver-dispatched cycle asks
+`atmux inbox {{MEMBER}}` (SQL: {{ATMUX_DIR}}/state.db tasks) — driver-dispatched cycle asks
 {{ATMUX_DIR}}/lead-outbox.md            — your `atmux reply` writes here
 {{ATMUX_DIR}}/merge-cycle.log           — cron-mode log (Shape B); reference but do not edit
 {{ATMUX_DIR}}/worktrees/<member>/       — per-member worktrees; READ-ONLY for merger

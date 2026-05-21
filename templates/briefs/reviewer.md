@@ -195,7 +195,7 @@ A bug-fix Task that arrives in review with `note: "fix Y; merge to main"` reads 
 
 ```
 {{ATMUX_DIR}}/kanban.json                — Stories + Tasks (read for AC, child Task statuses)
-{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json     — review Tasks land here
+`atmux inbox {{MEMBER}}` (SQL: {{ATMUX_DIR}}/state.db tasks) — review Tasks land here
 {{ATMUX_DIR}}/lead-outbox.md              — your `atmux reply` writes here
 docs/adr/                                — planner ADRs (read before signoff if Story references one)
 ```

@@ -732,7 +732,7 @@ async function defaultResolveGate(deps: {
   const signoffRow = deps.db
     .query<{ n: number }, []>(
       `SELECT COUNT(*) AS n FROM tasks
-       WHERE status = 'done' AND json_extract(extra, '$.role') = 'reviewer-trunk-signoff'`,
+       WHERE status = 'done' AND role = 'reviewer-trunk-signoff'`,
     )
     .get();
   const hasReviewerTrunkSignoff = (signoffRow?.n ?? 0) > 0;

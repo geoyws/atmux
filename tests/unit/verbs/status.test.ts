@@ -6,8 +6,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
-import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
-import { addTask, moveTask } from "../../../src/core/kanban.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { addTask, assignTask, moveTask } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
 import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import {
@@ -89,6 +90,8 @@ async function stageTeam(
   const teamName = `${sessionPrefix}-team`;
   const sessionName = `atmux-${teamName}`;
   await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: teamName, members }));
+  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  closeDatabase(db);
   if (withSession) {
     const first = members[0];
     if (first === undefined) throw new Error("test fail");
@@ -245,25 +248,12 @@ describe("status verb — integration", () => {
 
   test("pendingCount reflects member's inbox.pending length", async () => {
     await stageTeam([{ name: "alpha" }], false);
-    await appendPending(atmuxDir, "alpha", {
-      id: "t-aaaaaaaa",
-      subject: "p1",
-      status: "todo",
-      deps: [],
-    });
-    await appendPending(atmuxDir, "alpha", {
-      id: "t-bbbbbbbb",
-      subject: "p2",
-      status: "todo",
-      deps: [],
-    });
-    // Add to inProgress too — should NOT count toward pending.
-    await appendDispatched(
-      atmuxDir,
-      "alpha",
-      { id: "t-cccccccc", subject: "ip1", status: "in-progress", deps: [] },
-      1,
-    );
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    closeDatabase(db);
+    await addTask(atmuxDir, { subject: "p1", assignee: "alpha" });
+    await addTask(atmuxDir, { subject: "p2", assignee: "alpha" });
+    const ipId = await addTask(atmuxDir, { subject: "ip1", assignee: "alpha" });
+    await moveTask(atmuxDir, ipId, "in-progress");
     const { out } = await captureStdout(() =>
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
     );

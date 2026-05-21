@@ -130,7 +130,7 @@ The 6-step per-tick loop:
 ~/.claude/teams/registry.json                        — fleet registry (read for super-status walk)
 ~/.claude/teams/superdriver-bypass-log.md            — async audit log; you append here
 ~/.claude/teams/{team}/.atmux/audit.json             — per-team audit output (read after `atmux audit --json`)
-{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json                — driver-dispatched ON-DEMAND tick asks land here
+`atmux inbox {{MEMBER}}` (SQL: {{ATMUX_DIR}}/state.db tasks) — driver-dispatched ON-DEMAND tick asks land here
 {{ATMUX_DIR}}/lead-outbox.md                         — your `atmux reply` for superdriver-team-internal context
 docs/adr/038-declarative-live-audit-model.md         — class taxonomy you maintain (via planner)
 docs/audit.md                                        — operator guide you maintain (via planner)

@@ -63,7 +63,7 @@ import { basename, join } from "node:path";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
-import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
+import { driverInboxPath, ensureStateDb, getAtmuxDir, kanbanJsonPath } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -320,20 +320,8 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
     await writeText(drvInbox, "");
   }
 
-  // Per-member inbox files (bash :56-60). Iterate over members from the
-  // rendered team object directly — equivalent to bash's
-  // `jq -r '.members[].name'` re-read of the just-written team.json.
-  // The bash side defensively skips empty names (`[[ -z "$m" ]] &&
-  // continue`); the TS port's `Team` schema enforces `members[].name`
-  // is non-empty (src/schema/team.ts:27 — `z.string().min(1)`), so the
-  // empty-name branch is statically unreachable here.
-  for (const member of rendered.members) {
-    const ib = inboxPathFor(dir, member.name);
-    if (!(await exists(ib))) {
-      // Bash literal: `echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"`.
-      await writeText(ib, '{"pending":[],"inProgress":[],"done":[]}\n');
-    }
-  }
+  // SQL-canonical inbox from day 1 (ADR-076 Phase 3).
+  await ensureStateDb(atmuxDir);
 
   // (Skipped per header comment: bash :70-77 atmux::registry_upsert.
   // Registry abstraction lands in a follow-up; no fsState divergence.)
