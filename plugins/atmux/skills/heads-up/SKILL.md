@@ -28,7 +28,7 @@ The skill itself does not act. Per the team-member brief in atmux templates, atm
 1. **Read the args** (`$ARGUMENTS`). The args summarise what changed:
    - `new task <id> dispatched` → next idle turn, claim or note the task
    - `cascade unblock — claim --next` → run `atmux claim --next` when ready
-   - `new tell-lead from driver` → re-read `.atmux/driver-inbox.md` `## Open` section
+   - `new tell-lead from driver` → re-read `.atmux/lead-inbox.md` `## Open` section (the lead's incoming inbox; driver→lead direction per [ADR-215](../../../../docs/adr/215-multi-driver-support-per-team-default-three.md) §D3)
    - `new flag <id>` / `flag-add` / `flag-resolve` → `atmux flags list --status open`
    - `new reply from <member>` → re-read `.atmux/lead-outbox.md`
    - `decisions-add` → re-read `.atmux/decisions.md`
