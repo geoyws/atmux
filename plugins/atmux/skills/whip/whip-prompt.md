@@ -679,19 +679,20 @@ for w in $TEAM_WINDOWS; do
   fi
 
   # New rate-limit window for this member — record state + page Discord once.
-  RESET_MYT=$(TZ='Asia/Kuala_Lumpur' date -d "@$RESET_EPOCH" +'%H:%M MYT %Y-%m-%d')
-  printf '{"member":"%s","reset_epoch":%d,"reset_human":"%s","reset_myt":"%s","detected_at":%d}\n' \
-    "$MEMBER" "$RESET_EPOCH" "$RESET_HUMAN" "$RESET_MYT" "$NOW" > "$STATE_FILE"
+  # RESET_LOCAL uses the operator's configured timezone (plugin userConfig COORDINATION_TZ / COORDINATION_TZ_SUFFIX; default UTC).
+  RESET_LOCAL=$(TZ="${COORDINATION_TZ:-UTC}" date -d "@$RESET_EPOCH" +"%H:%M ${COORDINATION_TZ_SUFFIX:-UTC} %Y-%m-%d")
+  printf '{"member":"%s","reset_epoch":%d,"reset_human":"%s","reset_local":"%s","detected_at":%d}\n' \
+    "$MEMBER" "$RESET_EPOCH" "$RESET_HUMAN" "$RESET_LOCAL" "$NOW" > "$STATE_FILE"
 
-  bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/ping-discord.sh" "🚫 **[whip-rate-limit]** · \`${TEAM}\` · \`${MEMBER}\` · $(TZ='${COORDINATION_TZ:-${user_config.COORDINATION_TZ}}' date +'%H:%M ${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}}')
+  bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/atmux}/skills/whip/scripts/ping-discord.sh" "🚫 **[whip-rate-limit]** · \`${TEAM}\` · \`${MEMBER}\` · $(TZ="${COORDINATION_TZ:-UTC}" date +"%H:%M ${COORDINATION_TZ_SUFFIX:-UTC}")
 
 🚫 Teammate Claude account hit weekly cap — dispatch locked until reset.
 
-⏰ Resets: \`${RESET_MYT}\` (= ${RESET_HUMAN} Europe/Berlin)
+⏰ Resets: \`${RESET_LOCAL}\` (= ${RESET_HUMAN} per Anthropic's banner, which uses Europe/Berlin)
 🎯 Member: \`${MEMBER}\` (pane: \`${w}\`)
 
 Operator options:
-1️⃣ Wait until \`${RESET_MYT}\` — whip auto-dismisses the modal at reset
+1️⃣ Wait until \`${RESET_LOCAL}\` — whip auto-dismisses the modal at reset
 2️⃣ Swap this team's \`claudeAccount\` in \`~/.atmux/cockpit.json\` to a different account, then cycle only this cage
 3️⃣ Approve \`/extra-usage\` in the pane modal (operator decision, billed)
 
