@@ -260,3 +260,21 @@ Jury permissions ship in `templates/cursor-cli-permissions-jury.json` (sibling t
 - memory `project_martinet_pattern` — Stage 0 manual-bootstrap precedent
 - memory `reference_kanbantask_passthrough_extra_json` — Zod `.passthrough()` precedent for D2
 - memory `project_honker_pubsub_rehaul_design` — full design state (decisions locked)
+
+## §Amendment 2026-05-21 — `_jury` runs Opus, not cursor (per ADR-201 rejection)
+
+Driver rejected ADR-201 on 2026-05-21 with the direction: *"REMOVE cursor in favor of Opus across atmux — not just decline to add at member tier, but unwind cursor at sentinel (ADR-132) + cancel forthcoming jury cursor path."* The adversarial-LLM-diversity reframe that justified cursor for `_jury` in the original ADR §D1 is overridden by the operator's preference for Opus consistency across every tier (member, sentinel, jury). Memory `feedback_opus_all_for_agile_flow` was refreshed with the 2026-05-21 reaffirmation date in the same commit set.
+
+**Changes to the ADR-204 design as originally drafted:**
+
+- **§D1 (default-member roster)** — `_jury` is now `type: "claude"` (not `"cursor"`), `claudeAccount: <pool entry>` (via ADR-199 once that ships), `model: "claude-opus-4-7"`, `CLAUDE_CODE_EFFORT_LEVEL=xhigh`. Drops the `cursorModel: "composer-2.5-fast"` field.
+- **§D7 (Dogfooding Stage 0)** — `--manual` flag still valid; once autonomous, the cursor-cli spawn is replaced by a Claude Opus spawn following the same conventions as every other Opus member-role pane (ADR-094 spawn defaults — `--permission-mode auto`, `CLAUDE_GUARD_AGENT=1`, plugin-dir, etc.).
+- **§D8 (Cursor permissions matrix)** — entire section becomes inapplicable. Jury permissions are governed by the existing Claude TUI cage discipline + same tool-allowlist Claude operates under. The `templates/cursor-cli-permissions-jury.json` sibling file is **no longer needed**; the existing `templates/cursor-cli-permissions.json` member-tier file persists for the (now-rejected) ADR-201 path's separate cleanup.
+
+**The rest of ADR-204 stands** — the AC contract (§D2-D3), state-machine extension (§D4 + ADR-144 §Amendment 2026-05-21), ping-pong cap + lead escalation (§D5), epic-team + parent jury scoping (§D6) are LLM-agnostic. The cursor-versus-Opus choice is purely a spawn-layer detail; the acceptance-criteria judgment contract is unchanged.
+
+**Adversarial-LLM-diversity is preserved differently** — the value of a different judgment perspective is still present, but it now lives in the **role separation** (planner writes AC; jury judges; reviewer signs off; gitter merges) rather than in the **model separation** (Opus + cursor). Opus run with `xhigh` effort on a different role + a different prompt + a different role-brief is the operator's stated equivalent.
+
+**Reviewer surface (sibling to ADR-201's rejection follow-ups):** if a `_jury` member or epic-team's `_jury` is spawned as `type: "cursor"` in any team.json, file `atmux flag add --severity high --subject "[jury] cursor-typed _jury violates ADR-204 §Amendment 2026-05-21 — must be type: claude"`.
+
+**Filed via** same commit set as memory `feedback_opus_all_for_agile_flow` refresh + ADR-207 (Opus-sentinel supersession of ADR-132).
