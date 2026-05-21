@@ -45,6 +45,30 @@ plugins/atmux/
 
 Plugin namespace: invocations are `/atmux:<skill>` (per Claude Code convention `plugin:skill`).
 
+### §D1.5 — Adjacent-asset bundling
+
+When the source's SKILL.md body invokes adjacent files (scripts, tests, prompt siblings), the bundled plugin preserves them 1:1 at `plugins/atmux/skills/<name>/<asset-path>`. Rules:
+
+1. **`scripts/`** — bundled as-is alongside SKILL.md. Script bodies undergo the same §D4 strip pass (personal paths, host refs, account ids, operator name). SKILL.md path references already use `${CLAUDE_PLUGIN_ROOT}/skills/<name>/scripts/<file>.sh`; the symlink wizard step (§D5) makes this resolve correctly post-install.
+2. **`tests/`** — bundled when present (e.g. `bau/tests/velocity-gate.bats`). Tests for skill scripts run as part of atmux's own test suite OR ship as documentation for users wanting to verify their override.
+3. **`<name>-prompt.md`** — adjacent prompt files (e.g. `whip-prompt.md`, `sweep-prompt.md` ex `superdoctor-prompt.md`) bundled alongside SKILL.md. Generalization pass applies §D4 + §D1.5 strip rules.
+4. **Dangling references** — if SKILL.md references an adjacent file the source dir doesn't ship (e.g. `cockpit-rebuild` SKILL.md references `scripts/cockpit-rebuild.sh` but no such file exists in source), the generalized output either **drops the reference** OR **adds a clear TODO** citing this rule. Don't ship dead links.
+
+**Audit inventory** (planner sweep 2026-05-21, full per-skill table in [.atmux/decisions.md OQ4](../../.atmux/decisions.md)):
+
+| Skill | Adjacent assets in source |
+|---|---|
+| `team` | 2 scripts (`clear-member.sh`, `rotate-member.sh`) |
+| `whip` | 5 scripts + `whip-prompt.md` (`watchdog.sh` is cron-driven — path-stability ADR-pointer needed) |
+| `bau` | 2 scripts + `tests/` (bats) |
+| `ghostbuster` | 1 script |
+| `budget` | 1 script |
+| `sweep` (ex `superdoctor`) | `superdoctor-prompt.md` (renames to `sweep-prompt.md` per §D2.1) |
+| `cockpit-rebuild` | dangling reference only (no actual file in source) — apply rule 4 |
+| `bruh` / `bruhloop` / `heads-up` / `session` / `tell-lead` | none (SKILL.md is self-contained) |
+
+The 1:1 preservation contract decouples skill ownership from operator dotfiles: a user installing the bundled plugin gets a fully-functional skill surface without separately copying scripts out of operator-private trees.
+
 ### §D2 — Skill carve set + naming
 
 12 skills, source → destination:
@@ -93,6 +117,8 @@ Each carved SKILL.md needs a pass to strip operator-specific surface:
 | ADR-superseded vocab | `atmux_teams` (pre-[ADR-135](135-cockpit-naming-convention.md) cockpit session name); `superdoctor` (pre-§D2.1 sweep rename); `martinet` (pre-[ADR-158](158-martinet-to-sentinel-rename.md) sentinel rename); any other ADR-flagged retired vocab discovered during the pass | `atmux_cockpit` / `sweep` / `sentinel` / current-canonical per the cited ADR |
 
 Substrate-level coupling (atmux verbs, ADR refs, cage/cockpit semantics) STAYS — those are the public atmux surface. The generalization is removing operator-specific path/host/domain particulars + retired-vocab residue, not atmux particulars.
+
+Adjacent assets bundled per §D1.5 (`scripts/`, `tests/`, `<name>-prompt.md`) undergo the same strip pass — the rules in this table apply to their bodies too, not just to SKILL.md.
 
 #### §D4.1 — Per-skill known-leak pre-inventory
 
