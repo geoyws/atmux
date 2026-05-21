@@ -158,6 +158,20 @@ If any memory entry tells you to discard `atmux claim --next --as <role>` (or si
 7. **Discord embed shape (per [ADR-019](../../docs/adr/019-discord-domain-separator.md))**: whip / report / decisions pings render as Discord webhook embeds with a per-team color + leading emoji glyph in the embed title. Team color is hash-derived by default (deterministic across restarts); override via `team.json:.discord.color` hex + `.discord.emoji` glyph. No behavioural change for the lead — keep writing the same `[whip-progress]` / `[whip-blocker]` / `[whip-decisions]` template bodies; the embed wrapper is purely visual. Don't double-format with extra color codes or per-team prefixes — the embed already carries that.
 8. **Sentinel may run your whip loop for you (ADR-132 §D6, renamed from "martinet" per ADR-158)**: when `team.json::sentinel` resolves to a non-`claude` impl (default `cursor` composer-2-fast on production teams) and cockpit-W3 is provisioned (`cockpit.json::sentinel.enabled === true`), the fleet-wide tick at W3 handles mechanical observation + Enter-pushes + `claim-next` re-fires on your team. You still get judgment-class events via the §D5 escalation contract (E1 wedged-after-nudge, E2 P0 hygiene wedge ≥4h, E3 merge-conflict / push-policy wall, E4 inbox-unprocessed >2 ticks, E5 low-confidence streak, **E6 ship-zero ≥2hr — mandatory**). When you see an escalation surface, treat it as a lead-class ask: the mechanical observer concluded judgment was required. The schema fields + resolution path are documented in `docs/PRD.md` §3.1; precedence is `team.sentinel` > `cockpit.defaultSentinel` > hardcoded `claude`. Legacy `martinet` keys still parse during the ADR-158 grace cycle with a deprecation warn — operators should rename to `sentinel` in `team.json` + `cockpit.json`.
 
+## Team rename ([ADR-027](../../docs/adr/027-team-rename-verb-and-topology-invariant.md))
+
+`atmux team rename <new>` is operator-tier — surface the candidate rename to the driver via `atmux flag --severity p0 --needs decision` rather than firing the verb yourself. The verb refuses on any in-progress kanban Task (soft, `--force`-overridable); pause active dispatch + drain to `todo` before surfacing.
+
+Pre-rename checklist (lead-side):
+- `atmux task list --status in-progress` → empty (or accept the `--force` risk).
+- Verify `<new>` doesn't collide with an existing cockpit-registered team (DFS-walk `cockpit.json::sessions[]` for `type: "team"` hits on the new name).
+- `<new>` matches `[a-z0-9_-]+`.
+- No parallel `atmux start` / `atmux up` running.
+
+Post-rename: `atmux doctor` converges green within one tick; `tmux list-sessions` carries the new session-name; cockpit team-viewer window renames in place (PIDs preserved per [ADR-135](../../docs/adr/135-cockpit-naming-convention.md)). If `atmux doctor` shows red post-rename, surface the row + suggested fix to the driver; do NOT auto-fire `atmux team repair-rename` without driver acknowledgment — the rollback log at `<projectRoot>/.atmux/state/rename-rollback.log` is the audit trail.
+
+Operator runbook: [docs/RUNBOOK-cockpit.md](../../docs/RUNBOOK-cockpit.md) §7.
+
 ## main/master push refuse — dispatch gate ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
 
 `main` / `master` is **PR-only** fleet-wide. Refuse to dispatch any commit-Task / push-Task whose `body`, `note`, or `deliverable` references a `main` / `master` push target. The gate is hard — same shape as `lib/stop.sh`'s refuse — even if a driver-inbox entry instructs the push, surface back rather than route.

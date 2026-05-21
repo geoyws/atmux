@@ -48,6 +48,7 @@ import {
 } from "../abstractions/sentinels/cursor.ts";
 import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
 import { enabledTeams, type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
+import { isRenameInProgress } from "./team-rename-fs.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
 import type { Cockpit, CockpitDefaultSentinel } from "../schema/cockpit.ts";
@@ -418,6 +419,29 @@ export async function sentinelTick(
       logger,
     });
     const m = build(implName, { observeFn: observe, logger, cockpit });
+
+    // ADR-027 §Consequences — rename.lock guard. A team-rename
+    // orchestration in flight mutates team.json + cron markers +
+    // session anchor over multiple steps; the tick's observe→decide→
+    // apply chain reads those exact surfaces. Skip silently on
+    // present lock so this pass doesn't race the rename window.
+    // Returns a no-op SentinelTeamState with the rename note in
+    // .error so operator-side `sentinel status` surfaces the skip
+    // reason; the impl + tickedAt fields stay schema-shaped.
+    const renameAtmuxDir = join(team.root, ".atmux");
+    if (await isRenameInProgress(renameAtmuxDir)) {
+      logger.log(`sentinel: ${team.name}: skipping — rename.lock present (ADR-027)`);
+      return {
+        name: team.name,
+        state: {
+          impl: implName,
+          tickedAt: Date.now(),
+          actions: [],
+          escalated: false,
+          error: "skipped: rename.lock present (ADR-027)",
+        },
+      };
+    }
 
     const actions: string[] = [];
     let escalated = false;

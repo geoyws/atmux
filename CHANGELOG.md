@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🏷️ `atmux team rename` — forward-going verb (ADR-027 shipped, EPIC e-1e223687)
+
+Closes the 2026-04-27 gap: [ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md) was accepted but never implemented. Sibling to `atmux team repair-rename` (recovery side, [ADR-103](docs/adr/103-team-repair-rename.md)). The verb renames a team atomically across every surface the team-name appears in — `team.json:.name`, tmux session + cockpit team-viewer window, cron markers, cockpit registry (`cockpit.json::sessions[]` DFS — superseded shape per [ADR-089](docs/adr/089-recursive-cockpit-sessions.md) §B), single-session capture file — with rollback-staged 10-step orchestration + refuse-gate preflight (in-progress kanban tasks soft-refuse; name collision + invalid charset hard-refuse).
+
+Implementation across 5 files per the shared-worktree commit-race split pattern (see [`docs/audit/2026-05-20-shared-index-swap.md`](docs/audit/2026-05-20-shared-index-swap.md) for the structural rationale):
+
+- [`src/verbs/team-rename.ts`](src/verbs/team-rename.ts) — pure helpers (`parseTeamRenameArgs`, `validateTeamName`, `runRefuseGates`, `RollbackStep` + `rollbackWalk`) + the top-level `teamRename` dispatcher wiring every sibling step (T1 + T2 + T6 wire-in).
+- [`src/verbs/team-rename-fs.ts`](src/verbs/team-rename-fs.ts) — file-state steps: `acquireRenameLock` (with `team.json.bak.<epoch>` snapshot), `mutateTeamJson`, `rewriteSessionAnchor`, `releaseRenameLock` (T3).
+- [`src/verbs/team-rename-cockpit.ts`](src/verbs/team-rename-cockpit.ts) — cockpit registry sync: `syncCockpitRegistry` DFS-walks `cockpit.json::sessions[]`; legacy flat `teams[]` rosters auto-lift via `migrateLegacyShape` (T4).
+- [`src/verbs/team-rename-tmux.ts`](src/verbs/team-rename-tmux.ts) — tmux + branch rename: `renameTeamViewerWindow` (cockpit team-viewer window only; per-member windows carry no team-name post-[ADR-135](docs/adr/135-cockpit-naming-convention.md)), `renamePerMemberBranches` (opt-in via `--force-branches`; atomic-multi-ref push with per-branch fallback) (T5).
+- [`src/verbs/team-rename-convergence.ts`](src/verbs/team-rename-convergence.ts) — post-rename invariant assertion (T6).
+
+Coverage: 100% line on each shipped surface; ≥89% function across the integration test surface.
+
+Known follow-up: cron-consumer rename-lock guards (ADR-027 §Consequences) are NOT YET wired in the bun port — `sentinel.ts` + `cron-orphans.ts` don't honor the lock; `whip.ts` + `decisions.ts` don't exist as standalone bun verbs. Race risk during in-flight renames; follow-up Task filed at T7 commit-time. T6's convergence helper asserts post-rename hygiene but does NOT cover mid-rename consumer-race.
+
+Operator runbook: [`docs/RUNBOOK-cockpit.md`](docs/RUNBOOK-cockpit.md) §7 — Team rename. Reviewer-relevant deviation notes inline in [ADR-027 §Deviations](docs/adr/027-team-rename-verb-and-topology-invariant.md#deviations-from-spec-added-at-shipping-time-2026-05-20).
+
 ### 📐 Documented — `claudeAccount` inheritance contract for `spawn-epic` (ADR-090 §Amendment 2026-05-20, t-72f90a08)
 
 Retroactive coverage for the 2026-05-16 dogfood regression fix that landed at commit `2674670` ("fix(epic-team): two regressions caught by 2026-05-16 dogfood") without the same-commit unit test + ADR §Amendment its acceptance criteria required. Closes t-72f90a08 (P0).
