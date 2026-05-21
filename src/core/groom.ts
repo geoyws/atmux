@@ -389,10 +389,19 @@ export function parseOpenEntries(openBody: string, nowMsOverride?: number): Pars
   if (openBody.length === 0) return [];
   const stampMs = nowMsOverride ?? nowMs();
   const lines = openBody.split("\n");
-  // Find each entry start index.
+  // Find each entry start index. Per t-754c1c57: accept BOTH list-item
+  // shape (`- [HH:MM MYT...]`, lead-outbox + driver-inbox legacy) AND
+  // H3-header shape (`### [HH:MM MYT...]`, unum-monorepo driver-inbox
+  // 2026-05-21 convention). Use a regex that matches the timestamp
+  // bracket — checkbox sub-items (`- [ ]` acceptance criteria within
+  // H3 entries) won't match the `[HH:MM MYT` prefix, so they're
+  // correctly excluded from the entry-start list (the pre-fix
+  // `startsWith("- [")` check matched them, shredding parent H3
+  // entries under --aggressive).
+  const ENTRY_START_RE = /^(?:- |### )\[\d{2}:\d{2} MYT/;
   const starts: number[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if ((lines[i] ?? "").startsWith("- [")) starts.push(i);
+    if (ENTRY_START_RE.test(lines[i] ?? "")) starts.push(i);
   }
   if (starts.length === 0) return [];
 
@@ -424,7 +433,10 @@ export function parseOpenEntries(openBody: string, nowMsOverride?: number): Pars
 export function parseEntryTimestamp(line: string, nowMs: number): number | null {
   // `- [HH:MM MYT YYYY-MM-DD]` (driver-inbox, dated form)
   // `- [HH:MM MYT]` (driver-inbox today-implicit OR lead-outbox)
-  const m = /^- \[(\d{2}):(\d{2}) MYT(?: (\d{4})-(\d{2})-(\d{2}))?\]/.exec(line);
+  // `### [HH:MM MYT YYYY-MM-DD]` (driver-inbox H3-shaped, unum-monorepo
+  //   2026-05-21 convention — same data, different markdown wrapper)
+  // Per t-754c1c57.
+  const m = /^(?:- |### )\[(\d{2}):(\d{2}) MYT(?: (\d{4})-(\d{2})-(\d{2}))?\]/.exec(line);
   if (m === null) return null;
   const hh = Number.parseInt(m[1] ?? "", 10);
   const mm = Number.parseInt(m[2] ?? "", 10);

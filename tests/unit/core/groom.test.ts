@@ -582,6 +582,25 @@ describe("parseEntryTimestamp", () => {
     const got = parseEntryTimestamp("- [12:00 MYT] **whip-impl**: hi", RUN_MS);
     expect(got).toBe(1778212800);
   });
+
+  // t-754c1c57 — H3-shaped entries (unum-monorepo driver-inbox convention)
+  test("parses `### [HH:MM MYT YYYY-MM-DD]` H3-header shape (unum-monorepo)", () => {
+    const got = parseEntryTimestamp("### [12:00 MYT 2026-05-08] EI-PLANNER-5 audit", RUN_MS);
+    expect(got).toBe(1778212800);
+  });
+
+  test("parses `### [HH:MM MYT]` today-implicit H3 shape", () => {
+    const got = parseEntryTimestamp("### [12:00 MYT] heads-up", RUN_MS);
+    expect(got).toBe(1778212800);
+  });
+
+  test("returns null on checkbox sub-item `- [ ]` shape (NOT an entry start)", () => {
+    // Defense against the --aggressive false-extract that shredded H3
+    // entries pre-fix — checkbox sub-items embedded inside H3 entries
+    // (acceptance criteria, TODO lists) must NOT match the entry-start.
+    expect(parseEntryTimestamp("- [ ] acceptance criterion", RUN_MS)).toBeNull();
+    expect(parseEntryTimestamp("- [x] checked AC", RUN_MS)).toBeNull();
+  });
 });
 
 describe("parseOpenEntries", () => {
@@ -600,12 +619,59 @@ describe("parseOpenEntries", () => {
     expect(got[1]?.text).toBe("- [13:00 MYT 2026-05-08] second\n");
   });
 
-  test("entry-start without parseable timestamp records null epochSec", () => {
-    const body = "- [malformed] hi\n- [12:00 MYT] ok\n";
+  test("malformed brackets (`- [bogus]`, `- [ ]`) are NOT entry-starts post-t-754c1c57", () => {
+    // Pre-t-754c1c57 the entry-start detector matched any `- [` prefix,
+    // shredding checkbox sub-items + malformed brackets into false
+    // entries. New regex `/^(?:- |### )\[\d{2}:\d{2} MYT/` requires the
+    // HH:MM MYT timestamp shape — malformed brackets attach to the
+    // preceding entry as continuation OR (if no prior entry) are
+    // dropped from the parse result.
+    const body = "- [malformed] hi\n- [12:00 MYT] ok\n- [ ] checkbox AC\n";
+    const got = parseOpenEntries(body, RUN_MS);
+    expect(got).toHaveLength(1);
+    expect(got[0]?.text.startsWith("- [12:00 MYT]")).toBe(true);
+    // The checkbox AC `- [ ]` attaches as continuation of the MYT entry.
+    expect(got[0]?.text).toContain("- [ ] checkbox AC");
+    expect(got[0]?.epochSec).not.toBeNull();
+  });
+
+  // t-754c1c57 — H3-shaped + checkbox-exclusion regression coverage
+  test("H3-shaped entries (`### [...]`) split correctly; checkbox sub-items NOT extracted", () => {
+    // Unum-monorepo driver-inbox convention: H3 header per entry,
+    // checkbox sub-items embedded as acceptance criteria. Pre-fix the
+    // checkbox sub-items got falsely extracted as standalone entries
+    // under --aggressive, shredding parent H3 entries.
+    const body =
+      "### [12:00 MYT 2026-05-08] EI-PLANNER-5 audit\n" +
+      "Acceptance criteria:\n" +
+      "- [ ] criterion A\n" +
+      "- [x] criterion B (done)\n" +
+      "### [13:00 MYT 2026-05-08] EI-PLANNER-6 follow-up\n" +
+      "- [ ] criterion C\n";
     const got = parseOpenEntries(body, RUN_MS);
     expect(got).toHaveLength(2);
-    expect(got[0]?.epochSec).toBeNull();
+    expect(got[0]?.text.startsWith("### [12:00 MYT 2026-05-08]")).toBe(true);
+    expect(got[0]?.text).toContain("- [ ] criterion A");
+    expect(got[0]?.text).toContain("- [x] criterion B");
+    expect(got[1]?.text.startsWith("### [13:00 MYT 2026-05-08]")).toBe(true);
+    expect(got[1]?.text).toContain("- [ ] criterion C");
+    // Both entries get parseable epochSec.
+    expect(got[0]?.epochSec).not.toBeNull();
     expect(got[1]?.epochSec).not.toBeNull();
+  });
+
+  test("mixed list-item + H3 shapes coexist in same ## Open section", () => {
+    const body =
+      "- [10:00 MYT 2026-05-08] **planner**: legacy list-item\n" +
+      "### [11:00 MYT 2026-05-08] H3-shape next-gen\n" +
+      "- [ ] AC inside H3\n" +
+      "- [12:00 MYT 2026-05-08] another legacy entry\n";
+    const got = parseOpenEntries(body, RUN_MS);
+    expect(got).toHaveLength(3);
+    expect(got[0]?.text.startsWith("- [10:00")).toBe(true);
+    expect(got[1]?.text.startsWith("### [11:00")).toBe(true);
+    expect(got[1]?.text).toContain("- [ ] AC inside H3");
+    expect(got[2]?.text.startsWith("- [12:00")).toBe(true);
   });
 });
 
@@ -674,15 +740,19 @@ describe("ageInboxOpenToArchive", () => {
         "## Archive\n",
     );
     const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
-    // 4 entry-start matches by the `- [` prefix parser; only 1 has stale timestamp.
-    // "- no-timestamp-prefix" does NOT start with `- [` so it's treated as
-    // a continuation of the preceding entry (the stale one), not its own row.
+    // Post-t-754c1c57: entry-start requires `- [HH:MM MYT...]` shape.
+    // 2 timestamp-shaped entries (fresh + stale); 1 has stale timestamp.
+    // Both `- no-timestamp-prefix` AND `- [malformed] also-no-timestamp`
+    // are continuation lines of the preceding entry (the stale one) —
+    // they travel WITH it to ## Archive when it ages.
     expect(got[0]?.agedCount).toBe(1);
     const after = await readFile(src, "utf8");
     expect(after).toContain("fresh");
     expect(after.indexOf("stale")).toBeGreaterThan(after.indexOf("## Archive"));
-    // Unparseable-timestamp row stays in ## Open (conservative rule).
-    expect(after.indexOf("- [malformed]")).toBeLessThan(after.indexOf("## Archive"));
+    // `- [malformed]` is now continuation of the stale entry → travels
+    // with it to ## Archive. (Pre-t-754c1c57 it was treated as its own
+    // null-epochSec entry that stayed in ## Open — that was the bug.)
+    expect(after.indexOf("- [malformed]")).toBeGreaterThan(after.indexOf("## Archive"));
   });
 
   // Fixture D: aggressive (--inbox-days 0).
@@ -693,7 +763,11 @@ describe("ageInboxOpenToArchive", () => {
       "## Open\n" + "- [22:00 MYT 2026-05-08] today\n" + "- [malformed] no-time\n" + "## Archive\n",
     );
     const got = await ageInboxOpenToArchive(env.atmuxDir, 0, { nowMs: RUN_MS });
-    expect(got[0]?.agedCount).toBe(2);
+    // Post-t-754c1c57: `- [malformed]` attaches as continuation to the
+    // preceding timestamp-shaped entry (the `today` one); single
+    // composite entry ages under aggressive=0. Pre-fix this counted as
+    // 2 separate entries with the malformed one carrying null epochSec.
+    expect(got[0]?.agedCount).toBe(1);
     expect(got[0]?.remainingOpen).toBe(0);
     const after = await readFile(src, "utf8");
     expect(after).toContain("## Open\n## Archive\n");
