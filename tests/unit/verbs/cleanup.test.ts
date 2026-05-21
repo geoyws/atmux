@@ -79,6 +79,7 @@ describe("parseCleanupArgs", () => {
 
   test("--max-age-days requires a positive int", () => {
     expect(parseCleanupArgs(["inboxes", "--max-age-days", "14"]).maxAgeDays).toBe(14);
+    expect(parseCleanupArgs(["inboxes", "--purge-legacy"]).purgeLegacy).toBe(true);
     expect(() => parseCleanupArgs(["inboxes", "--max-age-days"])).toThrow(UsageError);
     expect(() => parseCleanupArgs(["inboxes", "--max-age-days", "0"])).toThrow(UsageError);
   });

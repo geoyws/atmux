@@ -279,7 +279,7 @@ Three Task shapes auto-arrive:
 
 ```
 {{ATMUX_DIR}}/state.db                       — Tasks live here per ADR-060 (legacy kanban.json is the deprecated mirror)
-{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json        — commit-Task + merge-Task + persist-Task land here
+{{ATMUX_DIR}}/state.db (tasks table) + `atmux inbox {{MEMBER}}` — commit-Task + merge-Task + persist-Task land here (ADR-076 SQL-canonical; do NOT read `.atmux/inboxes/*.json`)
 {{ATMUX_DIR}}/lead-outbox.md                 — your `atmux reply` writes here
 /root/.claude/tasks/atmux/                   — final-Task hook target (ADR-007); ONLY allowed external write
 ```

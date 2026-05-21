@@ -32,6 +32,8 @@ import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
+import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { resolveDayFilePath } from "../abstractions/release-notes.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { mytDate, now } from "../abstractions/time.ts";
@@ -51,13 +53,14 @@ import {
   defaultEmojiForRole,
   driverInboxPath,
   getAtmuxDir,
-  inboxPathFor,
   kanbanJsonPath,
   type ResolveDirOpts,
   resolveTeamSocket,
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import { loadInbox } from "../core/inbox.ts";
+import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import {
   type DriverInboxEntry,
@@ -84,7 +87,6 @@ import {
   type DriftReport,
 } from "../core/whip-config-drift.ts";
 import { UsageError } from "../errors.ts";
-import { Inbox } from "../schema/inbox.ts";
 import { Kanban } from "../schema/kanban.ts";
 import { type Team, type TeamMember, Team as TeamSchema } from "../schema/team.ts";
 
@@ -564,15 +566,27 @@ export interface PhantomEntry {
 }
 
 export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry[]> {
-  const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), Kanban);
-  if (kanban === null) return [];
-  const liveIds = new Set(kanban.tasks.map((t) => t.id));
+  const stateDb = join(atmuxDir, "state.db");
   const team = await tryLoadTeam({ dir: atmuxDir });
   if (team === null) return [];
+
+  const liveIds = new Set<string>();
+  if (await exists(stateDb)) {
+    const db = openDatabase(stateDb, migrations);
+    try {
+      for (const t of new KanbanRepo(db).listTasks()) liveIds.add(t.id);
+    } finally {
+      closeDatabase(db);
+    }
+  } else {
+    const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), Kanban);
+    if (kanban === null) return [];
+    for (const t of kanban.tasks) liveIds.add(t.id);
+  }
+
   const phantoms: PhantomEntry[] = [];
   for (const m of team.members) {
-    const inbox = await tryReadJson(inboxPathFor(atmuxDir, m.name), Inbox);
-    if (inbox === null) continue;
+    const inbox = await loadInbox(atmuxDir, m.name);
     for (const e of inbox.inProgress) {
       if (!liveIds.has(e.id)) {
         phantoms.push({ member: m.name, id: e.id, subject: e.subject ?? "" });
@@ -580,6 +594,36 @@ export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry
     }
   }
   return phantoms;
+}
+
+/** Legacy ADR-076 JSON inbox files on SQL-canonical teams mislead tools
+ *  that read the path directly. Surface for `atmux cleanup inboxes --purge-legacy`. */
+export async function findLegacyInboxJson(atmuxDir: string): Promise<string[]> {
+  const stateDb = join(atmuxDir, "state.db");
+  if (!(await exists(stateDb))) return [];
+  const ibDir = join(atmuxDir, "inboxes");
+  if (!(await exists(ibDir))) return [];
+  const { readdir } = await import("node:fs/promises");
+  const names: string[] = [];
+  for (const name of await readdir(ibDir).catch(() => [] as string[])) {
+    if (name.endsWith(".json")) names.push(name);
+  }
+  return names.sort();
+}
+
+export async function checkLegacyInboxJson(atmuxDir: string): Promise<DoctorRow[]> {
+  const files = await findLegacyInboxJson(atmuxDir);
+  if (files.length === 0) return [];
+  const sample = files.slice(0, 3).join(", ");
+  const more = files.length > 3 ? ` (+${files.length - 3} more)` : "";
+  return [
+    {
+      status: "yellow",
+      label: "legacy-inbox-json",
+      detail: `${files.length} stale .atmux/inboxes/*.json file(s) on SQL-canonical team (e.g. ${sample}${more})`,
+      hint: "atmux cleanup inboxes --purge-legacy  (canonical inbox is state.db tasks + `atmux inbox <member>`)",
+    },
+  ];
 }
 
 export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]> {
@@ -2865,10 +2909,11 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
+  rows.push(...(await checkLegacyInboxJson(atmuxDir)));
   // t-af159454: phantom in-progress claims (kanban rows with dead
   // owner panes). Distinct vulnerability class from phantom-inbox
-  // above (that one scans JSON inbox files; this scans the live
-  // kanban). Cage-only — singleSession teams short-circuit in the
+  // above (that one scans member inProgress via loadInbox; this scans
+  // the live kanban). Cage-only — singleSession teams short-circuit in
   // check itself.
   rows.push(...(await checkPhantomInProgressClaims(atmuxDir, team)));
   // Cursor-plugin-cache parity — only fires when cursor-agent is

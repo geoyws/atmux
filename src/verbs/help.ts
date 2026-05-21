@@ -138,9 +138,10 @@ Maintenance:
   groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
                               Daily 04:00 cron sweep — flush archive sections, age
                               out done/cancelled cards, cull stale .bak files.
-  cleanup <logs|inboxes|all> [--max-size <bytes>] [--max-age-days <N>] [--dry-run]
+  cleanup <logs|inboxes|all> [--max-size <bytes>] [--max-age-days <N>] [--purge-legacy] [--dry-run]
                               Rotate big *.log files; prune old .done[] in
-                              member inboxes. Idempotent + cron-safe.
+                              member inboxes, or --purge-legacy to delete
+                              stale .atmux/inboxes/*.json on SQL teams.
   discorder <progress|heartbeat>
                               ADR-022 Discord cron pings. progress = 30-min
                               digest; heartbeat = hourly state-of-team.
