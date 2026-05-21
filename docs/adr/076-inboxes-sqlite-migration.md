@@ -31,11 +31,22 @@ The canonical and ONLY source of member-inbox state is `state.db` tasks table, q
 - **Code (16 src/ files)**: `src/abstractions/sqlite-migrations.ts`, `src/core/{cleanup,common,inbox}.ts`, `src/core/repositories/kanban-repo.ts`, `src/verbs/{add-member,claim,cleanup,dispatch,doctor,epic-merge,handoff,help,inbox,init,task}.ts`.
 - **Tests (11 files)**: matching `tests/unit/{core,verbs}/*.test.ts` — assertions on legacy JSON paths removed; SQL projection assertions kept.
 - **Briefs (6 templates)**: `templates/briefs/{dba,discorder,enforcer,merger,reviewer,unblocker}.md` — operator-facing inbox-path references replaced with `atmux inbox <member>` verb references.
+- **`atmux doctor --fix` behavior addition**: `src/verbs/doctor.ts:~3185` — `--fix` flag now invokes `removeLegacyInboxFiles(atmuxDir)` to delete stale `.atmux/inboxes/<m>.json` files alongside the existing phantom-detector check. Same-commit `help.ts` text surfaces this as a `--fix` side-effect. Operators upgrading past Phase 3 should run `atmux doctor --fix` once on each project to purge the transitional artifacts.
 - **ADR (this file)**: post-hoc authorship — Phase 3 commit fills the dangling reference from ADR-154 + memory snapshots.
 
 ## Acceptance
 
-- `rg -n 'inboxes/.*\.json\|inboxPathFor\|emptyInbox' src/ templates/briefs/` returns zero hits.
+- `rg -n 'inboxes/.*\.json\|inboxPathFor\|emptyInbox' src/ templates/briefs/` returns **zero JSON read/write call-sites outside the cleanup / migration / archive transitional paths**, which are explicitly retained per §Phase 3 file inventory below. Surviving sites + their retention reason (per reviewer audit 2026-05-21, docs/reviews/t-bfb6ea42-reviewer-reject-2026-05-21.md):
+  - `src/core/cleanup.ts` + `src/verbs/cleanup.ts` — cleanup verb deletes stale JSON (transitional path: `cleanup inboxes --purge-legacy`)
+  - `src/verbs/migrate-state.ts` — reads JSON to migrate to SQL (transitional path: one-shot migration)
+  - `src/verbs/stop.ts` — archives legacy JSON on stop (transitional path: graceful teardown)
+  - `src/verbs/doctor.ts` — `findLegacyInboxJson` + `removeLegacyInboxFiles` (transitional path: doctor warns about stale JSON + `--fix` removes; phantom-inbox detector retained)
+  - `src/verbs/help.ts` — mentions cleanup target (operator-facing help text)
+  - `src/core/discorder.ts` — pre-existing `void inboxPathFor;` lint suppression (pre-existing, untouched by Phase 3)
+  - `src/core/inbox.ts` — `emptyInbox` retained for empty-team fast-path inside SQL-backed `loadInbox` (legitimate fast-path, not a JSON read)
+  - `src/core/common.ts` — `inboxPathFor` retained, used by the 5 transitional-path sites above
+  - `src/schema/inbox.ts` + `src/schema/README.md` — Zod schema header references (historical, harmless)
+  - `templates/briefs/committer.md` — admonition language ("do NOT read .atmux/inboxes/*.json"), not a code path
 - `atmux inbox <member>` continues to render pending/inProgress/done sections from SQL.
 - All unit tests pass against state.db-only paths.
 - Reviewer signoff per the standard ADR write-flow (CLAUDE.md §Discipline #4).
