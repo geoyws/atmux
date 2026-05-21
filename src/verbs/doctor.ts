@@ -34,6 +34,11 @@ import {
   type HonkerHooks,
   type HonkerRuntimeState,
 } from "../abstractions/honker.ts";
+import {
+  type HostPressureVerdict,
+  probeHostPressure,
+  type ProbeHostPressureDeps,
+} from "../core/host-pressure.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
@@ -702,6 +707,68 @@ export async function checkHonker(
   } finally {
     closeDatabase(db);
   }
+}
+
+// ---------- host-pressure probe (ADR-184 §Amendment 2026-05-21) ----------
+
+/** Pure mapping. State-snapshot → doctor row. Tests inject verdicts to
+ *  hit every branch without /proc reads. */
+export function hostPressureRows(verdict: HostPressureVerdict): DoctorRow[] {
+  if (verdict.skipped) {
+    return [
+      {
+        status: "info",
+        label: "host-pressure",
+        detail: "probe skipped — non-Linux platform (gate inactive)",
+      },
+    ];
+  }
+  if (verdict.probe === null || verdict.thresholds === null) {
+    // Linux but probe failed somehow — surface as info, don't block.
+    return [
+      {
+        status: "info",
+        label: "host-pressure",
+        detail: "probe data unavailable",
+      },
+    ];
+  }
+  const loadCeil = verdict.probe.cpuCores * verdict.thresholds.maxLoadRatio;
+  const memMb = verdict.probe.memAvailableMb;
+  const memMbThreshold = verdict.thresholds.minMemMb;
+  const baseDetail = [
+    `load 15min ${verdict.probe.loadAvg15min.toFixed(2)} / ${loadCeil.toFixed(2)} ceil`,
+    `mem ${memMb}MB / ${memMbThreshold}MB floor`,
+    `${verdict.probe.cpuCores} cores`,
+  ].join(" · ");
+  if (verdict.ok) {
+    return [
+      {
+        status: "green",
+        label: "host-pressure",
+        detail: `under threshold — ${baseDetail}`,
+      },
+    ];
+  }
+  return [
+    {
+      status: "yellow",
+      label: "host-pressure",
+      detail: `OVER threshold — ${baseDetail}`,
+      hint:
+        `${verdict.reasons.join("; ")} — spawn-epic will REFUSE until pressure drops. ` +
+        `override: --force-spawn (use sparingly); tune: ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB env.`,
+    },
+  ];
+}
+
+/** Verb-side wrapper — runs the live probe + maps to rows. Production
+ *  default; tests inject `probeFn` to drive specific verdicts. */
+export async function checkHostPressure(
+  probeFn: (deps: ProbeHostPressureDeps) => Promise<HostPressureVerdict> = probeHostPressure,
+): Promise<DoctorRow[]> {
+  const verdict = await probeFn({});
+  return hostPressureRows(verdict);
 }
 
 // ---------- atmux-skills-plugin probe (ADR-217 §D5) ----------
@@ -3144,6 +3211,12 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // poll mode. Info-level when state.db absent or kill-switch off;
   // yellow on fallback (load failure / smoke fail); green on loaded.
   rows.push(...(await checkHonker(atmuxDir)));
+  // ADR-184 §Amendment 2026-05-21: host-pressure probe. Surfaces the
+  // /proc/loadavg + /proc/meminfo readings vs configured thresholds
+  // (ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB). Green
+  // under threshold; yellow over (spawn-epic refuses); info on
+  // non-Linux platforms.
+  rows.push(...(await checkHostPressure()));
   // ADR-217 §D5: installed-state of the /atmux: skills plugin (12
   // cockpit-tier skills shipped via plugins/atmux/, installed by the
   // wizard step in `atmux init`). Green when symlink + plugin.json
