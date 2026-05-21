@@ -441,3 +441,27 @@ Closes a 2026-05-16 dogfood regression surfaced by the first real epic-team spaw
 **Cross-refs:** Memory `feedback_spawn_epic_claude_account_inheritance_gap.md` (workaround anchor) · ADR-091 §Decision-anchor #3 (sibling marker-shape consistency).
 
 **Filed via** t-72f90a08 (docs role, 2026-05-20).
+
+
+## §Amendment 2026-05-21 — `dissolve-epic` cage-teardown regression (ghost-tmux pile-up)
+
+Closes a long-running production regression surfaced 2026-05-21 by the operator: `atmux team dissolve-epic` was leaking the per-epic tmux server + its workers on every dissolve, leading to ~20+ ghost tmux sessions accumulating across the host (~38GB combined RSS observed at audit time). The root cause is a 1-line wiring bug in this ADR's §`dissolve-epic` step 5 ("soft-stop the child cage"): the implementation gated the entire teardown step on `opts.softStopHook !== undefined`, which is only true under test injection. In production `opts.softStopHook` is undefined → step 5 was a no-op → cage tmux server kept running indefinitely. Steps 6–8 (worktree prune + cockpit unregister + parent EPIC mark-done) proceeded normally, so the orphan tmux became invisible to `atmux cockpit list` despite still consuming RAM.
+
+**Contract** — `dissolve-epic` MUST always reap the child cage tmux server when the child team.json is present (i.e. the cage was spawned at some point). The reap has two sequential steps:
+
+1. **softStop** (per ADR-087) — graceful: writes `<epicRoot>/.atmux/state/resume.json`, notifies each member pane via a comment-prefixed line, sleeps `team.softStopGraceSeconds` (default 5s). Failures here are non-fatal — the manifest is forensic-only; the actual reap is step 2.
+2. **`tmux kill-session`** — load-bearing: kills the cage tmux server unconditionally after step 1, regardless of whether step 1 succeeded. Mirrors `verbs/stop.ts:272` killSession invocation (the canonical reap for non-dissolve teardowns).
+
+Both steps no-op when `tmux.session.hasSession()` returns false (idempotent dissolve of an already-stopped epic-team). Both steps swallow their own failures so the outer dissolve pipeline always reaches worktree-prune + cockpit-mutate (the operator-visible state advance).
+
+**Test-injection seam** — `DissolveEpicOpts.softStopHook` retained but reshaped: was `(epicRoot: string) => Promise<void>`, now `(deps: { epicRoot, childTeam }) => Promise<void>`. The default wires `defaultCageTeardown` (exported from same module for direct unit-test coverage). Tests that don't want to mock a full tmux pass `softStopHook: async () => undefined` to opt out; tests that exercise the default cage reap pass a mock `tmuxFactory`.
+
+**Why this isn't the kind of thing the doc-update gate would have caught** — the regression existed at ADR-090's original ship and the §step-5 description matched the intent. The bug was that the **default for `opts.softStopHook` did not match the comment claiming it was "real softStop() invocation against the child's cage."** Effectively a TODO that was committed instead of completed; doc said one thing, code did another. Caught only by operator-observed ghost session pile-up + the 2026-05-21 audit trace.
+
+**Concrete impl**: `src/verbs/team/dissolve-epic.ts::defaultCageTeardown` (helper added 2026-05-21). 5 unit tests in `tests/unit/verbs/team/dissolve-epic.test.ts` cover: (a) alive cage → both softStop + killSession run, (b) dead cage → killSession skipped, (c) hasSession throws → no killSession + no rethrow, (d) session name uses ADR-161 cage form `atmux_<name>`, (e) end-to-end dissolve with no `softStopHook` still kills cage. Total dissolve-epic tests: 16/16 pass.
+
+**Out of scope / follow-up**: A `cockpit.reaper` consumer subscribed to `epic.dissolved` events (per [ADR-202](202-honker-pubsub-substrate-deferred.md) substrate) will provide defense-in-depth — re-runs the reap until the orphan tmux is gone + surfaces dropped reaps to lead. That work lives in the Honker gitter EPIC e-d5278f2b alongside the trunk-merge consumer (ADR-091).
+
+**Cross-refs:** ADR-087 (softStop primitive — composed here) · ADR-202 (Honker substrate — defense-in-depth path) · `verbs/stop.ts:272` (canonical killSession pattern after softStop).
+
+**Filed via** 2026-05-21 driver session — operator-surfaced ghost-tmux pile-up.

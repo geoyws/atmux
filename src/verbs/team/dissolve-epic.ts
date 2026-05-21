@@ -47,15 +47,21 @@ import { exists, writeText } from "../../abstractions/fs.ts";
 import { readJson } from "../../abstractions/json.ts";
 import { closeDatabase, type Database, openDatabase } from "../../abstractions/sqlite.ts";
 import { migrations } from "../../abstractions/sqlite-migrations.ts";
-import { createTmux } from "../../abstractions/tmux.ts";
+import { createTmux, type TmuxConfig, type TmuxNamespace } from "../../abstractions/tmux.ts";
 import {
   defaultGitSpawn,
   type GitSpawn,
   isWorktreeDirty,
   pruneWorktree,
 } from "../../abstractions/worktree.ts";
-import { defaultCockpitConfigPath, removeEpicViewerFromParentCage } from "../../core/cockpit.ts";
+import {
+  cageSessionName,
+  defaultCockpitConfigPath,
+  removeEpicViewerFromParentCage,
+  resolveCageSocket,
+} from "../../core/cockpit.ts";
 import { resolveCallerScope } from "../../core/common.ts";
+import { softStop } from "../../core/soft-stop.ts";
 import { ConfigError, UsageError } from "../../errors.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
 
@@ -121,11 +127,27 @@ export interface DissolveEpicOpts {
   cockpitPath?: string;
   callerScope?: () => "driver" | "member";
   env?: NodeJS.ProcessEnv;
-  /** Test injection — soft-stop hook. Default: real softStop()
-   *  invocation against the child's cage. The default no-ops when
-   *  the cage tmux session isn't reachable (covers dissolve of a
-   *  team whose cage was already torn down out-of-band). */
-  softStopHook?: (epicRoot: string) => Promise<void>;
+  /** Test injection — cage teardown hook. Default:
+   *  {@link defaultCageTeardown}, which resolves the child cage's
+   *  socket, runs ADR-087 `softStop` (manifest + grace + notify), then
+   *  `tmux kill-session` so the cage tmux server actually exits.
+   *
+   *  Historical regression t-<this-fix> (2026-05-21): previously this
+   *  was named `softStopHook` AND was opt-in (`if hook !== undefined`),
+   *  so production dissolve-epic NEVER killed cage tmux servers. Result:
+   *  every dissolve leaked an orphan tmux server + its ~10 claude
+   *  workers (operator observed 20+ ghost sessions). The wiring now
+   *  applies the default in production and tests still override via this
+   *  hook to bypass the cage teardown when they don't want to mock a
+   *  full tmux. */
+  softStopHook?: (deps: {
+    epicRoot: string;
+    childTeam: TeamShape;
+  }) => Promise<void>;
+  /** Tmux factory. Defaults to {@link createTmux}. Tests injecting a
+   *  custom `softStopHook` typically don't need this — it's only used
+   *  by the default `softStopHook` path. */
+  tmuxFactory?: (config: TmuxConfig) => TmuxNamespace;
 }
 
 // ---------- Raw cockpit shape ----------
@@ -219,15 +241,31 @@ export async function dissolveEpic(
     );
   }
 
-  // 5. Soft-stop the child cage. Best-effort — log warn on failure
-  //    but continue. The cage may already be down (operator killed
-  //    it out-of-band, or it never spawned).
-  if (childTeam !== null && opts.softStopHook !== undefined) {
+  // 5. Soft-stop + kill the child cage. Best-effort — log warn on
+  //    failure but continue. The cage may already be down (operator
+  //    killed it out-of-band, or it never spawned).
+  //
+  //    Default hook = {@link defaultCageTeardown} (softStop + killSession
+  //    against the resolved cage socket). Pre-fix this step was gated
+  //    on `opts.softStopHook !== undefined`, which meant production
+  //    NEVER killed the cage tmux server (the operator-observed ghost-
+  //    session pile-up). Now: hook always runs when childTeam exists;
+  //    tests inject a no-op via opts.softStopHook to skip real teardown.
+  if (childTeam !== null) {
+    const hook =
+      opts.softStopHook ??
+      ((deps: { epicRoot: string; childTeam: TeamShape }) =>
+        defaultCageTeardown({
+          epicRoot: deps.epicRoot,
+          childTeam: deps.childTeam,
+          tmuxFactory: opts.tmuxFactory ?? createTmux,
+          logger,
+        }));
     try {
-      await opts.softStopHook(epicRoot);
+      await hook({ epicRoot, childTeam });
     } catch (e) {
       logger.warn(
-        `dissolve-epic: soft-stop failed for '${parsed.epicId}' — continuing with prune (${e instanceof Error ? e.message : String(e)})`,
+        `dissolve-epic: cage teardown failed for '${parsed.epicId}' — continuing with prune (${e instanceof Error ? e.message : String(e)})`,
       );
     }
   }
@@ -399,5 +437,63 @@ async function markParentEpicDone(
     }
   } finally {
     closeDb(db);
+  }
+}
+
+/**
+ * Default cage teardown — runs ADR-087 `softStop` then `tmux kill-session`
+ * against the child cage. No-op when the cage tmux server isn't running
+ * (idempotent dissolve of an already-stopped epic-team).
+ *
+ * Best-effort: every step swallows failures so the outer dissolve pipeline
+ * always reaches worktree-prune + cockpit-mutate. softStop failures are
+ * intentionally non-fatal — the killSession that follows is the load-
+ * bearing reap step; the manifest is forensic-only.
+ */
+export async function defaultCageTeardown(deps: {
+  epicRoot: string;
+  childTeam: TeamShape;
+  tmuxFactory: (config: TmuxConfig) => TmuxNamespace;
+  logger: { log: (m: string) => void; warn: (m: string) => void };
+}): Promise<void> {
+  const teamName = deps.childTeam.name;
+  const socket = await resolveCageSocket(teamName, deps.epicRoot);
+  const tmux = deps.tmuxFactory({ socketPath: socket });
+  const sessionName = cageSessionName(teamName);
+
+  // Probe — skip teardown when cage already down. Idempotent dissolve.
+  let alive = false;
+  try {
+    alive = await tmux.session.hasSession(`=${sessionName}`);
+  } catch {
+    // Socket missing entirely — cage already gone.
+    alive = false;
+  }
+  if (!alive) return;
+
+  // softStop: notify + manifest + grace. Best-effort; killSession below
+  // is the actual reap.
+  try {
+    await softStop({
+      team: deps.childTeam,
+      atmuxDir: join(deps.epicRoot, ".atmux"),
+      sessionName,
+      tmux,
+      reason: "dissolve-epic",
+    });
+  } catch (e) {
+    deps.logger.warn(
+      `dissolve-epic: softStop step failed — proceeding to killSession (${e instanceof Error ? e.message : String(e)})`,
+    );
+  }
+
+  // killSession: actual reap of the cage tmux server. Without this,
+  // dissolve leaks an orphan tmux + its workers — the root cause of
+  // the ghost-session pile-up.
+  try {
+    await tmux.session.killSession(`=${sessionName}`);
+  } catch {
+    // Session may have died mid-softStop or socket may already be gone.
+    // Either way: target state achieved.
   }
 }
