@@ -34,6 +34,14 @@ import type { Logger } from "./tui.ts";
  *  cleanup, which only targets `__<team>__home`). */
 export const ORCHD_WINDOW = "__orchd__";
 
+/** Legacy `__relayd__` window name from pre-ADR-224 cages. Detected and
+ *  renamed in-place to {@link ORCHD_WINDOW} by {@link maybeSpawnOrchdWindow}
+ *  on every `atmux start` (mirror of ADR-161 §Self-heal for member-window
+ *  prefix migration). Not exported — external callers should never spawn
+ *  this name; only the in-process auto-rename probe references it. Remove
+ *  in the same release as the CLI `relayd` deprecation alias. */
+const LEGACY_RELAYD_WINDOW = "__relayd__";
+
 export interface SpawnOrchdWindowDeps {
   team: Team;
   /** Tmux session name (typically `atmux::<team>` or per-team session). */
@@ -83,9 +91,41 @@ export async function maybeSpawnOrchdWindow(
     return false;
   }
 
-  // Idempotence: skip if the window already exists.
+  // ADR-224 §D2 — incremental-mode auto-rename: legacy cages spawned
+  // pre-rename have a `__relayd__` service window. Detect on every
+  // `atmux start` + rename in-place via `tmux rename-window` (NO
+  // kill-respawn — the running supervisor process keeps its pane
+  // state, log file handles, child Rust binary). Mirrors ADR-161
+  // §Self-heal pattern for member-window prefix migration. Idempotent:
+  // re-running on an already-renamed cage finds no `__relayd__` and
+  // skips silently.
+  //
+  // The single `listWindows` call below covers BOTH the rename probe
+  // AND the spawn-idempotence check — after the rename the same array
+  // (re-bound via the rename'd-name lookup) tells us whether to skip
+  // spawn. Tmux-error path warns + falls through to spawn attempt,
+  // same defensive shape as before this block.
   try {
     const windows = await tmux.window.listWindows(session);
+    const legacy = windows.find((w) => w.name === LEGACY_RELAYD_WINDOW);
+    if (legacy !== undefined) {
+      try {
+        await tmux.window.renameWindow(
+          { sessionName: session, windowIndex: legacy.index },
+          ORCHD_WINDOW,
+        );
+        logger.log(
+          `orchd: renamed legacy '${LEGACY_RELAYD_WINDOW}' window → '${ORCHD_WINDOW}' for '${team.name}' (per ADR-224 §D2)`,
+        );
+        // After rename, the orchd window exists — skip spawn so we don't
+        // race a fresh supervisor against the renamed one.
+        return false;
+      } catch (e) {
+        logger.warn(
+          `orchd: rename '${LEGACY_RELAYD_WINDOW}' → '${ORCHD_WINDOW}' failed (${e instanceof Error ? e.message : String(e)}) — proceeding to spawn-idempotence check`,
+        );
+      }
+    }
     if (windows.some((w) => w.name === ORCHD_WINDOW)) {
       logger.log(
         `orchd: '${team.name}' service window already exists — skipping spawn`,
