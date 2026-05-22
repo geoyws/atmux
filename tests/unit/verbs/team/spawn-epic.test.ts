@@ -15,11 +15,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitSpawn } from "../../../../src/abstractions/branch-merge.ts";
 import type { SpawnResult } from "../../../../src/abstractions/spawn.ts";
+import type { HostPressureVerdict } from "../../../../src/core/host-pressure.ts";
 import {
   parseSpawnEpicArgs,
   type SpawnEpicOpts,
   spawnEpic,
 } from "../../../../src/verbs/team/spawn-epic.ts";
+
+// Host-pressure probe stub — always returns `ok: true, skipped: true` so
+// the ADR-184 spawn gate never refuses in tests. Real-host probe lives
+// under tests/unit/core/host-pressure.test.ts.
+const permissivePressure: SpawnEpicOpts["probeHostPressure"] = async () =>
+  ({
+    ok: true,
+    reasons: [],
+    probe: null,
+    thresholds: null,
+    skipped: true,
+  }) satisfies HostPressureVerdict;
 
 let scratch: string;
 let cockpitPath: string;
@@ -130,6 +143,7 @@ describe("spawnEpic — caller-scope gate (ADR-033)", () => {
   test("refuses with explanatory error when caller is member", async () => {
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "member",
       git: makeGitStub({ initialBranch: "main" }),
@@ -140,12 +154,102 @@ describe("spawnEpic — caller-scope gate (ADR-033)", () => {
   });
 });
 
+// ---------- Host-pressure gate (ADR-184 substrate) ----------
+
+describe("spawnEpic — host-pressure gate (ADR-184)", () => {
+  test("refuses with explanatory error when probe reports pressure", async () => {
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: async () => ({
+        ok: false,
+        reasons: ["load 15min 20.00 > 12.00 (16 cores × 0.75)"],
+        probe: {
+          loadAvg1min: 20,
+          loadAvg15min: 20,
+          memAvailableMb: 16000,
+          cpuCores: 16,
+        },
+        thresholds: { maxLoadRatio: 0.75, minMemMb: 8192 },
+        skipped: false,
+      }),
+      templatesDir,
+      callerScope: () => "driver",
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+    };
+    await expect(spawnEpic(["e-aabb0001", "--from", "parent-team"], opts)).rejects.toThrow(
+      /host under pressure/,
+    );
+  });
+
+  test("--force-spawn bypasses the gate even when probe red", async () => {
+    let probeCalled = 0;
+    const warnLines: string[] = [];
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: async () => {
+        probeCalled += 1;
+        return {
+          ok: false,
+          reasons: ["load 15min 20.00 > 12.00"],
+          probe: null,
+          thresholds: null,
+          skipped: false,
+        };
+      },
+      templatesDir,
+      callerScope: () => "driver",
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: (m) => warnLines.push(m) },
+    };
+    const rc = await spawnEpic(
+      ["e-aabb0001", "--from", "parent-team", "--force-spawn"],
+      opts,
+    );
+    expect(rc).toBe(0);
+    expect(probeCalled).toBe(0); // probe NOT called under --force-spawn
+    expect(warnLines.some((m) => m.includes("--force-spawn bypasses"))).toBe(true);
+  });
+
+  test("non-Linux probe (skipped) treated as ok — no refusal", async () => {
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: async () => ({
+        ok: true,
+        reasons: [],
+        probe: null,
+        thresholds: null,
+        skipped: true,
+      }),
+      templatesDir,
+      callerScope: () => "driver",
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+    };
+    const rc = await spawnEpic(["e-aabb0001", "--from", "parent-team"], opts);
+    expect(rc).toBe(0);
+  });
+
+  test("--force-spawn arg parses + survives positional epicId", () => {
+    const r = parseSpawnEpicArgs(["e-1", "--from", "parent", "--force-spawn"]);
+    expect(r.forceSpawn).toBe(true);
+
+    const r2 = parseSpawnEpicArgs(["--force-spawn", "e-1", "--from", "parent"]);
+    expect(r2.forceSpawn).toBe(true);
+    expect(r2.epicId).toBe("e-1");
+
+    const r3 = parseSpawnEpicArgs(["e-1", "--from", "parent"]);
+    expect(r3.forceSpawn).toBe(false);
+  });
+});
+
 // ---------- End-to-end happy path ----------
 
 describe("spawnEpic — happy path", () => {
   test("creates worktree + child team.json + child state.db + cockpit entry", async () => {
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -189,6 +293,7 @@ describe("spawnEpic — happy path", () => {
   test("--parent-base override pins the branch suffix", async () => {
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -204,6 +309,7 @@ describe("spawnEpic — happy path", () => {
   test("--parent-epic-kanban-id override carries through", async () => {
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -253,6 +359,7 @@ describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", ()
     const warns: string[] = [];
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -268,6 +375,7 @@ describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", ()
     const warns: string[] = [];
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -288,6 +396,7 @@ describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", ()
     const warns: string[] = [];
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -323,6 +432,7 @@ describe("spawnEpic — claudeAccount inheritance from parent (ADR-091)", () => 
   function driverOpts(): SpawnEpicOpts {
     return {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -419,6 +529,7 @@ describe("spawnEpic — refusal paths", () => {
   test("refuses when parent team not in cockpit", async () => {
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -434,6 +545,7 @@ describe("spawnEpic — refusal paths", () => {
     });
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
@@ -446,6 +558,7 @@ describe("spawnEpic — refusal paths", () => {
   test("refuses when roster preset not found", async () => {
     const opts: SpawnEpicOpts = {
       cockpitPath,
+      probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),

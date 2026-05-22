@@ -95,16 +95,18 @@ describe("checkHonker (I/O wrapper)", () => {
     expect(rows[0]?.detail).toMatch(/state\.db absent/);
   });
 
-  test("state.db present, kill-switch off → info 'kill-switch off' row", async () => {
+  test("state.db present, kill-switch EXPLICITLY off → info 'kill-switch off' row", async () => {
     // Force-create state.db by opening + closing it once with the
     // canonical migration ladder.
     const { Database } = await import("bun:sqlite");
     const stateDb = join(atmuxDir, "state.db");
     const init = new Database(stateDb, { create: true });
     init.close();
-    // Now run a checkHonker against it. Default env has ATMUX_HONKER
-    // unset → kill-switch off.
-    const rows = await checkHonker(atmuxDir, { env: {} });
+    // ADR-202 §Amendment 2026-05-21 flipped default OFF → ON, so empty
+    // env now means substrate-load attempt (and yellow fallback if
+    // binary absent). To exercise the kill-switch-off info row, set
+    // ATMUX_HONKER=off explicitly.
+    const rows = await checkHonker(atmuxDir, { env: { ATMUX_HONKER: "off" } });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("info");
     expect(rows[0]?.detail).toMatch(/kill-switch off/);

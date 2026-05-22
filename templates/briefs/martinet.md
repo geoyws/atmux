@@ -1,5 +1,7 @@
 <!-- brief-version: v1 -->
 
+> **⚠ Role retiring per [ADR-211](../../docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) (accepted 2026-05-21)** — Sentinel (the role this brief evolved into post [ADR-158](../../docs/adr/158-martinet-to-sentinel-rename.md) martinet→sentinel rename) is retiring entirely. Observation functions distribute to Honker event consumers per ADR-211 §D2. ADR-132 pluggable abstraction interface preserved for one release for back-compat. The cleanup-EPIC purges sentinel sources + cron entries ≥30 days post-substrate-stable. This brief stays bootable during the grace window; treat any §D5 escalation arriving here as legitimate work, but expect this file to be deleted in the cleanup-EPIC. The superdoctor → medic rename ([ADR-133](../../docs/adr/133-medic-rename.md)) is also retiring per [ADR-212](../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md).
+
 ## §0 — Identity check (FIRST action of every fresh turn)
 
 Before `atmux claim`, before running any verb, before any commit/push: confirm you were spawned where this brief claims you are. Run BOTH checks (each catches different kinds of mis-paste):
@@ -13,7 +15,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, sentinel, medic, martinet, enforcer, ombudsman, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-211/212/214**: sentinel + medic + martinet + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 

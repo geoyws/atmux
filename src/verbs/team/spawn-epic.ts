@@ -71,13 +71,20 @@ import {
 import { defaultCockpitConfigPath, migrateLegacyShape } from "../../core/cockpit.ts";
 import { resolveCallerScope } from "../../core/common.ts";
 import { ConfigError, UsageError } from "../../errors.ts";
+import {
+  formatPressureError,
+  type HostPressureVerdict,
+  probeHostPressure,
+  type ProbeHostPressureDeps,
+} from "../../core/host-pressure.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
 
 const USAGE =
   "atmux team spawn-epic <epicId> --from <parentTeam>\n" +
   "  [--roster <preset> | --roster-file <path>]\n" +
   "  [--parent-base <branch>] [--parent-epic-kanban-id <eid>]\n" +
-  "  [--merge-mode auto|pr] [--no-init-submodules]";
+  "  [--merge-mode auto|pr] [--no-init-submodules]\n" +
+  "  [--force-spawn]   (bypass host-pressure gate — use sparingly)";
 
 // ---------- Arg parsing ----------
 
@@ -90,6 +97,9 @@ export interface ParsedSpawnEpicArgs {
   parentEpicKanbanId?: string;
   mergeMode?: "auto" | "pr";
   initSubmodules: boolean;
+  /** `--force-spawn` — bypass the host-pressure gate. ADR-184 substrate.
+   *  Use sparingly: the gate exists to prevent fleet thrash + OOM. */
+  forceSpawn: boolean;
 }
 
 export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpicArgs {
@@ -101,6 +111,7 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
   let parentEpicKanbanId: string | undefined;
   let mergeMode: "auto" | "pr" | undefined;
   let initSubmodules = true;
+  let forceSpawn = false;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -146,6 +157,11 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
       i += 1;
       continue;
     }
+    if (a === "--force-spawn") {
+      forceSpawn = true;
+      i += 1;
+      continue;
+    }
     if (a?.startsWith("-") === true) {
       throw new UsageError({
         what: `spawn-epic: unknown flag: ${a}`,
@@ -187,6 +203,7 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
     epicId,
     parentTeam,
     initSubmodules,
+    forceSpawn,
   };
   if (roster !== undefined) out.roster = roster;
   if (rosterFile !== undefined) out.rosterFile = rosterFile;
@@ -226,6 +243,9 @@ export interface SpawnEpicOpts {
   callerScope?: () => "driver" | "member";
   /** Override `process.env` (test injection — for $HOME resolution). */
   env?: NodeJS.ProcessEnv;
+  /** Host-pressure probe injection (test seam). Production default reads
+   *  /proc/loadavg + /proc/meminfo + /proc/cpuinfo. ADR-184 substrate. */
+  probeHostPressure?: (deps: ProbeHostPressureDeps) => Promise<HostPressureVerdict>;
 }
 
 // ---------- Top-level dispatch ----------
@@ -272,6 +292,33 @@ export async function spawnEpic(
       what: "spawn-epic: refused — caller scope is not 'driver'. Set ATMUX_CALLER_SCOPE=driver in the calling shell (ADR-033 §Caller-scope gate).",
       hint: "from a driver pane: ATMUX_CALLER_SCOPE=driver atmux team spawn-epic ...",
     });
+  }
+
+  // 1.5. Host-pressure gate. ADR-184 substrate — refuse spawn when the
+  //      host is over load OR RAM threshold. The full ADR-184 EPIC adds
+  //      a queue + dormancy audit; this thin gate is the prerequisite
+  //      defense-in-depth that prevents fleet thrash + OOM.
+  //
+  //      Configurable via ATMUX_SPAWN_MAX_LOAD_RATIO (default 0.75) +
+  //      ATMUX_SPAWN_MIN_FREE_MB (default 8192). Bypass with
+  //      --force-spawn (operator escape hatch, e.g. when you KNOW the
+  //      load avg will drop after spawn because workers will idle).
+  //      Non-Linux platforms skip the gate (probe returns {skipped:true}).
+  if (!parsed.forceSpawn) {
+    const probe = opts.probeHostPressure ?? probeHostPressure;
+    const verdict = await probe({ env });
+    if (!verdict.ok && !verdict.skipped) {
+      throw new ConfigError({
+        what: `spawn-epic: refused — ${formatPressureError(verdict)}`,
+        hint:
+          "wait for pressure to drop OR override with --force-spawn (use sparingly). " +
+          "tune thresholds via ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB env.",
+      });
+    }
+  } else {
+    logger.warn(
+      "spawn-epic: --force-spawn bypasses host-pressure gate (ADR-184) — operator owns the consequences.",
+    );
   }
 
   // 2. Resolve parent via cockpit walk (raw read so we can mutate +

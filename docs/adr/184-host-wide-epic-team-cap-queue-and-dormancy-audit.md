@@ -362,3 +362,27 @@ Operator-driven manual reduction precedes any new spawn — v1 cap (8) is well b
 - ADR-132/158 (sentinel — possible v2 host-tier observer).
 - ADR-148 (commit-cadence ground-truth signal — primary dormancy axis).
 - Origin: 2026-05-17 22:25 MYT driver P0 (driver-inbox tail line 5742+).
+
+
+## §Amendment 2026-05-21 — Thin spawn-side pressure gate shipped ahead of full EPIC
+
+Closes the immediate operational pain surfaced 2026-05-21 driver session: hax under ~10 simultaneous epic-teams, load avg 20+, MemAvailable 24GB out of 124GB. Operator directive: *"let's make atmux spawn sensitive to RAM and CPU"*. Full ADR-184 substrate (queue + dormancy audit + admission ladder) is filed as EPIC e-13f311f5 (not yet spawned). This amendment documents a focused subset shipped today as the prerequisite defense-in-depth.
+
+**Contract** — `atmux team spawn-epic` reads host pressure pre-spawn + refuses with operator-actionable error when:
+
+1. `loadAvg(15min) / cpu_cores > ATMUX_SPAWN_MAX_LOAD_RATIO` (default 0.75)
+2. `MemAvailable < ATMUX_SPAWN_MIN_FREE_MB` (default 8192 MB)
+
+Thresholds tunable per host via env. Override via `--force-spawn` flag (operator escape hatch — surfaces a WARN line that operator owns the consequences). Non-Linux platforms skip the gate (probe returns `{skipped:true}` — macOS dev unaffected).
+
+**Why this subset:**
+
+- It's the entire spawn-side decision surface — the full ADR-184 EPIC adds *queueing* (admission ladder + dormancy audit) which is significant additional work. Refusing-with-hint is simpler + already covers the pain (the operator sees "wait + try again or --force-spawn" instead of an OOM 20 minutes later).
+- The probe module (`src/core/host-pressure.ts`) is the testable seam the full EPIC's queue will sit on. Net wasted effort: ~0.
+- Bootstrap (`atmux start`) NOT gated yet — that's parent-team scope, smaller blast radius, full EPIC's call whether to gate.
+
+**Implementation**: `src/core/host-pressure.ts` (new — pure probe + threshold logic) + `src/verbs/team/spawn-epic.ts` step 1.5 (post-caller-scope, pre-cockpit-read). Tests: 24 unit on host-pressure module (100% func / 99% line coverage) + 4 on spawn-epic gate integration.
+
+**Cross-refs:** ADR-198 (host-pressure playbook — operator-side runtime relief; this ADR's spawn-side admission control is the *prevention* sibling), EPIC e-13f311f5 (full ADR-184 substrate — queue + dormancy audit; consumes `host-pressure.ts` probe).
+
+**Filed via** 2026-05-21 driver session operator directive.

@@ -108,6 +108,8 @@ describe("parseInitArgs", () => {
       name: "alpha",
       force: false,
       wizard: false,
+      noSkills: false,
+      skillsOnly: false,
     });
   });
 
@@ -132,6 +134,8 @@ describe("parseInitArgs", () => {
       name: "x",
       force: true,
       wizard: false,
+      noSkills: false,
+      skillsOnly: false,
     });
   });
 
@@ -301,10 +305,13 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     expect(env.logs.length).toBe(1);
     expect(env.logs[0]).toMatchObject({ kind: "ok" });
     expect(env.logs[0]?.msg).toBe(`initialized atmux team 'hello' at ${join(env.cwd, ".atmux")}`);
-    // stdout matches bash :80-84 exactly (blank line + 4 lines).
+    // stdout matches bash :80-84 + the ADR-217 §D5 skills-install render
+    // line that precedes it. Test harness passes `env: {}` so the helper
+    // short-circuits with `{kind: "skipped", reason: "$HOME unset"}`.
     const stdout = env.stdoutBuf.join("");
     expect(stdout).toBe(
       [
+        "· skills plugin install skipped ($HOME unset)\n",
         "\n",
         "Next:\n",
         `  1. review ${join(env.cwd, ".atmux", "team.json")}\n`,

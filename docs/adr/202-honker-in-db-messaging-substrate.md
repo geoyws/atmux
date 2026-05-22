@@ -288,3 +288,16 @@ Acceptance per EPIC: substrate smoke tests + consumer-specific assertions green;
 - memory `project_honker_pubsub_rehaul_design` — full design state, decisions locked, 10 open questions resolved in this ADR per the operator's "go with your lean" 2026-05-21 directive
 - memory `project_cheap_model_first_adr_140` — ADR-140 burn-reduction projection
 - memory `reference_kanbantask_passthrough_extra_json` — Zod `.passthrough()` precedent for D4
+
+
+## §Amendment 2026-05-21 — Default flipped OFF → ON (driver-initiated dogfood)
+
+Default kill-switch state reverses: `ATMUX_HONKER` env var now defaults to **ON** when absent / empty. Operators explicitly disable via `ATMUX_HONKER=off|0|false|OFF|FALSE`. Garbage values (e.g. `ATMUX_HONKER=onn`) fall back to default-ON rather than silently disabling — typo-safe positive form.
+
+**Why this is safe to flip before the binary universally ships:** the substrate is graceful per §D6. When the binary isn't present at `~/.atmux/extensions/honker.{so,dylib}`, `loadHonkerOrFallback` returns `{loaded: false, fallbackReason: "..."}` cleanly + the doctor probe surfaces a yellow `fallback` row. Consumers fall through to their cron-backstop / direct-INSERT paths. Net effect of default-ON pre-binary: a yellow doctor row + a few wasted load-attempts on boot. No production traffic change.
+
+**Why we flip now**: dogfood. Even pre-binary, all event-emitting code paths in production exercise the (poll-mode) substrate consistently. The day the binary lands, the load-attempt starts succeeding without code changes elsewhere — the consumer dispatch flips event-driven automatically. This catches any "I built event-emission against the substrate but didn't actually emit" bugs while we still have time to fix them.
+
+**Concrete impl**: `src/abstractions/honker.ts::isHonkerEnabled` (the kill-switch reader) now returns `true` for absent / empty / unrecognized values; only explicit off-forms return `false`. 7 unit tests in `tests/unit/abstractions/honker.test.ts::isHonkerEnabled` cover the new contract.
+
+**Filed via** 2026-05-21 driver session — *"flip honker and let's turn it on"*.

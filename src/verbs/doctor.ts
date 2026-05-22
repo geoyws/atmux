@@ -34,6 +34,11 @@ import {
   type HonkerHooks,
   type HonkerRuntimeState,
 } from "../abstractions/honker.ts";
+import {
+  type HostPressureVerdict,
+  probeHostPressure,
+  type ProbeHostPressureDeps,
+} from "../core/host-pressure.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
@@ -702,6 +707,218 @@ export async function checkHonker(
   } finally {
     closeDatabase(db);
   }
+}
+
+// ---------- host-pressure probe (ADR-184 §Amendment 2026-05-21) ----------
+
+/** Pure mapping. State-snapshot → doctor row. Tests inject verdicts to
+ *  hit every branch without /proc reads. */
+export function hostPressureRows(verdict: HostPressureVerdict): DoctorRow[] {
+  if (verdict.skipped) {
+    return [
+      {
+        status: "info",
+        label: "host-pressure",
+        detail: "probe skipped — non-Linux platform (gate inactive)",
+      },
+    ];
+  }
+  if (verdict.probe === null || verdict.thresholds === null) {
+    // Linux but probe failed somehow — surface as info, don't block.
+    return [
+      {
+        status: "info",
+        label: "host-pressure",
+        detail: "probe data unavailable",
+      },
+    ];
+  }
+  const loadCeil = verdict.probe.cpuCores * verdict.thresholds.maxLoadRatio;
+  const memMb = verdict.probe.memAvailableMb;
+  const memMbThreshold = verdict.thresholds.minMemMb;
+  const baseDetail = [
+    `load 15min ${verdict.probe.loadAvg15min.toFixed(2)} / ${loadCeil.toFixed(2)} ceil`,
+    `mem ${memMb}MB / ${memMbThreshold}MB floor`,
+    `${verdict.probe.cpuCores} cores`,
+  ].join(" · ");
+  if (verdict.ok) {
+    return [
+      {
+        status: "green",
+        label: "host-pressure",
+        detail: `under threshold — ${baseDetail}`,
+      },
+    ];
+  }
+  return [
+    {
+      status: "yellow",
+      label: "host-pressure",
+      detail: `OVER threshold — ${baseDetail}`,
+      hint:
+        `${verdict.reasons.join("; ")} — spawn-epic will REFUSE until pressure drops. ` +
+        `override: --force-spawn (use sparingly); tune: ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB env.`,
+    },
+  ];
+}
+
+/** Verb-side wrapper — runs the live probe + maps to rows. Production
+ *  default; tests inject `probeFn` to drive specific verdicts. */
+export async function checkHostPressure(
+  probeFn: (deps: ProbeHostPressureDeps) => Promise<HostPressureVerdict> = probeHostPressure,
+): Promise<DoctorRow[]> {
+  const verdict = await probeFn({});
+  return hostPressureRows(verdict);
+}
+
+// ---------- atmux-skills-plugin probe (ADR-217 §D5) ----------
+
+/** Inputs the pure state-mapper resolves to a doctor row. Exported so
+ *  tests exercise every branch without filesystem I/O. */
+export type SkillsPluginState =
+  | { kind: "opted-out" }
+  | { kind: "symlink-missing" }
+  | { kind: "plugin-json-missing"; installPath: string }
+  | { kind: "plugin-json-malformed"; installPath: string; reason: string }
+  | { kind: "plugin-json-schema-fail"; installPath: string; reason: string }
+  | { kind: "green"; installPath: string; pluginName: string };
+
+/** Pure mapping. Same shape as `honkerStateRows` — keep the wrapper +
+ *  state mapper paired so unit tests can hit every branch. */
+export function skillsPluginStateRows(state: SkillsPluginState): DoctorRow[] {
+  switch (state.kind) {
+    case "opted-out":
+      return [
+        {
+          status: "info",
+          label: "atmux-skills-plugin",
+          detail:
+            "user opted out via wizard (marker present at ~/.atmux/state/skills-plugin-opted-out)",
+        },
+      ];
+    case "symlink-missing":
+      return [
+        {
+          status: "yellow",
+          label: "atmux-skills-plugin",
+          detail: "skills plugin not installed at ~/.claude/plugins/atmux/",
+          hint: "atmux init --skills-only  (or rerun the install wizard)",
+        },
+      ];
+    case "plugin-json-missing":
+      return [
+        {
+          status: "yellow",
+          label: "atmux-skills-plugin",
+          detail: `plugin.json missing at ${state.installPath}/.claude-plugin/plugin.json`,
+          hint: "atmux init --skills-only --force  (re-installs the bundled plugin)",
+        },
+      ];
+    case "plugin-json-malformed":
+      return [
+        {
+          status: "yellow",
+          label: "atmux-skills-plugin",
+          detail: `plugin.json malformed at ${state.installPath} — ${state.reason}`,
+          hint: "atmux init --skills-only --force  (overwrites with bundled manifest)",
+        },
+      ];
+    case "plugin-json-schema-fail":
+      return [
+        {
+          status: "yellow",
+          label: "atmux-skills-plugin",
+          detail: `plugin.json schema validation failed at ${state.installPath} — ${state.reason}`,
+          hint: "atmux init --skills-only --force  (re-installs the bundled plugin)",
+        },
+      ];
+    case "green":
+      return [
+        {
+          status: "green",
+          label: "atmux-skills-plugin",
+          detail: `skills plugin installed at ${state.installPath} (plugin=${state.pluginName})`,
+        },
+      ];
+  }
+}
+
+export interface CheckSkillsPluginOpts {
+  /** Override $HOME for tests. */
+  home?: string;
+}
+
+/** I/O wrapper. Resolves the install path under $HOME, probes for the
+ *  opt-out marker first, then verifies the symlink + plugin.json. Returns
+ *  the empty array when $HOME is unset (defensive — caller probably has
+ *  bigger issues, no point emitting a doctor row about it). */
+export async function checkSkillsPlugin(
+  opts: CheckSkillsPluginOpts = {},
+): Promise<DoctorRow[]> {
+  const home = opts.home ?? process.env.HOME;
+  if (home === undefined || home.length === 0) return [];
+
+  const optOutMarker = join(home, ".atmux", "state", "skills-plugin-opted-out");
+  if (await exists(optOutMarker)) {
+    return skillsPluginStateRows({ kind: "opted-out" });
+  }
+
+  // Canonical install path: real dir (operator dotfiles override) or
+  // symlink to <atmux-source>/plugins/atmux/. Both count as "installed"
+  // for the probe; the wizard step distinguishes for UX purposes.
+  const installPath = join(home, ".claude", "plugins", "atmux");
+  const st = await statOrNull(installPath);
+  if (st === null || !st.isDirectory) {
+    return skillsPluginStateRows({ kind: "symlink-missing" });
+  }
+
+  const manifestPath = join(installPath, ".claude-plugin", "plugin.json");
+  const raw = await readTextOrNull(manifestPath);
+  if (raw === null) {
+    return skillsPluginStateRows({ kind: "plugin-json-missing", installPath });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return skillsPluginStateRows({
+      kind: "plugin-json-malformed",
+      installPath,
+      reason: e instanceof Error ? e.message : String(e),
+    });
+  }
+  // Minimal shape check on the keys the probe's green path depends on.
+  // The Claude Code plugin-schema pin lives in the sibling integration
+  // test (t-e57fe51e) — this probe stays cheap + tolerant of additive
+  // schema fields so a CC schema bump doesn't flip every operator's row
+  // yellow.
+  if (parsed === null || typeof parsed !== "object") {
+    return skillsPluginStateRows({
+      kind: "plugin-json-schema-fail",
+      installPath,
+      reason: "manifest is not an object",
+    });
+  }
+  const m = parsed as Record<string, unknown>;
+  if (typeof m.name !== "string" || m.name.length === 0) {
+    return skillsPluginStateRows({
+      kind: "plugin-json-schema-fail",
+      installPath,
+      reason: "missing or empty 'name' field",
+    });
+  }
+  if (!Array.isArray(m.skills)) {
+    return skillsPluginStateRows({
+      kind: "plugin-json-schema-fail",
+      installPath,
+      reason: "'skills' field is not an array",
+    });
+  }
+  return skillsPluginStateRows({
+    kind: "green",
+    installPath,
+    pluginName: m.name,
+  });
 }
 
 export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]> {
@@ -2994,6 +3211,18 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // poll mode. Info-level when state.db absent or kill-switch off;
   // yellow on fallback (load failure / smoke fail); green on loaded.
   rows.push(...(await checkHonker(atmuxDir)));
+  // ADR-184 §Amendment 2026-05-21: host-pressure probe. Surfaces the
+  // /proc/loadavg + /proc/meminfo readings vs configured thresholds
+  // (ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB). Green
+  // under threshold; yellow over (spawn-epic refuses); info on
+  // non-Linux platforms.
+  rows.push(...(await checkHostPressure()));
+  // ADR-217 §D5: installed-state of the /atmux: skills plugin (12
+  // cockpit-tier skills shipped via plugins/atmux/, installed by the
+  // wizard step in `atmux init`). Green when symlink + plugin.json
+  // valid; yellow on missing / malformed; info when user opted out
+  // via wizard [n]. $HOME-unset → silent no-row.
+  rows.push(...(await checkSkillsPlugin()));
   // t-af159454: phantom in-progress claims (kanban rows with dead
   // owner panes). Distinct vulnerability class from phantom-inbox
   // above (that one scans member inProgress via loadInbox; this scans

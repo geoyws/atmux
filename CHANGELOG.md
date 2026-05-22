@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🟢 Fixed — hold-posture deadlock eliminated from lead bootstrap (ADR-210 §Tier 1, t-ef4bb453)
+
+Lead brief step 2 now does **kanban-first dispatch** instead of holding for planner refinement. Planner role re-framed as async-enriching (not gating). Closes the sopx 2026-05-21 deadlock class where lead + members + planner all idled waiting on each other.
+
+- **templates/briefs/lead.md** — new step 2 (kanban-first dispatch by role: fe-*/be-*/db/devops/reviewer); steps 3-9 renumbered. Cross-link to [ADR-210](docs/adr/210-eliminate-hold-posture-deadlock-structurally.md).
+- **templates/briefs/planner.md** — async-enrich-not-gating callout at top of §Your loop. Workers re-read Task bodies between turns and pick up planner refinements on subsequent dispatches.
+
+**Backport posture** (per ADR-210 §OQ1 driver preference): NEW spawn-epic invocations pick up the new brief automatically. **Existing teams need `/clear` on lead + planner panes to re-bootstrap from the updated brief**. Operator chooses which stuck teams to /clear; no automated backport sweep ships in Tier 1. If your team is currently in the hold-deadlock pattern, `/clear` the lead pane and re-spawn it via `/team rotate-lead` (or whichever rotation verb your topology uses).
+
+Tier 2 (member-side pull-protocol fallback) ships as a follow-up release once Tier 1 is verified in the field.
+
 ### 🏷️ `atmux team rename` — forward-going verb (ADR-027 shipped, EPIC e-1e223687)
 
 Closes the 2026-04-27 gap: [ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md) was accepted but never implemented. Sibling to `atmux team repair-rename` (recovery side, [ADR-103](docs/adr/103-team-repair-rename.md)). The verb renames a team atomically across every surface the team-name appears in — `team.json:.name`, tmux session + cockpit team-viewer window, cron markers, cockpit registry (`cockpit.json::sessions[]` DFS — superseded shape per [ADR-089](docs/adr/089-recursive-cockpit-sessions.md) §B), single-session capture file — with rollback-staged 10-step orchestration + refuse-gate preflight (in-progress kanban tasks soft-refuse; name collision + invalid charset hard-refuse).

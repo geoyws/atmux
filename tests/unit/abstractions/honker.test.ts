@@ -27,17 +27,26 @@ import {
 } from "../../../src/abstractions/honker.ts";
 
 describe("isHonkerEnabled", () => {
-  test("default-off when env var absent", () => {
-    expect(isHonkerEnabled({})).toBe(false);
+  // 2026-05-21: default flipped off → on per driver-initiated dogfood.
+  // Substrate is graceful (binary-absent → poll-mode fallback), so
+  // default-on is safe to enable before the binary ships universally.
+  test("default-ON when env var absent (post-2026-05-21 dogfood flip)", () => {
+    expect(isHonkerEnabled({})).toBe(true);
   });
 
-  test("default-off when env var explicitly off", () => {
+  test("default-ON when env var is empty string", () => {
+    expect(isHonkerEnabled({ ATMUX_HONKER: "" })).toBe(true);
+  });
+
+  test("explicit off forms still disable", () => {
     expect(isHonkerEnabled({ ATMUX_HONKER: "off" })).toBe(false);
     expect(isHonkerEnabled({ ATMUX_HONKER: "0" })).toBe(false);
-    expect(isHonkerEnabled({ ATMUX_HONKER: "" })).toBe(false);
+    expect(isHonkerEnabled({ ATMUX_HONKER: "false" })).toBe(false);
+    expect(isHonkerEnabled({ ATMUX_HONKER: "OFF" })).toBe(false);
+    expect(isHonkerEnabled({ ATMUX_HONKER: "FALSE" })).toBe(false);
   });
 
-  test("on for truthy values", () => {
+  test("on for truthy values (back-compat — explicit-on still honored)", () => {
     expect(isHonkerEnabled({ ATMUX_HONKER: "on" })).toBe(true);
     expect(isHonkerEnabled({ ATMUX_HONKER: "ON" })).toBe(true);
     expect(isHonkerEnabled({ ATMUX_HONKER: "1" })).toBe(true);
@@ -49,6 +58,13 @@ describe("isHonkerEnabled", () => {
     expect(isHonkerEnabled({ ATMUX_HONKER: "  on  " })).toBe(true);
     expect(isHonkerEnabled({ ATMUX_HONKER: "  off  " })).toBe(false);
   });
+
+  test("garbage value falls back to default-on (positive form)", () => {
+    // Anything that isn't an explicit off-form returns true. This keeps
+    // typos like ATMUX_HONKER=onn from silently disabling the substrate.
+    expect(isHonkerEnabled({ ATMUX_HONKER: "yes" })).toBe(true);
+    expect(isHonkerEnabled({ ATMUX_HONKER: "garbage" })).toBe(true);
+  });
 });
 
 describe("loadHonkerOrFallback — kill-switch off", () => {
@@ -58,8 +74,8 @@ describe("loadHonkerOrFallback — kill-switch off", () => {
   });
   afterEach(() => db.close());
 
-  test("returns {loaded: false} cleanly when env not set", () => {
-    const state = loadHonkerOrFallback(db, { env: {} });
+  test("returns {loaded: false} cleanly when kill-switch explicit off", () => {
+    const state = loadHonkerOrFallback(db, { env: { ATMUX_HONKER: "off" } });
     expect(state.loaded).toBe(false);
     expect(state.fallbackReason).toBeNull();
     expect(state.extensionPath).toBeNull();
@@ -380,7 +396,7 @@ describe("bootHonker + getHonkerState", () => {
   });
 
   test("kill-switch off → state cached as {loaded: false} with no fallback reason", () => {
-    const state = bootHonker(db, { env: {} });
+    const state = bootHonker(db, { env: { ATMUX_HONKER: "off" } });
     expect(state.loaded).toBe(false);
     expect(state.fallbackReason).toBeNull();
     expect(getHonkerState(db)).toBe(state);

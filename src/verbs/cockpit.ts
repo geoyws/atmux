@@ -13,7 +13,10 @@
 //   2. cycle dead cages (live-team-aware: a cage with running claude
 //      procs is preserved unless --force-cycle). Calls `start` in-process
 //      per team to spawn the bare-shell member windows
-//   3. apply the C-\ cage prefix to every cage tmux server
+//   3. apply the level-resolved cage prefix per ADR-089 §C (F1/F2/F3
+//      from DEFAULT_PREFIX_CHAIN or operator-supplied cockpit.prefixChain)
+//      to every cage tmux server. Legacy `C-\` falls through only when
+//      the chain resolution fails — never as the primary path.
 //   4. auto-launch the TUI in each non-claude pane via resolveTuiCommand
 //      + tmux send-keys (skip with --no-launch)
 //   5. reconcile cockpit session (default `atmux_teams` per ADR-046) on
@@ -47,6 +50,7 @@ import {
   perTeamCageSocketPath,
   resolveCageSocket,
   resolveCockpitConfigPath,
+  resolvePrefix,
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
@@ -676,11 +680,28 @@ export async function cockpitRebuild(
     }
   }
 
-  // Phase 3: apply C-\ cage prefix on every enabled cage.
+  // Phase 3: apply the level-resolved cage prefix on every enabled cage
+  // per ADR-089 §C. Pre-fix (clobber observed 2026-05-21): cockpit rebuild
+  // called applyCagePrefix() with no prefix → fell back to legacy `C-\`,
+  // which overrode operator-supplied F-key chain configured via
+  // `cockpit.prefixChain` (or the DEFAULT_PREFIX_CHAIN F1..F12). atmux
+  // start already routes through resolveCagePrefixBestEffort; this loop
+  // mirrors the same resolution by reading `t.level` from the flattened
+  // enabledTeams() walk + adding 1 (walkSessions yields 0-indexed levels;
+  // resolvePrefix expects 1-indexed per ADR-089 §C). Top-level team =
+  // level 1 = F1; epic-team child = level 2 = F2; etc.
   for (const t of teams) {
     const sock = await resolveCageSocket(t.name, t.root);
     const cageTmux = factory({ socketPath: sock });
-    await applyCagePrefix(cageTmux);
+    let prefix: string | undefined;
+    try {
+      prefix = resolvePrefix(t.level + 1, cockpit.prefixChain);
+    } catch {
+      // Best-effort — invalid chain or level > MAX_NESTING_LEVEL falls
+      // through to applyCagePrefix's legacy `C-\` default (cosmetic
+      // only; cage operation unaffected).
+    }
+    await applyCagePrefix(cageTmux, prefix);
   }
 
   // Phase 4: TUI auto-launch (idempotent — skips panes already on claude).

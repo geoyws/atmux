@@ -1,0 +1,126 @@
+{
+  "name": "atmux",
+  "description": "atmux-bun port — Phase 4 RUSH (parity matrix expansion + lane porters). Dogfooding atmux for own coordination.",
+  "tmuxTmpdir": "/root/work/src/atmux/.atmux/tmux",
+  "worktreeIsolation": true,
+  "singleSession": false,
+  "driverSession": {
+    "tui": "claude"
+  },
+  "members": [
+    {
+      "name": "lead",
+      "role": "team-lead",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "/root/work/src/atmux",
+      "emoji": "🧭",
+      "claudeAccount": "personal"
+    },
+    {
+      "name": "planner",
+      "role": "planner",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "/root/work/src/atmux",
+      "emoji": "🎯",
+      "claudeAccount": "personal"
+    },
+    {
+      "name": "reviewer",
+      "role": "reviewer",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "/root/work/src/atmux",
+      "emoji": "🔍",
+      "claudeAccount": "personal"
+    },
+    {
+      "name": "docs",
+      "role": "docs",
+      "lane": "misc",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "/root/work/src/atmux",
+      "emoji": "🦦",
+      "claudeAccount": "personal"
+    },
+    {
+      "name": "gitter",
+      "role": "committer",
+      "lane": "misc",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "/root/work/src/atmux",
+      "emoji": "🌿",
+      "claudeAccount": "personal"
+    },
+    {
+      "name": "ombudsman",
+      "role": "ombudsman",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "/root/work/src/atmux",
+      "emoji": "⚖️",
+      "claudeAccount": "personal"
+    }
+  ],
+  "emojis": {
+    "mode": "static"
+  },
+  "whip": {
+    "intervalMins": 5,
+    "staleMin": 90,
+    "leadMaxMin": 60,
+    "autoRotate": true,
+    "downConfirmTicks": 2,
+    "heartbeat": true,
+    "leadCtxRotateThreshold": 70,
+    "budgetPauseThreshold": 90,
+    "budgetResumeThreshold": 80,
+    "budgetWarningBands": [
+      0.5,
+      0.25,
+      0.15
+    ],
+    "budgetRefreshLeadMins": 30,
+    "autoStopAfterIdleTicks": 0,
+    "selfHealEnabled": false,
+    "selfHealRecipes": [],
+    "needsApprovalEnabled": true,
+    "accountFallback": ["unum", "icloud", "ifca"],
+    "accountSwapTriggerThreshold": 75,
+    "accountSwapFallbackHealthThreshold": 50,
+    "accountSwapPerMemberDeadlineSec": 300,
+    "accountSwapExcludeRoles": [
+      "planner",
+      "reviewer"
+    ]
+  },
+  "kanban": {
+    "crossLaneClaim": true,
+    "cronAutoInstall": true
+  },
+  "report": {
+    "intervalMins": 30,
+    "heartbeatHours": 1
+  },
+  "autoMerge": {
+    "enabled": true,
+    "requireReviewerSignoff": false,
+    "skipTestGate": false,
+    "testCommand": "bun test",
+    "revertOnFail": true,
+    "cronBackstopMin": 10,
+    "maxMergesPerHour": null
+  },
+  "ombudsman": {
+    "enabled": true,
+    "tickIntervalMins": 15
+  },
+  "tuiCommands": {
+    "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type.",
+    "claude": "CLAUDE_CONFIG_DIR=/root/.claude-personal CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 claude --plugin-dir=/root/work/journals/.sb/claude-skills --permission-mode auto"
+  },
+  "bareWindowNames": true
+}
