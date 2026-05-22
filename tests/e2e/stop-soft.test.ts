@@ -22,6 +22,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import { buildWindowName } from "../../src/core/common.ts";
 import { ResumeManifest } from "../../src/schema/resume.ts";
 import { claim as claimVerb } from "../../src/verbs/claim.ts";
 import { start as startVerb } from "../../src/verbs/start.ts";
@@ -93,7 +94,13 @@ beforeAll(async () => {
 
   leadMarkerDir = join(homedir(), ".claude", "teams", teamName);
   await mkdir(leadMarkerDir, { recursive: true });
-  await writeFile(join(leadMarkerDir, "lead-window-name.txt"), "🧭lead\n");
+  // Post-ADR-135 + ADR-161 canonical: team-lead role → `🧭_lead`
+  // (default-member underscore separator). Source: src/core/common.ts::
+  // buildWindowName + isDefaultMemberRole.
+  await writeFile(
+    join(leadMarkerDir, "lead-window-name.txt"),
+    `${buildWindowName("lead", "🧭", undefined, "team-lead")}\n`,
+  );
 
   tmux = createTmux({ socketPath });
 });
@@ -186,7 +193,8 @@ describe("e2e: stop --soft (ADR-087)", () => {
     const parsed = ResumeManifest.parse(JSON.parse(await readFile(manifestPath, "utf8")));
     const w1 = parsed.members.find((m) => m.name === "w1");
     expect(w1?.lastClaim).toBe(taskId);
-    expect(w1?.windowName).toBe("🐝w1");
+    // Post-ADR-135 canonical: role=member → `<emoji>-<name>` (hyphen).
+    expect(w1?.windowName).toBe(buildWindowName("w1", "🐝", undefined, "member"));
     expect(parsed.members.find((m) => m.name === "lead")?.lastClaim).toBeNull();
   });
 
