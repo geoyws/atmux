@@ -933,3 +933,231 @@ Per Epic body file-ownership rules: Epic A owns `src/verbs/relayd.ts`, `src/core
 
 **Filed via** 2026-05-22 driver /btw audit fold-in (Epic e-95087c8b Story 1) — *"relayd direct send-keys: cuts latency + Bun spawn cost"*; T3 contract refinement *"drop --member from required set"* unified the wire-format.
 
+## §Amendment 2026-05-22 (X) — Cron decommission protocol
+
+Drives the operator playbook for retiring a parallel cron line once its event-driven relayd counterpart has earned trust. Filed under epic e-b7a702d1 (/btw correctness fold-in) story s-95f312ab (S1) per /btw audit #4.
+
+### Motivation — parallel-path risk if no retire gate exists
+
+Every cron/relayd parallel pair is intentionally redundant at substrate-load time: the relayd consumer is the latency floor (sub-second), the cron line is the structural backstop (catches missed-emit + cold-start races + substrate downtime). Defense-in-depth is correct during bring-up. But the pairs become *liabilities* if they run in parallel forever without a retire gate:
+
+1. **Double-process risk** — both paths invoking the same handler on the same event multiplies side-effects (e.g. two committer-sweeps racing the same `<base>-<member>` merge, two lane-ticks dispatching the same lane). Idempotency gates per-handler must hold, but every additional path adds a contention surface.
+2. **Operator confusion** — when a beat fails, "did cron fire?" + "did relayd fire?" + "did both?" + "which one did the work?" tripled log-grep surface vs. a single-source-of-truth path.
+3. **Drift** — cron-template emit code (`src/core/cron.ts`) and relayd consumer code (`src/core/*-consumer.ts`) drift independently; a bug fix in the relayd path may not land in the cron path or vice versa, leaving the team silently on the buggy fallback when one fails.
+4. **Cost ratchet** — every team's crontab grows; on hosts with many teams the cron noise itself becomes a tail-latency problem (concurrent `cron` fanout fights the same SQLite write lock the relayd consumer already serializes through).
+
+A retire gate forces operators to make the decommission decision explicitly, with a probe-backed verdict, instead of letting the parallel-path state ossify.
+
+### The gate (concrete spec — copy-pasteable for operators)
+
+Before removing any parallel cron line, ALL THREE of the following MUST hold:
+
+1. **Substrate uptime** — the relayd consumer for the topic in question has been live for **≥ N days** (default `N=7`). Probe via `atmux relayd --status` (per §V): the consumer's `subscriber_offsets` row must exist and its `last_seen_at` must be within the last cron-cadence window (i.e. relayd hasn't fallen behind the substrate).
+2. **Zero-loss across the window** — `atmux doctor relayd-event-loss --topic <X> --since <now-N-days>` returns zero-loss: every event emitted on topic `<X>` over the N-day window was acknowledged by the consumer's subscriber_offsets advance. (The doctor probe itself ships separately — see §Out of scope.)
+3. **Decommission-time probe + record** — operator manually runs `atmux doctor relayd-event-loss --topic <X> --since <last-N-days>` at decommission time AND attaches the output verbatim into the decommission commit body. The N-day probe is the durable evidence trail; a future revert needs to know the verdict that authorized the removal.
+
+`N=7` is the default; per-team override via `team.json::honker.decommissionWindowDays`. Shorter windows are valid for low-volume topics where 7 days is uneconomic; longer for high-stakes topics (e.g. epic-merge fan-in) where the operator wants extra evidence before drop.
+
+### Procedure steps
+
+The full decommission flow:
+
+a. **Install the relayd consumer for topic `<X>`** (or confirm it's already installed). Verify via `atmux relayd --status | grep <consumer-name>`. If the consumer row is absent, do NOT proceed — file a Task to install it first.
+
+b. **Leave the existing parallel cron line in place.** Both paths MUST run concurrently for the gate window. Do NOT short-circuit by removing the cron line "because relayd is already running" — the gate measures the relayd path's reliability *against* the cron path's coverage. Skipping the parallel phase forfeits the evidence that decommission is safe.
+
+c. **Wait N days** (default 7). During this window, do not touch the cron line. Resist the temptation to "test the decommission early" — the whole point is N consecutive days of zero-loss observation, not a snapshot.
+
+d. **Run the doctor probe**: `atmux doctor relayd-event-loss --topic <X> --since <ts-N-days-ago>`. The probe MUST return zero-loss. If it returns non-zero loss, investigate the loss class first — the relayd path isn't ready and the cron stays.
+
+e. **Remove the cron block** from `team.json::cronTemplates` (or whichever team.json field gates the cron-line emission for topic `<X>`) AND run `atmux start` from the team root to regenerate the host crontab. The `atmux:team=<name>` sandwich markers (per ADR-083) idempotently rewrite the team's crontab block; the now-absent cron line falls off automatically.
+
+f. **Commit with body**: `Decommission: cron <topic-X> per ADR-202 §X (probe output attached).` Paste the verbatim `atmux doctor relayd-event-loss` output in the commit body as the audit trail. Push to the team's base; the next `atmux start` on any peer host picks up the removed line via crontab re-emit.
+
+### Enumeration of CURRENT parallel cron/relayd pairings (as of ADR write date 2026-05-22)
+
+| # | Cron line | Relayd consumer / topic | Notes |
+|---|-----------|-------------------------|-------|
+| 1 | `lane-tick` every 5min (`src/core/cron.ts:306`, default `DEFAULT_LANE_TICK_CRON_MINS=5`) | `lane-router` consumer subscribing to `task.unclaimed` topic (emitted from `src/core/kanban.ts:287` per §IV) | Cron is the structural backstop for wedged panes / compaction-wipe / rate-lockout cases /goal cannot see; relayd is the happy-path latency floor. |
+| 2 | `committer --sweep` every `team.autoMerge.cronBackstopMin` min (default 10, `src/core/cron.ts:403`) | `committer --drain` invoked from a cron line at `*/1min` (per §II), backed by the `atmux:gitter` consumer subscribing to `task.done` (`src/core/gitter-consumer.ts:98`) | `--sweep` walks every `<base>-<member>` branch (catches events the substrate missed entirely); `--drain` processes substrate-emitted events at the cron cadence floor. Both gated on `hasGitter && autoMerge.enabled`. |
+
+Pre-decommission, operators MUST re-grep `team.json` against the live relayd subscriber list (`atmux relayd --status`) to confirm the table above is still complete — new pairings landed between this ADR write and the operator's decommission window will not appear here.
+
+### Reversibility
+
+Re-installing a decommissioned cron block requires only:
+
+1. Restore the corresponding cron template in `team.json` (or revert the commit that dropped it).
+2. Run `atmux start` from the team root. The host crontab regenerates with the previously-removed line back in place.
+
+No state migration. No data backfill. No re-bootstrap of the consumer offsets table. The relayd path keeps running unchanged; the cron line simply rejoins as a parallel safety net.
+
+This is by design — the decommission gate is high-friction (7-day wait + manual probe), but the rollback is one config flip + `atmux start`. Operators encountering substrate trouble post-decommission can restore the cron parallel-path in seconds without escalation overhead.
+
+## §Amendment 2026-05-22 (XI) — Events-table prune policy
+
+The `events` table is append-only by design (§D6 durability invariant). Without periodic eviction it grows unbounded — every `emit()` is one row, retained forever in Phase-1. Filed under epic e-b7a702d1 (/btw correctness fold-in) story s-31997a2c per /btw audit #2. Implemented by `src/core/events-prune.ts` (T2.2, t-c3a40f38); state column added in v12→v13 migration (T2.1, t-0d79d5bd).
+
+### Invariant — offset-gated pruning
+
+**Events are NEVER deleted while their rowid exceeds `MIN(subscriber_offsets.last_event_id_rowid)` across all consumers.** This is non-negotiable. The slowest consumer defines the prune ceiling. Even if an event is past the TTL or pushes the table past `maxRows`, if a single consumer hasn't read past it, the row stays. Consumer-truth wins over space pressure.
+
+Practical corollary: a registered consumer that has never run (`last_event_id == ""` sentinel from `loadOffset()`) effectively blocks all pruning. The first-run gap is acceptable cost; missed-event consequences are far worse than a temporarily oversized events table.
+
+### Policy defaults (`team.json::honker.eventsPrune`)
+
+| Knob | Default | Meaning |
+|------|---------|---------|
+| `ttlSec` | `30 * 86400` (30 days) | Events older than `now - ttlSec` are TTL-eligible. |
+| `maxRows` | `100_000` | Soft cap on the `events` table. Above this, FIFO-evict the oldest rows from within the offset-allowed window until back at the cap. |
+
+Both knobs are caller-overridable per `prune()` call — callers passing explicit values supersede team.json defaults. The team.json structure is documented at the wiring-Task layer (this amendment defines policy intent; the wiring Task surfaces the config schema in the operator-facing RUNBOOK).
+
+### Trigger model — caller-invoked, not auto-scheduled
+
+`prune()` is a pure function. It does NOT register itself with cron, relayd, or any auto-scheduler. The caller (a future wiring Task) decides when to invoke:
+
+- A relayd-tick handler can fire `prune()` opportunistically on every Nth event drained.
+- A cron line (`atmux:team=<name>:events-prune`) can call it at a fixed cadence (operator-tunable).
+- The doctor probe can dry-run-style invoke it for capacity diagnostics.
+
+Out-of-scope for this amendment: the wiring topology (relayd vs cron vs both). A follow-up Task (filed post-T2.2) will pick the trigger pattern and ship the integration.
+
+### State — `prune_state` (v12→v13, ADR-202 §XI)
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `team_name` | `TEXT PRIMARY KEY` | One row per team (cage isolation). Matches the team identifier in `team.json`. |
+| `cursor` | `INTEGER NOT NULL DEFAULT 0` | Highest `events.rowid` pruned so far. Floor for the next sweep so we don't re-scan the head of the table every tick. |
+| `last_pruned_at_sec` | `INTEGER NOT NULL DEFAULT 0` | Unix seconds of the most recent sweep completion. Drives operator cadence checks and the medic visibility probe. |
+
+`prune_state.cursor` is intentionally INTEGER (rowid space), not TEXT (UUIDv7 space) — rowid ordering matches UUIDv7 emission order for the events table (single-writer + append-only) and rowid comparisons are cheaper than TEXT lex comparisons at scale.
+
+### Return contract
+
+`prune(db, opts)` returns `{ deleted, skipped, reason? }`:
+
+- **Happy path**: `{ deleted: N, skipped: 0 }` — N rows actually DELETEd; `prune_state.cursor` advanced; `last_pruned_at_sec` stamped.
+- **Skip path**: `{ deleted: 0, skipped: M, reason: "offsets stale — no consumers advanced past prune_state.cursor since last prune" }` — M is the count of events eligible *if* offsets advanced, surfaced so the caller can build operator visibility ("12k events queued, no consumer has read past id 42"). `prune_state` is NOT written on skip — cursor stays where it is so the next sweep retries cleanly.
+
+### Reviewer gates (T2.2 + this amendment)
+
+- All DB writes wrapped in `db.transaction(() => ...)()` — atomic per-call, no half-prune state visible to other readers.
+- 100% line + function coverage on `src/core/events-prune.ts` (tests cover all 6 AC paths + boundary throw + slowest-consumer + cursor-persistence).
+- Strict offset-gate verified by the slowest-consumer test — eviction respects `MIN(offset)` across multi-consumer setups.
+
+### Out of scope for this amendment
+
+- Caller wiring (relayd-tick hook vs cron line vs doctor probe). Follow-up Task.
+- Multi-team coordination — `prune()` operates on a single team_name per call.
+- Rollback / unprune — no undo verb. Pruned rows are gone; the durability contract is satisfied by the consumer's offset advance (the consumer confirmed processing before we pruned).
+
+## §Amendment 2026-05-22 (XIII) — `atmux migrate-hex-ids` verb
+
+Operator one-shot to renumber pre-§VIII legacy hex-only IDs (`<scope>-<8 hex>`) onto the compound `<scope>-<N>-<hex>` shape that §VIII established. Implemented by `src/verbs/migrate-hex-ids.ts` (T4.1, t-b7598005). Filed under epic e-b7a702d1 (/btw correctness fold-in) story s-7de3720c per /btw audit #4.
+
+### Verb name + flags
+
+```
+atmux migrate-hex-ids [--dry-run] [--apply]
+                      [--scope=epics|stories|tasks|all]
+                      [--team=<name>]
+```
+
+- `--dry-run` (default ON when `--apply` is absent) — print the legacy→compound mapping table; **no DB writes**, no branch renames, no ADR rewrites.
+- `--apply` (REQUIRED to write) — execute the planned migration. Without this flag the verb is a read-only inspector.
+- `--scope` (default `all`) — restrict which PK columns are scanned for legacy IDs. `epics` / `stories` / `tasks` scan exactly that table; `all` scans all three. FK + JSON-array sweeps always cover the full mapping (otherwise we'd dangle references).
+- `--team` — override `team.name` resolved from cwd `team.json`. Single-team only; cross-team coordination is out of scope.
+
+### Safety
+
+- **Default-OFF**: omitting `--apply` is a no-op dry-run, even when `--dry-run` itself is omitted. The verb refuses to mutate without explicit `--apply`.
+- **Snapshot-before-commit**: pre-mutation mapping table written to `.atmux/migrations/hex-ids-<unix-ts>.json` so operator-rollback stays viable even if the process crashes mid-flight. Snapshot lands AFTER the kanban transaction commits but BEFORE any out-of-DB mutation (`team.json` / git branches / ADR pointers) — the loudest failure path leaves the DB consistent + snapshot recoverable.
+- **Atomic kanban transaction**: every PK rename + FK update + JSON-array substitution + event-payload rewrite wraps in a single `db.transaction(() => ...)()`. SQLite STRICT tables enforce PK uniqueness, so we copy → re-point FKs → drop the legacy row (three-phase) rather than UPDATEing the PK directly.
+- **Branch rename try/catch**: legacy `<base>-epic-<hex>` branches get `git branch -m` to `<base>-epic-<compound>`. Missing branches log a `WARN migrate-hex-ids: branch rename skip — ...` and continue (operator may have already renamed manually).
+- **ADR pointer rewrite**: docs/adr/*.md scanned for legacy ID substrings; matched files rewritten with the compound form. Out-of-scope IDs are left alone (no spurious diffs).
+
+### Snapshot location + manual rollback
+
+`.atmux/migrations/hex-ids-<unix-ts>.json`. Shape:
+
+```json
+{
+  "ts": 1779470000,
+  "team": "team-alpha",
+  "scope": "all",
+  "mappings": [
+    { "legacyId": "t-3b017960", "compoundId": "t-7-3b017960", "scope": "t", "sequenceN": 7 },
+    ...
+  ]
+}
+```
+
+Manual rollback (no rollback verb in T4.1 — follow-up Task):
+
+```bash
+jq -r '.mappings[] | "\(.compoundId) \(.legacyId)"' \
+  .atmux/migrations/hex-ids-<unix-ts>.json |
+  while read new old; do
+    # Reverse each kanban update + event-payload substitution.
+    # (Operator-driven; rollback verb will automate.)
+  done
+```
+
+### Scope mechanics
+
+The PK scan respects `--scope`, but **all FK sweeps + JSON-array substitutions + event-payload rewrites apply to the full mapping table** built from that scan. Reasoning: if you renumber `e-3b017960 → e-7-3b017960` but leave `tasks.epic = 'e-3b017960'` un-rewritten, the task is orphaned. There's no "partial migration" that keeps the kanban consistent; the scope flag controls only which PKs are eligible to be renumbered in this run.
+
+Out-of-scope kanban references that point to legacy hex IDs OUTSIDE the current `--scope` are left alone (no FK sweep, no JSON substitution). Operator must re-run with a wider scope or `--scope=all` to catch them.
+
+### Out of scope (T4.1)
+
+- **Rollback verb**: follow-up Task. Snapshot is captured + readable; reverse-walk is operator-scripted today.
+- **Multi-team coordination**: each team's `state.db` migrates independently. No cross-team rename propagation.
+- **Tests**: T4.2 ships unit tests covering all the verb's branches (dry-run plan / apply path / scope filter / snapshot / branch-rename failure / ADR rewrite).
+- **`c-` scope (complaints PK)**: complaint IDs use the same hex shape but live in their own table; their migration is a follow-up because `id_sequences` doesn't yet carry a `c` scope. `complaints.related_task_id` IS updated (it's a FK to tasks).
+
+## §Amendment 2026-05-22 (XIV) — Relayd circuit-breaker backlog-restart audit
+
+Filed under epic e-b7a702d1 (/btw correctness fold-in) story s-b9cd9c3d per T5.1 (t-4eb9cd40). Pinned by `tests/unit/core/relayd-window.test.ts` "circuit-breaker backlog-restart tolerance (T5.1)" describe block.
+
+### Operator scenario
+
+Relayd has been down through accumulated backlog (5000 events). When it comes back up and starts replaying in batches of ~100, transient errors (db lock contention, OOM back-pressure, mid-batch handler thrown) can trigger 3–4 brief intra-batch restarts within the first 60 seconds of recovery. The circuit-breaker must NOT trip — tripping forfeits the catch-up benefit (cron `--drain` then shoulders the whole backlog at the 1-min cadence floor).
+
+### Verdict — Option B (FAIL on current code)
+
+Initial test FAILED on current code at `src/core/relayd-window.ts:186` (the supervisor's `RC=$?` line, pre-tweak).
+
+**Root cause**: the supervisor wrapped the daemon invocation in a pipe-to-`tee`-for-logging (`atmux-relayd … | tee -a .atmux/logs/relayd.log`) and captured `RC=$?`. In bash, `$?` after a pipeline reports the LAST command's exit code — that's `tee`, which almost always exits 0. The daemon's actual exit code was silently swallowed. With `RC=0` on every iteration, the supervisor's `if [[ $RC -eq 0 ]]; then echo "clean exit, not restarting"; exit 0; fi` branch always fired, and the restart loop never ran. The circuit-breaker existed in the code but was UNREACHABLE — every relayd crash terminated the supervisor wrapper too, leaving an empty tmux window for the operator + cron `--drain` to backstop.
+
+This was a silent regression: relayd would spawn fine, daemon would die on first transient hiccup, supervisor would exit clean, no operator-visible alert. Auto-restart was effectively never wired despite shipping with full code paths.
+
+**Tweak landed**: changed `RC=$?` → `RC=${PIPESTATUS[0]}` in the supervisor command, which captures the LEFTMOST pipeline command's exit code (i.e. the daemon's actual rc). Both legs of the if-else (Rust `atmux-relayd` and Bun-fallback `atmux relayd --start`) feed the same pipe shape, so a single capture point covers both.
+
+### Behavior — pre/post tweak
+
+| Scenario | Pre-tweak ($? — tee's rc) | Post-tweak (${PIPESTATUS[0]} — daemon's rc) |
+|----------|--------------------------|---------------------------------------------|
+| Daemon clean exit (rc=0) | RC=0 → supervisor exits clean | RC=0 → supervisor exits clean (unchanged) |
+| Daemon crash (rc=1) | RC=0 → supervisor exits clean (BUG: no restart) | RC=1 → supervisor restarts after 5s back-off |
+| 3 quick crashes in 60s | (loop never ran) | crash_count=3, loop continues, breaker not tripped |
+| 5 quick crashes in 60s | (loop never ran) | crash_count=5 → CIRCUIT BREAKER tripped, exit 42 |
+| 4 crashes then 70s elapsed, 4 more crashes | (loop never ran) | crash_window reset at the 70s mark, fresh budget — breaker not tripped |
+
+### Regression pin
+
+`tests/unit/core/relayd-window.test.ts` describe `maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (T5.1)`. Four cases:
+
+1. **Window-reset string inspection** — supervisor cmd contains the 60s rolling-window reset (`ELAPSED -gt 60`).
+2. **Counter-increment ordering** — increment line precedes the threshold check (off-by-one resistance).
+3. **3-crash bash execution** — runs the real supervisor with a counting stub that fails 3 times then succeeds. Asserts the supervisor restarts each crash + exits clean on the 4th attempt (rc=0, "clean exit, not restarting" in output, no "CIRCUIT BREAKER tripped").
+4. **5-crash bash execution** — always-fail stub. Asserts the breaker trips (rc=42, "CIRCUIT BREAKER tripped" in output).
+
+Cases 3 and 4 invoke the actual bash supervisor cmd in a subprocess with stubbed `atmux relayd --start` and a tightened back-off (`sleep 0` instead of `sleep 5`) so the tests finish well under the 30s timeout. They exercise the real RC-capture path, so a future regression that re-introduces the `RC=$?` bug (or any other pipeline-swallow shape) trips case 4 immediately.
+
+### Out of scope for this amendment
+
+- **Exponential back-off** between crash restarts — the current 5s fixed delay is fine for transient-error catch-up. Operator can tune via a future config knob; not a correctness gap.
+- **Dead-letter routing** for events that consistently throw inside the same handler — relayd's responsibility ends at dispatch; consumers handle idempotency + poison-skipping (per ADR-203 §D7).
+- **Reset across `atmux start`** — when the operator does `atmux start` after a tripped breaker, the supervisor spawns fresh and `CRASH_COUNT=0` starts over. Intentional: operator-acknowledged respawn is the recovery signal.
