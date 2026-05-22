@@ -38,7 +38,7 @@
 // failures here mean the wire-up regressed.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDatabase, openDatabase } from "../../src/abstractions/sqlite.ts";
@@ -269,12 +269,32 @@ function seedChildTask(
 // ---------- Fixture lifecycle ----------
 
 let fix: Fixture;
+let priorHomeEnv: string | undefined;
 
 beforeEach(async () => {
   fix = await makeFixture();
+  // Thread the scratch cockpit.json through to dissolveEpic's resolver.
+  // epicMergeTickVerb constructs its EpicMergeContext with
+  // `defaultDispatchDissolve` hard-wired (no opts injection point at the
+  // verb-call level — gap noted in commit msg), and that helper invokes
+  // dissolveEpic() without forwarding cockpitPath. dissolveEpic falls
+  // through to `defaultCockpitConfigPath(home)` (src/verbs/team/
+  // dissolve-epic.ts:187) which uses `$HOME/.atmux/cockpit.json` directly
+  // (it does NOT consult ATMUX_COCKPIT_CONFIG — that path goes through
+  // `resolveCockpitConfigPath` which dissolveEpic doesn't call). The only
+  // env knob that affects this resolution is `$HOME`; pin it to the
+  // fixture root + symlink the scratch cockpit to the canonical
+  // `$HOME/.atmux/cockpit.json` location so both spawn-epic's explicit-
+  // path mutation AND dissolveEpic's home-default read see the same file.
+  await mkdir(join(fix.tmpRoot, ".atmux"), { recursive: true });
+  await symlink(fix.cockpitPath, join(fix.tmpRoot, ".atmux", "cockpit.json"));
+  priorHomeEnv = process.env.HOME;
+  process.env.HOME = fix.tmpRoot;
 });
 
 afterEach(async () => {
+  if (priorHomeEnv === undefined) delete process.env.HOME;
+  else process.env.HOME = priorHomeEnv;
   await rm(fix.tmpRoot, { recursive: true, force: true });
 });
 

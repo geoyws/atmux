@@ -36,7 +36,27 @@ function git(args: string[], cwd: string): void {
   }
 }
 
+// Modern git (>= 2.38) blocks `file://` submodule transport by default
+// (CVE-2022-39253) — `git submodule update --init --recursive` fails
+// with `fatal: transport 'file' not allowed` when the parent registered
+// a submodule by local path. Two paths fix this:
+//   - per-repo: `git -C <repo> config protocol.file.allow always`
+//   - per-process: `GIT_CONFIG_COUNT=1 / KEY_0 / VALUE_0` env override
+// We already set the per-repo config on `parent` (line below), but the
+// worktree created via provisionWorktree spawns its own `git submodule`
+// process whose effective config lookup did NOT pick up the parent's
+// `protocol.file.allow` reliably across git versions. Pin via env so
+// every defaultGitSpawn child inherits the override.
+const priorGitConfigEnv: Record<string, string | undefined> = {};
+
 beforeAll(async () => {
+  for (const k of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]) {
+    priorGitConfigEnv[k] = process.env[k];
+  }
+  process.env.GIT_CONFIG_COUNT = "1";
+  process.env.GIT_CONFIG_KEY_0 = "protocol.file.allow";
+  process.env.GIT_CONFIG_VALUE_0 = "always";
+
   root = await mkdtemp(join(tmpdir(), "atmux-adr088-"));
   parent = join(root, "parent");
   child = join(root, "child");
@@ -64,6 +84,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(priorGitConfigEnv)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
 });
 
 describe("ADR-088 e2e: provisionWorktree initSubmodules", () => {
