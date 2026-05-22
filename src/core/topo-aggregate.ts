@@ -1,108 +1,102 @@
-// ADR-222 §D3 — pure-function fleet topography aggregator.
+// ADR-222 §D3 — fleet topography aggregator + discovery orchestrator.
 //
-// `aggregateTopo(io)` walks the cockpit-anchored fleet (cockpit →
-// parent teams → epic-teams) and returns a `TopoManifest` matching the
-// stable JSON shape pinned at ADR-222 §D2 (`schema_version: 1`). The
-// classifier at `src/core/orphan-detector.ts` (sibling task t-4b1c831d)
-// is the consumer that fills `orphans[]` — this aggregator emits the
-// raw cockpit-anchored view with `orphans: []` empty and a fully
-// populated `cockpit` + `teams[]` + `summary` block.
+// Architecture (per lead routing 2026-05-22, refined off the original
+// §D3 "io-injected aggregator" sketch):
 //
-// Per ADR-222 §D5 the aggregator NEVER throws on a per-source failure
-// — every probe in `TopoIO` is typed to a nullable return, and the
-// aggregator narrows the null to a manifest-row state (`cage_alive:
-// false`, `kanban: null`, `branch: null`, etc.). The verb-level
-// formatter renders the failure shape; downstream consumers (cockpit-
-// mirror Rust crate, doctor probes, ADR-223 reap) pin on it.
+//   discovery = await gatherDiscovery(io)         // ONLY IO entry point
+//   manifest  = aggregateTopo(discovery)          // pure transformation
+//   orphans   = classifyOrphans(manifest, discovery, seenState)
 //
-// Pure: deterministic for a given `io`. Tests inject a stub IO whose
-// methods return canned shapes; production wires the IO in the verb
-// layer (sibling task t-cd382b92). No `Bun.spawn`, no `Database`, no
-// fs reads inside this module — that's R4-style separation per
-// ADR-007 + the §D3 "aggregator NEVER reads sources directly" rule
-// the reviewer enforces.
+// `Discovery` is the single intermediate state — a typed bag carrying
+// the full set of raw probe results (cockpit + per-team + per-epic +
+// global sockets + crontab + per-parent worktree/branch/kanban-epic
+// enumerations). Both consumers (aggregator AND classifier) read from
+// it; neither does IO. This is the lead-mandated Plan-B refinement
+// to keep the public `--json` manifest schema (which cockpit-mirror
+// pins on) free of raw discovery scaffolding.
 //
-// Performance: each parent team's probes run in parallel
-// (`Promise.all`); each parent's epics are then probed in parallel
-// against each other. The IO shim is expected to enforce per-probe
-// timeouts (500ms for tmux, 1s for git per §D5) — the aggregator
-// itself does not race timers; it trusts the IO contract.
+// Schema notes:
+//   - `TopoManifest` is the public `--json` shape pinned at ADR-222
+//     §D2 (`schema_version: 1`). It carries `cockpit + teams[] +
+//     orphans[] + summary` only — no `discovery` field.
+//   - `Discovery` is INTERNAL scaffolding; not serialized on the
+//     manifest. Stable as a TS-level contract between aggregator,
+//     classifier, and the verb-layer orchestrator (t-cd382b92).
+//   - Per ADR-222 §D5 every IO probe is nullable; gatherDiscovery
+//     never throws on per-source failure. Aggregator + classifier
+//     narrow nullables to safe defaults (kanban: null, cage_alive:
+//     false, ahead/merged: null, etc.).
 //
-// Stable ordering (§D5 "Determinism"): teams sorted alphabetically by
-// `name`; epics within each team sorted by `eid` lexicographic.
-// `generated_at` formatted to 3-digit ms precision UTC. The cockpit-
-// mirror Rust crate pins on this ordering for diff stability.
+// Determinism: gatherDiscovery records `generated_at` once via
+// `io.now()` and computes `elapsed_ms` at the end; aggregateTopo
+// formats the timestamp + carries elapsed_ms verbatim into
+// summary.elapsed_ms. Teams + epics + sockets + worktrees + branches
+// are sorted alphabetically / lexicographically inside aggregateTopo
+// so the manifest is byte-stable for the cockpit-mirror diff loop.
 
 import { join } from "node:path";
 import type { LoadedCockpit } from "./cockpit.ts";
 
-// ---------- Manifest types (the §D2 contract) ----------
+// ---------- Manifest types (the §D2 public --json contract) ----------
 
-/** Top-level manifest. Output of {@link aggregateTopo}; consumed by
- *  cockpit-mirror, doctor probes, ADR-223 reap, operator dotfiles.
- *  Stable shape per ADR-222 §D2 — additive-only on `schema_version: 1`. */
+/** Top-level manifest. Pinned shape per ADR-222 §D2 (`schema_version:
+ *  1`, additive-only). The Rust cockpit-mirror crate (`e-95087c8b`
+ *  S2) pins on this; widen carefully. */
 export interface TopoManifest {
   schema_version: 1;
-  /** ISO 8601 UTC, 3-digit ms precision (e.g. `2026-05-22T13:54:00.123Z`). */
+  /** ISO 8601 UTC, 3-digit ms precision. */
   generated_at: string;
   cockpit: TopoCockpit;
   /** Sorted alphabetically by `name`. */
   teams: TopoTeam[];
-  /** Empty in the aggregator output — filled by the orphan-detector
-   *  classifier (sibling t-4b1c831d). The verb-layer composer wires
-   *  both together. */
+  /** Empty in the aggregator output — filled by the orphan classifier
+   *  via {@link classifyOrphans} (sibling module orphan-detector.ts)
+   *  at the verb-layer composer. */
   orphans: TopoOrphan[];
   summary: TopoSummary;
 }
 
 /** Cockpit singleton block. */
 export interface TopoCockpit {
-  /** Cockpit tmux socket absolute path (e.g. `/tmp/.tmux-1000/atmux-cockpit`). */
+  /** Cockpit tmux socket absolute path. */
   socket: string;
   /** Result of the cockpit-socket liveness probe. */
   alive: boolean;
-  /** Resolved cockpit.json path even when {@link TopoIO.readCockpit}
-   *  returned null (so consumers can surface "registry expected at X
-   *  but missing"). */
+  /** Resolved cockpit.json path even when the cockpit read returned
+   *  null (lets consumers surface "expected at X but missing"). */
   registry_path: string;
-  /** Count of top-level `sessions[]` entries in cockpit.json. Zero when
-   *  the cockpit read returned null. */
+  /** Count of top-level `sessions[]` in cockpit.json. Zero on null. */
   sessions_count: number;
 }
 
-/** Parent-team row. Each row carries its own epic-team children inline. */
+/** Parent-team row. */
 export interface TopoTeam {
   name: string;
   kind: "parent";
   atmux_dir: string;
   worktree: string;
-  /** Current branch at the worktree; null when the worktree is not a
-   *  git repo / the rev-parse probe failed. */
+  /** null when the worktree's rev-parse failed (§D5 row 6). */
   branch: string | null;
   cage_socket: string;
   cage_alive: boolean;
-  /** Kanban counts. Null when the per-team `state.db` was missing or
-   *  locked (§D5 row 2). */
+  /** null when the per-team `state.db` was missing / locked (§D5
+   *  row 2). */
   kanban: KanbanProbe | null;
-  /** Always `true` for rows enumerated from cockpit; the orphan-
-   *  detector identifies disk-only teams missing from cockpit
-   *  separately. Kept on the row so the classifier can short-circuit
-   *  on `in_cockpit_registry: false` once it joins disk + cockpit
-   *  views. */
+  /** Always `true` for rows enumerated from cockpit; the classifier
+   *  derives `in_cockpit_registry: false` rows from the discovery
+   *  block externally. */
   in_cockpit_registry: true;
-  /** Max(last-commit, last-kanban-mutation). Null when both probes
-   *  returned null. */
+  /** Max(last-commit, last-kanban-mutation). null when both null. */
   last_activity: string | null;
   /** Inline epic-team children, sorted by `eid` lexicographic. */
   epics: TopoEpic[];
   /** ADR-087 — present only when the cockpit row carries
-   *  `soft_stopped_at`. The aggregator surfaces the flag; orphan
-   *  classifier treats `cage_alive: false` AS-INTENDED when this is
-   *  true. */
+   *  `soft_stopped_at`. Classifier treats `cage_alive: false` AS-
+   *  INTENDED when this flag is true. */
   soft_stopped?: boolean;
 }
 
-/** Epic-team row. Always nested under its parent in {@link TopoTeam.epics}. */
+/** Epic-team row. */
 export interface TopoEpic {
   eid: string;
   kind: "epic";
@@ -114,194 +108,274 @@ export interface TopoEpic {
   cage_alive: boolean;
   kanban: KanbanProbe | null;
   in_cockpit_registry: true;
-  /** True iff the parent team's kanban has an epic row for this `eid`.
-   *  False when the parent kanban probe succeeded and the row was
-   *  absent. Null when the parent kanban probe failed (cannot tell). */
+  /** True iff the parent kanban has an epic row for this `eid`.
+   *  null when the parent kanban probe failed (cannot tell). */
   in_parent_kanban: boolean | null;
-  /** Count of commits on the epic-team branch ahead of trunk. Null on
-   *  git probe failure / timeout per §D5 row 5. */
+  /** null on §D5 row 5 git-probe failure / timeout. */
   branch_ahead_of_trunk: number | null;
-  /** True iff the epic-team branch is fully merged into trunk. Null on
-   *  git probe failure / timeout per §D5 row 5. */
+  /** null on §D5 row 5. */
   branch_merged_to_trunk: boolean | null;
   last_activity: string | null;
   soft_stopped?: boolean;
 }
 
-/** Kanban probe shape. Per ADR-222 §D3, the IO returns counts derived
- *  from `<atmuxDir>/state.db` opened read-only. Additive on
- *  `schema_version: 1` — surfaces in the manifest's `kanban` field. */
+/** Kanban probe shape. Surfaces on the manifest's `kanban` field. */
 export interface KanbanProbe {
-  /** Parent teams only — count of epic rows in the kanban. Omitted for
-   *  epic-team kanban probes (epic-team state.db doesn't store nested
-   *  epics). */
+  /** Parent teams only — count of epic rows. Omitted for epic-team
+   *  probes (those state.dbs don't store nested epics). */
   epics?: number;
-  /** Parent teams only — every epic id present in the kanban. Internal
-   *  to the join that computes {@link TopoEpic.in_parent_kanban}; the
-   *  manifest carries it for downstream consumers that want the same
-   *  join without re-querying. Omitted for epic-team probes. */
+  /** Parent teams only — list of epic ids in the kanban. Used for
+   *  the id-precise `in_parent_kanban` join. */
   epic_ids?: string[];
-  /** Count of tasks NOT in a terminal status (todo / in-progress / blocked). */
+  /** Tasks NOT in a terminal status. */
   tasks_open: number;
-  /** Count of tasks in `done` status. */
+  /** Tasks in `done` status. */
   tasks_done: number;
-  /** `MAX(updated_at)` across the kanban tables, formatted as ISO 8601
-   *  UTC with 3-digit ms precision. Null when the table is empty. */
+  /** ISO 8601 UTC ms-precision of `MAX(updated_at)`. null when the
+   *  table is empty. */
   last_activity: string | null;
 }
 
-/** Orphan-detector output row (consumed by the manifest's `orphans[]`
- *  array; aggregator emits empty + the verb-level composer fills). */
+/** Orphan row — output of {@link classifyOrphans}. */
 export interface TopoOrphan {
-  /** Enum literal from ADR-222 §D4 (e.g. `cage-tmux-without-registry`). */
+  /** Enum literal from ADR-222 §D4. */
   class: string;
-  /** Identifier the operator recognizes (eid / team name / cron marker). */
+  /** Identifier the operator recognizes. */
   ref: string;
-  /** Filesystem hint when applicable. */
   atmux_dir?: string;
   details: string;
-  /** ISO 8601 UTC — first observation timestamp per ADR-222 §D4 carve-out. */
+  /** ISO 8601 UTC — earliest observation per the §D4 30s grace. */
   first_seen: string;
-  /** Operator-facing suggested next command. */
   reap_hint?: string;
 }
 
-/** Summary block — counts + wall-time. `elapsed_ms` is the aggregator's
- *  own runtime (orphan classifier + render add their own time on top
- *  in the verb layer). */
+/** Summary block. `elapsed_ms` carries gatherDiscovery's wall-time
+ *  (the aggregator transform is sub-ms). Classifier + verb-layer
+ *  rewrite `orphans_count` after running the classifier. */
 export interface TopoSummary {
   teams_count: number;
   epics_count: number;
   cages_alive: number;
-  /** Always zero in the aggregator output; verb-layer composer rewrites
-   *  this after the orphan-detector runs. */
   orphans_count: number;
   elapsed_ms: number;
 }
 
-// ---------- IO shim (the §D3 data-source injection contract) ----------
+// ---------- Discovery types (INTERNAL — not on the public manifest) ----------
 
-/** Every data source the aggregator consumes goes through this shim.
- *  Tests stub each method to drive deterministic per-failure-mode rows;
- *  production impl wires real fs / sqlite / tmux / git in the verb
- *  layer per ADR-007's "subprocess calls live in abstractions" rule.
+/** The single intermediate state passed from {@link gatherDiscovery}
+ *  to {@link aggregateTopo} (and re-consumed by `classifyOrphans`).
+ *
+ *  Carries the full raw IO result for every probe in the §D3 + §D4
+ *  sources table. Stable as a TS-level contract among the aggregator,
+ *  classifier, and verb-layer composer — NOT serialized on the public
+ *  `--json` manifest. */
+export interface Discovery {
+  /** Wall-clock at gatherDiscovery start. Used by the aggregator to
+   *  populate `manifest.generated_at`. */
+  generated_at: Date;
+  /** Total wall-time gatherDiscovery took (ms). Drives
+   *  `manifest.summary.elapsed_ms`. */
+  elapsed_ms: number;
+  cockpit: CockpitDiscovery;
+  /** Per-parent enrichment — keyed by parent name, sorted alphabetic. */
+  parents: ParentDiscovery[];
+  /** Global probes not joined to a specific parent. */
+  global: GlobalDiscovery;
+}
+
+export interface CockpitDiscovery {
+  socket: string;
+  alive: boolean;
+  registry_path: string;
+  /** null per §D5 row 1 when the cockpit.json read failed. */
+  data: LoadedCockpit | null;
+}
+
+export interface GlobalDiscovery {
+  /** Alive cage tmux sockets enumerated from `/tmp/atmux-<name>/`,
+   *  regardless of registry. Class 1 consumes this. */
+  sockets_alive: TmuxSocketEntry[];
+  /** Marker-fenced cron blocks. null per §D5 row 4 on crontab read
+   *  failure. Class 2 consumes this. */
+  cron_marker_blocks: CronMarkerBlock[] | null;
+}
+
+export interface ParentDiscovery {
+  name: string;
+  root: string;
+  soft_stopped: boolean;
+  atmux_dir: string;
+  worktree: string;
+  cage_socket: string;
+  cage_alive: boolean;
+  branch: string | null;
+  last_commit: string | null;
+  kanban: KanbanProbe | null;
+  /** Worktree dirs found at `<root>/../atmux-epics/`. Class 3 + 4. */
+  worktrees_on_disk: WorktreeOnDisk[];
+  /** Branches matching `<base>-epic-*` glob in the parent repo.
+   *  Class 4. */
+  branches: BranchOnParent[];
+  /** Kanban epic rows (eid + status). Class 5. null when the parent
+   *  kanban probe failed. */
+  kanban_epic_rows: KanbanEpicRow[] | null;
+  epics: EpicDiscovery[];
+}
+
+export interface EpicDiscovery {
+  eid: string;
+  session_name: string;
+  parent: string;
+  soft_stopped: boolean;
+  atmux_dir: string;
+  worktree: string;
+  cage_socket: string;
+  cage_alive: boolean;
+  branch: string | null;
+  last_commit: string | null;
+  ahead: number | null;
+  merged: boolean | null;
+  kanban: KanbanProbe | null;
+}
+
+// ---------- Shared discovery sub-shapes ----------
+
+export interface TmuxSocketEntry {
+  socket: string;
+  /** Team name parsed from `/tmp/atmux-<parent>/...`. */
+  parent: string;
+  /** Epic id when socket is an epic-team cage; null for a parent. */
+  eid: string | null;
+}
+
+export interface CronMarkerBlock {
+  /** Marker value (e.g. `atmux:team=e-deadbeef`). */
+  ref: string;
+  atmux_dir: string;
+  /** Pre-resolved by the IO so the classifier doesn't double-probe. */
+  atmux_dir_exists: boolean;
+}
+
+export interface WorktreeOnDisk {
+  path: string;
+  parent: string;
+  eid: string;
+}
+
+export interface BranchOnParent {
+  parent: string;
+  branch: string;
+  /** Epic id parsed from the branch suffix. */
+  eid: string;
+}
+
+export interface KanbanEpicRow {
+  eid: string;
+  /** Free-form status literal (`todo` / `in-progress` / `done` / etc.). */
+  status: string;
+}
+
+// ---------- IO shim (single entry point for gatherDiscovery) ----------
+
+/** Every fallible source the discovery orchestrator probes goes
+ *  through this shim. Tests stub each method to drive deterministic
+ *  per-failure-mode rows; production wires real fs / sqlite / tmux /
+ *  git in the verb layer per ADR-007's "subprocess calls live in
+ *  abstractions" rule.
  *
  *  Every method that probes a fallible source returns a nullable: null
  *  means "source failed, carry the failure on the row" per ADR-222 §D5.
  *  Methods that don't probe (pure path resolvers, `now`) never return
- *  null. */
-export interface TopoIO {
-  /** Read + parse the cockpit registry. Returns null per ADR-222 §D5
-   *  row 1 when cockpit.json is missing / unreadable / parse-broken.
-   *  Aggregator emits the minimal manifest in that case. */
+ *  null.
+ *
+ *  Aggregator + classifier do NOT take this — they read from {@link
+ *  Discovery} only. */
+export interface DiscoveryIO {
+  /** Read + parse the cockpit registry. null per §D5 row 1 on missing
+   *  / unreadable / parse-broken. */
   readCockpit(): Promise<LoadedCockpit | null>;
-
-  /** Resolved cockpit registry path. Returned even when readCockpit()
-   *  yielded null so the manifest's `cockpit.registry_path` field
-   *  always carries the expected path. */
   cockpitRegistryPath(): string;
-
-  /** Resolved cockpit tmux socket path. Stable regardless of liveness. */
   cockpitSocketPath(): string;
-
-  /** Probe `tmux -S <socket> list-sessions`. Returns true on success,
-   *  false on any failure (timeout, missing socket, spawn error) per
-   *  ADR-222 §D5 row 3. The 500ms per-socket timeout is enforced
-   *  inside the IO impl, not here. */
+  /** Probe tmux liveness at `socket`. 500ms timeout enforced inside
+   *  the IO impl per §D5 row 3. */
   cageAlive(socket: string): Promise<boolean>;
-
-  /** Open `<atmuxDir>/state.db` read-only and probe kanban counts +
-   *  last mutation. Returns null per ADR-222 §D5 row 2 when the file
-   *  is missing / locked / corrupt. `opts.parent` toggles inclusion of
-   *  the `epics` count (parent kanban has epics; epic-team kanban
-   *  doesn't). */
+  /** Open `<atmuxDir>/state.db` read-only + probe kanban counts +
+   *  last mutation. null per §D5 row 2 on missing / locked / corrupt. */
   readKanban(atmuxDir: string, opts: { parent: boolean }): Promise<KanbanProbe | null>;
-
-  /** Resolve the worktree's current branch via `git rev-parse
-   *  --abbrev-ref HEAD`. Returns null per ADR-222 §D5 row 6 when the
-   *  worktree is not a git repo or the rev-parse failed. */
+  /** Current branch via `git rev-parse --abbrev-ref HEAD`. null per
+   *  §D5 row 6 on broken worktree. */
   gitCurrentBranch(worktreePath: string): Promise<string | null>;
-
-  /** ISO timestamp of the worktree's HEAD commit
-   *  (`git log -1 --format=%cI`). Returns null when the probe failed
-   *  (broken worktree) — `last_activity` falls back to kanban-only. */
+  /** ISO timestamp of HEAD via `git log -1 --format=%cI`. null on
+   *  broken worktree. */
   gitLastCommitAt(worktreePath: string): Promise<string | null>;
-
-  /** Count commits on `branch` not on `base`
-   *  (`git rev-list --count <base>..<branch>`). 1s per-branch timeout
-   *  per ADR-222 §D5 row 5; null on timeout / failure. */
+  /** Commits on `branch` not on `base`. null per §D5 row 5 on
+   *  timeout / failure. */
   gitAheadCount(repoPath: string, base: string, branch: string): Promise<number | null>;
-
-  /** True iff `branch` is fully merged into `base`
-   *  (`git merge-base --is-ancestor <branch> <base>`). 1s timeout per
-   *  ADR-222 §D5 row 5; null on timeout / failure. */
+  /** True iff `branch` is merged into `base`. null per §D5 row 5. */
   gitMergedInto(repoPath: string, base: string, branch: string): Promise<boolean | null>;
-
-  /** Wall-clock at aggregation start. Stubbed in tests for stable
-   *  `generated_at`. */
+  /** Walk `/tmp/atmux-<name>/` for alive cage sockets. Pre-filtered alive. */
+  listAliveCageSockets(): Promise<TmuxSocketEntry[]>;
+  /** Parse `crontab -l` into marker-fenced blocks. Each carries pre-
+   *  resolved `atmux_dir_exists`. null per §D5 row 4 on crontab fail. */
+  listCronMarkerBlocks(): Promise<CronMarkerBlock[] | null>;
+  /** Walk `<parentRoot>/../atmux-epics/` for one parent. Empty array
+   *  is "no epics ever spawned" — NOT a failure. */
+  listEpicWorktreeDirs(parentRoot: string, parentName: string): Promise<WorktreeOnDisk[]>;
+  /** Branches matching `<base>-epic-*` in `repoPath`. Empty on git
+   *  probe failure (best-effort — classifier skips class 4 for that
+   *  parent rather than false-positiving). */
+  listEpicBranches(repoPath: string, base: string, parentName: string): Promise<BranchOnParent[]>;
+  /** Kanban epic rows (eid + status). null per §D5 row 2. */
+  listKanbanEpicRows(atmuxDir: string): Promise<KanbanEpicRow[] | null>;
+  /** Wall-clock. Stubbed in tests for deterministic timestamps. */
   now(): Date;
 }
 
-// ---------- Path computation (cage socket convention per ADR-162) ----------
+// ---------- Path computation (per ADR-162 socket convention) ----------
 
-/** Parent team cage socket: `/tmp/atmux-<team>/sock` per ADR-162. */
 export function cageSocketForTeam(teamName: string): string {
   return `/tmp/atmux-${teamName}/sock`;
 }
 
-/** Epic-team cage socket:
- *  `/tmp/atmux-<parent>/epics/<eid>/tmux-0/default` per ADR-162. */
 export function cageSocketForEpic(parentName: string, eid: string): string {
   return `/tmp/atmux-${parentName}/epics/${eid}/tmux-0/default`;
 }
 
-/** Parent team atmux dir = `<root>/.atmux`. */
 export function atmuxDirForTeam(teamRoot: string): string {
   return join(teamRoot, ".atmux");
 }
 
-/** Epic-team worktree = `<parentRoot>/../atmux-epics/<eid>` per the
- *  convention `atmux team spawn-epic` uses (sibling to the parent
- *  worktree, not nested under it — keeps git operations on the parent
- *  worktree clean). */
 export function worktreeForEpic(parentRoot: string, eid: string): string {
   return join(parentRoot, "..", "atmux-epics", eid);
 }
 
-/** Epic-team atmux dir = `<epicWorktree>/.atmux`. */
 export function atmuxDirForEpic(parentRoot: string, eid: string): string {
   return join(worktreeForEpic(parentRoot, eid), ".atmux");
 }
 
-// ---------- Time formatting (deterministic ISO with 3-digit ms) ----------
+// ---------- Time formatting ----------
 
-/** Format a Date to ISO 8601 UTC with 3-digit ms precision. Bun's
- *  `Date.toISOString()` already conforms; this helper exists as the
- *  single canonical format site so any future shift (e.g. ns precision)
- *  lands here, not at N call sites. */
 export function formatIsoMs(d: Date): string {
   return d.toISOString();
 }
 
-/** Return the later of two ISO timestamps; null when both are null. */
 function maxIso(a: string | null, b: string | null): string | null {
   if (a === null) return b;
   if (b === null) return a;
   return a >= b ? a : b;
 }
 
-// ---------- Cockpit walk helpers ----------
+// ---------- Cockpit walk ----------
 
-/** Walk a {@link LoadedCockpit} and yield the parent-team rows in the
- *  shape the aggregator iterates over. Epic-teams nested under each
- *  parent come out as a separate list keyed by parent name (we walk
- *  every level of `sessions[]` because epic-teams can sit under
- *  arbitrarily-deep team nodes per ADR-089 §B). */
 interface CockpitWalkResult {
   parents: Array<{ name: string; root: string; softStopped: boolean }>;
   epicsByParent: Map<string, Array<{ eid: string; sessionName: string; softStopped: boolean }>>;
 }
 
+/** Walk the cockpit's recursive `sessions[]` tree and return flat
+ *  parent + epic-child lists. Exported for tests + the gatherer.
+ *  Defensive on shape — coerces missing fields rather than throwing
+ *  so a partially-corrupt cockpit still surfaces what it can. */
 export function walkCockpit(cockpit: LoadedCockpit): CockpitWalkResult {
   const parents: CockpitWalkResult["parents"] = [];
   const epicsByParent = new Map<
@@ -347,147 +421,114 @@ export function walkCockpit(cockpit: LoadedCockpit): CockpitWalkResult {
   return { parents, epicsByParent };
 }
 
-// ---------- Aggregator entry ----------
+// ---------- gatherDiscovery — the ONLY async / IO entry point ----------
 
-/** Per ADR-222 §D3 — pure fleet aggregator. Walks cockpit → teams →
- *  epics, gathers per-source probes in parallel, returns the §D2
- *  manifest with `orphans: []` empty (classifier sibling t-4b1c831d
- *  fills that block in the verb-level composer). Never throws on
- *  per-source failure: every probe nullable is narrowed to a manifest-
- *  row failure state. */
-export async function aggregateTopo(io: TopoIO): Promise<TopoManifest> {
+/** Probe every source declared in ADR-222 §D3 + §D4, returning a
+ *  fully-populated {@link Discovery} the aggregator + classifier
+ *  consume as a pure intermediate.
+ *
+ *  Per ADR-222 §D5 every per-source failure narrows to a nullable on
+ *  the appropriate field — gatherDiscovery NEVER throws on per-source
+ *  IO failure. Per-team probes parallelize via Promise.all; per-epic
+ *  probes parallelize within each team. */
+export async function gatherDiscovery(io: DiscoveryIO): Promise<Discovery> {
   const start = io.now();
   const cockpitSocket = io.cockpitSocketPath();
   const cockpitRegistry = io.cockpitRegistryPath();
 
-  const [cockpit, cockpitAlive] = await Promise.all([
+  const [cockpitData, cockpitAlive, sockets, cronBlocks] = await Promise.all([
     io.readCockpit(),
     io.cageAlive(cockpitSocket),
+    io.listAliveCageSockets(),
+    io.listCronMarkerBlocks(),
   ]);
 
-  if (cockpit === null) {
-    return finalize({
-      generatedAt: start,
-      cockpit: {
-        socket: cockpitSocket,
-        alive: cockpitAlive,
-        registry_path: cockpitRegistry,
-        sessions_count: 0,
-      },
-      teams: [],
-      io,
-      startedAt: start,
-    });
+  const cockpit: CockpitDiscovery = {
+    socket: cockpitSocket,
+    alive: cockpitAlive,
+    registry_path: cockpitRegistry,
+    data: cockpitData,
+  };
+
+  let parents: ParentDiscovery[] = [];
+  if (cockpitData !== null) {
+    const walk = walkCockpit(cockpitData);
+    walk.parents.sort((a, b) => a.name.localeCompare(b.name));
+    parents = await Promise.all(
+      walk.parents.map((p) => gatherOneParent(io, p, walk.epicsByParent.get(p.name) ?? [])),
+    );
   }
 
-  const { parents, epicsByParent } = walkCockpit(cockpit);
-  parents.sort((a, b) => a.name.localeCompare(b.name));
-
-  const teams = await Promise.all(
-    parents.map((p) => aggregateOneTeam(io, p, epicsByParent.get(p.name) ?? [])),
-  );
-
-  return finalize({
-    generatedAt: start,
-    cockpit: {
-      socket: cockpitSocket,
-      alive: cockpitAlive,
-      registry_path: cockpitRegistry,
-      sessions_count: cockpit.sessions.length,
-    },
-    teams,
-    io,
-    startedAt: start,
-  });
-}
-
-interface FinalizeInput {
-  generatedAt: Date;
-  cockpit: TopoCockpit;
-  teams: TopoTeam[];
-  io: TopoIO;
-  startedAt: Date;
-}
-
-function finalize(input: FinalizeInput): TopoManifest {
-  const { cockpit, teams, io, startedAt } = input;
   const finishedAt = io.now();
-  const elapsedMs = Math.max(0, finishedAt.getTime() - startedAt.getTime());
-
-  let cagesAlive = cockpit.alive ? 1 : 0;
-  let epicsCount = 0;
-  for (const team of teams) {
-    if (team.cage_alive) cagesAlive += 1;
-    epicsCount += team.epics.length;
-    for (const epic of team.epics) {
-      if (epic.cage_alive) cagesAlive += 1;
-    }
-  }
+  const elapsedMs = Math.max(0, finishedAt.getTime() - start.getTime());
 
   return {
-    schema_version: 1,
-    generated_at: formatIsoMs(input.generatedAt),
+    generated_at: start,
+    elapsed_ms: elapsedMs,
     cockpit,
-    teams,
-    orphans: [],
-    summary: {
-      teams_count: teams.length,
-      epics_count: epicsCount,
-      cages_alive: cagesAlive,
-      orphans_count: 0,
-      elapsed_ms: elapsedMs,
+    parents,
+    global: {
+      sockets_alive: sockets,
+      cron_marker_blocks: cronBlocks,
     },
   };
 }
 
-async function aggregateOneTeam(
-  io: TopoIO,
+async function gatherOneParent(
+  io: DiscoveryIO,
   parent: { name: string; root: string; softStopped: boolean },
   epicEntries: Array<{ eid: string; sessionName: string; softStopped: boolean }>,
-): Promise<TopoTeam> {
+): Promise<ParentDiscovery> {
   const atmuxDir = atmuxDirForTeam(parent.root);
   const worktree = parent.root;
   const cageSocket = cageSocketForTeam(parent.name);
 
-  const [kanban, cageAlive, branch, lastCommit] = await Promise.all([
-    io.readKanban(atmuxDir, { parent: true }),
-    io.cageAlive(cageSocket),
-    io.gitCurrentBranch(worktree),
-    io.gitLastCommitAt(worktree),
-  ]);
+  const [kanban, cageAlive, branch, lastCommit, worktreesOnDisk, kanbanEpicRows] =
+    await Promise.all([
+      io.readKanban(atmuxDir, { parent: true }),
+      io.cageAlive(cageSocket),
+      io.gitCurrentBranch(worktree),
+      io.gitLastCommitAt(worktree),
+      io.listEpicWorktreeDirs(parent.root, parent.name),
+      io.listKanbanEpicRows(atmuxDir),
+    ]);
+
+  // Branch glob hint for `<base>-epic-*` enumeration depends on the
+  // parent's current branch. Empty hint → empty branches list (the
+  // classifier conservatively skips class-4 detection for this parent
+  // rather than false-positiving on every branch).
+  const branches =
+    branch === null || branch.length === 0
+      ? []
+      : await io.listEpicBranches(parent.root, branch, parent.name);
 
   const sortedEpics = [...epicEntries].sort((a, b) => a.eid.localeCompare(b.eid));
-  // Trunk branch for ahead/merged probes = the parent's current branch.
-  // When the parent branch probe failed, we surface null on both per-
-  // epic gates (we can't do a meaningful base comparison without a base).
-  const epics = await Promise.all(
-    sortedEpics.map((e) => aggregateOneEpic(io, parent, e, branch, kanban)),
-  );
+  const epics = await Promise.all(sortedEpics.map((e) => gatherOneEpic(io, parent, e, branch)));
 
-  const team: TopoTeam = {
+  return {
     name: parent.name,
-    kind: "parent",
+    root: parent.root,
+    soft_stopped: parent.softStopped,
     atmux_dir: atmuxDir,
     worktree,
-    branch,
     cage_socket: cageSocket,
     cage_alive: cageAlive,
+    branch,
+    last_commit: lastCommit,
     kanban,
-    in_cockpit_registry: true,
-    last_activity: maxIso(lastCommit, kanban?.last_activity ?? null),
+    worktrees_on_disk: worktreesOnDisk,
+    branches,
+    kanban_epic_rows: kanbanEpicRows,
     epics,
   };
-  if (parent.softStopped) team.soft_stopped = true;
-  return team;
 }
 
-async function aggregateOneEpic(
-  io: TopoIO,
+async function gatherOneEpic(
+  io: DiscoveryIO,
   parent: { name: string; root: string },
   entry: { eid: string; sessionName: string; softStopped: boolean },
   parentBranch: string | null,
-  parentKanban: KanbanProbe | null,
-): Promise<TopoEpic> {
+): Promise<EpicDiscovery> {
   const worktree = worktreeForEpic(parent.root, entry.eid);
   const atmuxDir = atmuxDirForEpic(parent.root, entry.eid);
   const cageSocket = cageSocketForEpic(parent.name, entry.eid);
@@ -506,35 +547,111 @@ async function aggregateOneEpic(
       : io.gitMergedInto(parent.root, parentBranch, epicBranchHint),
   ]);
 
-  // `in_parent_kanban`: id-precise join against the parent kanban
-  // probe's `epic_ids` list. When the parent kanban returned null we
-  // can't tell — surface null so the classifier doesn't treat unknown
-  // as absent. When the parent kanban omitted `epic_ids` (older IO
-  // impl without the additive field) we conservatively return null
-  // for the same reason.
+  return {
+    eid: entry.eid,
+    session_name: entry.sessionName,
+    parent: parent.name,
+    soft_stopped: entry.softStopped,
+    atmux_dir: atmuxDir,
+    worktree,
+    cage_socket: cageSocket,
+    cage_alive: cageAlive,
+    branch,
+    last_commit: lastCommit,
+    ahead,
+    merged,
+    kanban,
+  };
+}
+
+// ---------- aggregateTopo — pure sync transformation ----------
+
+/** Pure transformation of {@link Discovery} → {@link TopoManifest}.
+ *
+ *  No IO, no clock reads, no side effects. The manifest's `generated_at`
+ *  + `summary.elapsed_ms` come verbatim from the discovery (which owns
+ *  the wall-clock). `orphans` is emitted empty — the classifier
+ *  (`src/core/orphan-detector.ts`) fills it via the verb-layer
+ *  orchestrator. */
+export function aggregateTopo(discovery: Discovery): TopoManifest {
+  const teams: TopoTeam[] = discovery.parents.map((p) => parentToTeam(p));
+
+  let cagesAlive = discovery.cockpit.alive ? 1 : 0;
+  let epicsCount = 0;
+  for (const team of teams) {
+    if (team.cage_alive) cagesAlive += 1;
+    epicsCount += team.epics.length;
+    for (const epic of team.epics) {
+      if (epic.cage_alive) cagesAlive += 1;
+    }
+  }
+
+  return {
+    schema_version: 1,
+    generated_at: formatIsoMs(discovery.generated_at),
+    cockpit: {
+      socket: discovery.cockpit.socket,
+      alive: discovery.cockpit.alive,
+      registry_path: discovery.cockpit.registry_path,
+      sessions_count: discovery.cockpit.data?.sessions.length ?? 0,
+    },
+    teams,
+    orphans: [],
+    summary: {
+      teams_count: teams.length,
+      epics_count: epicsCount,
+      cages_alive: cagesAlive,
+      orphans_count: 0,
+      elapsed_ms: discovery.elapsed_ms,
+    },
+  };
+}
+
+function parentToTeam(p: ParentDiscovery): TopoTeam {
+  const team: TopoTeam = {
+    name: p.name,
+    kind: "parent",
+    atmux_dir: p.atmux_dir,
+    worktree: p.worktree,
+    branch: p.branch,
+    cage_socket: p.cage_socket,
+    cage_alive: p.cage_alive,
+    kanban: p.kanban,
+    in_cockpit_registry: true,
+    last_activity: maxIso(p.last_commit, p.kanban?.last_activity ?? null),
+    epics: p.epics.map((e) => epicToManifestEpic(e, p.kanban)),
+  };
+  if (p.soft_stopped) team.soft_stopped = true;
+  return team;
+}
+
+function epicToManifestEpic(e: EpicDiscovery, parentKanban: KanbanProbe | null): TopoEpic {
+  // id-precise join against the parent's epic_ids list. When the
+  // parent kanban probe failed or the IO didn't populate epic_ids we
+  // surface null so the classifier doesn't treat unknown as absent.
   let inParentKanban: boolean | null;
   if (parentKanban === null || parentKanban.epic_ids === undefined) {
     inParentKanban = null;
   } else {
-    inParentKanban = parentKanban.epic_ids.includes(entry.eid);
+    inParentKanban = parentKanban.epic_ids.includes(e.eid);
   }
 
   const epic: TopoEpic = {
-    eid: entry.eid,
+    eid: e.eid,
     kind: "epic",
-    parent: parent.name,
-    atmux_dir: atmuxDir,
-    worktree,
-    branch,
-    cage_socket: cageSocket,
-    cage_alive: cageAlive,
-    kanban,
+    parent: e.parent,
+    atmux_dir: e.atmux_dir,
+    worktree: e.worktree,
+    branch: e.branch,
+    cage_socket: e.cage_socket,
+    cage_alive: e.cage_alive,
+    kanban: e.kanban,
     in_cockpit_registry: true,
     in_parent_kanban: inParentKanban,
-    branch_ahead_of_trunk: ahead,
-    branch_merged_to_trunk: merged,
-    last_activity: maxIso(lastCommit, kanban?.last_activity ?? null),
+    branch_ahead_of_trunk: e.ahead,
+    branch_merged_to_trunk: e.merged,
+    last_activity: maxIso(e.last_commit, e.kanban?.last_activity ?? null),
   };
-  if (entry.softStopped) epic.soft_stopped = true;
+  if (e.soft_stopped) epic.soft_stopped = true;
   return epic;
 }

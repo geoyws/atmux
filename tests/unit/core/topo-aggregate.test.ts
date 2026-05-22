@@ -1,41 +1,43 @@
-// Unit tests for src/core/topo-aggregate.ts (ADR-222 §D3 / t-4de545c8).
+// Unit tests for src/core/topo-aggregate.ts (ADR-222 §D3 / t-4de545c8
+// + Plan-B refactor under t-4b1c831d).
 //
-// Coverage matrix (per CLAUDE.md "100% coverage on tracked paths"):
-//   - aggregateTopo:
-//     - cockpit null  → minimal manifest (§D5 row 1)
-//     - cockpit present + cockpit-tmux alive / dead
-//     - parents iterated alphabetically + epics iterated by eid asc
-//     - elapsed_ms computed from io.now() delta
-//   - aggregateOneTeam:
-//     - kanban null (§D5 row 2) / populated (parent shape with epics + epic_ids)
-//     - cage alive true / false (§D5 row 3 timeout = false)
-//     - branch null (§D5 row 6 broken worktree) / populated
-//     - lastCommit null / populated, lastCommit + kanban last_activity max
-//     - softStopped flag passed through
-//   - aggregateOneEpic:
-//     - kanban null / populated (epic shape — no epics field)
-//     - cage alive true / false
-//     - branch null / populated
-//     - parentBranch null → ahead + merged both null, no IO call
-//     - parentBranch populated → ahead/merged probed
-//     - ahead null (§D5 row 5 timeout) / number; merged null / true / false
-//     - in_parent_kanban: parent null → null; parent epic_ids absent → null;
-//       parent epic_ids contains eid → true; absent → false
-//     - softStopped flag passed through
-//   - walkCockpit:
-//     - empty sessions
-//     - team-only
-//     - epic-team under team (parent linkage)
-//     - epic-team without `epicId` falls back to `name`
-//     - recursive: epic-team nested two levels deep
-//     - non-team/epic sessions ignored
-//     - soft_stopped_at recognized on team + epic-team
-//   - Path helpers (cageSocketForTeam, cageSocketForEpic, atmuxDirForTeam,
-//     worktreeForEpic, atmuxDirForEpic, formatIsoMs)
+// Architecture split per lead routing 2026-05-22:
+//   - gatherDiscovery(io): async, the ONLY IO entry point → Discovery
+//   - aggregateTopo(discovery): sync pure transformation → TopoManifest
+//   - walkCockpit: pure shape walker, consumed by gatherDiscovery
 //
-// Per ADR-222 §D5 the aggregator must NEVER throw on a per-source
-// failure — every test that pins a null IO return verifies the
-// resulting manifest field rather than expecting a throw.
+// Coverage matrix:
+//   gatherDiscovery:
+//     - cockpit null (§D5 row 1) → empty parents + cockpit.data: null +
+//       global probes still populated
+//     - cockpit present + per-parent + per-epic probes fully populated
+//     - cockpit-socket alive true / false
+//     - parents sorted alphabetically; epics sorted by eid
+//     - parent branch null → epic ahead/merged auto-null + no IO calls;
+//       parent branch empty string → no branches enumeration
+//     - elapsed_ms computed from io.now() delta; clock-skew clamped ≥0
+//     - every IO method's null return surfaces on the right field
+//
+//   aggregateTopo:
+//     - empty discovery (cockpit null, no parents) → minimal manifest
+//     - populated discovery → teams + epics + summary; orphans empty
+//     - cockpit alive / dead counts toward summary.cages_alive
+//     - parent + epic soft_stopped flags surface on manifest rows
+//     - last_activity = max(last_commit, kanban.last_activity)
+//     - in_parent_kanban: null when parentKanban null; null when
+//       epic_ids missing; true when epic_ids contains eid; false
+//       when absent
+//     - summary.elapsed_ms = discovery.elapsed_ms (verbatim)
+//
+//   walkCockpit:
+//     - empty / team-only / epic-team under team / recursive nesting
+//     - epicId fallback to name; missing root/parent coerced; non-array
+//       sessions skipped; malformed entries skipped; non-team/epic
+//       sessions ignored; soft_stopped_at recognized
+//
+//   Path helpers (cageSocketForTeam / cageSocketForEpic /
+//     atmuxDirForTeam / worktreeForEpic / atmuxDirForEpic /
+//     formatIsoMs).
 
 import { describe, expect, test } from "bun:test";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
@@ -45,14 +47,18 @@ import {
   atmuxDirForTeam,
   cageSocketForEpic,
   cageSocketForTeam,
+  type Discovery,
+  type DiscoveryIO,
+  type EpicDiscovery,
   formatIsoMs,
+  gatherDiscovery,
   type KanbanProbe,
-  type TopoIO,
+  type ParentDiscovery,
   walkCockpit,
   worktreeForEpic,
 } from "../../../src/core/topo-aggregate.ts";
 
-// ---------- Stub IO ----------
+// ---------- Stub IO for gatherDiscovery ----------
 
 interface StubIOSpec {
   cockpit?: LoadedCockpit | null;
@@ -64,9 +70,18 @@ interface StubIOSpec {
   lastCommit?: (worktreePath: string) => string | null;
   ahead?: (repoPath: string, base: string, branch: string) => number | null;
   merged?: (repoPath: string, base: string, branch: string) => boolean | null;
-  /** Sequence of Date values returned by io.now() — index 0 used for
-   *  the aggregator's `start`, index 1 for `finish`. Defaults to a
-   *  fixed pair 100ms apart. */
+  sockets?: ReturnType<DiscoveryIO["listAliveCageSockets"]> extends Promise<infer T> ? T : never;
+  cronBlocks?: Awaited<ReturnType<DiscoveryIO["listCronMarkerBlocks"]>>;
+  worktrees?: (
+    parentRoot: string,
+    parentName: string,
+  ) => Awaited<ReturnType<DiscoveryIO["listEpicWorktreeDirs"]>>;
+  branches?: (
+    repoPath: string,
+    base: string,
+    parentName: string,
+  ) => Awaited<ReturnType<DiscoveryIO["listEpicBranches"]>>;
+  kanbanEpicRows?: (atmuxDir: string) => Awaited<ReturnType<DiscoveryIO["listKanbanEpicRows"]>>;
   nowSeq?: Date[];
 }
 
@@ -77,10 +92,15 @@ interface StubIOCalls {
   lastCommit: string[];
   ahead: Array<{ repo: string; base: string; branch: string }>;
   merged: Array<{ repo: string; base: string; branch: string }>;
+  sockets: number;
+  cron: number;
+  worktrees: Array<{ root: string; name: string }>;
+  branches: Array<{ repo: string; base: string; name: string }>;
+  kanbanEpicRows: string[];
   now: number;
 }
 
-function makeStubIO(spec: StubIOSpec = {}): { io: TopoIO; calls: StubIOCalls } {
+function makeStubIO(spec: StubIOSpec = {}): { io: DiscoveryIO; calls: StubIOCalls } {
   const calls: StubIOCalls = {
     cageAlive: [],
     kanban: [],
@@ -88,13 +108,18 @@ function makeStubIO(spec: StubIOSpec = {}): { io: TopoIO; calls: StubIOCalls } {
     lastCommit: [],
     ahead: [],
     merged: [],
+    sockets: 0,
+    cron: 0,
+    worktrees: [],
+    branches: [],
+    kanbanEpicRows: [],
     now: 0,
   };
   const nowSeq = spec.nowSeq ?? [
     new Date("2026-05-22T13:54:00.000Z"),
     new Date("2026-05-22T13:54:00.100Z"),
   ];
-  const io: TopoIO = {
+  const io: DiscoveryIO = {
     async readCockpit() {
       return spec.cockpit ?? null;
     },
@@ -127,6 +152,26 @@ function makeStubIO(spec: StubIOSpec = {}): { io: TopoIO; calls: StubIOCalls } {
     async gitMergedInto(repoPath, base, branch) {
       calls.merged.push({ repo: repoPath, base, branch });
       return spec.merged ? spec.merged(repoPath, base, branch) : null;
+    },
+    async listAliveCageSockets() {
+      calls.sockets += 1;
+      return spec.sockets ?? [];
+    },
+    async listCronMarkerBlocks() {
+      calls.cron += 1;
+      return spec.cronBlocks === undefined ? null : spec.cronBlocks;
+    },
+    async listEpicWorktreeDirs(root, name) {
+      calls.worktrees.push({ root, name });
+      return spec.worktrees ? spec.worktrees(root, name) : [];
+    },
+    async listEpicBranches(repo, base, name) {
+      calls.branches.push({ repo, base, name });
+      return spec.branches ? spec.branches(repo, base, name) : [];
+    },
+    async listKanbanEpicRows(atmuxDir) {
+      calls.kanbanEpicRows.push(atmuxDir);
+      return spec.kanbanEpicRows ? spec.kanbanEpicRows(atmuxDir) : null;
     },
     now() {
       const idx = Math.min(calls.now, nowSeq.length - 1);
@@ -169,6 +214,63 @@ function cockpitWith(sessions: unknown[]): LoadedCockpit {
   } as unknown as LoadedCockpit;
 }
 
+// ---------- Discovery fixtures for aggregateTopo tests ----------
+
+function emptyDiscovery(overrides: Partial<Discovery> = {}): Discovery {
+  return {
+    generated_at: new Date("2026-05-22T13:54:00.000Z"),
+    elapsed_ms: 0,
+    cockpit: {
+      socket: "/tmp/.tmux-1000/atmux-cockpit",
+      alive: false,
+      registry_path: "/root/.atmux/cockpit.json",
+      data: null,
+    },
+    parents: [],
+    global: { sockets_alive: [], cron_marker_blocks: null },
+    ...overrides,
+  };
+}
+
+function parentDiscovery(overrides: Partial<ParentDiscovery> = {}): ParentDiscovery {
+  return {
+    name: "atmux",
+    root: "/srv/atmux",
+    soft_stopped: false,
+    atmux_dir: "/srv/atmux/.atmux",
+    worktree: "/srv/atmux",
+    cage_socket: "/tmp/atmux-atmux/sock",
+    cage_alive: false,
+    branch: null,
+    last_commit: null,
+    kanban: null,
+    worktrees_on_disk: [],
+    branches: [],
+    kanban_epic_rows: null,
+    epics: [],
+    ...overrides,
+  };
+}
+
+function epicDiscovery(overrides: Partial<EpicDiscovery> = {}): EpicDiscovery {
+  return {
+    eid: "e-1",
+    session_name: "ep-1",
+    parent: "atmux",
+    soft_stopped: false,
+    atmux_dir: "/srv/atmux-epics/e-1/.atmux",
+    worktree: "/srv/atmux-epics/e-1",
+    cage_socket: "/tmp/atmux-atmux/epics/e-1/tmux-0/default",
+    cage_alive: false,
+    branch: null,
+    last_commit: null,
+    ahead: null,
+    merged: null,
+    kanban: null,
+    ...overrides,
+  };
+}
+
 // ---------- Path helpers ----------
 
 describe("path helpers", () => {
@@ -187,9 +289,7 @@ describe("path helpers", () => {
     expect(atmuxDirForTeam("/srv/atmux")).toBe("/srv/atmux/.atmux");
   });
 
-  test("worktreeForEpic resolves to parent-sibling atmux-epics dir", () => {
-    // path.join normalizes the `..` segment, so the result is the
-    // sibling directory of the parent worktree.
+  test("worktreeForEpic resolves to sibling atmux-epics dir", () => {
     expect(worktreeForEpic("/root/work/src/atmux", "e-abc")).toBe(
       "/root/work/src/atmux-epics/e-abc",
     );
@@ -202,8 +302,7 @@ describe("path helpers", () => {
   });
 
   test("formatIsoMs formats with 3-digit ms precision", () => {
-    const d = new Date("2026-05-22T13:54:00.123Z");
-    expect(formatIsoMs(d)).toBe("2026-05-22T13:54:00.123Z");
+    expect(formatIsoMs(new Date("2026-05-22T13:54:00.123Z"))).toBe("2026-05-22T13:54:00.123Z");
   });
 });
 
@@ -227,8 +326,9 @@ describe("walkCockpit", () => {
       cockpitWith([teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")])]),
     );
     expect(r.parents).toHaveLength(1);
-    const epics = r.epicsByParent.get("atmux");
-    expect(epics).toEqual([{ eid: "e-1", sessionName: "ep", softStopped: false }]);
+    expect(r.epicsByParent.get("atmux")).toEqual([
+      { eid: "e-1", sessionName: "ep", softStopped: false },
+    ]);
   });
 
   test("epic-team without epicId falls back to session name", () => {
@@ -239,8 +339,7 @@ describe("walkCockpit", () => {
         ]),
       ]),
     );
-    const epics = r.epicsByParent.get("atmux");
-    expect(epics?.[0]?.eid).toBe("ep-noid");
+    expect(r.epicsByParent.get("atmux")?.[0]?.eid).toBe("ep-noid");
   });
 
   test("non-team/epic sessions are ignored", () => {
@@ -252,7 +351,6 @@ describe("walkCockpit", () => {
       ]),
     );
     expect(r.parents).toEqual([{ name: "atmux", root: "/srv/atmux", softStopped: false }]);
-    expect(r.epicsByParent.size).toBe(0);
   });
 
   test("recursive walk finds nested epic-teams", () => {
@@ -315,7 +413,6 @@ describe("walkCockpit", () => {
       ]),
     );
     expect(r.parents).toHaveLength(1);
-    expect(r.epicsByParent.size).toBe(0);
   });
 
   test("malformed child entries skipped (no type or no name)", () => {
@@ -331,43 +428,41 @@ describe("walkCockpit", () => {
   });
 });
 
-// ---------- aggregateTopo: cockpit null branch (§D5 row 1) ----------
+// ---------- gatherDiscovery — cockpit null (§D5 row 1) ----------
 
-describe("aggregateTopo — cockpit null (§D5 row 1)", () => {
-  test("emits minimal manifest with cockpit.alive: false when socket dead", async () => {
-    const { io } = makeStubIO({
-      cockpit: null,
-      cockpitSocketPath: "/tmp/.tmux-1000/atmux-cockpit",
-      cageAlive: () => false,
-    });
-    const m = await aggregateTopo(io);
-    expect(m.schema_version).toBe(1);
-    expect(m.cockpit.alive).toBe(false);
-    expect(m.cockpit.sessions_count).toBe(0);
-    expect(m.cockpit.registry_path).toBe("/root/.atmux/cockpit.json");
-    expect(m.cockpit.socket).toBe("/tmp/.tmux-1000/atmux-cockpit");
-    expect(m.teams).toEqual([]);
-    expect(m.orphans).toEqual([]);
-    expect(m.summary.teams_count).toBe(0);
-    expect(m.summary.cages_alive).toBe(0);
+describe("gatherDiscovery — cockpit null (§D5 row 1)", () => {
+  test("emits empty parents with cockpit.data null + cockpit.alive false", async () => {
+    const { io } = makeStubIO({ cockpit: null, cageAlive: () => false });
+    const d = await gatherDiscovery(io);
+    expect(d.cockpit.data).toBeNull();
+    expect(d.cockpit.alive).toBe(false);
+    expect(d.cockpit.socket).toBe("/tmp/.tmux-1000/atmux-cockpit");
+    expect(d.cockpit.registry_path).toBe("/root/.atmux/cockpit.json");
+    expect(d.parents).toEqual([]);
   });
 
-  test("cockpit null with cockpit socket alive still gives alive:true + empty teams", async () => {
+  test("global sockets + cron still gathered when cockpit null", async () => {
     const { io } = makeStubIO({
       cockpit: null,
-      cageAlive: () => true,
+      sockets: [{ socket: "/tmp/atmux-x/sock", parent: "x", eid: null }],
+      cronBlocks: [{ ref: "atmux:team=x", atmux_dir: "/srv/x/.atmux", atmux_dir_exists: false }],
     });
-    const m = await aggregateTopo(io);
-    expect(m.cockpit.alive).toBe(true);
-    expect(m.summary.cages_alive).toBe(1);
-    expect(m.teams).toEqual([]);
+    const d = await gatherDiscovery(io);
+    expect(d.global.sockets_alive).toHaveLength(1);
+    expect(d.global.cron_marker_blocks).toHaveLength(1);
+  });
+
+  test("cockpit socket alive surfaces on cockpit.alive", async () => {
+    const { io } = makeStubIO({ cockpit: null, cageAlive: () => true });
+    const d = await gatherDiscovery(io);
+    expect(d.cockpit.alive).toBe(true);
   });
 });
 
-// ---------- aggregateTopo: cockpit happy paths ----------
+// ---------- gatherDiscovery — happy paths ----------
 
-describe("aggregateTopo — teams + epics happy paths", () => {
-  test("teams sorted alphabetically; epics sorted by eid", async () => {
+describe("gatherDiscovery — populated paths", () => {
+  test("parents sorted alphabetically; epics sorted by eid", async () => {
     const cockpit = cockpitWith([
       teamSession("zebra", "/srv/zebra"),
       teamSession("atmux", "/srv/atmux", [
@@ -376,84 +471,138 @@ describe("aggregateTopo — teams + epics happy paths", () => {
       ]),
     ]);
     const { io } = makeStubIO({ cockpit, cageAlive: () => true });
-    const m = await aggregateTopo(io);
-    expect(m.teams.map((t) => t.name)).toEqual(["atmux", "zebra"]);
-    expect(m.teams[0]?.epics.map((e) => e.eid)).toEqual(["e-aaa", "e-bbb"]);
+    const d = await gatherDiscovery(io);
+    expect(d.parents.map((p) => p.name)).toEqual(["atmux", "zebra"]);
+    expect(d.parents[0]?.epics.map((e) => e.eid)).toEqual(["e-aaa", "e-bbb"]);
   });
 
-  test("populated kanban + lastCommit produces max last_activity", async () => {
+  test("per-team probes populate parent fields", async () => {
     const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
-    const { io } = makeStubIO({
+    const { io, calls } = makeStubIO({
       cockpit,
       cageAlive: () => true,
       branch: () => "atmux-geoyws",
       lastCommit: () => "2026-05-22T13:00:00.000Z",
       kanban: () => ({
-        epics: 3,
-        epic_ids: ["e-1", "e-2", "e-3"],
-        tasks_open: 5,
-        tasks_done: 100,
+        epics: 1,
+        epic_ids: ["e-1"],
+        tasks_open: 4,
+        tasks_done: 12,
         last_activity: "2026-05-22T13:50:00.000Z",
       }),
+      worktrees: () => [{ path: "/srv/atmux-epics/e-1", parent: "atmux", eid: "e-1" }],
+      branches: () => [{ parent: "atmux", branch: "atmux-geoyws-epic-e-1", eid: "e-1" }],
+      kanbanEpicRows: () => [{ eid: "e-1", status: "in-progress" }],
     });
-    const m = await aggregateTopo(io);
-    const team = m.teams[0];
-    expect(team?.branch).toBe("atmux-geoyws");
-    expect(team?.kanban?.epics).toBe(3);
-    expect(team?.kanban?.tasks_open).toBe(5);
-    expect(team?.last_activity).toBe("2026-05-22T13:50:00.000Z"); // kanban > commit
+    const d = await gatherDiscovery(io);
+    const p = d.parents[0];
+    expect(p?.cage_alive).toBe(true);
+    expect(p?.branch).toBe("atmux-geoyws");
+    expect(p?.last_commit).toBe("2026-05-22T13:00:00.000Z");
+    expect(p?.kanban?.tasks_open).toBe(4);
+    expect(p?.worktrees_on_disk).toHaveLength(1);
+    expect(p?.branches).toHaveLength(1);
+    expect(p?.kanban_epic_rows).toEqual([{ eid: "e-1", status: "in-progress" }]);
+    // listEpicBranches was called because branch was populated.
+    expect(calls.branches).toHaveLength(1);
   });
 
-  test("last_activity prefers commit when commit > kanban", async () => {
+  test("parent branch null → branches enumeration skipped, ahead/merged auto-null", async () => {
+    const cockpit = cockpitWith([
+      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
+    ]);
+    const { io, calls } = makeStubIO({ cockpit, branch: () => null });
+    const d = await gatherDiscovery(io);
+    expect(d.parents[0]?.branches).toEqual([]);
+    expect(d.parents[0]?.epics[0]?.ahead).toBeNull();
+    expect(d.parents[0]?.epics[0]?.merged).toBeNull();
+    expect(calls.branches).toHaveLength(0);
+    expect(calls.ahead).toHaveLength(0);
+    expect(calls.merged).toHaveLength(0);
+  });
+
+  test("parent branch empty string also skips branches enumeration", async () => {
     const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
-    const { io } = makeStubIO({
+    const { io, calls } = makeStubIO({ cockpit, branch: () => "" });
+    await gatherDiscovery(io);
+    expect(calls.branches).toHaveLength(0);
+  });
+
+  test("epic probes populate epic fields + ahead/merged from parent branch", async () => {
+    const cockpit = cockpitWith([
+      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
+    ]);
+    const { io, calls } = makeStubIO({
       cockpit,
-      lastCommit: () => "2026-05-22T13:50:00.000Z",
-      kanban: () => ({
-        tasks_open: 0,
-        tasks_done: 0,
-        last_activity: "2026-05-22T10:00:00.000Z",
-      }),
+      branch: (wt) => (wt === "/srv/atmux" ? "atmux-geoyws" : "atmux-geoyws-epic-e-1"),
+      ahead: () => 3,
+      merged: () => false,
     });
-    const m = await aggregateTopo(io);
-    expect(m.teams[0]?.last_activity).toBe("2026-05-22T13:50:00.000Z");
+    const d = await gatherDiscovery(io);
+    const e = d.parents[0]?.epics[0];
+    expect(e?.ahead).toBe(3);
+    expect(e?.merged).toBe(false);
+    expect(e?.branch).toBe("atmux-geoyws-epic-e-1");
+    expect(calls.ahead[0]?.branch).toBe("atmux-geoyws-epic-e-1");
+    expect(calls.merged[0]?.branch).toBe("atmux-geoyws-epic-e-1");
   });
 
-  test("kanban null (§D5 row 2) → kanban: null + last_activity from commit only", async () => {
-    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
-    const { io } = makeStubIO({
-      cockpit,
-      kanban: () => null,
-      lastCommit: () => "2026-05-22T13:00:00.000Z",
-    });
-    const m = await aggregateTopo(io);
-    expect(m.teams[0]?.kanban).toBeNull();
-    expect(m.teams[0]?.last_activity).toBe("2026-05-22T13:00:00.000Z");
-  });
-
-  test("both kanban + commit null → last_activity null", async () => {
-    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
-    const { io } = makeStubIO({ cockpit });
-    const m = await aggregateTopo(io);
-    expect(m.teams[0]?.last_activity).toBeNull();
-  });
-
-  test("cage_alive: true counts toward summary.cages_alive", async () => {
+  test("ahead null (§D5 row 5) + merged true", async () => {
     const cockpit = cockpitWith([
       teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
     ]);
     const { io } = makeStubIO({
       cockpit,
-      cageAlive: (s) => s.includes("e-1") || s.includes(".tmux-1000"),
+      branch: () => "atmux-geoyws",
+      ahead: () => null,
+      merged: () => true,
     });
-    const m = await aggregateTopo(io);
-    // cockpit + epic cage = 2 alive; parent cage dead.
-    expect(m.summary.cages_alive).toBe(2);
-    expect(m.teams[0]?.cage_alive).toBe(false);
-    expect(m.teams[0]?.epics[0]?.cage_alive).toBe(true);
+    const d = await gatherDiscovery(io);
+    expect(d.parents[0]?.epics[0]?.ahead).toBeNull();
+    expect(d.parents[0]?.epics[0]?.merged).toBe(true);
   });
 
-  test("softStopped flag surfaces on team + epic rows", async () => {
+  test("kanban null (§D5 row 2)", async () => {
+    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
+    const { io } = makeStubIO({ cockpit, kanban: () => null });
+    const d = await gatherDiscovery(io);
+    expect(d.parents[0]?.kanban).toBeNull();
+  });
+
+  test("kanban_epic_rows null (§D5 row 2 for the row-listing probe)", async () => {
+    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
+    const { io } = makeStubIO({ cockpit, kanbanEpicRows: () => null });
+    const d = await gatherDiscovery(io);
+    expect(d.parents[0]?.kanban_epic_rows).toBeNull();
+  });
+
+  test("cron blocks null (§D5 row 4)", async () => {
+    const { io } = makeStubIO({ cockpit: null, cronBlocks: null });
+    const d = await gatherDiscovery(io);
+    expect(d.global.cron_marker_blocks).toBeNull();
+  });
+
+  test("elapsed_ms computed from io.now() delta", async () => {
+    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
+    const { io } = makeStubIO({
+      cockpit,
+      nowSeq: [new Date("2026-05-22T13:54:00.000Z"), new Date("2026-05-22T13:54:00.487Z")],
+    });
+    const d = await gatherDiscovery(io);
+    expect(d.elapsed_ms).toBe(487);
+  });
+
+  test("clock-skew (finish before start) clamps elapsed_ms to 0", async () => {
+    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
+    const { io } = makeStubIO({
+      cockpit,
+      nowSeq: [new Date("2026-05-22T13:54:00.100Z"), new Date("2026-05-22T13:54:00.000Z")],
+    });
+    const d = await gatherDiscovery(io);
+    expect(d.elapsed_ms).toBe(0);
+  });
+
+  test("soft_stopped flags propagate to parent + epic discovery rows", async () => {
     const cockpit = cockpitWith([
       {
         type: "team",
@@ -475,224 +624,311 @@ describe("aggregateTopo — teams + epics happy paths", () => {
       },
     ]);
     const { io } = makeStubIO({ cockpit });
-    const m = await aggregateTopo(io);
+    const d = await gatherDiscovery(io);
+    expect(d.parents[0]?.soft_stopped).toBe(true);
+    expect(d.parents[0]?.epics[0]?.soft_stopped).toBe(true);
+  });
+
+  test("cage_alive probes include cockpit + per-team + per-epic sockets", async () => {
+    const cockpit = cockpitWith([
+      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
+    ]);
+    const { io, calls } = makeStubIO({ cockpit });
+    await gatherDiscovery(io);
+    expect(calls.cageAlive).toContain("/tmp/.tmux-1000/atmux-cockpit");
+    expect(calls.cageAlive).toContain("/tmp/atmux-atmux/sock");
+    expect(calls.cageAlive).toContain("/tmp/atmux-atmux/epics/e-1/tmux-0/default");
+  });
+});
+
+// ---------- aggregateTopo (pure transformation) ----------
+
+describe("aggregateTopo — empty / cockpit-null discovery", () => {
+  test("emits minimal manifest from empty discovery", () => {
+    const m = aggregateTopo(emptyDiscovery());
+    expect(m.schema_version).toBe(1);
+    expect(m.cockpit.alive).toBe(false);
+    expect(m.cockpit.sessions_count).toBe(0);
+    expect(m.teams).toEqual([]);
+    expect(m.orphans).toEqual([]);
+    expect(m.summary.teams_count).toBe(0);
+    expect(m.summary.epics_count).toBe(0);
+    expect(m.summary.cages_alive).toBe(0);
+    expect(m.summary.elapsed_ms).toBe(0);
+  });
+
+  test("cockpit alive counts toward cages_alive", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        cockpit: {
+          socket: "/x",
+          alive: true,
+          registry_path: "/r",
+          data: null,
+        },
+      }),
+    );
+    expect(m.cockpit.alive).toBe(true);
+    expect(m.summary.cages_alive).toBe(1);
+  });
+
+  test("cockpit data populated → sessions_count from data.sessions.length", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        cockpit: {
+          socket: "/x",
+          alive: true,
+          registry_path: "/r",
+          data: cockpitWith([teamSession("a", "/srv/a"), teamSession("b", "/srv/b")]),
+        },
+      }),
+    );
+    expect(m.cockpit.sessions_count).toBe(2);
+  });
+});
+
+describe("aggregateTopo — teams + epics", () => {
+  test("parent row populated from ParentDiscovery", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            name: "atmux",
+            branch: "atmux-geoyws",
+            cage_alive: true,
+            kanban: { tasks_open: 5, tasks_done: 100, last_activity: null, epics: 0 },
+          }),
+        ],
+      }),
+    );
+    expect(m.teams[0]?.name).toBe("atmux");
+    expect(m.teams[0]?.branch).toBe("atmux-geoyws");
+    expect(m.teams[0]?.cage_alive).toBe(true);
+    expect(m.teams[0]?.kanban?.tasks_open).toBe(5);
+  });
+
+  test("last_activity = max(last_commit, kanban.last_activity)", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            last_commit: "2026-05-22T10:00:00.000Z",
+            kanban: { tasks_open: 0, tasks_done: 0, last_activity: "2026-05-22T13:50:00.000Z" },
+          }),
+        ],
+      }),
+    );
+    expect(m.teams[0]?.last_activity).toBe("2026-05-22T13:50:00.000Z");
+  });
+
+  test("last_activity prefers commit when commit > kanban", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            last_commit: "2026-05-22T13:50:00.000Z",
+            kanban: { tasks_open: 0, tasks_done: 0, last_activity: "2026-05-22T10:00:00.000Z" },
+          }),
+        ],
+      }),
+    );
+    expect(m.teams[0]?.last_activity).toBe("2026-05-22T13:50:00.000Z");
+  });
+
+  test("last_activity null when both probes null", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [parentDiscovery({ last_commit: null, kanban: null })],
+      }),
+    );
+    expect(m.teams[0]?.last_activity).toBeNull();
+  });
+
+  test("soft_stopped flag surfaces on team + epic rows", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            soft_stopped: true,
+            epics: [epicDiscovery({ soft_stopped: true })],
+          }),
+        ],
+      }),
+    );
     expect(m.teams[0]?.soft_stopped).toBe(true);
     expect(m.teams[0]?.epics[0]?.soft_stopped).toBe(true);
   });
 
-  test("non-softStopped omits the flag entirely", async () => {
-    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
-    const { io } = makeStubIO({ cockpit });
-    const m = await aggregateTopo(io);
+  test("non-softStopped omits the flag entirely", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [parentDiscovery({ soft_stopped: false, epics: [epicDiscovery()] })],
+      }),
+    );
     expect(m.teams[0]?.soft_stopped).toBeUndefined();
+    expect(m.teams[0]?.epics[0]?.soft_stopped).toBeUndefined();
   });
 
-  test("elapsed_ms computed from io.now() delta", async () => {
-    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
-    const { io } = makeStubIO({
-      cockpit,
-      nowSeq: [new Date("2026-05-22T13:54:00.000Z"), new Date("2026-05-22T13:54:00.487Z")],
-    });
-    const m = await aggregateTopo(io);
-    expect(m.summary.elapsed_ms).toBe(487);
-    expect(m.generated_at).toBe("2026-05-22T13:54:00.000Z");
-  });
-
-  test("clock-skew (finish before start) clamps elapsed_ms to 0", async () => {
-    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
-    const { io } = makeStubIO({
-      cockpit,
-      nowSeq: [new Date("2026-05-22T13:54:00.100Z"), new Date("2026-05-22T13:54:00.000Z")],
-    });
-    const m = await aggregateTopo(io);
-    expect(m.summary.elapsed_ms).toBe(0);
-  });
-});
-
-// ---------- aggregateOneTeam: branch failure ----------
-
-describe("aggregateOneTeam — failure narrowing", () => {
-  test("branch null (§D5 row 6 broken worktree)", async () => {
-    const cockpit = cockpitWith([teamSession("atmux", "/srv/atmux")]);
-    const { io } = makeStubIO({ cockpit, branch: () => null });
-    const m = await aggregateTopo(io);
-    expect(m.teams[0]?.branch).toBeNull();
-  });
-});
-
-// ---------- aggregateOneEpic: full matrix ----------
-
-describe("aggregateOneEpic — git-probe matrix (§D5 row 5)", () => {
-  test("parent branch null skips ahead/merged probes entirely", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io, calls } = makeStubIO({
-      cockpit,
-      branch: () => null, // both parent + epic branches probe-null
-    });
-    const m = await aggregateTopo(io);
-    const epic = m.teams[0]?.epics[0];
-    expect(epic?.branch_ahead_of_trunk).toBeNull();
-    expect(epic?.branch_merged_to_trunk).toBeNull();
-    // No ahead/merged IO calls because parent branch was null.
-    expect(calls.ahead).toHaveLength(0);
-    expect(calls.merged).toHaveLength(0);
-  });
-
-  test("parent branch present + ahead/merged populated", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io, calls } = makeStubIO({
-      cockpit,
-      branch: (wt) => (wt === "/srv/atmux" ? "atmux-geoyws" : "atmux-geoyws-epic-e-1"),
-      ahead: () => 3,
-      merged: () => false,
-    });
-    const m = await aggregateTopo(io);
-    const epic = m.teams[0]?.epics[0];
-    expect(epic?.branch_ahead_of_trunk).toBe(3);
-    expect(epic?.branch_merged_to_trunk).toBe(false);
-    // The ahead/merged probes hit the parent repo with the hint-branch name.
-    expect(calls.ahead[0]?.base).toBe("atmux-geoyws");
-    expect(calls.ahead[0]?.branch).toBe("atmux-geoyws-epic-e-1");
-    expect(calls.merged[0]?.branch).toBe("atmux-geoyws-epic-e-1");
-  });
-
-  test("ahead null (§D5 row 5 timeout) + merged true", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io } = makeStubIO({
-      cockpit,
-      branch: () => "atmux-geoyws",
-      ahead: () => null,
-      merged: () => true,
-    });
-    const m = await aggregateTopo(io);
-    expect(m.teams[0]?.epics[0]?.branch_ahead_of_trunk).toBeNull();
-    expect(m.teams[0]?.epics[0]?.branch_merged_to_trunk).toBe(true);
-  });
-
-  test("in_parent_kanban: parent kanban null → null", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io } = makeStubIO({ cockpit, kanban: () => null });
-    const m = await aggregateTopo(io);
+  test("in_parent_kanban: parent kanban null → null", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [parentDiscovery({ kanban: null, epics: [epicDiscovery({ eid: "e-1" })] })],
+      }),
+    );
     expect(m.teams[0]?.epics[0]?.in_parent_kanban).toBeNull();
   });
 
-  test("in_parent_kanban: parent kanban missing epic_ids → null (conservative)", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io } = makeStubIO({
-      cockpit,
-      kanban: (_dir, opts) =>
-        opts.parent
-          ? { tasks_open: 0, tasks_done: 0, last_activity: null, epics: 0 }
-          : { tasks_open: 0, tasks_done: 0, last_activity: null },
-    });
-    const m = await aggregateTopo(io);
+  test("in_parent_kanban: epic_ids missing → null", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            kanban: { tasks_open: 0, tasks_done: 0, last_activity: null, epics: 0 },
+            epics: [epicDiscovery({ eid: "e-1" })],
+          }),
+        ],
+      }),
+    );
     expect(m.teams[0]?.epics[0]?.in_parent_kanban).toBeNull();
   });
 
-  test("in_parent_kanban: epic_ids contains eid → true", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io } = makeStubIO({
-      cockpit,
-      kanban: (_dir, opts) =>
-        opts.parent
-          ? {
+  test("in_parent_kanban: epic_ids contains eid → true", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            kanban: {
               tasks_open: 0,
               tasks_done: 0,
               last_activity: null,
               epics: 1,
               epic_ids: ["e-1"],
-            }
-          : { tasks_open: 0, tasks_done: 0, last_activity: null },
-    });
-    const m = await aggregateTopo(io);
+            },
+            epics: [epicDiscovery({ eid: "e-1" })],
+          }),
+        ],
+      }),
+    );
     expect(m.teams[0]?.epics[0]?.in_parent_kanban).toBe(true);
   });
 
-  test("in_parent_kanban: epic_ids missing this eid → false", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io } = makeStubIO({
-      cockpit,
-      kanban: (_dir, opts) =>
-        opts.parent
-          ? {
+  test("in_parent_kanban: epic_ids missing this eid → false", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            kanban: {
               tasks_open: 0,
               tasks_done: 0,
               last_activity: null,
               epics: 1,
               epic_ids: ["e-other"],
-            }
-          : { tasks_open: 0, tasks_done: 0, last_activity: null },
-    });
-    const m = await aggregateTopo(io);
+            },
+            epics: [epicDiscovery({ eid: "e-1" })],
+          }),
+        ],
+      }),
+    );
     expect(m.teams[0]?.epics[0]?.in_parent_kanban).toBe(false);
   });
 
-  test("epic kanban populated has no `epics` field on the manifest", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io } = makeStubIO({
-      cockpit,
-      kanban: (_dir, opts) =>
-        opts.parent
-          ? { tasks_open: 0, tasks_done: 0, last_activity: null, epics: 1, epic_ids: ["e-1"] }
-          : { tasks_open: 5, tasks_done: 2, last_activity: "2026-05-22T12:00:00.000Z" },
-    });
-    const m = await aggregateTopo(io);
-    const epicKanban = m.teams[0]?.epics[0]?.kanban;
-    expect(epicKanban?.tasks_open).toBe(5);
-    expect(epicKanban?.tasks_done).toBe(2);
-    expect(epicKanban?.epics).toBeUndefined();
+  test("epic ahead/merged values pass through verbatim", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            epics: [epicDiscovery({ ahead: 7, merged: false })],
+          }),
+        ],
+      }),
+    );
+    expect(m.teams[0]?.epics[0]?.branch_ahead_of_trunk).toBe(7);
+    expect(m.teams[0]?.epics[0]?.branch_merged_to_trunk).toBe(false);
   });
 
-  test("epic socket path correctly probed", async () => {
-    const cockpit = cockpitWith([
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const { io, calls } = makeStubIO({ cockpit });
-    await aggregateTopo(io);
-    expect(calls.cageAlive).toContain("/tmp/atmux-atmux/epics/e-1/tmux-0/default");
-    expect(calls.cageAlive).toContain("/tmp/atmux-atmux/sock");
+  test("epic last_activity = max(last_commit, kanban.last_activity)", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            epics: [
+              epicDiscovery({
+                last_commit: "2026-05-22T13:00:00.000Z",
+                kanban: { tasks_open: 0, tasks_done: 0, last_activity: "2026-05-22T13:50:00.000Z" },
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(m.teams[0]?.epics[0]?.last_activity).toBe("2026-05-22T13:50:00.000Z");
+  });
+
+  test("summary.cages_alive counts cockpit + parents + epics", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        cockpit: { socket: "/x", alive: true, registry_path: "/r", data: null },
+        parents: [
+          parentDiscovery({ cage_alive: true, epics: [epicDiscovery({ cage_alive: true })] }),
+          parentDiscovery({ name: "other", cage_alive: false }),
+        ],
+      }),
+    );
+    expect(m.summary.cages_alive).toBe(3);
+  });
+
+  test("summary.epics_count totals epics across all parents", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        parents: [
+          parentDiscovery({
+            epics: [epicDiscovery({ eid: "e-1" }), epicDiscovery({ eid: "e-2" })],
+          }),
+          parentDiscovery({ name: "other", epics: [epicDiscovery({ eid: "e-3" })] }),
+        ],
+      }),
+    );
+    expect(m.summary.epics_count).toBe(3);
+  });
+
+  test("summary.elapsed_ms passes through from discovery verbatim", () => {
+    const m = aggregateTopo(emptyDiscovery({ elapsed_ms: 487 }));
+    expect(m.summary.elapsed_ms).toBe(487);
+  });
+
+  test("generated_at formatted via formatIsoMs", () => {
+    const m = aggregateTopo(emptyDiscovery({ generated_at: new Date("2026-05-22T13:54:00.123Z") }));
+    expect(m.generated_at).toBe("2026-05-22T13:54:00.123Z");
   });
 });
 
-// ---------- Determinism: same IO → same manifest ----------
+// ---------- Determinism: same discovery → same manifest ----------
 
 describe("determinism", () => {
-  test("two runs against the same IO produce identical manifests", async () => {
-    const cockpit = cockpitWith([
-      teamSession("zebra", "/srv/zebra"),
-      teamSession("atmux", "/srv/atmux", [epicTeamSession("ep", "atmux", "e-1")]),
-    ]);
-    const spec: StubIOSpec = {
-      cockpit,
-      cageAlive: () => true,
-      branch: () => "atmux-geoyws",
-      lastCommit: () => "2026-05-22T13:00:00.000Z",
-      kanban: (_dir, opts) =>
-        opts.parent
-          ? { tasks_open: 1, tasks_done: 2, last_activity: null, epics: 1, epic_ids: ["e-1"] }
-          : { tasks_open: 0, tasks_done: 0, last_activity: null },
-      ahead: () => 0,
-      merged: () => true,
-      nowSeq: [new Date("2026-05-22T13:54:00.000Z"), new Date("2026-05-22T13:54:00.100Z")],
-    };
-    const first = await aggregateTopo(makeStubIO(spec).io);
-    const second = await aggregateTopo(makeStubIO(spec).io);
-    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  test("two aggregateTopo runs against the same discovery produce identical manifests", () => {
+    const discovery = emptyDiscovery({
+      cockpit: {
+        socket: "/x",
+        alive: true,
+        registry_path: "/r",
+        data: cockpitWith([teamSession("atmux", "/srv/atmux")]),
+      },
+      parents: [
+        parentDiscovery({
+          cage_alive: true,
+          branch: "atmux-geoyws",
+          last_commit: "2026-05-22T13:00:00.000Z",
+          kanban: {
+            tasks_open: 1,
+            tasks_done: 2,
+            last_activity: null,
+            epics: 1,
+            epic_ids: ["e-1"],
+          },
+          epics: [epicDiscovery({ ahead: 0, merged: true })],
+        }),
+      ],
+    });
+    expect(JSON.stringify(aggregateTopo(discovery))).toBe(JSON.stringify(aggregateTopo(discovery)));
   });
 });
