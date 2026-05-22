@@ -822,3 +822,114 @@ From operator's /btw audit (image 2026-05-22):
 202/202 across touched paths.
 
 **Filed via** 2026-05-22 driver session — *"all 3. start the implementation. it has to be COMPLETE FOR USE"* → *"maybe use e-1-${hash} so that it's easier to grep"* + /btw fold-in.
+
+
+## §Amendment 2026-05-22 (IX-A) — relayd direct send-keys (lane-router lean dispatch)
+
+Operator /btw audit fold-in (Epic e-95087c8b, /btw #1). Pre-IX-A, every `task.unclaimed` notification fired the full `runLaneTick` enumeration on the Bun side — walk ALL members, pick a task per lane, dispatch. The event itself names a single task; re-enumerating every member to land that one task is wasted work. IX-A wires a lean per-event dispatch path that trusts the event's routing.
+
+### Architecture — lean dispatch from Rust to Bun
+
+```
+honker_stream_publish task.unclaimed
+                │
+                ▼
+┌────────────────────────────────────────────────────────────┐
+│ atmux-relayd (Rust, ADR-202 §VII binary)                  │
+│   1. drain new event_ids for topic=task.unclaimed         │
+│   2. for each: SELECT payload FROM events WHERE event_id  │
+│   3. parse Zod-shaped JSON → (taskId, lane)               │
+│   4. spawn `atmux relayd --handle-one                     │
+│        --event-id X --topic task.unclaimed                │
+│        --task-id T --lane L`                              │
+│      (extra args omitted on parse-fail / NULL payload)    │
+└────────────────────────────────────────────────────────────┘
+                │ spawn per event (~50ms Bun cold start)
+                ▼
+┌────────────────────────────────────────────────────────────┐
+│ atmux relayd --handle-one --topic task.unclaimed (Bun)    │
+│   resolveLeanDispatchOpts(parsed, team):                  │
+│     • absent --task-id OR --lane     → null  (fall back)  │
+│     • lane has no member.lane match  → null  (fall back)  │
+│     • else                            → {taskId, member, lane}│
+│   leanOpts !== null:                                      │
+│     → runLaneTickForOne(atmuxDir, team, leanOpts)         │
+│       = one safeSendKeysWithVerify call                   │
+│   leanOpts === null:                                      │
+│     → runLaneTick(atmuxDir, team)  (existing path)        │
+│   saveOffset on both branches (idempotent w/ Rust caller) │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Why `--member` is NOT in the wire format
+
+`TaskUnclaimedPayload` (see `src/schema/events.ts`) has fields `{ topic, taskId, team, lane, priority?, epicId?, storyId? }` — no `member`. The task is unclaimed at the moment the event fires; no owner has been assigned yet. Lane→member resolution is a routing decision the dispatcher makes when it picks WHO to nudge.
+
+Pre-implementation drafts had `--member` as a required CLI flag alongside `--task-id`/`--lane`. T3 (t-c8efcec0) impl surfaced the gap: the Rust dispatcher cannot pass a `member` it doesn't have. The unified contract: Rust passes `--task-id` + `--lane`; Bun derives `member` via `team.members.find(m => m.lane === lane)` (first-match wins). `--member` remains accepted as an OPTIONAL parser flag (override path for tests + manual debug invocation) but is never required.
+
+Required-together set: `{--task-id, --lane}`. Mixed (one present, one absent) → `UsageError`. Both absent → falls through to legacy `runLaneTick`.
+
+### Member-derivation: first-match-wins, not load-balanced
+
+`team.members.find(m => m.lane === opts.lane)` is deterministic for 1-member-per-lane teams (the modern epic-team default — see `.atmux/team.json` shape). For teams with multiple workers in the same lane, the first-listed member wins. Deliberate simplification: the lean dispatch is a latency-sensitive nudge (NOTIFY → ~ms-to-pane), not a load-balanced router. The cron-driven `lane-tick` cross-member enumeration remains the always-on backstop and handles cross-member fairness through its own selection logic.
+
+When a configured lane has no matching member (`team.members[]` mismatch / roster drift), `resolveLeanDispatchOpts` returns `null` → caller falls through to `runLaneTick`. Operator visibility via a stderr line naming the lane.
+
+### Safety nets carved-out from the lean path
+
+`runLaneTickForOne` deliberately does NOT apply the safety nets that `runLaneTick` runs on every tick:
+
+- queued-text resubmit (cron tick keeps firing — ADR-080 + ADR-157)
+- lead-ctx-rotate override
+- goal-active skip
+- auto-done scan
+
+The lean path is the latency-sensitive event-driven nudge; the always-on poll-tick keeps these guards intact. Net safety is unchanged; what shifts is WHEN the nudge fires (event-driven sub-second vs. cron up-to-5-min).
+
+### Where the code lives
+
+- **`rust/atmux-relayd/src/main.rs`** —
+  - `load_event_payload(db, event_id)` — `SELECT payload FROM events WHERE event_id = ?1`, returns `Option<String>`.
+  - `parse_task_unclaimed_payload(json)` — serde_json parse; returns `Option<(taskId, lane)>`.
+  - `dispatch_to_bun(..., extra_args: &[(&str, &str)])` — appends `--task-id X --lane L` when caller supplies them; empty slice = legacy no-hints dispatch.
+  - Lane-router branch in `drain_and_dispatch` calls `load_event_payload` → `parse_task_unclaimed_payload` → builds extra-args; falls back to empty slice on `None`.
+- **`src/verbs/relayd.ts`** —
+  - `ParsedRelaydArgs` gains optional `taskId` / `member` / `lane` fields.
+  - `parseRelaydArgs` accepts `--task-id` / `--member` / `--lane`; required-together gate on `task-id ↔ lane`; `--member` optional.
+  - `relaydHandleOne` for `topic === 'task.unclaimed'` calls `resolveLeanDispatchOpts(parsed, team)`; lean path on non-null, legacy `runLaneTick` on null.
+  - `resolveLeanDispatchOpts(parsed, team)` — the three null-cases (absent args / lane-mismatch / explicit-member override pass-through) collapsed in one helper.
+- **`src/verbs/lane-tick.ts`** —
+  - New exported `runLaneTickForOne(atmuxDir, team, opts, deps?)` with `LaneTickForOneOpts` / `LaneTickForOneDeps` / `LaneTickForOneResult` types + 4-variant `LaneTickForOneOutcome` (`injected` / `send-failed` / `skip-member-not-found` / `skip-task-not-found`).
+  - Existing `runLaneTick` untouched — back-compat preserved for cron-drain + degraded-mode Bun `--start` fallback path.
+
+### Backward compat
+
+- Pre-IX-A `task.unclaimed` events lacking the `payload` column / with NULL payload / with payload that doesn't match the Zod shape: Rust `load_event_payload` returns `Ok(None)` or `parse_task_unclaimed_payload` returns `None` → dispatched with no extra args → Bun `resolveLeanDispatchOpts` returns null → falls through to `runLaneTick` (current behavior, no regression).
+- Degraded-mode Bun `atmux relayd --start` (when the Rust binary isn't on PATH — pre-§VII installs) emits no `--task-id` / `--lane` → same null fall-through. Existing operators see no change until they redeploy `npm run build:install`.
+- Legacy `committer --daemon` path (per §V backward compat carve-out): untouched, no IX-A code on that path.
+
+### Resource cost
+
+Lean dispatch saves the cross-member enumeration cost on each `task.unclaimed`: skip walking `team.members[]`, skip per-lane `pickTaskForLane`, skip composing the multi-line update prompt. Net ~5-20ms per event on a 5-member team (the bulk is filesystem reads + kanban queries that the enumeration triggers; the actual `safeSendKeysWithVerify` call dominates the remaining cost). At ~100 events/day per team, the absolute savings are negligible — the architectural win is correctness: dispatch routing now matches the event's intent (one task → one nudge), not a side-effect of the polled enumeration shape.
+
+### Tests
+
+- `tests/unit/verbs/relayd.test.ts` — parser matrix extended: both-present / both-absent / mixed-only-task-id / mixed-only-lane / optional `--member` override.
+- `tests/unit/verbs/lane-tick.test.ts` — `describe('runLaneTickForOne')` with happy path / member-derivable-from-lane / member-not-derivable / task-not-in-kanban cases.
+- `tests/unit/verbs/relayd-handle-one-lane-router.test.ts` (T4 paired) — `resolveLeanDispatchOpts` 3-null-case matrix.
+- Rust crate tests under `rust/atmux-relayd/tests/` (T3 paired) — `parse_task_unclaimed_payload` valid / missing-field / invalid-JSON; `load_event_payload` NULL / missing-row / present.
+
+8593+ existing unit tests stay green. Lean dispatch is opt-in via flags — absent flags = legacy `runLaneTick` fallback = zero regression for non-IX-A code paths.
+
+### Out of scope (IX-A)
+
+- Cross-team / fleet event mirroring (IX-B + §X + §XI reserved for sibling Epic e-6a066299).
+- Cockpit-mirror Rust crate (filed as ADR-219 under Epic e-95087c8b Story 2).
+- `task.done` / other-topic lean dispatch (this amendment is `task.unclaimed`-scoped; gitter merge handler stays full-payload-load per §VII).
+
+### File ownership (Epic e-95087c8b)
+
+Per Epic body file-ownership rules: Epic A owns `src/verbs/relayd.ts`, `src/core/relayd-window.ts`, `rust/atmux-relayd/`, and `rust/atmux-cockpit-mirror/` (Story 2). Epic A does NOT touch `src/abstractions/events.ts`, `src/abstractions/sqlite-migrations.ts`, `src/core/id-sequence.ts` (sibling Epic e-6a066299's territory). ADR-202 amendments: §IX-A here; §IX-B / §X / §XI reserved for sibling Epic.
+
+**Filed via** 2026-05-22 driver /btw audit fold-in (Epic e-95087c8b Story 1) — *"relayd direct send-keys: cuts latency + Bun spawn cost"*; T3 contract refinement *"drop --member from required set"* unified the wire-format.
+
