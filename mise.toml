@@ -1,0 +1,40 @@
+# Per-project mise toolchain pins.
+#
+# `mise install` in this directory fetches every declared tool at the
+# pinned version (or `stable` for rolling toolchains). Contributors on
+# fresh machines (clone → mise install → bun install → ready) don't
+# need to know that atmux requires Bun AND Rust to build — mise
+# resolves both.
+#
+# CI: same install command works in GitHub Actions. The honker-events
+# branch added rust as a build-time requirement (for rust/atmux-listener);
+# this file makes that explicit at the project boundary.
+
+[tools]
+# Bun — primary runtime + bundler for the TS/JS half of atmux.
+# Pinned to `latest` matching the user-global default; pin to a specific
+# version (e.g. "1.3.11") if reproducibility across contributors becomes
+# a friction point.
+bun = "latest"
+
+# Rust — required for `rust/atmux-listener` (kernel-blocked NOTIFY/LISTEN
+# subprocess per ADR-202 §Amendment 2026-05-22 II). `stable` channel
+# tracks rustup's latest stable release. `cargo build --release` in
+# `rust/atmux-listener/` produces the binary that `npm run build:install`
+# stages alongside the main atmux shim.
+rust = "stable"
+
+# Tmux — atmux's foundational multiplexer (per ADR-018 cage socket
+# isolation). atmux requires >=3.4 (per package.json engines.tmux).
+# Pinned at project level so the engines check doesn't drift from the
+# actual installed version when contributors run on fresh hosts.
+tmux = "latest"
+
+# Notes for the future:
+# - When honker-extension publishes platform-native wheels for darwin-
+#   aarch64, add a tools entry to pull the prebuilt .so/.dylib rather
+#   than requiring contributors to fetch from PyPI manually. Until then,
+#   the install wizard (ADR-200) handles per-host extension provisioning.
+# - If the Cargo profile changes (e.g. cross-compile for darwin-aarch64
+#   from linux-x64 host), add `cargo-zigbuild` or similar as a mise tool
+#   here so the cross-toolchain setup is reproducible.

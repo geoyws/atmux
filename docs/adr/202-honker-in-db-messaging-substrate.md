@@ -570,3 +570,58 @@ separate commit so this consumer-conversion lands cleanly.
 
 **Filed via** 2026-05-22 driver session — *"keep going"* + /goal directive
 ("convert all event-driven consumers ... migrate all running teams").
+
+
+## §Amendment 2026-05-22 (V) — `atmux relayd` promoted to top-level verb
+
+The naming-pressure flag from §IV is paid down. `relayd` is now the canonical CLI surface for event-routing operations, separate from `committer` (which stays as the merge-related verb).
+
+### Verb-tree shape
+
+```
+committer (merge-related operations)
+  --sweep   ADR-134 branch-walking auto-merger (unchanged)
+
+relayd    (event-routing operations — NEW)
+  --start   long-lived NOTIFY/LISTEN multi-topic consumer (was committer --daemon)
+  --drain   one-shot cron-backstop drain across all topics (was committer --drain)
+  --once    test ergonomics
+  --max-events N  test ergonomics
+```
+
+The body lives in `verbs/relayd.ts` as a thin dispatcher that re-uses the shared multi-topic dispatcher in `verbs/committer.ts`. Future amendment moves the body into `relayd.ts` once legacy `committer --daemon` is removed (next release cycle).
+
+### Wiring updates
+
+- **CLI dispatch** (`src/cli.ts`): new `case "relayd"` route.
+- **relayd-window** (`src/core/relayd-window.ts`): supervisor command now invokes `atmux relayd --start` (was `atmux committer --daemon`).
+- **Cron template** (`src/core/cron.ts`): cron line emits `relayd --drain` (was `committer --drain`). Log file renamed `committer-drain.log` → `relayd-drain.log`.
+- **Golden cron block** + **cron-test verb list**: synchronized with the rename.
+
+### Backward compat
+
+Legacy `committer --daemon` and `committer --drain` flags STILL parse (no deprecation gate yet) so operator scripts + in-flight cron blocks from pre-V installations continue to work. Next release cycle adds an explicit deprecation-warn at the committer verb's dispatch on those flags, then removes them.
+
+### Test surface
+
+`tests/unit/verbs/relayd.test.ts` — 15 parser tests covering --start / --drain / --team-dir / --once / --max-events / error paths. 178 tests green across relayd + relayd-window + cron + committer.
+
+**Filed via** 2026-05-22 driver session — operator's "make sure our arch is robust" review + ADR-202 §IV's documented naming-pressure flag.
+
+
+## §Amendment 2026-05-22 (VI) — `mise.toml` project-level toolchain pins
+
+Adds a project-root `mise.toml` declaring atmux's full build toolchain. Contributors on fresh machines run `mise install` in the project root and get Bun + Rust + tmux at the right versions without separate setup.
+
+```toml
+[tools]
+bun = "latest"
+rust = "stable"   # required for rust/atmux-listener
+tmux = "latest"   # atmux requires >=3.4 per package.json engines
+```
+
+Rationale: before this commit, the atmux-listener Rust dependency was implicit — `npm run build:install` would fail on a fresh machine without `cargo` on PATH with no explanatory error. The mise.toml makes the requirement explicit at the project boundary.
+
+CI: same `mise install` works in GitHub Actions. Honker-events branch was the first PR to introduce a Rust build dependency; this file makes that requirement legible to anyone reading the project structure.
+
+**Filed via** 2026-05-22 driver session — operator's *"like install rust stuff into mise"*.

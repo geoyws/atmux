@@ -334,7 +334,7 @@ describe("maybeSpawnRelaydWindow — success path", () => {
     expect(cmd).toContain("mkdir -p .atmux/logs");
   });
 
-  test("supervisor command invokes 'atmux committer --daemon'", async () => {
+  test("supervisor command invokes 'atmux relayd --start' (ADR-202 §V)", async () => {
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
     await maybeSpawnRelaydWindow({
@@ -346,7 +346,7 @@ describe("maybeSpawnRelaydWindow — success path", () => {
       env: {},
     });
     const cmd = sendKeysCalls[0]?.keys ?? "";
-    expect(cmd).toContain("atmux committer --daemon");
+    expect(cmd).toContain("atmux relayd --start");
   });
 });
 

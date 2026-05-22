@@ -167,7 +167,7 @@ export async function maybeSpawnRelaydWindow(
       `CRASH_WINDOW_START=$(date +%s); ` +
       `while true; do ` +
       `echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] relayd: starting (crash_count=$CRASH_COUNT)"; ` +
-      `atmux committer --daemon 2>&1 | tee -a .atmux/logs/relayd.log; ` +
+      `atmux relayd --start 2>&1 | tee -a .atmux/logs/relayd.log; ` +
       `RC=$?; ` +
       `if [[ $RC -eq 0 ]]; then ` +
       `echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] relayd: clean exit, not restarting"; ` +

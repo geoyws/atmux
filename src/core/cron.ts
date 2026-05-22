@@ -418,7 +418,7 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
     // --daemon` in a tmux pane (uses the atmux-listener Rust
     // subprocess for ~60ms wake). Daemon supervision via `atmux start`
     // is a future amendment.
-    out.push(`* * * * * ${baseEnv} committer --drain ${logTail("committer-drain")}`);
+    out.push(`* * * * * ${baseEnv} relayd --drain ${logTail("relayd-drain")}`);
   }
 
   // 12. ADR-091 §State machine — epic-merge-tick: fires `atmux epic-
