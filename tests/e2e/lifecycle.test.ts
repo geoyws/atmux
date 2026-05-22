@@ -33,16 +33,21 @@
 //   9.  report produces a shipped section with a completed task
 //   10. broadcast message lands in every non-driver member pane
 //
-// Window names use the post-ADR-017 form (`<emoji><member>`, no
-// `__<team>__` prefix). The bash bats source still references the legacy
-// prefix; we assert against the current TS form (`🧭lead`, `🔍reviewer`,
-// `🌿gitter`, `🐝w1`).
+// Window names use the post-ADR-135 + ADR-161 canonical form (the
+// `__<team>__` prefix from pre-ADR-017 is also gone): default-member
+// roles (team-lead, planner, reviewer, ombudsman) render
+// `<emoji>_<name>` while user-added members (role=member) +
+// committer-class keep `<emoji>-<name>`. The bash bats source still
+// references the legacy `<emoji><name>` (no separator) form; we
+// derive assertions from src/core/common.ts::buildWindowName so future
+// format changes propagate here automatically.
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import { buildWindowName } from "../../src/core/common.ts";
 import { done as doneVerb } from "../../src/verbs/claim.ts";
 import { dispatch as dispatchVerb } from "../../src/verbs/dispatch.ts";
 import { poke as whipVerb } from "../../src/verbs/poke.ts";
@@ -154,13 +159,17 @@ beforeAll(async () => {
   // override — the per-team uniqueness keeps it from colliding.
   leadMarkerDir = join(homedir(), ".claude", "teams", teamName);
   // Pre-seed lead-window-name.txt so whip's per-member check resolves
-  // the lead window to the post-ADR-017 form (`🧭lead`) rather than
-  // falling back to the legacy `__<team>__team-lead` bash convention
+  // the lead window to the post-ADR-135 + ADR-161 canonical form
+  // (default-member team-lead → `🧭_lead`, underscore-separated) rather
+  // than falling back to the legacy `__<team>__team-lead` bash convention
   // (whip.ts:441). The writer side is `team rotate-lead` / `team start`
   // (V-26, deferred per ADR-021) — until that ships, whip reads stale
   // unless someone seeds the marker. Beat 6 needs this for "all clean".
   await mkdir(leadMarkerDir, { recursive: true });
-  await writeFile(join(leadMarkerDir, "lead-window-name.txt"), "🧭lead\n");
+  await writeFile(
+    join(leadMarkerDir, "lead-window-name.txt"),
+    `${buildWindowName("lead", "🧭", undefined, "team-lead")}\n`,
+  );
 
   // Pre-build a tmux handle on the same socket for assertions +
   // post-walk cleanup.
@@ -218,8 +227,22 @@ async function captureStdout<T>(fn: () => Promise<T>): Promise<{ result: T; stdo
   }
 }
 
-/** Build a tmux pane target string for the given member + emoji. */
-const win = (member: string, emoji: string) => `${sessionName}:${emoji}${member}`;
+/** Role lookup for buildWindowName (per ADR-161 §Decision-anchor #2 —
+ *  default-member roles render `<emoji>_<name>` while user-added members
+ *  (role=member) and committer-class keep ADR-135 `<emoji>-<name>`).
+ *  Must match the roster in beforeAll() teamJson.members. */
+const MEMBER_ROLES: Record<string, string> = {
+  lead: "team-lead",
+  reviewer: "reviewer",
+  gitter: "gitter",
+  w1: "member",
+};
+
+/** Build a tmux pane target string for the given member + emoji, honoring
+ *  the role-aware ADR-135 + ADR-161 canonical window-name format via
+ *  src/core/common.ts::buildWindowName. */
+const win = (member: string, emoji: string) =>
+  `${sessionName}:${buildWindowName(member, emoji, undefined, MEMBER_ROLES[member])}`;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -242,8 +265,17 @@ describe("e2e lifecycle (1x cold-start+walk)", () => {
     expect(rc).toBe(0);
     expect(await tmux.session.hasSession(sessionName)).toBe(true);
     const wins = await tmux.window.listWindows(sessionName);
-    // Post-ADR-017: bare emoji-prefixed names, no `__<team>__` wrapper.
-    const memberNames = new Set(["🧭lead", "🔍reviewer", "🌿gitter", "🐝w1"]);
+    // Post-ADR-135 + ADR-161 canonical window-name format: default-member
+    // roles (team-lead, reviewer, …) render `<emoji>_<name>`; user-added
+    // members (role=member) + committer-class keep `<emoji>-<name>`. The
+    // `__<team>__` wrapper from pre-ADR-017 is also gone. Source: src/
+    // core/common.ts::buildWindowName.
+    const memberNames = new Set([
+      buildWindowName("lead", "🧭", undefined, "team-lead"),
+      buildWindowName("reviewer", "🔍", undefined, "reviewer"),
+      buildWindowName("gitter", "🌿", undefined, "gitter"),
+      buildWindowName("w1", "🐝", undefined, "member"),
+    ]);
     const memberWins = wins.filter((w) => memberNames.has(w.name));
     expect(memberWins.length).toBe(4);
   });
