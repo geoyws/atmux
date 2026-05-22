@@ -49,6 +49,7 @@ use std::time::Duration;
 
 use honker::Database;
 use rusqlite::params;
+use serde_json::Value as JsonValue;
 
 /// Linux-only: kernel sends SIGTERM when our parent dies. Closes the
 /// orphan-after-SIGKILL teardown hole. See atmux-listener for the same
@@ -120,6 +121,40 @@ fn save_offset(db: &Database, consumer: &str, event_id: &str) -> Result<(), Stri
     r.map(|_| ()).map_err(|e| format!("save_offset error: {}", e))
 }
 
+/// Load the `payload` column for an event_id. Returns `Ok(None)` when
+/// the row exists but payload is NULL, `Ok(Some(_))` when present, and
+/// `Err(_)` only on rusqlite faults. Missing-row collapses to `Ok(None)`
+/// so the caller's fallback path handles both transparently — at most-
+/// once-payload semantics: emitter races (payload null'd, event pruned)
+/// fall back to no-extra-args dispatch identically.
+fn load_event_payload(db: &Database, event_id: &str) -> Result<Option<String>, String> {
+    let r: rusqlite::Result<Option<String>> = db.with_conn(|c| {
+        match c.query_row(
+            "SELECT payload FROM events WHERE event_id = ?1",
+            params![event_id],
+            |r| r.get::<_, Option<String>>(0),
+        ) {
+            Ok(s) => Ok(s),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    });
+    r.map_err(|e| format!("load_event_payload({}) error: {}", event_id, e))
+}
+
+/// Parse `TaskUnclaimedPayload` (Zod schema at `src/schema/events.ts`)
+/// for the `taskId` + `lane` fields. Returns `None` when either field
+/// is missing or the JSON doesn't parse — caller falls back to no-
+/// extra-args dispatch (existing cross-member runLaneTick behavior).
+/// `member` is INTENTIONALLY absent — task is unclaimed at this point,
+/// the Bun side derives member from `lane` via `team.members[]`.
+fn parse_task_unclaimed_payload(json: &str) -> Option<(String, String)> {
+    let v: JsonValue = serde_json::from_str(json).ok()?;
+    let task_id = v.get("taskId")?.as_str()?.to_string();
+    let lane = v.get("lane")?.as_str()?.to_string();
+    Some((task_id, lane))
+}
+
 fn drain_topic(
     db: &Database,
     topic: &str,
@@ -139,9 +174,18 @@ fn drain_topic(
     r.map_err(|e| format!("drain_topic({}) error: {}", topic, e))
 }
 
-/// Spawn `atmux relayd --handle-one --event-id <id> --topic <t> --team-dir <p>`.
-/// Returns the child's exit code (None when killed by signal).
-fn dispatch_to_bun(atmux_bin: &str, team_dir: &str, event_id: &str, topic: &str) -> Option<i32> {
+/// Spawn `atmux relayd --handle-one --event-id <id> --topic <t> --team-dir <p>
+/// [<extra_args>...]`. Returns the child's exit code (None when killed
+/// by signal). `extra_args` carry the optional `--task-id <id> --lane <l>`
+/// payload hints for the lean per-event dispatch path (ADR-202
+/// §Amendment 2026-05-22 IX-A); empty slice = legacy no-hints dispatch.
+fn dispatch_to_bun(
+    atmux_bin: &str,
+    team_dir: &str,
+    event_id: &str,
+    topic: &str,
+    extra_args: &[(&str, &str)],
+) -> Option<i32> {
     let mut cmd = Command::new(atmux_bin);
     cmd.arg("relayd")
         .arg("--handle-one")
@@ -151,6 +195,9 @@ fn dispatch_to_bun(atmux_bin: &str, team_dir: &str, event_id: &str, topic: &str)
         .arg(topic)
         .arg("--team-dir")
         .arg(team_dir);
+    for (flag, value) in extra_args {
+        cmd.arg(flag).arg(value);
+    }
     let output = match cmd.status() {
         Ok(s) => s,
         Err(e) => {
@@ -175,7 +222,55 @@ fn drain_and_dispatch(
         let current_offset = &offsets[idx];
         let new_event_ids = drain_topic(db, cfg.topic, current_offset, 1000)?;
         for event_id in new_event_ids {
-            let code = dispatch_to_bun(atmux_bin, team_dir, &event_id, cfg.bun_topic);
+            // ADR-202 §Amendment 2026-05-22 IX-A: for the lane-router
+            // consumer, read the event payload + pass --task-id/--lane
+            // to Bun so the per-event lean dispatcher can target ONE
+            // member instead of enumerating the team. Member resolution
+            // happens Bun-side because TaskUnclaimedPayload has no
+            // `member` field (task is unclaimed at emit time). On any
+            // payload-load / parse failure we fall back to the legacy
+            // no-extra-args dispatch — the Bun side then runs the full
+            // runLaneTick scan, which is the correct degraded behavior.
+            let mut payload_args: Vec<(String, String)> = Vec::new();
+            if cfg.name == "atmux:lane-router" {
+                match load_event_payload(db, &event_id) {
+                    Ok(Some(json)) => match parse_task_unclaimed_payload(&json) {
+                        Some((task_id, lane)) => {
+                            payload_args.push(("--task-id".to_string(), task_id));
+                            payload_args.push(("--lane".to_string(), lane));
+                        }
+                        None => {
+                            eprintln!(
+                                "atmux-relayd: payload parse failed for eventId={} (consumer={}) — falling back to no-extra-args dispatch",
+                                event_id, cfg.name
+                            );
+                        }
+                    },
+                    Ok(None) => {
+                        eprintln!(
+                            "atmux-relayd: no payload row for eventId={} (consumer={}) — falling back to no-extra-args dispatch",
+                            event_id, cfg.name
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "atmux-relayd: {} — falling back to no-extra-args dispatch",
+                            e
+                        );
+                    }
+                }
+            }
+            let extra_refs: Vec<(&str, &str)> = payload_args
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            let code = dispatch_to_bun(
+                atmux_bin,
+                team_dir,
+                &event_id,
+                cfg.bun_topic,
+                &extra_refs,
+            );
             match code {
                 Some(0) => {
                     save_offset(db, cfg.name, &event_id)?;

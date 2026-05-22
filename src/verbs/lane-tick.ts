@@ -36,7 +36,7 @@ import {
   type WindowShimOps,
 } from "../core/common.ts";
 import { resolveGoalForMember } from "../core/goal-resolver.ts";
-import { listTasks, moveTask } from "../core/kanban.ts";
+import { listTasks, moveTask, showTask } from "../core/kanban.ts";
 import { type CaptureFn, classifyText, type PaneClassification } from "../core/pane-state.ts";
 import { pasteAndSubmit } from "../core/paste-submit.ts";
 import { detectAndResubmit } from "../core/queued-text-resubmit.ts";
@@ -217,39 +217,7 @@ export async function runLaneTick(
           renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
         }
       : deps.shimOps;
-  const sendKeysFn: SendKeysFn =
-    deps.sendKeysFn ??
-    (async (target: string, keys: string, opts) => {
-      // ADR-138 T3b3 (t-06547e2d): when the keystroke is a TEXT BODY
-      // (the claim-injection / rotate-nudge case below — bracketed-
-      // paste-Enter-swallow bug zone), route through
-      // `pasteAndSubmit` so the bundled load-buffer + paste-buffer
-      // -d + 500ms settle + C-m cascade lands the message reliably.
-      // Raw `tmux.pane.sendKeys` is preserved for control-key /
-      // modal-dismiss cases (enter:false explicit, single-character
-      // payload) — those don't pass through the bracketed-paste
-      // envelope and are fine on the raw path.
-      const sendTarget = {
-        kind: "member" as const,
-        member: parseMemberFromTarget(target),
-        team: team.name,
-        target,
-      };
-      const wantsEnter = opts?.enter ?? true;
-      const isControlKeyOnly = !wantsEnter || /^[CM]-./.test(keys);
-      if (isControlKeyOnly) {
-        // Control-key / no-submit path — raw sendKeys is correct here.
-        await tmux.pane.sendKeys({ target: sendTarget, keys, enter: wantsEnter });
-        return;
-      }
-      // Text-body path — paste-submit cascade. P0 leak (t-06547e2d):
-      // `tmux send-keys <text> Enter` on a Claude pane in the "just
-      // finished + ← for agents" transition state silently drops the
-      // Enter, leaving the command queued in the composer. pasteAndSubmit
-      // uses `C-m` (literal CR) after the bracketed-paste envelope —
-      // empirically reliable across the leak's full failure-mode set.
-      await pasteAndSubmit(tmux, sendTarget, keys);
-    });
+  const sendKeysFn: SendKeysFn = deps.sendKeysFn ?? buildDefaultSendKeysFn(tmux, team.name);
 
   const session = await getSessionName({ dir: atmuxDir, team });
 
@@ -408,7 +376,7 @@ export async function runLaneTick(
     // is the exact "67% ctx + queued claim defeats rotation" scenario
     // the operator flagged on 2026-05-09 07:25 MYT (sopx-driver bundle).
     // Re-using §A1's `parseLeadCtxPct` keeps the parser surface unified.
-    let claimText = `atmux claim --next --as ${member.name}`;
+    let claimText = buildClaimText(member.name);
     let isRotateNudge = false;
     if (leadName !== undefined && member.name === leadName) {
       const ctxPct = parseLeadCtxPct(paneText);
@@ -517,6 +485,204 @@ export async function runLaneTick(
   }
 
   return { visited: lanedMembers.length, outcomes, autoDoneResolved };
+}
+
+// ---------- Per-event lean dispatcher (relayd direct send-keys, IX-A) ----------
+
+/** Options for {@link runLaneTickForOne}. Sourced from the relayd
+ *  `task.unclaimed` event payload (per ADR-202 §Amendment 2026-05-22
+ *  IX-A T3 unified contract): the Rust dispatcher hands the Bun side
+ *  `--task-id` + `--lane` from the payload. `TaskUnclaimedPayload` has
+ *  no `member` field (task is unclaimed), so the dispatcher derives
+ *  member from `team.members[]` via `lane` lookup. `--member` is an
+ *  OPTIONAL explicit override on the wire that maps to {@link member}
+ *  here; standalone override (without taskId+lane) is rejected at the
+ *  parser layer. */
+export interface LaneTickForOneOpts {
+  /** Target task id (from the relayd task.unclaimed event). Used to
+   *  resolve the task on the kanban + as an audit-log identifier on
+   *  the dispatch line; the worker still re-pulls via `claim --next`
+   *  at its own scope (the same prompt runLaneTick uses). */
+  taskId: string;
+  /** Lane of the target task. Drives lane-to-member derivation when
+   *  {@link member} is omitted: first `team.members[]` entry whose
+   *  `.lane === opts.lane` wins. For 1-member-per-lane teams (modern
+   *  epic-team default) the pick is deterministic. */
+  lane: string;
+  /** Optional override of lane-to-member derivation. When provided,
+   *  bypasses lane-lookup and dispatches directly to this member;
+   *  MUST exist in `team.members[]` (absent → outcome="skip-member-
+   *  not-found"). When omitted (the Rust dispatcher's default), the
+   *  derivation runs against `team.members[].lane`. */
+  member?: string;
+}
+
+export type LaneTickForOneOutcome =
+  | "injected"
+  | "send-failed"
+  /** Lane-derivation failed: no `team.members[]` entry with matching
+   *  `.lane`. Distinct from skip-member-not-found (which fires when
+   *  an explicit --member override doesn't resolve) so operators can
+   *  disambiguate misconfigured roster vs misrouted CLI invocation. */
+  | "skip-no-member-for-lane"
+  | "skip-member-not-found"
+  | "skip-task-not-found";
+
+export interface LaneTickForOneResult {
+  outcome: LaneTickForOneOutcome;
+  /** Resolved member name (post-derivation when --member omitted),
+   *  OR `null` when derivation failed (skip-no-member-for-lane). */
+  member: string | null;
+  taskId: string;
+  /** From safeSendKeysWithVerify — number of send attempts (1 on first
+   *  verify-pass, up to retries+1 otherwise). 0 when skipped pre-send. */
+  attempts: number;
+}
+
+/** Injectable deps for {@link runLaneTickForOne} — strict subset of
+ *  {@link LaneTickDeps} (no goal-resolver, no git-spawn for auto-done,
+ *  no sendFn — the lean dispatcher uses `safeSendKeysWithVerify`
+ *  directly). */
+export interface LaneTickForOneDeps {
+  tmux?: TmuxNamespace;
+  capture?: CaptureFn;
+  sendKeysFn?: SendKeysFn;
+  log?: (msg: string) => void;
+  shimOps?: WindowShimOps | null;
+}
+
+/**
+ * Lean per-event dispatcher: dispatch ONE task to ONE member via
+ * `safeSendKeysWithVerify`, skipping the cross-member enumeration loop
+ * that {@link runLaneTick} does today.
+ *
+ * Called by the Rust atmux-relayd lane-router on each `task.unclaimed`
+ * event (per ADR-202 §Amendment 2026-05-22 IX-A relayd direct send-keys).
+ * The relayd has already routed the event to (task, member, lane); this
+ * function trusts that routing and dispatches the same `atmux claim
+ * --next --as <member>` prompt {@link runLaneTick} uses, verified-once
+ * via `safeSendKeysWithVerify`.
+ *
+ * Safety nets NOT applied here (the cron-driven {@link runLaneTick}
+ * tick remains the backstop): queued-text resubmit, lead-ctx-rotate
+ * override, goal-active skip, auto-done scan. Per-event path is
+ * intentionally minimal — the polled tick keeps firing per ADR-080 +
+ * ADR-157, so the net of safety remains complete.
+ */
+export async function runLaneTickForOne(
+  atmuxDir: string,
+  team: Team,
+  opts: LaneTickForOneOpts,
+  deps: LaneTickForOneDeps = {},
+): Promise<LaneTickForOneResult> {
+  const log = deps.log ?? defaultLog;
+
+  // Resolve member: explicit override > lane-derivation. For the
+  // override path the wire-protocol is "the caller knew the exact
+  // member"; for the derivation path the wire-protocol is "the Rust
+  // dispatcher passed --lane only, please pick the first matching
+  // member". 1-member-per-lane is the modern epic-team default;
+  // multi-member-per-lane falls back to first-listed-wins (deliberate
+  // simplification — the polled lane-tick remains the load-balanced
+  // path).
+  let member: TeamMember | undefined;
+  if (opts.member !== undefined) {
+    member = team.members.find((m) => m.name === opts.member);
+    if (member === undefined) {
+      log(
+        `lane-tick-one: ${opts.member}: member not in team.members[] — skip ` +
+          `(task=${opts.taskId}, lane=${opts.lane})`,
+      );
+      return {
+        outcome: "skip-member-not-found",
+        member: opts.member,
+        taskId: opts.taskId,
+        attempts: 0,
+      };
+    }
+  } else {
+    member = team.members.find((m) => m.lane === opts.lane);
+    if (member === undefined) {
+      log(
+        `lane-tick-one: lane=${opts.lane} has no member in team.members[] — skip ` +
+          `(task=${opts.taskId})`,
+      );
+      return {
+        outcome: "skip-no-member-for-lane",
+        member: null,
+        taskId: opts.taskId,
+        attempts: 0,
+      };
+    }
+  }
+
+  // Resolve task by id so a vanished task (claimed by sibling between
+  // event emit + dispatch tick, or wiped by operator) surfaces as a
+  // no-op rather than a spurious claim-injection. The worker's own
+  // `claim --next` is still authoritative for what they pick up — this
+  // is the upstream sanity gate.
+  const task = await showTask(atmuxDir, opts.taskId);
+  if (task === null) {
+    log(
+      `lane-tick-one: ${member.name}: task ${opts.taskId} not in kanban — skip ` +
+        `(lane=${opts.lane})`,
+    );
+    return {
+      outcome: "skip-task-not-found",
+      member: member.name,
+      taskId: opts.taskId,
+      attempts: 0,
+    };
+  }
+
+  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const capture: CaptureFn =
+    deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
+  const shimOps: WindowShimOps | null =
+    deps.shimOps === undefined
+      ? {
+          listWindowNames: async (s) => (await tmux.window.listWindows(s)).map((w) => w.name),
+          renameWindow: (s, from, to) => tmux.window.renameWindow(`${s}:${from}`, to),
+        }
+      : deps.shimOps;
+  const sendKeysFn: SendKeysFn = deps.sendKeysFn ?? buildDefaultSendKeysFn(tmux, team.name);
+
+  const session = await getSessionName({ dir: atmuxDir, team });
+  const windowTarget = await resolveMemberWindowTarget(session, member, shimOps);
+
+  const claimText = buildClaimText(member.name);
+
+  const result = await safeSendKeysWithVerify({
+    target: windowTarget,
+    keys: claimText,
+    expectVerifier: composerEmpty(),
+    capture,
+    sendKeys: sendKeysFn,
+    log,
+  });
+
+  if (result.success) {
+    log(
+      `lane-tick-one: ${member.name}: injected claim --next ` +
+        `(task=${opts.taskId}, lane=${opts.lane}, attempts=${result.attempts})`,
+    );
+    return {
+      outcome: "injected",
+      member: member.name,
+      taskId: opts.taskId,
+      attempts: result.attempts,
+    };
+  }
+  log(
+    `lane-tick-one: ${member.name}: send-failed — see send-keys-failures.log ` +
+      `(task=${opts.taskId}, lane=${opts.lane}, attempts=${result.attempts})`,
+  );
+  return {
+    outcome: "send-failed",
+    member: member.name,
+    taskId: opts.taskId,
+    attempts: result.attempts,
+  };
 }
 
 // ---------- ADR-080 §B2: auto-done scan ----------
@@ -646,6 +812,52 @@ export function parseLaneTickArgs(argv: ReadonlyArray<string>): ParsedArgs {
 }
 
 // ---------- Internals ----------
+
+/** Compose the claim-injection prompt sent on the happy path. Shared
+ *  between {@link runLaneTick} and {@link runLaneTickForOne} so a future
+ *  prompt-shape change (e.g. carrying the task id explicitly) lands in
+ *  ONE place. The lead-ctx-rotate override in runLaneTick still swaps
+ *  to a literal `/team rotate-lead` string — that's a distinct nudge,
+ *  not a variation of this template. */
+function buildClaimText(memberName: string): string {
+  return `atmux claim --next --as ${memberName}`;
+}
+
+/** Build the default `sendKeysFn` that both {@link runLaneTick} and
+ *  {@link runLaneTickForOne} use when the caller doesn't inject one.
+ *
+ *  ADR-138 T3b3 (t-06547e2d): when the keystroke is a TEXT BODY
+ *  (claim-injection / rotate-nudge zone — the bracketed-paste-Enter-
+ *  swallow bug zone), route through `pasteAndSubmit` so the bundled
+ *  load-buffer + paste-buffer -d + 500ms settle + C-m cascade lands
+ *  the message reliably. Raw `tmux.pane.sendKeys` is preserved for
+ *  control-key / modal-dismiss cases (enter:false explicit, single-
+ *  character payload) — those don't pass through the bracketed-paste
+ *  envelope and are fine on the raw path. */
+function buildDefaultSendKeysFn(tmux: TmuxNamespace, teamName: string): SendKeysFn {
+  return async (target: string, keys: string, opts) => {
+    const sendTarget = {
+      kind: "member" as const,
+      member: parseMemberFromTarget(target),
+      team: teamName,
+      target,
+    };
+    const wantsEnter = opts?.enter ?? true;
+    const isControlKeyOnly = !wantsEnter || /^[CM]-./.test(keys);
+    if (isControlKeyOnly) {
+      // Control-key / no-submit path — raw sendKeys is correct here.
+      await tmux.pane.sendKeys({ target: sendTarget, keys, enter: wantsEnter });
+      return;
+    }
+    // Text-body path — paste-submit cascade. P0 leak (t-06547e2d):
+    // `tmux send-keys <text> Enter` on a Claude pane in the "just
+    // finished + ← for agents" transition state silently drops the
+    // Enter, leaving the command queued in the composer. pasteAndSubmit
+    // uses `C-m` (literal CR) after the bracketed-paste envelope —
+    // empirically reliable across the leak's full failure-mode set.
+    await pasteAndSubmit(tmux, sendTarget, keys);
+  };
+}
 
 /** EPIC e-a3077ca0 T5: build the tmux window target string for a
  *  member, self-healing legacy hyphen / no-separator window names to

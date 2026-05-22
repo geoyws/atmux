@@ -35,10 +35,10 @@ import {
   committerDrainVerb,
 } from "./committer.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { runLaneTick } from "./lane-tick.ts";
+import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
 
 const USAGE =
-  "atmux relayd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T]";
+  "atmux relayd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
 
 export interface ParsedRelaydArgs {
   /** Sub-verbs:
@@ -69,6 +69,22 @@ export interface ParsedRelaydArgs {
   eventId?: string;
   /** `--topic T`: required when subverb is `handle-one`. */
   topic?: string;
+  /** `--task-id ID`: (ADR-202 §Amendment 2026-05-22 IX-A) single-task
+   *  hint for `handle-one --topic task.unclaimed`. The Rust dispatcher
+   *  passes (taskId, lane) from the event payload so the Bun side can
+   *  use the lean per-event dispatcher instead of the cross-member
+   *  runLaneTick loop. Parser enforces: --task-id + --lane required-
+   *  pair (T3 revision dropped --member from the required-set since
+   *  TaskUnclaimedPayload has no member field — the handler derives
+   *  member from lane via team.members[]). */
+  taskId?: string;
+  /** `--member NAME`: OPTIONAL override of the lane-to-member
+   *  derivation in {@link relaydHandleOne}. Standalone --member
+   *  (without --task-id + --lane) is rejected as a wire-format
+   *  mistake. */
+  member?: string;
+  /** `--lane L`: see {@link taskId} — required alongside --task-id. */
+  lane?: string;
 }
 
 export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
@@ -78,6 +94,9 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
   let maxEvents: number | undefined;
   let eventId: string | undefined;
   let topic: string | undefined;
+  let taskId: string | undefined;
+  let member: string | undefined;
+  let lane: string | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -161,6 +180,42 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       i += 2;
       continue;
     }
+    if (a === "--task-id") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "relayd: --task-id requires a value",
+          hint: USAGE,
+        });
+      }
+      taskId = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--member") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "relayd: --member requires a value",
+          hint: USAGE,
+        });
+      }
+      member = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--lane") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "relayd: --lane requires a value",
+          hint: USAGE,
+        });
+      }
+      lane = v;
+      i += 2;
+      continue;
+    }
     if (a?.startsWith("-") === true) {
       throw new UsageError({ what: `relayd: unknown flag: ${a}`, hint: USAGE });
     }
@@ -186,12 +241,41 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       });
     }
   }
+  // ADR-202 §Amendment 2026-05-22 IX-A (T3 revision — see commit msg
+  // for t-c8efcec0): TaskUnclaimedPayload does NOT carry `member`
+  // (task is unclaimed at emit time), so the Rust dispatcher passes
+  // only `--task-id` + `--lane`. The Bun handler derives member from
+  // lane via team.members[]. Wire-protocol contract:
+  //   - --task-id + --lane is the required-pair (either both or neither).
+  //   - --member is OPTIONAL — when provided it overrides lane-derivation;
+  //     when omitted, relaydHandleOne picks the first member with matching
+  //     lane. Standalone --member (without the pair) is a wire-format
+  //     mistake — reject so misconfigured callers fail loudly.
+  if ((taskId === undefined) !== (lane === undefined)) {
+    const missing = taskId === undefined ? "--task-id" : "--lane";
+    throw new UsageError({
+      what:
+        `relayd --handle-one: --task-id and --lane must be provided together ` +
+        `(missing: ${missing})`,
+      hint: USAGE,
+    });
+  }
+  if (member !== undefined && (taskId === undefined || lane === undefined)) {
+    throw new UsageError({
+      what:
+        "relayd --handle-one: --member is only valid alongside --task-id + --lane",
+      hint: USAGE,
+    });
+  }
   const out: ParsedRelaydArgs = { subverb };
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (once) out.once = true;
   if (maxEvents !== undefined) out.maxEvents = maxEvents;
   if (eventId !== undefined) out.eventId = eventId;
   if (topic !== undefined) out.topic = topic;
+  if (taskId !== undefined) out.taskId = taskId;
+  if (member !== undefined) out.member = member;
+  if (lane !== undefined) out.lane = lane;
   return out;
 }
 
@@ -292,14 +376,31 @@ async function relaydHandleOne(
       parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
     const team = await requireTeam(dirOpts);
     const atmuxDir = await getAtmuxDir(dirOpts);
-    // No need to load the specific event payload — runLaneTick visits
-    // ALL members of the team and picks tasks for each lane. The
-    // event was just the wake-up signal.
+    // ADR-202 §Amendment 2026-05-22 IX-A (T3 unified contract): when
+    // the Rust dispatcher passes (taskId, lane) from the event payload,
+    // use the lean per-event dispatcher. Member derivation from lane
+    // lives inside runLaneTickForOne (single source of truth). Absent
+    // --task-id / --lane (back-compat with older relayd events +
+    // degraded-mode Bun --start path) → fall through to runLaneTick
+    // (cross-member enumeration is the correct degraded behavior).
     try {
-      await runLaneTick(atmuxDir, team);
+      if (parsed.taskId !== undefined && parsed.lane !== undefined) {
+        const leanOpts: { taskId: string; lane: string; member?: string } = {
+          taskId: parsed.taskId,
+          lane: parsed.lane,
+        };
+        if (parsed.member !== undefined) leanOpts.member = parsed.member;
+        await runLaneTickForOne(atmuxDir, team, leanOpts);
+      } else {
+        // No need to load the specific event payload — runLaneTick visits
+        // ALL members of the team and picks tasks for each lane. The
+        // event was just the wake-up signal.
+        await runLaneTick(atmuxDir, team);
+      }
       // Manually advance offset so this Bun process doesn't depend on
       // the Rust caller checking exit code precisely. The Rust caller
-      // ALSO saves the offset on rc=0, which is idempotent.
+      // ALSO saves the offset on rc=0, which is idempotent. Offset
+      // behavior is identical on both lean + fallback paths.
       const dbPath = join(atmuxDir, "state.db");
       const db = openDatabase(dbPath, migrations);
       try {

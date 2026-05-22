@@ -150,4 +150,154 @@ describe("parseRelaydArgs", () => {
       teamDir: "/srv/demo",
     });
   });
+
+  // ADR-202 §Amendment 2026-05-22 IX-A T3 unified contract:
+  // --task-id + --lane is the required-pair on `--handle-one --topic
+  // task.unclaimed` for the lean per-event dispatch path. --member is
+  // an OPTIONAL explicit override (handler/runLaneTickForOne derives
+  // member from lane when absent). Mixed (one of pair) rejects; absent
+  // both falls through to legacy runLaneTick.
+  test("--handle-one + --task-id + --lane parses (no --member)", () => {
+    expect(
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "01900xyz",
+        "--topic",
+        "task.unclaimed",
+        "--task-id",
+        "t-1",
+        "--lane",
+        "be",
+      ]),
+    ).toEqual({
+      subverb: "handle-one",
+      eventId: "01900xyz",
+      topic: "task.unclaimed",
+      taskId: "t-1",
+      lane: "be",
+    });
+  });
+
+  test("--handle-one + --task-id + --lane + --member (override) all captured", () => {
+    expect(
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "01900xyz",
+        "--topic",
+        "task.unclaimed",
+        "--task-id",
+        "t-1",
+        "--lane",
+        "be",
+        "--member",
+        "be-1",
+      ]),
+    ).toEqual({
+      subverb: "handle-one",
+      eventId: "01900xyz",
+      topic: "task.unclaimed",
+      taskId: "t-1",
+      lane: "be",
+      member: "be-1",
+    });
+  });
+
+  test("--handle-one without --task-id/--lane falls through (no payload-hint fields)", () => {
+    expect(
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "01900xyz",
+        "--topic",
+        "task.unclaimed",
+      ]),
+    ).toEqual({
+      subverb: "handle-one",
+      eventId: "01900xyz",
+      topic: "task.unclaimed",
+    });
+  });
+
+  test("--handle-one + --task-id alone (missing --lane) throws UsageError", () => {
+    expect(() =>
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "01900xyz",
+        "--topic",
+        "task.unclaimed",
+        "--task-id",
+        "t-1",
+      ]),
+    ).toThrow(UsageError);
+  });
+
+  test("--handle-one + --lane alone (missing --task-id) throws UsageError", () => {
+    expect(() =>
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "01900xyz",
+        "--topic",
+        "task.unclaimed",
+        "--lane",
+        "be",
+      ]),
+    ).toThrow(UsageError);
+  });
+
+  test("--handle-one + --member alone (no --task-id/--lane) throws UsageError", () => {
+    expect(() =>
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "01900xyz",
+        "--topic",
+        "task.unclaimed",
+        "--member",
+        "be-1",
+      ]),
+    ).toThrow(UsageError);
+  });
+
+  test("--task-id without value throws", () => {
+    expect(() =>
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "x",
+        "--topic",
+        "task.unclaimed",
+        "--task-id",
+      ]),
+    ).toThrow(UsageError);
+  });
+
+  test("--lane without value throws", () => {
+    expect(() =>
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "x",
+        "--topic",
+        "task.unclaimed",
+        "--lane",
+      ]),
+    ).toThrow(UsageError);
+  });
+
+  test("--member without value throws", () => {
+    expect(() =>
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "x",
+        "--topic",
+        "task.unclaimed",
+        "--member",
+      ]),
+    ).toThrow(UsageError);
+  });
 });
