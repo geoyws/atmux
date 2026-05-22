@@ -54,6 +54,37 @@ describe("parseCommitterArgs", () => {
   test("unexpected positional arg throws UsageError", () => {
     expect(() => parseCommitterArgs(["--sweep", "extra"])).toThrow(UsageError);
   });
+
+  test("--drain parses as drain sub-verb", () => {
+    expect(parseCommitterArgs(["--drain"])).toEqual({ subverb: "drain" });
+  });
+  test("'drain' bare form parses the same", () => {
+    expect(parseCommitterArgs(["drain"])).toEqual({ subverb: "drain" });
+  });
+  test("--daemon parses as daemon sub-verb", () => {
+    expect(parseCommitterArgs(["--daemon"])).toEqual({ subverb: "daemon" });
+  });
+  test("--daemon --once flag honored", () => {
+    expect(parseCommitterArgs(["--daemon", "--once"])).toEqual({
+      subverb: "daemon",
+      once: true,
+    });
+  });
+  test("--daemon --max-events N captured", () => {
+    expect(parseCommitterArgs(["--daemon", "--max-events", "5"])).toEqual({
+      subverb: "daemon",
+      maxEvents: 5,
+    });
+  });
+  test("--max-events 0 throws UsageError (must be positive)", () => {
+    expect(() => parseCommitterArgs(["--daemon", "--max-events", "0"])).toThrow(UsageError);
+  });
+  test("--max-events without value throws", () => {
+    expect(() => parseCommitterArgs(["--daemon", "--max-events"])).toThrow(UsageError);
+  });
+  test("--max-events non-numeric throws", () => {
+    expect(() => parseCommitterArgs(["--daemon", "--max-events", "abc"])).toThrow(UsageError);
+  });
 });
 
 // ---------- recordingQueueMergeAttempt ----------
@@ -321,5 +352,81 @@ describe("committer() top-level dispatch", () => {
 
   test("missing sub-verb → UsageError propagates", async () => {
     await expect(committer([])).rejects.toThrow(UsageError);
+  });
+});
+
+// ---------- committer --drain / --daemon (ADR-202/203 event-driven) ----------
+
+describe("committer --drain / --daemon integration", () => {
+  let scratch: string;
+  let atmuxDir: string;
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "atmux-committer-event-"));
+    atmuxDir = join(scratch, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "demo",
+        members: [{ name: "be-1", role: "member", lane: "be" }],
+        autoMerge: { enabled: true },
+        merger: { enabled: true, baseBranch: "main" },
+      }),
+    );
+    // Pre-create state.db so context-build can open + boot Honker.
+    const { closeDatabase, openDatabase } = await import(
+      "../../../src/abstractions/sqlite.ts"
+    );
+    const { migrations } = await import("../../../src/abstractions/sqlite-migrations.ts");
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    closeDatabase(db);
+  });
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  test("--drain with empty events table exits 0 and logs processed=0", async () => {
+    const logs: string[] = [];
+    const logger = {
+      log: (s: string) => logs.push(s),
+      ok: () => {},
+      warn: () => {},
+      err: () => {},
+    };
+    const rc = await committer(["--drain", "--team-dir", scratch], {
+      logger,
+      git: async () => fakeSpawnResult("main\n", 0),
+    });
+    expect(rc).toBe(0);
+    // Honker kill-switch defaults to ON now but ATMUX_HONKER=off in test env,
+    // OR substrate present — either way the drain is honored. Check the log.
+    expect(logs.some((l) => l.includes("committer --drain") || l.includes("ATMUX_HONKER=off"))).toBe(true);
+  });
+
+  test("--daemon --once with empty events exits 0 cleanly", async () => {
+    const logs: string[] = [];
+    const logger = {
+      log: (s: string) => logs.push(s),
+      ok: () => {},
+      warn: () => {},
+      err: () => {},
+    };
+    // Bound the loop with --once + --max-events 1 so the watcher exits.
+    // Test fires SIGTERM after a short delay as belt-and-braces.
+    const timer = setTimeout(() => process.emit("SIGTERM"), 800);
+    try {
+      const rc = await committer(
+        ["--daemon", "--team-dir", scratch, "--once", "--max-events", "1"],
+        {
+          logger,
+          git: async () => fakeSpawnResult("main\n", 0),
+        },
+      );
+      expect(rc).toBe(0);
+      expect(logs.some((l) => l.includes("committer --daemon") && l.includes("starting"))).toBe(true);
+      expect(logs.some((l) => l.includes("committer --daemon") && l.includes("stopped"))).toBe(true);
+    } finally {
+      clearTimeout(timer);
+    }
   });
 });

@@ -45,7 +45,9 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { emit as defaultEmit } from "../abstractions/events.ts";
 import { exists } from "../abstractions/fs.ts";
+import { getHonkerState } from "../abstractions/honker.ts";
 import { updateJson } from "../abstractions/json.ts";
 import {
   closeDatabase,
@@ -284,7 +286,7 @@ export async function moveTask(
   atmuxDir: string,
   id: string,
   status: string,
-  opts: { callerScope?: CallerScope } = {},
+  opts: { callerScope?: CallerScope; emit?: typeof defaultEmit } = {},
 ): Promise<void> {
   const completedAt = status === "done" ? nowEpoch() : undefined;
   // ADR-033: only `in-progress` and `done` are gated; `todo` / `blocked`
@@ -297,7 +299,15 @@ export async function moveTask(
   // the write-lock-held transaction body. tryLoadTeam returns null
   // on absent team.json (JSON-only kanbans / tests that don't stage
   // a team) — auto-emit silently skips in that case.
-  const team: Team | null = status === "done" ? await tryLoadTeam({ dir: atmuxDir }) : null;
+  //
+  // ADR-202/203: also pre-load team for status transitions that emit
+  // events (claimed / done) — payload carries team.name as scope.
+  const eventStatuses = new Set(["done", "in-progress"]);
+  const team: Team | null =
+    status === "done" || eventStatuses.has(status)
+      ? await tryLoadTeam({ dir: atmuxDir })
+      : null;
+  const emit = opts.emit ?? defaultEmit;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
       // ADR-146 §Atomic: BEGIN IMMEDIATE so the upsert + the auto-
@@ -319,6 +329,13 @@ export async function moveTask(
         if (status === "done" && team !== null) {
           tryAutoEmitTrunkMerge(repo, next, team);
         }
+        // ADR-202/203 §D2: task-lifecycle event emission, same-tx so
+        // event durability matches the kanban row. Honker NOTIFY (if
+        // loaded) fires inside emit() via honker_stream_publish; the
+        // events table INSERT is authoritative.
+        if (team !== null) {
+          tryEmitTaskLifecycle({ db, prev: cur, next, team, emit });
+        }
       });
     });
     return;
@@ -331,6 +348,77 @@ export async function moveTask(
     if (completedAt !== undefined) next.completedAt = completedAt;
     return next;
   });
+}
+
+// ---------- ADR-202/203 task-lifecycle event emit hook ----------
+
+/**
+ * Emit task-lifecycle events on status flips per ADR-203 §D2:
+ *
+ *   - `done`         → `task.done`    (every move TO done)
+ *   - `in-progress`  → `task.claimed` (only on FIRST move from todo →
+ *                      in-progress; status-flips within in-progress are
+ *                      no-ops to avoid noise)
+ *
+ * Best-effort: a missing events table (pre-migration) or a Zod failure
+ * is swallowed — the kanban-row mutation is the load-bearing side
+ * effect; the event is observability/coordination plumbing.
+ *
+ * Same-tx with the upsertTask write — `emit()` INSERTs into the events
+ * table inside the transactImmediate scope, so a rollback drops the
+ * event alongside the kanban row. Atomic by construction.
+ *
+ * Honker NOTIFY happens inside emit() (honker_stream_publish) when
+ * `getHonkerState(db)?.loaded === true` — gracefully swallowed when
+ * the substrate isn't loaded.
+ */
+function tryEmitTaskLifecycle(args: {
+  db: Database;
+  prev: KanbanTask;
+  next: KanbanTask;
+  team: Team;
+  emit: typeof defaultEmit;
+}): void {
+  const { db, prev, next, team, emit } = args;
+  const honkerLoaded = getHonkerState(db)?.loaded ?? false;
+  const opts = honkerLoaded ? { honkerLoaded: true } : {};
+  try {
+    if (next.status === "done") {
+      const doneAt = (next.completedAt ?? nowEpoch()) as number;
+      emit(
+        db,
+        {
+          topic: "task.done",
+          taskId: next.id,
+          member: prev.owner ?? next.owner ?? "",
+          team: team.name,
+          doneAtSec: doneAt,
+          ...(typeof next.story === "string" ? { storyId: next.story } : {}),
+          ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
+        },
+        opts,
+      );
+      return;
+    }
+    if (next.status === "in-progress" && prev.status !== "in-progress") {
+      emit(
+        db,
+        {
+          topic: "task.claimed",
+          taskId: next.id,
+          member: next.owner ?? prev.owner ?? "",
+          team: team.name,
+          ...(typeof next.story === "string" ? { storyId: next.story } : {}),
+          ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
+        },
+        opts,
+      );
+    }
+  } catch {
+    // Best-effort: missing events table or programmer-introduced Zod
+    // failure must not break task move. The kanban row is the
+    // load-bearing side effect.
+  }
 }
 
 // ---------- ADR-146 T2: trunk-merge auto-emit hook ----------

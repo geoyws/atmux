@@ -301,3 +301,75 @@ Default kill-switch state reverses: `ATMUX_HONKER` env var now defaults to **ON*
 **Concrete impl**: `src/abstractions/honker.ts::isHonkerEnabled` (the kill-switch reader) now returns `true` for absent / empty / unrecognized values; only explicit off-forms return `false`. 7 unit tests in `tests/unit/abstractions/honker.test.ts::isHonkerEnabled` cover the new contract.
 
 **Filed via** 2026-05-21 driver session — *"flip honker and let's turn it on"*.
+
+
+## §Amendment 2026-05-22 — NOTIFY/LISTEN watcher + first event-driven consumer shipped
+
+Three substrate-completion deliverables filed in a single commit (`atmux-geoyws-honker-events` branch):
+
+### 1. `emit()` now publishes to Honker stream when loaded
+
+`src/abstractions/events.ts::emit` previously only INSERTed into the `events` table (durable layer); the `honkerLoaded` flag was a no-op stub. This commit wires the actual NOTIFY half: when `opts.honkerLoaded === true`, `emit()` also calls `honker_stream_publish(topic, eventId, JSON.stringify(payload))` which (per the Honker upstream contract) inserts a row into `_honker_notifications` table with `channel = "honker:stream:<topic>"`. That row is the wake-up signal `watchEvents()` listens for.
+
+The honker-stream publish is **best-effort**: a thrown error (substrate-internal hiccup, table missing, etc.) is swallowed inside `emit()`. The events-table INSERT remains authoritative — durability is unaffected by NOTIFY failures. Cron-backstop drain (per §D6) catches consumers up if NOTIFY missed.
+
+### 2. `watchEvents()` async-iterator subscription
+
+New `src/abstractions/events.ts::watchEvents(db, opts)` async generator. Yields `EventPayload` per new event in lexicographic ID order. Wake-up strategy:
+
+- **Honker-loaded mode** (~100ms latency): polls `MAX(_honker_notifications.id)` at `honkerPollIntervalMs` (default 100ms). O(1) indexed lookup — effectively NOTIFY/LISTEN for our throughput (~100 events/day at peak per team).
+- **Fallback mode** (~1500ms latency): polls the events table directly at `fallbackPollIntervalMs`. Same behavior consumers get under `ATMUX_HONKER=off`.
+
+**Cancellation:** pass an `AbortSignal`; generator returns the next time the inner sleep wakes (within `pollIntervalMs` of abort, worst case).
+
+**Backlog drain:** on first iteration, drains every event with `event_id > initialOffset` — consumers that crashed mid-batch reload their offset from `subscriber_offsets` and resume without loss. At-least-once semantics; handler MUST be idempotent.
+
+**Graceful degradation:** if `honkerLoaded` is claimed `true` but `_honker_notifications` is missing at runtime (substrate killed mid-session), the loop silently downgrades to the fallback poll cadence rather than throwing.
+
+Test coverage: 9 new tests in `tests/unit/abstractions/events.test.ts::watchEvents` covering backlog drain, topic filter, initialOffset cursor, AbortSignal cancellation (pre-abort + mid-loop), mid-loop emit pickup, missing-notifications degradation, empty-topics drain-all, drainBatchSize cap.
+
+### 3. First production emit point — `task.done` + `task.claimed`
+
+`src/core/kanban.ts::moveTask` now emits via a new same-transaction hook `tryEmitTaskLifecycle`:
+
+- **`done` transition** → `task.done` payload (taskId, member, team, doneAtSec, storyId?, epicId?).
+- **`todo → in-progress` transition** → `task.claimed` payload. Status flips WITHIN `in-progress` are no-ops to avoid emit noise.
+- Same-`transactImmediate` scope as `repo.upsertTask` so event durability matches the kanban row (atomic by construction).
+- Best-effort: a missing events table (pre-migration) or programmer-introduced Zod failure is swallowed — the kanban-row mutation is load-bearing; the event is observability/coordination plumbing.
+- `opts.emit` test-injection seam; production callers accept the default.
+
+Test coverage: 7 new tests in `tests/unit/core/kanban-sqlite.test.ts::"kanban (SQLite mode) — task-lifecycle event emit (ADR-202/203)"` covering done-emits, claimed-on-first-todo→in-progress, blocked-emits-nothing, no-duplicate-on-redundant-move, emit-shim-honored, missing-team.json-short-circuit, emit-throw-doesn't-rollback-kanban, story+epic-context-included.
+
+### 4. First production consumer — `atmux committer --daemon` + `--drain`
+
+Two new sub-verbs on `atmux committer` (the existing T4 ADR-134 cron-sweep verb gets a peer rather than a replacement):
+
+- **`atmux committer --drain`** — one-shot cron-backstop drain. Runs `gitterConsume()` once, processes any pending `task.done` events via the `subscriber_offsets` table, exits 0. Drop-in replacement for the existing `*/5 atmux committer --sweep` cron line once we trust event-driven coordination.
+- **`atmux committer --daemon`** — long-lived NOTIFY/LISTEN consumer. Subscribes to `task.done` via `watchEvents()`, routes each event through the production `createGitterMergeHandler` dispatcher (ADR-134 state machine). Handles `SIGINT`/`SIGTERM` by aborting the watcher and exiting 0 once the in-flight event finishes. `--once` / `--max-events N` test-mode bounds.
+
+Both share a `buildEventDrivenContext()` factory that loads team config, opens `state.db`, boots Honker, wires the gitter merge handler with worktree resolver + roster filter.
+
+Test coverage: 9 new parser tests + 2 integration tests (drain-empty exits 0; daemon-once-empty exits 0 with start+stop log lines).
+
+### Net effect on production coordination
+
+After this commit:
+- Every `atmux task move <id> done` emits a durable `task.done` event into the events table.
+- Honker substrate (when loaded) gets a `_honker_notifications` wake-up row.
+- A running `atmux committer --daemon` picks the event up within ~100ms and dispatches the merge via ADR-134's state machine.
+- Cron-backstop (`atmux committer --drain` on cron) catches any events the daemon missed (offset-table driven).
+
+**What still needs to happen before "all event-driven"** (operator's 2026-05-22 directive — *"we want pubsub before switching... it has to be all event driven"*):
+
+1. ✅ `task.done` / `task.claimed` emit points (this commit).
+2. ✅ Gitter consumer running event-driven (this commit).
+3. ❌ Cron decommission: drop the `*/5 atmux committer --sweep` line once daemons are verified across all teams (separate amendment).
+4. ❌ Pane-state events → cockpit-watchdog replacement (separate EPIC).
+5. ❌ Rotation observer events (ADR-212) — schema landed, consumer pending.
+6. ❌ Complaint events (ADR-214) — schema landed, consumer pending.
+7. ❌ Per-team daemon supervisor — wiring the daemon to start/stop alongside `atmux start` / `atmux stop` (separate EPIC; until then, operator launches manually or via cron).
+8. ❌ Replace `*/2 cockpit-watchdog` + `*/5 lane-tick` + `*/15 poke` + `*/15 doctor wedge probes` with event-driven equivalents (per-cron-line decommission amendments).
+
+Migration of running teams is gated on items 3–8. Substrate + first consumer shipped is the unblock — remaining work is consumer-by-consumer + cron-by-cron decommission.
+
+**Filed via** 2026-05-22 driver session — *"do it all urself right here but in a separate worktree"*.

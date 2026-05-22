@@ -105,13 +105,26 @@ export function emit(
     validated.schemaVersion,
   );
 
-  // Phase-1 stub: when Honker is loaded, the future commit will also
-  // invoke the native NOTIFY primitive here (e.g.
-  // `db.exec("SELECT honker_notify(?, ?)", topic, eventId)`). For
-  // now, the INSERT above is the only durable side-effect and the
-  // sole notification path — consumers poll via drainSince().
+  // Honker NOTIFY path: publish to the Honker stream so the substrate
+  // emits a `_honker_notifications` row (channel `honker:stream:<topic>`)
+  // — that's the wake-up signal `watchEvents()` listens for.
+  //
+  // The honker stream is a mirror, not the source of truth — the
+  // `events` table INSERT above is durable + Zod-validated and remains
+  // authoritative. The stream-publish is best-effort: a thrown error
+  // here (substrate-internal hiccup) must not lose the event. Caller
+  // already has the durable row.
   if (opts.honkerLoaded) {
-    // Future: db.prepare("SELECT honker_notify(?, ?)").get(validated.topic, validated.eventId);
+    try {
+      db.prepare("SELECT honker_stream_publish(?, ?, ?) AS r").get(
+        validated.topic,
+        validated.eventId,
+        JSON.stringify(validated),
+      );
+    } catch {
+      // Substrate degradation — durable INSERT already succeeded; the
+      // cron-backstop drain (per ADR-202 §D6) catches consumers up.
+    }
   }
 
   return validated;
@@ -256,6 +269,169 @@ export async function withIdempotency(
   }
 
   return processed;
+}
+
+// ---------- watchEvents (NOTIFY/LISTEN wake-up loop) ----------
+
+/** Options for `watchEvents()` — topic filter + cancellation + cadence. */
+export interface WatchEventsOpts {
+  /** Topics to subscribe to. Empty array → all topics. */
+  topics: ReadonlyArray<string>;
+  /** Cancellation handle. Generator returns cleanly when aborted. */
+  signal?: AbortSignal;
+  /** Initial offset cursor (event_id). Default `""` (drain everything). */
+  initialOffset?: string;
+  /** Wake-cadence when Honker is loaded — checking `_honker_notifications`
+   *  MAX(id) for new wake-ups. Default 100ms (~realtime feel, O(1) query). */
+  honkerPollIntervalMs?: number;
+  /** Wake-cadence when Honker is NOT loaded — direct events-table scan.
+   *  Default 1500ms (cron-backstop-class latency). */
+  fallbackPollIntervalMs?: number;
+  /** True when `bootHonker()` reported `loaded: true` for this DB. */
+  honkerLoaded?: boolean;
+  /** Test seam — sleeper. Default uses `setTimeout`. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Test seam — max-drain batch size per wake. Default 1000. */
+  drainBatchSize?: number;
+}
+
+/** Default sleep — honors AbortSignal so cancellation returns immediately. */
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+/** Read the current MAX(id) from `_honker_notifications`. Returns 0 when
+ *  the table doesn't exist (substrate booted but bootstrap skipped) or
+ *  is empty. Used as a cheap wake-up cursor by `watchEvents()`. */
+function readHonkerNotificationMaxId(db: Database): number {
+  try {
+    const row = db
+      .prepare(
+        "SELECT COALESCE(MAX(id), 0) AS m FROM _honker_notifications",
+      )
+      .get() as { m: number | null } | undefined;
+    return row?.m ?? 0;
+  } catch {
+    // Table not present (e.g. honker not bootstrapped on this db) — fall
+    // back to event-table polling cadence.
+    return -1;
+  }
+}
+
+/**
+ * Async-iterator subscription to durable events. Yields one
+ * {@link EventPayload} per new event in lexicographic ID order, then
+ * sleeps until the next wake-up.
+ *
+ * **Wake-up strategy:**
+ * - When `honkerLoaded` and the substrate's `_honker_notifications`
+ *   table is queryable, the loop polls `MAX(id)` at `honkerPollIntervalMs`
+ *   (default 100ms). This is an O(1) indexed lookup — effectively NOTIFY/
+ *   LISTEN for our throughput (~100 events/day at peak per team).
+ * - Otherwise the loop polls the events table directly at
+ *   `fallbackPollIntervalMs` (default 1500ms). Same behavior consumers
+ *   get under `ATMUX_HONKER=off`.
+ *
+ * **Cancellation:** pass an `AbortSignal`; the generator returns the
+ * next time the inner sleep wakes (so within `pollIntervalMs` of the
+ * abort, worst case). No outstanding DB handles are leaked — every
+ * read is a single prepared statement on the caller's open Database.
+ *
+ * **Backlog drain:** on first iteration, drains every event with
+ * `event_id > initialOffset`. So a consumer that crashed mid-batch can
+ * reload its offset from `subscriber_offsets` and resume without
+ * missing events. At-least-once semantics — handler MUST be idempotent.
+ *
+ * **No throws:** poison rows in `events.payload` are skipped (same
+ * contract as `drainSince()`). DB errors propagate to the caller via
+ * the generator's next() call.
+ *
+ * Usage:
+ *
+ *     const watcher = watchEvents(db, {
+ *       topics: ["task.done"],
+ *       signal: ac.signal,
+ *       honkerLoaded: getHonkerState(db)?.loaded ?? false,
+ *     });
+ *     for await (const event of watcher) {
+ *       await handler(event);
+ *       saveOffset(db, consumerName, event.eventId);
+ *     }
+ */
+export async function* watchEvents(
+  db: Database,
+  opts: WatchEventsOpts,
+): AsyncGenerator<EventPayload, void, void> {
+  const sleep = opts.sleep ?? defaultSleep;
+  const honkerInterval = opts.honkerPollIntervalMs ?? 100;
+  const fallbackInterval = opts.fallbackPollIntervalMs ?? 1500;
+  const drainLimit = opts.drainBatchSize ?? 1000;
+  let lastEventId = opts.initialOffset ?? "";
+  let lastNotificationId = opts.honkerLoaded ? readHonkerNotificationMaxId(db) : -1;
+  // useNotificationsTable: only relevant when honker is loaded AND the
+  // table query succeeded on first probe. -1 means table absent → degrade
+  // to events-table polling at the fallback cadence.
+  let useNotificationsTable = opts.honkerLoaded === true && lastNotificationId >= 0;
+
+  // First-pass: drain any backlog before entering the wait loop. Lets
+  // callers cleanly resume from a saved offset.
+  {
+    const batch = drainSince(db, {
+      topics: opts.topics,
+      lastEventId,
+      limit: drainLimit,
+    });
+    for (const event of batch) {
+      if (opts.signal?.aborted) return;
+      yield event;
+      lastEventId = event.eventId;
+    }
+  }
+
+  while (!opts.signal?.aborted) {
+    if (useNotificationsTable) {
+      // Cheap wake-up probe — MAX(id) on tiny indexed table.
+      const currentMax = readHonkerNotificationMaxId(db);
+      if (currentMax < 0) {
+        // Table disappeared (substrate killed mid-run) — degrade.
+        useNotificationsTable = false;
+        continue;
+      }
+      if (currentMax === lastNotificationId) {
+        await sleep(honkerInterval, opts.signal);
+        continue;
+      }
+      lastNotificationId = currentMax;
+    } else {
+      await sleep(fallbackInterval, opts.signal);
+      if (opts.signal?.aborted) return;
+    }
+
+    const batch = drainSince(db, {
+      topics: opts.topics,
+      lastEventId,
+      limit: drainLimit,
+    });
+    for (const event of batch) {
+      if (opts.signal?.aborted) return;
+      yield event;
+      lastEventId = event.eventId;
+    }
+  }
 }
 
 // ---------- bootHonker announce binding ----------

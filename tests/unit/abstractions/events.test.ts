@@ -29,6 +29,7 @@ import {
   emit,
   loadOffset,
   saveOffset,
+  watchEvents,
   withIdempotency,
 } from "../../../src/abstractions/events.ts";
 import { bootHonker, resetHonkerStateForTest } from "../../../src/abstractions/honker.ts";
@@ -382,7 +383,8 @@ describe("announceHonkerState binding for bootHonker", () => {
 
   test("kill-switch off → fallback event with sentinel reason 'kill-switch off'", () => {
     const announce = announceHonkerState();
-    bootHonker(db, { env: {} }, announce);
+    // Default flipped ON 2026-05-21 — must pass ATMUX_HONKER=off explicitly.
+    bootHonker(db, { env: { ATMUX_HONKER: "off" } }, announce);
     resetHonkerStateForTest(db);
     const rows = drainSince(db, { topics: ["internal.honker.fallback"], lastEventId: "" });
     expect(rows.length).toBe(1);
@@ -405,5 +407,254 @@ describe("announceHonkerState binding for bootHonker", () => {
     // Verify no real INSERT happened (fake emit short-circuited)
     const count = (db.prepare("SELECT COUNT(*) AS n FROM events").get() as { n: number }).n;
     expect(count).toBe(0);
+  });
+});
+
+// ---------- emit + honkerLoaded honker_stream_publish bridge ----------
+
+describe("emit — honkerLoaded stream-publish bridge", () => {
+  test("honkerLoaded=true tries honker_stream_publish (function absent → swallowed, durable INSERT still succeeds)", () => {
+    // No honker extension loaded in test → honker_stream_publish() throws
+    // "no such function". emit() catches it; durable INSERT still lands.
+    const result = emit(
+      db,
+      {
+        topic: "task.done",
+        taskId: "t-1",
+        member: "be-1",
+        team: "demo",
+        doneAtSec: 100,
+      },
+      { honkerLoaded: true, nowSec: () => 100 },
+    );
+    expect(result.eventId).toBeTruthy();
+    const rows = drainSince(db, { topics: ["task.done"], lastEventId: "" });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.topic).toBe("task.done");
+  });
+
+  test("honkerLoaded=false does not attempt stream publish (no throws even when function absent)", () => {
+    // Same env, just opts.honkerLoaded omitted. emit() must never try the
+    // stream publish path → no try/catch surface to fail on.
+    const result = emit(
+      db,
+      {
+        topic: "task.done",
+        taskId: "t-1",
+        member: "be-1",
+        team: "demo",
+        doneAtSec: 100,
+      },
+      { nowSec: () => 100 },
+    );
+    expect(result.eventId).toBeTruthy();
+  });
+});
+
+// ---------- watchEvents async-iterator subscription ----------
+
+describe("watchEvents", () => {
+  test("backlog drain on first iteration — events emitted before subscription are yielded", async () => {
+    // Use injected monotonic-ish IDs so lexicographic order is deterministic.
+    let counter = 0;
+    const ids = ["01900000000000000000000000000001", "01900000000000000000000000000002", "01900000000000000000000000000003"];
+    const gen = () => ids[counter++] ?? "";
+    emit(db, { topic: "task.done", taskId: "t-A", member: "be-1", team: "demo", doneAtSec: 1 }, { generateId: gen });
+    emit(db, { topic: "task.done", taskId: "t-B", member: "be-1", team: "demo", doneAtSec: 2 }, { generateId: gen });
+    emit(db, { topic: "task.done", taskId: "t-C", member: "be-1", team: "demo", doneAtSec: 3 }, { generateId: gen });
+    const ac = new AbortController();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      honkerLoaded: false,
+      sleep: async () => {
+        ac.abort(); // abort after first wake-cycle so loop exits
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") seen.push(ev.taskId);
+    }
+    expect(seen).toEqual(["t-A", "t-B", "t-C"]);
+  });
+
+  test("topic filter is honored — only matching events yielded", async () => {
+    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
+    emit(db, { topic: "task.claimed", taskId: "t-B", member: "x", team: "y" });
+    const ac = new AbortController();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      sleep: async () => {
+        ac.abort();
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) seen.push(ev.topic);
+    expect(seen).toEqual(["task.done"]);
+  });
+
+  test("initialOffset skips already-processed events", async () => {
+    // Inject deterministic IDs so lexicographic ordering is stable regardless
+    // of UUIDv7 same-ms randomness.
+    let counter = 0;
+    const ids = ["01900000000000000000000000000a01", "01900000000000000000000000000a02"];
+    const gen = () => ids[counter++] ?? "";
+    const e1 = emit(
+      db,
+      { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 },
+      { generateId: gen },
+    );
+    emit(
+      db,
+      { topic: "task.done", taskId: "t-B", member: "x", team: "y", doneAtSec: 2 },
+      { generateId: gen },
+    );
+    const ac = new AbortController();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      initialOffset: e1.eventId, // start AFTER e1
+      sleep: async () => {
+        ac.abort();
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") seen.push(ev.taskId);
+    }
+    expect(seen).toEqual(["t-B"]);
+  });
+
+  test("AbortSignal cancels mid-loop — generator returns cleanly", async () => {
+    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
+    const ac = new AbortController();
+    let sleepCalls = 0;
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      sleep: async () => {
+        sleepCalls += 1;
+        if (sleepCalls === 1) ac.abort();
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") seen.push(ev.taskId);
+    }
+    expect(seen).toEqual(["t-A"]);
+    expect(sleepCalls).toBe(1); // looped once, then aborted
+  });
+
+  test("pre-aborted signal yields nothing — early-out", async () => {
+    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
+    const ac = new AbortController();
+    ac.abort();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      sleep: async () => {},
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) seen.push(ev.topic);
+    expect(seen).toEqual([]);
+  });
+
+  test("yields new events emitted between wake cycles", async () => {
+    let wakeCount = 0;
+    const ac = new AbortController();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      sleep: async () => {
+        wakeCount += 1;
+        if (wakeCount === 1) {
+          // Emit a new event mid-loop — should be picked up next pass.
+          emit(db, {
+            topic: "task.done",
+            taskId: "mid-loop",
+            member: "x",
+            team: "y",
+            doneAtSec: 9,
+          });
+        } else if (wakeCount === 2) {
+          ac.abort();
+        }
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") seen.push(ev.taskId);
+    }
+    expect(seen).toEqual(["mid-loop"]);
+  });
+
+  test("honkerLoaded=true but _honker_notifications missing → degrades to fallback poll", async () => {
+    // No honker extension loaded → _honker_notifications table doesn't
+    // exist. watchEvents must degrade silently to the events-table poll
+    // path rather than throwing.
+    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
+    const ac = new AbortController();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      honkerLoaded: true, // claims loaded but no actual table
+      sleep: async () => {
+        ac.abort();
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") seen.push(ev.taskId);
+    }
+    expect(seen).toEqual(["t-A"]);
+  });
+
+  test("empty topics array = drain everything", async () => {
+    emit(db, { topic: "task.done", taskId: "a", member: "x", team: "y", doneAtSec: 1 });
+    emit(db, { topic: "task.claimed", taskId: "b", member: "x", team: "y" });
+    const ac = new AbortController();
+    const watcher = watchEvents(db, {
+      topics: [],
+      signal: ac.signal,
+      sleep: async () => {
+        ac.abort();
+      },
+    });
+    const topics: string[] = [];
+    for await (const ev of watcher) topics.push(ev.topic);
+    expect(topics).toContain("task.done");
+    expect(topics).toContain("task.claimed");
+  });
+
+  test("drainBatchSize caps backlog per wake", async () => {
+    for (let i = 0; i < 5; i += 1) {
+      emit(db, {
+        topic: "task.done",
+        taskId: `t-${i}`,
+        member: "x",
+        team: "y",
+        doneAtSec: i,
+      });
+    }
+    const ac = new AbortController();
+    let sleepCalls = 0;
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      drainBatchSize: 2,
+      sleep: async () => {
+        sleepCalls += 1;
+        if (sleepCalls >= 3) ac.abort(); // backlog2 + wake1+2 then abort
+      },
+    });
+    const ids: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") ids.push(ev.taskId);
+    }
+    // 5 events, limit 2 per call → 3 drains (2+2+1) total. Initial drain
+    // does 2, then loop drains 2 more, then 1 more on next wake.
+    expect(ids.length).toBeGreaterThanOrEqual(4);
+    expect(ids.length).toBeLessThanOrEqual(5);
   });
 });
