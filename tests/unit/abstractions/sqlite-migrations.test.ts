@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v12)", () => {
+  test("opening with the full ladder advances user_version to the tail (v13)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -40,7 +40,9 @@ describe("sqlite-migrations live ladder", () => {
     //             §D1 Honker substrate + ADR-203 §D7 idempotency)
     //   - v11→v12 added id_sequences for running-number IDs (ADR-202
     //             §VIII compound `<scope>-<N>-<hash>` shape)
-    expect(readUserVersion(db)).toBe(12);
+    //   - v12→v13 added prune_state for events-prune cursor bookkeeping
+    //             (ADR-202 §XI queued via T2.2, t-0d79d5bd)
+    expect(readUserVersion(db)).toBe(13);
   });
 });
 
@@ -318,6 +320,72 @@ describe("v10 → v11: events + subscriber_offsets (Honker substrate)", () => {
            VALUES (?, ?, ?)`,
         )
         .run("team-alpha:gitter", "01890000-0000-7000-8000-000000000004", 1_700_000_003),
+    ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/);
+  });
+});
+
+describe("v12 → v13: prune_state (events-prune cursor bookkeeping)", () => {
+  test("prune_state table exists with the expected column set + types", () => {
+    const cols = db.prepare("PRAGMA table_info(prune_state)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+      dflt_value: string | null;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+
+    const expected: ReadonlyArray<readonly [string, string]> = [
+      ["team_name", "TEXT"],
+      ["cursor", "INTEGER"],
+      ["last_pruned_at_sec", "INTEGER"],
+    ];
+    for (const [name, type] of expected) {
+      const c = byName.get(name);
+      expect(c).toBeDefined();
+      expect(c?.type).toBe(type);
+    }
+    expect(cols).toHaveLength(expected.length);
+
+    // `team_name` is PK; cursor + last_pruned_at_sec are NOT NULL with
+    // DEFAULT 0 per ADR-202 §XI (queued via T2.2).
+    expect(byName.get("team_name")?.pk).toBe(1);
+    expect(byName.get("cursor")?.notnull).toBe(1);
+    expect(byName.get("cursor")?.dflt_value).toBe("0");
+    expect(byName.get("last_pruned_at_sec")?.notnull).toBe(1);
+    expect(byName.get("last_pruned_at_sec")?.dflt_value).toBe("0");
+  });
+
+  test("prune_state starts empty on a fresh ladder", () => {
+    const { n } = db
+      .prepare("SELECT COUNT(*) AS n FROM prune_state")
+      .get() as { n: number };
+    expect(n).toBe(0);
+  });
+
+  test("prune_state accepts a row with the defaults applied", () => {
+    db.prepare("INSERT INTO prune_state (team_name) VALUES (?)").run("team-alpha");
+    const row = db
+      .prepare("SELECT team_name, cursor, last_pruned_at_sec FROM prune_state WHERE team_name = ?")
+      .get("team-alpha") as
+      | { team_name: string; cursor: number; last_pruned_at_sec: number }
+      | undefined;
+    expect(row?.team_name).toBe("team-alpha");
+    expect(row?.cursor).toBe(0);
+    expect(row?.last_pruned_at_sec).toBe(0);
+  });
+
+  test("prune_state enforces uniqueness on team_name (PK)", () => {
+    db.prepare(
+      `INSERT INTO prune_state (team_name, cursor, last_pruned_at_sec) VALUES (?, ?, ?)`,
+    ).run("team-beta", 42, 1_700_000_000);
+
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO prune_state (team_name, cursor, last_pruned_at_sec) VALUES (?, ?, ?)`,
+        )
+        .run("team-beta", 99, 1_700_000_001),
     ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/);
   });
 });

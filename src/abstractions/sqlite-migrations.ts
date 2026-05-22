@@ -574,4 +574,37 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  // ADR-202 §Amendment 2026-05-22 (XI, queued via T2.2) — events-prune
+  // bookkeeping. The `events` table (v10→v11) grows monotonically; a
+  // periodic pruner walks `event_id ASC` and trims rows older than the
+  // retention window. `prune_state` records the per-team cursor +
+  // last-prune timestamp so the next sweep resumes where the last one
+  // left off instead of full-scanning the table each tick.
+  //
+  // Schema: one row per team.
+  //   - `team_name` — PK, matches the team identifier in team.json.
+  //   - `cursor` — highest `event_id` rowid (or sequence) pruned so far.
+  //     Stored as INTEGER so SQLite can compare without TEXT collation
+  //     quirks. Default 0 = "no prune yet, start from the head".
+  //   - `last_pruned_at_sec` — unix seconds of the most recent sweep
+  //     completion. Drives cadence checks ("don't re-prune within N
+  //     minutes") and the medic visibility probe.
+  //
+  // IF NOT EXISTS guard (per ADR-147 T9 dogfood, 2026-05-15): some
+  // dev DBs may already carry the table from earlier prune-impl
+  // prototyping; the guard makes this step a no-op on those DBs while
+  // still creating the table on fresh ladders.
+  {
+    from: 12,
+    to: 13,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS prune_state (
+          team_name TEXT PRIMARY KEY,
+          cursor INTEGER NOT NULL DEFAULT 0,
+          last_pruned_at_sec INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+    },
+  },
 ];
