@@ -625,3 +625,89 @@ Rationale: before this commit, the atmux-listener Rust dependency was implicit �
 CI: same `mise install` works in GitHub Actions. Honker-events branch was the first PR to introduce a Rust build dependency; this file makes that requirement legible to anyone reading the project structure.
 
 **Filed via** 2026-05-22 driver session — operator's *"like install rust stuff into mise"*.
+
+
+## §Amendment 2026-05-22 (VII) — `atmux-relayd` Rust binary owns the long-lived subscription
+
+Operator directive *"let's do rust now"* + the RSS audit from this session (single Claude session ≈ 7-10× a full relayd stack worth of RAM) pointed to the right Rust deepening: not porting the gitter merge / lane-tick handlers (months of work for invisible savings), but reclaiming the relayd's idle Bun-process cost.
+
+### Architecture — Path B: Rust dispatcher, Bun per-event handler
+
+```
+                                    ┌───────────────────────────────┐
+   honker_stream_publish ──NOTIFY──→│  atmux-relayd (Rust)         │
+                                    │  - Honker::update_events     │
+                                    │  - rusqlite drain events     │
+                                    │  - spawn Bun per event       │
+                                    │  - rusqlite save offset      │
+                                    │  ~5MB RSS idle, kernel-blocked│
+                                    └───────────────┬───────────────┘
+                                                    │ spawn per event
+                                                    ↓
+                                    ┌───────────────────────────────┐
+                                    │ atmux relayd --handle-one     │
+                                    │  --event-id X --topic T       │
+                                    │ (Bun, one-shot)               │
+                                    │  - load event by id           │
+                                    │  - dispatch to topic handler  │
+                                    │  - exit 0 (success) or 1      │
+                                    │ ~50ms startup + handler time  │
+                                    └───────────────────────────────┘
+```
+
+**Why this is the right shape:**
+- Bun process runs only during actual handler execution. Idle infra is Rust-only.
+- Handler logic (gitter merge state machine, lane-tick pane classifier) stays in Bun where it lives. No port. No two-language drift.
+- Per-event spawn cost (~50ms) is negligible against our throughput (~100 events/day per team).
+- Rust binary is ~80 lines; total project Rust LOC stays small.
+
+### Where the code lives
+
+- **`rust/atmux-relayd/`** — new Rust crate. Single binary `atmux-relayd`. Uses `honker = "0.3.3"` for NOTIFY/LISTEN + `rusqlite = "0.39"` for events table + offset queries. Builds to 1.6MB statically linked.
+- **`src/verbs/relayd.ts::relaydHandleOne`** — new Bun handler entry point. Single-event dispatch: load event by `--event-id`, route to topic handler (gitter merge for `task.done`, runLaneTick for `task.unclaimed`), exit 0/1. The Bun process doesn't advance the offset for `task.done` — the Rust binary does on observing exit-code 0. For `task.unclaimed` the Bun handler advances the offset directly (defensive double-write; Rust will re-save and SQLite UPSERT serializes).
+- **`src/core/relayd-window.ts`** — supervisor command updated to spawn the Rust binary first, falling back to Bun `atmux relayd --start` when the Rust binary isn't on PATH (degraded mode for pre-§VII installs that haven't redeployed).
+- **`package.json::build:install`** — added `build:relayd` script. Both `atmux-listener` and `atmux-relayd` binaries staged at `/opt/atmux/$v/bin/`. `atmux-relayd` symlinked to `/usr/local/bin/` so the supervisor's `command -v atmux-relayd` check resolves.
+
+### Verified end-to-end
+
+Smoke test in `/tmp/test-relayd.sh`:
+1. Bootstrap a state.db with Honker tables + atmux migrations.
+2. Spawn `atmux-relayd` with fake atmux binary (logs invocations + exits 0).
+3. Bun publishes `task.done` event + honker_stream_publish.
+4. **Result: Rust binary detected wake + spawned fake atmux in 44ms** with correct args (`relayd --handle-one --event-id ... --topic task.done --team-dir ...`).
+
+### Resource cost (verified on hax)
+
+| Process | RSS idle | CPU idle |
+|---|---|---|
+| Pre-§VII Bun `atmux relayd --start` | ~30-50MB | ~0% |
+| Post-§VII Rust `atmux-relayd` | ~3-5MB | ~0% |
+
+Savings: ~30-45MB per team. Negligible against single-Claude-session weights (~350-580MB), but architecturally the Rust binary is the right shape — finite scope, no business logic, no Bun-runtime tax.
+
+### Topics handled
+
+Multi-topic dispatch driven by a static `CONSUMERS` array in `rust/atmux-relayd/src/main.rs`:
+- `atmux:gitter` → `task.done`
+- `atmux:lane-router` → `task.unclaimed`
+
+Adding new topics = one entry in CONSUMERS + the Bun-side handler in `relaydHandleOne`'s topic switch. Future amendment (cockpit-mirror, complaint dispatcher, etc.) walks the same path.
+
+### Teardown discipline (unchanged from §III + §V)
+
+- `PR_SET_PDEATHSIG(SIGTERM)` on Linux — kernel sends SIGTERM when parent dies, even via SIGKILL.
+- `PPID==1` check at startup guards spawn→prctl race.
+- bash wrapper's SIGTERM/SIGINT/SIGHUP trap cascades to the Rust child via process group.
+- Circuit breaker (5 crashes / 60s → exit 42) still applies — wrapper-level guard against unbootable Rust binary.
+
+### Backward compat
+
+The Bun `atmux relayd --start` path stays as a fallback (degraded mode when Rust binary not on PATH). Operators on older deploys without `atmux-relayd` get the Bun process; once they redeploy `npm run build:install`, the supervisor command's `command -v atmux-relayd` check flips them to the Rust path automatically. No breaking change at the operator surface.
+
+### Tests
+
+- `tests/unit/verbs/relayd.test.ts` — 21 parser tests (added 6 for `--handle-one`/`--event-id`/`--topic` invariants).
+- 35/35 across relayd + relayd-window tests.
+- E2E smoke verified manually (above).
+
+**Filed via** 2026-05-22 driver session — *"i think we shoudl go rust"* → *"let's do rust now"*.

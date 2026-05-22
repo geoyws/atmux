@@ -135,10 +135,13 @@ export async function maybeSpawnRelaydWindow(
     //      exit code 0 + propagation to the daemon child before bash
     //      itself exits.
     //
-    //   2. `atmux committer --daemon` runs as bash's foreground child
-    //      in the same process group, so SIGTERM to bash → SIGTERM
-    //      to the daemon (default tmux kill-pane → SIGHUP → process
-    //      group cascade).
+    //   2. `atmux-relayd` (Rust binary, ADR-202 §VII) runs as bash's
+    //      foreground child in the same process group, so SIGTERM to
+    //      bash → SIGTERM to the daemon (default tmux kill-pane →
+    //      SIGHUP → process group cascade). Pre-§VII this was the
+    //      Bun `atmux relayd --start` process; §VII swapped it out
+    //      for the Rust binary which uses ~5MB RSS idle (vs ~30-50MB
+    //      for Bun).
     //
     //   3. The Rust atmux-listener subprocess (spawned BY the daemon)
     //      sets PR_SET_PDEATHSIG=SIGTERM on Linux, so even SIGKILL of
@@ -167,7 +170,19 @@ export async function maybeSpawnRelaydWindow(
       `CRASH_WINDOW_START=$(date +%s); ` +
       `while true; do ` +
       `echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] relayd: starting (crash_count=$CRASH_COUNT)"; ` +
-      `atmux relayd --start 2>&1 | tee -a .atmux/logs/relayd.log; ` +
+      // ADR-202 §VII — spawn the Rust atmux-relayd binary directly.
+      // The binary handles subscription + drain + dispatch; it spawns
+      // `atmux relayd --handle-one` Bun subprocesses per event for
+      // the actual handler work. Idle RSS ~5MB vs ~30-50MB for the
+      // old Bun --start path. Falls back to Bun `atmux relayd --start`
+      // when the Rust binary isn't on PATH (degraded mode, e.g.
+      // pre-§VII installs that haven't redeployed build:install).
+      `if command -v atmux-relayd >/dev/null 2>&1; then ` +
+      `  ATMUX_RELAYD_TEAM_DIR=$(pwd) atmux-relayd .atmux/state.db 2>&1 | tee -a .atmux/logs/relayd.log; ` +
+      `else ` +
+      `  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] relayd: atmux-relayd Rust binary not on PATH; falling back to Bun atmux relayd --start"; ` +
+      `  atmux relayd --start 2>&1 | tee -a .atmux/logs/relayd.log; ` +
+      `fi; ` +
       `RC=$?; ` +
       `if [[ $RC -eq 0 ]]; then ` +
       `echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] relayd: clean exit, not restarting"; ` +

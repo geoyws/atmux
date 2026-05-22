@@ -1,0 +1,293 @@
+// atmux-relayd — Rust dispatcher for the atmux event-driven substrate.
+//
+// Replaces the Bun-side `atmux relayd --start` long-lived process per
+// ADR-202 §Amendment 2026-05-22 (VII). Architecture:
+//
+//   1. This Rust binary stays subscribed (Honker `Database::listen`),
+//      blocks kernel-level on the mpsc-fed Subscription iterator. Idle
+//      RSS ~5MB, idle CPU ~0%.
+//   2. On each notification: query the events table for new rows since
+//      this consumer's offset (rusqlite — same db, same connection).
+//   3. For each new event: spawn `atmux relayd --handle-one --event-id
+//      <id>` as a one-shot Bun subprocess. Wait for exit.
+//   4. On clean exit (rc=0): advance the consumer's offset and loop.
+//      On non-zero exit: log and DON'T advance — next wake re-attempts.
+//
+// Net: Bun runs only during handler execution (~50ms cold start + the
+// handler's own time, usually 1-30s for a git merge). Idle resource
+// cost is Rust-only, ~5MB per team.
+//
+// Multi-topic dispatch: we listen on BOTH honker:stream:task.done and
+// honker:stream:task.unclaimed via the raw UpdateEvents waker (wakes on
+// any DB commit) rather than spawning two Subscription threads. On
+// each wake we drain BOTH topics' new events in lex-id order, dispatch
+// each to Bun via `--topic` flag so the Bun side picks the right
+// handler.
+//
+// Wire protocol with Bun:
+//   atmux relayd --handle-one --event-id <id> --topic <t> [--team-dir <p>]
+//   exit 0          → event handled successfully; relayd advances offset
+//   exit non-zero   → handler failed (or Bun couldn't load event);
+//                     relayd does NOT advance offset; next wake retries
+//
+// Lifecycle:
+//   - parent dies (tmux pane killed, atmux stop, kernel OOM SIGKILL) →
+//     PR_SET_PDEATHSIG(SIGTERM) terminates this process on Linux.
+//   - SIGTERM/SIGINT → break out of subscription loop, exit 0.
+//   - In-flight Bun child gets SIGTERM via process-group cascade.
+//
+// Configuration via env:
+//   ATMUX_RELAYD_DB        — path to state.db (default: ./.atmux/state.db)
+//   ATMUX_RELAYD_ATMUX_BIN — path to atmux binary (default: `atmux` on PATH)
+//   ATMUX_RELAYD_TEAM_DIR  — path passed to atmux --team-dir (default: cwd)
+//   ATMUX_RELAYD_TOPICS    — comma-separated topic list to subscribe to
+//                            (default: task.done,task.unclaimed)
+
+use std::env;
+use std::process::{Command, ExitCode};
+use std::time::Duration;
+
+use honker::Database;
+use rusqlite::params;
+
+/// Linux-only: kernel sends SIGTERM when our parent dies. Closes the
+/// orphan-after-SIGKILL teardown hole. See atmux-listener for the same
+/// pattern.
+#[cfg(target_os = "linux")]
+fn install_parent_death_signal() {
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong, 0, 0, 0);
+        if libc::getppid() == 1 {
+            std::process::exit(0);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_parent_death_signal() {}
+
+/// Subscriber-offset row schema mirrors the Bun-side
+/// `src/abstractions/events.ts::loadOffset/saveOffset` contract. Each
+/// consumer has its own offset so slow handlers don't starve fast ones.
+struct ConsumerCfg {
+    name: &'static str,
+    topic: &'static str,
+    /// The Bun-side `--topic` argument value the handler will use to
+    /// dispatch internally. Must match the topic literal in
+    /// `src/schema/events.ts::TOPICS`.
+    bun_topic: &'static str,
+}
+
+const CONSUMERS: &[ConsumerCfg] = &[
+    ConsumerCfg { name: "atmux:gitter", topic: "task.done", bun_topic: "task.done" },
+    ConsumerCfg {
+        name: "atmux:lane-router",
+        topic: "task.unclaimed",
+        bun_topic: "task.unclaimed",
+    },
+];
+
+fn load_offset(db: &Database, consumer: &str) -> Result<String, String> {
+    let r: rusqlite::Result<String> = db.with_conn(|c| {
+        match c.query_row(
+            "SELECT last_event_id FROM subscriber_offsets WHERE consumer_name = ?1",
+            params![consumer],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(s) => Ok(s),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()),
+            Err(e) => Err(e),
+        }
+    });
+    r.map_err(|e| format!("load_offset({}) error: {}", consumer, e))
+}
+
+fn save_offset(db: &Database, consumer: &str, event_id: &str) -> Result<(), String> {
+    let now_sec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let r: rusqlite::Result<usize> = db.with_conn(|c| {
+        c.execute(
+            "INSERT INTO subscriber_offsets (consumer_name, last_event_id, last_processed_at_sec)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(consumer_name) DO UPDATE SET
+               last_event_id = excluded.last_event_id,
+               last_processed_at_sec = excluded.last_processed_at_sec",
+            params![consumer, event_id, now_sec],
+        )
+    });
+    r.map(|_| ()).map_err(|e| format!("save_offset error: {}", e))
+}
+
+fn drain_topic(
+    db: &Database,
+    topic: &str,
+    after: &str,
+    limit: i64,
+) -> Result<Vec<String>, String> {
+    let r: rusqlite::Result<Vec<String>> = db.with_conn(|c| {
+        let mut stmt = c.prepare(
+            "SELECT event_id FROM events
+             WHERE event_id > ?1 AND topic = ?2
+             ORDER BY event_id ASC
+             LIMIT ?3",
+        )?;
+        let iter = stmt.query_map(params![after, topic, limit], |r| r.get::<_, String>(0))?;
+        iter.collect::<rusqlite::Result<Vec<_>>>()
+    });
+    r.map_err(|e| format!("drain_topic({}) error: {}", topic, e))
+}
+
+/// Spawn `atmux relayd --handle-one --event-id <id> --topic <t> --team-dir <p>`.
+/// Returns the child's exit code (None when killed by signal).
+fn dispatch_to_bun(atmux_bin: &str, team_dir: &str, event_id: &str, topic: &str) -> Option<i32> {
+    let mut cmd = Command::new(atmux_bin);
+    cmd.arg("relayd")
+        .arg("--handle-one")
+        .arg("--event-id")
+        .arg(event_id)
+        .arg("--topic")
+        .arg(topic)
+        .arg("--team-dir")
+        .arg(team_dir);
+    let output = match cmd.status() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "atmux-relayd: spawn `{} relayd --handle-one` failed: {}",
+                atmux_bin, e
+            );
+            return None;
+        }
+    };
+    output.code()
+}
+
+fn drain_and_dispatch(
+    db: &Database,
+    atmux_bin: &str,
+    team_dir: &str,
+    offsets: &mut Vec<String>,
+) -> Result<usize, String> {
+    let mut processed = 0;
+    for (idx, cfg) in CONSUMERS.iter().enumerate() {
+        let current_offset = &offsets[idx];
+        let new_event_ids = drain_topic(db, cfg.topic, current_offset, 1000)?;
+        for event_id in new_event_ids {
+            let code = dispatch_to_bun(atmux_bin, team_dir, &event_id, cfg.bun_topic);
+            match code {
+                Some(0) => {
+                    save_offset(db, cfg.name, &event_id)?;
+                    offsets[idx] = event_id.clone();
+                    processed += 1;
+                    println!(
+                        "atmux-relayd: handled {} eventId={} (consumer={})",
+                        cfg.bun_topic, event_id, cfg.name
+                    );
+                }
+                Some(other) => {
+                    eprintln!(
+                        "atmux-relayd: bun handler exit rc={} on {} eventId={} (consumer={}); NOT advancing offset; will retry next wake",
+                        other, cfg.bun_topic, event_id, cfg.name
+                    );
+                    // Don't continue this consumer's drain — re-attempt next wake.
+                    break;
+                }
+                None => {
+                    eprintln!(
+                        "atmux-relayd: bun handler killed-by-signal on {} eventId={} (consumer={}); NOT advancing offset",
+                        cfg.bun_topic, event_id, cfg.name
+                    );
+                    break;
+                }
+            }
+        }
+    }
+    Ok(processed)
+}
+
+fn main() -> ExitCode {
+    install_parent_death_signal();
+
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_string());
+    let db_path = env::var("ATMUX_RELAYD_DB").unwrap_or_else(|_| {
+        args.iter()
+            .skip(1)
+            .next()
+            .cloned()
+            .unwrap_or_else(|| format!("{}/.atmux/state.db", cwd))
+    });
+    let atmux_bin = env::var("ATMUX_RELAYD_ATMUX_BIN").unwrap_or_else(|_| "atmux".to_string());
+    let team_dir = env::var("ATMUX_RELAYD_TEAM_DIR").unwrap_or_else(|_| cwd.clone());
+
+    eprintln!(
+        "atmux-relayd: starting (db={}, atmux={}, team_dir={})",
+        db_path, atmux_bin, team_dir
+    );
+
+    let db = match Database::open(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("atmux-relayd: Database::open({}) failed: {}", db_path, e);
+            return ExitCode::from(3);
+        }
+    };
+
+    // Load initial offsets — one per consumer. The Vec index matches
+    // the CONSUMERS slice index so `offsets[i]` is `CONSUMERS[i]`'s
+    // last-processed event_id.
+    let mut offsets: Vec<String> = match CONSUMERS
+        .iter()
+        .map(|c| load_offset(&db, c.name).map_err(|e| format!("{:?}", e)))
+        .collect()
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("atmux-relayd: failed to load initial offsets: {}", e);
+            return ExitCode::from(4);
+        }
+    };
+
+    // Initial drain — catch up anything that landed while relayd was
+    // down. The handler dispatch is at-least-once per ADR-203 §D7;
+    // duplicate processing is the failure mode (handlers are idempotent
+    // by contract).
+    if let Err(e) = drain_and_dispatch(&db, &atmux_bin, &team_dir, &mut offsets) {
+        eprintln!("atmux-relayd: initial drain error: {}", e);
+    }
+
+    // UpdateEvents — raw wake channel from the Honker watcher thread.
+    // Wakes on ANY db commit (including non-event commits like kanban
+    // writes). On wake, we re-drain both topics; non-event commits
+    // produce zero new events and no Bun spawns.
+    let events = db.update_events();
+    eprintln!("atmux-relayd: subscribed, entering wake loop");
+
+    loop {
+        match events.recv_timeout(Duration::from_secs(60)) {
+            Ok(Some(())) => {
+                // DB commit observed — drain both topics.
+                if let Err(e) = drain_and_dispatch(&db, &atmux_bin, &team_dir, &mut offsets) {
+                    eprintln!("atmux-relayd: drain error: {}", e);
+                }
+            }
+            Ok(None) => {
+                // 60s timeout with no DB commit — belt-and-braces drain
+                // in case the watcher missed an event (rare; defends
+                // against subtle Honker bugs without depending on its
+                // perfect-delivery guarantee).
+                if let Err(e) = drain_and_dispatch(&db, &atmux_bin, &team_dir, &mut offsets) {
+                    eprintln!("atmux-relayd: timeout drain error: {}", e);
+                }
+            }
+            Err(e) => {
+                eprintln!("atmux-relayd: watcher closed ({}), exiting", e);
+                return ExitCode::SUCCESS;
+            }
+        }
+    }
+}

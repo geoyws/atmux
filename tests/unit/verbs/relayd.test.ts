@@ -90,4 +90,49 @@ describe("parseRelaydArgs", () => {
       maxEvents: 5,
     });
   });
+
+  test("--handle-one with --event-id + --topic parses", () => {
+    expect(
+      parseRelaydArgs(["--handle-one", "--event-id", "01900xyz", "--topic", "task.done"]),
+    ).toEqual({
+      subverb: "handle-one",
+      eventId: "01900xyz",
+      topic: "task.done",
+    });
+  });
+
+  test("--handle-one without --event-id throws", () => {
+    expect(() => parseRelaydArgs(["--handle-one", "--topic", "task.done"])).toThrow(UsageError);
+  });
+
+  test("--handle-one without --topic throws", () => {
+    expect(() => parseRelaydArgs(["--handle-one", "--event-id", "01900xyz"])).toThrow(UsageError);
+  });
+
+  test("--handle-one with --team-dir captured", () => {
+    expect(
+      parseRelaydArgs([
+        "--handle-one",
+        "--event-id",
+        "e-1",
+        "--topic",
+        "task.unclaimed",
+        "--team-dir",
+        "/srv/demo",
+      ]),
+    ).toEqual({
+      subverb: "handle-one",
+      eventId: "e-1",
+      topic: "task.unclaimed",
+      teamDir: "/srv/demo",
+    });
+  });
+
+  test("--event-id without value throws", () => {
+    expect(() => parseRelaydArgs(["--handle-one", "--event-id"])).toThrow(UsageError);
+  });
+
+  test("--topic without value throws", () => {
+    expect(() => parseRelaydArgs(["--handle-one", "--topic"])).toThrow(UsageError);
+  });
 });

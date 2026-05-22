@@ -23,38 +23,57 @@
 // point. Wiring stays in `verbs/committer.ts` to avoid a churn-only
 // move; this file is a thin dispatcher.
 
+import { join } from "node:path";
+import { drainSince, saveOffset } from "../abstractions/events.ts";
+import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { getAtmuxDir, requireTeam, type ResolveDirOpts } from "../core/common.ts";
 import {
   type CommitterOpts,
+  buildEventDrivenContext,
   committerDaemonVerb,
   committerDrainVerb,
 } from "./committer.ts";
-import { UsageError } from "../errors.ts";
+import { ConfigError, UsageError } from "../errors.ts";
+import { runLaneTick } from "./lane-tick.ts";
 
 const USAGE =
-  "atmux relayd <--start|--drain> [--team-dir <path>] [--once] [--max-events N]";
+  "atmux relayd <--start|--drain|--handle-one> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T]";
 
 export interface ParsedRelaydArgs {
   /** Sub-verbs:
-   *   - `start`  : long-lived multi-topic event-router (was `committer
-   *                --daemon`). Subscribes to task.done + task.unclaimed
-   *                (and future topics) via atmux-listener Rust
-   *                kernel-blocked NOTIFY/LISTEN.
-   *   - `drain`  : one-shot cron-backstop drain across all topics
-   *                (was `committer --drain`). Processes pending
-   *                events via subscriber_offsets table, exits 0. */
-  subverb: "start" | "drain";
+   *   - `start`       : long-lived multi-topic event-router. Pre-VII this
+   *                     was the Bun long-lived process. Post-VII the
+   *                     Rust `atmux-relayd` binary owns the long-lived
+   *                     subscription + dispatch loop. This Bun verb's
+   *                     --start path remains as a fallback when the Rust
+   *                     binary isn't present (degraded mode).
+   *   - `drain`       : one-shot cron-backstop drain across all topics.
+   *                     Processes pending events via subscriber_offsets
+   *                     table, exits 0.
+   *   - `handle-one`  : (ADR-202 §VII) single-event dispatch — load
+   *                     event by --event-id + --topic, run handler,
+   *                     save offset, exit. Spawned by atmux-relayd Rust
+   *                     binary once per arriving event. */
+  subverb: "start" | "drain" | "handle-one";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
   /** `--max-events N`: exit after processing N events (test ergonomics). */
   maxEvents?: number;
+  /** `--event-id ID`: required when subverb is `handle-one`. */
+  eventId?: string;
+  /** `--topic T`: required when subverb is `handle-one`. */
+  topic?: string;
 }
 
 export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
-  let subverb: "start" | "drain" | undefined;
+  let subverb: "start" | "drain" | "handle-one" | undefined;
   let teamDir: string | undefined;
   let once = false;
   let maxEvents: number | undefined;
+  let eventId: string | undefined;
+  let topic: string | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -65,6 +84,11 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
     }
     if (a === "--drain" || a === "drain") {
       subverb = "drain";
+      i += 1;
+      continue;
+    }
+    if (a === "--handle-one" || a === "handle-one") {
+      subverb = "handle-one";
       i += 1;
       continue;
     }
@@ -104,6 +128,30 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       i += 2;
       continue;
     }
+    if (a === "--event-id") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "relayd: --event-id requires a value",
+          hint: USAGE,
+        });
+      }
+      eventId = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--topic") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "relayd: --topic requires a value",
+          hint: USAGE,
+        });
+      }
+      topic = v;
+      i += 2;
+      continue;
+    }
     if (a?.startsWith("-") === true) {
       throw new UsageError({ what: `relayd: unknown flag: ${a}`, hint: USAGE });
     }
@@ -111,14 +159,30 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
   }
   if (subverb === undefined) {
     throw new UsageError({
-      what: "relayd: no sub-verb specified (--start or --drain)",
+      what: "relayd: no sub-verb specified (--start, --drain, or --handle-one)",
       hint: USAGE,
     });
+  }
+  if (subverb === "handle-one") {
+    if (eventId === undefined) {
+      throw new UsageError({
+        what: "relayd --handle-one: --event-id required",
+        hint: USAGE,
+      });
+    }
+    if (topic === undefined) {
+      throw new UsageError({
+        what: "relayd --handle-one: --topic required",
+        hint: USAGE,
+      });
+    }
   }
   const out: ParsedRelaydArgs = { subverb };
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (once) out.once = true;
   if (maxEvents !== undefined) out.maxEvents = maxEvents;
+  if (eventId !== undefined) out.eventId = eventId;
+  if (topic !== undefined) out.topic = topic;
   return out;
 }
 
@@ -134,6 +198,9 @@ export async function relayd(
   opts: CommitterOpts = {},
 ): Promise<number> {
   const parsed = parseRelaydArgs(argv);
+  if (parsed.subverb === "handle-one") {
+    return await relaydHandleOne(parsed, opts);
+  }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
   // matching sub-verb name.
@@ -148,4 +215,104 @@ export async function relayd(
     return await committerDaemonVerb(committerArgs, opts);
   }
   return await committerDrainVerb(committerArgs, opts);
+}
+
+/**
+ * `atmux relayd --handle-one --event-id X --topic T` — ADR-202 §VII.
+ *
+ * Single-event dispatch: load the named event from the events table,
+ * route to its topic handler, exit 0 on success / non-zero on failure.
+ * Spawned per-event by the Rust `atmux-relayd` binary, which owns the
+ * long-lived subscription + offset advancement.
+ *
+ * Bun process lifecycle per invocation: load → dispatch → exit. ~50ms
+ * cold start + handler time (1-30s for gitter merge, ~1s for lane-tick).
+ *
+ * Offset advancement is the Rust side's responsibility — this handler
+ * does NOT save offset. The Rust binary advances on observing exit-code
+ * 0 from this process.
+ */
+async function relaydHandleOne(
+  parsed: ParsedRelaydArgs,
+  opts: CommitterOpts = {},
+): Promise<number> {
+  const eventId = parsed.eventId;
+  const topic = parsed.topic;
+  if (eventId === undefined || topic === undefined) {
+    // Parser guarantees both; defensive check for ts narrowing.
+    throw new UsageError({
+      what: "relayd --handle-one: parser invariant violated (missing event-id or topic)",
+    });
+  }
+  if (topic === "task.done") {
+    // Need full event-driven context for the gitter merge handler.
+    const committerArgs = {
+      subverb: "daemon" as const,
+      ...(parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {}),
+    };
+    const ctx = await buildEventDrivenContext(committerArgs, opts);
+    try {
+      // Load the specific event by id (lex-> id so use > prevId trick).
+      // drainSince accepts a "lower-bound exclusive" cursor; we want
+      // exactly one event with this id, so use a cursor that's one
+      // codepoint below.
+      const beforeCursor = eventId.slice(0, -1) + String.fromCharCode(
+        eventId.charCodeAt(eventId.length - 1) - 1,
+      );
+      const rows = drainSince(ctx.db, {
+        topics: ["task.done"],
+        lastEventId: beforeCursor,
+        limit: 50,
+      });
+      const event = rows.find((r) => r.eventId === eventId);
+      if (event === undefined || event.topic !== "task.done") {
+        ctx.logger.log(`relayd --handle-one: event ${eventId} not found in task.done — skip`);
+        ctx.closeDb(ctx.db);
+        return 0; // not an error — event may have been pruned, or wrong topic
+      }
+      const outcome = await ctx.handler(event);
+      ctx.logger.log(
+        `relayd --handle-one: task.done eventId=${eventId} taskId=${event.taskId} outcome=${outcome}`,
+      );
+      ctx.closeDb(ctx.db);
+      return 0;
+    } catch (e) {
+      ctx.logger.log(
+        `relayd --handle-one: task.done eventId=${eventId} threw: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      ctx.closeDb(ctx.db);
+      return 1;
+    }
+  }
+  if (topic === "task.unclaimed") {
+    const dirOpts: ResolveDirOpts =
+      parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+    const team = await requireTeam(dirOpts);
+    const atmuxDir = await getAtmuxDir(dirOpts);
+    // No need to load the specific event payload — runLaneTick visits
+    // ALL members of the team and picks tasks for each lane. The
+    // event was just the wake-up signal.
+    try {
+      await runLaneTick(atmuxDir, team);
+      // Manually advance offset so this Bun process doesn't depend on
+      // the Rust caller checking exit code precisely. The Rust caller
+      // ALSO saves the offset on rc=0, which is idempotent.
+      const dbPath = join(atmuxDir, "state.db");
+      const db = openDatabase(dbPath, migrations);
+      try {
+        saveOffset(db, "atmux:lane-router", eventId);
+      } finally {
+        closeDatabase(db);
+      }
+      return 0;
+    } catch (e) {
+      process.stderr.write(
+        `relayd --handle-one: task.unclaimed eventId=${eventId} threw: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+      return 1;
+    }
+  }
+  throw new ConfigError({
+    what: `relayd --handle-one: unknown topic '${topic}' (expected task.done or task.unclaimed)`,
+  });
 }
