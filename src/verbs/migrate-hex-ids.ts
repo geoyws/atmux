@@ -225,11 +225,21 @@ function rewriteEventPayloads(db: Database, mappings: ReadonlyMap<string, string
 function applyKanbanMutations(db: Database, mappings: ReadonlyArray<IdMapping>): void {
   if (mappings.length === 0) return;
 
+  // Resolve non-id column list dynamically per table via PRAGMA so new
+  // migrations that ALTER TABLE … ADD COLUMN don't break this verb
+  // (observed 2026-05-22: v9→v10 added stories.merge_mode after this
+  // verb shipped — runtime PRAGMA introspection adapts automatically).
+  const nonIdCols = {
+    tasks: readNonIdColumns(db, "tasks"),
+    stories: readNonIdColumns(db, "stories"),
+    epics: readNonIdColumns(db, "epics"),
+  };
+
   // Phase 1: copy each legacy row to a new compound-keyed row.
   for (const m of mappings) {
     const table = m.scope === "t" ? "tasks" : m.scope === "s" ? "stories" : "epics";
     db.prepare(
-      `INSERT INTO ${table} SELECT ${quoteId(m.compoundId)} AS id, ${tableNonIdColumns(table)} FROM ${table} WHERE id = ?`,
+      `INSERT INTO ${table} SELECT ${quoteId(m.compoundId)} AS id, ${nonIdCols[table].join(", ")} FROM ${table} WHERE id = ?`,
     ).run(m.legacyId);
   }
 
@@ -280,61 +290,20 @@ function applyKanbanMutations(db: Database, mappings: ReadonlyArray<IdMapping>):
   }
 }
 
-/** Comma-list of every non-id column for the given kanban table.
- *  Cached at module load via the static map below — schema is fixed
- *  per the migration ladder so no need to PRAGMA at runtime. */
-function tableNonIdColumns(table: string): string {
-  const cols = NON_ID_COLUMNS[table];
-  if (cols === undefined) throw new Error(`tableNonIdColumns: unknown table '${table}'`);
-  return cols.join(", ");
+/** Resolve the non-`id` column list for `table` via PRAGMA — adapts
+ *  to ALTER TABLE … ADD COLUMN migrations that land after this verb
+ *  ships. Returns columns in their on-disk order so the INSERT …
+ *  SELECT below stays positional-safe. */
+function readNonIdColumns(db: Database, table: string): string[] {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+    cid: number;
+  }>;
+  return rows
+    .sort((a, b) => a.cid - b.cid)
+    .map((r) => r.name)
+    .filter((n) => n !== "id");
 }
-
-const NON_ID_COLUMNS: Record<string, ReadonlyArray<string>> = {
-  tasks: [
-    "subject",
-    "body",
-    "status",
-    "owner",
-    "deps",
-    "priority",
-    "epic",
-    "story",
-    "lane",
-    "deliverable",
-    "stale_min",
-    "driver_only",
-    "created_at",
-    "claimed_at",
-    "completed_at",
-    "claimed_from",
-    "created_from",
-    "note",
-    "extra",
-  ],
-  stories: [
-    "epic",
-    "title",
-    "body",
-    "acceptance_criteria",
-    "status",
-    "created_at",
-    "completed_at",
-    "advanced_at",
-    "review_signoff",
-    "merge_task_id",
-    "extra",
-  ],
-  epics: [
-    "title",
-    "body",
-    "status",
-    "driver_ref",
-    "created_at",
-    "completed_at",
-    "stories",
-    "extra",
-  ],
-};
 
 /** Quote an id as a SQL string literal — safe because compound IDs
  *  match a strict regex (no apostrophes / backslashes possible). */
@@ -492,40 +461,42 @@ export async function migrateHexIds(
       return 0;
     }
 
-    // Allocate sequence in a tx — rolled back if dry-run.
-    const mappings: IdMapping[] = [];
-    const txn = db.transaction(() => {
-      for (const legacyId of legacyIds) {
-        const scope = scopeChar(legacyId);
-        const assigned = assignSequenceToLegacyId(db, scope, legacyId);
-        mappings.push({
-          legacyId,
-          compoundId: assigned.compoundId,
-          scope,
-          sequenceN: assigned.sequenceN,
-        });
-      }
-      if (!opts.apply) {
-        // Roll back the sequence advances so dry-run is non-mutating.
-        throw new DryRunRollback();
-      }
-    });
-
+    // Single mutating-or-rollback transaction. On dry-run we throw
+    // DryRunRollback at the end so bun:sqlite rolls back the
+    // sequence-allocation INSERTs (otherwise the dry-run would
+    // permanently advance counters). On --apply we let the txn commit.
+    const finalMappings: IdMapping[] = [];
+    const lookup = new Map<string, string>();
+    let eventsTouched = 0;
     try {
-      txn();
+      db.transaction(() => {
+        for (const legacyId of legacyIds) {
+          const scope = scopeChar(legacyId);
+          const assigned = assignSequenceToLegacyId(db, scope, legacyId);
+          finalMappings.push({
+            legacyId,
+            compoundId: assigned.compoundId,
+            scope,
+            sequenceN: assigned.sequenceN,
+          });
+          lookup.set(legacyId, assigned.compoundId);
+        }
+        if (!opts.apply) {
+          throw new DryRunRollback();
+        }
+        applyKanbanMutations(db, finalMappings);
+        eventsTouched = rewriteEventPayloads(db, lookup);
+      })();
     } catch (e) {
       if (!(e instanceof DryRunRollback)) throw e;
-      // Re-allocate sequences ONLY for the dry-run print — but the
-      // sequence advances are rolled back at this point. Best-effort:
-      // re-compute mappings synthetically using peekId + 1..N for the
-      // print so the operator sees the SHAPE of the assignment.
-      // (Actual --apply re-allocates atomically inside the real txn.)
     }
 
     // Print plan (always — dry-run + apply both show what happened).
-    stdout(`migrate-hex-ids: team=${teamName} scope=${opts.scope} mappings=${mappings.length}\n`);
+    stdout(
+      `migrate-hex-ids: team=${teamName} scope=${opts.scope} mappings=${finalMappings.length}\n`,
+    );
     stdout("legacy → compound\n");
-    for (const m of mappings) {
+    for (const m of finalMappings) {
       stdout(`  ${m.legacyId} → ${m.compoundId}\n`);
     }
 
@@ -536,28 +507,7 @@ export async function migrateHexIds(
       return 0;
     }
 
-    // --apply path: snapshot BEFORE the mutating transaction commits.
-    // The dry-run-rollback above already discarded the sequence
-    // advances, so we re-run inside a fresh transaction that covers
-    // both the sequence reassignment AND all FK / payload updates.
-    const finalMappings: IdMapping[] = [];
-    const lookup = new Map<string, string>();
-    db.transaction(() => {
-      for (const legacyId of legacyIds) {
-        const scope = scopeChar(legacyId);
-        const assigned = assignSequenceToLegacyId(db, scope, legacyId);
-        finalMappings.push({
-          legacyId,
-          compoundId: assigned.compoundId,
-          scope,
-          sequenceN: assigned.sequenceN,
-        });
-        lookup.set(legacyId, assigned.compoundId);
-      }
-      applyKanbanMutations(db, finalMappings);
-      const eventsTouched = rewriteEventPayloads(db, lookup);
-      stdout(`migrate-hex-ids: events payloads rewritten = ${eventsTouched}\n`);
-    })();
+    stdout(`migrate-hex-ids: events payloads rewritten = ${eventsTouched}\n`);
 
     // Snapshot lands AFTER the txn commits — bun:sqlite doesn't expose
     // a pre-commit hook. Best-effort recoverability: snapshot is
