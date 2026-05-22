@@ -1,6 +1,6 @@
 # ADR-173: `atmux epic show <eid>` — enumerate child Stories + Tasks
 
-**Status**: Accepted — ratified by driver 2026-05-21 (read-side `atmux epic show <eid>` enumerates children; §OQ recommendations as-written: 1-level only, story-show fast-follow YES, no lane grouping, show all by default, no body truncation)
+**Status**: proposed (deferred: epic show children block absent in `src/verbs/epic.ts` as of 2026-05-22 audit — `atmux epic show <eid>` still renders id/status/subject/body/ref only, no Stories+Tasks tree; original ratification 2026-05-21 was bookkeeping — see §Amendment 2026-05-22 below.)
 **Date**: 2026-05-18
 **Driver-ref**: ADR-193 §OQ-4 carve-out — read-side ergonomics deferred to a sibling ADR. ADR-176 §Consequences also references the gap implicitly (criterion (d) requires children-indexable data; the operator-facing view of those children is what ADR-173 surfaces).
 **Relates**: ADR-007 (Epic/Story/Task hierarchy original spec), ADR-193 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-176 (criterion (d) — same data path), ADR-165 (CLI-surface pattern reference).
@@ -141,3 +141,18 @@ Reuse existing kanban-render helpers (`src/core/render-task.ts` or wherever per-
 - **ADR-007** — original Epic/Story/Task hierarchy. ADR-173 implements the missing read-side affordance documented but never built.
 - **ADR-006** — JSON output stability convention (additive keys are non-breaking).
 - **ADR-165** — CLI-surface pattern reference (atmux team set/get/unset is read-side-friendly; ADR-173 extends that ergonomics philosophy to the epic verb).
+
+
+## §Amendment 2026-05-22 — Status demoted to `proposed (deferred:)` after surface-vs-impl audit
+
+Demoted from `Accepted — ratified by driver 2026-05-21` → `proposed (deferred: impl not yet shipped)` per CLAUDE.md §Source-of-truth chain escape hatch ("Intentionally-held → `Status: proposed (deferred: <reason>)` so ADR-085 surfacer doesn't ping").
+
+**Why the demote**: the 2026-05-21 operator ratification batch (commit `b6d634f` "30 ADRs flipped proposed→accepted") was bookkeeping — clearing the `proposed` marker for ADRs whose impl was understood-to-have-shipped. That sweep folded in ADR-173 + sibling ADRs whose impl was still pending. 2026-05-22 docs audit (via Task `t-b1bd0f9c`, lead-routed `d-7b8d444f-batch` decision) confirms `atmux epic show <eid>` still renders only id/status/subject/body/ref — the Stories+Tasks tree block specified by §Decision is not in `src/verbs/epic.ts`. The decision contract (1-level children, story-show fast-follow, no lane grouping, show all by default, no body truncation) is intact + still the right shape; only the impl is pending.
+
+**Why deferred (not retracted)**: the ADR's substance — read-side affordance for the Epic/Story/Task hierarchy first documented in ADR-007 — is the right answer to the cross-cage observability gap. The proposal stands; the schedule slipped. A future impl-EPIC will close the gap; flipping back to `accepted` happens THEN, not before.
+
+**Original ratification context preserved**: `Accepted — ratified by driver 2026-05-21 (read-side atmux epic show <eid> enumerates children; §OQ recommendations as-written: 1-level only, story-show fast-follow YES, no lane grouping, show all by default, no body truncation)`. The §OQ recommendations in §Decision below remain as-ratified; the demote is a *schedule* signal, not a substance reversal.
+
+**Cross-refs**: `t-b1bd0f9c` (Status-vs-Impl drift audit — this ADR is one of 5 in the Path B cluster; siblings ADR-174/178/183/193); `d-7b8d444f-batch` (lead-recorded decision authorizing close-or-§Amendment per gap-class); CLAUDE.md §Source-of-truth chain (deferred-status escape hatch); `b6d634f` (the originating bookkeeping batch).
+
+**Filed as part of Path B cluster per d-7b8d444f-batch + t-b1bd0f9c (Status-vs-Impl audit).**
