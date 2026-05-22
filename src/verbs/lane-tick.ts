@@ -487,9 +487,9 @@ export async function runLaneTick(
   return { visited: lanedMembers.length, outcomes, autoDoneResolved };
 }
 
-// ---------- Per-event lean dispatcher (relayd direct send-keys, IX-A) ----------
+// ---------- Per-event lean dispatcher (orchd direct send-keys, IX-A) ----------
 
-/** Options for {@link runLaneTickForOne}. Sourced from the relayd
+/** Options for {@link runLaneTickForOne}. Sourced from the orchd
  *  `task.unclaimed` event payload (per ADR-202 §Amendment 2026-05-22
  *  IX-A T3 unified contract): the Rust dispatcher hands the Bun side
  *  `--task-id` + `--lane` from the payload. `TaskUnclaimedPayload` has
@@ -499,7 +499,7 @@ export async function runLaneTick(
  *  here; standalone override (without taskId+lane) is rejected at the
  *  parser layer. */
 export interface LaneTickForOneOpts {
-  /** Target task id (from the relayd task.unclaimed event). Used to
+  /** Target task id (from the orchd task.unclaimed event). Used to
    *  resolve the task on the kanban + as an audit-log identifier on
    *  the dispatch line; the worker still re-pulls via `claim --next`
    *  at its own scope (the same prompt runLaneTick uses). */
@@ -556,9 +556,9 @@ export interface LaneTickForOneDeps {
  * `safeSendKeysWithVerify`, skipping the cross-member enumeration loop
  * that {@link runLaneTick} does today.
  *
- * Called by the Rust atmux-relayd lane-router on each `task.unclaimed`
- * event (per ADR-202 §Amendment 2026-05-22 IX-A relayd direct send-keys).
- * The relayd has already routed the event to (task, member, lane); this
+ * Called by the Rust atmux-orchd lane-router on each `task.unclaimed`
+ * event (per ADR-202 §Amendment 2026-05-22 IX-A orchd direct send-keys).
+ * The orchd has already routed the event to (task, member, lane); this
  * function trusts that routing and dispatches the same `atmux claim
  * --next --as <member>` prompt {@link runLaneTick} uses, verified-once
  * via `safeSendKeysWithVerify`.

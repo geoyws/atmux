@@ -480,7 +480,7 @@ export async function committerDaemonVerb(
     // handler; offset for that handler is what gets advanced.
     const gitterConsumer = "atmux:gitter";
     const laneRouterConsumer = "atmux:lane-router";
-    // Watch BOTH topics in one subscription — relayd is the multi-topic
+    // Watch BOTH topics in one subscription — orchd is the multi-topic
     // dispatcher. The handler dispatches by topic; offsets are
     // per-consumer (gitter vs lane-router) for independent recovery.
     // We pick the LOWER of the two offsets as the initial cursor so

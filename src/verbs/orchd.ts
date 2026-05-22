@@ -1,4 +1,4 @@
-// ADR-202 §Amendment 2026-05-22 (V) — `atmux relayd` top-level verb.
+// ADR-202 §Amendment 2026-05-22 (V) — `atmux orchd` top-level verb.
 //
 // Promotes the event-router persona to first-class CLI surface. Splits
 // the verb tree to align with the persona separation:
@@ -6,7 +6,7 @@
 //   committer (verb) — merge-related operations:
 //     --sweep   (existing, ADR-134)   branch-walking auto-merger
 //
-//   relayd    (verb) — event-routing operations:
+//   orchd    (verb) — event-routing operations:
 //     --start   (long-lived NOTIFY/LISTEN consumer, multi-topic
 //                dispatcher — uses atmux-listener Rust subprocess)
 //     --drain   (one-shot cron-backstop drain across all topics)
@@ -37,14 +37,30 @@ import {
 import { ConfigError, UsageError } from "../errors.ts";
 import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
 
-const USAGE =
-  "atmux relayd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
+// ADR-224 §D6 — orchd subscription registry seam (Phase 1 zero-handler).
+// Re-exported from this verb module so Phase 2 + sibling EPIC e-a946af69
+// callers can register against the same canonical surface they see in
+// `atmux orchd` (verb file = entry-point) without an extra import hop.
+// The actual registry lives in src/core/orchd-registry.ts; this is the
+// public seam from the verb side. Phase 1 ships the wiring; handlers
+// stay empty until Phase 2 dispatches.
+import { visitOrchdSubscriptions } from "../core/orchd-registry.ts";
+export {
+  type OrchdSubscription,
+  ORCHD_SUBSCRIPTIONS,
+  registerOrchdSubscription,
+  findOrchdSubscriptionsByTopic,
+  visitOrchdSubscriptions,
+} from "../core/orchd-registry.ts";
 
-export interface ParsedRelaydArgs {
+const USAGE =
+  "atmux orchd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
+
+export interface ParsedOrchdArgs {
   /** Sub-verbs:
    *   - `start`       : long-lived multi-topic event-router. Pre-VII this
    *                     was the Bun long-lived process. Post-VII the
-   *                     Rust `atmux-relayd` binary owns the long-lived
+   *                     Rust `atmux-orchd` binary owns the long-lived
    *                     subscription + dispatch loop. This Bun verb's
    *                     --start path remains as a fallback when the Rust
    *                     binary isn't present (degraded mode).
@@ -53,7 +69,7 @@ export interface ParsedRelaydArgs {
    *                     table, exits 0.
    *   - `handle-one`  : (ADR-202 §VII) single-event dispatch — load
    *                     event by --event-id + --topic, run handler,
-   *                     save offset, exit. Spawned by atmux-relayd Rust
+   *                     save offset, exit. Spawned by atmux-orchd Rust
    *                     binary once per arriving event.
    *   - `status`      : (ADR-202 §VIII /btw #9) single-shot diagnostic —
    *                     subscriber offsets, recent event counts per
@@ -79,7 +95,7 @@ export interface ParsedRelaydArgs {
    *  member from lane via team.members[]). */
   taskId?: string;
   /** `--member NAME`: OPTIONAL override of the lane-to-member
-   *  derivation in {@link relaydHandleOne}. Standalone --member
+   *  derivation in {@link orchdHandleOne}. Standalone --member
    *  (without --task-id + --lane) is rejected as a wire-format
    *  mistake. */
   member?: string;
@@ -87,7 +103,7 @@ export interface ParsedRelaydArgs {
   lane?: string;
 }
 
-export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
+export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   let subverb: "start" | "drain" | "handle-one" | "status" | undefined;
   let teamDir: string | undefined;
   let once = false;
@@ -129,14 +145,14 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       const v = argv[i + 1];
       if (v === undefined || v === "") {
         throw new UsageError({
-          what: "relayd: --max-events requires a value",
+          what: "orchd: --max-events requires a value",
           hint: USAGE,
         });
       }
       const n = Number.parseInt(v, 10);
       if (!Number.isFinite(n) || n <= 0) {
         throw new UsageError({
-          what: `relayd: --max-events must be a positive integer (got ${v})`,
+          what: `orchd: --max-events must be a positive integer (got ${v})`,
           hint: USAGE,
         });
       }
@@ -148,7 +164,7 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       const v = argv[i + 1];
       if (v === undefined || v === "") {
         throw new UsageError({
-          what: "relayd: --team-dir requires a value",
+          what: "orchd: --team-dir requires a value",
           hint: USAGE,
         });
       }
@@ -160,7 +176,7 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       const v = argv[i + 1];
       if (v === undefined || v === "") {
         throw new UsageError({
-          what: "relayd: --event-id requires a value",
+          what: "orchd: --event-id requires a value",
           hint: USAGE,
         });
       }
@@ -172,7 +188,7 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       const v = argv[i + 1];
       if (v === undefined || v === "") {
         throw new UsageError({
-          what: "relayd: --topic requires a value",
+          what: "orchd: --topic requires a value",
           hint: USAGE,
         });
       }
@@ -184,7 +200,7 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       const v = argv[i + 1];
       if (v === undefined || v === "") {
         throw new UsageError({
-          what: "relayd: --task-id requires a value",
+          what: "orchd: --task-id requires a value",
           hint: USAGE,
         });
       }
@@ -196,7 +212,7 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       const v = argv[i + 1];
       if (v === undefined || v === "") {
         throw new UsageError({
-          what: "relayd: --member requires a value",
+          what: "orchd: --member requires a value",
           hint: USAGE,
         });
       }
@@ -208,7 +224,7 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       const v = argv[i + 1];
       if (v === undefined || v === "") {
         throw new UsageError({
-          what: "relayd: --lane requires a value",
+          what: "orchd: --lane requires a value",
           hint: USAGE,
         });
       }
@@ -217,26 +233,26 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       continue;
     }
     if (a?.startsWith("-") === true) {
-      throw new UsageError({ what: `relayd: unknown flag: ${a}`, hint: USAGE });
+      throw new UsageError({ what: `orchd: unknown flag: ${a}`, hint: USAGE });
     }
-    throw new UsageError({ what: `relayd: unexpected arg: ${a}`, hint: USAGE });
+    throw new UsageError({ what: `orchd: unexpected arg: ${a}`, hint: USAGE });
   }
   if (subverb === undefined) {
     throw new UsageError({
-      what: "relayd: no sub-verb specified (--start, --drain, or --handle-one)",
+      what: "orchd: no sub-verb specified (--start, --drain, or --handle-one)",
       hint: USAGE,
     });
   }
   if (subverb === "handle-one") {
     if (eventId === undefined) {
       throw new UsageError({
-        what: "relayd --handle-one: --event-id required",
+        what: "orchd --handle-one: --event-id required",
         hint: USAGE,
       });
     }
     if (topic === undefined) {
       throw new UsageError({
-        what: "relayd --handle-one: --topic required",
+        what: "orchd --handle-one: --topic required",
         hint: USAGE,
       });
     }
@@ -248,14 +264,14 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
   // lane via team.members[]. Wire-protocol contract:
   //   - --task-id + --lane is the required-pair (either both or neither).
   //   - --member is OPTIONAL — when provided it overrides lane-derivation;
-  //     when omitted, relaydHandleOne picks the first member with matching
+  //     when omitted, orchdHandleOne picks the first member with matching
   //     lane. Standalone --member (without the pair) is a wire-format
   //     mistake — reject so misconfigured callers fail loudly.
   if ((taskId === undefined) !== (lane === undefined)) {
     const missing = taskId === undefined ? "--task-id" : "--lane";
     throw new UsageError({
       what:
-        `relayd --handle-one: --task-id and --lane must be provided together ` +
+        `orchd --handle-one: --task-id and --lane must be provided together ` +
         `(missing: ${missing})`,
       hint: USAGE,
     });
@@ -263,11 +279,11 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
   if (member !== undefined && (taskId === undefined || lane === undefined)) {
     throw new UsageError({
       what:
-        "relayd --handle-one: --member is only valid alongside --task-id + --lane",
+        "orchd --handle-one: --member is only valid alongside --task-id + --lane",
       hint: USAGE,
     });
   }
-  const out: ParsedRelaydArgs = { subverb };
+  const out: ParsedOrchdArgs = { subverb };
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (once) out.once = true;
   if (maxEvents !== undefined) out.maxEvents = maxEvents;
@@ -280,22 +296,22 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
 }
 
 /**
- * `atmux relayd` top-level dispatch. Delegates to the existing
+ * `atmux orchd` top-level dispatch. Delegates to the existing
  * committer verb-layer functions via a re-shaped `ParsedCommitterArgs`
  * — single source of truth for the daemon/drain bodies stays in
  * `committer.ts`. Future amendment can move the bodies here once
  * legacy `committer --daemon` is removed.
  */
-export async function relayd(
+export async function orchd(
   argv: ReadonlyArray<string>,
   opts: CommitterOpts = {},
 ): Promise<number> {
-  const parsed = parseRelaydArgs(argv);
+  const parsed = parseOrchdArgs(argv);
   if (parsed.subverb === "handle-one") {
-    return await relaydHandleOne(parsed, opts);
+    return await orchdHandleOne(parsed, opts);
   }
   if (parsed.subverb === "status") {
-    return await relaydStatus(parsed);
+    return await orchdStatus(parsed);
   }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
@@ -308,17 +324,27 @@ export async function relayd(
     ...(parsed.maxEvents !== undefined ? { maxEvents: parsed.maxEvents } : {}),
   };
   if (parsed.subverb === "start") {
+    // ADR-224 §D6 — walk the subscription registry seam before handing
+    // off to the existing daemon body. Phase 1 ships an empty
+    // ORCHD_SUBSCRIPTIONS array → visitor fires zero times → no
+    // behavior change. Phase 2 + sibling EPIC e-a946af69 populate the
+    // array; the visitor callback then handles per-handler offset init
+    // + dispatch wiring. Today's gitter / lane-router subscriptions stay
+    // owned by committerDaemonVerb (single source of truth, ADR-202 §V).
+    visitOrchdSubscriptions(() => {
+      // Phase 2 wires this — see [[orchd-registry]] §D6 sketch.
+    });
     return await committerDaemonVerb(committerArgs, opts);
   }
   return await committerDrainVerb(committerArgs, opts);
 }
 
 /**
- * `atmux relayd --handle-one --event-id X --topic T` — ADR-202 §VII.
+ * `atmux orchd --handle-one --event-id X --topic T` — ADR-202 §VII.
  *
  * Single-event dispatch: load the named event from the events table,
  * route to its topic handler, exit 0 on success / non-zero on failure.
- * Spawned per-event by the Rust `atmux-relayd` binary, which owns the
+ * Spawned per-event by the Rust `atmux-orchd` binary, which owns the
  * long-lived subscription + offset advancement.
  *
  * Bun process lifecycle per invocation: load → dispatch → exit. ~50ms
@@ -328,8 +354,8 @@ export async function relayd(
  * does NOT save offset. The Rust binary advances on observing exit-code
  * 0 from this process.
  */
-async function relaydHandleOne(
-  parsed: ParsedRelaydArgs,
+async function orchdHandleOne(
+  parsed: ParsedOrchdArgs,
   opts: CommitterOpts = {},
 ): Promise<number> {
   const eventId = parsed.eventId;
@@ -337,7 +363,7 @@ async function relaydHandleOne(
   if (eventId === undefined || topic === undefined) {
     // Parser guarantees both; defensive check for ts narrowing.
     throw new UsageError({
-      what: "relayd --handle-one: parser invariant violated (missing event-id or topic)",
+      what: "orchd --handle-one: parser invariant violated (missing event-id or topic)",
     });
   }
   if (topic === "task.done") {
@@ -353,19 +379,19 @@ async function relaydHandleOne(
       // eventId + drainSince).
       const event = loadEventById(ctx.db, eventId);
       if (event === null || event.topic !== "task.done") {
-        ctx.logger.log(`relayd --handle-one: event ${eventId} not found in task.done — skip`);
+        ctx.logger.log(`orchd --handle-one: event ${eventId} not found in task.done — skip`);
         ctx.closeDb(ctx.db);
         return 0; // not an error — event may have been pruned, or wrong topic
       }
       const outcome = await ctx.handler(event);
       ctx.logger.log(
-        `relayd --handle-one: task.done eventId=${eventId} taskId=${event.taskId} outcome=${outcome}`,
+        `orchd --handle-one: task.done eventId=${eventId} taskId=${event.taskId} outcome=${outcome}`,
       );
       ctx.closeDb(ctx.db);
       return 0;
     } catch (e) {
       ctx.logger.log(
-        `relayd --handle-one: task.done eventId=${eventId} threw: ${e instanceof Error ? e.message : String(e)}`,
+        `orchd --handle-one: task.done eventId=${eventId} threw: ${e instanceof Error ? e.message : String(e)}`,
       );
       ctx.closeDb(ctx.db);
       return 1;
@@ -380,7 +406,7 @@ async function relaydHandleOne(
     // the Rust dispatcher passes (taskId, lane) from the event payload,
     // use the lean per-event dispatcher. Member derivation from lane
     // lives inside runLaneTickForOne (single source of truth). Absent
-    // --task-id / --lane (back-compat with older relayd events +
+    // --task-id / --lane (back-compat with older orchd events +
     // degraded-mode Bun --start path) → fall through to runLaneTick
     // (cross-member enumeration is the correct degraded behavior).
     try {
@@ -411,21 +437,21 @@ async function relaydHandleOne(
       return 0;
     } catch (e) {
       process.stderr.write(
-        `relayd --handle-one: task.unclaimed eventId=${eventId} threw: ${e instanceof Error ? e.message : String(e)}\n`,
+        `orchd --handle-one: task.unclaimed eventId=${eventId} threw: ${e instanceof Error ? e.message : String(e)}\n`,
       );
       return 1;
     }
   }
   throw new ConfigError({
-    what: `relayd --handle-one: unknown topic '${topic}' (expected task.done or task.unclaimed)`,
+    what: `orchd --handle-one: unknown topic '${topic}' (expected task.done or task.unclaimed)`,
   });
 }
 
 /**
- * `atmux relayd --status` — single-shot diagnostic (ADR-202 §VIII /btw #9).
+ * `atmux orchd --status` — single-shot diagnostic (ADR-202 §VIII /btw #9).
  *
- * Surfaces relayd's observable state in one command so operators can
- * grep + understand health without diving into `.atmux/logs/relayd.log`:
+ * Surfaces orchd's observable state in one command so operators can
+ * grep + understand health without diving into `.atmux/logs/orchd.log`:
  *   - Per-consumer subscriber offset (last processed event)
  *   - Total events table size + recent-window count (last hour)
  *   - Per-topic event count (last 24h)
@@ -434,7 +460,7 @@ async function relaydHandleOne(
  * Output is tab-separated lines, grep-able. Returns exit 0 always —
  * status is read-only diagnostic.
  */
-async function relaydStatus(parsed: ParsedRelaydArgs): Promise<number> {
+async function orchdStatus(parsed: ParsedOrchdArgs): Promise<number> {
   const dirOpts: ResolveDirOpts =
     parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);
@@ -445,7 +471,7 @@ async function relaydStatus(parsed: ParsedRelaydArgs): Promise<number> {
     const hourAgo = now - 3600;
     const dayAgo = now - 86_400;
 
-    process.stdout.write("# atmux relayd --status\n");
+    process.stdout.write("# atmux orchd --status\n");
     process.stdout.write(`team-dir\t${atmuxDir}\n`);
     process.stdout.write(`db\t${dbPath}\n`);
 
@@ -457,7 +483,7 @@ async function relaydStatus(parsed: ParsedRelaydArgs): Promise<number> {
       )
       .all() as Array<{ consumer_name: string; last_event_id: string; last_processed_at_sec: number }>;
     if (consumers.length === 0) {
-      process.stdout.write("(no consumers yet — relayd hasn't processed any events)\n");
+      process.stdout.write("(no consumers yet — orchd hasn't processed any events)\n");
     }
     for (const c of consumers) {
       const ageSec = now - c.last_processed_at_sec;

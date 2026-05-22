@@ -197,7 +197,7 @@ export function drainSince(db: Database, opts: DrainOpts): EventPayload[] {
  * row doesn't exist or the payload fails Zod validation.
  *
  * Replaces the cursor-trick (`lastEventId = eventId.slice(0,-1) +
- * String.fromCharCode(...)`) the relayd `--handle-one` path abused on
+ * String.fromCharCode(...)`) the orchd `--handle-one` path abused on
  * drainSince for single-event lookup. Brittle if the event-id encoding
  * ever changes; this is the canonical accessor.
  *
