@@ -1,6 +1,6 @@
 # ADR-178: Test-cage leak reaper — spinTmux sidecar + `atmux test-reaper` verb
 
-**Status**: Accepted — ratified by driver 2026-05-21 (spinTmux sidecar `.leak-tracker.json` + `atmux test-reaper` verb for test-cage cleanup; §OQ recommendations as-written)
+**Status**: proposed (deferred: impl not yet shipped; `atmux test-reaper` verb absent + no `src/core/leak-tracker*` module as of 2026-05-22 audit. Original ratification 2026-05-21 was bookkeeping-batch — see §Amendment 2026-05-22 below for the surface-vs-impl audit context.)
 **Date**: 2026-05-18
 **Driver-ref**: complaint c-27a1c8f4 (filed 2026-05-17 by medic; adjudicated by ombudsman 2026-05-17 to atmux team for in-process half; dotfiles half scoped out per `[[feedback_claude_skills_dotfiles_territory]]`).
 **Relates**: ADR-018 (per-team tmux socket isolation — same isolation pattern), ADR-058 (cage tiering — test cage is ephemeral Tier-1), ADR-162 (atmux owns its tmux infrastructure — cockpit-socket isolation; same defensive-cleanup discipline applied to tests).
@@ -165,3 +165,18 @@ Rejected alternative: write to a single `~/.atmux/state/test-fixture-registry.js
 - ADR-058 (cage tiering — ephemeral Tier-1).
 - ADR-162 (atmux owns its tmux infrastructure — cockpit-socket isolation; sibling discipline at the team layer).
 - Global CLAUDE.md `bun test --timeout` discipline (`~/.claude-personal/CLAUDE.md` §Engineering "bun test orphans survive BashTool timeouts").
+
+
+## §Amendment 2026-05-22 — Status demoted to `proposed (deferred:)` after surface-vs-impl audit
+
+Demoted from `Accepted — ratified by driver 2026-05-21` → `proposed (deferred: impl not yet shipped)` per CLAUDE.md §Source-of-truth chain escape hatch ("Intentionally-held → `Status: proposed (deferred: <reason>)` so ADR-085 surfacer doesn't ping").
+
+**Why the demote**: the 2026-05-21 operator ratification batch (commit `b6d634f` "30 ADRs flipped proposed→accepted") was bookkeeping — clearing the `proposed` marker for ADRs whose impl was understood-to-have-shipped. That sweep folded in ADR-178 + 7 sibling ADRs whose impl was still pending. 2026-05-22 docs audit (via Task `t-b1bd0f9c`, lead-routed `d-7b8d444f-batch` decision) confirms `atmux test-reaper` verb does not exist (`atmux test-reaper --help` → `unknown verb`) and no `src/core/leak-tracker*` module is on disk. The decision contract (spinTmux sidecar `.leak-tracker.json` + verb + reaper logic + bunfig integration) is intact + still the right shape; only the impl is pending.
+
+**Why deferred (not retracted)**: the ADR's substance — `spinTmux` sidecar tracker + `atmux test-reaper` verb invoked from `bunfig.toml` / `scripts/test-ci.sh` — is the right answer to the c-27a1c8f4 complaint (ombudsman-adjudicated 2026-05-17 to atmux team for the in-process half). The proposal stands; the schedule slipped. A future impl-EPIC will close the gap; flipping back to `accepted` happens THEN, not before.
+
+**Original ratification context preserved**: `Accepted — ratified by driver 2026-05-21 (spinTmux sidecar .leak-tracker.json + atmux test-reaper verb for test-cage cleanup; §OQ recommendations as-written)`. The §OQ recommendations in §Decision below remain as-ratified; the demote is a *schedule* signal, not a substance reversal.
+
+**Cross-refs**: `t-b1bd0f9c` (Status-vs-Impl drift audit — this ADR is one of 5 in the Path B cluster; siblings ADR-173/174/183/193); `d-7b8d444f-batch` (lead-recorded decision authorizing close-or-§Amendment per gap-class); CLAUDE.md §Source-of-truth chain (deferred-status escape hatch); `b6d634f` (the originating bookkeeping batch).
+
+**Filed via** t-b1bd0f9c (docs role, 2026-05-22). PoC §Amendment for the Path B cluster — lead spot-review the shape before bulk-applying to ADR-173/174/183/193.
