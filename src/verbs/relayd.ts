@@ -35,6 +35,7 @@ import {
   committerDrainVerb,
 } from "./committer.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team } from "../schema/team.ts";
 import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
 
 const USAGE =
@@ -71,15 +72,19 @@ export interface ParsedRelaydArgs {
   topic?: string;
   /** `--task-id ID`: (ADR-202 §Amendment 2026-05-22 IX-A) single-task
    *  hint for `handle-one --topic task.unclaimed`. The Rust dispatcher
-   *  passes the resolved (task, member, lane) tuple from the event
-   *  payload so the Bun side can use the lean per-event dispatcher
-   *  instead of the cross-member runLaneTick loop. Parser enforces
-   *  none-or-all-three: passing any of taskId/member/lane requires
-   *  all three. */
+   *  passes (taskId, lane) from the event payload so the Bun side can
+   *  use the lean per-event dispatcher instead of the cross-member
+   *  runLaneTick loop. Parser enforces: --task-id + --lane required-
+   *  pair (T3 revision dropped --member from the required-set since
+   *  TaskUnclaimedPayload has no member field — the handler derives
+   *  member from lane via team.members[]). */
   taskId?: string;
-  /** `--member NAME`: see {@link taskId}. */
+  /** `--member NAME`: OPTIONAL override of the lane-to-member
+   *  derivation in {@link relaydHandleOne}. Standalone --member
+   *  (without --task-id + --lane) is rejected as a wire-format
+   *  mistake. */
   member?: string;
-  /** `--lane L`: see {@link taskId}. */
+  /** `--lane L`: see {@link taskId} — required alongside --task-id. */
   lane?: string;
 }
 
@@ -237,23 +242,29 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       });
     }
   }
-  // ADR-202 §Amendment 2026-05-22 IX-A: --task-id / --member / --lane
-  // are all-or-none. Mixed combinations reject with the same shape as
-  // `--event-id requires --topic` so callers get a consistent error
-  // surface. None-set = fall through to existing runLaneTick path
-  // (back-compat for events lacking payload + degraded-mode Bun --start).
-  const oneOfThree = [
-    ["--task-id", taskId],
-    ["--member", member],
-    ["--lane", lane],
-  ] as const;
-  const present = oneOfThree.filter(([, v]) => v !== undefined);
-  if (present.length > 0 && present.length < 3) {
-    const missing = oneOfThree.filter(([, v]) => v === undefined).map(([f]) => f);
+  // ADR-202 §Amendment 2026-05-22 IX-A (T3 revision — see commit msg
+  // for t-c8efcec0): TaskUnclaimedPayload does NOT carry `member`
+  // (task is unclaimed at emit time), so the Rust dispatcher passes
+  // only `--task-id` + `--lane`. The Bun handler derives member from
+  // lane via team.members[]. Wire-protocol contract:
+  //   - --task-id + --lane is the required-pair (either both or neither).
+  //   - --member is OPTIONAL — when provided it overrides lane-derivation;
+  //     when omitted, relaydHandleOne picks the first member with matching
+  //     lane. Standalone --member (without the pair) is a wire-format
+  //     mistake — reject so misconfigured callers fail loudly.
+  if ((taskId === undefined) !== (lane === undefined)) {
+    const missing = taskId === undefined ? "--task-id" : "--lane";
     throw new UsageError({
       what:
-        `relayd --handle-one: --task-id/--member/--lane must be provided together ` +
-        `(missing: ${missing.join(", ")})`,
+        `relayd --handle-one: --task-id and --lane must be provided together ` +
+        `(missing: ${missing})`,
+      hint: USAGE,
+    });
+  }
+  if (member !== undefined && (taskId === undefined || lane === undefined)) {
+    throw new UsageError({
+      what:
+        "relayd --handle-one: --member is only valid alongside --task-id + --lane",
       hint: USAGE,
     });
   }
@@ -367,23 +378,19 @@ async function relaydHandleOne(
     const team = await requireTeam(dirOpts);
     const atmuxDir = await getAtmuxDir(dirOpts);
     // ADR-202 §Amendment 2026-05-22 IX-A: when the Rust dispatcher
-    // passes the resolved (task, member, lane) tuple, use the lean
+    // passes (taskId, lane) from the event payload, use the lean
     // per-event dispatcher — single `safeSendKeysWithVerify` call to
-    // ONE member, skipping the cross-member enumeration loop. Absent
-    // payload (back-compat with older relayd events + degraded-mode
-    // Bun --start path) → fall through to runLaneTick. Parser enforces
-    // none-or-all-three so the branch condition is unambiguous.
+    // ONE member, skipping the cross-member enumeration loop. Member
+    // is derived from lane via team.members[] here (T3 revision —
+    // TaskUnclaimedPayload has no member field). Absent --task-id /
+    // --lane (back-compat with older relayd events + degraded-mode
+    // Bun --start path) OR lane has no matching member → fall through
+    // to runLaneTick (cross-member enumeration is the correct degraded
+    // behavior).
     try {
-      if (
-        parsed.taskId !== undefined &&
-        parsed.member !== undefined &&
-        parsed.lane !== undefined
-      ) {
-        await runLaneTickForOne(atmuxDir, team, {
-          taskId: parsed.taskId,
-          member: parsed.member,
-          lane: parsed.lane,
-        });
+      const leanOpts = resolveLeanDispatchOpts(parsed, team);
+      if (leanOpts !== null) {
+        await runLaneTickForOne(atmuxDir, team, leanOpts);
       } else {
         // No need to load the specific event payload — runLaneTick visits
         // ALL members of the team and picks tasks for each lane. The
@@ -412,6 +419,54 @@ async function relaydHandleOne(
   throw new ConfigError({
     what: `relayd --handle-one: unknown topic '${topic}' (expected task.done or task.unclaimed)`,
   });
+}
+
+/**
+ * Resolve lean per-event dispatch opts for `task.unclaimed`. Returns
+ * the {taskId, member, lane} tuple {@link runLaneTickForOne} needs,
+ * OR `null` when the caller should fall through to the cross-member
+ * `runLaneTick` enumeration.
+ *
+ * Three null-cases collapse into the same fallback:
+ *   1. --task-id or --lane absent — Rust dispatcher couldn't read the
+ *      payload (legacy event lacking payload column, payload parse
+ *      failure, etc).
+ *   2. lane is set but no team.members[] entry carries that lane —
+ *      misconfigured roster; cross-member enumeration is the correct
+ *      degraded behavior (operator-visible via stderr line).
+ *   3. (Explicit --member override): if --member was passed alongside
+ *      --task-id + --lane, use it verbatim instead of derivation.
+ *      Standalone --member was already rejected by the parser.
+ *
+ * Source of truth for member.lane: `team.members[]` filtered on
+ * `.lane === opts.lane`, first-match wins. For 1-member-per-lane
+ * teams (modern epic-team default) the pick is deterministic; for
+ * teams with multiple workers per lane the first-listed-member wins
+ * — a deliberate simplification, since the lean dispatch path is for
+ * latency-sensitive nudging, not for load-balanced routing (lane-tick
+ * cron still drains the lane via cross-member enumeration as the
+ * always-on backstop).
+ */
+function resolveLeanDispatchOpts(
+  parsed: ParsedRelaydArgs,
+  team: Team,
+): { taskId: string; member: string; lane: string } | null {
+  if (parsed.taskId === undefined || parsed.lane === undefined) {
+    return null;
+  }
+  let member = parsed.member;
+  if (member === undefined) {
+    const candidate = team.members.find((m) => m.lane === parsed.lane);
+    if (candidate === undefined) {
+      process.stderr.write(
+        `relayd --handle-one: task.unclaimed lane=${parsed.lane} has no member in ` +
+          `team.members[] — falling through to runLaneTick\n`,
+      );
+      return null;
+    }
+    member = candidate.name;
+  }
+  return { taskId: parsed.taskId, member, lane: parsed.lane };
 }
 
 /**
