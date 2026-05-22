@@ -183,7 +183,13 @@ export async function maybeSpawnRelaydWindow(
       `  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] relayd: atmux-relayd Rust binary not on PATH; falling back to Bun atmux relayd --start"; ` +
       `  atmux relayd --start 2>&1 | tee -a .atmux/logs/relayd.log; ` +
       `fi; ` +
-      `RC=$?; ` +
+      // Use PIPESTATUS[0] not $? — the relayd is piped to tee, so $?
+      // captures tee's status (almost always 0) and swallows the
+      // daemon's actual exit code. Without this fix the supervisor
+      // believes every relayd exit is clean and never restarts, which
+      // silently disables the circuit-breaker entirely (ADR-202 §XIV
+      // / T5.1 verdict, t-4eb9cd40).
+      `RC=\${PIPESTATUS[0]}; ` +
       `if [[ $RC -eq 0 ]]; then ` +
       `echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] relayd: clean exit, not restarting"; ` +
       `exit 0; ` +

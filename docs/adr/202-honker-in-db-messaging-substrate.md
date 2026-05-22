@@ -1006,3 +1006,48 @@ Out-of-scope kanban references that point to legacy hex IDs OUTSIDE the current 
 - **Multi-team coordination**: each team's `state.db` migrates independently. No cross-team rename propagation.
 - **Tests**: T4.2 ships unit tests covering all the verb's branches (dry-run plan / apply path / scope filter / snapshot / branch-rename failure / ADR rewrite).
 - **`c-` scope (complaints PK)**: complaint IDs use the same hex shape but live in their own table; their migration is a follow-up because `id_sequences` doesn't yet carry a `c` scope. `complaints.related_task_id` IS updated (it's a FK to tasks).
+
+## §Amendment 2026-05-22 (XIV) — Relayd circuit-breaker backlog-restart audit
+
+Filed under epic e-b7a702d1 (/btw correctness fold-in) story s-b9cd9c3d per T5.1 (t-4eb9cd40). Pinned by `tests/unit/core/relayd-window.test.ts` "circuit-breaker backlog-restart tolerance (T5.1)" describe block.
+
+### Operator scenario
+
+Relayd has been down through accumulated backlog (5000 events). When it comes back up and starts replaying in batches of ~100, transient errors (db lock contention, OOM back-pressure, mid-batch handler thrown) can trigger 3–4 brief intra-batch restarts within the first 60 seconds of recovery. The circuit-breaker must NOT trip — tripping forfeits the catch-up benefit (cron `--drain` then shoulders the whole backlog at the 1-min cadence floor).
+
+### Verdict — Option B (FAIL on current code)
+
+Initial test FAILED on current code at `src/core/relayd-window.ts:186` (the supervisor's `RC=$?` line, pre-tweak).
+
+**Root cause**: the supervisor wrapped the daemon invocation in a pipe-to-`tee`-for-logging (`atmux-relayd … | tee -a .atmux/logs/relayd.log`) and captured `RC=$?`. In bash, `$?` after a pipeline reports the LAST command's exit code — that's `tee`, which almost always exits 0. The daemon's actual exit code was silently swallowed. With `RC=0` on every iteration, the supervisor's `if [[ $RC -eq 0 ]]; then echo "clean exit, not restarting"; exit 0; fi` branch always fired, and the restart loop never ran. The circuit-breaker existed in the code but was UNREACHABLE — every relayd crash terminated the supervisor wrapper too, leaving an empty tmux window for the operator + cron `--drain` to backstop.
+
+This was a silent regression: relayd would spawn fine, daemon would die on first transient hiccup, supervisor would exit clean, no operator-visible alert. Auto-restart was effectively never wired despite shipping with full code paths.
+
+**Tweak landed**: changed `RC=$?` → `RC=${PIPESTATUS[0]}` in the supervisor command, which captures the LEFTMOST pipeline command's exit code (i.e. the daemon's actual rc). Both legs of the if-else (Rust `atmux-relayd` and Bun-fallback `atmux relayd --start`) feed the same pipe shape, so a single capture point covers both.
+
+### Behavior — pre/post tweak
+
+| Scenario | Pre-tweak ($? — tee's rc) | Post-tweak (${PIPESTATUS[0]} — daemon's rc) |
+|----------|--------------------------|---------------------------------------------|
+| Daemon clean exit (rc=0) | RC=0 → supervisor exits clean | RC=0 → supervisor exits clean (unchanged) |
+| Daemon crash (rc=1) | RC=0 → supervisor exits clean (BUG: no restart) | RC=1 → supervisor restarts after 5s back-off |
+| 3 quick crashes in 60s | (loop never ran) | crash_count=3, loop continues, breaker not tripped |
+| 5 quick crashes in 60s | (loop never ran) | crash_count=5 → CIRCUIT BREAKER tripped, exit 42 |
+| 4 crashes then 70s elapsed, 4 more crashes | (loop never ran) | crash_window reset at the 70s mark, fresh budget — breaker not tripped |
+
+### Regression pin
+
+`tests/unit/core/relayd-window.test.ts` describe `maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (T5.1)`. Four cases:
+
+1. **Window-reset string inspection** — supervisor cmd contains the 60s rolling-window reset (`ELAPSED -gt 60`).
+2. **Counter-increment ordering** — increment line precedes the threshold check (off-by-one resistance).
+3. **3-crash bash execution** — runs the real supervisor with a counting stub that fails 3 times then succeeds. Asserts the supervisor restarts each crash + exits clean on the 4th attempt (rc=0, "clean exit, not restarting" in output, no "CIRCUIT BREAKER tripped").
+4. **5-crash bash execution** — always-fail stub. Asserts the breaker trips (rc=42, "CIRCUIT BREAKER tripped" in output).
+
+Cases 3 and 4 invoke the actual bash supervisor cmd in a subprocess with stubbed `atmux relayd --start` and a tightened back-off (`sleep 0` instead of `sleep 5`) so the tests finish well under the 30s timeout. They exercise the real RC-capture path, so a future regression that re-introduces the `RC=$?` bug (or any other pipeline-swallow shape) trips case 4 immediately.
+
+### Out of scope for this amendment
+
+- **Exponential back-off** between crash restarts — the current 5s fixed delay is fine for transient-error catch-up. Operator can tune via a future config knob; not a correctness gap.
+- **Dead-letter routing** for events that consistently throw inside the same handler — relayd's responsibility ends at dispatch; consumers handle idempotency + poison-skipping (per ADR-203 §D7).
+- **Reset across `atmux start`** — when the operator does `atmux start` after a tripped breaker, the supervisor spawns fresh and `CRASH_COUNT=0` starts over. Intentional: operator-acknowledged respawn is the recovery signal.
