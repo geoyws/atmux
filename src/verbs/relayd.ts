@@ -35,7 +35,6 @@ import {
   committerDrainVerb,
 } from "./committer.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import type { Team } from "../schema/team.ts";
 import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
 
 const USAGE =
@@ -377,19 +376,20 @@ async function relaydHandleOne(
       parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
     const team = await requireTeam(dirOpts);
     const atmuxDir = await getAtmuxDir(dirOpts);
-    // ADR-202 §Amendment 2026-05-22 IX-A: when the Rust dispatcher
-    // passes (taskId, lane) from the event payload, use the lean
-    // per-event dispatcher — single `safeSendKeysWithVerify` call to
-    // ONE member, skipping the cross-member enumeration loop. Member
-    // is derived from lane via team.members[] here (T3 revision —
-    // TaskUnclaimedPayload has no member field). Absent --task-id /
-    // --lane (back-compat with older relayd events + degraded-mode
-    // Bun --start path) OR lane has no matching member → fall through
-    // to runLaneTick (cross-member enumeration is the correct degraded
-    // behavior).
+    // ADR-202 §Amendment 2026-05-22 IX-A (T3 unified contract): when
+    // the Rust dispatcher passes (taskId, lane) from the event payload,
+    // use the lean per-event dispatcher. Member derivation from lane
+    // lives inside runLaneTickForOne (single source of truth). Absent
+    // --task-id / --lane (back-compat with older relayd events +
+    // degraded-mode Bun --start path) → fall through to runLaneTick
+    // (cross-member enumeration is the correct degraded behavior).
     try {
-      const leanOpts = resolveLeanDispatchOpts(parsed, team);
-      if (leanOpts !== null) {
+      if (parsed.taskId !== undefined && parsed.lane !== undefined) {
+        const leanOpts: { taskId: string; lane: string; member?: string } = {
+          taskId: parsed.taskId,
+          lane: parsed.lane,
+        };
+        if (parsed.member !== undefined) leanOpts.member = parsed.member;
         await runLaneTickForOne(atmuxDir, team, leanOpts);
       } else {
         // No need to load the specific event payload — runLaneTick visits
@@ -419,54 +419,6 @@ async function relaydHandleOne(
   throw new ConfigError({
     what: `relayd --handle-one: unknown topic '${topic}' (expected task.done or task.unclaimed)`,
   });
-}
-
-/**
- * Resolve lean per-event dispatch opts for `task.unclaimed`. Returns
- * the {taskId, member, lane} tuple {@link runLaneTickForOne} needs,
- * OR `null` when the caller should fall through to the cross-member
- * `runLaneTick` enumeration.
- *
- * Three null-cases collapse into the same fallback:
- *   1. --task-id or --lane absent — Rust dispatcher couldn't read the
- *      payload (legacy event lacking payload column, payload parse
- *      failure, etc).
- *   2. lane is set but no team.members[] entry carries that lane —
- *      misconfigured roster; cross-member enumeration is the correct
- *      degraded behavior (operator-visible via stderr line).
- *   3. (Explicit --member override): if --member was passed alongside
- *      --task-id + --lane, use it verbatim instead of derivation.
- *      Standalone --member was already rejected by the parser.
- *
- * Source of truth for member.lane: `team.members[]` filtered on
- * `.lane === opts.lane`, first-match wins. For 1-member-per-lane
- * teams (modern epic-team default) the pick is deterministic; for
- * teams with multiple workers per lane the first-listed-member wins
- * — a deliberate simplification, since the lean dispatch path is for
- * latency-sensitive nudging, not for load-balanced routing (lane-tick
- * cron still drains the lane via cross-member enumeration as the
- * always-on backstop).
- */
-function resolveLeanDispatchOpts(
-  parsed: ParsedRelaydArgs,
-  team: Team,
-): { taskId: string; member: string; lane: string } | null {
-  if (parsed.taskId === undefined || parsed.lane === undefined) {
-    return null;
-  }
-  let member = parsed.member;
-  if (member === undefined) {
-    const candidate = team.members.find((m) => m.lane === parsed.lane);
-    if (candidate === undefined) {
-      process.stderr.write(
-        `relayd --handle-one: task.unclaimed lane=${parsed.lane} has no member in ` +
-          `team.members[] — falling through to runLaneTick\n`,
-      );
-      return null;
-    }
-    member = candidate.name;
-  }
-  return { taskId: parsed.taskId, member, lane: parsed.lane };
 }
 
 /**

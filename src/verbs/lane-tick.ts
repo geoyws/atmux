@@ -491,32 +491,48 @@ export async function runLaneTick(
 
 /** Options for {@link runLaneTickForOne}. Sourced from the relayd
  *  `task.unclaimed` event payload (per ADR-202 §Amendment 2026-05-22
- *  IX-A): the Rust dispatcher resolves the (task, member, lane) tuple
- *  upstream and hands it to the Bun side as `--task-id / --member /
- *  --lane`. */
+ *  IX-A T3 unified contract): the Rust dispatcher hands the Bun side
+ *  `--task-id` + `--lane` from the payload. `TaskUnclaimedPayload` has
+ *  no `member` field (task is unclaimed), so the dispatcher derives
+ *  member from `team.members[]` via `lane` lookup. `--member` is an
+ *  OPTIONAL explicit override on the wire that maps to {@link member}
+ *  here; standalone override (without taskId+lane) is rejected at the
+ *  parser layer. */
 export interface LaneTickForOneOpts {
   /** Target task id (from the relayd task.unclaimed event). Used to
    *  resolve the task on the kanban + as an audit-log identifier on
    *  the dispatch line; the worker still re-pulls via `claim --next`
    *  at its own scope (the same prompt runLaneTick uses). */
   taskId: string;
-  /** Target member name (from the relayd routing). MUST exist in
-   *  `team.members[]`; absent → outcome="skip-member-not-found". */
-  member: string;
-  /** Lane of the target task (from the relayd routing). Logged-only
-   *  here — the source of truth is the Rust dispatcher's routing. */
+  /** Lane of the target task. Drives lane-to-member derivation when
+   *  {@link member} is omitted: first `team.members[]` entry whose
+   *  `.lane === opts.lane` wins. For 1-member-per-lane teams (modern
+   *  epic-team default) the pick is deterministic. */
   lane: string;
+  /** Optional override of lane-to-member derivation. When provided,
+   *  bypasses lane-lookup and dispatches directly to this member;
+   *  MUST exist in `team.members[]` (absent → outcome="skip-member-
+   *  not-found"). When omitted (the Rust dispatcher's default), the
+   *  derivation runs against `team.members[].lane`. */
+  member?: string;
 }
 
 export type LaneTickForOneOutcome =
   | "injected"
   | "send-failed"
+  /** Lane-derivation failed: no `team.members[]` entry with matching
+   *  `.lane`. Distinct from skip-member-not-found (which fires when
+   *  an explicit --member override doesn't resolve) so operators can
+   *  disambiguate misconfigured roster vs misrouted CLI invocation. */
+  | "skip-no-member-for-lane"
   | "skip-member-not-found"
   | "skip-task-not-found";
 
 export interface LaneTickForOneResult {
   outcome: LaneTickForOneOutcome;
-  member: string;
+  /** Resolved member name (post-derivation when --member omitted),
+   *  OR `null` when derivation failed (skip-no-member-for-lane). */
+  member: string | null;
   taskId: string;
   /** From safeSendKeysWithVerify — number of send attempts (1 on first
    *  verify-pass, up to retries+1 otherwise). 0 when skipped pre-send. */
@@ -561,18 +577,43 @@ export async function runLaneTickForOne(
 ): Promise<LaneTickForOneResult> {
   const log = deps.log ?? defaultLog;
 
-  const member = team.members.find((m) => m.name === opts.member);
-  if (member === undefined) {
-    log(
-      `lane-tick-one: ${opts.member}: member not in team.members[] — skip ` +
-        `(task=${opts.taskId}, lane=${opts.lane})`,
-    );
-    return {
-      outcome: "skip-member-not-found",
-      member: opts.member,
-      taskId: opts.taskId,
-      attempts: 0,
-    };
+  // Resolve member: explicit override > lane-derivation. For the
+  // override path the wire-protocol is "the caller knew the exact
+  // member"; for the derivation path the wire-protocol is "the Rust
+  // dispatcher passed --lane only, please pick the first matching
+  // member". 1-member-per-lane is the modern epic-team default;
+  // multi-member-per-lane falls back to first-listed-wins (deliberate
+  // simplification — the polled lane-tick remains the load-balanced
+  // path).
+  let member: TeamMember | undefined;
+  if (opts.member !== undefined) {
+    member = team.members.find((m) => m.name === opts.member);
+    if (member === undefined) {
+      log(
+        `lane-tick-one: ${opts.member}: member not in team.members[] — skip ` +
+          `(task=${opts.taskId}, lane=${opts.lane})`,
+      );
+      return {
+        outcome: "skip-member-not-found",
+        member: opts.member,
+        taskId: opts.taskId,
+        attempts: 0,
+      };
+    }
+  } else {
+    member = team.members.find((m) => m.lane === opts.lane);
+    if (member === undefined) {
+      log(
+        `lane-tick-one: lane=${opts.lane} has no member in team.members[] — skip ` +
+          `(task=${opts.taskId})`,
+      );
+      return {
+        outcome: "skip-no-member-for-lane",
+        member: null,
+        taskId: opts.taskId,
+        attempts: 0,
+      };
+    }
   }
 
   // Resolve task by id so a vanished task (claimed by sibling between
@@ -583,12 +624,12 @@ export async function runLaneTickForOne(
   const task = await showTask(atmuxDir, opts.taskId);
   if (task === null) {
     log(
-      `lane-tick-one: ${opts.member}: task ${opts.taskId} not in kanban — skip ` +
+      `lane-tick-one: ${member.name}: task ${opts.taskId} not in kanban — skip ` +
         `(lane=${opts.lane})`,
     );
     return {
       outcome: "skip-task-not-found",
-      member: opts.member,
+      member: member.name,
       taskId: opts.taskId,
       attempts: 0,
     };
@@ -627,7 +668,7 @@ export async function runLaneTickForOne(
     );
     return {
       outcome: "injected",
-      member: opts.member,
+      member: member.name,
       taskId: opts.taskId,
       attempts: result.attempts,
     };
@@ -638,7 +679,7 @@ export async function runLaneTickForOne(
   );
   return {
     outcome: "send-failed",
-    member: opts.member,
+    member: member.name,
     taskId: opts.taskId,
     attempts: result.attempts,
   };

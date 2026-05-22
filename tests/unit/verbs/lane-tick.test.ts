@@ -21,6 +21,7 @@ import {
   parseLaneTickArgs,
   runAutoDoneScan,
   runLaneTick,
+  runLaneTickForOne,
 } from "../../../src/verbs/lane-tick.ts";
 
 let teamDir: string;
@@ -862,5 +863,196 @@ describe("laneTick verb — top-level", () => {
       log: () => {},
     });
     expect(result.visited).toBe(0);
+  });
+});
+
+// ---------- runLaneTickForOne — IX-A lean per-event dispatcher ----------
+//
+// Per ADR-202 §Amendment 2026-05-22 IX-A T3 unified contract: dispatch
+// ONE task to ONE member, deriving member from lane via team.members[]
+// when the explicit override is absent. The Rust dispatcher passes
+// (taskId, lane) from TaskUnclaimedPayload; --member remains an
+// optional override. These tests exercise the dispatcher's contract
+// against the four major outcomes:
+//   - injected (happy path: lane-derivation succeeds + send verified)
+//   - skip-no-member-for-lane (roster has nobody for that lane)
+//   - skip-task-not-found (event references a vanished task)
+//   - skip-member-not-found (explicit override fails to resolve)
+// + a override-bypasses-derivation case to lock the precedence rule.
+//
+// composerEmpty() verifies via `/❯\s*$/m`; the post-send capture
+// fixture below satisfies that regex on the first poll so
+// safeSendKeysWithVerify returns success on attempt 1.
+describe("runLaneTickForOne — IX-A lean per-event dispatcher", () => {
+  // Fixture that satisfies composerEmpty() — the verifier
+  // safeSendKeysWithVerify uses on the post-send capture poll.
+  const FIXTURE_COMPOSER_EMPTY = "tok 67k/100  ⏵⏵ auto mode on\n❯ \n";
+
+  async function seedKanbanWithTask(
+    id: string,
+    subject: string,
+    lane: string,
+  ): Promise<void> {
+    const kanban = {
+      tasks: [
+        {
+          id,
+          subject,
+          status: "todo",
+          owner: null,
+          lane,
+          createdAt: Math.floor(Date.now() / 1000) - 60,
+        },
+      ],
+      epics: [],
+      stories: [],
+    };
+    await writeFile(join(atmuxDir, "kanban.json"), JSON.stringify(kanban));
+  }
+
+  test("happy path: taskId + lane derives member from team.json, calls send-keys exactly once with claim --next prompt", async () => {
+    await seedThreeMemberTeam({ withLanes: { m1: "be", m2: "fe", m3: "db" } });
+    const team = await loadTeam({ teamDir });
+    await seedKanbanWithTask("t-target", "do thing", "be");
+
+    const sendCalls: Array<{ target: string; keys: string }> = [];
+    const sendKeysFn = async (target: string, keys: string): Promise<void> => {
+      sendCalls.push({ target, keys });
+    };
+
+    const result = await runLaneTickForOne(
+      atmuxDir,
+      team,
+      { taskId: "t-target", lane: "be" },
+      {
+        capture: async () => FIXTURE_COMPOSER_EMPTY,
+        sendKeysFn,
+        shimOps: null,
+        log: () => {},
+      },
+    );
+
+    expect(result.outcome).toBe("injected");
+    // First member with lane=be is m1 (m2=fe, m3=db).
+    expect(result.member).toBe("m1");
+    expect(result.taskId).toBe("t-target");
+    expect(sendCalls.length).toBe(1);
+    expect(sendCalls[0]?.keys).toBe("atmux claim --next --as m1");
+    // Window target should contain the derived member's name.
+    expect(sendCalls[0]?.target).toContain("m1");
+  });
+
+  test("lane has no matching member → skip-no-member-for-lane (member null, no send)", async () => {
+    await seedThreeMemberTeam({ withLanes: { m1: "fe", m2: "fe", m3: "db" } });
+    const team = await loadTeam({ teamDir });
+    await seedKanbanWithTask("t-target", "orphan", "be");
+
+    const sendCalls: Array<{ target: string; keys: string }> = [];
+    const sendKeysFn = async (target: string, keys: string): Promise<void> => {
+      sendCalls.push({ target, keys });
+    };
+
+    const result = await runLaneTickForOne(
+      atmuxDir,
+      team,
+      { taskId: "t-target", lane: "be" },
+      {
+        capture: async () => FIXTURE_COMPOSER_EMPTY,
+        sendKeysFn,
+        shimOps: null,
+        log: () => {},
+      },
+    );
+
+    expect(result.outcome).toBe("skip-no-member-for-lane");
+    expect(result.member).toBeNull();
+    expect(result.taskId).toBe("t-target");
+    expect(sendCalls.length).toBe(0);
+  });
+
+  test("task not in kanban → skip-task-not-found (no-op, no send, member still resolved for the log line)", async () => {
+    await seedThreeMemberTeam({ withLanes: { m1: "be" } });
+    const team = await loadTeam({ teamDir });
+    // Intentionally NO seedKanbanWithTask call — empty kanban.
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ tasks: [], epics: [], stories: [] }),
+    );
+
+    const sendCalls: Array<{ target: string; keys: string }> = [];
+    const sendKeysFn = async (target: string, keys: string): Promise<void> => {
+      sendCalls.push({ target, keys });
+    };
+
+    const result = await runLaneTickForOne(
+      atmuxDir,
+      team,
+      { taskId: "t-vanished", lane: "be" },
+      {
+        capture: async () => FIXTURE_COMPOSER_EMPTY,
+        sendKeysFn,
+        shimOps: null,
+        log: () => {},
+      },
+    );
+
+    expect(result.outcome).toBe("skip-task-not-found");
+    expect(result.member).toBe("m1");
+    expect(sendCalls.length).toBe(0);
+  });
+
+  test("--member override: bypasses lane-derivation, dispatches to explicit member (not first-lane-match)", async () => {
+    await seedThreeMemberTeam({ withLanes: { m1: "be", m2: "be", m3: "fe" } });
+    const team = await loadTeam({ teamDir });
+    await seedKanbanWithTask("t-target", "do thing", "be");
+
+    const sendCalls: Array<{ target: string; keys: string }> = [];
+    const sendKeysFn = async (target: string, keys: string): Promise<void> => {
+      sendCalls.push({ target, keys });
+    };
+
+    const result = await runLaneTickForOne(
+      atmuxDir,
+      team,
+      { taskId: "t-target", lane: "be", member: "m2" },
+      {
+        capture: async () => FIXTURE_COMPOSER_EMPTY,
+        sendKeysFn,
+        shimOps: null,
+        log: () => {},
+      },
+    );
+
+    expect(result.outcome).toBe("injected");
+    // Explicit override wins over the lane-derivation's first-match.
+    expect(result.member).toBe("m2");
+    expect(sendCalls[0]?.keys).toBe("atmux claim --next --as m2");
+  });
+
+  test("--member override: name not in team.members[] → skip-member-not-found (no send)", async () => {
+    await seedThreeMemberTeam({ withLanes: { m1: "be" } });
+    const team = await loadTeam({ teamDir });
+    await seedKanbanWithTask("t-target", "do thing", "be");
+
+    const sendCalls: Array<{ target: string; keys: string }> = [];
+    const sendKeysFn = async (target: string, keys: string): Promise<void> => {
+      sendCalls.push({ target, keys });
+    };
+
+    const result = await runLaneTickForOne(
+      atmuxDir,
+      team,
+      { taskId: "t-target", lane: "be", member: "ghost" },
+      {
+        capture: async () => FIXTURE_COMPOSER_EMPTY,
+        sendKeysFn,
+        shimOps: null,
+        log: () => {},
+      },
+    );
+
+    expect(result.outcome).toBe("skip-member-not-found");
+    expect(result.member).toBe("ghost");
+    expect(sendCalls.length).toBe(0);
   });
 });
