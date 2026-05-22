@@ -93,6 +93,7 @@ import { sweepEpics } from "./verbs/team/sweep-epics.ts";
 import { teamRename } from "./verbs/team-rename.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
+import { topo } from "./verbs/topo.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
 import { watchdog } from "./verbs/watchdog.ts";
@@ -227,6 +228,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return story(argv.slice(1));
     case "team":
       return dispatchTeamSubverb(argv.slice(1));
+    case "topo":
+      return topo(argv.slice(1));
     case "member":
       return dispatchMemberSubverb(argv.slice(1));
     case "sync":
