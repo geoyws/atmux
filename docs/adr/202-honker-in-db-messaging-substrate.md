@@ -883,3 +883,61 @@ Re-installing a decommissioned cron block requires only:
 No state migration. No data backfill. No re-bootstrap of the consumer offsets table. The relayd path keeps running unchanged; the cron line simply rejoins as a parallel safety net.
 
 This is by design — the decommission gate is high-friction (7-day wait + manual probe), but the rollback is one config flip + `atmux start`. Operators encountering substrate trouble post-decommission can restore the cron parallel-path in seconds without escalation overhead.
+
+## §Amendment 2026-05-22 (XI) — Events-table prune policy
+
+The `events` table is append-only by design (§D6 durability invariant). Without periodic eviction it grows unbounded — every `emit()` is one row, retained forever in Phase-1. Filed under epic e-b7a702d1 (/btw correctness fold-in) story s-31997a2c per /btw audit #2. Implemented by `src/core/events-prune.ts` (T2.2, t-c3a40f38); state column added in v12→v13 migration (T2.1, t-0d79d5bd).
+
+### Invariant — offset-gated pruning
+
+**Events are NEVER deleted while their rowid exceeds `MIN(subscriber_offsets.last_event_id_rowid)` across all consumers.** This is non-negotiable. The slowest consumer defines the prune ceiling. Even if an event is past the TTL or pushes the table past `maxRows`, if a single consumer hasn't read past it, the row stays. Consumer-truth wins over space pressure.
+
+Practical corollary: a registered consumer that has never run (`last_event_id == ""` sentinel from `loadOffset()`) effectively blocks all pruning. The first-run gap is acceptable cost; missed-event consequences are far worse than a temporarily oversized events table.
+
+### Policy defaults (`team.json::honker.eventsPrune`)
+
+| Knob | Default | Meaning |
+|------|---------|---------|
+| `ttlSec` | `30 * 86400` (30 days) | Events older than `now - ttlSec` are TTL-eligible. |
+| `maxRows` | `100_000` | Soft cap on the `events` table. Above this, FIFO-evict the oldest rows from within the offset-allowed window until back at the cap. |
+
+Both knobs are caller-overridable per `prune()` call — callers passing explicit values supersede team.json defaults. The team.json structure is documented at the wiring-Task layer (this amendment defines policy intent; the wiring Task surfaces the config schema in the operator-facing RUNBOOK).
+
+### Trigger model — caller-invoked, not auto-scheduled
+
+`prune()` is a pure function. It does NOT register itself with cron, relayd, or any auto-scheduler. The caller (a future wiring Task) decides when to invoke:
+
+- A relayd-tick handler can fire `prune()` opportunistically on every Nth event drained.
+- A cron line (`atmux:team=<name>:events-prune`) can call it at a fixed cadence (operator-tunable).
+- The doctor probe can dry-run-style invoke it for capacity diagnostics.
+
+Out-of-scope for this amendment: the wiring topology (relayd vs cron vs both). A follow-up Task (filed post-T2.2) will pick the trigger pattern and ship the integration.
+
+### State — `prune_state` (v12→v13, ADR-202 §XI)
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `team_name` | `TEXT PRIMARY KEY` | One row per team (cage isolation). Matches the team identifier in `team.json`. |
+| `cursor` | `INTEGER NOT NULL DEFAULT 0` | Highest `events.rowid` pruned so far. Floor for the next sweep so we don't re-scan the head of the table every tick. |
+| `last_pruned_at_sec` | `INTEGER NOT NULL DEFAULT 0` | Unix seconds of the most recent sweep completion. Drives operator cadence checks and the medic visibility probe. |
+
+`prune_state.cursor` is intentionally INTEGER (rowid space), not TEXT (UUIDv7 space) — rowid ordering matches UUIDv7 emission order for the events table (single-writer + append-only) and rowid comparisons are cheaper than TEXT lex comparisons at scale.
+
+### Return contract
+
+`prune(db, opts)` returns `{ deleted, skipped, reason? }`:
+
+- **Happy path**: `{ deleted: N, skipped: 0 }` — N rows actually DELETEd; `prune_state.cursor` advanced; `last_pruned_at_sec` stamped.
+- **Skip path**: `{ deleted: 0, skipped: M, reason: "offsets stale — no consumers advanced past prune_state.cursor since last prune" }` — M is the count of events eligible *if* offsets advanced, surfaced so the caller can build operator visibility ("12k events queued, no consumer has read past id 42"). `prune_state` is NOT written on skip — cursor stays where it is so the next sweep retries cleanly.
+
+### Reviewer gates (T2.2 + this amendment)
+
+- All DB writes wrapped in `db.transaction(() => ...)()` — atomic per-call, no half-prune state visible to other readers.
+- 100% line + function coverage on `src/core/events-prune.ts` (tests cover all 6 AC paths + boundary throw + slowest-consumer + cursor-persistence).
+- Strict offset-gate verified by the slowest-consumer test — eviction respects `MIN(offset)` across multi-consumer setups.
+
+### Out of scope for this amendment
+
+- Caller wiring (relayd-tick hook vs cron line vs doctor probe). Follow-up Task.
+- Multi-team coordination — `prune()` operates on a single team_name per call.
+- Rollback / unprune — no undo verb. Pruned rows are gone; the durability contract is satisfied by the consumer's offset advance (the consumer confirmed processing before we pruned).
