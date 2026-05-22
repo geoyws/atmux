@@ -465,3 +465,27 @@ Both steps no-op when `tmux.session.hasSession()` returns false (idempotent diss
 **Cross-refs:** ADR-087 (softStop primitive — composed here) · ADR-202 (Honker substrate — defense-in-depth path) · `verbs/stop.ts:272` (canonical killSession pattern after softStop).
 
 **Filed via** 2026-05-21 driver session — operator-surfaced ghost-tmux pile-up.
+
+
+## §Amendment 2026-05-22 — dissolve-epic completeness extension (e-7a1014f9)
+
+Closes the broader cage-residue class that surfaced overnight 2026-05-21 → 22 (superdoctor reaped 18 GB RAM + 67 claude procs across 8 orphan-cage sweeps in one day). Yesterday's §Amendment 2026-05-21 wired softStop + killSession into `defaultCageTeardown`; today's extension covers the two remaining sites:
+
+**Fix #1 (cage tmux kill-server)** — `defaultCageTeardown` now calls `tmux.server.killServer()` AFTER `killSession`. Cage tmux is single-purpose by ADR-018 design (one cage = one server on a per-tmpdir socket), so killing the whole server is the canonical reap. The killSession-then-killServer ordering preserves graceful-before-hammer semantics: softStop notifies → killSession ends the named session → killServer evicts the socket file + any stray sibling sessions.
+
+**Fix #2 (merged-branch deletion)** — new `deleteMergedEpicBranch` helper invoked at step 6a (after `pruneWorktree`). Resolves the branch name from `childTeam.epicTeam.parentBase` per ADR-090 §Disk layout (`<parentBase>-epic-<epicId>`), probes existence + ancestor-of-trunk via `git merge-base --is-ancestor`, then `git branch -D` when merged. Behavior matrix:
+
+- Branch absent → no-op
+- Branch present + merged → `git branch -D` + green log
+- Branch present + unmerged → **preserve + warn with operator rescue command** — applies even under `--skip-checks` (the skip-checks override bypasses kanban + worktree-dirty gates but does NOT silently destroy unpushed commits)
+- Git delete fails → warn + manual hint (best-effort)
+
+**Fix #3 (orphan-detection doctor probe)** — filed as follow-up Task; not in this commit. The probe walks per-team tmux sockets, cross-refs against `cockpit.json::sessions[]`, surfaces yellow `cage-orphan` row + manual kill-server hint when invariant `cage tmux alive ⇒ epic-id rostered in cockpit` fails. Cleanup-EPIC e-7a1014f9 owns the impl after this commit ships.
+
+**Concrete impl**: `src/verbs/team/dissolve-epic.ts::defaultCageTeardown` (extended) + `src/verbs/team/dissolve-epic.ts::deleteMergedEpicBranch` (new helper, exported for direct unit coverage). 6 new unit tests + 1 existing test updated to assert killSession-before-killServer ordering. Total dissolve-epic suite: 22/22 pass. Coverage: 80% funcs / 90% lines on dissolve-epic.ts.
+
+**Closes:** e-7a1014f9 §Fix #1 + §Fix #2 (Fix #3 deferred to same EPIC's follow-up Task). De-duplicates e-88e1ffa9 (same scope filed twice; closing as superseded after this commit lands).
+
+**Cross-refs:** ADR-018 (per-team tmux socket isolation — kill-server scope), ADR-179 (per-member-branch fan-in — merged-branch detection pattern via `merge-base --is-ancestor`), e-7a1014f9 (parent EPIC), t-609c1921 (driver-only tracking ticket).
+
+**Filed via** 2026-05-22 driver session — overnight superdoctor reap signaling the dissolve-epic completeness gap.

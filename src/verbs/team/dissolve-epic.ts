@@ -319,6 +319,24 @@ export async function dissolveEpic(
     }
   }
 
+  // 6a. e-7a1014f9 §Fix #2 — delete the epic branch when merged into
+  //     trunk. ADR-090 §Disk layout names the branch `<parentBase>-
+  //     epic-<epicId>`; we resolve parentBase from childTeam's
+  //     epicTeam block. Skip if childTeam is absent (partially-spawned
+  //     remnant — no reliable branch name). Skip if --skip-checks AND
+  //     branch unmerged (operator rescue path preserves the unmerged
+  //     work even when forcing dissolve).
+  if (childTeam !== null && childTeam.epicTeam !== undefined) {
+    await deleteMergedEpicBranch({
+      parentRoot,
+      parentBase: childTeam.epicTeam.parentBase,
+      epicId: parsed.epicId,
+      skipChecks: parsed.skipChecks,
+      git,
+      logger,
+    });
+  }
+
   // 7. Remove epic-team entry from parent's cockpit sessions[].
   if (parentEntry.sessions !== undefined) {
     parentEntry.sessions = parentEntry.sessions.filter(
@@ -487,13 +505,109 @@ export async function defaultCageTeardown(deps: {
     );
   }
 
-  // killSession: actual reap of the cage tmux server. Without this,
-  // dissolve leaks an orphan tmux + its workers — the root cause of
-  // the ghost-session pile-up.
+  // killSession: graceful reap of the named session. May leave the
+  // tmux *server* running if the cage somehow has sibling sessions
+  // (rare). The killServer below is the load-bearing cleanup that
+  // catches that residue too.
   try {
     await tmux.session.killSession(`=${sessionName}`);
   } catch {
     // Session may have died mid-softStop or socket may already be gone.
-    // Either way: target state achieved.
+  }
+
+  // killServer: cage tmux is single-purpose by ADR-018 design — one
+  // cage = one server. Kill the whole server (not just the session)
+  // so any stray sibling sessions + the socket file disappear in one
+  // shot. This is what e-7a1014f9 §Fix #1 calls for: previously
+  // dissolve-epic left 7+ panes alive even on the named session being
+  // killed (the cage tmux server kept running). Net cost yesterday:
+  // 18GB / 67 procs reaped manually by superdoctor across 8 orphans.
+  try {
+    await tmux.server.killServer();
+  } catch {
+    // Server may already be down (race vs killSession, or stale
+    // socket). Target state (no tmux server on this cage socket)
+    // achieved either way.
+  }
+}
+
+/**
+ * Delete the epic-team's branch from the parent repo when fully merged
+ * into trunk. e-7a1014f9 §Fix #2 — closes the "merged-but-not-deleted"
+ * residue class that accumulated 12+ branches in sopx before manual
+ * cleanup.
+ *
+ * Behavior matrix:
+ *   - Branch absent → no-op
+ *   - Branch present + merged into parentBase → `git branch -D` it
+ *   - Branch present + unmerged + skipChecks=true → skip + warn
+ *     (operator rescue path: --skip-checks dissolves the cage but
+ *     preserves the unmerged commits on the branch for forensics)
+ *   - Branch present + unmerged + skipChecks=false → unreachable
+ *     in normal flow (assertPreflightGates would have refused);
+ *     still safe to skip with warn.
+ *
+ * Best-effort: every step swallows failures + logs warn so the outer
+ * dissolve pipeline always completes.
+ */
+export async function deleteMergedEpicBranch(deps: {
+  parentRoot: string;
+  parentBase: string;
+  epicId: string;
+  skipChecks: boolean;
+  git: GitSpawn;
+  logger: { log: (m: string) => void; warn: (m: string) => void };
+}): Promise<void> {
+  const branch = `${deps.parentBase}-epic-${deps.epicId}`;
+
+  // Probe — does the branch exist at all? Uses `git -C <root>` so the
+  // command targets the parent repo regardless of the caller's cwd.
+  let branchExists = false;
+  try {
+    const r = await deps.git([
+      "-C",
+      deps.parentRoot,
+      "show-ref",
+      "--verify",
+      "--quiet",
+      `refs/heads/${branch}`,
+    ]);
+    branchExists = r.exitCode === 0;
+  } catch {
+    branchExists = false;
+  }
+  if (!branchExists) return;
+
+  // Probe — is it fully merged into parentBase?
+  let merged = false;
+  try {
+    const r = await deps.git([
+      "-C",
+      deps.parentRoot,
+      "merge-base",
+      "--is-ancestor",
+      branch,
+      deps.parentBase,
+    ]);
+    merged = r.exitCode === 0;
+  } catch {
+    merged = false;
+  }
+
+  if (!merged) {
+    deps.logger.warn(
+      `dissolve-epic: branch '${branch}' has unmerged commits — preserving for operator rescue (manual delete via: git -C ${deps.parentRoot} branch -D ${branch})`,
+    );
+    return;
+  }
+
+  // Merged — safe to delete.
+  try {
+    await deps.git(["-C", deps.parentRoot, "branch", "-D", branch]);
+    deps.logger.log(`dissolve-epic: deleted merged branch '${branch}'`);
+  } catch (e) {
+    deps.logger.warn(
+      `dissolve-epic: branch delete failed for '${branch}' (${e instanceof Error ? e.message : String(e)}) — manual: git -C ${deps.parentRoot} branch -D ${branch}`,
+    );
   }
 }
