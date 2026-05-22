@@ -758,6 +758,47 @@ export async function cockpitRebuild(
     cockpit.sentinel,
   );
 
+  // Phase 5b (t-3fb7bc54): apply the resolved prefix to the cockpit
+  // session itself. Phase 3 above wires per-cage prefixes via
+  // applyCagePrefix(cageTmux, resolvePrefix(t.level + 1, ...)) but the
+  // cockpit session — a separate tmux server on the `atmux-cockpit`
+  // socket per ADR-162 §Decision-anchor #1 — was never set, so its
+  // prefix defaulted to whatever the host tmux config (or applyCagePrefix's
+  // legacy `C-\` fallback) supplied. Result on operator's hax (observed
+  // 2026-05-21 21:57 MYT after a seed-expansion spawn): cockpit prefix
+  // clobbered to `C-a`, manual `tmux -L atmux-cockpit set-option -g
+  // prefix F1` workaround per rebuild.
+  //
+  // Resolution: cockpit gets `resolvePrefix(1, cockpit.prefixChain)`
+  // (level 1 = `F1` by default). Per ADR-089 §C the chain is 1-indexed
+  // for cages (L1 = top-level team cage, L2 = epic-team child, ...);
+  // the cockpit is structurally the outer container, not a level in
+  // the cage chain, but the chain's first entry is the right operator-
+  // facing value because (a) the cockpit and L1 cages live on
+  // SEPARATE tmux sockets so the same chord doesn't collide (different
+  // tmux servers own different keybinding namespaces), and (b) the
+  // operator's documented workaround was `F1`, which is precisely
+  // `resolvePrefix(1, ...)`. The alternative — introducing a distinct
+  // "cockpit prefix" config knob orthogonal to `prefixChain` — adds
+  // surface without solving anything the chain's first entry doesn't
+  // already cover; deferred (`Out of scope` candidate) until an
+  // operator hits a case where the chain's first entry is wrong for
+  // the cockpit (none observed today).
+  //
+  // Best-effort wrap mirrors the Phase 3 loop above — invalid chain
+  // or level > MAX_NESTING_LEVEL falls through to applyCagePrefix's
+  // legacy `C-\` default (cosmetic only; cockpit operation
+  // unaffected).
+  {
+    let cockpitPrefix: string | undefined;
+    try {
+      cockpitPrefix = resolvePrefix(1, cockpit.prefixChain);
+    } catch {
+      // Same swallow as Phase 3 — best-effort cosmetic.
+    }
+    await applyCagePrefix(cockpitTmux, cockpitPrefix);
+  }
+
   // Phase 6 (ADR-086): cockpit-scoped cron block install. Idempotent —
   // strips any existing `# >>> atmux:cockpit` block and re-appends a
   // fresh one with the resolved `atmux pulse` line. Honors

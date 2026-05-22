@@ -1,4 +1,9 @@
-// ADR-062 §Decision (5) + §OQ5: lane-drift-check helper.
+// ADR-127 §Decision (5) + §OQ5: lane-drift-check helper.
+// (renamed from ADR-062 per the 2026-05 renumber sweep; see ADR-093
+// renumber map. See also ADR-176 for criterion (d) — epic-children-
+// progressing — which tightens the 3-criterion algorithm by adding
+// a 4th invariant. ADR-176 never relaxes a revert; only delays one
+// when there's evidence an epic-team child is still shipping.)
 //
 // Pure-input helper. Scans `in-progress` Tasks and decides per-task
 // whether the work is genuinely stuck (and the claim should revert to
@@ -8,10 +13,13 @@
 //   (a) `claimedAt` more than `claimedAtThresholdMin` minutes ago
 //       (default 30, configurable via verb flag).
 //   (b) claiming worker's pane state is non-READY (current classify;
-//       single-sample per ADR-062 §OQ5 — a follow-up can corroborate
+//       single-sample per ADR-127 §OQ5 — a follow-up can corroborate
 //       with a 5-min-apart re-sample if false positives surface).
 //   (c) no commit in the last N commits (default 30, scanned by the
 //       verb) references the task's id pattern (`t-[0-9a-f]{8}`).
+//   (d) NEW per ADR-176 — epic-children-progressing: parent EPIC-class
+//       Task is held when its child Tasks in the same Epic are still
+//       making commits (additive tightening; (a)+(b)+(c) still required).
 //
 // Pure / no-IO. Inputs: Tasks, a classifyMember probe (verb-injected),
 // the recent-commits text (verb fetches via `git log`), and the

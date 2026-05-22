@@ -165,6 +165,8 @@ overrideable until the relevant Task lands.
    fallback ON, the default); `crossLaneClaim=false` ≡
    `lanePickup.strict=true` (strict-lane mode). See
    `src/schema/team.ts::TeamKanban`.
+> ⚠️ AMENDED 2026-05-20 by ADR-176: criterion (d) added — skip revert when Task has progressing children. Append-only convention — body unchanged. See [§Amendment 2026-05-20 — partial supersession by ADR-176](#amendment-2026-05-20--partial-supersession-by-adr-176-oq5-gains-4th-criterion) below for the full §OQ5 → 4-criterion algorithm.
+
 5. **OQ5 — drift threshold**: stuck-claim revert criteria. **Default**:
    `claimedAt > 30min` AND pane non-READY > 5min AND no commit
    referencing `<task-id>` in last 30min → revert to `todo` + raise

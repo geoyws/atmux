@@ -622,6 +622,33 @@ describe("applyCagePrefix", () => {
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
+
+  // t-3fb7bc54: rebuild Phase 5b applies `resolvePrefix(1, prefixChain)`
+  // to the cockpit session itself. The cockpit lives on a separate tmux
+  // socket from cage tmuxes (per ADR-162 §Decision-anchor #1), so the
+  // F1-binding on the cockpit doesn't collide with the same F1 on the
+  // L1 cage — different tmux servers own different keybinding
+  // namespaces. This test exercises the Phase 5b shape directly on a
+  // cockpit-shaped fixture: apply the chain's first entry + verify it
+  // lands on global options.
+  test("applies F1 (chain[0]) on a cockpit-shaped session", async () => {
+    const fx = await spinTmux("cockpit-prefix");
+    try {
+      await fx.tmux.session.newSession({
+        name: "atmux_test_cockpit",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      await applyCagePrefix(fx.tmux, "F1");
+      const opts = await fx.tmux.option.showOptions({ global: true });
+      expect(opts.prefix).toBe("F1");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("reconcileCockpitSession", () => {

@@ -1,6 +1,6 @@
 # ADR-193: Restore documented `atmux task add` flags — `--epic` / `--story` / `--deliverable`
 
-**Status**: Accepted — ratified by driver 2026-05-21 (restore --epic/--story/--deliverable flags + inverse mutations on task update; §OQ recommendations as-written: no add-time existence validation, free-form deliverable string, no auto-backfill, list-filter ADR sibling, routine schema migration)
+**Status**: proposed (deferred: task add `--epic`/`--story`/`--deliverable` flags rejected by CLI as of 2026-05-22 audit — `atmux task add` USAGE line accepts only `--body|--assignee|--deps|--priority|--lane|--driver-only`; original ratification 2026-05-21 was bookkeeping — see §Amendment 2026-05-22 below.)
 **Date**: 2026-05-18
 **Renumbered 2026-05-20**: originally drafted as ADR-172 (`d7586c4` on `geoyws-planner`). Trunk merge `fe8aea1` shipped `docs/adr/172-stop-github-ci-until-stabilise.md` between drafting and rename. Renumbered per "older keeps the number" heuristic (memory `project_adr_collision_resolutions_2026_05_18`). 193 chosen as next free across trunk + geoyws + planner refs.
 **Driver-ref**: ADR-176 §sibling-gap surface 2026-05-17 — criterion (d) in `src/core/lane-drift.ts` requires `.epic` populated on kanban Tasks; at runtime all tasks have `.epic: null` because there is no CLI path to set it.
@@ -104,3 +104,18 @@ atmux task update <id> [--body T] [--deps a,b] [--epic <eid>] [--story <sid>] [-
 - **ADR-007** — original Epic / Story / Task hierarchy spec; ADR-193 restores the documented CLI affordances.
 - **ADR-126** / **ADR-169** — state.db schema-migration patterns ADR-193's `.deliverable` column addition follows.
 - **`feedback_brief_aspirational_verbs`** (planner-memory 2026-05-17) — surfaces this class of port-regression broadly. ADR-193 closes one slice.
+
+
+## §Amendment 2026-05-22 — Status demoted to `proposed (deferred:)` after surface-vs-impl audit
+
+Demoted from `Accepted — ratified by driver 2026-05-21` → `proposed (deferred: impl not yet shipped)` per CLAUDE.md §Source-of-truth chain escape hatch ("Intentionally-held → `Status: proposed (deferred: <reason>)` so ADR-085 surfacer doesn't ping").
+
+**Why the demote**: the 2026-05-21 operator ratification batch (commit `b6d634f` "30 ADRs flipped proposed→accepted") was bookkeeping — clearing the `proposed` marker for ADRs whose impl was understood-to-have-shipped. That sweep folded in ADR-193 + sibling ADRs whose impl was still pending. 2026-05-22 docs audit (via Task `t-b1bd0f9c`, lead-routed `d-7b8d444f-batch` decision) confirms `atmux task add` does NOT accept `--epic`/`--story`/`--deliverable` — invocation errors with `unknown flag: --epic` and the USAGE line shows only `[--body T] [--assignee M] [--deps a,b] [--priority N] [--lane L] [--driver-only]`. The decision contract (no add-time existence validation, free-form deliverable string, no auto-backfill, list-filter ADR sibling, routine schema migration) is intact + still the right shape; only the impl is pending.
+
+**Why deferred (not retracted)**: the ADR's substance — restoring documented CLI affordances + the `.epic` column setter that ADR-176 criterion (d) depends on — remains load-bearing. Memory `feedback_atmux_task_add_lost_epic_story_deliverable_flags` (2026-05-20) and `feedback_brief_aspirational_verbs` (planner 2026-05-17) both surface this regression class; ADR-193 closes the largest slice. The proposal stands; the schedule slipped. A future impl-EPIC (likely bundled with the sibling ADR-174 task-list filter impl since both touch the same `src/verbs/task.ts` arg parser + schema migration) will close the gap; flipping back to `accepted` happens THEN, not before.
+
+**Original ratification context preserved**: `Accepted — ratified by driver 2026-05-21 (restore --epic/--story/--deliverable flags + inverse mutations on task update; §OQ recommendations as-written: no add-time existence validation, free-form deliverable string, no auto-backfill, list-filter ADR sibling, routine schema migration)`. The §OQ recommendations in §Decision below remain as-ratified; the demote is a *schedule* signal, not a substance reversal.
+
+**Cross-refs**: `t-b1bd0f9c` (Status-vs-Impl drift audit — this ADR is one of 4 in the Path B cluster post-correction; siblings ADR-173/174/178; ADR-183 was DROPPED from Path B after re-verification confirmed `src/verbs/sentinel.ts:367-381` ships ADR-183 §D1 epic-team scope); `d-7b8d444f-batch` (lead-recorded decision authorizing close-or-§Amendment per gap-class); CLAUDE.md §Source-of-truth chain (deferred-status escape hatch); `b6d634f` (the originating bookkeeping batch).
+
+**Filed as part of Path B cluster per d-7b8d444f-batch + t-b1bd0f9c (Status-vs-Impl audit).**

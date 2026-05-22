@@ -1,6 +1,6 @@
 # ADR-174: `atmux task list` — add `--epic <eid>` and `--story <sid>` filters
 
-**Status**: Accepted — ratified by driver 2026-05-21 (`--epic` and `--story` filters; §OQ recommendations as-written: createdAt-ASC sort preserved, empty-string matches null, no `--priority` bundling, no filter-time eid/sid validation)
+**Status**: proposed (deferred: task list `--epic`/`--story` flags rejected by CLI as of 2026-05-22 audit — `atmux task list --epic <eid>` errors with `unknown arg: --epic`; original ratification 2026-05-21 was bookkeeping — see §Amendment 2026-05-22 below.)
 **Date**: 2026-05-18
 **Driver-ref**: ADR-193 §OQ-4 ("file as a sibling follow-up ADR/task. ADR-193 stays focused on the write-side gap; read-side ergonomics is a separate ADR") + ADR-173 §Related ("`atmux task list --epic` filter remains as a future fast-follow").
 **Relates**: ADR-193 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-173 (`atmux epic show` children enumeration — sibling read-side surface), ADR-007 (Epic/Story/Task hierarchy original spec), ADR-006 (JSON output stability convention).
@@ -80,3 +80,18 @@ Trivial: extend the SQL WHERE clause in `src/verbs/task.ts::list`. Both columns 
 - **ADR-173** — sibling read-side ergonomics. `atmux epic show <eid>` renders the tree; `atmux task list --epic <eid>` renders the flat slice. Complementary, not overlapping.
 - **ADR-007** — original Epic/Story/Task hierarchy. ADR-174 implements the third (and final) of the documented read-side affordances. With ADR-193/173/174 together, the three-ADR arc closes the CLI round-trip on EPIC-task linkage.
 - **ADR-006** — JSON output stability. ADR-174 narrows the slice without changing keys; additive-keys-non-breaking convention preserved.
+
+
+## §Amendment 2026-05-22 — Status demoted to `proposed (deferred:)` after surface-vs-impl audit
+
+Demoted from `Accepted — ratified by driver 2026-05-21` → `proposed (deferred: impl not yet shipped)` per CLAUDE.md §Source-of-truth chain escape hatch ("Intentionally-held → `Status: proposed (deferred: <reason>)` so ADR-085 surfacer doesn't ping").
+
+**Why the demote**: the 2026-05-21 operator ratification batch (commit `b6d634f` "30 ADRs flipped proposed→accepted") was bookkeeping — clearing the `proposed` marker for ADRs whose impl was understood-to-have-shipped. That sweep folded in ADR-174 + sibling ADRs whose impl was still pending. 2026-05-22 docs audit (via Task `t-b1bd0f9c`, lead-routed `d-7b8d444f-batch` decision) confirms `atmux task list --epic <eid>` and `--story <sid>` flags are not in the CLI surface — invocation errors with `unknown arg: --epic`. The decision contract (createdAt-ASC sort preserved, empty-string matches null, no `--priority` bundling, no filter-time eid/sid validation) is intact + still the right shape; only the impl is pending.
+
+**Why deferred (not retracted)**: the ADR's substance — the third arm of the ADR-193/173/174 trio closing the CLI round-trip on EPIC-task linkage — remains the right answer to the read-side ergonomics gap. The proposal stands; the schedule slipped. A future impl-EPIC will close the gap (likely bundled with the ADR-193 task-add-flag impl since both touch the same `src/verbs/task.ts` arg parser); flipping back to `accepted` happens THEN, not before.
+
+**Original ratification context preserved**: `Accepted — ratified by driver 2026-05-21 (--epic and --story filters; §OQ recommendations as-written: createdAt-ASC sort preserved, empty-string matches null, no --priority bundling, no filter-time eid/sid validation)`. The §OQ recommendations in §Decision below remain as-ratified; the demote is a *schedule* signal, not a substance reversal.
+
+**Cross-refs**: `t-b1bd0f9c` (Status-vs-Impl drift audit — this ADR is one of 5 in the Path B cluster; siblings ADR-173/178/183/193); `d-7b8d444f-batch` (lead-recorded decision authorizing close-or-§Amendment per gap-class); CLAUDE.md §Source-of-truth chain (deferred-status escape hatch); `b6d634f` (the originating bookkeeping batch).
+
+**Filed as part of Path B cluster per d-7b8d444f-batch + t-b1bd0f9c (Status-vs-Impl audit).**
