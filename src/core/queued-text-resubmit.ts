@@ -90,7 +90,7 @@ const COMPOSER_LINE_RE = /❯\s*(.*?)\s*$/;
  * we want to fire.
  */
 const ACTIVE_TURN_RE =
-  /(?:Cooking|Schlepping|Honking|Crunching|Cogitating|Brewing|Effecting|Imagining|Sautéeing|Kneading|Misting|Puttering|Grooving|Ruminating)\.{3}|… \(\d+m?s\)|[✻✶✽]/;
+  /(?:Cooking|Schlepping|Honking|Crunching|Cogitating|Brewing|Effecting|Imagining|Sautéeing|Kneading|Misting|Puttering|Grooving|Ruminating)(?:\.{3}|…)|… \(\d+m?s\)|[✻✶✽]/;
 
 /**
  * Detect a stuck-text condition in `paneCapture` and (when safe) resubmit via

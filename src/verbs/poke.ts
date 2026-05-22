@@ -2194,6 +2194,12 @@ async function runQueuedTextResubmit(opts: {
   const captureFn = (t: string) => tmux.pane.capturePane({ target: t, start: -30 });
   const targetStr = serializeSendTarget(sendTarget);
   const sendKeysFn: QueuedResubmitSendKeysFn = async (text) => {
+    // ADR-138 T3b3 carve-out: this raw sendKeys lives inside the inner
+    // `sendKeys` callback that `safeSendKeysWithVerify` invokes. The
+    // verify-and-retry policy (composerEmpty verifier + retry budget +
+    // escalate-on-exhaustion) sits OUTSIDE this callback and catches the
+    // bracketed-paste-Enter-swallow bug at the policy layer. Same shape
+    // as `core/goal-injection.ts` + `verbs/ombudsman.ts` carve-outs.
     const result = await safeSendKeysWithVerify({
       target: targetStr,
       keys: text,

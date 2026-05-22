@@ -628,14 +628,20 @@ describe("watchEvents", () => {
   });
 
   test("externalSignals drives drain — events yielded on each signal", async () => {
+    // Inject monotonic IDs — UUIDv7 same-ms random tail can put t-B's id
+    // lexicographically below t-A's under suite-parallel pressure, causing
+    // drainSince(lastEventId=t-A_id) to skip t-B.
+    let counter = 0;
+    const injectedIds = ["01900000000000000000000000000b01", "01900000000000000000000000000b02"];
+    const gen = () => injectedIds[counter++] ?? "";
     // Pre-populate one event
-    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
+    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 }, { generateId: gen });
     const ac = new AbortController();
     // Yield two wake signals then end
     const signals = (async function* () {
       yield "honker:stream:task.done\tnew";
       // Emit a second event mid-loop so the second signal triggers a drain
-      emit(db, { topic: "task.done", taskId: "t-B", member: "x", team: "y", doneAtSec: 2 });
+      emit(db, { topic: "task.done", taskId: "t-B", member: "x", team: "y", doneAtSec: 2 }, { generateId: gen });
       yield "honker:stream:task.done\tnew";
     })();
     const watcher = watchEvents(db, {

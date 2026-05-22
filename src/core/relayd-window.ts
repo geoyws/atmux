@@ -202,6 +202,11 @@ export async function maybeSpawnRelaydWindow(
       `echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] relayd: crashed rc=$RC ($CRASH_COUNT/5 in last 60s), restart in 5s"; ` +
       `sleep 5; ` +
       `done`;
+    // ADR-138 T3b3 carve-out: this is a SHELL command at the freshly
+    // launched service window's shell prompt (pre-Claude, no bracketed-
+    // paste envelope). Same shape as `verbs/start.ts`'s launcher sends.
+    // The supervisor shell loop never enters a Claude TUI compose box —
+    // the bracketed-paste-Enter-swallow bug zone does not apply.
     await tmux.pane.sendKeys({
       target: {
         kind: "service",
