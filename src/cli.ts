@@ -68,6 +68,7 @@ import { laneTick } from "./verbs/lane-tick.ts";
 import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
+import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
 import { pause, resume } from "./verbs/pause.ts";
@@ -359,6 +360,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cleanup(argv.slice(1));
     case "discorder":
       return discorder(argv.slice(1));
+    case "migrate-hex-ids":
+      return migrateHexIds(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
     case "up":

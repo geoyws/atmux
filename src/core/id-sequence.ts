@@ -78,6 +78,56 @@ export function peekId(db: Database, scope: IdScope): number {
   return row?.last_id ?? 0;
 }
 
+// ---------- Legacy-id → compound-id sequence assignment ----------
+
+/**
+ * Atomically allocate the next sequence number for `scope` and pair
+ * it with the `legacyHex` ID's existing 8-char hash to produce a
+ * compound `<scope>-<N>-<hash>` ID.
+ *
+ * The legacy ID's hash is PRESERVED in the compound form — `t-3b017960`
+ * becomes `t-N-3b017960`. This is the building block for
+ * `atmux migrate-hex-ids` (T4.1 / ADR-202 §XIII): the running number
+ * gives humans recall, the preserved hash keeps every existing grep /
+ * log / branch / ADR reference partially valid.
+ *
+ * Pure with respect to the sequence row (one atomic INSERT … ON
+ * CONFLICT … RETURNING per call). Caller wraps the migration's
+ * multi-row updates in a transaction; this helper is the per-row
+ * primitive.
+ *
+ * @throws If `legacyHex` is not a `<scope>-<8 hex>` legacy ID — the
+ *         caller is responsible for filtering before calling.
+ */
+export function assignSequenceToLegacyId(
+  db: Database,
+  scope: IdScope,
+  legacyHex: string,
+): { compoundId: string; sequenceN: number } {
+  const expected = new RegExp(`^${scope}-([0-9a-f]{8})$`);
+  const match = expected.exec(legacyHex);
+  if (match === null) {
+    throw new Error(
+      `assignSequenceToLegacyId: '${legacyHex}' is not a legacy hex id for scope '${scope}'`,
+    );
+  }
+  const hash = match[1];
+  const row = db
+    .prepare(
+      `INSERT INTO id_sequences (scope, last_id) VALUES (?, 1)
+       ON CONFLICT(scope) DO UPDATE SET last_id = id_sequences.last_id + 1
+       RETURNING last_id`,
+    )
+    .get(scope) as { last_id: number } | undefined;
+  if (row === undefined) {
+    throw new Error(`assignSequenceToLegacyId(${scope}): SQLite RETURNING produced no row`);
+  }
+  return {
+    compoundId: `${scope}-${row.last_id}-${hash}`,
+    sequenceN: row.last_id,
+  };
+}
+
 // ---------- Format detection ----------
 
 /**

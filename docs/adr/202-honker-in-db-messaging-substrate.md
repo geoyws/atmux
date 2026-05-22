@@ -941,3 +941,68 @@ Out-of-scope for this amendment: the wiring topology (relayd vs cron vs both). A
 - Caller wiring (relayd-tick hook vs cron line vs doctor probe). Follow-up Task.
 - Multi-team coordination — `prune()` operates on a single team_name per call.
 - Rollback / unprune — no undo verb. Pruned rows are gone; the durability contract is satisfied by the consumer's offset advance (the consumer confirmed processing before we pruned).
+
+## §Amendment 2026-05-22 (XIII) — `atmux migrate-hex-ids` verb
+
+Operator one-shot to renumber pre-§VIII legacy hex-only IDs (`<scope>-<8 hex>`) onto the compound `<scope>-<N>-<hex>` shape that §VIII established. Implemented by `src/verbs/migrate-hex-ids.ts` (T4.1, t-b7598005). Filed under epic e-b7a702d1 (/btw correctness fold-in) story s-7de3720c per /btw audit #4.
+
+### Verb name + flags
+
+```
+atmux migrate-hex-ids [--dry-run] [--apply]
+                      [--scope=epics|stories|tasks|all]
+                      [--team=<name>]
+```
+
+- `--dry-run` (default ON when `--apply` is absent) — print the legacy→compound mapping table; **no DB writes**, no branch renames, no ADR rewrites.
+- `--apply` (REQUIRED to write) — execute the planned migration. Without this flag the verb is a read-only inspector.
+- `--scope` (default `all`) — restrict which PK columns are scanned for legacy IDs. `epics` / `stories` / `tasks` scan exactly that table; `all` scans all three. FK + JSON-array sweeps always cover the full mapping (otherwise we'd dangle references).
+- `--team` — override `team.name` resolved from cwd `team.json`. Single-team only; cross-team coordination is out of scope.
+
+### Safety
+
+- **Default-OFF**: omitting `--apply` is a no-op dry-run, even when `--dry-run` itself is omitted. The verb refuses to mutate without explicit `--apply`.
+- **Snapshot-before-commit**: pre-mutation mapping table written to `.atmux/migrations/hex-ids-<unix-ts>.json` so operator-rollback stays viable even if the process crashes mid-flight. Snapshot lands AFTER the kanban transaction commits but BEFORE any out-of-DB mutation (`team.json` / git branches / ADR pointers) — the loudest failure path leaves the DB consistent + snapshot recoverable.
+- **Atomic kanban transaction**: every PK rename + FK update + JSON-array substitution + event-payload rewrite wraps in a single `db.transaction(() => ...)()`. SQLite STRICT tables enforce PK uniqueness, so we copy → re-point FKs → drop the legacy row (three-phase) rather than UPDATEing the PK directly.
+- **Branch rename try/catch**: legacy `<base>-epic-<hex>` branches get `git branch -m` to `<base>-epic-<compound>`. Missing branches log a `WARN migrate-hex-ids: branch rename skip — ...` and continue (operator may have already renamed manually).
+- **ADR pointer rewrite**: docs/adr/*.md scanned for legacy ID substrings; matched files rewritten with the compound form. Out-of-scope IDs are left alone (no spurious diffs).
+
+### Snapshot location + manual rollback
+
+`.atmux/migrations/hex-ids-<unix-ts>.json`. Shape:
+
+```json
+{
+  "ts": 1779470000,
+  "team": "team-alpha",
+  "scope": "all",
+  "mappings": [
+    { "legacyId": "t-3b017960", "compoundId": "t-7-3b017960", "scope": "t", "sequenceN": 7 },
+    ...
+  ]
+}
+```
+
+Manual rollback (no rollback verb in T4.1 — follow-up Task):
+
+```bash
+jq -r '.mappings[] | "\(.compoundId) \(.legacyId)"' \
+  .atmux/migrations/hex-ids-<unix-ts>.json |
+  while read new old; do
+    # Reverse each kanban update + event-payload substitution.
+    # (Operator-driven; rollback verb will automate.)
+  done
+```
+
+### Scope mechanics
+
+The PK scan respects `--scope`, but **all FK sweeps + JSON-array substitutions + event-payload rewrites apply to the full mapping table** built from that scan. Reasoning: if you renumber `e-3b017960 → e-7-3b017960` but leave `tasks.epic = 'e-3b017960'` un-rewritten, the task is orphaned. There's no "partial migration" that keeps the kanban consistent; the scope flag controls only which PKs are eligible to be renumbered in this run.
+
+Out-of-scope kanban references that point to legacy hex IDs OUTSIDE the current `--scope` are left alone (no FK sweep, no JSON substitution). Operator must re-run with a wider scope or `--scope=all` to catch them.
+
+### Out of scope (T4.1)
+
+- **Rollback verb**: follow-up Task. Snapshot is captured + readable; reverse-walk is operator-scripted today.
+- **Multi-team coordination**: each team's `state.db` migrates independently. No cross-team rename propagation.
+- **Tests**: T4.2 ships unit tests covering all the verb's branches (dry-run plan / apply path / scope filter / snapshot / branch-rename failure / ADR rewrite).
+- **`c-` scope (complaints PK)**: complaint IDs use the same hex shape but live in their own table; their migration is a follow-up because `id_sequences` doesn't yet carry a `c` scope. `complaints.related_task_id` IS updated (it's a FK to tasks).
