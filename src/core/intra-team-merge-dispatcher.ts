@@ -168,7 +168,17 @@ export function deriveMember(memberBranch: string, base: string): string | null 
  *  passed in, no module-level globals.
  *
  *  - **ownerOpenTaskCount** — kanban rows where `owner=<member>` AND
- *    `status` in {`todo`, `in-progress`}. Zero = gate clears.
+ *    `status='in-progress'`. Zero = gate clears. (§Amendment
+ *    2026-05-22 — `todo` tasks NO LONGER count: they represent
+ *    future work, not active blockers on the current commit set.
+ *    Pre-amendment semantics structurally wedged long-lived parent-
+ *    team members like docs / lead / reviewer who always carry
+ *    forward todos; manual sqlite reset required on every fan-in.
+ *    Original safety intent — "don't fan in mid-active-work" — is
+ *    preserved by `in-progress` alone, combined with the worktree-
+ *    clean gate. Epic-team fan-in uses a different gate semantic
+ *    (all-tasks-done = epic complete) in `verbs/epic-merge.ts` and
+ *    is NOT touched by this amendment.)
  *  - **worktreeIsClean** — `git status --porcelain` empty against
  *    `teamRoot`. The base worktree's cleanliness gates the
  *    destructive `git checkout <base>` inside `mergeMember`.
@@ -197,13 +207,15 @@ export async function resolvePreMergeGate(
   // intervenes. (We pick a finite sentinel — Number.MAX_SAFE_INTEGER
   // is overkill; the gate only checks `> 0`, so any positive value
   // suffices.)
+  // §Amendment 2026-05-22 — only `in-progress` tasks count as
+  // active blockers. `todo` is future work and does NOT gate fan-in
+  // (see jsdoc above for rationale + ADR-134 §Amendment 2026-05-22).
   let ownerOpenTaskCount = 0;
   if (member === null) {
     ownerOpenTaskCount = 1;
   } else {
-    const todoTasks = deps.kanbanRepo.listTasks({ owner: member, status: "todo" });
     const inProgressTasks = deps.kanbanRepo.listTasks({ owner: member, status: "in-progress" });
-    ownerOpenTaskCount = todoTasks.length + inProgressTasks.length;
+    ownerOpenTaskCount = inProgressTasks.length;
   }
 
   // Worktree cleanliness against teamRoot. Empty porcelain = clean.

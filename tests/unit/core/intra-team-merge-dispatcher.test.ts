@@ -333,6 +333,72 @@ describe("resolvePreMergeGate", () => {
     // Member derivation fails → conservative gate-hold sentinel.
     expect(gate.ownerOpenTaskCount).toBeGreaterThan(0);
   });
+
+  test("§Amendment 2026-05-22 — todo-only tasks do NOT count (long-lived member with future todos clears gate)", async () => {
+    // Seed three `todo` rows owned by `fe-1`. Pre-amendment these
+    // counted toward ownerOpenTaskCount and structurally wedged the
+    // member (docs-branch +8 t-04694072 reproduction). Post-amendment
+    // only `in-progress` counts.
+    for (let i = 1; i <= 3; i++) {
+      kanbanRepo.addTask({
+        id: `t-future-${i}`,
+        subject: `future work item ${i}`,
+        body: "",
+        status: "todo",
+        owner: "fe-1",
+        deps: [],
+        priority: null,
+        epic: null,
+        story: null,
+        lane: null,
+        deliverable: null,
+        staleMin: null,
+        driverOnly: false,
+        createdAt: 100 + i,
+        claimedAt: null,
+        completedAt: null,
+        claimedFrom: null,
+        createdFrom: null,
+        note: null,
+      });
+    }
+    const gate = await resolvePreMergeGate(
+      "geoyws-fe-1",
+      3,
+      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
+    );
+    expect(gate.ownerOpenTaskCount).toBe(0);
+  });
+
+  test("§Amendment 2026-05-22 — in-progress tasks DO count (safety intent preserved)", async () => {
+    kanbanRepo.addTask({
+      id: "t-active-001",
+      subject: "active shipping work",
+      body: "",
+      status: "in-progress",
+      owner: "fe-1",
+      deps: [],
+      priority: null,
+      epic: null,
+      story: null,
+      lane: null,
+      deliverable: null,
+      staleMin: null,
+      driverOnly: false,
+      createdAt: 100,
+      claimedAt: 150,
+      completedAt: null,
+      claimedFrom: null,
+      createdFrom: null,
+      note: null,
+    });
+    const gate = await resolvePreMergeGate(
+      "geoyws-fe-1",
+      1,
+      makeDeps({ git: makeGitStub({ behavior: "success" }) }),
+    );
+    expect(gate.ownerOpenTaskCount).toBe(1);
+  });
 });
 
 // ---------- 5-cell dispatcher matrix ----------
