@@ -1,11 +1,11 @@
-// End-to-end integration test for the atmux-relayd Rust subprocess
+// End-to-end integration test for the atmux-orchd Rust subprocess
 // (t-21dbcc72 — S1 trunk-signoff carve-out #2 follow-up). Mirrors the
 // `tests/integration/native-listener-e2e.test.ts` pattern: gate on the
 // real Rust binary's presence, spawn it against a synthetic events
 // table, observe dispatch behavior.
 //
 // Validates (per t-21dbcc72 AC):
-//   1. Valid TaskUnclaimedPayload → relayd reads payload, dispatches
+//   1. Valid TaskUnclaimedPayload → orchd reads payload, dispatches
 //      Bun handler with --task-id + --lane (lean per-event dispatch
 //      path per ADR-202 §Amendment 2026-05-22 IX-A).
 //   2. Payload parse-fail (invalid JSON) → falls back to no-extra-args
@@ -14,7 +14,7 @@
 //      path in `load_event_payload`).
 //   4. Offset advancement on rc=0; no advancement on rc!=0.
 //
-// Strategy: pre-seed events table BEFORE spawning relayd so the
+// Strategy: pre-seed events table BEFORE spawning orchd so the
 // initial-drain code path picks up rows synchronously. Cross-process
 // Honker NOTIFY/LISTEN is exercised elsewhere (native-listener-e2e);
 // here we focus on the read-payload + dispatch-shape + offset
@@ -28,26 +28,26 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "../..");
-const RELAYD_BIN = join(
+const ORCHD_BIN = join(
   REPO_ROOT,
   "rust",
-  "atmux-relayd",
+  "atmux-orchd",
   "target",
   "release",
-  "atmux-relayd",
+  "atmux-orchd",
 );
-const BINARY_AVAILABLE = existsSync(RELAYD_BIN);
+const BINARY_AVAILABLE = existsSync(ORCHD_BIN);
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
 if (!BINARY_AVAILABLE) {
   test.skip(
-    `atmux-relayd-e2e: skipping — binary missing at ${RELAYD_BIN}`,
+    `atmux-orchd-e2e: skipping — binary missing at ${ORCHD_BIN}`,
     () => {},
   );
 } else {
-  describe("atmux-relayd end-to-end (real subprocess)", () => {
+  describe("atmux-orchd end-to-end (real subprocess)", () => {
     let scratchDir: string;
     let dbPath: string;
     let fakeAtmuxBin: string;
@@ -66,7 +66,7 @@ if (!BINARY_AVAILABLE) {
     }
 
     beforeEach(async () => {
-      scratchDir = await mkdtemp(join(tmpdir(), "atmux-relayd-e2e-"));
+      scratchDir = await mkdtemp(join(tmpdir(), "atmux-orchd-e2e-"));
       dbPath = join(scratchDir, "state.db");
       fakeAtmuxLog = join(scratchDir, "fake-atmux.log");
       fakeAtmuxBin = join(scratchDir, "fake-atmux");
@@ -76,7 +76,7 @@ if (!BINARY_AVAILABLE) {
       // NOT NULL` (per sqlite-migrations.ts); we deliberately drop the
       // NOT NULL constraint here so the NULL-payload test can exercise
       // the `Option<String>` defensive branch in `load_event_payload`.
-      // The relayd's read-path treats nullable payload as a runtime
+      // The orchd's read-path treats nullable payload as a runtime
       // shape, not a schema-enforced invariant — this is the seam we
       // want covered.
       const db = new Database(dbPath);
@@ -123,14 +123,14 @@ if (!BINARY_AVAILABLE) {
       db.close();
     }
 
-    function spawnRelayd(): ReturnType<typeof Bun.spawn> {
+    function spawnOrchd(): ReturnType<typeof Bun.spawn> {
       return Bun.spawn({
-        cmd: [RELAYD_BIN],
+        cmd: [ORCHD_BIN],
         env: {
           ...process.env,
-          ATMUX_RELAYD_DB: dbPath,
-          ATMUX_RELAYD_ATMUX_BIN: fakeAtmuxBin,
-          ATMUX_RELAYD_TEAM_DIR: scratchDir,
+          ATMUX_ORCHD_DB: dbPath,
+          ATMUX_ORCHD_ATMUX_BIN: fakeAtmuxBin,
+          ATMUX_ORCHD_TEAM_DIR: scratchDir,
         },
         stdout: "pipe",
         stderr: "pipe",
@@ -186,10 +186,10 @@ if (!BINARY_AVAILABLE) {
         }),
       );
 
-      proc = spawnRelayd();
+      proc = spawnOrchd();
       const content = await waitForLogLineContaining("0190validpayl", 10_000);
 
-      expect(content).toContain("relayd");
+      expect(content).toContain("orchd");
       expect(content).toContain("--handle-one");
       expect(content).toContain("--event-id 0190validpayl");
       expect(content).toContain("--topic task.unclaimed");
@@ -200,7 +200,7 @@ if (!BINARY_AVAILABLE) {
     test("invalid JSON payload → fake atmux invoked WITHOUT --task-id/--lane (fallback dispatch)", async () => {
       insertEvent("task.unclaimed", "0190badjson01", "not actually json");
 
-      proc = spawnRelayd();
+      proc = spawnOrchd();
       const content = await waitForLogLineContaining("0190badjson01", 10_000);
 
       expect(content).toContain("--event-id 0190badjson01");
@@ -213,7 +213,7 @@ if (!BINARY_AVAILABLE) {
     test("NULL payload → fake atmux invoked WITHOUT --task-id/--lane (Option::None path)", async () => {
       insertEvent("task.unclaimed", "0190nullpayld", null);
 
-      proc = spawnRelayd();
+      proc = spawnOrchd();
       const content = await waitForLogLineContaining("0190nullpayld", 10_000);
 
       expect(content).toContain("--event-id 0190nullpayld");
@@ -235,10 +235,10 @@ if (!BINARY_AVAILABLE) {
         }),
       );
 
-      proc = spawnRelayd();
+      proc = spawnOrchd();
       await waitForLogLineContaining("0190rcadv0001", 10_000);
 
-      // Give relayd a moment to advance the offset after spawn-success.
+      // Give orchd a moment to advance the offset after spawn-success.
       const deadline = Date.now() + 5_000;
       let offset: string | null = null;
       while (Date.now() < deadline) {
@@ -249,7 +249,7 @@ if (!BINARY_AVAILABLE) {
       expect(offset).toBe("0190rcadv0001");
     }, 30_000);
 
-    test("rc!=0 dispatch → subscriber_offsets does NOT advance (relayd holds the offset for retry)", async () => {
+    test("rc!=0 dispatch → subscriber_offsets does NOT advance (orchd holds the offset for retry)", async () => {
       // Override fake-atmux to exit 42.
       await writeFakeAtmux(fakeAtmuxBin, 42);
       insertEvent(
@@ -264,13 +264,13 @@ if (!BINARY_AVAILABLE) {
         }),
       );
 
-      proc = spawnRelayd();
+      proc = spawnOrchd();
       // Wait for the dispatch attempt itself (the fake-atmux still
       // logs even when exiting 42 — its first line happens before
       // exit).
       await waitForLogLineContaining("0190rchold001", 10_000);
 
-      // Give relayd a moment in case it would (erroneously) advance.
+      // Give orchd a moment in case it would (erroneously) advance.
       await sleep(2_000);
       const offset = readSubscriberOffset("atmux:lane-router");
       // Offset MUST NOT have advanced past the failed event. The

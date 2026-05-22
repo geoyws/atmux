@@ -36,7 +36,7 @@
 #                          AND team.members[].role ∈ {committer,gitter}
 #                          (ADR-159 TR3 accept-both grace; emitted verb
 #                          is the canonical `committer` per ADR-159 TR4)
-#   L11b relayd --drain    same gate as L11. Fires every 1min (cron
+#   L11b orchd --drain    same gate as L11. Fires every 1min (cron
 #                          floor) — drains pending task.done +
 #                          task.unclaimed events via subscriber_offsets
 #                          table. Defense-in-depth alongside --sweep
@@ -55,6 +55,6 @@
 */15 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux ombudsman tick >> /srv/golden-reference/.atmux/logs/ombudsman.log 2>&1
 */5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux lane-stall-tick >> /srv/golden-reference/.atmux/logs/lane-stall.log 2>&1
 */10 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux committer --sweep >> /srv/golden-reference/.atmux/logs/committer-sweep.log 2>&1
-* * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux relayd --drain >> /srv/golden-reference/.atmux/logs/relayd-drain.log 2>&1
+* * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux orchd --drain >> /srv/golden-reference/.atmux/logs/orchd-drain.log 2>&1
 */5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux epic-merge tick >> /srv/golden-reference/.atmux/logs/epic-merge.log 2>&1
 # <<< atmux:team=golden-reference

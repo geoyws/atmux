@@ -1,4 +1,4 @@
-// Unit tests for src/core/relayd-window.ts (ADR-202 §Amendment 2026-05-22 II).
+// Unit tests for src/core/orchd-window.ts (ADR-202 §Amendment 2026-05-22 II).
 //
 // Coverage:
 //   - Gate failures: autoMerge.enabled !== true, no committer/gitter,
@@ -13,7 +13,7 @@
 //   - SIGTERM trap present in supervisor command.
 //   - Circuit breaker (5 crashes in 60s) present.
 //   - Clean exit (rc=0) doesn't restart.
-//   - Logging tee to .atmux/logs/relayd.log.
+//   - Logging tee to .atmux/logs/orchd.log.
 
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
@@ -21,7 +21,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
-import { maybeSpawnRelaydWindow, RELAYD_WINDOW } from "../../../src/core/relayd-window.ts";
+import { maybeSpawnOrchdWindow, ORCHD_WINDOW } from "../../../src/core/orchd-window.ts";
 import type { Team } from "../../../src/schema/team.ts";
 
 // Minimal Team fixture per the schema shape.
@@ -121,11 +121,11 @@ function makeLogger(): { logger: { log: (s: string) => void; ok: (s: string) => 
   };
 }
 
-describe("maybeSpawnRelaydWindow — gating", () => {
+describe("maybeSpawnOrchdWindow — gating", () => {
   test("autoMerge.enabled !== true → returns false, no spawn", async () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
-    const result = await maybeSpawnRelaydWindow({
+    const result = await maybeSpawnOrchdWindow({
       team: team({ autoMerge: undefined }),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -140,7 +140,7 @@ describe("maybeSpawnRelaydWindow — gating", () => {
   test("no committer/gitter role → returns false, no spawn", async () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
-    const result = await maybeSpawnRelaydWindow({
+    const result = await maybeSpawnOrchdWindow({
       team: team({
         members: [
           { name: "be-1", role: "member", lane: "be" },
@@ -160,7 +160,7 @@ describe("maybeSpawnRelaydWindow — gating", () => {
   test("legacy 'gitter' role accepted as committer-equivalent (ADR-159 grace)", async () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
-    const result = await maybeSpawnRelaydWindow({
+    const result = await maybeSpawnOrchdWindow({
       team: team({
         members: [
           { name: "be-1", role: "member", lane: "be" },
@@ -180,7 +180,7 @@ describe("maybeSpawnRelaydWindow — gating", () => {
   test("ATMUX_HONKER=off → returns false, logs reason, no spawn", async () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger, logs } = makeLogger();
-    const result = await maybeSpawnRelaydWindow({
+    const result = await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -197,7 +197,7 @@ describe("maybeSpawnRelaydWindow — gating", () => {
     for (const value of ["0", "false", "OFF", "False"]) {
       const { tmux, newWindowCalls } = mockTmux({});
       const { logger } = makeLogger();
-      const result = await maybeSpawnRelaydWindow({
+      const result = await maybeSpawnOrchdWindow({
         team: team(),
         session: "atmux::demo",
         teamRoot: "/srv/demo",
@@ -211,13 +211,13 @@ describe("maybeSpawnRelaydWindow — gating", () => {
   });
 });
 
-describe("maybeSpawnRelaydWindow — idempotence", () => {
+describe("maybeSpawnOrchdWindow — idempotence", () => {
   test("window already exists → returns false, no spawn, log explains", async () => {
     const { tmux, newWindowCalls } = mockTmux({
-      listWindowsResult: [{ index: 5, id: "@5", name: RELAYD_WINDOW, active: false }],
+      listWindowsResult: [{ index: 5, id: "@5", name: ORCHD_WINDOW, active: false }],
     });
     const { logger, logs } = makeLogger();
-    const result = await maybeSpawnRelaydWindow({
+    const result = await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -233,7 +233,7 @@ describe("maybeSpawnRelaydWindow — idempotence", () => {
   test("listWindows throws → log warn + fall through to spawn attempt", async () => {
     const { tmux, newWindowCalls } = mockTmux({ listWindowsThrows: true });
     const { logger, logs } = makeLogger();
-    const result = await maybeSpawnRelaydWindow({
+    const result = await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -247,11 +247,11 @@ describe("maybeSpawnRelaydWindow — idempotence", () => {
   });
 });
 
-describe("maybeSpawnRelaydWindow — success path", () => {
+describe("maybeSpawnOrchdWindow — success path", () => {
   test("happy path: spawns window with correct name + cwd, sends wrapper command", async () => {
     const { tmux, newWindowCalls, sendKeysCalls } = mockTmux({});
     const { logger, logs } = makeLogger();
-    const result = await maybeSpawnRelaydWindow({
+    const result = await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -263,7 +263,7 @@ describe("maybeSpawnRelaydWindow — success path", () => {
     expect(newWindowCalls).toHaveLength(1);
     expect(newWindowCalls[0]).toEqual({
       sessionName: "atmux::demo",
-      name: RELAYD_WINDOW,
+      name: ORCHD_WINDOW,
       cwd: "/srv/demo",
     });
     expect(sendKeysCalls).toHaveLength(1);
@@ -274,7 +274,7 @@ describe("maybeSpawnRelaydWindow — success path", () => {
   test("supervisor command includes SIGTERM trap", async () => {
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -292,7 +292,7 @@ describe("maybeSpawnRelaydWindow — success path", () => {
   test("supervisor command includes circuit breaker (5 crashes / 60s)", async () => {
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -309,7 +309,7 @@ describe("maybeSpawnRelaydWindow — success path", () => {
   test("supervisor command exits cleanly on rc=0 (no restart)", async () => {
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -322,10 +322,10 @@ describe("maybeSpawnRelaydWindow — success path", () => {
     expect(cmd).toContain("not restarting");
   });
 
-  test("supervisor command logs to .atmux/logs/relayd.log via tee", async () => {
+  test("supervisor command logs to .atmux/logs/orchd.log via tee", async () => {
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -334,14 +334,14 @@ describe("maybeSpawnRelaydWindow — success path", () => {
       env: {},
     });
     const cmd = sendKeysCalls[0]?.keys ?? "";
-    expect(cmd).toContain("tee -a .atmux/logs/relayd.log");
+    expect(cmd).toContain("tee -a .atmux/logs/orchd.log");
     expect(cmd).toContain("mkdir -p .atmux/logs");
   });
 
-  test("supervisor command invokes 'atmux relayd --start' (ADR-202 §V)", async () => {
+  test("supervisor command invokes 'atmux orchd --start' (ADR-202 §V)", async () => {
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -350,14 +350,14 @@ describe("maybeSpawnRelaydWindow — success path", () => {
       env: {},
     });
     const cmd = sendKeysCalls[0]?.keys ?? "";
-    expect(cmd).toContain("atmux relayd --start");
+    expect(cmd).toContain("atmux orchd --start");
   });
 });
 
-describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (T5.1)", () => {
+describe("maybeSpawnOrchdWindow — circuit-breaker backlog-restart tolerance (T5.1)", () => {
   // Regression-pin per ADR-202 §XIV (queued via T5.1, t-4eb9cd40).
   //
-  // Operator scenario: relayd has been down through accumulated
+  // Operator scenario: orchd has been down through accumulated
   // backlog (5000 events). When it comes back up and starts replaying
   // in batches of ~100, transient errors (db lock contention, OOM
   // back-pressure, mid-batch handler thrown) can trigger 3–4 brief
@@ -374,7 +374,7 @@ describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (
   test("supervisor command resets crash window after 60s elapsed (rolling-window behavior)", async () => {
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -392,7 +392,7 @@ describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (
   test("supervisor command counter increments BEFORE the threshold check (so 4 crashes don't trip)", async () => {
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
@@ -413,16 +413,16 @@ describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (
   });
 
   test("real bash execution: 3 quick crashes within 60s do NOT trip the breaker (loop continues)", async () => {
-    // Extract the supervisor cmd from the verb, then mock the relayd
+    // Extract the supervisor cmd from the verb, then mock the orchd
     // invocation to fail 3 times then exit cleanly. The supervisor
     // loop sees rc=0 on attempt 4 → exits with "clean exit, not
     // restarting" (rc=0). The breaker MUST NOT have tripped (rc=42).
 
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    const tmpRoot = await mkdtemp(join(tmpdir(), "atmux-relayd-circuit-"));
+    const tmpRoot = await mkdtemp(join(tmpdir(), "atmux-orchd-circuit-"));
 
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: tmpRoot,
@@ -432,7 +432,7 @@ describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (
     });
 
     let cmd = sendKeysCalls[0]?.keys ?? "";
-    // Swap the real relayd invocation for a counting stub. The stub
+    // Swap the real orchd invocation for a counting stub. The stub
     // is a tiny bash snippet that increments a counter file and exits
     // non-zero for the first 3 attempts, then zero on the 4th.
     const stubCounter = join(tmpRoot, "stub.count");
@@ -441,12 +441,12 @@ describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (
       `n=$(cat "${stubCounter}"); n=$((n + 1)); echo "$n" > "${stubCounter}"; ` +
       `if [[ "$n" -le 3 ]]; then exit 1; else exit 0; fi`;
     // Replace BOTH the Rust-binary path and the Bun-fallback path with
-    // the stub — the supervisor's `command -v atmux-relayd` check will
-    // fail in this hermetic env (no atmux-relayd installed under tmpRoot),
+    // the stub — the supervisor's `command -v atmux-orchd` check will
+    // fail in this hermetic env (no atmux-orchd installed under tmpRoot),
     // so the fallback path runs. Patching it is sufficient.
     cmd = cmd.replace(
-      'atmux relayd --start 2>&1 | tee -a .atmux/logs/relayd.log',
-      `bash -c '${stubBash}' 2>&1 | tee -a .atmux/logs/relayd.log`,
+      'atmux orchd --start 2>&1 | tee -a .atmux/logs/orchd.log',
+      `bash -c '${stubBash}' 2>&1 | tee -a .atmux/logs/orchd.log`,
     );
     // Tighten the inter-crash backoff so the test finishes well under
     // 60s — the bash supervisor sleeps 5s between restarts in prod,
@@ -496,9 +496,9 @@ describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (
 
     const { tmux, sendKeysCalls } = mockTmux({});
     const { logger } = makeLogger();
-    const tmpRoot = await mkdtemp(join(tmpdir(), "atmux-relayd-circuit-trip-"));
+    const tmpRoot = await mkdtemp(join(tmpdir(), "atmux-orchd-circuit-trip-"));
 
-    await maybeSpawnRelaydWindow({
+    await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: tmpRoot,
@@ -510,8 +510,8 @@ describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (
     let cmd = sendKeysCalls[0]?.keys ?? "";
     // Always-fail stub.
     cmd = cmd.replace(
-      'atmux relayd --start 2>&1 | tee -a .atmux/logs/relayd.log',
-      `bash -c 'exit 1' 2>&1 | tee -a .atmux/logs/relayd.log`,
+      'atmux orchd --start 2>&1 | tee -a .atmux/logs/orchd.log',
+      `bash -c 'exit 1' 2>&1 | tee -a .atmux/logs/orchd.log`,
     );
     cmd = cmd.replace("sleep 5", "sleep 0");
 
@@ -539,11 +539,11 @@ describe("maybeSpawnRelaydWindow — circuit-breaker backlog-restart tolerance (
   }, 30_000);
 });
 
-describe("maybeSpawnRelaydWindow — failure isolation", () => {
+describe("maybeSpawnOrchdWindow — failure isolation", () => {
   test("newWindow throws → log warn + return false, never propagates", async () => {
     const { tmux, newWindowCalls } = mockTmux({ newWindowThrows: true });
     const { logger, logs } = makeLogger();
-    const result = await maybeSpawnRelaydWindow({
+    const result = await maybeSpawnOrchdWindow({
       team: team(),
       session: "atmux::demo",
       teamRoot: "/srv/demo",

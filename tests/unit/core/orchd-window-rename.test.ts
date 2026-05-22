@@ -138,6 +138,7 @@ const logger = {
   log: () => {},
   warn: () => {},
   err: () => {},
+  ok: () => {},
 };
 
 describe("maybeSpawnOrchdWindow — ADR-224 §D2 incremental auto-rename", () => {
