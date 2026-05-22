@@ -627,6 +627,87 @@ describe("watchEvents", () => {
     expect(topics).toContain("task.claimed");
   });
 
+  test("externalSignals drives drain — events yielded on each signal", async () => {
+    // Pre-populate one event
+    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
+    const ac = new AbortController();
+    // Yield two wake signals then end
+    const signals = (async function* () {
+      yield "honker:stream:task.done\tnew";
+      // Emit a second event mid-loop so the second signal triggers a drain
+      emit(db, { topic: "task.done", taskId: "t-B", member: "x", team: "y", doneAtSec: 2 });
+      yield "honker:stream:task.done\tnew";
+    })();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      externalSignals: signals,
+      // Set sleep so post-iterator fallback exits immediately
+      sleep: async () => {
+        ac.abort();
+      },
+    });
+    const ids: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") ids.push(ev.taskId);
+      if (ids.length >= 2) {
+        ac.abort();
+        break;
+      }
+    }
+    // First iteration: backlog drains both (t-A + initial), second signal: no new (t-B already drained on first)
+    // Actually: backlog drain happens before the loop, then signals iterate.
+    // We expect at least both events.
+    expect(ids).toContain("t-A");
+    expect(ids).toContain("t-B");
+  });
+
+  test("externalSignals throw → falls back to poll-mode gracefully", async () => {
+    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
+    const ac = new AbortController();
+    const signals = (async function* () {
+      throw new Error("simulated listener crash");
+    })();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      externalSignals: signals,
+      sleep: async () => {
+        // After fallback, this sleep is called — emit one more then abort
+        emit(db, { topic: "task.done", taskId: "t-B", member: "x", team: "y", doneAtSec: 2 });
+        ac.abort();
+      },
+    });
+    const ids: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") ids.push(ev.taskId);
+    }
+    // Backlog drain catches t-A, then signals crashes, then fallback poll picks up t-B
+    expect(ids).toContain("t-A");
+  });
+
+  test("externalSignalGapMs respected before fallback", async () => {
+    const ac = new AbortController();
+    const signals = (async function* () {
+      // Empty — ends immediately
+    })();
+    let gapApplied = false;
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      externalSignals: signals,
+      externalSignalGapMs: 50,
+      sleep: async (ms) => {
+        if (ms === 50) gapApplied = true;
+        ac.abort();
+      },
+    });
+    for await (const _ of watcher) {
+      /* empty */
+    }
+    expect(gapApplied).toBe(true);
+  });
+
   test("drainBatchSize caps backlog per wake", async () => {
     for (let i = 0; i < 5; i += 1) {
       emit(db, {

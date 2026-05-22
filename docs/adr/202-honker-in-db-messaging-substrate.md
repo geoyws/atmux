@@ -373,3 +373,53 @@ After this commit:
 Migration of running teams is gated on items 3–8. Substrate + first consumer shipped is the unblock — remaining work is consumer-by-consumer + cron-by-cron decommission.
 
 **Filed via** 2026-05-22 driver session — *"do it all urself right here but in a separate worktree"*.
+
+
+## §Amendment 2026-05-22 (II) — atmux-listener Rust subprocess: true kernel-blocking NOTIFY
+
+Eliminates the 100ms in-process poll documented in §Amendment 2026-05-22 (I) §2 by spawning a small Rust subprocess that wraps Honker's native `Database::listen()` blocking iterator.
+
+### Why this exists
+
+Honker's watcher API (`UpdateWatcher`, `Subscription`, `UpdateEvents`) is exposed only at the Rust binding level, not as SQL functions. From bun:sqlite the `_honker_notifications` table can only be polled via `MAX(id)` cursor reads (~100ms cadence as shipped in §Amendment 2026-05-22 (I)). The watcher itself is implemented as a 1ms `PRAGMA data_version` poll inside Honker's Rust thread — but it's accessible only to Rust callers.
+
+Bridging the gap: a tiny Rust binary (~80 lines, 1.6MB compiled) that:
+1. Opens the team's `state.db` via `honker::Database::open()`.
+2. Calls `db.listen("honker:stream:<topic>")` to get a blocking `Subscription` iterator.
+3. Streams each `Notification` to stdout as one line: `<channel>\t<payload>\n`.
+4. Exits cleanly on stdin close (parent died → broken-pipe → graceful exit).
+
+The Bun parent (e.g. `atmux committer --daemon`) spawns this subprocess via `spawnNativeListener()` and feeds its stdout iterator into `watchEvents({externalSignals: ...})`. No in-process polling — the Bun event loop is genuinely idle between wake-ups.
+
+### Where the code lives
+
+- `rust/atmux-listener/Cargo.toml` — crate spec, depends on `honker = "0.3.3"` with `bundled-sqlite` feature so the binary links statically without needing libsqlite3-dev on the build host.
+- `rust/atmux-listener/src/main.rs` — ~80-line binary. Wire protocol + lifecycle documented inline.
+- `src/abstractions/native-listener.ts` — Bun-side spawner. Filters out the initial `ready` handshake, exposes `AsyncIterable<string>` of notification lines, handles graceful stop via stdin-close + SIGTERM.
+- `src/abstractions/events.ts::watchEvents` — extended with `externalSignals?: AsyncIterable<string>` opt. When provided, the loop awaits the iterator instead of polling. Subprocess crash → graceful degrade to poll-mode (per the `externalSignals` contract).
+- `src/verbs/committer.ts::committerDaemonVerb` — wires it together: when Honker is loaded AND the binary is available at `$ATMUX_LISTENER_BIN` or `/opt/atmux/current/bin/atmux-listener`, spawns the listener and threads its signals into watchEvents. Logs the wake-mode picked (`wake=native-listener` or `wake=poll`).
+- `package.json::build:install` — runs `cargo build --release` in `rust/atmux-listener` and installs the binary alongside the main atmux shim.
+
+### Verified latency
+
+End-to-end smoke test (`tests/integration/native-listener-e2e.test.ts`) verifies Bun → `honker_stream_publish` → atmux-listener Rust subprocess → Bun stdout-read wake roundtrip in **~60ms on hax** (Hetzner AX42-U, default polling backend). This is bounded by Honker's 1ms `PRAGMA data_version` poll cadence plus stdout buffering jitter.
+
+With the `kernel-watcher` Cargo feature enabled (notify-rs filesystem events on the `-wal` / `-shm` sidecars), expected latency drops to ~1ms — source-only opt-in per Honker upstream. Atmux's listener crate carries the feature flag pre-wired; enabling it is `cargo build --release --features kernel-watcher` in `rust/atmux-listener`. Not enabled by default until Honker upstream promotes kernel-watcher out of experimental.
+
+### Cross-process publish-visibility prerequisite
+
+Found during integration: bun:sqlite reports `PRAGMA journal_mode` as `"memory"` even after explicit `db.run("PRAGMA journal_mode=WAL")` — but the `-wal` / `-shm` sidecar files DO get created, and cross-process reads work. The reporting is a bun:sqlite display quirk; functionally the DB is in WAL mode. No code change required; documented here so future investigators don't waste an hour like the 2026-05-22 driver session did.
+
+### Lifecycle + supervision
+
+The listener subprocess is owned by its spawning Bun process. When the daemon exits (SIGTERM/SIGINT, error, --once completion), `handle.stop()` closes the subprocess's stdin and falls back to SIGTERM as belt-and-braces. The Rust binary observes broken-pipe on next stdout write and exits cleanly.
+
+If the listener crashes mid-session (rare: watcher panic on file replacement, OOM, etc.), `watchEvents()` catches the iterator's throw and falls back to its in-process poll path (~100ms cadence). The daemon doesn't die — it just goes from kernel-blocked back to 100ms polling. A future amendment may add automatic respawn via `--respawn-on-crash`, but for now the cron-backstop drain (per §D6) catches anything the degraded daemon misses.
+
+### Tests
+
+- `tests/unit/abstractions/native-listener.test.ts` — 11 spawn-fn-injected tests (handshake filter, kill propagation, exit observation, env-driven path resolution).
+- `tests/unit/abstractions/events.test.ts::watchEvents externalSignals` — 3 new tests (signal-driven drain, throw-degrades-to-poll, gapMs-respected).
+- `tests/integration/native-listener-e2e.test.ts` — 2 real-binary tests (Bun publish → ≤1s wake, stop terminates cleanly). Gated on binary availability; skipped on dev machines without `cargo build`.
+
+**Filed via** 2026-05-22 driver session — *"i am okay with us writing rust in atmux"* → *"yes start with the rust listener"*. Net: ~250 lines of Rust + Bun + tests + ADR, delivers true kernel-blocked NOTIFY/LISTEN without forking Honker.

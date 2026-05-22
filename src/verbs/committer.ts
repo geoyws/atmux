@@ -51,6 +51,11 @@ import {
   watchEvents as watchEventsImport,
 } from "../abstractions/events.ts";
 import { bootHonker as bootHonkerImport, getHonkerState as honkerStateImport } from "../abstractions/honker.ts";
+import {
+  type NativeListenerHandle,
+  resolveDefaultListenerBinary,
+  spawnNativeListener,
+} from "../abstractions/native-listener.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
@@ -412,10 +417,38 @@ export async function committerDaemonVerb(
   const onSig = () => ac.abort();
   process.once("SIGINT", onSig);
   process.once("SIGTERM", onSig);
+  let nativeListener: NativeListenerHandle | null = null;
   try {
     const honkerLoaded = honkerStateImport(ctx.db)?.loaded ?? false;
+    // ADR-202 §Amendment 2026-05-22 (II) — prefer the atmux-listener
+    // Rust subprocess for kernel-blocking wake when (a) Honker is
+    // loaded and (b) the binary is available on disk. Falls back to
+    // the in-process 100ms poll path when either is missing.
+    const channel = "honker:stream:task.done";
+    const dbPath = `${ctx.atmuxDir}/state.db`;
+    let externalSignals: AsyncIterable<string> | undefined;
+    let wakeMode = "poll";
+    if (honkerLoaded) {
+      const binaryPath = resolveDefaultListenerBinary();
+      if (binaryPath !== null) {
+        try {
+          nativeListener = spawnNativeListener({
+            binaryPath,
+            dbPath,
+            channel,
+            onDiagnostic: (msg) => ctx.logger.log(`committer --daemon: ${msg}`),
+          });
+          externalSignals = nativeListener.signals;
+          wakeMode = "native-listener";
+        } catch (e) {
+          ctx.logger.log(
+            `committer --daemon: native listener spawn failed (${e instanceof Error ? e.message : String(e)}) — falling back to poll`,
+          );
+        }
+      }
+    }
     ctx.logger.log(
-      `committer --daemon: team='${ctx.team.name}' honker=${honkerLoaded ? "loaded" : "fallback"} starting watcher (topics=[task.done])`,
+      `committer --daemon: team='${ctx.team.name}' honker=${honkerLoaded ? "loaded" : "fallback"} wake=${wakeMode} starting watcher (topics=[task.done])`,
     );
     let processed = 0;
     const consumerName = "atmux:gitter";
@@ -425,6 +458,7 @@ export async function committerDaemonVerb(
       signal: ac.signal,
       initialOffset: lastOffset,
       honkerLoaded,
+      ...(externalSignals ? { externalSignals } : {}),
     });
     for await (const event of watcher) {
       if (event.topic !== "task.done") continue;
@@ -456,6 +490,7 @@ export async function committerDaemonVerb(
   } finally {
     process.removeListener("SIGINT", onSig);
     process.removeListener("SIGTERM", onSig);
+    if (nativeListener !== null) nativeListener.stop();
     ctx.closeDb(ctx.db);
   }
   return 0;

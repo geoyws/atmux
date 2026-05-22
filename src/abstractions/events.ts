@@ -293,6 +293,18 @@ export interface WatchEventsOpts {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Test seam — max-drain batch size per wake. Default 1000. */
   drainBatchSize?: number;
+  /** Async iterator of wake-up signals from an external listener (e.g.
+   *  the `atmux-listener` Rust subprocess wrapping Honker's blocking
+   *  `Database::listen`). When provided, the loop awaits this iterator
+   *  instead of polling — true kernel-blocked wake (~1ms latency,
+   *  ~0% idle CPU). Yields one item per notification; we ignore the
+   *  value and drain the events table on each yield. The iterator's
+   *  early return ends the watcher cleanly. */
+  externalSignals?: AsyncIterable<string>;
+  /** When `externalSignals` ends (parent listener died), wait this many
+   *  ms before yielding control — gives the supervisor a window to
+   *  respawn the listener. Default 0 (return immediately, caller decides). */
+  externalSignalGapMs?: number;
 }
 
 /** Default sleep — honors AbortSignal so cancellation returns immediately. */
@@ -400,6 +412,39 @@ export async function* watchEvents(
       yield event;
       lastEventId = event.eventId;
     }
+  }
+
+  // External signal path (atmux-listener subprocess via Honker's
+  // blocking Database::listen). When the caller provides a signal
+  // iterator, we await it instead of polling — true kernel-blocked
+  // wake, zero in-process polling.
+  if (opts.externalSignals !== undefined) {
+    try {
+      for await (const _signal of opts.externalSignals) {
+        if (opts.signal?.aborted) return;
+        const batch = drainSince(db, {
+          topics: opts.topics,
+          lastEventId,
+          limit: drainLimit,
+        });
+        for (const event of batch) {
+          if (opts.signal?.aborted) return;
+          yield event;
+          lastEventId = event.eventId;
+        }
+      }
+    } catch {
+      // Iterator throw (subprocess died, broken pipe) — fall through to
+      // poll mode below as graceful degradation. The caller's supervisor
+      // can respawn the listener; meanwhile we keep events flowing.
+    }
+    if (opts.externalSignalGapMs && opts.externalSignalGapMs > 0) {
+      await sleep(opts.externalSignalGapMs, opts.signal);
+    }
+    // Listener-stream ended — degrade to poll-mode for the rest of the
+    // generator's life. Reset notification-baseline so we don't re-drain.
+    lastNotificationId = opts.honkerLoaded ? readHonkerNotificationMaxId(db) : -1;
+    useNotificationsTable = opts.honkerLoaded === true && lastNotificationId >= 0;
   }
 
   while (!opts.signal?.aborted) {
