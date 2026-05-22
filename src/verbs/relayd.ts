@@ -24,7 +24,7 @@
 // move; this file is a thin dispatcher.
 
 import { join } from "node:path";
-import { drainSince, saveOffset } from "../abstractions/events.ts";
+import { loadEventById, saveOffset } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { getAtmuxDir, requireTeam, type ResolveDirOpts } from "../core/common.ts";
@@ -38,7 +38,7 @@ import { ConfigError, UsageError } from "../errors.ts";
 import { runLaneTick } from "./lane-tick.ts";
 
 const USAGE =
-  "atmux relayd <--start|--drain|--handle-one> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T]";
+  "atmux relayd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T]";
 
 export interface ParsedRelaydArgs {
   /** Sub-verbs:
@@ -54,8 +54,12 @@ export interface ParsedRelaydArgs {
    *   - `handle-one`  : (ADR-202 §VII) single-event dispatch — load
    *                     event by --event-id + --topic, run handler,
    *                     save offset, exit. Spawned by atmux-relayd Rust
-   *                     binary once per arriving event. */
-  subverb: "start" | "drain" | "handle-one";
+   *                     binary once per arriving event.
+   *   - `status`      : (ADR-202 §VIII /btw #9) single-shot diagnostic —
+   *                     subscriber offsets, recent event counts per
+   *                     topic, last-handler-outcome. Operator runs it
+   *                     instead of grepping logs. */
+  subverb: "start" | "drain" | "handle-one" | "status";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
@@ -68,7 +72,7 @@ export interface ParsedRelaydArgs {
 }
 
 export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
-  let subverb: "start" | "drain" | "handle-one" | undefined;
+  let subverb: "start" | "drain" | "handle-one" | "status" | undefined;
   let teamDir: string | undefined;
   let once = false;
   let maxEvents: number | undefined;
@@ -89,6 +93,11 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
     }
     if (a === "--handle-one" || a === "handle-one") {
       subverb = "handle-one";
+      i += 1;
+      continue;
+    }
+    if (a === "--status" || a === "status") {
+      subverb = "status";
       i += 1;
       continue;
     }
@@ -201,6 +210,9 @@ export async function relayd(
   if (parsed.subverb === "handle-one") {
     return await relaydHandleOne(parsed, opts);
   }
+  if (parsed.subverb === "status") {
+    return await relaydStatus(parsed);
+  }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
   // matching sub-verb name.
@@ -252,20 +264,11 @@ async function relaydHandleOne(
     };
     const ctx = await buildEventDrivenContext(committerArgs, opts);
     try {
-      // Load the specific event by id (lex-> id so use > prevId trick).
-      // drainSince accepts a "lower-bound exclusive" cursor; we want
-      // exactly one event with this id, so use a cursor that's one
-      // codepoint below.
-      const beforeCursor = eventId.slice(0, -1) + String.fromCharCode(
-        eventId.charCodeAt(eventId.length - 1) - 1,
-      );
-      const rows = drainSince(ctx.db, {
-        topics: ["task.done"],
-        lastEventId: beforeCursor,
-        limit: 50,
-      });
-      const event = rows.find((r) => r.eventId === eventId);
-      if (event === undefined || event.topic !== "task.done") {
+      // ADR-202 §VIII caveat-fix: use loadEventById for direct lookup
+      // instead of the brittle cursor-trick (decrement-last-char on
+      // eventId + drainSince).
+      const event = loadEventById(ctx.db, eventId);
+      if (event === null || event.topic !== "task.done") {
         ctx.logger.log(`relayd --handle-one: event ${eventId} not found in task.done — skip`);
         ctx.closeDb(ctx.db);
         return 0; // not an error — event may have been pruned, or wrong topic
@@ -315,4 +318,98 @@ async function relaydHandleOne(
   throw new ConfigError({
     what: `relayd --handle-one: unknown topic '${topic}' (expected task.done or task.unclaimed)`,
   });
+}
+
+/**
+ * `atmux relayd --status` — single-shot diagnostic (ADR-202 §VIII /btw #9).
+ *
+ * Surfaces relayd's observable state in one command so operators can
+ * grep + understand health without diving into `.atmux/logs/relayd.log`:
+ *   - Per-consumer subscriber offset (last processed event)
+ *   - Total events table size + recent-window count (last hour)
+ *   - Per-topic event count (last 24h)
+ *   - Honker substrate load state
+ *
+ * Output is tab-separated lines, grep-able. Returns exit 0 always —
+ * status is read-only diagnostic.
+ */
+async function relaydStatus(parsed: ParsedRelaydArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts =
+    parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const hourAgo = now - 3600;
+    const dayAgo = now - 86_400;
+
+    process.stdout.write("# atmux relayd --status\n");
+    process.stdout.write(`team-dir\t${atmuxDir}\n`);
+    process.stdout.write(`db\t${dbPath}\n`);
+
+    // Subscriber offsets
+    process.stdout.write("\n## consumer offsets\n");
+    const consumers = db
+      .prepare(
+        "SELECT consumer_name, last_event_id, last_processed_at_sec FROM subscriber_offsets ORDER BY consumer_name",
+      )
+      .all() as Array<{ consumer_name: string; last_event_id: string; last_processed_at_sec: number }>;
+    if (consumers.length === 0) {
+      process.stdout.write("(no consumers yet — relayd hasn't processed any events)\n");
+    }
+    for (const c of consumers) {
+      const ageSec = now - c.last_processed_at_sec;
+      process.stdout.write(
+        `${c.consumer_name}\tlast=${c.last_event_id}\tage=${ageSec}s\n`,
+      );
+    }
+
+    // Events table size + recent counts
+    process.stdout.write("\n## events table\n");
+    const total = db.prepare("SELECT COUNT(*) AS n FROM events").get() as { n: number };
+    const recent1h = db
+      .prepare("SELECT COUNT(*) AS n FROM events WHERE emitted_at_sec >= ?")
+      .get(hourAgo) as { n: number };
+    process.stdout.write(`total\t${total.n}\n`);
+    process.stdout.write(`last-1h\t${recent1h.n}\n`);
+
+    // Per-topic counts (last 24h)
+    process.stdout.write("\n## per-topic (last 24h)\n");
+    const perTopic = db
+      .prepare(
+        "SELECT topic, COUNT(*) AS n FROM events WHERE emitted_at_sec >= ? GROUP BY topic ORDER BY n DESC",
+      )
+      .all(dayAgo) as Array<{ topic: string; n: number }>;
+    if (perTopic.length === 0) {
+      process.stdout.write("(no events in last 24h)\n");
+    }
+    for (const t of perTopic) {
+      process.stdout.write(`${t.topic}\t${t.n}\n`);
+    }
+
+    // Honker notifications channel (if substrate loaded)
+    process.stdout.write("\n## honker notifications (if substrate loaded)\n");
+    try {
+      const notifMax = db
+        .prepare("SELECT COALESCE(MAX(id), 0) AS n FROM _honker_notifications")
+        .get() as { n: number };
+      process.stdout.write(`_honker_notifications.max\t${notifMax.n}\n`);
+    } catch {
+      process.stdout.write("(table not present — honker substrate not loaded)\n");
+    }
+
+    // WAL observability — file size + journal mode
+    process.stdout.write("\n## wal\n");
+    try {
+      const jm = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+      process.stdout.write(`journal_mode\t${jm.journal_mode}\n`);
+    } catch {
+      // ignore
+    }
+
+    return 0;
+  } finally {
+    closeDatabase(db);
+  }
 }

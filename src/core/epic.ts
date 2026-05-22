@@ -10,7 +10,8 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
-import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase, transactImmediate } from "../abstractions/sqlite.ts";
+import { nextId } from "./id-sequence.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanEpic, KanbanStory, KanbanTask } from "../schema/kanban.ts";
@@ -65,6 +66,21 @@ async function _withRepo<T>(
   }
 }
 
+/** Variant that exposes the raw Database alongside the repo. ADR-202
+ *  §VIII consumers need it for `nextId(db, "e")` allocation inside
+ *  the open write scope. */
+async function _withDbAndRepo<T>(
+  atmuxDir: string,
+  fn: (db: Database, repo: KanbanRepo) => T | Promise<T>,
+): Promise<T> {
+  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  try {
+    return await fn(db, new KanbanRepo(db));
+  } finally {
+    closeDatabase(db);
+  }
+}
+
 export interface AddEpicOpts {
   title: string;
   body?: string;
@@ -84,19 +100,29 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
       what: `epic add: ${_stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
     });
   }
-  const id = genEpicId();
-  const epic: KanbanEpic = {
-    id,
-    title,
-    body: opts.body !== undefined && opts.body.length > 0 ? opts.body : null,
-    status: "planning",
-    driverRef: opts.driverRef !== undefined && opts.driverRef.length > 0 ? opts.driverRef : null,
-    createdAt: nowEpoch(),
-    completedAt: null,
-    stories: [],
-  };
-  await _withRepo(atmuxDir, (repo) => repo.upsertEpic(epic));
-  return id;
+  // ADR-202 §VIII — running-number ID per-team scoped via id_sequences.
+  // Sequence increment + epic row insert run in the same transaction
+  // so a rollback drops both.
+  let assignedId = "";
+  await _withDbAndRepo(atmuxDir, (db, repo) => {
+    transactImmediate(db, () => {
+      const id = nextId(db, "e");
+      const epic: KanbanEpic = {
+        id,
+        title,
+        body: opts.body !== undefined && opts.body.length > 0 ? opts.body : null,
+        status: "planning",
+        driverRef:
+          opts.driverRef !== undefined && opts.driverRef.length > 0 ? opts.driverRef : null,
+        createdAt: nowEpoch(),
+        completedAt: null,
+        stories: [],
+      };
+      repo.upsertEpic(epic);
+      assignedId = id;
+    });
+  });
+  return assignedId;
 }
 
 export interface ListEpicsFilter {
@@ -177,7 +203,7 @@ export async function advanceEpic(
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `epic advance: no such epic: ${id}` });
   }
-  return await _withRepo(atmuxDir, async (repo) => {
+  return await _withDbAndRepo(atmuxDir, async (db, repo) => {
     const epic = repo.getEpic(id);
     if (epic === null) {
       throw new ConfigError({ what: `epic advance: no such epic: ${id}` });
@@ -225,7 +251,7 @@ export async function advanceEpic(
     repo.upsertEpic(updated);
     let summaryTaskId: string | null = null;
     if (resolved === "review") {
-      summaryTaskId = await dispatchEpicSummary(atmuxDir, repo, id);
+      summaryTaskId = await dispatchEpicSummary(atmuxDir, repo, db, id);
     }
     return { from: cur, to: resolved, summaryTaskId, noop: false };
   });
@@ -238,6 +264,7 @@ export async function advanceEpic(
 async function dispatchEpicSummary(
   atmuxDir: string,
   repo: KanbanRepo,
+  db: Database,
   eid: string,
 ): Promise<string> {
   // Per t-85846a0b (cluster 5 of t-2b801707 fix): use `dir: atmuxDir`
@@ -252,7 +279,8 @@ async function dispatchEpicSummary(
       what: "epic dispatch-summary: no member with role=team-lead in team.json",
     });
   }
-  const tid = `t-${randomBytes(4).toString("hex")}`;
+  // ADR-202 §VIII — running-number task ID.
+  const tid = nextId(db, "t");
   const now = nowEpoch();
   const task: KanbanTask = {
     id: tid,

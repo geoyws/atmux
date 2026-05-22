@@ -66,7 +66,8 @@ describe("kanban (SQLite mode)", () => {
 
   test("addTask + showTask round-trip", async () => {
     const id = await addTask(env.atmuxDir, { subject: "first task" });
-    expect(id).toMatch(/^t-[0-9a-f]{8}$/);
+    // ADR-202 §VIII — compound IDs in SQLite mode (t-N-<hash>).
+    expect(id).toMatch(/^t-[1-9][0-9]*-[0-9a-f]{8}$/);
 
     const t = await showTask(env.atmuxDir, id);
     expect(t).not.toBeNull();
@@ -566,7 +567,8 @@ describe("kanban (SQLite mode) — task-lifecycle event emit (ADR-202/203)", () 
   test("addTask with no team.json — emit short-circuits (no throw)", async () => {
     await rm(join(env.atmuxDir, "team.json"));
     const id = await addTask(env.atmuxDir, { subject: "x", lane: "be" });
-    expect(id).toMatch(/^t-[0-9a-f]{8}$/);
+    // ADR-202 §VIII — compound IDs in SQLite mode (t-N-<hash>).
+    expect(id).toMatch(/^t-[1-9][0-9]*-[0-9a-f]{8}$/);
     // Kanban row landed despite no team
     const db = openStateDb();
     try {

@@ -193,6 +193,29 @@ export function drainSince(db: Database, opts: DrainOpts): EventPayload[] {
 }
 
 /**
+ * Load a single event by its full `event_id`. Returns `null` when the
+ * row doesn't exist or the payload fails Zod validation.
+ *
+ * Replaces the cursor-trick (`lastEventId = eventId.slice(0,-1) +
+ * String.fromCharCode(...)`) the relayd `--handle-one` path abused on
+ * drainSince for single-event lookup. Brittle if the event-id encoding
+ * ever changes; this is the canonical accessor.
+ *
+ * ADR-202 §Amendment 2026-05-22 (VIII) caveat-fix.
+ */
+export function loadEventById(db: Database, eventId: string): EventPayload | null {
+  const row = db
+    .prepare("SELECT payload FROM events WHERE event_id = ?")
+    .get(eventId) as { payload: string } | undefined;
+  if (row === undefined) return null;
+  try {
+    return EventPayload.parse(JSON.parse(row.payload));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Load the last-processed eventId for a scope-qualified consumer per
  * ADR-203 §D7. Returns the lower-bound sentinel `""` when the consumer
  * has never run before (every UUIDv7 sorts higher than the empty string).

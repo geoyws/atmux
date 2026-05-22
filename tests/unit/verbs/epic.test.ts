@@ -162,7 +162,7 @@ describe("epicNextState + epicLegalTransition", () => {
 describe("addEpic", () => {
   test("creates an epic with default status 'planning'", async () => {
     const id = await addEpic(atmuxDir, { title: "Onboard new hires" });
-    expect(id).toMatch(/^e-[0-9a-f]{8}$/);
+    expect(id).toMatch(/^e-[1-9][0-9]*-[0-9a-f]{8}$/);
     const epics = await listEpics(atmuxDir);
     expect(epics).toHaveLength(1);
     expect(epics[0]?.id).toBe(id);
@@ -317,7 +317,7 @@ describe("epic verb — dispatch", () => {
     const { out } = await captureStdout(() =>
       epic(["add", "--team-dir", teamDir, "First", "epic"]),
     );
-    expect(out).toMatch(/^e-[0-9a-f]{8}$/m);
+    expect(out).toMatch(/^e-[1-9][0-9]*-[0-9a-f]{8}$/m);
   });
 
   test("epic list (no epics) prints '(no epics)'", async () => {

@@ -711,3 +711,114 @@ The Bun `atmux relayd --start` path stays as a fallback (degraded mode when Rust
 - E2E smoke verified manually (above).
 
 **Filed via** 2026-05-22 driver session — *"i think we shoudl go rust"* → *"let's do rust now"*.
+
+
+## §Amendment 2026-05-22 (VIII) — compound IDs (`<scope>-<N>-<hash>`) for tasks / stories / epics
+
+Operator request 2026-05-22: hex-only IDs (`e-3b017960`) are hard to think about and remember; switch to monotonic running numbers (`e-1, e-2, e-1203`). After reconsideration: *"maybe use e-1-${hash} so that it's easier to grep"* — best of both worlds, running number for human recall, hash suffix for unambiguous grep.
+
+### Format
+
+`<scope>-<N>-<hash>` where:
+- `<scope>`: `t` (task), `s` (story), `e` (epic)
+- `<N>`: per-team monotonic positive integer starting at 1
+- `<hash>`: 8 hex chars from `randomBytes(4)` (same generator as legacy)
+
+Examples: `e-1-3b017960`, `t-1203-a1b2c3d4`, `s-7-deadbeef`.
+
+### Why both halves
+
+1. **Easier to remember.** "Epic 1 / Epic 1203" beats "Epic e-7a1014f9" in reviews + commit messages + brief writing. Same readability win that git tags and GitHub PR numbers give.
+2. **Easier to grep.** `grep e-1 logs/*.log` matches too many things (every event-id starting with e-1...). `grep e-1-3b017960` matches exactly the one ID. The hash suffix makes IDs unambiguous in log streams.
+
+### Per-team scope
+
+Each team's `state.db` has its own counters in the `id_sequences` table. `e-1-X` in team A and `e-1-Y` in team B are distinct (different hash suffixes). Matches atmux's existing per-team isolation (cage sockets, kanban, events).
+
+### Schema migration
+
+Migration 11→12 adds `id_sequences (scope TEXT PRIMARY KEY, last_id INTEGER NOT NULL DEFAULT 0)`. Counters bootstrap at 0; first `nextId()` returns 1.
+
+### Atomicity
+
+Counter increment via single `INSERT ... ON CONFLICT DO UPDATE SET last_id = last_id + 1 RETURNING last_id` under SQLite write lock. Concurrent allocators get distinct values without races. Hash generation is independent (no DB roundtrip needed).
+
+### Backward compat (forever)
+
+Pre-§VIII IDs (`t-3b017960`, no running number) stay valid:
+- Kanban rows keep their original IDs; nothing migrates automatically.
+- ADR refs (`e-7a1014f9`, etc.) keep matching.
+- Git branches with old IDs continue to merge.
+- Hex IDs match by string equality everywhere — same lookup path as compound IDs.
+- `isHexId(id)` / `isCompoundId(id)` / `isAnyId(id)` predicates available for code that needs to distinguish.
+
+Migration verb to upgrade hex → compound IDs in-place is filed as an optional task (operator opts in per-team during a maintenance window). Defaults OFF.
+
+### Partial-prefix matching (/btw #8)
+
+`matchesIdPrefix(candidate, query)` accepts:
+- Exact full ID: `t-1203-a1b2c3d4` ↔ `t-1203-a1b2c3d4`
+- Running-number prefix: `t-1203` matches `t-1203-a1b2c3d4`
+- Partial hash: `t-1203-a1b2` matches `t-1203-a1b2c3d4`
+- Digit-boundary check: `t-1` does NOT match `t-12-abc` (prevents false collisions across running numbers)
+- Hex-only candidates: exact equality required (no partial; would be ambiguous in legacy land)
+
+Future polish: wire this into `atmux task show` / `atmux epic show` for typo-tolerant + short-form lookups.
+
+### JSON-mode kanbans
+
+JSON-mode teams (pre-SQLite-migration) stay on hex IDs — sequence counter requires a SQLite write transaction. Every team running atmux today is SQLite-mode; this is a defensive fallback for legacy fixtures + test scaffolds.
+
+### Loop-prevention regex update
+
+`AUTO_EMIT_SUBJECT_RE` in `src/core/kanban.ts` extended to accept BOTH legacy hex (`t-3b017960`) AND new compound (`t-1-3b017960`) IDs in the auto-emit Task subject prefix:
+
+```ts
+/^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\):/
+```
+
+Other regex-matched ID consumers (lane-tick / claim / kanban filters) already use string equality — no change needed.
+
+### Caveat fix: `loadEventById` helper
+
+The §VII `relayd --handle-one` path used a cursor-trick on `drainSince` for single-event lookup (decrement-last-char on eventId). Brittle if event-id encoding ever changes. Replaced with a dedicated `loadEventById(db, eventId)` in `src/abstractions/events.ts` — direct `SELECT payload FROM events WHERE event_id = ?` + Zod parse.
+
+### `atmux relayd --status` verb (/btw #9)
+
+Single-shot diagnostic surfacing relayd state without log-grepping:
+- Per-consumer subscriber offset + age
+- Events table size + last-hour count
+- Per-topic counts (last 24h)
+- Honker `_honker_notifications.MAX(id)` (when substrate loaded)
+- `PRAGMA journal_mode`
+
+Tab-separated output, grep-able. Operator runs `atmux relayd --status` and gets full picture in <100ms.
+
+### Concerns folded as queued tasks
+
+From operator's /btw audit (image 2026-05-22):
+- **#1 Relayd direct send-keys** — Task #24 (filed)
+- **#2 Doctor probe for relayd** — partial: `--status` verb covers most. Doctor probe queued for unified probe surface.
+- **#3 Cockpit-mirror consumer** — Task #25
+- **#4 Cron decommission protocol** — Task #26
+- **#5 Events table pruning** — Task #27
+- **#6 Idempotency stress test** — Task #28
+- **#7 WAL checkpoint observability** — covered partially by `--status` verb
+- **#8 Partial-prefix matching** — shipped in `matchesIdPrefix`
+- **#9 `atmux relayd status` verb** — shipped
+- **#10 Hex→sequence migration verb** — Task #29 (opt-in)
+- **Caveat: cursor-trick brittleness** — fixed via `loadEventById`
+- **Caveat: 60s timeout double-process** — Task #28 (idempotency test will cover)
+- **Caveat: circuit breaker on big-backlog restart** — Task #30
+
+### Tests
+
+`tests/unit/core/id-sequence.test.ts` — 25 tests covering nextId allocation, scope independence, counter persistence, hash override seam, format detection (compound / sequence / hex / any), partial-prefix matching with digit-boundary edge cases, 100-call concurrency invariant.
+
+`tests/unit/verbs/relayd.test.ts` — 3 new tests for `--status` sub-verb parser.
+
+`tests/unit/core/kanban-sqlite.test.ts` + `tests/unit/core/kanban.test.ts` — regex updates for compound ID format.
+
+202/202 across touched paths.
+
+**Filed via** 2026-05-22 driver session — *"all 3. start the implementation. it has to be COMPLETE FOR USE"* → *"maybe use e-1-${hash} so that it's easier to grep"* + /btw fold-in.

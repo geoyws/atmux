@@ -135,4 +135,19 @@ describe("parseRelaydArgs", () => {
   test("--topic without value throws", () => {
     expect(() => parseRelaydArgs(["--handle-one", "--topic"])).toThrow(UsageError);
   });
+
+  test("--status parses as status sub-verb", () => {
+    expect(parseRelaydArgs(["--status"])).toEqual({ subverb: "status" });
+  });
+
+  test("'status' bare form parses identically", () => {
+    expect(parseRelaydArgs(["status"])).toEqual({ subverb: "status" });
+  });
+
+  test("--status with --team-dir captured", () => {
+    expect(parseRelaydArgs(["--status", "--team-dir", "/srv/demo"])).toEqual({
+      subverb: "status",
+      teamDir: "/srv/demo",
+    });
+  });
 });
