@@ -822,3 +822,64 @@ From operator's /btw audit (image 2026-05-22):
 202/202 across touched paths.
 
 **Filed via** 2026-05-22 driver session — *"all 3. start the implementation. it has to be COMPLETE FOR USE"* → *"maybe use e-1-${hash} so that it's easier to grep"* + /btw fold-in.
+
+## §Amendment 2026-05-22 (X) — Cron decommission protocol
+
+Drives the operator playbook for retiring a parallel cron line once its event-driven relayd counterpart has earned trust. Filed under epic e-b7a702d1 (/btw correctness fold-in) story s-95f312ab (S1) per /btw audit #4.
+
+### Motivation — parallel-path risk if no retire gate exists
+
+Every cron/relayd parallel pair is intentionally redundant at substrate-load time: the relayd consumer is the latency floor (sub-second), the cron line is the structural backstop (catches missed-emit + cold-start races + substrate downtime). Defense-in-depth is correct during bring-up. But the pairs become *liabilities* if they run in parallel forever without a retire gate:
+
+1. **Double-process risk** — both paths invoking the same handler on the same event multiplies side-effects (e.g. two committer-sweeps racing the same `<base>-<member>` merge, two lane-ticks dispatching the same lane). Idempotency gates per-handler must hold, but every additional path adds a contention surface.
+2. **Operator confusion** — when a beat fails, "did cron fire?" + "did relayd fire?" + "did both?" + "which one did the work?" tripled log-grep surface vs. a single-source-of-truth path.
+3. **Drift** — cron-template emit code (`src/core/cron.ts`) and relayd consumer code (`src/core/*-consumer.ts`) drift independently; a bug fix in the relayd path may not land in the cron path or vice versa, leaving the team silently on the buggy fallback when one fails.
+4. **Cost ratchet** — every team's crontab grows; on hosts with many teams the cron noise itself becomes a tail-latency problem (concurrent `cron` fanout fights the same SQLite write lock the relayd consumer already serializes through).
+
+A retire gate forces operators to make the decommission decision explicitly, with a probe-backed verdict, instead of letting the parallel-path state ossify.
+
+### The gate (concrete spec — copy-pasteable for operators)
+
+Before removing any parallel cron line, ALL THREE of the following MUST hold:
+
+1. **Substrate uptime** — the relayd consumer for the topic in question has been live for **≥ N days** (default `N=7`). Probe via `atmux relayd --status` (per §V): the consumer's `subscriber_offsets` row must exist and its `last_seen_at` must be within the last cron-cadence window (i.e. relayd hasn't fallen behind the substrate).
+2. **Zero-loss across the window** — `atmux doctor relayd-event-loss --topic <X> --since <now-N-days>` returns zero-loss: every event emitted on topic `<X>` over the N-day window was acknowledged by the consumer's subscriber_offsets advance. (The doctor probe itself ships separately — see §Out of scope.)
+3. **Decommission-time probe + record** — operator manually runs `atmux doctor relayd-event-loss --topic <X> --since <last-N-days>` at decommission time AND attaches the output verbatim into the decommission commit body. The N-day probe is the durable evidence trail; a future revert needs to know the verdict that authorized the removal.
+
+`N=7` is the default; per-team override via `team.json::honker.decommissionWindowDays`. Shorter windows are valid for low-volume topics where 7 days is uneconomic; longer for high-stakes topics (e.g. epic-merge fan-in) where the operator wants extra evidence before drop.
+
+### Procedure steps
+
+The full decommission flow:
+
+a. **Install the relayd consumer for topic `<X>`** (or confirm it's already installed). Verify via `atmux relayd --status | grep <consumer-name>`. If the consumer row is absent, do NOT proceed — file a Task to install it first.
+
+b. **Leave the existing parallel cron line in place.** Both paths MUST run concurrently for the gate window. Do NOT short-circuit by removing the cron line "because relayd is already running" — the gate measures the relayd path's reliability *against* the cron path's coverage. Skipping the parallel phase forfeits the evidence that decommission is safe.
+
+c. **Wait N days** (default 7). During this window, do not touch the cron line. Resist the temptation to "test the decommission early" — the whole point is N consecutive days of zero-loss observation, not a snapshot.
+
+d. **Run the doctor probe**: `atmux doctor relayd-event-loss --topic <X> --since <ts-N-days-ago>`. The probe MUST return zero-loss. If it returns non-zero loss, investigate the loss class first — the relayd path isn't ready and the cron stays.
+
+e. **Remove the cron block** from `team.json::cronTemplates` (or whichever team.json field gates the cron-line emission for topic `<X>`) AND run `atmux start` from the team root to regenerate the host crontab. The `atmux:team=<name>` sandwich markers (per ADR-083) idempotently rewrite the team's crontab block; the now-absent cron line falls off automatically.
+
+f. **Commit with body**: `Decommission: cron <topic-X> per ADR-202 §X (probe output attached).` Paste the verbatim `atmux doctor relayd-event-loss` output in the commit body as the audit trail. Push to the team's base; the next `atmux start` on any peer host picks up the removed line via crontab re-emit.
+
+### Enumeration of CURRENT parallel cron/relayd pairings (as of ADR write date 2026-05-22)
+
+| # | Cron line | Relayd consumer / topic | Notes |
+|---|-----------|-------------------------|-------|
+| 1 | `lane-tick` every 5min (`src/core/cron.ts:306`, default `DEFAULT_LANE_TICK_CRON_MINS=5`) | `lane-router` consumer subscribing to `task.unclaimed` topic (emitted from `src/core/kanban.ts:287` per §IV) | Cron is the structural backstop for wedged panes / compaction-wipe / rate-lockout cases /goal cannot see; relayd is the happy-path latency floor. |
+| 2 | `committer --sweep` every `team.autoMerge.cronBackstopMin` min (default 10, `src/core/cron.ts:403`) | `committer --drain` invoked from a cron line at `*/1min` (per §II), backed by the `atmux:gitter` consumer subscribing to `task.done` (`src/core/gitter-consumer.ts:98`) | `--sweep` walks every `<base>-<member>` branch (catches events the substrate missed entirely); `--drain` processes substrate-emitted events at the cron cadence floor. Both gated on `hasGitter && autoMerge.enabled`. |
+
+Pre-decommission, operators MUST re-grep `team.json` against the live relayd subscriber list (`atmux relayd --status`) to confirm the table above is still complete — new pairings landed between this ADR write and the operator's decommission window will not appear here.
+
+### Reversibility
+
+Re-installing a decommissioned cron block requires only:
+
+1. Restore the corresponding cron template in `team.json` (or revert the commit that dropped it).
+2. Run `atmux start` from the team root. The host crontab regenerates with the previously-removed line back in place.
+
+No state migration. No data backfill. No re-bootstrap of the consumer offsets table. The relayd path keeps running unchanged; the cron line simply rejoins as a parallel safety net.
+
+This is by design — the decommission gate is high-friction (7-day wait + manual probe), but the rollback is one config flip + `atmux start`. Operators encountering substrate trouble post-decommission can restore the cron parallel-path in seconds without escalation overhead.
