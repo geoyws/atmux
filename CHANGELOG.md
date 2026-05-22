@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — solo-worker scope v1: 1-2 member roster presets for small standalone tasks (ADR-221, t-8c8ce51c)
+
+Fills the gap between "drop on long-lived member queue" (pollutes branch) and "spawn full 7-member epic-team" (wasteful for single commits). Two new roster presets under `templates/epic-rosters/`:
+
+- **`solo.json`** — 1 member (`solo`, role=member, lane=misc). For pure-docs / trivial fixes.
+- **`solo+committer.json`** — 2 members (solo + committer). For load-bearing changes where a separate review pass adds value.
+
+Spawn via existing verb: `ATMUX_CALLER_SCOPE=driver atmux team spawn-epic w-<task-id> --from <parent> --roster solo`. Convention: `w-` prefix distinguishes worker-teams in cockpit + epic-list enumeration.
+
+v1 ships the substrate only. v2 adds convenience verbs (`spawn-worker` / `dissolve-worker` / `list-workers`) + auto-dissolve on task.done via Honker subscription. Until then, operator manually dissolves with `atmux team dissolve-epic w-<task-id>`.
+
+See [ADR-221](docs/adr/221-solo-worker-scope.md) for the full design + v2 roadmap.
+
+### 🟢 Fixed — merger-state design-gap pair (long-lived members fan in autonomously) — t-9aa2f8cb + t-0542595c
+
+Two sibling dispatcher fixes shipped 2026-05-22 close the structural wedge that required manual `merger_state` sqlite resets every time a long-lived member shipped a commit.
+
+- **`fix(merger-gate)`** ([t-9aa2f8cb](docs/tasks/t-9aa2f8cb.md), c-6ca1ff2) — intra-team gate counts `in-progress` tasks only (was `todo + in-progress`). Closes the in_progress sink that wedged docs/lead/reviewer with forward-todo queues.
+- **`fix(merger-state)`** ([t-0542595c](docs/tasks/t-0542595c.md), c-baa0b8a) — auto-re-entry from `merged` when branch is ahead of base. Closes the merged-terminal wedge that required manual reset after every fan-in.
+
+Both shipped with [ADR-134 §Amendment 2026-05-22 (I + II)](docs/adr/134-in-team-auto-merger.md); live-validated on `atmux-geoyws-docs +1` immediately post-deploy.
+
 ### 🟢 Fixed — hold-posture deadlock eliminated from lead bootstrap (ADR-210 §Tier 1, t-ef4bb453)
 
 Lead brief step 2 now does **kanban-first dispatch** instead of holding for planner refinement. Planner role re-framed as async-enriching (not gating). Closes the sopx 2026-05-21 deadlock class where lead + members + planner all idled waiting on each other.
