@@ -332,9 +332,10 @@ describe("loadHonkerOrFallback — production bun:sqlite path (no hooks injected
 
   test("real defaultSmokeProbe — SELECT honker_version() throws when extension absent → fallback", () => {
     // Load hook stubbed (returns OK) but no smokeProbe hook → real
-    // `SELECT honker_version()` fires against a DB without the extension.
-    // The SQL throws "no such function: honker_version" which the smoke
-    // probe catch wraps into a fallback. Exercises lines 178-180.
+    // `SELECT honker_bootstrap()` fires against a DB without the
+    // extension. The SQL throws "no such function: honker_bootstrap"
+    // which the smoke probe catch wraps into a fallback. Exercises
+    // the smoke-probe error path.
     const state = loadHonkerOrFallback(db, {
       env: { ATMUX_HONKER: "on", HOME: "/root" },
       platform: "linux",
@@ -343,7 +344,7 @@ describe("loadHonkerOrFallback — production bun:sqlite path (no hooks injected
     });
     expect(state.loaded).toBe(false);
     expect(state.fallbackReason).toMatch(/smoke probe threw/);
-    expect(state.fallbackReason).toMatch(/honker_version/);
+    expect(state.fallbackReason).toMatch(/honker_bootstrap/);
   });
 });
 

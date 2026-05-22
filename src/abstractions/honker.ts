@@ -41,6 +41,26 @@ function defaultExtensionPath(env: NodeJS.ProcessEnv, platform: string): string 
   return `${home}/.atmux/extensions/honker.${ext}`;
 }
 
+/**
+ * SQLite extension entry-point symbol.
+ *
+ * Honker's Rust crate is `honker_ext` → cdylib `libhonker_ext.{so,dylib}`
+ * → init symbol `sqlite3_honkerext_init` (rusqlite/bindgen strips the
+ *  underscore in the symbol name even though the crate name retains
+ *  it). SQLite's auto-detect from the filename produces
+ *  `sqlite3_honker_ext_init` (with underscore) which doesn't match —
+ *  the extension fails to load without an explicit entry point.
+ *
+ * Overridable via `ATMUX_HONKER_ENTRY` env when upstream renames the
+ * crate. Verified against honker-extension 0.2.3 (the PyPI manylinux
+ * wheel that ships the prebuilt .so).
+ */
+function defaultExtensionEntryPoint(env: NodeJS.ProcessEnv): string {
+  const explicit = env.ATMUX_HONKER_ENTRY?.trim();
+  if (explicit && explicit.length > 0) return explicit;
+  return "sqlite3_honkerext_init";
+}
+
 /** Resolve the Homebrew sqlite library path on macOS. */
 function macSqlitePath(env: NodeJS.ProcessEnv): string {
   const explicit = env.ATMUX_HONKER_MAC_SQLITE?.trim();
@@ -53,8 +73,10 @@ function macSqlitePath(env: NodeJS.ProcessEnv): string {
 export interface HonkerHooks {
   /** Optional override for the `setCustomSQLite` static call. */
   setCustomSQLite?: (path: string) => void;
-  /** Optional override for the extension-load call. */
-  loadExtension?: (db: Database, path: string) => void;
+  /** Optional override for the extension-load call. Receives the resolved
+   *  entry-point symbol as the third argument (defaults to
+   *  `sqlite3_honkerext_init`; see {@link defaultExtensionEntryPoint}). */
+  loadExtension?: (db: Database, path: string, entryPoint: string) => void;
   /** Optional override for the post-load smoke probe. */
   smokeProbe?: (db: Database) => boolean;
   /** Process platform string. Defaults to `process.platform`. */
@@ -146,17 +168,27 @@ export function loadHonkerOrFallback(db: Database, hooks: HonkerHooks = {}): Hon
   }
 
   // Load the extension. Failure → fall back, log reason, no throw.
+  //
+  // Entry point: SQLite derives a default init symbol from the filename
+  // (strips `lib` + extension → `sqlite3_<name>_init`). honker-extension
+  // 0.2.3 ships `libhonker_ext.so` → SQLite tries `sqlite3_honker_ext_init`,
+  // but rusqlite/bindgen produced `sqlite3_honkerext_init` (no
+  // underscore). We pass the entry point explicitly so the filename can
+  // be whatever the operator chose at install time.
+  const entryPoint = defaultExtensionEntryPoint(env);
   try {
     if (hooks.loadExtension) {
-      hooks.loadExtension(db, extensionPath);
+      hooks.loadExtension(db, extensionPath, entryPoint);
     } else {
-      db.loadExtension(extensionPath);
+      (db as unknown as {
+        loadExtension: (path: string, entry?: string) => void;
+      }).loadExtension(extensionPath, entryPoint);
     }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
       loaded: false,
-      fallbackReason: `loadExtension(${extensionPath}) failed: ${msg}`,
+      fallbackReason: `loadExtension(${extensionPath}, ${entryPoint}) failed: ${msg}`,
       extensionPath,
     };
   }
@@ -187,10 +219,21 @@ export function loadHonkerOrFallback(db: Database, hooks: HonkerHooks = {}): Hon
   return { loaded: true, fallbackReason: null, extensionPath };
 }
 
-/** Default smoke probe: `SELECT honker_version()` must return a string. */
+/**
+ * Default smoke probe: call `honker_bootstrap()` and verify it returns
+ * a row. `honker_bootstrap()` is the canonical Honker init call —
+ * idempotent (CREATE TABLE IF NOT EXISTS internally) and zero-arg, so
+ * it's safe to invoke on every boot.
+ *
+ * Verified against honker-extension 0.2.3 (PyPI manylinux wheel). The
+ * function returns an integer (0 on success); we just confirm the SQL
+ * round-trip succeeds without throwing.
+ */
 function defaultSmokeProbe(db: Database): boolean {
-  const row = db.query("SELECT honker_version() AS v").get() as { v?: unknown } | null;
-  return typeof row?.v === "string" && row.v.length > 0;
+  // bootstrap returns a row with one column; query.get() returns the
+  // row or null. Any non-null row = extension wired correctly.
+  const row = db.query("SELECT honker_bootstrap() AS v").get();
+  return row !== null && row !== undefined;
 }
 
 // ---------- Boot helper + state accessor ----------

@@ -25,7 +25,7 @@ import {
 // Host-pressure probe stub — always returns `ok: true, skipped: true` so
 // the ADR-184 spawn gate never refuses in tests. Real-host probe lives
 // under tests/unit/core/host-pressure.test.ts.
-const permissivePressure: SpawnEpicOpts["probeHostPressure"] = async () =>
+const permissivePressure: NonNullable<SpawnEpicOpts["probeHostPressure"]> = async () =>
   ({
     ok: true,
     reasons: [],
