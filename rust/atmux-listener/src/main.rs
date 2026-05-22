@@ -60,7 +60,42 @@ use std::process::ExitCode;
 
 use honker::Database;
 
+/// Linux-only: ask the kernel to deliver SIGTERM to this process when
+/// its parent dies. Closes a teardown loophole — without this, if the
+/// Bun parent gets SIGKILL'd (atmux stop --force, OOM kill), the
+/// stdin pipe stays open from the kernel's perspective until our next
+/// stdout write fails. With the kernel-blocked Subscription::recv() we
+/// might block indefinitely while orphaned.
+///
+/// No-op on non-Linux. macOS would need a kqueue PROC_FILTER on PPID
+/// which adds complexity for a platform that already runs poll-mode.
+#[cfg(target_os = "linux")]
+fn install_parent_death_signal() {
+    // PR_SET_PDEATHSIG = 1 (kernel constant). Sends SIGTERM (15) to
+    // this process when the parent dies.
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong, 0, 0, 0);
+    }
+    // Race window: if the parent died BETWEEN our spawn and the prctl
+    // call (e.g. immediate kill), we never registered. Verify by
+    // checking PPID — if PPID is 1 (reparented to init), exit
+    // immediately rather than running orphaned.
+    unsafe {
+        if libc::getppid() == 1 {
+            std::process::exit(0);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_parent_death_signal() {
+    // macOS / other Unix: skip. Rely on stdin broken-pipe detection
+    // at the next stdout write.
+}
+
 fn main() -> ExitCode {
+    install_parent_death_signal();
+
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!(

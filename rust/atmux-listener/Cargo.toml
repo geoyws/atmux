@@ -9,6 +9,12 @@ publish = false
 [dependencies]
 honker = { version = "0.3.3", features = ["bundled-sqlite"] }
 
+# Linux-only — PR_SET_PDEATHSIG so the listener dies when the Bun
+# parent dies, even via SIGKILL. No-op on other platforms (macOS dev
+# path stays poll-mode for now).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [features]
 # Default: PRAGMA data_version polling inside honker (same as honker's
 # Python/Node bindings use by default).

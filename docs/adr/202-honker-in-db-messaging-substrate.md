@@ -423,3 +423,74 @@ If the listener crashes mid-session (rare: watcher panic on file replacement, OO
 - `tests/integration/native-listener-e2e.test.ts` — 2 real-binary tests (Bun publish → ≤1s wake, stop terminates cleanly). Gated on binary availability; skipped on dev machines without `cargo build`.
 
 **Filed via** 2026-05-22 driver session — *"i am okay with us writing rust in atmux"* → *"yes start with the rust listener"*. Net: ~250 lines of Rust + Bun + tests + ADR, delivers true kernel-blocked NOTIFY/LISTEN without forking Honker.
+
+
+## §Amendment 2026-05-22 (III) — `relayd` supervisor: atmux start wires the daemon into a service window
+
+The atmux-listener Rust subprocess + the Bun-side `committer --daemon` shipped in (II) only had value if something actually ran them. This amendment puts both into a service tmux window spawned per-team by `atmux start`.
+
+### Persona
+
+**`relayd`** — Unix daemon naming convention (`*d` suffix, à la `httpd`, `sshd`, `crond`, OpenBSD's `relayd`). A deterministic infrastructure process — no Claude TUI, no LLM, no API tokens. Just signal routing. One per atmux team (parent or epic-team) inside that team's cage tmux server.
+
+Distinct from the `committer` persona, which actually runs `git merge`. relayd is the dispatch layer that hands events TO the committer's handler. Future consumers (lane-router, rotation-observer, complaint-dispatcher) all plug into the same relayd primitive.
+
+### Topology
+
+| Scope | What spawns | Process count per team |
+|---|---|---|
+| Parent team | `atmux start <team>` | 1 relayd Bun process + 1 atmux-listener Rust subprocess |
+| Epic-team | epic-team's own `atmux start` (inside child cage) | 1 relayd + 1 listener, scoped to epic-team's `state.db` |
+
+Resource cost on hax: ~35-55MB RSS per team, ~0% CPU idle. Trivial against 128GB.
+
+### Lifecycle teardown discipline
+
+Operator concern 2026-05-22: *"make sure relayd dies alongside her team/cage."* Three defenses:
+
+1. **bash trap** on `SIGTERM` / `SIGINT` / `SIGHUP` in the wrapper. Cascades to the foreground daemon via shared process group.
+2. **`PR_SET_PDEATHSIG=SIGTERM`** in the Rust listener (Linux only). Kernel sends SIGTERM to the listener when the Bun parent dies, even via SIGKILL. macOS dev path stays poll-mode (no pdeathsig equivalent).
+3. **PPID==1 check at startup** in the Rust listener — guards the race window where the parent died between spawn and `prctl()` registration.
+
+Net: `atmux stop`, `tmux kill-server`, `kill -9 <bun-pid>`, parent crash — all paths terminate relayd's full process tree.
+
+### Robustness audit + circuit breaker
+
+Audit checklist landed alongside this amendment (16 failure modes reviewed; see `src/core/relayd-window.ts` header + ADR-202 §Amendment 2026-05-22 (III) commit message). Top fix:
+
+**Infinite-restart circuit breaker.** Without it, a broken config / missing binary / bad DB schema would respawn the daemon every 5 seconds forever, generating log spam. The wrapper now tracks `CRASH_COUNT` over a 60-second sliding window — at ≥5 immediate crashes, exits with rc=42 + a loud log line directing the operator to investigate `.atmux/logs/relayd.log` and re-run `atmux start` to respawn after fixing. The cron `committer --drain` line stays installed, so event drainage continues without the daemon.
+
+### Eligibility gate
+
+relayd spawns ONLY when ALL of:
+1. `team.autoMerge?.enabled === true` (same gate as committer --sweep / --drain)
+2. team has a member with `role ∈ {committer, gitter}` (someone for relayd to dispatch TO; ADR-159 grace cycle accepts both)
+3. `env.ATMUX_HONKER` is not explicitly `off`/`0`/`false` (substrate kill-switch off → no NOTIFY path; cron --drain handles event drain alone)
+
+### SendTarget extension
+
+Added `kind: "service"` to the ADR-025 `SendTarget` audit type — so reviewer-grep can filter "every send to a non-Claude infra window" distinctly from member / lead sends. Tmux argv shape is identical; the discriminator is intent-declaration only.
+
+### Tests
+
+- `tests/unit/core/relayd-window.test.ts` — 14 tests, 100% coverage on `relayd-window.ts`. Pins: gate failures (autoMerge / no committer / ATMUX_HONKER=off / legacy gitter accepted), idempotence (existing window / listWindows-throws degrades), success path (window spawn + correct send-keys), failure isolation (newWindow-throws logged + returned false), supervisor command invariants (SIGTERM trap, circuit breaker, clean-exit-no-restart, log-tee, atmux invocation).
+
+### Operator-facing surface
+
+After this amendment, `atmux start <team>` on an eligible team produces a `__relayd__` window in the cage tmux server. Operator attaches via `atmux attach <team>`, switches to that window with prefix+w, sees:
+
+```
+[2026-05-22T07:00:00Z] relayd: starting (crash_count=0)
+committer --daemon: team='demo' honker=loaded wake=native-listener starting watcher (topics=[task.done])
+native-listener: ready
+```
+
+…and stays idle (kernel-blocked) until events arrive. On `atmux stop`:
+
+```
+[2026-05-22T08:30:00Z] relayd: SIGTERM received, exiting
+```
+
+Clean.
+
+**Filed via** 2026-05-22 driver session — *"we need to give her a name"* → after honest re-evaluation of Vesper vs alternatives → operator picked `relayd` (Unix daemon convention, no persona overload).
