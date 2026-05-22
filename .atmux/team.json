@@ -88,7 +88,11 @@
     "selfHealEnabled": false,
     "selfHealRecipes": [],
     "needsApprovalEnabled": true,
-    "accountFallback": ["unum", "icloud", "ifca"],
+    "accountFallback": [
+      "unum",
+      "icloud",
+      "ifca"
+    ],
     "accountSwapTriggerThreshold": 75,
     "accountSwapFallbackHealthThreshold": 50,
     "accountSwapPerMemberDeadlineSec": 300,
