@@ -166,9 +166,22 @@ describe("live migration ladder — legacy DB rescue (ADR-147 T9 dogfood)", () =
   // table.
 
   test("seeded legacy state (user_version=4 + hygiene present, attempts missing) walks the live ladder to completion", () => {
-    // Seed: create only the hygiene table by hand, set user_version=4.
-    // Mimics a DB that ran the pre-renumber v3→v4.
+    // Seed: walk the live ladder partially (v0→v4) to set up a realistic
+    // legacy DB state — every pre-v5 table present — then mimic the
+    // pre-renumber v3→v4 by replacing superdoctor_attempts with the
+    // hygiene table (the SQL the OLD v3→v4 used to run). user_version
+    // stays at 4. This is what real on-disk legacy DBs looked like
+    // before ADR-147 T9's renumber + IF NOT EXISTS guards landed.
     const seed = new Database(env.dbPath, { create: true });
+    for (const m of liveMigrations.filter((mig) => mig.to <= 4)) {
+      seed.transaction(() => {
+        m.up(seed);
+        seed.exec(`PRAGMA user_version = ${m.to}`);
+      })();
+    }
+    // Drop the v3→v4 artifact (attempts) and create the pre-renumber
+    // artifact (hygiene) — the swap that ADR-147 T9 documents.
+    seed.exec("DROP TABLE IF EXISTS superdoctor_attempts");
     seed.exec(`
       CREATE TABLE superdoctor_hygiene (
         task_id TEXT NOT NULL,
@@ -187,7 +200,6 @@ describe("live migration ladder — legacy DB rescue (ADR-147 T9 dogfood)", () =
     seed.exec(
       "CREATE INDEX idx_hygiene_unfixed ON superdoctor_hygiene(severity ASC, detected_at ASC) WHERE fix_applied_at IS NULL",
     );
-    seed.exec("PRAGMA user_version = 4");
     seed.close();
 
     // Open with the live ladder — must not throw and must end at the

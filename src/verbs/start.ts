@@ -134,6 +134,7 @@ import {
 } from "../core/common.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
+import { maybeSpawnRelaydWindow } from "../core/relayd-window.ts";
 import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -886,6 +887,27 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   }
   const spawnCap = resolveSpawnConcurrency(opts.spawnConcurrency, env);
   await runWithConcurrency(teammates, spawnCap, spawnOneMember);
+
+  // 8b. ADR-202 §Amendment 2026-05-22 (II) — daemon supervisor window.
+  //     When the team has a committer/gitter role AND autoMerge is
+  //     enabled AND Honker is not explicitly disabled, spawn a service
+  //     window running `atmux committer --daemon` with auto-restart.
+  //     The daemon uses the atmux-listener Rust subprocess for
+  //     kernel-blocked NOTIFY/LISTEN wake (~60ms). Cron --drain stays
+  //     installed as the safety net — if the daemon window dies and
+  //     stays dead until the next `atmux start`, the drain catches
+  //     events within 1min.
+  //
+  //     Idempotent: skipped when the supervisor window already exists
+  //     (e.g. `atmux start` re-run on an already-up team).
+  await maybeSpawnRelaydWindow({
+    team,
+    session,
+    teamRoot: dir,
+    tmux,
+    logger,
+    env,
+  });
 
   // 9. Close the `__<team>__home` placeholder if any members spawned
   //    AND non-placeholder windows now exist (lib/start.sh:288-294).

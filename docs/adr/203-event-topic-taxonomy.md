@@ -303,3 +303,17 @@ Operator code MUST NOT emit into `internal.*`. Schema enforcement via Zod litera
 - memory `reference_kanbantask_passthrough_extra_json` — `.passthrough()` precedent
 - memory `project_epic_team_extra_schema` — epic-team parent relationship resolution (D4 mirror rule)
 - memory `project_honker_pubsub_rehaul_design` — decisions locked in design memory; this ADR commits the taxonomy half
+
+
+## §Amendment 2026-05-22 — First emit point + consumer wired in production
+
+`task.done` and `task.claimed` topics graduate from schema-only to actually-emitted. `src/core/kanban.ts::moveTask` invokes `emit()` via a same-transaction hook (`tryEmitTaskLifecycle`) on every status flip into the relevant terminal/entry state. Payload shapes verified against the discriminated union — TS narrows correctly, runtime validation passes.
+
+Topic-specific semantics now pinned by code:
+
+- **`task.done`** fires on EVERY move with target status `done`. If a Task is moved from `done` back to `todo` and then again to `done`, two events fire — at-least-once on the consumer side is the contract. `doneAtSec` reflects each emit (not the original completion).
+- **`task.claimed`** fires ONLY on the first transition from a non-`in-progress` status into `in-progress`. Status flips within `in-progress` (re-assignment, body edits, etc.) are no-ops. This prevents emit floods when planner-tier verbs touch the same row repeatedly.
+
+First production consumer wired: `atmux committer --daemon` (long-lived) + `atmux committer --drain` (cron-backstop). See ADR-202 §Amendment 2026-05-22 for the consumer side.
+
+**Filed via** 2026-05-22 driver session (`atmux-geoyws-honker-events` branch).

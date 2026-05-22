@@ -18,3 +18,9 @@ dist/
 
 # Local worktree caches
 .claude/worktrees/
+
+# Rust build artifacts (rust/atmux-listener/target)
+rust/*/target/
+
+# Local scratch dirs (test fixtures during dev)
+.scratch/

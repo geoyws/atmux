@@ -2,8 +2,10 @@
 // (T2 of EPIC e-4acc3562).
 //
 // Pins:
-//   - Kill-switch off (`ATMUX_HONKER` unset/off) short-circuits to
+//   - Kill-switch off (`ATMUX_HONKER=off`) short-circuits to
 //     {processed:0, escalated:0} without touching the events table.
+//   - Default (unset/empty `ATMUX_HONKER`) drains — post-ADR-202
+//     §Amendment 2026-05-21 flipped the default from OFF to ON.
 //   - Happy path: 3 `task.done` events emitted → handler called 3
 //     times in event_id order → returns {processed:3}.
 //   - 'escalated' outcomes increment the escalated counter.
@@ -72,10 +74,15 @@ describe("kill-switch behavior", () => {
     expect(loadOffset(db, "atmux:gitter")).toBe("");
   });
 
-  test("ATMUX_HONKER unset (default) also short-circuits", async () => {
+  test("ATMUX_HONKER unset (default) drains — post-ADR-202 amendment default is ON", async () => {
+    // Pre-ADR-202 §Amendment 2026-05-21 the default was OFF; this test pinned
+    // the short-circuit. The amendment flipped the default to ON, so unset/empty
+    // env now drains via the default stub handler ("skipped-not-mine") which
+    // advances the offset without escalating.
     emitTaskDone(1);
     const result = await gitterConsume({ db, env: {} });
-    expect(result).toEqual({ processed: 0, escalated: 0 });
+    expect(result).toEqual({ processed: 1, escalated: 0 });
+    expect(loadOffset(db, "atmux:gitter")).toBe(fakeId(1));
   });
 
   test("short-circuit logs the fallback path", async () => {

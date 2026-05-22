@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v11)", () => {
+  test("opening with the full ladder advances user_version to the tail (v12)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -38,7 +38,9 @@ describe("sqlite-migrations live ladder", () => {
     //   - v9→v10 added stories.merge_mode (ADR-175 GAP 2, t-aacb8664)
     //   - v10→v11 added events + subscriber_offsets tables (ADR-202
     //             §D1 Honker substrate + ADR-203 §D7 idempotency)
-    expect(readUserVersion(db)).toBe(11);
+    //   - v11→v12 added id_sequences for running-number IDs (ADR-202
+    //             §VIII compound `<scope>-<N>-<hash>` shape)
+    expect(readUserVersion(db)).toBe(12);
   });
 });
 

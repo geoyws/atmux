@@ -538,4 +538,40 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  // ADR-202 §Amendment 2026-05-22 (VIII) — running-number IDs for
+  // tasks / stories / epics. Operator request: hex IDs (`e-3b017960`)
+  // are hard to think about and remember; switch to monotonic integers
+  // (`e-1, e-2, e-1203`) like git tags or PR numbers.
+  //
+  // Per-team scoped: each team's state.db has its own counters. `e-1`
+  // in team A != `e-1` in team B. Matches the per-team isolation
+  // model already established for cage sockets + kanban.
+  //
+  // Backward compat: pre-migration hex IDs (t-3b017960, e-7a1014f9,
+  // s-c4e91c33) stay valid forever — they're just data in the kanban
+  // rows. Only NEW IDs (post-migration) use the sequence counter.
+  // Lookups already match by string equality so both formats work.
+  //
+  // Schema: `id_sequences(scope, last_id)`. `scope` is the single-
+  // character prefix (`t`, `s`, `e`). On nextId, INSERT … ON CONFLICT
+  // DO UPDATE atomically increments `last_id` and returns the new
+  // value. SQLite serializes via WAL; concurrent processes get
+  // distinct sequential IDs without races.
+  //
+  // Bootstrap: counters start at 0 and the first nextId() returns 1.
+  // For teams migrating mid-life, the first sequenced ID is e-1
+  // regardless of how many hex IDs exist. Hex history stays
+  // immutable; sequence is a fresh start.
+  {
+    from: 11,
+    to: 12,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE id_sequences (
+          scope TEXT PRIMARY KEY NOT NULL,
+          last_id INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+    },
+  },
 ];

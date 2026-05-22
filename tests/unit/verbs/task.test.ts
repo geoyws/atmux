@@ -270,6 +270,9 @@ describe("task verb — dispatch", () => {
       task(["add", "--team-dir", teamDir, "first task"]),
     );
     expect(exit).toBe(0);
+    // JSON-mode kanban (no state.db) stays on legacy hex IDs per
+    // ADR-202 §VIII fallback. SQLite-mode tests get the compound
+    // `t-N-<hash>` shape (see kanban-sqlite.test.ts).
     expect(out).toMatch(/^t-[0-9a-f]{8}\n$/);
     const k = await loadKanban(atmuxDir);
     expect(k.tasks).toHaveLength(1);

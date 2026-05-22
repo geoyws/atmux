@@ -40,6 +40,7 @@ import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
 import { committer } from "./verbs/committer.ts";
+import { relayd } from "./verbs/relayd.ts";
 import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
 import { cronInstall } from "./verbs/cron-install.ts";
@@ -297,6 +298,14 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
           "Accepting this release; will fail next release.\n",
       );
       return committer(argv.slice(1));
+    case "relayd":
+      // ADR-202 §Amendment 2026-05-22 (V) — `relayd` is the canonical
+      // event-router persona/verb. Subscribes to multi-topic via
+      // atmux-listener Rust kernel-blocked NOTIFY/LISTEN and dispatches
+      // to handler-per-topic. Sub-verbs: --start (long-lived), --drain
+      // (one-shot cron-backstop). Legacy `committer --daemon` / `committer
+      // --drain` remain as deprecated aliases for one release.
+      return relayd(argv.slice(1));
     case "epic-merge":
       return epicMerge(argv.slice(1));
     case "complaints":
