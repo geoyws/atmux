@@ -122,7 +122,7 @@ describe("maybeSpawnRelaydWindow — gating", () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
     const result = await maybeSpawnRelaydWindow({
-      team: team({ autoMerge: { enabled: false } }),
+      team: team({ autoMerge: undefined }),
       session: "atmux::demo",
       teamRoot: "/srv/demo",
       tmux,

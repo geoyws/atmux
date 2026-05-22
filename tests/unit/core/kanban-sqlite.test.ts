@@ -506,6 +506,77 @@ describe("kanban (SQLite mode) — task-lifecycle event emit (ADR-202/203)", () 
     expect(t?.status).toBe("done"); // kanban row still wins
   });
 
+  test("addTask with lane + no owner emits task.unclaimed (ADR-202 §IV)", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "do-the-thing", lane: "be" });
+    const db = openStateDb();
+    try {
+      const rows = drainSince(db, { topics: ["task.unclaimed"], lastEventId: "" });
+      expect(rows.length).toBe(1);
+      const r = rows[0];
+      if (r?.topic === "task.unclaimed") {
+        expect(r.taskId).toBe(id);
+        expect(r.team).toBe("test-team");
+        expect(r.lane).toBe("be");
+      } else {
+        throw new Error("expected task.unclaimed");
+      }
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("addTask with lane + ASSIGNED owner does NOT emit task.unclaimed", async () => {
+    await addTask(env.atmuxDir, { subject: "x", lane: "be", assignee: "be-1" });
+    const db = openStateDb();
+    try {
+      const rows = drainSince(db, { topics: ["task.unclaimed"], lastEventId: "" });
+      expect(rows.length).toBe(0);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("addTask without lane does NOT emit task.unclaimed", async () => {
+    await addTask(env.atmuxDir, { subject: "x" });
+    const db = openStateDb();
+    try {
+      const rows = drainSince(db, { topics: ["task.unclaimed"], lastEventId: "" });
+      expect(rows.length).toBe(0);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("addTask with non-canonical lane does NOT emit (closed enum guard)", async () => {
+    // 'docs' / 'git' aren't in the v1 canonical lane enum — emit skips.
+    // The kanban row still lands; the event just doesn't fire.
+    const id = await addTask(env.atmuxDir, { subject: "x", lane: "docs" });
+    const db = openStateDb();
+    try {
+      const rows = drainSince(db, { topics: ["task.unclaimed"], lastEventId: "" });
+      expect(rows.length).toBe(0);
+      // Kanban row landed
+      const row = db.query("SELECT lane FROM tasks WHERE id = ?").get(id) as { lane: string };
+      expect(row.lane).toBe("docs");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("addTask with no team.json — emit short-circuits (no throw)", async () => {
+    await rm(join(env.atmuxDir, "team.json"));
+    const id = await addTask(env.atmuxDir, { subject: "x", lane: "be" });
+    expect(id).toMatch(/^t-[0-9a-f]{8}$/);
+    // Kanban row landed despite no team
+    const db = openStateDb();
+    try {
+      const row = db.query("SELECT id FROM tasks WHERE id = ?").get(id) as { id: string };
+      expect(row.id).toBe(id);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("done with story+epic context — payload includes both", async () => {
     const id = await addTask(env.atmuxDir, { subject: "x", assignee: "be-1" });
     // Stamp story/epic via direct repo write — AddTaskOpts doesn't expose

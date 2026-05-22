@@ -205,9 +205,24 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
   // schema treats `undefined` as not-driver-only via the optional field
   // shape) so legacy Tasks parse unchanged.
   if (opts.driverOnly === true) task.driverOnly = true;
+  // ADR-202 §Amendment 2026-05-22 (IV) — task.unclaimed event-emit gate.
+  // Fire when ALL of: status='todo' (always true here) AND lane is set
+  // AND owner is null. lane-router consumer picks it up and runs
+  // lane-tick for the named lane immediately rather than waiting for
+  // the */5 cron tick. Pre-load team for the team.name scope field;
+  // tryLoadTeam returns null on absent team.json (JSON-only kanbans /
+  // test fixtures), in which case emit silently short-circuits.
+  const wantsUnclaimedEmit =
+    typeof task.lane === "string" && task.lane.length > 0 && task.owner === null;
+  const team = wantsUnclaimedEmit ? await tryLoadTeam({ dir: atmuxDir }) : null;
   if (await _useSqlite(atmuxDir)) {
-    await _withDb(atmuxDir, (_db, repo) => {
-      repo.addTask(task);
+    await _withDb(atmuxDir, (db, repo) => {
+      transactImmediate(db, () => {
+        repo.addTask(task);
+        if (wantsUnclaimedEmit && team !== null) {
+          tryEmitTaskUnclaimed({ db, task, team });
+        }
+      });
     });
     return id;
   }
@@ -218,6 +233,49 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     { initial: emptyKanban() },
   );
   return id;
+}
+
+/**
+ * ADR-202 §Amendment 2026-05-22 (IV): emit `task.unclaimed` on a fresh
+ * unowned-with-lane task. Same-transaction with the addTask write so
+ * event durability matches the kanban row. Best-effort — Zod failure
+ * or missing events table is swallowed (the kanban write is load-
+ * bearing; the event is observability/coordination plumbing).
+ */
+function tryEmitTaskUnclaimed(args: {
+  db: Database;
+  task: KanbanTask;
+  team: Team;
+}): void {
+  const { db, task, team } = args;
+  const honkerLoaded = getHonkerState(db)?.loaded ?? false;
+  const emitOpts = honkerLoaded ? { honkerLoaded: true } : {};
+  // Narrow the lane to the ADR-203 v1 enum. The kanban-side `lane`
+  // field is a string; the event schema is a closed enum. If the
+  // lane isn't one of the seven canonical lanes, skip emit silently
+  // — the cron */5 lane-tick still catches non-canonical lanes.
+  const canonical: ReadonlyArray<string> = ["fe", "be", "db", "ops", "test", "review", "misc"];
+  if (typeof task.lane !== "string" || !canonical.includes(task.lane)) return;
+  try {
+    defaultEmit(
+      db,
+      {
+        topic: "task.unclaimed",
+        taskId: task.id,
+        team: team.name,
+        lane: task.lane as "fe" | "be" | "db" | "ops" | "test" | "review" | "misc",
+        ...(task.priority !== null && task.priority !== undefined
+          ? { priority: task.priority }
+          : {}),
+        ...(typeof task.story === "string" ? { storyId: task.story } : {}),
+        ...(typeof task.epic === "string" ? { epicId: task.epic } : {}),
+      },
+      emitOpts,
+    );
+  } catch {
+    // Best-effort: missing events table or Zod failure must not break
+    // task add. The kanban row is the load-bearing side effect.
+  }
 }
 
 /**

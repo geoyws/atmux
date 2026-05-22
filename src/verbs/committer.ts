@@ -51,6 +51,7 @@ import {
   watchEvents as watchEventsImport,
 } from "../abstractions/events.ts";
 import { bootHonker as bootHonkerImport, getHonkerState as honkerStateImport } from "../abstractions/honker.ts";
+import { runLaneTick as runLaneTickImport } from "./lane-tick.ts";
 import {
   type NativeListenerHandle,
   resolveDefaultListenerBinary,
@@ -383,13 +384,35 @@ export async function committerDrainVerb(
   opts: CommitterOpts = {},
 ): Promise<number> {
   const ctx = await buildEventDrivenContext(parsed, opts);
-  const result = await gitterConsumeImport({
+  // Drain task.done via the gitter consumer (ADR-202 §I).
+  const gitterResult = await gitterConsumeImport({
     db: ctx.db,
     handler: ctx.handler,
     logger: ctx.consumerLogger,
   });
+  // Drain task.unclaimed via inline withIdempotency loop (ADR-202 §IV).
+  // Separate consumer name → independent offset → at-least-once recovery
+  // is per-consumer even when the two consumers' rates diverge.
+  let unclaimedProcessed = 0;
+  try {
+    const { withIdempotency } = await import("../abstractions/events.ts");
+    await withIdempotency(
+      ctx.db,
+      "atmux:lane-router",
+      { topics: ["task.unclaimed"] },
+      async (event) => {
+        if (event.topic !== "task.unclaimed") return;
+        await runLaneTickImport(ctx.atmuxDir, ctx.team);
+        unclaimedProcessed += 1;
+      },
+    );
+  } catch (e) {
+    ctx.logger.log(
+      `committer --drain: task.unclaimed drain threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
+    );
+  }
   ctx.logger.log(
-    `committer --drain: team='${ctx.team.name}' processed=${result.processed} escalated=${result.escalated}`,
+    `committer --drain: team='${ctx.team.name}' done=${gitterResult.processed} escalated=${gitterResult.escalated} unclaimed=${unclaimedProcessed}`,
   );
   ctx.closeDb(ctx.db);
   return 0;
@@ -448,30 +471,61 @@ export async function committerDaemonVerb(
       }
     }
     ctx.logger.log(
-      `committer --daemon: team='${ctx.team.name}' honker=${honkerLoaded ? "loaded" : "fallback"} wake=${wakeMode} starting watcher (topics=[task.done])`,
+      `committer --daemon: team='${ctx.team.name}' honker=${honkerLoaded ? "loaded" : "fallback"} wake=${wakeMode} starting watcher (topics=[task.done, task.unclaimed])`,
     );
     let processed = 0;
-    const consumerName = "atmux:gitter";
-    const lastOffset = loadOffsetImport(ctx.db, consumerName);
+    // Two consumers share the same Bun process but have independent
+    // offsets so a slow gitter merge doesn't starve lane-tick wake-up
+    // (and vice versa). Each event's `topic` discriminator picks the
+    // handler; offset for that handler is what gets advanced.
+    const gitterConsumer = "atmux:gitter";
+    const laneRouterConsumer = "atmux:lane-router";
+    // Watch BOTH topics in one subscription — relayd is the multi-topic
+    // dispatcher. The handler dispatches by topic; offsets are
+    // per-consumer (gitter vs lane-router) for independent recovery.
+    // We pick the LOWER of the two offsets as the initial cursor so
+    // no consumer falls behind silently.
+    const gitterOffset = loadOffsetImport(ctx.db, gitterConsumer);
+    const laneRouterOffset = loadOffsetImport(ctx.db, laneRouterConsumer);
+    const initialOffset = gitterOffset < laneRouterOffset ? gitterOffset : laneRouterOffset;
     const watcher = watchEventsImport(ctx.db, {
-      topics: ["task.done"],
+      topics: ["task.done", "task.unclaimed"],
       signal: ac.signal,
-      initialOffset: lastOffset,
+      initialOffset,
       honkerLoaded,
       ...(externalSignals ? { externalSignals } : {}),
     });
     for await (const event of watcher) {
-      if (event.topic !== "task.done") continue;
       try {
-        const outcome = await ctx.handler(event);
-        saveOffsetImport(ctx.db, consumerName, event.eventId);
-        processed += 1;
-        ctx.logger.log(
-          `committer --daemon: handled task.done eventId=${event.eventId} taskId=${event.taskId} outcome=${outcome}`,
-        );
+        if (event.topic === "task.done") {
+          // Skip if this event is at-or-before gitter's saved offset
+          // (covers the case where lane-router was behind so we re-
+          // drained shared history).
+          if (event.eventId <= gitterOffset) continue;
+          const outcome = await ctx.handler(event);
+          saveOffsetImport(ctx.db, gitterConsumer, event.eventId);
+          processed += 1;
+          ctx.logger.log(
+            `committer --daemon: handled task.done eventId=${event.eventId} taskId=${event.taskId} outcome=${outcome}`,
+          );
+        } else if (event.topic === "task.unclaimed") {
+          if (event.eventId <= laneRouterOffset) continue;
+          // Run the same lane-tick logic the cron */5 would run.
+          // This is broader than strictly necessary — lane-tick visits
+          // ALL members, not just the lane named in the event — but
+          // re-using the existing verb keeps the behavior identical
+          // to the cron path. The win is latency: 5min → ~1sec on
+          // a fresh unclaimed task.
+          const result = await runLaneTickImport(ctx.atmuxDir, ctx.team);
+          saveOffsetImport(ctx.db, laneRouterConsumer, event.eventId);
+          processed += 1;
+          ctx.logger.log(
+            `committer --daemon: handled task.unclaimed eventId=${event.eventId} taskId=${event.taskId} lane=${event.lane} visited=${result.visited}`,
+          );
+        }
       } catch (e) {
         ctx.logger.log(
-          `committer --daemon: handler threw on eventId=${event.eventId} — NOT advancing offset; will retry next NOTIFY: ${e instanceof Error ? e.message : String(e)}`,
+          `committer --daemon: handler threw on eventId=${event.eventId} topic=${event.topic} — NOT advancing offset; will retry next NOTIFY: ${e instanceof Error ? e.message : String(e)}`,
         );
         break; // stop drain, will retry on next signal
       }

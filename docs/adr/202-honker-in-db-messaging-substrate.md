@@ -494,3 +494,79 @@ native-listener: ready
 Clean.
 
 **Filed via** 2026-05-22 driver session — *"we need to give her a name"* → after honest re-evaluation of Vesper vs alternatives → operator picked `relayd` (Unix daemon convention, no persona overload).
+
+
+## §Amendment 2026-05-22 (IV) — `task.unclaimed` event + lane-router consumer
+
+Second event-driven consumer wired. relayd now multiplexes two topics:
+`task.done` (gitter merge dispatch) and `task.unclaimed` (lane-router immediate
+claim-injection).
+
+### Trigger
+
+`addTask` emits `task.unclaimed` inside the same `transactImmediate` as the
+kanban row upsert when ALL of:
+- `status === "todo"` (always true on add)
+- `lane` is set to a canonical v1 lane (fe / be / db / ops / test / review / misc)
+- `owner === null`
+
+Non-canonical lanes (`docs`, `git`) skip emit silently — the kanban row still
+lands; the cron `*/5 lane-tick` continues to handle those.
+
+### Payload shape
+
+`TaskUnclaimedPayload` added to `src/schema/events.ts` discriminated union:
+- `taskId`, `team`, `lane` (closed enum), `priority?`, `epicId?`, `storyId?`
+
+### Consumer wiring
+
+`atmux committer --daemon` extended:
+- Subscribes to `["task.done", "task.unclaimed"]` in a single `watchEvents` call
+- Two independent offsets (`atmux:gitter` + `atmux:lane-router`) for independent
+  recovery — slow merge handler doesn't starve lane wake-up and vice versa
+- Dispatch by topic discriminator: `task.done` → `ctx.handler` (gitter merge);
+  `task.unclaimed` → `runLaneTick(atmuxDir, team)` (existing lane-tick logic)
+
+`atmux committer --drain` extended:
+- Runs gitterConsume (task.done) AND a separate withIdempotency loop for
+  task.unclaimed → runLaneTick
+- One-shot per cron tick; logs `done=N escalated=M unclaimed=K`
+
+### Latency improvement
+
+Before: a new unclaimed task with a lane sat in `todo` up to 5min before the
+cron `*/5 lane-tick` fired the first claim-injection attempt.
+
+After: emit fires inside the addTask transaction → relayd's atmux-listener
+wakes within ~1ms (kernel-watcher) or ~100ms (default poll) → lane-tick runs
+for that task's team → claim-injection happens within ~1sec end-to-end.
+
+5min → 1sec on the happy path.
+
+### Cron decommission posture
+
+`*/5 lane-tick` cron line stays installed as backstop. Decommission per-team
+once relayd lane-router proves out in production (operator verification +
+ADR-amendment + cron-template edit). Future amendment.
+
+### Tests
+
+5 new tests in `kanban-sqlite.test.ts`:
+- lane + no owner → emits task.unclaimed with correct payload
+- lane + assigned owner → no emit
+- no lane → no emit
+- non-canonical lane → no emit (kanban row still lands)
+- missing team.json → emit short-circuits silently (no throw)
+
+### Naming pressure observed
+
+The `committer --daemon` verb subscribing to `task.unclaimed` makes the verb
+name a misnomer — "committer" implies merging, not lane-routing. A future
+amendment introduces the canonical `atmux relayd --start` verb that
+re-homes the multi-topic dispatcher to the persona we already named. The
+internal helpers (`buildEventDrivenContext`, `runLaneTickImport`,
+`gitterConsumeImport`) stay; only the CLI surface changes. Deferred to a
+separate commit so this consumer-conversion lands cleanly.
+
+**Filed via** 2026-05-22 driver session — *"keep going"* + /goal directive
+("convert all event-driven consumers ... migrate all running teams").
