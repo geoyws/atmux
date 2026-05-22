@@ -35,10 +35,10 @@ import {
   committerDrainVerb,
 } from "./committer.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { runLaneTick } from "./lane-tick.ts";
+import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
 
 const USAGE =
-  "atmux relayd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T]";
+  "atmux relayd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
 
 export interface ParsedRelaydArgs {
   /** Sub-verbs:
@@ -69,6 +69,18 @@ export interface ParsedRelaydArgs {
   eventId?: string;
   /** `--topic T`: required when subverb is `handle-one`. */
   topic?: string;
+  /** `--task-id ID`: (ADR-202 §Amendment 2026-05-22 IX-A) single-task
+   *  hint for `handle-one --topic task.unclaimed`. The Rust dispatcher
+   *  passes the resolved (task, member, lane) tuple from the event
+   *  payload so the Bun side can use the lean per-event dispatcher
+   *  instead of the cross-member runLaneTick loop. Parser enforces
+   *  none-or-all-three: passing any of taskId/member/lane requires
+   *  all three. */
+  taskId?: string;
+  /** `--member NAME`: see {@link taskId}. */
+  member?: string;
+  /** `--lane L`: see {@link taskId}. */
+  lane?: string;
 }
 
 export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
@@ -78,6 +90,9 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
   let maxEvents: number | undefined;
   let eventId: string | undefined;
   let topic: string | undefined;
+  let taskId: string | undefined;
+  let member: string | undefined;
+  let lane: string | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -161,6 +176,42 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       i += 2;
       continue;
     }
+    if (a === "--task-id") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "relayd: --task-id requires a value",
+          hint: USAGE,
+        });
+      }
+      taskId = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--member") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "relayd: --member requires a value",
+          hint: USAGE,
+        });
+      }
+      member = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--lane") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "relayd: --lane requires a value",
+          hint: USAGE,
+        });
+      }
+      lane = v;
+      i += 2;
+      continue;
+    }
     if (a?.startsWith("-") === true) {
       throw new UsageError({ what: `relayd: unknown flag: ${a}`, hint: USAGE });
     }
@@ -186,12 +237,35 @@ export function parseRelaydArgs(argv: ReadonlyArray<string>): ParsedRelaydArgs {
       });
     }
   }
+  // ADR-202 §Amendment 2026-05-22 IX-A: --task-id / --member / --lane
+  // are all-or-none. Mixed combinations reject with the same shape as
+  // `--event-id requires --topic` so callers get a consistent error
+  // surface. None-set = fall through to existing runLaneTick path
+  // (back-compat for events lacking payload + degraded-mode Bun --start).
+  const oneOfThree = [
+    ["--task-id", taskId],
+    ["--member", member],
+    ["--lane", lane],
+  ] as const;
+  const present = oneOfThree.filter(([, v]) => v !== undefined);
+  if (present.length > 0 && present.length < 3) {
+    const missing = oneOfThree.filter(([, v]) => v === undefined).map(([f]) => f);
+    throw new UsageError({
+      what:
+        `relayd --handle-one: --task-id/--member/--lane must be provided together ` +
+        `(missing: ${missing.join(", ")})`,
+      hint: USAGE,
+    });
+  }
   const out: ParsedRelaydArgs = { subverb };
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (once) out.once = true;
   if (maxEvents !== undefined) out.maxEvents = maxEvents;
   if (eventId !== undefined) out.eventId = eventId;
   if (topic !== undefined) out.topic = topic;
+  if (taskId !== undefined) out.taskId = taskId;
+  if (member !== undefined) out.member = member;
+  if (lane !== undefined) out.lane = lane;
   return out;
 }
 
@@ -292,14 +366,34 @@ async function relaydHandleOne(
       parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
     const team = await requireTeam(dirOpts);
     const atmuxDir = await getAtmuxDir(dirOpts);
-    // No need to load the specific event payload — runLaneTick visits
-    // ALL members of the team and picks tasks for each lane. The
-    // event was just the wake-up signal.
+    // ADR-202 §Amendment 2026-05-22 IX-A: when the Rust dispatcher
+    // passes the resolved (task, member, lane) tuple, use the lean
+    // per-event dispatcher — single `safeSendKeysWithVerify` call to
+    // ONE member, skipping the cross-member enumeration loop. Absent
+    // payload (back-compat with older relayd events + degraded-mode
+    // Bun --start path) → fall through to runLaneTick. Parser enforces
+    // none-or-all-three so the branch condition is unambiguous.
     try {
-      await runLaneTick(atmuxDir, team);
+      if (
+        parsed.taskId !== undefined &&
+        parsed.member !== undefined &&
+        parsed.lane !== undefined
+      ) {
+        await runLaneTickForOne(atmuxDir, team, {
+          taskId: parsed.taskId,
+          member: parsed.member,
+          lane: parsed.lane,
+        });
+      } else {
+        // No need to load the specific event payload — runLaneTick visits
+        // ALL members of the team and picks tasks for each lane. The
+        // event was just the wake-up signal.
+        await runLaneTick(atmuxDir, team);
+      }
       // Manually advance offset so this Bun process doesn't depend on
       // the Rust caller checking exit code precisely. The Rust caller
-      // ALSO saves the offset on rc=0, which is idempotent.
+      // ALSO saves the offset on rc=0, which is idempotent. Offset
+      // behavior is identical on both lean + fallback paths.
       const dbPath = join(atmuxDir, "state.db");
       const db = openDatabase(dbPath, migrations);
       try {
