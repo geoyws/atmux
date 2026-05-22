@@ -138,16 +138,19 @@ describe("renderBootPrompt", () => {
   test("ADR-081 §C boot prompt — single line, template-substituted, self-verifying", () => {
     const out = renderBootPrompt("atmux", "fe-1");
     expect(out).toBe(
-      "First run `echo $ATMUX_MEMBER` — if it isn't `fe-1`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-atmux.md and your role brief if your role appears in templates/briefs/, then bootstrap as fe-1.",
+      "First run `echo $ATMUX_MEMBER` — if it isn't `fe-1`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read your role brief in templates/briefs/ + the project CLAUDE.md, then bootstrap as fe-1.",
     );
     // Reviewer pre-flag: single-line (no newlines anywhere)
     expect(out.includes("\n")).toBe(false);
   });
 
-  test("substitutes both placeholders", () => {
+  test("substitutes the {member} placeholder", () => {
     const out = renderBootPrompt("sopx-guild", "be-2");
-    expect(out).toContain("/tmp/atmux-brief-generic-sopx-guild.md");
+    // {team} is unused as of the 2026-05-22 dead-file-reference strip
+    // (t-f79db3b9); kept in renderBootPrompt for call-site ABI
+    // stability. The {member} placeholder remains load-bearing.
     expect(out).toContain("bootstrap as be-2");
+    expect(out).toContain("if it isn't `be-2`");
   });
 
   test("self-verification preamble — recipient must check $ATMUX_MEMBER before adopting role", () => {
@@ -160,6 +163,22 @@ describe("renderBootPrompt", () => {
     expect(out).toContain("if it isn't `driver`");
     expect(out).toContain("mis-targeted");
     expect(out).toContain("do NOT bootstrap");
+  });
+
+  test("dead-file-reference strip (t-f79db3b9) — no /tmp/atmux-brief-generic-* path", () => {
+    // Regression-pin for the 2026-05-22 strip. Pre-strip, the prompt
+    // told recipients to read /tmp/atmux-brief-generic-<team>.md, a
+    // file nothing in the codebase ever wrote. The strip removes the
+    // dead reference; role brief + project CLAUDE.md are the
+    // canonical bootstrap sources. If a generic-brief surface ever
+    // resurfaces it belongs in CLAUDE.md, not /tmp/.
+    const out = renderBootPrompt("atmux", "fe-1");
+    expect(out).not.toContain("atmux-brief-generic");
+    expect(out).not.toContain("/tmp/");
+    // Conditional ("if your role appears in templates/briefs/") also
+    // dropped — every role atmux spawns has a brief via BRIEF_ALIASES
+    // + member.md fallback at the resolver layer (rotate.ts).
+    expect(out).not.toContain("if your role appears");
   });
 });
 
@@ -422,7 +441,7 @@ describe("bootClaudeMember — submit-verify path (t-1b45d565)", () => {
       captures: [
         "✻ Welcome", // sentinel — not booted
         "❯ ", // ready — `❯ ` IS at EOL here, but this capture is consumed by the READINESS poll, not the submit-verify poll
-        "❯ Read /tmp/atmux-brief-generic-atmux.md and your role brief", // submit-verify polls — composer still has prompt text; `❯ ` is NOT at EOL → composerEmpty miss → verify times out across all submitVerifyRetries → submit-not-verified
+        "❯ Read your role brief in templates/briefs/", // submit-verify polls — composer still has prompt text; `❯ ` is NOT at EOL → composerEmpty miss → verify times out across all submitVerifyRetries → submit-not-verified
       ],
     });
     const r = await bootClaudeMember({
