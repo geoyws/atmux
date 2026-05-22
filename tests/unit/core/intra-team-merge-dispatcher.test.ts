@@ -440,13 +440,28 @@ describe("productionQueueMergeAttempt — 5-cell matrix", () => {
     expect(r.reason).toContain("tested");
   });
 
-  test("cell 2c: row in `merged` at entry (terminal) → refuse with reason='terminal: merged'", async () => {
+  test("cell 2c: row in `merged` at entry + aheadCount=0 (no new commits past fan-in) → refuse with reason='terminal: merged'", async () => {
     seedState("merged");
     const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
-    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 0 });
     expect(r.queued).toBe(false);
     expect(r.reason).toContain("terminal");
     expect(r.reason).toContain("merged");
+  });
+
+  test("§Amendment 2026-05-22 (II) — merged + aheadCount>0 auto-re-enters via open and continues walk (t-0542595c)", async () => {
+    seedState("merged");
+    const fn = productionQueueMergeAttempt(makeDeps({ git: makeGitStub({ behavior: "success" }) }));
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    // Walk should HAVE progressed (not refused) because new commits past
+    // the prior fan-in trigger auto-re-entry. The merged→open auto-reset
+    // happens inside the dispatcher; the row then advances through the
+    // standard gate machinery.
+    expect(r.queued).toBe(true);
+    expect(r.reason).not.toContain("terminal: merged");
+    // Final state should reflect a fresh walk (open → in_progress →
+    // ready_to_merge → ... → tested) under a clean gate.
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("tested");
   });
 
   // ----- Cell 3: clean merge succeeds (already covered by Cell 1) -----
