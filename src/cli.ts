@@ -40,6 +40,7 @@ import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
 import { committer } from "./verbs/committer.ts";
+import { cockpitMirror } from "./verbs/cockpit-mirror.ts";
 import { relayd } from "./verbs/relayd.ts";
 import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
@@ -306,6 +307,15 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       // (one-shot cron-backstop). Legacy `committer --daemon` / `committer
       // --drain` remain as deprecated aliases for one release.
       return relayd(argv.slice(1));
+    case "cockpit-mirror":
+      // ADR-219 — cockpit-scope event dispatcher. Per-event Bun handler
+      // spawned by the Rust `atmux-cockpit-mirror` binary
+      // (`--handle-one --event-id X --topic T`); 7-topic whitelist per
+      // ADR-219 §D3 (epic.merge_ready / epic.spawn_blocked / team.spawned
+      // / team.dissolved / budget.warning / budget.recovered /
+      // gitter.escalated). Per-topic real handlers are follow-up Tasks;
+      // MVP scaffold logs + advances offset.
+      return cockpitMirror(argv.slice(1));
     case "epic-merge":
       return epicMerge(argv.slice(1));
     case "complaints":
