@@ -30,11 +30,32 @@ rust = "stable"
 # actual installed version when contributors run on fresh hosts.
 tmux = "latest"
 
+# ---------- Rust ecosystem extras ----------
+# Installed via mise's `cargo:` backend — cargo install with mise-managed
+# binary directory + version pinning. Each tool's purpose noted inline.
+
+# sccache — shared compilation cache for Rust. Drops repeated `cargo
+# build` from ~30s to ~3s on warm cache. Set RUSTC_WRAPPER=sccache in
+# shell env (or .cargo/config.toml `[build] rustc-wrapper = "sccache"`)
+# to activate. Big win for the atmux-listener / atmux-relayd dev loop.
+#
+# Installed via mise's `github:` backend which pulls prebuilt
+# release binaries from GitHub. Avoids the cargo-install path's
+# transitive C dep on libssl-dev (openssl-sys). (Was ubi: prior to
+# mise 2027.1 — github: is the canonical backend now.)
+"github:mozilla/sccache" = "latest"
+
+# cargo-watch — `cargo watch -x check` for live re-typecheck on file
+# save. Optional but recommended for the Rust dev loop alongside
+# `bun --watch` for the TS side. Same github-binary rationale.
+"github:watchexec/cargo-watch" = "latest"
+
 # Notes for the future:
 # - When honker-extension publishes platform-native wheels for darwin-
 #   aarch64, add a tools entry to pull the prebuilt .so/.dylib rather
 #   than requiring contributors to fetch from PyPI manually. Until then,
 #   the install wizard (ADR-200) handles per-host extension provisioning.
-# - If the Cargo profile changes (e.g. cross-compile for darwin-aarch64
-#   from linux-x64 host), add `cargo-zigbuild` or similar as a mise tool
-#   here so the cross-toolchain setup is reproducible.
+# - Cross-compile from linux-x64 (hax) to darwin-aarch64 (operator MBP):
+#   `cargo-zigbuild` would handle this but requires zig itself. Mise
+#   doesn't expose zig as a plugin yet. Operators run `cargo build` on
+#   each target host until the cross-toolchain story shipping ramps up.
