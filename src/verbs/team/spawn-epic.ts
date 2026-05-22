@@ -77,6 +77,12 @@ import {
   probeHostPressure,
   type ProbeHostPressureDeps,
 } from "../../core/host-pressure.ts";
+import {
+  type BudgetProbeState,
+  loadBudgetMap,
+  selectAccount,
+} from "../../core/account-pool.ts";
+import type { ClaudeAccountPoolEntry } from "../../schema/cockpit.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
 
 const USAGE =
@@ -403,7 +409,22 @@ export async function spawnEpic(
   //     fall back to the parent's first-member account as the team-default.
   //     Roster entries that explicitly carry `claudeAccount` are NOT
   //     overwritten — operators retain per-roster override control.
-  const rosterMembersWithAccount = await inheritClaudeAccount(rosterMembers, parentRoot);
+  //
+  //     ADR-199: when the cockpit configures `claudeAccountPool[]` AND
+  //     the parent has no team-default claudeAccount AND no per-member
+  //     match, select an account from the pool (least-loaded by budget
+  //     probe). The pool fills the bottom of the inheritance ladder;
+  //     explicit roster + parent matches still win.
+  const poolFallback = await resolvePoolFallback({
+    pool: extractPoolFromCockpit(cockpitMigrated),
+    env,
+  });
+  const rosterMembersWithAccount = await inheritClaudeAccount(
+    rosterMembers,
+    parentRoot,
+    poolFallback,
+    logger,
+  );
 
   // 5. provisionWorktree. Side-effect tracker for rollback.
   await mkdir(epicsDir, { recursive: true });
@@ -573,18 +594,20 @@ async function resolveRosterMembers(
 async function inheritClaudeAccount(
   rosterMembers: TeamShape["members"],
   parentRoot: string,
+  poolFallback: ClaudeAccountPoolEntry | null = null,
+  logger?: { log: (m: string) => void; warn: (m: string) => void },
 ): Promise<TeamShape["members"]> {
   const parentTeamPath = join(parentRoot, ".atmux", "team.json");
-  if (!(await exists(parentTeamPath))) return rosterMembers;
-  type ParentMember = { name?: unknown; claudeAccount?: unknown };
-  const ParentShape = z.object({ members: z.array(z.unknown()) }).passthrough();
-  let parentParsed: { members: unknown[] };
-  try {
-    parentParsed = await readJson(parentTeamPath, ParentShape);
-  } catch {
-    return rosterMembers;
+  let parentMembers: { name?: unknown; claudeAccount?: unknown }[] = [];
+  if (await exists(parentTeamPath)) {
+    const ParentShape = z.object({ members: z.array(z.unknown()) }).passthrough();
+    try {
+      const parentParsed = await readJson(parentTeamPath, ParentShape);
+      parentMembers = parentParsed.members as typeof parentMembers;
+    } catch {
+      // Unreadable parent → fall through to pool-fallback if available.
+    }
   }
-  const parentMembers = parentParsed.members as ParentMember[];
   const byName = new Map<string, unknown>();
   let teamDefault: unknown;
   for (const m of parentMembers) {
@@ -598,6 +621,21 @@ async function inheritClaudeAccount(
       if (teamDefault === undefined) teamDefault = m.claudeAccount;
     }
   }
+  // ADR-199: bottom of the inheritance ladder. When no parent default
+  // is available AND no per-member match would fill, the pool fallback
+  // supplies the team-default. The pool entry's {configDir, label}
+  // shape maps 1:1 to claudeAccount.
+  if (teamDefault === undefined && poolFallback !== null) {
+    teamDefault = {
+      configDir: poolFallback.configDir,
+      label: poolFallback.label,
+    };
+    if (logger !== undefined) {
+      logger.log(
+        `spawn-epic: claudeAccount drawn from pool — '${poolFallback.label}' (ADR-199)`,
+      );
+    }
+  }
   if (teamDefault === undefined && byName.size === 0) return rosterMembers;
   return rosterMembers.map((m) => {
     const member = m as { name?: unknown; claudeAccount?: unknown };
@@ -609,6 +647,52 @@ async function inheritClaudeAccount(
     if (inherited === undefined) return m;
     return { ...member, claudeAccount: inherited } as TeamShape["members"][number];
   });
+}
+
+/** Read the `claudeAccountPool[]` from a cockpit-shaped object. Returns
+ *  empty array when the key is absent OR malformed (best-effort —
+ *  spawn-epic continues with the existing parent-inheritance path).
+ *  ADR-199 minimal slice. */
+function extractPoolFromCockpit(cockpit: unknown): readonly ClaudeAccountPoolEntry[] {
+  if (cockpit === null || typeof cockpit !== "object") return [];
+  const c = cockpit as { claudeAccountPool?: unknown };
+  if (!Array.isArray(c.claudeAccountPool)) return [];
+  // Defensive coercion: filter to entries matching the {configDir,label}
+  // shape. Zod-strict at the cockpit-load layer would normally enforce
+  // this; the duck-typed filter here keeps us safe if cockpit was read
+  // raw (passthrough) — same defensive pattern as the existing parent
+  // member loop above.
+  const out: ClaudeAccountPoolEntry[] = [];
+  for (const e of c.claudeAccountPool) {
+    if (
+      e !== null &&
+      typeof e === "object" &&
+      typeof (e as { configDir?: unknown }).configDir === "string" &&
+      typeof (e as { label?: unknown }).label === "string"
+    ) {
+      const entry = e as { configDir: string; label: string; weight?: number };
+      out.push({
+        configDir: entry.configDir,
+        label: entry.label,
+        ...(typeof entry.weight === "number" ? { weight: entry.weight } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/** Resolve the pool selection result into a single account entry, or
+ *  `null` when the pool is empty / nothing selectable. Loads the
+ *  per-label budget probe state from `$HOME/.atmux/state/budget-probe-*.json`. */
+async function resolvePoolFallback(deps: {
+  pool: readonly ClaudeAccountPoolEntry[];
+  env: NodeJS.ProcessEnv;
+}): Promise<ClaudeAccountPoolEntry | null> {
+  if (deps.pool.length === 0) return null;
+  const home = deps.env.HOME ?? "/root";
+  const budgetMap = await loadBudgetMap(deps.pool, home);
+  const { account } = selectAccount({ pool: deps.pool, budgetByLabel: budgetMap });
+  return account;
 }
 
 function defaultTemplatesDir(): string {

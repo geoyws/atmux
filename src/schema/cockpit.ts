@@ -45,6 +45,24 @@ export const CockpitClaudeAccount = z
   .strict();
 export type CockpitClaudeAccount = z.infer<typeof CockpitClaudeAccount>;
 
+/** ADR-199 — pool entry for `cockpit.claudeAccountPool[]`. Extends
+ *  {@link CockpitClaudeAccount} with an optional `weight` (0..1) used
+ *  as a tie-breaker when budget probe state is stale or absent. */
+export const ClaudeAccountPoolEntry = z
+  .object({
+    /** Absolute path to the per-account ~/.claude-* directory. */
+    configDir: z.string().min(1),
+    /** Free-form label — MUST match the budget probe filename suffix
+     *  (`~/.atmux/state/budget-probe-<label>.json`) so the selector
+     *  can find the entry's live utilization. */
+    label: z.string().min(1),
+    /** Tie-breaker weight when budget data is stale or absent.
+     *  Higher = preferred. Default 1.0. */
+    weight: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+export type ClaudeAccountPoolEntry = z.infer<typeof ClaudeAccountPoolEntry>;
+
 /** Per-session TUI launch overrides. All fields opt-in; bare object falls
  *  back to atmux defaults. */
 export const CockpitTuiOverrides = z
@@ -579,6 +597,14 @@ export const Cockpit = z
     defaultSentinel: CockpitDefaultSentinel.optional(),
     /** Optional ADR-086 pulse probe tunables. Omit for defaults. */
     pulse: CockpitPulse.optional(),
+    /** ADR-199 — Claude account pool for epic-team spawning. When
+     *  populated, `spawn-epic` draws `team.claudeAccount` from this
+     *  list via `selectAccount()` (least-loaded by budget probe state).
+     *  Each entry extends {@link CockpitClaudeAccount} with an optional
+     *  weight tie-breaker. Empty / unset → spawn-epic falls back to
+     *  the existing per-member inheritance chain (ADR-090 §Amendment
+     *  2026-05-20). */
+    claudeAccountPool: z.array(ClaudeAccountPoolEntry).optional(),
   })
   .passthrough();
 export type Cockpit = z.infer<typeof Cockpit>;

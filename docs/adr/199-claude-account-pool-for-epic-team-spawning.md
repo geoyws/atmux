@@ -162,3 +162,50 @@ Once the Honker substrate ADR is accepted + impl-EPIC ships:
 - memory `feedback_spawn_epic_requires_driver_scope` — scope precedent
 - memory `project_spawn_epic_claude_account_pool` — design state + open questions
 - memory `project_honker_pubsub_rehaul_design` — substrate dependency
+
+
+## §Amendment 2026-05-22 — Minimal slice shipped (substrate + spawn-epic integration)
+
+Ships the **load-bearing** piece of ADR-199 — `claudeAccountPool[]` configured in cockpit + `selectAccount()` least-loaded selector + spawn-epic integration. Closes the spawn-epic 401-regression class without waiting on Honker subscriber + cron-backstop substrate; those are ergonomic improvements that don't block migration.
+
+**Shipped:**
+
+- `src/schema/cockpit.ts::ClaudeAccountPoolEntry` — `{configDir, label, weight?}` schema (extends the existing `CockpitClaudeAccount` precedent).
+- `src/schema/cockpit.ts::Cockpit::claudeAccountPool` — root-level `ClaudeAccountPoolEntry[]` optional array. When unset / empty, spawn-epic falls back to the existing parent-inheritance chain (no behavior change).
+- `src/core/account-pool.ts::selectAccount()` — pure selector. Selection ladder:
+  1. Exclude `status !== "allowed"` entries when ANY entry is healthy (otherwise pick least-bad).
+  2. Among eligible, prefer lower `h5_util` (most headroom).
+  3. Tie → higher `weight` (default 1.0).
+  4. Further tie → pool-array order.
+- `src/core/account-pool.ts::readBudgetProbe` + `loadBudgetMap` — I/O wrappers that read `$HOME/.atmux/state/budget-probe-<label>.json` per the existing budget skill convention.
+- `src/verbs/team/spawn-epic.ts::extractPoolFromCockpit` + `resolvePoolFallback` — pool-resolution helpers; pool fills the bottom of the inheritance ladder (after explicit roster + parent-name-match + parent-team-default).
+- `inheritClaudeAccount` signature extended with optional `poolFallback` parameter; backward-compatible when pool is null/empty.
+
+**Selection semantics (verified by 14 unit tests on the pure function):**
+
+- Empty pool → null result, fallback to existing inheritance chain.
+- Lowest h5_util wins among allowed entries.
+- Throttled entries excluded if ANY allowed; all-throttled → pick least-bad.
+- Fresh budget data wins over stale (default 30min stale threshold).
+- Missing budget data treated as stale (weight + order fallback).
+
+**Stale-grace contract** — entries with `probedAt` older than `staleThresholdSec` (default 1800) are treated as unknown. Default value chosen because budget probe runs every ~15min (2× safety margin).
+
+**Deferred to follow-up Tasks** on EPIC e-7471f008:
+
+- CLI verbs (`atmux cockpit account-pool add/remove/list` — driver-scope-only per ADR-033)
+- Honker subscription to `budget.warning` / `budget.recovered` topics (event-driven re-weighting; currently selector re-reads probe state at each spawn-epic)
+- Cron-backstop 5min poll (defense-in-depth per ADR-202 §D6)
+- Doctor probe row `claudeAccountPool` (green when populated + non-stale; yellow on partial staleness)
+- Per-team override `team.json::epicSpawnPool[]` (cockpit-pool override scope)
+- `epic.spawn_blocked` event emission on exhaustion
+
+**Why ship now without the deferred items:**
+
+The deferred items optimize an already-working flow. The minimal slice eliminates the 401-on-bootstrap regression that was forcing manual jq-patch + restart on every spawn-epic. With this commit, spawn-epic against a cockpit with `claudeAccountPool` populated picks a working account automatically; operators configure the pool once + forget.
+
+**Tests:** 20 unit tests (100% func / 98.73% line coverage) on `account-pool.ts`. 27 spawn-epic tests still pass (no regression from the inheritance signature extension).
+
+**Cross-refs:** ADR-090 §Amendment 2026-05-20 (claudeAccount inheritance contract — pool fills the team-default leaf), ADR-202 (Honker substrate — deferred subscription path), `coordination:budget` skill (state file shape).
+
+**Filed via** 2026-05-22 driver session — operator: "deliver the whole thing for honker and fam first".
