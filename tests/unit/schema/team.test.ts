@@ -22,6 +22,8 @@ import {
   resolveRefusalConfig,
   Team,
   TeamAutoEmitTrunkMerge,
+  TeamAutoSpawn,
+  TeamAutoSpawnDefault,
   TeamCadence,
   TeamCadenceThresholds,
   TeamCrons,
@@ -1464,5 +1466,190 @@ describe("Team schema integrates TeamRefusalDetection cleanly (ADR-139 §Config)
   test("Team.parse without `refusalDetection` leaves field undefined (back-compat)", () => {
     const team = Team.parse({ name: "demo", members: [] });
     expect(team.refusalDetection).toBeUndefined();
+  });
+});
+
+// ---------- TeamAutoSpawn — ADR-231 §D3 + §D4 (t-8-3328eb57) ----------
+
+describe("TeamAutoSpawnDefault — entry shape", () => {
+  test("accepts a well-formed entry", () => {
+    const e = TeamAutoSpawnDefault.parse({
+      match: "^demo-",
+      roster: "solo",
+      autoSpawn: true,
+    });
+    expect(e.match).toBe("^demo-");
+    expect(e.roster).toBe("solo");
+    expect(e.autoSpawn).toBe(true);
+    expect(e.forceSpawn).toBeUndefined();
+  });
+
+  test("optional forceSpawn survives parse", () => {
+    const e = TeamAutoSpawnDefault.parse({
+      match: ".*",
+      roster: "backend-heavy",
+      autoSpawn: true,
+      forceSpawn: true,
+    });
+    expect(e.forceSpawn).toBe(true);
+  });
+
+  test("rejects invalid regex source (schema-level catch via new RegExp refine)", () => {
+    expect(() =>
+      TeamAutoSpawnDefault.parse({
+        match: "[unclosed",
+        roster: "solo",
+        autoSpawn: true,
+      }),
+    ).toThrow(/invalid regex source/);
+  });
+
+  test("rejects autoSpawn: false (literal-true catches typo'd opt-out)", () => {
+    expect(() =>
+      TeamAutoSpawnDefault.parse({
+        match: ".*",
+        roster: "solo",
+        autoSpawn: false,
+      }),
+    ).toThrow();
+  });
+
+  test("rejects empty match", () => {
+    expect(() =>
+      TeamAutoSpawnDefault.parse({
+        match: "",
+        roster: "solo",
+        autoSpawn: true,
+      }),
+    ).toThrow();
+  });
+
+  test("rejects empty roster", () => {
+    expect(() =>
+      TeamAutoSpawnDefault.parse({
+        match: ".*",
+        roster: "",
+        autoSpawn: true,
+      }),
+    ).toThrow();
+  });
+
+  test("strict mode rejects unknown keys", () => {
+    expect(() =>
+      TeamAutoSpawnDefault.parse({
+        match: ".*",
+        roster: "solo",
+        autoSpawn: true,
+        typo: "extra",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("TeamAutoSpawn — block shape", () => {
+  test("empty block parses (both fields optional)", () => {
+    const s = TeamAutoSpawn.parse({});
+    expect(s.defaults).toBeUndefined();
+    expect(s.sweepCron).toBeUndefined();
+  });
+
+  test("defaults[] with multiple entries preserves order", () => {
+    const s = TeamAutoSpawn.parse({
+      defaults: [
+        { match: "^demo-", roster: "solo", autoSpawn: true },
+        { match: "^prod-", roster: "backend-heavy", autoSpawn: true, forceSpawn: true },
+      ],
+    });
+    expect(s.defaults).toHaveLength(2);
+    expect(s.defaults?.[0]?.match).toBe("^demo-");
+    expect(s.defaults?.[1]?.forceSpawn).toBe(true);
+  });
+
+  test("sweepCron accepts 5-field cron string", () => {
+    const s = TeamAutoSpawn.parse({ sweepCron: "*/2 * * * *" });
+    expect(s.sweepCron).toBe("*/2 * * * *");
+  });
+
+  test("sweepCron rejects 3-field string (loose validation)", () => {
+    expect(() => TeamAutoSpawn.parse({ sweepCron: "*/5 * *" })).toThrow(/5-field cron/);
+  });
+
+  test("sweepCron rejects empty string", () => {
+    expect(() => TeamAutoSpawn.parse({ sweepCron: "" })).toThrow();
+  });
+
+  test("sweepCron rejects leading whitespace pollution", () => {
+    expect(() => TeamAutoSpawn.parse({ sweepCron: "  */5 * * * *" })).toThrow(/5-field cron/);
+  });
+
+  test("strict mode rejects unknown top-level keys", () => {
+    expect(() =>
+      TeamAutoSpawn.parse({ defualts: [] }),
+    ).toThrow();
+  });
+
+  test("invalid entry inside defaults[] rejects the whole block", () => {
+    expect(() =>
+      TeamAutoSpawn.parse({
+        defaults: [{ match: "[bad", roster: "x", autoSpawn: true }],
+      }),
+    ).toThrow(/invalid regex source/);
+  });
+});
+
+describe("Team schema integrates TeamAutoSpawn cleanly (ADR-231 §D3 + §D4)", () => {
+  test("Team.parse accepts an `autoSpawn` block with full shape", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      autoSpawn: {
+        defaults: [
+          { match: "^demo-", roster: "solo", autoSpawn: true },
+          { match: ".*", roster: "default", autoSpawn: true, forceSpawn: false },
+        ],
+        sweepCron: "*/2 * * * *",
+      },
+    });
+    expect(team.autoSpawn?.defaults).toHaveLength(2);
+    expect(team.autoSpawn?.sweepCron).toBe("*/2 * * * *");
+    expect(team.autoSpawn?.defaults?.[0]?.roster).toBe("solo");
+  });
+
+  test("Team.parse without `autoSpawn` leaves field undefined (back-compat)", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.autoSpawn).toBeUndefined();
+  });
+
+  test("Team.parse rejects a malformed regex inside autoSpawn.defaults", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        autoSpawn: {
+          defaults: [{ match: "(unbalanced", roster: "solo", autoSpawn: true }],
+        },
+      }),
+    ).toThrow(/invalid regex source/);
+  });
+
+  test("Team.parse rejects a malformed sweepCron inside autoSpawn", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        autoSpawn: { sweepCron: "every-5-min" },
+      }),
+    ).toThrow(/5-field cron/);
+  });
+
+  test("Team.parse allows autoSpawn alongside sibling blocks (autoPush, autoMerge)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      autoSpawn: { sweepCron: "0 * * * *" },
+      autoPush: { enabled: true },
+    });
+    expect(team.autoSpawn?.sweepCron).toBe("0 * * * *");
+    expect(team.autoPush?.enabled).toBe(true);
   });
 });

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `team.json::autoSpawn` Zod schema ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D3 + §D4, EPIC `e-60e16169` Phase 2 Story S1, t-8-3328eb57)
+
+New optional `autoSpawn` block on the top-level Team schema (`src/schema/team.ts`) — config home for orchd's `spawn-epic` handler per ADR-231 §D3:
+
+- `defaults[]` — first-match-wins routing table; each entry is `{ match: string (regex source, validated via `new RegExp(match)` in a `z.string().refine` so unparseable patterns are caught at schema-parse time), roster: string, autoSpawn: literal true (typo-catch for opt-out-by-mistake), forceSpawn?: boolean }`. Per-epic explicit `extra.autoSpawn.enabled` always wins per ADR-231 §D3 resolution precedence; this array is the operator's fallback "anything matching X gets auto-spawned with roster Y".
+- `sweepCron` — operator override for the `atmux orchd --sweep` cadence (ADR-231 §D4 OQ-C). Default `*/5 * * * *` is applied at the cron-emission site, NOT here — schema validation is loose (5-field whitespace-separated string presence only) so misshapen cron strings surface at the sandwich-marker emission code's richer parser rather than refusing the whole team.json parse.
+
+Resolution-precedence logic (per-epic explicit > per-team defaults[] first-match > off) lives in `effectiveAutoSpawn()` (out of scope here — Task T-S2.5). Per-epic `epics.extra.autoSpawn` Zod schema lives on the kanban side (out of scope here).
+
+20 new unit tests at `tests/unit/schema/team.test.ts` cover: entry-shape (well-formed, optional forceSpawn, invalid regex, autoSpawn-false typo-catch, empty match/roster, strict unknown-keys); block-shape (empty, multi-entry order, sweepCron 5-field accept, 3-field reject, empty reject, whitespace-pollution reject, strict unknown-keys, invalid-entry-rejects-whole-block); Team-level integration (full-shape parse, back-compat absent, malformed regex via Team.parse, malformed cron via Team.parse, coexists with autoPush). 100% line + funcs coverage on `src/schema/team.ts`.
+
 ### 🔄 Changed — orchd auto-dissolve subscriber now routes through `dispatchDissolveEpic` + `dissolveEpic` factored into `src/core/` ([ADR-232](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) §D1, EPIC `e-60e16169` Phase 2 Story S0, t-4-d75fb776)
 
 Two-step landing:
