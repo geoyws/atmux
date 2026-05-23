@@ -1,13 +1,19 @@
-// ADR-232 §D1 — dispatchEpicMerge unit coverage.
+// ADR-232 §D1 + §D2.a — dispatchEpicMerge unit coverage.
 //
-// Pins per task t-3-bfbda5d8 AC:
+// Pins per task t-3-bfbda5d8 AC + t-20/t-21 fix sweep:
 //   - Function exported + Zod-validated input/output.
 //   - LOCAL route invokes performEpicMerge (via invokeLocal hook) and
 //     returns its result mapped to DispatchEpicMergeResult shape.
 //   - REMOTE route emits dispatch message + returns ack/error correctly.
 //   - Failure surfaces atmux flag add with epicId + target cage +
-//     stderrTail in body.
-//   - cage-not-found path → flag-add + gate-held.
+//     stderrTail in body — ONLY on dispatch failure, NOT cage-not-found.
+//   - cage-not-found path → quiet skipped-not-mine (no flag) per
+//     ADR-232 §D2.a + §D3 fallback semantics (fixed in c477954 review
+//     iteration: pre-fix flag-spammed on every event).
+//   - §D2.a local-cage-skip guard: cage.name === localTeamName →
+//     skipped-not-mine with reason "local-cage-already-owns".
+//   - §D2.a anti-pattern guard: targetCage matching /^e-\d+-[0-9a-f]+$/
+//     refused as caller bug (epicId-as-cage-name conflation).
 
 import { describe, expect, test } from "bun:test";
 import type {
@@ -209,7 +215,7 @@ describe("dispatchEpicMerge — LOCAL route", () => {
     expect(r).toEqual({ state: "gate-held", reason: "missing reviewer-trunk-signoff" });
   });
 
-  test("LOCAL path without invokeLocal returns gate-held (wire-up gap, no flag)", async () => {
+  test("LOCAL path without invokeLocal returns skipped-not-mine (wire-up gap, no flag)", async () => {
     const flag = captureFlagAdd();
     const r = await dispatchEpicMerge(
       { epicId: "e-60e16169" },
@@ -220,12 +226,11 @@ describe("dispatchEpicMerge — LOCAL route", () => {
         // invokeLocal: undefined
       },
     );
-    expect(r.state).toBe("gate-held");
-    if (r.state === "gate-held") {
+    expect(r.state).toBe("skipped-not-mine");
+    if (r.state === "skipped-not-mine") {
       expect(r.reason).toContain("local invoker not wired");
     }
-    // Wire-up gap is NOT a flag-add condition — the gate-held + the
-    // subscriber's merge-blocked emit are sufficient operator signal.
+    // Wire-up gap is NOT a flag-add condition — quiet skipped-not-mine.
     expect(flag.calls).toEqual([]);
   });
 });
@@ -234,14 +239,13 @@ describe("dispatchEpicMerge — LOCAL route", () => {
 
 describe("dispatchEpicMerge — REMOTE route", () => {
   test("ok=true → skipped-not-mine with cage name in reason", async () => {
-    let dispatchedEpicId: string | null = null;
-    let dispatchedCage: CageInfo | null = null;
+    const captured: { epicId?: string; cage?: CageInfo } = {};
     const dispatchRemote = async (
       epicId: string,
       cage: CageInfo,
     ): Promise<RemoteAckResult> => {
-      dispatchedEpicId = epicId;
-      dispatchedCage = cage;
+      captured.epicId = epicId;
+      captured.cage = cage;
       return { ok: true };
     };
     const flag = captureFlagAdd();
@@ -256,8 +260,8 @@ describe("dispatchEpicMerge — REMOTE route", () => {
       },
     );
 
-    expect(dispatchedEpicId).toBe("e-60e16169");
-    expect(dispatchedCage).toEqual(REMOTE_CAGE);
+    expect(captured.epicId).toBe("e-60e16169");
+    expect(captured.cage).toEqual(REMOTE_CAGE);
     expect(r.state).toBe("skipped-not-mine");
     if (r.state === "skipped-not-mine") {
       expect(r.reason).toContain(REMOTE_CAGE.name);
@@ -315,16 +319,16 @@ describe("dispatchEpicMerge — REMOTE route", () => {
   });
 
   test("targetCage override forces REMOTE path (empty root)", async () => {
-    let dispatchedCage: CageInfo | null = null;
+    const captured: { cage?: CageInfo } = {};
     const dispatchRemote = async (
       _e: string,
       cage: CageInfo,
     ): Promise<RemoteAckResult> => {
-      dispatchedCage = cage;
+      captured.cage = cage;
       return { ok: true };
     };
     const r = await dispatchEpicMerge(
-      { epicId: "e-60e16169", targetCage: "e-override" },
+      { epicId: "e-60e16169", targetCage: "other-cage" },
       {
         // resolveCage MUST NOT be called when targetCage override is present.
         resolveCage: async () => {
@@ -335,15 +339,15 @@ describe("dispatchEpicMerge — REMOTE route", () => {
       },
     );
     expect(r.state).toBe("skipped-not-mine");
-    expect(dispatchedCage?.name).toBe("e-override");
-    expect(dispatchedCage?.root).toBe("");
+    expect(captured.cage?.name).toBe("other-cage");
+    expect(captured.cage?.root).toBe("");
   });
 });
 
-// ---------- cage-not-found ----------
+// ---------- ADR-232 §D2.a — cage-not-found (quiet skipped-not-mine, NO flag) ----------
 
-describe("dispatchEpicMerge — cage-not-found", () => {
-  test("resolveCage returns null → flag-add + gate-held", async () => {
+describe("dispatchEpicMerge — cage-not-found (§D2.a + §D3 fallback)", () => {
+  test("resolveCage returns null → quiet skipped-not-mine (NO flag-add)", async () => {
     const flag = captureFlagAdd();
     const r = await dispatchEpicMerge(
       { epicId: "e-unknown" },
@@ -352,16 +356,180 @@ describe("dispatchEpicMerge — cage-not-found", () => {
         flagAdd: flag.hook,
       },
     );
+    expect(r.state).toBe("skipped-not-mine");
+    if (r.state === "skipped-not-mine") {
+      expect(r.reason).toContain("cage not found for epic e-unknown");
+      expect(r.reason).toContain("resolveCage returned null");
+    }
+    // REGRESSION GATE — pre-c477954-fix flag-spammed here on every event;
+    // the fix swaps to quiet skipped-not-mine + zero flag-add calls.
+    expect(flag.calls).toEqual([]);
+  });
+
+  test("default resolveCage (unwired) → quiet skipped-not-mine on every event", async () => {
+    // This is the c477954-fix regression scenario: a wire-up that
+    // passes no resolveCage at all. The dispatcher must NOT raise a
+    // flag on each event — that was the reviewer's REJECT condition.
+    const flag = captureFlagAdd();
+    const r = await dispatchEpicMerge(
+      { epicId: "e-anything" },
+      { flagAdd: flag.hook },
+    );
+    expect(r.state).toBe("skipped-not-mine");
+    expect(flag.calls).toEqual([]);
+  });
+});
+
+// ---------- ADR-232 §D2.a — local-cage-skip guard (parent → child only) ----------
+
+describe("dispatchEpicMerge — §D2.a local-cage-skip guard", () => {
+  test("resolved cage.name === localTeamName → skipped-not-mine with local-cage-already-owns", async () => {
+    const invokeLocal = async (): Promise<PerformEpicMergeResult> => {
+      throw new Error("invokeLocal should NEVER fire when local-cage-skip guard is active");
+    };
+    const dispatchRemote = async (): Promise<RemoteAckResult> => {
+      throw new Error("dispatchRemote should NEVER fire when local-cage-skip guard is active");
+    };
+    const r = await dispatchEpicMerge(
+      { epicId: "e-60e16169" },
+      {
+        localTeamName: "e-60e16169",
+        resolveCage: async () => ({
+          name: "e-60e16169",
+          root: "/some/path",
+          parentBase: "atmux-geoyws",
+        }),
+        invokeLocal,
+        dispatchRemote,
+      },
+    );
+    expect(r.state).toBe("skipped-not-mine");
+    if (r.state === "skipped-not-mine") {
+      expect(r.reason).toContain("local-cage-already-owns");
+      expect(r.reason).toContain("e-60e16169");
+      expect(r.reason).toContain("ADR-232 §D2.a");
+    }
+  });
+
+  test("local-skip via explicit targetCage that matches localTeamName", async () => {
+    const r = await dispatchEpicMerge(
+      { epicId: "e-anything", targetCage: "atmux" },
+      {
+        localTeamName: "atmux",
+        invokeLocal: async () => {
+          throw new Error("invokeLocal should not fire on local-skip");
+        },
+        dispatchRemote: async () => {
+          throw new Error("dispatchRemote should not fire on local-skip");
+        },
+      },
+    );
+    expect(r.state).toBe("skipped-not-mine");
+    if (r.state === "skipped-not-mine") {
+      expect(r.reason).toContain("local-cage-already-owns");
+    }
+  });
+
+  test("local-skip guard does NOT fire when localTeamName is undefined", async () => {
+    // No localTeamName → guard inert, normal routing applies.
+    const captured: { reached?: boolean } = {};
+    const r = await dispatchEpicMerge(
+      { epicId: "e-x" },
+      {
+        // localTeamName: undefined
+        resolveCage: async () => REMOTE_CAGE,
+        isLocalCage: () => false,
+        dispatchRemote: async () => {
+          captured.reached = true;
+          return { ok: true };
+        },
+      },
+    );
+    expect(captured.reached).toBe(true);
+    expect(r.state).toBe("skipped-not-mine");
+  });
+
+  test("local-skip is name-based, NOT path-based (resilient to worktree moves)", async () => {
+    // CageInfo's `root` field is irrelevant to the local-skip guard;
+    // only `name` matters. This pins the §D2.a name-based comparison.
+    const r = await dispatchEpicMerge(
+      { epicId: "e-x" },
+      {
+        localTeamName: "my-team",
+        resolveCage: async () => ({
+          name: "my-team",
+          root: "/some/totally/unrelated/path",
+          parentBase: "main",
+        }),
+      },
+    );
+    expect(r.state).toBe("skipped-not-mine");
+    if (r.state === "skipped-not-mine") {
+      expect(r.reason).toContain("local-cage-already-owns");
+    }
+  });
+});
+
+// ---------- ADR-232 §D2.a — anti-pattern guard (epicId-as-cage-name) ----------
+
+describe("dispatchEpicMerge — §D2.a anti-pattern guard", () => {
+  test("targetCage matching epicId shape /^e-\\d+-[0-9a-f]+$/ is refused with explainer", async () => {
+    const r = await dispatchEpicMerge(
+      { epicId: "e-1-118d16a9", targetCage: "e-2-deadbeef" },
+      {
+        // even with everything wired, the guard fires first at step 0
+        resolveCage: async () => {
+          throw new Error("resolveCage should not fire on anti-pattern guard");
+        },
+        invokeLocal: async () => {
+          throw new Error("invokeLocal should not fire on anti-pattern guard");
+        },
+        dispatchRemote: async () => {
+          throw new Error("dispatchRemote should not fire on anti-pattern guard");
+        },
+      },
+    );
     expect(r.state).toBe("gate-held");
     if (r.state === "gate-held") {
-      expect(r.reason).toContain("cage not found for epic e-unknown");
+      expect(r.reason).toContain("targetCage");
+      expect(r.reason).toContain("looks like an epic id");
+      expect(r.reason).toContain("ADR-232 §D2.a");
+      expect(r.reason).toContain("e-2-deadbeef");
     }
-    expect(flag.calls).toHaveLength(1);
-    const flagInput = flag.calls[0];
-    if (flagInput === undefined) throw new Error("flag call missing");
-    expect(flagInput.epicId).toBe("e-unknown");
-    expect(flagInput.targetCage).toBe("(unresolved)");
-    expect(flagInput.stderrTail).toContain("registry walk returned no match");
+  });
+
+  test("non-epicId-shaped targetCage passes the guard (real cage name)", async () => {
+    // "atmux" should pass — only the digit-counter epicId shape
+    // /^e-\d+-[0-9a-f]+$/ trips the guard.
+    let dispatched = false;
+    await dispatchEpicMerge(
+      { epicId: "e-1-118d16a9", targetCage: "atmux" },
+      {
+        dispatchRemote: async () => {
+          dispatched = true;
+          return { ok: true };
+        },
+      },
+    );
+    expect(dispatched).toBe(true);
+  });
+
+  test("targetCage 'e-60e16169' (8-hex tail, no counter prefix) — passes guard", async () => {
+    // Per ADR-090 §spawn-epic step 7, epic-team cage names default to
+    // `e-<hash>` shape (8-char hex) — NOT the `e-<counter>-<hash>`
+    // shape minted by addEpic. The guard must not false-positive on
+    // legitimate cage names.
+    let dispatched = false;
+    await dispatchEpicMerge(
+      { epicId: "e-1-118d16a9", targetCage: "e-60e16169" },
+      {
+        dispatchRemote: async () => {
+          dispatched = true;
+          return { ok: true };
+        },
+      },
+    );
+    expect(dispatched).toBe(true);
   });
 });
 
@@ -375,7 +543,8 @@ describe("dispatchEpicMerge — input validation", () => {
     };
     await expect(
       dispatchEpicMerge(
-        // @ts-expect-error — deliberately invalid
+        // Empty epicId is TS-valid (string) but schema-invalid
+        // (`.min(1)` refine) — Zod rejects at runtime.
         { epicId: "" },
         { flagAdd: flag.hook, dispatchRemote },
       ),
@@ -386,7 +555,7 @@ describe("dispatchEpicMerge — input validation", () => {
 
 // ---------- Default impls (via spawn injection) ----------
 
-describe("dispatchEpicMerge — default dispatchRemote (Bun subprocess per §D2 path A)", () => {
+describe("dispatchEpicMerge — default dispatchRemote (Bun subprocess per §D2.b path A)", () => {
   test("exit 0 → ok=true; argv carries --topic epic.merge-request + --epic-id + cwd=cage.root", async () => {
     const stub = stubSpawn([{ exitCode: 0 }]);
     const r = await dispatchEpicMerge(
@@ -542,40 +711,59 @@ describe("dispatchEpicMerge — default dispatchRemote (Bun subprocess per §D2 
 });
 
 describe("dispatchEpicMerge — default resolveCage / isLocalCage", () => {
-  test("default resolveCage returns null → cage-not-found path", async () => {
+  test("default resolveCage returns null → quiet skipped-not-mine (no flag)", async () => {
     // No resolveCage override, no targetCage → default returns null.
-    const stub = stubSpawn([{ exitCode: 0 }]); // flagAdd default
-    const r = await dispatchEpicMerge(
-      { epicId: "e-unknown" },
-      { spawn: stub.spawn },
-    );
-    expect(r.state).toBe("gate-held");
-    if (r.state === "gate-held") {
+    // Per §D2.a fix, cage-not-found is QUIET — no flag-add spam.
+    const flag = captureFlagAdd();
+    const r = await dispatchEpicMerge({ epicId: "e-unknown" }, { flagAdd: flag.hook });
+    expect(r.state).toBe("skipped-not-mine");
+    if (r.state === "skipped-not-mine") {
       expect(r.reason).toContain("cage not found");
     }
-    // flagAdd default fired once.
-    expect(stub.calls).toHaveLength(1);
-    expect(stub.calls[0]?.argv?.slice(0, 2)).toEqual(["flag", "add"]);
+    expect(flag.calls).toEqual([]);
   });
 
-  test("default isLocalCage matches cwd prefix", async () => {
-    const cwdCage: CageInfo = { name: "x", root: process.cwd(), parentBase: "main" };
-    const invokeLocal = async (): Promise<PerformEpicMergeResult> => ({
-      state: "merged",
-      changed: true,
-      reason: "ok",
-      mergedSha: "abc",
-      dissolveDispatched: false,
-    });
+  test("default isLocalCage uses localTeamName name-comparison", async () => {
     const r = await dispatchEpicMerge(
       { epicId: "e-x" },
       {
-        resolveCage: async () => cwdCage,
-        // isLocalCage: undefined → exercise default; cwd === cage.root → true.
-        invokeLocal,
+        localTeamName: "my-team",
+        resolveCage: async () => ({
+          name: "my-team",
+          root: "/whatever",
+          parentBase: "main",
+        }),
+        invokeLocal: async () => {
+          throw new Error("should hit local-skip guard before invokeLocal");
+        },
       },
     );
-    expect(r.state).toBe("merged");
+    // local-skip guard returns skipped-not-mine
+    expect(r.state).toBe("skipped-not-mine");
+    if (r.state === "skipped-not-mine") {
+      expect(r.reason).toContain("local-cage-already-owns");
+    }
+  });
+
+  test("default isLocalCage with no localTeamName → always returns false (every cage REMOTE)", async () => {
+    const captured: { reached?: boolean } = {};
+    const r = await dispatchEpicMerge(
+      { epicId: "e-x" },
+      {
+        // localTeamName: undefined → makeDefaultIsLocalCage returns always-false
+        resolveCage: async () => ({
+          name: "anycage",
+          root: "/path",
+          parentBase: "main",
+        }),
+        dispatchRemote: async () => {
+          captured.reached = true;
+          return { ok: true };
+        },
+      },
+    );
+    expect(captured.reached).toBe(true);
+    expect(r.state).toBe("skipped-not-mine");
   });
 
   test("default isLocalCage rejects cage with empty root", async () => {

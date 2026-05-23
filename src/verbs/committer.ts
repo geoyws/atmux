@@ -447,7 +447,19 @@ export async function committerDrainVerb(
   bootstrapOrchdImport({
     db: ctx.db,
     mergeDeps: {
-      dispatchEpicMerge: async (epicId) => dispatchEpicMergeImport({ epicId }),
+      // ADR-232 §D2.a wire-up: pass `localTeamName` so the dispatcher's
+      // local-cage-skip guard fires when the epic resolves to the
+      // running cage (prevents self-dispatch loops per the amendment).
+      // `resolveCage` + `invokeLocal` deliberately omitted in v1: the
+      // dispatcher's default cage-not-found path is QUIET
+      // (skipped-not-mine, no flag-add per the c477954-fix amendment) —
+      // the merge still fires via the in-cage `atmux epic-merge tick`
+      // cron path (ADR-091). Wire-up is sufficient for the §D3
+      // safety-net semantics; full cage-registry walker + EpicMergeContext
+      // assembly land in a follow-up Task once the transport choice
+      // (ADR-232 §D2.b OQ-1) resolves.
+      dispatchEpicMerge: async (epicId) =>
+        dispatchEpicMergeImport({ epicId }, { localTeamName: ctx.team.name }),
     },
     dissolveDeps: {
       dispatchDissolveEpic: async (epicId) =>

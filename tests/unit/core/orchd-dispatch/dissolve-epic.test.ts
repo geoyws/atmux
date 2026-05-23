@@ -226,3 +226,46 @@ describe("dispatchDissolveEpic — targetCage default", () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+// ---------- ADR-232 §D2.a anti-pattern guard (t-21-8c0b2bfd sweep) ----------
+
+describe("dispatchDissolveEpic — §D2.a anti-pattern guard", () => {
+  test("targetCage matching epicId shape /^e-\\d+-[0-9a-f]+$/ is refused with explainer", async () => {
+    const { perform, calls } = recordingPerform("ok");
+    const r = await dispatchDissolveEpic(
+      { epicId: "e-1-118d16a9", targetCage: "e-2-deadbeef" },
+      {
+        perform,
+        localCageName: "this-cage",
+        // No flag-raise needed; the guard short-circuits BEFORE
+        // touching perform or roster.
+      },
+    );
+    expect(r.state).toBe("skipped-not-mine");
+    if (r.state === "skipped-not-mine") {
+      expect(r.reason).toContain("targetCage");
+      expect(r.reason).toContain("looks like an epic id");
+      expect(r.reason).toContain("ADR-232 §D2.a");
+      expect(r.reason).toContain("e-2-deadbeef");
+    }
+    // The guard fires BEFORE perform, so no local invocation.
+    expect(calls).toHaveLength(0);
+  });
+
+  test("non-epicId-shaped targetCage (cage name like 'atmux' or 'e-60e16169') passes guard", async () => {
+    // 'e-60e16169' = ADR-090 §spawn-epic step 7 cage-name shape
+    // (8-hex tail, no counter prefix) — NOT the e-<digit>-<hex>
+    // epicId shape. The guard must not false-positive here.
+    const { perform } = recordingPerform("ok");
+    const r = await dispatchDissolveEpic(
+      { epicId: "e-1-118d16a9", targetCage: "e-60e16169" },
+      {
+        perform,
+        localCageName: "e-60e16169",
+        listCages: async () => ["e-60e16169"],
+      },
+    );
+    // Matches localCageName → LOCAL path fires; guard didn't block.
+    expect(r.state).toBe("dissolved");
+  });
+});
