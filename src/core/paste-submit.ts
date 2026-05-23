@@ -1,13 +1,18 @@
 // ADR-081 §A: post-paste submit cascade.
+// ADR-231 (2026-05-23): keystroke updated from `C-m` symbolic to
+// literal `\r` via `-l` mode — tmux 3.6 + Claude Code v2.1.150 eats
+// both symbolic `C-m` and `Enter`; literal CR is the only submit path
+// that works. ADR-081 §A's bracketed-paste-envelope rationale is
+// preserved; ADR-188's 4-step canonical pattern is unaffected.
 //
 // Every paste-buffer-then-submit call site routes the trailing submit
-// through this helper. The shape — `sleep(≥500) → tmux send-keys ... C-m`
+// through this helper. The shape — `sleep(≥500) → tmux send-keys ... -l $'\r'`
 // — exists for one reason: under claude TUIs' bracketed-paste mode the
 // `tmux paste-buffer -d` envelope makes the immediately-following
 // `tmux send-keys ... Enter` get interpreted as "newline inside the
-// pasted message" rather than "submit the compose box." `C-m` (the
-// literal carriage return keysym) bypasses the bracketed-paste
-// interpretation entirely.
+// pasted message" rather than "submit the compose box." Literal CR via
+// `-l` bypasses the bracketed-paste interpretation entirely AND avoids
+// the tmux 3.6 + Claude TUI symbolic-key-eating regression.
 //
 // Proven during the 2026-05-12 atmux team manual recovery (ADR-081 §A
 // "Audit trail"): the same buffer that silently starved 11 panes via
@@ -45,7 +50,8 @@ const defaultSleep = (ms: number): Promise<void> =>
 /**
  * Submit the message currently sitting in `target`'s compose box after a
  * preceding `tmux.buffer.pasteBuffer` call. Sleeps {@link settleMs} then
- * fires `tmux send-keys -t <target> C-m` (literal carriage return).
+ * fires `tmux send-keys -t <target> -l $'\r'` (literal carriage return
+ * via `-l` mode; see ADR-231 for the tmux 3.6 keystroke regression).
  *
  * Always pass the SAME `SendTarget` that was passed to `pasteBuffer` —
  * the discriminated union gates driver-pane bans at the type level
@@ -66,7 +72,8 @@ export async function submitAfterPaste(
   const settle =
     requested >= PASTE_SUBMIT_SETTLE_FLOOR_MS ? requested : PASTE_SUBMIT_SETTLE_FLOOR_MS;
   await sleep(settle);
-  await tmux.pane.sendKeys({ target, keys: "C-m", enter: false });
+  // ADR-231: literal CR replaces C-m symbolic — see file-header comment.
+  await tmux.pane.sendKeys({ target, keys: "\r", literal: true, enter: false });
 }
 
 // ---------- ADR-138 T3b3: pasteAndSubmit bundled primitive ----------
