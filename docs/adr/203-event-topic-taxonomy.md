@@ -51,6 +51,8 @@ The v1 topic set, organized by domain. **Each entry has a payload schema in D3.*
 - `epic.created` — epic spawned
 - `epic.dissolved` — epic-team dissolved (cockpit consumer reaps cron blocks per ADR-197)
 - `epic.merge-ready` — every child task done; ready for fan-in
+- `epic.merged` — orchd-merge handler completed fan-in (post-condition vs `epic.merge-ready` pre-condition). Payload: `{epicId, parentBase, mergeSha, mergedAtSec}`. Per ADR-226 §D2 (2026-05-23). Consumed by Phase 4 (ADR-227 auto-dissolve).
+- `epic.merge-blocked` — orchd-merge dispatcher returned conflict / gate-held / non-terminal. Payload: `{epicId, reason, blockedAtSec}`. Per ADR-226 §D2 (2026-05-23). Operator-observable; no consumer in v1.
 - `epic.spawn-blocked` — `spawn-epic` refused due to pool exhaustion (ADR-199 D3) — cockpit-scope
 
 #### Commit lifecycle (team-scope)

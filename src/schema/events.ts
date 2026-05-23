@@ -113,9 +113,7 @@ export const GitterEscalatedPayload = z
     branch: z.string(),
     commitSha: z.string(),
     conflictFiles: z.array(z.string()).optional(),
-    suggestedResolution: z
-      .enum(["rebase", "squash", "revert", "handoff-to-author"])
-      .optional(),
+    suggestedResolution: z.enum(["rebase", "squash", "revert", "handoff-to-author"]).optional(),
     severity: z.enum(["low", "medium", "high"]).default("medium"),
     failureClass: z.enum([
       "merge-conflict",
@@ -123,6 +121,37 @@ export const GitterEscalatedPayload = z
       "missing-worktree",
       "dispatcher-refused",
     ]),
+  })
+  .passthrough();
+
+/**
+ * `epic.merged` — orchd-merge handler successfully merged an epic-team
+ * branch into its parent base. ADR-203 §D2 (Epic lifecycle, ADR-226
+ * §D2 addition 2026-05-23). Consumed by Phase 4 (ADR-227 auto-dissolve).
+ */
+export const EpicMergedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.merged"),
+    epicId: z.string(),
+    parentBase: z.string(),
+    mergeSha: z.string(),
+    mergedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.merge-blocked` — orchd-merge handler's dispatcher returned a
+ * conflict or gate-held outcome. ADR-203 §D2 (Epic lifecycle, ADR-226
+ * §D2 addition 2026-05-23). Operator-observable; no consumer in v1.
+ */
+export const EpicMergeBlockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.merge-blocked"),
+    epicId: z.string(),
+    reason: z.string(),
+    blockedAtSec: z.number(),
   })
   .passthrough();
 
@@ -161,6 +190,8 @@ export const EventPayload = z.discriminatedUnion("topic", [
   TaskUnclaimedPayload,
   CommitLandedPayload,
   GitterEscalatedPayload,
+  EpicMergedPayload,
+  EpicMergeBlockedPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -171,6 +202,8 @@ export type TaskDonePayload = z.infer<typeof TaskDonePayload>;
 export type TaskUnclaimedPayload = z.infer<typeof TaskUnclaimedPayload>;
 export type CommitLandedPayload = z.infer<typeof CommitLandedPayload>;
 export type GitterEscalatedPayload = z.infer<typeof GitterEscalatedPayload>;
+export type EpicMergedPayload = z.infer<typeof EpicMergedPayload>;
+export type EpicMergeBlockedPayload = z.infer<typeof EpicMergeBlockedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -206,6 +239,8 @@ export const TOPICS = [
   "epic.created",
   "epic.dissolved",
   "epic.merge-ready",
+  "epic.merged",
+  "epic.merge-blocked",
   "epic.spawn-blocked",
   // Commit lifecycle (team-scope)
   "commit.landed",

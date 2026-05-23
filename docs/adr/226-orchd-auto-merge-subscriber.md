@@ -45,7 +45,7 @@ Orchd subscribes to topic `task.done` (already in [ADR-203](203-event-topic-taxo
 
 1. Resolve `epic` from event payload (`TaskDonePayload.epicId` if present; otherwise look up the Task's `epic` column; otherwise parse the `[e-XXXXXXXX...]` subject prefix — see §OQ2/§OQ4 resolution below).
 2. If `epic` is `null` (Task wasn't bound to an Epic) → outcome `skipped-no-epic`. Continue draining.
-3. Run epic-completeness query: `SELECT COUNT(*) FROM tasks WHERE epic = :eid AND status NOT IN ('done', 'wontfix')`. If non-zero → outcome `skipped-epic-not-complete`. Continue draining.
+3. Run epic-completeness query — **§OQ4-aware variant** (be-1 2026-05-23): `SELECT COUNT(*) FROM tasks WHERE (epic = :eid OR subject LIKE '[' || :eid || ']%' OR subject LIKE '[' || :eid || ' %' OR subject LIKE '[' || :eid || '/%') AND status NOT IN ('done', 'wontfix')`. The three `subject LIKE` branches catch the canonical EPIC-bound subject-prefix shapes — `[e-XXX]`, `[e-XXX T1]`, `[e-XXX/s-YYY]`. Without these branches the query returns `0` for every epicId today (since `tasks.epic IS NULL` universally per §OQ4) and orchd-merge spurious-merges every `task.done` instead of gating. If non-zero → outcome `skipped-epic-not-complete`. Continue draining.
 4. If zero → invoke the merge dispatcher. Default-stub returns `skipped-not-mine`; the production wiring (this ADR's T1 / module impl Task) injects `performEpicMerge` from `src/core/epic-merge.ts`.
 5. On dispatcher outcome:
    - `merged` → emit `epic.merged` event (Phase 4 consumer); outcome `merged`.
