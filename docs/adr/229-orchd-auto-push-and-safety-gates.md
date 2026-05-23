@@ -138,9 +138,9 @@ Bundled here so T_push_module (t-1-fc0368cb) implementer + T_push_review (t-3-2b
 
 3 new topics added to ADR-203 §D2 in same commit as T_push_module:
 
-- `epic.pushed` — fires after `git push` succeeds. Payload: `{topic, epicId, base, headSha, beforeSha, pushedAt, durationMs}`. Consumed by Phase 4 (per §D1 amendment).
-- `epic.push-blocked` — fires on any safety-gate refusal. Payload: `{topic, epicId, base, gateBlocked: "1"|"2"|"3"|"4"|"5"|"7", reason, details}`. Operator-observable in cockpit-mirror feed.
-- `epic.push-conflict` — fires specifically on Gate-1 upstream-advanced refusal. Payload: `{topic, epicId, base, ahead, behind, divergenceSha}`. Distinct from `epic.push-blocked` because it carries actionable rebase/pull metadata. Cockpit may surface a distinct Discord template (`[push-conflict]`) per ADR-219.
+- `epic.pushed` — fires after `git push` succeeds. Payload: `{topic, epicId, base, headSha, beforeSha?, pushedAtSec, durationMs?}`. Consumed by Phase 4 (per §D1 amendment). Field name `pushedAtSec` (not `pushedAt`) aligns with the `*Sec` suffix convention enforced across ADR-203/226/227/228 — impl + ADR-203 §D2 entry already use `pushedAtSec`; this paragraph catches up per §Amendment 2026-05-23-rev3 reviewer-pass.
+- `epic.push-blocked` — fires on any safety-gate refusal. Payload: `{topic, epicId, base, gateBlocked: "1"|"2"|"3a"|"3b"|"4"|"5"|"7", reason, blockedAtSec}`. Operator-observable in cockpit-mirror feed. `blockedAtSec` field added per §Amendment 2026-05-23-rev3 reviewer-pass (impl + ADR-203 §D2 entry already emit it; previous `details` field was a typo).
+- `epic.push-conflict` — fires specifically on Gate-1 upstream-advanced refusal. Payload: `{topic, epicId, base, ahead, behind, divergenceSha?, blockedAtSec}`. Distinct from `epic.push-blocked` because it carries actionable rebase/pull metadata. Cockpit may surface a distinct Discord template (`[push-conflict]`) per ADR-219. `blockedAtSec` field added per §Amendment 2026-05-23-rev3 (impl already emits it).
 
 ### §D4 — Subscription seam (cross-team contract with `e-60e16169`)
 
@@ -242,3 +242,79 @@ be-1 shipped conditional reviewer-pass at commit `2310085` (lead-outbox relay 20
 **FLAG-B — `--no-verify` grep blocklist gap**: §DA-Gate-1 + §D2.1 grep enforcement omitted `--no-verify`. Bypassing pre-push hooks is the canonical exfil for unsafe code (it defeats Gate-3b tsc AND any team-installed pre-push hooks). **Fix**: `--no-verify` added to both §DA-Gate-1 prose blocklist AND §D2.1 grep regex. T_push_module (t-1-fc0368cb) body updated to include the augmented grep.
 
 **Status flip**: proposed → accepted, landing in the SAME commit as these 2 patches.
+
+### §Amendment 2026-05-23-rev3 — Independent reviewer-pass on Phase 6 trunk-signoff (t-3-2bb5c6e6)
+
+Independent reviewer (per brief §audit-bar #1) audited cumulative Phase 6 diff = `6d8e593` (schema) + `1c31056` (orchd-push.ts module + 7 gates + ADR-229 same-commit + ADR-203 §D2 amendment + tests). Supersedes be-1's self-trunk-signoff `6a4b7e6` (be-1 self-flagged independence caveat at claim time per lane=be routing past ADR-031 REVIEW-lane carve-out).
+
+**Audit verdict**: APPROVE — all 12 DoD checklist items in t-3-2bb5c6e6 body verified by independent inspection. Highlights below; full enumeration in trunk-signoff Task note.
+
+Independent greps run (NOT copied from author):
+
+```
+# (a) Forbidden flags — own pattern, slightly broader than §D2.1
+rg -nP '\-\-force|\-\-mirror|\-\-all\b|\-\-tags\b|\-\-delete\b|\-\-prune\b|\-\-no-verify|forcePush|force-with-lease' src/core/orchd-push.ts
+# Result: 6 hits, ALL in module-header DoD comment block (lines 20-22, 310-311 — quoting the prohibition for future maintainers).
+# Carve-out: §D2.1 grep DoD is codified as a unit test that filters comment lines (tests/unit/core/orchd-push.test.ts:748-751);
+# zero functional invocations exist. Test correctly strips `^\s*//` and `^\s*\*` lines before assertion.
+
+# (b) Inline STAGING_PATTERNS regex
+rg -nP 'staging\$|\^main\$|\^master\$|\^production\$|-staging|/main/|/master/|/production/' src/core/orchd-push.ts
+# Result: 5 hits, all string LITERALS (skipped-staging-base outcome label, scripts/push-staging.sh in error msg, DoD comment).
+# Zero RegExp constructions; STAGING_PATTERNS confirmed single-sourced at src/core/auto-push.ts:32.
+
+# (c) isPushAllowed import + invocation
+rg -n 'isPushAllowed' src/core/orchd-push.ts
+# Result: imported at line 43; invoked at line 274. Canonical reuse — no shadow primitive.
+
+# (d) Gate fire-order trace (cheapest-first per §DA9-rev1)
+sed -n '254p;261p;272p;290p;301p;308p;367p' src/core/orchd-push.ts
+# Result: Gate-5 (line 254) → Gate-4 (261) → Gate-2 (272) → Gate-7 (290) → Gate-3a (301) → Gate-1 (308) → Gate-3b (367). Matches §DA9-rev1.
+```
+
+**Drift flagged (NIT — not blocker; follow-up Task scope)**: §DA-Gate-2 line 96 claims "allowedBases overrides BOTH (escape hatch)" but impl at `src/core/orchd-push.ts:274,281` honors a different precedence — allowedBases overrides STAGING_PATTERNS only (line 274 via isPushAllowed `allowedOverride`), while refusedBases is an independent additive check (line 281) that fires regardless of allowedBases membership. In the **conflict case** (base in BOTH allowedBases AND refusedBases), impl refuses; ADR says allow. No test covers the conflict case today.
+
+Two valid resolutions for follow-up (either preserves intent; planner picks):
+1. **Patch impl line 281** to `if (policy.refusedBases.includes(base) && !policy.allowedBases.includes(base))` — honors ADR "allowedBases overrides BOTH" semantics.
+2. **Patch ADR §DA-Gate-2 line 96 + §D2 Gate-2 prose** to "refusedBases is additive AND wins on conflict — operator safety net default" + add a regression test cell to t-1-fc0368cb's grand suite ("base in both lists → refusedBases wins").
+
+Either resolution is a one-line code change OR a doc fix. Independent reviewer recommends #2 (refusedBases-wins is the safer default in operator-config-conflict edge cases), but defers to planner. Follow-up Task ID TBD — operator-direct via driver-inbox or via lead routing.
+
+**Decision-anchor + Open-question cross-refs intact** — verified via direct read: §DA1↔§D1, §DA2↔§D3+§D1, §DA3↔ADR-227 §D1 §Amendment, §DA4↔§D2, §DA5↔§D2 Gate-4, §DA6↔§D2 Gate-5+Gate-4, §DA7↔§D4, §DA8↔§D2 Gate-2+§D2.1+§Amendment, §DA9+§DA9-rev1↔§D2 fire-order. §OQ1↔§DA-Gate-7, §OQ2↔ADR-227 §D1 §Amendment, §OQ4↔§DA-Gate-1+§D3 push-conflict, §OQ5↔§DA-Gate-3b+§DA-Gate-4 schema. §OQ3 (multi-remote) properly deferred to v2 with no §Decision-anchor (correct shape).
+
+**Test coverage enumeration** (Story-diff level — 1c31056 ships 795-line test file; 100% line coverage on orchd-push.ts + schema/events.ts per commit body):
+
+| Group | Tests | Coverage class |
+|---|---|---|
+| appendOrchdPushAuditRow JSONL writer | 1 | §DA-Gate-6 audit-log shape |
+| Happy-path 7-gate fire order | 1 | §DA9-rev1 cheapest-first; gatesPassed audit |
+| Gate-1 upstream-advanced | 1 | push-conflict emit + escalated outcome |
+| Gate-2 (BLOCKER regression + STAGING_PATTERNS coverage + carve-outs) | 6 | main / master / production / unum-staging / allowedBases escape / refusedBases additive |
+| Gate-3a working-tree dirty | 1 | skipped-preflight via runGitStatusClean |
+| Gate-3b tsc | 2 | tsc errors + typecheckCmd="" skip per §OQ5 |
+| Gate-4 opt-in | 1 | enabled=false → skipped-not-opted-in |
+| Gate-5 kill-switch | 4 | base trigger + empty + "0" guard + Gate-5-over-Gate-4 precedence |
+| Gate-7 cooldown | 4 | within-window + post-window + per-base + Gate-7-before-Gate-3a cost-saving |
+| dispatcher skipped-not-mine | 1 | no terminal emit / no audit row |
+| default handler stubs | 4 | DEFAULT_DISPATCH_STUB + DEFAULT_TSC_CLEAN + DEFAULT_GIT_STATUS_CLEAN + default-resolvers-refuse-via-Gate-4 |
+| logger info/warn | 2 | warn-on-conflict + info-on-pushed |
+| orchdPushConsume kill-switch | 3 | ATMUX_HONKER off + unset + log-fallback |
+| orchdPushConsume happy + escalated counts | 2 | N-event drain + escalated separation |
+| orchdPushConsume idempotency | 1 | throw-halts-drain (offset stays) |
+| orchdPushConsume consumer + topic injection | 2 | custom consumerName + default topics=['epic.merged'] |
+| end-to-end consumer→factory→7-gates | 1 | emit epic.merged → drain → emit epic.pushed |
+| §D2.1 grep DoD codified | 2 | forbidden-flag + inline-regex (test strips comments before assertion — verified at tests/unit/core/orchd-push.test.ts:748-751) |
+
+**Three-off-switch independence verified structurally**:
+1. `ATMUX_HONKER=off` short-circuits `orchdPushConsume` at line 469-472 BEFORE handler invocation.
+2. `ATMUX_AUTOPUSH_OFF=1` short-circuits `createAutoPushHandler` at Gate-5 line 254-258 (env read, fires first).
+3. `team.json::autoPush.enabled=false` short-circuits at Gate-4 line 261-269 (file-resolved config). Each gate hits a different code path; tests cover each in isolation (Gate-5-over-Gate-4 precedence test confirms Gate-5 wins when both off → expected).
+
+**Carve-outs accepted**:
+- Sibling-daemon Phase 3+6 chain integration is e2e-stubbed (sibling EPIC `e-60e16169`'s `src/verbs/orchd.ts` not yet shipped). End-to-end consumer→factory→push test exercises the seam shape; the daemon-loop chain order (merge → push → dissolve) is sibling-territory scope.
+- ADR §D3 `*Sec` field-name alignment patched in this Amendment (3 fields catch up to impl + ADR-203 §D2 already-aligned shape).
+- §DA-Gate-2 precedence drift filed as follow-up (NIT scope — see above).
+
+**Be-1's self-signoff `6a4b7e6` is superseded** by this independent reviewer pass; the standalone `docs/reviews/t-1-fc0368cb-trunk-signoff-2026-05-23.md` file remains as historical record of be-1's self-checklist.
+
+Trunk-signoff status: APPROVED. Phase 6 ships ready-to-merge; magic-value `extra.role='reviewer-trunk-signoff'` stamp on t-3-2bb5c6e6 owed to driver per atmux 0.8.11 `task update --extra` gap.
