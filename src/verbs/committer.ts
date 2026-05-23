@@ -76,6 +76,7 @@ import {
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
 import { bootstrapOrchd as bootstrapOrchdImport } from "../core/orchd-bootstrap.ts";
+import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
 import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
 import { ORCHD_SUBSCRIPTIONS as ORCHD_SUBSCRIPTIONS_IMPORT } from "../core/orchd-registry.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
@@ -444,6 +445,9 @@ export async function committerDrainVerb(
   // (flag + offset-advance per ADR-232 OQ-3 anti-retry).
   bootstrapOrchdImport({
     db: ctx.db,
+    mergeDeps: {
+      dispatchEpicMerge: async (epicId) => dispatchEpicMergeImport({ epicId }),
+    },
     pushDeps: {
       dispatchGitPush: async (parentBase) =>
         dispatchGitPushImport(

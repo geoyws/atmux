@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔄 Changed — orchd auto-merge subscriber now routes through `dispatchEpicMerge` ([ADR-232](docs/adr/232-orchd-cross-cage-dispatcher-seam.md), EPIC `e-60e16169` Phase 2 Story S0)
+
+New `src/core/orchd-dispatch/epic-merge.ts` exports `dispatchEpicMerge({ epicId, targetCage? })` — the cross-cage dispatcher seam consumed by parent's ADR-226 auto-merge subscriber. LOCAL route invokes `performEpicMerge` directly (zero-RPC); REMOTE route emits a Bun-subprocess dispatch per ADR-202 §IX-A lean-dispatch contract (path A per ADR-232 §D2; OQ-1 transport refinement deferred). Cage-not-found and remote-dispatch failure paths surface `atmux flag add` with epicId + target cage + stderr tail in the body. Wire-up at `src/verbs/committer.ts` injects the dispatcher into `bootstrapOrchd({ mergeDeps })`, replacing the stubbed default that returned `skipped-not-mine` (the stub stays as ADR-232 §D3's safety net — the auto-merge handler's `skipped-not-mine` switch case is unchanged). Zod-validated input/output; 30-test unit suite at `tests/unit/core/orchd-dispatch/epic-merge.test.ts` covers local-route, remote-route, route-failure-flag, cage-not-found, default impls, and pure `mapLocalResult` mapping.
+
 ### ✨ Added — orchd Phase 3-5 lifecycle (EPIC `e-a946af69` close-out)
 
 End-to-end automation of epic-team lifecycle via the orchd event-
