@@ -607,4 +607,66 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  // ---------- v13 → v14 — TODO_FAN_IN_RENUMBER ----------
+  // ADR-228 §D2 (orchd spawn-queue + pressure monitor) — per-team
+  // spawn-queue table. Sibling EPIC `e-cf8a6195` (ADR-225 epic
+  // dependencies + isReady toggle) ALSO claims a v13→v14 slot on a
+  // different branch (commit 36b63f3 on `atmux-geoyws-epic-e-cf8a6195`).
+  // At fan-in time the committer renumbers whichever lands second
+  // per ADR-091 §pre-flag #4 committer-side renumber pattern. Search
+  // tag `TODO_FAN_IN_RENUMBER` to find this entry quickly during
+  // renumber.
+  //
+  // Master design task: parent atmux kanban driver-ref (ADR-228 author).
+  //
+  // Schema purpose: orchd's pressure-aware spawn flow refuses-then-
+  // queues at the host-pressure gate when load is high. Queued requests
+  // persist here until the drain tick re-attempts spawn (or the
+  // request is abandoned after `MAX_ATTEMPTS`). Per-team scope matches
+  // orchd's daemon scope (one daemon per team consumes the team's
+  // spawn_queue); SQLite gives `BEGIN IMMEDIATE` serialization for
+  // free vs the JSON+flock fragility of the cockpit-level host-
+  // registry queue (memory `project_merger_state_merged_terminal_design_gap`
+  // documents the flock-race class this avoids).
+  //
+  // Columns:
+  //   - `queue_id`            — PK; `q-<8 hex>` matches ADR-184 §queueId regex.
+  //   - `epic_id`             — `e-<id>` being spawned.
+  //   - `spawn_args`          — JSON-encoded full argv to replay on dequeue.
+  //   - `queued_at_sec`       — unix seconds (test-clock injectable).
+  //   - `queued_by`           — requester identity (member/driver).
+  //   - `priority`            — 1-5 (1=highest); FIFO within same priority.
+  //   - `attempts`            — drain re-attempts; abandoned after MAX_ATTEMPTS.
+  //   - `last_attempt_at_sec` — null until first drain attempt.
+  //   - `last_failure_reason` — null on success path; populated on drain failure.
+  //   - `state`               — `queued` | `spawning` | `abandoned` (CHECK constraint).
+  //
+  // Index: `(state, priority, queued_at_sec)` — admit-tick reads
+  // `WHERE state = 'queued' ORDER BY priority, queued_at_sec`; the
+  // composite covers the predicate + sort without an extra sort step.
+  {
+    from: 13, // TODO_FAN_IN_RENUMBER (sibling e-cf8a6195 claims same slot)
+    to: 14, // TODO_FAN_IN_RENUMBER
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE spawn_queue (
+          queue_id TEXT PRIMARY KEY NOT NULL,
+          epic_id TEXT NOT NULL,
+          spawn_args TEXT NOT NULL,
+          queued_at_sec INTEGER NOT NULL,
+          queued_by TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 5,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_attempt_at_sec INTEGER,
+          last_failure_reason TEXT,
+          state TEXT NOT NULL DEFAULT 'queued'
+            CHECK (state IN ('queued','spawning','abandoned'))
+        ) STRICT
+      `);
+      db.exec(`
+        CREATE INDEX idx_spawn_queue_priority_queued
+          ON spawn_queue(state, priority, queued_at_sec)
+      `);
+    },
+  },
 ];
