@@ -556,11 +556,26 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
       /** `tmux send-keys -t <target> [-l] <keys> [Enter]`.
        *  `target: SendTarget` — driver pane is type-banned per ADR-025. */
       async sendKeys(opts) {
+        // Symbolic / literal keys phase — single invocation.
         const argv = ["send-keys", "-t", serializeSendTarget(opts.target)];
         if (opts.literal) argv.push("-l");
         argv.push(opts.keys);
-        if (opts.enter ?? true) argv.push("Enter");
         await tmuxRun(argv);
+        // Submit phase — ADR-231: tmux 3.6 + Claude TUI eats both
+        // symbolic `Enter` and `C-m`; only literal CR via `-l` triggers
+        // submit. Separate invocation because `-l` applies to the
+        // entire send-keys call (tmux flag scope is per-invocation,
+        // not per-arg), so we cannot mix symbolic keys with a literal
+        // CR tail in one argv.
+        if (opts.enter ?? true) {
+          await tmuxRun([
+            "send-keys",
+            "-t",
+            serializeSendTarget(opts.target),
+            "-l",
+            "\r",
+          ]);
+        }
       },
 
       /** `tmux capture-pane -p -t <target> [-S start] [-E end] [-e]`. */
