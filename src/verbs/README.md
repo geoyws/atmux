@@ -52,11 +52,11 @@ Operator one-pager: [docs/RUNBOOK-sync.md](../../docs/RUNBOOK-sync.md). Migrator
 
 ### `cockpit rotate` ([ADR-167](../../docs/adr/167-cockpit-rotate-verb.md))
 
-Operator-fired rotation of cockpit role panes (`medic` / `sentinel` / `<team-name>`) with brief-paste-ready handoff. Closes Rung C of the `/bruh` escalation chain — the previously manual handoff + Ctrl-C + canonical-respawn protocol. Lives in [`src/verbs/cockpit-rotate.ts`](cockpit-rotate.ts) and dispatched from `src/verbs/cockpit.ts` (sub-verb pattern, sibling to `cockpit rebuild` + `cockpit migrate-socket`).
+Operator-fired rotation of cockpit role panes (`medic` / `<team-name>`) with brief-paste-ready handoff. Closes Rung C of the `/bruh` escalation chain — the previously manual handoff + Ctrl-C + canonical-respawn protocol. Lives in [`src/verbs/cockpit-rotate.ts`](cockpit-rotate.ts) and dispatched from `src/verbs/cockpit.ts` (sub-verb pattern, sibling to `cockpit rebuild` + `cockpit migrate-socket`).
 
 Flag surface:
 
-- `<session-name>` — required positional: `medic`, `sentinel`, or a registered team-name. `superdriver` is unconditionally refused (operator REPL pane).
+- `<session-name>` — required positional: `medic` or a registered team-name. `superdriver` is unconditionally refused (operator REPL pane).
 - `--force` — bypass pre-flight gates 1-3 (user-not-typing, pane-idle, uptime) ONLY. Gate 4 (never-rotate-superdriver) is unconditional.
 
 Exit codes: `0` success, `64` (EX_USAGE) bad argv, `65` (EX_DATAERR) gate refusal (1-4), `70` (EX_SOFTWARE) respawn / handoff-write failure, `78` (EX_CONFIG) caller-scope refusal (driver-only per [ADR-033](../../docs/adr/033-caller-scope-gate.md)).

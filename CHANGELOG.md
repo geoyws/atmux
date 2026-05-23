@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🗑️ Removed — Sentinel substrate (EPIC e-be01fc89, 2026-05-23)
+
+The cron-polling sentinel mechanism documented in [ADR-132](docs/adr/132-pluggable-martinet.md) has been removed in entirety. Mechanical observation + Enter-push + `claim-next` re-fires distribute to Honker event consumers per sibling EPIC `e-a946af69` (orchd Phase 3-5; Phase 1 already merged at [f6b078b](https://github.com/geoyws/atmux/commit/f6b078b)).
+
+**Source surface deleted** (6 files, -1791 LOC in T1):
+
+- `src/abstractions/sentinel.ts` + `src/abstractions/sentinels/{claude,cursor}.ts`
+- `src/core/sentinel-config.ts` + `src/core/sentinel-escalation.ts`
+- `src/verbs/sentinel.ts` + CLI dispatch case at `src/cli.ts:287`
+
+**Cron + cockpit surface decommissioned**:
+
+- `src/core/cron.ts` — no sentinel emission branch (T3 regression assertions in `tests/unit/core/cron.test.ts`).
+- `src/verbs/cockpit.ts` — `buildSentinelWindowCommand`, `autoStartSentinelLoop`, W3 `_sentinel` provisioning in `reconcileCockpitSession` all removed.
+- `src/core/cockpit.ts` — `migrateMartinetBlockToSentinel` shim deleted (ADR-158 grace shim is moot post-deletion).
+- `src/verbs/doctor.ts` — `checkCockpitSentinelWindow` + `fixMissingSentinelWindow` probes removed.
+
+**Schema fields removed** (passthrough preserves legacy keys as inert data):
+
+- `team.sentinel` / `team.sentinelOverrides`
+- `cockpit.sentinel` / `cockpit.defaultSentinel`
+- `SentinelImpl`, `TeamSentinelOverrides`, `CockpitSentinel{Claude,Cursor}`, `CockpitDefaultSentinel`, `SentinelSession{T,}`, `DEFAULT_SENTINEL_CADENCE_SEC`, `DEFAULT_SENTINEL_ESCALATION_CONFIDENCE` types.
+
+**Test surface** (T2): 6 sentinel-only test files deleted (~2898 LOC); 10 test files migrated to drop sentinel-specific assertions.
+
+**Brief retired**: `templates/briefs/martinet.md` deleted.
+
+**ADR closure** (T8 + T7):
+
+- ADR-132 status flipped `Accepted` → `Superseded by e-be01fc89`; final §Amendment 2026-05-23 appended.
+- ADRs 158 / 183 / 185 / 206 / 207 marked `Superseded by e-be01fc89`.
+- ADR-211 marked `Implemented by e-be01fc89 + e-a946af69`.
+- ADR-189 §D2 updated: sentinel-cron-polling removal no longer "lean-mode opt-in" — sentinel is gone entirely.
+
+#### Migration notes
+
+- **Existing crontabs with sentinel blocks**: `atmux stop && atmux start` per team cycles the sandwich-marker block; no manual cleanup needed (per [ADR-202](docs/adr/202-honker-pubsub-substrate.md) §X cron decommission protocol).
+- **Stale `team.json` / `cockpit.json` keys** (`sentinel`, `sentinelOverrides`, `defaultSentinel`, legacy `martinet`): schema-removed; the deploy-team-start path silently drops them via `.passthrough()`.
+- **One-way door**: ADR-158 martinet→sentinel migration shim was deleted alongside the sentinel surface. Operators on pre-ADR-158 cockpit.json with top-level `martinet:` keys: rename to `sentinel:` (or delete the block entirely) before the next `atmux start` — the shim that previously rewrote `martinet` → `sentinel` is gone.
+
+#### Sibling-EPIC IOU — cadence-truth-signal restoration
+
+`tests/e2e/cadence-truth-signal.test.ts` B4+B5 sentinel-escalation contract beats were DELETED; B9+B10 escalation assertions were GUTTED (commit [d26855d](https://github.com/geoyws/atmux/commit/d26855d) — T2). Audit anchor lives in the test file itself as `TODO(e-a946af69)` markers (header line 18 + B4/B5 deletion site at line 294). Sibling EPIC e-a946af69 (orchd Phase 3-5 lifecycle) owes a "restore cadence-truth-signal coverage" Task that wires the orchd-escalation entrypoint + re-adds the gutted beats against the new contract. **NOT blocking e-be01fc89 done-state** — the TODO markers are sufficient audit anchor per ADR-148 contract preservation.
+
 ### 🔄 Changed — `atmux relayd` → `atmux orchd` rename + Rust crate atmux-relayd → atmux-orchd (ADR-224 Phase 1)
 
 `relayd` (relay daemon) is misleading now that the daemon will also own auto-spawn (`epic.added`) and auto-dissolve (`task.done`) in Phase 2 per [ADR-224](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 1 is a pure relabel — zero behavior change — landing before Phase 2 impl so the codebase doesn't carry a misleading symbol through that development window.

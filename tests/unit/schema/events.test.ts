@@ -271,9 +271,9 @@ describe("TOPICS registry + isKnownTopic", () => {
     // Adding a topic to TOPICS requires an ADR amendment — failing here
     // is the reminder. Current closed set: 5 task + 8 story + 6 epic
     // (4 base + 2 from ADR-225 amendment: epic.unblocked / epic.ready)
-    // + 3 commit + 1 gitter + 3 pane + 4 coordination + 8 cockpit + 4
-    // internal = 42.
-    expect(TOPICS.length).toBe(42);
+    // + 3 commit + 1 gitter + 3 pane + 4 coordination + 7 cockpit
+    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 41.
+    expect(TOPICS.length).toBe(41);
   });
 
   test("known topics across each domain are present", () => {

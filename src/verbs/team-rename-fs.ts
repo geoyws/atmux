@@ -59,8 +59,8 @@ export function renameLockPath(atmuxDir: string): string {
 
 /** Read-side guard primitive — true iff `acquireRenameLock` has run
  *  but `releaseRenameLock` hasn't (a rename orchestration is in
- *  flight). Cron'd consumers (sentinel tick, cron-orphans, pulse,
- *  discorder digest) call this at entry and skip silently when true,
+ *  flight). Cron'd consumers (cron-orphans, pulse, discorder digest)
+ *  call this at entry and skip silently when true,
  *  per ADR-027 §Consequences "[[ -f rename.lock ]] && return 0".
  *
  *  Returns false on a missing atmuxDir / fs error — failing-open is

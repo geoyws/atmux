@@ -168,11 +168,13 @@ This brief edit composes with CLAUDE.md global rules; no global CLAUDE.md edit n
 
 ### (D6) `ship-zero-window` classifier wiring — fulfills ADR-132 contract
 
+> **§Amendment 2026-05-23 (sentinel deleted per e-be01fc89)**: §D2 cadence-classifier SURVIVES — it remains the canonical ship-zero-window verdict source. The §D6 sentinel-escalate entrypoint (subitems 1+2 below describing Martinet/Sentinel observe() + medic event-driven pickup) is RETIRED — sentinel/martinet role deleted entirely 2026-05-23; orchd substrate (EPIC e-a946af69) absorbs the escalate-to-claude-lead path event-driven. Subitem 3 (Discord template) persists, fired by orchd consumers on cadence-classifier events. Lines below describe historical wiring for audit.
+
 ADR-132 §Escalation E6 specifies `ship-zero-window` as MANDATORY regardless of impl. ADR-148 §D2 ships the classifier; T5 wires the classifier's `verdict === "ship-zero-window"` output into:
 
-1. **Martinet observe() output** — `Observation.members[].cadence: CadenceObservation` is a new field. Martinet's `decide()` checks `cadence.verdict === "ship-zero-window"` and emits `{ kind: "escalate-to-claude-lead", reason: "ship-zero-window detected on <member> (<age> since last commit)", ... }` per the existing escalation contract.
-2. **Medic event-driven pickup** — per ADR-140 cheap-model-first chain, medic subscribes to martinet events; medic fires its hourly diagnosis + complaint-file path when ship-zero-window fires.
-3. **Discord [ship-zero-window] template** — new named template in `src/abstractions/discord.ts` typed renderers. Verdict-line: `🚨 Need you — <member> ship-zero-window <age> (no commits since <SHA>)`. 🚨 is justified here per CLAUDE.md (genuinely-irreversible bar: operator-attention-required on dormancy >2hr).
+1. **Martinet observe() output** — `Observation.members[].cadence: CadenceObservation` is a new field. Martinet's `decide()` checks `cadence.verdict === "ship-zero-window"` and emits `{ kind: "escalate-to-claude-lead", reason: "ship-zero-window detected on <member> (<age> since last commit)", ... }` per the existing escalation contract. *(Retired 2026-05-23 per e-be01fc89; orchd consumes the cadence-classifier verdict directly.)*
+2. **Medic event-driven pickup** — per ADR-140 cheap-model-first chain, medic subscribes to martinet events; medic fires its hourly diagnosis + complaint-file path when ship-zero-window fires. *(Sentinel/martinet event bus retired; per ADR-212 cockpit medic also retired — orchd absorbs both event sources.)*
+3. **Discord [ship-zero-window] template** — new named template in `src/abstractions/discord.ts` typed renderers. Verdict-line: `🚨 Need you — <member> ship-zero-window <age> (no commits since <SHA>)`. 🚨 is justified here per CLAUDE.md (genuinely-irreversible bar: operator-attention-required on dormancy >2hr). *(Template persists; now fired by orchd consumers on cadence-classifier events.)*
 
 ### (D7) Config — `team.json::cadence`
 

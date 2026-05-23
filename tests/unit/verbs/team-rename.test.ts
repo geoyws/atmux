@@ -287,13 +287,12 @@ describe("collidesWithCockpit", () => {
     expect(collidesWithCockpit(c, "deep")).toBe(true);
   });
 
-  test("non-team siblings ignored (superdriver / medic / sentinel)", () => {
+  test("non-team siblings ignored (superdriver / medic)", () => {
     const c: Cockpit = {
       ...emptyCockpit(),
       sessions: [
         { type: "superdriver", name: "atmux", enabled: true },
         { type: "medic", name: "atmux", enabled: true },
-        { type: "sentinel", name: "atmux", enabled: true },
       ],
     };
     expect(collidesWithCockpit(c, "atmux")).toBe(false);

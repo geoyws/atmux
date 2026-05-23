@@ -27,15 +27,15 @@ Add `atmux cockpit rotate <session-name>` verb under the existing `src/verbs/coc
 
 ```
 atmux cockpit rotate medic [--force]
-atmux cockpit rotate sentinel [--force]
 atmux cockpit rotate <team-name> [--force]
 ```
 
-`<session-name>` is one of three canonical targets:
+> **§Amendment 2026-05-23 (sentinel deleted per e-be01fc89)**: The `atmux cockpit rotate sentinel [--force]` subcommand is **retired** — sentinel role deleted entirely 2026-05-23 (Sentinel REMOVAL EPIC); orchd substrate (EPIC e-a946af69) is event-driven and has no rotatable cockpit pane. Lines below that mention sentinel handoff payload / re-arm sentinel-tick / `_sentinel` (W3) targets are preserved as historical audit context — the rotate dispatcher no longer accepts `sentinel` as a target.
+
+`<session-name>` is one of two canonical targets (post-2026-05-23 — `sentinel` retired):
 | Target | Cockpit window | What rotates |
 |---|---|---|
 | `medic` | `_medic` (W2 per ADR-135) | self-healing role pane |
-| `sentinel` | `_sentinel` (W3 per ADR-158) | whip-manager pane |
 | `<team-name>` | `<team-name>` (W4+) | per-team driver pane (NOT the team's lead — lead lives in cage per ADR-162) |
 
 Hard-refused targets: `superdriver` (W1, operator REPL).

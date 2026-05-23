@@ -257,3 +257,13 @@ Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47
 **Why the seam mattered today.** Gitter pane appeared alive (process running, no segfault), but claude TUI was wedged (no `✻` activity, no commit since N hours, no response to operator). That is sentinel scope. Medic wouldn't probe it because nothing was broken in the code/test/build sense; the member was just *quiet*. Same root cause as the lifecycle-symmetry gap (audit finding #1).
 
 Cross-refs: ADR-132 §Amendment 2026-05-19 (sentinel boundary side), ADR-027 (doctor framework), ADR-140 (cheap-model-first — sentinel = mechanical, medic = judgment-bearing), EPIC e-35dd6274 (wedge-clearing mechanism — scope clarity is precondition for probe-class routing per ADR-186), t-186d5910 (sentinel deploy — landing the deploy makes the boundary observable).
+
+### 2026-05-23 — Sentinel role deleted per e-be01fc89; pane-liveness flows on-demand + orchd
+
+The 2026-05-19 boundary text above moved pane-liveness scope to sentinel (W3 cockpit role). With sentinel deleted entirely 2026-05-23 (Sentinel REMOVAL EPIC), that routing is dead. Replacement coverage:
+
+- **On-demand pane-liveness probes** — operator runs `atmux doctor` at session start / on suspicion; doctor's probe library (ADR-027) carries the wedge-class probes from ADR-186.
+- **Event-driven escalate-to-claude-lead** — orchd substrate (EPIC e-a946af69) absorbs sentinel's continuous-observation pattern as event-driven consumers; ship-zero-window / pane-wedge / refusal-pattern signals flow to claude-lead via Honker pubsub (ADR-202/203), no cron required.
+- **Cockpit-tier medic** — per [ADR-212](./212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the W2 medic scheduled-tick role is also retired; the **probe substrate library** described in §Amendment 2026-05-21 above PERSISTS for orchd consumer use.
+
+The 2026-05-19 cross-refs (ADR-132 §Amendment, t-186d5910 sentinel deploy, ADR-140 sentinel/medic boundary) are preserved as historical audit context; the live mechanisms they pointed at are gone.

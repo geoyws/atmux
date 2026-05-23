@@ -83,7 +83,6 @@ import { outbox, reply } from "./verbs/reply.ts";
 import { report } from "./verbs/report.ts";
 import { rotate, rotateLead } from "./verbs/rotate.ts";
 import { send } from "./verbs/send.ts";
-import { sentinel } from "./verbs/sentinel.ts";
 import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
@@ -287,8 +286,6 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cronOrphans(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
-    case "sentinel":
-      return sentinel(argv.slice(1));
     case "ombudsman":
       return ombudsman(argv.slice(1));
     case "committer":

@@ -183,7 +183,7 @@ The atmux team's cage hosts the operator's driver Claude. Restarting it = restar
 - **Do NOT** run `atmux stop --soft` on atmux from inside the atmux driver pane — the soft-stop kills the operator's own Claude conversation context mid-migration. Run from a separate tmux session (operator's daily-driver default — `tmux attach -t default`, not `atmux attach -t atmux_cockpit`) or directly via SSH.
 - **Pre-stop hygiene**: run `/session preclear` from inside the atmux driver first if you want the post-restart Claude to bootstrap cleanly. This commits the conversation summary to memory before the cage cycle.
 - **Post-restart**: re-attach via cockpit + observe `honker` doctor row green-or-yellow per §3(e); the new driver Claude bootstraps from CLAUDE.md without prior turn context.
-- **Failure path**: if `atmux stop --soft` on atmux wedges (rare — usually a sentinel or merger pane mid-turn), fall back to `atmux stop --force` from the outside session. `--force` is documented per ADR-087 for the wedged case.
+- **Failure path**: if `atmux stop --soft` on atmux wedges (rare — usually a merger pane mid-turn), fall back to `atmux stop --force` from the outside session. `--force` is documented per ADR-087 for the wedged case.
 
 ---
 

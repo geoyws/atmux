@@ -40,6 +40,22 @@ const DEFAULT_PATH = "/root/.bun/bin:/usr/local/bin:/usr/bin:/bin";
 const P = `PATH=${DEFAULT_PATH} `;
 
 describe("renderCronLines", () => {
+  test("vanilla team emits NO sentinel cron line (EPIC e-be01fc89 — sentinel decommissioned)", () => {
+    // Phase A cron decommission: no team-start path emits a sentinel
+    // cron line. Guards against re-introduction (would need ADR
+    // amendment to re-add).
+    const lines = renderCronLines(baseOpts(baseTeam()));
+    expect(lines.some((l) => /atmux sentinel/.test(l))).toBe(false);
+  });
+
+  test("team with cadence enabled still emits NO sentinel cron line", () => {
+    const team = baseTeam({
+      cadence: { enabled: true, windowSec: 1800 },
+    } as never);
+    const lines = renderCronLines(baseOpts(team));
+    expect(lines.some((l) => /atmux sentinel/.test(l))).toBe(false);
+  });
+
   test("vanilla team renders 4-line block: poke / report / decisions / groom (ADR-160)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
     // poke default schema-side is `intervalMins: 15` (src/schema/team.ts +

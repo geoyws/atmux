@@ -1,7 +1,7 @@
 // ADR-139 §D2 / T3 (t-841049e4): refusal-event scan + record path.
 //
 // Pure-of-direct-IO orchestrator that the medic (hourly, ADR-077 /
-// ADR-133) and the martinet (per-tick, ADR-132) invoke once per team:
+// ADR-133) invokes once per team:
 //   1. For each team member, capture the member's tmux pane.
 //   2. Run the capture through `classifyRefusal` (ADR-139 T2).
 //   3. When `detected === true`, write a row to `refusal_events`
@@ -10,8 +10,8 @@
 //
 // Idempotency: the `refusal_events` table has a
 // `UNIQUE(member, minute_bucket, severity)` constraint, so re-scans
-// within the same minute (medic + martinet both firing inside a 60s
-// window, or a tick double-firing on retry) collapse to a single row
+// within the same minute (medic + future orchd event consumer firing
+// inside a 60s window, or a tick double-firing on retry) collapse via
 // via `INSERT OR IGNORE`. The `recorded` field on `RefusalScanResult`
 // distinguishes "row written" from "row deduped". No background
 // pruning lives here — T4 / T5 add retention policy if needed.
@@ -146,7 +146,7 @@ export function listRefusalEventsForMember(
   }));
 }
 
-/** Per-member outcome surfaced to the verb + medic / martinet log. */
+/** Per-member outcome surfaced to the verb + medic log. */
 export interface PerMemberRefusalScan {
   member: string;
   /** `none` when classifier matched nothing; the highest-precedence
