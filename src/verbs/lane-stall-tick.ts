@@ -46,7 +46,7 @@ import {
   pruneDedupState,
   readDedupState,
 } from "../core/lane-stall.ts";
-import { type CaptureFn, classifyText } from "../core/pane-state.ts";
+import { type CaptureFn } from "../core/pane-state.ts";
 import { type SafeSendOpts, type SendKeysFn, safeSendKeys } from "../core/safe-send.ts";
 import { UsageError } from "../errors.ts";
 import { DEFAULT_LANE_STALL_MIN_AGE_SEC, type Team, type TeamMember } from "../schema/team.ts";

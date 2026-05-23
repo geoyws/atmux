@@ -68,7 +68,7 @@ import {
   provisionWorktree,
   pruneWorktree,
 } from "../../abstractions/worktree.ts";
-import { type BudgetProbeState, loadBudgetMap, selectAccount } from "../../core/account-pool.ts";
+import { loadBudgetMap, selectAccount } from "../../core/account-pool.ts";
 import { defaultCockpitConfigPath, migrateLegacyShape } from "../../core/cockpit.ts";
 import { resolveCallerScope } from "../../core/common.ts";
 import {
