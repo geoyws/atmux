@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Subscription registry seam**: new `src/core/orchd-registry.ts` exporting `ORCHD_SUBSCRIPTIONS: OrchdSubscription[] = []` — zero-handler scaffold per [ADR-224 §D6](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 2 wires the `epic.added` / `task.done` handlers; Phase 1 array is empty so no behavior change.
 - **Migration**: external callers should swap `atmux relayd` → `atmux orchd` and `atmux-relayd` binary references → `atmux-orchd` before the next release removes the alias.
 
+### ✨ Added — epic dependencies + `is_ready` toggle (ADR-225, EPIC e-cf8a6195)
+
+EPICs now carry `depends_on` (epic-id list) + `is_ready` (0/1 kick-off bit) — v13→v14 migration. `atmux team spawn-epic` consults an eligibility predicate (all deps `done` + `is_ready=1`) and refuses on unmet deps with a structured `--force` override + log to `~/.atmux/state/spawn-overrides.log`. New verbs: `epic ready` / `epic unready` / `epic set-depends-on` / `epic deps`; `epic list` gains `R` + `D=k/n` columns; `epic show` renders the dep chain. Two new event topics (`epic.unblocked`, `epic.ready`) ship per ADR-203 §D2 amendment. Cycle-detect + non-existent-dep refusal fire at add-time. Sibling EPIC e-60e16169 (orchd auto-spawn) is the primary substrate consumer. See [ADR-225](docs/adr/225-epic-dependencies-and-is-ready-toggle.md).
+
 ### ✨ Added — solo-worker scope v1: 1-2 member roster presets for small standalone tasks (ADR-221, t-8c8ce51c)
 
 Fills the gap between "drop on long-lived member queue" (pollutes branch) and "spawn full 7-member epic-team" (wasteful for single commits). Two new roster presets under `templates/epic-rosters/`:

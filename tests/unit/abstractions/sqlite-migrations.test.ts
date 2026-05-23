@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v13)", () => {
+  test("opening with the full ladder advances user_version to the tail (v14)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -42,7 +42,9 @@ describe("sqlite-migrations live ladder", () => {
     //             §VIII compound `<scope>-<N>-<hash>` shape)
     //   - v12→v13 added prune_state for events-prune cursor bookkeeping
     //             (ADR-202 §XI queued via T2.2, t-0d79d5bd)
-    expect(readUserVersion(db)).toBe(13);
+    //   - v13→v14 added epics.depends_on + epics.is_ready (ADR-225,
+    //             master task t-802c468b, EPIC e-cf8a6195)
+    expect(readUserVersion(db)).toBe(14);
   });
 });
 
@@ -324,6 +326,122 @@ describe("v10 → v11: events + subscriber_offsets (Honker substrate)", () => {
   });
 });
 
+describe("v13 → v14: epics.depends_on + epics.is_ready (ADR-225)", () => {
+  test("both columns exist on the epics table with the expected types + defaults", () => {
+    const cols = db.prepare("PRAGMA table_info(epics)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+
+    const dep = byName.get("depends_on");
+    expect(dep).toBeDefined();
+    expect(dep?.type).toBe("TEXT");
+    expect(dep?.notnull).toBe(1);
+    // SQLite stores the literal default with the source-text quoting.
+    expect(dep?.dflt_value).toBe("'[]'");
+
+    const ready = byName.get("is_ready");
+    expect(ready).toBeDefined();
+    expect(ready?.type).toBe("INTEGER");
+    expect(ready?.notnull).toBe(1);
+    expect(ready?.dflt_value).toBe("0");
+  });
+
+  test("new epic rows inherit the column defaults (depends_on='[]', is_ready=0)", () => {
+    db.prepare(
+      `INSERT INTO epics (id, title, body, status, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run("e-fresh", "fresh epic", "body", "planning", 1_700_000_000);
+    const row = db
+      .prepare("SELECT depends_on, is_ready FROM epics WHERE id = ?")
+      .get("e-fresh") as { depends_on: string; is_ready: number };
+    expect(row.depends_on).toBe("[]");
+    expect(row.is_ready).toBe(0);
+  });
+
+  test("depends_on round-trips a JSON-array of epic ids", () => {
+    db.prepare(
+      `INSERT INTO epics (id, title, status, depends_on, is_ready, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "e-chain",
+      "downstream",
+      "planning",
+      JSON.stringify(["e-up1", "e-up2"]),
+      0,
+      1_700_000_001,
+    );
+    const row = db.prepare("SELECT depends_on FROM epics WHERE id = ?").get("e-chain") as {
+      depends_on: string;
+    };
+    expect(JSON.parse(row.depends_on)).toEqual(["e-up1", "e-up2"]);
+  });
+});
+
+describe("v13 → v14: backfill semantics on a pre-existing v13 DB", () => {
+  // Pre-existing v13 DBs (already on trunk after Epic B's prune_state
+  // migration) must have their epics rows correctly backfilled when
+  // they walk through v13→v14: in-flight + done epics flip to
+  // is_ready=1; draft (planning / ready) rows stay at 0. depends_on
+  // backfills to '[]' for every row via the column default.
+  //
+  // We synthesize the pre-v14 shape by opening a DB with the ladder
+  // truncated at v13, seeding rows in mixed statuses, closing, then
+  // re-opening with the full ladder so v13→v14 fires on top.
+  test("backfill: in-flight + done flip to is_ready=1; drafts stay at 0; all get depends_on='[]'", async () => {
+    const pre14 = migrations.filter((m) => m.to <= 13);
+    const path = join(scratch, "backfill.db");
+
+    // Stage 1: walk to v13 and seed mixed-status rows.
+    const staging = openDatabase(path, pre14);
+    expect(readUserVersion(staging)).toBe(13);
+    const rowsByStatus: ReadonlyArray<readonly [string, string]> = [
+      ["e-plan", "planning"],
+      ["e-ready", "ready"],
+      ["e-flight", "in-progress"],
+      ["e-rev", "review"],
+      ["e-done", "done"],
+    ];
+    for (const [id, status] of rowsByStatus) {
+      staging
+        .prepare(`INSERT INTO epics (id, title, status, created_at) VALUES (?, ?, ?, ?)`)
+        .run(id, `${id} title`, status, 1_700_000_000);
+    }
+    closeDatabase(staging);
+
+    // Stage 2: re-open with the full ladder; v13→v14 runs.
+    const full = openDatabase(path, migrations);
+    expect(readUserVersion(full)).toBe(14);
+
+    const seen = full
+      .prepare("SELECT id, status, depends_on, is_ready FROM epics ORDER BY id")
+      .all() as Array<{
+      id: string;
+      status: string;
+      depends_on: string;
+      is_ready: number;
+    }>;
+    const byId = new Map(seen.map((r) => [r.id, r]));
+
+    // Drafts stay at 0.
+    expect(byId.get("e-plan")?.is_ready).toBe(0);
+    expect(byId.get("e-ready")?.is_ready).toBe(0);
+    // In-flight + review + done flip to 1.
+    expect(byId.get("e-flight")?.is_ready).toBe(1);
+    expect(byId.get("e-rev")?.is_ready).toBe(1);
+    expect(byId.get("e-done")?.is_ready).toBe(1);
+    // depends_on backfills to '[]' for every row via the column default.
+    for (const r of seen) {
+      expect(r.depends_on).toBe("[]");
+    }
+
+    closeDatabase(full);
+  });
+});
+
 describe("v12 → v13: prune_state (events-prune cursor bookkeeping)", () => {
   test("prune_state table exists with the expected column set + types", () => {
     const cols = db.prepare("PRAGMA table_info(prune_state)").all() as Array<{
@@ -357,9 +475,7 @@ describe("v12 → v13: prune_state (events-prune cursor bookkeeping)", () => {
   });
 
   test("prune_state starts empty on a fresh ladder", () => {
-    const { n } = db
-      .prepare("SELECT COUNT(*) AS n FROM prune_state")
-      .get() as { n: number };
+    const { n } = db.prepare("SELECT COUNT(*) AS n FROM prune_state").get() as { n: number };
     expect(n).toBe(0);
   });
 
@@ -382,9 +498,7 @@ describe("v12 → v13: prune_state (events-prune cursor bookkeeping)", () => {
 
     expect(() =>
       db
-        .prepare(
-          `INSERT INTO prune_state (team_name, cursor, last_pruned_at_sec) VALUES (?, ?, ?)`,
-        )
+        .prepare(`INSERT INTO prune_state (team_name, cursor, last_pruned_at_sec) VALUES (?, ?, ?)`)
         .run("team-beta", 99, 1_700_000_001),
     ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/);
   });

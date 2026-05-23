@@ -607,4 +607,49 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  // ---------- v13 → v14 ----------
+  // ADR-225 (epic dependencies + isReady toggle) — orchd substrate.
+  // Master design task: parent atmux kanban `t-802c468b`.
+  //
+  // Adds the two columns that promote epic-level dependency + kick-off
+  // bookkeeping from "mentally held by the operator" to "queryable
+  // substrate":
+  //   - `depends_on` — JSON array of upstream epic ids. Top-level
+  //                    column (not extra JSON) so orchd's
+  //                    spawn-eligibility tick can index/scan without
+  //                    JSON-pulling on every probe. Same shape as
+  //                    `tasks.deps` (v0→v1) — SQLite has no native
+  //                    array type; cardinality stays small (≤3 in
+  //                    observed practice).
+  //   - `is_ready`   — INTEGER 0/1 (bool). Default 0 — explicit
+  //                    operator go-ahead prevents accidental
+  //                    auto-spawn on draft epics. Pairs with the
+  //                    `depends_on` predicate in
+  //                    `epicIsEligible()` (T3 / src/core/epic.ts).
+  //
+  // Backfill: existing in-flight epics get `is_ready=1` so the new
+  // substrate doesn't retroactively block ongoing work or invite a
+  // re-spawn (orchd would refuse them on the eligibility predicate
+  // otherwise). `status='done'` rows are included for the same
+  // reason — already-shipped epics are eligibility-satisfied
+  // upstream deps; flipping them to is_ready=1 keeps the predicate
+  // self-consistent (deps-done + is_ready=1).
+  //
+  // `depends_on` backfills via the column default — every existing
+  // row gets `'[]'` (empty array). No legacy data has dependsOn
+  // semantics, so this is the correct historical answer.
+  //
+  // Append-only per the ADR-126 single-ladder invariant (this file's
+  // header §); v12→v13 (events-prune cursor, ADR-202 §XI) already
+  // landed on trunk this morning (Epic B fan-in, f376665), so this
+  // step takes v13→v14.
+  {
+    from: 13,
+    to: 14,
+    up: (db) => {
+      db.exec("ALTER TABLE epics ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'");
+      db.exec("ALTER TABLE epics ADD COLUMN is_ready INTEGER NOT NULL DEFAULT 0");
+      db.exec("UPDATE epics SET is_ready = 1 WHERE status IN ('in-progress', 'review', 'done')");
+    },
+  },
 ];

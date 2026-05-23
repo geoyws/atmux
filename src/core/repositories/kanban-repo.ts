@@ -51,6 +51,11 @@ interface EpicRow {
   created_at: number | null;
   completed_at: number | null;
   stories: string | null;
+  // ADR-225 (sqlite-migrations v13→v14): JSON array of upstream epic
+  // ids + 0/1 ready bit. NOT NULL with defaults at the storage layer;
+  // see schema migration for backfill semantics.
+  depends_on: string;
+  is_ready: number;
   extra: string | null;
 }
 
@@ -183,10 +188,21 @@ const KNOWN_EPIC_FIELDS = new Set([
   "createdAt",
   "completedAt",
   "stories",
+  // ADR-225 (sqlite-migrations v13→v14): top-level columns, not extra-JSON.
+  "dependsOn",
+  "isReady",
 ]);
 
 export function epicFromRow(row: EpicRow): KanbanEpic {
   const extra = row.extra ? (JSON.parse(row.extra) as Record<string, unknown>) : {};
+  // ADR-225: depends_on is JSON-array TEXT; legacy rows from a v13 DB
+  // walking the v13→v14 step get `'[]'` via the column DEFAULT, so a
+  // truthy guard suffices (the empty-string case shouldn't occur, but
+  // fall back to [] for belt-and-suspenders).
+  const dependsOn = row.depends_on ? (JSON.parse(row.depends_on) as string[]) : [];
+  // is_ready coerces INTEGER 0/1 ↔ boolean. SQLite returns the raw
+  // number; the schema-side TS type is `boolean`.
+  const isReady = row.is_ready === 1;
   return KanbanEpicSchema.parse({
     id: row.id,
     title: row.title ?? undefined,
@@ -196,6 +212,8 @@ export function epicFromRow(row: EpicRow): KanbanEpic {
     createdAt: row.created_at ?? undefined,
     completedAt: row.completed_at,
     stories: row.stories ? JSON.parse(row.stories) : undefined,
+    dependsOn,
+    isReady,
     ...extra,
   });
 }
@@ -214,6 +232,11 @@ export function epicToRow(epic: KanbanEpic): EpicRow {
     created_at: epic.createdAt ?? null,
     completed_at: epic.completedAt ?? null,
     stories: epic.stories ? JSON.stringify(epic.stories) : null,
+    // ADR-225: serialize dependsOn → JSON; coerce isReady boolean → 0/1.
+    // Schema `.default([])` / `.default(false)` guarantee these are set
+    // post-parse, but null-coalesce keeps the write path defensive.
+    depends_on: JSON.stringify(epic.dependsOn ?? []),
+    is_ready: epic.isReady ? 1 : 0,
     extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
   };
 }
@@ -393,13 +416,14 @@ export class KanbanRepo {
     this.db
       .query(
         `INSERT INTO epics (id, title, body, status, driver_ref, created_at,
-				                    completed_at, stories, extra)
+				                    completed_at, stories, depends_on, is_ready, extra)
 				 VALUES ($id, $title, $body, $status, $driver_ref, $created_at,
-				         $completed_at, $stories, $extra)
+				         $completed_at, $stories, $depends_on, $is_ready, $extra)
 				 ON CONFLICT(id) DO UPDATE SET
 				   title=excluded.title, body=excluded.body, status=excluded.status,
 				   driver_ref=excluded.driver_ref, created_at=excluded.created_at,
 				   completed_at=excluded.completed_at, stories=excluded.stories,
+				   depends_on=excluded.depends_on, is_ready=excluded.is_ready,
 				   extra=excluded.extra`,
       )
       .run(bind(row));

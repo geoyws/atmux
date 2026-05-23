@@ -113,9 +113,7 @@ export const GitterEscalatedPayload = z
     branch: z.string(),
     commitSha: z.string(),
     conflictFiles: z.array(z.string()).optional(),
-    suggestedResolution: z
-      .enum(["rebase", "squash", "revert", "handoff-to-author"])
-      .optional(),
+    suggestedResolution: z.enum(["rebase", "squash", "revert", "handoff-to-author"]).optional(),
     severity: z.enum(["low", "medium", "high"]).default("medium"),
     failureClass: z.enum([
       "merge-conflict",
@@ -123,6 +121,44 @@ export const GitterEscalatedPayload = z
       "missing-worktree",
       "dispatcher-refused",
     ]),
+  })
+  .passthrough();
+
+/**
+ * `epic.unblocked` — the dep-graph event. Fires when an epic A's LAST
+ * unmet dep just transitioned to `status='done'`. Carries `byEpicId`
+ * = the dep id whose transition cleared the last blocker, so consumers
+ * (orchd, cockpit-mirror) can render "A is unblocked by B done".
+ *
+ * Critically NOT gated on `isReady` — the event reports the dep-graph
+ * fact. Consumers that want the combined eligibility predicate
+ * (deps-done + is_ready=1) join with `is_ready` at read time.
+ *
+ * ADR-225 §Events + §D2 amendment per ADR-203 §D2 closed-set rule.
+ */
+export const EpicUnblockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.unblocked"),
+    epicId: z.string(),
+    byEpicId: z.string(),
+    transitionedAt: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.ready` — operator (or workflow) flipped is_ready from 0 to 1.
+ * Fires only on the 0→1 transition; 1→0 downgrades are silent (orchd
+ * polls vs. event-driven for the is_ready=0 case per ADR-225).
+ *
+ * ADR-225 §Events + §D2 amendment per ADR-203 §D2 closed-set rule.
+ */
+export const EpicReadyPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.ready"),
+    epicId: z.string(),
+    transitionedAt: z.number(),
   })
   .passthrough();
 
@@ -161,6 +197,8 @@ export const EventPayload = z.discriminatedUnion("topic", [
   TaskUnclaimedPayload,
   CommitLandedPayload,
   GitterEscalatedPayload,
+  EpicUnblockedPayload,
+  EpicReadyPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -171,6 +209,8 @@ export type TaskDonePayload = z.infer<typeof TaskDonePayload>;
 export type TaskUnclaimedPayload = z.infer<typeof TaskUnclaimedPayload>;
 export type CommitLandedPayload = z.infer<typeof CommitLandedPayload>;
 export type GitterEscalatedPayload = z.infer<typeof GitterEscalatedPayload>;
+export type EpicUnblockedPayload = z.infer<typeof EpicUnblockedPayload>;
+export type EpicReadyPayload = z.infer<typeof EpicReadyPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -207,6 +247,12 @@ export const TOPICS = [
   "epic.dissolved",
   "epic.merge-ready",
   "epic.spawn-blocked",
+  // ADR-225 amendment per ADR-203 §D2 closed-set rule: dep-graph event
+  // (`epic.unblocked`) + operator-kick-off event (`epic.ready`). Both
+  // team-scope; cockpit-mirror joins them with the parent's epic row
+  // for cross-team awareness (same routing as `epic.merge-ready`).
+  "epic.unblocked",
+  "epic.ready",
   // Commit lifecycle (team-scope)
   "commit.landed",
   "commit.pushed",

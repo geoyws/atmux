@@ -475,6 +475,12 @@ ascending, then `createdAt` ascending. Tasks with non-`done` deps are
 skipped automatically. Cross-lane fallback when a lane is dry
 (`crossLaneClaim=true` default); REVIEW-lane carve-out (ADR-031).
 
+EPICs additionally carry `depends_on` (epic-id list) and `is_ready` (0/1
+kick-off bit) per [ADR-225](adr/225-epic-dependencies-and-is-ready-toggle.md);
+`team spawn-epic <eid>` consults an eligibility predicate (all deps done +
+`is_ready=1`) and refuses on unmet deps with a `--force` override. Two
+events (`epic.unblocked`, `epic.ready`) ship per ADR-203 §D2 amendment.
+
 ### 7.3 Socket-driven messaging (ADR-032, parent repo)
 
 Supervisor-injected keystrokes between turns (event-type prefixed):
