@@ -273,6 +273,13 @@ export function createSpawnEpicHandler(
         cmd: "atmux",
         argv,
         cwd: deps.atmuxDir,
+        // ADR-231 §D5 amendment 2026-05-23 (dogfood gap closure): orchd
+        // is the orchestrator — its spawn-epic invocations are
+        // authoritative by definition. Pass ATMUX_CALLER_SCOPE=driver
+        // so ADR-033 §Caller-scope gate accepts the call. Without
+        // this, orchd from cron context hits a hard refuse + raises
+        // spawnFailed flag, breaking auto-spawn end-to-end.
+        env: { ATMUX_CALLER_SCOPE: "driver" },
         expectExitCode: "any",
         timeoutMs: 120_000, // submodule init + worktree provision can
                            // take >30s on sopx-style trees per

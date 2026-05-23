@@ -328,6 +328,10 @@ describe("createSpawnEpicHandler — §D2 step 5: spawn-success", () => {
       "solo",
     ]);
     expect(call.cwd).toBe(scratch);
+    // ADR-231 §D5 amendment 2026-05-23 — orchd passes
+    // ATMUX_CALLER_SCOPE=driver so ADR-033 caller-scope gate accepts
+    // the call from cron context.
+    expect(call.env).toEqual({ ATMUX_CALLER_SCOPE: "driver" });
   });
 
   test("forceSpawn=true adds --force-spawn to argv", async () => {
