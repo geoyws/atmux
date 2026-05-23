@@ -270,9 +270,9 @@ describe("TOPICS registry + isKnownTopic", () => {
   test("v1 closed topic set has the expected size (ADR-203 §D2 enumeration)", () => {
     // Adding a topic to TOPICS requires an ADR amendment — failing here
     // is the reminder. Current closed set: 5 task + 8 story + 4 epic +
-    // 3 commit + 1 gitter + 3 pane + 4 coordination + 8 cockpit + 4
-    // internal = 40.
-    expect(TOPICS.length).toBe(40);
+    // 3 commit + 1 gitter + 3 pane + 4 coordination + 7 cockpit + 4
+    // internal = 39 (sentinel.escalated removed per EPIC e-be01fc89).
+    expect(TOPICS.length).toBe(39);
   });
 
   test("known topics across each domain are present", () => {

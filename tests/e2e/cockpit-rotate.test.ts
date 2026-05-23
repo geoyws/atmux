@@ -100,7 +100,7 @@ function tmuxCage(
 async function setupHermeticHome(hermetic: Hermetic): Promise<void> {
   const { homeDir } = hermetic;
   // Per-role marker dirs + cockpit.json dir + audit-log dir + bin dir.
-  for (const role of ["medic", "sentinel", "team-alpha"]) {
+  for (const role of ["medic", "team-alpha"]) {
     await mkdir(join(homeDir, ".claude/teams/__cockpit__", role), { recursive: true });
   }
   await mkdir(join(homeDir, ".atmux/state"), { recursive: true });
@@ -109,11 +109,11 @@ async function setupHermeticHome(hermetic: Hermetic): Promise<void> {
   // Session-start markers — mtime set to 2h ago via shell touch
   // (Node's utimes is portable but verbose; touch -d is simplest).
   // Role literals per src/verbs/cockpit-rotate.ts::sessionStartMarkerPath:
-  // medic, sentinel, team-driver (NOT team-name). Plus team-alpha dir is
-  // created above for handoff payload path symmetry.
+  // medic, team-driver (NOT team-name). Plus team-alpha dir is created
+  // above for handoff payload path symmetry.
   await mkdir(join(homeDir, ".claude/teams/__cockpit__/team-driver"), { recursive: true });
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
-  for (const role of ["medic", "sentinel", "team-driver"]) {
+  for (const role of ["medic", "team-driver"]) {
     const markerPath = join(homeDir, ".claude/teams/__cockpit__", role, "session-start.txt");
     await writeFile(markerPath, "", "utf8");
     // ISO date for `touch -d` — portable on coreutils.
@@ -124,24 +124,14 @@ async function setupHermeticHome(hermetic: Hermetic): Promise<void> {
     });
   }
 
-  // cockpit.json — minimal sessions[] declaring medic + sentinel +
-  // one team (team-alpha) all bound to /root/.claude (→ resolver
-  // returns 'claude' → PATH resolves to our stub).
-  // Per src/schema/cockpit.ts: SentinelSession is strict on the base
-  // fields only (no `impl` here — that field lives on the legacy
-  // top-level CockpitSentinel which the loader synthesizes; the rotate
-  // verb's sentinel path tolerates a null/undeclared impl and defaults
-  // to the claude wrapper).
+  // cockpit.json — minimal sessions[] declaring medic + one team
+  // (team-alpha) all bound to /root/.claude (→ resolver returns 'claude'
+  // → PATH resolves to our stub).
   const cockpitJson = {
     sessions: [
       {
         type: "medic",
         name: "medic",
-        claudeAccount: { configDir: "/root/.claude" },
-      },
-      {
-        type: "sentinel",
-        name: "sentinel",
         claudeAccount: { configDir: "/root/.claude" },
       },
       {
@@ -169,10 +159,10 @@ async function setupHermeticHome(hermetic: Hermetic): Promise<void> {
   await chmod(stubClaude, 0o755);
 }
 
-/** Spawn the synthetic cockpit session with the 4 windows the verb
- *  reads/touches: _superdriver (gate-1 source), _medic, _sentinel,
- *  team-alpha (team-driver target). Each window runs `sleep infinity`
- *  so they stay alive until the verb's killWindow tears them down. */
+/** Spawn the synthetic cockpit session with the 3 windows the verb
+ *  reads/touches: _superdriver (gate-1 source), _medic, team-alpha
+ *  (team-driver target). Each window runs `sleep infinity` so they
+ *  stay alive until the verb's killWindow tears them down. */
 function spawnCockpitSession(hermetic: Hermetic): void {
   const newSess = tmuxCage(hermetic, [
     "new-session",
@@ -188,7 +178,7 @@ function spawnCockpitSession(hermetic: Hermetic): void {
     "sleep infinity",
   ]);
   expect(newSess.exitCode).toBe(0);
-  for (const win of ["_medic", "_sentinel", "team-alpha"]) {
+  for (const win of ["_medic", "team-alpha"]) {
     const w = tmuxCage(hermetic, [
       "new-window",
       "-d",
@@ -501,7 +491,7 @@ describe.skipIf(!HAS_TMUX)("e2e ADR-167 T7 — atmux cockpit rotate", () => {
 
   test("Run 5 — team-driver rotation respawns cockpit window; per-team cage socket unaffected", async () => {
     spawnCockpitSession(hermetic);
-    // Spawn a separate sentinel "cage" session on a different socket
+    // Spawn a separate per-team "cage" session on a different socket
     // → proves cockpit rotate's tmuxFactory threads cockpit socket
     // only (per ADR-162). We use a second named socket inside the
     // same TMUX_TMPDIR so the assertion is real (not just isolated
