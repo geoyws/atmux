@@ -427,20 +427,25 @@ describe("committer --drain / --daemon integration", () => {
     expect(rc).toBe(0);
 
     // The drain log summary MUST surface orchd-* stats — drift detector
-    // for step 3/5's contract.
+    // for step 3/5's contract. Phase 2 (ADR-231) added 3 consumers:
+    // dissolve-solo-worker + spawn:on-ready + spawn:on-unblocked.
     const summary = logs.find((l) => l.includes("committer --drain: team="));
     expect(summary).toBeDefined();
-    expect(summary).toContain("orchd-subs=3");
+    expect(summary).toContain("orchd-subs=6");
     expect(summary).toContain("orchd-errors=0");
 
-    // Registry MUST have been populated with the three canonical
-    // consumer IDs (idempotency means a sibling call wouldn't double-
-    // push these).
+    // Registry MUST have been populated with the six canonical consumer
+    // IDs (idempotency means a sibling call wouldn't double-push these).
+    // ADR-231 §D2/§D6 added the spawn + solo-worker-dissolve entries on
+    // top of parent's auto-merge/dissolve/push (ADR-226/227/229).
     const consumerIds = ORCHD_SUBSCRIPTIONS.map((s) => s.consumerId).sort();
     expect(consumerIds).toEqual([
       "atmux:orchd:auto-dissolve",
       "atmux:orchd:auto-merge",
       "atmux:orchd:auto-push",
+      "atmux:orchd:dissolve-solo-worker",
+      "atmux:orchd:spawn:on-ready",
+      "atmux:orchd:spawn:on-unblocked",
     ]);
 
     // Cleanup so sibling tests don't see leaked registry state.
@@ -457,7 +462,12 @@ describe("committer --drain / --daemon integration", () => {
     };
     // Bound the loop with --once + --max-events 1 so the watcher exits.
     // Test fires SIGTERM after a short delay as belt-and-braces.
-    const timer = setTimeout(() => process.emit("SIGTERM"), 800);
+    // Timer bumped 800→1500ms post-Phase 2 (ADR-231) — bootstrap now
+    // registers 6 orchd consumers (was 3), each walks an empty event
+    // table on startup; the cumulative cold-start work pushes past
+    // 800ms on slower CI nodes. 1500ms = ~250ms per consumer with
+    // headroom for the watcher's own init.
+    const timer = setTimeout(() => process.emit("SIGTERM"), 1500);
     try {
       const rc = await committer(
         ["--daemon", "--team-dir", scratch, "--once", "--max-events", "1"],
