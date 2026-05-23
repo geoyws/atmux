@@ -37,6 +37,7 @@ import { probeHostPressure } from "../core/host-pressure.ts";
 // public seam from the verb side. Phase 1 ships the wiring; handlers
 // stay empty until Phase 2 dispatches.
 import { visitOrchdSubscriptions } from "../core/orchd-registry.ts";
+import { orchdSweep } from "../core/orchd-sweep.ts";
 import { pressureMonitorTick, resolveSpawnQueueLimits } from "../core/spawn-queue.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import {
@@ -57,7 +58,7 @@ export {
 } from "../core/orchd-registry.ts";
 
 const USAGE =
-  "atmux orchd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
+  "atmux orchd <--start|--drain|--sweep|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
 
 export interface ParsedOrchdArgs {
   /** Sub-verbs:
@@ -78,7 +79,7 @@ export interface ParsedOrchdArgs {
    *                     subscriber offsets, recent event counts per
    *                     topic, last-handler-outcome. Operator runs it
    *                     instead of grepping logs. */
-  subverb: "start" | "drain" | "handle-one" | "status";
+  subverb: "start" | "drain" | "sweep" | "handle-one" | "status";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
@@ -107,7 +108,7 @@ export interface ParsedOrchdArgs {
 }
 
 export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
-  let subverb: "start" | "drain" | "handle-one" | "status" | undefined;
+  let subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | undefined;
   let teamDir: string | undefined;
   let once = false;
   let maxEvents: number | undefined;
@@ -126,6 +127,11 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--drain" || a === "drain") {
       subverb = "drain";
+      i += 1;
+      continue;
+    }
+    if (a === "--sweep" || a === "sweep") {
+      subverb = "sweep";
       i += 1;
       continue;
     }
@@ -242,7 +248,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   }
   if (subverb === undefined) {
     throw new UsageError({
-      what: "orchd: no sub-verb specified (--start, --drain, or --handle-one)",
+      what: "orchd: no sub-verb specified (--start, --drain, --sweep, --handle-one, or --status)",
       hint: USAGE,
     });
   }
@@ -314,6 +320,9 @@ export async function orchd(
   }
   if (parsed.subverb === "status") {
     return await orchdStatus(parsed);
+  }
+  if (parsed.subverb === "sweep") {
+    return await orchdSweepCli(parsed);
   }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
@@ -511,6 +520,29 @@ async function orchdHandleOne(parsed: ParsedOrchdArgs, opts: CommitterOpts = {})
  * Output is tab-separated lines, grep-able. Returns exit 0 always —
  * status is read-only diagnostic.
  */
+
+/**
+ * `atmux orchd --sweep` — one-shot cron-backstop walk (ADR-231 §D4).
+ *
+ * Resolves the local atmuxDir, runs `orchdSweep(atmuxDir)` once, and
+ * prints the counters JSON to stdout for cron-line + Discord
+ * summarization (T-S2.3 surfaces the structured summary). Exit code:
+ * 0 on clean sweep (any counter values); non-zero only if `orchdSweep`
+ * throws (the walker swallows handler errors per its own contract, so
+ * the only throws here are unrecoverable setup failures — atmuxDir
+ * unresolvable, etc.).
+ *
+ * `--once` is the canonical form (consistent with `--drain`); reused
+ * verbatim — no per-invocation arg processing beyond `--team-dir`.
+ */
+async function orchdSweepCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const result = await orchdSweep(atmuxDir);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  return 0;
+}
+
 async function orchdStatus(parsed: ParsedOrchdArgs): Promise<number> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);

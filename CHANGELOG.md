@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux orchd --sweep` CLI subverb ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D4, EPIC `e-60e16169` Phase 2 Story S2, t-11-84fced39)
+
+One-shot cron-backstop walker subverb on the `atmux orchd` CLI. Wraps `orchdSweep(atmuxDir)` from `src/core/orchd-sweep.ts` (sibling t-10) and prints the `{epicsConsidered, epicsSpawned, workersConsidered, workersDissolved}` counters JSON to stdout per ADR-231 §D4 cron-line + Discord summarization needs (T-S2.3). `--sweep` and the bare positional `sweep` both parse; `--once` reuses the existing flag (consistent with `--drain`). Exit code 0 on any clean sweep (counter values are walker observations, not failure conditions); non-zero only on unrecoverable setup throws (atmuxDir unresolvable, etc.) — the walker itself swallows per-handler errors per its own contract. 6 new unit tests at `tests/unit/verbs/orchd.test.ts` cover parser (`--sweep`, `sweep`, `--team-dir`, `--once`, last-wins-on-mixed-subverb) and dispatch routing (orchdSweep invoked with resolved atmuxDir, counters JSON written to stdout) via `bun:test`'s `mock.module` seam.
+
 ### 🟢 Fixed — orchd cross-cage dispatcher seams (ADR-232 §D2.a + c477954 wire-up regression, t-20-91595e35 + t-21-8c0b2bfd)
 
 Sweep across all three dispatchers (`epic-merge`, `dissolve-epic`, `git-push`) to add the [ADR-232 §D2.a](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) routing-semantics guards + heal the c477954 wire-up regression that reviewer flagged. Two-part fix:
