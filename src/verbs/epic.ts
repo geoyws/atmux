@@ -1,31 +1,49 @@
 // ADR-010: CLI dispatcher — `epic` verb. Subverb dispatch + display only.
 // Bash spec: lib/epic.sh @ worktree-frozen.
 //
-// Subverb routing (1:1 parity with bash):
+// Subverb routing:
 //
-//   atmux epic add     <title> [--body T] [--driver-ref R]
-//   atmux epic list    [--status S] [--json]
-//   atmux epic ls      ↔ list
-//   atmux epic show    <id> [--json]
-//   atmux epic get     ↔ show
-//   atmux epic advance <id> [--to S]
-//   atmux epic adv     ↔ advance
+//   atmux epic add             <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y]
+//   atmux epic list            [--status S] [--json]   (table + R/D columns)
+//   atmux epic ls              ↔ list
+//   atmux epic show            <id> [--json]           (includes is_ready + depends_on)
+//   atmux epic get             ↔ show
+//   atmux epic advance         <id> [--to S]
+//   atmux epic adv             ↔ advance
+//   atmux epic ready           <id>                    (ADR-225)
+//   atmux epic unready         <id>                    (ADR-225)
+//   atmux epic set-depends-on  <id> <eid,…>            (ADR-225; empty clears)
+//   atmux epic deps            <id> [--json]           (ADR-225)
 
 import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
-import { addEpic, advanceEpic, listEpics, showEpic } from "../core/epic.ts";
+import {
+  addEpic,
+  advanceEpic,
+  listEpics,
+  setEpicDependsOn,
+  setEpicReady,
+  showEpic,
+} from "../core/epic.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { KanbanEpic } from "../schema/kanban.ts";
 
-const USAGE_HINT_ROOT = "atmux epic <add|list|show|advance> [args]";
-const USAGE_ADD = "atmux epic add <title> [--body T] [--driver-ref R]";
+const USAGE_HINT_ROOT =
+  "atmux epic <add|list|show|advance|ready|unready|set-depends-on|deps> [args]";
+const USAGE_ADD = "atmux epic add <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y]";
 const USAGE_LIST = "atmux epic list [--status S] [--json]";
 const USAGE_SHOW = "atmux epic show <id> [--json]";
 const USAGE_ADV = "atmux epic advance <id> [--to <state>]";
+// ADR-225 subverb usage hints.
+const USAGE_READY = "atmux epic ready <id> [--team-dir D]";
+const USAGE_UNREADY = "atmux epic unready <id> [--team-dir D]";
+const USAGE_SET_DEPS = "atmux epic set-depends-on <id> <eid,…> [--team-dir D]";
+const USAGE_DEPS = "atmux epic deps <id> [--json] [--team-dir D]";
 
 export async function epic(argv: ReadonlyArray<string>): Promise<number> {
   const first = argv[0];
   if (first === undefined) {
     throw new UsageError({
-      what: "epic: missing verb (add|list|show|advance)",
+      what: "epic: missing verb (add|list|show|advance|ready|unready|set-depends-on|deps)",
       hint: USAGE_HINT_ROOT,
     });
   }
@@ -42,9 +60,19 @@ export async function epic(argv: ReadonlyArray<string>): Promise<number> {
     case "advance":
     case "adv":
       return await epicAdvance(rest);
+    case "ready":
+      return await epicReadyVerb(rest, true);
+    case "unready":
+      return await epicReadyVerb(rest, false);
+    case "set-depends-on":
+      return await epicSetDependsOnVerb(rest);
+    case "deps":
+      return await epicDeps(rest);
     default:
       throw new UsageError({
-        what: `epic: unknown verb: ${first} (use add|list|show|advance)`,
+        what:
+          `epic: unknown verb: ${first} ` +
+          `(use add|list|show|advance|ready|unready|set-depends-on|deps)`,
         hint: USAGE_HINT_ROOT,
       });
   }
@@ -59,10 +87,203 @@ async function epicAdd(argv: ReadonlyArray<string>): Promise<number> {
   const opts: Parameters<typeof addEpic>[1] = { title: parsed.title };
   if (parsed.body !== undefined) opts.body = parsed.body;
   if (parsed.driverRef !== undefined) opts.driverRef = parsed.driverRef;
+  // ADR-225: pass the comma-split dependsOn list through to the core
+  // validator (self / non-existent / cycle refused before insert).
+  if (parsed.dependsOn !== undefined) opts.dependsOn = parsed.dependsOn;
   const id = await addEpic(atmuxDir, opts);
   process.stderr.write(`epic: added ${id} — ${parsed.title}\n`);
   process.stdout.write(`${id}\n`);
   return 0;
+}
+
+// ---------- ADR-225 subverbs ----------
+
+async function epicReadyVerb(argv: ReadonlyArray<string>, makeReady: boolean): Promise<number> {
+  const verbLabel = makeReady ? "ready" : "unready";
+  const { positional, rest } = splitFlagsAndPositionals(argv);
+  const id = positional[0];
+  if (id === undefined || id.length === 0) {
+    throw new UsageError({
+      what: `epic ${verbLabel}: <id> required`,
+      hint: makeReady ? USAGE_READY : USAGE_UNREADY,
+    });
+  }
+  const { teamDir } = parseTeamDirOnly(rest, `epic ${verbLabel}`);
+  const dirOpts: ResolveDirOpts = teamDir !== undefined ? { teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const result = await setEpicReady(atmuxDir, id, makeReady);
+  if (result.noop) {
+    process.stderr.write(`epic: ${id} already is_ready=${result.from ? 1 : 0} (no-op)\n`);
+    return 0;
+  }
+  process.stderr.write(`epic: ${id} is_ready: ${result.from ? 1 : 0} → ${result.to ? 1 : 0}\n`);
+  return 0;
+}
+
+async function epicSetDependsOnVerb(argv: ReadonlyArray<string>): Promise<number> {
+  const { positional, rest } = splitFlagsAndPositionals(argv);
+  const id = positional[0];
+  // Second positional is the comma-separated dep list. Empty string is
+  // legal — it clears the list.
+  const depList = positional[1];
+  if (id === undefined || id.length === 0) {
+    throw new UsageError({
+      what: "epic set-depends-on: <id> required",
+      hint: USAGE_SET_DEPS,
+    });
+  }
+  if (depList === undefined) {
+    throw new UsageError({
+      what: "epic set-depends-on: <eid,…> required (use empty string to clear)",
+      hint: USAGE_SET_DEPS,
+    });
+  }
+  const deps = splitDepsCsv(depList);
+  const { teamDir } = parseTeamDirOnly(rest, "epic set-depends-on");
+  const dirOpts: ResolveDirOpts = teamDir !== undefined ? { teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  await setEpicDependsOn(atmuxDir, id, deps);
+  process.stderr.write(`epic: ${id} depends_on: [${deps.join(", ")}]\n`);
+  return 0;
+}
+
+async function epicDeps(argv: ReadonlyArray<string>): Promise<number> {
+  const { positional, rest } = splitFlagsAndPositionals(argv);
+  const id = positional[0];
+  if (id === undefined || id.length === 0) {
+    throw new UsageError({ what: "epic deps: <id> required", hint: USAGE_DEPS });
+  }
+  const { json, teamDir } = parseDepsFlags(rest);
+  const dirOpts: ResolveDirOpts = teamDir !== undefined ? { teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const epic = await showEpic(atmuxDir, id);
+  if (epic === null) {
+    throw new ConfigError({ what: `epic deps: no such epic: ${id}` });
+  }
+  // Render the transitive tree depth-first. Pull a single transitive
+  // closure once (epicTransitiveDeps walks BFS); the renderer below
+  // walks via repeated showEpic calls to display per-node status.
+  const tree = await _buildDepsTree(atmuxDir, id);
+  if (json) {
+    process.stdout.write(`${JSON.stringify(tree, null, 2)}\n`);
+    return 0;
+  }
+  const lines: string[] = [];
+  _renderDepsTree(tree, 0, lines);
+  process.stdout.write(`${lines.join("\n")}\n`);
+  return 0;
+}
+
+interface DepsNode {
+  id: string;
+  status: string;
+  /** True when the id had no epic row (dangling ref). */
+  missing: boolean;
+  children: DepsNode[];
+}
+
+/** Recursive walker for the deps tree. Uses a cycle-guard `seen` set so
+ *  a pre-existing pathological cycle in storage doesn't infinite-loop
+ *  the renderer. */
+async function _buildDepsTree(
+  atmuxDir: string,
+  rootId: string,
+  seen: Set<string> = new Set(),
+): Promise<DepsNode> {
+  if (seen.has(rootId)) {
+    // Cycle — return a stub child without recursing further.
+    return { id: rootId, status: "(cycle)", missing: false, children: [] };
+  }
+  seen.add(rootId);
+  const epic = await showEpic(atmuxDir, rootId);
+  if (epic === null) {
+    return { id: rootId, status: "missing", missing: true, children: [] };
+  }
+  const children: DepsNode[] = [];
+  for (const dep of epic.dependsOn ?? []) {
+    children.push(await _buildDepsTree(atmuxDir, dep, new Set(seen)));
+  }
+  return {
+    id: epic.id,
+    status: epic.status ?? "planning",
+    missing: false,
+    children,
+  };
+}
+
+function _renderDepsTree(node: DepsNode, indent: number, out: string[]): void {
+  const pad = "  ".repeat(indent);
+  const tag = node.missing ? "[missing]" : `[${node.status}]`;
+  out.push(`${pad}${node.id} ${tag}`);
+  for (const child of node.children) {
+    _renderDepsTree(child, indent + 1, out);
+  }
+}
+
+/** Comma-split + trim a `--depends-on` / set-depends-on token list.
+ *  Empty input (e.g. operator typed `""` to clear) returns []. */
+function splitDepsCsv(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return [];
+  return trimmed
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/** Reusable `--team-dir` parser for the small subverbs (ready /
+ *  unready / set-depends-on) that don't accept any other flags. */
+function parseTeamDirOnly(argv: ReadonlyArray<string>, verbLabel: string): { teamDir?: string } {
+  let teamDir: string | undefined;
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--team-dir") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: `${verbLabel}: --team-dir requires a value` });
+      }
+      teamDir = v;
+      i += 2;
+      continue;
+    }
+    throw new UsageError({ what: `${verbLabel}: unknown flag: ${a ?? ""}` });
+  }
+  const out: { teamDir?: string } = {};
+  if (teamDir !== undefined) out.teamDir = teamDir;
+  return out;
+}
+
+interface DepsFlags {
+  json: boolean;
+  teamDir?: string;
+}
+
+function parseDepsFlags(argv: ReadonlyArray<string>): DepsFlags {
+  let json = false;
+  let teamDir: string | undefined;
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--json") {
+      json = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--team-dir") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "epic deps: --team-dir requires a value", hint: USAGE_DEPS });
+      }
+      teamDir = v;
+      i += 2;
+      continue;
+    }
+    throw new UsageError({ what: `epic deps: unknown flag: ${a ?? ""}`, hint: USAGE_DEPS });
+  }
+  const out: DepsFlags = { json };
+  if (teamDir !== undefined) out.teamDir = teamDir;
+  return out;
 }
 
 async function epicList(argv: ReadonlyArray<string>): Promise<number> {
@@ -79,14 +300,45 @@ async function epicList(argv: ReadonlyArray<string>): Promise<number> {
     process.stdout.write("(no epics)\n");
     return 0;
   }
-  process.stdout.write(`${"ID".padEnd(12)} ${"STATUS".padEnd(12)} ${"CREATED".padEnd(12)} TITLE\n`);
+  // ADR-225 §CLI: add R (is_ready bit) + D (k/n done-deps) columns.
+  // R is a single char; D renders `k/n` or `-` when no deps.
+  // depCounts is built up-front to avoid N round-trips on a long list.
+  const depCounts = _buildDepCountMap(epics);
+  process.stdout.write(
+    `${"ID".padEnd(12)} ${"STATUS".padEnd(12)} ${"R".padEnd(2)} ${"D".padEnd(6)} ${"CREATED".padEnd(12)} TITLE\n`,
+  );
   for (const e of epics) {
     const id = (e.id ?? "").padEnd(12);
     const status = (e.status ?? "").padEnd(12);
+    const r = (e.isReady ? "1" : "0").padEnd(2);
+    const d = (depCounts.get(e.id) ?? "-").padEnd(6);
     const created = String(e.createdAt ?? 0).padEnd(12);
-    process.stdout.write(`${id} ${status} ${created} ${e.title ?? ""}\n`);
+    process.stdout.write(`${id} ${status} ${r} ${d} ${created} ${e.title ?? ""}\n`);
   }
   return 0;
+}
+
+/** Build a `k/n` string for every epic's `D` column, where n=len(deps)
+ *  and k=deps with status=done. Returns `-` for epics with no deps.
+ *  Builds an in-memory id→status map first so we don't re-query the
+ *  repo per dep (would be O(N×D) round trips for a large list). */
+function _buildDepCountMap(epics: ReadonlyArray<KanbanEpic>): Map<string, string> {
+  const statusById = new Map<string, string>();
+  for (const e of epics) statusById.set(e.id, e.status ?? "planning");
+  const out = new Map<string, string>();
+  for (const e of epics) {
+    const deps = e.dependsOn ?? [];
+    if (deps.length === 0) {
+      out.set(e.id, "-");
+      continue;
+    }
+    let done = 0;
+    for (const d of deps) {
+      if (statusById.get(d) === "done") done += 1;
+    }
+    out.set(e.id, `${done}/${deps.length}`);
+  }
+  return out;
 }
 
 async function epicShow(argv: ReadonlyArray<string>): Promise<number> {
@@ -123,6 +375,13 @@ async function epicShow(argv: ReadonlyArray<string>): Promise<number> {
   }
   if (epic.driverRef !== null && epic.driverRef !== undefined) {
     lines.push(`  ref:  ${epic.driverRef}`);
+  }
+  // ADR-225 §CLI: surface is_ready + depends_on on the text view so
+  // operators can see the eligibility predicate inputs at a glance.
+  lines.push(`  is_ready: ${epic.isReady ? 1 : 0}`);
+  const deps = epic.dependsOn ?? [];
+  if (deps.length > 0) {
+    lines.push(`  depends_on: [${deps.join(", ")}]`);
   }
   if (epic.storyRows.length > 0) {
     lines.push("");
@@ -179,6 +438,8 @@ interface ParsedAddArgs {
   body?: string;
   driverRef?: string;
   teamDir?: string;
+  // ADR-225: comma-separated dep list, empty/absent → no deps.
+  dependsOn?: string[];
 }
 
 export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
@@ -186,6 +447,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   let body: string | undefined;
   let driverRef: string | undefined;
   let teamDir: string | undefined;
+  let dependsOn: string[] | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -207,6 +469,20 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
         });
       }
       driverRef = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--depends-on") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "epic add: --depends-on requires a value (e.g. e-aaa,e-bbb)",
+          hint: USAGE_ADD,
+        });
+      }
+      // ADR-225 §CLI: comma-split + trim. Empty string → empty list
+      // (caller wrote `--depends-on ""` to explicitly assert no deps).
+      dependsOn = splitDepsCsv(v);
       i += 2;
       continue;
     }
@@ -236,6 +512,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   if (body !== undefined) out.body = body;
   if (driverRef !== undefined) out.driverRef = driverRef;
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (dependsOn !== undefined) out.dependsOn = dependsOn;
   return out;
 }
 
