@@ -1766,7 +1766,7 @@ export async function reconcileCockpitSession(
   // immediately after their parent's viewer in cockpit window order. The
   // `teams` array from enabledTeams() is already in DFS pre-order
   // (parent → child → next sibling), so the desired layout is:
-  //   [_superdriver, _medic?, _martinet?, ...teams in DFS order]
+  //   [_superdriver, _medic?, ...teams in DFS order]
   // Skip this pass in per-team mode — single-team callers have no authority
   // to reorder sibling team viewers.
   if (onlyTeam === undefined) {

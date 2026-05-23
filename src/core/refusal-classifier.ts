@@ -11,9 +11,10 @@
 // merged class set would muddy the input-vs-output distinction.
 //
 // Consumer surfaces:
-// - Medic hourly scan (D2 — primary detector NOW, pre-sentinel-ship)
-// - Sentinel 270s scan (D2 — primary detector POST-sentinel-ship)
-// Both call this function on every member-pane capture, store
+// - Medic hourly scan (D2 — primary detector)
+// - Future orchd event consumer (EPIC e-a946af69) — will subscribe
+//   to per-tick pane-capture events when Honker substrate lands.
+// Callers invoke this function on every member-pane capture, store
 // detections in `refusal_events` (per-team state.db), and let
 // `refusal-threshold.ts::shouldRotate` decide whether the
 // accumulated events cross threshold.

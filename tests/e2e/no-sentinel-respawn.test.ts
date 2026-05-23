@@ -130,7 +130,6 @@ describe("e2e: no-sentinel-respawn regression (EPIC e-be01fc89 T4)", () => {
       team,
       atmuxDir,
       atmuxBin: "/usr/local/bin/atmux",
-      cronPath: "/usr/bin:/bin",
     });
     for (const p of SENTINEL_PATTERNS) {
       expect(lines.some((l) => p.test(l))).toBe(false);
@@ -150,7 +149,6 @@ describe("e2e: no-sentinel-respawn regression (EPIC e-be01fc89 T4)", () => {
       team,
       atmuxDir,
       atmuxBin: "/usr/local/bin/atmux",
-      cronPath: "/usr/bin:/bin",
     });
     for (const p of SENTINEL_PATTERNS) {
       expect(lines.some((l) => p.test(l))).toBe(false);

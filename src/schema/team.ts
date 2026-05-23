@@ -75,7 +75,7 @@ export const TeamMember = z
     command: z.string().optional(),
     /** ADR-157 §D4 — explicit runtime selector for the per-member
      *  TUI flavor. When `"cursor"`, the member runs under Cursor CLI
-     *  (martinet path per ADR-132 + ADR-140) and `goal` (below) is a
+     *  and `goal` (below) is a
      *  WARN-not-refuse no-op: Cursor has no `/goal` skill equivalent,
      *  so the field is allowed for partial-migration scenarios but
      *  doesn't drive a self-nudge loop. Default-unset → falls back
@@ -961,11 +961,10 @@ export const TeamCadenceThresholds = z
     /** At or above this age AND zero commits in window → verdict
      *  `dormant`. Default 21600 (6h). */
     dormantMaxAgeSec: z.number().int().positive().optional(),
-    /** Escalation flag threshold per ADR-132 §E6 contract bullet —
-     *  zero commits AND age ≥ this → verdict `ship-zero-window`.
-     *  Default 7200 (2h). Subset of `dormant` when the dormant
-     *  threshold is higher; surfacing happens regardless of
-     *  Sentinel impl. */
+    /** Escalation flag threshold — zero commits AND age ≥ this →
+     *  verdict `ship-zero-window`. Default 7200 (2h). Subset of
+     *  `dormant` when the dormant threshold is higher; surfacing
+     *  happens at observer-call sites (medic / orchd EPIC e-a946af69). */
     shipZeroWindowSec: z.number().int().positive().optional(),
   })
   .strict();
@@ -1094,8 +1093,8 @@ export const DEFAULT_CADENCE_CONFIG = {
 export const TeamRefusalDetection = z
   .object({
     /** Master switch. Default `true` — enabled by default per
-     *  ADR-139 §Config. Set `false` to suppress both medic + sentinel
-     *  refusal scans for the team. */
+     *  ADR-139 §Config. Set `false` to suppress medic refusal scans
+     *  for the team. */
     enabled: z.boolean().optional(),
     /** Soft-class events within `windowMin` to fire rotate. Default
      *  3 per ADR-139 §D3. */
@@ -1153,8 +1152,8 @@ export interface ResolvedRefusalConfig {
 
 /** Apply defaults to the team's `refusalDetection` block (absent or
  *  partial → fully resolved config). Pure — no I/O. The trigger
- *  module + medic + sentinel all call this at the top of each tick
- *  so the threshold gate sees concrete numbers. */
+ *  module + medic call this at the top of each tick so the threshold
+ *  gate sees concrete numbers. */
 export function resolveRefusalConfig(
   block: TeamRefusalDetection | undefined,
 ): ResolvedRefusalConfig {
