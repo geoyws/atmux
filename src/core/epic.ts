@@ -10,12 +10,17 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
-import { closeDatabase, type Database, openDatabase, transactImmediate } from "../abstractions/sqlite.ts";
-import { nextId } from "./id-sequence.ts";
+import {
+  closeDatabase,
+  type Database,
+  openDatabase,
+  transactImmediate,
+} from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanEpic, KanbanStory, KanbanTask } from "../schema/kanban.ts";
 import { tryLoadTeam } from "./common.ts";
+import { nextId } from "./id-sequence.ts";
 import { nowEpoch } from "./kanban.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
@@ -117,6 +122,13 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
         createdAt: nowEpoch(),
         completedAt: null,
         stories: [],
+        // ADR-225 (T1/T2 substrate): fresh epics start with no deps and
+        // is_ready=0 — operator flips via `epic ready` (T4) post-decomp.
+        // T3 will extend `addEpic` with a `--depends-on` flag + cycle
+        // validation; this literal mirrors the schema defaults so the
+        // existing call-site typechecks under the new KanbanEpic shape.
+        dependsOn: [],
+        isReady: false,
       };
       repo.upsertEpic(epic);
       assignedId = id;

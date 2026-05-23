@@ -221,6 +221,38 @@ describe("KanbanEpic", () => {
     const e = KanbanEpic.parse({ id: "e-x", driverRef: null });
     expect(e.driverRef).toBeNull();
   });
+
+  // ADR-225 §Schema (sqlite-migrations v13→v14): dependsOn + isReady.
+  test("dependsOn + isReady: explicit values round-trip cleanly", () => {
+    const parsed = KanbanEpic.parse({
+      id: "e-225a",
+      dependsOn: ["e-up1", "e-up2"],
+      isReady: true,
+    });
+    expect(parsed.dependsOn).toEqual(["e-up1", "e-up2"]);
+    expect(parsed.isReady).toBe(true);
+  });
+
+  test("dependsOn + isReady: defaults apply when fields omitted", () => {
+    // Models the legacy-row case (NULL → coerced default by epicFromRow,
+    // or simply omitted by a caller building a fresh epic literal).
+    const parsed = KanbanEpic.parse({ id: "e-225b" });
+    expect(parsed.dependsOn).toEqual([]);
+    expect(parsed.isReady).toBe(false);
+  });
+
+  test("dependsOn: rejects non-array shape", () => {
+    expect(() => KanbanEpic.parse({ id: "e-225c", dependsOn: "e-up1" })).toThrow();
+  });
+
+  test("dependsOn: rejects non-string elements", () => {
+    expect(() => KanbanEpic.parse({ id: "e-225d", dependsOn: [1, 2] })).toThrow();
+  });
+
+  test("isReady: rejects non-boolean", () => {
+    expect(() => KanbanEpic.parse({ id: "e-225e", isReady: "yes" })).toThrow();
+    expect(() => KanbanEpic.parse({ id: "e-225f", isReady: 1 })).toThrow();
+  });
 });
 
 // ---------- KanbanStory ----------
