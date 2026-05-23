@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔄 Changed — orchd auto-dissolve subscriber now routes through `dispatchDissolveEpic` + `dissolveEpic` factored into `src/core/` ([ADR-232](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) §D1, EPIC `e-60e16169` Phase 2 Story S0, t-4-d75fb776)
+
+Two-step landing:
+
+- **Factor.** `dissolveEpic` body extracted from `src/verbs/team/dissolve-epic.ts` into `src/core/dissolve-epic.ts::performDissolveEpic({epicId, skipChecks, forcePrune}, opts)` so the cross-cage dispatcher invokes the same pipeline without re-walking argv. Same factoring pattern as `performEpicMerge` per ADR-091. The CLI verb file shrinks to a thin wrapper (~98 lines from ~613) that parses argv + delegates; helper exports (`defaultCageTeardown`, `deleteMergedEpicBranch`, `DissolveEpicOpts`) re-export through the verb file so existing test imports stay unmodified — no behavior change to `atmux team dissolve-epic` CLI verb (same exit code, same stdout shape, same `ConfigError` throws).
+- **Wrap.** New `src/core/orchd-dispatch/dissolve-epic.ts` exports `dispatchDissolveEpic({ epicId, targetCage? })` — the cross-cage dispatcher seam consumed by parent's ADR-227 auto-dissolve subscriber. LOCAL route invokes `performDissolveEpic` directly with `callerScope: () => "driver"` injected per ADR-091 §state machine + ADR-227 §D1 (the orchd subscriber IS the legitimate driver). REMOTE route returns `{state: 'skipped-not-mine'}` per ADR-232 §D2 (v1 local-only; OQ-1 transport refinement deferred). Cage-not-found (targetCage absent from roster AND not local) raises `atmux flag add --severity p1` then returns `skipped-not-mine` so the subscriber advances the offset rather than retrying into a storm (ADR-232 OQ-3 + ADR-231 §D5). `performDissolveEpic` pre-flight refusals (open child tasks, dirty worktree, epic-team not in cockpit) → `{state: 'gate-held', reason}` so the subscriber emits `epic.dissolve-blocked` per ADR-227 §D6.
+
+Wire-up at `src/verbs/committer.ts::committerDrainVerb` injects `dispatchDissolveEpic` into `bootstrapOrchd({ dissolveDeps })` alongside the sibling `dispatchEpicMerge` (mergeDeps) + `dispatchGitPush` (pushDeps) closures. Stubbed `skipped-not-mine` default stays at the handler-factory layer as the ADR-232 §D3 safety net under at-least-once delivery. Zod-validated input (`DispatchDissolveEpicInputSchema`); 11-test unit suite at `tests/unit/core/orchd-dispatch/dissolve-epic.test.ts` covers LOCAL success, ConfigError → gate-held mapping, non-ConfigError re-propagation, REMOTE-deferred, cage-not-found flag + skipped-not-mine, targetCage default to epicId, local-cage override beating roster mismatch. 6 new tests at `tests/unit/core/dissolve-epic.test.ts` cover the structured-input entry point (Zod schema, caller-scope gate, topology not-found, happy path); the 22 pre-factor verb tests at `tests/unit/verbs/team/dissolve-epic.test.ts` continue to pass against the factored module unmodified (no regression on tracked-paths coverage per CLAUDE.md).
+
+### 🔄 Changed — orchd auto-merge subscriber now routes through `dispatchEpicMerge` ([ADR-232](docs/adr/232-orchd-cross-cage-dispatcher-seam.md), EPIC `e-60e16169` Phase 2 Story S0)
+
+New `src/core/orchd-dispatch/epic-merge.ts` exports `dispatchEpicMerge({ epicId, targetCage? })` — the cross-cage dispatcher seam consumed by parent's ADR-226 auto-merge subscriber. LOCAL route invokes `performEpicMerge` directly (zero-RPC); REMOTE route emits a Bun-subprocess dispatch per ADR-202 §IX-A lean-dispatch contract (path A per ADR-232 §D2; OQ-1 transport refinement deferred). Cage-not-found and remote-dispatch failure paths surface `atmux flag add` with epicId + target cage + stderr tail in the body. Wire-up at `src/verbs/committer.ts` injects the dispatcher into `bootstrapOrchd({ mergeDeps })`, replacing the stubbed default that returned `skipped-not-mine` (the stub stays as ADR-232 §D3's safety net — the auto-merge handler's `skipped-not-mine` switch case is unchanged). Zod-validated input/output; 30-test unit suite at `tests/unit/core/orchd-dispatch/epic-merge.test.ts` covers local-route, remote-route, route-failure-flag, cage-not-found, default impls, and pure `mapLocalResult` mapping.
+
 ### ✨ Added — orchd Phase 3-5 lifecycle (EPIC `e-a946af69` close-out)
 
 End-to-end automation of epic-team lifecycle via the orchd event-
@@ -23,6 +36,14 @@ flipping atmux's coordination spine from cron-polled to event-driven:
 Topic taxonomy ([ADR-203 §D2](docs/adr/203-event-topic-taxonomy.md)) grew by 3 entries (47 → 50 in `TOPICS`): `epic.spawn-queued`, `epic.spawn-abandoned`, `epic.added`. Discriminated union + Zod payloads in `src/schema/events.ts`.
 
 End-to-end dogfood (lifecycle + pressure-throttle) requires sibling EPIC `e-60e16169`'s dispatcher injection before any handler does work at the verb layer — until then, the registered handlers ship with `skipped-not-mine` stubs that are safe no-ops under at-least-once delivery. Run protocol for the post-`e-60e16169` operator-driven dogfood lives at [ADR-228 §Amendment 2026-05-23-rev2](docs/adr/228-orchd-spawn-queue-pressure-monitor.md).
+
+### ✨ Added — orchd cross-cage dispatcher seam: `dispatchGitPush` (Story s-4-a74c6fc1 / t-5)
+
+First of three dispatchers under [ADR-232 §D1](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) — wraps `git push <remote> <branch>` for the parent ADR-229 auto-push handler. Local cage executes via `defaultGitSpawn` (fetch → upstream-advanced detect → push → resolve head SHA); remote cage stub returns `skipped-not-mine` per §D2 (transport choice OQ-1 deferred — local-only v1). Cage-not-found + fetch-failure + push-rejection paths raise `atmux flag add --severity p1` and return `skipped-not-mine` with no retry per §OQ-3 (mirrors ADR-231 §D5 anti-retry-storm).
+
+- **New** — `src/core/orchd-dispatch/git-push.ts` (Zod input + dispatch function + test-injection deps).
+- **New** — `tests/unit/core/orchd-dispatch/git-push.test.ts` (15 cases: schema validation, local happy path, upstream-advanced, remote-route deferred, cage-not-found, fetch-failure flag, push-rejection flag, no-retry assertion, rev-list parse fallbacks).
+- **Wired** — `src/verbs/committer.ts::committerDrainVerb` now injects `dispatchGitPush` into `bootstrapOrchd({ pushDeps })`, closing over `team.name` as the local cage identifier. Sibling dispatchers `dispatchEpicMerge` (t-3) and `dispatchDissolveEpic` (t-4) land in the same directory.
 
 ### ✨ Added — `atmux topo` fleet observability + reap cascade (ADR-222 + ADR-223)
 

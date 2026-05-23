@@ -76,6 +76,9 @@ import {
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
 import { bootstrapOrchd as bootstrapOrchdImport } from "../core/orchd-bootstrap.ts";
+import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
+import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
+import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
 import { ORCHD_SUBSCRIPTIONS as ORCHD_SUBSCRIPTIONS_IMPORT } from "../core/orchd-registry.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
@@ -432,7 +435,35 @@ export async function committerDrainVerb(
   // populated the registry (tests, future `--start` path), the
   // idempotency guard inside `registerOrchdSubscription` no-ops the
   // duplicate consumerIds.
-  bootstrapOrchdImport({ db: ctx.db });
+  //
+  // Push-dispatcher wiring (ADR-232 §D1 — Story s-4-a74c6fc1 / t-5):
+  // inject `dispatchGitPush` so the auto-push handler's Gate-1 fires
+  // a real `git push origin <parentBase>` (default stub returned
+  // `skipped-not-mine` per ADR-232 §D3 safety net). Cage param =
+  // local team.name; remote cages are stubbed per ADR-232 §D2
+  // (local-only v1). Skipped-not-mine still routes back to the
+  // safety net on cage-not-found / push-rejection / fetch-failure
+  // (flag + offset-advance per ADR-232 OQ-3 anti-retry).
+  bootstrapOrchdImport({
+    db: ctx.db,
+    mergeDeps: {
+      dispatchEpicMerge: async (epicId) => dispatchEpicMergeImport({ epicId }),
+    },
+    dissolveDeps: {
+      dispatchDissolveEpic: async (epicId) =>
+        dispatchDissolveEpicImport(
+          { epicId },
+          { localCageName: ctx.team.name },
+        ),
+    },
+    pushDeps: {
+      dispatchGitPush: async (parentBase) =>
+        dispatchGitPushImport(
+          { cage: ctx.team.name, branch: parentBase },
+          { localCageName: ctx.team.name },
+        ),
+    },
+  });
   let orchdProcessed = 0;
   let orchdErrors = 0;
   try {
