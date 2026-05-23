@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v13)", () => {
+  test("opening with the full ladder advances user_version to the tail (v14)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -42,7 +42,12 @@ describe("sqlite-migrations live ladder", () => {
     //             §VIII compound `<scope>-<N>-<hash>` shape)
     //   - v12→v13 added prune_state for events-prune cursor bookkeeping
     //             (ADR-202 §XI queued via T2.2, t-0d79d5bd)
-    expect(readUserVersion(db)).toBe(13);
+    //   - v13→v14 added epics.depends_on + epics.is_ready (ADR-225,
+    //             master task t-802c468b, EPIC e-cf8a6195)
+    //   - v14→v15 added spawn_queue for orchd refuse-then-queue path
+    //             (ADR-228 §D2, t-095190f8) — renumbered from v13→v14
+    //             at fan-in 2026-05-23 per ADR-091 §pre-flag #4
+    expect(readUserVersion(db)).toBe(15);
   });
 });
 
@@ -324,6 +329,122 @@ describe("v10 → v11: events + subscriber_offsets (Honker substrate)", () => {
   });
 });
 
+describe("v13 → v14: epics.depends_on + epics.is_ready (ADR-225)", () => {
+  test("both columns exist on the epics table with the expected types + defaults", () => {
+    const cols = db.prepare("PRAGMA table_info(epics)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+
+    const dep = byName.get("depends_on");
+    expect(dep).toBeDefined();
+    expect(dep?.type).toBe("TEXT");
+    expect(dep?.notnull).toBe(1);
+    // SQLite stores the literal default with the source-text quoting.
+    expect(dep?.dflt_value).toBe("'[]'");
+
+    const ready = byName.get("is_ready");
+    expect(ready).toBeDefined();
+    expect(ready?.type).toBe("INTEGER");
+    expect(ready?.notnull).toBe(1);
+    expect(ready?.dflt_value).toBe("0");
+  });
+
+  test("new epic rows inherit the column defaults (depends_on='[]', is_ready=0)", () => {
+    db.prepare(
+      `INSERT INTO epics (id, title, body, status, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run("e-fresh", "fresh epic", "body", "planning", 1_700_000_000);
+    const row = db
+      .prepare("SELECT depends_on, is_ready FROM epics WHERE id = ?")
+      .get("e-fresh") as { depends_on: string; is_ready: number };
+    expect(row.depends_on).toBe("[]");
+    expect(row.is_ready).toBe(0);
+  });
+
+  test("depends_on round-trips a JSON-array of epic ids", () => {
+    db.prepare(
+      `INSERT INTO epics (id, title, status, depends_on, is_ready, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "e-chain",
+      "downstream",
+      "planning",
+      JSON.stringify(["e-up1", "e-up2"]),
+      0,
+      1_700_000_001,
+    );
+    const row = db.prepare("SELECT depends_on FROM epics WHERE id = ?").get("e-chain") as {
+      depends_on: string;
+    };
+    expect(JSON.parse(row.depends_on)).toEqual(["e-up1", "e-up2"]);
+  });
+});
+
+describe("v13 → v14: backfill semantics on a pre-existing v13 DB", () => {
+  // Pre-existing v13 DBs (already on trunk after Epic B's prune_state
+  // migration) must have their epics rows correctly backfilled when
+  // they walk through v13→v14: in-flight + done epics flip to
+  // is_ready=1; draft (planning / ready) rows stay at 0. depends_on
+  // backfills to '[]' for every row via the column default.
+  //
+  // We synthesize the pre-v14 shape by opening a DB with the ladder
+  // truncated at v13, seeding rows in mixed statuses, closing, then
+  // re-opening with the full ladder so v13→v14 fires on top.
+  test("backfill: in-flight + done flip to is_ready=1; drafts stay at 0; all get depends_on='[]'", async () => {
+    const pre14 = migrations.filter((m) => m.to <= 13);
+    const path = join(scratch, "backfill.db");
+
+    // Stage 1: walk to v13 and seed mixed-status rows.
+    const staging = openDatabase(path, pre14);
+    expect(readUserVersion(staging)).toBe(13);
+    const rowsByStatus: ReadonlyArray<readonly [string, string]> = [
+      ["e-plan", "planning"],
+      ["e-ready", "ready"],
+      ["e-flight", "in-progress"],
+      ["e-rev", "review"],
+      ["e-done", "done"],
+    ];
+    for (const [id, status] of rowsByStatus) {
+      staging
+        .prepare(`INSERT INTO epics (id, title, status, created_at) VALUES (?, ?, ?, ?)`)
+        .run(id, `${id} title`, status, 1_700_000_000);
+    }
+    closeDatabase(staging);
+
+    // Stage 2: re-open with the full ladder; v13→v14 runs.
+    const full = openDatabase(path, migrations);
+    expect(readUserVersion(full)).toBe(14);
+
+    const seen = full
+      .prepare("SELECT id, status, depends_on, is_ready FROM epics ORDER BY id")
+      .all() as Array<{
+      id: string;
+      status: string;
+      depends_on: string;
+      is_ready: number;
+    }>;
+    const byId = new Map(seen.map((r) => [r.id, r]));
+
+    // Drafts stay at 0.
+    expect(byId.get("e-plan")?.is_ready).toBe(0);
+    expect(byId.get("e-ready")?.is_ready).toBe(0);
+    // In-flight + review + done flip to 1.
+    expect(byId.get("e-flight")?.is_ready).toBe(1);
+    expect(byId.get("e-rev")?.is_ready).toBe(1);
+    expect(byId.get("e-done")?.is_ready).toBe(1);
+    // depends_on backfills to '[]' for every row via the column default.
+    for (const r of seen) {
+      expect(r.depends_on).toBe("[]");
+    }
+
+    closeDatabase(full);
+  });
+});
+
 describe("v12 → v13: prune_state (events-prune cursor bookkeeping)", () => {
   test("prune_state table exists with the expected column set + types", () => {
     const cols = db.prepare("PRAGMA table_info(prune_state)").all() as Array<{
@@ -357,9 +478,7 @@ describe("v12 → v13: prune_state (events-prune cursor bookkeeping)", () => {
   });
 
   test("prune_state starts empty on a fresh ladder", () => {
-    const { n } = db
-      .prepare("SELECT COUNT(*) AS n FROM prune_state")
-      .get() as { n: number };
+    const { n } = db.prepare("SELECT COUNT(*) AS n FROM prune_state").get() as { n: number };
     expect(n).toBe(0);
   });
 
@@ -382,10 +501,178 @@ describe("v12 → v13: prune_state (events-prune cursor bookkeeping)", () => {
 
     expect(() =>
       db
-        .prepare(
-          `INSERT INTO prune_state (team_name, cursor, last_pruned_at_sec) VALUES (?, ?, ?)`,
-        )
+        .prepare(`INSERT INTO prune_state (team_name, cursor, last_pruned_at_sec) VALUES (?, ?, ?)`)
         .run("team-beta", 99, 1_700_000_001),
     ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/);
+  });
+});
+
+// ---------- v14 → v15 — spawn_queue (ADR-228 §D2) ----------
+// Renumbered from v13→v14 at fan-in 2026-05-23 per ADR-091 §pre-flag
+// #4 — sibling EPIC e-cf8a6195 (ADR-225 epic-deps) landed v13→v14
+// first.
+
+describe("v14 → v15: spawn_queue (ADR-228 §D2, t-095190f8)", () => {
+  test("spawn_queue table exists with the expected column set + types", () => {
+    const cols = db.prepare("PRAGMA table_info(spawn_queue)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+      pk: number;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+    expect(byName.get("queue_id")?.type).toBe("TEXT");
+    expect(byName.get("queue_id")?.pk).toBe(1);
+    expect(byName.get("queue_id")?.notnull).toBe(1);
+    expect(byName.get("epic_id")?.type).toBe("TEXT");
+    expect(byName.get("epic_id")?.notnull).toBe(1);
+    expect(byName.get("spawn_args")?.type).toBe("TEXT");
+    expect(byName.get("spawn_args")?.notnull).toBe(1);
+    expect(byName.get("queued_at_sec")?.type).toBe("INTEGER");
+    expect(byName.get("queued_at_sec")?.notnull).toBe(1);
+    expect(byName.get("queued_by")?.type).toBe("TEXT");
+    expect(byName.get("queued_by")?.notnull).toBe(1);
+    expect(byName.get("priority")?.type).toBe("INTEGER");
+    expect(byName.get("priority")?.dflt_value).toBe("5");
+    expect(byName.get("attempts")?.type).toBe("INTEGER");
+    expect(byName.get("attempts")?.dflt_value).toBe("0");
+    expect(byName.get("last_attempt_at_sec")?.type).toBe("INTEGER");
+    expect(byName.get("last_attempt_at_sec")?.notnull).toBe(0); // nullable
+    expect(byName.get("last_failure_reason")?.type).toBe("TEXT");
+    expect(byName.get("last_failure_reason")?.notnull).toBe(0); // nullable
+    expect(byName.get("state")?.type).toBe("TEXT");
+    expect(byName.get("state")?.dflt_value).toBe("'queued'");
+  });
+
+  test("idx_spawn_queue_priority_queued index covers (state, priority, queued_at_sec)", () => {
+    const indexes = db.prepare("PRAGMA index_list(spawn_queue)").all() as Array<{
+      name: string;
+    }>;
+    expect(indexes.some((i) => i.name === "idx_spawn_queue_priority_queued")).toBe(true);
+
+    const indexCols = db
+      .prepare("PRAGMA index_info(idx_spawn_queue_priority_queued)")
+      .all() as Array<{ seqno: number; cid: number; name: string }>;
+    const colNames = indexCols.sort((a, b) => a.seqno - b.seqno).map((c) => c.name);
+    expect(colNames).toEqual(["state", "priority", "queued_at_sec"]);
+  });
+
+  test("spawn_queue accepts a row with defaults applied", () => {
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      "q-abc12345",
+      "e-deadbeef",
+      '["spawn-epic","e-deadbeef","--from","atmux"]',
+      1_700_000_000,
+      "be-1",
+    );
+
+    const row = db.prepare("SELECT * FROM spawn_queue WHERE queue_id = ?").get("q-abc12345") as {
+      queue_id: string;
+      epic_id: string;
+      spawn_args: string;
+      queued_at_sec: number;
+      queued_by: string;
+      priority: number;
+      attempts: number;
+      last_attempt_at_sec: number | null;
+      last_failure_reason: string | null;
+      state: string;
+    };
+    expect(row.queue_id).toBe("q-abc12345");
+    expect(row.epic_id).toBe("e-deadbeef");
+    expect(row.priority).toBe(5); // default
+    expect(row.attempts).toBe(0); // default
+    expect(row.last_attempt_at_sec).toBeNull();
+    expect(row.last_failure_reason).toBeNull();
+    expect(row.state).toBe("queued"); // default
+  });
+
+  test("spawn_queue.state CHECK constraint rejects unknown values", () => {
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by, state)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run("q-bogus", "e-x", "[]", 0, "be-1", "DRAINING"),
+    ).toThrow(/CHECK constraint failed/);
+  });
+
+  test("spawn_queue.state accepts each valid state literal", () => {
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by, state)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("q-q", "e-1", "[]", 1, "be-1", "queued");
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by, state)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("q-s", "e-1", "[]", 1, "be-1", "spawning");
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by, state)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("q-a", "e-1", "[]", 1, "be-1", "abandoned");
+
+    const count = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM spawn_queue WHERE state IN ('queued','spawning','abandoned')",
+      )
+      .get() as { n: number };
+    expect(count.n).toBe(3);
+  });
+
+  test("queue_id is the primary key (rejects duplicate)", () => {
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by) VALUES (?, ?, ?, ?, ?)`,
+    ).run("q-dup", "e-1", "[]", 1, "be-1");
+
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run("q-dup", "e-2", "[]", 2, "be-1"),
+    ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/);
+  });
+
+  test("spawn_queue accepts overrides for priority + attempts", () => {
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by, priority, attempts)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("q-high", "e-urgent", "[]", 0, "driver", 1, 3);
+
+    const row = db
+      .prepare("SELECT priority, attempts FROM spawn_queue WHERE queue_id = ?")
+      .get("q-high") as {
+      priority: number;
+      attempts: number;
+    };
+    expect(row.priority).toBe(1);
+    expect(row.attempts).toBe(3);
+  });
+
+  test("admit-tick query `WHERE state='queued' ORDER BY priority, queued_at_sec` uses the composite index", () => {
+    // Seed two queued rows + one spawning row at different priorities.
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by, priority) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("q-a", "e-a", "[]", 100, "be-1", 5);
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by, priority) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("q-b", "e-b", "[]", 50, "be-1", 1);
+    db.prepare(
+      `INSERT INTO spawn_queue (queue_id, epic_id, spawn_args, queued_at_sec, queued_by, priority, state) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("q-spawning", "e-x", "[]", 0, "be-1", 1, "spawning");
+
+    const rows = db
+      .prepare(
+        `SELECT queue_id, priority FROM spawn_queue
+         WHERE state = 'queued' ORDER BY priority, queued_at_sec`,
+      )
+      .all() as Array<{ queue_id: string; priority: number }>;
+    // q-b (priority 1) before q-a (priority 5); spawning row excluded.
+    expect(rows.map((r) => r.queue_id)).toEqual(["q-b", "q-a"]);
   });
 });

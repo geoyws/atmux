@@ -1,6 +1,6 @@
 # ADR-203: Event topic taxonomy — canonical names, Zod payload schemas, cross-team propagation rules, post-commit hook
 
-**Status**: proposed (deferred: gated on ADR-202 substrate landing first — taxonomy is meaningless without the messaging primitive)
+**Status**: Accepted — ratified by driver 2026-05-23 (ADR-202 substrate fully on trunk; deferral condition met). Topic taxonomy now LIVE: `task.done` / `task.unclaimed` / `epic.merged` / consumer subscriptions wired per ADR-202 §IX-A + §X. Forthcoming events (`epic.added` / `epic.unblocked` / `epic.ready` / `epic.dissolved` / `epic.spawn_queued` / `epic.spawn_failed` / `budget.warning` / `budget.recovered`) follow this ADR's vocabulary contract as they're added under orchd lifecycle EPICs (`e-60e16169` Phase 2, `e-a946af69` Phase 3-5, `e-cf8a6195` deps + isReady).
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-20 evening design session — operator: *"come up with a complete recommendation to rehaul the entire atmux to use pubsub with honker"* — taxonomy is the second of three Honker-stack ADRs queued.
 **Cross-refs**: [ADR-202](202-honker-in-db-messaging-substrate.md) §D4 (typed-discriminated-union decision this fleshes out), [ADR-202](202-honker-in-db-messaging-substrate.md) §D9 (post-commit hook architecture this specifies in detail), [ADR-091](091-kanban-driven-auto-merge.md) §Triggers (task-done event consumer), [ADR-134](134-in-team-auto-merger.md) §Triggers (branch-ready event consumer), [ADR-145](145-atmux-adopts-gitter.md) (gitter event-consumer mapping), [ADR-126](126-sqlite-state-store.md) §kanban schema (events table sibling), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md) §D6 (`budget.warning` / `budget.recovered` topics), [ADR-200](200-install-wizard-guided-first-run-setup.md) §D9 (hook install wizard step), forthcoming ADR-204 (`_jury` consumer of `story.tested` + emitter of `story.jury_ratified` / `story.jury_verdict`).
@@ -51,7 +51,16 @@ The v1 topic set, organized by domain. **Each entry has a payload schema in D3.*
 - `epic.created` — epic spawned
 - `epic.dissolved` — epic-team dissolved (cockpit consumer reaps cron blocks per ADR-197)
 - `epic.merge-ready` — every child task done; ready for fan-in
+- `epic.merged` — orchd-merge handler completed fan-in (post-condition vs `epic.merge-ready` pre-condition). Payload: `{epicId, parentBase, mergeSha, mergedAtSec}`. Per ADR-226 §D2 (2026-05-23). Consumed by Phase 4 (ADR-227 auto-dissolve).
+- `epic.merge-blocked` — orchd-merge dispatcher returned conflict / gate-held / non-terminal. Payload: `{epicId, reason, blockedAtSec}`. Per ADR-226 §D2 (2026-05-23). Operator-observable; no consumer in v1.
+- `epic.dissolve-blocked` — orchd-dissolve handler's pre-flight gate refused (worktree dirty, in-flight sessions, ADR-090 §dissolve-epic gate held). Payload: `{epicId, reason, blockedAtSec}`. Per ADR-227 §D2 (2026-05-23). Operator-observable; surfaces in cockpit-mirror Discord feed per ADR-219; no v1 consumer.
+- `epic.pushed` — orchd-push handler successfully pushed merged commit to `origin/<parentBase>`. Payload: `{epicId, base, headSha, beforeSha?, pushedAtSec, durationMs?}`. Per ADR-229 §D3 (2026-05-23). Consumed by Phase 4 (ADR-227 §Amendment 2026-05-23 trigger flip from `epic.merged` to `epic.pushed`).
+- `epic.push-blocked` — orchd-push handler's pre-flight gate refused (Gate-{2,3a,3b,4,5,7} per ADR-229 §DA-Gate-N). Payload: `{epicId, base, gateBlocked: "1"|"2"|"3a"|"3b"|"4"|"5"|"7", reason, blockedAtSec}`. Per ADR-229 §D3. Operator-observable; no v1 consumer.
+- `epic.push-conflict` — orchd-push handler's Gate-1 upstream-advanced refusal (distinct from `epic.push-blocked` for actionable rebase/pull metadata + Discord template per ADR-219). Payload: `{epicId, base, ahead, behind, divergenceSha?, blockedAtSec}`. Per ADR-229 §D3.
 - `epic.spawn-blocked` — `spawn-epic` refused due to pool exhaustion (ADR-199 D3) — cockpit-scope
+- `epic.spawn-queued` — `spawn-epic` deferred via the per-team SQLite queue because the host was over pressure threshold. Payload: `{queueId, epicId, queuedBy, queuedAtSec, depth}`. Per ADR-228 §D5 (Phase 5b, 2026-05-23). Operator-observable; surfaces in cockpit-mirror Discord feed at depth thresholds {3, 5, 10} per ADR-219 §queue-grew template.
+- `epic.spawn-abandoned` — orchd's pressure-monitor drain attempts exhausted `maxAttempts` for a queued spawn request. Payload: `{queueId, epicId, attempts, lastFailureReason}`. Per ADR-228 §D5. Operator must inspect manually (no v1 consumer); row persists in `spawn_queue` table for audit.
+- `epic.added` — a new epic-team was added (direct spawn OR successful drain by orchd's pressure-monitor). Payload: `{epicId, addedAtSec}`. Per ADR-228 §D5; sibling EPIC `e-60e16169` Phase 2 auto-spawn consumes this for downstream automation.
 
 #### Commit lifecycle (team-scope)
 - `commit.landed` — post-commit hook fired (D5 hook contract)

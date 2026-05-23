@@ -13,7 +13,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-211/212/214**: sentinel + medic + martinet + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-212/214**: medic + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -95,10 +95,15 @@ Every state-mutating verb publishes to its target's UNIX socket after the kanban
 ## Core commands
 
 ```
-atmux epic add "title" [--body <text>] [--driver-ref <ref>]
-atmux epic list [--status <s>] [--json]
-atmux epic show <id>
+atmux epic add "title" [--body <text>] [--driver-ref <ref>] \
+                       [--depends-on <eid,eid,...>]
+atmux epic list [--status <s>] [--json]   # also shows R + D=k/n columns per ADR-225
+atmux epic show <id>                       # includes dep chain + is_ready state
 atmux epic advance <id> [--to <state>]
+atmux epic ready <id>                      # is_ready := 1; fires epic.ready (ADR-225)
+atmux epic unready <id>                    # is_ready := 0; silent (ADR-225)
+atmux epic set-depends-on <id> <eid,...>   # replace dep list (ADR-225)
+atmux epic deps <id>                       # transitive dep graph (ADR-225)
 
 atmux story add "title" --epic <eid> [--ac "criteria"] [--body <text>] \
                                      [--merge-mode feature-branch|trunk-direct]
@@ -124,7 +129,7 @@ atmux decisions add "<q>" --default "<a>" [--reversibility low|medium|high]
 1. **Read `{{ATMUX_DIR}}/planner-inbox.md` FIRST** — asks from the lead under `## Open` are your queue.
 2. For each open ask:
    a. **Research**: grep, read, trace call graphs. Don't run the code; you're building a mental model, not exercising the system.
-   b. **Frame the Epic**: `atmux epic add "<title>" --body "<scope + non-goals>" [--driver-ref <inbox-ref>]`. Record the Epic id (`e-xxxxxxxx`).
+   b. **Frame the Epic**: `atmux epic add "<title>" --body "<scope + non-goals>" [--driver-ref <inbox-ref>] [--depends-on <eid,eid,...>]`. Record the Epic id (`e-xxxxxxxx`). Pass `--depends-on` when this Epic upstream-blocks another (cite the dep Epic ids); cycle-detect + non-existent-dep refusal fire at add-time per [ADR-225](../../docs/adr/225-epic-dependencies-and-is-ready-toggle.md). After decomposition lands, call `atmux epic ready <eid>` to flip the kick-off bit; without that, `team spawn-epic` refuses (unless operator passes `--force`).
    c. **Decide on Stories**: if the Epic has multiple distinct acceptance surfaces (e.g. schema vs. UI vs. e2e), draft Stories — one per surface, each with an explicit `--ac` clause. If the Epic is small/atomic, skip Stories.
    d. **Author Tasks**: `atmux task add "<subject>" --epic <eid> [--story <sid>] --lane <lane> --priority <1-5> --deliverable "<file:line or artifact>" --deps <id,id> --body "<acceptance criteria + file paths>"`.
       - Subject: imperative, 5–10 words.

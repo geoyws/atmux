@@ -47,8 +47,8 @@ describe.if(HAS_BIN)("atmux-cockpit-mirror smoke (ADR-219 T-S2-11)", () => {
   let fakeAtmuxBin: string;
   let fakeAtmuxLog: string;
   let proc: ReturnType<typeof Bun.spawn> | null = null;
-  let mirrorStdoutBuf = "";
-  let mirrorStderrBuf = "";
+  let _mirrorStdoutBuf = "";
+  let _mirrorStderrBuf = "";
 
   beforeEach(async () => {
     scratchDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-mirror-smoke-"));
@@ -63,8 +63,8 @@ describe.if(HAS_BIN)("atmux-cockpit-mirror smoke (ADR-219 T-S2-11)", () => {
       `#!/bin/bash\necho "$@" >> "${fakeAtmuxLog}"\nexit 0\n`,
     );
     await chmod(fakeAtmuxBin, 0o755);
-    mirrorStdoutBuf = "";
-    mirrorStderrBuf = "";
+    _mirrorStdoutBuf = "";
+    _mirrorStderrBuf = "";
   });
 
   afterEach(async () => {
@@ -143,7 +143,7 @@ describe.if(HAS_BIN)("atmux-cockpit-mirror smoke (ADR-219 T-S2-11)", () => {
   /** Drain the mirror's stdout/stderr streams into in-memory buffers
    *  so assertions can grep them. Best-effort — a closed stream returns
    *  empty and we stop. */
-  async function drainStreams(): Promise<void> {
+  async function _drainStreams(): Promise<void> {
     if (proc === null) return;
     const readStream = async (
       stream: ReadableStream<Uint8Array> | undefined | null,
@@ -164,7 +164,7 @@ describe.if(HAS_BIN)("atmux-cockpit-mirror smoke (ADR-219 T-S2-11)", () => {
       return acc;
     };
     // Read both concurrently; ignore-then-add.
-    [mirrorStdoutBuf, mirrorStderrBuf] = await Promise.all([
+    [_mirrorStdoutBuf, _mirrorStderrBuf] = await Promise.all([
       readStream(proc.stdout as ReadableStream<Uint8Array>),
       readStream(proc.stderr as ReadableStream<Uint8Array>),
     ]);

@@ -1,7 +1,7 @@
 // ADR-063 (legacy flat shape) → ADR-089 (recursive `sessions[]` shape).
 //
 // New canonical: `Cockpit.sessions[]` — a discriminated union on `type`
-// across `team` / `epic-team` / `superdriver` / `medic` / `sentinel`.
+// across `team` / `epic-team` / `superdriver` / `medic`.
 // `team` and `epic-team` carry nested `sessions[]` for arbitrary-depth
 // nesting.
 //
@@ -202,26 +202,12 @@ export interface MedicSessionT {
   tuiOverrides?: CockpitTuiOverrides;
 }
 
-/** Cockpit window 3 (ADR-132 §D2) — pluggable Sentinel role.
- *  Singleton (one per cockpit) — the fleet-wide tick loop iterates
- *  every enabled team per tick from this one cage, dispatching the
- *  resolved impl (`team.json::sentinel` per team) on each. */
-export interface SentinelSessionT {
-  type: "sentinel";
-  name: string;
-  enabled: boolean;
-  prefixChain?: string[];
-  claudeAccount?: CockpitClaudeAccount;
-  tuiOverrides?: CockpitTuiOverrides;
-}
-
 export type CockpitSessionT =
   | TeamSessionT
   | EpicTeamSessionT
   | SuperdriverSessionT
   | SuperdoctorSessionT
-  | MedicSessionT
-  | SentinelSessionT;
+  | MedicSessionT;
 
 // ---------- Concrete leaf schemas ----------
 
@@ -278,14 +264,6 @@ export const MedicSession: z.ZodType<MedicSessionT> = z.lazy(() =>
   }).strict(),
 ) as z.ZodType<MedicSessionT>;
 
-/** Cockpit window 3 (ADR-132 §D2) — pluggable Sentinel role. Singleton
- *  in practice; one cage hosts the fleet-wide tick loop. */
-export const SentinelSession: z.ZodType<SentinelSessionT> = z.lazy(() =>
-  CockpitSessionBase.extend({
-    type: z.literal("sentinel"),
-  }).strict(),
-) as z.ZodType<SentinelSessionT>;
-
 /** Discriminated union — ADR-089 §Decision-anchor #2. Rejects unknown
  *  `type` strings (strict-mode union per the reviewer pre-flag). Wrapped
  *  in `z.lazy` so the recursive `TeamSession.sessions[]` references can
@@ -305,7 +283,6 @@ export const CockpitSession = z.lazy(() =>
     SuperdriverSession as unknown as z.ZodObject,
     SuperdoctorSession as unknown as z.ZodObject,
     MedicSession as unknown as z.ZodObject,
-    SentinelSession as unknown as z.ZodObject,
   ]),
 ) as unknown as z.ZodType<CockpitSessionT>;
 
@@ -385,102 +362,6 @@ export type CockpitSuperdoctor = z.infer<typeof CockpitSuperdoctor>;
 export const CockpitMedic = CockpitSuperdoctor;
 export type CockpitMedic = z.infer<typeof CockpitMedic>;
 
-/**
- * ADR-132 §D4 — `claude` variant of the pluggable sentinel config.
- * Reuses the cockpit-tier `claudeAccount` + `tuiOverrides` pattern
- * verbatim from {@link CockpitSuperdoctor}. The cockpit-rebuild
- * step provisions a Tier-1 (operator-runtime) cage at W3 when this
- * variant is selected — no separate cage subprocess; the sentinel
- * runs in the operator's TUI under `claudeAccount`.
- *
- * `autoStart` + `autoStartTimeoutSec` mirror the superdoctor pattern
- * (t-22453c1e): after a freshly-created sentinel window settles to
- * its idle Claude prompt, the cockpit-rebuild step fires
- * `/loop /sentinel` to begin the observation cycle. Defaults: true /
- * 30s. Pre-existing windows are never re-fired; the auto-start gate
- * is fresh-create-only.
- */
-export const CockpitSentinelClaude = z
-  .object({
-    impl: z.literal("claude"),
-    enabled: z.boolean().default(false),
-    claudeAccount: CockpitClaudeAccount.optional(),
-    tuiOverrides: CockpitTuiOverrides.optional(),
-    autoStart: z.boolean().optional(),
-    autoStartTimeoutSec: z.number().int().positive().optional(),
-  })
-  .strict();
-export type CockpitSentinelClaude = z.infer<typeof CockpitSentinelClaude>;
-
-/**
- * ADR-132 §D4 — `cursor` variant of the pluggable sentinel config.
- * The cockpit-rebuild step provisions a Tier-2 cage tmux server
- * running `cursor-agent --model <model>` at W3 when this variant
- * is selected. Tier-2 is full operator-UID with git access (per
- * ADR-050 §D1 + ADR-058 §D3 trust posture — cursor-agent is the
- * sole accepted fallback executor post-2026-05-14 scope reduction;
- * the same cage tier carries over to the sentinel pattern).
- *
- * `cursorBinPath` is the absolute path to the operator's
- * `cursor-agent` install (default `/usr/local/bin/cursor-agent`,
- * the project-canonical install location). `model` picks between
- * `composer-2-fast` (default — cost-efficient mechanical-tier
- * choice) and `composer-2` (for teams that need deeper reasoning
- * at the sentinel tier). `cageTier` is literal-pinned to `"tier-2"`
- * per ADR-132 §D4 — Tier 3+ would require a fresh ADR + enum bump
- * (out of scope per the 2026-05-14 reduction).
- */
-export const CockpitSentinelCursor = z
-  .object({
-    impl: z.literal("cursor"),
-    enabled: z.boolean().default(false),
-    cursorBinPath: z.string().default("/usr/local/bin/cursor-agent"),
-    model: z.enum(["composer-2-fast", "composer-2"]).default("composer-2-fast"),
-    cageTier: z.literal("tier-2").default("tier-2"),
-  })
-  .strict();
-export type CockpitSentinelCursor = z.infer<typeof CockpitSentinelCursor>;
-
-/**
- * ADR-132 §D4 — pluggable 2-impl sentinel config as a discriminated
- * union keyed on `impl`. Picking the variant at the schema layer
- * means TS narrows correctly when callers read variant-specific
- * fields (`.tuiOverrides` only valid on claude; `.cursorBinPath`
- * only valid on cursor). Both variants share `enabled` + `impl`;
- * everything else is impl-specific.
- *
- * Resolution order per ADR-132 §D6: per-team `team.json::sentinel`
- * beats `cockpit.defaultSentinel` beats hard-coded `"claude"`
- * fallback. The `defaultSentinel` field at the top of `Cockpit`
- * carries the fleet-wide default; this discriminated union carries
- * the impl-specific provisioning knobs.
- *
- * Trunk-merge note (Task t-b86fd8cb, 2026-05-14): replaces both
- * sides' flat singleton structs. whip-impl branch had a Claude-only
- * shape with `tuiOverrides` + `autoStart`. trunk had a Cursor-only
- * shape with `cursorBinPath` + `model`. The discriminated union
- * embeds BOTH legitimately — neither side's fields are dropped,
- * both find their proper variant home. Diverges from ADR-132 §D6's
- * flat example by hoisting the impl-selector onto the block itself
- * (§D6's example used `cockpit.defaultSentinel` separately +
- * fields-vary-by-impl); this reshape is per Task t-b86fd8cb body's
- * explicit "discriminated-union schema per ADR-132 §D4" mandate.
- * ADR-132 §D6 same-commit pointer added to capture the divergence.
- */
-export const CockpitSentinel = z.discriminatedUnion("impl", [
-  CockpitSentinelClaude,
-  CockpitSentinelCursor,
-]);
-export type CockpitSentinel = z.infer<typeof CockpitSentinel>;
-
-/** ADR-132 §D6 fleet-wide Sentinel impl resolution: per-team
- *  `team.json::sentinel` beats `cockpit.defaultSentinel` beats hard-coded
- *  `"claude"` fallback. Enum mirrors the post-2026-05-14-simplification
- *  shipping set in `src/abstractions/sentinel.ts` — MiniMax + Kimi
- *  backends dropped pre-implementation. */
-export const CockpitDefaultSentinel = z.enum(["claude", "cursor"]);
-export type CockpitDefaultSentinel = z.infer<typeof CockpitDefaultSentinel>;
-
 /** ADR-086 §Phase 1.5: verdict literal keys for the per-verdict dedup
  *  ladder. Restated here (not imported from `core/pulse-state.ts` to
  *  avoid the schema → core dependency direction) — kept in lockstep
@@ -492,10 +373,6 @@ const PulseVerdictLiteralSchema = z.enum([
   "🔴 Stalled",
   "🚨 Need you",
 ]);
-
-// (CockpitSentinel definition hoisted to the discriminated-union block
-// above, alongside CockpitSentinelClaude + CockpitSentinelCursor +
-// CockpitDefaultSentinel — see Task t-b86fd8cb resolution / ADR-132 §D4.)
 
 /** ADR-086: cockpit-wide `atmux pulse` probe tunables. All fields opt-in;
  *  defaults are 30 / 5 / 30 (window / interval / dedup minutes). */
@@ -581,20 +458,6 @@ export const Cockpit = z
      *  `superdoctor` block (deprecated). New code reads `cockpit.medic`
      *  directly. */
     medic: CockpitMedic.optional(),
-    /** ADR-132 §D4 / §D6 — cockpit-tier Sentinel block. Discriminated
-     *  union on `impl` (`claude` | `cursor`); one cage in cockpit
-     *  window 3 hosts the fleet-wide tick loop. When unset or
-     *  `enabled: false`, no W3 window is provisioned and per-team
-     *  viewer windows occupy W3+ (the pre-ADR-132 topology). See
-     *  {@link CockpitSentinel} for the variant-by-variant field
-     *  rationale. */
-    sentinel: CockpitSentinel.optional(),
-    /** ADR-132 §D6 — fleet default Sentinel impl when neither
-     *  `team.json::sentinel` nor `cockpit.sentinel.impl` resolves a
-     *  selection. Resolution order: per-team `team.json::sentinel`
-     *  beats `cockpit.sentinel.impl` beats `cockpit.defaultSentinel`
-     *  beats hard-coded `"claude"`. */
-    defaultSentinel: CockpitDefaultSentinel.optional(),
     /** Optional ADR-086 pulse probe tunables. Omit for defaults. */
     pulse: CockpitPulse.optional(),
     /** ADR-199 — Claude account pool for epic-team spawning. When
@@ -605,6 +468,30 @@ export const Cockpit = z
      *  the existing per-member inheritance chain (ADR-090 §Amendment
      *  2026-05-20). */
     claudeAccountPool: z.array(ClaudeAccountPoolEntry).optional(),
+    /** ADR-229 §DA-Gate-2: cockpit-scope orchd-push policy layers
+     *  (additive on top of the canonical {@link import("../core/auto-push.ts").STAGING_PATTERNS}
+     *  via `isPushAllowed(branch, allowedOverride)`). Both lists default
+     *  to empty so a missing block matches "no operator overrides".
+     *
+     *  - `refusedBases` — additional branches to refuse beyond the
+     *    canonical staging-pattern set. Use case: project-specific
+     *    `*-canary` / `*-release` patterns that aren't in
+     *    `STAGING_PATTERNS` but the operator wants to gate.
+     *  - `allowedBases` — escape-hatch overrides. Use case: `geoy.ws`
+     *    personal-infra carve-out per global CLAUDE.md push policy
+     *    (operator enrolls explicitly per §Consequences).
+     *
+     *  Precedence (per ADR-229 §DA-Gate-2): `allowedBases` > regex
+     *  match in `STAGING_PATTERNS` > `refusedBases`. Allowlist beats
+     *  both because it's the operator's explicit "yes, push this"
+     *  override. */
+    pushPolicy: z
+      .object({
+        refusedBases: z.array(z.string()).default([]),
+        allowedBases: z.array(z.string()).default([]),
+      })
+      .strict()
+      .optional(),
   })
   .passthrough();
 export type Cockpit = z.infer<typeof Cockpit>;

@@ -56,7 +56,7 @@ atmux cockpit migrate-socket --keep-legacy
 - **What's preserved:** window names, relative window order, [ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` convention, scrollback (as visual breadcrumb only).
 - **What's lost:** live process state in each pane (Claude conversation context, REPL state, mid-edit buffers).
 
-Cron-spawned cockpit roles (medic / martinet / sentinel) re-establish themselves on the next cron tick — they're stateless across ticks, no operator action needed. The only state-bearing panes are operator-driven (a `superdriver` Claude conversation, an ad-hoc shell). Operators re-invoke those in the new panes; the breadcrumb file gives them visual context to recover from.
+Cron-spawned cockpit roles (medic) re-establish themselves on the next cron tick — they're stateless across ticks, no operator action needed. The only state-bearing panes are operator-driven (a `superdriver` Claude conversation, an ad-hoc shell). Operators re-invoke those in the new panes; the breadcrumb file gives them visual context to recover from.
 
 **Idempotent.** Re-running `atmux cockpit migrate-socket` on an already-migrated cockpit returns 0 with the "no legacy cockpit on default socket" log. The doctor probe [`cockpit-on-default-socket`](#§4--doctor-probes) self-clears after migration completes.
 
@@ -134,11 +134,10 @@ The override is per-invocation; agents that spawn atmux processes inherit the en
 
 ## §6 — Cockpit pane rotation (`atmux cockpit rotate`)
 
-Operator-fired rotation of a cockpit role pane — `medic`, `sentinel`, or a per-team driver pane. Closes the manual handoff + Ctrl-C + canonical-respawn protocol that previously lived in the `/bruh` skill §3a manual fallback. Per [ADR-167](adr/167-cockpit-rotate-verb.md) (Rung C of the `/bruh` escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild).
+Operator-fired rotation of a cockpit role pane — `medic` or a per-team driver pane. Closes the manual handoff + Ctrl-C + canonical-respawn protocol that previously lived in the `/bruh` skill §3a manual fallback. Per [ADR-167](adr/167-cockpit-rotate-verb.md) (Rung C of the `/bruh` escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild).
 
 ```bash
 atmux cockpit rotate medic    [--force]
-atmux cockpit rotate sentinel [--force]
 atmux cockpit rotate <team>   [--force]
 ```
 
@@ -169,12 +168,12 @@ Gate refusals fire the `cockpit-rotate-refused` Discord template; success rotati
 
 Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
 
-1. **Assemble + atomic-write handoff** to `~/.claude/teams/__cockpit__/<role>/handoff.md` — brief-paste-ready Markdown with role-specific sections (medic: diagnosis + complaints + recent rotations; sentinel: classifier state + NudgeAction history + escalations; team-driver: lead-outbox tail + outbox snapshot + recent rotations). 100KB soft cap with truncate-with-trailer per [§OQ-2](adr/167-cockpit-rotate-verb.md). Handoff write lands **before** Ctrl-C so the rotation is re-traceable if a later step crashes mid-flight.
+1. **Assemble + atomic-write handoff** to `~/.claude/teams/__cockpit__/<role>/handoff.md` — brief-paste-ready Markdown with role-specific sections (medic: diagnosis + complaints + recent rotations; team-driver: lead-outbox tail + outbox snapshot + recent rotations). 100KB soft cap with truncate-with-trailer per [§OQ-2](adr/167-cockpit-rotate-verb.md). Handoff write lands **before** Ctrl-C so the rotation is re-traceable if a later step crashes mid-flight.
 2. **Ctrl-C** the target pane via `safeSendKeysWithVerify` ([ADR-138](adr/138-verified-send-keys.md)) with a 3s grace + `claudeUiGoneVerifier` (no `❯` / `Cooked` / `Schlepping` / `Honking` / `Compacting` markers).
 3. **`tmux kill-window`** the target pane (SIGHUP fallback for C-c-resistant claude).
-4. **Resolve `claudeAccount` wrapper** via the [ADR-094](adr/094-c-alias-spawn-convention.md) c-alias table (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`, unknown → `ConfigError` exit 70). Load-bearing for medic + sentinel-claude; skipped for sentinel-cursor + team-driver (their spawn lines are not claude TUIs — see [ADR-167 §Amendment 2026-05-17](adr/167-cockpit-rotate-verb.md)).
+4. **Resolve `claudeAccount` wrapper** via the [ADR-094](adr/094-c-alias-spawn-convention.md) c-alias table (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`, unknown → `ConfigError` exit 70). Load-bearing for medic; skipped for team-driver (its spawn line is the cage retry loop, not a claude TUI).
 5. **`tmux new-window`** with the resolved respawn command.
-6. **Re-arm cadence** — medic gets `/loop /medic` via `autoStartSuperdoctorLoop`; sentinel-claude gets `/loop /sentinel` via `autoStartSentinelLoop`; sentinel-cursor + team-driver have no claude TUI to re-arm.
+6. **Re-arm cadence** — medic gets `/loop /medic` via `autoStartSuperdoctorLoop`; team-driver has no claude TUI to re-arm.
 7. **Append success audit row** to `~/.atmux/state/cockpit-rotate-audit.log` (NDJSON) with `outcome="success"` + `handoffPath`.
 
 ### Recovery — when a step fails
@@ -189,7 +188,7 @@ Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
 | `killWindow` throw | exit 70, `respawn-failed` audit row | Ctrl-C fired; kill failed (window may still exist — diagnose manually) |
 | `newWindow` throw | exit 70, `respawn-failed` audit row | window gone, no respawn (rare — tmux server unreachable) |
 | Ctrl-C verifier escalation | continues anyway (kill-window is destructive primitive) | rotated |
-| `autoStart` failure | continues (exit 0) | rotated but cadence un-armed — operator types `/loop /medic` or `/loop /sentinel` manually |
+| `autoStart` failure | continues (exit 0) | rotated but cadence un-armed — operator types `/loop /medic` manually |
 
 The verb favors **"either fully succeed or leave the pane intact"** over partial-state recovery. Handoff write success without respawn IS recoverable: the operator inspects `~/.claude/teams/__cockpit__/<role>/handoff.md`, fixes the underlying issue (typically wrapper resolution or tmux state), and re-runs the verb.
 
@@ -209,51 +208,22 @@ V1 has no rotation policy ([ADR-167 §OQ-6](adr/167-cockpit-rotate-verb.md) — 
 
 Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)) — `cockpit rotate` operates on the cockpit socket only. Use Rung B (medic's `/team rotate-lead`) for lead rotation.
 
-## §7 — W3 `_sentinel` install + recovery
+## §7 — On-demand observation (post-sentinel-decommission)
 
-Per [ADR-183](adr/183-sentinel-scope-includes-epic-teams.md) the cockpit's W3 `_sentinel` window observes every enabled team-shape session (parent teams + epic-teams) every 270s. The original t-186d5910 finding was that source-side sentinel code shipped without the cockpit window install path being wired — silent-member-death class went uncaught for hours. The install + recovery surfaces below close that gap.
-
-### Install paths
-
-| Path | When to use | Reach |
-|---|---|---|
-| `atmux cockpit rebuild` | Full cockpit re-provision (after schema bumps, migrating socket, recovering from a stop --force). | Tears down + recreates every cockpit window from cockpit.json. |
-| `atmux doctor --fix` | The W3 window is the only thing missing; everything else is fine. | Targeted: re-installs W3 only; leaves W1/W2/Wn untouched. |
-| Manual `tmux new-window` (legacy stopgap) | Disaster recovery — `atmux` binary itself is broken. | One-shot; same `while true; do atmux sentinel tick; sleep 270; done` body. |
-
-**Recommended**: run `atmux doctor --fix` first. It's idempotent + scoped + cheap. Full `atmux cockpit rebuild` is a heavier hammer reserved for multi-window drift.
-
-> **Skill cross-link** (per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D7): the full-rebuild path is also wrapped as `/atmux:cockpit-rebuild` from Claude Code — same verb under the hood, with the args (`--no-cycle`, `--force-cycle`) passed through. Use the slash form when driving from the cockpit Claude pane; use the bare `atmux cockpit rebuild` verb when scripting.
-
-### Verify W3 alive
-
-```bash
-# Window exists?
-tmux -L atmux-cockpit list-windows -t atmux_cockpit | grep _sentinel
-
-# State file getting updated?
-stat -c '%Y' ~/.atmux/state/sentinel-state.json
-date +%s
-# Diff should be < 270s (one tick cadence)
-
-# Cursor or claude impl picked up?
-jq -r '.lastTick.impl, .lastTick.tookMs' ~/.atmux/state/sentinel-state.json
-```
-
-### Doctor probes guarding W3
-
-Per [ADR-183 §D4](adr/183-sentinel-scope-includes-epic-teams.md) + the 2026-05-20 release:
-
-- **`cockpit-has-w3-sentinel`** (P1) — fails when the W3 window is missing. `atmux doctor --fix` repairs in-place.
-- **`deployed-binary-lag`** (warn) — flags the case where source HEAD has sentinel features that `/opt/atmux/current` doesn't (the code-shipped-not-deployed gap that hid the original t-186d5910). Repair: `atmux release patch` (or appropriate bump) — see §8.
-
-### Epic-teams + dynamic discovery (post ADR-183 §Amendment 2026-05-20)
-
-Sentinel scope includes epic-teams. Per [ADR-185](adr/185-sentinel-dynamic-epic-discovery.md), epic-teams MUST be absent from `cockpit.json::sessions[]` — sentinel discovers them at tick time. If `atmux doctor` flags an epic-team registered in cockpit.json, the fix is `atmux team dissolve-epic` for the registered entry (or hand-edit removal) — NOT to wire more entries. Registration creates drift; discovery dodges it.
+The cockpit-W3 sentinel role retired per EPIC e-be01fc89 (2026-05-23) —
+mechanical observation distributes to Honker event consumers per
+sibling EPIC e-a946af69 (orchd Phase 3-5). Until those consumers ship,
+operators run on-demand audits via `atmux doctor` and the lead's
+self-driven whip cron (see `docs/RUNBOOK-on-demand-audit.md`). The
+historical sentinel install + recovery surface (W3 `_sentinel` window,
+`sentinel-state.json` state file, `cockpit-has-w3-sentinel` doctor
+probe, ADR-183 dynamic-discovery, ADR-185 epic-team scope) is fully
+retired; the cockpit-rebuild + doctor paths above no longer touch W3.
 
 ## §8 — Release / deployment via `atmux release`
 
-Canonical deploy surface as of 2026-05-20 ([ADR-183 sibling Task t-c3f4c418](adr/183-sentinel-scope-includes-epic-teams.md)). Replaces the 4-step manual flow (`npm version` + commit + `bun run build:install` + `git push`) that hid t-186d5910 for ~30h.
+Canonical deploy surface as of 2026-05-20. Replaces the 4-step manual
+flow (`npm version` + commit + `bun run build:install` + `git push`).
 
 ```bash
 atmux release patch                  # 0.8.8 → 0.8.9
@@ -295,7 +265,7 @@ Atmux ships a Claude Code skills plugin at `plugins/atmux/` (in the atmux source
 | When to run | Skill | What it does |
 |---|---|---|
 | Start-of-session, status snapshot | `/atmux:bau [hours]` | Commit cadence / rate-limits / kanban / churn per team. Default 24h window. Escalates Dormant teams to lead. |
-| Want sentinel-like cadence without the cockpit role | `/atmux:whip [verb]` | Autonomous-work nudge loop (run / cadence / watchdog). Pure-shell. |
+| Want autonomous-work nudge cadence | `/atmux:whip [verb]` | Autonomous-work nudge loop (run / cadence / watchdog). Pure-shell. |
 | End-of-day unblocker pass | `/atmux:bruh` | Sweeps pending decisions / blockers / flags / worktrees in one pass. |
 | Hands-off 15-min `/atmux:bruh` cadence | `/atmux:bruhloop` | Sugar wrapper that arms `/loop 15mins /atmux:bruh …` so the operator doesn't retype the chain. |
 | One-shot team lifecycle | `/atmux:team <verb>` | start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member. Calls `atmux team` verbs underneath. |

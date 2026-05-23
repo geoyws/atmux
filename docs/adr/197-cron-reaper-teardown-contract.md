@@ -147,4 +147,5 @@ If the teardown-hook integration surfaces problems in production (e.g. cron-reap
 - Memory `feedback_atmux_lifecycle_orphan_cron` (recurring class — atmux lifecycle tests leaving orphan crons hide real-team dormancy).
 - `src/verbs/cron-orphans.ts` (today's verb that this ADR supersedes vocabulary-wise + builds upon shape-wise).
 - `src/core/cron.ts::findCronOrphans` / `pruneCronOrphans` (existing core helpers; cron-reaper re-uses them + adds `reapTeamCronBlock(teamName, opts)`).
+- [ADR-223](223-reap-cascade-semantics-and-safety.md) §D2 composes `cron-reaper` into the orphan-reap cascade for the `cron-block-without-worktree` class — never re-implements crontab parsing.
 - `CLAUDE.md` §Cron discipline (added at 51015b5 alongside ADR-192; T8 extends it to name the teardown contract).

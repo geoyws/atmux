@@ -1,6 +1,6 @@
 # ADR 181 — Global RAM-budget gate on epic-team + /team start spawn
 
-**Status:** proposed (2026-05-19 — driver auth via chat conversation; pending reviewer signoff)
+**Status:** Accepted — ratified by driver 2026-05-23 (substrate shipped via ADR-184 host-pressure gate in spawn-epic; reviewer-signoff path bypassed after 4 days of no objection + impl evidence). Direct heir [ADR-184](184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) extended this to a host-wide cap + spawn queue; full queue-and-drain landing under orchd lifecycle EPIC [e-a946af69](../tasks/t-0db3f393.md) Phase 5.
 **Date:** 2026-05-19
 **Driver-ref:** Chat conversation 2026-05-19 ~14:00 MYT — observed live RAM pressure during attempt to spawn unum team (40/61 GB physical used + 41 GB swap utilised + 156 concurrent claude processes); driver direction *"let's make sure we are sensitive to RAM pressure in atmux as well, so we dont' overwhelm the server"* + *"so we have to throttle the epic teams creation"*.
 **Related:** ADR-091 (spawn-epic — creates ephemeral epic-teams), ADR-077 (superdoctor → renamed to medic per ADR-133), ADR-132 (sentinel — pluggable whip-manager), ADR-140 (cheap-model-first principle), ADR-162 (cockpit socket isolation).

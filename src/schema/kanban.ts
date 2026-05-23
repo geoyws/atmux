@@ -183,6 +183,24 @@ export const KanbanEpic = z
      *  transitions; operators tail this field via `atmux status` to
      *  triage stuck epics. `null` for clean / not-yet-merged Epics. */
     note: z.string().nullable().optional(),
+    /** ADR-225 §Schema (sqlite-migrations v13→v14): IDs of upstream
+     *  epics this epic depends on. Cardinality stays small (≤3 in
+     *  observed practice). Storage column is `epics.depends_on`
+     *  (TEXT NOT NULL DEFAULT '[]') — repo round-trips JSON ↔ string[].
+     *  Eligibility (`epicIsEligible`, T3) requires every id here to
+     *  resolve to a `status='done'` epic; cycle / self / existence
+     *  validation lives in `addEpic` + `setEpicDependsOn` (T3). */
+    dependsOn: z.array(z.string()).default([]),
+    /** ADR-225 §Schema (sqlite-migrations v13→v14): explicit
+     *  decomposition-complete + operator-greenlit bit. Decouples draft
+     *  vs. ready-for-kick-off from the lifecycle `status`. Storage
+     *  column `epics.is_ready` (INTEGER NOT NULL DEFAULT 0); repo
+     *  coerces 0/1 ↔ boolean. Backfill at migration time flips
+     *  in-progress / review / done epics to `true` so the new substrate
+     *  doesn't retroactively block in-flight work (see migration body
+     *  for the UPDATE). `epic.ready` event fires on 0→1; no event on
+     *  1→0. */
+    isReady: z.boolean().default(false),
   })
   .passthrough();
 export type KanbanEpic = z.infer<typeof KanbanEpic>;
@@ -244,10 +262,7 @@ export const KanbanStory = z
      *  `KNOWN_STORY_FIELDS` per ADR-091's extra-JSON-append pattern.
      *  Field schema kept permissive (`z.array(z.record)`) so future
      *  audit-entry additions don't churn the schema. */
-    signoffAudit: z
-      .array(z.record(z.string(), z.unknown()))
-      .nullable()
-      .optional(),
+    signoffAudit: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
     /** ADR-175 GAP 2: how this Story integrates onto trunk.
      *
      *   - `'feature-branch'` (DEFAULT) — current behaviour.
@@ -274,9 +289,7 @@ export const KanbanStory = z
      *  Two values only (per ADR-175 §Decision GAP 2 — YAGNI tightens
      *  scope). A future third mode (e.g. `'no-merge'` per ADR-175
      *  OQ-3) lands additively without schema churn. */
-    mergeMode: z
-      .enum(["feature-branch", "trunk-direct"])
-      .default("feature-branch"),
+    mergeMode: z.enum(["feature-branch", "trunk-direct"]).default("feature-branch"),
   })
   .passthrough();
 export type KanbanStory = z.infer<typeof KanbanStory>;

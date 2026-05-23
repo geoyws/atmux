@@ -15,7 +15,6 @@ import type { GitSpawn } from "../../../src/abstractions/branch-merge.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
-  type BranchRenameMember,
   renamePerMemberBranches,
   renameTeamViewerWindow,
 } from "../../../src/verbs/team-rename-tmux.ts";

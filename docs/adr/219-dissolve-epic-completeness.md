@@ -1,6 +1,6 @@
 # ADR-219: `dissolve-epic` completeness — cage `kill-server` + merged-branch `-D` + orphan-detection invariant
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-23 (impl shipped via Epic e-7a1014f9 + tracked task #8: `killServer` at src/verbs/team/dissolve-epic.ts:526 + branch -D + orphan-detection probe; closes the 8-orphan-cage reap class observed 2026-05-21 21:35-22:05 MYT).
 **Date**: 2026-05-22
 **Driver-ref**: 2026-05-21 superdoctor reaps (21:35 / 21:48 / 22:05 MYT) — 8 orphan cages across sopx + atmux, ~18GB RAM + 67 claude processes recovered. 4 consecutive `atmux team dissolve-epic --skip-checks` calls reported success but left the cage tmux server alive with 7+ panes and the merged branch undeleted; operator had to hand-run `tmux kill-server` + `git branch -D` to actually complete each teardown. Filed via Epic `e-7a1014f9` (parent task `t-609c1921`, P0, lead-routed 02:34 MYT 2026-05-22).
 **Cross-refs**: [ADR-090](090-epic-team-lifecycle.md) §`dissolve-epic` + §Amendment 2026-05-21 (substrate being completed), [ADR-179](179-per-member-branch-fan-in.md) (merged-into-trunk detection — `git merge-base --is-ancestor`), [ADR-077](077-superdoctor-cockpit-role.md) §doctor probes (orphan-detection invariant lands here), [ADR-162](162-atmux-owns-tmux-infrastructure.md) (per-cage tmux socket isolation — cage-kill targets the cage socket, not the cockpit socket), [ADR-087](087-atmux-stop-soft.md) (softStop primitive — preserved as best-effort step 1; kill-server is the load-bearing step 2), [ADR-218](218-auto-fold-in-verb-and-lead-auto-drive.md) (auto-fold-in — calls `dissolve-epic` at end of chain; completeness is its post-condition), [ADR-197](197-cron-reaper-teardown-contract.md) (cron-strip teardown — sibling teardown contract).
@@ -83,6 +83,8 @@ Add a new probe to [ADR-077](077-superdoctor-cockpit-role.md) §doctor probes + 
 - **Cockpit-rebuild integration**: `atmux cockpit rebuild` already iterates the tree; add the same probe inline so a rebuild surfaces orphans alongside its own structural fixes.
 
 This closes the silent-accumulation class. The same invariant would have caught all 8 of the 2026-05-21 orphans before the host RAM pressure surfaced (the first cage went orphan ~13h before the 22:05 sweep; the doctor probe runs hourly via [ADR-077](077-superdoctor-cockpit-role.md) cadence, so the first ping would have hit ~12h earlier).
+
+**§see-also (2026-05-22)**: Topo's `--orphans` (per [ADR-222](222-cage-topography-read-only-verb-surface.md) §D4) supersedes this narrow probe with a unified manifest — every orphan class lives in one place + the same classifier output feeds doctor probes + the ADR-223 `--reap` cascade. This §D3 probe stays for one release window then collapses (per ADR-222 §OQ4 — lazy migration).
 
 ## Open Questions
 

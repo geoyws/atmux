@@ -17,7 +17,6 @@ import { sessionAnchorPath } from "./common.ts";
 import {
   Cockpit,
   type CockpitMedic,
-  type CockpitSentinel,
   type CockpitSessionT,
   type Cockpit as CockpitShape,
   type CockpitSuperdoctor,
@@ -26,12 +25,11 @@ import {
 } from "../schema/cockpit.ts";
 
 /** Output of `loadCockpit` — same as `Cockpit` but with the legacy
- *  back-compat fields (`teams`, `superdoctor`, `medic`, `sentinel`)
+ *  back-compat fields (`teams`, `superdoctor`, `medic`)
  *  narrowed: `teams` is always populated by `enrichLegacyFields`;
  *  `superdoctor` / `medic` are populated when at least one
  *  `type: "superdoctor"` OR `type: "medic"` entry exists (the loader
- *  coerces both to medic semantics per ADR-133); `sentinel` is
- *  populated when at least one `type: "sentinel"` entry exists. */
+ *  coerces both to medic semantics per ADR-133). */
 export type LoadedCockpit = CockpitShape & { teams: CockpitTeam[] };
 
 export interface LoadCockpitOpts {
@@ -101,22 +99,19 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   //      `superdoctor` key → `medic` with deprecation warning.
   //   3. `migrateCockpitSessionLegacyLiteral` — ADR-135 §D5 legacy
   //      `cockpitSession: "atmux_teams"` → canonical `"atmux_cockpit"`.
-  //   4. `migrateMartinetBlockToSentinel` — ADR-158 TR3 top-level
-  //      `martinet` key → `sentinel` with deprecation warning. All
-  //      shims are idempotent on inputs that already use the new shape.
+  //      All shims are idempotent on inputs that already use the new shape.
   const raw = await readJson(path, z.unknown());
   const warn = opts.warn ?? ((msg: string) => process.stderr.write(msg));
   const migrated = migrateLegacyShape(raw, path, warn);
   const medicShimmed = migrateSuperdoctorBlockToMedic(migrated, path, warn);
   const sessionShimmed = migrateCockpitSessionLegacyLiteral(medicShimmed, path, warn);
-  const sentinelShimmed = migrateMartinetBlockToSentinel(sessionShimmed, path, warn);
   // ADR-005 boundary uniformity: Zod errors at the loadCockpit boundary
   // wrap as SchemaError so catch-by-tag callers (and the JSDoc contract
   // above — "SchemaError on parse failure") observe the same error
   // class as every other readJson-style boundary. Bare `Cockpit.parse`
   // throws Zod's native error class; that bypasses the wrap and breaks
   // both the JSDoc contract + 4+ existing tests asserting `SchemaError`.
-  const result = Cockpit.safeParse(sentinelShimmed);
+  const result = Cockpit.safeParse(sessionShimmed);
   if (!result.success) {
     throw new SchemaError({
       file: path,
@@ -208,24 +203,12 @@ export function migrateLegacyShape(
         `during the one-release-cycle deprecation window.\n`,
     );
   }
-  // ADR-132 §D6 — top-level `sentinel` block lifts into sessions[] as
-  // its own discriminated entry.
-  const sentinelBlock = obj.sentinel;
-  if (typeof sentinelBlock === "object" && sentinelBlock !== null) {
-    const mObj = sentinelBlock as Record<string, unknown>;
-    sessions.push({
-      ...mObj,
-      type: "sentinel",
-      name: typeof mObj.name === "string" ? mObj.name : "sentinel",
-    });
-  }
   // Strip the legacy keys so the new-shape parse doesn't see them — the
   // enrichment pass adds them back from sessions[] post-validation.
-  const { teams: _t, superdoctor: _s, medic: _m, sentinel: _mt, ...rest } = obj;
+  const { teams: _t, superdoctor: _s, medic: _m, ...rest } = obj;
   void _t;
   void _s;
   void _m;
-  void _mt;
   return { ...rest, schemaVersion: 1, sessions };
 }
 
@@ -309,52 +292,6 @@ export function migrateCockpitSessionLegacyLiteral(
 }
 
 /**
- * ADR-158 TR3: pre-parse shim that renames the top-level `martinet`
- * block to `sentinel`. Mirrors {@link migrateSuperdoctorBlockToMedic}
- * (ADR-133 precedent) — same three-branch shape:
- *
- *   1. Both `sentinel` AND `martinet` set → strip `martinet`, warn
- *      operator that the deprecated key is being ignored.
- *   2. Only `martinet` set → rename to `sentinel`, warn operator that
- *      they should rename the key in their cockpit.json.
- *   3. Only `sentinel` set OR neither set → no-op.
- *
- * Idempotent on already-migrated inputs (no `martinet` key). Does NOT
- * auto-migrate the on-disk file — the warning is the call to action.
- * The warning surfaces on every `atmux doctor` / cron tick that loads
- * cockpit.json until the operator updates the on-disk key (self-
- * clearing post-rename per ADR-158 §Part B). After one release cycle,
- * the legacy key is rejected at the schema level; this shim is
- * removed via an ADR-158 amendment per §Removal timeline.
- */
-export function migrateMartinetBlockToSentinel(
-  raw: unknown,
-  path: string,
-  warn: (msg: string) => void,
-): unknown {
-  if (typeof raw !== "object" || raw === null) return raw;
-  const obj = raw as Record<string, unknown>;
-  if (obj.martinet === undefined) return obj;
-  if (obj.sentinel !== undefined) {
-    warn(
-      `atmux: cockpit.json at ${path} has BOTH deprecated top-level 'martinet' AND 'sentinel' keys ` +
-        `— 'sentinel' wins; remove the 'martinet' block per ADR-158. ` +
-        `Accepting this release; will fail next release.\n`,
-    );
-    const { martinet: _drop, ...rest } = obj;
-    void _drop;
-    return rest;
-  }
-  warn(
-    `atmux: cockpit.json at ${path} uses deprecated top-level 'martinet' key — ` +
-      `rename to 'sentinel' per ADR-158. ` +
-      `Accepting this release; will fail next release.\n`,
-  );
-  const { martinet, ...rest } = obj;
-  return { ...rest, sentinel: martinet };
-}
-
-/**
  * Post-parse synthesis of legacy back-compat fields. Walks `sessions[]`
  * DFS and populates `teams: CockpitTeam[]` (type==="team" entries) +
  * `superdoctor: CockpitSuperdoctor` (first type==="superdoctor" entry).
@@ -376,7 +313,6 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   // when both exist in the same sessions[] (matches the cockpit.json
   // top-level resolution rule in `migrateLegacyShape`).
   let medicResolved: CockpitMedic | undefined;
-  let sentinel: CockpitSentinel | undefined;
   // Legacy `superdoctor` synthesis bucket — populated when no canonical
   // `medic` session entry is seen but a `superdoctor` session entry is.
   // ADR-133 second pass coerces this into `medicResolved` if still
@@ -404,19 +340,6 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
       if (node.claudeAccount !== undefined) m.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) m.tuiOverrides = node.tuiOverrides;
       medicResolved = m;
-    } else if (node.type === "sentinel" && sentinel === undefined) {
-      // ADR-132 §D6: synthesize a CockpitSentinel from the ADR-089
-      // sessions[] sentinel discriminator. SentinelSessionT carries
-      // claude-shape fields (claudeAccount + tuiOverrides) only —
-      // session-level impl selection isn't currently modelled — so
-      // the synthesized config is always the claude variant. To
-      // declare a cursor-variant sentinel, operators set the
-      // top-level `cockpit.sentinel: { impl: "cursor", ... }` block
-      // directly; that path skips this session-walk synthesis.
-      const mt: CockpitSentinel = { impl: "claude", enabled: node.enabled };
-      if (node.claudeAccount !== undefined) mt.claudeAccount = node.claudeAccount;
-      if (node.tuiOverrides !== undefined) mt.tuiOverrides = node.tuiOverrides;
-      sentinel = mt;
     } else if (node.type === "superdoctor" && superdoctor === undefined) {
       // Legacy ADR-077 sessions[] entry — preserve the full claude
       // shape (autoStart + autoStartTimeoutSec retained per trunk's
@@ -456,7 +379,6 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
         ? { superdoctor: medic as CockpitSuperdoctor }
         : {}),
     ...(medic !== undefined ? { medic } : {}),
-    ...(sentinel !== undefined ? { sentinel } : {}),
   };
 }
 
@@ -487,7 +409,7 @@ export interface FlattenedTeamEntry {
 /** Depth-first flattener — ADR-089 §F + T5 prep. Returns enabled
  *  team-shaped entries (both `type: "team"` and `type: "epic-team"`)
  *  with their nesting `level` annotated. `superdriver` /
- *  `superdoctor` / `medic` / `sentinel` entries are excluded —
+ *  `superdoctor` / `medic` entries are excluded —
  *  they're cockpit-internal singletons, not iterable "teams" in the
  *  legacy sense.
  *

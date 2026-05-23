@@ -131,7 +131,7 @@ const NORMAL_CAPTURE = "log output ...\nworking on T-12345 — claiming next\n>"
 
 /** Run a full scan + trigger cycle for one team. Each call iterates
  *  members once, captures per the provided captureMap, and dispatches
- *  through the trigger module. Mirrors what medic/martinet do per tick. */
+ *  through the trigger module. Mirrors what medic does per tick. */
 async function tickOnce(
   testTeam: Team,
   captureMap: Record<string, string>,

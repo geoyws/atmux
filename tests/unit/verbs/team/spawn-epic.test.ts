@@ -34,6 +34,16 @@ const permissivePressure: NonNullable<SpawnEpicOpts["probeHostPressure"]> = asyn
     skipped: true,
   }) satisfies HostPressureVerdict;
 
+// ADR-225 eligibility-gate stub — pretend every epic is eligible. Tests
+// that don't care about the gate use this so they don't have to seed a
+// parent state.db with a real ready+done-deps epic row. The dedicated
+// ADR-225 describe block below (further down) exercises the gate logic
+// in isolation with a true predicate + seeded fixture.
+const permissiveEligibility: NonNullable<SpawnEpicOpts["eligibilityProbe"]> = async () => ({
+  eligible: true,
+  blockers: [],
+});
+
 let scratch: string;
 let cockpitPath: string;
 let templatesDir: string;
@@ -99,6 +109,16 @@ describe("parseSpawnEpicArgs", () => {
     expect(r.initSubmodules).toBe(false);
   });
 
+  test("autoDissolve defaults to true (ADR-227 §D3)", () => {
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p"]);
+    expect(r.autoDissolve).toBe(true);
+  });
+
+  test("--no-auto-dissolve flips autoDissolve to false (operator opt-out per ADR-227 §D3)", () => {
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--no-auto-dissolve"]);
+    expect(r.autoDissolve).toBe(false);
+  });
+
   test("--merge-mode pr accepted", () => {
     const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--merge-mode", "pr"]);
     expect(r.mergeMode).toBe("pr");
@@ -146,6 +166,7 @@ describe("spawnEpic — caller-scope gate (ADR-033)", () => {
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "member",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
     };
     await expect(spawnEpic(["e-1", "--from", "parent-team"], opts)).rejects.toThrow(
@@ -174,6 +195,7 @@ describe("spawnEpic — host-pressure gate (ADR-184)", () => {
       }),
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
@@ -199,13 +221,11 @@ describe("spawnEpic — host-pressure gate (ADR-184)", () => {
       },
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: (m) => warnLines.push(m) },
     };
-    const rc = await spawnEpic(
-      ["e-aabb0001", "--from", "parent-team", "--force-spawn"],
-      opts,
-    );
+    const rc = await spawnEpic(["e-aabb0001", "--from", "parent-team", "--force-spawn"], opts);
     expect(rc).toBe(0);
     expect(probeCalled).toBe(0); // probe NOT called under --force-spawn
     expect(warnLines.some((m) => m.includes("--force-spawn bypasses"))).toBe(true);
@@ -223,6 +243,7 @@ describe("spawnEpic — host-pressure gate (ADR-184)", () => {
       }),
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
@@ -252,6 +273,7 @@ describe("spawnEpic — happy path", () => {
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
@@ -296,6 +318,7 @@ describe("spawnEpic — happy path", () => {
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
@@ -312,6 +335,7 @@ describe("spawnEpic — happy path", () => {
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
@@ -362,6 +386,7 @@ describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", ()
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: (m) => warns.push(m) },
     };
@@ -378,6 +403,7 @@ describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", ()
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: (m) => warns.push(m) },
     };
@@ -399,6 +425,7 @@ describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", ()
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: (m) => warns.push(m) },
     };
@@ -422,10 +449,7 @@ describe("spawnEpic — claudeAccount inheritance from parent (ADR-091)", () => 
 
   async function readChild(epicId: string) {
     return JSON.parse(
-      await readFile(
-        join(scratch, "parent-team-epics", epicId, ".atmux", "team.json"),
-        "utf8",
-      ),
+      await readFile(join(scratch, "parent-team-epics", epicId, ".atmux", "team.json"), "utf8"),
     );
   }
 
@@ -435,6 +459,7 @@ describe("spawnEpic — claudeAccount inheritance from parent (ADR-091)", () => 
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
@@ -486,10 +511,7 @@ describe("spawnEpic — claudeAccount inheritance from parent (ADR-091)", () => 
       { name: "lead", role: "lead", claudeAccount: "personal" },
       { name: "fe-1", role: "member", claudeAccount: "personal" },
     ]);
-    await spawnEpic(
-      ["e-aa03", "--from", "parent-team", "--roster", "pinned"],
-      driverOpts(),
-    );
+    await spawnEpic(["e-aa03", "--from", "parent-team", "--roster", "pinned"], driverOpts());
     const child = await readChild("e-aa03");
     const byName = Object.fromEntries(child.members.map((m: { name: string }) => [m.name, m]));
     // Roster-pinned value preserved; non-pinned member inherits.
@@ -532,6 +554,7 @@ describe("spawnEpic — refusal paths", () => {
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
     };
     await expect(spawnEpic(["e-1", "--from", "no-such-team"], opts)).rejects.toThrow(
@@ -548,6 +571,7 @@ describe("spawnEpic — refusal paths", () => {
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
     };
     await expect(spawnEpic(["e-1", "--from", "parent-team"], opts)).rejects.toThrow(
@@ -561,6 +585,7 @@ describe("spawnEpic — refusal paths", () => {
       probeHostPressure: permissivePressure,
       templatesDir,
       callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
       git: makeGitStub({ initialBranch: "main" }),
     };
     await expect(
@@ -620,3 +645,178 @@ function ok(stdout: string): SpawnResult {
     durationMs: 0,
   };
 }
+
+// ---------- ADR-225 eligibility gate (T5 / t-1fbd2aa4) ----------
+
+describe("spawnEpic — ADR-225 eligibility gate", () => {
+  test("eligible epic spawns normally (smoke — probe returns eligible:true)", async () => {
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: permissivePressure,
+      templatesDir,
+      callerScope: () => "driver",
+      eligibilityProbe: async () => ({ eligible: true, blockers: [] }),
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+    };
+    const rc = await spawnEpic(["e-elig-ok", "--from", "parent-team"], opts);
+    expect(rc).toBe(0);
+  });
+
+  test("ineligible epic (is_ready=0) refused — UsageError names the blocker", async () => {
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: permissivePressure,
+      templatesDir,
+      callerScope: () => "driver",
+      eligibilityProbe: async () => ({ eligible: false, blockers: ["is_ready=0"] }),
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+    };
+    await expect(spawnEpic(["e-ineligible", "--from", "parent-team"], opts)).rejects.toThrow(
+      /not eligible.*is_ready=0/s,
+    );
+  });
+
+  test("ineligible epic (unmet dep) refused — message names dep id + status", async () => {
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: permissivePressure,
+      templatesDir,
+      callerScope: () => "driver",
+      eligibilityProbe: async () => ({
+        eligible: false,
+        blockers: ["dep e-up1 not done (status=in-progress)"],
+      }),
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+    };
+    await expect(spawnEpic(["e-blocked", "--from", "parent-team"], opts)).rejects.toThrow(
+      /dep e-up1 not done.*status=in-progress/s,
+    );
+  });
+
+  test("--force on ineligible epic proceeds + writes override log line + invokes Discord", async () => {
+    const homeDir = join(scratch, "home");
+    await mkdir(homeDir, { recursive: true });
+    const discordCalls: Array<Record<string, unknown>> = [];
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: permissivePressure,
+      templatesDir,
+      callerScope: () => "driver",
+      eligibilityProbe: async () => ({
+        eligible: false,
+        blockers: ["is_ready=0", "dep e-up1 not done (status=planning)"],
+      }),
+      sendSpawnForceDiscord: async (payload) => {
+        discordCalls.push(payload as unknown as Record<string, unknown>);
+      },
+      logSpawnOverrideOpts: { homeDir, now: () => 1_700_000_000_000 },
+      env: { ...process.env, HOME: homeDir, ATMUX_MEMBER: "be-1" },
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+    };
+    const rc = await spawnEpic(["e-forced", "--from", "parent-team", "--force"], opts);
+    expect(rc).toBe(0);
+
+    // Discord call landed with the expected payload shape.
+    expect(discordCalls).toHaveLength(1);
+    const payload = discordCalls[0] as {
+      topic: string;
+      epicId: string;
+      team: string;
+      blockers: string[];
+      callerMember: string;
+      callerScope: string;
+    };
+    expect(payload.topic).toBe("spawn-force");
+    expect(payload.epicId).toBe("e-e-forced");
+    expect(payload.team).toBe("parent-team");
+    expect(payload.blockers).toContain("is_ready=0");
+    expect(payload.callerMember).toBe("be-1");
+    expect(payload.callerScope).toBe("driver");
+
+    // Override log file lands at $HOME/.atmux/state/spawn-overrides.log
+    // with the same payload + ts + iso.
+    const logPath = join(homeDir, ".atmux", "state", "spawn-overrides.log");
+    const raw = await readFile(logPath, "utf8");
+    const lines = raw
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(1);
+    const line = lines[0] as {
+      ts: number;
+      iso: string;
+      epicId: string;
+      team: string;
+      blockers: string[];
+      callerMember: string;
+      callerScope: string;
+    };
+    expect(line.ts).toBe(1_700_000_000);
+    expect(line.iso).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(line.epicId).toBe("e-e-forced");
+    expect(line.team).toBe("parent-team");
+    expect(line.blockers).toEqual(["is_ready=0", "dep e-up1 not done (status=planning)"]);
+    expect(line.callerMember).toBe("be-1");
+    expect(line.callerScope).toBe("driver");
+  });
+
+  test("--force on eligible epic STILL spawns + does NOT log (gate already green)", async () => {
+    const homeDir = join(scratch, "home");
+    await mkdir(homeDir, { recursive: true });
+    let discordCalled = 0;
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: permissivePressure,
+      templatesDir,
+      callerScope: () => "driver",
+      eligibilityProbe: async () => ({ eligible: true, blockers: [] }),
+      sendSpawnForceDiscord: async () => {
+        discordCalled += 1;
+      },
+      logSpawnOverrideOpts: { homeDir, now: () => 1_700_000_000_000 },
+      env: { ...process.env, HOME: homeDir, ATMUX_MEMBER: "be-1" },
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+    };
+    const rc = await spawnEpic(["e-clean", "--from", "parent-team", "--force"], opts);
+    expect(rc).toBe(0);
+    // No override fired because the gate didn't refuse.
+    expect(discordCalled).toBe(0);
+    // No log file written.
+    const logPath = join(homeDir, ".atmux", "state", "spawn-overrides.log");
+    const logExists = await readFile(logPath, "utf8")
+      .then(() => true)
+      .catch(() => false);
+    expect(logExists).toBe(false);
+  });
+
+  test("--force flag round-trips via the parser", () => {
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--force"]);
+    expect(r.forceEligibility).toBe(true);
+
+    const r2 = parseSpawnEpicArgs(["--force", "e-1", "--from", "p"]);
+    expect(r2.forceEligibility).toBe(true);
+    expect(r2.epicId).toBe("e-1");
+
+    const r3 = parseSpawnEpicArgs(["e-1", "--from", "p"]);
+    expect(r3.forceEligibility).toBe(false);
+  });
+
+  test("--force-spawn and --force are independent flags", () => {
+    const both = parseSpawnEpicArgs(["e-1", "--from", "p", "--force-spawn", "--force"]);
+    expect(both.forceSpawn).toBe(true);
+    expect(both.forceEligibility).toBe(true);
+
+    const onlyEligibility = parseSpawnEpicArgs(["e-1", "--from", "p", "--force"]);
+    expect(onlyEligibility.forceSpawn).toBe(false);
+    expect(onlyEligibility.forceEligibility).toBe(true);
+
+    const onlySpawn = parseSpawnEpicArgs(["e-1", "--from", "p", "--force-spawn"]);
+    expect(onlySpawn.forceSpawn).toBe(true);
+    expect(onlySpawn.forceEligibility).toBe(false);
+  });
+});

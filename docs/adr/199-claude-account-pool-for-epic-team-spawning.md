@@ -1,6 +1,6 @@
 # ADR-199: Claude account pool for epic-team spawning — least-loaded selection from a configured pool, replacing manual per-spawn assignment
 
-**Status**: proposed (deferred: gated on Honker substrate ADR + impl)
+**Status**: Accepted — ratified by driver 2026-05-23 (Honker substrate on trunk via Epic A/B/C + orchd P1 merges; deferral condition met). Minimal slice shipped (cockpit `claudeAccountPool[]` + spawn-epic least-loaded selection per `3730acd`); full Honker subscription on `budget.warning`/`budget.recovered` filed as follow-up under orchd lifecycle ([e-a946af69](../tasks/t-0db3f393.md)).
 **Date**: 2026-05-20
 **Driver-ref**: 2026-05-20 evening design session — operator request "we also need a feature to be able to spawn epic-teams from a pool of claude accounts" + "gate it after our honker implementation"
 **Cross-refs**: [ADR-033](033-kanban-driver-only-flag.md) (driver-scope-only flag — pool config follows this scope), [ADR-091](091-kanban-driven-auto-merge.md) (epic-spawn / spawn-epic verb surface that this extends), [ADR-140](140-cheap-model-first.md) (motivation overlap — observation-loop Claude-burn reduction; pool reduces per-team rate-limit blast), Honker-substrate ADR (TBD — forward-ref for budget-event subscription path), memory `feedback_spawn_epic_claude_account_inheritance_gap` (the 401-on-spawn manual recovery dance this resolves), memory `feedback_spawn_epic_requires_driver_scope` (spawn-epic itself is driver-scope-only — pool mutations inherit), memory `project_spawn_epic_claude_account_pool` (design state).

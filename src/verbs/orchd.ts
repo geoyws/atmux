@@ -27,16 +27,8 @@ import { join } from "node:path";
 import { loadEventById, saveOffset } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
-import { getAtmuxDir, requireTeam, type ResolveDirOpts } from "../core/common.ts";
-import {
-  type CommitterOpts,
-  buildEventDrivenContext,
-  committerDaemonVerb,
-  committerDrainVerb,
-} from "./committer.ts";
-import { ConfigError, UsageError } from "../errors.ts";
-import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
-
+import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { probeHostPressure } from "../core/host-pressure.ts";
 // ADR-224 §D6 — orchd subscription registry seam (Phase 1 zero-handler).
 // Re-exported from this verb module so Phase 2 + sibling EPIC e-a946af69
 // callers can register against the same canonical surface they see in
@@ -45,11 +37,22 @@ import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
 // public seam from the verb side. Phase 1 ships the wiring; handlers
 // stay empty until Phase 2 dispatches.
 import { visitOrchdSubscriptions } from "../core/orchd-registry.ts";
+import { pressureMonitorTick, resolveSpawnQueueLimits } from "../core/spawn-queue.ts";
+import { ConfigError, UsageError } from "../errors.ts";
+import {
+  buildEventDrivenContext,
+  type CommitterOpts,
+  committerDaemonVerb,
+  committerDrainVerb,
+} from "./committer.ts";
+import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
+import { spawnEpic } from "./team/spawn-epic.ts";
+
 export {
-  type OrchdSubscription,
-  ORCHD_SUBSCRIPTIONS,
-  registerOrchdSubscription,
   findOrchdSubscriptionsByTopic,
+  ORCHD_SUBSCRIPTIONS,
+  type OrchdSubscription,
+  registerOrchdSubscription,
   visitOrchdSubscriptions,
 } from "../core/orchd-registry.ts";
 
@@ -278,8 +281,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   }
   if (member !== undefined && (taskId === undefined || lane === undefined)) {
     throw new UsageError({
-      what:
-        "orchd --handle-one: --member is only valid alongside --task-id + --lane",
+      what: "orchd --handle-one: --member is only valid alongside --task-id + --lane",
       hint: USAGE,
     });
   }
@@ -334,7 +336,60 @@ export async function orchd(
     visitOrchdSubscriptions(() => {
       // Phase 2 wires this — see [[orchd-registry]] §D6 sketch.
     });
-    return await committerDaemonVerb(committerArgs, opts);
+
+    // ADR-228 §D4 + §D7 (Phase 5b, driver P0 step 4/5 2026-05-23):
+    // pressure-monitor drain loop. Wakes every pressureCheckIntervalSec
+    // (default 60s per ADR-228 §D6), probes host pressure, and on
+    // under-threshold-AND-non-empty-queue invokes pressureMonitorTick
+    // for one drain attempt (drain-one-per-tick per §DA4). Runs in
+    // parallel with committerDaemonVerb's watcher; both stop on
+    // SIGINT/SIGTERM via the shared process-signal handler installed
+    // by committerDaemonVerb.
+    //
+    // Owns its own db handle (per-loop SQLite connection; WAL mode
+    // tolerates concurrent connections) so the inner spawn-epic call
+    // can open additional db handles without contention on the daemon's
+    // primary connection.
+    const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+    const monitorAtmuxDir = await getAtmuxDir(dirOpts);
+    const monitorDb = openDatabase(join(monitorAtmuxDir, "state.db"), migrations);
+    const monitorLimits = resolveSpawnQueueLimits(process.env);
+    const onMonitorTick = async (): Promise<void> => {
+      try {
+        await pressureMonitorTick({
+          db: monitorDb,
+          probeHostPressure: () => probeHostPressure({ env: process.env }),
+          spawnEpic: async (argv) => {
+            try {
+              const rc = await spawnEpic(argv);
+              return { success: rc === 0 };
+            } catch (e) {
+              return {
+                success: false,
+                reason: e instanceof Error ? e.message : String(e),
+              };
+            }
+          },
+          limits: monitorLimits,
+        });
+      } catch (e) {
+        process.stderr.write(
+          `orchd --start: pressure-monitor tick threw — ${e instanceof Error ? e.message : String(e)}\n`,
+        );
+      }
+    };
+    const monitorInterval = setInterval(() => {
+      void onMonitorTick();
+    }, monitorLimits.pressureCheckIntervalSec * 1000);
+    // setInterval keeps the event loop alive — unref so committerDaemonVerb's
+    // SIGINT-driven exit path isn't blocked by the timer reference.
+    monitorInterval.unref();
+    try {
+      return await committerDaemonVerb(committerArgs, opts);
+    } finally {
+      clearInterval(monitorInterval);
+      closeDatabase(monitorDb);
+    }
   }
   return await committerDrainVerb(committerArgs, opts);
 }
@@ -354,10 +409,7 @@ export async function orchd(
  * does NOT save offset. The Rust binary advances on observing exit-code
  * 0 from this process.
  */
-async function orchdHandleOne(
-  parsed: ParsedOrchdArgs,
-  opts: CommitterOpts = {},
-): Promise<number> {
+async function orchdHandleOne(parsed: ParsedOrchdArgs, opts: CommitterOpts = {}): Promise<number> {
   const eventId = parsed.eventId;
   const topic = parsed.topic;
   if (eventId === undefined || topic === undefined) {
@@ -398,8 +450,7 @@ async function orchdHandleOne(
     }
   }
   if (topic === "task.unclaimed") {
-    const dirOpts: ResolveDirOpts =
-      parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+    const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
     const team = await requireTeam(dirOpts);
     const atmuxDir = await getAtmuxDir(dirOpts);
     // ADR-202 §Amendment 2026-05-22 IX-A (T3 unified contract): when
@@ -461,8 +512,7 @@ async function orchdHandleOne(
  * status is read-only diagnostic.
  */
 async function orchdStatus(parsed: ParsedOrchdArgs): Promise<number> {
-  const dirOpts: ResolveDirOpts =
-    parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);
   const dbPath = join(atmuxDir, "state.db");
   const db = openDatabase(dbPath, migrations);
@@ -481,15 +531,17 @@ async function orchdStatus(parsed: ParsedOrchdArgs): Promise<number> {
       .prepare(
         "SELECT consumer_name, last_event_id, last_processed_at_sec FROM subscriber_offsets ORDER BY consumer_name",
       )
-      .all() as Array<{ consumer_name: string; last_event_id: string; last_processed_at_sec: number }>;
+      .all() as Array<{
+      consumer_name: string;
+      last_event_id: string;
+      last_processed_at_sec: number;
+    }>;
     if (consumers.length === 0) {
       process.stdout.write("(no consumers yet — orchd hasn't processed any events)\n");
     }
     for (const c of consumers) {
       const ageSec = now - c.last_processed_at_sec;
-      process.stdout.write(
-        `${c.consumer_name}\tlast=${c.last_event_id}\tage=${ageSec}s\n`,
-      );
+      process.stdout.write(`${c.consumer_name}\tlast=${c.last_event_id}\tage=${ageSec}s\n`);
     }
 
     // Events table size + recent counts

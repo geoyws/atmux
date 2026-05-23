@@ -17,7 +17,6 @@ import {
   loadCockpit,
   MAX_NESTING_LEVEL,
   migrateLegacyShape,
-  migrateMartinetBlockToSentinel,
   migrateSuperdoctorBlockToMedic,
   perTeamCageSocketPath,
   readNestingLevel,
@@ -641,180 +640,6 @@ describe("loadCockpit — ADR-133 TR2 medic / superdoctor end-to-end", () => {
   });
 });
 
-// ---------- ADR-158 TR3: migrateMartinetBlockToSentinel shim ----------
-
-describe("migrateMartinetBlockToSentinel — top-level martinet → sentinel", () => {
-  test("only `martinet` set → lifts to `sentinel` + warns deprecated", () => {
-    const warned: string[] = [];
-    const out = migrateMartinetBlockToSentinel(
-      {
-        schemaVersion: 1,
-        sessions: [],
-        martinet: { impl: "claude", enabled: true, autoStart: false },
-      },
-      "/fake/path.json",
-      (m) => warned.push(m),
-    ) as Record<string, unknown>;
-    expect(out.sentinel).toEqual({ impl: "claude", enabled: true, autoStart: false });
-    expect(out.martinet).toBeUndefined();
-    expect(warned).toHaveLength(1);
-    expect(warned[0]).toContain("deprecated top-level 'martinet' key");
-    expect(warned[0]).toContain("rename to 'sentinel'");
-    expect(warned[0]).toContain("ADR-158");
-    expect(warned[0]).toContain("/fake/path.json");
-  });
-
-  test("only `sentinel` set → no-op, no warning", () => {
-    const warned: string[] = [];
-    const input = {
-      schemaVersion: 1,
-      sessions: [],
-      sentinel: { impl: "claude", enabled: true },
-    };
-    const out = migrateMartinetBlockToSentinel(input, "/p.json", (m) => warned.push(m));
-    expect(out).toBe(input);
-    expect(warned).toHaveLength(0);
-  });
-
-  test("BOTH `sentinel` and `martinet` set → sentinel wins, martinet stripped, warns dual", () => {
-    const warned: string[] = [];
-    const out = migrateMartinetBlockToSentinel(
-      {
-        schemaVersion: 1,
-        sessions: [],
-        sentinel: { impl: "claude", enabled: true },
-        martinet: { impl: "cursor", enabled: false }, // operator forgot to delete this
-      },
-      "/p.json",
-      (m) => warned.push(m),
-    ) as Record<string, unknown>;
-    expect(out.sentinel).toEqual({ impl: "claude", enabled: true });
-    expect(out.martinet).toBeUndefined();
-    expect(warned).toHaveLength(1);
-    expect(warned[0]).toContain("BOTH");
-    expect(warned[0]).toContain("'sentinel' wins");
-    expect(warned[0]).toContain("ADR-158");
-  });
-
-  test("neither set → passes through unchanged + no warning", () => {
-    const warned: string[] = [];
-    const input = { schemaVersion: 1, sessions: [] };
-    const out = migrateMartinetBlockToSentinel(input, "/p.json", (m) => warned.push(m));
-    expect(out).toBe(input);
-    expect(warned).toHaveLength(0);
-  });
-
-  test("non-object input passes through unchanged", () => {
-    const warned: string[] = [];
-    expect(migrateMartinetBlockToSentinel(null, "/p.json", (m) => warned.push(m))).toBe(null);
-    expect(migrateMartinetBlockToSentinel("string", "/p.json", (m) => warned.push(m))).toBe(
-      "string",
-    );
-    expect(warned).toHaveLength(0);
-  });
-
-  test("preserves all other top-level fields when lifting", () => {
-    const warned: string[] = [];
-    const out = migrateMartinetBlockToSentinel(
-      {
-        schemaVersion: 1,
-        cockpitSession: "custom_session",
-        sessions: [{ type: "team", name: "x", root: "/x" }],
-        prefixChain: ["F1", "F2"],
-        martinet: { impl: "cursor", enabled: true, model: "composer-2" },
-      },
-      "/p.json",
-      (m) => warned.push(m),
-    ) as Record<string, unknown>;
-    expect(out.schemaVersion).toBe(1);
-    expect(out.cockpitSession).toBe("custom_session");
-    expect(out.sessions).toEqual([{ type: "team", name: "x", root: "/x" }]);
-    expect(out.prefixChain).toEqual(["F1", "F2"]);
-    expect(out.sentinel).toEqual({ impl: "cursor", enabled: true, model: "composer-2" });
-    expect(out.martinet).toBeUndefined();
-  });
-});
-
-describe("loadCockpit — ADR-158 TR3 sentinel / martinet end-to-end", () => {
-  test("config with only `sentinel` block → cockpit.sentinel populated, no warning", async () => {
-    const warned: string[] = [];
-    await writeCockpit({
-      schemaVersion: 1,
-      sessions: [{ type: "team", name: "x", root: "/x" }],
-      sentinel: { impl: "claude", enabled: true },
-    });
-    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
-    expect(cockpit.sentinel?.enabled).toBe(true);
-    expect(cockpit.sentinel?.impl).toBe("claude");
-    expect(warned).toHaveLength(0);
-  });
-
-  test("config with only `martinet` top-level block → cockpit.sentinel populated + deprecation warn", async () => {
-    const warned: string[] = [];
-    await writeCockpit({
-      schemaVersion: 1,
-      sessions: [{ type: "team", name: "x", root: "/x" }],
-      martinet: { impl: "claude", enabled: true, autoStart: false },
-    });
-    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
-    expect(cockpit.sentinel?.enabled).toBe(true);
-    expect(cockpit.sentinel?.impl).toBe("claude");
-    if (cockpit.sentinel?.impl !== "claude") throw new Error("narrowing failed");
-    expect(cockpit.sentinel.autoStart).toBe(false);
-    expect(warned).toHaveLength(1);
-    expect(warned[0]).toContain("deprecated top-level 'martinet'");
-    expect(warned[0]).toContain("ADR-158");
-  });
-
-  test("config with BOTH `sentinel` and `martinet` → sentinel wins + dual-key warn", async () => {
-    const warned: string[] = [];
-    await writeCockpit({
-      schemaVersion: 1,
-      sessions: [{ type: "team", name: "x", root: "/x" }],
-      sentinel: { impl: "claude", enabled: true },
-      martinet: { impl: "cursor", enabled: false },
-    });
-    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
-    expect(cockpit.sentinel?.impl).toBe("claude");
-    expect(cockpit.sentinel?.enabled).toBe(true);
-    expect(warned).toHaveLength(1);
-    expect(warned[0]).toContain("BOTH");
-    expect(warned[0]).toContain("'sentinel' wins");
-    expect(warned[0]).toContain("ADR-158");
-  });
-
-  test("config with neither key → cockpit.sentinel undefined, no warning", async () => {
-    const warned: string[] = [];
-    await writeCockpit({
-      schemaVersion: 1,
-      sessions: [{ type: "team", name: "x", root: "/x" }],
-    });
-    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
-    expect(cockpit.sentinel).toBeUndefined();
-    expect(warned).toHaveLength(0);
-  });
-
-  test("legacy flat roster with martinet shape-migrates first; sentinel surfaces via sessions[]", async () => {
-    // Parallels the ADR-133 legacy-flat test above: migrateLegacyShape
-    // lifts the top-level `sentinel` (or `martinet` after the TR3 shim)
-    // into sessions[]. The TR3 shim still runs first on the recursive
-    // shape, normalizing martinet → sentinel before migrateLegacyShape
-    // sees it. Net: cockpit.sentinel populated, ADR-158 warn fires.
-    const warned: string[] = [];
-    await writeCockpit({
-      teams: [{ name: "x", root: "/x", enabled: true }],
-      martinet: { impl: "claude", enabled: true },
-    });
-    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warned.push(m) });
-    expect(cockpit.sentinel?.impl).toBe("claude");
-    expect(cockpit.sentinel?.enabled).toBe(true);
-    // Two warns: ADR-089 flat-shape lift + ADR-158 martinet→sentinel.
-    expect(warned).toHaveLength(2);
-    expect(warned.some((m) => m.includes("legacy flat teams[]"))).toBe(true);
-    expect(warned.some((m) => m.includes("deprecated top-level 'martinet'"))).toBe(true);
-  });
-});
-
 // ---------- ADR-089: walkSessions DFS ----------
 
 describe("walkSessions — depth-first traversal", () => {
@@ -1266,7 +1091,7 @@ describe("findTeamByName (ADR-092 §D2)", () => {
     expect(found?.parent).toBe("alpha");
   });
 
-  test("skips superdriver / medic / sentinel leaves (only team / epic-team)", () => {
+  test("skips superdriver / medic leaves (only team / epic-team)", () => {
     const cockpit: CockpitShape = {
       schemaVersion: 1,
       sessions: [

@@ -14,9 +14,9 @@
 // BYPASSING `loadCockpit`'s legacy-field ENRICHMENT pass. That keeps
 // the round-trip canonical — the file written back contains only the
 // ADR-089 `sessions[]` tree, not the synthesized legacy `teams[]` /
-// `superdoctor` / `medic` / `sentinel` top-level mirrors. Operators on
-// pre-ADR-089 cockpit.json see a one-time migration to canonical
-// shape on the next rename — matches ADR-089's deprecation path.
+// `superdoctor` / `medic` top-level mirrors. Operators on pre-ADR-089
+// cockpit.json see a one-time migration to canonical shape on the
+// next rename — matches ADR-089's deprecation path.
 
 import { z } from "zod";
 import { atomicWrite } from "../abstractions/fs.ts";
@@ -82,7 +82,7 @@ export interface SyncCockpitRegistryArgs {
  *  `teams[]` shape, `migrateLegacyShape` lifts it to the canonical
  *  `sessions[]` form before mutation; the round-trip writes the
  *  canonical form back to disk (legacy top-level `teams[]`,
- *  `superdoctor`, `medic`, `sentinel` keys are stripped per the shim).
+ *  `superdoctor`, `medic` keys are stripped per the shim).
  *  This is a one-way migration — operators on a fresh rename of a
  *  legacy roster get the canonical shape for free.
  *

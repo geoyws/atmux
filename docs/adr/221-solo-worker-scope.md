@@ -1,9 +1,9 @@
 # ADR-221: Solo-worker scope — small standalone tasks via 1-2 member epic-team
 
-**Status:** Proposed
-**Date:** 2026-05-22
+**Status:** Accepted — v1 substrate (`templates/epic-rosters/solo.json` + `solo+committer.json`) via merge `fe6bcda` 2026-05-22; v2 convenience verbs (spawn-worker / dissolve-worker / list-workers) via this commit 2026-05-23. Auto-dissolve folded into orchd lifecycle [e-a946af69](../tasks/t-0db3f393.md) Phase 4 / ADR-227.
+**Date:** 2026-05-22 (v1) · 2026-05-23 (§v2 amendment)
 **Deciders:** geoyws (driver)
-**Related:** [ADR-090](090-epic-team-spawn.md), [ADR-091](091-epic-team-auto-merge.md), [ADR-033](033-driver-scope-only-gates.md), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md), [t-8c8ce51c](../tasks/t-8c8ce51c.md), [t-9aa2f8cb](../tasks/t-9aa2f8cb.md), [t-0542595c](../tasks/t-0542595c.md)
+**Related:** [ADR-090](090-epic-team-spawn.md), [ADR-091](091-epic-team-auto-merge.md), [ADR-033](033-driver-scope-only-gates.md), [ADR-170](170-sweep-epics.md), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md), [t-8c8ce51c](../tasks/t-8c8ce51c.md), [t-9aa2f8cb](../tasks/t-9aa2f8cb.md), [t-0542595c](../tasks/t-0542595c.md)
 
 ## Context
 
@@ -35,16 +35,46 @@ ATMUX_CALLER_SCOPE=driver atmux team spawn-epic w-<task-id> --from <parent> --ro
 
 Convention: epic-id prefix `w-` distinguishes worker-teams from regular epics in cockpit + `atmux epic list` enumeration. The `parentEpicKanbanId` falls back to `e-w-<task-id>` per spawn-epic default; operator can override with `--parent-epic-kanban-id` if they want to attach the worker to an existing kanban EPIC instead of synthesizing a new one.
 
-### v2 surface (follow-up Task, NOT in this ADR)
+### v2 surface (§Amendment 2026-05-23, this ADR)
 
-A future ADR will add convenience verbs:
+Promoted from the original "follow-up Task" outline. Three convenience verbs land in `src/verbs/team/` and route through the existing `team` subverb dispatcher; the worker-team convention from §v1 is the substrate, these verbs are ergonomic wrappers.
 
-- `atmux team spawn-worker <task-id>` — auto-creates a wrapper epic, then spawn-epic; epic-id derived from task-id.
-- `atmux team dissolve-worker <task-id>` — alias for dissolve-epic.
-- `atmux team list-workers` — filters cockpit sessions[] for type=epic-team with name starting with `w-`.
-- **Auto-dissolve on task.done** — Honker subscription that calls dissolve-worker when the worker's only task transitions to done. The current event-driven substrate (ADR-202) supports this; v2 wires the consumer.
+1. **`atmux team spawn-worker <task-id> --from <parent> [--roster <preset>] [--parent-base <branch>] [--no-init-submodules] [--force-spawn]`**
 
-v2 is gated on: (a) v1 dogfood validating the smaller-roster ergonomics; (b) Honker substrate maturity (relayd already shipped per ADR-202 §Amendment 2026-05-22, but the `task.done → dissolve-worker` consumer is new).
+   Pipeline:
+
+   1. Resolve caller-scope (driver-only — fails closed BEFORE any disk mutation so members can't pollute the parent kanban with half-formed worker rows).
+   2. Normalise the task-id positional into a canonical worker-id (`w-<tail>`):
+       - `t-abc123` → `w-abc123`  (strip task prefix, swap)
+       - `w-abc123` → `w-abc123`  (already canonical — pass through)
+       - `abc123`   → `w-abc123`  (bare id — prefix `w-`)
+   3. Resolve the parent team's root via the cockpit (required — `--from` is mandatory; no walk-up inference). Refuse if the parent isn't in `cockpit.json::sessions[]`.
+   4. Auto-create a wrapper kanban EPIC in the parent's `state.db` via `addEpic`. Title is `worker: <task-id>` for forensic traceability; `driverRef` pins the origin task-id for downstream tooling. The returned `e-XXXXXXXX` id becomes the worker's `parentEpicKanbanId` — so `dissolve-worker` / `dissolve-epic` later mark THIS row done at teardown, instead of synthesizing `e-w-<tail>` which doesn't exist.
+   5. Synthesize spawn-epic argv (worker-id, `--from`, `--roster <preset>` defaulting to `solo`, `--parent-epic-kanban-id <new-epic-id>`, plus any pass-through flags) and delegate to `spawnEpic`.
+
+   Carve-out: this verb does NOT roll back the wrapper kanban EPIC if `spawnEpic` fails mid-pipeline. The row is small + harmless; the operator can `atmux epic advance <id> --to wontfix` if needed. Aligns with spawn-epic's own "partial state on failure" philosophy (it leaves cockpit-mutate step un-rolled-back too).
+
+2. **`atmux team dissolve-worker <worker-id-or-task-id> [--skip-checks] [--force-prune]`**
+
+   Pipeline:
+
+   1. Resolve caller-scope (driver-only).
+   2. Worker-id gate — refuses generic `e-` epic ids with a hint pointing to `dissolve-epic`. Accepted forms (`t-`/bare/`w-`) normalise to `w-<tail>` via the same routine as `spawn-worker`.
+   3. Delegate to `dissolveEpic` with the normalised id + pass-through flags.
+
+   Why a separate verb (vs. running `dissolve-epic w-<tail>` directly):
+       - Symmetry with `spawn-worker` — operators reach for the matching pair.
+       - Visible audit-trail — log + history grep separates worker teardown from generic epic-team teardown.
+       - Future-proofing — when the §v3 auto-dissolve consumer (carve-out below) lands, it calls THIS verb so the prefix-check guard stays single-sourced.
+
+3. **`atmux team list-workers [--parent <team>] [--json]`**
+
+   Enumerates worker-teams from `loadCockpit() → enabledTeams() → filter (type=epic-team AND name.startsWith("w-"))`. Read-only — for activity-based classification (idle, drainable, dissolve-safe) operators continue to use `atmux team sweep-epics` (ADR-170); `list-workers` is enumeration, not housekeeping.
+
+### Carve-outs (§v2 §Amendment 2026-05-23)
+
+- **Auto-dissolve on `task.done` — NOT in this ADR.** The Honker subscription that calls `dissolve-worker` when the worker's only task transitions to `done` is folded into **EPIC e-a946af69 Phase 4 (orchd lifecycle)**. The event-driven substrate (ADR-202, relayd shipped 2026-05-22) supports it; the consumer wiring belongs with the broader lifecycle work in e-a946af69, not as a sibling of these three thin verbs.
+- **`dissolve-worker` is NOT a no-op on non-worker epic-team ids.** It refuses with a hint, never silently passes through. The `e-` vs `w-` distinction is a load-bearing convention; eroding it via silent fallthrough would break the future auto-dissolve path's prefix-based subscription filter.
 
 ## Carve-outs
 
@@ -72,5 +102,7 @@ v2 is gated on: (a) v1 dogfood validating the smaller-roster ergonomics; (b) Hon
 - [t-8c8ce51c](../tasks/t-8c8ce51c.md) — filing Task that motivated this ADR
 - [ADR-090 §`spawn-epic` verb](090-epic-team-spawn.md) — substrate this builds on
 - [ADR-091 §`epic-merge`](091-epic-team-auto-merge.md) — fan-in semantics shared with workers
-- [ADR-202 §Amendment 2026-05-22](202-honker-pubsub-substrate.md) — event substrate for v2 auto-dissolve
+- [ADR-170 §`sweep-epics`](170-sweep-epics.md) — companion read-only enumerator + housekeeping path (workers count against the same sweep)
+- [ADR-202 §Amendment 2026-05-22](202-honker-pubsub-substrate.md) — event substrate for §v3 auto-dissolve consumer (consumer wiring deferred to EPIC e-a946af69 Phase 4)
 - 2026-05-22 session log — multiple small-fix commits motivating the gap analysis
+- 2026-05-23 §v2 amendment — e-678dd038 epic-team shipped the 3 convenience verbs + tests; dogfood validation outstanding (operator self-spawn of a worker via the new verb)

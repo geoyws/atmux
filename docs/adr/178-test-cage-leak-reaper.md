@@ -164,6 +164,7 @@ Rejected alternative: write to a single `~/.atmux/state/test-fixture-registry.js
 - ADR-018 (per-team tmux socket isolation).
 - ADR-058 (cage tiering — ephemeral Tier-1).
 - ADR-162 (atmux owns its tmux infrastructure — cockpit-socket isolation; sibling discipline at the team layer).
+- [ADR-223](223-reap-cascade-semantics-and-safety.md) — orphan-reap cascade is a sibling orchestrator for production-class orphans; test-reaper remains canonical for the test-class.
 - Global CLAUDE.md `bun test --timeout` discipline (`~/.claude-personal/CLAUDE.md` §Engineering "bun test orphans survive BashTool timeouts").
 
 

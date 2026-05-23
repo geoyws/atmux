@@ -18,11 +18,8 @@ import {
   DEFAULT_LANE_TICK_CRON_MINS,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
   DEFAULT_REFUSAL_DETECTION_CONFIG,
-  DEFAULT_SENTINEL_CADENCE_SEC,
-  DEFAULT_SENTINEL_ESCALATION_CONFIDENCE,
   DEFAULT_WORKTREE_ROOT,
   resolveRefusalConfig,
-  SentinelImpl,
   Team,
   TeamAutoEmitTrunkMerge,
   TeamCadence,
@@ -33,7 +30,6 @@ import {
   TeamMember,
   TeamOmbudsman,
   TeamRefusalDetection,
-  TeamSentinelOverrides,
   TeamWhip,
 } from "../../../src/schema/team.ts";
 
@@ -178,36 +174,24 @@ describe("TeamWhip — stallPrevention shape (ADR-057 schema promotion)", () => 
   });
 
   test("typo on a stallPrevention field rejects (.strict() catches typo)", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSecond: 120 } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSecond: 120 } })).toThrow();
   });
 
   test("non-positive heartbeatStaleSec rejects", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 0 } }),
-    ).toThrow();
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: -5 } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 0 } })).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: -5 } })).toThrow();
   });
 
   test("non-integer heartbeatStaleSec rejects", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 1.5 } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 1.5 } })).toThrow();
   });
 
   test("string in heartbeatStaleSec rejects (was silently defaulted pre-promotion)", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: "120" } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: "120" } })).toThrow();
   });
 
   test("non-boolean autoPushOnDone rejects", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { autoPushOnDone: "yes" } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { autoPushOnDone: "yes" } })).toThrow();
   });
 
   test("allowedPushBranches with non-string element rejects", () => {
@@ -219,9 +203,7 @@ describe("TeamWhip — stallPrevention shape (ADR-057 schema promotion)", () => 
   });
 
   test("allowedPushBranches as a string (not array) rejects", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { allowedPushBranches: "main" } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { allowedPushBranches: "main" } })).toThrow();
   });
 
   test("happy-path: full canonical block parses + every field round-trips", () => {
@@ -528,116 +510,6 @@ describe("TeamMember — role gitter→committer accept-both shim (ADR-159 TR3)"
   test("missing role parses successfully (optional field) — backward compat", () => {
     const m = TeamMember.parse({ name: "no-role" });
     expect(m.role).toBeUndefined();
-  });
-});
-
-// ---------- ADR-132 §D6: SentinelImpl + TeamSentinelOverrides ----------
-
-describe("SentinelImpl — 2026-05-14 two-impl enum", () => {
-  test("accepts 'claude' and 'cursor' literals", () => {
-    expect(SentinelImpl.parse("claude")).toBe("claude");
-    expect(SentinelImpl.parse("cursor")).toBe("cursor");
-  });
-
-  test("rejects dropped backends 'minimax' and 'kimi'", () => {
-    // Per the 2026-05-14 12:53 MYT driver simplification: MiniMax +
-    // Kimi were dropped pre-implementation ("unreliable and not
-    // smart enough"). The schema is the canonical fence — re-
-    // introducing either requires both this enum AND the
-    // `Sentinel["name"]` literal in src/abstractions/sentinel.ts
-    // to be updated in lockstep.
-    expect(() => SentinelImpl.parse("minimax")).toThrow();
-    expect(() => SentinelImpl.parse("kimi")).toThrow();
-  });
-
-  test("rejects arbitrary strings", () => {
-    expect(() => SentinelImpl.parse("gpt5")).toThrow();
-    expect(() => SentinelImpl.parse("")).toThrow();
-    expect(() => SentinelImpl.parse("CLAUDE")).toThrow(); // case-sensitive
-  });
-});
-
-describe("TeamSentinelOverrides — defaults + bounds", () => {
-  test("empty object parses cleanly — both fields are opt-in", () => {
-    const o = TeamSentinelOverrides.parse({});
-    expect(o.cadenceSec).toBeUndefined();
-    expect(o.escalationConfidenceThreshold).toBeUndefined();
-  });
-
-  test("cadenceSec accepts positive integers", () => {
-    const o = TeamSentinelOverrides.parse({ cadenceSec: 300 });
-    expect(o.cadenceSec).toBe(300);
-  });
-
-  test("cadenceSec rejects zero / negatives / non-integers", () => {
-    expect(() => TeamSentinelOverrides.parse({ cadenceSec: 0 })).toThrow();
-    expect(() => TeamSentinelOverrides.parse({ cadenceSec: -30 })).toThrow();
-    expect(() => TeamSentinelOverrides.parse({ cadenceSec: 1.5 })).toThrow();
-  });
-
-  test("escalationConfidenceThreshold accepts 0.0-1.0 bounds inclusive", () => {
-    expect(
-      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 0 })
-        .escalationConfidenceThreshold,
-    ).toBe(0);
-    expect(
-      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 1 })
-        .escalationConfidenceThreshold,
-    ).toBe(1);
-    expect(
-      TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 0.7 })
-        .escalationConfidenceThreshold,
-    ).toBe(0.7);
-  });
-
-  test("escalationConfidenceThreshold rejects out-of-range values", () => {
-    expect(() => TeamSentinelOverrides.parse({ escalationConfidenceThreshold: -0.01 })).toThrow();
-    expect(() => TeamSentinelOverrides.parse({ escalationConfidenceThreshold: 1.01 })).toThrow();
-  });
-
-  test("unknown keys rejected (.strict drift detection)", () => {
-    expect(() => TeamSentinelOverrides.parse({ cadenceSecondz: 270 })).toThrow();
-  });
-
-  test("Team accepts sentinel + sentinelOverrides at top-level", () => {
-    const team = Team.parse({
-      name: "demo",
-      members: [],
-      sentinel: "cursor",
-      sentinelOverrides: { cadenceSec: 180, escalationConfidenceThreshold: 0.8 },
-    });
-    expect(team.sentinel).toBe("cursor");
-    expect(team.sentinelOverrides?.cadenceSec).toBe(180);
-    expect(team.sentinelOverrides?.escalationConfidenceThreshold).toBe(0.8);
-  });
-
-  test("Team without sentinel field parses (backward compat — defaults to undefined)", () => {
-    const team = Team.parse({ name: "demo", members: [] });
-    expect(team.sentinel).toBeUndefined();
-    expect(team.sentinelOverrides).toBeUndefined();
-  });
-
-  test("Team.sentinel rejects dropped 'minimax' value at the top-level too", () => {
-    expect(() =>
-      Team.parse({
-        name: "demo",
-        members: [],
-        sentinel: "minimax" as unknown as SentinelImpl,
-      }),
-    ).toThrow();
-  });
-});
-
-describe("Sentinel per-impl default constants", () => {
-  test("DEFAULT_SENTINEL_CADENCE_SEC is 270s (ADR-132 §D3)", () => {
-    // Both shipping impls (claude + cursor) default to 270s — pin
-    // the constant so a drift here surfaces in the resolver test
-    // alongside this one.
-    expect(DEFAULT_SENTINEL_CADENCE_SEC).toBe(270);
-  });
-
-  test("DEFAULT_SENTINEL_ESCALATION_CONFIDENCE is 0.7 (ADR-132 §D5 E5)", () => {
-    expect(DEFAULT_SENTINEL_ESCALATION_CONFIDENCE).toBe(0.7);
   });
 });
 
@@ -1059,6 +931,154 @@ describe("TeamEpic — ADR-090 §Schema valid shape + defaults", () => {
       }),
     ).toThrow();
   });
+
+  // ---------- ADR-227 §D3: autoDissolve carve-out ----------
+
+  test("autoDissolve defaults to true (ADR-227 §D3 — orchd Phase 4 auto-dissolves on epic.pushed)", () => {
+    const e = TeamEpic.parse({
+      parent: "atmux",
+      parentEpicKanbanId: "e-a946af69",
+      parentBase: "atmux-geoyws",
+    });
+    expect(e.autoDissolve).toBe(true);
+  });
+
+  test("autoDissolve honored when explicitly false (operator opt-out via --no-auto-dissolve)", () => {
+    const e = TeamEpic.parse({
+      parent: "atmux",
+      parentEpicKanbanId: "e-a946af69",
+      parentBase: "atmux-geoyws",
+      autoDissolve: false,
+    });
+    expect(e.autoDissolve).toBe(false);
+  });
+
+  test("autoDissolve honored when explicitly true (idempotent with default)", () => {
+    const e = TeamEpic.parse({
+      parent: "atmux",
+      parentEpicKanbanId: "e-a946af69",
+      parentBase: "atmux-geoyws",
+      autoDissolve: true,
+    });
+    expect(e.autoDissolve).toBe(true);
+  });
+
+  // ---------- ADR-229 §DA-Gate-4 + §DA-Gate-7: autoPush sub-block ----------
+
+  test("ADR-229 autoPush — absent block keeps schema valid (additive)", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+    });
+    expect(t.autoPush).toBeUndefined();
+  });
+
+  test("ADR-229 autoPush — empty {} applies all three defaults (loud-opt-in §DA5)", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+      autoPush: {},
+    });
+    expect(t.autoPush).toEqual({
+      enabled: false,
+      typecheckCmd: "bun run typecheck",
+      cooldownSec: 30,
+    });
+  });
+
+  test("ADR-229 autoPush — explicit enabled: true honored", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+      autoPush: { enabled: true },
+    });
+    expect(t.autoPush?.enabled).toBe(true);
+    expect(t.autoPush?.cooldownSec).toBe(30); // default still applies
+  });
+
+  test("ADR-229 autoPush — cooldownSec custom value honored", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+      autoPush: { cooldownSec: 60 },
+    });
+    expect(t.autoPush?.cooldownSec).toBe(60);
+  });
+
+  test("ADR-229 autoPush — typecheckCmd empty string is honored (Gate-3b skip)", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+      autoPush: { typecheckCmd: "" },
+    });
+    expect(t.autoPush?.typecheckCmd).toBe("");
+  });
+
+  test("ADR-229 autoPush — non-positive cooldownSec refused", () => {
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { cooldownSec: 0 },
+      }),
+    ).toThrow();
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { cooldownSec: -5 },
+      }),
+    ).toThrow();
+  });
+
+  test("ADR-229 autoPush — non-integer cooldownSec refused", () => {
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { cooldownSec: 30.5 },
+      }),
+    ).toThrow();
+  });
+
+  test("ADR-229 autoPush — non-boolean enabled refused", () => {
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { enabled: "true" },
+      }),
+    ).toThrow();
+  });
+
+  test("ADR-229 autoPush — strict mode rejects unknown keys (drift surface)", () => {
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { enabld: true }, // typo
+      }),
+    ).toThrow();
+  });
+
+  test("autoDissolve rejects non-boolean (strict drift surface)", () => {
+    expect(() =>
+      TeamEpic.parse({
+        parent: "atmux",
+        parentEpicKanbanId: "e-a946af69",
+        parentBase: "atmux-geoyws",
+        autoDissolve: "true",
+      }),
+    ).toThrow();
+    expect(() =>
+      TeamEpic.parse({
+        parent: "atmux",
+        parentEpicKanbanId: "e-a946af69",
+        parentBase: "atmux-geoyws",
+        autoDissolve: 1,
+      }),
+    ).toThrow();
+  });
 });
 
 // ---------- TeamEpic — ADR-144 §Deployed mode superRefine ----------
@@ -1073,9 +1093,7 @@ describe("TeamEpic superRefine — ADR-144 T4 deployed-requires-stagingUrlTempla
       stagingUrlTemplate: "${product}-${dev-suffix}-${epic-name}-staging.ifca.app",
     });
     expect(e.testGateMode).toBe("deployed");
-    expect(e.stagingUrlTemplate).toBe(
-      "${product}-${dev-suffix}-${epic-name}-staging.ifca.app",
-    );
+    expect(e.stagingUrlTemplate).toBe("${product}-${dev-suffix}-${epic-name}-staging.ifca.app");
   });
   test("testGateMode: 'deployed' with null stagingUrlTemplate REFUSES at parse", () => {
     expect(() =>

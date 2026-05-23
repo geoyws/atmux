@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — orchd Phase 3-5 lifecycle (EPIC `e-a946af69` close-out)
+
+End-to-end automation of epic-team lifecycle via the orchd event-
+router substrate. Three subscribers + spawn-queue land together,
+flipping atmux's coordination spine from cron-polled to event-driven:
+
+- **Phase 3 ([ADR-226](docs/adr/226-orchd-auto-merge-subscriber.md))** — `orchd-merge` consumer: `task.done` events fire `performEpicMerge` once an epic's last open task lands. Emits `epic.merged` on success or `epic.merge-blocked` on dispatcher gate-held / conflict. `ATMUX_HONKER` kill-switch + at-least-once `withIdempotency` wrapper.
+- **Phase 4 ([ADR-227](docs/adr/227-orchd-auto-dissolve-subscriber.md))** — `orchd-dissolve` consumer: `epic.pushed` events fire `dissolve-epic` (cage teardown + branch prune + cockpit registry cleanup). Operator opt-out via `team.json::epicTeam.autoDissolve=false`. Trigger flipped from the original `epic.merged` to `epic.pushed` per ADR-227 §Amendment 2026-05-23 — prevents Phase 4 dissolving the cage before Phase 6 pushes the merge commit (forensics-preserving).
+- **Phase 5a ([ADR-228 §D2](docs/adr/228-orchd-spawn-queue-pressure-monitor.md))** — `spawn_queue` SQLite table (v13→v14 migration) + `SpawnQueueRow` Zod schema + `SpawnQueueRepo` (CRUD + `dequeueHead` under `BEGIN IMMEDIATE`).
+- **Phase 5b ([ADR-228 §D1 / §D4 / §D7](docs/adr/228-orchd-spawn-queue-pressure-monitor.md))** — `src/core/spawn-queue.ts` exports `admit` / `enqueueIfPressured` / `pressureMonitorTick` / `resolveSpawnQueueLimits`. `spawn-epic` verb refuses → enqueues by default (per §OQ3 HIGH-REV `queue-default` decision); `--no-queue` flag preserves the original throw-on-pressure semantics for one-shot scripts. orchd `--start` installs a `setInterval` drain loop firing every `pressureCheckIntervalSec` (default 60s; tunable via `ATMUX_SPAWN_QUEUE_TICK_SEC`).
+- **Phase 6 ([ADR-229](docs/adr/229-orchd-auto-push-subscriber.md))** — `orchd-push` consumer: `epic.merged` events fire `git push origin <parentBase>` through 7 safety gates (kill-switch, opt-in, staging-refuse, cooldown, working-tree-clean, force-push-refusal, typecheck) in cheapest-first fire order. Emits `epic.pushed` / `epic.push-blocked` / `epic.push-conflict`.
+- **Wire-up ([ADR-224 §D6](docs/adr/224-orchd-multi-topic-event-router.md))** — `src/core/orchd-bootstrap.ts::bootstrapOrchd` registers all three subscribers against `ORCHD_SUBSCRIPTIONS`; `atmux orchd --drain` iterates the registry alongside the existing hardcoded `gitter` + `lane-router` consumers (single dispatch path per the driver P0 step 3/5 directive).
+
+Topic taxonomy ([ADR-203 §D2](docs/adr/203-event-topic-taxonomy.md)) grew by 3 entries (47 → 50 in `TOPICS`): `epic.spawn-queued`, `epic.spawn-abandoned`, `epic.added`. Discriminated union + Zod payloads in `src/schema/events.ts`.
+
+End-to-end dogfood (lifecycle + pressure-throttle) requires sibling EPIC `e-60e16169`'s dispatcher injection before any handler does work at the verb layer — until then, the registered handlers ship with `skipped-not-mine` stubs that are safe no-ops under at-least-once delivery. Run protocol for the post-`e-60e16169` operator-driven dogfood lives at [ADR-228 §Amendment 2026-05-23-rev2](docs/adr/228-orchd-spawn-queue-pressure-monitor.md).
+
+### ✨ Added — `atmux topo` fleet observability + reap cascade (ADR-222 + ADR-223)
+
+One verb replaces today's N × N manual cleanup loop: enumerates the
+entire fleet (cockpit + parent teams + epic-teams + cage sockets +
+crontab marker blocks + worktrees + branches + kanban epic rows),
+classifies orphans against the [ADR-222 §D4](docs/adr/222-cage-topography-read-only-verb-surface.md)
+6-class taxonomy, and (with `--reap --apply`) composes the canonical
+per-class reap primitives behind a 4-gate safety ladder per
+[ADR-223 §D3](docs/adr/223-reap-cascade-semantics-and-safety.md).
+
+- **`atmux topo`** — flat / `--tree` / `--orphans` / `--json` / `--team` / `--since`
+  read-only manifest. JSON is `schema_version: 1` (cockpit-mirror
+  Rust crate at sibling EPIC pins on it).
+- **`atmux topo --reap`** — dry-run cascade. `--apply` runs the
+  destruction with per-orphan `[y]/[N]/[a]/[q]/[d]` confirmation
+  (Gate 4 deferred to the verb layer). `--yes` bypasses Gate 4 only.
+- **Safety gates** — Gate 1 (active-check, bypassed by
+  `--skip-checks`), Gate 2 (parent-kind, structural / never bypassed),
+  Gate 3 (merge-base, preserves [ADR-219 §D2](docs/adr/219-dissolve-epic-completeness.md)
+  invariant / never bypassed), Gate 4 (interactive, bypassed by `--yes`).
+- **Reap-log** at `~/.atmux/state/reap-log.jsonl` (one row per
+  reaped orphan; `schema_version: 1`).
+- **Composition map** — `tmux kill-server` / `cron-reaper` /
+  `git branch -D` / `rm -rf` (`reapZombieWorktree`) /
+  `removeRegistryEntry`. `dissolveEpic` is intentionally NOT in the
+  map for the `cage-tmux-without-registry` class (always refuses on
+  missing-registry per the 2026-05-22 amendment); two-pass cascade
+  re-classifies residue as `branch-without-row` + `worktree-without-cage`.
+- **Performance**: hax dogfood 2026-05-22 measured 441-449 ms on
+  the live 5T / 16E fleet (4.4× under the 2s budget).
+- **Operator runbook**: [`docs/RUNBOOK-topology.md`](docs/RUNBOOK-topology.md).
+
+### 🗑️ Removed — Sentinel substrate (EPIC e-be01fc89, 2026-05-23)
+
+The cron-polling sentinel mechanism documented in [ADR-132](docs/adr/132-pluggable-martinet.md) has been removed in entirety. Mechanical observation + Enter-push + `claim-next` re-fires distribute to Honker event consumers per sibling EPIC `e-a946af69` (orchd Phase 3-5; Phase 1 already merged at [f6b078b](https://github.com/geoyws/atmux/commit/f6b078b)).
+
+**Source surface deleted** (6 files, -1791 LOC in T1):
+
+- `src/abstractions/sentinel.ts` + `src/abstractions/sentinels/{claude,cursor}.ts`
+- `src/core/sentinel-config.ts` + `src/core/sentinel-escalation.ts`
+- `src/verbs/sentinel.ts` + CLI dispatch case at `src/cli.ts:287`
+
+**Cron + cockpit surface decommissioned**:
+
+- `src/core/cron.ts` — no sentinel emission branch (T3 regression assertions in `tests/unit/core/cron.test.ts`).
+- `src/verbs/cockpit.ts` — `buildSentinelWindowCommand`, `autoStartSentinelLoop`, W3 `_sentinel` provisioning in `reconcileCockpitSession` all removed.
+- `src/core/cockpit.ts` — `migrateMartinetBlockToSentinel` shim deleted (ADR-158 grace shim is moot post-deletion).
+- `src/verbs/doctor.ts` — `checkCockpitSentinelWindow` + `fixMissingSentinelWindow` probes removed.
+
+**Schema fields removed** (passthrough preserves legacy keys as inert data):
+
+- `team.sentinel` / `team.sentinelOverrides`
+- `cockpit.sentinel` / `cockpit.defaultSentinel`
+- `SentinelImpl`, `TeamSentinelOverrides`, `CockpitSentinel{Claude,Cursor}`, `CockpitDefaultSentinel`, `SentinelSession{T,}`, `DEFAULT_SENTINEL_CADENCE_SEC`, `DEFAULT_SENTINEL_ESCALATION_CONFIDENCE` types.
+
+**Test surface** (T2): 6 sentinel-only test files deleted (~2898 LOC); 10 test files migrated to drop sentinel-specific assertions.
+
+**Brief retired**: `templates/briefs/martinet.md` deleted.
+
+**ADR closure** (T8 + T7):
+
+- ADR-132 status flipped `Accepted` → `Superseded by e-be01fc89`; final §Amendment 2026-05-23 appended.
+- ADRs 158 / 183 / 185 / 206 / 207 marked `Superseded by e-be01fc89`.
+- ADR-211 marked `Implemented by e-be01fc89 + e-a946af69`.
+- ADR-189 §D2 updated: sentinel-cron-polling removal no longer "lean-mode opt-in" — sentinel is gone entirely.
+
+#### Migration notes
+
+- **Existing crontabs with sentinel blocks**: `atmux stop && atmux start` per team cycles the sandwich-marker block; no manual cleanup needed (per [ADR-202](docs/adr/202-honker-pubsub-substrate.md) §X cron decommission protocol).
+- **Stale `team.json` / `cockpit.json` keys** (`sentinel`, `sentinelOverrides`, `defaultSentinel`, legacy `martinet`): schema-removed; the deploy-team-start path silently drops them via `.passthrough()`.
+- **One-way door**: ADR-158 martinet→sentinel migration shim was deleted alongside the sentinel surface. Operators on pre-ADR-158 cockpit.json with top-level `martinet:` keys: rename to `sentinel:` (or delete the block entirely) before the next `atmux start` — the shim that previously rewrote `martinet` → `sentinel` is gone.
+
+#### Sibling-EPIC IOU — cadence-truth-signal restoration
+
+`tests/e2e/cadence-truth-signal.test.ts` B4+B5 sentinel-escalation contract beats were DELETED; B9+B10 escalation assertions were GUTTED (commit [d26855d](https://github.com/geoyws/atmux/commit/d26855d) — T2). Audit anchor lives in the test file itself as `TODO(e-a946af69)` markers (header line 18 + B4/B5 deletion site at line 294). Sibling EPIC e-a946af69 (orchd Phase 3-5 lifecycle) owes a "restore cadence-truth-signal coverage" Task that wires the orchd-escalation entrypoint + re-adds the gutted beats against the new contract. **NOT blocking e-be01fc89 done-state** — the TODO markers are sufficient audit anchor per ADR-148 contract preservation.
+
 ### 🔄 Changed — `atmux relayd` → `atmux orchd` rename + Rust crate atmux-relayd → atmux-orchd (ADR-224 Phase 1)
 
 `relayd` (relay daemon) is misleading now that the daemon will also own auto-spawn (`epic.added`) and auto-dissolve (`task.done`) in Phase 2 per [ADR-224](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 1 is a pure relabel — zero behavior change — landing before Phase 2 impl so the codebase doesn't carry a misleading symbol through that development window.
@@ -15,6 +108,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rust crate**: `rust/atmux-relayd/` renamed to `rust/atmux-orchd/`; binary `atmux-relayd` → `atmux-orchd`; `build:relayd` → `build:orchd`; `/usr/local/bin/atmux-orchd` symlink ([e02ea2d](https://github.com/geoyws/atmux/commit/e02ea2d)).
 - **Subscription registry seam**: new `src/core/orchd-registry.ts` exporting `ORCHD_SUBSCRIPTIONS: OrchdSubscription[] = []` — zero-handler scaffold per [ADR-224 §D6](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 2 wires the `epic.added` / `task.done` handlers; Phase 1 array is empty so no behavior change.
 - **Migration**: external callers should swap `atmux relayd` → `atmux orchd` and `atmux-relayd` binary references → `atmux-orchd` before the next release removes the alias.
+
+### ✨ Added — epic dependencies + `is_ready` toggle (ADR-225, EPIC e-cf8a6195)
+
+EPICs now carry `depends_on` (epic-id list) + `is_ready` (0/1 kick-off bit) — v13→v14 migration. `atmux team spawn-epic` consults an eligibility predicate (all deps `done` + `is_ready=1`) and refuses on unmet deps with a structured `--force` override + log to `~/.atmux/state/spawn-overrides.log`. New verbs: `epic ready` / `epic unready` / `epic set-depends-on` / `epic deps`; `epic list` gains `R` + `D=k/n` columns; `epic show` renders the dep chain. Two new event topics (`epic.unblocked`, `epic.ready`) ship per ADR-203 §D2 amendment. Cycle-detect + non-existent-dep refusal fire at add-time. Sibling EPIC e-60e16169 (orchd auto-spawn) is the primary substrate consumer. See [ADR-225](docs/adr/225-epic-dependencies-and-is-ready-toggle.md).
+
+### ⏳ Deprecated — `atmux epic-merge tick` cron (orchd Phase 3 supersedes; removal scheduled 2026-06-06)
+
+Per [ADR-226 §D4 + §DA3](docs/adr/226-orchd-auto-merge-subscriber.md) cron-backstop coordination + [ADR-202 §X](docs/adr/202-honker-in-db-messaging-substrate.md) cron-decommission protocol: now that orchd subscribes to `task.done` and dispatches `performEpicMerge` sub-second (commit `89fcab8`, 2026-05-23), the per-epic-team `epic-merge tick` cron is no longer the primary epic-merge trigger. It stays installed for **two weeks (until 2026-06-06)** as a defense-in-depth resilience fallback — the orchd primary path competes with the cron via the existing `merger_state` `BEGIN IMMEDIATE` serialization, so first-one-wins.
+
+**Decommission timeline**:
+
+- **2026-05-23** (T+0): orchd-merge primary path live (Phase 3 module ships at commit `89fcab8`). Cron + orchd both installed; either can drive the merge. CHANGELOG entry (this one).
+- **2026-06-06** (T+14): operator-verified orchd primary path stable via Honker event-log query (`SELECT COUNT(*) FROM events WHERE topic = 'epic.merged'` vs cron-attributed `merger_state` rows). Follow-up Task in **parent atmux kanban** removes the cron-block emit from `src/core/cron.ts` (search tag: `epic-merge tick`). Removal lands as a planner-filed Task at T+14 with cron-template-pruning commit + cockpit rebuild verification.
+- **2026-06-13** (T+21): orphan-cron sweep pass — `crontab -l | grep 'epic-merge tick'` on every team-host MUST return zero hits post-decommission. If any team's crontab still carries the line, file a follow-up complaint via medic.
+
+**Rollback path**: `ATMUX_HONKER=off` short-circuits the orchd-merge consumer; the cron-only path resumes. The cron template body lives in `src/core/cron.ts` near the existing `epic-merge tick` invocation; the removal Task at T+14 owns the prune.
+
+See also: [ADR-226 §D4](docs/adr/226-orchd-auto-merge-subscriber.md) (cron-backstop coordination), [ADR-226 §DA3](docs/adr/226-orchd-auto-merge-subscriber.md) (decision-anchor), [ADR-202 §X](docs/adr/202-honker-in-db-messaging-substrate.md) (cron-decommission protocol). Follow-up Task (parent atmux kanban, planner-filed at T+14): "Remove epic-merge tick cron template — orchd Phase 3 dogfood verified".
 
 ### ✨ Added — solo-worker scope v1: 1-2 member roster presets for small standalone tasks (ADR-221, t-8c8ce51c)
 

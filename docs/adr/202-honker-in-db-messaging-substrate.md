@@ -1,6 +1,6 @@
 # ADR-202: Honker as the in-DB messaging substrate — eliminate polling/whip/observation loops by adopting SQLite NOTIFY/LISTEN semantics
 
-**Status**: proposed (deferred: pending substrate probe + extension build + Mac dev `setCustomSQLite` verification)
+**Status**: Accepted — ratified by driver 2026-05-23 (substrate fully on trunk via honker-events fan-in `f376665` + Epic A/B/C merges; relayd Bun + Rust supervisor + atmux-listener Rust subprocess + events table + cron --drain backstop ALL deployed at `/opt/atmux/0.8.11/bin/`). Mac dev `setCustomSQLite` is a separate dev-ergonomics concern; substrate is production-ratified on hax. §Amendments I+II (in-db + NOTIFY/LISTEN) + §IX-A (relayd direct send-keys) + §X (cron decommission) + §XI (events pruning) + §XIII (migrate-hex-ids) + §XIV (circuit-breaker) all on trunk.
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-20 evening design session — operator: *"come up with a complete recommendation to rehaul the entire atmux to use pubsub with honker and avoid loops and whips and polling"*. Design captured in memory `project_honker_pubsub_rehaul_design`; this ADR formalizes the substrate decision.
 **Cross-refs**: [ADR-032](032-socket-pubsub-messaging-layer.md) (accepted-but-parked unix-socket-pubsub — carved-out, not superseded; see D8), [ADR-091](091-kanban-driven-auto-merge.md) §"forward-ref to socket-pubsub-driven dispatch" (this ADR delivers the in-DB half of that forward-ref), [ADR-134](134-in-team-auto-merger.md) §Triggers (event-driven trigger half), [ADR-145](145-atmux-adopts-gitter.md) §Reviewer-pre-flag (event-driven cascade half), [ADR-077](077-cockpit-superdoctor.md) (medic role — becomes event-driven post-substrate per migration phase 7), [ADR-126](126-sqlite-state-store.md) (state.db — the substrate Honker plugs into), [ADR-132](132-pluggable-martinet.md) (sentinel observation loops — becomes event-consumer post-substrate), [ADR-140](140-cheap-model-first.md) (Claude-burn reduction motivation — this ADR's projection sits alongside ADR-140's), [ADR-192](192-cron-arm-idempotency-contract.md) (OS-cron discipline — still applies for irreducible periodic work), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md) §D6 (subscribes to `budget.warning`/`budget.recovered` once this lands), [ADR-200](200-install-wizard-guided-first-run-setup.md) §D6 (Honker extension install step), forthcoming ADR-203 (event topic taxonomy — payload schema + propagation rules), forthcoming ADR-204 (`_jury` role — first consumer beyond the substrate).
@@ -924,7 +924,7 @@ Lean dispatch saves the cross-member enumeration cost on each `task.unclaimed`: 
 ### Out of scope (IX-A)
 
 - Cross-team / fleet event mirroring (IX-B + §X + §XI reserved for sibling Epic e-6a066299).
-- Cockpit-mirror Rust crate (filed as ADR-219 under Epic e-95087c8b Story 2).
+- Cockpit-mirror Rust crate (filed as ADR-230, renumbered from ADR-219 on 2026-05-23 due to collision with ADR-219 dissolve-epic-completeness; Epic e-95087c8b Story 2).
 - `task.done` / other-topic lean dispatch (this amendment is `task.unclaimed`-scoped; gitter merge handler stays full-payload-load per §VII).
 
 ### File ownership (Epic e-95087c8b)

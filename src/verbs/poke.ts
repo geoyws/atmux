@@ -1345,7 +1345,7 @@ type _NeedsApprovalReportRef = NeedsApprovalReport;
  * try/catch is the outer net.
  */
 async function runVelocityGate(ctx: TickCtx, homeOpts: SkillsTeamPathsOpts): Promise<void> {
-  const { team, atmuxDir, nowSec, tmux, stderr } = ctx;
+  const { team, atmuxDir, nowSec, tmux } = ctx;
   const velocityCfg = team.whip?.velocityGate;
   const windowMin = velocityCfg?.windowMin ?? 60;
   const standbyGraceMin = velocityCfg?.standbyGraceMin ?? 30;
