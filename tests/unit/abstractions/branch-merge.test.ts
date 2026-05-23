@@ -23,7 +23,6 @@ import {
   defaultGitSpawn,
   type GitSpawn,
   MergeConflictError,
-  type MergeMemberOpts,
   mergeMember,
 } from "../../../src/abstractions/branch-merge.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";

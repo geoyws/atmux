@@ -109,6 +109,16 @@ describe("parseSpawnEpicArgs", () => {
     expect(r.initSubmodules).toBe(false);
   });
 
+  test("autoDissolve defaults to true (ADR-227 §D3)", () => {
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p"]);
+    expect(r.autoDissolve).toBe(true);
+  });
+
+  test("--no-auto-dissolve flips autoDissolve to false (operator opt-out per ADR-227 §D3)", () => {
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--no-auto-dissolve"]);
+    expect(r.autoDissolve).toBe(false);
+  });
+
   test("--merge-mode pr accepted", () => {
     const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--merge-mode", "pr"]);
     expect(r.mergeMode).toBe("pr");

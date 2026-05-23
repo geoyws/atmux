@@ -2119,7 +2119,7 @@ describe("checkWorktreeIsolation", () => {
   // ---------- Class 2: orphan ----------
 
   test("isolation ON + dir present that isn't in roster → YELLOW 'worktree-orphan:<dir>'", async () => {
-    const gitSpawn: GitSpawn = async () =>
+    const _gitSpawn: GitSpawn = async () =>
       // The wrong-branch probe runs because alice IS present (matched).
       // We want the orphan to also surface — set up a clean branch state
       // so wrong-branch returns no rows.

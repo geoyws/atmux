@@ -386,3 +386,7 @@ Thresholds tunable per host via env. Override via `--force-spawn` flag (operator
 **Cross-refs:** ADR-198 (host-pressure playbook — operator-side runtime relief; this ADR's spawn-side admission control is the *prevention* sibling), EPIC e-13f311f5 (full ADR-184 substrate — queue + dormancy audit; consumes `host-pressure.ts` probe).
 
 **Filed via** 2026-05-21 driver session operator directive.
+
+## §Status amendment 2026-05-23 — Phase 5 queue-ify pointer
+
+**Status: amended 2026-05-23** — Phase 5 ([ADR-228](228-orchd-spawn-queue-pressure-monitor.md) spawn-queue + pressure-monitor) queue-ifies the refuse-on-pressure path FOR orchd-handler-driven spawns (the auto-spawn flow). The MANUAL `atmux team spawn-epic` CLI continues to refuse with `ConfigError` per the original §Decision semantics; only the event-driven handler now enqueues instead of refusing. See [ADR-228 §What-breaks](228-orchd-spawn-queue-pressure-monitor.md) for the bifurcation rationale.

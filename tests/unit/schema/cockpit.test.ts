@@ -371,3 +371,59 @@ describe("CockpitMedic — ADR-133 alias of CockpitSuperdoctor", () => {
   });
 });
 
+// ---------- ADR-229 §DA-Gate-2: cockpit pushPolicy ----------
+
+describe("Cockpit.pushPolicy — ADR-229 §DA-Gate-2 (orchd-push allowlist / refusedlist)", () => {
+  test("absent → undefined (additive — no operator overrides)", () => {
+    const c = Cockpit.parse({});
+    expect(c.pushPolicy).toBeUndefined();
+  });
+
+  test("empty {} applies sub-defaults — both lists empty", () => {
+    const c = Cockpit.parse({ pushPolicy: {} });
+    expect(c.pushPolicy).toEqual({ refusedBases: [], allowedBases: [] });
+  });
+
+  test("refusedBases populated (project-specific additions)", () => {
+    const c = Cockpit.parse({
+      pushPolicy: { refusedBases: ["foo-canary", "bar-release"] },
+    });
+    expect(c.pushPolicy?.refusedBases).toEqual(["foo-canary", "bar-release"]);
+    expect(c.pushPolicy?.allowedBases).toEqual([]); // sub-default
+  });
+
+  test("allowedBases populated (escape-hatch override — e.g. geoy.ws)", () => {
+    const c = Cockpit.parse({
+      pushPolicy: { allowedBases: ["geoyws-main", "geoyws-personal"] },
+    });
+    expect(c.pushPolicy?.allowedBases).toEqual(["geoyws-main", "geoyws-personal"]);
+    expect(c.pushPolicy?.refusedBases).toEqual([]); // sub-default
+  });
+
+  test("both lists populated simultaneously (independent layers)", () => {
+    const c = Cockpit.parse({
+      pushPolicy: {
+        refusedBases: ["foo-canary"],
+        allowedBases: ["geoyws-main"],
+      },
+    });
+    expect(c.pushPolicy?.refusedBases).toEqual(["foo-canary"]);
+    expect(c.pushPolicy?.allowedBases).toEqual(["geoyws-main"]);
+  });
+
+  test("non-array refusedBases refused (Zod type guard)", () => {
+    expect(() =>
+      Cockpit.parse({
+        pushPolicy: { refusedBases: "foo-canary" as unknown as string[] },
+      }),
+    ).toThrow();
+  });
+
+  test("strict mode rejects unknown keys inside pushPolicy (drift surface)", () => {
+    expect(() =>
+      Cockpit.parse({
+        pushPolicy: { refusedBases: [], allowdBases: [] }, // typo
+      }),
+    ).toThrow();
+  });
+});

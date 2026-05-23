@@ -162,6 +162,133 @@ export const EpicReadyPayload = z
   })
   .passthrough();
 
+/**
+ * `epic.merged` — orchd-merge handler successfully merged an epic-team
+ * branch into its parent base. ADR-203 §D2 (Epic lifecycle, ADR-226
+ * §D2 addition 2026-05-23). Consumed by Phase 4 (ADR-227 auto-dissolve).
+ */
+export const EpicMergedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.merged"),
+    epicId: z.string(),
+    parentBase: z.string(),
+    mergeSha: z.string(),
+    mergedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.merge-blocked` — orchd-merge handler's dispatcher returned a
+ * conflict or gate-held outcome. ADR-203 §D2 (Epic lifecycle, ADR-226
+ * §D2 addition 2026-05-23). Operator-observable; no consumer in v1.
+ */
+export const EpicMergeBlockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.merge-blocked"),
+    epicId: z.string(),
+    reason: z.string(),
+    blockedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.pushed` — orchd-push handler successfully pushed the merged
+ * commit to `origin/<parentBase>`. ADR-203 §D2 (Epic lifecycle,
+ * ADR-229 §D3 addition 2026-05-23). Consumed by Phase 4 (ADR-227
+ * §Amendment 2026-05-23 trigger flip from `epic.merged` to
+ * `epic.pushed`).
+ */
+export const EpicPushedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.pushed"),
+    epicId: z.string(),
+    base: z.string(),
+    headSha: z.string(),
+    beforeSha: z.string().optional(),
+    pushedAtSec: z.number(),
+    durationMs: z.number().optional(),
+  })
+  .passthrough();
+
+/**
+ * `epic.push-blocked` — orchd-push handler's pre-flight gate refused
+ * (any Gate-{2,3a,3b,4,5,7} failure). ADR-203 §D2 (Epic lifecycle,
+ * ADR-229 §D3 addition 2026-05-23). Operator-observable; no consumer
+ * in v1; surfaces in cockpit-mirror Discord feed per ADR-219. Gate-1
+ * upstream-advanced is a distinct topic ({@link EpicPushConflictPayload})
+ * because the actionable rebase/pull metadata warrants a distinct
+ * Discord template.
+ */
+export const EpicPushBlockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.push-blocked"),
+    epicId: z.string(),
+    base: z.string(),
+    gateBlocked: z.enum(["1", "2", "3a", "3b", "4", "5", "7"]),
+    reason: z.string(),
+    blockedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.push-conflict` — orchd-push handler's Gate-1 upstream-advanced
+ * refusal. Distinct from `epic.push-blocked` because it carries
+ * actionable rebase/pull metadata (ahead, behind, divergenceSha) +
+ * a distinct Discord template per ADR-219. ADR-203 §D2 (Epic
+ * lifecycle, ADR-229 §D3 addition 2026-05-23).
+ */
+export const EpicPushConflictPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.push-conflict"),
+    epicId: z.string(),
+    base: z.string(),
+    ahead: z.number(),
+    behind: z.number(),
+    divergenceSha: z.string().optional(),
+    blockedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.dissolved` — orchd-dissolve handler completed the cage reap
+ * for an epic-team. ADR-203 §D2 (Epic lifecycle; topic existed in v1
+ * but the Zod payload schema landed alongside ADR-227 T5 dissolve
+ * module 2026-05-23). Operator-observable; no consumer in v1 — the
+ * cron-based sweep-epics reaper (`e-db13ac01`) used to handle this
+ * with disk-state probes pre-Phase-4.
+ */
+export const EpicDissolvedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.dissolved"),
+    epicId: z.string(),
+    dissolvedAtSec: z.number(),
+    dissolvedSha: z.string().optional(),
+  })
+  .passthrough();
+
+/**
+ * `epic.dissolve-blocked` — orchd-dissolve handler's pre-flight gate
+ * refused (worktree dirty, in-flight sessions, ADR-090 §dissolve-epic
+ * gate held). ADR-203 §D2 (Epic lifecycle, ADR-227 §D2 addition
+ * 2026-05-23). Operator-observable; no consumer in v1; surfaces in
+ * cockpit-mirror Discord feed per ADR-219.
+ */
+export const EpicDissolveBlockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.dissolve-blocked"),
+    epicId: z.string(),
+    reason: z.string(),
+    blockedAtSec: z.number(),
+  })
+  .passthrough();
+
 /** Substrate self-monitoring: extension loaded + smoke passed. ADR-203 §D8. */
 export const InternalHonkerLoadedPayload = z
   .object({
@@ -199,6 +326,13 @@ export const EventPayload = z.discriminatedUnion("topic", [
   GitterEscalatedPayload,
   EpicUnblockedPayload,
   EpicReadyPayload,
+  EpicMergedPayload,
+  EpicMergeBlockedPayload,
+  EpicPushedPayload,
+  EpicPushBlockedPayload,
+  EpicPushConflictPayload,
+  EpicDissolvedPayload,
+  EpicDissolveBlockedPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -211,6 +345,13 @@ export type CommitLandedPayload = z.infer<typeof CommitLandedPayload>;
 export type GitterEscalatedPayload = z.infer<typeof GitterEscalatedPayload>;
 export type EpicUnblockedPayload = z.infer<typeof EpicUnblockedPayload>;
 export type EpicReadyPayload = z.infer<typeof EpicReadyPayload>;
+export type EpicMergedPayload = z.infer<typeof EpicMergedPayload>;
+export type EpicMergeBlockedPayload = z.infer<typeof EpicMergeBlockedPayload>;
+export type EpicPushedPayload = z.infer<typeof EpicPushedPayload>;
+export type EpicPushBlockedPayload = z.infer<typeof EpicPushBlockedPayload>;
+export type EpicPushConflictPayload = z.infer<typeof EpicPushConflictPayload>;
+export type EpicDissolvedPayload = z.infer<typeof EpicDissolvedPayload>;
+export type EpicDissolveBlockedPayload = z.infer<typeof EpicDissolveBlockedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -246,6 +387,12 @@ export const TOPICS = [
   "epic.created",
   "epic.dissolved",
   "epic.merge-ready",
+  "epic.merged",
+  "epic.merge-blocked",
+  "epic.pushed",
+  "epic.push-blocked",
+  "epic.push-conflict",
+  "epic.dissolve-blocked",
   "epic.spawn-blocked",
   // ADR-225 amendment per ADR-203 §D2 closed-set rule: dep-graph event
   // (`epic.unblocked`) + operator-kick-off event (`epic.ready`). Both

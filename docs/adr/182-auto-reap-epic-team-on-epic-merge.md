@@ -155,3 +155,9 @@ All OQs are tunable post-impl. Drivers may flip via the standard ADR-amendment s
 - ADR-181 — Global RAM-budget gate on spawn (the spawn-side throttle; this ADR is the reap-side counterpart that keeps the budget liquid)
 - Memory `[[feedback_auto_groom_shipped_via_sha_false_positives]]` — 83% false-positive observation that motivates the targeted-groom design
 - Observed sweep 2026-05-19 14:30 MYT — 12 epic-team directories, 0 SAFE-DISSOLVE, 10 DRAIN, 2 RISKY — the triggering snapshot for this ADR
+
+## §Status amendment 2026-05-23 — Phase 4 supersession
+
+**Status: amended 2026-05-23** — Phase 4 ([ADR-227](227-orchd-auto-dissolve-subscriber.md) auto-dissolve subscriber) supersedes the inline-dissolve-at-merge code path described in this ADR. The cron-backstop documented in §Decision step-N remains installed for ~2-week soak per [ADR-202 §X](202-honker-in-db-messaging-substrate.md) cron-decommission protocol; after the soak window the cron line is removed via crontab block prune. See [ADR-227 §Decision](227-orchd-auto-dissolve-subscriber.md) for the event-driven dissolve substrate that supersedes the inline path.
+
+Phase 4 implementation landed on trunk at commit `c17cfbd` (`feat(orchd): Phase 4 auto-dissolve subscriber — src/core/orchd-dissolve.ts + epic.dissolved + epic.dissolve-blocked + audit log + worker fold-in`).

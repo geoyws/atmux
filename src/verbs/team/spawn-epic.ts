@@ -93,6 +93,7 @@ const USAGE =
   "  [--roster <preset> | --roster-file <path>]\n" +
   "  [--parent-base <branch>] [--parent-epic-kanban-id <eid>]\n" +
   "  [--merge-mode auto|pr] [--no-init-submodules]\n" +
+  "  [--no-auto-dissolve]  (per ADR-227 §D3 — keeps cage post-merge for inspection)\n" +
   "  [--force-spawn]   (bypass host-pressure gate — use sparingly)\n" +
   "  [--force]         (bypass ADR-225 eligibility gate — logged + Discord)";
 
@@ -107,6 +108,11 @@ export interface ParsedSpawnEpicArgs {
   parentEpicKanbanId?: string;
   mergeMode?: "auto" | "pr";
   initSubmodules: boolean;
+  /** `--no-auto-dissolve` — per ADR-227 §D3: keep the epic-team's cage
+   *  alive post-merge so operators can grep `.atmux/logs/` or run post-
+   *  mortems. Persists to `team.json::epicTeam.autoDissolve = false`;
+   *  default is `true` (auto-dissolve on `epic.pushed`). */
+  autoDissolve: boolean;
   /** `--force-spawn` — bypass the host-pressure gate. ADR-184 substrate.
    *  Use sparingly: the gate exists to prevent fleet thrash + OOM. */
   forceSpawn: boolean;
@@ -128,6 +134,7 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
   let parentEpicKanbanId: string | undefined;
   let mergeMode: "auto" | "pr" | undefined;
   let initSubmodules = true;
+  let autoDissolve = true;
   let forceSpawn = false;
   let forceEligibility = false;
   let i = 0;
@@ -172,6 +179,11 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
     }
     if (a === "--no-init-submodules") {
       initSubmodules = false;
+      i += 1;
+      continue;
+    }
+    if (a === "--no-auto-dissolve") {
+      autoDissolve = false;
       i += 1;
       continue;
     }
@@ -226,6 +238,7 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
     epicId,
     parentTeam,
     initSubmodules,
+    autoDissolve,
     forceSpawn,
     forceEligibility,
   };
@@ -552,6 +565,7 @@ export async function spawnEpic(
         parentEpicKanbanId: parsed.parentEpicKanbanId ?? `e-${parsed.epicId}`,
         parentBase,
         mergeMode: parsed.mergeMode ?? "auto",
+        autoDissolve: parsed.autoDissolve,
       },
     });
     const childAtmuxDir = join(epicRoot, ".atmux");

@@ -88,7 +88,6 @@ import { classifyText } from "../core/pane-state.ts";
 import {
   findPhantomInProgressClaims,
   formatPruneIso,
-  type PhantomClaim,
   prunePhantomInProgressClaims,
 } from "../core/phantom-prune.ts";
 import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";

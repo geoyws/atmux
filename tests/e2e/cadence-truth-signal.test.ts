@@ -428,7 +428,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     // off the brief produces the exact `atmux send` argv the runbook
     // expects. CLAUDE.md "pair runbook beats with rehearsal spec
     // steps" — the brief sentence IS the runbook beat for D5.
-    const briefPath = join(teamDir, "..", "..", "..", "templates", "briefs", "team-lead.md");
+    const _briefPath = join(teamDir, "..", "..", "..", "templates", "briefs", "team-lead.md");
     // Resolve relative to the repo root: this test sits at
     // <repo>/tests/e2e/cadence-truth-signal.test.ts; brief at
     // <repo>/templates/briefs/team-lead.md. import.meta.url gives the
