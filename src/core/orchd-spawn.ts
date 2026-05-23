@@ -250,10 +250,20 @@ export function createSpawnEpicHandler(
     }
 
     // (5) Spawn. Build argv per ADR-090 §spawn-epic verb signature.
+    //     The spawn-epic verb expects the SHORT epicId (no `e-`
+    //     prefix) as its positional arg — it re-adds the prefix
+    //     internally for the kanban lookup (line 515 of the verb).
+    //     Honker events carry the full kanban ID (`e-XXX`), so strip
+    //     the prefix here. Caught by 2026-05-23 dogfood gate when
+    //     spawn-epic received `e-3-6134ed37` and looked up
+    //     `e-e-3-6134ed37` (not found).
+    const shortEpicId = event.epicId.startsWith("e-")
+      ? event.epicId.slice(2)
+      : event.epicId;
     const argv: string[] = [
       "team",
       "spawn-epic",
-      event.epicId,
+      shortEpicId,
       "--from",
       deps.team.name,
     ];

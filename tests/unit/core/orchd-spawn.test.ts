@@ -321,7 +321,10 @@ describe("createSpawnEpicHandler — §D2 step 5: spawn-success", () => {
     expect(call.argv).toEqual([
       "team",
       "spawn-epic",
-      "e-test",
+      // ADR-231 §D2 amendment 2026-05-23 — orchd strips the `e-`
+      // prefix before passing to spawn-epic's positional, since the
+      // verb re-adds it internally for kanban lookup.
+      "test",
       "--from",
       "demo-cage",
       "--roster",
