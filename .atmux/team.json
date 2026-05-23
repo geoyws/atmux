@@ -15,7 +15,7 @@
       "model": "default",
       "cwd": "/root/work/src/atmux",
       "emoji": "🧭",
-      "claudeAccount": "personal"
+      "claudeAccount": "unum"
     },
     {
       "name": "planner",
@@ -24,7 +24,7 @@
       "model": "default",
       "cwd": "/root/work/src/atmux",
       "emoji": "🎯",
-      "claudeAccount": "personal"
+      "claudeAccount": "unum"
     },
     {
       "name": "reviewer",
@@ -33,7 +33,7 @@
       "model": "default",
       "cwd": "/root/work/src/atmux",
       "emoji": "🔍",
-      "claudeAccount": "personal"
+      "claudeAccount": "unum"
     },
     {
       "name": "docs",
@@ -43,7 +43,7 @@
       "model": "default",
       "cwd": "/root/work/src/atmux",
       "emoji": "🦦",
-      "claudeAccount": "personal"
+      "claudeAccount": "unum"
     },
     {
       "name": "gitter",
@@ -53,7 +53,7 @@
       "model": "default",
       "cwd": "/root/work/src/atmux",
       "emoji": "🌿",
-      "claudeAccount": "personal"
+      "claudeAccount": "unum"
     },
     {
       "name": "ombudsman",
@@ -62,7 +62,7 @@
       "model": "default",
       "cwd": "/root/work/src/atmux",
       "emoji": "⚖️",
-      "claudeAccount": "personal"
+      "claudeAccount": "unum"
     }
   ],
   "emojis": {
@@ -124,7 +124,7 @@
   },
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type.",
-    "claude": "CLAUDE_CONFIG_DIR=/root/.claude-personal CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 claude --plugin-dir=/root/work/journals/.sb/claude-skills --permission-mode auto"
+    "claude": "CLAUDE_CONFIG_DIR=/root/.claude-unum CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 claude --plugin-dir=/root/work/journals/.sb/claude-skills --permission-mode auto"
   },
   "bareWindowNames": true
 }
