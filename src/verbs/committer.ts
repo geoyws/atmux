@@ -562,6 +562,20 @@ export async function committerDaemonVerb(
           });
           externalSignals = nativeListener.signals;
           wakeMode = "native-listener";
+          // Abort-bind: SIGINT/SIGTERM → ac.abort() (set above) doesn't
+          // interrupt the subprocess stdout read inside watchEvents'
+          // `for await (... of externalSignals)`. Closing the listener
+          // ends the iterator, which falls through to poll mode where
+          // the abort signal IS honored. Without this, --daemon hangs
+          // until the subprocess writes another line or the parent dies.
+          const stopOnAbort = (): void => {
+            try {
+              nativeListener?.stop();
+            } catch {
+              // ignore — best-effort cleanup
+            }
+          };
+          ac.signal.addEventListener("abort", stopOnAbort, { once: true });
         } catch (e) {
           ctx.logger.log(
             `committer --daemon: native listener spawn failed (${e instanceof Error ? e.message : String(e)}) — falling back to poll`,
