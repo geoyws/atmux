@@ -475,6 +475,17 @@ export async function committerDrainVerb(
           { localCageName: ctx.team.name },
         ),
     },
+    // ADR-231 §D2 — orchd auto-spawn handler wire-up. Passes
+    // atmuxDir + the running cage's team config so
+    // effectiveAutoSpawn can resolve per-team defaults[] and
+    // spawnEpicHandler can stamp `spawned_at` via the local
+    // state.db. Without this wire-up, the spawn subscriptions
+    // register with a stub that returns `skipped-row-missing` for
+    // every event (safe no-op pre-T-S2.5).
+    spawnDeps: {
+      atmuxDir: ctx.atmuxDir,
+      team: ctx.team,
+    },
   });
   let orchdProcessed = 0;
   let orchdErrors = 0;

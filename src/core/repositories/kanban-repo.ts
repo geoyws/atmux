@@ -56,6 +56,10 @@ interface EpicRow {
   // see schema migration for backfill semantics.
   depends_on: string;
   is_ready: number;
+  // ADR-231 §D2 §Schema (sqlite-migrations v15→v16, t-6-8db78adf):
+  // unix-epoch timestamp set by orchd auto-spawn (NULL = not yet
+  // spawned). Drives the §D2 step-2 dedup gate.
+  spawned_at: number | null;
   extra: string | null;
 }
 
@@ -191,6 +195,9 @@ const KNOWN_EPIC_FIELDS = new Set([
   // ADR-225 (sqlite-migrations v13→v14): top-level columns, not extra-JSON.
   "dependsOn",
   "isReady",
+  // ADR-231 §D2 (sqlite-migrations v15→v16): top-level column for the
+  // orchd auto-spawn dedup gate.
+  "spawnedAt",
 ]);
 
 export function epicFromRow(row: EpicRow): KanbanEpic {
@@ -214,6 +221,11 @@ export function epicFromRow(row: EpicRow): KanbanEpic {
     stories: row.stories ? JSON.parse(row.stories) : undefined,
     dependsOn,
     isReady,
+    // ADR-231 §D2 §Schema: surface spawned_at as nullable. SQLite
+    // returns null when the column wasn't stamped yet (orchd hasn't
+    // spawned this epic-team) — propagated to the schema's
+    // `.nullable().optional()` shape.
+    spawnedAt: row.spawned_at,
     ...extra,
   });
 }
@@ -237,6 +249,9 @@ export function epicToRow(epic: KanbanEpic): EpicRow {
     // post-parse, but null-coalesce keeps the write path defensive.
     depends_on: JSON.stringify(epic.dependsOn ?? []),
     is_ready: epic.isReady ? 1 : 0,
+    // ADR-231 §D2 §Schema: spawned_at is nullable + optional in the
+    // schema — undefined → null on write.
+    spawned_at: epic.spawnedAt ?? null,
     extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
   };
 }
@@ -416,15 +431,17 @@ export class KanbanRepo {
     this.db
       .query(
         `INSERT INTO epics (id, title, body, status, driver_ref, created_at,
-				                    completed_at, stories, depends_on, is_ready, extra)
+				                    completed_at, stories, depends_on, is_ready,
+				                    spawned_at, extra)
 				 VALUES ($id, $title, $body, $status, $driver_ref, $created_at,
-				         $completed_at, $stories, $depends_on, $is_ready, $extra)
+				         $completed_at, $stories, $depends_on, $is_ready,
+				         $spawned_at, $extra)
 				 ON CONFLICT(id) DO UPDATE SET
 				   title=excluded.title, body=excluded.body, status=excluded.status,
 				   driver_ref=excluded.driver_ref, created_at=excluded.created_at,
 				   completed_at=excluded.completed_at, stories=excluded.stories,
 				   depends_on=excluded.depends_on, is_ready=excluded.is_ready,
-				   extra=excluded.extra`,
+				   spawned_at=excluded.spawned_at, extra=excluded.extra`,
       )
       .run(bind(row));
   }
