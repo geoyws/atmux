@@ -155,6 +155,41 @@ export const EpicMergeBlockedPayload = z
   })
   .passthrough();
 
+/**
+ * `epic.dissolved` — orchd-dissolve handler completed the cage reap
+ * for an epic-team. ADR-203 §D2 (Epic lifecycle; topic existed in v1
+ * but the Zod payload schema landed alongside ADR-227 T5 dissolve
+ * module 2026-05-23). Operator-observable; no consumer in v1 — the
+ * cron-based sweep-epics reaper (`e-db13ac01`) used to handle this
+ * with disk-state probes pre-Phase-4.
+ */
+export const EpicDissolvedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.dissolved"),
+    epicId: z.string(),
+    dissolvedAtSec: z.number(),
+    dissolvedSha: z.string().optional(),
+  })
+  .passthrough();
+
+/**
+ * `epic.dissolve-blocked` — orchd-dissolve handler's pre-flight gate
+ * refused (worktree dirty, in-flight sessions, ADR-090 §dissolve-epic
+ * gate held). ADR-203 §D2 (Epic lifecycle, ADR-227 §D2 addition
+ * 2026-05-23). Operator-observable; no consumer in v1; surfaces in
+ * cockpit-mirror Discord feed per ADR-219.
+ */
+export const EpicDissolveBlockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.dissolve-blocked"),
+    epicId: z.string(),
+    reason: z.string(),
+    blockedAtSec: z.number(),
+  })
+  .passthrough();
+
 /** Substrate self-monitoring: extension loaded + smoke passed. ADR-203 §D8. */
 export const InternalHonkerLoadedPayload = z
   .object({
@@ -192,6 +227,8 @@ export const EventPayload = z.discriminatedUnion("topic", [
   GitterEscalatedPayload,
   EpicMergedPayload,
   EpicMergeBlockedPayload,
+  EpicDissolvedPayload,
+  EpicDissolveBlockedPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -204,6 +241,8 @@ export type CommitLandedPayload = z.infer<typeof CommitLandedPayload>;
 export type GitterEscalatedPayload = z.infer<typeof GitterEscalatedPayload>;
 export type EpicMergedPayload = z.infer<typeof EpicMergedPayload>;
 export type EpicMergeBlockedPayload = z.infer<typeof EpicMergeBlockedPayload>;
+export type EpicDissolvedPayload = z.infer<typeof EpicDissolvedPayload>;
+export type EpicDissolveBlockedPayload = z.infer<typeof EpicDissolveBlockedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -241,6 +280,7 @@ export const TOPICS = [
   "epic.merge-ready",
   "epic.merged",
   "epic.merge-blocked",
+  "epic.dissolve-blocked",
   "epic.spawn-blocked",
   // Commit lifecycle (team-scope)
   "commit.landed",
