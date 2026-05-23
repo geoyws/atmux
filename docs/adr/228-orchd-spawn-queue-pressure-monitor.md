@@ -244,3 +244,25 @@ Deferred to follow-up (Story s-5 / S11 scope):
 - e2e dogfood test (spawn N=40 with cap=32, observe queue saturation + drain on load drop) — too expensive for unit suite; lands as a manual test against a scratch cage.
 - Cockpit-mirror Discord template wire for `epic.spawn-queued` depth thresholds (ADR-219 §queue-grew).
 - `team.json::spawnQueue.checkIntervalSec` per-team override — today env-only (`ATMUX_SPAWN_QUEUE_TICK_SEC`).
+
+## §Amendment 2026-05-23-rev2 — Dogfood deferral + manual-run protocol (driver P0 step 5/5)
+
+S11 (Story `s-5-a2119efb`) §AC items #5 (end-to-end orchd lifecycle dogfood) + #6 (pressure-throttle dogfood) are NOT in this EPIC's scope. The dispatcher closures required for true end-to-end firing — `dispatchEpicMerge` (ADR-226 §D5), `dispatchDissolveEpic` (ADR-227 §D6), `dispatchGitPush` (ADR-229 §D4) — are owned by sibling EPIC `e-60e16169` per each handler module's §Sibling injection contract. Until that EPIC's dispatchers land, `bootstrapOrchd` registers each handler with the documented `skipped-not-mine` stubbed default, which is a safe no-op under at-least-once delivery (no merges / dissolves / pushes attempted at the verb layer).
+
+Concrete dogfood-readiness protocol for the operator to run **after sibling `e-60e16169` lands**:
+
+1. **End-to-end orchd lifecycle (AC #5)**:
+   - Spawn a scratch epic-team: `ATMUX_CALLER_SCOPE=driver atmux team spawn-epic <eid> --from atmux`.
+   - Land a task that completes the epic (last open task → `done`).
+   - Watch `atmux orchd --status` for the offset advance on `atmux:orchd:auto-merge` consumer.
+   - Verify `atmux task list` shows the epic merged + `git log` on the parent base shows the merge SHA.
+   - Verify the `epic.pushed` event lands; verify `atmux:orchd:auto-dissolve` advances + the cage is reaped via `atmux team sweep-epics`.
+
+2. **Pressure-throttle dogfood (AC #6)**:
+   - Set `ATMUX_SPAWN_QUEUE_MAX_DEPTH=32` + a low `ATMUX_SPAWN_MAX_LOAD_RATIO` (e.g. `0.05`) to force every spawn to refuse.
+   - Loop-spawn 40 epics: `for i in $(seq 1 40); do atmux team spawn-epic e-test$i --from atmux; done`.
+   - Verify `atmux orchd --status` reports `epic.spawn-queued` count = 32 + `flag.raised` (queue-saturated) count = 8.
+   - Drop the load (kill background workload OR raise `ATMUX_SPAWN_MAX_LOAD_RATIO`).
+   - Observe `atmux orchd --status` drain across loop ticks until queue depth = 0; verify `epic.added` event count = 32.
+
+S11 §AC items #1-#4 (ADR status flips + §Status amendments + cron decommission) are already accepted on trunk as of this commit (ADR-226/227/228 §Status all `accepted`; ADR-182 §Status amendment landed at `f1aea9b`; ADR-184 §Status amendment §rev2 landed in this commit). S11 §AC #7 reviewer trunk-signoff is a separate role's gate that fires after this commit.
