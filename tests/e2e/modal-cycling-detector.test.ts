@@ -196,21 +196,21 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
   let teamDir: string;
   let atmuxDir: string;
   let homeDir: string;
-  let stdoutBuf: string;
-  let stderrBuf: string;
+  let _stdoutBuf: string;
+  let _stderrBuf: string;
   const stdout = (s: string): void => {
-    stdoutBuf += s;
+    _stdoutBuf += s;
   };
   const stderr = (s: string): void => {
-    stderrBuf += s;
+    _stderrBuf += s;
   };
 
   beforeEach(async () => {
     teamDir = await mkdtemp(join(tmpdir(), "atmux-e2e-modalcycle-"));
     atmuxDir = join(teamDir, ".atmux");
     homeDir = await mkdtemp(join(tmpdir(), "atmux-e2e-modalcycle-home-"));
-    stdoutBuf = "";
-    stderrBuf = "";
+    _stdoutBuf = "";
+    _stderrBuf = "";
   });
 
   afterEach(async () => {
