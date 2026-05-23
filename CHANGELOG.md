@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `dissolveSoloWorkerHandler` + `isSoloWorkerTeamName` orchd auto-dissolve for solo workers ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D6 + [ADR-221](docs/adr/221-solo-worker-scope.md) §Phase 2, EPIC `e-60e16169` Phase 2 Story S2, t-15-6a65eadb)
+
+Closes ADR-221 §Phase 2 auto-dissolve. New `src/core/orchd-dissolve-solo-worker.ts` exports `dissolveSoloWorkerHandler` (created via `createDissolveSoloWorkerHandler({db, …})`) + `orchdDissolveSoloWorkerConsume` (consumer surface mirroring `orchd-merge.ts` + `orchd-dissolve.ts` so operators learn one factory shape). Subscribes to `task.done` with consumerId `atmux:orchd:dissolve-solo-worker` — distinct from parent's `atmux:orchd:auto-merge` (same topic, isolated by Honker per-consumer offsets per ADR-202 §VIII).
+
+Algorithm per ADR-231 §D6:
+1. Load task row defensively (race-deleted → `skipped-task-missing`).
+2. Classify owning team via `isSoloWorkerTeamName` (`team.name.startsWith("w-")` per ADR-221 §v2 line 72) — exported separately from `src/core/solo-worker.ts` so future tooling (status display, complaint adjudicator) reuses one canonical predicate.
+3. Enumerate the owning member's remaining open tasks — any pending → `skipped-pending-work`.
+4. Spawn `atmux team dissolve-worker <event.team>` — exit-0 → `dissolved`; non-zero or spawn-throw → `escalated` + `atmux flag add --severity p1 --needs unblock` with stderr tail (≤500 chars) in body. NO retry per ADR-231 anti-retry-storm doctrine.
+
+Bootstrap wire-up at `src/core/orchd-bootstrap.ts` registers the new subscription alongside the three existing (merge / dissolve / push); `BootstrapOrchdDeps.dissolveSoloWorkerDeps` is the test/operator override seam. 19 unit tests cover all 5 outcomes (incl. happy-path + 4 skip variants + escalated with stderr/stdout/throw/swallow-on-flag-fail), idempotency on re-delivery, and the consumer-surface (Honker kill-switch, default handler, escalated counter, custom consumerName). Bootstrap tests updated to expect 4 subscriptions (was 3) — including a regression check that `dissolve-solo-worker` shares `task.done` with auto-merge but has a distinct consumerId.
+
+ADR-231 §D6 + §D7 amended same-commit: §D6 step 4 corrected (`atmux team stop --team <name>` → `atmux team dissolve-worker <id>`; the original verb form doesn't exist in the codebase, per ADR-221 §v2 line 68 which always intended `dissolve-worker` for auto-dissolve); §D7 file-layout row renamed (`orchd-dissolve.ts` → `orchd-dissolve-solo-worker.ts` — sibling EPIC `e-a946af69` fan-in 8d75360 already shipped Phase 4 epic-team auto-dissolve at the original path, so this handler takes the `-solo-worker` suffix to avoid collision). 100% line + funcs coverage on the new handler module + classifier.
+
 ### ✨ Added — `classifySpawnFailure` orchd spawn-epic recovery classifier ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D5 + [ADR-184](docs/adr/184-host-wide-epic-team-cap-queue-and-dormancy-audit.md), EPIC `e-60e16169` Phase 2 Story S2, t-13-2f8b0d92)
 
 New pure helper `src/core/orchd-spawn-classify.ts` exports `classifySpawnFailure(stderr): 'hard' | 'host-pressure' | 'eligibility-race'` — the 3-way result classifier the spawn handler (T-S2.5) consumes to decide recovery posture per ADR-231 §D5:

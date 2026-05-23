@@ -37,6 +37,10 @@
 import type { Database } from "bun:sqlite";
 import type { EpicMergedPayload, EventPayload, TaskDonePayload } from "../schema/events.ts";
 import {
+  createDissolveSoloWorkerHandler,
+  type DissolveSoloWorkerHandlerDeps,
+} from "./orchd-dissolve-solo-worker.ts";
+import {
   type AutoDissolveHandlerDeps,
   createAutoDissolveHandler,
   type DissolveTriggerPayload,
@@ -51,15 +55,22 @@ import { registerOrchdSubscription } from "./orchd-registry.ts";
 export const ORCHD_MERGE_CONSUMER_ID = "atmux:orchd:auto-merge";
 export const ORCHD_DISSOLVE_CONSUMER_ID = "atmux:orchd:auto-dissolve";
 export const ORCHD_PUSH_CONSUMER_ID = "atmux:orchd:auto-push";
+/** ADR-231 §D6: distinct from {@link ORCHD_DISSOLVE_CONSUMER_ID} (which
+ *  handles parent's Phase 4 epic-team dissolve per ADR-227). Honker
+ *  per-consumer offsets isolate the two subscriptions on the shared
+ *  `task.done` topic. */
+export const ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID = "atmux:orchd:dissolve-solo-worker";
 
 /** Topics — exported for the same reason. Mirrors each handler module's
  *  documented trigger:
  *  - merge: `task.done` (per ADR-226 §D1)
  *  - dissolve: `epic.pushed` (per ADR-227 §Amendment 2026-05-23 trigger flip)
- *  - push: `epic.merged` (per ADR-229 §D1) */
+ *  - push: `epic.merged` (per ADR-229 §D1)
+ *  - dissolve-solo-worker: `task.done` (per ADR-231 §D6) */
 export const ORCHD_MERGE_TOPIC = "task.done";
 export const ORCHD_DISSOLVE_TOPIC = "epic.pushed";
 export const ORCHD_PUSH_TOPIC = "epic.merged";
+export const ORCHD_DISSOLVE_SOLO_WORKER_TOPIC = "task.done";
 
 /**
  * Per-handler dep overrides — partial of the underlying
@@ -81,6 +92,12 @@ export interface BootstrapOrchdDeps {
   dissolveDeps?: Omit<AutoDissolveHandlerDeps, "db">;
   /** Optional overrides for {@link createAutoPushHandler}. */
   pushDeps?: Omit<AutoPushHandlerDeps, "db">;
+  /** ADR-231 §D6: optional overrides for
+   *  {@link createDissolveSoloWorkerHandler}. Absent ⇒ handler factory
+   *  builds with `db` only + applies its own defaults
+   *  ({@link isSoloWorkerTeamName} classifier, real spawn, no-op
+   *  logger). */
+  dissolveSoloWorkerDeps?: Omit<DissolveSoloWorkerHandlerDeps, "db">;
 }
 
 /** Per-subscription registration result for caller observability. */
@@ -129,6 +146,10 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
     db: deps.db,
     ...(deps.pushDeps ?? {}),
   });
+  const dissolveSoloWorkerHandlerFn = createDissolveSoloWorkerHandler({
+    db: deps.db,
+    ...(deps.dissolveSoloWorkerDeps ?? {}),
+  });
 
   const mergeIsNew = registerOrchdSubscription({
     topic: ORCHD_MERGE_TOPIC,
@@ -151,6 +172,16 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       await pushHandlerFn(event as EpicMergedPayload);
     },
   });
+  // ADR-231 §D6 — solo-worker auto-dissolve subscriber. Shares the
+  // `task.done` topic with the auto-merge handler; per-consumer
+  // offsets (ADR-202 §VIII) isolate the two.
+  const dissolveSoloWorkerIsNew = registerOrchdSubscription({
+    topic: ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
+    consumerId: ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+    handler: async (event: EventPayload) => {
+      await dissolveSoloWorkerHandlerFn(event as TaskDonePayload);
+    },
+  });
 
   return {
     registered: [
@@ -161,6 +192,11 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
         isNew: dissolveIsNew,
       },
       { consumerId: ORCHD_PUSH_CONSUMER_ID, topic: ORCHD_PUSH_TOPIC, isNew: pushIsNew },
+      {
+        consumerId: ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+        topic: ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
+        isNew: dissolveSoloWorkerIsNew,
+      },
     ],
   };
 }

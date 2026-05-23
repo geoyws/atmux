@@ -139,12 +139,12 @@ OQ4 resolution (per `.atmux/decisions.md` D4). Three classes:
 Algorithm:
 
 1. Load task via `KanbanTask.findById(taskId)`. If row missing (race-deleted), exit silently.
-2. Resolve the task's owning member's team scope. If the member is NOT in a solo-worker-spawned team (per ADR-221 §D-solo-worker-classifier — implementation detail, lives in `src/core/solo-worker.ts`), exit silently.
+2. Resolve the task's owning member's team scope. If the member is NOT in a solo-worker-spawned team (classifier: `team.name.startsWith("w-")` per ADR-221 §v2 line 72; implementation lives in `src/core/solo-worker.ts::isSoloWorkerTeamName`), exit silently.
 3. If solo-worker AND `KanbanTask.findAllByOwner(member).filter(t => t.status !== 'done').length > 0`, exit silently (pending work).
-4. If solo-worker AND ALL their tasks are done, invoke `atmux team stop --team <worker-team-name>` to dissolve.
-5. Failure: emit flag `orchd: dissolve failed for worker-team <name>: <stderrTail>`. No retry (mirrors §D5).
+4. If solo-worker AND ALL their tasks are done, invoke `atmux team dissolve-worker <worker-team-name>` to dissolve. *§Amendment 2026-05-23-be1 (t-15-6a65eadb impl): the original §D6 wording named `atmux team stop --team <name>` — that verb form doesn't exist in the codebase (only `atmux stop --team-dir <path>` and the canonical `atmux team dissolve-worker <id>` per ADR-221 §v2 line 68). `dissolve-worker` is the correct dissolve verb (handles cockpit cleanup + kanban Epic row transition via the shared `dissolveEpic` core) and the verb ADR-221 §v2 always intended for auto-dissolve. §D6 step 4 corrected here.*
+5. Failure: emit flag `orchd: dissolve failed for worker-team <name>: <stderrTail>` via `atmux flag add --severity p1 --needs unblock`. No retry (mirrors §D5).
 
-Idempotency: re-delivery is no-op. `atmux team stop` is idempotent per ADR-090 (second invocation on already-stopped team is a clean no-op). Honker offset advance only on handler-success ensures re-delivery happens if the handler throws.
+Idempotency: re-delivery after a successful dissolve causes the second `dissolve-worker` invocation to refuse with non-zero exit (epic-team not found in cockpit). The handler classifies that as `escalated` + raises a flag for operator triage — the operator's flag review confirms it's the already-dissolved benign case, no automated retry needed. Honker offset advance only on handler-success ensures re-delivery happens if the handler throws.
 
 ### D7 — Implementation file layout (handler-as-data; orchd.ts stays thin)
 
@@ -153,7 +153,7 @@ Idempotency: re-delivery is no-op. `atmux team stop` is idempotent per ADR-090 (
 | `src/verbs/orchd.ts` | CLI entrypoint: `--start` (daemon loop iterating ORCHD_SUBSCRIPTIONS), `--drain` (one-pass + exit), `--sweep` (cron backstop entrypoint). No handler logic. |
 | `src/core/orchd-registry.ts` | `OrchdSubscription` interface + `ORCHD_SUBSCRIPTIONS` array. Phase 2 appends 3 entries (2 spawn-triggers + 1 dissolve). |
 | `src/core/orchd-spawn.ts` | `spawnEpicHandler` + `effectiveAutoSpawn` + host-pressure classifier. |
-| `src/core/orchd-dissolve.ts` | `dissolveSoloWorkerHandler`. |
+| `src/core/orchd-dissolve-solo-worker.ts` | `dissolveSoloWorkerHandler` + `orchdDissolveSoloWorkerConsume` (consumer surface mirroring `orchd-merge.ts`). *§Amendment 2026-05-23-be1 (t-15-6a65eadb impl): file renamed from the original `orchd-dissolve.ts` because sibling EPIC `e-a946af69` fan-in (commit 8d75360) shipped Phase 4 epic-team auto-dissolve at that path — distinct scope (per-epic vs per-task), distinct topic (`epic.pushed` vs `task.done`), distinct consumerId (`atmux:orchd:auto-dissolve` vs `atmux:orchd:dissolve-solo-worker`). The two files coexist; this ADR's handler now lives at the `-solo-worker` suffix to avoid path collision with parent's Phase 4.* |
 | `src/core/orchd-sweep.ts` | `--sweep` walker. Imports + reuses handlers from orchd-spawn.ts + orchd-dissolve.ts (NOT duplicate logic). |
 | `src/abstractions/sqlite-migrations.ts` | Migration v15→v16: `ALTER TABLE epics ADD COLUMN spawned_at INTEGER`. (Renumbered from v14→v15 at impl time, t-6-8db78adf, since ADR-228 spawn_queue claimed v14→v15 at sibling EPIC e-a946af69 fan-in 8d75360.) |
 | `src/schema/kanban.ts` | Extend `KanbanEpic.extra.autoSpawn` Zod sub-shape; add `spawnedAt: z.number().nullable().optional()`. (Do NOT touch `dependsOn` / `isReady` — those are ADR-225 territory.) |
