@@ -489,3 +489,7 @@ Closes the broader cage-residue class that surfaced overnight 2026-05-21 → 22 
 **Cross-refs:** ADR-018 (per-team tmux socket isolation — kill-server scope), ADR-179 (per-member-branch fan-in — merged-branch detection pattern via `merge-base --is-ancestor`), e-7a1014f9 (parent EPIC), t-609c1921 (driver-only tracking ticket).
 
 **Filed via** 2026-05-22 driver session — overnight superdoctor reap signaling the dissolve-epic completeness gap.
+
+## §see-also (2026-05-22)
+
+[ADR-223](223-reap-cascade-semantics-and-safety.md) §D2 — orphan-reap cascade interacts with `dissolve-epic`'s refusal semantics. Per the 2026-05-22 amendment, `dissolveEpic` is NOT in the composition map for the cage-tmux-without-registry orphan class (it always refuses when the cockpit registry entry is missing); the cascade uses `tmux -S <socket> kill-server` as PRIMARY and lets the next pass re-classify residue as `branch-without-row` + `worktree-without-cage`. dissolve-epic stays the canonical primitive for any cleanly-registered epic-team teardown.
