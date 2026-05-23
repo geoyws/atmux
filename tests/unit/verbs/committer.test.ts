@@ -374,9 +374,7 @@ describe("committer --drain / --daemon integration", () => {
       }),
     );
     // Pre-create state.db so context-build can open + boot Honker.
-    const { closeDatabase, openDatabase } = await import(
-      "../../../src/abstractions/sqlite.ts"
-    );
+    const { closeDatabase, openDatabase } = await import("../../../src/abstractions/sqlite.ts");
     const { migrations } = await import("../../../src/abstractions/sqlite-migrations.ts");
     const db = openDatabase(join(atmuxDir, "state.db"), migrations);
     closeDatabase(db);
@@ -400,7 +398,53 @@ describe("committer --drain / --daemon integration", () => {
     expect(rc).toBe(0);
     // Honker kill-switch defaults to ON now but ATMUX_HONKER=off in test env,
     // OR substrate present — either way the drain is honored. Check the log.
-    expect(logs.some((l) => l.includes("committer --drain") || l.includes("ATMUX_HONKER=off"))).toBe(true);
+    expect(
+      logs.some((l) => l.includes("committer --drain") || l.includes("ATMUX_HONKER=off")),
+    ).toBe(true);
+  });
+
+  // ADR-224 §D6 + ADR-226/227/229 wire-up (driver P0 step 3/5
+  // 2026-05-23) — `--drain` iterates `ORCHD_SUBSCRIPTIONS` so the
+  // single dispatch path covers both the hardcoded consumers
+  // (gitter / lane-router) AND the registry-sourced handlers.
+  test("--drain populates ORCHD_SUBSCRIPTIONS via bootstrapOrchd and emits orchd-* totals", async () => {
+    // Clear the module-level registry so this test sees the post-drain
+    // population starting from a known-empty baseline.
+    const { ORCHD_SUBSCRIPTIONS } = await import("../../../src/core/orchd-registry.ts");
+    ORCHD_SUBSCRIPTIONS.length = 0;
+
+    const logs: string[] = [];
+    const logger = {
+      log: (s: string) => logs.push(s),
+      ok: () => {},
+      warn: () => {},
+      err: () => {},
+    };
+    const rc = await committer(["--drain", "--team-dir", scratch], {
+      logger,
+      git: async () => fakeSpawnResult("main\n", 0),
+    });
+    expect(rc).toBe(0);
+
+    // The drain log summary MUST surface orchd-* stats — drift detector
+    // for step 3/5's contract.
+    const summary = logs.find((l) => l.includes("committer --drain: team="));
+    expect(summary).toBeDefined();
+    expect(summary).toContain("orchd-subs=3");
+    expect(summary).toContain("orchd-errors=0");
+
+    // Registry MUST have been populated with the three canonical
+    // consumer IDs (idempotency means a sibling call wouldn't double-
+    // push these).
+    const consumerIds = ORCHD_SUBSCRIPTIONS.map((s) => s.consumerId).sort();
+    expect(consumerIds).toEqual([
+      "atmux:orchd:auto-dissolve",
+      "atmux:orchd:auto-merge",
+      "atmux:orchd:auto-push",
+    ]);
+
+    // Cleanup so sibling tests don't see leaked registry state.
+    ORCHD_SUBSCRIPTIONS.length = 0;
   });
 
   test("--daemon --once with empty events exits 0 cleanly", async () => {
@@ -423,8 +467,12 @@ describe("committer --drain / --daemon integration", () => {
         },
       );
       expect(rc).toBe(0);
-      expect(logs.some((l) => l.includes("committer --daemon") && l.includes("starting"))).toBe(true);
-      expect(logs.some((l) => l.includes("committer --daemon") && l.includes("stopped"))).toBe(true);
+      expect(logs.some((l) => l.includes("committer --daemon") && l.includes("starting"))).toBe(
+        true,
+      );
+      expect(logs.some((l) => l.includes("committer --daemon") && l.includes("stopped"))).toBe(
+        true,
+      );
     } finally {
       clearTimeout(timer);
     }
