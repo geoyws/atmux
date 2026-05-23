@@ -76,6 +76,7 @@ import {
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
 import { bootstrapOrchd as bootstrapOrchdImport } from "../core/orchd-bootstrap.ts";
+import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
 import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
 import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
 import { ORCHD_SUBSCRIPTIONS as ORCHD_SUBSCRIPTIONS_IMPORT } from "../core/orchd-registry.ts";
@@ -447,6 +448,13 @@ export async function committerDrainVerb(
     db: ctx.db,
     mergeDeps: {
       dispatchEpicMerge: async (epicId) => dispatchEpicMergeImport({ epicId }),
+    },
+    dissolveDeps: {
+      dispatchDissolveEpic: async (epicId) =>
+        dispatchDissolveEpicImport(
+          { epicId },
+          { localCageName: ctx.team.name },
+        ),
     },
     pushDeps: {
       dispatchGitPush: async (parentBase) =>
