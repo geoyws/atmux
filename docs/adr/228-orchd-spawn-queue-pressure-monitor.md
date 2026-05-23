@@ -228,3 +228,19 @@ Audit summary:
 - §D7 cross-team seam mirrors ADR-226 / ADR-227 pattern; sibling EPIC integrates daemon loop + one verb helper call. ✅
 
 Pending T9 impl (`src/core/spawn-queue.ts` + migration + ADR-203 §D2 amendment) will land in a downstream Task; this reviewer-pass scope is doc-only. Reviewer notes the §OQ3 HIGH-REV decision still owes an `atmux decisions add` row at the parent atmux team's `.atmux/decisions.md` (aspirational verb today — operator-direct edit acceptable substitute per memory `feedback_brief_aspirational_verbs`).
+
+## §Amendment 2026-05-23 — Phase 5b impl landed (driver P0 step 4/5)
+
+T9 impl shipped (epic-team `e-a946af69` Story `s-4-1b9d3950`):
+
+- `src/core/spawn-queue.ts` — exports `admit`, `enqueueIfPressured`, `pressureMonitorTick`, `resolveSpawnQueueLimits`, `generateSpawnQueueId`, plus `SPAWN_QUEUE_DEFAULT_{MAX_DEPTH,MAX_ATTEMPTS,TICK_INTERVAL_SEC}` constants. Story AC bumps `maxDepth` default from §D6's 20 to 32 (matches the AC #2 cap test in `s-4-1b9d3950`); other defaults unchanged.
+- `src/verbs/team/spawn-epic.ts` — adds `--no-queue` flag + refuse→enqueue branch. Default path opens the parent's `state.db`, calls `enqueueIfPressured`, exits 0 with operator-hint on admission OR `ConfigError` on cap-refusal. `--no-queue` flag matches §OQ3 escape hatch.
+- `src/verbs/orchd.ts` — `--start` path installs a `setInterval`-driven loop firing every `limits.pressureCheckIntervalSec` (default 60s per §D6), calling `pressureMonitorTick` with the spawn-epic verb as dispatcher. Loop owns its own `state.db` connection; `unref()` so SIGINT/SIGTERM exit isn't blocked by the timer reference. Cleanup on shutdown via `try/finally` around the daemon delegation.
+- `src/schema/events.ts` — three new topics added to `TOPICS` + `EventPayload` discriminated union: `epic.spawn-queued`, `epic.spawn-abandoned`, `epic.added`. Sibling `docs/adr/203-event-topic-taxonomy.md` §D2 §Epic-lifecycle list amended to match.
+
+Tests in `tests/unit/core/spawn-queue.test.ts` — 20 cases across admit / enqueueIfPressured / pressureMonitorTick / resolveSpawnQueueLimits / generateSpawnQueueId; coverage on `src/core/spawn-queue.ts` at 99.45% line / 100% func. The §OQ3 HIGH-REV `atmux decisions add` row is still operator-side homework — pinned forward to S11 (step 5/5 ADR status flips).
+
+Deferred to follow-up (Story s-5 / S11 scope):
+- e2e dogfood test (spawn N=40 with cap=32, observe queue saturation + drain on load drop) — too expensive for unit suite; lands as a manual test against a scratch cage.
+- Cockpit-mirror Discord template wire for `epic.spawn-queued` depth thresholds (ADR-219 §queue-grew).
+- `team.json::spawnQueue.checkIntervalSec` per-team override — today env-only (`ATMUX_SPAWN_QUEUE_TICK_SEC`).

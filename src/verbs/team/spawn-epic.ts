@@ -84,6 +84,7 @@ import {
   type SpawnForceDiscordFn,
   type SpawnOverrideRecord,
 } from "../../core/spawn-override.ts";
+import { enqueueIfPressured, resolveSpawnQueueLimits } from "../../core/spawn-queue.ts";
 import { ConfigError, UsageError } from "../../errors.ts";
 import type { ClaudeAccountPoolEntry } from "../../schema/cockpit.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
@@ -95,6 +96,7 @@ const USAGE =
   "  [--merge-mode auto|pr] [--no-init-submodules]\n" +
   "  [--no-auto-dissolve]  (per ADR-227 §D3 — keeps cage post-merge for inspection)\n" +
   "  [--force-spawn]   (bypass host-pressure gate — use sparingly)\n" +
+  "  [--no-queue]      (ADR-228 §D1 — refuse-immediately on pressure instead of enqueue)\n" +
   "  [--force]         (bypass ADR-225 eligibility gate — logged + Discord)";
 
 // ---------- Arg parsing ----------
@@ -116,6 +118,11 @@ export interface ParsedSpawnEpicArgs {
   /** `--force-spawn` — bypass the host-pressure gate. ADR-184 substrate.
    *  Use sparingly: the gate exists to prevent fleet thrash + OOM. */
   forceSpawn: boolean;
+  /** `--no-queue` — ADR-228 §D1: refuse-immediately on host-pressure
+   *  instead of enqueue. Default is queue-on-pressure (ADR-228 §DA3
+   *  HIGH-REV decision). Operator-side escape hatch for one-shot
+   *  scripts that need synchronous-failure semantics. */
+  noQueue: boolean;
   /** `--force` — bypass the ADR-225 eligibility gate (is_ready + deps-
    *  done). Logged to `~/.atmux/state/spawn-overrides.log` + emits
    *  `[spawn-force]` Discord. Use sparingly — exists for operator
@@ -136,6 +143,7 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
   let initSubmodules = true;
   let autoDissolve = true;
   let forceSpawn = false;
+  let noQueue = false;
   let forceEligibility = false;
   let i = 0;
   while (i < argv.length) {
@@ -192,6 +200,11 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
       i += 1;
       continue;
     }
+    if (a === "--no-queue") {
+      noQueue = true;
+      i += 1;
+      continue;
+    }
     if (a === "--force") {
       forceEligibility = true;
       i += 1;
@@ -240,6 +253,7 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
     initSubmodules,
     autoDissolve,
     forceSpawn,
+    noQueue,
     forceEligibility,
   };
   if (roster !== undefined) out.roster = roster;
@@ -367,6 +381,59 @@ export async function spawnEpic(
     const probe = opts.probeHostPressure ?? probeHostPressure;
     const verdict = await probe({ env });
     if (!verdict.ok && !verdict.skipped) {
+      // ADR-228 §D1 refuse→enqueue path. Operator-side escape via
+      // `--no-queue` falls through to the original throw-on-pressure
+      // behavior (synchronous failure for one-shot scripts). Default
+      // path opens the parent's state.db and enqueues for orchd's
+      // pressure-monitor drain loop (`pressureMonitorTick` in
+      // `src/core/spawn-queue.ts`).
+      if (!parsed.noQueue) {
+        // Resolve parent root early via cockpit (same lookup step 2
+        // performs on the success path — duplicated here so the rare
+        // pressure-refused branch keeps its own scope).
+        const cockpitRaw = await readJson(cockpitPath, RawCockpitForMutation);
+        const cockpitMigrated = migrateLegacyShape(
+          cockpitRaw,
+          cockpitPath,
+          logger.warn,
+        ) as typeof cockpitRaw;
+        const parentEntry = findTeamSession(
+          (cockpitMigrated.sessions as SessionEntry[] | undefined) ?? [],
+          parsed.parentTeam,
+        );
+        if (parentEntry !== null && parentEntry.root !== undefined && parentEntry.root.length > 0) {
+          const parentAtmuxDir = `${parentEntry.root}/.atmux`;
+          const parentDbPath = `${parentAtmuxDir}/state.db`;
+          const db = openDb(parentDbPath);
+          try {
+            const limits = resolveSpawnQueueLimits(env);
+            const queuedBy = env.ATMUX_CALLER_SCOPE === "driver" ? "driver" : "operator";
+            const enqResult = enqueueIfPressured(parsed.epicId, argv, {
+              db,
+              limits,
+              queuedBy,
+            });
+            if (enqResult.enqueued) {
+              logger.log(
+                `spawn-epic: host pressure too high — queued ${enqResult.queueId} (depth ${enqResult.depth}/${limits.maxDepth}). orchd will retry when load drops. Override with --no-queue.`,
+              );
+              return 0;
+            }
+            // Refused — fall through to throw with reason from
+            // admit() (queue full or duplicate epic).
+            throw new ConfigError({
+              what: `spawn-epic: refused — ${formatPressureError(verdict)} AND ${enqResult.reason}`,
+              hint:
+                "wait for pressure to drop OR override with --force-spawn (use sparingly) OR " +
+                "raise ATMUX_SPAWN_QUEUE_MAX_DEPTH for a larger queue.",
+            });
+          } finally {
+            closeDb(db);
+          }
+        }
+        // Parent missing — fall through to the original throw (no
+        // queue available without a parent db).
+      }
       throw new ConfigError({
         what: `spawn-epic: refused — ${formatPressureError(verdict)}`,
         hint:
