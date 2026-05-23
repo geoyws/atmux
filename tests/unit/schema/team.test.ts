@@ -178,36 +178,24 @@ describe("TeamWhip — stallPrevention shape (ADR-057 schema promotion)", () => 
   });
 
   test("typo on a stallPrevention field rejects (.strict() catches typo)", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSecond: 120 } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSecond: 120 } })).toThrow();
   });
 
   test("non-positive heartbeatStaleSec rejects", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 0 } }),
-    ).toThrow();
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: -5 } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 0 } })).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: -5 } })).toThrow();
   });
 
   test("non-integer heartbeatStaleSec rejects", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 1.5 } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: 1.5 } })).toThrow();
   });
 
   test("string in heartbeatStaleSec rejects (was silently defaulted pre-promotion)", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: "120" } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { heartbeatStaleSec: "120" } })).toThrow();
   });
 
   test("non-boolean autoPushOnDone rejects", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { autoPushOnDone: "yes" } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { autoPushOnDone: "yes" } })).toThrow();
   });
 
   test("allowedPushBranches with non-string element rejects", () => {
@@ -219,9 +207,7 @@ describe("TeamWhip — stallPrevention shape (ADR-057 schema promotion)", () => 
   });
 
   test("allowedPushBranches as a string (not array) rejects", () => {
-    expect(() =>
-      TeamWhip.parse({ stallPrevention: { allowedPushBranches: "main" } }),
-    ).toThrow();
+    expect(() => TeamWhip.parse({ stallPrevention: { allowedPushBranches: "main" } })).toThrow();
   });
 
   test("happy-path: full canonical block parses + every field round-trips", () => {
@@ -1059,6 +1045,56 @@ describe("TeamEpic — ADR-090 §Schema valid shape + defaults", () => {
       }),
     ).toThrow();
   });
+
+  // ---------- ADR-227 §D3: autoDissolve carve-out ----------
+
+  test("autoDissolve defaults to true (ADR-227 §D3 — orchd Phase 4 auto-dissolves on epic.pushed)", () => {
+    const e = TeamEpic.parse({
+      parent: "atmux",
+      parentEpicKanbanId: "e-a946af69",
+      parentBase: "atmux-geoyws",
+    });
+    expect(e.autoDissolve).toBe(true);
+  });
+
+  test("autoDissolve honored when explicitly false (operator opt-out via --no-auto-dissolve)", () => {
+    const e = TeamEpic.parse({
+      parent: "atmux",
+      parentEpicKanbanId: "e-a946af69",
+      parentBase: "atmux-geoyws",
+      autoDissolve: false,
+    });
+    expect(e.autoDissolve).toBe(false);
+  });
+
+  test("autoDissolve honored when explicitly true (idempotent with default)", () => {
+    const e = TeamEpic.parse({
+      parent: "atmux",
+      parentEpicKanbanId: "e-a946af69",
+      parentBase: "atmux-geoyws",
+      autoDissolve: true,
+    });
+    expect(e.autoDissolve).toBe(true);
+  });
+
+  test("autoDissolve rejects non-boolean (strict drift surface)", () => {
+    expect(() =>
+      TeamEpic.parse({
+        parent: "atmux",
+        parentEpicKanbanId: "e-a946af69",
+        parentBase: "atmux-geoyws",
+        autoDissolve: "true",
+      }),
+    ).toThrow();
+    expect(() =>
+      TeamEpic.parse({
+        parent: "atmux",
+        parentEpicKanbanId: "e-a946af69",
+        parentBase: "atmux-geoyws",
+        autoDissolve: 1,
+      }),
+    ).toThrow();
+  });
 });
 
 // ---------- TeamEpic — ADR-144 §Deployed mode superRefine ----------
@@ -1073,9 +1109,7 @@ describe("TeamEpic superRefine — ADR-144 T4 deployed-requires-stagingUrlTempla
       stagingUrlTemplate: "${product}-${dev-suffix}-${epic-name}-staging.ifca.app",
     });
     expect(e.testGateMode).toBe("deployed");
-    expect(e.stagingUrlTemplate).toBe(
-      "${product}-${dev-suffix}-${epic-name}-staging.ifca.app",
-    );
+    expect(e.stagingUrlTemplate).toBe("${product}-${dev-suffix}-${epic-name}-staging.ifca.app");
   });
   test("testGateMode: 'deployed' with null stagingUrlTemplate REFUSES at parse", () => {
     expect(() =>

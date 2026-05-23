@@ -68,20 +68,16 @@ import {
   provisionWorktree,
   pruneWorktree,
 } from "../../abstractions/worktree.ts";
+import { type BudgetProbeState, loadBudgetMap, selectAccount } from "../../core/account-pool.ts";
 import { defaultCockpitConfigPath, migrateLegacyShape } from "../../core/cockpit.ts";
 import { resolveCallerScope } from "../../core/common.ts";
-import { ConfigError, UsageError } from "../../errors.ts";
 import {
   formatPressureError,
   type HostPressureVerdict,
-  probeHostPressure,
   type ProbeHostPressureDeps,
+  probeHostPressure,
 } from "../../core/host-pressure.ts";
-import {
-  type BudgetProbeState,
-  loadBudgetMap,
-  selectAccount,
-} from "../../core/account-pool.ts";
+import { ConfigError, UsageError } from "../../errors.ts";
 import type { ClaudeAccountPoolEntry } from "../../schema/cockpit.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
 
@@ -90,6 +86,7 @@ const USAGE =
   "  [--roster <preset> | --roster-file <path>]\n" +
   "  [--parent-base <branch>] [--parent-epic-kanban-id <eid>]\n" +
   "  [--merge-mode auto|pr] [--no-init-submodules]\n" +
+  "  [--no-auto-dissolve]  (per ADR-227 §D3 — keeps cage post-merge for inspection)\n" +
   "  [--force-spawn]   (bypass host-pressure gate — use sparingly)";
 
 // ---------- Arg parsing ----------
@@ -103,6 +100,11 @@ export interface ParsedSpawnEpicArgs {
   parentEpicKanbanId?: string;
   mergeMode?: "auto" | "pr";
   initSubmodules: boolean;
+  /** `--no-auto-dissolve` — per ADR-227 §D3: keep the epic-team's cage
+   *  alive post-merge so operators can grep `.atmux/logs/` or run post-
+   *  mortems. Persists to `team.json::epicTeam.autoDissolve = false`;
+   *  default is `true` (auto-dissolve on `epic.pushed`). */
+  autoDissolve: boolean;
   /** `--force-spawn` — bypass the host-pressure gate. ADR-184 substrate.
    *  Use sparingly: the gate exists to prevent fleet thrash + OOM. */
   forceSpawn: boolean;
@@ -117,6 +119,7 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
   let parentEpicKanbanId: string | undefined;
   let mergeMode: "auto" | "pr" | undefined;
   let initSubmodules = true;
+  let autoDissolve = true;
   let forceSpawn = false;
   let i = 0;
   while (i < argv.length) {
@@ -160,6 +163,11 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
     }
     if (a === "--no-init-submodules") {
       initSubmodules = false;
+      i += 1;
+      continue;
+    }
+    if (a === "--no-auto-dissolve") {
+      autoDissolve = false;
       i += 1;
       continue;
     }
@@ -209,6 +217,7 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
     epicId,
     parentTeam,
     initSubmodules,
+    autoDissolve,
     forceSpawn,
   };
   if (roster !== undefined) out.roster = roster;
@@ -453,6 +462,7 @@ export async function spawnEpic(
         parentEpicKanbanId: parsed.parentEpicKanbanId ?? `e-${parsed.epicId}`,
         parentBase,
         mergeMode: parsed.mergeMode ?? "auto",
+        autoDissolve: parsed.autoDissolve,
       },
     });
     const childAtmuxDir = join(epicRoot, ".atmux");
@@ -631,9 +641,7 @@ async function inheritClaudeAccount(
       label: poolFallback.label,
     };
     if (logger !== undefined) {
-      logger.log(
-        `spawn-epic: claudeAccount drawn from pool — '${poolFallback.label}' (ADR-199)`,
-      );
+      logger.log(`spawn-epic: claudeAccount drawn from pool — '${poolFallback.label}' (ADR-199)`);
     }
   }
   if (teamDefault === undefined && byName.size === 0) return rosterMembers;

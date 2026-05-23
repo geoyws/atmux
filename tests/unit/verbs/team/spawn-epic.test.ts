@@ -99,6 +99,16 @@ describe("parseSpawnEpicArgs", () => {
     expect(r.initSubmodules).toBe(false);
   });
 
+  test("autoDissolve defaults to true (ADR-227 §D3)", () => {
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p"]);
+    expect(r.autoDissolve).toBe(true);
+  });
+
+  test("--no-auto-dissolve flips autoDissolve to false (operator opt-out per ADR-227 §D3)", () => {
+    const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--no-auto-dissolve"]);
+    expect(r.autoDissolve).toBe(false);
+  });
+
   test("--merge-mode pr accepted", () => {
     const r = parseSpawnEpicArgs(["e-1", "--from", "p", "--merge-mode", "pr"]);
     expect(r.mergeMode).toBe("pr");
@@ -202,10 +212,7 @@ describe("spawnEpic — host-pressure gate (ADR-184)", () => {
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: (m) => warnLines.push(m) },
     };
-    const rc = await spawnEpic(
-      ["e-aabb0001", "--from", "parent-team", "--force-spawn"],
-      opts,
-    );
+    const rc = await spawnEpic(["e-aabb0001", "--from", "parent-team", "--force-spawn"], opts);
     expect(rc).toBe(0);
     expect(probeCalled).toBe(0); // probe NOT called under --force-spawn
     expect(warnLines.some((m) => m.includes("--force-spawn bypasses"))).toBe(true);
@@ -422,10 +429,7 @@ describe("spawnEpic — claudeAccount inheritance from parent (ADR-091)", () => 
 
   async function readChild(epicId: string) {
     return JSON.parse(
-      await readFile(
-        join(scratch, "parent-team-epics", epicId, ".atmux", "team.json"),
-        "utf8",
-      ),
+      await readFile(join(scratch, "parent-team-epics", epicId, ".atmux", "team.json"), "utf8"),
     );
   }
 
@@ -486,10 +490,7 @@ describe("spawnEpic — claudeAccount inheritance from parent (ADR-091)", () => 
       { name: "lead", role: "lead", claudeAccount: "personal" },
       { name: "fe-1", role: "member", claudeAccount: "personal" },
     ]);
-    await spawnEpic(
-      ["e-aa03", "--from", "parent-team", "--roster", "pinned"],
-      driverOpts(),
-    );
+    await spawnEpic(["e-aa03", "--from", "parent-team", "--roster", "pinned"], driverOpts());
     const child = await readChild("e-aa03");
     const byName = Object.fromEntries(child.members.map((m: { name: string }) => [m.name, m]));
     // Roster-pinned value preserved; non-pinned member inherits.

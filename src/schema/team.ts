@@ -962,6 +962,23 @@ export const TeamEpic = z
      *  variables `${product}`, `${dev-suffix}`, `${epic-name}` are
      *  expanded at deploy time by `scripts/deploy.sh`. */
     stagingUrlTemplate: z.string().nullable().default(null),
+    /** ADR-227 §D3: orchd auto-dissolve carve-out. When `true` (default),
+     *  orchd auto-dissolves the epic-team on `epic.pushed` (per ADR-229
+     *  §DA3 trigger amendment; pre-amendment was `epic.merged`). Operator
+     *  sets `false` at spawn time via `atmux team spawn-epic --no-auto-
+     *  dissolve` to keep the cage alive for post-merge inspection (e.g.
+     *  grepping `.atmux/logs/`, post-mortem on a failed deploy, etc.).
+     *  Manual `atmux team dissolve-epic <eid>` still works as the cleanup
+     *  path when autoDissolve was false. */
+    autoDissolve: z
+      .boolean()
+      .default(true)
+      .describe(
+        "ADR-227: when true (default), orchd auto-dissolves the epic-team " +
+          "on epic.pushed. Operator sets false at spawn time to keep the " +
+          "cage alive for post-merge inspection; manual `atmux team " +
+          "dissolve-epic <eid>` still works as the cleanup path.",
+      ),
   })
   .strict()
   .superRefine((data, ctx) => {
