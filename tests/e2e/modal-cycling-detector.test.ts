@@ -230,6 +230,12 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
     const clarifierCalls: Array<{ member: string; message: string }> = [];
     const flagCalls: Array<{ subject: string; body: string }> = [];
 
+    // Pane keys here mirror src/core/common.ts::buildWindowName output:
+    // member role (default for tui=claude with no explicit role override)
+    // renders `<emoji>-<name>` per ADR-135. The legacy pre-ADR-135
+    // no-separator form (`🐝alice`) is what whip USED to look for; the
+    // canonical hyphen form is what it looks for now. Same drift class as
+    // T4 lifecycle.test.ts (t-056e963f).
     await whip(["--team-dir", teamDir], {
       stdout,
       stderr,
@@ -238,7 +244,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -291,7 +297,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
 
     const tmuxNs = buildFakeTmux({
       sessionUp: true,
-      panes: { "🐝alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
+      panes: { "🐝-alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
     });
 
     const sent: DiscordSendOpts[] = [];
@@ -350,7 +356,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -391,7 +397,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -431,7 +437,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
       env: {},
       tmux: buildFakeTmux({
         sessionUp: true,
-        panes: { "🐝alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
+        panes: { "🐝-alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
       }),
       discordSend: async (o) => {
         sent.push(o);
@@ -467,7 +473,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
       tmux: buildFakeTmux({
         sessionUp: true,
         panes: {
-          "🐝alice": { paneCmd: "claude", state: NARRATIVE_PANE, pid: 1234 },
+          "🐝-alice": { paneCmd: "claude", state: NARRATIVE_PANE, pid: 1234 },
         },
       }),
       discordSend: async (o) => {

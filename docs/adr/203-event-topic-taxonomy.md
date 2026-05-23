@@ -1,6 +1,6 @@
 # ADR-203: Event topic taxonomy — canonical names, Zod payload schemas, cross-team propagation rules, post-commit hook
 
-**Status**: proposed (deferred: gated on ADR-202 substrate landing first — taxonomy is meaningless without the messaging primitive)
+**Status**: Accepted — ratified by driver 2026-05-23 (ADR-202 substrate fully on trunk; deferral condition met). Topic taxonomy now LIVE: `task.done` / `task.unclaimed` / `epic.merged` / consumer subscriptions wired per ADR-202 §IX-A + §X. Forthcoming events (`epic.added` / `epic.unblocked` / `epic.ready` / `epic.dissolved` / `epic.spawn_queued` / `epic.spawn_failed` / `budget.warning` / `budget.recovered`) follow this ADR's vocabulary contract as they're added under orchd lifecycle EPICs (`e-60e16169` Phase 2, `e-a946af69` Phase 3-5, `e-cf8a6195` deps + isReady).
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-20 evening design session — operator: *"come up with a complete recommendation to rehaul the entire atmux to use pubsub with honker"* — taxonomy is the second of three Honker-stack ADRs queued.
 **Cross-refs**: [ADR-202](202-honker-in-db-messaging-substrate.md) §D4 (typed-discriminated-union decision this fleshes out), [ADR-202](202-honker-in-db-messaging-substrate.md) §D9 (post-commit hook architecture this specifies in detail), [ADR-091](091-kanban-driven-auto-merge.md) §Triggers (task-done event consumer), [ADR-134](134-in-team-auto-merger.md) §Triggers (branch-ready event consumer), [ADR-145](145-atmux-adopts-gitter.md) (gitter event-consumer mapping), [ADR-126](126-sqlite-state-store.md) §kanban schema (events table sibling), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md) §D6 (`budget.warning` / `budget.recovered` topics), [ADR-200](200-install-wizard-guided-first-run-setup.md) §D9 (hook install wizard step), forthcoming ADR-204 (`_jury` consumer of `story.tested` + emitter of `story.jury_ratified` / `story.jury_verdict`).
@@ -303,3 +303,17 @@ Operator code MUST NOT emit into `internal.*`. Schema enforcement via Zod litera
 - memory `reference_kanbantask_passthrough_extra_json` — `.passthrough()` precedent
 - memory `project_epic_team_extra_schema` — epic-team parent relationship resolution (D4 mirror rule)
 - memory `project_honker_pubsub_rehaul_design` — decisions locked in design memory; this ADR commits the taxonomy half
+
+
+## §Amendment 2026-05-22 — First emit point + consumer wired in production
+
+`task.done` and `task.claimed` topics graduate from schema-only to actually-emitted. `src/core/kanban.ts::moveTask` invokes `emit()` via a same-transaction hook (`tryEmitTaskLifecycle`) on every status flip into the relevant terminal/entry state. Payload shapes verified against the discriminated union — TS narrows correctly, runtime validation passes.
+
+Topic-specific semantics now pinned by code:
+
+- **`task.done`** fires on EVERY move with target status `done`. If a Task is moved from `done` back to `todo` and then again to `done`, two events fire — at-least-once on the consumer side is the contract. `doneAtSec` reflects each emit (not the original completion).
+- **`task.claimed`** fires ONLY on the first transition from a non-`in-progress` status into `in-progress`. Status flips within `in-progress` (re-assignment, body edits, etc.) are no-ops. This prevents emit floods when planner-tier verbs touch the same row repeatedly.
+
+First production consumer wired: `atmux committer --daemon` (long-lived) + `atmux committer --drain` (cron-backstop). See ADR-202 §Amendment 2026-05-22 for the consumer side.
+
+**Filed via** 2026-05-22 driver session (`atmux-geoyws-honker-events` branch).

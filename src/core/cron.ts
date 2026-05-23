@@ -401,6 +401,24 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
       team.autoMerge.cronBackstopMin ??
       DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN;
     out.push(`${cronEvery(gitterMins)} ${baseEnv} committer --sweep ${logTail("committer-sweep")}`);
+    // ADR-202 §Amendment 2026-05-22 (II) — `committer --drain` line.
+    // Cron-supervised event-driven consumer: every minute, drains any
+    // pending task.done events via the subscriber_offsets table and
+    // exits 0. Defense-in-depth alongside --sweep — the sweep walks
+    // every branch (catches events the substrate missed entirely),
+    // the drain processes events the substrate emitted (latency floor
+    // is the cron cadence of 1min vs --sweep's 5-10min branch walk).
+    //
+    // Gated on the same hasGitter + autoMerge.enabled because both
+    // verbs need the same team config + roster surface. Cadence is
+    // fixed at 1min (the cron floor) — no override needed; this is
+    // the fast path, not a backstop.
+    //
+    // For sub-minute latency, operators launch `atmux committer
+    // --daemon` in a tmux pane (uses the atmux-listener Rust
+    // subprocess for ~60ms wake). Daemon supervision via `atmux start`
+    // is a future amendment.
+    out.push(`* * * * * ${baseEnv} orchd --drain ${logTail("orchd-drain")}`);
   }
 
   // 12. ADR-091 §State machine — epic-merge-tick: fires `atmux epic-

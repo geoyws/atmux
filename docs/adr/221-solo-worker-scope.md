@@ -1,6 +1,6 @@
 # ADR-221: Solo-worker scope — small standalone tasks via 1-2 member epic-team
 
-**Status:** Proposed
+**Status:** Accepted (v1) — ratified by driver 2026-05-23 (v1 substrate shipped on trunk: `templates/epic-rosters/solo.json` + `solo+committer.json` + ADR-221 body via merge `fe6bcda`). v2 (convenience verbs spawn-worker / dissolve-worker / list-workers) in-flight under EPIC [e-678dd038](../tasks/); auto-dissolve folded into orchd lifecycle [e-a946af69](../tasks/t-0db3f393.md) Phase 4 / ADR-227.
 **Date:** 2026-05-22
 **Deciders:** geoyws (driver)
 **Related:** [ADR-090](090-epic-team-spawn.md), [ADR-091](091-epic-team-auto-merge.md), [ADR-033](033-driver-scope-only-gates.md), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md), [t-8c8ce51c](../tasks/t-8c8ce51c.md), [t-9aa2f8cb](../tasks/t-9aa2f8cb.md), [t-0542595c](../tasks/t-0542595c.md)

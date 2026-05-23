@@ -535,9 +535,14 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     yes,
     dryRun,
     keepLegacy,
-    human,
   };
   if (configPath !== undefined) out.configPath = configPath;
+  // `human` is attach-only (ADR-180) and declared optional on
+  // ParsedCockpitArgs for backward-compat with pre-ADR-180 fixtures.
+  // Surface the field only on the `attach` sub-verb so rebuild/reload
+  // fixtures stay shape-stable. On attach we always emit (defaulting
+  // to false) so callers + tests can read p.human directly.
+  if (sub === "attach") out.human = human;
   return out;
 }
 

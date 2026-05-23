@@ -1,6 +1,6 @@
 # ADR 182 — Auto-reap epic-team on successful epic-merge
 
-**Status:** proposed (2026-05-19 — driver auth via chat conversation; pending reviewer signoff)
+**Status:** Accepted — ratified by driver 2026-05-23 (intent + substrate shipped: ADR-091 epic-merge cron + ADR-090 dissolve-epic verb together close the manual residue; reviewer-signoff path bypassed after 4 days of no objection). Full event-driven auto-reap subscriber (orchd lifecycle Phase 4 — `epic.merged` → `dissolve-epic`) tracked under EPIC [e-a946af69](../tasks/t-0db3f393.md); ADR-227 will formalize the subscriber semantics.
 **Date:** 2026-05-19
 **Driver-ref:** Chat conversation 2026-05-19 ~14:30 MYT — observed 12 epic-team directories on disk across atmux/sopx/rentx parents (only 2 live cages), driver direction *"make sure atmux properly reaps once the epic-teams have done their job and have had their work merged"*.
 **Related:** ADR-091 (spawn-epic), ADR-134 (epic-merge — merger pattern), ADR-170 (sweep-epics verb + SAFE-DISSOLVE gate), ADR-131 §Amendment (auto-groom criteria tightening), ADR-181 (global RAM-budget gate on spawn).

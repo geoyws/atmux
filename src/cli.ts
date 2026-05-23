@@ -40,6 +40,8 @@ import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
 import { committer } from "./verbs/committer.ts";
+import { cockpitMirror } from "./verbs/cockpit-mirror.ts";
+import { orchd } from "./verbs/orchd.ts";
 import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
 import { cronInstall } from "./verbs/cron-install.ts";
@@ -67,6 +69,7 @@ import { laneTick } from "./verbs/lane-tick.ts";
 import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
+import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
 import { pause, resume } from "./verbs/pause.ts";
@@ -300,6 +303,36 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
           "Accepting this release; will fail next release.\n",
       );
       return committer(argv.slice(1));
+    case "orchd":
+      // ADR-224 §D1 — `orchd` (orchestrator daemon) is the canonical
+      // event-router persona/verb. Renamed from `relayd` 2026-05-22 to
+      // honestly cover the expanding lifecycle responsibilities (Phase 2
+      // adds auto-spawn / auto-dissolve subscribers per §D4). Subscribes
+      // to multi-topic via atmux-listener Rust kernel-blocked NOTIFY/
+      // LISTEN and dispatches to handler-per-topic. Sub-verbs: --start
+      // (long-lived), --drain (one-shot cron-backstop), --handle-one
+      // (per-event dispatch), --status (diagnostic).
+      return orchd(argv.slice(1));
+    case "relayd":
+      // ADR-224 §D1 — `atmux relayd` is the deprecation alias for one
+      // release post-rename. Emits a single-line stderr warning then
+      // delegates to the orchd handler with same exit code + stdout
+      // shape (scripts that pipe / parse stdout keep working). Removed
+      // next release.
+      process.stderr.write(
+        "[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); " +
+          "update callsites — alias removes next release\n",
+      );
+      return orchd(argv.slice(1));
+    case "cockpit-mirror":
+      // ADR-219 — cockpit-scope event dispatcher. Per-event Bun handler
+      // spawned by the Rust `atmux-cockpit-mirror` binary
+      // (`--handle-one --event-id X --topic T`); 7-topic whitelist per
+      // ADR-219 §D3 (epic.merge_ready / epic.spawn_blocked / team.spawned
+      // / team.dissolved / budget.warning / budget.recovered /
+      // gitter.escalated). Per-topic real handlers are follow-up Tasks;
+      // MVP scaffold logs + advances offset.
+      return cockpitMirror(argv.slice(1));
     case "epic-merge":
       return epicMerge(argv.slice(1));
     case "complaints":
@@ -353,6 +386,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return cleanup(argv.slice(1));
     case "discorder":
       return discorder(argv.slice(1));
+    case "migrate-hex-ids":
+      return migrateHexIds(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
     case "up":

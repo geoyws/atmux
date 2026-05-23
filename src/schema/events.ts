@@ -62,6 +62,26 @@ export const TaskDonePayload = z
   })
   .passthrough();
 
+/**
+ * `task.unclaimed` — task landed in `todo` with a lane set + no owner.
+ * ADR-203 §D2 (Task lifecycle). ADR-202 §Amendment 2026-05-22 (IV) wires
+ * this to a lane-router consumer that runs the existing `lane-tick`
+ * claim-injection for the named lane immediately rather than waiting
+ * for the 5-min cron tick (latency: 5min to ~1sec).
+ */
+export const TaskUnclaimedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("task.unclaimed"),
+    taskId: z.string(),
+    team: z.string(),
+    lane: z.enum(["fe", "be", "db", "ops", "test", "review", "misc"]),
+    priority: z.number().nullable().optional(),
+    epicId: z.string().optional(),
+    storyId: z.string().optional(),
+  })
+  .passthrough();
+
 /** `commit.landed` — post-commit hook fired. ADR-203 §D5 hook contract. */
 export const CommitLandedPayload = z
   .object({
@@ -138,6 +158,7 @@ export const InternalHonkerFallbackPayload = z
 export const EventPayload = z.discriminatedUnion("topic", [
   TaskClaimedPayload,
   TaskDonePayload,
+  TaskUnclaimedPayload,
   CommitLandedPayload,
   GitterEscalatedPayload,
   InternalHonkerLoadedPayload,
@@ -147,6 +168,7 @@ export const EventPayload = z.discriminatedUnion("topic", [
 export type EventPayload = z.infer<typeof EventPayload>;
 export type TaskClaimedPayload = z.infer<typeof TaskClaimedPayload>;
 export type TaskDonePayload = z.infer<typeof TaskDonePayload>;
+export type TaskUnclaimedPayload = z.infer<typeof TaskUnclaimedPayload>;
 export type CommitLandedPayload = z.infer<typeof CommitLandedPayload>;
 export type GitterEscalatedPayload = z.infer<typeof GitterEscalatedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;

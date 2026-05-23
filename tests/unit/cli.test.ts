@@ -839,3 +839,52 @@ describe("logVerbEvent — events-log envelope", () => {
     expect(parsed.exit).toBe(64);
   });
 });
+
+// ---------- ADR-224 §D1 — orchd primary + relayd deprecation alias ----------
+//
+// `atmux relayd` is the one-release deprecation alias; emits stderr warn
+// then delegates to the orchd handler with same exit code + stdout shape.
+// The full live-daemon "--start exits 0 + stdout-matches" assertion
+// requires integration-test infra (DB+tmux); these unit tests cover the
+// alias-prefix + drop-in-error-shape invariants which are sufficient to
+// guard the dispatch surface.
+
+describe("cli.main — atmux orchd / relayd alias (ADR-224 §D1)", () => {
+  test("'orchd' (no subverb) → exit 64 + 'atmux: orchd: no sub-verb specified' on stderr", async () => {
+    const { exit, stderr } = await captureMain(["orchd"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("orchd: no sub-verb specified");
+  });
+
+  test("'relayd' alias → stderr starts with deprecation line", async () => {
+    const { stderr } = await captureMain(["relayd"]);
+    expect(stderr.startsWith("[deprecated] 'atmux relayd' renamed to 'atmux orchd'")).toBe(true);
+  });
+
+  test("'relayd' alias delegates to orchd — same exit code + same tail-of-stderr as 'orchd'", async () => {
+    // Drop-in equivalence: for the no-subverb error path, the alias should
+    // produce the deprecation prefix + the SAME error output as 'orchd'.
+    // ADR-224 §D1 binding: "same exit code, same stdout shape" — exit
+    // codes must match; stderr matches everything AFTER the deprecation
+    // prefix line.
+    const alias = await captureMain(["relayd"]);
+    const primary = await captureMain(["orchd"]);
+    expect(alias.exit).toBe(primary.exit);
+    expect(alias.stdout).toBe(primary.stdout);
+    const aliasStderrAfterPrefix = alias.stderr.replace(
+      /^\[deprecated\] 'atmux relayd' renamed to 'atmux orchd' \(ADR-224\); update callsites — alias removes next release\n/,
+      "",
+    );
+    expect(aliasStderrAfterPrefix).toBe(primary.stderr);
+  });
+
+  test("'relayd' alias deprecation line matches exact AC literal", async () => {
+    // ADR-224 §D1 + Task body: literal stderr must be
+    //   [deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); update callsites — alias removes next release
+    const { stderr } = await captureMain(["relayd"]);
+    const firstLine = stderr.split("\n")[0] ?? "";
+    expect(firstLine).toBe(
+      "[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); update callsites — alias removes next release",
+    );
+  });
+});

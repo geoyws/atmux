@@ -14,7 +14,8 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
-import { closeDatabase, type Database, openDatabase, transact } from "../abstractions/sqlite.ts";
+import { closeDatabase, type Database, openDatabase, transact, transactImmediate } from "../abstractions/sqlite.ts";
+import { nextId } from "./id-sequence.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanStory, KanbanTask } from "../schema/kanban.ts";
@@ -100,34 +101,40 @@ export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<st
       what: `story add: ${_stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
     });
   }
-  return await _withRepo(atmuxDir, (repo) => {
-    const parent = repo.getEpic(opts.epic);
-    if (parent === null) {
-      throw new ConfigError({ what: `story add: no such epic: ${opts.epic}` });
-    }
-    const sid = genStoryId();
-    const story: KanbanStory = {
-      id: sid,
-      epic: opts.epic,
-      title,
-      body: opts.body !== undefined && opts.body.length > 0 ? opts.body : null,
-      acceptanceCriteria:
-        opts.acceptanceCriteria !== undefined && opts.acceptanceCriteria.length > 0
-          ? opts.acceptanceCriteria
-          : null,
-      status: "planning",
-      reviewSignoff: false,
-      mergeTaskId: null,
-      mergeMode: opts.mergeMode ?? "feature-branch",
-      createdAt: nowEpoch(),
-      completedAt: null,
-    };
-    repo.upsertStory(story);
-    // Mirror bash's `(.epics[]? | select(.id == $eid) | .stories) //= []
-    //                | (...) += [$sid]`. The lazy-init is implicit since
-    // we read into an array; we just append + upsert.
-    const childList = parent.stories ?? [];
-    repo.upsertEpic({ ...parent, stories: [...childList, sid] });
+  return await _withRepo(atmuxDir, (repo, db) => {
+    // ADR-202 §VIII — running-number ID per-team scoped via id_sequences.
+    // Sequence increment + story insert + epic.stories append all run
+    // inside the same transactImmediate so the trio is atomic.
+    let sid = "";
+    transactImmediate(db, () => {
+      const parent = repo.getEpic(opts.epic);
+      if (parent === null) {
+        throw new ConfigError({ what: `story add: no such epic: ${opts.epic}` });
+      }
+      sid = nextId(db, "s");
+      const story: KanbanStory = {
+        id: sid,
+        epic: opts.epic,
+        title,
+        body: opts.body !== undefined && opts.body.length > 0 ? opts.body : null,
+        acceptanceCriteria:
+          opts.acceptanceCriteria !== undefined && opts.acceptanceCriteria.length > 0
+            ? opts.acceptanceCriteria
+            : null,
+        status: "planning",
+        reviewSignoff: false,
+        mergeTaskId: null,
+        mergeMode: opts.mergeMode ?? "feature-branch",
+        createdAt: nowEpoch(),
+        completedAt: null,
+      };
+      repo.upsertStory(story);
+      // Mirror bash's `(.epics[]? | select(.id == $eid) | .stories) //= []
+      //                | (...) += [$sid]`. The lazy-init is implicit since
+      // we read into an array; we just append + upsert.
+      const childList = parent.stories ?? [];
+      repo.upsertEpic({ ...parent, stories: [...childList, sid] });
+    });
     return sid;
   });
 }

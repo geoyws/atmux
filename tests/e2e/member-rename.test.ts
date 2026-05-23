@@ -61,6 +61,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import { buildWindowName } from "../../src/core/common.ts";
 import { Kanban } from "../../src/schema/kanban.ts";
 import { Team } from "../../src/schema/team.ts";
 import { checkMemberLabelCollision } from "../../src/verbs/doctor.ts";
@@ -127,15 +128,19 @@ async function buildFixture(
   await writeFile(join(atmuxDir, "kanban.json"), '{"tasks":[],"epics":[],"stories":[]}');
 
   // Spin a tmux session with one window per member, using the
-  // ADR-135 `<emoji>-<member>` form (hyphen-separator) — the rename
-  // verb expects to find this exact window name to target it.
+  // canonical ADR-135 + ADR-161 form via src/core/common.ts::
+  // buildWindowName — default-member roles (team-lead, planner,
+  // reviewer, ombudsman) render `<emoji>_<name>` (underscore) while
+  // user-added members (role=member) + committer-class keep
+  // `<emoji>-<name>` (hyphen). The rename verb computes its
+  // oldWindow target via the same function, so any drift between
+  // the fixture's window spawn and the verb's lookup would surface
+  // as a `tmux: can't find window` mid-rename.
   const tmux = createTmux({ socketPath, configFile: "/dev/null" });
   const first = members[0];
   if (first === undefined) throw new Error("test setup: ≥1 member required");
-  const winName = (m: (typeof members)[number]): string => {
-    const display = m.label !== undefined && m.label.length > 0 ? m.label : m.name;
-    return m.emoji !== undefined && m.emoji.length > 0 ? `${m.emoji}-${display}` : display;
-  };
+  const winName = (m: (typeof members)[number]): string =>
+    buildWindowName(m.name, m.emoji, m.label, m.role);
   await tmux.session.newSession({
     name: sessionName,
     shellCommand: "cat",
@@ -286,13 +291,15 @@ describe("e2e: ADR-136 member rename — 6-path walk", () => {
       { name: "lead", role: "team-lead", emoji: "🧭", tui: "shell" },
       { name: "worker-1", role: "member", emoji: "🐝", tui: "shell" },
     ]);
-    // Seed lead-window-name.txt with the current display name (ADR-
-    // 135 hyphenated form). The verb's content-based detection
-    // matches this exact string + rewrites atomically.
+    // Seed lead-window-name.txt with the current display name.
+    // Post-ADR-161: role=team-lead is a default-member → underscore
+    // separator (`🧭_lead`), not the ADR-135 hyphen. The verb's
+    // content-based detection matches this exact string + rewrites
+    // atomically.
     const markerDir = join(fx.homeDir, ".claude", "teams", fx.teamName);
     await mkdir(markerDir, { recursive: true });
     const markerPath = join(markerDir, "lead-window-name.txt");
-    await writeFile(markerPath, "🧭-lead\n");
+    await writeFile(markerPath, "🧭_lead\n");
 
     const result = await runRename([
       "lead",
@@ -306,7 +313,8 @@ describe("e2e: ADR-136 member rename — 6-path walk", () => {
     expect(result.patchedLeadMarker).toBe(true);
 
     const after = (await readFile(markerPath, "utf8")).trim();
-    expect(after).toBe("🧭-Coordinator");
+    // Post-rename: role unchanged (team-lead → underscore separator).
+    expect(after).toBe("🧭_Coordinator");
 
     // team.json + marker file BOTH carry the new display state.
     const tj = await readTeamJson();

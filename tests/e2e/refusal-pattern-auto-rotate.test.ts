@@ -221,7 +221,15 @@ describe("ADR-139 refusal auto-rotate — e2e walk", () => {
   test("scenario 4: cap exhaustion at 3/day → HARD escalation, no spawn", async () => {
     const rec = makeRecorder();
     const t = team("demo", ["dave"], { maxRotationsPerDay: 3 });
-    const t0 = 40_000_000;
+    // t0 = 1971-04-08T09:13:20Z. Cycles 0..2 end at t+7800s (~13:23 UTC)
+    // and the 4th cycle ends at t+15000s (~13:23 UTC). All four cycles
+    // are within the SAME UTC day — required because the rotations cap
+    // (src/core/refusal-trigger.ts countTodayRotations) keys on UTC
+    // day via `utcDayKey`. The historical value `40_000_000` landed at
+    // 23:06 UTC, so cycles 1..4 straddled UTC midnight and the cap-
+    // check at cycle 4 only saw 2 same-day prior rotations instead of
+    // 3 → cap didn't fire, 4th rotate spawn slipped through.
+    const t0 = 39_950_000;
     // Three full threshold-trip cycles — each fires rotate AND
     // appends one log row. After the third, the cap is saturated.
     for (let cycle = 0; cycle < 3; cycle += 1) {

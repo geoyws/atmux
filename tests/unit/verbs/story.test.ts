@@ -156,7 +156,7 @@ describe("addStory", () => {
   test("creates a story under existing epic", async () => {
     const eid = await addEpic(atmuxDir, { title: "Big" });
     const sid = await addStory(atmuxDir, { title: "Slice 1", epic: eid });
-    expect(sid).toMatch(/^s-[0-9a-f]{8}$/);
+    expect(sid).toMatch(/^s-[1-9][0-9]*-[0-9a-f]{8}$/);
     const stories = await listStories(atmuxDir, { epic: eid });
     expect(stories.map((s) => s.id)).toEqual([sid]);
     expect(stories[0]?.status).toBe("planning");
@@ -400,7 +400,7 @@ describe("story verb — dispatch", () => {
     const { out } = await captureStdout(() =>
       story(["add", "--epic", eid, "--team-dir", teamDir, "Some", "title"]),
     );
-    expect(out).toMatch(/^s-[0-9a-f]{8}$/m);
+    expect(out).toMatch(/^s-[1-9][0-9]*-[0-9a-f]{8}$/m);
   });
 
   test("story list (none) prints '(no stories for <eid>)'", async () => {
@@ -1000,7 +1000,7 @@ describe("story verb — --merge-mode dispatch", () => {
       ]),
     );
     const sid = out.trim();
-    expect(sid).toMatch(/^s-[0-9a-f]{8}$/);
+    expect(sid).toMatch(/^s-[1-9][0-9]*-[0-9a-f]{8}$/);
     const s = (await listStories(atmuxDir, { epic: eid })).find((x) => x.id === sid);
     expect(s?.mergeMode).toBe("trunk-direct");
   });

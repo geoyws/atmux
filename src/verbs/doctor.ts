@@ -578,7 +578,16 @@ export interface PhantomEntry {
 
 export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry[]> {
   const stateDb = join(atmuxDir, "state.db");
-  const team = await tryLoadTeam({ dir: atmuxDir });
+  // Malformed team.json → SchemaError out of tryLoadTeam. checkTeam already
+  // surfaces the red row; phantom-inbox scan has no team roster to walk, so
+  // treat unparseable identically to absent (return []). Without this catch,
+  // `atmux doctor` crashes on a malformed team.json instead of emitting red.
+  let team: Awaited<ReturnType<typeof tryLoadTeam>>;
+  try {
+    team = await tryLoadTeam({ dir: atmuxDir });
+  } catch {
+    return [];
+  }
   if (team === null) return [];
 
   const liveIds = new Set<string>();
