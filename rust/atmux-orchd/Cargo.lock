@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "atmux-relayd"
+name = "atmux-orchd"
 version = "0.1.0"
 dependencies = [
  "honker",

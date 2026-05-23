@@ -1365,7 +1365,7 @@ describe("renderCronBlock — golden-file parity (ADR-057 §D6d)", () => {
       " ombudsman tick ",
       " lane-stall-tick ",
       " committer --sweep ",
-      " relayd --drain ",
+      " orchd --drain ",
       " epic-merge tick ",
     ];
     expect(bodyLines.length).toBe(orderedVerbs.length);

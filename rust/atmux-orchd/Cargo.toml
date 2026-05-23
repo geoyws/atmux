@@ -1,5 +1,5 @@
 [package]
-name = "atmux-relayd"
+name = "atmux-orchd"
 version = "0.1.0"
 edition = "2021"
 description = "Per-team event-router daemon — subscribes to Honker NOTIFY, drains events table, dispatches Bun per event for handler execution"
@@ -12,7 +12,7 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Linux-only — PR_SET_PDEATHSIG so the relayd dies when its tmux-pane
+# Linux-only — PR_SET_PDEATHSIG so the orchd dies when its tmux-pane
 # parent dies, even via SIGKILL. No-op on other platforms.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
@@ -30,5 +30,5 @@ strip = true
 panic = "abort"
 
 [[bin]]
-name = "atmux-relayd"
+name = "atmux-orchd"
 path = "src/main.rs"

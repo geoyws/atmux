@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔄 Changed — `atmux relayd` → `atmux orchd` rename + Rust crate atmux-relayd → atmux-orchd (ADR-224 Phase 1)
+
+`relayd` (relay daemon) is misleading now that the daemon will also own auto-spawn (`epic.added`) and auto-dissolve (`task.done`) in Phase 2 per [ADR-224](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 1 is a pure relabel — zero behavior change — landing before Phase 2 impl so the codebase doesn't carry a misleading symbol through that development window.
+
+- **Bun verb**: `atmux relayd` renamed to `atmux orchd` ([a9c17ab](https://github.com/geoyws/atmux/commit/a9c17ab)). Deprecation alias preserves `atmux relayd` for one release — emits stderr warning `[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); update callsites — alias removes next release` then delegates to the orchd handler (same exit code, same stdout shape).
+- **Rust crate**: `rust/atmux-relayd/` renamed to `rust/atmux-orchd/`; binary `atmux-relayd` → `atmux-orchd`; `build:relayd` → `build:orchd`; `/usr/local/bin/atmux-orchd` symlink ([e02ea2d](https://github.com/geoyws/atmux/commit/e02ea2d)).
+- **Subscription registry seam**: new `src/core/orchd-registry.ts` exporting `ORCHD_SUBSCRIPTIONS: OrchdSubscription[] = []` — zero-handler scaffold per [ADR-224 §D6](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 2 wires the `epic.added` / `task.done` handlers; Phase 1 array is empty so no behavior change.
+- **Migration**: external callers should swap `atmux relayd` → `atmux orchd` and `atmux-relayd` binary references → `atmux-orchd` before the next release removes the alias.
+
 ### ✨ Added — solo-worker scope v1: 1-2 member roster presets for small standalone tasks (ADR-221, t-8c8ce51c)
 
 Fills the gap between "drop on long-lived member queue" (pollutes branch) and "spawn full 7-member epic-team" (wasteful for single commits). Two new roster presets under `templates/epic-rosters/`:

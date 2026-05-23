@@ -1,88 +1,88 @@
-// Unit tests for src/verbs/relayd.ts (ADR-202 §Amendment 2026-05-22 V).
+// Unit tests for src/verbs/orchd.ts (ADR-202 §Amendment 2026-05-22 V).
 //
-// `relayd` is the top-level event-router verb. Body delegates to the
+// `orchd` is the top-level event-router verb. Body delegates to the
 // shared committerDaemonVerb / committerDrainVerb in verbs/committer.ts
 // (single source of truth for the multi-topic dispatcher) — these
 // tests cover the verb-surface invariants only:
-//   - parseRelaydArgs accepts --start / --drain (and bare-word forms)
-//   - parseRelaydArgs honors --team-dir / --once / --max-events
+//   - parseOrchdArgs accepts --start / --drain (and bare-word forms)
+//   - parseOrchdArgs honors --team-dir / --once / --max-events
 //   - parser rejects unknown flags + missing sub-verb
 //   - dispatch routes start → committerDaemonVerb, drain → committerDrainVerb
 
 import { describe, expect, test } from "bun:test";
 import { UsageError } from "../../../src/errors.ts";
-import { parseRelaydArgs } from "../../../src/verbs/relayd.ts";
+import { parseOrchdArgs } from "../../../src/verbs/orchd.ts";
 
-describe("parseRelaydArgs", () => {
+describe("parseOrchdArgs", () => {
   test("--start parses as start sub-verb", () => {
-    expect(parseRelaydArgs(["--start"])).toEqual({ subverb: "start" });
+    expect(parseOrchdArgs(["--start"])).toEqual({ subverb: "start" });
   });
 
   test("'start' bare form parses identically", () => {
-    expect(parseRelaydArgs(["start"])).toEqual({ subverb: "start" });
+    expect(parseOrchdArgs(["start"])).toEqual({ subverb: "start" });
   });
 
   test("--drain parses as drain sub-verb", () => {
-    expect(parseRelaydArgs(["--drain"])).toEqual({ subverb: "drain" });
+    expect(parseOrchdArgs(["--drain"])).toEqual({ subverb: "drain" });
   });
 
   test("'drain' bare form parses identically", () => {
-    expect(parseRelaydArgs(["drain"])).toEqual({ subverb: "drain" });
+    expect(parseOrchdArgs(["drain"])).toEqual({ subverb: "drain" });
   });
 
   test("--team-dir captures path", () => {
-    expect(parseRelaydArgs(["--start", "--team-dir", "/srv/demo"])).toEqual({
+    expect(parseOrchdArgs(["--start", "--team-dir", "/srv/demo"])).toEqual({
       subverb: "start",
       teamDir: "/srv/demo",
     });
   });
 
   test("--once flag captured", () => {
-    expect(parseRelaydArgs(["--start", "--once"])).toEqual({
+    expect(parseOrchdArgs(["--start", "--once"])).toEqual({
       subverb: "start",
       once: true,
     });
   });
 
   test("--max-events N captured", () => {
-    expect(parseRelaydArgs(["--start", "--max-events", "3"])).toEqual({
+    expect(parseOrchdArgs(["--start", "--max-events", "3"])).toEqual({
       subverb: "start",
       maxEvents: 3,
     });
   });
 
   test("--max-events 0 throws UsageError", () => {
-    expect(() => parseRelaydArgs(["--start", "--max-events", "0"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--start", "--max-events", "0"])).toThrow(UsageError);
   });
 
   test("--max-events non-numeric throws UsageError", () => {
-    expect(() => parseRelaydArgs(["--start", "--max-events", "abc"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--start", "--max-events", "abc"])).toThrow(UsageError);
   });
 
   test("--max-events without value throws", () => {
-    expect(() => parseRelaydArgs(["--start", "--max-events"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--start", "--max-events"])).toThrow(UsageError);
   });
 
   test("--team-dir without value throws", () => {
-    expect(() => parseRelaydArgs(["--start", "--team-dir"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--start", "--team-dir"])).toThrow(UsageError);
   });
 
   test("no sub-verb throws UsageError", () => {
-    expect(() => parseRelaydArgs([])).toThrow(UsageError);
-    expect(() => parseRelaydArgs(["--team-dir", "/x"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs([])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--team-dir", "/x"])).toThrow(UsageError);
   });
 
   test("unknown flag throws UsageError", () => {
-    expect(() => parseRelaydArgs(["--frobnicate"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--frobnicate"])).toThrow(UsageError);
   });
 
   test("unexpected positional arg throws UsageError", () => {
-    expect(() => parseRelaydArgs(["--start", "garbage"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--start", "garbage"])).toThrow(UsageError);
   });
 
   test("combined --start --team-dir --once --max-events all captured", () => {
     expect(
-      parseRelaydArgs(["--start", "--team-dir", "/srv/demo", "--once", "--max-events", "5"]),
+      parseOrchdArgs(["--start", "--team-dir", "/srv/demo", "--once", "--max-events", "5"]),
     ).toEqual({
       subverb: "start",
       teamDir: "/srv/demo",
@@ -93,7 +93,7 @@ describe("parseRelaydArgs", () => {
 
   test("--handle-one with --event-id + --topic parses", () => {
     expect(
-      parseRelaydArgs(["--handle-one", "--event-id", "01900xyz", "--topic", "task.done"]),
+      parseOrchdArgs(["--handle-one", "--event-id", "01900xyz", "--topic", "task.done"]),
     ).toEqual({
       subverb: "handle-one",
       eventId: "01900xyz",
@@ -102,16 +102,16 @@ describe("parseRelaydArgs", () => {
   });
 
   test("--handle-one without --event-id throws", () => {
-    expect(() => parseRelaydArgs(["--handle-one", "--topic", "task.done"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--handle-one", "--topic", "task.done"])).toThrow(UsageError);
   });
 
   test("--handle-one without --topic throws", () => {
-    expect(() => parseRelaydArgs(["--handle-one", "--event-id", "01900xyz"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--handle-one", "--event-id", "01900xyz"])).toThrow(UsageError);
   });
 
   test("--handle-one with --team-dir captured", () => {
     expect(
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "e-1",
@@ -129,23 +129,23 @@ describe("parseRelaydArgs", () => {
   });
 
   test("--event-id without value throws", () => {
-    expect(() => parseRelaydArgs(["--handle-one", "--event-id"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--handle-one", "--event-id"])).toThrow(UsageError);
   });
 
   test("--topic without value throws", () => {
-    expect(() => parseRelaydArgs(["--handle-one", "--topic"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--handle-one", "--topic"])).toThrow(UsageError);
   });
 
   test("--status parses as status sub-verb", () => {
-    expect(parseRelaydArgs(["--status"])).toEqual({ subverb: "status" });
+    expect(parseOrchdArgs(["--status"])).toEqual({ subverb: "status" });
   });
 
   test("'status' bare form parses identically", () => {
-    expect(parseRelaydArgs(["status"])).toEqual({ subverb: "status" });
+    expect(parseOrchdArgs(["status"])).toEqual({ subverb: "status" });
   });
 
   test("--status with --team-dir captured", () => {
-    expect(parseRelaydArgs(["--status", "--team-dir", "/srv/demo"])).toEqual({
+    expect(parseOrchdArgs(["--status", "--team-dir", "/srv/demo"])).toEqual({
       subverb: "status",
       teamDir: "/srv/demo",
     });
@@ -159,7 +159,7 @@ describe("parseRelaydArgs", () => {
   // both falls through to legacy runLaneTick.
   test("--handle-one + --task-id + --lane parses (no --member)", () => {
     expect(
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "01900xyz",
@@ -181,7 +181,7 @@ describe("parseRelaydArgs", () => {
 
   test("--handle-one + --task-id + --lane + --member (override) all captured", () => {
     expect(
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "01900xyz",
@@ -206,7 +206,7 @@ describe("parseRelaydArgs", () => {
 
   test("--handle-one without --task-id/--lane falls through (no payload-hint fields)", () => {
     expect(
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "01900xyz",
@@ -222,7 +222,7 @@ describe("parseRelaydArgs", () => {
 
   test("--handle-one + --task-id alone (missing --lane) throws UsageError", () => {
     expect(() =>
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "01900xyz",
@@ -236,7 +236,7 @@ describe("parseRelaydArgs", () => {
 
   test("--handle-one + --lane alone (missing --task-id) throws UsageError", () => {
     expect(() =>
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "01900xyz",
@@ -250,7 +250,7 @@ describe("parseRelaydArgs", () => {
 
   test("--handle-one + --member alone (no --task-id/--lane) throws UsageError", () => {
     expect(() =>
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "01900xyz",
@@ -264,7 +264,7 @@ describe("parseRelaydArgs", () => {
 
   test("--task-id without value throws", () => {
     expect(() =>
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "x",
@@ -277,7 +277,7 @@ describe("parseRelaydArgs", () => {
 
   test("--lane without value throws", () => {
     expect(() =>
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "x",
@@ -290,7 +290,7 @@ describe("parseRelaydArgs", () => {
 
   test("--member without value throws", () => {
     expect(() =>
-      parseRelaydArgs([
+      parseOrchdArgs([
         "--handle-one",
         "--event-id",
         "x",

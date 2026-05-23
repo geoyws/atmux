@@ -2,7 +2,7 @@
 // dispatcher. The Rust `atmux-cockpit-mirror` binary owns the long-
 // lived subscription against `~/.atmux/cockpit-events.db`; this Bun
 // verb is the per-event handler spawned by the Rust binary once per
-// arriving event (mirror of `atmux relayd --handle-one`).
+// arriving event (mirror of `atmux orchd --handle-one`).
 //
 // Wire-format (Rust → Bun): `atmux cockpit-mirror --handle-one
 // --event-id <id> --topic <t>`. Exit 0 advances the Rust caller's

@@ -41,7 +41,7 @@ import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
 import { committer } from "./verbs/committer.ts";
 import { cockpitMirror } from "./verbs/cockpit-mirror.ts";
-import { relayd } from "./verbs/relayd.ts";
+import { orchd } from "./verbs/orchd.ts";
 import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
 import { cronInstall } from "./verbs/cron-install.ts";
@@ -300,14 +300,27 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
           "Accepting this release; will fail next release.\n",
       );
       return committer(argv.slice(1));
+    case "orchd":
+      // ADR-224 §D1 — `orchd` (orchestrator daemon) is the canonical
+      // event-router persona/verb. Renamed from `relayd` 2026-05-22 to
+      // honestly cover the expanding lifecycle responsibilities (Phase 2
+      // adds auto-spawn / auto-dissolve subscribers per §D4). Subscribes
+      // to multi-topic via atmux-listener Rust kernel-blocked NOTIFY/
+      // LISTEN and dispatches to handler-per-topic. Sub-verbs: --start
+      // (long-lived), --drain (one-shot cron-backstop), --handle-one
+      // (per-event dispatch), --status (diagnostic).
+      return orchd(argv.slice(1));
     case "relayd":
-      // ADR-202 §Amendment 2026-05-22 (V) — `relayd` is the canonical
-      // event-router persona/verb. Subscribes to multi-topic via
-      // atmux-listener Rust kernel-blocked NOTIFY/LISTEN and dispatches
-      // to handler-per-topic. Sub-verbs: --start (long-lived), --drain
-      // (one-shot cron-backstop). Legacy `committer --daemon` / `committer
-      // --drain` remain as deprecated aliases for one release.
-      return relayd(argv.slice(1));
+      // ADR-224 §D1 — `atmux relayd` is the deprecation alias for one
+      // release post-rename. Emits a single-line stderr warning then
+      // delegates to the orchd handler with same exit code + stdout
+      // shape (scripts that pipe / parse stdout keep working). Removed
+      // next release.
+      process.stderr.write(
+        "[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); " +
+          "update callsites — alias removes next release\n",
+      );
+      return orchd(argv.slice(1));
     case "cockpit-mirror":
       // ADR-219 — cockpit-scope event dispatcher. Per-event Bun handler
       // spawned by the Rust `atmux-cockpit-mirror` binary

@@ -1,6 +1,6 @@
-// atmux-relayd — Rust dispatcher for the atmux event-driven substrate.
+// atmux-orchd — Rust dispatcher for the atmux event-driven substrate.
 //
-// Replaces the Bun-side `atmux relayd --start` long-lived process per
+// Replaces the Bun-side `atmux orchd --start` long-lived process per
 // ADR-202 §Amendment 2026-05-22 (VII). Architecture:
 //
 //   1. This Rust binary stays subscribed (Honker `Database::listen`),
@@ -8,7 +8,7 @@
 //      RSS ~5MB, idle CPU ~0%.
 //   2. On each notification: query the events table for new rows since
 //      this consumer's offset (rusqlite — same db, same connection).
-//   3. For each new event: spawn `atmux relayd --handle-one --event-id
+//   3. For each new event: spawn `atmux orchd --handle-one --event-id
 //      <id>` as a one-shot Bun subprocess. Wait for exit.
 //   4. On clean exit (rc=0): advance the consumer's offset and loop.
 //      On non-zero exit: log and DON'T advance — next wake re-attempts.
@@ -25,10 +25,10 @@
 // handler.
 //
 // Wire protocol with Bun:
-//   atmux relayd --handle-one --event-id <id> --topic <t> [--team-dir <p>]
-//   exit 0          → event handled successfully; relayd advances offset
+//   atmux orchd --handle-one --event-id <id> --topic <t> [--team-dir <p>]
+//   exit 0          → event handled successfully; orchd advances offset
 //   exit non-zero   → handler failed (or Bun couldn't load event);
-//                     relayd does NOT advance offset; next wake retries
+//                     orchd does NOT advance offset; next wake retries
 //
 // Lifecycle:
 //   - parent dies (tmux pane killed, atmux stop, kernel OOM SIGKILL) →
@@ -37,10 +37,10 @@
 //   - In-flight Bun child gets SIGTERM via process-group cascade.
 //
 // Configuration via env:
-//   ATMUX_RELAYD_DB        — path to state.db (default: ./.atmux/state.db)
-//   ATMUX_RELAYD_ATMUX_BIN — path to atmux binary (default: `atmux` on PATH)
-//   ATMUX_RELAYD_TEAM_DIR  — path passed to atmux --team-dir (default: cwd)
-//   ATMUX_RELAYD_TOPICS    — comma-separated topic list to subscribe to
+//   ATMUX_ORCHD_DB        — path to state.db (default: ./.atmux/state.db)
+//   ATMUX_ORCHD_ATMUX_BIN — path to atmux binary (default: `atmux` on PATH)
+//   ATMUX_ORCHD_TEAM_DIR  — path passed to atmux --team-dir (default: cwd)
+//   ATMUX_ORCHD_TOPICS    — comma-separated topic list to subscribe to
 //                            (default: task.done,task.unclaimed)
 
 use std::env;
@@ -174,7 +174,7 @@ fn drain_topic(
     r.map_err(|e| format!("drain_topic({}) error: {}", topic, e))
 }
 
-/// Spawn `atmux relayd --handle-one --event-id <id> --topic <t> --team-dir <p>
+/// Spawn `atmux orchd --handle-one --event-id <id> --topic <t> --team-dir <p>
 /// [<extra_args>...]`. Returns the child's exit code (None when killed
 /// by signal). `extra_args` carry the optional `--task-id <id> --lane <l>`
 /// payload hints for the lean per-event dispatch path (ADR-202
@@ -187,7 +187,7 @@ fn dispatch_to_bun(
     extra_args: &[(&str, &str)],
 ) -> Option<i32> {
     let mut cmd = Command::new(atmux_bin);
-    cmd.arg("relayd")
+    cmd.arg("orchd")
         .arg("--handle-one")
         .arg("--event-id")
         .arg(event_id)
@@ -202,7 +202,7 @@ fn dispatch_to_bun(
         Ok(s) => s,
         Err(e) => {
             eprintln!(
-                "atmux-relayd: spawn `{} relayd --handle-one` failed: {}",
+                "atmux-orchd: spawn `{} orchd --handle-one` failed: {}",
                 atmux_bin, e
             );
             return None;
@@ -241,20 +241,20 @@ fn drain_and_dispatch(
                         }
                         None => {
                             eprintln!(
-                                "atmux-relayd: payload parse failed for eventId={} (consumer={}) — falling back to no-extra-args dispatch",
+                                "atmux-orchd: payload parse failed for eventId={} (consumer={}) — falling back to no-extra-args dispatch",
                                 event_id, cfg.name
                             );
                         }
                     },
                     Ok(None) => {
                         eprintln!(
-                            "atmux-relayd: no payload row for eventId={} (consumer={}) — falling back to no-extra-args dispatch",
+                            "atmux-orchd: no payload row for eventId={} (consumer={}) — falling back to no-extra-args dispatch",
                             event_id, cfg.name
                         );
                     }
                     Err(e) => {
                         eprintln!(
-                            "atmux-relayd: {} — falling back to no-extra-args dispatch",
+                            "atmux-orchd: {} — falling back to no-extra-args dispatch",
                             e
                         );
                     }
@@ -277,13 +277,13 @@ fn drain_and_dispatch(
                     offsets[idx] = event_id.clone();
                     processed += 1;
                     println!(
-                        "atmux-relayd: handled {} eventId={} (consumer={})",
+                        "atmux-orchd: handled {} eventId={} (consumer={})",
                         cfg.bun_topic, event_id, cfg.name
                     );
                 }
                 Some(other) => {
                     eprintln!(
-                        "atmux-relayd: bun handler exit rc={} on {} eventId={} (consumer={}); NOT advancing offset; will retry next wake",
+                        "atmux-orchd: bun handler exit rc={} on {} eventId={} (consumer={}); NOT advancing offset; will retry next wake",
                         other, cfg.bun_topic, event_id, cfg.name
                     );
                     // Don't continue this consumer's drain — re-attempt next wake.
@@ -291,7 +291,7 @@ fn drain_and_dispatch(
                 }
                 None => {
                     eprintln!(
-                        "atmux-relayd: bun handler killed-by-signal on {} eventId={} (consumer={}); NOT advancing offset",
+                        "atmux-orchd: bun handler killed-by-signal on {} eventId={} (consumer={}); NOT advancing offset",
                         cfg.bun_topic, event_id, cfg.name
                     );
                     break;
@@ -309,25 +309,25 @@ fn main() -> ExitCode {
     let cwd = env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| ".".to_string());
-    let db_path = env::var("ATMUX_RELAYD_DB").unwrap_or_else(|_| {
+    let db_path = env::var("ATMUX_ORCHD_DB").unwrap_or_else(|_| {
         args.iter()
             .skip(1)
             .next()
             .cloned()
             .unwrap_or_else(|| format!("{}/.atmux/state.db", cwd))
     });
-    let atmux_bin = env::var("ATMUX_RELAYD_ATMUX_BIN").unwrap_or_else(|_| "atmux".to_string());
-    let team_dir = env::var("ATMUX_RELAYD_TEAM_DIR").unwrap_or_else(|_| cwd.clone());
+    let atmux_bin = env::var("ATMUX_ORCHD_ATMUX_BIN").unwrap_or_else(|_| "atmux".to_string());
+    let team_dir = env::var("ATMUX_ORCHD_TEAM_DIR").unwrap_or_else(|_| cwd.clone());
 
     eprintln!(
-        "atmux-relayd: starting (db={}, atmux={}, team_dir={})",
+        "atmux-orchd: starting (db={}, atmux={}, team_dir={})",
         db_path, atmux_bin, team_dir
     );
 
     let db = match Database::open(&db_path) {
         Ok(db) => db,
         Err(e) => {
-            eprintln!("atmux-relayd: Database::open({}) failed: {}", db_path, e);
+            eprintln!("atmux-orchd: Database::open({}) failed: {}", db_path, e);
             return ExitCode::from(3);
         }
     };
@@ -342,17 +342,17 @@ fn main() -> ExitCode {
     {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("atmux-relayd: failed to load initial offsets: {}", e);
+            eprintln!("atmux-orchd: failed to load initial offsets: {}", e);
             return ExitCode::from(4);
         }
     };
 
-    // Initial drain — catch up anything that landed while relayd was
+    // Initial drain — catch up anything that landed while orchd was
     // down. The handler dispatch is at-least-once per ADR-203 §D7;
     // duplicate processing is the failure mode (handlers are idempotent
     // by contract).
     if let Err(e) = drain_and_dispatch(&db, &atmux_bin, &team_dir, &mut offsets) {
-        eprintln!("atmux-relayd: initial drain error: {}", e);
+        eprintln!("atmux-orchd: initial drain error: {}", e);
     }
 
     // UpdateEvents — raw wake channel from the Honker watcher thread.
@@ -360,14 +360,14 @@ fn main() -> ExitCode {
     // writes). On wake, we re-drain both topics; non-event commits
     // produce zero new events and no Bun spawns.
     let events = db.update_events();
-    eprintln!("atmux-relayd: subscribed, entering wake loop");
+    eprintln!("atmux-orchd: subscribed, entering wake loop");
 
     loop {
         match events.recv_timeout(Duration::from_secs(60)) {
             Ok(Some(())) => {
                 // DB commit observed — drain both topics.
                 if let Err(e) = drain_and_dispatch(&db, &atmux_bin, &team_dir, &mut offsets) {
-                    eprintln!("atmux-relayd: drain error: {}", e);
+                    eprintln!("atmux-orchd: drain error: {}", e);
                 }
             }
             Ok(None) => {
@@ -376,11 +376,11 @@ fn main() -> ExitCode {
                 // against subtle Honker bugs without depending on its
                 // perfect-delivery guarantee).
                 if let Err(e) = drain_and_dispatch(&db, &atmux_bin, &team_dir, &mut offsets) {
-                    eprintln!("atmux-relayd: timeout drain error: {}", e);
+                    eprintln!("atmux-orchd: timeout drain error: {}", e);
                 }
             }
             Err(e) => {
-                eprintln!("atmux-relayd: watcher closed ({}), exiting", e);
+                eprintln!("atmux-orchd: watcher closed ({}), exiting", e);
                 return ExitCode::SUCCESS;
             }
         }

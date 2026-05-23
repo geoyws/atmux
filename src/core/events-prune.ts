@@ -21,7 +21,7 @@
 //                            completion. Drives cadence checks and the
 //                            medic visibility probe.
 //
-// Function is pure / caller-invoked. No cron wiring, no relayd hook —
+// Function is pure / caller-invoked. No cron wiring, no orchd hook —
 // the follow-up wiring Task carries that. Single team_name per call;
 // multi-team coordination is out of scope.
 

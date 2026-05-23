@@ -134,7 +134,7 @@ import {
 } from "../core/common.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
-import { maybeSpawnRelaydWindow } from "../core/relayd-window.ts";
+import { maybeSpawnOrchdWindow } from "../core/orchd-window.ts";
 import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -900,7 +900,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //
   //     Idempotent: skipped when the supervisor window already exists
   //     (e.g. `atmux start` re-run on an already-up team).
-  await maybeSpawnRelaydWindow({
+  await maybeSpawnOrchdWindow({
     team,
     session,
     teamRoot: dir,
