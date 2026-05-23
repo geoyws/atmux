@@ -24,6 +24,14 @@ Topic taxonomy ([ADR-203 §D2](docs/adr/203-event-topic-taxonomy.md)) grew by 3 
 
 End-to-end dogfood (lifecycle + pressure-throttle) requires sibling EPIC `e-60e16169`'s dispatcher injection before any handler does work at the verb layer — until then, the registered handlers ship with `skipped-not-mine` stubs that are safe no-ops under at-least-once delivery. Run protocol for the post-`e-60e16169` operator-driven dogfood lives at [ADR-228 §Amendment 2026-05-23-rev2](docs/adr/228-orchd-spawn-queue-pressure-monitor.md).
 
+### ✨ Added — orchd cross-cage dispatcher seam: `dispatchGitPush` (Story s-4-a74c6fc1 / t-5)
+
+First of three dispatchers under [ADR-232 §D1](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) — wraps `git push <remote> <branch>` for the parent ADR-229 auto-push handler. Local cage executes via `defaultGitSpawn` (fetch → upstream-advanced detect → push → resolve head SHA); remote cage stub returns `skipped-not-mine` per §D2 (transport choice OQ-1 deferred — local-only v1). Cage-not-found + fetch-failure + push-rejection paths raise `atmux flag add --severity p1` and return `skipped-not-mine` with no retry per §OQ-3 (mirrors ADR-231 §D5 anti-retry-storm).
+
+- **New** — `src/core/orchd-dispatch/git-push.ts` (Zod input + dispatch function + test-injection deps).
+- **New** — `tests/unit/core/orchd-dispatch/git-push.test.ts` (15 cases: schema validation, local happy path, upstream-advanced, remote-route deferred, cage-not-found, fetch-failure flag, push-rejection flag, no-retry assertion, rev-list parse fallbacks).
+- **Wired** — `src/verbs/committer.ts::committerDrainVerb` now injects `dispatchGitPush` into `bootstrapOrchd({ pushDeps })`, closing over `team.name` as the local cage identifier. Sibling dispatchers `dispatchEpicMerge` (t-3) and `dispatchDissolveEpic` (t-4) land in the same directory.
+
 ### ✨ Added — `atmux topo` fleet observability + reap cascade (ADR-222 + ADR-223)
 
 One verb replaces today's N × N manual cleanup loop: enumerates the
