@@ -671,6 +671,7 @@ describe("watchEvents", () => {
   test("externalSignals throw → falls back to poll-mode gracefully", async () => {
     emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
     const ac = new AbortController();
+    // biome-ignore lint/correctness/useYield: intentional no-yield fixture — generator throws on first .next() call to simulate a crashed external listener and exercise the poll-mode fallback path.
     const signals = (async function* () {
       throw new Error("simulated listener crash");
     })();
