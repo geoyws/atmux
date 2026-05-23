@@ -325,10 +325,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       );
       return orchd(argv.slice(1));
     case "cockpit-mirror":
-      // ADR-219 — cockpit-scope event dispatcher. Per-event Bun handler
+      // ADR-230 — cockpit-scope event dispatcher. Per-event Bun handler
       // spawned by the Rust `atmux-cockpit-mirror` binary
       // (`--handle-one --event-id X --topic T`); 7-topic whitelist per
-      // ADR-219 §D3 (epic.merge_ready / epic.spawn_blocked / team.spawned
+      // ADR-230 §D3 (epic.merge_ready / epic.spawn_blocked / team.spawned
       // / team.dissolved / budget.warning / budget.recovered /
       // gitter.escalated). Per-topic real handlers are follow-up Tasks;
       // MVP scaffold logs + advances offset.

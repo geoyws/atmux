@@ -1,4 +1,4 @@
-// ADR-219: `atmux cockpit-mirror` Bun verb — cockpit-scope event
+// ADR-230 (renumbered from ADR-219 on 2026-05-23): `atmux cockpit-mirror` Bun verb — cockpit-scope event
 // dispatcher. The Rust `atmux-cockpit-mirror` binary owns the long-
 // lived subscription against `~/.atmux/cockpit-events.db`; this Bun
 // verb is the per-event handler spawned by the Rust binary once per

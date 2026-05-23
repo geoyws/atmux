@@ -1,4 +1,6 @@
-# ADR-219: `atmux-cockpit-mirror` Rust crate — fleet-wide event consumer
+# ADR-230: `atmux-cockpit-mirror` Rust crate — fleet-wide event consumer
+
+> **Renumbered 2026-05-23**: originally filed as ADR-219; collided with [ADR-219 dissolve-epic-completeness](219-dissolve-epic-completeness.md) (filed earlier same day, May 22). Per "older keeps the number" heuristic, this one renumbered to ADR-230. Cross-refs updated across cli.ts, cockpit-mirror.ts, ADR-224, ADR-202, and the t-4160d662 + t-809d1ed9 review docs.
 
 **Status**: proposed (deferred: pending crate scaffold + cockpit-events.db schema bootstrap + per-team mirror writer wiring per OQ1)
 **Date**: 2026-05-22

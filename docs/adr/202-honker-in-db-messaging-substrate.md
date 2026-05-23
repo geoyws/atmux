@@ -924,7 +924,7 @@ Lean dispatch saves the cross-member enumeration cost on each `task.unclaimed`: 
 ### Out of scope (IX-A)
 
 - Cross-team / fleet event mirroring (IX-B + §X + §XI reserved for sibling Epic e-6a066299).
-- Cockpit-mirror Rust crate (filed as ADR-219 under Epic e-95087c8b Story 2).
+- Cockpit-mirror Rust crate (filed as ADR-230, renumbered from ADR-219 on 2026-05-23 due to collision with ADR-219 dissolve-epic-completeness; Epic e-95087c8b Story 2).
 - `task.done` / other-topic lean dispatch (this amendment is `task.unclaimed`-scoped; gitter merge handler stays full-payload-load per §VII).
 
 ### File ownership (Epic e-95087c8b)
