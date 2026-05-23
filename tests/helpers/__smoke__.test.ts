@@ -52,8 +52,9 @@ describe("honker-mock — registry + dispatch", () => {
 
     const results = await mock.drain();
     expect(results).toHaveLength(1);
-    expect(results[0].delivered).toBe(1);
-    expect(results[0].failed).toBe(0);
+    const [first] = results;
+    expect(first!.delivered).toBe(1);
+    expect(first!.failed).toBe(0);
     expect(calls).toEqual(["spawn:e-aaaaaaaa"]);
   });
 
@@ -81,13 +82,13 @@ describe("honker-mock — registry + dispatch", () => {
 
     // First drain: handler throws → offset stays at 0, error recorded.
     const first = await mock.drain();
-    expect(first[0].delivered).toBe(0);
-    expect(first[0].failed).toBe(1);
+    expect(first[0]!.delivered).toBe(0);
+    expect(first[0]!.failed).toBe(1);
     expect(mock.getOffset("atmux:orchd:dissolve-worker")).toBe(0);
 
     // Second drain: re-delivers the same event → handler succeeds, offset advances.
     const second = await mock.drain();
-    expect(second[0].delivered).toBe(1);
+    expect(second[0]!.delivered).toBe(1);
     expect(mock.getOffset("atmux:orchd:dissolve-worker")).toBeGreaterThan(0);
     expect(attempt).toBe(2);
   });
@@ -313,6 +314,6 @@ describe("atmux-flag-spy — capture + assert", () => {
     expect(spy.calls).toHaveLength(0);
     await spy.add({ message: "second" });
     expect(spy.calls).toHaveLength(1);
-    expect(spy.calls[0].sequence).toBe(1);
+    expect(spy.calls[0]!.sequence).toBe(1);
   });
 });

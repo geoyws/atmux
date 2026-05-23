@@ -175,7 +175,10 @@ export function createSpawnEpicStub(initial?: SpawnEpicResult): SpawnEpicStub {
       if (sequence !== null && sequence.length > 0) {
         const idx = Math.min(sequenceCursor, sequence.length - 1);
         sequenceCursor += 1;
-        return sequence[idx];
+        // idx ∈ [0, sequence.length-1] by construction (Math.min above);
+        // the `?? defaultResult` is a defense-in-depth fallback to keep
+        // noUncheckedIndexedAccess happy without a non-null assertion.
+        return sequence[idx] ?? defaultResult;
       }
       return defaultResult;
     },

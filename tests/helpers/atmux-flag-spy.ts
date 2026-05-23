@@ -20,18 +20,22 @@ export type FlagSeverity = "p0" | "p1" | "p2";
 /** "Needs" classifier passed via `--needs` — operator-triage hint. */
 export type FlagNeeds = "unblock" | "decision" | "context" | string;
 
-/** Recorded flag-add call — every field the production caller passed. */
+/** Recorded flag-add call — every field the production caller passed.
+ *  Optional fields declare `| undefined` explicitly so callers can pass
+ *  `severity: args.severity` (which may be `undefined`) under
+ *  `exactOptionalPropertyTypes: true` without forcing a conditional
+ *  spread at every call site. */
 export interface FlagCall {
   /** The flag message body. */
   readonly message: string;
   /** Severity tier. `undefined` when caller omitted `--severity`. */
-  readonly severity?: FlagSeverity;
+  readonly severity?: FlagSeverity | undefined;
   /** `--needs <tag>` classifier; `undefined` when omitted. */
-  readonly needs?: FlagNeeds;
+  readonly needs?: FlagNeeds | undefined;
   /** `--task <id>` linkage; `undefined` when omitted. Used by the
    *  `host-pressure-deferred` path which links the affected epic's
    *  spawn task per the future spawn-epic Task linkage in ADR-231 §D2. */
-  readonly taskId?: string;
+  readonly taskId?: string | undefined;
   /** Sequence (1-based) in invocation order. */
   readonly sequence: number;
 }
