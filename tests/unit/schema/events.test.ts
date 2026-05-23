@@ -269,11 +269,12 @@ describe("passthrough for forward-compat", () => {
 describe("TOPICS registry + isKnownTopic", () => {
   test("v1 closed topic set has the expected size (ADR-203 §D2 enumeration)", () => {
     // Adding a topic to TOPICS requires an ADR amendment — failing here
-    // is the reminder. Current closed set: 5 task + 8 story + 7 epic +
+    // is the reminder. Current closed set: 5 task + 8 story + 10 epic +
     // 3 commit + 1 gitter + 3 pane + 4 coordination + 8 cockpit + 4
-    // internal = 43 (+2 epic post-ADR-226 §D2: epic.merged, epic.merge-blocked;
-    // +1 epic post-ADR-227 §D2: epic.dissolve-blocked).
-    expect(TOPICS.length).toBe(43);
+    // internal = 46 (+2 epic post-ADR-226 §D2: epic.merged, epic.merge-blocked;
+    // +1 epic post-ADR-227 §D2: epic.dissolve-blocked;
+    // +3 epic post-ADR-229 §D3: epic.pushed, epic.push-blocked, epic.push-conflict).
+    expect(TOPICS.length).toBe(46);
   });
 
   test("known topics across each domain are present", () => {
