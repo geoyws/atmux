@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `classifySpawnFailure` orchd spawn-epic recovery classifier ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D5 + [ADR-184](docs/adr/184-host-wide-epic-team-cap-queue-and-dormancy-audit.md), EPIC `e-60e16169` Phase 2 Story S2, t-13-2f8b0d92)
+
+New pure helper `src/core/orchd-spawn-classify.ts` exports `classifySpawnFailure(stderr): 'hard' | 'host-pressure' | 'eligibility-race'` — the 3-way result classifier the spawn handler (T-S2.5) consumes to decide recovery posture per ADR-231 §D5:
+
+- `host-pressure` (`/host-wide cap \(\d+\) reached/`) — ADR-184 refusal signature; handler increments `spawnPressureDeferred` and lets cron `--sweep` retry.
+- `eligibility-race` (`/eligible=false: /`) — ADR-225 predicate refusal signature; handler exits silently and the next `epic.ready` / `epic.unblocked` event re-fires.
+- `hard` (default) — any other non-zero exit; handler writes `epics.extra.spawnFailed` + raises `atmux flag add` + NO retry per ADR-231 anti-retry-storm rationale.
+
+Precedence: when BOTH transient signatures appear in the same stderr blob, host-pressure wins — the more severe operator signal, and the safer fallback when ambiguous (capacity exhaustion ought to surface louder than predicate refusal). Whitespace-tolerant between `host-wide`, `cap`, and the digit group so spawn-epic wrapper formatting drift doesn't silently degrade to `hard`. 16 unit tests cover each class, partial-match boundary cases, empty stderr, multiline blob, and the precedence ordering in both orders. 100% line + funcs coverage on the new module.
+
 ### ✨ Added — `team.json::autoSpawn` Zod schema ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D3 + §D4, EPIC `e-60e16169` Phase 2 Story S1, t-8-3328eb57)
 
 New optional `autoSpawn` block on the top-level Team schema (`src/schema/team.ts`) — config home for orchd's `spawn-epic` handler per ADR-231 §D3:
