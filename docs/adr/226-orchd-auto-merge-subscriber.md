@@ -1,6 +1,6 @@
 # ADR-226: orchd auto-merge subscriber (Phase 3) — `task.done` → `atmux epic-merge` → `epic.merged`
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-23
 **Driver-ref**: parent atmux kanban Epic `e-a946af69` ("orchd lifecycle Phase 3-5") + driver-inbox 08:27 MYT 2026-05-23 (lead relay)
 **Parent EPIC (this team)**: `e-a946af69` (orchd Phase 3-5)
@@ -56,8 +56,8 @@ Orchd subscribes to topic `task.done` (already in [ADR-203](203-event-topic-taxo
 
 Two new topics added to [ADR-203](203-event-topic-taxonomy.md) §D2 v1 topic set in the same commit as `src/core/orchd-merge.ts`:
 
-- `epic.merged` — fires after `performEpicMerge` returns success. Payload: `{topic, epicId, parentBase, mergeSha, mergedAt}`. Consumed by Phase 4 (ADR-227).
-- `epic.merge-blocked` — fires when merge dispatcher returns conflict / gate-held. Payload: `{topic, epicId, reason, blockedAt}`. Operator-observable; no consumer in v1.
+- `epic.merged` — fires after `performEpicMerge` returns success. Payload: `{topic, epicId, parentBase, mergeSha, mergedAtSec}`. Consumed by Phase 4 (ADR-227).
+- `epic.merge-blocked` — fires when merge dispatcher returns conflict / gate-held. Payload: `{topic, epicId, reason, blockedAtSec}`. Operator-observable; no consumer in v1.
 
 Both extend the existing `BasePayloadFields` discriminator. Zod schemas land in `src/schema/events.ts` alongside the topic-list entries.
 
@@ -92,7 +92,8 @@ export type AutoMergeOutcome =
   | "skipped-no-epic"
   | "skipped-epic-not-complete"
   | "skipped-already-merged"
-  | "skipped-honker-off";
+  | "skipped-honker-off"
+  | "skipped-not-mine";
 
 export interface OrchdMergeConsumeDeps {
   db: Database;
@@ -150,3 +151,17 @@ Sibling does NOT need to import internals; the `createAutoMergeHandler` factory 
 > **§DA4** — Cross-team seam ownership: `src/core/orchd-merge.ts` = this EPIC. `src/verbs/orchd.ts` = sibling EPIC `e-60e16169`. Seam shape pinned by §D5 + factory pattern; sibling integrates via single import + single call site.
 >
 > **§DA5 (2026-05-23, t-05f368d6)** — `TaskDonePayload.epicId` schema unchanged (already optional per `src/schema/events.ts:60`); resolver in T1 is **three-stage** (payload → `tasks.epic` column → `[e-XXXXX]` subject-prefix regex). Subject-prefix fallback is load-bearing TODAY because `tasks.epic` is universally `NULL` until `atmux task add --epic` is restored (memory `feedback_atmux_task_add_lost_epic_story_deliverable_flags`). See §OQ2 + §OQ4 resolutions.
+
+## §Amendment 2026-05-23 — Reviewer-pass (t-cd2c3c42)
+
+Status flipped `proposed → accepted` after reviewer audit of commit `89fcab8` (T1 module impl) against §D1-§D5 + §DA1-§DA5. Three impl-doc parity patches landed in the same commit as the status flip:
+
+1. §D2 payload field names corrected `mergedAt` → `mergedAtSec`, `blockedAt` → `blockedAtSec` to match ADR-203 §D2 entries + the actual emitted shape in `src/core/orchd-merge.ts:244-263` (impl + ADR-203 already use the `*Sec` suffix; §D2 here was the outlier).
+2. §D5 `AutoMergeOutcome` union added `"skipped-not-mine"` literal — impl exports 7 variants (`src/core/orchd-merge.ts:57-64`) since the dispatcher-stub passes its `skipped-not-mine` state through as a handler-visible outcome; the ADR §D5 example mistakenly listed only 6.
+3. Reviewer-pass audit verdict appended here so future readers see the doc-impl parity history.
+
+Cumulative diff audit:
+- Seam shape: exact mirror of `gitter-consumer.ts` confirmed (`withIdempotency` + Honker kill-switch + injected-handler default).
+- Test coverage: 62 unit tests across 5 describe blocks (resolver 3-stage, completeness query, handler 6 outcomes, kill-switch, happy-path, failure-mode).
+- Schema parity: `EpicMergedPayload` + `EpicMergeBlockedPayload` added to `src/schema/events.ts` discriminated union + TOPICS list (40 → 42).
+- Cross-team seam (sibling EPIC `e-60e16169`): `createAutoMergeHandler` factory + `orchdMergeConsume` consumer = single import + single call-site integration. No reach into module internals required.
