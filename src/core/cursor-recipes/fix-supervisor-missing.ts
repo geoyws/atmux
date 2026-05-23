@@ -62,10 +62,11 @@ async function defaultListWindows(sessionName: string): Promise<ReadonlyArray<st
   // here). Failure modes (tmux missing, session absent, list error)
   // all map to null.
   const { spawn } = await import("../../abstractions/spawn.ts");
+  const { resolveTmuxBin } = await import("../resolve-tmux-bin.ts");
   let r: Awaited<ReturnType<typeof spawn>>;
   try {
     r = await spawn({
-      cmd: "tmux",
+      cmd: resolveTmuxBin(),
       argv: ["list-windows", "-t", sessionName, "-F", "#{window_name}"],
       timeoutMs: 5_000,
       expectExitCode: "any",

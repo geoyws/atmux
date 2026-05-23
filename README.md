@@ -897,6 +897,7 @@ See [`plugins/atmux/README.md`](plugins/atmux/README.md) for the full per-skill 
 | `ATMUX_CURSOR_APPROVE_MCPS`          | `1`                                          | Append `--approve-mcps`; set `0` to disable           |
 | `ATMUX_CURSOR_ARGS_EXTRA`            | _(empty)_                                    | Extra args appended after `--model`                   |
 | `ATMUX_KIMI_BIN`                     | `kimi`                                       | Kimi CLI binary                                     |
+| `ATMUX_TMUX_BIN`                     | `/opt/atmux/current/bin/tmux` → system `tmux` | Override the tmux binary every atmux call spawns (ADR-191). Vendored default lives next to `atmux`; falls back to system `tmux` on PATH (warn-once) when absent. Operators pinning a different tmux version (testing, local dev build, CI override) set this to win the resolution chain. |
 
 ## Dependencies
 

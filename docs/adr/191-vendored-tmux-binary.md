@@ -117,6 +117,31 @@ For full-fleet rollback (drop the vendored binary entirely), delete `/opt/atmux/
 
 5. **(LOW reversibility) Bin namespace clash**: `/opt/atmux/<v>/bin/tmux` conflicts with operator running `tmux` from PATH. Resolution: atmux callers use absolute path via `resolveTmuxBin()`; operator's PATH still hits system tmux. No actual clash. Open to discussion if operator-ergonomics suffers.
 
+## Implementation status
+
+Tracked under Epic e-162046c7 (driver dispatch 2026-05-23, "ship the unshipped"). Source already ratified the technical decision 2026-05-21; this section records what landed when.
+
+**2026-05-23 — Resolver helper + spawn-site migration (be-1)**
+
+- `src/core/resolve-tmux-bin.ts` — `resolveTmuxBin()` helper landed with the 3-tier chain wired (override → vendored at `/opt/atmux/current/bin/tmux` → system `tmux` on PATH + warn-once). Injectable env / existsSync / warn / state seams mirror `resolveDefaultListenerBinary` (`src/abstractions/native-listener.ts`) for parity. Per-process memoization via module-scope state; tests pass their own state record for isolation. Unit coverage 100% lines / 100% funcs in `tests/unit/core/resolve-tmux-bin.test.ts`.
+- Call-sites migrated to consume `resolveTmuxBin()`:
+  - `src/abstractions/tmux.ts` — `tmuxRunRaw`, `loadBuffer`, `attachSessionInheritStdio` (the 3 spawn primitives in the typed wrapper).
+  - `src/abstractions/fallback-cage.ts` — Tier-3+ `sudo -u <agent> env … <tmux>` cage spawn + the operator-tier `capture-pane` post-mortem + the Tier-3+ `kill-session` teardown.
+  - `src/verbs/poke.ts` — `sendCageBrief` paste-buffer load/paste for both operator + Tier-3+ paths.
+  - `src/verbs/doctor.ts` — `defaultTmuxSpawn` baseline for the tmux-version probe family.
+  - `src/core/cursor-recipes/fix-supervisor-missing.ts` — `list-windows` detect probe.
+- Header comment in `src/abstractions/tmux.ts` updated — every spawn now reads `cmd: resolveTmuxBin()` instead of the `cmd: "tmux"` literal called out in the original ADR-004 §Socket-injection block. Binary resolution lives in the same closure layer as socket pinning.
+- `atmux doctor` probe `checkVendoredTmuxBinary` (src/verbs/doctor.ts) — two yellow rows possible: `vendored-tmux-missing` (binary absent → resolveTmuxBin falls through to system tmux) + `vendored-tmux-version-drift` (binary present but `tmux -V` doesn't match the ADR-191 3.6a pin). Self-clearing post-`build:install`. Hooked into the main `doctor()` orchestrator next to `checkTmuxVersionMismatch`. 7 unit tests cover all branches (absent / pinned / drift / unparseable / non-zero exit / throw / custom path+version).
+
+**Pending (subsequent landings on Epic e-162046c7)**
+
+- `package.json::build:install` extension — fetch + build + install tmux 3.6a alongside the existing `atmux` / `atmux-listener` / `atmux-orchd` / `atmux-cockpit-mirror` artefacts. Gated on driver direction re: build-from-source-in-CI vs pre-built binary tarball per DoD#1 + ADR-191 §OQ2.
+- README operator guidance — how to override via `ATMUX_TMUX_BIN`.
+- RUNBOOK rollback note — drop `/opt/atmux/<v>/bin/tmux` + atmux falls through to system tmux on next spawn.
+- CHANGELOG `[Unreleased] §Added` — vendored tmux binary.
+- SECURITY.md — supply-chain posture (tmux CVE monitoring + per-release SHA256 publication).
+- ADR-162 §Amendment cross-link this ADR (cockpit socket isolation + binary isolation: complete tmux-infrastructure ownership per the operator's framing).
+
 ## Cross-refs
 
 - ADR-162 (atmux owns tmux infrastructure — cockpit socket isolation; this ADR completes the binary side)

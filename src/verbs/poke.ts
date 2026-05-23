@@ -107,6 +107,7 @@ import { runSelfHealPass } from "../core/cursor-self-heal.ts";
 import { writeHeartbeat } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { listTasks } from "../core/kanban.ts";
 import {
   ensureLeadSessionStart,
@@ -1676,7 +1677,7 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
   // for Tier 3+ since the cage tmux runs under the dedicated user.
   const tmuxArgv = (rest: string[]): { cmd: string; argv: string[] } =>
     isOperator
-      ? { cmd: "tmux", argv: ["-L", handle.tmuxSocket, ...rest] }
+      ? { cmd: resolveTmuxBin(), argv: ["-L", handle.tmuxSocket, ...rest] }
       : {
           cmd: "sudo",
           argv: [
@@ -1684,7 +1685,7 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
             handle.agent,
             "env",
             `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
-            "tmux",
+            resolveTmuxBin(),
             "-L",
             handle.tmuxSocket,
             ...rest,

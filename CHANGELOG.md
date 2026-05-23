@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `resolveTmuxBin()` 3-tier resolver + `vendored-tmux-binary` doctor probe (ADR-191, e-162046c7)
+
+First half of the vendored-tmux ship — the source-side resolution chain lands before the build-side install pipeline so the runtime is ready for the binary the moment `build:install` learns to ship it.
+
+- **Resolver helper**: new `src/core/resolve-tmux-bin.ts::resolveTmuxBin()` walks `ATMUX_TMUX_BIN` (operator override) → `/opt/atmux/current/bin/tmux` (vendored) → system `tmux` on PATH (warn-once on fallback). Per-process memoization avoids re-probing the filesystem on every tmux spawn; the warn-once dedup keeps the fallback message out of high-frequency call paths. Injectable env / existsSync / warn / state seams mirror `resolveDefaultListenerBinary` for test parity. 100% line + func coverage in `tests/unit/core/resolve-tmux-bin.test.ts`.
+- **Call-site migration**: every `cmd: "tmux"` literal in production code routed through `resolveTmuxBin()` — `src/abstractions/tmux.ts` (3 spawn primitives), `src/abstractions/fallback-cage.ts` (Tier-3+ sudo spawn + capture-pane + kill-session), `src/verbs/poke.ts` (paste-buffer load/paste), `src/verbs/doctor.ts` (tmux-version probe family), `src/core/cursor-recipes/fix-supervisor-missing.ts` (list-windows detect).
+- **Doctor probe** `checkVendoredTmuxBinary` (src/verbs/doctor.ts): yellow row `vendored-tmux-missing` when `/opt/atmux/current/bin/tmux` is absent (operators see the fallback signal explicitly) + `vendored-tmux-version-drift` when present-but-not-3.6a. Self-clearing post-install. 7 unit tests cover all branches.
+- **Operator-facing**: `ATMUX_TMUX_BIN` documented in README §Configuration. Build:install pipeline extension (DoD #1) lands separately — gated on operator/driver authorization since it sudo-touches `/opt/atmux/` on live deploys.
+
+Cross-refs: [ADR-191](docs/adr/191-vendored-tmux-binary.md) §Implementation status (this commit), [ADR-162](docs/adr/162-cockpit-socket-isolation.md) (complementary tmux-infra ownership), [ADR-163](docs/adr/163-bundled-tmux-3.6a.md) (pin reference).
+
 ### 🔄 Changed — `atmux relayd` → `atmux orchd` rename + Rust crate atmux-relayd → atmux-orchd (ADR-224 Phase 1)
 
 `relayd` (relay daemon) is misleading now that the daemon will also own auto-spawn (`epic.added`) and auto-dissolve (`task.done`) in Phase 2 per [ADR-224](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 1 is a pure relabel — zero behavior change — landing before Phase 2 impl so the codebase doesn't carry a misleading symbol through that development window.

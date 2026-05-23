@@ -49,6 +49,7 @@ import {
   checkSubmoduleIntegrity,
   checkTeam,
   checkTmuxVersionMismatch,
+  checkVendoredTmuxBinary,
   checkTuiCommandsClaudeOverride,
   checkTuis,
   checkWebhook,
@@ -4070,6 +4071,103 @@ describe("checkTmuxVersionMismatch", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("yellow");
     expect(rows[0]?.detail).toContain("failed to run");
+  });
+});
+
+describe("checkVendoredTmuxBinary", () => {
+  function tmuxOk(stdout: string): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: ["-V"],
+      cmd: "/opt/atmux/current/bin/tmux",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  test("vendored binary absent → yellow 'vendored-tmux-missing'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => false,
+      tmux: async () => tmuxOk("tmux 3.6a"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("vendored-tmux-missing");
+    expect(rows[0]?.detail).toContain("/opt/atmux/current/bin/tmux");
+    expect(rows[0]?.hint).toContain("build:install");
+    expect(rows[0]?.hint).toContain("ATMUX_TMUX_BIN");
+  });
+
+  test("vendored present + exact pinned version 3.6a → no rows", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux 3.6a"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("vendored present + version drift (3.6b) → yellow 'version-drift'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux 3.6b"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("3.6b");
+    expect(rows[0]?.detail).toContain("3.6a");
+    expect(rows[0]?.hint).toContain("build:install");
+  });
+
+  test("vendored present + unparseable -V → yellow 'version-drift unparseable'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux next-3.7"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("unparseable");
+  });
+
+  test("vendored present + tmux -V exits non-zero → yellow 'version-drift exited'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => ({
+        exitCode: 2,
+        stdout: "",
+        stderr: "permission denied",
+        argv: ["-V"],
+        cmd: "/opt/atmux/current/bin/tmux",
+        signalled: null,
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("exited 2");
+  });
+
+  test("vendored present + spawn throws → yellow 'version-drift failed to run'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => {
+        throw new Error("ENOENT");
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("failed to run");
+  });
+
+  test("custom vendoredPath + expectedVersion respected", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: (p) => p === "/custom/tmux",
+      tmux: async () => tmuxOk("tmux 3.5"),
+      vendoredPath: "/custom/tmux",
+      expectedVersion: "3.5",
+    });
+    expect(rows).toEqual([]);
   });
 });
 
