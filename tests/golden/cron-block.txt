@@ -41,6 +41,12 @@
 #                          task.unclaimed events via subscriber_offsets
 #                          table. Defense-in-depth alongside --sweep
 #                          per ADR-202 §Amendment 2026-05-22 (II) (V).
+#   L11c orchd --sweep    always (unconditional emit per ADR-231 §D4
+#                          cron backstop). Walks kanban for eligible
+#                          auto-spawn epics + resolveSoloWorkerMembers
+#                          (handlers fast-no-op when nothing matches).
+#                          Cadence: team.autoSpawn.sweepCron override
+#                          (loose-validated schema) ?? default */5.
 #   L12 epic-merge tick    team.epicTeam !== undefined
 # --- canonical block below; lines above this fence are ignored by the test ---
 # >>> atmux:team=golden-reference — managed by atmux start; do not edit by hand
@@ -56,5 +62,6 @@
 */5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux lane-stall-tick >> /srv/golden-reference/.atmux/logs/lane-stall.log 2>&1
 */10 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux committer --sweep >> /srv/golden-reference/.atmux/logs/committer-sweep.log 2>&1
 * * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux orchd --drain >> /srv/golden-reference/.atmux/logs/orchd-drain.log 2>&1
+*/5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux orchd --sweep >> /srv/golden-reference/.atmux/logs/orchd-sweep.log 2>&1
 */5 * * * * PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin ATMUX_DIR=/srv/golden-reference/.atmux /usr/local/bin/atmux epic-merge tick >> /srv/golden-reference/.atmux/logs/epic-merge.log 2>&1
 # <<< atmux:team=golden-reference
