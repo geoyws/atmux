@@ -277,12 +277,20 @@ export function createSpawnEpicHandler(
       argv.push("--force-spawn");
     }
 
+    // spawn-epic resolves roster files relative to its `cwd`
+    // (templates/epic-rosters/<name>.json). Pass the worktree root,
+    // NOT the `.atmux/` dir — the latter resolves to
+    // `.atmux/templates/...` which doesn't exist. Caught by 2026-05-23
+    // dogfood gate (EPIC 4).
+    const worktreeRoot = deps.atmuxDir.endsWith("/.atmux")
+      ? deps.atmuxDir.slice(0, -"/.atmux".length)
+      : deps.atmuxDir;
     let result: SpawnResult;
     try {
       result = await spawnFn({
         cmd: "atmux",
         argv,
-        cwd: deps.atmuxDir,
+        cwd: worktreeRoot,
         // ADR-231 §D5 amendment 2026-05-23 (dogfood gap closure): orchd
         // is the orchestrator — its spawn-epic invocations are
         // authoritative by definition. Pass ATMUX_CALLER_SCOPE=driver
