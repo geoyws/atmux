@@ -999,6 +999,40 @@ export const TeamEpic = z
   });
 export type TeamEpic = z.infer<typeof TeamEpic>;
 
+/** `team.json::autoPush` — ADR-229 §DA-Gate-4 + §DA-Gate-7 (Phase 6
+ *  orchd auto-push opt-in config). All fields have defaults; the block
+ *  itself is `.optional()` so existing teams that never opt in carry
+ *  zero config-file footprint. `.strict()` per ADR-054 §D3 drift
+ *  detection — a typo on `enabld` / `cooldown` lands in the strict
+ *  rejection bucket rather than silently defaulting.
+ *
+ *  Default-`false` on `enabled` is deliberate per ADR-229 §DA5 "loud
+ *  opt-in" anchor: orchd-push refuses by default until the operator
+ *  flips `enabled: true` per team after dogfood. */
+export const TeamAutoPush = z
+  .object({
+    /** ADR-229 §DA-Gate-4: per-team opt-in. Default `false`. orchd-push
+     *  Gate-4 reads this; `false` → refuse + emit `epic.push-blocked`
+     *  with reason `"team.json::autoPush.enabled not set (opt-in only)"`. */
+    enabled: z.boolean().default(false),
+    /** ADR-229 §DA-Gate-3b: pre-flight typecheck command. Default
+     *  `"bun run typecheck"`. Empty string (`""`) → orchd-push Gate-3b
+     *  skips the subprocess invocation (for projects whose typecheck is
+     *  too slow OR runs in CI as the gate). Operator-overridable
+     *  per-team. */
+    typecheckCmd: z.string().default("bun run typecheck"),
+    /** ADR-229 §DA-Gate-7: in-memory cooldown window in seconds. After
+     *  a successful push to `<parentBase>`, no further push to the same
+     *  base from THIS daemon for `cooldownSec` seconds. Default 30.
+     *  Loop-prevention for cascade-drain scenarios. */
+    cooldownSec: z.number().int().positive().default(30),
+  })
+  .strict()
+  .describe(
+    "ADR-229: orchd Phase 6 auto-push opt-in config. Refuse-by-default until enabled is explicitly true.",
+  );
+export type TeamAutoPush = z.infer<typeof TeamAutoPush>;
+
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
  *  All fields optional; defaults applied at the call-site per ADR-142
  *  §Configuration. `.strict()` so typos (`windowMins` etc.) trip the
@@ -1372,6 +1406,10 @@ export const Team = z
      *        refuse (§Decision-anchor #9).
      *  Absent block keeps existing teams unchanged (additive). */
     epicTeam: TeamEpic.optional(),
+    /** ADR-229 §DA-Gate-4 + §DA-Gate-7: orchd Phase 6 auto-push opt-in
+     *  config. Absent → defaults applied (`enabled: false`, refuse-by-
+     *  default per loud-opt-in §DA5 anchor). See {@link TeamAutoPush}. */
+    autoPush: TeamAutoPush.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. Setting `0` collapses the grace to a single tick but

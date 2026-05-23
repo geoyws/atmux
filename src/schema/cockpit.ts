@@ -605,6 +605,30 @@ export const Cockpit = z
      *  the existing per-member inheritance chain (ADR-090 §Amendment
      *  2026-05-20). */
     claudeAccountPool: z.array(ClaudeAccountPoolEntry).optional(),
+    /** ADR-229 §DA-Gate-2: cockpit-scope orchd-push policy layers
+     *  (additive on top of the canonical {@link import("../core/auto-push.ts").STAGING_PATTERNS}
+     *  via `isPushAllowed(branch, allowedOverride)`). Both lists default
+     *  to empty so a missing block matches "no operator overrides".
+     *
+     *  - `refusedBases` — additional branches to refuse beyond the
+     *    canonical staging-pattern set. Use case: project-specific
+     *    `*-canary` / `*-release` patterns that aren't in
+     *    `STAGING_PATTERNS` but the operator wants to gate.
+     *  - `allowedBases` — escape-hatch overrides. Use case: `geoy.ws`
+     *    personal-infra carve-out per global CLAUDE.md push policy
+     *    (operator enrolls explicitly per §Consequences).
+     *
+     *  Precedence (per ADR-229 §DA-Gate-2): `allowedBases` > regex
+     *  match in `STAGING_PATTERNS` > `refusedBases`. Allowlist beats
+     *  both because it's the operator's explicit "yes, push this"
+     *  override. */
+    pushPolicy: z
+      .object({
+        refusedBases: z.array(z.string()).default([]),
+        allowedBases: z.array(z.string()).default([]),
+      })
+      .strict()
+      .optional(),
   })
   .passthrough();
 export type Cockpit = z.infer<typeof Cockpit>;

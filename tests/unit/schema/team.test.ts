@@ -1077,6 +1077,104 @@ describe("TeamEpic — ADR-090 §Schema valid shape + defaults", () => {
     expect(e.autoDissolve).toBe(true);
   });
 
+  // ---------- ADR-229 §DA-Gate-4 + §DA-Gate-7: autoPush sub-block ----------
+
+  test("ADR-229 autoPush — absent block keeps schema valid (additive)", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+    });
+    expect(t.autoPush).toBeUndefined();
+  });
+
+  test("ADR-229 autoPush — empty {} applies all three defaults (loud-opt-in §DA5)", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+      autoPush: {},
+    });
+    expect(t.autoPush).toEqual({
+      enabled: false,
+      typecheckCmd: "bun run typecheck",
+      cooldownSec: 30,
+    });
+  });
+
+  test("ADR-229 autoPush — explicit enabled: true honored", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+      autoPush: { enabled: true },
+    });
+    expect(t.autoPush?.enabled).toBe(true);
+    expect(t.autoPush?.cooldownSec).toBe(30); // default still applies
+  });
+
+  test("ADR-229 autoPush — cooldownSec custom value honored", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+      autoPush: { cooldownSec: 60 },
+    });
+    expect(t.autoPush?.cooldownSec).toBe(60);
+  });
+
+  test("ADR-229 autoPush — typecheckCmd empty string is honored (Gate-3b skip)", () => {
+    const t = Team.parse({
+      name: "x",
+      members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+      autoPush: { typecheckCmd: "" },
+    });
+    expect(t.autoPush?.typecheckCmd).toBe("");
+  });
+
+  test("ADR-229 autoPush — non-positive cooldownSec refused", () => {
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { cooldownSec: 0 },
+      }),
+    ).toThrow();
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { cooldownSec: -5 },
+      }),
+    ).toThrow();
+  });
+
+  test("ADR-229 autoPush — non-integer cooldownSec refused", () => {
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { cooldownSec: 30.5 },
+      }),
+    ).toThrow();
+  });
+
+  test("ADR-229 autoPush — non-boolean enabled refused", () => {
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { enabled: "true" },
+      }),
+    ).toThrow();
+  });
+
+  test("ADR-229 autoPush — strict mode rejects unknown keys (drift surface)", () => {
+    expect(() =>
+      Team.parse({
+        name: "x",
+        members: [{ name: "fe-1", role: "member", lane: "fe", tui: "claude" }],
+        autoPush: { enabld: true }, // typo
+      }),
+    ).toThrow();
+  });
+
   test("autoDissolve rejects non-boolean (strict drift surface)", () => {
     expect(() =>
       TeamEpic.parse({
