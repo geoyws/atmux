@@ -50,8 +50,10 @@ import {
   saveOffset as saveOffsetImport,
   watchEvents as watchEventsImport,
 } from "../abstractions/events.ts";
-import { bootHonker as bootHonkerImport, getHonkerState as honkerStateImport } from "../abstractions/honker.ts";
-import { runLaneTick as runLaneTickImport } from "./lane-tick.ts";
+import {
+  bootHonker as bootHonkerImport,
+  getHonkerState as honkerStateImport,
+} from "../abstractions/honker.ts";
 import {
   type NativeListenerHandle,
   resolveDefaultListenerBinary,
@@ -73,11 +75,14 @@ import {
 } from "../core/gitter-consumer.ts";
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
+import { bootstrapOrchd as bootstrapOrchdImport } from "../core/orchd-bootstrap.ts";
+import { ORCHD_SUBSCRIPTIONS as ORCHD_SUBSCRIPTIONS_IMPORT } from "../core/orchd-registry.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import type { Team as TeamShape } from "../schema/team.ts";
 import { UsageError } from "../errors.ts";
+import type { Team as TeamShape } from "../schema/team.ts";
+import { runLaneTick as runLaneTickImport } from "./lane-tick.ts";
 
 const USAGE =
   "atmux committer <--sweep|--daemon|--drain> [--team-dir <path>] [--once] [--max-events N]";
@@ -309,13 +314,13 @@ export async function committerSweepVerb(
     // stub stays available as an explicit `opts.queueMergeAttempt`
     // injection (test seam only).
     // ADR-134 T3+T4 (t-2b7572d7): resolve member worktree from
-     // `<base>-<member>` branch via the team's worktreeIsolation
-     // convention. Mirrors `src/verbs/status.ts::resolveMemberWorktree`
-     // but takes the branch directly; the convention is `<teamRoot>/
-     // .atmux/worktrees/<member>` (or `team.worktreeRoot/<member>`).
-     // Returns null when worktreeIsolation is disabled — the
-     // dispatcher's rebase path treats null as "missing worktree" and
-     // transitions to terminal conflict.
+    // `<base>-<member>` branch via the team's worktreeIsolation
+    // convention. Mirrors `src/verbs/status.ts::resolveMemberWorktree`
+    // but takes the branch directly; the convention is `<teamRoot>/
+    // .atmux/worktrees/<member>` (or `team.worktreeRoot/<member>`).
+    // Returns null when worktreeIsolation is disabled — the
+    // dispatcher's rebase path treats null as "missing worktree" and
+    // transitions to terminal conflict.
     const worktreeRoot = team.worktreeRoot ?? ".atmux/worktrees";
     const resolveMemberWorktreePath = async (memberBranch: string): Promise<string | null> => {
       if (team.worktreeIsolation !== true) return null;
@@ -411,8 +416,48 @@ export async function committerDrainVerb(
       `committer --drain: task.unclaimed drain threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
     );
   }
+  // ADR-224 §D6 + ADR-226/227/229 wire-up (driver P0 step 3/5
+  // 2026-05-23): drain ORCHD_SUBSCRIPTIONS too so the drain path
+  // covers both hardcoded consumers (above) AND every registry-
+  // sourced handler. Driver-preferred over deploying `--start` mode
+  // (the latter requires the `__orchd__` window per ADR-224 §D6, gated
+  // on team restart). Each subscription is consumed under its own
+  // `consumerId` → independent offset → at-least-once recovery; a
+  // throw in one handler does NOT halt sibling subs (`continue`
+  // per-iteration; the wider try/catch covers iterator-itself faults).
+  //
+  // Idempotent `bootstrapOrchd` call: drain is one-shot per process,
+  // so the registry starts empty each invocation. Calling bootstrap
+  // here populates it for the iterator below; if a caller already
+  // populated the registry (tests, future `--start` path), the
+  // idempotency guard inside `registerOrchdSubscription` no-ops the
+  // duplicate consumerIds.
+  bootstrapOrchdImport({ db: ctx.db });
+  let orchdProcessed = 0;
+  let orchdErrors = 0;
+  try {
+    const { withIdempotency } = await import("../abstractions/events.ts");
+    for (const sub of ORCHD_SUBSCRIPTIONS_IMPORT) {
+      try {
+        await withIdempotency(ctx.db, sub.consumerId, { topics: [sub.topic] }, async (event) => {
+          if (event.topic !== sub.topic) return;
+          await sub.handler(event);
+          orchdProcessed += 1;
+        });
+      } catch (e) {
+        orchdErrors += 1;
+        ctx.logger.log(
+          `committer --drain: orchd-sub ${sub.consumerId} (topic=${sub.topic}) threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
+        );
+      }
+    }
+  } catch (e) {
+    ctx.logger.log(
+      `committer --drain: orchd subscriptions iterator threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
+    );
+  }
   ctx.logger.log(
-    `committer --drain: team='${ctx.team.name}' done=${gitterResult.processed} escalated=${gitterResult.escalated} unclaimed=${unclaimedProcessed}`,
+    `committer --drain: team='${ctx.team.name}' done=${gitterResult.processed} escalated=${gitterResult.escalated} unclaimed=${unclaimedProcessed} orchd-subs=${ORCHD_SUBSCRIPTIONS_IMPORT.length} orchd-processed=${orchdProcessed} orchd-errors=${orchdErrors}`,
   );
   ctx.closeDb(ctx.db);
   return 0;
@@ -567,7 +612,9 @@ export async function buildEventDrivenContext(
   baseBranch: string;
   db: Database;
   closeDb: (db: Database) => void;
-  handler: (event: import("../schema/events.ts").TaskDonePayload) => Promise<import("../core/gitter-consumer.ts").HandlerOutcome>;
+  handler: (
+    event: import("../schema/events.ts").TaskDonePayload,
+  ) => Promise<import("../core/gitter-consumer.ts").HandlerOutcome>;
   logger: Logger;
   consumerLogger: import("../core/gitter-consumer.ts").Logger;
 }> {

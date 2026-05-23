@@ -58,6 +58,9 @@ The v1 topic set, organized by domain. **Each entry has a payload schema in D3.*
 - `epic.push-blocked` — orchd-push handler's pre-flight gate refused (Gate-{2,3a,3b,4,5,7} per ADR-229 §DA-Gate-N). Payload: `{epicId, base, gateBlocked: "1"|"2"|"3a"|"3b"|"4"|"5"|"7", reason, blockedAtSec}`. Per ADR-229 §D3. Operator-observable; no v1 consumer.
 - `epic.push-conflict` — orchd-push handler's Gate-1 upstream-advanced refusal (distinct from `epic.push-blocked` for actionable rebase/pull metadata + Discord template per ADR-219). Payload: `{epicId, base, ahead, behind, divergenceSha?, blockedAtSec}`. Per ADR-229 §D3.
 - `epic.spawn-blocked` — `spawn-epic` refused due to pool exhaustion (ADR-199 D3) — cockpit-scope
+- `epic.spawn-queued` — `spawn-epic` deferred via the per-team SQLite queue because the host was over pressure threshold. Payload: `{queueId, epicId, queuedBy, queuedAtSec, depth}`. Per ADR-228 §D5 (Phase 5b, 2026-05-23). Operator-observable; surfaces in cockpit-mirror Discord feed at depth thresholds {3, 5, 10} per ADR-219 §queue-grew template.
+- `epic.spawn-abandoned` — orchd's pressure-monitor drain attempts exhausted `maxAttempts` for a queued spawn request. Payload: `{queueId, epicId, attempts, lastFailureReason}`. Per ADR-228 §D5. Operator must inspect manually (no v1 consumer); row persists in `spawn_queue` table for audit.
+- `epic.added` — a new epic-team was added (direct spawn OR successful drain by orchd's pressure-monitor). Payload: `{epicId, addedAtSec}`. Per ADR-228 §D5; sibling EPIC `e-60e16169` Phase 2 auto-spawn consumes this for downstream automation.
 
 #### Commit lifecycle (team-scope)
 - `commit.landed` — post-commit hook fired (D5 hook contract)

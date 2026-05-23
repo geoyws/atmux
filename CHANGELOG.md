@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — orchd Phase 3-5 lifecycle (EPIC `e-a946af69` close-out)
+
+End-to-end automation of epic-team lifecycle via the orchd event-
+router substrate. Three subscribers + spawn-queue land together,
+flipping atmux's coordination spine from cron-polled to event-driven:
+
+- **Phase 3 ([ADR-226](docs/adr/226-orchd-auto-merge-subscriber.md))** — `orchd-merge` consumer: `task.done` events fire `performEpicMerge` once an epic's last open task lands. Emits `epic.merged` on success or `epic.merge-blocked` on dispatcher gate-held / conflict. `ATMUX_HONKER` kill-switch + at-least-once `withIdempotency` wrapper.
+- **Phase 4 ([ADR-227](docs/adr/227-orchd-auto-dissolve-subscriber.md))** — `orchd-dissolve` consumer: `epic.pushed` events fire `dissolve-epic` (cage teardown + branch prune + cockpit registry cleanup). Operator opt-out via `team.json::epicTeam.autoDissolve=false`. Trigger flipped from the original `epic.merged` to `epic.pushed` per ADR-227 §Amendment 2026-05-23 — prevents Phase 4 dissolving the cage before Phase 6 pushes the merge commit (forensics-preserving).
+- **Phase 5a ([ADR-228 §D2](docs/adr/228-orchd-spawn-queue-pressure-monitor.md))** — `spawn_queue` SQLite table (v13→v14 migration) + `SpawnQueueRow` Zod schema + `SpawnQueueRepo` (CRUD + `dequeueHead` under `BEGIN IMMEDIATE`).
+- **Phase 5b ([ADR-228 §D1 / §D4 / §D7](docs/adr/228-orchd-spawn-queue-pressure-monitor.md))** — `src/core/spawn-queue.ts` exports `admit` / `enqueueIfPressured` / `pressureMonitorTick` / `resolveSpawnQueueLimits`. `spawn-epic` verb refuses → enqueues by default (per §OQ3 HIGH-REV `queue-default` decision); `--no-queue` flag preserves the original throw-on-pressure semantics for one-shot scripts. orchd `--start` installs a `setInterval` drain loop firing every `pressureCheckIntervalSec` (default 60s; tunable via `ATMUX_SPAWN_QUEUE_TICK_SEC`).
+- **Phase 6 ([ADR-229](docs/adr/229-orchd-auto-push-subscriber.md))** — `orchd-push` consumer: `epic.merged` events fire `git push origin <parentBase>` through 7 safety gates (kill-switch, opt-in, staging-refuse, cooldown, working-tree-clean, force-push-refusal, typecheck) in cheapest-first fire order. Emits `epic.pushed` / `epic.push-blocked` / `epic.push-conflict`.
+- **Wire-up ([ADR-224 §D6](docs/adr/224-orchd-multi-topic-event-router.md))** — `src/core/orchd-bootstrap.ts::bootstrapOrchd` registers all three subscribers against `ORCHD_SUBSCRIPTIONS`; `atmux orchd --drain` iterates the registry alongside the existing hardcoded `gitter` + `lane-router` consumers (single dispatch path per the driver P0 step 3/5 directive).
+
+Topic taxonomy ([ADR-203 §D2](docs/adr/203-event-topic-taxonomy.md)) grew by 3 entries (47 → 50 in `TOPICS`): `epic.spawn-queued`, `epic.spawn-abandoned`, `epic.added`. Discriminated union + Zod payloads in `src/schema/events.ts`.
+
+End-to-end dogfood (lifecycle + pressure-throttle) requires sibling EPIC `e-60e16169`'s dispatcher injection before any handler does work at the verb layer — until then, the registered handlers ship with `skipped-not-mine` stubs that are safe no-ops under at-least-once delivery. Run protocol for the post-`e-60e16169` operator-driven dogfood lives at [ADR-228 §Amendment 2026-05-23-rev2](docs/adr/228-orchd-spawn-queue-pressure-monitor.md).
+
 ### ✨ Added — `atmux topo` fleet observability + reap cascade (ADR-222 + ADR-223)
 
 One verb replaces today's N × N manual cleanup loop: enumerates the

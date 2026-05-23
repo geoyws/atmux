@@ -308,6 +308,56 @@ export const InternalHonkerFallbackPayload = z
   })
   .passthrough();
 
+/**
+ * `epic.spawn-queued` — orchd queued a spawn request because the host
+ * was over pressure threshold. ADR-228 §D5. Operator-observable;
+ * surfaces in cockpit-mirror at depth thresholds {3, 5, 10} per
+ * ADR-219 §queue-grew template (mirrors ADR-184 cadence).
+ */
+export const EpicSpawnQueuedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.spawn-queued"),
+    queueId: z.string(),
+    epicId: z.string(),
+    queuedBy: z.string(),
+    queuedAtSec: z.number(),
+    depth: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
+/**
+ * `epic.spawn-abandoned` — orchd's drain attempts exhausted
+ * `maxAttempts` for a queued spawn request. ADR-228 §D5. Operator
+ * must inspect manually (no automated consumer in v1).
+ */
+export const EpicSpawnAbandonedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.spawn-abandoned"),
+    queueId: z.string(),
+    epicId: z.string(),
+    attempts: z.number().int().nonnegative(),
+    lastFailureReason: z.string(),
+  })
+  .passthrough();
+
+/**
+ * `epic.added` — a new epic-team was added (either via direct spawn
+ * OR via spawn-queue drain). Sibling EPIC `e-60e16169` Phase 2 auto-
+ * spawn consumes this for downstream automation. ADR-228 §D5 added
+ * this topic to the v1 closed set alongside `epic.spawn-queued` /
+ * `epic.spawn-abandoned`.
+ */
+export const EpicAddedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.added"),
+    epicId: z.string(),
+    addedAtSec: z.number(),
+  })
+  .passthrough();
+
 // ---------- Discriminated union ----------
 
 /**
@@ -333,6 +383,9 @@ export const EventPayload = z.discriminatedUnion("topic", [
   EpicPushConflictPayload,
   EpicDissolvedPayload,
   EpicDissolveBlockedPayload,
+  EpicSpawnQueuedPayload,
+  EpicSpawnAbandonedPayload,
+  EpicAddedPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -352,6 +405,9 @@ export type EpicPushBlockedPayload = z.infer<typeof EpicPushBlockedPayload>;
 export type EpicPushConflictPayload = z.infer<typeof EpicPushConflictPayload>;
 export type EpicDissolvedPayload = z.infer<typeof EpicDissolvedPayload>;
 export type EpicDissolveBlockedPayload = z.infer<typeof EpicDissolveBlockedPayload>;
+export type EpicSpawnQueuedPayload = z.infer<typeof EpicSpawnQueuedPayload>;
+export type EpicSpawnAbandonedPayload = z.infer<typeof EpicSpawnAbandonedPayload>;
+export type EpicAddedPayload = z.infer<typeof EpicAddedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -394,6 +450,14 @@ export const TOPICS = [
   "epic.push-conflict",
   "epic.dissolve-blocked",
   "epic.spawn-blocked",
+  // ADR-228 §D5 (Phase 5b spawn-queue): refuse→enqueue + drain-loop
+  // lifecycle. `epic.spawn-queued` fires on admission; `epic.spawn-
+  // abandoned` fires when attempts hit `maxAttempts`; `epic.added`
+  // fires on successful drain (sibling EPIC e-60e16169 auto-spawn
+  // consumer).
+  "epic.spawn-queued",
+  "epic.spawn-abandoned",
+  "epic.added",
   // ADR-225 amendment per ADR-203 §D2 closed-set rule: dep-graph event
   // (`epic.unblocked`) + operator-kick-off event (`epic.ready`). Both
   // team-scope; cockpit-mirror joins them with the parent's epic row
