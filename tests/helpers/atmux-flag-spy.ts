@@ -41,12 +41,15 @@ export interface FlagCall {
 }
 
 /** Argument shape passed by the production handler — mirrors the
- *  `atmux flag` CLI surface so the spy can be a drop-in seam. */
+ *  `atmux flag` CLI surface so the spy can be a drop-in seam. Optional
+ *  fields declare `| undefined` explicitly to satisfy
+ *  `exactOptionalPropertyTypes: true` at call sites that parse CLI argv
+ *  + propagate possibly-undefined values straight through. */
 export interface FlagAddArgs {
   readonly message: string;
-  readonly severity?: FlagSeverity;
-  readonly needs?: FlagNeeds;
-  readonly taskId?: string;
+  readonly severity?: FlagSeverity | undefined;
+  readonly needs?: FlagNeeds | undefined;
+  readonly taskId?: string | undefined;
 }
 
 /** The spy. Construct with {@link createFlagSpy}. */
