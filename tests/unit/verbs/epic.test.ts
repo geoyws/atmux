@@ -565,3 +565,151 @@ describe("epic verb — ADR-225 dispatch", () => {
     await expect(epic(["deps", "e-ghost", "--team-dir", teamDir])).rejects.toThrow(ConfigError);
   });
 });
+
+// ---------- Pure: parseAddArgs — ADR-231 §D3 (auto-spawn flags) ----------
+
+describe("epic parseAddArgs — auto-spawn flags (ADR-231 §D3)", () => {
+  test("--auto-spawn alone → autoSpawn={enabled:true}", () => {
+    const a = parseAddArgs(["t", "--auto-spawn"]);
+    expect(a.autoSpawn).toEqual({ enabled: true });
+  });
+
+  test("--no-auto-spawn alone → autoSpawn={enabled:false}", () => {
+    const a = parseAddArgs(["t", "--no-auto-spawn"]);
+    expect(a.autoSpawn).toEqual({ enabled: false });
+  });
+
+  test("--auto-spawn --roster solo → autoSpawn={enabled:true,roster:'solo'}", () => {
+    const a = parseAddArgs(["t", "--auto-spawn", "--roster", "solo"]);
+    expect(a.autoSpawn).toEqual({ enabled: true, roster: "solo" });
+  });
+
+  test("--auto-spawn --force-spawn → autoSpawn={enabled:true,forceSpawn:true}", () => {
+    const a = parseAddArgs(["t", "--auto-spawn", "--force-spawn"]);
+    expect(a.autoSpawn).toEqual({ enabled: true, forceSpawn: true });
+  });
+
+  test("combo: --auto-spawn --roster solo --force-spawn → all three set", () => {
+    const a = parseAddArgs(["t", "--auto-spawn", "--roster", "solo", "--force-spawn"]);
+    expect(a.autoSpawn).toEqual({
+      enabled: true,
+      roster: "solo",
+      forceSpawn: true,
+    });
+  });
+
+  test("no flags → autoSpawn undefined (falls back to per-team defaults match OR off)", () => {
+    const a = parseAddArgs(["t"]);
+    expect(a.autoSpawn).toBeUndefined();
+  });
+
+  test("mutex: --no-auto-spawn + --force-spawn → UsageError", () => {
+    expect(() => parseAddArgs(["t", "--no-auto-spawn", "--force-spawn"])).toThrow(
+      /--no-auto-spawn cannot combine with --force-spawn/,
+    );
+  });
+
+  test("mutex: --roster without --auto-spawn → UsageError (helpful message)", () => {
+    expect(() => parseAddArgs(["t", "--roster", "solo"])).toThrow(
+      /--roster requires --auto-spawn/,
+    );
+  });
+
+  test("mutex: --force-spawn without --auto-spawn → UsageError", () => {
+    expect(() => parseAddArgs(["t", "--force-spawn"])).toThrow(/--force-spawn requires --auto-spawn/);
+  });
+
+  test("mutex: --no-auto-spawn + --roster → UsageError (--roster requires --auto-spawn-enable)", () => {
+    // --no-auto-spawn sets autoSpawnFlag='disable', not 'enable',
+    // so the --roster mutex check fires.
+    expect(() => parseAddArgs(["t", "--no-auto-spawn", "--roster", "solo"])).toThrow(
+      /--roster requires --auto-spawn/,
+    );
+  });
+
+  test("--roster without a value → UsageError", () => {
+    expect(() => parseAddArgs(["t", "--auto-spawn", "--roster"])).toThrow(
+      /--roster requires a value/,
+    );
+  });
+
+  test("--roster with empty value → UsageError (treated as missing)", () => {
+    expect(() => parseAddArgs(["t", "--auto-spawn", "--roster", ""])).toThrow(
+      /--roster requires a value/,
+    );
+  });
+});
+
+// ---------- IO: epic verb dispatch — ADR-231 §D3 round-trip ----------
+
+describe("epic verb — ADR-231 §D3 auto-spawn round-trip", () => {
+  test("`epic add --auto-spawn --roster solo` writes extra.autoSpawn", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic([
+        "add",
+        "--team-dir",
+        teamDir,
+        "Z",
+        "--auto-spawn",
+        "--roster",
+        "solo",
+      ]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    expect(z?.extra?.autoSpawn).toEqual({ enabled: true, roster: "solo" });
+  });
+
+  test("`epic add --no-auto-spawn` writes extra.autoSpawn={enabled:false}", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z", "--no-auto-spawn"]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    expect(z?.extra?.autoSpawn).toEqual({ enabled: false });
+  });
+
+  test("`epic add` (no auto-spawn flags) → no autoSpawn key in extra", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z"]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    // Either extra absent OR extra present without autoSpawn — both
+    // valid; the meaningful assertion is "no autoSpawn config" so
+    // per-team defaults (T-S1.3) drive the decision downstream.
+    expect(z?.extra?.autoSpawn).toBeUndefined();
+  });
+
+  test("`epic add --auto-spawn --roster solo --force-spawn` writes full triple", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic([
+        "add",
+        "--team-dir",
+        teamDir,
+        "Z",
+        "--auto-spawn",
+        "--roster",
+        "solo",
+        "--force-spawn",
+      ]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    expect(z?.extra?.autoSpawn).toEqual({
+      enabled: true,
+      roster: "solo",
+      forceSpawn: true,
+    });
+  });
+
+  test("`epic add --no-auto-spawn --force-spawn` rejects with mutex UsageError before any DB write", async () => {
+    const before = await listEpics(atmuxDir);
+    await expect(
+      epic(["add", "--team-dir", teamDir, "Z", "--no-auto-spawn", "--force-spawn"]),
+    ).rejects.toThrow(/--no-auto-spawn cannot combine with --force-spawn/);
+    // Confirm no partial row landed.
+    const after = await listEpics(atmuxDir);
+    expect(after.length).toBe(before.length);
+  });
+});

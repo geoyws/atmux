@@ -96,6 +96,18 @@ export interface AddEpicOpts {
    *  self-dep / non-existent / cycle all refuse with UsageError before
    *  the row lands. Defaults to `[]` (no deps). */
   dependsOn?: string[];
+  /** ADR-231 §D3: per-epic orchd auto-spawn config. Written into the
+   *  inserted row's `extra.autoSpawn` slot per the schema shape (Zod
+   *  `KanbanEpic.extra.autoSpawn`, t-7-0ad1dfe3). Absent → no
+   *  `autoSpawn` key in `extra` (epic falls back to per-team defaults
+   *  match T-S1.3 OR off). Caller (verb-layer parseAddArgs) does the
+   *  flag mutex enforcement so the operator sees parse errors before
+   *  the DB write. */
+  autoSpawn?: {
+    enabled: boolean;
+    roster?: string;
+    forceSpawn?: boolean;
+  };
 }
 
 /** Append an epic to the kanban; return its generated id. Mirrors bash
@@ -135,6 +147,19 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
         dependsOn: proposedDeps,
         isReady: false,
       };
+      // ADR-231 §D3 — fold per-epic autoSpawn config into the typed
+      // `extra` slot (Zod shape from t-7-0ad1dfe3). KanbanEpic's
+      // `.extra` round-trips through the JSON-extra spillover bag in
+      // kanban-repo so unknown sibling keys (future per-epic config
+      // classes) stay forward-compatible.
+      if (opts.autoSpawn !== undefined) {
+        const autoSpawn: NonNullable<NonNullable<KanbanEpic["extra"]>["autoSpawn"]> = {
+          enabled: opts.autoSpawn.enabled,
+        };
+        if (opts.autoSpawn.roster !== undefined) autoSpawn.roster = opts.autoSpawn.roster;
+        if (opts.autoSpawn.forceSpawn === true) autoSpawn.forceSpawn = true;
+        epic.extra = { autoSpawn };
+      }
       repo.upsertEpic(epic);
       assignedId = id;
     });

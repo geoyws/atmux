@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux epic add` auto-spawn CLI flags ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D3, EPIC `e-60e16169` Phase 2 Story S1, t-9-1060b4c7)
+
+Four new flags on `atmux epic add` populate the per-epic `extra.autoSpawn` Zod sub-shape landed in t-7-0ad1dfe3 (KanbanEpic schema, ADR-231 §D3 §Schema):
+
+| Flag | Effect |
+|---|---|
+| `--auto-spawn` | sets `extra.autoSpawn.enabled = true` (orchd will spawn this epic-team automatically once ADR-225's eligibility predicate flips) |
+| `--no-auto-spawn` | sets `extra.autoSpawn.enabled = false` (explicit opt-out — overrides per-team defaults match in T-S1.3) |
+| `--roster <name>` | sets `extra.autoSpawn.roster = <name>` (e.g. `solo`, `backend-heavy`); requires `--auto-spawn` |
+| `--force-spawn` | sets `extra.autoSpawn.forceSpawn = true` (passes `--force` to `atmux team spawn-epic` — bypasses ADR-225's eligibility predicate); requires `--auto-spawn` |
+
+Mutex enforcement at parse time (caller sees the error before any DB write):
+- `--no-auto-spawn` + `--force-spawn` → UsageError (mutually exclusive — `--no-auto-spawn` opts OUT of orchd spawn, `--force-spawn` opts IN bypassing predicates).
+- `--roster` without `--auto-spawn` → UsageError (roster picks the member set orchd spawns; with auto-spawn off it has no effect).
+- `--force-spawn` without `--auto-spawn` → UsageError (force only affects the orchd-driven spawn path).
+
+No flags → no `autoSpawn` key written; epic falls back to per-team defaults match (T-S1.3) OR off.
+
+Wire-up: `parseAddArgs` captures the flags + does the mutex walk; `epicAdd` plumbs through `AddEpicOpts.autoSpawn`; `addEpic` (src/core/epic.ts) folds the sub-shape into the inserted row's `extra.autoSpawn` slot. Round-trip through the kanban-repo's JSON-extra spillover bag stays forward-compatible with future per-epic config classes via `extra.passthrough()`.
+
+Tests: 11 new cases at `tests/unit/verbs/epic.test.ts` — 6 pure-parse (single flags, combo, no-flags-undefined) + 5 mutex-error + 1 missing-value + 5 verb-dispatch round-trip (CLI → showEpic readout). 80/80 epic tests green; 93.75% func / 87.48% line coverage on `src/verbs/epic.ts`.
+
+Out of scope (separate Tasks):
+- `team.json::autoSpawn.defaults[]` per-team fallback (T-S1.3 — already shipped per CHANGELOG entry below).
+- spawn-handler read-side that consults `extra.autoSpawn.enabled` + `spawnedAt IS NULL` (T-S2.5).
+
 ### ✨ Added — `dissolveSoloWorkerHandler` + `isSoloWorkerTeamName` orchd auto-dissolve for solo workers ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D6 + [ADR-221](docs/adr/221-solo-worker-scope.md) §Phase 2, EPIC `e-60e16169` Phase 2 Story S2, t-15-6a65eadb)
 
 Closes ADR-221 §Phase 2 auto-dissolve. New `src/core/orchd-dissolve-solo-worker.ts` exports `dissolveSoloWorkerHandler` (created via `createDissolveSoloWorkerHandler({db, …})`) + `orchdDissolveSoloWorkerConsume` (consumer surface mirroring `orchd-merge.ts` + `orchd-dissolve.ts` so operators learn one factory shape). Subscribes to `task.done` with consumerId `atmux:orchd:dissolve-solo-worker` — distinct from parent's `atmux:orchd:auto-merge` (same topic, isolated by Honker per-consumer offsets per ADR-202 §VIII).

@@ -29,7 +29,9 @@ import type { KanbanEpic } from "../schema/kanban.ts";
 
 const USAGE_HINT_ROOT =
   "atmux epic <add|list|show|advance|ready|unready|set-depends-on|deps> [args]";
-const USAGE_ADD = "atmux epic add <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y]";
+const USAGE_ADD =
+  "atmux epic add <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y] " +
+  "[--auto-spawn | --no-auto-spawn] [--roster <name>] [--force-spawn]";
 const USAGE_LIST = "atmux epic list [--status S] [--json]";
 const USAGE_SHOW = "atmux epic show <id> [--json]";
 const USAGE_ADV = "atmux epic advance <id> [--to <state>]";
@@ -90,6 +92,10 @@ async function epicAdd(argv: ReadonlyArray<string>): Promise<number> {
   // ADR-225: pass the comma-split dependsOn list through to the core
   // validator (self / non-existent / cycle refused before insert).
   if (parsed.dependsOn !== undefined) opts.dependsOn = parsed.dependsOn;
+  // ADR-231 §D3: per-epic orchd auto-spawn config. core/epic.ts
+  // writes this into the inserted row's `extra.autoSpawn` slot per
+  // the schema shape landed in t-7-0ad1dfe3.
+  if (parsed.autoSpawn !== undefined) opts.autoSpawn = parsed.autoSpawn;
   const id = await addEpic(atmuxDir, opts);
   process.stderr.write(`epic: added ${id} — ${parsed.title}\n`);
   process.stdout.write(`${id}\n`);
@@ -440,6 +446,15 @@ interface ParsedAddArgs {
   teamDir?: string;
   // ADR-225: comma-separated dep list, empty/absent → no deps.
   dependsOn?: string[];
+  // ADR-231 §D3: per-epic orchd auto-spawn config (resolved at parse
+  // time; mutex'd at parse-error so the caller gets the helpful
+  // message before any DB work). Absent → no autoSpawn key written
+  // (epic falls back to per-team defaults match OR off).
+  autoSpawn?: {
+    enabled: boolean;
+    roster?: string;
+    forceSpawn?: boolean;
+  };
 }
 
 export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
@@ -448,6 +463,12 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   let driverRef: string | undefined;
   let teamDir: string | undefined;
   let dependsOn: string[] | undefined;
+  // ADR-231 §D3 flags — captured at parse time, mutex-checked after
+  // the walk completes (an earlier --auto-spawn doesn't know whether
+  // --no-auto-spawn will appear later).
+  let autoSpawnFlag: "enable" | "disable" | undefined;
+  let rosterFlag: string | undefined;
+  let forceSpawnFlag = false;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -495,6 +516,34 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
       i += 2;
       continue;
     }
+    // ADR-231 §D3 — orchd auto-spawn per-epic config.
+    if (a === "--auto-spawn") {
+      autoSpawnFlag = "enable";
+      i += 1;
+      continue;
+    }
+    if (a === "--no-auto-spawn") {
+      autoSpawnFlag = "disable";
+      i += 1;
+      continue;
+    }
+    if (a === "--roster") {
+      const v = argv[i + 1];
+      if (v === undefined || v.length === 0) {
+        throw new UsageError({
+          what: "epic add: --roster requires a value (e.g. 'solo', 'backend-heavy')",
+          hint: USAGE_ADD,
+        });
+      }
+      rosterFlag = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--force-spawn") {
+      forceSpawnFlag = true;
+      i += 1;
+      continue;
+    }
     if (a === "--") {
       title = argv.slice(i + 1).join(" ");
       break;
@@ -508,11 +557,45 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   if (title.length === 0) {
     throw new UsageError({ what: "epic add: <title> required", hint: USAGE_ADD });
   }
+
+  // ADR-231 §D3 — flag mutex enforcement (parse-time so the caller
+  // sees the error before any DB work).
+  if (autoSpawnFlag === "disable" && forceSpawnFlag) {
+    throw new UsageError({
+      what: "epic add: --no-auto-spawn cannot combine with --force-spawn (mutually exclusive — --no-auto-spawn opts OUT of orchd spawn, --force-spawn opts IN bypassing the eligibility predicate)",
+      hint: USAGE_ADD,
+    });
+  }
+  if (autoSpawnFlag !== "enable" && rosterFlag !== undefined) {
+    throw new UsageError({
+      what: "epic add: --roster requires --auto-spawn (the roster picks which member set orchd spawns; with auto-spawn off it has no effect)",
+      hint: USAGE_ADD,
+    });
+  }
+  if (autoSpawnFlag !== "enable" && forceSpawnFlag) {
+    throw new UsageError({
+      what: "epic add: --force-spawn requires --auto-spawn (force only affects the orchd-driven spawn path; with auto-spawn off it has no effect)",
+      hint: USAGE_ADD,
+    });
+  }
+
   const out: ParsedAddArgs = { title };
   if (body !== undefined) out.body = body;
   if (driverRef !== undefined) out.driverRef = driverRef;
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (dependsOn !== undefined) out.dependsOn = dependsOn;
+  // ADR-231 §D3 — assemble autoSpawn sub-shape only when the operator
+  // explicitly flagged one of the auto-spawn semantics. No flag →
+  // absent autoSpawn key → caller falls back to per-team defaults
+  // match (T-S1.3) OR off.
+  if (autoSpawnFlag === "enable") {
+    const autoSpawn: NonNullable<ParsedAddArgs["autoSpawn"]> = { enabled: true };
+    if (rosterFlag !== undefined) autoSpawn.roster = rosterFlag;
+    if (forceSpawnFlag) autoSpawn.forceSpawn = true;
+    out.autoSpawn = autoSpawn;
+  } else if (autoSpawnFlag === "disable") {
+    out.autoSpawn = { enabled: false };
+  }
   return out;
 }
 
