@@ -253,6 +253,81 @@ describe("KanbanEpic", () => {
     expect(() => KanbanEpic.parse({ id: "e-225e", isReady: "yes" })).toThrow();
     expect(() => KanbanEpic.parse({ id: "e-225f", isReady: 1 })).toThrow();
   });
+
+  // ADR-231 §D2 + §D3 §Schema (sqlite-migrations v15→v16,
+  // t-6-8db78adf migration + t-7-0ad1dfe3 Zod): spawnedAt + extra.autoSpawn.
+  test("extra.autoSpawn: full shape parses + round-trips", () => {
+    const parsed = KanbanEpic.parse({
+      id: "e-231a",
+      extra: {
+        autoSpawn: {
+          enabled: true,
+          roster: "backend-heavy",
+          forceSpawn: false,
+        },
+      },
+    });
+    expect(parsed.extra?.autoSpawn?.enabled).toBe(true);
+    expect(parsed.extra?.autoSpawn?.roster).toBe("backend-heavy");
+    expect(parsed.extra?.autoSpawn?.forceSpawn).toBe(false);
+  });
+
+  test("extra.autoSpawn: minimal (just enabled) parses; optional fields absent", () => {
+    const parsed = KanbanEpic.parse({
+      id: "e-231b",
+      extra: { autoSpawn: { enabled: false } },
+    });
+    expect(parsed.extra?.autoSpawn?.enabled).toBe(false);
+    expect(parsed.extra?.autoSpawn?.roster).toBeUndefined();
+    expect(parsed.extra?.autoSpawn?.forceSpawn).toBeUndefined();
+  });
+
+  test("extra: absent autoSpawn handled gracefully (extra itself optional)", () => {
+    const parsedNoExtra = KanbanEpic.parse({ id: "e-231c" });
+    expect(parsedNoExtra.extra).toBeUndefined();
+    const parsedEmptyExtra = KanbanEpic.parse({ id: "e-231d", extra: {} });
+    expect(parsedEmptyExtra.extra?.autoSpawn).toBeUndefined();
+  });
+
+  test("extra: passthrough preserves unknown sibling keys (forward-compat for future per-epic config)", () => {
+    const parsed = KanbanEpic.parse({
+      id: "e-231e",
+      extra: {
+        autoSpawn: { enabled: true },
+        futureFeatureBag: { foo: "bar" },
+      },
+    }) as unknown as { extra: { futureFeatureBag: { foo: string } } };
+    expect(parsed.extra.futureFeatureBag.foo).toBe("bar");
+  });
+
+  test("extra.autoSpawn.enabled: rejects non-boolean", () => {
+    expect(() =>
+      KanbanEpic.parse({
+        id: "e-231f",
+        extra: { autoSpawn: { enabled: "true" } },
+      }),
+    ).toThrow();
+    expect(() =>
+      KanbanEpic.parse({
+        id: "e-231g",
+        extra: { autoSpawn: { enabled: 1 } },
+      }),
+    ).toThrow();
+  });
+
+  test("spawnedAt: accepts null (not yet spawned) AND positive integer (unix-epoch)", () => {
+    const fresh = KanbanEpic.parse({ id: "e-231h", spawnedAt: null });
+    expect(fresh.spawnedAt).toBeNull();
+    const spawned = KanbanEpic.parse({ id: "e-231i", spawnedAt: 1_700_000_500 });
+    expect(spawned.spawnedAt).toBe(1_700_000_500);
+    const omitted = KanbanEpic.parse({ id: "e-231j" });
+    expect(omitted.spawnedAt).toBeUndefined();
+  });
+
+  test("spawnedAt: rejects non-numeric / float / string shapes", () => {
+    expect(() => KanbanEpic.parse({ id: "e-231k", spawnedAt: "1700000500" })).toThrow();
+    expect(() => KanbanEpic.parse({ id: "e-231l", spawnedAt: 1700000500.5 })).toThrow();
+  });
 });
 
 // ---------- KanbanStory ----------
