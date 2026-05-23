@@ -475,6 +475,7 @@ describe("renderFlat", () => {
         ],
         orphans: [
           {
+            kind: "epic",
             class: "cage-tmux-without-registry",
             ref: "ghost",
             details: "test",
@@ -786,6 +787,7 @@ describe("renderTree orphan section", () => {
         teams: [],
         orphans: [
           {
+            kind: "epic",
             class: "cage-tmux-without-registry",
             ref: "ghost",
             details: "test",

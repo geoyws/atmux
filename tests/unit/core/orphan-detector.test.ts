@@ -348,7 +348,7 @@ describe("class 1: cage-tmux-without-registry", () => {
     const { orphans } = classifyOrphans(manifest, discovery, seen);
     expect(orphans).toHaveLength(1);
     expect(orphans[0]?.ref).toBe("e-ghost");
-    expect(orphans[0]?.reap_hint).toContain("dissolve-epic e-ghost");
+    expect(orphans[0]?.reap_hint).toContain("kill-server");
   });
 
   test("neg: parent-cage alive, parent IS in cockpit", () => {

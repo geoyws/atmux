@@ -147,6 +147,7 @@ export function classifyOrphans(
     const ageMs = nowMs - firstSeenMs;
     if (ageMs >= graceForClass(c.cls)) {
       const row: TopoOrphan = {
+        kind: "epic", // every §D4 class is epic-scoped today
         class: c.cls,
         ref: c.ref,
         details: c.details,
@@ -208,7 +209,11 @@ function detectCageWithoutRegistry(
         });
       }
     } else {
-      // Epic-cage socket.
+      // Epic-cage socket. Per ADR-223 §D2 row 1 amendment 2026-05-22:
+      // dissolveEpic ALWAYS refuses on this class (orphan IS the
+      // missing registry entry); PRIMARY reap is `tmux kill-server`
+      // + the next-pass re-classifies residue as branch-without-row +
+      // worktree-without-cage.
       const key = `${s.parent}::${s.eid}`;
       if (!knownEpics.has(key)) {
         out.push({
@@ -216,7 +221,7 @@ function detectCageWithoutRegistry(
           ref: s.eid,
           atmux_dir: undefined,
           details: `epic-team cage tmux alive at ${s.socket}; ${s.eid} not in cockpit sessions[] under '${s.parent}'`,
-          reap_hint: `atmux team dissolve-epic ${s.eid} --skip-checks`,
+          reap_hint: `tmux -S ${s.socket} kill-server`,
         });
       }
     }

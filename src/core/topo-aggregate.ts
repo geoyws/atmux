@@ -136,8 +136,20 @@ export interface KanbanProbe {
   last_activity: string | null;
 }
 
-/** Orphan row — output of {@link classifyOrphans}. */
-export interface TopoOrphan {
+/** Orphan row — output of {@link classifyOrphans}. Discriminated on
+ *  `kind` so the reap orchestrator (ADR-223 §D3 Gate 2) can narrow at
+ *  compile time before dispatching destructive primitives. Every
+ *  orphan class in §D4 is epic-scoped today; the `kind: "parent"`
+ *  branch is a forward-looking guard for any future class that
+ *  targets a parent team (`atmux team rm` ownership, not reap's). */
+export type TopoOrphan = TopoOrphanBase & {
+  /** Topology kind — gates which destructive primitives may run.
+   *  Reap dispatches ONLY when `kind === "epic"`; `parent` rows are
+   *  refused with `gate-2-parent-kind` per ADR-223 §D3 Gate 2. */
+  kind: "epic" | "parent";
+};
+
+interface TopoOrphanBase {
   /** Enum literal from ADR-222 §D4. */
   class: string;
   /** Identifier the operator recognizes. */
